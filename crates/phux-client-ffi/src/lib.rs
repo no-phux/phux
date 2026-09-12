@@ -12,6 +12,7 @@ mod grid_metadata;
 mod operations;
 mod pointer;
 mod remote;
+mod session_create;
 mod session_query;
 mod session_rename;
 mod types;
@@ -44,7 +45,9 @@ pub use pointer::{
     PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,
     phux_client_terminal_mouse_mode,
 };
+pub use remote::registry::*;
 pub use remote::*;
+pub use session_create::*;
 pub use session_query::*;
 pub use session_rename::*;
 pub use types::*;
@@ -686,12 +689,18 @@ fn dispatch_frame(
     let Some(frame) = directory::dispatch(client, frame) else {
         return Ok(());
     };
+    let Some(frame) = session_create::dispatch(client, frame)? else {
+        return Ok(());
+    };
     let Some(frame) = session_query::dispatch(client, frame)? else {
         return Ok(());
     };
     let Some(frame) = session_rename::dispatch(client, frame)? else {
         return Ok(());
     };
+    if workspace::resources::dispatch(client, &frame)? {
+        return Ok(());
+    }
     let Some(frame) = workspace::dispatch(client, frame) else {
         return Ok(());
     };
@@ -1026,22 +1035,30 @@ fn apply_attached(
         },
     )?;
     for pane in agent_sessions {
-        let facet = pane.agent.as_ref();
-        apply_kernel_input(
-            client,
-            KernelInput::AgentSessionDeclared(AgentSessionDeclaration {
-                terminal_id: &pane.id,
-                parent: pane.parent.as_ref(),
-                provider: facet.map(|facet| facet.provider.as_str()),
-                native_id: facet.and_then(|facet| facet.native_id.as_deref()),
-                state: facet.map(|facet| facet.state.as_str()),
-            }),
-        )?;
-        client
-            .agent_streams
-            .insert(pane.id.clone(), client::AgentStream::default());
+        declare_agent_session(client, pane)?;
     }
     workspace::attached(client, snapshot);
+    Ok(())
+}
+
+/// Admit a record stream without allocating a terminal replica or changing an
+/// existing generation. Inventory declarations are independent of subscription.
+fn declare_agent_session(
+    client: &mut Client,
+    resource: &phux_protocol::wire::info::ResourceInfo,
+) -> Result<(), BridgeError> {
+    let facet = resource.agent.as_ref();
+    apply_kernel_input(
+        client,
+        KernelInput::AgentSessionDeclared(AgentSessionDeclaration {
+            terminal_id: &resource.id,
+            parent: resource.parent.as_ref(),
+            provider: facet.map(|facet| facet.provider.as_str()),
+            native_id: facet.and_then(|facet| facet.native_id.as_deref()),
+            state: facet.map(|facet| facet.state.as_str()),
+        }),
+    )?;
+    client.agent_streams.entry(resource.id.clone()).or_default();
     Ok(())
 }
 
@@ -1340,32 +1357,47 @@ fn apply_terminal_closed(
     client: &mut Client,
     terminal_id: &phux_protocol::ResourceId,
 ) -> Result<(), BridgeError> {
+    // A delayed explicit close after temporary inventory withdrawal still creates
+    // a durable tombstone, without retiring the host projection a second time.
+    client.workspace.subscriptions.cancel(terminal_id);
+    if client.workspace.subscriptions.was_withdrawn(terminal_id) {
+        apply_kernel_input(client, KernelInput::ResourceClosed { terminal_id })?;
+        client.workspace.subscriptions.mark_closed(terminal_id);
+        client.forget_resource(terminal_id);
+        return Ok(());
+    }
+    if !client.is_agent_stream(terminal_id)
+        && client.session.resource_kind(terminal_id) == Some(ResourceKind::AgentSession)
+    {
+        return Ok(());
+    }
     client.ensure_participant(terminal_id)?;
     apply_kernel_input(client, KernelInput::ResourceClosed { terminal_id })?;
     if client.is_agent_stream(terminal_id) {
-        // The kernel drops the stream silently (nothing was painted); the
-        // host still needs to retire its projection of the resource.
-        let (stream_id, bootstrap_id) = client
-            .agent_streams
-            .get(terminal_id)
-            .and_then(|state| state.generation)
-            .unwrap_or((0, 0));
-        let mut effect = OwnedEffect::simple(
-            EFFECT_AGENT_RECORDS,
-            AGENT_RECORDS_CLOSED,
-            terminal_id.clone(),
-        );
-        effect.stream_id = stream_id;
-        effect.bootstrap_id = bootstrap_id;
-        client.owned_effects.push(effect);
-        client.publish_effects();
+        client.workspace.subscriptions.mark_closed(terminal_id);
+        retire_agent_stream(client, terminal_id);
         client.forget_resource(terminal_id);
         return Ok(());
     }
     operations::release_terminal(client, terminal_id)?;
     forget_terminal(client, terminal_id);
     client.forget_resource(terminal_id);
+    client.operations.observe_resource_closed(terminal_id);
     Ok(())
+}
+
+/// Withdraw an agent stream's admission and retire its host projection. The
+/// registry entry is removed only by an authoritative close or inventory read.
+fn retire_agent_stream(client: &mut Client, id: &phux_protocol::ResourceId) {
+    let Some(state) = client.agent_streams.remove(id) else {
+        return;
+    };
+    let (stream_id, bootstrap_id) = state.generation.unwrap_or((0, 0));
+    let mut effect = OwnedEffect::simple(EFFECT_AGENT_RECORDS, AGENT_RECORDS_CLOSED, id.clone());
+    effect.stream_id = stream_id;
+    effect.bootstrap_id = bootstrap_id;
+    client.owned_effects.push(effect);
+    client.publish_effects();
 }
 
 /// Publishes a bell as an effect the embedder can observe.
@@ -1470,8 +1502,10 @@ pub unsafe extern "C" fn phux_client_session_get(
     }
 }
 
-/// Returns the number of resources in the latest accepted ATTACHED snapshot
-/// that the server has not since reported closed. Zero means either no
+/// Returns the number of resources in the latest accepted inventory.
+///
+/// An ATTACHED or workspace `GET_STATE` snapshot replaces membership; a resource
+/// closure removes an entry. Zero means either no
 /// snapshot has arrived or the client pointer is invalid.
 ///
 /// # Safety
@@ -1489,7 +1523,7 @@ pub unsafe extern "C" fn phux_client_resource_count(client: *const PhuxClient) -
     })
 }
 
-/// Returns one borrowed resource summary from the latest ATTACHED.
+/// Returns one borrowed resource summary from the latest accepted inventory.
 ///
 /// # Safety
 ///
@@ -2305,6 +2339,7 @@ pub unsafe extern "C" fn phux_client_search_results_release(
 #[cfg(test)]
 mod tests {
     mod clear_presentation;
+    mod resource_discovery;
 
     use super::*;
     use phux_protocol::caps::ServerCapabilities;
@@ -3748,6 +3783,13 @@ mod tests {
     fn attached_mixed_client() -> *mut PhuxClient {
         let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
         let agent = phux_protocol::ResourceId::local(MIXED_AGENT);
+        attached_resource_client(mixed_kind_snapshot(&terminal, &agent))
+    }
+
+    fn attached_resource_client(
+        snapshot: phux_protocol::wire::info::SessionSnapshot,
+    ) -> *mut PhuxClient {
+        let terminal = snapshot.focused_resource.clone();
         let stream_id = phux_protocol::StreamId::new(1).expect("stream");
         let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
         let client = boxed_client();
@@ -3761,7 +3803,7 @@ mod tests {
         for frame in [
             FrameKind::Attached {
                 attach_id: 7,
-                snapshot: mixed_kind_snapshot(&terminal, &agent),
+                snapshot,
                 initial_client_id: phux_protocol::ClientId::new(9),
             },
             FrameKind::BootstrapBegin {

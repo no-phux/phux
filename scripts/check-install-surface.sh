@@ -14,6 +14,16 @@ require_fixed() {
   fi
 }
 
+# Prose may wrap across lines without changing the install contract.
+require_prose() {
+  local file="$1"
+  local needle="$2"
+  if ! tr '\n' ' ' < "$ROOT/$file" | tr -s '[:space:]' | grep -F -- "$needle" > /dev/null; then
+    printf 'missing: %s: %s\n' "$file" "$needle" >&2
+    failures=$((failures + 1))
+  fi
+}
+
 forbid_fixed() {
   local file="$1"
   local needle="$2"
@@ -44,13 +54,13 @@ require_regex() {
 # The README is a landing page: it carries the brew one-liner, the platform
 # truth, and a pointer to INSTALL.md. The full channel matrix, source builds,
 # and cargo-install caveats are gated on docs/INSTALL.md below.
-require_fixed README.md "Quick start"
+require_fixed README.md "## Install"
 require_fixed README.md "brew trust --tap no-phux/tap"
 require_fixed README.md "brew install no-phux/tap/phux"
 forbid_fixed README.md "brew install phall1/phux/phux"
 forbid_fixed README.md "brew install phall1/tap/phux"
 require_fixed README.md "macOS arm64, Linux x86_64, and Linux arm64"
-require_fixed README.md "Windows is not supported"
+require_prose README.md "Windows is not supported"
 require_fixed README.md "docs/INSTALL.md"
 forbid_fixed README.md "macOS x86_64"
 # Version literals in the README rot; forbid the one that already did
@@ -61,7 +71,7 @@ forbid_fixed README.md "v0.0.3"
 # version is stale by the next release; point at "the latest release" instead.
 forbid_fixed docs/RELEASING.md "v0.0.3"
 
-require_fixed docs/INSTALL.md "Homebrew is the recommended install on supported macOS and Linux"
+require_prose docs/INSTALL.md "Homebrew is the recommended day-to-day path on supported macOS and Linux"
 require_fixed docs/INSTALL.md "Supported install channels"
 require_fixed docs/INSTALL.md "Homebrew"
 require_fixed docs/INSTALL.md "brew trust --tap no-phux/tap"
@@ -81,7 +91,9 @@ require_fixed docs/INSTALL.md '`cargo install phux` is unsupported'
 # lives instead of being resurrected in INSTALL.md.
 require_fixed docs/RELEASING.md 'do not point installers or the tap at it'
 require_fixed docs/INSTALL.md "Windows is not supported"
-require_fixed docs/INSTALL.md "First run: persistent session + agent loop"
+# First-run and headless guidance live in their canonical guides.
+require_fixed docs/INSTALL.md '[Quickstart](./QUICKSTART.md)'
+require_fixed docs/INSTALL.md '[Agents](./consumers/agents.md)'
 require_fixed docs/INSTALL.md 'verifies the release `.sha256` sidecar before unpacking'
 require_fixed docs/INSTALL.md 'prints the exact command to run next'
 require_fixed docs/INSTALL.md 'only when that directory is not already on `PATH`'
@@ -118,14 +130,17 @@ require_fixed scripts/install.sh 'publish_dir="$(mktemp -d "${install_dir}/.phux
 require_fixed scripts/install.sh 'rollback_publish'
 require_fixed scripts/install.sh 'mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"'
 require_fixed scripts/install.sh 'echo "next: phux"'
+require_fixed scripts/install.sh '--channel'
+require_fixed scripts/install.sh 'PHUX_CHANNEL'
+require_fixed scripts/install.sh '.phux-channel'
+require_fixed docs/RELEASING.md 'next channel'
+require_fixed ADR/0113-next-release-channel.md '`phux update'
 require_fixed scripts/install.sh 'PATH remedy: export PATH=%s:"$PATH"'
 require_fixed scripts/install.sh 'found_command="$(command -v phux 2>/dev/null || true)"'
-# The repo publishes several release streams and only bare vX.Y.Z tags carry
-# the CLI tarballs. The redirect fast path must stay core-only, with a
-# filtered list as the fallback for when another stream ships newer.
-require_fixed scripts/install.sh 'v[0-9]*)'
-require_fixed scripts/install.sh 'releases?per_page=30'
-require_fixed scripts/install.sh 'no core phux release found in recent GitHub releases'
+# Both standalone scripts embed the same bounded structural JSON resolver.
+# The executable tests cover mixed streams, pagination and metadata filtering.
+require_fixed scripts/install.sh 'resolve_latest_version v'
+require_fixed scripts/install-cockpit.sh 'resolve_latest_version cockpit-v'
 require_fixed scripts/test-install.sh 'installer transaction tests passed'
 
 # --- The Cockpit installer ---------------------------------------------------
@@ -148,7 +163,7 @@ require_fixed scripts/install-cockpit.sh 'Phux Cockpit ships arm64 only'
 require_fixed scripts/install-cockpit.sh 'com.apple.quarantine'
 require_fixed scripts/install-cockpit.sh 'rollback_publish'
 require_fixed scripts/install-cockpit.sh '.phux-cockpit-install.lock'
-require_fixed scripts/install-cockpit.sh 'open -a "Phux Cockpit"'
+require_fixed scripts/install-cockpit.sh 'printf '\''next: open %s\n'\'' "$(shell_quote "$installed_app")"'
 require_fixed scripts/test-install.sh 'cockpit installer transaction tests passed'
 forbid_fixed scripts/test-install.sh 'bash "$ROOT/scripts/install-cockpit.sh"'
 
@@ -201,7 +216,7 @@ require_fixed README.md 'curl -fsSL https://phux.sh/install | sh'
 require_fixed README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install | sh'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
-require_fixed docs/INSTALL.md '## Phux Cockpit (native macOS)'
+require_fixed docs/INSTALL.md '## Cockpit (native macOS)'
 require_fixed clients/cockpit/README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
 require_fixed docs/site/DEPLOY.md '/install-cockpit'
 require_fixed docs/RELEASING.md 'curl -fsSL https://phux.sh/install | sh'
@@ -223,7 +238,12 @@ forbid_fixed docs/INSTALL.md 'phall1/phux'
 forbid_fixed docs/RELEASING.md 'phall1/phux'
 forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
 forbid_fixed docs/site/scripts/sync-docs.ts 'phall1/phux'
-require_fixed scripts/install.sh 'https://github.com/no-phux/phux/releases/download/${version}'
+require_fixed scripts/install.sh 'https://github.com/no-phux/phux/releases/download/${release_tag}'
+# The next-channel pointer must be an asset named channel.json. gh's
+# `file#label` syntax labels the asset; it does not rename it.
+require_fixed scripts/publish-next-channel.sh 'pointer_dir/channel.json'
+require_fixed scripts/publish-next-channel.sh 'gh release upload next "$channel_json" --clobber'
+forbid_fixed scripts/publish-next-channel.sh 'channel_json#channel.json'
 require_fixed scripts/install-cockpit.sh 'https://github.com/no-phux/phux/releases/download/${version}'
 require_fixed crates/phux/src/commands/update/release.rs 'pub(crate) const REPO: &str = "no-phux/phux";'
 
@@ -427,6 +447,9 @@ require_fixed docs/INSTALL.md 'nix profile upgrade phux'
 require_fixed docs/INSTALL.md 'nixos-rebuild switch'
 require_fixed docs/INSTALL.md 'Verifies the checksum before unpacking anything'
 require_fixed docs/INSTALL.md 'phux update --rollback'
+require_fixed docs/INSTALL.md '--channel next'
+require_fixed docs/INSTALL.md 'PHUX_CHANNEL=next'
+require_fixed docs/INSTALL.md 'sh -s -- --channel next'
 require_fixed docs/RELEASING.md 'This layout is a consumed contract'
 
 if [ "$failures" -ne 0 ]; then
@@ -435,4 +458,6 @@ if [ "$failures" -ne 0 ]; then
 fi
 
 bash "$ROOT/scripts/test-install.sh"
+bash "$ROOT/scripts/sync-install-resolver.sh" --check
+bash "$ROOT/scripts/test-install-resolution.sh"
 echo "install surface check passed"

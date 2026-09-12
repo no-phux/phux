@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-12
 ---
 
 # Appendix B — Reserved ranges
@@ -22,7 +22,7 @@ For implementers extending the protocol:
 - `WORKLOAD_RESPONSE = 0x04` and `WORKLOAD_CHALLENGE = 0x84` were allocated
   to the endpoint-neutral `phux-workload/v1` profile
   ([workload-auth.md](./workload-auth.md)) but never shipped; per
-  [ADR-0114](../../ADR/0114-workload-auth-is-mtls.md) they are
+  [ADR-0116](../../ADR/0116-workload-auth-is-mtls.md) they are
   retired-unshipped back to the reserved pool. `0x04..=0x0F` and
   `0x84..=0x8F` remain open for connection lifecycle — with the caution
   that an old draft peer could in theory emit these two bytes, so a
@@ -36,9 +36,9 @@ For implementers extending the protocol:
   reserve, which it belongs in: it wraps the hot path's largest frames.
   `0x9B..=0x9F` remain open for hot-path messages.
 - Message IDs `0x24..=0x2F` and `0xA3..=0xAF`: reserved for further L1
-  Terminal lifecycle / per-pane control frames (phux-4li.10 allocated
-  `0x22..=0x23` C→S and `0xA1..=0xA2` S→C from these ranges; ADR-0056
-  allocated `MOVE_RESOURCE = 0x2A` and `RESOURCE_MOVED = 0xA8`). The
+  Terminal lifecycle / per-pane control frames (`0x22..=0x23` C→S and
+  `0xA1..=0xA2` S→C are taken; ADR-0056 allocated `MOVE_RESOURCE = 0x2A`
+  and `RESOURCE_MOVED = 0xA8`). The
   `SPAWN_PROCESS` / `KILL_PROCESS` / `PROCESS_SPAWNED` / `PROCESS_CLOSED` /
   `PROCESS_OUTPUT` family once pencilled into `0x24..=0x25` /
   `0xA3..=0xA5`, and the `FORWARD_PORT` / `CLOSE_PORT_FORWARD` /
@@ -49,8 +49,8 @@ For implementers extending the protocol:
 - Message IDs `0x31..=0x3F` and `0xC2..=0xCF`: reserved for control
   plane.
 - Message IDs `0x41..=0x4F` and `0xB3..=0xBF`: reserved for events
-  (phux-y2t allocated `SUBSCRIBE_EVENTS = 0x41` C→S and `EVENT = 0xB3`
-  S→C from these ranges; `0x42..=0x4F` and `0xB4..=0xBF` remain open).
+  (`SUBSCRIBE_EVENTS = 0x41` C→S and `EVENT = 0xB3` S→C are taken;
+  `0x42..=0x4F` and `0xB4..=0xBF` remain open).
 - Message IDs `0x50..=0x5F` and `0xD0..=0xDF`: L3
   ([L3.md](./L3.md) §1). `0x50..=0x55` C→S and `0xD0..=0xD3` S→C are
   allocated (the metadata verbs, and the `LIST_DIRECTORY` /

@@ -30,6 +30,7 @@ mod schema;
 pub mod session_name; // phux-c2td.6 (`${random-name}` adjective-noun generator)
 pub mod settings; // phux-u1tq.3 (scalar settings catalogue, provenance snapshot, comment-preserving writer)
 pub mod socket; // phux-93b (shared default socket path: daemon + thin clients)
+pub mod toml_registry;
 pub mod vocab; // phux-i0e8.3.1 (validation vocabulary: action + hook event names)
 
 // Wave 5 modules — each owned by its respective subtask:
@@ -140,6 +141,24 @@ pub fn parse_str(input: &str, path: &Path) -> Result<Config, ConfigError> {
 /// the offending file.
 pub fn parse_with_defaults(user_input: &str, path: &Path) -> Result<Config, ConfigError> {
     let merged = merged_config_table(user_input, path)?;
+    deserialize_merged(merged, user_input, path)
+}
+
+/// Parse the usual layer stack with an aggregate external-file byte budget.
+///
+/// `max_read_bytes` includes `user_input` and each unique inherited file; embedded
+/// defaults are excluded. Each layer read stops at remaining bytes plus one
+/// sentinel byte, before parsing. Ordinary unbounded loaders retain their behavior.
+///
+/// # Errors
+/// Same errors as [`parse_with_defaults`]. Budget exhaustion is a
+/// [`ConfigError::LayerRead`] with [`std::io::ErrorKind::FileTooLarge`].
+pub fn parse_with_defaults_bounded(
+    user_input: &str,
+    path: &Path,
+    max_read_bytes: usize,
+) -> Result<Config, ConfigError> {
+    let (merged, _) = layer::merged_with_budget(user_input, path, Some(max_read_bytes))?;
     deserialize_merged(merged, user_input, path)
 }
 

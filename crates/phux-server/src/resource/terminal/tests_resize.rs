@@ -28,6 +28,7 @@ async fn resize_updates_terminal_dims() {
                     cell_px: None,
                     resync_clients: false,
                     resync_only: false,
+                    resync_for: None,
                 })
                 .await
                 .expect("send resize");
@@ -99,6 +100,7 @@ async fn resize_with_cell_px_updates_pty_winsize_pixels() {
                     cell_px: Some((9, 18)),
                     resync_clients: false,
                     resync_only: false,
+                    resync_for: None,
                 })
                 .await
                 .expect("send resize");
@@ -115,6 +117,7 @@ async fn resize_with_cell_px_updates_pty_winsize_pixels() {
                     cell_px: None,
                     resync_clients: false,
                     resync_only: false,
+                    resync_for: None,
                 })
                 .await
                 .expect("send resize");
@@ -194,6 +197,7 @@ async fn winsize_pixels_default_when_no_client_reports_metrics() {
                     cell_px: None,
                     resync_clients: false,
                     resync_only: false,
+                    resync_for: None,
                 })
                 .await
                 .expect("send resize");
@@ -241,6 +245,7 @@ async fn xtwinops_size_queries_answered_from_resized_geometry() {
                     cell_px: Some((9, 18)),
                     resync_clients: false,
                     resync_only: false,
+                    resync_for: None,
                 })
                 .await
                 .expect("send resize");
@@ -334,6 +339,7 @@ async fn resize_rebroadcasts_grid_snapshot_for_phux_8v1() {
                     cell_px: None,
                     resync_clients: true,
                     resync_only: false,
+                    resync_for: None,
                 })
                 .await
                 .expect("send resize");
@@ -460,6 +466,7 @@ async fn a_no_op_resize_publishes_no_resync_for_phux_a5xj() {
                     cell_px: None,
                     resync_clients: true,
                     resync_only: false,
+                    resync_for: None,
                 })
                 .await
                 .expect("send no-op resize");
@@ -483,6 +490,7 @@ async fn a_no_op_resize_publishes_no_resync_for_phux_a5xj() {
                     cell_px: None,
                     resync_clients: true,
                     resync_only: false,
+                    resync_for: None,
                 })
                 .await
                 .expect("send real resize");
@@ -491,6 +499,82 @@ async fn a_no_op_resize_publishes_no_resync_for_phux_a5xj() {
                 drain_resync_dims(&mut out),
                 vec![(40, 10)],
                 "a resize that actually reflowed must still resync exactly once",
+            );
+
+            token.cancel();
+            tokio::time::timeout(ACTOR_EXIT_DEADLINE, join)
+                .await
+                .expect("actor did not exit after cancel")
+                .expect("actor task panicked");
+        })
+        .await;
+}
+
+/// phux-auqy, through the real run loop: two pumps that fall behind inside
+/// one debounce window converge on ONE snapshot addressed to both of them
+/// and to nobody else, and the grid does not move.
+///
+/// This is the actor half of "one slow consumer must not re-bootstrap the
+/// pane": the pumps' own half (`takes_resync`) only works if the actor
+/// carries the requester's identity through the debounce to the broadcast.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn targeted_gap_resyncs_coalesce_into_one_snapshot_for_exactly_their_pumps() {
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let bundle = TerminalActor::new_with_seed(80, 24, b"auqy-marker").expect("seed");
+            let handle = bundle.handle.clone();
+            let token = bundle.token;
+            let mut out = handle.output.subscribe();
+            let join = tokio::task::spawn_local(bundle.actor.run());
+
+            let pump = |owner| ResyncTarget {
+                owner,
+                stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+            };
+            for owner in [4, 9, 4] {
+                handle
+                    .terminal()
+                    .expect("terminal facet")
+                    .resize
+                    .send(ResizeRequest {
+                        cols: 0,
+                        rows: 0,
+                        cell_px: None,
+                        resync_clients: true,
+                        resync_only: true,
+                        resync_for: Some(pump(owner)),
+                    })
+                    .await
+                    .expect("send targeted resync_only");
+            }
+            settle_past_resync_debounce().await;
+
+            let mut resyncs = Vec::new();
+            loop {
+                match out.try_recv() {
+                    Ok(PaneOutput::Resync {
+                        cols,
+                        rows,
+                        reason,
+                        audience,
+                        ..
+                    }) => resyncs.push((cols, rows, reason, audience)),
+                    Ok(PaneOutput::Live { .. } | PaneOutput::Control { .. })
+                    | Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => {}
+                    Err(_) => break,
+                }
+            }
+            assert_eq!(
+                resyncs,
+                vec![(
+                    80,
+                    24,
+                    ResyncReason::OutboundGap,
+                    ResyncAudience::Only(vec![pump(4), pump(9)].into()),
+                )],
+                "one synthesis, addressed to exactly the pumps that asked",
             );
 
             token.cancel();
@@ -531,6 +615,7 @@ async fn resync_only_request_rebroadcasts_snapshot_without_resizing() {
                     cell_px: None,
                     resync_clients: true,
                     resync_only: true,
+                    resync_for: None,
                 })
                 .await
                 .expect("send resync_only");
@@ -615,6 +700,7 @@ async fn rapid_resizes_coalesce_into_one_resync_snapshot() {
                         cell_px: None,
                         resync_clients: true,
                         resync_only: false,
+                        resync_for: None,
                     })
                     .await
                     .expect("send resize");
@@ -708,6 +794,7 @@ async fn degenerate_resize_storm_does_not_panic_actor() {
                         cell_px: None,
                         resync_clients: false,
                         resync_only: false,
+                        resync_for: None,
                     })
                     .await
                     .expect("send resize");
@@ -729,6 +816,7 @@ async fn degenerate_resize_storm_does_not_panic_actor() {
                     cell_px: None,
                     resync_clients: false,
                     resync_only: false,
+                    resync_for: None,
                 })
                 .await
                 .expect("send final resize");

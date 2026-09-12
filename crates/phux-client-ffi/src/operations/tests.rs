@@ -8,6 +8,8 @@ use phux_protocol::{
 
 struct Harness(Box<PhuxClient>);
 
+mod close_resource;
+
 fn history_send(id: ResourceId) -> phux_client_core::session::KernelSend {
     phux_client_core::session::KernelSend::HistoryRequest {
         key: phux_client_core::session::ReplicaKey {

@@ -16,8 +16,8 @@ use phux_protocol::wire::frame::FrameKind;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 pub use crate::resource::{
-    ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResourceEventSubscriber, ResyncReason,
-    SubscribeToEventsRequest, UnsubscribeFromEventsRequest,
+    ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResourceEventSubscriber, ResyncAudience,
+    ResyncReason, ResyncTarget, SubscribeToEventsRequest, UnsubscribeFromEventsRequest,
 };
 
 /// Request to register a new consumer with the actor.
@@ -620,6 +620,13 @@ pub struct ResizeRequest {
     /// past the broadcast buffer reconverges — without disturbing the grid
     /// geometry. `cols`/`rows`/`cell_px` are ignored when this is set.
     pub resync_only: bool,
+    /// The one pump a `resync_only` request is for. `Some` addresses the
+    /// resulting [`PaneOutput::Resync`] to that pump alone
+    /// ([`ResyncAudience::Only`]), so one consumer falling behind does not
+    /// re-bootstrap every other consumer of the pane. `None` owes the resync
+    /// to every subscriber. Ignored unless `resync_only` is set: a reflow
+    /// changes the grid under everyone.
+    pub resync_for: Option<ResyncTarget>,
 }
 
 /// The Terminal facet of a [`ResourceHandle`](crate::resource::ResourceHandle):

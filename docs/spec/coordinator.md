@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-12
 ---
 
 # Coordinator — durable work endpoint
@@ -15,10 +15,14 @@ terminal input, output, bootstrap, or history.
 
 ---
 
+<!-- impl-status: spec-only; probe: COORD_HELLO,CoordHello -->
+> **Status: spec-only.** No codec, server, or client in this tree implements
+> the coordinator endpoint. The terminal protocol is independent of it.
+
 ## 1. Scope and status
 
 This document specifies coordinator protocol `0.1.0`. The endpoint is
-**spec-only** until its codec and server exist. The key words `MUST`, `MUST NOT`,
+spec-only: no codec or server exists in this tree. The key words `MUST`, `MUST NOT`,
 `REQUIRED`, `SHALL`, `SHALL NOT`, `SHOULD`, `SHOULD NOT`, `MAY`, and `OPTIONAL`
 are interpreted as RFC 2119 requirements.
 
@@ -193,7 +197,7 @@ TLS handshake (mTLS client certificate) -> COORD_HELLO -> COORD_HELLO_OK
 
 COORD_PING is the only permitted pre-COORD_HELLO interleaving.
 Authentication is the TLS handshake per [workload-auth.md](./workload-auth.md)
-as amended by [ADR-0114](../../ADR/0114-workload-auth-is-mtls.md): the server
+as amended by [ADR-0116](../../ADR/0116-workload-auth-is-mtls.md): the server
 verifies an mTLS client certificate against the phux CA and authorizes the
 credential id against the registry before COORD_HELLO is evaluated. There
 are no `WORKLOAD_CHALLENGE` / `WORKLOAD_RESPONSE` frames and no
@@ -223,7 +227,7 @@ COORD_HELLO {                                // 0x01, C -> S
  11 max_event_credit_count: u32
  12 max_event_credit_bytes: u32
  // field 13 is retired-unshipped: the WorkloadOffer record belonged to the
- //   retired phux-workload/v1 proof profile (ADR-0114). No sender emits it.
+ //   retired phux-workload/v1 proof profile (ADR-0116). No sender emits it.
 }
 
 COORD_HELLO_OK {                             // 0x80, S -> C
@@ -241,7 +245,7 @@ COORD_HELLO_OK {                             // 0x80, S -> C
  12 max_event_credit_count: u32
  13 max_event_credit_bytes: u32
  // field 14 is retired-unshipped: the WorkloadGrant record belonged to the
- //   retired phux-workload/v1 proof profile (ADR-0114). No sender emits it.
+ //   retired phux-workload/v1 proof profile (ADR-0116). No sender emits it.
  15 operation_result_retention_secs: u64     // >= 2_592_000
  16 activation_certificate: ActivationCertificate
 }
@@ -313,7 +317,7 @@ it never leaves a reduced, plausibly complete stream.
 
 The IDs are coordinator-local. The `0x04` / `0x84` slots once pencilled
 for imported `WORKLOAD_RESPONSE` / `WORKLOAD_CHALLENGE` are
-retired-unshipped with the proof profile (ADR-0114) and stay unallocated.
+retired-unshipped with the proof profile (ADR-0116) and stay unallocated.
 
 | ID | Direction | Frame |
 |---:|---|---|
@@ -332,7 +336,7 @@ retired-unshipped with the proof profile (ADR-0114) and stay unallocated.
 | `0x80` | S -> C | `COORD_HELLO_OK` |
 | `0x82` | S -> C | `ACK` |
 | `0x83` | S -> C | `COORD_AUTHORITY_RENEWED` |
-| `0x84` | — | retired-unshipped (was `WORKLOAD_CHALLENGE`; ADR-0114) |
+| `0x84` | — | retired-unshipped (was `WORKLOAD_CHALLENGE`; ADR-0116) |
 | `0x90` | S -> C | `COORD_COMMAND_RESULT` |
 | `0x91` | S -> C | `OPERATION_RESULT` |
 | `0xa0` | S -> C | `SNAPSHOT_BEGIN` |

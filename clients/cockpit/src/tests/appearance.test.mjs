@@ -78,7 +78,7 @@ test('a failed rollback still dismisses Settings and releases the keyboard', () 
   [model, cmd] = step(model, { kind: 'appearance_failed', error: bytes('engine unavailable') });
   assert.equal(model.settingsOpen, false);
   assert.equal(model.paletteOpen, true);
-  assert.equal(cmd.cmds.at(-1).name, 'cockpit.navigation');
+  assert.ok(cmd.cmds.some(effect => effect.name === 'cockpit.navigation'));
 });
 
 test('without a native transaction Cancel closes locally, while a failed Save keeps the preview', () => {

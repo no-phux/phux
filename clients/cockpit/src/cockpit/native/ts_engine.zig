@@ -27,6 +27,14 @@ const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
 const shared_workspace = @import("../shared_workspace.zig");
 const peer_edits = @import("../peer_edits.zig");
+const session_attachments = @import("session_attachments.zig");
+pub const new_session = @import("new_session.zig");
+pub const new_session_runtime = @import("new_session_runtime.zig");
+pub const machine_runtime = @import("machine_runtime.zig");
+
+test {
+    _ = @import("machine_engine_tests.zig");
+}
 
 test "projection refusal publishes newly retained completion independently from refusal flag" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
@@ -99,6 +107,27 @@ pub const NoShells = struct {
 
 pub const PointerOutcome = enum { ignored, consumed, geometry_changed };
 
+test "external keybindings retire legacy find and copy chords while search still owns input" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const pane = engine.focusedPane().?;
+    const find: canvas.WidgetKeyboardEvent = .{ .phase = .key_down, .key = "f", .modifiers = .{ .super = true } };
+    try std.testing.expect(!engine.textInputOwnsKeyboard());
+    engine.onKey(&NoShells{}, find);
+    try std.testing.expect(engine.textInputOwnsKeyboard());
+    pane.session.searchClose();
+    engine.external_keybindings = true;
+    engine.onKey(&NoShells{}, find);
+    try std.testing.expect(!engine.textInputOwnsKeyboard());
+    try std.testing.expect(!engine.localShortcut(&NoShells{}, pane, .{ .phase = .key_down, .key = "c", .modifiers = .{ .super = true } }));
+    try std.testing.expect(!engine.localShortcut(&NoShells{}, pane, .{ .phase = .key_down, .key = "c", .modifiers = .{ .control = true } }));
+    try std.testing.expect(!engine.localShortcut(&NoShells{}, pane, .{ .phase = .key_down, .key = "f", .modifiers = .{ .control = true } }));
+    _ = engine.nativeCommand(@intFromEnum(protocol.NativeCommand.find), &NoShells{});
+    try std.testing.expect(engine.textInputOwnsKeyboard());
+    engine.onKey(&NoShells{}, .{ .phase = .key_down, .key = "escape" });
+    try std.testing.expect(!engine.textInputOwnsKeyboard());
+}
+
 test "shared deferred selection is superseded by keyboard and routed window focus" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
     defer engine.destroy();
@@ -161,6 +190,7 @@ const SplitDrag = struct {
     shared_id: ?[16]u8 = null,
     shared_revision: u64 = 0,
     window_epoch: u64 = 0,
+    local_fingerprint: u64 = 0,
     original_fraction: f32 = 0.5,
     /// The coordinator whose tab holds the divider; its projection's
     /// revision is the one `shared_revision` was taken from.
@@ -176,6 +206,7 @@ pub const Engine = struct {
     model: *Model,
     sequence: u64 = 0,
     revision: u64 = 1,
+    selection_epoch: u64 = 1,
     intent_refused: bool = false,
     /// The pty key each registry slot was last spawned for, so `spawnShells`
     /// is idempotent across frames and a reused slot spawns again.
@@ -205,21 +236,13 @@ pub const Engine = struct {
     directory_origin: @import("directory_picker.zig").Origin = .{},
     /// Edits of a showing peer's tabs, queued to that coordinator alone.
     peer_edits: peer_edits.Edits = .{},
-    /// Each peer slot's channel occupancy. Its key carries this generation
-    /// (support.phuxPeerChannelKeyAt), and every close Cockpit asks for moves
-    /// it on, so a late event of a closed occupancy is recognized as stale.
-    peer_channel_generation: [model_module.max_phux_peers]u64 = @splat(0),
-    /// The occupancy whose close a restart waits for (Model.phux_peer_reopen).
-    peer_reopen_generation: [model_module.max_phux_peers]u64 = @splat(0),
-    /// A failed listing peer's next automatic redial wait; 0 is the first.
-    peer_retry_delay_ms: [model_module.max_phux_peers]u64 = @splat(0),
-    /// The channel generation a slot's retry timer was armed for; a timer
-    /// that fires for any other generation, or none, is stale.
-    peer_retry_generation: [model_module.max_phux_peers]?u64 = @splat(null),
-    /// When each peer began listing on its current connection; null while it
-    /// is not listing. A failure after it stayed listed `peer_retry_stable_ms`
-    /// starts its backoff over; an earlier one keeps it growing.
-    peer_listed_since: [model_module.max_phux_peers]?std.Io.Timestamp = @splat(null),
+    /// Shipping startup shares one wake channel across dynamically owned
+    /// workers. Per-peer handles remain logical retirement/retry identities.
+    peer_wake_key: u64 = 0,
+    peer_wake_handle: native_sdk.ChannelHandle = .{},
+    peer_background_cursor: usize = 0,
+    /// The shipping native keybinding registry owns application chords.
+    external_keybindings: bool = false,
     /// Each coordinator's last Rename Session, and on which of its
     /// connections (session_commands.zig): one pending rename per
     /// coordinator, so a rename on one never refuses a rename on another.
@@ -314,9 +337,14 @@ pub const Engine = struct {
         model.saved_attachments = .{};
         model.pending_attachments = @splat(false);
         model.state.setPath(null);
+        const remote = model.phux().?;
+        model.shared_workspace.attachment_id = remote.context_id;
+        model.bindWindowAttachment(0, remote.context_id);
     }
 
     pub fn destroy(self: *Engine) void {
+        self.peer_edits.deinit();
+        self.rename_flights.deinit();
         model_module.deinitModel(self.model);
         std.heap.page_allocator.destroy(self.model);
         std.heap.page_allocator.destroy(self);
@@ -471,7 +499,7 @@ pub const Engine = struct {
         while (remote.takeNotice()) |notice| {
             defer remote.releaseNotice(notice);
             if (!notice.isBell()) continue;
-            const owner: support.ReplicaOwner = .{ .terminal_ref = notice.terminal_ref, .generation = notice.generation };
+            const owner: support.ReplicaOwner = .{ .terminal_ref = notice.terminal_ref, .generation = notice.generation, .source_context = remote.host.context_id };
             if (!self.model.ownerIsCurrent(owner)) continue;
             if (!remote.ringBell(owner)) continue;
             changed = true;
@@ -507,7 +535,7 @@ pub const Engine = struct {
         }
         if (model.phux()) |remote| {
             const workspace = remote.workspaceSnapshot();
-            if (workspace.state != .unavailable) return self.synchronizeSharedWorkspace() or changed;
+            if (workspace.state != .unavailable) return self.synchronizeSharedWorkspace(delta.sessions_listed) or changed;
         }
         return changed;
     }
@@ -520,19 +548,28 @@ pub const Engine = struct {
             _ = self.creation.complete(model, result);
             // Subscription restoration may share the provider's deduplicated
             // attach request. Both exact owners must observe its completion.
-            _ = model.shared_workspace.completeSubscription(result, remote.workspaceSnapshot().request_id);
+            _ = completeSubscriptions(&model.shared_workspace, remote, result);
             changed = true;
         }
         return changed;
     }
 
-    fn synchronizeSharedWorkspace(self: *Engine) bool {
+    fn completeSubscriptions(state: *shared_workspace.State, remote: *support.PhuxProvider, result: support.OperationResult) bool {
+        if (state.attachment_id != null) return state.completeSubscriptionFrom(remote.context_id, result, remote.workspaceSnapshot().request_id);
+        return state.completeSubscription(result, remote.workspaceSnapshot().request_id);
+    }
+
+    fn synchronizeSharedWorkspace(self: *Engine, catalog_listed: bool) bool {
         const model = self.model;
         const remote = model.phux() orelse return false;
         self.sharedContext() catch return self.projectionRefused();
         var changed = model.shared_mutations.pump(model);
         changed = self.creation.pump(model) or changed;
         changed = (self.projectSharedWorkspace() catch return self.projectionRefused()) or changed;
+        // Bound empty New Tab on the primary provider: queue, then settle from
+        // this drain's creation evidence (primary has no peer `holds` path).
+        changed = empty_session.pumpAttachment(self, remote) or changed;
+        changed = self.settleEmptyAttachment(remote, null, catalog_listed) or changed;
         self.admitDesiredTerminal();
         if (self.creation.count() == 0 and remote.workspaceSnapshot().status != .pending) model.shared_workspace.releaseUnused(model);
         model.shared_workspace.subscribe(model);
@@ -576,6 +613,7 @@ pub const Engine = struct {
         var remote_endpoint: [@import("../attachment_state.zig").max_endpoint_bytes]u8 = undefined;
         const endpoint = try coordinatorEndpoint(remote, &remote_endpoint);
         model.shared_workspace.authority = remote.providerId();
+        model.bindSharedAttachment(remote);
         model.shared_workspace.setContext(contextHash(endpoint, server));
         try model.setAttachmentContext(endpoint, server, session);
     }
@@ -620,14 +658,14 @@ pub const Engine = struct {
         // A listing peer's list is refreshed with the switcher's; it
         // announces only when the list actually changed, so this cannot feed
         // itself.
-        for (self.model.phux_peers) |value| if (value) |peer| peer.refreshStandby();
+        for (self.model.peers.items) |entry| if (entry.provider) |peer| peer.refreshStandby();
         const now = std.Io.Clock.awake.now(self.model.provider.io);
         if (self.last_workspace_refresh) |last| {
             if (last.durationTo(now).toMilliseconds() < 1000) return;
         }
         var requested = refreshAttached(self.model.phux());
-        for (self.model.phux_peers) |value| {
-            const peer = value orelse continue;
+        for (self.model.peers.items) |entry| {
+            const peer = entry.provider orelse continue;
             if (peer.showing()) requested = refreshAttached(peer) or requested;
         }
         if (requested) self.last_workspace_refresh = now;
@@ -649,6 +687,7 @@ pub const Engine = struct {
         self.cancelSplitDrag();
         self.model.captureRemotePaint();
         if (self.model.phux()) |remote| {
+            empty_session.forgetAttachment(self.model, remote.context_id, false);
             remote.stop();
             while (remote.takeOperationResult()) |result| {
                 _ = self.creation.completeDisconnected(self.model, result);
@@ -689,11 +728,12 @@ pub const Engine = struct {
     pub fn stopProviderChannels(self: *Engine, fx: anytype) void {
         if (self.model.phux()) |remote| remote.stop();
         fx.closeChannel(support.phux_channel_key);
-        for (self.model.phux_peers, 0..) |value, slot| {
-            if (value) |peer| peer.stop();
-            self.model.phux_peer_reopen[slot] = false;
+        for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.provider) |peer| peer.stop();
+            entry.reopen = false;
             self.retirePeerChannel(fx, slot);
         }
+        if (self.peer_wake_key != 0) fx.closeChannel(self.peer_wake_key);
         if (comptime support.phux_enabled) if (self.model.pointer_state) |pointer_state| {
             if (pointer_state.monitor) |*monitor| monitor.stop();
             pointer_state.monitor = null;
@@ -718,9 +758,18 @@ pub const Engine = struct {
         if (fingerprint == state.fingerprint) return;
         state.fingerprint = fingerprint;
         if (!state.enabled()) return;
+        // Replay claims the debounce timer and file write from the journal
+        // (native_effect_replay). Arming pending here would strand a latch
+        // the claimed terminal never clears.
+        if (effectReplayArmed(fx)) return;
         state.pending = true;
         state.retry_count = 0;
         self.armTopologyPersist(fx, on_fire);
+    }
+
+    fn effectReplayArmed(fx: anytype) bool {
+        if (!@hasField(@TypeOf(fx), "effects")) return false;
+        return fx.effects.replayArmed();
     }
 
     fn armTopologyPersist(_: *Engine, fx: anytype, on_fire: anytype) void {
@@ -785,14 +834,16 @@ pub const Engine = struct {
         self.sequence +%= 1;
         if (protocol.decodeNavigationIntent(bytes)) |intent| return self.applyNavigationIntent(intent, fx);
         const intent = protocol.decodeIntent(bytes) orelse return self.refuse();
-        if (intent.expected_revision != self.revision) return self.refuse();
+        // A config probe reads process-wide disk state and names no positional
+        // target. Title/output churn cannot make that read unsafe or retarget it.
+        if (intent.kind != .probe_config and intent.expected_revision != self.revision) return self.refuse();
         // A tab intent means the window whose chrome sent it. Adopting it as
         // active first is what CockpitHost does with a routed event's window.
         // 255 means "the platform event's already-adopted focused window".
         // Markup intents carry an explicit 0..4 slot; native command mapping
         // has no window field, so the extension adopts CommandEvent.window_id
         // before the compiled core dispatches this intent.
-        if (intent.window != 255) {
+        if (windowScoped(intent.kind) and intent.window != 255) {
             if (intent.window != 0 and !self.model.windowOpen(intent.window)) return self.refuse();
             self.model.active_window = intent.window;
         }
@@ -800,6 +851,15 @@ pub const Engine = struct {
         self.intent_refused = false;
         self.revision +%= 1;
         return true;
+    }
+
+    /// Process-wide settings and creation have no originating window target.
+    /// Their legacy zero byte is not permission to move focus to the primary.
+    fn windowScoped(kind: protocol.IntentKind) bool {
+        return switch (kind) {
+            .probe_config, .reveal_config, .set_theme, .set_tab_placement, .new_window => false,
+            else => true,
+        };
     }
 
     fn applyModelIntent(self: *Engine, intent: protocol.Intent, fx: anytype) bool {
@@ -1151,18 +1211,21 @@ pub const Engine = struct {
         return true;
     }
 
-    fn supersedeSelection(self: *Engine) void {
+    pub fn supersedeSelection(self: *Engine) void {
+        self.selection_epoch +|= 1;
+        self.cancelPendingSelection();
+        peer_restore.cancelFront(self.model);
+    }
+
+    fn cancelPendingSelection(self: *Engine) void {
         self.model.shared_workspace.desired_terminal = null;
         self.creation.supersedeFocus();
         // A peer's pending placement must not take focus back either.
-        for (&self.model.peer_workspaces) |*state| state.desired_terminal = null;
+        for (self.model.peers.items) |entry| entry.workspace.desired_terminal = null;
         self.peer_edits.supersedeFocus();
         // A picked empty session's state gives way too, unless its first tab
         // is already opening.
         empty_session.dismiss(self.model);
-        // So does a front record still waiting for its host's list: the user
-        // chose what to show (ADR-0110).
-        peer_restore.cancelFront(self.model);
     }
 
     fn selectPlacedNavigation(self: *Engine, placed: model_module.PlacedTerminalDestination, fx: anytype) bool {
@@ -1183,6 +1246,13 @@ pub const Engine = struct {
     fn showNavigationWindow(_: *Engine, fx: anytype, window: usize) void {
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime @hasDecl(Fx, "showWindow")) fx.showWindow(scene.windowLabelFor(window));
+    }
+
+    pub fn didSelectNavigationWindow(self: *Engine, window: usize, fx: anytype) void {
+        self.supersedeSelection();
+        pointer_input.endHiddenCaptures(self.model, fx);
+        self.showNavigationWindow(fx, window);
+        self.syncRemoteFocus();
     }
 
     fn selectAvailableNavigation(self: *Engine, ref: TerminalRef, fx: anytype) bool {
@@ -1206,30 +1276,15 @@ pub const Engine = struct {
     }
 
     fn selectSessionNavigation(self: *Engine, id: u32, fx: anytype) bool {
-        const Fx = navigationFxType(@TypeOf(fx));
-        if (comptime !@hasDecl(Fx, "restartPhux")) return false;
         const remote = self.model.phux() orelse return false;
-        const previous = remote.selectedSessionId() orelse return false;
-        const changed = remote.selectSession(id) catch return false;
-        // Selecting the current session is an accepted idempotent action;
-        // acknowledge it without restarting the connection or flashing refusal.
-        if (!changed) {
-            self.refreshWorkspace();
-            self.supersedeSelection();
-            return true;
-        }
-        self.model.shared_workspace.leaveSession(self.model) catch {
-            _ = remote.selectSession(previous) catch {};
-            return false;
-        };
-        const accepted = fx.restartPhux(self);
-        if (accepted) self.supersedeSelection();
-        return accepted;
+        const window = self.model.active_window;
+        self.showSessionFromInWindow(remote, id, window, self.model.window_epochs[window], fx) catch return false;
+        return true;
     }
 
     // ------------------------------------ coordinators beside the active one
     //
-    // The model holds the active Phux provider and up to max_phux_peers more:
+    // The model holds the active Phux provider and dynamically owned peers:
     // this Mac's coordinator while a registered remote host is active, and
     // registered hosts. Each runs its own worker on its own channel
     // (support.phuxPeerChannelKey), so any one restarts or fails alone. A peer
@@ -1243,7 +1298,22 @@ pub const Engine = struct {
 
     /// Open every peer's channel at launch.
     pub fn openPeerChannels(self: *Engine, fx: anytype, on_event: anytype) void {
-        for (0..model_module.max_phux_peers) |slot| self.openPeerChannel(fx, slot, on_event);
+        self.openPeerWakeForReplay(fx, on_event);
+        for (0..self.model.peers.items.len) |slot| self.openPeerChannel(fx, slot, on_event);
+    }
+
+    /// Register the shared effect occupancy without starting any socket workers.
+    /// Replay's posting handle is intentionally inert; recorded events feed it.
+    pub fn openPeerWakeForReplay(self: *Engine, fx: anytype, on_event: anytype) void {
+        if (self.peer_wake_key == 0) self.peer_wake_key = support.allocatePeerHandle() catch return;
+        self.peer_wake_handle = fx.openChannel(.{ .key = self.peer_wake_key, .on_event = on_event, .max_pending = 1 });
+    }
+
+    fn livePeerWake(self: *Engine, fx: anytype, on_event: anytype) native_sdk.ChannelHandle {
+        if (self.peer_wake_handle.live()) return self.peer_wake_handle;
+        self.peer_wake_key = support.allocatePeerHandle() catch return .{};
+        self.openPeerWakeForReplay(fx, on_event);
+        return self.peer_wake_handle;
     }
 
     /// Open one peer's channel and start (or restart) its worker. A peer that
@@ -1252,9 +1322,16 @@ pub const Engine = struct {
         if (comptime !support.phux_enabled) return;
         const peer = self.model.phuxPeerAt(slot) orelse return;
         const key = self.peerChannelKey(slot);
-        const handle = fx.openChannel(.{ .key = key, .on_event = on_event, .max_pending = 1 });
+        if (key == 0) {
+            self.model.peers.items[slot].failed = true;
+            return;
+        }
+        const handle = if (self.peer_wake_key != 0)
+            self.livePeerWake(fx, on_event)
+        else
+            fx.openChannel(.{ .key = key, .on_event = on_event, .max_pending = 1 });
         if (!handle.live()) {
-            self.model.peer_failed[slot] = true;
+            self.model.peers.items[slot].failed = true;
             return;
         }
         if (peer.state() == .new) {
@@ -1265,7 +1342,7 @@ pub const Engine = struct {
     }
 
     fn peerOpenFailed(self: *Engine, fx: anytype, slot: usize) void {
-        self.model.peer_failed[slot] = true;
+        self.model.peers.items[slot].failed = true;
         self.retirePeerChannel(fx, slot);
         self.schedulePeerRetry(fx, slot);
     }
@@ -1278,37 +1355,49 @@ pub const Engine = struct {
     /// picking its row retries it, and once its tabs leave the screen it goes
     /// back to listing (`settlePeers`).
     fn schedulePeerRetry(self: *Engine, fx: anytype, slot: usize) void {
+        self.cancelPeerRetry(fx, slot);
         // This connection's listing, if any, ends with this failure.
-        if (self.peerListedStably(slot)) self.peer_retry_delay_ms[slot] = 0;
-        self.peer_listed_since[slot] = null;
+        const entry = self.model.peers.items[slot];
+        if (self.peerListedStably(slot)) entry.retry_delay_ms = 0;
+        entry.listed_since = null;
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime !@hasDecl(Fx, "schedulePeerRetry")) return;
         const peer = self.model.phuxPeerAt(slot) orelse return;
         if (peer.showing()) return;
-        const delay = if (self.peer_retry_delay_ms[slot] == 0) peer_retry_initial_ms else self.peer_retry_delay_ms[slot];
-        self.peer_retry_delay_ms[slot] = @min(delay * 2, peer_retry_max_ms);
-        self.peer_retry_generation[slot] = self.peer_channel_generation[slot];
-        fx.schedulePeerRetry(peer_retry_timer_key + slot, delay);
+        const delay = if (entry.retry_delay_ms == 0) peer_retry_initial_ms else entry.retry_delay_ms;
+        entry.retry_delay_ms = @min(delay * 2, peer_retry_max_ms);
+        entry.retry_key = support.allocatePeerHandle() catch return;
+        fx.schedulePeerRetry(entry.retry_key.?, delay);
     }
 
     /// The slot now holds another coordinator (or none): the next failure
     /// waits 1 s again, and a timer already armed is stale.
-    fn resetPeerRetry(self: *Engine, slot: usize) void {
-        self.peer_retry_delay_ms[slot] = 0;
-        self.peer_retry_generation[slot] = null;
-        self.peer_listed_since[slot] = null;
+    fn resetPeerRetry(self: *Engine, fx: anytype, slot: usize) void {
+        self.cancelPeerRetry(fx, slot);
+        const entry = self.model.peers.items[slot];
+        entry.retry_delay_ms = 0;
+        entry.listed_since = null;
+    }
+
+    fn cancelPeerRetry(self: *Engine, fx: anytype, slot: usize) void {
+        const entry = self.model.peers.items[slot];
+        const key = entry.retry_key orelse return;
+        const Fx = navigationFxType(@TypeOf(fx));
+        if (comptime @hasDecl(Fx, "cancelTimer")) fx.cancelTimer(key);
+        entry.retry_key = null;
     }
 
     /// The slot listed on this connection: a timer already armed is stale.
     /// The backoff itself is not reset here; the next failure decides, by how
     /// long the peer stayed listed (`peerListedStably`).
-    fn notePeerListed(self: *Engine, slot: usize) void {
-        self.peer_retry_generation[slot] = null;
-        if (self.peer_listed_since[slot] == null) self.peer_listed_since[slot] = std.Io.Clock.awake.now(self.model.provider.io);
+    fn notePeerListed(self: *Engine, fx: anytype, slot: usize) void {
+        self.cancelPeerRetry(fx, slot);
+        const entry = self.model.peers.items[slot];
+        if (entry.listed_since == null) entry.listed_since = std.Io.Clock.awake.now(self.model.provider.io);
     }
 
     fn peerListedStably(self: *const Engine, slot: usize) bool {
-        const since = self.peer_listed_since[slot] orelse return false;
+        const since = self.model.peers.items[slot].listed_since orelse return false;
         const now = std.Io.Clock.awake.now(self.model.provider.io);
         return since.durationTo(now).toMilliseconds() >= peer_retry_stable_ms;
     }
@@ -1320,40 +1409,54 @@ pub const Engine = struct {
     /// showing meanwhile, the timer is stale and does nothing.
     pub fn onPeerRetryTimer(self: *Engine, fx: anytype, key: u64) bool {
         if (comptime !support.phux_enabled) return false;
-        const slot = peerRetrySlot(key) orelse return false;
+        const slot = self.peerRetrySlot(key) orelse return false;
         if (!self.peerRetryDue(slot)) return false;
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
-        self.model.peer_failed[slot] = false;
+        self.model.peers.items[slot].failed = false;
         _ = fx.restartPeer(self, slot);
         return self.commitProviderChange(true);
     }
 
-    fn peerRetrySlot(key: u64) ?usize {
-        if (key < peer_retry_timer_key or key >= peer_retry_timer_key + model_module.max_phux_peers) return null;
-        return @intCast(key - peer_retry_timer_key);
+    /// SDK admission failure is terminal for this timer. Keep manual retry
+    /// available rather than recursively scheduling another rejected timer.
+    pub fn onPeerRetryRejected(self: *Engine, key: u64) bool {
+        const slot = self.peerRetrySlot(key) orelse return false;
+        self.model.peers.items[slot].retry_key = null;
+        return self.commitProviderChange(true);
+    }
+
+    fn peerRetrySlot(self: *const Engine, key: u64) ?usize {
+        for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.retry_key == key) return slot;
+        }
+        return null;
     }
 
     /// Consumes the slot's armed timer; true when it may redial now.
     fn peerRetryDue(self: *Engine, slot: usize) bool {
-        const armed = self.peer_retry_generation[slot] orelse return false;
-        self.peer_retry_generation[slot] = null;
-        if (armed != self.peer_channel_generation[slot]) return false;
+        const entry = self.model.peers.items[slot];
+        if (entry.retry_key == null) return false;
+        entry.retry_key = null;
         const peer = self.model.phuxPeerAt(slot) orelse return false;
-        return self.model.peer_failed[slot] and !peer.showing();
+        return entry.failed and !peer.showing();
     }
 
     /// Peer `slot`'s current channel key.
     pub fn peerChannelKey(self: *const Engine, slot: usize) u64 {
-        return support.phuxPeerChannelKeyAt(slot, self.peer_channel_generation[slot]);
+        return self.model.peers.items[slot].channel_key;
     }
 
     /// Close the slot's current channel and move its key to the next
     /// generation, so anything that occupancy still delivers is stale.
     fn retirePeerChannel(self: *Engine, fx: anytype, slot: usize) void {
+        self.cancelPeerRetry(fx, slot);
         const Fx = navigationFxType(@TypeOf(fx));
-        if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(self.peerChannelKey(slot));
-        self.peer_channel_generation[slot] = support.nextPeerChannelGeneration(self.peer_channel_generation[slot]);
+        if (self.peer_wake_key == 0) {
+            if (comptime @hasDecl(Fx, "closeChannel")) fx.closeChannel(self.peerChannelKey(slot));
+        }
+        const entry = self.model.peers.items[slot];
+        entry.channel_key = support.allocatePeerHandle() catch 0;
     }
 
     /// Drain one peer's wake. A listing peer can only move the switcher's
@@ -1362,39 +1465,110 @@ pub const Engine = struct {
     /// channel the slot has since closed is not this peer's (`peerStaleEvent`).
     pub fn onPeerChannel(self: *Engine, fx: anytype, event: native_sdk.EffectChannelEvent, on_event: anytype) bool {
         if (comptime !support.phux_enabled) return false;
+        if (self.peer_wake_key != 0 and event.key == self.peer_wake_key) return self.onPeerWake(fx, event.kind);
         // A showing peer's focused pane may have just become live.
         defer self.syncRemoteFocus();
-        const channel = support.peerChannelForKey(event.key, model_module.max_phux_peers) orelse return false;
-        const slot = channel.slot;
-        if (self.model.phuxPeerAt(slot) == null) return false;
-        if (channel.generation != self.peer_channel_generation[slot]) return self.peerStaleEvent(fx, channel, event.kind, on_event);
+        const slot = self.peerSlotForHandle(event.key) orelse return false;
+        const entry = self.model.peers.items[slot];
+        if (entry.provider == null) return false;
+        if (event.key != entry.channel_key) return self.peerStaleEvent(fx, slot, event.kind, on_event);
         return switch (event.kind) {
             .data => self.drainPeer(fx, slot),
             .closed, .rejected => self.peerClosed(fx, slot),
         };
     }
 
+    fn onPeerWake(self: *Engine, fx: anytype, kind: native_sdk.EffectChannelEventKind) bool {
+        if (kind != .data) return self.peerWakeClosed(fx);
+        defer self.syncRemoteFocus();
+        var changed = false;
+        // Visible work always gets the first turn. Each provider already
+        // bounds its own FFI drain; a catalog flood never precedes input work.
+        for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.failed) continue;
+            const peer = entry.provider orelse continue;
+            if (!peer.showing() or !peerWakePending(peer)) continue;
+            changed = self.drainPeer(fx, slot) or changed;
+        }
+        // One background source per turn is the minimum useful progress;
+        // round-robin continuation prevents N catalogs multiplying a wake's
+        // drain budget. A coalesced post is only a hint, never identity.
+        if (self.nextBackgroundPeer()) |slot| changed = self.drainPeer(fx, slot) or changed;
+        self.continuePeerWake();
+        return changed;
+    }
+
+    fn peerWakePending(peer: *support.PhuxProvider) bool {
+        return peer.bridge.incoming.hasReadiness();
+    }
+
+    fn nextBackgroundPeer(self: *Engine) ?usize {
+        const peers = self.model.peers.items;
+        for (0..peers.len) |_| {
+            self.peer_background_cursor %= peers.len;
+            const slot = self.peer_background_cursor;
+            self.peer_background_cursor += 1;
+            if (peers[slot].failed) continue;
+            const peer = peers[slot].provider orelse continue;
+            if (!peer.showing() and peerWakePending(peer)) return slot;
+        }
+        return null;
+    }
+
+    fn continuePeerWake(self: *Engine) void {
+        for (self.model.peers.items) |entry| {
+            if (entry.failed) continue;
+            const peer = entry.provider orelse continue;
+            if (!peerWakePending(peer)) continue;
+            _ = self.peer_wake_handle.post("");
+            return;
+        }
+    }
+
+    fn peerWakeClosed(self: *Engine, fx: anytype) bool {
+        var changed = false;
+        for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.provider == null) continue;
+            changed = self.peerClosed(fx, slot) or changed;
+        }
+        return changed;
+    }
+
     /// An event of a channel occupancy the slot has since closed, including
     /// one from before a Disconnect and a new Connect reused the slot. Only
     /// the close a restart waits for does anything: it opens the slot's next
     /// channel. Anything else is ignored, so it can stop no other connection.
-    fn peerStaleEvent(self: *Engine, fx: anytype, channel: support.PeerChannel, kind: native_sdk.EffectChannelEventKind, on_event: anytype) bool {
-        const slot = channel.slot;
-        if (kind != .closed or !self.model.phux_peer_reopen[slot]) return false;
-        if (self.peer_reopen_generation[slot] != channel.generation) return false;
-        self.model.phux_peer_reopen[slot] = false;
+    fn peerSlotForHandle(self: *const Engine, key: u64) ?usize {
+        if (key == 0) return null;
+        for (self.model.peers.items, 0..) |entry, slot| {
+            if (entry.channel_key == key or entry.closing_key == key) return slot;
+        }
+        return null;
+    }
+
+    fn peerStaleEvent(self: *Engine, fx: anytype, slot: usize, kind: native_sdk.EffectChannelEventKind, on_event: anytype) bool {
+        const entry = self.model.peers.items[slot];
+        if (kind != .closed or !entry.reopen) return false;
+        entry.reopen = false;
+        entry.closing_key = null;
         self.openPeerChannel(fx, slot, on_event);
         return self.commitProviderChange(true);
     }
 
     fn drainPeer(self: *Engine, fx: anytype, slot: usize) bool {
         const peer = self.model.phuxPeerAt(slot).?;
-        const delta = peer.drainReadiness() catch return self.failPeer(fx, slot);
+        const limit = if (self.peer_wake_key != 0 and !peer.showing()) 1 else peer.bridge.incoming.pendingCount();
+        const delta = peer.drainReadinessBudget(limit) catch return self.failPeer(fx, slot);
         if (delta.sessions_listed or delta.ready_published) {
-            self.model.peer_failed[slot] = false;
-            self.notePeerListed(slot);
+            self.model.peers.items[slot].failed = false;
+            self.notePeerListed(fx, slot);
         }
         if (peer.showing()) return self.drainShowingPeerWake(fx, slot, delta);
+        return self.drainListingPeerWake(fx, slot, delta);
+    }
+
+    fn drainListingPeerWake(self: *Engine, fx: anytype, slot: usize, delta: support.SyncDelta) bool {
+        const peer = self.model.phuxPeerAt(slot).?;
         // Nothing presents a listing peer's terminals, so nothing rings for
         // them; its list settling is what moves.
         while (peer.takeNotice()) |notice| peer.releaseNotice(notice);
@@ -1412,7 +1586,7 @@ pub const Engine = struct {
 
     fn drainShowingPeerWake(self: *Engine, fx: anytype, slot: usize, delta: support.SyncDelta) bool {
         if (delta.detached) return self.peerDetached(fx, slot);
-        const projected = self.drainShowingPeer(fx, slot);
+        const projected = self.drainShowingPeer(fx, slot, delta.sessions_listed);
         return self.commitProviderChange(projected or peerPublicationMoved(delta));
     }
 
@@ -1434,8 +1608,9 @@ pub const Engine = struct {
         const Fx = navigationFxType(@TypeOf(fx));
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         const slot = self.model.peerSlot(coordinator) orelse return false;
-        if (!self.model.peer_failed[slot]) return false;
-        self.model.peer_failed[slot] = false;
+        if (!self.model.peers.items[slot].failed) return false;
+        self.cancelPeerRetry(fx, slot);
+        self.model.peers.items[slot].failed = false;
         return fx.restartPeer(self, slot);
     }
 
@@ -1450,13 +1625,15 @@ pub const Engine = struct {
     /// Cockpit asked for names an older generation and never reaches here.
     fn peerClosed(self: *Engine, fx: anytype, slot: usize) bool {
         const model = self.model;
-        model.phuxPeerAt(slot).?.stop();
+        const peer = model.phuxPeerAt(slot).?;
+        empty_session.forgetAttachment(model, peer.context_id, false);
+        peer.stop();
         self.peer_edits.forget(slot);
-        empty_session.forgetPeer(model, model.phuxPeerAt(slot).?.providerId(), false);
+        empty_session.forgetPeer(model, peer.providerId(), false);
         peer_restore.failed(model, slot);
         // That occupancy is gone; the next one opens under a fresh key.
-        self.peer_channel_generation[slot] = support.nextPeerChannelGeneration(self.peer_channel_generation[slot]);
-        model.peer_failed[slot] = true;
+        model.peers.items[slot].channel_key = support.allocatePeerHandle() catch 0;
+        model.peers.items[slot].failed = true;
         self.schedulePeerRetry(fx, slot);
         return self.commitProviderChange(true);
     }
@@ -1465,11 +1642,12 @@ pub const Engine = struct {
     /// Its placed tabs keep their last frames, frozen, until it reconnects.
     fn failPeer(self: *Engine, fx: anytype, slot: usize) bool {
         const peer = self.model.phuxPeerAt(slot) orelse return false;
+        empty_session.forgetAttachment(self.model, peer.context_id, false);
         peer.stop();
         self.peer_edits.forget(slot);
         empty_session.forgetPeer(self.model, peer.providerId(), false);
         peer_restore.failed(self.model, slot);
-        self.model.peer_failed[slot] = true;
+        self.model.peers.items[slot].failed = true;
         self.retirePeerChannel(fx, slot);
         self.schedulePeerRetry(fx, slot);
         return self.commitProviderChange(true);
@@ -1478,13 +1656,14 @@ pub const Engine = struct {
     /// A showing peer's wake, as `drainPhux` is the active one's: attach and
     /// detach results settle its subscriptions, its bells ring, and its
     /// shared workspace projects beside the other coordinators' tabs.
-    fn drainShowingPeer(self: *Engine, fx: anytype, slot: usize) bool {
+    fn drainShowingPeer(self: *Engine, fx: anytype, slot: usize, catalog_listed: bool) bool {
         const model = self.model;
         const peer = model.phuxPeerAt(slot).?;
-        const state = &model.peer_workspaces[slot];
+        const state = &model.peers.items[slot].workspace;
+        model.bindSharedAttachment(peer);
         var changed = false;
         while (peer.takeOperationResult()) |result| {
-            _ = state.completeSubscription(result, peer.workspaceSnapshot().request_id);
+            _ = completeSubscriptions(state, peer, result);
             _ = self.peer_edits.complete(model, slot, result);
             changed = true;
         }
@@ -1497,11 +1676,58 @@ pub const Engine = struct {
         const projected = self.projectPeer(peer, state, published);
         // A picked empty session New Tab showed: its first tab, on this peer.
         changed = empty_session.pump(self, slot) or changed;
+        changed = self.settleEmptyAttachment(peer, slot, catalog_listed) or changed;
         // A terminal spawned for a new tab or split is not placed yet; it
         // must not be detached as unused before its placement lands.
         if (published.status != .pending and self.peer_edits.pendingCreations(slot) == 0) state.releaseUnused(model);
         state.subscribe(model);
         return projected or changed;
+    }
+
+    /// After pumping an exact attachment, settle its empty picks from that
+    /// source's first-tab outcomes and whether this drain adopted a list.
+    fn settleEmptyAttachment(self: *Engine, remote: *support.PhuxProvider, peer_slot: ?usize, catalog_listed: bool) bool {
+        var reported: [16]empty_session.FirstTab = undefined;
+        const count = self.emptyFirstTabs(remote, peer_slot, &reported);
+        return empty_session.settleAttachment(self.model, remote, .{ .first_tabs = reported[0..count], .catalog_listed = catalog_listed });
+    }
+
+    fn emptyFirstTabs(self: *Engine, remote: *support.PhuxProvider, peer_slot: ?usize, out: []empty_session.FirstTab) usize {
+        if (peer_slot) |slot| {
+            var raw: [16]peer_edits.EmptyFirstTab = undefined;
+            const count = self.peer_edits.collectEmptyFirstTabs(slot, &raw);
+            const n = @min(count, out.len);
+            for (raw[0..n], 0..) |entry, i| {
+                out[i] = .{
+                    .window = entry.window,
+                    .window_epoch = entry.window_epoch,
+                    .connection_epoch = entry.connection_epoch,
+                    .outcome = switch (entry.outcome) {
+                        .pending => .pending,
+                        .refused => .refused,
+                        .placed => .placed,
+                    },
+                };
+            }
+            return n;
+        }
+        _ = remote;
+        var raw: [16]durable_creation.Creation.EmptyFirstTab = undefined;
+        const count = self.creation.collectEmptyFirstTabs(&raw);
+        const n = @min(count, out.len);
+        for (raw[0..n], 0..) |entry, i| {
+            out[i] = .{
+                .window = entry.window,
+                .window_epoch = entry.window_epoch,
+                .connection_epoch = entry.connection_epoch,
+                .outcome = switch (entry.outcome) {
+                    .pending => .pending,
+                    .refused => .refused,
+                    .placed => .placed,
+                },
+            };
+        }
+        return n;
     }
 
     /// Apply a peer's publication beside the other coordinators' tabs. A
@@ -1518,9 +1744,18 @@ pub const Engine = struct {
         // Showing a session means seeing it: its first projection takes the
         // selection, so it is not taken back to listing as hidden.
         // A remembered tab (ADR-0110) is selected when it still exists.
-        if (first and state.session != 0) revealAuthority(model, peer.providerId(), peer_restore.takeHint(model, peer.providerId(), state.session));
+        if (first and state.session != 0) self.revealPeerProjection(peer, state.session);
         if (generation != state.projection_generation) self.split_drag = null;
         return projected;
+    }
+
+    fn revealPeerProjection(self: *Engine, peer: *support.PhuxProvider, session: u32) void {
+        const model = self.model;
+        const slot = model.peerSlotForAttachment(peer.context_id) orelse return;
+        const entry = model.peers.items[slot];
+        if (entry.selection_epoch) |epoch| if (epoch != self.selection_epoch) return;
+        const hint = peer_restore.takeHint(model, peer.providerId(), session);
+        session_attachments.revealProjected(model, peer.context_id, hint);
     }
 
     /// Select the tab coordinator `id` projected for shared window
@@ -1575,7 +1810,7 @@ pub const Engine = struct {
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         // A peer's New Window whose tab never landed leaves no empty window.
         var changed = self.peer_edits.retireOrphans(self.model);
-        for (0..model_module.max_phux_peers) |slot| {
+        for (0..self.model.peers.items.len) |slot| {
             if (self.emptyTabHolds(slot)) continue;
             if (!self.peerHidden(slot)) continue;
             self.unshowPeer(fx, slot);
@@ -1596,7 +1831,8 @@ pub const Engine = struct {
         const model = self.model;
         const peer = model.phuxPeerAtConst(slot) orelse return false;
         if (!peer.showing()) return false;
-        if (model.peer_workspaces[slot].session == 0) return false;
+        if (model.peers.items[slot].workspace.session == 0) return false;
+        if (model.peers.items[slot].workspace.attachment_id != null) return !session_attachments.visibleElsewhere(model, peer.context_id, model_module.max_windows);
         return !authorityVisible(model, peer.providerId());
     }
 
@@ -1659,11 +1895,17 @@ pub const Engine = struct {
         // The next connection is a new epoch: nothing queued for this one
         // may reach it.
         self.peer_edits.forget(slot);
+        if (self.peer_wake_key != 0) {
+            self.retirePeerChannel(fx, slot);
+            self.openPeerChannel(fx, slot, on_event);
+            return true;
+        }
         // A reopen already waits for its close; that close opens it.
-        if (self.model.phux_peer_reopen[slot]) return true;
+        const entry = self.model.peers.items[slot];
+        if (entry.reopen) return true;
         if (fx.peerChannelLive(self.peerChannelKey(slot))) {
-            self.model.phux_peer_reopen[slot] = true;
-            self.peer_reopen_generation[slot] = self.peer_channel_generation[slot];
+            entry.reopen = true;
+            entry.closing_key = entry.channel_key;
             self.retirePeerChannel(fx, slot);
         } else {
             self.openPeerChannel(fx, slot, on_event);
@@ -1677,14 +1919,20 @@ pub const Engine = struct {
         if (comptime !support.phux_enabled) return;
         const model = self.model;
         const peer = model.phuxPeerAt(slot) orelse return;
+        empty_session.forgetAttachment(model, peer.context_id, true);
         self.stopShowingPeer(slot);
         empty_session.forgetPeer(model, peer.providerId(), true);
         self.peer_edits.dropStrays(slot);
-        model.peer_restore[slot] = null;
-        model.phux_peers[slot] = null;
-        model.phux_peer_reopen[slot] = false;
-        model.peer_failed[slot] = false;
-        self.resetPeerRetry(slot);
+        const entry = model.peers.items[slot];
+        entry.restore = null;
+        entry.provider = null;
+        entry.reopen = false;
+        entry.closing_key = null;
+        entry.failed = false;
+        entry.coordinator_context = null;
+        entry.session_created_at = null;
+        entry.selection_epoch = null;
+        self.resetPeerRetry(fx, slot);
         peer.stop();
         // Its close event may arrive after another peer takes the slot; the
         // new generation's key tells the two apart.
@@ -1693,12 +1941,74 @@ pub const Engine = struct {
         self.revision +%= 1;
     }
 
+    /// Transfer the captured provider into stable heap-owned peer storage.
+    pub fn adoptCapturedPeer(self: *Engine, remote: *support.PhuxProvider, fx: anytype) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const slot = self.model.freePeerSlot() catch |err| {
+            remote.destroy();
+            return err;
+        };
+        self.model.peers.items[slot].provider = remote;
+        remote.standBy();
+        self.model.bindSharedAttachment(remote);
+        if (!fx.restartPeer(self, slot)) {
+            self.dropPeer(fx, slot);
+            return error.ConnectionUnavailable;
+        }
+    }
+
+    pub fn retryCapturedPeer(self: *Engine, target: machine_runtime.Target, tunnel: @import("machines.zig").Tunnel, identity: machine_runtime.RegistryIdentity, fx: anytype) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        if (!target.matches(self.model)) {
+            tunnel.close();
+            return error.StaleTarget;
+        }
+        const remote = self.model.phuxForAttachment(target.attachment_id).?;
+        try remote.replaceCapturedTunnel(tunnel, identity);
+        if (self.model.peerSlotForAttachment(target.attachment_id)) |slot| {
+            self.cancelPeerRetry(fx, slot);
+            self.model.peers.items[slot].failed = false;
+            if (!fx.restartPeer(self, slot)) return error.ConnectionUnavailable;
+        } else {
+            if (!fx.restartPhux(self)) return error.ConnectionUnavailable;
+        }
+    }
+
+    pub fn disconnectCapturedPeers(self: *Engine, targets: []const machine_runtime.Target, fx: anytype) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        // Every exact target is checked before the first mutation.
+        for (targets) |target| {
+            if (!target.matches(self.model)) return error.StaleTarget;
+        }
+        for (targets) |target| {
+            if (self.model.peerSlotForAttachment(target.attachment_id)) |slot| {
+                self.dropPeer(fx, slot);
+            } else if (self.model.phuxForAttachment(target.attachment_id)) |remote| {
+                self.dropActiveAttachment(remote, fx);
+            }
+        }
+    }
+
+    fn dropActiveAttachment(self: *Engine, remote: *support.PhuxProvider, fx: anytype) void {
+        const model = self.model;
+        self.creation.disconnect(model);
+        model.shared_workspace.leaveSession(model) catch {};
+        remote.stop();
+        model.phux_provider = null;
+        model.phux_reconnect_after_close = false;
+        model.phux_connection_unavailable = false;
+        fx.closeChannel(support.phux_channel_key);
+        remote.destroy();
+        model.shared_workspace.deinit();
+        model.shared_workspace = .{};
+    }
+
     /// Take a showing peer's tabs out of the windows and forget its
     /// projection. Done before its identity changes or it goes.
     fn stopShowingPeer(self: *Engine, slot: usize) void {
         const model = self.model;
         const peer = model.phuxPeerAt(slot) orelse return;
-        const state = &model.peer_workspaces[slot];
+        const state = &model.peers.items[slot].workspace;
         self.peer_edits.forget(slot);
         if (peer.showing()) {
             // Its own tabs, by the id they carry; never another's.
@@ -1729,7 +2039,7 @@ pub const Engine = struct {
             if (comptime @hasDecl(Fx, "restartPhux")) _ = fx.restartPhux(self);
             return;
         }
-        const slot = self.peerSlotForEndpoint(endpoint) orelse self.freePeerSlot() orelse return error.PeerCapacity;
+        const slot = self.peerSlotForEndpoint(endpoint) orelse try model.freePeerSlot();
         const gpa = std.heap.page_allocator;
         // Copied: the active retarget below frees a pending target these
         // slices would otherwise point into.
@@ -1739,7 +2049,7 @@ pub const Engine = struct {
         // committed, so a failure leaves both providers as they were.
         const next_active = try active.prepareRetarget(endpoint, session, label);
         errdefer active.discardRetarget(next_active);
-        if (model.phux_peers[slot]) |peer| {
+        if (model.peers.items[slot].provider) |peer| {
             const next_peer = try peer.prepareRetarget(leaving.descriptor(), leaving.session, leaving.label);
             // Its tabs carry the identity it is about to give up.
             self.stopShowingPeer(slot);
@@ -1753,31 +2063,26 @@ pub const Engine = struct {
             // Lists sessions only; never attaches, so it sizes nobody's panes.
             peer.standBy();
             active.commitRetarget(next_active);
-            model.phux_peers[slot] = peer;
+            model.peers.items[slot].provider = peer;
         }
-        model.peer_failed[slot] = false;
-        self.resetPeerRetry(slot);
+        model.peers.items[slot].failed = false;
+        self.resetPeerRetry(fx, slot);
         // The slot now names another coordinator: strays of the one it
         // held are not this one's to kill.
         self.peer_edits.dropStrays(slot);
         // Nor is its restore state; and the user chose which coordinator to
         // show, so no front record waiting for its list is shown (ADR-0110).
-        model.peer_restore[slot] = null;
+        model.peers.items[slot].restore = null;
         peer_restore.cancelFront(model);
         self.restartCoordinators(fx, slot);
     }
 
     fn peerSlotForEndpoint(self: *const Engine, endpoint: support.PhuxEndpoint) ?usize {
         const wanted = support.PhuxProvider.coordinatorId(endpoint);
-        for (self.model.phux_peers, 0..) |value, slot| {
-            const peer = value orelse continue;
+        for (self.model.peers.items, 0..) |entry, slot| {
+            const peer = entry.provider orelse continue;
             if (peer.effectiveProviderId() == wanted) return slot;
         }
-        return null;
-    }
-
-    fn freePeerSlot(self: *const Engine) ?usize {
-        for (self.model.phux_peers, 0..) |value, slot| if (value == null) return slot;
         return null;
     }
 
@@ -1798,27 +2103,46 @@ pub const Engine = struct {
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         const model = self.model;
         const slot = self.showableSlot(coordinator, session) orelse return false;
-        // An empty session has no tab to display, so it is not attached: the
-        // window shows the Empty session state, and New Tab shows it
-        // (empty_session.zig).
+        // Compatibility for coordinator-only callers. Captured navigation uses
+        // showSessionFromInWindow and retains the exact per-window attachment.
         if (empty_session.peerSessionEmpty(model, coordinator, session)) {
             self.supersedeSelection();
             return empty_session.pickPeer(model, coordinator, session);
         }
-        const peer = model.phux_peers[slot].?;
-        const state = &model.peer_workspaces[slot];
-        state.authority = peer.providerId();
-        if (peer.showing()) {
-            if (peer.selectedSessionId() == session and peer.state() == .attached) {
-                self.supersedeSelection();
-                return true;
-            }
-            state.leaveSession(model) catch return false;
-        }
-        peer.show(session) catch return false;
-        _ = fx.restartPeer(self, slot);
-        self.supersedeSelection();
+        self.showSessionFromInWindow(model.phuxPeerAt(slot).?, session, model.active_window, model.window_epochs[model.active_window], fx) catch return false;
         return true;
+    }
+
+    pub fn showSessionFromInWindow(self: *Engine, remote: *support.PhuxProvider, session: u32, window: usize, epoch: u64, fx: anytype) !void {
+        try session_attachments.show(self, remote, session, window, epoch, fx);
+    }
+
+    pub fn openPeerTabFromInWindow(self: *Engine, remote: *support.PhuxProvider, window: usize, epoch: u64, cwd: []const u8, may_focus: bool) !void {
+        _ = try self.peer_edits.createTabIn(self.model, remote, window, epoch, cwd, may_focus);
+    }
+
+    pub fn captureNewSessionDestination(self: *Engine) ?new_session.Destination {
+        return new_session_runtime.capture(self, self.model.phuxForWindow(self.model.active_window), self.selection_epoch);
+    }
+
+    pub fn newSessionDestinationCurrent(self: *Engine, destination: new_session.Destination) bool {
+        return new_session_runtime.current(self, destination);
+    }
+
+    pub fn sendNewSession(self: *Engine, destination: new_session.Destination, name: []const u8, keep_empty: bool) !u32 {
+        return new_session_runtime.send(self, destination, name, keep_empty);
+    }
+
+    pub fn pollNewSession(self: *Engine, destination: new_session.Destination, request: u32) new_session.Outcome {
+        return new_session_runtime.poll(self, destination, request);
+    }
+
+    pub fn releaseNewSession(self: *Engine, destination: new_session.Destination, request: u32) void {
+        new_session_runtime.release(self, destination, request);
+    }
+
+    pub fn didCreateSession(self: *Engine, destination: new_session.Destination, session: u32, fx: anytype) void {
+        new_session_runtime.didCreate(self, destination, session, self.selection_epoch, fx, Engine.showSessionFromInWindow);
     }
 
     /// The slot of a peer that lists `session` and may show it now.
@@ -1827,7 +2151,7 @@ pub const Engine = struct {
         // Mid-exchange two providers can briefly hold one coordinator id.
         if (model.phuxConst()) |active| if (active.pending_retarget != null) return null;
         const slot = model.peerSlot(coordinator) orelse return null;
-        if (!peerListsSession(model.phux_peers[slot].?, session)) return null;
+        if (!peerListsSession(model.peers.items[slot].provider.?, session)) return null;
         return slot;
     }
 
@@ -1992,11 +2316,9 @@ pub const Engine = struct {
     }
 
     fn closeSharedWindow(self: *Engine, index: u8, fx: anytype) bool {
-        @import("../shared_workspace.zig").closeNativeWindow(self.model, index) catch return false;
+        session_attachments.closeWindow(self.model, fx, index) catch return false;
         self.supersedeSelection();
         pointer_input.endHiddenCaptures(self.model, fx);
-        if (index == 0) fx.closeWindow(scene.main_window_label);
-        if (self.model.openWindowCount() == 0) fx.quitApp();
         return true;
     }
 
@@ -2239,6 +2561,54 @@ pub const Engine = struct {
         return scene.windowIndexForCanvas(label);
     }
 
+    /// Bind the native incarnation as soon as the SDK materializes a window,
+    /// including a close before its first GPU frame. Never replace a known id
+    /// from a delayed native notification for a previously retired slot.
+    pub fn noteNativeWindow(self: *Engine, info: platform.WindowInfo) void {
+        if (!info.open) return;
+        for (0..model_module.max_windows) |index| {
+            if (!std.mem.eql(u8, info.label, scene.windowLabelFor(index))) continue;
+            const workspace = self.model.wsAt(index) orelse return;
+            if (workspace.window_id == 0) workspace.window_id = info.id;
+            return;
+        }
+    }
+
+    /// An OS close is an observed fact, not an index-based command computed
+    /// from a snapshot. Match its exact native incarnation, then publish the
+    /// retirement even when unrelated title evidence advanced the revision.
+    pub fn closeNativeWindow(self: *Engine, fx: anytype, window_id: platform.WindowId) bool {
+        if (window_id == 0) return false;
+        for (1..model_module.max_windows) |index| {
+            const workspace = self.model.wsAtConst(index) orelse continue;
+            if (workspace.window_id != window_id) continue;
+            self.retireWindowInput(fx, window_id);
+            if (self.closeWindow(@intCast(index), fx)) return self.commitProviderChange(true);
+            // The OS incarnation is gone even when there is no room to
+            // rehome shared tabs. Keep that workspace and recover its native
+            // presentation through the next snapshot, with a fresh id.
+            self.model.wsAt(index).?.window_id = 0;
+            _ = self.commitProviderChange(true);
+            self.intent_refused = true;
+            return true;
+        }
+        return false;
+    }
+
+    fn retireWindowInput(self: *Engine, fx: anytype, window_id: platform.WindowId) void {
+        if (self.split_drag) |drag| {
+            if (drag.window_id == window_id) self.cancelSplitDrag();
+        }
+        shipping_pointer.cancelLocalWindow(self.model, fx, window_id);
+        self.remote_pointer.cancelWindow(self.model, window_id);
+    }
+
+    pub fn matchesNativeWindow(self: *const Engine, index: usize, window_id: platform.WindowId) bool {
+        if (!self.model.windowOpen(index)) return false;
+        const workspace = self.model.wsAtConst(index) orelse return false;
+        return workspace.window_id == window_id;
+    }
+
     /// Adopt the platform's focused window as the active one, the way
     /// CockpitHost adopts a routed event's window; a window this engine has
     /// not painted yet has no id to match.
@@ -2323,10 +2693,8 @@ pub const Engine = struct {
         switch (event.kind) {
             .output => self.feedShellOutput(fx, pane, event.bytes),
             .exit => {
-                pane.phase = if (event.reason == .rejected or event.reason == .spawn_failed) .failed else .ended;
-                pane.exit_code = event.code;
-                pane.exit_signal = event.signal;
-                pane.exit_reason = event.reason;
+                terminal_runtime.finishSession(pane, event);
+                pointer_input.endCapturesForTerminal(self.model, fx, pane.id);
                 if (pane.phase == .ended) {
                     _ = lifecycle.closePane(self.model, fx, pane.id, false);
                     return self.commitProviderChange(true);
@@ -2362,6 +2730,22 @@ pub const Engine = struct {
         terminal_runtime.moveResponsesToOutbound(pane, fx);
     }
 
+    pub fn maintenancePending(self: *const Engine) bool {
+        return terminal_runtime.maintenancePending(self.model);
+    }
+
+    pub fn maintain(self: *Engine, fx: anytype) bool {
+        var chrome_changed = false;
+        for (0..max_terminals) |index| {
+            if (self.model.provider.states[index] != .active) continue;
+            const pane = self.model.provider.slot(index);
+            const before = self.paneChromeFingerprint(pane);
+            terminal_runtime.maintainPane(pane, fx);
+            chrome_changed = chrome_changed or before != self.paneChromeFingerprint(pane);
+        }
+        return self.commitProviderChange(chrome_changed);
+    }
+
     // ------------------------------------------------------------- input
 
     fn onRemoteKey(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) void {
@@ -2379,6 +2763,7 @@ pub const Engine = struct {
 
     fn remoteShortcut(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) bool {
         if (!event.modifiers.super or event.modifiers.control) return false;
+        if (self.external_keybindings) return self.remoteModeShortcut(ref, event);
         if (keyIs(event.key, "c")) {
             interaction.copy(self.model, fx, ref);
             return true;
@@ -2461,15 +2846,30 @@ pub const Engine = struct {
             self.onRemoteKey(fx, ref, event);
             return;
         }
-        const pane = self.focusedPane() orelse return;
+        self.onLocalKey(fx, ref, event);
+    }
+
+    fn onLocalKey(self: *Engine, fx: anytype, ref: TerminalRef, event: canvas.WidgetKeyboardEvent) void {
+        const pane = self.model.provider.terminal(ref) orelse return;
         if (pane.session.search.open) {
             self.searchKey(fx, pane, event);
             return;
         }
         if (self.localShortcut(fx, pane, event)) return;
         if (pane.selecting) return self.localSelectionKey(fx, pane, event);
+        if (!pane.acceptsInput()) return;
         interaction.rememberKey(self.model, ref, event);
         terminal_runtime.encodeKeyEvent(pane, fx, event, .press);
+    }
+
+    pub fn textInputOwnsKeyboard(self: *const Engine) bool {
+        const ref = self.model.focusedTerminalRef() orelse return false;
+        if (support.providerKind(ref) == .phux) {
+            const state = self.model.remoteUiConst(ref) orelse return false;
+            return state.search.open;
+        }
+        const pane = self.model.provider.terminalConst(ref) orelse return false;
+        return pane.session.search.open;
     }
 
     fn releaseKey(self: *Engine, fx: anytype, event: canvas.WidgetKeyboardEvent) void {
@@ -2494,6 +2894,7 @@ pub const Engine = struct {
             }
             return true;
         }
+        if (self.external_keybindings) return false;
         const command = terminalShortcut(event) orelse return false;
         if (command == .copy and !pane.session.selectionActive()) return false;
         _ = self.nativeCommand(@intFromEnum(command), fx);
@@ -2618,21 +3019,38 @@ pub const Engine = struct {
     pub fn onPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent) PointerOutcome {
         if (!self.pointerInputEnabled()) return .ignored;
         const window_index = windowIndexForCanvas(raw.label) orelse return .ignored;
-        if (!self.model.windowOpen(window_index)) return .ignored;
-        self.model.active_window = window_index;
-        defer self.syncRemoteFocus();
+        if (!self.matchesNativeWindow(window_index, raw.window_id)) return .ignored;
         const model = self.model;
         const phase = shipping_pointer.phase(raw) orelse return .ignored;
         if (phase == .down) {
             self.supersedeSelection();
+            self.cancelSplitPointer(raw);
             shipping_pointer.cancelLocal(model, fx, raw);
             self.remote_pointer.cancelPointer(model, raw);
         }
+        if (!self.pointerInWorkspace(raw, window_index)) return .ignored;
+        model.active_window = window_index;
+        defer self.syncRemoteFocus();
         const point = geometry.PointF.init(raw.x, raw.y);
         if (self.routeSplitDrag(raw, point)) |changed| {
             return if (changed) .geometry_changed else .consumed;
         }
         return self.routeTerminalPointer(fx, raw, phase, point);
+    }
+
+    fn pointerInWorkspace(self: *const Engine, raw: platform.GpuSurfaceInputEvent, window_index: usize) bool {
+        const workspace = self.model.wsAtConst(window_index).?;
+        const content = projection.workspaceChromeIn(self.model, workspace, workspace.surface_size).content;
+        if (content.containsPoint(.init(raw.x, raw.y))) return true;
+        if (self.split_drag) |drag| {
+            if (drag.window_id == raw.window_id and drag.pointer_id == raw.pointer_id) return true;
+        }
+        return shipping_pointer.localCaptured(self.model, raw) or self.remote_pointer.hasCapture(raw);
+    }
+
+    fn cancelSplitPointer(self: *Engine, raw: platform.GpuSurfaceInputEvent) void {
+        const drag = self.split_drag orelse return;
+        if (drag.window_id == raw.window_id and drag.pointer_id == raw.pointer_id) self.cancelSplitDrag();
     }
 
     fn routeTerminalPointer(self: *Engine, fx: anytype, raw: platform.GpuSurfaceInputEvent, phase: canvas.WidgetPointerPhase, point: geometry.PointF) PointerOutcome {
@@ -2666,8 +3084,8 @@ pub const Engine = struct {
 
     fn splitDragTree(self: *Engine, drag: SplitDrag) ?*layout.Tree {
         const workspace = self.model.wsAt(drag.window_index) orelse return null;
-        const id = drag.shared_id orelse return workspace.selectedTree();
         if (self.model.window_epochs[drag.window_index] != drag.window_epoch) return null;
+        const id = drag.shared_id orelse return localSplitDragTree(workspace, drag);
         if (self.projectionRevision(drag.authority) != drag.shared_revision) return null;
         for (workspace.shared_ids[0..workspace.tab_count], 0..) |candidate, index| {
             const known = candidate orelse continue;
@@ -2687,6 +3105,29 @@ pub const Engine = struct {
         const id = authority orelse return self.model.shared_workspace.revision;
         const state = self.model.sharedWorkspaceFor(id) orelse return self.model.shared_workspace.revision;
         return state.revision;
+    }
+
+    fn localSplitDragTree(workspace: *model_module.Workspace, drag: SplitDrag) ?*layout.Tree {
+        const tree = workspace.selectedTree() orelse return null;
+        if (localSplitFingerprint(tree) != drag.local_fingerprint) return null;
+        return tree;
+    }
+
+    /// Ignore presentation fractions/focus, but bind the capture to all exact
+    /// terminal identities and branch relationships. A recycled node or tab
+    /// position is not the divider the pointer originally pressed.
+    fn localSplitFingerprint(tree: *const layout.Tree) u64 {
+        var hasher = std.hash.Wyhash.init(0);
+        std.hash.autoHash(&hasher, tree.root);
+        for (tree.nodes) |node| {
+            std.hash.autoHash(&hasher, node.kind);
+            std.hash.autoHash(&hasher, node.parent);
+            std.hash.autoHash(&hasher, node.first);
+            std.hash.autoHash(&hasher, node.second);
+            std.hash.autoHash(&hasher, node.orientation);
+            std.hash.autoHash(&hasher, node.terminal);
+        }
+        return hasher.final();
     }
 
     fn moveSplitDrag(self: *Engine, drag: SplitDrag, point: geometry.PointF) bool {
@@ -2766,6 +3207,7 @@ pub const Engine = struct {
                 .shared_id = workspace.shared_ids[workspace.selected_tab],
                 .shared_revision = self.projectionRevision(authority),
                 .window_epoch = self.model.window_epochs[window_index],
+                .local_fingerprint = localSplitFingerprint(tree),
                 .original_fraction = tree.node(divider.node).fraction,
                 .authority = authority,
             };
@@ -2842,6 +3284,7 @@ pub const Engine = struct {
         if (model.focused == focused) return;
         model.focused = focused;
         if (!focused) {
+            self.cancelSplitDrag();
             self.last_click_count = 0;
             self.remote_pointer.cancelAll(model);
             self.remote_natural_keys_held = 0;
@@ -2858,11 +3301,11 @@ pub const Engine = struct {
         // Focus can move between coordinators: each side hears it on its own
         // connection.
         if (self.remote_focus_owner) |previous| {
-            if (self.model.phuxForRef(previous.terminal_ref)) |remote| remote.sendFocus(previous, false) catch {};
+            if (self.model.phuxForOwner(previous)) |remote| remote.sendFocus(previous, false) catch {};
         }
         self.remote_focus_owner = next;
         if (next) |owner| {
-            if (self.model.phuxForRef(owner.terminal_ref)) |remote| remote.sendFocus(owner, true) catch {};
+            if (self.model.phuxForOwner(owner)) |remote| remote.sendFocus(owner, true) catch {};
         }
     }
 
@@ -2880,9 +3323,7 @@ pub const Engine = struct {
         if (suspended) {
             // Suspending input chooses nothing to show: a front record still
             // waiting for its host's list survives it (ADR-0110).
-            const kept = self.model.peer_restore;
-            self.supersedeSelection();
-            self.model.peer_restore = kept;
+            self.cancelPendingSelection();
             self.remote_pointer.cancelAll(self.model);
             self.cancelSplitDrag();
             self.last_click_count = 0;
@@ -2921,17 +3362,30 @@ pub const Engine = struct {
         const model = self.model;
         const index = windowIndexForCanvas(frame.label) orelse return;
         const workspace = model.wsAt(index) orelse return;
+        if (workspace.window_id != 0 and workspace.window_id != frame.window_id) return;
         workspace.surface_size = frame.size;
         workspace.surface_measured = true;
         workspace.window_id = frame.window_id;
         if (frame.scale_factor > 0) workspace.surface_scale_factor = frame.scale_factor;
         const proposals = projection.proposedViewportsIn(model, workspace, frame.size);
         for (proposals.slice()) |proposal| {
-            interaction.resize(model, fx, proposal.terminal, .{ .cols = proposal.cols, .rows = proposal.rows });
+            self.resizeProjection(fx, proposal);
         }
         // A front record that waited for a measured window shows now, at
         // that window's real size (ADR-0110).
         _ = self.commitProviderChange(peer_restore.onFrame(self, fx));
+    }
+
+    fn resizeProjection(self: *Engine, fx: anytype, proposal: projection.PaneViewport) void {
+        const viewport: @import("provider_contract").Viewport = .{ .cols = proposal.cols, .rows = proposal.rows };
+        const owner = proposal.owner orelse {
+            interaction.resize(self.model, fx, proposal.terminal, viewport);
+            return;
+        };
+        const remote = self.model.phuxForOwner(owner) orelse return;
+        if (!self.model.ownerIsCurrent(owner)) return;
+        if (remote.lastViewport(proposal.terminal)) |last| if (last.eql(viewport)) return;
+        remote.viewportResize(proposal.terminal, viewport) catch {};
     }
 
     /// Paint the main window's grids beneath the markup chrome: the shipping

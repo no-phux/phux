@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-08
+last-reviewed: 2026-09-12
 ---
 
 # Render layering: ratatui chrome over libghostty pane interiors
@@ -37,3 +37,44 @@ crate cannot name it. This replaced the original
 `scripts/check-ratatui-boundary.sh` grep guard. The attach loop lives
 in `phux-tui` (it composites chrome over panes, so it legitimately
 depends on the chrome, the substrate, and the headless client).
+
+## Pane interiors are cell-diffed
+
+The pane painter (`attach/render.rs`) visits the rows libghostty reports
+dirty, but it does not rewrite them whole. Each pane keeps a front
+buffer: the cluster and resolved pen it last wrote to every cell of the
+outer terminal. A dirty row is compared against it and only the changed
+spans are emitted, each positioned with a `CUP` (or bridged by
+rewriting a short unchanged gap when that is fewer bytes). A full-screen
+animation that dirties every row every frame therefore costs about what
+actually changed, not a full-screen repaint (`phux-esge`).
+
+The front buffer is a claim about the outer terminal, so it holds only
+while nothing else writes over pane cells. The disjointness invariant
+above keeps the steady-state chrome out of pane rects. Every exception
+must invalidate the front buffer through
+`TerminalRenderer::invalidate_front` (all rows) or
+`invalidate_front_rows` (some rows):
+
+- screen clears (the full-frame clear, the SIGWINCH clear, the
+  full-screen overlay path), an incremental frame that failed to reach
+  the terminal, and a frame the stdout writer dropped;
+- modal overlays and the copy-mode status strip;
+- the predictive-echo overlay, for the rows its guesses cover.
+
+The renderer invalidates on its own for a forced paint (the full-frame
+path after its `ED2`), a moved origin or clipped extent, a replica
+generation change, an alternate-screen switch, a selection change, and
+kitty graphics replayed over the pane. An invalidated row is repainted
+whole the next time it is dirty, exactly as before the diff, so a
+missing invalidation shows up as stale cells and an extra one only
+costs bytes.
+
+## Status
+
+No remaining target-versus-shipped gaps in the render split this document
+owns. `ratatui` is fenced to `phux-tui`; pane interiors live in
+`phux-client-core`; cell-diff painting is the hot path.
+
+| Gap | Today | Owner | Tracked |
+|---|---|---|---|

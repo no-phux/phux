@@ -934,7 +934,7 @@ pub const GET_PERF: u32 = 0x0000_0800;
 /// Wire bit advertising the `TRANSCRIBE` voice passthrough command.
 ///
 /// `0x1000` is retired-unshipped (the phux-workload/v1 `WORKLOAD_AUTH` bit
-/// was specified but never implemented, ADR-0114) and skipped: it is not
+/// was specified but never implemented, ADR-0116) and skipped: it is not
 /// advertised and MUST NOT be reused without a version bump.
 pub const TRANSCRIBE: u32 = 0x0000_2000;
 /// Wire bit advertising non-Terminal `ResourceKind`s.
@@ -982,7 +982,7 @@ pub const CONDITIONAL_KILL: u32 = 0x0020_0000;
 ///
 /// A negotiating QUIC connection carries one control stream plus one
 /// client-opened bidi stream per attached Terminal (`docs/spec/proto.md`
-/// §4.2, ADR-0113). QUIC-only; never advertised on (or affecting) UDS,
+/// §4.2, ADR-0115). QUIC-only; never advertised on (or affecting) UDS,
 /// ssh-stdio, WebSocket, or WebTransport.
 pub const QUIC_STREAMS: u32 = 0x0040_0000;
 
@@ -1090,7 +1090,7 @@ pub enum ServerFeature {
     /// token in `RESOURCE_SPAWNED.instance`. A client MUST see this bit
     /// before sending the command: an older server cannot decode the tag.
     ConditionalKill = CONDITIONAL_KILL,
-    /// The connection may use QUIC multi-stream (ADR-0113): one control
+    /// The connection may use QUIC multi-stream (ADR-0115): one control
     /// stream plus one client-opened bidi stream per attached Terminal,
     /// each Terminal stream carrying that Terminal's output, bootstrap,
     /// history, and input. A client MUST NOT open a second QUIC stream

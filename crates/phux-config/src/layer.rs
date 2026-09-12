@@ -19,6 +19,7 @@
 //! renders it.
 
 use std::collections::{BTreeMap, HashSet};
+use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use crate::{ConfigError, byte_offset_to_line_col};
@@ -140,9 +141,21 @@ pub fn merged_config_with_provenance(
     user_input: &str,
     path: &Path,
 ) -> Result<(toml::Table, ConfigProvenance), ConfigError> {
+    merged_with_budget(user_input, path, None)
+}
+
+#[allow(
+    clippy::redundant_pub_crate,
+    reason = "private module helper; pub would trip unreachable_pub"
+)]
+pub(crate) fn merged_with_budget(
+    user_input: &str,
+    path: &Path,
+    max_read_bytes: Option<usize>,
+) -> Result<(toml::Table, ConfigProvenance), ConfigError> {
     let defaults_path = Path::new(DEFAULTS_DISPLAY_PATH);
     let default_table = parse_table(crate::DEFAULT_CONFIG_TOML, defaults_path)?;
-    let stack = resolve_user_stack(user_input, path)?;
+    let stack = resolve_user_stack(user_input, path, max_read_bytes)?;
 
     let mut layers = vec![LayerSource::Defaults];
     let mut recorded = BTreeMap::new();
@@ -193,72 +206,135 @@ pub fn merged_config_with_provenance(
 fn resolve_user_stack(
     user_input: &str,
     path: &Path,
+    max_read_bytes: Option<usize>,
 ) -> Result<Vec<(PathBuf, toml::Table)>, ConfigError> {
+    let mut budget = ReadBudget(max_read_bytes);
+    budget.consume(user_input.len(), path, path)?;
     let root = parse_table(user_input, path)?;
-    let mut out = Vec::new();
     // The root is on the chain from the start, so a layer that extends
     // the user's own config file is reported as a cycle.
-    let mut visiting = vec![canonical(path)];
-    let mut seen = HashSet::new();
-    push_layer(path, root, 0, &mut visiting, &mut seen, &mut out)?;
-    Ok(out)
+    let mut resolver = LayerResolver {
+        visiting: vec![canonical(path)],
+        seen: HashSet::new(),
+        out: Vec::new(),
+        budget,
+    };
+    resolver.push(path, root, 0)?;
+    Ok(resolver.out)
 }
 
 /// Depth-first post-order walk: resolve `table`'s `extends` chain into
 /// `out`, then push `table` itself.
-fn push_layer(
-    path: &Path,
-    mut table: toml::Table,
-    depth: usize,
-    visiting: &mut Vec<PathBuf>,
-    seen: &mut HashSet<PathBuf>,
-    out: &mut Vec<(PathBuf, toml::Table)>,
-) -> Result<(), ConfigError> {
-    if let Some(value) = table.remove(EXTENDS_KEY) {
-        if depth >= MAX_EXTENDS_DEPTH {
-            return Err(ConfigError::Layer {
-                path: path.to_path_buf(),
-                message: format!(
-                    "`extends` nesting exceeds the maximum depth of {MAX_EXTENDS_DEPTH}"
-                ),
-            });
-        }
-        for entry in extends_entries(value, path)? {
-            let layer_path = resolve_entry(&entry, path);
-            let layer_canon = canonical(&layer_path);
-            if visiting.contains(&layer_canon) {
-                return Err(ConfigError::LayerCycle {
-                    layer: layer_path,
-                    referenced_from: path.to_path_buf(),
+struct LayerResolver {
+    visiting: Vec<PathBuf>,
+    seen: HashSet<PathBuf>,
+    out: Vec<(PathBuf, toml::Table)>,
+    budget: ReadBudget,
+}
+
+impl LayerResolver {
+    fn push(
+        &mut self,
+        path: &Path,
+        mut table: toml::Table,
+        depth: usize,
+    ) -> Result<(), ConfigError> {
+        if let Some(value) = table.remove(EXTENDS_KEY) {
+            if depth >= MAX_EXTENDS_DEPTH {
+                return Err(ConfigError::Layer {
+                    path: path.to_path_buf(),
+                    message: format!(
+                        "`extends` nesting exceeds the maximum depth of {MAX_EXTENDS_DEPTH}"
+                    ),
                 });
             }
-            if !seen.insert(layer_canon.clone()) {
-                // Diamond: already merged via another branch. First
-                // position wins (ADR-0039).
-                continue;
+            for entry in extends_entries(value, path)? {
+                self.extend(path, &entry, depth + 1)?;
             }
-            let contents =
-                std::fs::read_to_string(&layer_path).map_err(|source| ConfigError::LayerRead {
-                    layer: layer_path.clone(),
-                    referenced_from: path.to_path_buf(),
-                    source,
-                })?;
-            let layer_table = parse_table(&contents, &layer_path)?;
-            visiting.push(layer_canon);
-            push_layer(&layer_path, layer_table, depth + 1, visiting, seen, out)?;
-            visiting.pop();
         }
+        if depth > 0 {
+            // Only *extended* layers are rewritten: the root file's relative
+            // manifests already resolve against its own directory by the
+            // documented `[[plugins]]` contract, and leaving them untouched
+            // keeps `phux config show` output identical to what the user wrote.
+            let layer_dir = path.parent().unwrap_or_else(|| Path::new(""));
+            absolutize_plugin_manifests(&mut table, layer_dir);
+        }
+        self.out.push((path.to_path_buf(), table));
+        Ok(())
     }
-    if depth > 0 {
-        // Only *extended* layers are rewritten: the root file's relative
-        // manifests already resolve against its own directory by the
-        // documented `[[plugins]]` contract, and leaving them untouched
-        // keeps `phux config show` output identical to what the user wrote.
-        let layer_dir = path.parent().unwrap_or_else(|| Path::new(""));
-        absolutize_plugin_manifests(&mut table, layer_dir);
+
+    fn extend(&mut self, parent: &Path, entry: &str, depth: usize) -> Result<(), ConfigError> {
+        let path = resolve_entry(entry, parent);
+        let canonical = canonical(&path);
+        if self.visiting.contains(&canonical) {
+            return Err(ConfigError::LayerCycle {
+                layer: path,
+                referenced_from: parent.to_path_buf(),
+            });
+        }
+        // Diamond: first position wins and consumes the file budget only once.
+        if !self.seen.insert(canonical.clone()) {
+            return Ok(());
+        }
+        let contents = self.budget.read(&path, parent)?;
+        let table = parse_table(&contents, &path)?;
+        self.visiting.push(canonical);
+        self.push(&path, table, depth)?;
+        self.visiting.pop();
+        Ok(())
     }
-    out.push((path.to_path_buf(), table));
-    Ok(())
+}
+
+/// Aggregate unique-file budget. Embedded defaults are trusted compiled bytes;
+/// root input and each first-visited external layer consume the caller's budget.
+struct ReadBudget(Option<usize>);
+
+impl ReadBudget {
+    fn consume(&mut self, bytes: usize, path: &Path, parent: &Path) -> Result<(), ConfigError> {
+        let Some(remaining) = self.0 else {
+            return Ok(());
+        };
+        self.0 = Some(remaining.checked_sub(bytes).ok_or_else(|| {
+            layer_read_error(
+                path,
+                parent,
+                std::io::Error::new(
+                    std::io::ErrorKind::FileTooLarge,
+                    "aggregate configuration byte budget exceeded",
+                ),
+            )
+        })?);
+        Ok(())
+    }
+
+    fn read(&mut self, path: &Path, parent: &Path) -> Result<String, ConfigError> {
+        let Some(remaining) = self.0 else {
+            return std::fs::read_to_string(path)
+                .map_err(|err| layer_read_error(path, parent, err));
+        };
+        let mut contents = Vec::new();
+        let file = std::fs::File::open(path).map_err(|err| layer_read_error(path, parent, err))?;
+        file.take(remaining.saturating_add(1) as u64)
+            .read_to_end(&mut contents)
+            .map_err(|err| layer_read_error(path, parent, err))?;
+        self.consume(contents.len(), path, parent)?;
+        String::from_utf8(contents).map_err(|err| {
+            layer_read_error(
+                path,
+                parent,
+                std::io::Error::new(std::io::ErrorKind::InvalidData, err),
+            )
+        })
+    }
+}
+
+fn layer_read_error(path: &Path, parent: &Path, source: std::io::Error) -> ConfigError {
+    ConfigError::LayerRead {
+        layer: path.to_path_buf(),
+        referenced_from: parent.to_path_buf(),
+        source,
+    }
 }
 
 /// Rewrite relative `manifest` paths in [`MANIFEST_ARRAY_KEYS`] arrays to
@@ -567,5 +643,38 @@ fn finalize_keys(
                 out.insert(path, origin);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    #[test]
+    fn aggregate_budget_counts_unique_diamond_layers_and_preserves_unbounded_loading() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path().join("config.toml");
+        let input = "extends=['a.toml','b.toml']\n";
+        let branch = "extends=['common.toml']\n";
+        let common = "[[remote]]\nname='x'\nendpoint='ssh://x'\n";
+        std::fs::write(dir.path().join("a.toml"), branch).expect("a");
+        std::fs::write(dir.path().join("b.toml"), branch).expect("b");
+        std::fs::write(dir.path().join("common.toml"), common).expect("common");
+        let exact = input.len() + 2 * branch.len() + common.len();
+        let bounded =
+            crate::parse_with_defaults_bounded(input, &root, exact).expect("exact budget");
+        let ordinary = crate::parse_with_defaults(input, &root).expect("ordinary loader");
+        assert_eq!(bounded.remote, ordinary.remote);
+        assert!(crate::parse_with_defaults_bounded(input, &root, exact - 1).is_err());
+        std::fs::write(
+            dir.path().join("common.toml"),
+            format!("{common}#{}", "界".repeat(1000)),
+        )
+        .expect("large common");
+        assert!(crate::parse_with_defaults_bounded(input, &root, exact).is_err());
+        assert_eq!(
+            crate::parse_with_defaults(input, &root)
+                .expect("unbounded behavior unchanged")
+                .remote,
+            ordinary.remote
+        );
     }
 }

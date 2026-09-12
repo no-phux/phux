@@ -9,6 +9,66 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.34.0](https://github.com/no-phux/phux/compare/v0.33.0...v0.34.0) (2026-09-12)
+
+
+### Features
+
+* **site:** polish the product surface, keep the phux voice ([#584](https://github.com/no-phux/phux/issues/584)) ([c900b37](https://github.com/no-phux/phux/commit/c900b37900f6729e8c283bc0976b65d03ee3d0ac))
+
+
+### Bug Fixes
+
+* **doctor:** surface disabled remote listeners from the running server ([1d4e5d2](https://github.com/no-phux/phux/commit/1d4e5d2a076fc3d384bccccfd6bf252e479d2ca8))
+* **release:** name the next-channel pointer channel.json ([0dbf7df](https://github.com/no-phux/phux/commit/0dbf7df93460710f933e3612bbf52c0ae6e28684))
+* **site:** restore next-channel install contract on landing page ([#585](https://github.com/no-phux/phux/issues/585)) ([228e456](https://github.com/no-phux/phux/commit/228e456e4d979ddca2a6236fa4b7e1a1f2f5154c))
+
+## [0.33.0](https://github.com/no-phux/phux/compare/v0.32.0...v0.33.0) (2026-09-12)
+
+
+### Features
+
+* **cli:** opt-in next channel from green main ([865f80a](https://github.com/no-phux/phux/commit/865f80a7da589cbd2f5f380e6c4e5ae76d5f0fd5))
+* **cockpit:** retain identity-bound native dev diagnostics ([713b6d5](https://github.com/no-phux/phux/commit/713b6d588aa81c922e77997c4c94f6d3f99f2506))
+* **site:** serve docs on docs.phux.sh ([#583](https://github.com/no-phux/phux/issues/583)) ([8c32dac](https://github.com/no-phux/phux/commit/8c32dac4b7dcc3eb14450338bf30f425c5f01b1a))
+* **tui:** stabilize sidebar navigation and move tabs to top ([22956c6](https://github.com/no-phux/phux/commit/22956c69d16c269351182ddd1384806a7d44dc36))
+
+
+### Bug Fixes
+
+* **ci:** align install surface guards with rewritten docs ([06e244d](https://github.com/no-phux/phux/commit/06e244dbcffafa04740a64089d224e410ba7f3df))
+* **client:** enforce one absolute deadline across run and wait operations ([8da3800](https://github.com/no-phux/phux/commit/8da3800c80e178989385a5efe24fb218f5e1be02))
+* **cockpit:** fail closed on unframed diagnostics ([2d8756e](https://github.com/no-phux/phux/commit/2d8756ecfba5243a8ab865960b994cdf48bada00))
+* **core:** validate live agent batches by record sequence ([5e1b45c](https://github.com/no-phux/phux/commit/5e1b45c11d2107be196c8ef88dd782eb5c256c07))
+* **ffi:** discover agent streams on workspace refresh ([437f8e3](https://github.com/no-phux/phux/commit/437f8e3477b4850f5581a1c1a60d5b565b36f55f))
+* **ffi:** isolate agent refusal and inventory withdrawal ([f4e3526](https://github.com/no-phux/phux/commit/f4e3526947ffe931d20ab9b19a54cb85963475fd))
+* **ffi:** keep agent closure ahead of stale inventory ([2b883d2](https://github.com/no-phux/phux/commit/2b883d21773f83e6850a026e94ece23f0f0fcb4c))
+* **relay:** bound only tunnel connections and read the congestion window under the lock ([51e2171](https://github.com/no-phux/phux/commit/51e2171cbb1b004c80d9e221d4431265945ee3fc))
+* **relay:** carry consumer-hop backpressure through the relay to the server ([0e6645f](https://github.com/no-phux/phux/commit/0e6645fb6803f39545c72e834cf22f759fb2af5a))
+* **relay:** tag tunnel CIDs so per-stream bounds stay independent ([48b89ff](https://github.com/no-phux/phux/commit/48b89ff496cfe7e25d740f147116614ca1a54ed7))
+* **server:** age stale output from the later of its read and the publish ([f1f72fd](https://github.com/no-phux/phux/commit/f1f72fdf67b2241cfaf9ccb380b1069ec13f0c9f))
+* **server:** bound remote output lag with a tracked QUIC send window and a staleness budget ([13f6863](https://github.com/no-phux/phux/commit/13f68635d4f0685f42de7b079d0ffce4b5a2ef8d))
+* **server:** let a retired output pump take any resync ([455edc0](https://github.com/no-phux/phux/commit/455edc06f2495daafc62c223cdca95a3dc8145e9))
+* **server:** name the generation a resync replaces ([2fcf8e4](https://github.com/no-phux/phux/commit/2fcf8e451a481c856b874d6fe78af6367467ec37))
+* **server:** resync only the output pump that fell behind ([d4e85bd](https://github.com/no-phux/phux/commit/d4e85bda28423702e0b43c1f5a2984745800fe42))
+* **server:** revive only named retired pumps and restart staleness after replay ([0f7f4e8](https://github.com/no-phux/phux/commit/0f7f4e86700b59cce5a86eb7cc7d333e5bba1359))
+* **server:** track the WebTransport send window through one shared phux-dial helper ([b91335c](https://github.com/no-phux/phux/commit/b91335ca9acc2eea84df0d4455300382e4853c5f))
+* **tui:** forget pane fronts at the full-frame clear, record after write (phux-esge) ([aeb23a7](https://github.com/no-phux/phux/commit/aeb23a7c6e019db267c30ccb47f94d910ae1315a))
+* **tui:** paint only the changed cells of dirty rows (phux-esge) ([912b88e](https://github.com/no-phux/phux/commit/912b88e235a3f8d13ee0eab00e712da8889ad802))
+* **tui:** satisfy pedantic clippy in sidebar e2e vocabulary fix ([4746519](https://github.com/no-phux/phux/commit/4746519b65e6b773b7d3ad5fd62283ff3fcd13d2))
+
+
+### Performance
+
+* **tui:** carry the pen across jumps and skip recording forced paints (phux-esge) ([23a5e21](https://github.com/no-phux/phux/commit/23a5e215bdfdc520f99905ebe84ef01c323a0d2e))
+
+
+### Documentation
+
+* drop the pre-alpha apology and the wrong name ([69e3d81](https://github.com/no-phux/phux/commit/69e3d81eef059eadf41927d257480449dbfc488c))
+* one story, honest maturity, page jobs ([74acd87](https://github.com/no-phux/phux/commit/74acd87cac0078e9bb3dd5d9180792313be73878))
+* **site:** make the docs chrome match the rewritten guides ([4980b71](https://github.com/no-phux/phux/commit/4980b7102b5cb61139ae78af58627421352a18b6))
+
 ## [0.32.0](https://github.com/no-phux/phux/compare/v0.31.0...v0.32.0) (2026-09-11)
 
 

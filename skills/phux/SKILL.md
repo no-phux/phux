@@ -618,6 +618,7 @@ binary, so nothing is invisible to you.
 | `phux agent` | `list`, `show`, `explain`, `set`, `clear`, `wait`, `prompt`, `send-keys`, `answer`, `start`, `install-claude`, `uninstall-claude` |
 | `phux workspace` | `inspect` a git repo and its worktrees; `save` / `restore` a session archive |
 | `phux doctor` | diagnose the install: config, socket, server, plugins, shims |
+| `phux runtime-info --json` | read this binary's versioned protocol/capability contract without loading config or connecting to a server |
 | `phux logs` | where the logs live, or tail one |
 | `phux --skill` | print this file (`phux skill` is equivalent) |
 | `phux mcp` | run the bundled MCP stdio adapter; forwards `--skill`, `--schema`, help, and future arguments |

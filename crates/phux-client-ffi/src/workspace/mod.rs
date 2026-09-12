@@ -7,6 +7,7 @@
 mod exports;
 mod model;
 mod mutation;
+pub(crate) mod resources;
 mod types;
 pub use exports::*;
 pub use types::*;
@@ -59,6 +60,7 @@ pub(crate) struct SharedWorkspace {
     nodes: Vec<Node>,
     roots: Vec<u32>,
     pending: Option<Pending>,
+    pub(crate) subscriptions: resources::Subscriptions,
     next_internal: u32,
 }
 
@@ -77,6 +79,7 @@ impl Default for SharedWorkspace {
             nodes: Vec::new(),
             roots: Vec::new(),
             pending: None,
+            subscriptions: resources::Subscriptions::default(),
             next_internal: INTERNAL_START,
         }
     }
@@ -95,6 +98,7 @@ impl SharedWorkspace {
     }
 
     pub(crate) fn disconnect(&mut self) {
+        self.subscriptions.clear();
         if self.pending.take().is_some() {
             self.status = 4;
             self.message = b"connection ended; workspace transaction outcome unknown".to_vec();
@@ -228,8 +232,8 @@ pub(crate) fn dispatch(client: &mut Client, frame: FrameKind) -> Option<FrameKin
             message,
             ..
         } if request_id >= INTERNAL_START => {
-            if pending_id(&client.workspace, request_id) {
-                client.workspace.fail(&BridgeError::state(message));
+            if let Err(error) = receive_error(client, request_id, message) {
+                client.workspace.fail(&error);
             }
         }
         FrameKind::ResourceSpawned { request_id, .. }
@@ -276,12 +280,20 @@ fn receive_state(client: &mut Client, id: u32, result: CommandResult) -> Result<
         CommandResult::Error { message, .. } => return Err(BridgeError::state(message)),
         _ => return Err(BridgeError::invalid("unexpected workspace GET_STATE reply")),
     };
-    let catalog = Catalog::from_snapshot(snapshot, client.workspace.selected)?;
+    let catalog = Catalog::from_snapshot(snapshot.clone(), client.workspace.selected)?;
+    resources::reconcile(client, &snapshot, &catalog)?;
     if let Some(pending) = client.workspace.pending.as_mut() {
         pending.state_id = None;
         pending.catalog = Some(catalog);
     }
     finish_read(client)
+}
+
+fn receive_error(client: &Client, id: u32, message: String) -> Result<(), BridgeError> {
+    if pending_id(&client.workspace, id) {
+        return Err(BridgeError::state(message));
+    }
+    Ok(())
 }
 
 fn receive_metadata(client: &mut Client, id: u32, bytes: Option<&[u8]>) -> Result<(), BridgeError> {

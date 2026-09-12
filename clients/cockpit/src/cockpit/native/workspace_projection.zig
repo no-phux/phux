@@ -10,6 +10,7 @@ const layout = @import("../layout.zig");
 const scene = @import("scene.zig");
 const config_module = @import("../../config/config.zig");
 const theme_module = @import("../../config/theme.zig");
+const fonts = @import("../../terminal/fonts.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -482,6 +483,9 @@ pub fn terminalTokens(model: *const Model) canvas.DesignTokens {
 pub fn terminalTokensFrom(base: canvas.DesignTokens, model: *const Model) canvas.DesignTokens {
     var tokens = base;
     const cfg = &model.config;
+    // `fontChoice` owns which family names are supported. An unsupported name
+    // is already a config warning; it paints the bundled face, never none.
+    fonts.apply(&tokens, config_module.fontChoice(cfg.font_family.slice()) orelse .bundled);
     tokens.typography.label_size = model.fontSize();
     // Background/foreground land in the emulator's own DEFAULTS through
     // `Session.snapshot`, so an application's OSC 10/11 still wins over them.
@@ -1033,6 +1037,18 @@ fn distinctStringCount(values: []const []const u8) usize {
     return total;
 }
 
+/// A tab summarizes all of its splits, including a quiet focused leaf's
+/// blocked sibling. Use the same terminal predicate for every placement.
+pub fn tabNeedsAttention(model: *const Model, workspace: *const Workspace, index: usize) bool {
+    const tree = workspace.treeConst(index) orelse return false;
+    var refs: [layout.max_panes]TerminalRef = undefined;
+    const count = tree.terminals(&refs);
+    for (refs[0..count]) |ref| {
+        if (terminalNeedsAttention(model, ref)) return true;
+    }
+    return false;
+}
+
 pub fn terminalNeedsAttention(model: *const Model, id: TerminalRef) bool {
     if (model.provider.terminalConst(id)) |pane| return paneNeedsAttention(model, pane);
     // Stream-derived attention sits beside the bell rather than replacing it.
@@ -1148,7 +1164,21 @@ pub fn chromeRevealedIn(model: *const Model, workspace: *const Workspace) bool {
 /// the per-window painter and view need it over the window they are drawing.
 pub fn workspaceTerminalRef(model: *const Model, workspace: *const Workspace) ?TerminalRef {
     const id = workspace.focusedTerminalRef() orelse return null;
-    return if (model.containsTerminal(id)) id else null;
+    if (model.attachmentPending(id)) return null;
+    if (support.providerKind(id) == .local) return if (model.provider.contains(id)) id else null;
+    // Presence, as `Model.containsTerminal` asks it, not owner currency: a
+    // frozen publication keeps its pane, and its retained Find band, on
+    // screen while refusing commands.
+    const remote = workspaceRemote(model, workspace) orelse return null;
+    return if (remote.contains(id)) id else null;
+}
+
+/// The connection `workspace`'s focused pane belongs to: its selected tree's
+/// exact attachment. The global ref lookup is ambiguous once two attachments
+/// of one coordinator are on screen, and then neither window found its pane.
+fn workspaceRemote(model: *const Model, workspace: *const Workspace) ?*const support.PhuxProvider {
+    const tree = workspace.selectedTreeConst() orelse return null;
+    return model.phuxForTreeConst(tree);
 }
 
 /// The scrollback-search band's height: one band (`chrome_band_height`), like
@@ -1175,7 +1205,9 @@ pub fn searchRevealed(model: *const Model) bool {
 pub fn searchRevealedIn(model: *const Model, workspace: *const Workspace) bool {
     const terminal_ref = workspaceTerminalRef(model, workspace) orelse return false;
     if (model.provider.terminalConst(terminal_ref)) |pane| return pane.session.search.open;
-    const state = model.remoteUiConst(terminal_ref) orelse return false;
+    const remote = workspaceRemote(model, workspace) orelse return false;
+    const owner = remote.owner(terminal_ref) orelse return false;
+    const state = model.remoteUiForOwnerConst(owner) orelse return false;
     return state.search.open;
 }
 
@@ -1303,23 +1335,43 @@ pub const Group = union(enum) { active, peer: usize };
 
 /// The host groups in switcher order: this Mac's coordinator first, then
 /// registered hosts, each pass in active-then-slot order.
-pub fn coordinatorGroups(model: *const Model, out: *[1 + model_module.max_phux_peers]Group) usize {
-    if (comptime !support.phux_enabled) return 0;
-    var count: usize = 0;
-    for ([_]bool{ false, true }) |remote_pass| {
-        if (model.phuxConst()) |active| if ((active.remoteTarget() != null) == remote_pass) {
-            out[count] = .active;
-            count += 1;
-        };
-        for (0..model_module.max_phux_peers) |slot| {
-            const peer = model.phuxPeerAtConst(slot) orelse continue;
-            if ((peer.remoteTarget() != null) != remote_pass) continue;
-            out[count] = .{ .peer = slot };
-            count += 1;
+pub const CoordinatorGroups = struct {
+    model: *const Model,
+    remote_pass: bool = false,
+    active_seen: bool = false,
+    slot: usize = 0,
+    done: bool = false,
+
+    pub fn next(self: *CoordinatorGroups) ?Group {
+        if (comptime !support.phux_enabled) return null;
+        if (self.done) return null;
+        if (self.nextInPass()) |group| return group;
+        if (self.remote_pass) {
+            self.done = true;
+            return null;
         }
+        self.remote_pass = true;
+        self.active_seen = false;
+        self.slot = 0;
+        return self.nextInPass();
     }
-    return count;
-}
+
+    fn nextInPass(self: *CoordinatorGroups) ?Group {
+        if (!self.active_seen) {
+            self.active_seen = true;
+            if (self.model.phuxConst()) |active| {
+                if ((active.remoteTarget() != null) == self.remote_pass) return .active;
+            }
+        }
+        while (self.slot < self.model.peers.items.len) {
+            const slot = self.slot;
+            self.slot += 1;
+            const peer = self.model.phuxPeerAtConst(slot) orelse continue;
+            if ((peer.remoteTarget() != null) == self.remote_pass) return .{ .peer = slot };
+        }
+        return null;
+    }
+};
 
 /// What a peer's group is called: its registered host's label, else This Mac.
 pub fn peerHostLabel(model: *const Model, coordinator: support.ProviderId) []const u8 {
@@ -1346,7 +1398,7 @@ fn inventoryPeer(model: *const Model) ?*const support.PhuxProvider {
 fn peerDegraded(model: *const Model, slot: usize) bool {
     if (comptime !support.phux_enabled) return false;
     const peer = model.phuxPeerAtConst(slot) orelse return false;
-    if (model.peer_failed[slot]) return true;
+    if (model.peers.items[slot].failed) return true;
     const state = peer.state();
     return state != .negotiated and state != .attached;
 }
@@ -1360,10 +1412,11 @@ pub const PaletteIterator = struct {
     pane_index: usize = 0,
     remote_index: usize = 0,
     session_index: usize = 0,
-    group: usize = 0,
+    group: ?Group = null,
+    groups: CoordinatorGroups,
 
     pub fn init(model: *const Model, workspace: *const Workspace) PaletteIterator {
-        return .{ .model = model, .needle = workspace.palette.needle() };
+        return .{ .model = model, .needle = workspace.palette.needle(), .groups = .{ .model = model } };
     }
 
     fn accepts(iterator: *const PaletteIterator, entry: PaletteEntry) bool {
@@ -1467,7 +1520,7 @@ pub const PaletteIterator = struct {
             return if (iterator.accepts(entry)) entry else null;
         }
         while (iterator.session_index < sessions.len) {
-            const entry: PaletteEntry = .{ .peer_session = .{ .coordinator = coordinator, .id = sessions[iterator.session_index].id } };
+            const entry: PaletteEntry = .{ .peer_session = .{ .coordinator = coordinator, .id = sessions[iterator.session_index].id, .attachment_id = peer.context_id } };
             iterator.session_index += 1;
             if (iterator.accepts(entry)) return entry;
         }
@@ -1475,18 +1528,17 @@ pub const PaletteIterator = struct {
     }
 
     fn nextGrouped(iterator: *PaletteIterator) ?PaletteEntry {
-        var order: [1 + model_module.max_phux_peers]Group = undefined;
-        const count = coordinatorGroups(iterator.model, &order);
-        while (iterator.group < count) {
-            const found = switch (order[iterator.group]) {
+        while (true) {
+            if (iterator.group == null) iterator.group = iterator.groups.next();
+            const group = iterator.group orelse return null;
+            const found = switch (group) {
                 .active => iterator.nextSession(),
                 .peer => |slot| iterator.nextPeerSession(slot),
             };
             if (found) |entry| return entry;
-            iterator.group += 1;
+            iterator.group = null;
             iterator.session_index = 0;
         }
-        return null;
     }
 
     pub fn next(iterator: *PaletteIterator) ?PaletteEntry {
@@ -1834,6 +1886,7 @@ pub fn resolvePanesIn(model: *const Model, workspace: *const Workspace, size: ge
 }
 
 pub const PaneViewport = struct {
+    owner: ?@import("provider_contract").ReplicaOwner = null,
     terminal: support.TerminalRef,
     cols: u16,
     rows: u16,
@@ -1907,13 +1960,14 @@ pub fn proposedViewportsIn(
             result.count += 1;
             continue;
         }
-        const presentation = model.remotePresentation(pane.terminal) orelse continue;
+        const tree = workspace.selectedTreeConst() orelse continue;
+        const presentation = model.remotePaintPresentationIn(tree, pane.terminal) orelse continue;
         if (presentation.phase != .live) continue;
         const proposed = grid.Session.clampGrid(
             @intFromFloat(@max(2, inner.width / metrics.width)),
             @intFromFloat(@max(2, inner.height / metrics.height)),
         );
-        result.items[result.count] = .{ .terminal = pane.terminal, .cols = proposed.x, .rows = proposed.y };
+        result.items[result.count] = .{ .terminal = pane.terminal, .owner = presentation.owner, .cols = proposed.x, .rows = proposed.y };
         result.count += 1;
     }
     return result;
@@ -1928,7 +1982,7 @@ pub fn viewportDiffers(model: *const Model, proposal: PaneViewport) bool {
     if (model.provider.terminalConst(proposal.terminal)) |terminal| {
         return proposal.cols != terminal.cols or proposal.rows != terminal.rows;
     }
-    const remote = model.phuxForRefConst(proposal.terminal) orelse return false;
+    const remote = (if (proposal.owner) |owner| model.phuxForOwnerConst(owner) else model.phuxForRefConst(proposal.terminal)) orelse return false;
     const last = remote.lastViewport(proposal.terminal) orelse return true;
     return !last.eql(.{ .cols = proposal.cols, .rows = proposal.rows });
 }

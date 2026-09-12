@@ -30,11 +30,11 @@ function opened() {
   return step(initialModel()[0], { kind: 'host_open' })[0];
 }
 
-test('Connect to Host is a menu command with its own chord, not cmd+shift+G', () => {
-  assert.deepEqual(commandMsg('remote.connect'), { kind: 'host_open' });
+test('Machines is a menu command with its own chord, not cmd+shift+G', () => {
+  assert.deepEqual(commandMsg('navigator.machines'), { kind: 'navigator_open', view: 2 });
   const zon = readFileSync(new URL('../../app.zon', import.meta.url), 'utf8');
-  assert.match(zon, /\.label = "Connect to Host…", \.command = "remote\.connect", \.key = "o", \.modifiers = \.\{ "primary", "shift" \}/);
-  assert.match(zon, /\.id = "remote\.connect", \.key = "o", \.modifiers = \.\{ "primary", "shift" \}/);
+  assert.match(zon, /\.label = "Machines…", \.command = "navigator\.machines", \.key = "o", \.modifiers = \.\{ "primary", "shift" \}/);
+  assert.match(zon, /\.id = "navigator\.machines", \.key = "o", \.modifiers = \.\{ "primary", "shift" \}/);
   const shiftG = zon.split('\n').filter(line => /\.key = "g", \.modifiers = \.\{ "primary", "shift" \}/.test(line));
   assert.ok(shiftG.length > 0);
   for (const line of shiftG) assert.match(line, /terminal\.find-previous/);

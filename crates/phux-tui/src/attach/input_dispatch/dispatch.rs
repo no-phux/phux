@@ -1192,14 +1192,20 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if !self.predict.should_display(predict_now_ms()) {
             return;
         }
-        let origin = self
+        let focused = self
             .ctx
             .workspace
             .active_window()
-            .and_then(|w| w.focus.as_ref())
+            .and_then(|w| w.focus.as_ref());
+        let origin = focused
             .and_then(|fid| self.panes.get(fid))
             .map_or((0, 0), |s| s.renderer.last_origin());
         let _ = overlay.render(self.predict, origin, self.out);
+        // phux-esge: the guesses now sit over the focused pane's cells; its
+        // front buffer must not keep claiming what was there before them.
+        if let Some(slot) = focused.and_then(|fid| self.panes.get_mut(fid)) {
+            crate::attach::pane_state::invalidate_predicted_rows(slot, self.predict);
+        }
     }
 }
 

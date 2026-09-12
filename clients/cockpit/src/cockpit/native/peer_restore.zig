@@ -38,7 +38,7 @@ const Shown = remote_memory.Shown;
 pub fn onListed(engine: anytype, fx: anytype, slot: usize) bool {
     if (comptime !support.phux_enabled or !canShow(@TypeOf(fx))) return false;
     const model = engine.model;
-    const restore = model.peer_restore[slot] orelse return false;
+    const restore = model.peers.items[slot].restore orelse return false;
     if (!current(model, slot, restore)) return drop(model, slot);
     if (!restore.pending) return false;
     return showFront(engine, fx, slot);
@@ -50,8 +50,8 @@ pub fn onFrame(engine: anytype, fx: anytype) bool {
     if (comptime !support.phux_enabled or !canShow(@TypeOf(fx))) return false;
     const model = engine.model;
     var shown = false;
-    for (0..model_module.max_phux_peers) |slot| {
-        const restore = model.peer_restore[slot] orelse continue;
+    for (model.peers.items, 0..) |entry, slot| {
+        const restore = entry.restore orelse continue;
         if (!restore.pending or !restore.listed) continue;
         if (!current(model, slot, restore)) {
             _ = drop(model, slot);
@@ -75,8 +75,8 @@ fn canShow(comptime Fx: type) bool {
 /// The user chose what to show before a front record was: it is not shown.
 /// Its tab hint stays, in case the user picks that session.
 pub fn cancelFront(model: *Model) void {
-    for (&model.peer_restore) |*value| {
-        if (value.*) |*restore| {
+    for (model.peers.items) |entry| {
+        if (entry.restore) |*restore| {
             restore.pending = false;
             restore.listed = false;
         }
@@ -91,10 +91,10 @@ pub fn cancelFront(model: *Model) void {
 /// comes back listing only and a host that returns later never takes the
 /// front window.
 pub fn failed(model: *Model, slot: usize) void {
-    const restore = if (model.peer_restore[slot]) |*value| value else return;
+    const restore = if (model.peers.items[slot].restore) |*value| value else return;
     if (!restore.pending) return;
     if (restore.retried) {
-        model.peer_restore[slot] = null;
+        model.peers.items[slot].restore = null;
         return;
     }
     restore.retried = true;
@@ -107,9 +107,9 @@ pub fn failed(model: *Model, slot: usize) void {
 /// selection is what is kept from then on.
 pub fn takeHint(model: *Model, coordinator: support.ProviderId, session: u32) ?[16]u8 {
     const slot = model.peerSlot(coordinator) orelse return null;
-    const restore = model.peer_restore[slot] orelse return null;
+    const restore = model.peers.items[slot].restore orelse return null;
     if (restore.coordinator != coordinator or restore.shown.session != session) return null;
-    model.peer_restore[slot] = null;
+    model.peers.items[slot].restore = null;
     return restore.shown.window;
 }
 
@@ -141,13 +141,13 @@ fn sameSession(peer: anytype, shown: Shown, created: i64) bool {
 }
 
 fn drop(model: *Model, slot: usize) bool {
-    model.peer_restore[slot] = null;
+    model.peers.items[slot].restore = null;
     return false;
 }
 
 fn showFront(engine: anytype, fx: anytype, slot: usize) bool {
     const model = engine.model;
-    const restore = &(model.peer_restore[slot].?);
+    const restore = &(model.peers.items[slot].restore.?);
     // Before the front window is measured there is no real size to attach
     // with; the frame that measures it shows the session (`onFrame`).
     const viewport = frontViewport(model) orelse {
@@ -188,39 +188,39 @@ pub fn frontViewport(model: *const Model) ?contract.Viewport {
 /// True when one changed, so the caller writes the file.
 pub fn capture(model: *const Model, hosts: *remote_memory.Hosts) bool {
     if (comptime !support.phux_enabled) return false;
-    var next: [remote_memory.max_hosts]?Shown = @splat(null);
-    var kept: [remote_memory.max_hosts]bool = @splat(false);
-    var live_front = false;
+    const live_front = hasLiveFront(model, hosts);
+    var changed = false;
     for (0..hosts.count) |index| {
         const id = support.PhuxProvider.coordinatorId(.{ .remote = .{ .target = hosts.get(index) } });
-        kept[index] = unsettled(model, id);
-        next[index] = if (kept[index]) hosts.shown[index] else liveRecord(model, id);
-        if (kept[index]) continue;
-        if (next[index]) |record| {
-            if (record.front) live_front = true;
-        }
+        const next = if (unsettled(model, id)) retainedRecord(hosts.shown[index], live_front) else liveRecord(model, id);
+        changed = hosts.setShown(index, next) or changed;
     }
-    // At most one record is front. A remembered host's tab in front now
-    // outranks a loaded front record not shown yet (another host was chosen,
-    // or the config made a remembered host active), so the file never names
-    // two.
-    for (0..hosts.count) |index| {
-        if (!live_front or !kept[index]) continue;
-        if (next[index]) |record| {
-            if (record.front) next[index] = null;
-        }
-    }
-    var changed = false;
-    for (0..hosts.count) |index| changed = hosts.setShown(index, next[index]) or changed;
     return changed;
+}
+
+fn hasLiveFront(model: *const Model, hosts: *const remote_memory.Hosts) bool {
+    for (0..hosts.count) |index| {
+        const id = support.PhuxProvider.coordinatorId(.{ .remote = .{ .target = hosts.get(index) } });
+        if (unsettled(model, id)) continue;
+        const record = liveRecord(model, id) orelse continue;
+        if (record.front) return true;
+    }
+    return false;
+}
+
+/// A current front selection outranks a restore still waiting on its host.
+fn retainedRecord(record: ?Shown, live_front: bool) ?Shown {
+    const value = record orelse return null;
+    if (live_front and value.front) return null;
+    return value;
 }
 
 /// Whether what coordinator `id` shows is not settled yet: a launch restore
 /// not judged, or a retarget in flight. Its loaded record is kept then, so a
 /// quit before its host lists loses nothing.
 fn unsettled(model: *const Model, id: support.ProviderId) bool {
-    for (model.peer_restore) |value| {
-        const restore = value orelse continue;
+    for (model.peers.items) |entry| {
+        const restore = entry.restore orelse continue;
         if (restore.coordinator == id and restore.pending) return true;
     }
     if (model.phuxConst()) |active| if (active.pending_retarget != null) return true;
@@ -243,17 +243,19 @@ const Showing = struct { session: u32, server: []const u8, created: ?i64 };
 /// The session coordinator `id` is attached to and displaying: the active
 /// coordinator's own, or a showing peer's projected one.
 fn showingSession(model: *const Model, id: support.ProviderId) ?Showing {
-    if (model.phuxConst()) |active| if (active.providerId() == id) {
-        if (active.state() != .attached) return null;
-        const session = active.selectedSessionId() orelse return null;
-        return .{ .session = session, .server = active.serverId() orelse return null, .created = createdAt(active, session) };
-    };
+    if (model.phuxConst()) |active| if (active.providerId() == id) return activeShowing(active);
     const slot = model.peerSlot(id) orelse return null;
     const peer = model.phuxPeerAtConst(slot) orelse return null;
     if (!peer.showing() or peer.state() != .attached) return null;
-    const session = model.peer_workspaces[slot].session;
+    const session = model.peers.items[slot].workspace.session;
     if (session == 0) return null;
     return .{ .session = session, .server = peer.serverId() orelse return null, .created = createdAt(peer, session) };
+}
+
+fn activeShowing(active: anytype) ?Showing {
+    if (active.state() != .attached) return null;
+    const session = active.selectedSessionId() orelse return null;
+    return .{ .session = session, .server = active.serverId() orelse return null, .created = createdAt(active, session) };
 }
 
 /// `session`'s creation time in the coordinator's own session list.

@@ -1,14 +1,25 @@
-<template name="cockpit-window" args="tabs rail width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status reconnect commandnotice">
+<import src="cockpit-settings.native" />
+<template name="cockpit-window" args="tabs rail width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status title detail">
   <stack>
     <column>
       <row height="50" padding="4" gap="8" cross="center" background="surface">
         <spacer width="78" window-drag="true" />
-        <button size="sm" variant="ghost" icon="folder-open" width="176" label="Switch workspace" on-press="palette_open">{workspaceLabel}</button>
+        <list-item height="40" width="176" label="Sessions" on-press="sessions_open">
+          <column gap="0">
+            <text overflow="ellipsis">{title}</text>
+            <text foreground="text_muted" overflow="ellipsis">{detail}</text>
+          </column>
+        </list-item>
+        <button size="sm" variant="ghost" icon="terminal" label="Inspect agents" on-press="agents_open" />
+
         <if test="{tabPlacement == 'top'}">
           <tabs grow="1" gap="4" label="Terminal tabs">
             <for each="tabs" key="id" as="tab">
               <column width="{width}" gap="4">
-                <toggle-button size="sm" role="tab" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}">{tab.title}</toggle-button>
+                <row gap="4" cross="center">
+                  <toggle-button size="sm" role="tab" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}" grow="1">{tab.title}</toggle-button>
+                  <if test="{tab.attention}"><text label="{tab.attentionLabel}">●</text></if>
+                </row>
                 <if test="{tab.selected}"><spacer height="2" background="accent" /></if>
                 <else><spacer height="2" /></else>
               </column>
@@ -17,15 +28,16 @@
           </tabs>
         </if>
         <else><spacer grow="1" /></else>
-        <button size="sm" variant="ghost" icon="plus" label="New terminal" on-press="new_terminal" />
-        <button size="sm" variant="ghost" icon="panel-left" label="Toggle workspace rail" on-press="toggle_tab_placement" />
+        <button size="sm" variant="ghost" icon="external-link" label="Machines" on-press="machines_open">Machines</button>
+        <button size="sm" variant="ghost" icon="plus" label="New Tab" on-press="new_terminal" />
+        <button size="sm" variant="ghost" icon="panel-left" label="Move tabs to top or side" on-press="toggle_tab_placement" />
         <button size="sm" variant="ghost" icon="settings" label="Settings" on-press="settings_open" />
       </row>
       <row grow="1">
         <if test="{tabPlacement == 'side'}">
           <column width="224" padding="12" gap="12" background="surface">
             <row height="32" cross="center" gap="8">
-              <text grow="1" foreground="text_muted">WORKSPACE</text>
+              <text grow="1" foreground="text_muted">TABS</text>
               <button size="sm" variant="ghost" icon="search" label="Find work" on-press="palette_open" />
             </row>
             <scroll grow="1">
@@ -34,9 +46,9 @@
                   <if test="{row.agent}">
                     <row gap="8" padding="4" cross="center">
                       <spacer width="16" />
-                      <text foreground="text_muted">{row.label}</text>
-                      <text grow="1" foreground="text_muted">{row.state}</text>
-                      <text foreground="warning">{row.mark}</text>
+                      <text grow="1" foreground="text_muted" overflow="ellipsis">{row.label}</text>
+                      <text foreground="text_muted">{row.state}</text>
+                      <text foreground="warning" label="{row.attentionLabel}">{row.mark}</text>
                     </row>
                   </if>
                   <else>
@@ -44,21 +56,23 @@
                       <if test="{row.selected}"><spacer width="2" height="24" background="accent" /></if>
                       <else><spacer width="2" height="24" /></else>
                       <list-item grow="1" icon="terminal" role="tab" selected="{row.selected}" accent="surface_pressed" accent-foreground="text" on-press="select_target:{row.target}">{row.label}</list-item>
+                      <if test="{row.mark}"><text label="{row.attentionLabel}">{row.mark}</text></if>
                     </row>
                   </else>
                 </for>
               </column>
             </scroll>
             <separator />
-            <button size="sm" variant="ghost" icon="folder" on-press="palette_open">Sessions and hosts</button>
+            <button size="sm" variant="ghost" icon="folder" on-press="sessions_open">Sessions</button>
+            <button size="sm" variant="ghost" icon="search" on-press="commands_open">Commands</button>
             <button size="sm" variant="ghost" icon="external-link" on-press="new_window">New window</button>
           </column>
         </if>
         <column grow="1">
           <spacer grow="1" label="phux-terminal-space" />
-          <if test="{commandnotice}"><status-bar>{commandnotice}</status-bar></if>
+          <if test="{commandNotice}"><status-bar>{commandNotice}</status-bar></if>
           <else>
-            <if test="{reconnect}">
+            <if test="{canReconnect}">
               <row height="40" gap="8" padding="4" cross="center" background="surface">
                 <icon name="alert" width="16" height="16" foreground="warning" />
                 <text grow="1">{status}</text>
@@ -75,28 +89,86 @@
       </row>
     </column>
     <if test="{paletteopen}">
-      <row main="center" cross="start" padding="16">
+      <row main="center" padding="16" background="scrim">
         <panel grow="1" max-width="640" padding="16">
-          <column gap="8">
+          <column grow="1" gap="8">
             <row cross="center" gap="8">
               <icon name="folder-open" width="16" height="16" />
-              <text grow="1">Switch workspace</text>
-              <button size="sm" variant="ghost" icon="x" label="Close switcher" on-press="palette_close" />
+              <text grow="1" size="heading">{navigatorTitle}</text>
+              <button size="sm" variant="ghost" on-press="agents_open">Agents</button>
+              <button size="sm" variant="ghost" icon="x" label="Close navigator" on-press="palette_close" />
+
             </row>
-            <row gap="4" cross="center" label="Workspace filters">
-              <for each="navigationScopes" key="index" as="scope">
-                <button size="sm" variant="ghost" selected="{paletteScope == scope.index}" on-press="palette_scope:{scope.index}">{scope.label}</button>
-              </for>
-              <if test="{paletteScope == 3}"><text grow="1" overflow="ellipsis" foreground="text_muted">{paletteHostLabel}</text></if>
+            <row gap="4" cross="center" label="Navigator views">
+              <button size="sm" variant="ghost" selected="{navigatorView == 1}" on-press="sessions_open">Sessions</button>
+              <button size="sm" variant="ghost" selected="{navigatorView == 2}" on-press="machines_open">Machines</button>
+              <button size="sm" variant="ghost" selected="{navigatorView == 3}" on-press="windows_open">Windows</button>
+              <spacer grow="1" />
+              <button size="sm" variant="ghost" selected="{navigatorView == 4}" on-press="commands_open">Commands</button>
             </row>
-            <input text="{palettequery}" placeholder="Search terminals, sessions or hosts" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Find terminal or session" />
+            <if test="{navigatorView == 4}"><input text="{palettequery}" placeholder="Type a command" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search commands" /></if>
+            <else><input text="{palettequery}" placeholder="Search by name, machine or directory" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search navigator" /></else>
+            <if test="{navigatorView == 2}">
+              <if test="{machines.failed}"><text wrap="true" foreground="warning">Check the machine registry, then refresh.</text></if>
+              <else><if test="{machines.total == 1}"><text wrap="true" foreground="text_muted">No remote machines added</text></if></else>
+            </if>
+            <scroll grow="1" value="{navigatorScroll}" on-scroll="navigator_scrolled">
+            <if test="{navigatorView == 4}">
+              <list gap="4" label="Commands">
+                <for each="actionRows" key="index" as="action">
+                  <list-item height="48" label="{action.label}" selected="{action.highlighted}" disabled="{action.disabled}" accent="surface_pressed" accent-foreground="text" on-press="commands_pick:{action.index}">
+                    <row gap="8" cross="center">
+                      <if test="{action.highlighted}"><spacer width="2" height="24" background="accent" /></if>
+                      <else><spacer width="2" height="24" /></else>
+                      <column grow="1" gap="0">
+                        <text overflow="ellipsis">{action.label}</text>
+                        <text foreground="text_muted" overflow="ellipsis">{action.detail}</text>
+                      </column>
+                      <text foreground="text_muted">{action.shortcut}</text>
+                    </row>
+                  </list-item>
+                </for>
+              </list>
+            </if>
+            <else>
+            <if test="{navigatorView == 2}">
+              <column gap="8">
+                <list gap="4" label="Saved machines">
+                  <for each="machineRows" key="target" as="machine">
+                    <list-item height="{machine.height}" label="{machine.name}" selected="{machine.highlighted}" accent="surface_pressed" accent-foreground="text" on-press="machine_pick:{machine.target}">
+                      <column gap="4">
+                        <row gap="8" cross="center">
+                          <text grow="1" overflow="ellipsis">{machine.name}</text>
+                          <text foreground="text_muted">{machine.status}</text>
+                        </row>
+                        <text foreground="text_muted" overflow="ellipsis">{machine.endpoint}</text>
+                        <if test="{machine.message}"><text wrap="true" foreground="warning">{machine.message}</text></if>
+                        <row gap="8" cross="center">
+                          <text foreground="text_muted">{machine.action}</text>
+                          <spacer grow="1" />
+                          <if test="{machine.canDisconnect}"><button size="sm" variant="ghost" on-press="machine_disconnect:{machine.target}">Disconnect</button></if>
+                          <if test="{machine.canForget}"><button size="sm" variant="ghost" on-press="machine_forget:{machine.target}">Forget…</button></if>
+                        </row>
+                      </column>
+                    </list-item>
+                  </for>
+                </list>
+                <if test="{machines.hasMore}"><button size="sm" variant="ghost" on-press="machines_more">Load more machines</button></if>
+              </column>
+            </if>
+            <else>
             <list gap="0" label="Terminals and sessions">
-              <for each="paletterows" key="id" as="row">
+              <for each="paletterows" key="target" as="row">
                 <list-item height="40" label="{row.label}" selected="{row.highlighted}" disabled="{row.disabled}" accent="surface_pressed" accent-foreground="text" on-press="palette_pick:{row.target}">
-                  <column gap="0">
-                    <text overflow="ellipsis">{row.label}</text>
-                    <text foreground="text_muted" overflow="ellipsis">{row.detail}</text>
-                  </column>
+                  <row gap="8" cross="center">
+                    <if test="{row.highlighted}"><spacer width="2" height="24" background="accent" /></if>
+                    <else><spacer width="2" height="24" /></else>
+                    <column grow="1" gap="0">
+                      <text overflow="ellipsis">{row.label}</text>
+                      <text foreground="text_muted" overflow="ellipsis">{row.detail}</text>
+                    </column>
+                    <if test="{row.current}"><text foreground="accent">Current</text></if>
+                  </row>
                   <!-- A session row's own actions: Rename goes to the coordinator
                        that listed the row, by the row's captured target. -->
                   <context-menu>
@@ -107,12 +179,37 @@
                 </list-item>
               </for>
             </list>
+            </else>
+            </else>
+            </scroll>
+            <if test="{navigatorView == 2}">
+              <if test="{toolQueued}">
+                <row gap="8" cross="center">
+                  <text grow="1" wrap="true">Finish authentication in the setup terminal, then recheck your saved machines.</text>
+                  <button size="sm" on-press="tool_recheck">Recheck</button>
+                </row>
+              </if>
+              <text wrap="true" foreground="text_muted">{machines.notice}</text>
+              <if test="{machines.forgetTarget}">
+                <panel padding="12">
+                  <column gap="8">
+                    <text wrap="true">Forget saved machine {machines.forgetName}?</text>
+                    <text wrap="true" foreground="text_muted">This removes the saved entry. Running work on the machine is retained.</text>
+                    <row gap="8" main="end">
+                      <button size="sm" variant="ghost" on-press="machine_forget_cancel">Cancel</button>
+                      <button size="sm" on-press="machine_forget_confirm">Forget Machine</button>
+                    </row>
+                  </column>
+                </panel>
+              </if>
+            </if>
             <text foreground="text_muted">{palettenotice}</text>
             <row gap="8" cross="center">
               <if test="{paletteprevious}"><button size="sm" variant="ghost" on-press="palette_previous">Previous</button></if>
-              <button size="sm" variant="ghost" icon="external-link" on-press="host_open">Connect to Host…</button>
               <spacer grow="1" />
-              <button size="sm" variant="ghost" on-press="palette_retry">Refresh</button>
+              <if test="{navigatorView == 1}"><button size="sm" icon="plus" on-press="new_session_open">New Session…</button></if>
+              <if test="{navigatorView == 2}"><button size="sm" variant="ghost" icon="plus" on-press="add_machine_open">Add Machine…</button></if>
+              <if test="{navigatorView != 4}"><button size="sm" variant="ghost" on-press="palette_retry">Refresh</button></if>
               <if test="{palettenext}"><button size="sm" variant="ghost" on-press="palette_next">Next</button></if>
             </row>
           </column>
@@ -135,18 +232,34 @@
           <column gap="8">
             <row cross="center" gap="8">
               <icon name="external-link" width="16" height="16" />
-              <text grow="1">Connect to Host</text>
+              <if test="{toolPurpose == 1}"><text grow="1" size="heading">Add Machine</text></if>
+              <else><if test="{toolPurpose == 2}"><text grow="1" size="heading">Edit Configuration</text></if>
+              <else><text grow="1">Connect to Host</text></else></else>
               <button size="sm" variant="ghost" icon="x" label="Close Connect to Host" on-press="host_close" />
             </row>
-            <input text="{hostQuery}" placeholder="Registered host: mini, me@mini, or mini:8788" autofocus="true" on-input="host_edit" on-submit="host_submit" label="Remote host" />
+            <if test="{toolPurpose != 2}">
+              <input text="{hostQuery}" placeholder="Hostname or SSH destination" autofocus="true" on-input="host_edit" on-submit="host_submit" label="Machine destination" />
+            </if>
+            <if test="{toolPurpose == 1}">
+              <input text="{hostFriendlyName}" placeholder="Friendly name" on-input="host_name_edit" on-submit="tool_submit" label="Machine name" />
+              <text wrap="true" foreground="text_muted">Set up authentication in a dedicated terminal on This Mac. When setup finishes, return to Machines and choose Recheck.</text>
+            </if>
+            <if test="{toolPurpose == 2}">
+              <text wrap="true">{toolTarget}</text>
+              <text wrap="true" foreground="text_muted">The configuration editor opens in a new local Phux terminal.</text>
+            </if>
             <text wrap="true" foreground="text_muted">{hostNotice}</text>
             <row gap="8" cross="center">
-              <button size="sm" variant="ghost" on-press="host_local">Use this Mac</button>
-              <button size="sm" variant="ghost" on-press="host_disconnect">Disconnect</button>
-              <button size="sm" variant="ghost" on-press="host_disconnect_all">Disconnect All</button>
+              <if test="{toolPurpose == 0}">
+                <button size="sm" variant="ghost" on-press="host_local">Use this Mac</button>
+                <button size="sm" variant="ghost" on-press="host_disconnect">Disconnect</button>
+                <button size="sm" variant="ghost" on-press="host_disconnect_all">Disconnect All</button>
+              </if>
               <spacer grow="1" />
               <button size="sm" variant="ghost" on-press="host_close">Cancel</button>
-              <button size="sm" on-press="host_submit">Connect</button>
+              <if test="{toolPurpose == 1}"><button size="sm" disabled="{hostBusy}" on-press="tool_submit">Open Setup Terminal</button></if>
+              <else><if test="{toolPurpose == 2}"><button size="sm" variant="ghost" on-press="settings_open">Choose Editor in Settings</button></if>
+              <else><button size="sm" on-press="host_submit">Connect</button></else></else>
             </row>
           </column>
         </panel>
@@ -154,6 +267,52 @@
     </if>
   </stack>
 </template>
+<template name="cockpit-agents" args="open rows notice previous next status">
+  <stack>
+    <if test="{open}">
+      <!-- Geist sm/md insets; detail viewport = four default 40pt bands. -->
+      <row main="center" cross="start" padding="8">
+        <panel width="520" padding="12">
+          <column gap="8">
+            <row cross="center" gap="8">
+              <text>Agents</text>
+              <text grow="1" wrap="true" foreground="text_muted">{notice}</text>
+              <button size="sm" variant="ghost" icon="x" label="Close agent inspector" on-press="palette_close" />
+            </row>
+            <scroll height="160" label="Agent inspection details">
+              <column gap="8">
+                <text wrap="true" foreground="text_muted">{status}</text>
+                <for each="rows" key="id" as="agent">
+                  <column gap="4">
+                    <text wrap="true">{agent.label}</text>
+                    <text foreground="text_muted">Resource</text>
+                    <text wrap="true" label="{agent.resource}">{agent.resource}</text>
+                    <text foreground="text_muted">Parent</text>
+                    <text wrap="true" label="{agent.parent}">{agent.parent}</text>
+                    <text foreground="text_muted">Native ID</text>
+                    <text wrap="true" label="{agent.nativeId}">{agent.nativeId}</text>
+                    <text wrap="true" foreground="text_muted" label="{agent.evidence}">{agent.evidence}</text>
+                  </column>
+                </for>
+              </column>
+            </scroll>
+            <for each="rows" key="id" as="agent">
+              <if test="{agent.index != 65535}"><button size="sm" autofocus="true" on-press="palette_submit">Jump to parent</button></if>
+              <else><text foreground="text_muted">Parent unavailable</text></else>
+            </for>
+            <row gap="8" cross="center">
+              <if test="{previous}"><button size="sm" variant="ghost" on-press="palette_previous">Previous agent</button></if>
+              <spacer grow="1" />
+              <button size="sm" variant="ghost" on-press="palette_retry">Refresh</button>
+              <if test="{next}"><button size="sm" variant="ghost" on-press="palette_next">Next agent</button></if>
+            </row>
+          </column>
+        </panel>
+      </row>
+    </if>
+  </stack>
+</template>
+
 
 <!-- Rename Session, presented by whichever window invoked it. The engine
      names the session on screen and the coordinator that owns it; the new
@@ -173,7 +332,8 @@
             <row gap="8" cross="center">
               <spacer grow="1" />
               <button size="sm" variant="ghost" on-press="rename_close">Cancel</button>
-              <button size="sm" on-press="rename_submit">Rename</button>
+              <if test="{creatingSession}"><button size="sm" disabled="{renameBusy}" on-press="rename_submit">Create Session</button></if>
+              <else><button size="sm" disabled="{renameBusy}" on-press="rename_submit">Rename</button></else>
             </row>
           </column>
         </panel>
@@ -186,7 +346,7 @@
      windows, offered with New Tab instead of treated as broken, in the
      window the snapshot names. A peer's session picked in the switcher can be
      dismissed; nothing attaches it until New Tab. -->
-<template name="cockpit-empty" args="emptyopen">
+<template name="cockpit-empty" args="emptyopen name detail picked">
   <stack>
     <if test="{emptyopen}">
       <row main="center" cross="start" padding="16">
@@ -194,11 +354,12 @@
           <column gap="8">
             <row cross="center" gap="8">
               <icon name="terminal" width="16" height="16" />
-              <text grow="1" overflow="ellipsis">{emptyName}</text>
-              <if test="{emptyPicked}"><button size="sm" variant="ghost" icon="x" label="Dismiss empty session" on-press="empty_dismiss" /></if>
+              <text grow="1" overflow="ellipsis">{name}</text>
+              <if test="{picked}"><button size="sm" variant="ghost" icon="x" label="Dismiss empty session" on-press="empty_dismiss" /></if>
             </row>
-            <text foreground="text_muted" overflow="ellipsis">{emptyDetail}</text>
-            <text wrap="true">This session has no windows. Open a tab to start working in it.</text>
+            <text foreground="text_muted" overflow="ellipsis">{detail}</text>
+            <text size="heading">Empty session</text>
+            <text wrap="true">Open a new tab to start a terminal.</text>
             <if test="{emptyNotice}"><text wrap="true" foreground="text_muted">{emptyNotice}</text></if>
             <row gap="8" cross="center">
               <spacer grow="1" />
@@ -241,103 +402,6 @@
               <spacer grow="1" />
               <button size="sm" variant="ghost" on-press="dir_close">Cancel</button>
               <button size="sm" on-press="dir_here">Open Here</button>
-            </row>
-          </column>
-        </panel>
-      </row>
-    </if>
-  </stack>
-</template>
-
-<template name="cockpit-settings" args="settingsopen themes configexists confignotice">
-  <stack>
-    <if test="{settingsopen}">
-      <row main="end" padding="16" background="scrim">
-        <panel grow="1" max-width="640" padding="16">
-          <column gap="16">
-            <row cross="center" gap="8">
-              <column grow="1" gap="4">
-                <text size="heading">Settings</text>
-                <text foreground="text_muted">Make room for your way of working.</text>
-              </column>
-              <button size="sm" variant="ghost" icon="x" label="Cancel settings" on-press="settings_close" />
-            </row>
-            <tabs gap="4" label="Settings sections">
-              <for each="settingsSections" key="index" as="section">
-                <button size="sm" variant="ghost" selected="{settingsSection == section.index}" on-press="settings_section:{section.index}">{section.label}</button>
-              </for>
-            </tabs>
-            <scroll grow="1">
-              <column gap="16">
-                <if test="{settingsSection == 0}">
-                  <column gap="12">
-                    <text>Theme</text>
-                    <text foreground="text_muted">Preview live in your terminal. Cancel restores your starting appearance.</text>
-                    <grid columns="2" gap="8">
-                      <for each="themes" key="index" as="theme">
-                        <button size="sm" variant="outline" selected="{theme.highlighted}" disabled="{appearanceBusy}" on-press="settings_pick:{theme.index}">{theme.label}</button>
-                      </for>
-                    </grid>
-                    <text foreground="text_muted">{appearance.contrastLabel}</text>
-                    <if test="{appearance.overrides}"><text wrap="true" foreground="warning">Your explicit foreground or background overrides the theme. Edit those keys in your config to follow the theme colors.</text></if>
-                    <separator />
-                    <row gap="8" cross="center">
-                      <text grow="1">Terminal text size</text>
-                      <button size="sm" variant="outline" disabled="{appearanceBusy}" label="Decrease text size" on-press="settings_font:{fontDecrease}">-</button>
-                      <text width="64" text-alignment="center">{appearance.fontLabel}</text>
-                      <button size="sm" variant="outline" disabled="{appearanceBusy}" label="Increase text size" on-press="settings_font:{fontIncrease}">+</button>
-                    </row>
-                    <row gap="8" cross="center">
-                      <text grow="1">Local terminal cursor</text>
-                      <toggle-group gap="4" label="Cursor style">
-                        <for each="cursorChoices" key="index" as="choice">
-                          <button size="sm" variant="ghost" selected="{appearance.cursor == choice.index}" disabled="{appearanceBusy}" on-press="settings_cursor:{choice.index}">{choice.label}</button>
-                        </for>
-                      </toggle-group>
-                    </row>
-                  </column>
-                </if>
-                <if test="{settingsSection == 1}">
-                  <column gap="16">
-                    <text>Tab placement</text>
-                    <text wrap="true" foreground="text_muted">Keep a compact strip above your work, or organize terminals and agent activity in a side rail.</text>
-                    <toggle-group gap="8" label="Tab placement">
-                      <for each="placementChoices" key="index" as="choice">
-                        <button size="sm" variant="outline" selected="{appearance.placement == choice.index}" disabled="{appearanceBusy}" on-press="settings_placement:{choice.index}">{choice.label}</button>
-                      </for>
-                    </toggle-group>
-                    <separator />
-                    <text>Arrange your work</text>
-                    <text wrap="true" foreground="text_muted">Cmd+D splits right. Cmd+Shift+D splits down. Cmd+Option+arrows moves focus between panes.</text>
-                    <text wrap="true" foreground="text_muted">Phux keeps your execution running when you close a placement. Local scratch terminals belong to this app.</text>
-                  </column>
-                </if>
-                <if test="{settingsSection == 2}">
-                  <column gap="16">
-                    <text>Current connection</text>
-                    <text wrap="true" foreground="text_muted">{connectionStatus}</text>
-                    <text wrap="true">{workspaceLabel}</text>
-                    <text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text>
-                    <text wrap="true" foreground="text_muted">{connectionDetail}</text>
-                    <text wrap="true" foreground="text_muted">Sessions and known terminal hosts are available from Switch workspace.</text>
-                    <separator />
-                    <row gap="8" cross="center">
-                      <text grow="1">Configuration file</text>
-                      <if test="{configexists}"><button size="sm" variant="ghost" icon="external-link" on-press="settings_reveal">Show in Finder</button></if>
-                    </row>
-                    <text wrap="true" foreground="text_muted">{confignotice}</text>
-                  </column>
-                </if>
-              </column>
-            </scroll>
-            <if test="{appearance.notice}"><text wrap="true" foreground="warning">{appearance.notice}</text></if>
-            <separator />
-            <row gap="8" cross="center">
-              <if test="{appearance.dirty}"><text foreground="text_muted">Unsaved preview</text></if>
-              <else><text foreground="text_muted">{appearance.contrastLabel}</text></else>
-              <spacer grow="1" />
-              <button size="sm" variant="ghost" on-press="settings_close">Cancel</button>
-              <button size="sm" disabled="{appearanceBusy}" on-press="settings_commit">Save changes</button>
             </row>
           </column>
         </panel>

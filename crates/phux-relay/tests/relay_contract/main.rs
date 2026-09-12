@@ -4,5 +4,6 @@
 mod common;
 
 mod relay_auth;
+mod relay_backpressure;
 mod relay_lifecycle;
 mod relay_routing;

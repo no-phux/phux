@@ -1,5 +1,7 @@
 export const ENGINE_CHANNEL_KEY = 0x434f434b0001;
 export const PROTOCOL_VERSION = 1;
+/// Mirrors `ts_snapshot.max_bytes`; raised for per-window context records.
+const SNAPSHOT_MAX_BYTES = 8192;
 
 const STATE_INVALIDATED = 1;
 const SNAPSHOT = 2;
@@ -10,6 +12,159 @@ const EXTENSION_TAB_CONTEXTS = 2;
 const EXTENSION_NAVIGATION_CONTEXT = 3;
 /// The Empty session state (empty_session.zig): which windows show it.
 const EXTENSION_EMPTY_SESSION = 4;
+/// Per-window header context (window_contexts.zig).
+const EXTENSION_WINDOW_CONTEXTS = 5;
+/// Identity-bound agent inspection rows (ts_agents.zig). Kind 5 is already
+/// window_contexts, so parent-agent rows take the next free value.
+const EXTENSION_PARENT_AGENT_ROWS = 6;
+const WINDOW_CONTEXTS_VERSION = 1;
+/// The primary window and four secondary slots (`model.max_windows`).
+export const MAX_WINDOWS = 5;
+const WINDOW_CONTEXT_TEXT_LIMIT = 64;
+/// Bits 0..3 are empty, picked, opening, unavailable; any higher bit is a
+/// record this build cannot read, so the whole record is refused.
+const WINDOW_CONTEXT_FLAGS_LIMIT = 15;
+/// `ts_navigation.Connection`: local, connecting, connected, offline,
+/// workspace unavailable.
+const WINDOW_CONTEXT_CONNECTION_LIMIT = 4;
+
+/// What one open window shows, by that window's own source: the session and
+/// machine its header names, its connection, and its Empty session state.
+/// Display metadata only; action targets and freshness live elsewhere.
+export interface WindowContext {
+  readonly window: number;
+  readonly empty: boolean;
+  readonly picked: boolean;
+  readonly opening: boolean;
+  readonly unavailable: boolean;
+  readonly connection: number;
+  readonly session: Uint8Array;
+  readonly host: Uint8Array;
+}
+
+/// The `window_contexts` record as the snapshot carried it. `present` is
+/// false only for a snapshot from a build that predates the record; a
+/// current engine always writes it, with `records` possibly empty.
+export interface WindowContexts {
+  readonly present: boolean;
+  readonly records: readonly WindowContext[];
+}
+
+const NO_WINDOW_CONTEXTS: readonly WindowContext[] = [];
+
+function absentWindowContexts(): WindowContexts {
+  return { present: false, records: NO_WINDOW_CONTEXTS };
+}
+
+/// The lowest and highest second byte a UTF-8 lead byte admits: E0 and F0
+/// refuse overlong forms, ED refuses surrogates, F4 refuses past U+10FFFF.
+function utf8SecondMin(lead: number): number {
+  if (lead === 0xe0) return 0xa0;
+  if (lead === 0xf0) return 0x90;
+  return 0x80;
+}
+
+function utf8SecondMax(lead: number): number {
+  if (lead === 0xed) return 0x9f;
+  if (lead === 0xf4) return 0x8f;
+  return 0xbf;
+}
+
+function utf8Width(lead: number): number {
+  if (lead < 0x80) return 1;
+  if (lead < 0xc2 || lead > 0xf4) return 0;
+  if (lead < 0xe0) return 2;
+  if (lead < 0xf0) return 3;
+  return 4;
+}
+
+/// The byte length of the well-formed scalar at `at`, or 0 when the bytes
+/// there are not one.
+function utf8Scalar(bytes: Uint8Array, at: number): number {
+  const lead = bytes[at];
+  const width = utf8Width(lead);
+  if (width <= 1) return width;
+  if (at + width > bytes.length) return 0;
+  const second = bytes[at + 1];
+  if (second < utf8SecondMin(lead) || second > utf8SecondMax(lead)) return 0;
+  for (let next = 2; next < width; next += 1) {
+    const byte = bytes[at + next];
+    if (byte < 0x80 || byte > 0xbf) return 0;
+  }
+  return width;
+}
+
+/// Well-formed UTF-8 (RFC 3629): no overlong forms, surrogates, scalars past
+/// U+10FFFF, stray continuation bytes, or sequences cut short.
+export function validUtf8(bytes: Uint8Array): boolean {
+  let at = 0;
+  while (at < bytes.length) {
+    const width = utf8Scalar(bytes, at);
+    if (width === 0) return false;
+    at += width;
+  }
+  return true;
+}
+
+function windowContextText(bytes: Uint8Array, at: number): Uint8Array | null {
+  if (at >= bytes.length) return null;
+  const length = bytes[at];
+  if (length > WINDOW_CONTEXT_TEXT_LIMIT || at + 1 + length > bytes.length) return null;
+  const text = bytes.subarray(at + 1, at + 1 + length);
+  return validUtf8(text) ? text : null;
+}
+
+interface WindowContextRecord {
+  readonly context: WindowContext;
+  readonly end: number;
+}
+
+function windowContextRecord(bytes: Uint8Array, at: number): WindowContextRecord | null {
+  if (at + 3 > bytes.length) return null;
+  const window = bytes[at];
+  const flags = bytes[at + 1];
+  const connection = bytes[at + 2];
+  if (!(window >= 0 && window < MAX_WINDOWS)) return null;
+  if (!(flags >= 0 && flags <= WINDOW_CONTEXT_FLAGS_LIMIT)) return null;
+  if (!(connection >= 0 && connection <= WINDOW_CONTEXT_CONNECTION_LIMIT)) return null;
+  const session = windowContextText(bytes, at + 3);
+  if (session === null) return null;
+  const host = windowContextText(bytes, at + 4 + session.length);
+  if (host === null) return null;
+  const context: WindowContext = {
+    window: Math.trunc(window), connection: Math.trunc(connection), session, host,
+    empty: (flags & 1) !== 0, picked: (flags & 2) !== 0, opening: (flags & 4) !== 0, unavailable: (flags & 8) !== 0,
+  };
+  return { context, end: at + 5 + session.length + host.length };
+}
+
+function hasWindowContext(records: readonly WindowContext[], window: number): boolean {
+  for (const record of records) {
+    if (record.window === window) return true;
+  }
+  return false;
+}
+
+/// The `window_contexts` payload, version 1: `version, count`, then per open
+/// window `window, flags, connection, session_len, session, host_len, host`.
+/// Strict: an unknown version, a count the payload does not hold exactly, a
+/// repeated or out-of-range window, a reserved flag bit, an unknown
+/// connection, or an over-long or malformed string refuses the whole record,
+/// never a prefix of it.
+export function windowContexts(payload: Uint8Array): readonly WindowContext[] | null {
+  if (payload.length < 2 || payload[0] !== WINDOW_CONTEXTS_VERSION) return null;
+  const count = payload[1];
+  if (!(count >= 0 && count <= MAX_WINDOWS)) return null;
+  const records: WindowContext[] = [];
+  let at = 2;
+  for (let index = 0; index < count; index += 1) {
+    const record = windowContextRecord(payload, at);
+    if (record === null || hasWindowContext(records, record.context.window)) return null;
+    records.push(record.context);
+    at = record.end;
+  }
+  return at === payload.length ? records : null;
+}
 
 /// A keep-empty session with no windows, as the snapshot offers it: a mask
 /// of the windows showing its state (bit 0 is the main window), whether it
@@ -68,6 +223,11 @@ export interface SnapshotAgentRow {
   readonly state: number;
   readonly attention: boolean;
   readonly provider: Uint8Array;
+  /// Resource identity is display/inspection data, never a terminal surface.
+  /// The parent index is actionable only at this snapshot's native revision.
+  readonly resource: Uint8Array;
+  readonly parent: Uint8Array;
+  readonly parentIndex: number;
 }
 
 export interface SnapshotTab {
@@ -125,7 +285,13 @@ export interface EngineSnapshot extends Invalidation {
   /// The agent rows the `agent_rows` extension record carried, empty when the
   /// snapshot carried none (which is also what an absent record means).
   readonly agents: readonly SnapshotAgentRow[];
+  /// The complete identity-bound roster size the `parent_agent_rows` record
+  /// carried, or the drawn row count when it carried none.
+  readonly agentTotal: number;
   readonly emptySession: SnapshotEmptySession;
+  /// Per-window header context; preferred over the navigation context and
+  /// `emptySession` for every window whenever `present`.
+  readonly windowContexts: WindowContexts;
 }
 
 function readU32(bytes: Uint8Array, at: number): number {
@@ -269,10 +435,7 @@ function readWindow(bytes: Uint8Array, at: number): SecondaryWindow | null {
 interface SecondaryRecords {
   readonly windows: readonly SecondaryWindow[];
   readonly terminalStates: Uint8Array;
-  readonly contexts: Uint8Array;
-  readonly agents: readonly SnapshotAgentRow[];
-  readonly navigation: NavigationSnapshotContext;
-  readonly empty: SnapshotEmptySession;
+  readonly extensions: SnapshotExtensions;
 }
 
 /// The `agent_rows` payload: a row count, then `[window][tab][state][flags]
@@ -302,6 +465,9 @@ function readAgentRows(bytes: Uint8Array, start: number, length: number): readon
       state: Math.trunc(state),
       attention: flags !== 0,
       provider: bytes.subarray(at + 5, at + 5 + providerLength),
+      resource: new Uint8Array(0),
+      parent: new Uint8Array(0),
+      parentIndex: 65535,
     });
     at += 5 + providerLength;
   }
@@ -317,6 +483,12 @@ interface SnapshotExtensions {
   readonly contexts: Uint8Array;
   readonly navigation: NavigationSnapshotContext;
   readonly empty: SnapshotEmptySession;
+  readonly windowContexts: WindowContexts;
+  readonly total: number;
+}
+
+function noExtensions(): SnapshotExtensions {
+  return { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession(), windowContexts: absentWindowContexts(), total: 0 };
 }
 
 interface NavigationSnapshotContext {
@@ -346,7 +518,7 @@ function readNavigationSnapshotContext(bytes: Uint8Array): NavigationSnapshotCon
 function snapshotExtension(previous: SnapshotExtensions, kind: number, payload: Uint8Array): SnapshotExtensions | null {
   if (kind === EXTENSION_AGENT_ROWS) {
     const agents = readAgentRows(payload, 0, payload.length);
-    return agents === null ? null : { ...previous, agents };
+    return agents === null ? null : { ...previous, agents, total: agents.length };
   }
   if (kind === EXTENSION_TAB_CONTEXTS) {
     return payload.length === 80 ? { ...previous, contexts: payload } : null;
@@ -359,11 +531,72 @@ function snapshotExtension(previous: SnapshotExtensions, kind: number, payload: 
     const empty = readEmptySession(payload);
     return empty === null ? null : { ...previous, empty };
   }
+  if (kind === EXTENSION_WINDOW_CONTEXTS) {
+    return withWindowContexts(previous, payload);
+  }
+  if (kind === EXTENSION_PARENT_AGENT_ROWS) {
+    const record = readParentAgents(payload, 0, payload.length);
+    return record === null ? null : { ...previous, agents: record.rows, total: record.total };
+  }
   return previous;
 }
 
+/// A second record would leave two answers for one window; refuse it.
+function withWindowContexts(previous: SnapshotExtensions, payload: Uint8Array): SnapshotExtensions | null {
+  if (previous.windowContexts.present) return null;
+  const records = windowContexts(payload);
+  return records === null ? null : { ...previous, windowContexts: { present: true, records } };
+}
+
+function agentPlacementValid(window: number, tab: number, state: number, flags: number): boolean {
+  return window <= 4 && tab <= 31 && state <= 4 && flags <= 1;
+}
+
+// Restate the integer proof at the compiled-core record boundary. The SDK's
+// ahead-of-time subset does not carry a predicate's range proof to its caller.
+function wireIndex(value: number): number {
+  return value >= 0 && value <= 65535 ? Math.trunc(value) : 0;
+}
+
+interface AgentRecords { readonly rows: readonly SnapshotAgentRow[]; readonly total: number; }
+
+function parentAgentRow(bytes: Uint8Array, at: number, end: number): SnapshotAgentRow | null {
+  if (at + 11 > end) return null;
+  if (!agentPlacementValid(bytes[at], bytes[at + 1], bytes[at + 4], bytes[at + 5])) return null;
+  const providerLength = bytes[at + 6];
+  const resourceLength = bytes[at + 7] + bytes[at + 8] * 256;
+  const parentLength = bytes[at + 9] + bytes[at + 10] * 256;
+  if (resourceLength === 0 || parentLength === 0) return null;
+  if (resourceLength > 288 || parentLength > 288 || providerLength > 12) return null;
+  const providerAt = at + 11;
+  const resourceAt = providerAt + providerLength;
+  const parentAt = resourceAt + resourceLength;
+  if (parentAt + parentLength > end) return null;
+  return { window: wireIndex(bytes[at]), tab: wireIndex(bytes[at + 1]), parentIndex: wireIndex(bytes[at + 2] + bytes[at + 3] * 256),
+    state: wireIndex(bytes[at + 4]), attention: bytes[at + 5] !== 0,
+    provider: bytes.subarray(providerAt, resourceAt), resource: bytes.subarray(resourceAt, parentAt),
+    parent: bytes.subarray(parentAt, parentAt + parentLength) };
+}
+
+function readParentAgents(bytes: Uint8Array, start: number, length: number): AgentRecords | null {
+  const end = start + length;
+  if (length < 3 || end > bytes.length) return null;
+  const total = bytes[start] + bytes[start + 1] * 256;
+  const count = bytes[start + 2];
+  if (count > 24 || count > total) return null;
+  const rows: SnapshotAgentRow[] = [];
+  let at = start + 3;
+  for (let i = 0; i < count; i += 1) {
+    const row = parentAgentRow(bytes, at, end);
+    if (row === null) return null;
+    rows.push(row);
+    at += 11 + row.provider.length + row.resource.length + row.parent.length;
+  }
+  return at === end ? { rows, total } : null;
+}
+
 function readExtensions(bytes: Uint8Array, start: number): SnapshotExtensions | null {
-  let result: SnapshotExtensions = { agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession() };
+  let result: SnapshotExtensions = noExtensions();
   let at = start;
   while (at < bytes.length) {
     if (at + 3 > bytes.length) return null;
@@ -397,13 +630,13 @@ function readSecondary(bytes: Uint8Array, start: number): SecondaryRecords | nul
 
 function readSnapshotTrailer(bytes: Uint8Array, at: number, secondary: readonly SecondaryWindow[]): SecondaryRecords | null {
   // Older snapshots carried no per-window terminal status trailer.
-  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), agents: NO_AGENTS, contexts: new Uint8Array(0), navigation: emptyNavigationContext(), empty: noEmptySession() };
+  if (at === bytes.length) return { windows: secondary, terminalStates: new Uint8Array(5), extensions: noExtensions() };
   if (at + 5 > bytes.length) return null;
   const terminalStates = bytes.subarray(at, at + 5);
   for (const state of terminalStates) if (state > 7) return null;
   const extensions = readExtensions(bytes, at + 5);
   if (extensions === null) return null;
-  return { windows: secondary, terminalStates, agents: extensions.agents, contexts: extensions.contexts, navigation: extensions.navigation, empty: extensions.empty };
+  return { windows: secondary, terminalStates, extensions };
 }
 
 function targetTabs(tabs: readonly SnapshotTab[], contexts: Uint8Array, window: number): readonly SnapshotTab[] {
@@ -423,7 +656,7 @@ function tabTarget(contexts: Uint8Array, window: number, id: number): Uint8Array
 }
 
 function snapshotHeaderValid(bytes: Uint8Array): boolean {
-  if (bytes.length < 28 || bytes.length > 4096) return false;
+  if (bytes.length < 28 || bytes.length > SNAPSHOT_MAX_BYTES) return false;
   if (bytes[0] !== PROTOCOL_VERSION || bytes[1] !== SNAPSHOT) return false;
   if (!(bytes[23] >= 0 && bytes[23] <= 4)) return false;
   return validRun(bytes[20], bytes[21], bytes[24], bytes[25]);
@@ -439,12 +672,13 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
   if (settings === null) return null;
   const secondary = readSecondary(bytes, settings.at);
   if (secondary === null) return null;
+  const extensions = secondary.extensions;
   return {
     connection: bytes[23],
-    currentSession: secondary.navigation.currentSession,
-    coordinatorEndpoint: secondary.navigation.coordinatorEndpoint,
-    connectionDetail: secondary.navigation.connectionDetail,
-    secondary: secondary.windows.map((window) => ({ ...window, tabs: targetTabs(window.tabs, secondary.contexts, window.index) })),
+    currentSession: extensions.navigation.currentSession,
+    coordinatorEndpoint: extensions.navigation.coordinatorEndpoint,
+    connectionDetail: extensions.navigation.connectionDetail,
+    secondary: secondary.windows.map((window) => ({ ...window, tabs: targetTabs(window.tabs, extensions.contexts, window.index) })),
     terminalStates: secondary.terminalStates,
     themes: catalog.themes,
     activeTheme: settings.activeTheme,
@@ -462,9 +696,11 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
     runStart: bytes[24],
     runCount: bytes[25],
     tabWidth: bytes[26] + bytes[27] * 256,
-    tabs: targetTabs(main.tabs, secondary.contexts, 0),
-    agents: secondary.agents,
-    emptySession: secondary.empty,
+    tabs: targetTabs(main.tabs, extensions.contexts, 0),
+    agents: extensions.agents,
+    agentTotal: extensions.total,
+    emptySession: extensions.empty,
+    windowContexts: extensions.windowContexts,
   };
 }
 
@@ -498,12 +734,21 @@ export interface NavigationRow {
   readonly kind: number;
   readonly host: Uint8Array;
   readonly selectable: boolean;
+  readonly current: boolean;
+  /// Identity-bound inspection data; empty on ordinary catalog rows. The
+  /// parent index is actionable only at this page's native revision.
+  readonly resource: Uint8Array;
+  readonly parent: Uint8Array;
+  readonly nativeId: Uint8Array;
+  readonly evidence: Uint8Array;
 }
 
-/// 0 all work, 1 sessions, 2 known terminal hosts, 3 exact raw host.
+/// 0 all work, 1 sessions, 2 known terminal hosts, 3 exact raw host, 4 native windows,
+/// 5 captured machine sessions (host field is opaque request-id/generation/row).
 export type NavigationScope = number;
 
 export interface NavigationPage {
+  readonly agents: boolean;
   readonly revision: WireU64;
   readonly offset: number;
   readonly total: number;
@@ -511,6 +756,18 @@ export interface NavigationPage {
   readonly scope: NavigationScope;
   readonly host: Uint8Array;
   readonly rows: readonly NavigationRow[];
+}
+
+export function navigationAgentsRequest(revision: WireU64, offset: number): Uint8Array {
+  const out = new Uint8Array(13);
+  out[0] = PROTOCOL_VERSION;
+  out[1] = 5;
+  writeU32(out, 2, revision.lo);
+  writeU32(out, 6, revision.hi);
+  out[10] = offset % 256;
+  out[11] = Math.floor(offset / 256);
+  out[12] = 0;
+  return out;
 }
 
 /// The native compiler requires fixed arity; retain the original caller API.
@@ -540,9 +797,14 @@ export function navigationScopedRequest(revision: WireU64, offset: number, query
 
 function validNavigationRequest(offset: number, query: Uint8Array, scope: number, host: Uint8Array): boolean {
   if (offset < 0 || offset > 65535 || offset !== Math.trunc(offset)) return false;
-  if (scope < 0 || scope > 3 || scope !== Math.trunc(scope)) return false;
+  if (scope < 0 || scope > 5 || scope !== Math.trunc(scope)) return false;
   if (query.length > 64 || host.length > 255) return false;
-  return scope === 3 || host.length === 0;
+  return validNavigationFilter(scope, host.length);
+}
+
+function validNavigationFilter(scope: number, length: number): boolean {
+  if (scope === 5) return length === 12;
+  return scope === 3 || length === 0;
 }
 
 export function navigationIntent(revision: WireU64, index: number): Uint8Array {
@@ -568,6 +830,8 @@ export function navigationHostFilter(target: Uint8Array): Uint8Array | null {
 }
 
 function validNavigationTarget(target: Uint8Array): boolean {
+  if (target.length === 10 && target[0] === 4) return true;
+  if (target.length === 22 && target[0] === 5) return true;
   if (navigationHostFilter(target) !== null) return true;
   return target.length >= 38 && target.length <= 298 && target[0] === 2;
 }
@@ -585,7 +849,8 @@ function navigationRecord(bytes: Uint8Array, at: number, highlighted: boolean): 
   if (!validNavigationTarget(target)) return null;
   const index = Math.trunc(rawIndex);
   const row: NavigationRow = { id: index, index, target, label: bytes.subarray(labelAt, labelAt + length), highlighted,
-    detail: new Uint8Array(0), kind: 0, host: new Uint8Array(0), selectable: true };
+    detail: new Uint8Array(0), kind: 0, host: new Uint8Array(0), selectable: true, current: false,
+    resource: new Uint8Array(0), parent: new Uint8Array(0), nativeId: new Uint8Array(0), evidence: new Uint8Array(0) };
   return { row, end: labelAt + length };
 }
 
@@ -607,14 +872,20 @@ function navigationRowMetadata(bytes: Uint8Array, at: number, row: NavigationRow
   const kind = bytes[at];
   const selectable = bytes[at + 1];
   const detailLength = bytes[at + 2];
-  if (!(kind >= 0 && kind <= 3)) return null;
-  if (selectable > 1 || detailLength > 160) return null;
+  if (!(kind >= 0 && kind <= 5)) return null;
+  if (selectable > 3 || detailLength > 160) return null;
   const end = at + 3 + detailLength;
   if (end > bytes.length) return null;
   // Exactly the host rows carry a filter token instead of catalog authority.
   const host = navigationHostFilter(row.target);
-  if ((kind === 3) !== (host !== null)) return null;
-  return { ...row, kind: Math.trunc(kind), selectable: selectable !== 0, detail: bytes.subarray(at + 3, end), host: host ?? new Uint8Array(0) };
+  if (!navigationKindMatchesTarget(kind, row.target, host !== null)) return null;
+  return { ...row, kind: Math.trunc(kind), selectable: (selectable & 1) !== 0, current: (selectable & 2) !== 0, detail: bytes.subarray(at + 3, end), host: host ?? new Uint8Array(0) };
+}
+
+function navigationKindMatchesTarget(kind: number, target: Uint8Array, host: boolean): boolean {
+  if ((kind === 3) !== host) return false;
+  if ((kind === 4) !== (target[0] === 4)) return false;
+  return (kind === 5) === (target[0] === 5);
 }
 
 function navigationMetadata(bytes: Uint8Array, start: number, rows: readonly NavigationRow[]): readonly NavigationRow[] | null {
@@ -631,11 +902,62 @@ function navigationMetadata(bytes: Uint8Array, start: number, rows: readonly Nav
 }
 
 function navigationHeaderValid(bytes: Uint8Array): boolean {
-  if (bytes.length < 16 || bytes.length > 4096) return false;
+  if (bytes.length < 16 || bytes.length > 8192) return false;
   if (bytes[0] !== PROTOCOL_VERSION) return false;
-  if (bytes[1] !== 3 && bytes[1] !== 4) return false;
+  if (bytes[1] !== 3 && bytes[1] !== 4 && bytes[1] !== 5) return false;
   const queryLength = bytes[12];
   return queryLength >= 0 && queryLength <= 64 && 16 + queryLength <= bytes.length;
+}
+
+/// One identity-bound inspection row: the old catalog index/label framing,
+/// then the four length-delimited identity fields. A single row fills the
+/// page; the revision fence still rejects delayed replies.
+// ts_agents.max_evidence_bytes: provider 256 + reason 1024 + metadata 512.
+// Identities retain their independent bounds; the page is still at most 4096.
+function inspectionFieldLimit(index: number): number {
+  if (index === 3) return 1792;
+  if (index === 2) return 256;
+  return 288;
+}
+
+function inspectionFields(bytes: Uint8Array, start: number): readonly Uint8Array[] | null {
+  const fields: Uint8Array[] = [];
+  let at = start;
+  for (let i = 0; i < 4; i += 1) {
+    if (at + 2 > bytes.length) return null;
+    const length = bytes[at] + bytes[at + 1] * 256;
+    if (length > inspectionFieldLimit(i) || at + 2 + length > bytes.length) return null;
+    fields.push(bytes.subarray(at + 2, at + 2 + length));
+    at += 2 + length;
+  }
+  return at === bytes.length ? fields : null;
+}
+
+function inspectionRow(bytes: Uint8Array, at: number, highlighted: boolean): NavigationRow | null {
+  if (at + 3 > bytes.length) return null;
+  const rawIndex = bytes[at] + bytes[at + 1] * 256;
+  const length = bytes[at + 2];
+  if (!(rawIndex >= 0 && rawIndex <= 65535)) return null;
+  if (!(length >= 1 && length <= 240) || at + 3 + length > bytes.length) return null;
+  const fields = inspectionFields(bytes, at + 3 + length);
+  if (fields === null) return null;
+  const index = Math.trunc(rawIndex);
+  const empty = new Uint8Array(0);
+  return { id: index, index, label: bytes.subarray(at + 3, at + 3 + length), target: empty, highlighted,
+    detail: empty, kind: 0, host: empty, selectable: true, current: false,
+    resource: fields[0], parent: fields[1], nativeId: fields[2], evidence: fields[3] };
+}
+
+function inspectionRows(bytes: Uint8Array, start: number, count: number): readonly NavigationRow[] | null {
+  const rows: NavigationRow[] = [];
+  let at = start;
+  for (let i = 0; i < count; i += 1) {
+    const row = inspectionRow(bytes, at, i === 0);
+    if (row === null) return null;
+    rows.push(row);
+    at = bytes.length;
+  }
+  return at === bytes.length ? rows : null;
 }
 
 export function navigationPage(bytes: Uint8Array): NavigationPage | null {
@@ -647,23 +969,38 @@ export function navigationPage(bytes: Uint8Array): NavigationPage | null {
   const offset = bytes[10] + bytes[11] * 256;
   const total = bytes[at] + bytes[at + 1] * 256;
   const count = bytes[at + 2];
-  if (!(count >= 0 && count <= 4) || offset + count > total) return null;
-  if (count !== Math.min(4, total - offset)) return null;
+  if (bytes[1] === 5) {
+    if (!(count >= 0 && count <= 1) || offset + count > total) return null;
+    if (count !== Math.min(1, total - offset)) return null;
+    const rows = inspectionRows(bytes, at + 3, count);
+    if (rows === null) return null;
+    return { agents: true, revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, 13 + queryLength),
+      scope: 0, host: new Uint8Array(0), rows };
+  }
+  const capacity = context.scope === 4 ? 16 : 4;
+  if (context.scope !== 4 && bytes.length > 4096) return null;
+  if (!validNavigationCount(count, offset, total, capacity)) return null;
   const rows = navigationRows(bytes, at + 3, count);
   if (rows === null) return null;
-  return { revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, 13 + queryLength), scope: context.scope, host: context.host, rows };
+  return { agents: false, revision: readU64(bytes, 2), offset, total, query: bytes.subarray(13, 13 + queryLength), scope: context.scope, host: context.host, rows };
+}
+
+function validNavigationCount(count: number, offset: number, total: number, capacity: number): boolean {
+  if (!(count >= 0 && count <= capacity)) return false;
+  if (offset + count > total) return false;
+  return count === Math.min(capacity, total - offset);
 }
 
 interface NavigationContext { readonly scope: number; readonly host: Uint8Array; readonly at: number; }
 
 function navigationContext(bytes: Uint8Array, at: number): NavigationContext | null {
-  if (bytes[1] === 3) return { scope: 0, host: new Uint8Array(0), at };
+  if (bytes[1] === 3 || bytes[1] === 5) return { scope: 0, host: new Uint8Array(0), at };
   if (at + 2 > bytes.length) return null;
   const scope = bytes[at];
   const length = bytes[at + 1];
-  if (!(scope >= 0 && scope <= 3)) return null;
+  if (!(scope >= 0 && scope <= 5)) return null;
   if (at + 5 + length > bytes.length) return null;
-  if (scope !== 3 && length !== 0) return null;
+  if (!validNavigationFilter(scope, length)) return null;
   return { scope: Math.trunc(scope), host: bytes.subarray(at + 2, at + 2 + length), at: at + 2 + length };
 }
 

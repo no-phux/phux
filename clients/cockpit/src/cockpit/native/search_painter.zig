@@ -5,6 +5,7 @@ const std = @import("std");
 const native_sdk = @import("native_sdk");
 const model_module = @import("../model.zig");
 const contract = @import("provider_contract");
+const layout = @import("../layout.zig");
 const projection = @import("workspace_projection.zig");
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -14,17 +15,28 @@ pub const View = struct { needle: []const u8, count: usize, ordinal: usize, fail
 
 pub fn paintWorkspace(model: *const model_module.Model, builder: *canvas.Builder, workspace: *const model_module.Workspace, size: geometry.SizeF, tokens: canvas.DesignTokens, focused: bool) !void {
     const ref = projection.workspaceTerminalRef(model, workspace) orelse return;
-    const value = view(model, ref) orelse return;
+    const tree = workspace.selectedTreeConst() orelse return;
+    const value = viewIn(model, tree, ref) orelse return;
     const rect = projection.workspaceChromeIn(model, workspace, size).search;
     try paint(value, builder, rect, tokens, 0, focused);
 }
 
 pub fn view(model: *const model_module.Model, ref: contract.TerminalRef) ?View {
+    return viewForState(model, ref, model.remoteUiConst(ref));
+}
+
+pub fn viewIn(model: *const model_module.Model, tree: *const layout.Tree, ref: contract.TerminalRef) ?View {
+    const presentation = model.remotePaintPresentationIn(tree, ref);
+    const state = if (presentation) |value| model.remoteUiForOwnerConst(value.owner) else null;
+    return viewForState(model, ref, state);
+}
+
+fn viewForState(model: *const model_module.Model, ref: contract.TerminalRef, remote_state: ?*const model_module.RemoteUiState) ?View {
     if (model.provider.terminalConst(ref)) |pane| {
         if (!pane.session.search.open) return null;
         return .{ .needle = pane.session.searchNeedle(), .count = pane.session.searchMatchCount(), .ordinal = pane.session.searchMatchOrdinal() };
     }
-    const state = model.remoteUiConst(ref) orelse return null;
+    const state = remote_state orelse return null;
     if (!state.search.open) return null;
     return .{ .needle = state.search.needle(), .count = state.search.count, .ordinal = state.search.index + 1, .failed = state.search.failed };
 }

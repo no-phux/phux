@@ -36,7 +36,7 @@ by a newer one, the newer line is the operative reading.
 ## Wire and codecs
 
 - [0086](./0086-shared-render-pool.md) One pooled libghostty render trio lives in `phux-protocol` behind the `server` feature.
-- [0115](./0115-wire-codec-stays-tlv.md) The wire codec stays hand-rolled TLV; protobuf considered and rejected, with a machine-readable schema as follow-up.
+- [0115](./0117-wire-codec-stays-tlv.md) The wire codec stays hand-rolled TLV; protobuf considered and rejected, with a machine-readable schema as follow-up.
 - [0061](./0061-capabilities-add-versions-break.md) New wire surface ships as a negotiated capability; a `major.minor` mismatch is rejected.
 - [0060](./0060-self-contained-session-recording.md) Recording is a consumer-side projection over the attach contract; encoders run in-process.
 - [0059](./0059-sandboxed-chunked-file-upload.md) `PUT_FILE` sends bounded chunks into a server-chosen sandbox directory under the command envelope.
@@ -50,6 +50,7 @@ by a newer one, the newer line is the operative reading.
 ## Server process and actor model
 
 - [0105](./0105-sessions-can-outlive-their-last-window.md) A keep-empty session survives its last window until an explicit kill; default sessions still cascade.
+- [0114](./0114-cockpit-closes-terminals-and-detaches-windows.md) Cockpit Close Pane/Tab ends work; Close Window/Quit detaches Phux views. Cockpit-created sessions opt into keep-empty; their last terminal leaves Empty session, whose closure retains the session.
 - [0096](./0096-always-on-performance-telemetry.md) Performance telemetry is always on, in-process, and read back through `GET_PERF`.
 - [0088](./0088-adopting-a-live-server-into-supervision.md) `install --adopt` arms a unit rather than loading it; the incumbent keeps its panes.
 - [0083](./0083-in-place-supervisor-unit-reconcile.md) `service reconcile` patches only the installed unit's restart-policy keys and reloads nothing.
@@ -80,7 +81,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Federation and transport
 
-- [0113](./0113-quic-stream-per-terminal.md) QUIC carries one control stream plus one bidi stream per attached Terminal; UDS/ws keep the single-stream shape.
+- [0113](./0115-quic-stream-per-terminal.md) QUIC carries one control stream plus one bidi stream per attached Terminal; UDS/ws keep the single-stream shape.
 - [0111](./0111-how-a-front-restore-is-judged.md) A front restore survives one failed connection of its host and is judged when the backoff redial, a lister, lists; This Mac's first projection at launch leaves a restored peer's tab in front; a record matches on coordinator, session id and creation time, so a graceful upgrade keeps it.
 - [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md) Cockpit keeps, beside each remembered host, the one session it showed; at launch every host lists, and only the one whose tab was in front is shown again, at the window's real size, once its own list still carries that session.
 - [0109](./0109-late-kills-are-conditional-on-instance-and-attachment.md) A late kill is `KILL_RESOURCE_IF`: the server kills only while the caller's instance token names its id space and no connection but the spawning one attached the resource; a hub relays the check to the satellite and vouches for its own consumers.
@@ -98,7 +99,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Auth and trust
 
-- [0114](./0114-workload-auth-is-mtls.md) Workload authentication is mTLS client certificates on QUIC/wss (kernel-uid on owner UDS, bearer token as outer admission only); 0098's proof handshake is retired unshipped.
+- [0114](./0116-workload-auth-is-mtls.md) Workload authentication is mTLS client certificates on QUIC/wss (kernel-uid on owner UDS, bearer token as outer admission only); 0098's proof handshake is retired unshipped.
 - [0106](./0106-identity-is-the-serving-user.md) A server never switches OS users; `user@host` selects that user's server, and `phux whoami` reports identity.
 - [0098](./0098-workload-proof-and-closed-scope-authority.md) Closed verb/selector grants with one pre-routing seam and live revocation (proof profile superseded by 0114).
 - [0091](./0091-certificate-names-the-advertised-address.md) The certificate names bind and overlay addresses once, at generation, and is never widened.
@@ -154,6 +155,7 @@ by a newer one, the newer line is the operative reading.
 
 - [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) One `ci` aggregate context is the merge gate; every action is SHA-pinned; shared lane setup.
 - [0082](./0082-retire-the-ci-metrics-store.md) The CI metrics branch, collector, and dashboard lane are gone; the run page suffices.
+- [0113](./0113-next-release-channel.md) `next` is an opt-in moving prerelease of green `main`; stable stays `vX.Y.Z` and Homebrew.
 - [0074](./0074-self-update-trust-boundary.md) `phux update` verifies the checksum before unpacking, swaps atomically, and refuses foreign installs.
 - [0069](./0069-generated-reference-docs.md) `docs/reference/` is rendered by the binary and byte-compared by a unit test.
 - [0001](./0001-language-rust.md) phux is implemented in Rust.

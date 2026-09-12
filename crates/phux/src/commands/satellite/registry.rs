@@ -66,7 +66,7 @@ pub(crate) fn load_registry() -> Result<Vec<SatelliteEntry>, String> {
 pub(crate) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String> {
     let config_path = config_loader::config_path();
     toml_registry::reject_symlink(&config_path)?;
-    let mut doc = toml_registry::read_document(&config_path)?;
+    let mut doc = toml_registry::edit_document(&config_path)?;
     let mut updated = false;
     for entry in load_registry()? {
         if entry.name == new.name {
@@ -78,7 +78,7 @@ pub(crate) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String
     if !updated {
         push_entry(&mut doc, new)?;
     }
-    toml_registry::write_document(&config_path, &doc)?;
+    doc.commit()?;
     Ok(SatelliteEntry {
         index: 0,
         name: new.name.clone(),
@@ -89,16 +89,12 @@ pub(crate) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String
     })
 }
 
-pub(crate) fn remove_entry(index: usize) -> Result<(), String> {
+pub(crate) fn remove_entry(entry: &SatelliteEntry) -> Result<(), String> {
     let config_path = config_loader::config_path();
     toml_registry::reject_symlink(&config_path)?;
-    let mut doc = toml_registry::read_document(&config_path)?;
-    let satellites = satellite_tables_mut(&mut doc)?;
-    if index >= satellites.len() {
-        return Err(format!("satellite registry index {index} disappeared"));
-    }
-    satellites.remove(index);
-    toml_registry::write_document(&config_path, &doc)
+    let mut doc = toml_registry::edit_document(&config_path)?;
+    doc.remove_machine(KEY, &entry.name, &entry.endpoint)?;
+    doc.commit()
 }
 
 fn entry_from_config(index: usize, satellite: SatelliteConfigEntry) -> SatelliteEntry {

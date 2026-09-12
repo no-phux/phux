@@ -28,6 +28,9 @@ bytes.workspace = true
 bitflags = "2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 serde = { workspace = true }
+# Trailing additive JSON on `SessionSnapshot` (remote listener bind report,
+# phux-kyna) and any future open-shaped diagnostic field on the state reply.
+serde_json = { workspace = true }
 # Derives TryFrom<u32> for the wire's PhysicalKey enum (ADR-0024). Pure Rust,
 # wasm-safe; the same crate libghostty-vt uses for its key discriminants.
 int-enum = "1.2"

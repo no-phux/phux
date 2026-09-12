@@ -13,7 +13,7 @@ peer holds the private key on that channel, and the registry maps the
 client identity to a closed scope ceiling enforced before dispatch.
 Expiry and revocation terminate live connections. Owner UDS keeps
 kernel-uid authority; the bearer token stays outer admission only.
-(ADR-0114 retires the unshipped `phux-workload/v1` proof profile this
+(ADR-0116 retires the unshipped `phux-workload/v1` proof profile this
 document previously specified; the authorization half stands.)
 
 ---
@@ -145,7 +145,7 @@ grant before any stateful frame is processed.
   routing, so a consumer certificate does not survive to the server:
   consumer↔relay and tunnel↔server authenticate separately, and
   authority across a relay is the tunnel's enrolled route authority
-  ([ADR-0114](../../ADR/0114-workload-auth-is-mtls.md)).
+  ([ADR-0116](../../ADR/0116-workload-auth-is-mtls.md)).
 
 There is deliberately no nonce, no transcript, and no exporter
 derivation in this profile: replay of a captured handshake is

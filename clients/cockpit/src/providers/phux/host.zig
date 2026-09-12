@@ -23,6 +23,10 @@ test {
 const workspace = provider.workspace;
 pub const OperationResult = operations.types.Result;
 pub const test_support = @import("operation_test_support.zig");
+
+test {
+    _ = @import("close_resource_tests.zig");
+}
 pub const AgentSession = agent_sessions.Session;
 pub const AgentState = agent_sessions.State;
 pub const AgentRecordsKind = agent_sessions.RecordsKind;
@@ -37,9 +41,13 @@ pub const max_sessions: usize = 256;
 pub const max_title_bytes: usize = 4096;
 pub const max_session_name_bytes: usize = 4096;
 pub const max_notice_bytes: usize = 64 * 1024;
-/// One AGENT_RECORDS payload, matching the client's MAX_APPEND_BYTES: the
-/// server refuses a larger append, so a larger effect is a codec disagreement.
-pub const max_agent_records_bytes: usize = 64 * 1024;
+/// One live ResourceOutput, bounded by phux-protocol::wire::frame::MAX_FRAME_LEN.
+/// The server stamps the whole append before broadcasting it, so its delivered
+/// bytes can exceed the 64 KiB producer-input limit.
+pub const max_agent_records_bytes: usize = 16 * 1024 * 1024;
+/// Retained history uses phux-config::MAX_AGENT_LOG_BYTES, not the append cap.
+/// The default is 4 MiB; a configured server can retain up to 64 MiB.
+pub const max_agent_retained_bytes: usize = 64 * 1024 * 1024;
 pub const max_agent_sessions: usize = agent_sessions.max_sessions;
 /// Admission is bounded independently from one frame's text budget. The
 /// painter degrades rows atomically; the provider retains the complete valid
@@ -118,6 +126,7 @@ pub const FrozenPresentation = @import("frozen_presentation.zig").FrozenPresenta
 const Terminal = struct {
     measured_cell: ?provider.MeasuredCell = null,
     id: RemoteId,
+    source_context: u64 = 0,
     generation: provider.Generation = .{},
     phase: provider.Phase = .attaching,
     dirty: bool = false,
@@ -154,7 +163,7 @@ const Terminal = struct {
     }
 
     fn owner(terminal: *const Terminal) provider.ReplicaOwner {
-        return .{ .terminal_ref = terminal.terminalRef(), .generation = terminal.generation };
+        return .{ .terminal_ref = terminal.terminalRef(), .generation = terminal.generation, .source_context = terminal.source_context };
     }
 
     fn presentation(terminal: *const Terminal) ?provider.Presentation {
@@ -481,14 +490,24 @@ pub const Host = struct {
     /// `cwd` empty inherits the server's default; otherwise the shell starts
     /// there. Copied by the queue call.
     pub fn requestSpawnIn(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
-        return host.spawnWith(owner_ref, viewport, cwd, false);
+        return host.spawnWith(owner_ref, viewport, cwd, false, &.{});
     }
 
     /// A spawn bound to the server's instance token (ADR-0109), so a later
     /// conditional kill can name exactly this terminal. Refused by a server
     /// without CONDITIONAL_KILL; ask `conditionalKillSupported` first.
     pub fn requestSpawnBound(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8) !u32 {
-        return host.spawnWith(owner_ref, viewport, cwd, true);
+        return host.spawnWith(owner_ref, viewport, cwd, true, &.{});
+    }
+
+    /// Dedicated tool process, copied by FFI before return. The bound spawn
+    /// retains conditional-cleanup evidence if placement later fails.
+    pub fn requestSpawnArgvBound(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, argv: []const []const u8) !u32 {
+        if (argv.len == 0) return error.InvalidArgument;
+        if (try host.spawnOwner(owner_ref)) |owner_id| {
+            if (owner_id.host().len != 0) return error.InvalidIdentity;
+        }
+        return host.spawnWith(owner_ref, viewport, cwd, true, argv);
     }
 
     pub fn conditionalKillSupported(host: *const Host) bool {
@@ -515,7 +534,55 @@ pub const Host = struct {
         return request_id;
     }
 
-    fn spawnWith(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, bound: bool) !u32 {
+    /// Intentional close is scoped to the connection captured with the action.
+    /// Receipts do not manufacture an ended view; RESOURCE_CLOSED owns that.
+    pub fn requestCloseResource(host: *Host, terminal_ref: provider.TerminalRef, expected_epoch: u64) !u32 {
+        const request_id = try host.preflightOperation();
+        if (expected_epoch != host.connectionEpoch()) return error.InvalidIdentity;
+        const terminal = host.findTerminalConst(terminal_ref) orelse return error.InvalidIdentity;
+        if (!terminal.published or terminal.phase != .live) return error.InvalidState;
+        const raw = cId(&terminal.id);
+        try resultError(c.phux_client_queue_close_resource(host.client, request_id, &raw));
+        host.operation_ledger.accepted(request_id, host.client_generation, .close_resource, terminal_ref);
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    /// A tab's exact leaves, validated together and sent as one server command.
+    pub fn requestCloseResources(host: *Host, refs: []const provider.TerminalRef, expected_epoch: u64) !u32 {
+        const request_id = try host.preflightOperation();
+        if (expected_epoch != host.connectionEpoch()) return error.InvalidIdentity;
+        if (refs.len == 0 or refs.len > max_terminals) return error.InvalidArgument;
+        var ids: [max_terminals]c.PhuxResourceId = undefined;
+        for (refs, ids[0..refs.len]) |terminal_ref, *raw| {
+            const terminal = host.findTerminalConst(terminal_ref) orelse return error.InvalidIdentity;
+            if (!terminal.published or terminal.phase != .live) return error.InvalidState;
+            raw.* = cId(&terminal.id);
+        }
+        try resultError(c.phux_client_queue_close_resources(host.client, request_id, &ids, refs.len));
+        host.operation_ledger.accepted(request_id, host.client_generation, .close_resources, null);
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    /// Copy a synchronous FFI refusal before another mutable client call. The
+    /// returned bytes belong to `out`, not the Client; no operation is consumed.
+    pub fn copyLastError(host: *const Host, out: []u8) []const u8 {
+        var raw: c.PhuxBytes = undefined;
+        if (c.phux_client_last_error(host.client, &raw) != c.PHUX_CLIENT_OK) return out[0..0];
+        const message = effectSlice(raw) catch return out[0..0];
+        var count = @min(out.len, message.len);
+        if (count < message.len) {
+            while (count > 0 and (message[count] & 0xc0) == 0x80) count -= 1;
+        }
+        @memcpy(out[0..count], message[0..count]);
+        return out[0..count];
+    }
+
+    fn spawnWith(host: *Host, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, bound: bool, argv: []const []const u8) !u32 {
+        var raw_argv: [64]c.PhuxBytes = undefined;
+        if (argv.len > raw_argv.len) return error.InvalidArgument;
+        for (argv, 0..) |arg, index| raw_argv[index] = bytes(arg);
         const request_id = try host.preflightOperation();
         try host.reserveTerminalSlot(null);
         const owner_id = try host.spawnOwner(owner_ref);
@@ -527,8 +594,8 @@ pub const Host = struct {
             .request_id = request_id,
             .owner_terminal = if (raw_owner) |*id| id else null,
             .satellite = bytes(satellite),
-            .argv = null,
-            .argc = 0,
+            .argv = if (argv.len == 0) null else &raw_argv,
+            .argc = argv.len,
             .cwd = bytes(cwd),
             .cols = viewport.cols,
             .rows = viewport.rows,
@@ -619,7 +686,7 @@ pub const Host = struct {
     fn admitOperationTerminal(host: *Host, remote: RemoteId) void {
         for (host.terminals.items) |*terminal| if (terminal.id.eql(remote)) return;
         std.debug.assert(host.terminals.items.len < max_terminals);
-        host.terminals.appendAssumeCapacity(.{ .id = remote, .provider_id = host.provider_id });
+        host.terminals.appendAssumeCapacity(.{ .id = remote, .provider_id = host.provider_id, .source_context = host.context_id });
     }
 
     fn spawnOwner(host: *const Host, terminal_ref: ?provider.TerminalRef) !?*const RemoteId {
@@ -728,15 +795,18 @@ pub const Host = struct {
 
     /// UI-thread wake handler. The worker never calls the C client.
     pub fn drainReadiness(host: *Host) !SyncDelta {
+        return host.drainReadinessBudget(host.bridge.incoming.pendingCount());
+    }
+
+    /// Snapshot admission before feeding: a producer replenishing its queue
+    /// cannot extend this UI turn indefinitely.
+    pub fn drainReadinessBudget(host: *Host, frame_limit: usize) !SyncDelta {
         if (host.disconnected) return error.InvalidState;
         errdefer host.disconnect();
         var delta: SyncDelta = .{};
         const directory_before = host.directoryStatusRaw();
         const query_before = host.sessionQueryStatus();
-        while (host.bridge.incoming.take()) |frame| {
-            defer host.bridge.incoming.release(frame);
-            try resultErrorWithContext(host.client, "feed frame", c.phux_client_feed_frame(host.client, frame.ptr, frame.len));
-        }
+        try host.feedReadinessFrames(frame_limit);
         delta.directory_changed = host.directoryStatusRaw() != directory_before;
         if (query_before == session_query_pending and host.sessionQueryStatus() == session_query_ok)
             delta.sessions_listed = try host.adoptListedSessions();
@@ -758,12 +828,24 @@ pub const Host = struct {
             delta.removed_count += host.pruneRemoved(false);
             try host.publishDirty(&delta);
         }
-        try host.stageOutgoing();
+        // A bounded drain leaves its suffix for the next wake, including
+        // already-received final frames when EOF races this turn. Do not
+        // consume that disconnect (which clears the queue) ahead of them.
+        if (!host.bridge.incoming.hasPending()) try host.stageOutgoing();
         delta.workspace_changed = host.workspace_changed;
         delta.metadata_changed = host.metadata_changed or host.workspace_changed;
         host.metadata_changed = false;
         host.workspace_changed = false;
         return delta;
+    }
+
+    fn feedReadinessFrames(host: *Host, frame_limit: usize) !void {
+        const count = host.bridge.incoming.drainCount(frame_limit);
+        for (0..count) |_| {
+            const frame = host.bridge.incoming.take() orelse break;
+            defer host.bridge.incoming.release(frame);
+            try resultErrorWithContext(host.client, "feed frame", c.phux_client_feed_frame(host.client, frame.ptr, frame.len));
+        }
     }
 
     pub fn terminalRefs(host: *const Host, out: []provider.TerminalRef) usize {
@@ -803,6 +885,7 @@ pub const Host = struct {
     /// on a person. A signal SOURCE for the quiet attention path, beside the
     /// bell and the phase latches — never a second attention mechanism.
     pub fn agentAttention(host: *const Host, ref: provider.TerminalRef) bool {
+        if (host.disconnected or host.state() != .attached) return false;
         const parent = host.remoteFromRef(ref) orelse return false;
         return host.agents.parentNeedsAttention(parent);
     }
@@ -1243,6 +1326,42 @@ pub const Host = struct {
     }
 
     pub const RenameStatus = enum(u32) { none = 0, pending = 1, renamed = 2, refused = 3, unknown_outcome = 4, _ };
+    /// Create on this exact coordinator connection. The FFI sends the CLI's
+    /// create metadata request and confirms its nonce before publishing an ID.
+    pub fn requestCreateSession(host: *Host, name: []const u8, keep_empty: bool) !u32 {
+        if (host.disconnected) return error.InvalidState;
+        const request_id = try host.operation_ledger.nextRequestId();
+        try resultError(c.phux_client_create_session(host.client, request_id, bytes(name), keep_empty));
+        host.operation_ledger.last_id = request_id;
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    pub const SessionCreateStatus = enum(u32) { none = 0, pending = 1, created = 2, refused = 3, unknown_outcome = 4, _ };
+    /// Message borrows the client until its next mutable call.
+    pub const SessionCreateInfo = struct {
+        status: SessionCreateStatus = .none,
+        request_id: u32 = 0,
+        session_id: u32 = 0,
+        message: []const u8 = "",
+    };
+
+    pub fn sessionCreateInfo(host: *Host, request_id: u32) SessionCreateInfo {
+        var raw = std.mem.zeroes(c.PhuxSessionCreateInfo);
+        raw.size = @sizeOf(c.PhuxSessionCreateInfo);
+        raw.version = c.PHUX_CLIENT_ABI_VERSION;
+        if (c.phux_client_session_create_info(host.client, request_id, &raw) != c.PHUX_CLIENT_OK) return .{};
+        if (raw.status == @intFromEnum(SessionCreateStatus.created)) {
+            host.refreshSessions() catch return .{ .status = .unknown_outcome, .request_id = request_id, .message = "Session created but its catalog could not be refreshed." };
+            host.metadata_changed = true;
+        }
+        return .{ .status = @enumFromInt(raw.status), .request_id = raw.request_id, .session_id = raw.session_id, .message = effectSlice(raw.message) catch "" };
+    }
+
+    pub fn releaseSessionCreate(host: *Host, request_id: u32) void {
+        _ = c.phux_client_session_create_release(host.client, request_id);
+    }
+
     /// `message` borrows the client until the next mutable host call.
     pub const RenameInfo = struct {
         status: RenameStatus = .none,
@@ -1342,8 +1461,8 @@ pub const Host = struct {
     }
 
     fn applyOperationIdentity(host: *Host, result: *const OperationResult) !void {
-        // A conditional kill names a terminal it never admits as a replica.
-        if (result.kind == .kill_if) return;
+        // Kill receipts never admit replicas or fake authoritative closure.
+        if (result.kind == .kill_if or result.kind == .close_resource or result.kind == .close_resources) return;
         const terminal_ref = result.terminal_ref orelse return;
         if (result.kind == .detach) {
             if (result.status == .success) host.removeOperationReplica(terminal_ref);
@@ -1446,6 +1565,27 @@ pub const Host = struct {
     /// make an additive change breaking. An unrecognized effect kind is still
     /// a protocol error, because the effect union is not additive that way.
     fn captureAgentRecords(host: *Host, effect: *const c.PhuxClientEffect) !void {
+        const reintroduced = effect.detail == c.PHUX_CLIENT_AGENT_RECORDS_CLOSED and
+            try host.catalogContainsAgent(try remoteFromC(effect.terminal_id));
+        try host.captureAgentRecordDelivery(effect, reintroduced);
+    }
+
+    fn catalogContainsAgent(host: *const Host, id: RemoteId) !bool {
+        const count = c.phux_client_resource_count(host.client);
+        for (0..count) |index| {
+            var raw = workspace_bridge.record(c.PhuxResourceInfo);
+            try resultError(c.phux_client_resource_get(host.client, index, &raw));
+            if (raw.kind != c.PHUX_RESOURCE_AGENT_SESSION) continue;
+            if ((try remoteFromC(raw.terminal_id)).eql(id)) return true;
+        }
+        return false;
+    }
+
+    /// CLOSED removes the ABI catalog entry before feed_frame returns. If the
+    /// final catalog lists it again, a later inventory reintroduced the ID.
+    /// Keep that membership but withdraw the closed stream's evidence now:
+    /// its replacement RETAINED may be delayed or refused.
+    fn captureAgentRecordDelivery(host: *Host, effect: *const c.PhuxClientEffect, reintroduced: bool) !void {
         const kind: agent_sessions.RecordsKind = switch (effect.detail) {
             c.PHUX_CLIENT_AGENT_RECORDS_RETAINED => .retained,
             c.PHUX_CLIENT_AGENT_RECORDS_LIVE => .live,
@@ -1454,8 +1594,19 @@ pub const Host = struct {
         };
         const id = try remoteFromC(effect.terminal_id);
         const payload = try effectSlice(effect.bytes);
-        if (payload.len > max_agent_records_bytes) return error.Protocol;
-        if (try host.agents.applyRecords(host.gpa, id, kind, payload)) host.metadata_changed = true;
+        const limit = if (kind == .retained) max_agent_retained_bytes else max_agent_records_bytes;
+        if (payload.len > limit) return error.Protocol;
+        const generation: provider.Generation = .{
+            .epoch_id = host.client_generation,
+            .stream_id = effect.stream_id,
+            .bootstrap_id = effect.bootstrap_id,
+            .last_seq = effect.seq,
+        };
+        const changed = if (reintroduced)
+            host.agents.withdrawRecordsGeneration(id, generation)
+        else
+            try host.agents.applyRecordsGeneration(host.gpa, id, generation, kind, payload);
+        if (changed) host.metadata_changed = true;
     }
 
     /// Adopt the resource catalog the latest ATTACHED snapshot published.
@@ -1471,22 +1622,28 @@ pub const Host = struct {
     fn refreshResources(host: *Host) !void {
         if (host.state() != .attached) return;
         const count = c.phux_client_resource_count(host.client);
-        if (count > max_catalog_terminals) return error.Protocol;
         var entries: std.ArrayListUnmanaged(agent_sessions.Entry) = .empty;
         defer entries.deinit(host.gpa);
-        try entries.ensureTotalCapacity(host.gpa, count);
         for (0..count) |index| {
             var raw = workspace_bridge.record(c.PhuxResourceInfo);
             try resultError(c.phux_client_resource_get(host.client, index, &raw));
-            if (raw.kind != c.PHUX_RESOURCE_AGENT_SESSION) continue;
-            entries.appendAssumeCapacity(try agentEntryFromC(raw));
+            try host.appendAgentEntry(&entries, raw);
         }
-        const before = host.agents.all().len;
-        host.agents.adopt(host.gpa, entries.items) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.Protocol => return error.Protocol,
-        };
-        if (before != host.agents.all().len) host.metadata_changed = true;
+        try host.adoptAgentEntries(entries.items);
+    }
+
+    fn appendAgentEntry(host: *Host, entries: *std.ArrayListUnmanaged(agent_sessions.Entry), raw: c.PhuxResourceInfo) !void {
+        if (raw.kind != c.PHUX_RESOURCE_AGENT_SESSION) return;
+        if (entries.items.len == max_agent_sessions) return error.Protocol;
+        var entry = try agentEntryFromC(raw);
+        entry.epoch_id = host.client_generation;
+        try entries.append(host.gpa, entry);
+    }
+
+    fn adoptAgentEntries(host: *Host, entries: []const agent_sessions.Entry) !void {
+        const changed = !host.agents.catalogMatches(entries);
+        try host.agents.adopt(host.gpa, entries);
+        if (changed) host.metadata_changed = true;
     }
 
     fn captureDamage(host: *Host, effect: *const c.PhuxClientEffect) !void {
@@ -1656,7 +1813,7 @@ pub const Host = struct {
         // pane and route keystrokes at a resource that cannot take them.
         if (host.agents.findConst(id) != null) return error.Protocol;
         if (host.terminals.items.len == max_terminals) return error.OutOfMemory;
-        try host.terminals.append(host.gpa, .{ .id = id, .provider_id = host.provider_id });
+        try host.terminals.append(host.gpa, .{ .id = id, .provider_id = host.provider_id, .source_context = host.context_id });
         return &host.terminals.items[host.terminals.items.len - 1];
     }
 
@@ -1900,10 +2057,9 @@ fn adoptCatalogFixture(host: *Host, catalog: []const c.PhuxResourceInfo) !void {
     var entries: std.ArrayListUnmanaged(agent_sessions.Entry) = .empty;
     defer entries.deinit(host.gpa);
     for (catalog) |raw| {
-        if (raw.kind != c.PHUX_RESOURCE_AGENT_SESSION) continue;
-        try entries.append(host.gpa, try agentEntryFromC(raw));
+        try host.appendAgentEntry(&entries, raw);
     }
-    try host.agents.adopt(host.gpa, entries.items);
+    try host.adoptAgentEntries(entries.items);
 }
 
 test "the resource catalog projects agent rows under a parent and never a replica" {
@@ -1949,6 +2105,7 @@ test "hand-built AGENT_RECORDS batches move one row and close it" {
     defer bridge.deinit();
     const host = try Host.create(std.testing.allocator, &bridge);
     defer host.destroy();
+    try test_support.attachHost(host);
 
     const parent_raw: c.PhuxResourceId = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = 7, .host = bytes("") };
     try adoptCatalogFixture(host, &[_]c.PhuxResourceInfo{
@@ -1992,7 +2149,7 @@ test "hand-built AGENT_RECORDS batches move one row and close it" {
     try std.testing.expect(host.metadata_changed);
 }
 
-test "a records payload past the append ceiling is a protocol failure" {
+test "a live records payload past the frame ceiling is a protocol failure" {
     var bridge = transport.Bridge.init(std.testing.allocator);
     defer bridge.deinit();
     const host = try Host.create(std.testing.allocator, &bridge);
@@ -2003,6 +2160,208 @@ test "a records payload past the append ceiling is a protocol failure" {
     @memset(oversized, 'x');
     var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_LIVE, oversized);
     try std.testing.expectError(error.Protocol, host.captureAgentRecords(&effect));
+}
+
+test "retained agent backlog above one append remains valid" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try adoptCatalogFixture(host, &.{resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "session", "working")});
+    const line = "{\"type\":\"provider_raw\",\"data\":{}}\n";
+    const repeats = (64 * 1024) / line.len + 1;
+    const ask = "{\"type\":\"ask\",\"data\":{\"question\":\"still here?\"}}\n";
+    const payload = try std.testing.allocator.alloc(u8, repeats * line.len + ask.len);
+    defer std.testing.allocator.free(payload);
+    for (0..repeats) |index| @memcpy(payload[index * line.len ..][0..line.len], line);
+    @memcpy(payload[repeats * line.len ..], ask);
+    var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, payload);
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(AgentState.blocked, host.agentSessions()[0].state());
+    // A stamped live batch is bounded by the frame, not the producer input.
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_LIVE;
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(AgentState.blocked, host.agentSessions()[0].state());
+}
+
+test "ABI generations fence evidence and same-state updates invalidate metadata" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try adoptCatalogFixture(host, &.{resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "session", "working")});
+    var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, "{\"seq\":1,\"type\":\"ask\",\"data\":{\"question\":\"first?\"}}");
+    try host.captureAgentRecords(&effect);
+    host.metadata_changed = false;
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_LIVE;
+    effect.bytes = bytes("{\"seq\":2,\"type\":\"ask\",\"data\":{\"question\":\"second?\"}}");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expect(host.metadata_changed);
+    try std.testing.expectEqualStrings("second?", host.agentSessions()[0].latest_evidence.?.reason.slice());
+    const old = effect;
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_RETAINED;
+    effect.bootstrap_id += 1;
+    effect.bytes = bytes("{\"seq\":3,\"type\":\"stop\"}");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(AgentState.done, host.agentSessions()[0].state());
+    host.metadata_changed = false;
+    effect = old;
+    try host.captureAgentRecords(&effect);
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_CLOSED;
+    effect.bytes = bytes("");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expect(!host.metadata_changed);
+    try std.testing.expectEqual(@as(usize, 1), host.agentSessions().len);
+    try std.testing.expectEqual(AgentState.done, host.agentSessions()[0].state());
+}
+
+test "old ABI generation cannot change or retire a replacement agent" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try adoptCatalogFixture(host, &.{resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "session", "working")});
+    var old = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, "{\"seq\":1,\"type\":\"ask\"}");
+    try host.captureAgentRecords(&old);
+    var current = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, "{\"seq\":2,\"type\":\"stop\"}");
+    current.bootstrap_id += 1;
+    try host.captureAgentRecords(&current);
+    try std.testing.expectEqual(AgentState.done, host.agentSessions()[0].state());
+    old.detail = c.PHUX_CLIENT_AGENT_RECORDS_LIVE;
+    old.bytes = bytes("{\"seq\":3,\"type\":\"prompt\"}");
+    try host.captureAgentRecords(&old);
+    try std.testing.expectEqual(AgentState.done, host.agentSessions()[0].state());
+    old.detail = c.PHUX_CLIENT_AGENT_RECORDS_CLOSED;
+    old.bytes = bytes("");
+    try host.captureAgentRecords(&old);
+    try std.testing.expectEqual(@as(usize, 1), host.agentSessions().len);
+}
+
+test "old ABI closure cannot retire a replacement agent" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try adoptCatalogFixture(host, &.{resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "session", "working")});
+    var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, "{\"seq\":1,\"type\":\"ask\"}");
+    try host.captureAgentRecords(&effect);
+    effect.bootstrap_id += 1;
+    effect.bytes = bytes("{\"seq\":2,\"type\":\"stop\"}");
+    try host.captureAgentRecords(&effect);
+    effect.bootstrap_id -= 1;
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_CLOSED;
+    effect.bytes = bytes("");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expectEqual(@as(usize, 1), host.agentSessions().len);
+}
+
+test "same-drain reintroduced catalog membership survives queued older CLOSED" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    const parent_raw: c.PhuxResourceId = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = 7, .host = bytes("") };
+    const parent_ref = phuxRef(try remoteFromC(parent_raw));
+    const catalog = [_]c.PhuxResourceInfo{resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "claude", "session", "working")};
+    try adoptCatalogFixture(host, &catalog);
+    var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, "{\"seq\":1,\"type\":\"ask\"}");
+    try host.captureAgentRecords(&effect);
+    try std.testing.expect(host.agentAttention(parent_ref));
+    // The host reads the final catalog before any accumulated effects. Feed
+    // the membership result of omission followed by reappearance in one drain.
+    try adoptCatalogFixture(host, &catalog);
+    host.metadata_changed = false;
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_CLOSED;
+    effect.bytes = bytes("");
+    try host.captureAgentRecordDelivery(&effect, true);
+    try std.testing.expectEqual(@as(usize, 1), host.agentSessions().len);
+    // Reattachment is asynchronous: the next retained batch may be delayed or
+    // refused. The ended generation must stop claiming attention immediately.
+    try std.testing.expectEqual(AgentState.working, host.agentSessions()[0].state());
+    try std.testing.expect(host.agentSessions()[0].latest_evidence == null);
+    try std.testing.expect(host.agentSessions()[0].generation == null);
+    try std.testing.expect(host.agentSessions()[0].last_record_seq == null);
+    try std.testing.expect(!host.agentAttention(parent_ref));
+    try std.testing.expect(host.metadata_changed);
+    host.metadata_changed = false;
+    try adoptCatalogFixture(host, &catalog);
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_RETAINED;
+    effect.bytes = bytes("{\"seq\":1,\"type\":\"ask\"}");
+    try host.captureAgentRecordDelivery(&effect, false);
+    try std.testing.expect(host.agentSessions()[0].generation == null);
+    try std.testing.expect(!host.metadata_changed);
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_RETAINED;
+    effect.bootstrap_id += 1;
+    effect.bytes = bytes("{\"seq\":2,\"type\":\"provider_raw\"}");
+    try host.captureAgentRecordDelivery(&effect, false);
+    try std.testing.expectEqual(AgentState.working, host.agentSessions()[0].state());
+    try std.testing.expect(host.agentSessions()[0].latest_evidence == null);
+    host.metadata_changed = false;
+    var stale_close = effect;
+    stale_close.bootstrap_id -= 1;
+    stale_close.detail = c.PHUX_CLIENT_AGENT_RECORDS_CLOSED;
+    stale_close.bytes = bytes("");
+    try host.captureAgentRecordDelivery(&stale_close, true);
+    try std.testing.expectEqual(effect.bootstrap_id, host.agentSessions()[0].generation.?.bootstrap_id);
+    try std.testing.expect(!host.metadata_changed);
+    effect.detail = c.PHUX_CLIENT_AGENT_RECORDS_CLOSED;
+    effect.bytes = bytes("");
+    try host.captureAgentRecordDelivery(&effect, false);
+    try std.testing.expectEqual(@as(usize, 0), host.agentSessions().len);
+}
+
+test "offline and reconnecting agents retain evidence without actionable attention" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    const parent_raw: c.PhuxResourceId = .{ .kind = c.PHUX_RESOURCE_ID_LOCAL, .id = 7, .host = bytes("") };
+    try adoptCatalogFixture(host, &.{resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "claude", "session", "working")});
+    var effect = agentRecordsEffect(9, c.PHUX_CLIENT_AGENT_RECORDS_RETAINED, "{\"seq\":1,\"type\":\"ask\",\"data\":{\"question\":\"wait?\"}}");
+    try host.captureAgentRecords(&effect);
+    const parent_ref = phuxRef(try remoteFromC(parent_raw));
+    try std.testing.expect(host.agentAttention(parent_ref));
+    host.disconnect();
+    try std.testing.expect(!host.agentAttention(parent_ref));
+    try std.testing.expectEqualStrings("wait?", host.agentSessions()[0].latest_evidence.?.reason.slice());
+    try host.reconnect("offline-test");
+    try std.testing.expect(!host.agentAttention(parent_ref));
+    // A new connection's catalog is authoritative even if it reuses IDs.
+    try adoptCatalogFixture(host, &.{resourceInfoFixture(9, c.PHUX_RESOURCE_AGENT_SESSION, &parent_raw, "claude", "session", "working")});
+    try std.testing.expect(host.agentSessions()[0].latest_evidence == null);
+}
+
+test "catalog filtering budgets agents independently and publishes same-size changes" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    var entries: std.ArrayListUnmanaged(agent_sessions.Entry) = .empty;
+    defer entries.deinit(std.testing.allocator);
+    // Exercise the same bounded filter that the production catalog read uses.
+    for (0..max_catalog_terminals + 1) |index| {
+        try host.appendAgentEntry(&entries, resourceInfoFixture(@intCast(index + 1), c.PHUX_RESOURCE_TERMINAL, null, "", "", ""));
+    }
+    try host.appendAgentEntry(&entries, resourceInfoFixture(9000, c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "old", "working"));
+    try host.adoptAgentEntries(entries.items);
+    try std.testing.expectEqual(@as(usize, 1), host.agentSessions().len);
+    host.metadata_changed = false;
+    entries.items[0].native_id = "new";
+    entries.items[0].state = "blocked";
+    try host.adoptAgentEntries(entries.items);
+    try std.testing.expect(host.metadata_changed);
+    try std.testing.expectEqualStrings("new", host.agentSessions()[0].native_id);
+    try std.testing.expectEqual(AgentState.blocked, host.agentSessions()[0].state());
+    host.metadata_changed = false;
+    try host.adoptAgentEntries(entries.items);
+    try std.testing.expect(!host.metadata_changed);
+    for (1..max_agent_sessions) |index| {
+        try host.appendAgentEntry(&entries, resourceInfoFixture(@intCast(9000 + index), c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "", "working"));
+    }
+    try std.testing.expectError(error.Protocol, host.appendAgentEntry(&entries, resourceInfoFixture(9999, c.PHUX_RESOURCE_AGENT_SESSION, null, "claude", "", "working")));
+    try std.testing.expectEqual(max_agent_sessions, entries.items.len);
 }
 
 test "an attach refresh drops the rows the new snapshot omits" {
@@ -2445,6 +2804,28 @@ test "workspace refresh shares spawn IDs and discovers other sessions without re
     try std.testing.expectEqualStrings("unplaced terminal", host.catalogTerminals()[1].title.slice());
 }
 
+test "session create uses negotiated owning connection and reports disconnect as unknown" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try host.start("session-create-test");
+    try test_support.stageFixture(&bridge, "hello_keep_empty.bin");
+    _ = try host.drainReadiness();
+    bridge.outgoing.reset();
+    try std.testing.expectError(error.InvalidState, host.requestCreateSession("work", false));
+    try test_support.expectOutgoingCount(&bridge, 0);
+    const id = try host.requestCreateSession("work", true);
+    try std.testing.expectEqual(@as(u32, 1), id);
+    try std.testing.expectEqual(Host.SessionCreateStatus.pending, host.sessionCreateInfo(id).status);
+    try test_support.expectOutgoingCount(&bridge, 3);
+    try std.testing.expectEqual(@as(?u32, null), host.selectedSessionId());
+    host.disconnect();
+    try std.testing.expectEqual(Host.SessionCreateStatus.unknown_outcome, host.sessionCreateInfo(id).status);
+    host.releaseSessionCreate(id);
+    try std.testing.expectEqual(Host.SessionCreateStatus.none, host.sessionCreateInfo(id).status);
+}
+
 test "workspace rename split resize queue mapped requests and adopt only confirmation" {
     var bridge = transport.Bridge.init(std.testing.allocator);
     defer bridge.deinit();
@@ -2837,6 +3218,30 @@ test "queued spawn keeps its request id when transport staging fails" {
     try std.testing.expectEqual(@as(usize, 0), c.phux_client_outgoing_count(host.client));
     try std.testing.expect(!bridge.outgoing.hasPending());
     try std.testing.expectError(error.InvalidState, host.drainReadiness());
+}
+
+test "dedicated local argv spawn is copied into one bound FFI operation" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHostWith(host, "hello_conditional_kill.bin");
+    try std.testing.expectError(error.InvalidArgument, host.requestSpawnArgvBound(null, .{ .cols = 80, .rows = 24 }, "", &.{}));
+    var argument = "config with spaces".*;
+    const request = try host.requestSpawnArgvBound(null, .{ .cols = 80, .rows = 24 }, "/fixture", &.{ "/usr/bin/true", "--wait", &argument });
+    @memset(&argument, 'x');
+    const frame = bridge.outgoing.take() orelse return error.MissingFrame;
+    defer bridge.outgoing.release(frame);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "/usr/bin/true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "--wait") != null);
+    try std.testing.expect(std.mem.indexOf(u8, frame, "config with spaces") != null);
+    try std.testing.expect(bridge.outgoing.take() == null);
+    // An accepted operation becomes uncertain on loss, never resubmitted to a
+    // shell or silently reported as a completed editor launch.
+    host.disconnect();
+    const receipt = host.takeOperationResult().?;
+    try std.testing.expectEqual(request, receipt.request_id);
+    try std.testing.expectEqual(operations.types.Status.unknown_outcome, receipt.status);
 }
 
 test "resize viewport follows identity when effects remove an earlier terminal" {

@@ -211,6 +211,42 @@ mod tests {
     }
 
     #[test]
+    fn instance_only_close_fences_recycled_ids_without_abandonment_conditions() {
+        let (old, _, old_wire) = state_with_pane();
+        let (mut replacement, core, wire) = state_with_pane();
+        assert_eq!(
+            old_wire, wire,
+            "fresh server reused the numeric resource ID"
+        );
+        assert_ne!(old.idspace.instance(), replacement.idspace.instance());
+        replacement.subscribe_terminal(ClientId(2), core, None);
+        let stale = KillPrecondition {
+            instance: Some(old.idspace.instance()),
+            conditions: KillConditions::NONE,
+        };
+        assert_eq!(
+            replacement.kill_resource_if(&wire, &stale),
+            Err(KillIfRefusal::Precondition(
+                "the instance token no longer names this server's id space"
+            ))
+        );
+        assert_eq!(
+            replacement.terminal_from_wire(&wire),
+            Some(core),
+            "recycled resource survives"
+        );
+        let current = KillPrecondition {
+            instance: Some(replacement.idspace.instance()),
+            conditions: KillConditions::NONE,
+        };
+        assert_eq!(
+            replacement.kill_resource_if(&wire, &current),
+            Ok(()),
+            "intentional close permits another attachment when the instance is current"
+        );
+    }
+
+    #[test]
     fn another_connection_using_the_pane_without_attaching_refuses() {
         let (mut state, core, wire) = state_with_pane();
         state.record_spawn(core, ClientId(1));

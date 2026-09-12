@@ -76,7 +76,7 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
 /// phux — a libghostty-backed terminal multiplexer and control plane.
 #[derive(Debug, Parser)]
 #[command(
-    version,
+    version = env!("PHUX_VERSION_LABEL"),
     help_template = "{about-with-newline}\n{usage-heading} {usage}\n\n{options}{after-help}",
     // NOTE: the root deliberately does NOT set `args_conflicts_with_subcommands`.
     // That setting would also refuse `phux --socket X ls` — clap 4.5 rejects
@@ -95,11 +95,12 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
           mcp        Run the bundled MCP stdio adapter\n  \
           host       Register the machines phux talks to: remotes and satellites\n  \
           service    Keep a server running across logout and reboot\n  \
-          update     Update phux to the latest release, keeping sessions alive\n  \
+          update     Update phux to the latest stable or next release, keeping sessions alive\n  \
           upgrade    Hot-swap the running server binary, keeping sessions alive\n\n\
         INSPECT\n  \
           ls         List sessions\n  \
           status     Report the running server: pid, uptime, version, clients, logs\n  \
+          runtime-info Inspect this binary's protocol and runtime capabilities\n  \
           whoami     Report who this connection is to the server, and whose server it is\n  \
           perf       Show the server's performance telemetry, live or as a snapshot\n  \
           snapshot   Capture a pane's screen as JSON or a boxed view\n  \
@@ -527,7 +528,7 @@ pub(crate) fn print_banner() {
 /// repo-internal paths — an installed binary's user has no checkout, so
 /// `docs/…` pointers are noise at best (the leak test in `help_inventory`
 /// scans this constant along with every help string).
-pub(crate) const BANNER: &str = concat!("phux ", env!("CARGO_PKG_VERSION"));
+pub(crate) const BANNER: &str = concat!("phux ", env!("PHUX_VERSION_LABEL"));
 
 /// Whether this invocation will enter the interactive TUI (raw mode +
 /// alt screen) and therefore MUST keep logs off stderr.
@@ -888,6 +889,7 @@ fn dispatch(
             commands::whoami::run_whoami(json.json, remote.with_socket(socket))
         }
         Some(Command::Status { json }) => commands::status::run_status(json.json, socket),
+        Some(Command::RuntimeInfo { json }) => commands::runtime_info::run(json.json),
         Some(Command::Perf { json, watch, reset }) => commands::perf::run_perf(
             commands::perf::PerfOptions {
                 json: json.json,
@@ -1226,6 +1228,12 @@ pub fn run() -> ExitCode {
     // config, socket, or TTY setup can alter the MCP stdio contract.
     if let Some(Command::Mcp { args }) = &cli.command {
         return commands::mcp::run(args);
+    }
+
+    // Runtime discovery must not open logs, load config, or contact a server.
+    // In particular a caller's PHUX_LOG may be a blocking FIFO.
+    if let Some(Command::RuntimeInfo { json }) = &cli.command {
+        return commands::runtime_info::run(json.json);
     }
 
     // The one-shot watchdog must precede any potentially blocking log open

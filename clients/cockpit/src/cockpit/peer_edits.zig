@@ -33,7 +33,6 @@ const Model = model_module.Model;
 const TerminalRef = contract.TerminalRef;
 const Mutation = contract.workspace.Mutation;
 const WindowId = shared_mutations.WindowId;
-const max_peers = model_module.max_phux_peers;
 
 /// `window` is New Window with one of the peer's panes focused: a new tab on
 /// that peer, placed in a native window opened for it.
@@ -110,27 +109,66 @@ const Creation = struct {
     }
 };
 
+/// One first-tab creation's outcome for `empty_session.settleAttachment`.
+/// Pending rows are still in `creations`; refused/placed are drain-local
+/// records filled when a creation clears so queue absence is never inferred.
+pub const EmptyFirstTab = struct {
+    window: usize,
+    window_epoch: u64,
+    connection_epoch: u64,
+    outcome: enum { pending, refused, placed },
+};
+
+const EmptyTabSettlement = struct {
+    window: usize,
+    window_epoch: u64,
+    epoch: u64,
+    placed: bool,
+};
+
 pub const Edits = struct {
-    mutations: [max_peers]shared_mutations.Coordinator = @splat(.{}),
-    creations: [max_peers][max_creations]?Creation = @splat(@splat(null)),
-    orphans: [max_peers * max_creations]?Provisional = @splat(null),
-    strays: [max_peers][max_strays]?Stray = @splat(@splat(null)),
+    pub const State = struct {
+        mutations: shared_mutations.Coordinator = .{},
+        creations: [max_creations]?Creation = @splat(null),
+        strays: [max_strays]?Stray = @splat(null),
+        empty_tab_settlements: [max_creations]?EmptyTabSettlement = @splat(null),
+    };
+    states: std.ArrayList(*State) = .empty,
+    // At most one provisional operation owns each physical window.
+    orphans: [model_module.max_windows]?Provisional = @splat(null),
+
+    pub fn deinit(self: *Edits) void {
+        for (self.states.items) |state| std.heap.page_allocator.destroy(state);
+        self.states.deinit(std.heap.page_allocator);
+    }
+
+    fn ensure(self: *Edits, slot: usize) !void {
+        const gpa = std.heap.page_allocator;
+        try self.states.ensureTotalCapacity(gpa, slot + 1);
+        while (self.states.items.len <= slot) {
+            const state = try gpa.create(State);
+            state.* = .{};
+            self.states.appendAssumeCapacity(state);
+        }
+    }
 
     /// The slot's connection ended or it now holds another coordinator:
     /// nothing queued for it may continue. A mutation already sent may still
     /// land on that server; forgetting it never rolls one back. A bound
     /// spawn whose placement was never sent is kept as a stray.
     pub fn forget(self: *Edits, slot: usize) void {
-        if (slot >= max_peers) return;
-        for (self.creations[slot]) |held| if (held) |entry| self.drop(slot, entry);
-        self.mutations[slot] = .{};
-        self.creations[slot] = @splat(null);
+        if (slot >= self.states.items.len) return;
+        const state = self.states.items[slot];
+        for (state.creations) |held| if (held) |entry| self.drop(slot, entry);
+        state.mutations = .{};
+        state.creations = @splat(null);
+        state.empty_tab_settlements = @splat(null);
     }
 
     fn drop(self: *Edits, slot: usize, entry: Creation) void {
         self.orphan(entry);
         const stray = entry.stray() orelse return;
-        for (&self.strays[slot]) |*held| {
+        for (&self.states.items[slot].strays) |*held| {
             if (held.* != null) continue;
             held.* = stray;
             return;
@@ -140,13 +178,14 @@ pub const Edits = struct {
     /// The slot now holds another coordinator, or none: its strays are not
     /// this coordinator's to kill.
     pub fn dropStrays(self: *Edits, slot: usize) void {
-        if (slot >= max_peers) return;
-        self.strays[slot] = @splat(null);
+        if (slot >= self.states.items.len) return;
+        self.states.items[slot].strays = @splat(null);
     }
 
     pub fn strayCount(self: *const Edits, slot: usize) usize {
+        if (slot >= self.states.items.len) return 0;
         var count: usize = 0;
-        for (self.strays[slot]) |held| {
+        for (self.states.items[slot].strays) |held| {
             if (held != null) count += 1;
         }
         return count;
@@ -160,11 +199,11 @@ pub const Edits = struct {
     /// are dropped. Only that peer's own terminals are ever named.
     pub fn sendStrays(self: *Edits, model: *Model, slot: usize) usize {
         if (comptime !support.phux_enabled) return 0;
-        if (slot >= max_peers) return 0;
+        if (slot >= self.states.items.len) return 0;
         const peer = model.phuxPeerAt(slot) orelse return 0;
         const supported = peer.conditionalKillSupported();
         var sent: usize = 0;
-        for (&self.strays[slot]) |*held| {
+        for (&self.states.items[slot].strays) |*held| {
             const stray = held.* orelse continue;
             held.* = null;
             if (!supported or stray.ref.provider_id != peer.providerId()) continue;
@@ -175,6 +214,7 @@ pub const Edits = struct {
     }
 
     fn orphan(self: *Edits, entry: Creation) void {
+        if (entry.kind != .window) return;
         const window = entry.window orelse return;
         for (&self.orphans) |*held| {
             if (held.* != null) continue;
@@ -209,12 +249,11 @@ pub const Edits = struct {
     pub fn adopt(self: *Edits, model: *Model, ref: TerminalRef) !*Creation {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const slot = try slotOf(model, ref.provider_id);
+        try self.ensure(slot);
         const peer_view = try view(model, slot);
         const peer = peer_view.peer;
         const state = peer_view.shared_workspace;
-        const snapshot = peer.workspaceSnapshot();
-        if (snapshot.session_id != state.session) return error.StaleContext;
-        if (snapshot.state == .unavailable or snapshot.state == .last_good_error) return error.WorkspaceUnavailable;
+        _ = try currentSnapshot(peer_view);
         if (peer.terminalSession(ref) != state.session) return error.StaleTarget;
         if (model.locateTerminal(ref) != null) return error.AlreadyPlaced;
         if (self.holdsTerminal(slot, ref)) return error.AlreadyPending;
@@ -232,8 +271,51 @@ pub const Edits = struct {
         return &free.*.?;
     }
 
+    /// Adopt an already completed, instance-bound spawn from the exact client.
+    pub fn adoptSpawnIn(self: *Edits, model: *Model, remote: *support.PhuxProvider, result: support.OperationResult, window: usize, epoch: u64, may_focus: bool) !*Creation {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        if (result.kind != .spawn or result.status != .success) return error.OperationFailed;
+        if (result.connection_epoch != remote.connectionEpoch()) return error.StaleContext;
+        const ref = result.terminal_ref orelse return error.MissingIdentity;
+        if (ref.provider_id != remote.providerId()) return error.ForeignCoordinator;
+        const instance = result.instance orelse return error.MissingIdentity;
+        const slot = model.peerSlotForAttachment(remote.context_id) orelse return error.NoCoordinator;
+        const entry = try self.prepareTabIn(model, slot, window, epoch, may_focus);
+        errdefer entry.* = null;
+        entry.*.?.instance = instance;
+        try accept(model, slot, &entry.*.?, result);
+        return &entry.*.?;
+    }
+
+    pub fn createTabIn(self: *Edits, model: *Model, remote: *support.PhuxProvider, window: usize, epoch: u64, cwd: []const u8, may_focus: bool) !*Creation {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const slot = model.peerSlotForAttachment(remote.context_id) orelse return error.NoCoordinator;
+        const entry = try self.prepareTabIn(model, slot, window, epoch, may_focus);
+        errdefer entry.* = null;
+        entry.*.?.request = try requestCreationSpawn(remote, null, cwd);
+        return &entry.*.?;
+    }
+
+    fn prepareTabIn(self: *Edits, model: *Model, slot: usize, window: usize, epoch: u64, may_focus: bool) !*?Creation {
+        if (!model.windowOpen(window) or model.window_epochs[window] != epoch) return error.StaleDestination;
+        const workspace = model.wsAtConst(window) orelse return error.StaleDestination;
+        if (workspace.tab_count == model_module.max_tabs) return error.TabCapacity;
+        try self.ensure(slot);
+        const peer_view = try view(model, slot);
+        _ = try currentSnapshot(peer_view);
+        if (!model.canAddPane()) return error.TerminalCapacity;
+        const free = self.vacant(slot) orelse return error.OperationCapacity;
+        free.* = .{ .coordinator = peer_view.peer.providerId(), .epoch = peer_view.peer.connectionEpoch(), .session = peer_view.shared_workspace.session, .kind = .tab, .request = 0, .window = window, .window_epoch = epoch, .may_focus = may_focus };
+        return free;
+    }
+
+    pub fn pendingTerminal(self: *const Edits, slot: usize, ref: TerminalRef) bool {
+        if (slot >= self.states.items.len) return false;
+        return self.holdsTerminal(slot, ref);
+    }
+
     fn holdsTerminal(self: *const Edits, slot: usize, ref: TerminalRef) bool {
-        for (self.creations[slot]) |held| {
+        for (self.states.items[slot].creations) |held| {
             const entry = held orelse continue;
             if (entry.terminal) |terminal| if (terminal.eql(ref)) return true;
         }
@@ -241,16 +323,55 @@ pub const Edits = struct {
     }
 
     pub fn pendingCreations(self: *const Edits, slot: usize) usize {
+        if (slot >= self.states.items.len) return 0;
         var count: usize = 0;
-        for (self.creations[slot]) |entry| {
+        for (self.states.items[slot].creations) |entry| {
             if (entry != null) count += 1;
         }
         return count;
     }
 
+    /// Exact first-tab evidence for one peer slot this drain. Pending creations
+    /// report `.pending`; cleared creations report the settlement recorded when
+    /// they finished. Call after `pump`/`complete` and before the next drain.
+    pub fn collectEmptyFirstTabs(self: *Edits, slot: usize, out: []EmptyFirstTab) usize {
+        if (slot >= self.states.items.len) return 0;
+        const state = self.states.items[slot];
+        var count: usize = 0;
+        for (state.creations) |held| {
+            const entry = held orelse continue;
+            const window = entry.window orelse continue;
+            if (count >= out.len) break;
+            out[count] = .{ .window = window, .window_epoch = entry.window_epoch, .connection_epoch = entry.epoch, .outcome = .pending };
+            count += 1;
+        }
+        for (&state.empty_tab_settlements) |*held| {
+            const value = held.* orelse continue;
+            held.* = null;
+            if (count >= out.len) continue;
+            out[count] = .{
+                .window = value.window,
+                .window_epoch = value.window_epoch,
+                .connection_epoch = value.epoch,
+                .outcome = if (value.placed) .placed else .refused,
+            };
+            count += 1;
+        }
+        return count;
+    }
+
+    fn noteEmptyTabSettlement(state: *State, entry: Creation, placed: bool) void {
+        const window = entry.window orelse return;
+        for (&state.empty_tab_settlements) |*held| {
+            if (held.* != null) continue;
+            held.* = .{ .window = window, .window_epoch = entry.window_epoch, .epoch = entry.epoch, .placed = placed };
+            return;
+        }
+    }
+
     /// A later explicit selection supersedes every pending placement's focus.
     pub fn supersedeFocus(self: *Edits) void {
-        for (&self.creations) |*slot| for (slot) |*entry| {
+        for (self.states.items) |state| for (&state.creations) |*entry| {
             if (entry.*) |*value| value.may_focus = false;
         };
     }
@@ -259,23 +380,26 @@ pub const Edits = struct {
     /// active coordinator's tabs send to theirs. Its terminals keep running.
     pub fn removeWindow(self: *Edits, model: *Model, coordinator: support.ProviderId, id: WindowId) !void {
         const slot = try slotOf(model, coordinator);
+        try self.ensure(slot);
         var peer_view = try view(model, slot);
-        try self.mutations[slot].requestRemoveWindow(&peer_view, id);
+        try self.states.items[slot].mutations.requestRemoveWindow(&peer_view, id);
     }
 
     /// Close one of the peer's panes on that coordinator.
     pub fn removePane(self: *Edits, model: *Model, ref: TerminalRef) !void {
         const slot = try slotOf(model, ref.provider_id);
+        try self.ensure(slot);
         var peer_view = try view(model, slot);
-        try self.mutations[slot].requestRemove(&peer_view, ref);
+        try self.states.items[slot].mutations.requestRemove(&peer_view, ref);
     }
 
     /// Move the peer's window `id` one step left or right in its own order.
     pub fn reorder(self: *Edits, model: *Model, coordinator: support.ProviderId, id: WindowId, right: bool) !void {
         const slot = try slotOf(model, coordinator);
+        try self.ensure(slot);
         var peer_view = try view(model, slot);
         const target = neighborIndex(peer_view.peer.workspaceSnapshot().windows, id, right) orelse return error.StaleTarget;
-        try self.mutations[slot].requestReorder(&peer_view, id, target);
+        try self.states.items[slot].mutations.requestReorder(&peer_view, id, target);
     }
 
     /// Commit a divider drag on the peer's window `id`. The path was taken
@@ -283,8 +407,9 @@ pub const Edits = struct {
     /// refuses it against any other revision rather than rebasing it.
     pub fn resize(self: *Edits, model: *Model, coordinator: support.ProviderId, id: WindowId, path_bits: u64, path_len: u32, ratio: f32) !void {
         const slot = try slotOf(model, coordinator);
+        try self.ensure(slot);
         var peer_view = try view(model, slot);
-        try self.mutations[slot].requestResize(&peer_view, id, path_bits, path_len, ratio);
+        try self.states.items[slot].mutations.requestResize(&peer_view, id, path_bits, path_len, ratio);
     }
 
     /// Spawn a terminal on the peer and place it as a new tab or a split of
@@ -294,33 +419,20 @@ pub const Edits = struct {
     pub fn create(self: *Edits, model: *Model, coordinator: support.ProviderId, kind: Kind, cwd: []const u8, owner_choice: Owner) !*Creation {
         if (comptime !support.phux_enabled) return error.NoProvider;
         const slot = try slotOf(model, coordinator);
+        try self.ensure(slot);
         const peer_view = try view(model, slot);
         const peer = peer_view.peer;
         const state = peer_view.shared_workspace;
-        const snapshot = peer.workspaceSnapshot();
-        if (snapshot.session_id != state.session) return error.StaleContext;
-        if (snapshot.state == .unavailable or snapshot.state == .last_good_error) return error.WorkspaceUnavailable;
+        const snapshot = try currentSnapshot(peer_view);
         if (!model.canAddPane()) return error.TerminalCapacity;
         const free = self.vacant(slot) orelse return error.OperationCapacity;
         var entry: Creation = .{ .coordinator = coordinator, .epoch = peer.connectionEpoch(), .session = state.session, .kind = kind, .request = 0 };
         if (isSplit(kind)) try self.prepareSplit(model, slot, snapshot, &entry);
         const owner = try spawnOwner(model, coordinator, kind, owner_choice);
-        const viewport = if (owner) |ref| peer.lastViewport(ref) orelse peer.attach_viewport else peer.attach_viewport;
         // New Window: the native window its tab will land in, opened now as
         // the active coordinator's New Window opens one.
-        if (kind == .window) {
-            const index = model.freeWindowIndex() orelse return error.WindowCapacity;
-            _ = model.openWindow(index) orelse return error.WindowCapacity;
-            entry.window = index;
-            entry.window_epoch = model.window_epochs[index];
-        }
-        // Bound when the peer can kill it conditionally later, should the
-        // placement never be sent (`Creation.stray`).
-        const spawned = if (peer.conditionalKillSupported())
-            peer.requestSpawnBound(owner, viewport, cwd)
-        else
-            peer.requestSpawnIn(owner, viewport, cwd);
-        entry.request = spawned catch |err| {
+        try prepareCreationWindow(model, peer, &entry);
+        entry.request = requestCreationSpawn(peer, owner, cwd) catch |err| {
             if (entry.window) |index| model.closeWindow(index);
             return err;
         };
@@ -329,8 +441,41 @@ pub const Edits = struct {
         return &free.*.?;
     }
 
+    /// New Window's native window, bound to the peer's exact attachment the
+    /// moment it opens. It is selected before its tab exists, and an unbound
+    /// empty window resolves to the canonical local provider
+    /// (`Model.phuxForWindowConst`), so New Session from it asked This Mac
+    /// instead of the machine the window was opened for. Every failure path
+    /// closes the window (`create`, `retireOrphans`), and closing clears the
+    /// binding.
+    fn prepareCreationWindow(model: *Model, peer: *const support.PhuxProvider, entry: *Creation) !void {
+        if (entry.kind != .window) return;
+        const index = model.freeWindowIndex() orelse return error.WindowCapacity;
+        _ = model.openWindow(index) orelse return error.WindowCapacity;
+        model.bindWindowAttachment(index, peer.context_id);
+        entry.window = index;
+        entry.window_epoch = model.window_epochs[index];
+    }
+
+    fn requestCreationSpawn(peer: *support.PhuxProvider, owner: ?TerminalRef, cwd: []const u8) !u32 {
+        const viewport = if (owner) |ref| peer.lastViewport(ref) orelse peer.attach_viewport else peer.attach_viewport;
+        // Bound when the peer can kill it conditionally later, should the
+        // placement never be sent (`Creation.stray`).
+        return if (peer.conditionalKillSupported())
+            peer.requestSpawnBound(owner, viewport, cwd)
+        else
+            peer.requestSpawnIn(owner, viewport, cwd);
+    }
+
+    fn currentSnapshot(peer_view: PeerView) !contract.workspace.Snapshot {
+        const snapshot = peer_view.peer.workspaceSnapshot();
+        if (snapshot.session_id != peer_view.shared_workspace.session) return error.StaleContext;
+        if (snapshot.state == .unavailable or snapshot.state == .last_good_error) return error.WorkspaceUnavailable;
+        return snapshot;
+    }
+
     fn vacant(self: *Edits, slot: usize) ?*?Creation {
-        for (&self.creations[slot]) |*entry| if (entry.* == null) return entry;
+        for (&self.states.items[slot].creations) |*entry| if (entry.* == null) return entry;
         return null;
     }
 
@@ -347,7 +492,7 @@ pub const Edits = struct {
 
     fn pendingSplits(self: *const Edits, slot: usize) usize {
         var count: usize = 0;
-        for (self.creations[slot]) |value| {
+        for (self.states.items[slot].creations) |value| {
             const entry = value orelse continue;
             if (isSplit(entry.kind)) count += 1;
         }
@@ -358,12 +503,13 @@ pub const Edits = struct {
     /// answered one of this slot's spawns or their follow-up attach.
     pub fn complete(self: *Edits, model: *Model, slot: usize, result: support.OperationResult) bool {
         if (comptime !support.phux_enabled) return false;
-        if (slot >= max_peers) return false;
-        for (&self.creations[slot]) |*held| {
+        if (slot >= self.states.items.len) return false;
+        for (&self.states.items[slot].creations) |*held| {
             const entry = if (held.*) |*value| value else continue;
             if (entry.stage != .spawning and entry.stage != .attaching) continue;
             if (entry.request != result.request_id or entry.epoch != result.connection_epoch) continue;
             accept(model, slot, entry, result) catch {
+                noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
                 self.orphan(entry.*);
                 held.* = null;
             };
@@ -377,11 +523,13 @@ pub const Edits = struct {
     /// so a confirmed placement's selection lands with the tab.
     pub fn pump(self: *Edits, model: *Model, slot: usize) bool {
         if (comptime !support.phux_enabled) return false;
+        if (slot >= self.states.items.len) return false;
         var peer_view = view(model, slot) catch return false;
-        var changed = self.mutations[slot].pump(&peer_view);
-        for (&self.creations[slot]) |*held| {
+        var changed = self.states.items[slot].mutations.pump(&peer_view);
+        for (&self.states.items[slot].creations) |*held| {
             const entry = if (held.*) |*value| value else continue;
             if (entry.epoch != peer_view.peer.connectionEpoch() or entry.session != peer_view.shared_workspace.session) {
+                noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
                 self.drop(slot, entry.*);
                 held.* = null;
                 changed = true;
@@ -397,19 +545,30 @@ pub const Edits = struct {
         switch (entry.stage) {
             .spawning, .attaching => return false,
             .publishing => {
+                if (!creationWindowCurrent(model, entry.*)) {
+                    noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
+                    self.drop(slot, entry.*);
+                    held.* = null;
+                    return true;
+                }
                 const outcome = self.place(peer_view, slot, entry) catch {
-                    self.orphan(entry.*);
+                    noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
+                    self.drop(slot, entry.*);
                     held.* = null;
                     return true;
                 };
                 return outcome;
             },
             .placing => {
-                const completion = self.mutations[slot].takeCreationCompletion(entry.ticket) orelse return false;
+                const completion = self.states.items[slot].mutations.takeCreationCompletion(entry.ticket) orelse return false;
                 if (completion.outcome == .confirmed) {
                     placeInWindow(model, peer_view, entry.*);
                     if (entry.may_focus) peer_view.shared_workspace.desired_terminal = entry.terminal;
-                } else self.orphan(entry.*);
+                    noteEmptyTabSettlement(self.states.items[slot], entry.*, true);
+                } else {
+                    noteEmptyTabSettlement(self.states.items[slot], entry.*, false);
+                    self.orphan(entry.*);
+                }
                 held.* = null;
                 return true;
             },
@@ -429,9 +588,9 @@ pub const Edits = struct {
             else => return false,
         }
         const mutation = try placement(entry.*, ref, peer.workspaceSnapshot().revision);
-        entry.ticket = try self.mutations[slot].requestCreation(peer_view, mutation, entry.epoch);
+        entry.ticket = try self.states.items[slot].mutations.requestCreation(peer_view, mutation, entry.epoch);
         entry.stage = .placing;
-        _ = self.mutations[slot].pump(peer_view);
+        _ = self.states.items[slot].mutations.pump(peer_view);
         return true;
     }
 };
@@ -468,6 +627,11 @@ fn placeInWindow(model: *const Model, peer_view: *PeerView, entry: Creation) voi
     peer_view.shared_workspace.placement_hint = .{ .shared_id = id, .window = index, .window_epoch = entry.window_epoch };
 }
 
+fn creationWindowCurrent(model: *const Model, entry: Creation) bool {
+    const window = entry.window orelse return true;
+    return model.windowOpen(window) and model.window_epochs[window] == entry.window_epoch;
+}
+
 fn placement(entry: Creation, ref: TerminalRef, revision: u64) !Mutation {
     var mutation: Mutation = .{ .expected_revision = revision, .session_id = entry.session, .kind = .add, .terminal_ref = ref };
     if (!isSplit(entry.kind)) return mutation;
@@ -493,8 +657,27 @@ fn spawnOwner(model: *Model, coordinator: support.ProviderId, kind: Kind, choice
     return ref;
 }
 
+/// The slot of the peer an edit addresses. When the active window's selected
+/// tab is `coordinator`'s and names its exact attachment, that attachment
+/// decides. Sibling attachments of one coordinator share its ID but show other
+/// sessions, so an attachment that is not a peer (the primary, or one since
+/// removed) refuses rather than falling back to whichever peer shares the ID:
+/// that fallback once spawned a New Window in another session.
 fn slotOf(model: *const Model, coordinator: support.ProviderId) !usize {
+    if (selectedAttachment(model, coordinator)) |attachment| {
+        return model.peerSlotForAttachment(attachment) orelse error.NotPeerAttachment;
+    }
     return model.peerSlot(coordinator) orelse error.NoCoordinator;
+}
+
+/// The exact attachment the active window's selected tab names, when that tab
+/// is `coordinator`'s. Null for a tab without one: the coordinator ID is then
+/// the only identity there is.
+fn selectedAttachment(model: *const Model, coordinator: support.ProviderId) ?u64 {
+    const workspace = model.wsAtConst(model.active_window) orelse return null;
+    const tree = workspace.treeConst(workspace.selected_tab) orelse return null;
+    if (shared_workspace.tabAuthority(tree) != coordinator) return null;
+    return tree.attachment_id;
 }
 
 /// A showing, attached peer whose workspace is projected for this
@@ -503,7 +686,7 @@ fn view(model: *Model, slot: usize) !PeerView {
     if (comptime !support.phux_enabled) return error.NoProvider;
     const peer = model.phuxPeerAt(slot) orelse return error.NoCoordinator;
     if (!peer.showing() or peer.state() != .attached) return error.NotShowing;
-    const state = &model.peer_workspaces[slot];
+    const state = &model.peers.items[slot].workspace;
     if (state.session == 0 or state.epoch != peer.connectionEpoch()) return error.WorkspaceUnavailable;
     if (state.authority != peer.providerId()) return error.StaleContext;
     return .{ .peer = peer, .shared_workspace = state };
@@ -511,7 +694,7 @@ fn view(model: *Model, slot: usize) !PeerView {
 
 /// Whether coordinator `id` is a peer that can take an edit now.
 pub fn editable(model: *Model, coordinator: support.ProviderId) bool {
-    const slot = model.peerSlot(coordinator) orelse return false;
+    const slot = slotOf(model, coordinator) catch return false;
     _ = view(model, slot) catch return false;
     return true;
 }

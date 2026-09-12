@@ -215,6 +215,7 @@ pub(crate) mod remote_target;
 pub(crate) mod rename;
 pub(crate) mod resize;
 pub(crate) mod run;
+pub(crate) mod runtime_info;
 pub(crate) mod satellite;
 pub(crate) mod send_keys;
 pub(crate) mod server;
@@ -231,6 +232,9 @@ pub(crate) mod toml_registry;
 pub(crate) mod update;
 pub(crate) mod upgrade;
 pub(crate) mod wait;
+// Stalled peers for the run/wait deadline tests (phux-69pq.10).
+#[cfg(test)]
+mod stall_peer;
 pub(crate) mod watch;
 pub(crate) mod whoami;
 pub(crate) mod workspace;
@@ -301,6 +305,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Mcp { .. } => Some("mcp"),
         Command::Skill { .. } => Some("skill"),
         Command::Logs { .. } => Some("logs"),
+        Command::RuntimeInfo { .. } => Some("runtime-info"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
         _ => None,
     }
@@ -308,6 +313,11 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    /// Inspect this binary's runtime protocol and capabilities without connecting.
+    RuntimeInfo {
+        #[command(flatten)]
+        json: JsonOpt,
+    },
     /// Attach to a session (interactive).
     ///
     /// With no name, attaches to the most-recently-focused session,
@@ -936,17 +946,18 @@ pub(crate) enum Command {
         signal: SignalArg,
     },
 
-    /// Update phux to the latest release, keeping sessions alive.
+    /// Update phux to the latest stable or next release, keeping sessions alive.
     // `long_about` spelled out for the same reason `rec` and `signal` do it:
     // clap reflows doc-comment paragraphs and the worked examples need real
     // newlines.
     #[command(
-        about = "Update phux to the latest release, keeping sessions alive",
-        long_about = "Update phux to the latest release, keeping sessions alive.\n\n\
+        about = "Update phux to the latest stable or next release, keeping sessions alive",
+        long_about = "Update phux to the latest stable or next release, keeping sessions alive.\n\n\
             Checks the published release, downloads the archive for this platform, \
             verifies it against the checksum published beside it, replaces the \
             binaries atomically, and asks a running server to re-exec so live panes \
-            survive. A server, its local clients, its satellites, and its relays must \
+            survive. `--channel next` follows green `main` instead of the latest \
+            `vX.Y.Z`. A server, its local clients, its satellites, and its relays must \
             all run the same release, so this is the command that moves a whole \
             deployment in one step.\n\n\
             phux updates only installs it maintains: a release archive unpacked into \
@@ -960,6 +971,7 @@ pub(crate) enum Command {
             phux update --check\n  \
             phux update --check --json\n  \
             phux update\n  \
+            phux update --channel next\n  \
             phux update --dry-run --version v1.2.3\n  \
             phux update --rollback"
     )]
@@ -1142,7 +1154,11 @@ pub(crate) enum Command {
             Polls the side-effect-free screen read — the poll \
             floor of the event surface: always works, no shell integration. \
             Exits 0 when the condition is met, and 124 when `--timeout` expires \
-            first. TARGET is a selector (see the \
+            first. The timeout is one budget for the whole wait — connecting, \
+            target resolution, and every screen read — so a server that stops \
+            answering still ends the wait on time. The first read always gets \
+            at least 2 seconds, so `--timeout 0` checks the condition once. \
+            TARGET is a selector (see the \
             top-level help); omit it for the most-recently-focused session.\n\n\
             Matching is against the lines as WRITTEN: rows the terminal \
             soft-wrapped at its right edge are joined first, so text that \
@@ -1204,7 +1220,10 @@ pub(crate) enum Command {
         #[arg(long, value_name = "MS")]
         idle: Option<u64>,
 
-        /// Give up after this many seconds (exit 124). Default: wait forever.
+        /// Give up after this many seconds (exit 124), counted from the start
+        /// of the command: connecting, resolving TARGET, and every screen
+        /// read share the one budget. The first read always gets at least
+        /// 2s, so 0 checks the condition once. Default: wait forever.
         #[arg(long, value_name = "SECS")]
         timeout: Option<u64>,
 
@@ -1483,7 +1502,15 @@ pub(crate) enum Command {
             Brackets the command with sentinels to capture `$?`, so it \
             assumes a POSIX shell (sh/bash/zsh). The process exit code mirrors \
             the command's — and is 125 when `phux` gives up on `--timeout` — so \
-            `phux run … && next` composes like a shell. TARGET is a selector \
+            `phux run … && next` composes like a shell. The timeout is one \
+            budget for the whole run — connecting, target resolution, input \
+            submission, and every screen read — so a server that stops \
+            answering still ends the run on time. Input is never started after \
+            the timeout, and once started it gets up to 2 more seconds to \
+            finish, so the pane is not left holding a half-typed line; the \
+            diagnostic says whether nothing, all, or possibly part of the input \
+            was delivered. Giving up does not stop the command or retract input \
+            already delivered. TARGET is a selector \
             (see the top-level help), resolved client-side to one pane; the \
             command routes to it by id (no attach, no resize).\n\n\
             Flags (`--timeout`, `--json`, `--socket`) MUST precede TARGET, or \
@@ -1501,8 +1528,11 @@ pub(crate) enum Command {
         #[arg(trailing_var_arg = true, required = true)]
         command: Vec<String>,
 
-        /// Give up after this many seconds (exit 125). Default: 600s.
-        /// Pass 0 to wait indefinitely.
+        /// Give up after this many seconds (exit 125), counted from the start
+        /// of the command: connecting, resolving TARGET, submitting the
+        /// command, and every screen read share the one budget; input that
+        /// has started gets up to 2s more to finish. Default: 600s. Pass 0 to
+        /// wait indefinitely.
         #[arg(long, value_name = "SECS")]
         timeout: Option<u64>,
 

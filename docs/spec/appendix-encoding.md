@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-06-07
+last-reviewed: 2026-09-12
 ---
 
 # Appendix A — Encoding primitives
@@ -82,11 +82,22 @@ for hex-dump readability and network feel; fixed widths exist where natural
 (for example timestamps and color channels) so the wire matches the
 conceptual width.
 
-A canonical hex dump of a `HELLO_OK` selecting the full tier set with an
-opaque `server_id` is committed at
-`crates/phux-protocol/tests/snapshots/frame_wire_snapshots__snap_hello_ok.snap`
-and pinned by the `snap_hello_ok` snapshot test; any wire-format change
-surfaces there as a reviewable diff.
+**Worked field.** HELLO field 3 is `protocol_minor: u16`. Protocol `0.9.0`
+encodes minor `9` as one TLV field:
+
+```text
+03          field_id 3 (varint)
+04          wire_type BYTES
+02          value length 2 (varint)
+00 09       u16 big-endian 9
+```
+
+The field's value is the positional `u16`; there is no inner length prefix.
+A leaf `str` inside a positional sub-record *does* use a `u32` big-endian
+count (§2.1). HELLO field 1 (`client_name`) is a top-level `BYTES` field
+whose value is the raw UTF-8 bytes — the TLV length is the string length,
+with no inner `u32`. Codec round-trip tests in
+`crates/phux-protocol/tests/` pin complete frames.
 
 ---
 

@@ -134,5 +134,5 @@ is explicit re-pairing.
   hardening" recommendation collected here.
 - ADR-0072 — the `PolicyEngine` seam this fills.
 - ADR-0091 — the cert-provisioning story the CA extends.
-- ADR-0113 — mTLS identity is per connection; streams inherit it.
+- ADR-0115 — mTLS identity is per connection; streams inherit it.
 - `docs/spec/workload-auth.md` — rewritten by the spec bead.

@@ -1,20 +1,32 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-08-02
+last-reviewed: 2026-09-12
 ---
 
 # Protocol 101: a complete session walkthrough
 
-**TL;DR.** One phux session traced end to end, from HELLO to detach: what each step does, the wire frames it sends, and why the design lands where it does. Read it before the reference specs; it is the narrative spine the per-tier docs assume you have already seen. Wire bodies here are illustrative shapes, not byte layouts; the normative encoding lives in the specs each step links.
+**TL;DR.** One terminal session from HELLO to detach: what each step does,
+the wire frames it sends, and why the design sits where it does. Read it
+before the catalogs. Wire bodies here are illustrative shapes, not byte
+layouts; the normative encoding lives in the specs each step links.
 
 ---
 
 ## The big picture
 
-A phux session, in one breath: a client connects to a server, negotiates capabilities, attaches to a terminal (or creates one), receives a stream of VT bytes as the PTY emits them, sends keypresses and mouse events back, and eventually detaches. The flow is asymmetric on purpose. The server sends opaque terminal **bytes**; the client sends **structured** input events. Both ends run the same terminal engine (libghostty), so neither side re-encodes terminal state into a second model — the bytes go straight onto the wire and are parsed once on each end.
+A client connects, negotiates, attaches to a terminal (or creates one),
+receives VT bytes as the PTY emits them, sends structured input back, and
+detaches. The wire is asymmetric: the server sends opaque terminal **bytes**;
+the client sends **structured** events. Both ends run libghostty, so neither
+re-encodes terminal state into a second model. The product picture is
+[CONCEPTS.md](../CONCEPTS.md); this page is one session on the wire.
 
-Protocol version for this walkthrough is `0.9.0`.
+Protocol version for this walkthrough is `0.9.0`. HELLO admits `major.minor`
+`0.9`; a `0.8` or `0.7` peer is rejected before session state.
+
+The spine is one terminal. Another resource kind (`AgentSession`) uses the
+same attach path; see the appendix, not the numbered steps.
 
 ---
 
@@ -30,7 +42,7 @@ Client sends (frame type 0x01):
   HELLO {
     client_name: "phux-tui",       // field 1
     protocol_major: 0,             // field 2
-    protocol_minor: 8,             // field 3
+    protocol_minor: 9,             // field 3
     protocol_patch: 0,             // field 4
     client_caps: {                 // field 5
       color: TrueColor,
@@ -51,11 +63,11 @@ Client sends (frame type 0x01):
 Server replies (frame type 0x80):
   HELLO_OK {
     protocol_major: 0,             // field 1
-    protocol_minor: 8,             // field 2
+    protocol_minor: 9,             // field 2
     protocol_patch: 0,             // field 3
     server_caps: {                 // field 4
       layers: 0x05,
-      features: 0x00000000,
+      features: ...,               // includes RESOURCE_KINDS; see proto.md §6.2
     },
     server_id: "phux-server-abc123", // field 5, opaque incarnation bytes
     selected_profile: NativeState { // field 6; current native tag is 3
@@ -69,7 +81,7 @@ Server replies (frame type 0x80):
 
 **Wire shape:** see [proto.md §6.1](./proto.md). Key pieces:
 
-- `major.minor` must equal `0.8`; a `0.7` peer is rejected before session
+- `major.minor` must equal `0.9`; any other minor is rejected before session
   state. Patch differences are compatible, and the server returns its current
   patch.
 - `layers` is intersected once for the connection. `0x01` is L1 only and
@@ -89,30 +101,37 @@ Server replies (frame type 0x80):
   compatibility profiles. Native checkpoint, history, cursor, and live PTY
   bytes remain opaque and byte-identical.
 
-**Why it matters:** negotiation happens once and fixes the contract for the whole connection — version, capabilities, and which tiers the two sides will use.
+**Why it matters:** negotiation happens once and fixes the contract for the
+whole connection — version, capabilities, and which tiers the two sides will
+use.
 
 ---
 
 ## Step 2: Attach to a terminal
 
-**What happens:** after HELLO, the client picks a terminal to watch. It can attach to an existing terminal or create one, and it declares the role it wants on that terminal.
+<!-- impl-status: spec-only; probe: RolePolicy -->
+> **Status: spec-only —** `role_policy` on `ATTACH` / `ATTACH_RESOURCE`. It is
+> not encoded today and the reference server keeps no role state, so a client
+> that omits it gets the same unconstrained subscription as one that would
+> ask for `PRIMARY`. Do not send it. [L1.md §8.1](./L1.md) has the contract
+> roles satisfy when they land. The frame below is the shape that is on the
+> wire.
+
+**What happens:** after HELLO, the client picks a terminal to watch. It can
+attach to an existing terminal or create one.
 
 ```
 Client sends (frame type 0x02):
   ATTACH {
-    attach_id: 23,
-    target: CREATE_IF_MISSING {
-      name: "scratch",           // L3 name key, resolved client-side
-      command: None,             // use the server's default shell
-      cwd: None,                 // use the server's default cwd
+    attach_id: 23,                 // field 5, client-chosen, echoed
+    target: CREATE_IF_MISSING {    // field 1
+      name: "scratch",             // L3 name key, resolved client-side
+      command: None,               // use the server's default shell
+      cwd: None,                   // use the server's default cwd
     },
-    viewport: { cols: 120, rows: 40 },
-    request_scrollback: false,
-    scrollback_limit_lines: 0,
-    role_policy: {
-      requested_role: PRIMARY,
-      takeover: NEVER,
-    },
+    viewport: { cols: 120, rows: 40 },  // field 2
+    request_scrollback: false,     // field 3
+    scrollback_limit_lines: 0,     // field 4
   }
 
 Server replies (frame type 0x81):
@@ -123,16 +142,19 @@ Server replies (frame type 0x81):
   }
 ```
 
-**Wire shape:** [L1.md §state replay](./L1.md) defines `ATTACH`, its `AttachTarget` union, and `RolePolicy`. `attach_id = 23` is client-chosen and echoed by both `ATTACHED` and `ATTACH_READY`, preventing concurrent attach replies from crossing. The target is a tagged union — `BY_TERMINAL_ID` to attach to one running terminal, `CREATE_IF_MISSING` to spawn one if absent, and others. `viewport` carries the client's drawable size so the server can size the terminal; `role_policy` chooses `PRIMARY` (input-capable) or `VIEWER` (watch-only). `ATTACHED` is metadata only: it carries a `SubstrateSnapshot` of the tier-visible state and the client's `initial_client_id`. It carries no terminal content yet — that arrives next.
+**Wire shape:** [L1.md §8](./L1.md) defines `ATTACH` and its `AttachTarget`
+union. `attach_id = 23` is client-chosen and echoed by both `ATTACHED` and
+`ATTACH_READY`, preventing concurrent attach replies from crossing. The target
+is a tagged union — `BY_TERMINAL_ID` to attach to one running terminal,
+`CREATE_IF_MISSING` to spawn one if absent, and others. `viewport` carries the
+client's drawable size so the server can size the terminal. `ATTACHED` is
+metadata only: it carries a `SubstrateSnapshot` of the tier-visible state and
+the client's `initial_client_id`. It carries no terminal content yet — that
+arrives next.
 
-**Why it matters:** this is where the client says "I want to see and control this terminal," and which role it claims. The server then allocates a subscription and begins the replay sequence.
-
-<!-- impl-status: spec-only; probe: RolePolicy -->
-> **Status: spec-only —** the `role_policy` block in the frame above. It is
-> not encoded on `ATTACH` today and the reference server keeps no role state,
-> so a client that omits it gets the same unconstrained subscription as one
-> that asks for `PRIMARY`. Send the rest of the frame as shown;
-> [L1.md §8.1](./L1.md) has the contract roles will satisfy when they land.
+**Why it matters:** this is where the client says "I want to see and control
+this terminal." The server then allocates a subscription and begins the replay
+sequence.
 
 ---
 
@@ -205,7 +227,9 @@ generation/watermark identity prevents stale bytes from corrupting a replica.
 
 ## Step 5: Handle client input
 
-**What happens:** the client sends a keystroke as a structured event. The server hands it to its libghostty encoder, which produces terminal-mode-aware VT bytes, and writes them to the PTY.
+**What happens:** the client sends a keystroke as a structured event. The
+server hands it to its libghostty encoder, which produces terminal-mode-aware
+VT bytes, and writes them to the PTY.
 
 ```
 User presses Ctrl+C.
@@ -235,161 +259,52 @@ Server sends (frame type 0x90):
   }
 ```
 
-**Wire shape:** [input.md](./input.md) defines the input family — `INPUT_KEY`, `INPUT_MOUSE`, `INPUT_PASTE`, `INPUT_FOCUS`, `INPUT_RAW`. Each carries a `terminal_id` and a structured event. The server's libghostty-backed encoder converts the event to mode-aware VT bytes and writes to the PTY; encoder configuration never crosses the wire. Sending input as structured data (rather than VT bytes) is what lets phux transport modifier-rich chords, the kitty keyboard protocol, IME composition, and pixel-precise mouse events end to end.
+**Wire shape:** [input.md](./input.md) defines the input family —
+`INPUT_KEY`, `INPUT_MOUSE`, `INPUT_PASTE`, `INPUT_FOCUS`. (`INPUT_RAW` is
+reserved and spec-only; do not send it.) Each live frame carries a
+`terminal_id` and a structured event. The server's libghostty-backed encoder
+converts the event to mode-aware VT bytes and writes to the PTY; encoder
+configuration never crosses the wire.
 
-**Why it matters:** the seam is the protocol. The client never produces VT bytes; the server never sees encoder options. Each side owns one half.
+**Why it matters:** the seam is the protocol. The client never produces VT
+bytes; the server never sees encoder options. Each side owns one half.
 
 ---
 
-## Step 6: Other terminal-originated events
+## Step 6: Terminal-originated signals
 
-**What happens:** the running process may emit control sequences that the server's engine parses and the server surfaces as structured events, rather than re-emitting raw escapes.
+<!-- impl-status: spec-only; probe: TYPE_TERMINAL_EVENT -->
+> **Status: spec-only —** `TERMINAL_EVENT` (`0xB1`). The live byte stream
+> already carries the same OSC sequences inside `RESOURCE_OUTPUT`, so a
+> consumer reads title and cwd from its own engine. `BELL` (`0xB0`) below
+> is shipped.
+
+**What happens:** a BEL in the PTY is forwarded as a structured frame. OSC
+title and cwd sequences travel in `RESOURCE_OUTPUT` today; a later
+`TERMINAL_EVENT` frame would surface them as fields.
 
 ```
-Process sets the window title via OSC 0:
-
-Server sends (frame type 0xB1):
-  TERMINAL_EVENT {
-    terminal_id: ResourceId::LOCAL(42),
-    event: TITLE { title: "my-project — vim" }
-  }
-
 Process rings the bell (BEL):
 
 Server sends (frame type 0xB0):
   BELL {
     terminal_id: ResourceId::LOCAL(42),
   }
-
-Process reports its working directory via OSC 7:
-
-Server sends (frame type 0xB1):
-  TERMINAL_EVENT {
-    terminal_id: ResourceId::LOCAL(42),
-    event: CURRENT_DIR { uri: "file:///Users/alice/workspace" }
-  }
 ```
 
-**Wire shape:** [L1.md §1.2–1.3](./L1.md) define `BELL` and `TERMINAL_EVENT`. The server's engine parses the OSC sequence once and forwards a structured field, so a consumer reads "the current directory" without parsing escape sequences itself. These frames are `spec-only` today; the live byte stream already carries the same OSC sequences inside `RESOURCE_OUTPUT`, so a consumer can also read title and cwd from its own engine.
+**Wire shape:** [L1.md §3.2](./L1.md) defines `BELL`. [L1.md §3.3](./L1.md)
+defines the spec-only `TERMINAL_EVENT` union.
 
-**Why it matters:** structured terminal events decouple a consumer from OSC parsing. An agent sees title and cwd as fields.
+**Why it matters:** `BELL` is a side-channel the byte stream does not
+preserve as a frame of its own. Structured OSC events, when they land,
+decouple a consumer from parsing those sequences itself.
 
 ---
 
-## Step 7: Bind an agent session to the terminal
+## Step 7: Detach
 
-<!-- impl-status: shipped; probe: ResourceKind,RESOURCE_KINDS -->
-> **Status: shipped —** this whole step. The reference server advertises
-> `RESOURCE_KINDS` and serves the kind. [L1.md §1.1, §1.2, §4.8, and
-> §5.5](./L1.md) carry the contract this step walks through.
-
-**What happens:** an agent harness running inside terminal 42 wants a
-durable, structured account of what it is doing — turns, tool calls,
-questions — that lives beside the pane rather than being scraped out of it.
-It asks the server for a second resource of a different kind, bound to the
-terminal as its parent, and appends records to it. A third party reads them
-back by attaching to the new resource exactly as it would attach to a
-terminal.
-
-Gate on the feature bit first: `HELLO_OK.server_caps.features` must contain
-`RESOURCE_KINDS`; an older server skips the new spawn fields and spawns a
-plain terminal.
-
-```
-Client sends (frame type 0x22):
-  SPAWN_RESOURCE {
-    request_id: 7,                 // field 1
-    group: GroupId(1),             // field 2; must equal the parent's Group
-    kind: AGENT_SESSION,           // field 11
-    parent: ResourceId::LOCAL(42), // field 12
-    provider: "claude",            // field 13
-    native_id: "c0ffee-…",         // field 14, the provider's own session id
-  }                                // fields 3–6, 8, 10 are absent: no process, no window, no grid
-
-Server replies (frame type 0xA2):
-  RESOURCE_SPAWNED { request_id: 7, result: OK(ResourceId::LOCAL(43)) }
-```
-
-Resource 43 is not a pane. A `GET_STATE` snapshot lists it with
-`kind = AGENT_SESSION`, `parent = LOCAL(42)`, `cols = rows = 0`,
-`window_id = 0`, and an `agent` facet `{ provider: "claude", state: "unknown" }`.
-
-The harness's hook shim appends two records. Each `phux agent emit` is one
-command; `seq` and `ts_ms` are absent because the server assigns them:
-
-```
-Client sends (frame type 0x31):
-  COMMAND { request_id: 8, cmd: APPEND_RESOURCE_OUTPUT {   // tag 0x1a
-    resource_id: ResourceId::LOCAL(43),
-    bytes: b'{"type":"session_start","data":{"provider":"claude","native_id":"c0ffee-…"}}\n'
-  } }
-Server replies (frame type 0xC2):
-  COMMAND_RESULT { request_id: 8, result: OK }
-
-Client sends (frame type 0x31):
-  COMMAND { request_id: 9, cmd: APPEND_RESOURCE_OUTPUT {
-    resource_id: ResourceId::LOCAL(43),
-    bytes: b'{"type":"prompt","data":{"length":412}}\n'
-  } }
-Server replies (frame type 0xC2):
-  COMMAND_RESULT { request_id: 9, result: OK }
-```
-
-The second record derives `working` for terminal 42's `phux.agent/v1`
-`state` ([L3.md §3.7](./L3.md)); the stream outranks the screen while the
-session is live. The prompt's text did not cross the wire, only its length.
-
-A fleet dashboard now attaches to 43. The bootstrap is the retained ring,
-replayed as chunks under the stream's own codec, and live records follow in
-the same generation:
-
-```
-Client sends (frame type 0x31):
-  COMMAND { request_id: 10, cmd: ATTACH_RESOURCE { terminal_id: LOCAL(43) } }
-
-Server sends BOOTSTRAP_BEGIN (0x93):
-  { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5,
-    codec: AgentEventsJsonlV1, cols: 0, rows: 0,
-    output_mode: Raw, base_seq: 2 }
-Server sends BOOTSTRAP_CHUNK (0x94):
-  { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5, chunk_seq: 0,
-    payload:
-      b'{"seq":1,"ts_ms":1789000000123,"type":"session_start","data":{"provider":"claude","native_id":"c0ffee-…"}}\n'
-      b'{"seq":2,"ts_ms":1789000004871,"type":"prompt","data":{"length":412}}\n' }
-Server sends BOOTSTRAP_READY (0x95):
-  { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5, history_cursor: None }
-Server replies (frame type 0xC2):
-  COMMAND_RESULT { request_id: 10, result: OK }
-
-Later, the harness calls a tool:
-
-Server sends RESOURCE_OUTPUT (0x90):
-  { terminal_id: LOCAL(43), stream_id: 11, bootstrap_id: 5, seq: 3,
-    bytes: b'{"seq":3,"ts_ms":1789000009002,"type":"tool_start","data":{"tool_name":"Read"}}\n' }
-```
-
-When the shell in terminal 42 exits, the server closes 42 and 43 in one
-lock acquisition; the dashboard receives
-`RESOURCE_CLOSED { terminal_id: LOCAL(43), exit_status: None, reason: PARENT_CLOSED }`
-and never sees a snapshot with 43 and without 42.
-
-**Wire shape:** [L1.md §1.2](./L1.md) owns the spawn fields and the cascade,
-[§5.5](./L1.md) the append command and its error table, [§4.8](./L1.md) the
-record grammar, the ring, and the raw-only profile (no `FRAME_ACK`, no
-`HISTORY_REQUEST`, zero geometry in BEGIN), and [§7.2](./L1.md) the state
-table. The record's `seq` is the resource's own counter; the frame's `seq`
-is the generation's, as in Step 4.
-
-**Why it matters:** the agent's account and the human's terminal are two
-resources on one server, bound by lifecycle, read through one attach path.
-A consumer that only speaks L1 gets the agent's structured story without a
-metadata tier and without scraping the grid.
-
----
-
-## Step 8: Detach
-
-**What happens:** the user quits or switches clients. The client sends `DETACH`; the server acknowledges and closes the transport.
+**What happens:** the user quits or switches clients. The client sends
+`DETACH`; the server acknowledges and closes the transport.
 
 ```
 Client sends (frame type 0x03):
@@ -406,7 +321,11 @@ The terminal keeps running on the server.
 Another client can attach to it later.
 ```
 
-**Wire shape:** [proto.md §7.2](./proto.md). `reason` is an enum: `REQUESTED` (clean client detach), `SERVER_SHUTDOWN`, `SESSION_KILLED` (a legacy name retained for wire compat), `REPLACED` (another client deliberately took over an exclusive attach), `PROTOCOL_ERROR`, and `INTERNAL_ERROR`.
+**Wire shape:** [proto.md §7.2](./proto.md). `reason` is an enum:
+`REQUESTED` (clean client detach), `SERVER_SHUTDOWN`, `SESSION_KILLED` (a
+legacy name retained for wire compat), `REPLACED` (another client
+deliberately took over an exclusive attach; spec-only until roles land),
+`PROTOCOL_ERROR`, and `INTERNAL_ERROR`.
 
 **Why it matters:** detach is clean and does not kill the terminal. The next
 client receives a fresh profile-selected bootstrap, then may pull retained
@@ -444,7 +363,8 @@ Client                              Server                    Terminal (PTY)
   X                                   |                           |
 ```
 
-After detach, the terminal keeps running. Its PTY is still open. Another client can attach and continue.
+After detach, the terminal keeps running. Its PTY is still open. Another
+client can attach and continue.
 
 ---
 
@@ -459,8 +379,53 @@ This walkthrough covers the happy path. For details:
 - **Metadata, session names, and grouping conventions:** [L3.md](./L3.md)
 - **Encoding primitives (varints, strings, tagged unions):** [appendix-encoding.md](./appendix-encoding.md)
 
-For the conceptual picture, read [CONCEPTS.md](../CONCEPTS.md) and the ADRs that shape the design:
+For the conceptual picture, read [CONCEPTS.md](../CONCEPTS.md).
+[ADR-0013](../../ADR/0013-libghostty-bytes-on-wire.md) is the bytes-on-wire
+decision this walkthrough assumes.
 
-- [ADR-0013: libghostty bytes on the wire](../../ADR/0013-libghostty-bytes-on-wire.md)
-- [ADR-0016: terminal ID as wire primary](../../ADR/0016-terminal-id-as-wire-primary.md)
-- [ADR-0030: engine-delegated wire and projection consumers](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
+A second resource kind — a producer-fed event log bound to a terminal —
+uses the same attach path. The appendix sketches it; [L1.md §1.1](./L1.md)
+is the contract.
+
+---
+
+## Appendix: another kind (`AgentSession`)
+
+<!-- impl-status: shipped; probe: ResourceKind,RESOURCE_KINDS -->
+> **Status: shipped.** The reference server advertises `RESOURCE_KINDS` and
+> serves `AgentSession` bound to a Terminal parent. [L1.md §1.1, §1.2,
+> §4.8, and §5.5](./L1.md) carry the contract.
+
+An agent harness running inside a terminal can ask for a second resource of
+a different kind, bound to that terminal as its parent, and append JSON-line
+records to it. A third party reads them by attaching to the new resource
+exactly as it would attach to a terminal.
+
+Gate on the feature bit first: `HELLO_OK.server_caps.features` must contain
+`RESOURCE_KINDS`; an older server skips the new spawn fields and spawns a
+plain terminal.
+
+```
+Client sends (frame type 0x22):
+  SPAWN_RESOURCE {
+    request_id: 7,                 // field 1
+    group: GroupId(1),             // field 2; must equal the parent's Group
+    kind: AGENT_SESSION,           // field 11
+    parent: ResourceId::LOCAL(42), // field 12
+    provider: "claude",            // field 13
+    native_id: "c0ffee-…",         // field 14
+  }                                // fields 3–6, 8, 10 are absent: no process, no window, no grid
+
+Server replies (frame type 0xA2):
+  RESOURCE_SPAWNED { request_id: 7, result: OK(ResourceId::LOCAL(43)) }
+```
+
+Resource 43 is not a pane. Append records with `APPEND_RESOURCE_OUTPUT`
+(command tag `0x1a`); attach with `ATTACH_RESOURCE`. Bootstrap uses
+`AgentEventsJsonlV1`, zero geometry, and no `FRAME_ACK`. Closing the parent
+closes the child in the same lock; the child never closes the parent.
+
+`phux agent session open|close`, `phux agent emit`, and `phux agent log`
+are the reference CLI for this kind. `%name` resolves an AgentSession. The
+pane detector (`phux agent show` / `explain`, OSC title) is a different
+surface.

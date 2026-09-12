@@ -220,6 +220,36 @@ notice; duplicate receipts cannot erase or roll back an operation exception.
 An invalidation arriving during a read schedules another read, so an empty
 in-flight reply cannot swallow the only completion wake.
 
+## Native origin, retirement, and quiet progress
+
+Raw terminal pointers adopt their exact native window only after workspace
+hit-testing or capture admission. Chrome activation adopts its originating
+window immediately before dispatching the rendered handler, so its earlier
+pointer-down cannot stale that same click. Process-wide Settings, placement,
+theme, and new-window intents do not treat a legacy zero byte as a primary-window
+focus request. Only the read-only config probe bypasses the revision fence.
+
+An OS close retires the matched native window incarnation before the SDK
+forwards its descriptor's `window_closed` message. That core message withdraws
+presentation and replaces the keyed snapshot request; it cannot issue another
+index-based lifecycle mutation. Local processes end through the shared lifecycle
+policy. Shared tabs are rehomed without changing Phux resources. If other windows
+lack capacity, Cockpit retains the workspace, publishes a refusal, and restores
+its presentation with a fresh native ID. Closed-incarnation captures are retired;
+delayed input cannot target that replacement.
+
+Divider capture is bound to window incarnation, pointer, and the exact split
+tree identities. Blur cancels it; another pointer's down does not. Palette bare
+navigation keys follow the overlay's command path while modified editing stays
+with the native editor. The inspector's actionable parent button receives native
+autofocus when its row mounts.
+
+Local outbound queues, retained emulator responses, and incremental searches
+progress through bounded, demand-driven maintenance even without frames or child
+output. Shipping and retained reducers share exit disposal and per-pane work
+policies. Failed panes remain searchable, reject writes, and retain no queued
+input for a later process generation.
+
 ## Acceptance evidence
 
 The shipping extension tests exercise the compiled core and native bridge:

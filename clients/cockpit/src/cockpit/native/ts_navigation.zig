@@ -15,7 +15,7 @@ pub const page_size = 4;
 pub const max_label_bytes = 240;
 pub const max_detail_bytes = 160;
 pub const max_host_bytes = support.RemoteResourceId.max_host_bytes;
-pub const Scope = enum(u8) { all = 0, sessions = 1, known_hosts = 2, exact_host = 3 };
+pub const Scope = enum(u8) { all = 0, sessions = 1, known_hosts = 2, exact_host = 3, captured_machine = 5 };
 pub const max_bytes = 4096;
 pub const Error = error{ InvalidRequest, StaleRevision, BufferTooSmall, CatalogTooLarge, UnavailableContext };
 const empty_workspace: model_module.Workspace = .{};
@@ -168,13 +168,13 @@ fn peerSessionDetail(model: *const Model, target: model_module.PeerSession, out:
 
 fn peerProjectionRefused(model: *const Model, coordinator: support.ProviderId) bool {
     const slot = model.peerSlot(coordinator) orelse return false;
-    return model.peer_workspaces[slot].refused;
+    return model.peers.items[slot].workspace.refused;
 }
 
 /// A failed peer's row retries it; a connecting one has nothing to do.
 fn peerRetryable(model: *const Model, coordinator: support.ProviderId) bool {
     const slot = model.peerSlot(coordinator) orelse return false;
-    return model.peer_failed[slot];
+    return model.peers.items[slot].failed;
 }
 
 /// A peer that cannot list says why: the recorded failure (a remote host's
@@ -184,7 +184,7 @@ fn peerUnavailableDetail(model: *const Model, coordinator: support.ProviderId, o
     if (comptime !support.phux_enabled) return "Unavailable";
     const slot = model.peerSlot(coordinator) orelse return "Unavailable";
     const peer = model.phuxPeerAtConst(slot).?;
-    if (!model.peer_failed[slot]) return "Connecting…";
+    if (!model.peers.items[slot].failed) return "Connecting…";
     var reason_buffer: [max_detail_bytes]u8 = undefined;
     const recorded = peer.remoteFailure(&reason_buffer);
     const reason = if (recorded.len != 0) recorded else "the connection was lost";
@@ -308,7 +308,7 @@ fn encodeMetadata(model: *const Model, row: *const Row, out: []u8, start: usize)
     return end;
 }
 
-const Request = struct { query: []const u8, scope: Scope = .all, host: []const u8 = "", offset: u16 };
+const Request = struct { query: []const u8, scope: Scope = .all, host: []const u8 = "", offset: u16, attachments: []const u64 = &.{} };
 
 /// Request: version=1, kind=3, revision:u64, offset:u16, query_len:u8, query
 /// UTF-8 (<=64). Kind 4 appends scope:u8, host_len:u8, raw host. Both replies
@@ -337,7 +337,9 @@ fn readScope(bytes: []const u8, at: usize, request: *Request) Error!void {
     request.scope = std.enums.fromInt(Scope, bytes[at]) orelse return error.InvalidRequest;
     if (bytes.len != at + 2 + @as(usize, bytes[at + 1])) return error.InvalidRequest;
     request.host = bytes[at + 2 ..];
-    if (request.scope != .exact_host and request.host.len != 0) return error.InvalidRequest;
+    if (request.scope == .captured_machine) {
+        if (request.host.len != 12) return error.InvalidRequest;
+    } else if (request.scope != .exact_host and request.host.len != 0) return error.InvalidRequest;
 }
 
 fn firstHostOccurrence(model: *const Model, host: []const u8, index: usize) bool {
@@ -351,21 +353,42 @@ fn firstHostOccurrence(model: *const Model, host: []const u8, index: usize) bool
 }
 
 fn matches(model: *const Model, entry: *const Entry, index: usize, request: Request) bool {
-    switch (request.scope) {
-        .all => {},
-        // Every host group: the active coordinator's and each peer's.
-        .sessions => if (entry.* != .session and entry.* != .peer_session and entry.* != .peer_unavailable) return false,
-        .known_hosts => {
-            const host = entryHost(entry) orelse return false;
-            if (!firstHostOccurrence(model, host, index)) return false;
-            return projection.containsIgnoreCase(coordinatorLabel(model, host), request.query);
-        },
-        .exact_host => {
-            const host = entryHost(entry) orelse return false;
-            if (!std.mem.eql(u8, host, request.host)) return false;
-        },
+    if (!scopeIncludes(model, entry.*, index, request)) return false;
+    if (request.scope == .known_hosts) {
+        const host = entryHost(entry) orelse return false;
+        return projection.containsIgnoreCase(coordinatorLabel(model, host), request.query);
     }
     return projection.paletteDestinationMatches(model, entry.*, request.query);
+}
+
+fn scopeIncludes(model: *const Model, entry: Entry, index: usize, request: Request) bool {
+    switch (request.scope) {
+        .all => return true,
+        // Every host group: the active coordinator's and each peer's.
+        .sessions => return isSessionEntry(entry),
+        .known_hosts => {
+            const host = entryHost(&entry) orelse return false;
+            return firstHostOccurrence(model, host, index);
+        },
+        .exact_host => {
+            const host = entryHost(&entry) orelse return false;
+            return std.mem.eql(u8, host, request.host);
+        },
+        .captured_machine => return capturedSessionMatches(model, entry, request.attachments),
+    }
+}
+
+fn isSessionEntry(entry: Entry) bool {
+    return switch (entry) {
+        .session, .peer_session, .peer_unavailable => true,
+        else => false,
+    };
+}
+
+fn capturedSessionMatches(model: *const Model, entry: Entry, attachments: []const u64) bool {
+    if (entry != .session and entry != .peer_session) return false;
+    const target = targets.capture(model, entry) orelse return false;
+    return std.mem.indexOfScalar(u64, attachments, target.context.provider) != null;
 }
 
 const Page = struct { rows: [page_size]Row = undefined, count: usize = 0, total: u16 = 0 };
@@ -389,7 +412,28 @@ fn collectPage(model: *const Model, request: Request) Error!Page {
 }
 
 pub fn encode(model: *const Model, revision: u64, request: []const u8, out: []u8) Error![]const u8 {
+    // Agent inspection owns kind 5: upstream kind 4 now carries scoped
+    // navigation requests, so the identity-bound roster moved off it.
+    if (request.len >= 2 and request[1] == 5) return @import("ts_agents.zig").encode(model, revision, request, out);
     const parsed = try validateRequest(revision, request);
+    if (parsed.scope == .captured_machine) return error.UnavailableContext;
+    return encodePage(model, request, parsed, out);
+}
+
+/// The composition root validates the opaque Browse token and its complete
+/// captured Target list before supplying these exact attachment identities.
+pub fn encodeForAttachments(model: *const Model, revision: u64, request: []const u8, out: []u8, attachment_ids: []const u64) Error![]const u8 {
+    var parsed = try validateRequest(revision, request);
+    if (parsed.scope != .captured_machine) return error.InvalidRequest;
+    if (attachment_ids.len == 0) return error.UnavailableContext;
+    for (attachment_ids) |id| {
+        if (model.phuxForAttachmentConst(id) == null) return error.UnavailableContext;
+    }
+    parsed.attachments = attachment_ids;
+    return encodePage(model, request, parsed, out);
+}
+
+fn encodePage(model: *const Model, request: []const u8, parsed: Request, out: []u8) Error![]const u8 {
     const page = try collectPage(model, parsed);
     if (out.len < request.len + 3) return error.BufferTooSmall;
     @memcpy(out[0..request.len], request);

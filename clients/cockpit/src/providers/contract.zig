@@ -158,11 +158,14 @@ pub const Generation = struct {
 pub const ReplicaOwner = struct {
     terminal_ref: TerminalRef,
     generation: Generation,
+    /// Process-local source identity: independent connections may publish the
+    /// same resource and wire generation. Zero is the local/legacy default.
+    source_context: u64 = 0,
 
     /// Owner equality deliberately excludes `last_seq`: applying more frames to
     /// the same replica must not invalidate a held key or asynchronous result.
     pub fn eql(a: ReplicaOwner, b: ReplicaOwner) bool {
-        return a.terminal_ref.eql(b.terminal_ref) and a.generation.sameReplica(b.generation);
+        return a.source_context == b.source_context and a.terminal_ref.eql(b.terminal_ref) and a.generation.sameReplica(b.generation);
     }
 };
 

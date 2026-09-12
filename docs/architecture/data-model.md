@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-12
 ---
 
 # Data model
@@ -45,17 +45,15 @@ populated, and the `Registry` is the only constructor
 
 ## Grouping is metadata, not a collection tier
 
-There is no built `Collection` type and no L2 collection lifecycle tier.
+There is no L2 collection tier; see [`../spec/L2.md`](../spec/L2.md).
 Grouping a set of resources — what a user thinks of as a session — is L3
 metadata plus client logic over the [L3 metadata model](../spec/L3.md),
 keyed by an opaque grouping identity. `GroupId` is retained only as that
 opaque key, not as a lifecycle entity the server creates, names, or tears
-down; per [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
-(option B) the structured grouping that used to be proposed for the wire is a
-consumer-side projection, and the lone irreducible group operation — atomic
-multi-terminal teardown — is a single L1 op (`KILL_RESOURCES`) rather than a
-tier. `GroupId`'s retention as an opaque grouping key is settled, not a
-remnant awaiting removal (bead phux-0bmc closed as resolved-by-rename).
+down. The lone irreducible group operation — atomic multi-resource teardown —
+is a single L1 op (`KILL_RESOURCES`) rather than a tier. `GroupId`'s
+retention as an opaque grouping key is settled, not a remnant awaiting
+removal (bead phux-0bmc closed as resolved-by-rename).
 
 The `Registry`'s `Session` and `Window` types are the in-process carriers of
 that grouping metadata. They are domain bookkeeping, not a wire tier: under
@@ -66,7 +64,7 @@ as L3 metadata, never a protocol-privileged concept.
 ```rust
 // phux-core::registry::Registry — domain only, no I/O.
 pub struct Registry {
-    sessions:  SlotMap<SessionId,  Session>,             // grouping metadata, not an L2 tier
+    sessions:  SlotMap<SessionId,  Session>,             // grouping metadata, not a wire tier
     windows:   SlotMap<WindowId,   Window>,              // TUI L3 convention
     resources: SlotMap<ResourceId, ResourceDescriptor>,  // L1 resources of every kind
 }
@@ -81,8 +79,7 @@ pub struct ResourceDescriptor {
 }
 pub struct TerminalFacet { dims, cwd, title }
 pub struct AgentFacet    { provider, native_id: Option<String>, state: Option<String> }
-// ResourceId is the slotmap key (still spelled `ResourceId` in phux-core
-// until the wire rename lands); location and kind are orthogonal.
+// ResourceId is the slotmap key; location and kind are orthogonal.
 // LayoutNode is a binary split tree of ResourceId leaves; only a Terminal
 // occupies a window slot. Per ADR-0017 the whole tree (LayoutNode + Window
 // + active-slot focus) is a TUI-consumer convention stored in L3 metadata,
@@ -138,7 +135,7 @@ pub struct ResourceHandle {
     pub consumer_attach, consumer_detach, consumer_ack,    // ADR-0018 consumers
     pub subscribe_to_events, unsubscribe_from_events,      // semantic events
     pub upgrade, control,                                  // ADR-0032, ADR-0033
-    pub facet: ResourceFacetHandle,   // non_exhaustive: Terminal(TerminalHandle)
+    pub facet: ResourceFacetHandle,   // non_exhaustive: Terminal | AgentSession
 }
 
 pub struct AttachedClient {
@@ -156,13 +153,13 @@ one acquisition.
 The engine side of a resource is `ResourceCore`: kind, parent, wire id, the
 checked output sequence, the output broadcast sender, the event-subscriber
 registry and fan-out, the cancel token and exit notification, and the
-control mailbox. An engine (today `resource::terminal::TerminalActor`)
-embeds one, keeps its own kind-specific state beside it, and builds the
-`ResourceHandle` in its constructor. Runtime code never holds a
-`TerminalHandle` on its own: it holds a `ResourceHandle` and calls
-`ResourceHandle::terminal()` where a grid, PTY, or input operation is needed
-— the one place a request aimed at a resource of another kind becomes a
-`WrongResourceKind` error.
+control mailbox. Each engine (`resource::terminal::TerminalActor`,
+`resource::agent_session`) embeds one, keeps its own kind-specific state
+beside it, and builds the `ResourceHandle` in its constructor. Runtime code
+never holds a `TerminalHandle` on its own: it holds a `ResourceHandle` and
+calls `ResourceHandle::terminal()` where a grid, PTY, or input operation is
+needed — the one place a request aimed at a resource of another kind becomes
+a `WrongResourceKind` error.
 
 Teardown runs under one lock acquisition. `KILL_RESOURCES` resolves every
 wire id and cancels every engine inside a single `with_mut`, so no other
@@ -180,8 +177,10 @@ have to be kept consistent across cascading deletes.
 
 ## Status
 
+No remaining target-versus-shipped gaps in the in-process types this
+document owns. Parent cascade announces `CloseReason::ParentClosed`, the
+runtime calls `Registry::new_agent_session` and writes `AgentFacet.state`,
+and `ResourceId` is the key name on both sides of `IdBridge`.
+
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Server-side cascade close: a parent's teardown closes each child's engine and announces it with `CloseReason::ParentClosed` | The cascade exists in the `Registry` only; no engine other than the Terminal exists, and `RESOURCE_CLOSED` carries no reason. | [ADR-0104](../../ADR/0104-parent-bindings-are-l1-lifecycle.md) | phux-am9y.10 |
-| AgentSession resources on the server (`SPAWN_RESOURCE` kind field, `Registry::new_agent_session` called from the runtime, `AgentFacet.state` derived from the stream) | `new_agent_session` has no caller outside `phux-core`'s tests; `AgentFacet.state` is never written. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.6, phux-am9y.9 |
-| `ResourceId` as the key's name everywhere, `KILL_RESOURCES` on the wire | `ResourceId` is the slotmap key and the wire id; `ResourceId` is a `phux-core` alias. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18 |

@@ -126,7 +126,7 @@ pub struct Connection {
     multistream: Option<Multistream>,
 }
 
-/// QUIC multi-stream state (proto.md §4.2, ADR-0113).
+/// QUIC multi-stream state (proto.md §4.2, ADR-0115).
 ///
 /// Bound Terminal streams pump complete frames into one merged channel,
 /// which [`Connection::recv`] reads alongside the control stream; Terminal

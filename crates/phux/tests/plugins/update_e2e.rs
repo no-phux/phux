@@ -125,6 +125,32 @@ fn a_tag_that_is_not_a_release_tag_is_refused_without_network() {
     }
 }
 
+/// `--channel next` is a closed vocabulary; anything else is clap's problem,
+/// diagnosed offline, and must not look like a release-tag refusal.
+#[test]
+fn a_channel_that_is_not_stable_or_next_is_refused_without_network() {
+    let (code, stdout, stderr) = run(&["update", "--check", "--channel", "nightly", "--json"]);
+    assert_eq!(code, 2, "stderr:\n{stderr}");
+    assert!(stdout.is_empty(), "stdout must stay empty: {stdout}");
+    assert!(
+        stderr.contains("invalid value 'nightly'") || stderr.contains("possible values"),
+        "clap must name the closed vocabulary:\n{stderr}"
+    );
+}
+
+/// `--channel next` on an unrecognized install is still a source refusal,
+/// before anything reaches the network.
+#[test]
+fn next_channel_does_not_bypass_the_unknown_source_refusal() {
+    let (code, stdout, stderr) = run(&["update", "--channel", "next", "--json"]);
+    assert_eq!(code, 2, "stderr:\n{stderr}");
+    assert!(stdout.is_empty());
+    assert_eq!(
+        json_error(&stderr)["error"]["code"],
+        "update_source_unsupported"
+    );
+}
+
 /// `--check` reports; `--dry-run` and `--rollback` act. Combining them is a
 /// usage error caught by clap rather than a silently-ignored flag.
 #[test]

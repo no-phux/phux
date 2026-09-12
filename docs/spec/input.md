@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-06-06
+last-reviewed: 2026-09-12
 ---
 
 # Input events
@@ -440,6 +440,11 @@ payload byte to the PTY.
 
 ## 7. INPUT_RAW (reserved)
 
+<!-- impl-status: spec-only; probe: TYPE_INPUT_RAW -->
+> **Status: spec-only.** Discriminant `0x13` is reserved. The reference
+> codec has no `TYPE_INPUT_RAW` and the server does not accept the frame.
+> Clients MUST NOT send it.
+
 ```
 INPUT_RAW {
     terminal_id: ResourceId,
@@ -447,10 +452,8 @@ INPUT_RAW {
 }
 ```
 
-The `0x13` frame type and shape are reserved but are not implemented by the
-reference codec or server. A future implementation is an escape hatch for
-direct PTY testing; clients MUST NOT send it without a later negotiated
-capability.
+The shape is an escape hatch for direct PTY testing. It is not a substitute
+for structured input, `INPUT_PASTE`, or `INPUT_TERMINAL_REPLY`.
 
 ---
 
@@ -468,16 +471,19 @@ delivered without an attach via `ROUTE_INPUT` or the acknowledged `APPLY_INPUT`
 batch ([L1.md §5.1](./L1.md)). `INPUT_TERMINAL_REPLY` cannot: it is meaningful
 only for an attached emulator processing that Terminal's output. The current
 one-server-per-user trust model authenticates the caller at the transport
-boundary; per-connection `PRIMARY` / `VIEWER` roles gate attached input.
+boundary. Per-connection `PRIMARY` / `VIEWER` roles are specified in
+[L1.md §8.1](./L1.md) and are spec-only; every live subscription behaves as
+an unconstrained primary.
 
 ---
 
 ## 9. Non-terminal targets
 
-<!-- impl-status: partial; probe: ResourceKind -->
-> **Status: partial.** Every id on the wire today names a Terminal, so the
-> refusal below is unreachable against the reference server. It binds a
-> server that advertises `RESOURCE_KINDS`.
+<!-- impl-status: shipped; probe: WrongResourceKind -->
+> **Status: shipped.** The reference server advertises `RESOURCE_KINDS` and
+> serves `AGENT_SESSION`. An `INPUT_*` frame addressed to a live
+> non-Terminal resource is dropped and answered with
+> `ERROR { code: WRONG_RESOURCE_KIND }`.
 
 Every frame in this document is a Terminal-facet frame: it exists to reach a
 PTY through an encoder or an ordered input lane, and only a Terminal-kind

@@ -63,31 +63,33 @@ pub const Flight = struct { coordinator: support.ProviderId, context: u64, epoch
 /// has its own connection. `last` is the coordinator the latest rename went
 /// to, whose outcome `status` reports.
 pub const Flights = struct {
-    pub const capacity: usize = 1 + @import("../model.zig").max_phux_peers;
-
-    slots: [capacity]?Flight = @splat(null),
+    slots: std.ArrayList(?Flight) = .empty,
     last: ?support.ProviderId = null,
 
     pub fn of(self: *const Flights, coordinator: support.ProviderId) ?Flight {
-        for (self.slots) |slot| if (slot) |flight| if (flight.coordinator == coordinator) return flight;
+        for (self.slots.items) |slot| if (slot) |flight| if (flight.coordinator == coordinator) return flight;
         return null;
     }
 
     /// The slot a rename on `coordinator` goes into: that coordinator's own,
     /// else a free one, else one whose rename can no longer settle
-    /// (`settled(engine, flight)`). Null only if every slot holds another
-    /// coordinator's live rename, which the coordinator bound rules out; it
-    /// is asked before anything is sent.
-    pub fn slotFor(self: *const Flights, coordinator: support.ProviderId, engine: anytype, comptime settled: anytype) ?usize {
-        for (self.slots, 0..) |slot, index| if (slot) |flight| if (flight.coordinator == coordinator) return index;
-        for (self.slots, 0..) |slot, index| if (slot == null) return index;
-        for (self.slots, 0..) |slot, index| if (settled(engine, slot.?)) return index;
-        return null;
+    /// (`settled(engine, flight)`). Grow only when every existing slot is
+    /// occupied. Allocation refusal is reported before anything is sent.
+    pub fn slotFor(self: *Flights, coordinator: support.ProviderId, engine: anytype, comptime settled: anytype) ?usize {
+        for (self.slots.items, 0..) |slot, index| if (slot) |flight| if (flight.coordinator == coordinator) return index;
+        for (self.slots.items, 0..) |slot, index| if (slot == null) return index;
+        for (self.slots.items, 0..) |slot, index| if (settled(engine, slot.?)) return index;
+        self.slots.append(std.heap.page_allocator, null) catch return null;
+        return self.slots.items.len - 1;
     }
 
     pub fn put(self: *Flights, index: usize, flight: Flight) void {
-        self.slots[index] = flight;
+        self.slots.items[index] = flight;
         self.last = flight.coordinator;
+    }
+
+    pub fn deinit(self: *Flights) void {
+        self.slots.deinit(std.heap.page_allocator);
     }
 };
 

@@ -341,8 +341,8 @@ typedef enum PhuxResourceKind {
 } PhuxResourceKind;
 
 /**
- * Borrowed resource summary from the latest ATTACHED snapshot. Initialize
- * size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION before
+ * Borrowed resource summary from the latest accepted ATTACHED or GET_STATE
+ * snapshot. Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION before
  * phux_client_resource_get. Every resource the snapshot listed appears, across
  * sessions and kinds, minus resources the server has since reported closed.
  * Only PHUX_RESOURCE_TERMINAL resources in the focused session take part in the
@@ -484,7 +484,9 @@ typedef enum PhuxOperationKind {
     PHUX_OPERATION_ATTACH_RESOURCE = 2,
     PHUX_OPERATION_DETACH_RESOURCE = 3,
     /* phux_client_queue_kill_if (see "conditional kill" below); additive. */
-    PHUX_OPERATION_KILL_IF = 4
+    PHUX_OPERATION_KILL_IF = 4,
+    PHUX_OPERATION_CLOSE_RESOURCE = 5,
+    PHUX_OPERATION_CLOSE_RESOURCES = 6
 } PhuxOperationKind;
 
 typedef enum PhuxOperationStatus {
@@ -820,7 +822,9 @@ PhuxClientResult phux_client_disconnect(PhuxClient *client);
 PhuxClientResult phux_client_feed_frame(PhuxClient *client, const uint8_t *data, size_t len);
 size_t phux_client_session_count(const PhuxClient *client);
 PhuxClientResult phux_client_session_get(const PhuxClient *client, size_t index, PhuxSessionInfo *out_session);
-/* Read-only resource catalog from the latest ATTACHED (see PhuxResourceInfo).
+/* Read-only resource catalog from the latest accepted ATTACHED or workspace
+ * GET_STATE (see PhuxResourceInfo). Workspace refresh subscribes AgentSession
+ * streams independently of terminal replica admission.
  * Zero before ATTACHED or for an invalid client. Spans borrowed until the next
  * mutable call. */
 size_t phux_client_resource_count(const PhuxClient *client);
@@ -1156,6 +1160,37 @@ PhuxClientResult phux_client_session_query_status(const PhuxClient *client, uint
 PhuxClientResult phux_client_queue_spawn_bound(PhuxClient *client, const PhuxSpawnOptions *options);
 PhuxClientResult phux_client_operation_instance(const PhuxClient *client, size_t index, uint8_t out_instance[16], bool *out_bound);
 PhuxClientResult phux_client_queue_kill_if(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_id, const uint8_t instance[16]);
+
+/* Intentional termination of a current, live terminal owned by this ATTACH.
+ * KILL_RESOURCE, or instance-only KILL_RESOURCE_IF when a bound spawn supplied
+ * evidence. Satellite IDs REQUIRE bound-spawn instance evidence: otherwise
+ * INVALID_STATE with last_error is returned before enqueue/ID consumption.
+ * A hub connection alone cannot fence a satellite restart. The satellite must
+ * evaluate the unchanged instance precondition or the relay returns refusal.
+ * This does not weaken abandoned-spawn cleanup above. Result kind 5
+ * reports correlated success/refusal/unknown outcome. SUCCESS is published only
+ * after this exact Client has processed command Ok AND RESOURCE_CLOSED for the
+ * captured terminal, in either order. Ok alone only acknowledges cancellation;
+ * it never produces a success receipt or fabricates replica retirement.
+ * Disconnect while either proof is missing reports UNKNOWN_OUTCOME, including
+ * after Ok. Clearing completed results leaves pending close evidence intact.
+ * The exact client is the connection fence. It cannot reconnect; disconnect
+ * discards queued output. Captured actions and outgoing bytes MUST NOT be
+ * replayed on a replacement connection or retargeted by numeric terminal ID. */
+PhuxClientResult phux_client_queue_close_resource(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_id);
+
+/* Atomic LOCAL batch on the owning coordinator via KILL_RESOURCES. All 1..256 IDs
+ * must be distinct current live owners of this attachment; ANY satellite ID
+ * (even bound) returns INVALID_STATE/last_error for the entire batch, because
+ * satellite batch forwarding provides no atomic correlated teardown. Never
+ * fall back to closing only the local subset. Validation failure
+ * queues nothing and consumes no request ID. Same connection fence/no replay
+ * contract as close_resource. Result kind 6 has no single returned terminal;
+ * SUCCESS requires Ok AND individual RESOURCE_CLOSED for EVERY captured ID,
+ * regardless of arrival order. Partial closure leaves the operation pending;
+ * disconnect then produces UNKNOWN_OUTCOME, not success. The wire
+ * batch has no instance precondition; never move it to another connection. */
+PhuxClientResult phux_client_queue_close_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
 /** *out_supported: HELLO_OK advertised CONDITIONAL_KILL. */
 PhuxClientResult phux_client_conditional_kill_supported(const PhuxClient *client, bool *out_supported);
 
@@ -1228,6 +1263,30 @@ typedef struct PhuxSessionRenameInfo {
 
 PhuxClientResult phux_client_rename_session(PhuxClient *client, uint32_t request_id, PhuxBytes current, PhuxBytes new_name);
 PhuxClientResult phux_client_session_rename_info(const PhuxClient *client, PhuxSessionRenameInfo *out_info);
+
+/* Create an empty durable session on this exact negotiated connection, using
+ * the CLI's nonce-correlated session-create operation. keep_empty must be true;
+ * a server without KEEP_EMPTY_SESSIONS is refused before any write. No ATTACH
+ * is sent and the current session remains selected. request_id shares the
+ * monotonic operation namespace. Names are UTF-8, 1..240 bytes, no controls. */
+PhuxClientResult phux_client_create_session(PhuxClient *client, uint32_t request_id, PhuxBytes name, bool keep_empty);
+
+typedef struct PhuxSessionCreateInfo {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    uint32_t status; /* 1 pending, 2 created, 3 refused, 4 unknown outcome */
+    uint32_t session_id; /* nonzero only after an authoritative state reply */
+    PhuxBytes message; /* borrowed until the next mutable client call */
+} PhuxSessionCreateInfo;
+
+/* Each request retains its own result under concurrency. Initialize size and
+ * version (PHUX_CLIENT_ABI_VERSION) before querying. Copy the message before
+ * releasing a result. Release abandons interest; pending writes still execute
+ * and their reply correlations are retained until drained or disconnected.
+ * Release only on the original Client incarnation: reconnects may reuse IDs. */
+PhuxClientResult phux_client_session_create_info(const PhuxClient *client, uint32_t request_id, PhuxSessionCreateInfo *out_info);
+PhuxClientResult phux_client_session_create_release(PhuxClient *client, uint32_t request_id);
 
 /* Follow renames any client makes, from the start of the connection.
  * Additive to ABI version 2. Queues the SUBSCRIBE_METADATA of
@@ -1319,6 +1378,14 @@ typedef struct PhuxRemoteTunnelInfo {
  * host; that tunnel is FAILED with a message. Only malformed arguments fail
  * the call. */
 PhuxClientResult phux_remote_tunnel_resolve(const PhuxRemoteTarget *target, PhuxRemoteTunnel **out_tunnel);
+/** Fresh RESOLVED tunnel from the source's immutable captured dial configuration.
+ * Copies endpoint, pin and token-file/config provenance without registry or token
+ * reads. Shares no socket, thread, cancellation or connection state. Source may
+ * be connecting/failed; it must have resolved successfully and remain live for
+ * this call (no concurrent free). Caller owns out; writable out is cleared on
+ * failure. Ordinary reconnect/independent attachments use this exact snapshot;
+ * an explicit registry Retry may resolve anew to adopt changed credentials. */
+PhuxClientResult phux_remote_tunnel_clone_resolved(const PhuxRemoteTunnel *source, PhuxRemoteTunnel **out_tunnel);
 /** Thread-safe with respect to the tunnel's own thread and to a concurrent
  * phux_remote_tunnel_start; may be called from any thread until free. */
 PhuxClientResult phux_remote_tunnel_info(const PhuxRemoteTunnel *tunnel, PhuxRemoteTunnelInfo *out_info);
@@ -1332,6 +1399,55 @@ PhuxClientResult phux_remote_tunnel_start(PhuxRemoteTunnel *tunnel, int transpor
 /** Cancels any dial, closes the connection, and joins the tunnel thread;
  * bounded by one scheduler poll, never by the network. Must not race info. */
 void phux_remote_tunnel_free(PhuxRemoteTunnel *tunnel);
+
+/* Saved-machine inventory, additive ABI v2. All calls are single-owner-thread.
+ * Listing reads only configuration (including its layers), never credentials or
+ * network. No four-entry limit: caller budgets bound capture and indexes page it.
+ * Every span below is borrowed until registry_free. Initialize size/version.
+ * Rows have no connection state: the host joins authenticated endpoint identity.
+ * Captured (registry handle,index) is authority; display names alone are not.
+ */
+typedef struct PhuxMachineRegistry PhuxMachineRegistry;
+typedef struct PhuxMachineRegistryOptions {
+    size_t size;
+    uint32_t version;
+    PhuxBytes config_path; /* Empty selects the CLI path; otherwise absolute. */
+    size_t max_entries;
+    /* Aggregate root + unique inherited file bytes; embedded defaults excluded. */
+    size_t max_file_bytes;
+} PhuxMachineRegistryOptions;
+typedef struct PhuxMachineRegistryInfo {
+    size_t size;
+    uint32_t version;
+    size_t count;
+    uint32_t failed;
+    PhuxBytes message;
+} PhuxMachineRegistryInfo;
+/* Display spans are at most 1024 UTF-8 bytes. Oversized identity fields produce
+ * an unsupported repair row. Never authorize actions from elided display text. */
+typedef struct PhuxMachineRecord {
+    size_t size;
+    uint32_t version;
+    uint32_t role; /* 1 remote, 2 satellite */
+    uint32_t route; /* 1 direct, 2 setup, 3 via hub, 4 disabled, 5 unsupported */
+    PhuxBytes name;
+    PhuxBytes endpoint;
+    PhuxBytes session;
+    PhuxBytes message;
+} PhuxMachineRecord;
+/* Load errors yield OK with info.failed=1 and a sanitized actionable message. */
+PhuxClientResult phux_machine_registry_open(const PhuxMachineRegistryOptions *options, PhuxMachineRegistry **out);
+PhuxClientResult phux_machine_registry_info(const PhuxMachineRegistry *registry, PhuxMachineRegistryInfo *out);
+PhuxClientResult phux_machine_registry_get(const PhuxMachineRegistry *registry, size_t index, PhuxMachineRecord *out);
+/* State error if captured root bytes or effective registrations changed. */
+PhuxClientResult phux_machine_registry_validate(const PhuxMachineRegistry *registry, size_t index);
+/* Returns a checked, exact tunnel (no network yet). Start never resolves aliases
+ * again. Caller owns out through phux_remote_tunnel_free. Unsupported roles fail. */
+PhuxClientResult phux_machine_registry_resolve(const PhuxMachineRegistry *registry, size_t index, PhuxRemoteTunnel **out);
+/* Caller first explicitly disconnects. Exact root entry only, comments preserved;
+ * no token files removed. Success invalidates capture; refresh before next action. */
+PhuxClientResult phux_machine_registry_forget(const PhuxMachineRegistry *registry, size_t index);
+void phux_machine_registry_free(PhuxMachineRegistry *registry);
 
 #ifdef __cplusplus
 }

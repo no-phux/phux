@@ -29,6 +29,7 @@ fn command_paths(command: &Command) -> Vec<String> {
 fn schema_contracts() -> Value {
     json!([
         { "invocation": "phux --capabilities --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux runtime-info --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux ls --json", "schema_version": 3, "kind": "document" },
         { "invocation": "phux snapshot --json", "schema_version": 3, "kind": "document" },
         { "invocation": "phux snapshot --rendered --json", "schema_version": 1, "kind": "document" },
@@ -53,7 +54,8 @@ fn schema_contracts() -> Value {
         { "invocation": "phux pair --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux pair rotate|revoke --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux rec|play --json", "schema_version": 1, "kind": "document" },
-        { "invocation": "phux logs|doctor|update --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux logs|doctor --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux update --json", "schema_version": crate::commands::update::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux whoami --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux run --json", "schema_version": null, "kind": "document", "note": "unversioned result" },
         { "invocation": "phux watch --json", "schema_version": null, "kind": "ndjson", "note": "event vocabulary is the compatibility contract" },
@@ -110,6 +112,28 @@ mod tests {
     use clap::CommandFactory;
 
     use super::*;
+
+    #[test]
+    fn update_schema_advertisement_matches_the_updater() {
+        let contracts = schema_contracts();
+        let contracts = contracts.as_array().unwrap();
+        for (invocation, schema, kind) in [
+            (
+                "phux update --json",
+                crate::commands::update::DOCUMENT_SCHEMA_VERSION,
+                "document",
+            ),
+            ("phux logs|doctor --json", 1, "document"),
+            ("phux --json failures", 1, "error"),
+        ] {
+            let contract = contracts
+                .iter()
+                .find(|row| row["invocation"] == invocation)
+                .unwrap_or_else(|| panic!("missing contract: {invocation}"));
+            assert_eq!(contract["schema_version"], schema, "{invocation}");
+            assert_eq!(contract["kind"], kind, "{invocation}");
+        }
+    }
 
     #[test]
     fn document_is_versioned_sorted_and_hides_plumbing() {

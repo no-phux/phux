@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-12
 ---
 
 # Module structure
@@ -9,17 +9,16 @@ last-reviewed: 2026-09-11
 **TL;DR.** Per-crate module trees as they exist in tree today, kept as a
 navigational map rather than an exhaustive listing. New modules should land
 in the shape that fits the crate; do not retrofit older layouts onto new
-work. The render-layering split between `phux-tui` and `phux-client-core`
-is documented separately in [`render-layering.md`](./render-layering.md); crate
-dependency edges are documented in [`crate-graph.md`](./crate-graph.md).
+work.
 
 ---
 
-What is in tree today. New modules land in the shape that fits the crate;
-do not retrofit older layouts onto new work. Eighteen crates make up the
-workspace; the sections below cover them roughly in dependency order
-(wire, domain, daemon, clients, config, binary, then the smaller
-special-purpose crates).
+Eighteen crates make up the workspace; the sections below cover them
+roughly in dependency order (wire, domain, daemon, clients, config,
+binary, then the smaller special-purpose crates). The render-layering
+split between `phux-tui` and `phux-client-core` is
+[`render-layering.md`](./render-layering.md); crate edges are
+[`crate-graph.md`](./crate-graph.md).
 
 ## `phux-protocol`
 
@@ -43,16 +42,14 @@ src/
 
 The `input` and `wire` modules are gated behind the `server` cargo feature
 so the no-feature shell compiles without `libghostty-vt`; see `lib.rs` for
-the docs.rs / crates.io rationale. Protocol 0.7 permanently retired
-`TERMINAL_SNAPSHOT = 0x91`: attach content is `BOOTSTRAP_BEGIN` / bounded
-opaque `BOOTSTRAP_CHUNK`s / `BOOTSTRAP_READY`, with retained history pulled
-afterward ([ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md)).
+the docs.rs / crates.io rationale. Attach content is `BOOTSTRAP_BEGIN` /
+bounded opaque `BOOTSTRAP_CHUNK`s / `BOOTSTRAP_READY`, with retained
+history pulled afterward
+([ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md)).
 Native checkpoint, history, cursor, and raw PTY payloads are engine-owned
 bytes and are never scanned or rewritten by phux; synthesized VT remains an
-explicit compatibility profile. The wire still spells the resource id and
-the substrate frames with the Terminal vocabulary (`ResourceId`,
-`RESOURCE_OUTPUT`, `SPAWN_RESOURCE`); the 0.9.0 rename is tracked in the
-Status table below.
+explicit compatibility profile. The substrate names are `ResourceId`,
+`RESOURCE_OUTPUT`, and `SPAWN_RESOURCE`.
 
 The mutual references among `wire/frame/`, `wire/decode.rs`, and
 `wire/info.rs` are deliberate. `frame` and `info` define one recursive wire
@@ -106,7 +103,8 @@ src/
                         resource types, ...)
   runtime/            — tokio current-thread executor + accept loops;
                         spawns per-client tasks on a LocalSet (ADR-0014)
-    mod.rs, attach.rs, client.rs, commands.rs, directory.rs (the
+    mod.rs, attach.rs, client.rs, commands.rs, resource_commands.rs
+    (AgentSession spawn and `APPEND_RESOURCE_OUTPUT`), directory.rs (the
     LIST_DIRECTORY host query), pump.rs, resume.rs, upgrade.rs, upload.rs,
     voice.rs, whoami.rs (the read-only phux.whoami/v1 key)
     input_lane/       — the dedicated input-encoding thread (ADR-0044) and
@@ -116,7 +114,9 @@ src/
                         one module per concern rather than one large file
     mod.rs, sessions.rs, terminals.rs, session_table.rs, resource_table.rs
     (ResourceTable: ResourceHandle per live resource, its cancel token,
-    subscribers, output pumps, and the engine JoinSet), client.rs,
+    subscribers, output pumps, and the engine JoinSet), resolve.rs
+    (`resolve_resource`: local handle, satellite relay, or unknown),
+    bindings.rs (parent cascade and `CloseReason`), client.rs,
     client_table.rs, metadata.rs, leases.rs, lease_table.rs, hub.rs,
     hub_state.rs, agent.rs, agent_tracking.rs, cwd.rs, events.rs,
     hook_dispatch.rs, lifecycle.rs, reap.rs, snapshot.rs, viewport.rs,
@@ -132,8 +132,12 @@ src/
                         Send + Clone channel set the runtime holds: kind,
                         parent, output, consumer attach/detach/ack, event
                         subscribe/unsubscribe, upgrade, control, plus
-                        `facet`), ResourceFacetHandle (one variant per
-                        engine), WrongResourceKind
+                        `facet`), ResourceFacetHandle (Terminal and
+                        AgentSession variants), WrongResourceKind
+    agent_session/    — the AgentSession engine: record ring, append
+                        validation, seq/time stamp, bootstrap from
+                        retained `AgentEventsJsonlV1` records, derived
+                        state (ADR-0103); record.rs, ring.rs
     terminal/         — the Terminal engine: TerminalActor owns one pane's
                         libghostty `Terminal` (!Send, in a RefCell on the
                         LocalSet), its input encoders, PTY reader/writer
@@ -168,11 +172,15 @@ src/
                         slices the live screen; rules.rs loads the TOML
                         manifests; identify.rs names the agent from the
                         PTY's foreground process; record.rs is the
-                        phux.agent/v1 JSON shape
+                        phux.agent/v1 JSON shape; live_session.rs is the
+                        live AgentSession-child probe so stream evidence
+                        outranks screen inference
   agent_state.rs      — arbitration between an explicit SET_METADATA and
-                        the detector's writes (ADR-0046)
+                        the detector's writes (ADR-0046); evidence ladder
+                        is Stream > Hook > Process > Screen
   agent_asked.rs      — the `phux ask` / `asked` event ingress (ADR-0036);
                         the AskedSource ladder is Scrape < Sentinel < Hook
+                        < Stream
   agent_explain.rs    — the `phux agent explain` evidence report
   hooks.rs            — server-side event-hook dispatcher (config
                         `[[hooks.<name>]]` plus plugin `[[events]]`),
@@ -199,11 +207,12 @@ src/
 ```
 
 **The facet rule.** Runtime code holds a `ResourceHandle` and reaches a
-Terminal-only channel only through `ResourceHandle::terminal()`, the one
-place that produces `WrongResourceKind`. Each caller maps that error into
-its own reply shape (`runtime/commands.rs` has the one `CommandResult`
-mapping); nothing else in the crate matches on the facet enum, so a second
-engine adds a variant and a constructor, not a sweep of the runtime.
+kind-only channel through `ResourceHandle::terminal()` or
+`ResourceHandle::agent_session()`, the two producers of
+`WrongResourceKind`. Each caller maps that error into its own reply
+shape (`runtime/commands.rs` has the one `CommandResult` mapping);
+nothing else in the crate matches on the facet enum, so a further engine
+adds a variant and a constructor, not a sweep of the runtime.
 
 **`ResourceTable`.** `state/resource_table.rs` holds every map keyed on a
 live resource — `ResourceHandle`s, cancellation tokens, the `JoinSet` that
@@ -215,11 +224,9 @@ handle, and spawns the engine future in one call under the state lock;
 window and session when they empty) and calls `ResourceTable::
 forget_resource` in the same acquisition.
 
-**Satellite routing.** Each command handler in `runtime/commands.rs` that
-names a resource checks `ResourceId::is_local()` itself and, on a hub,
-forwards a satellite-tagged frame through `hub::relay` with the id rewritten
-(ADR-0007). There are eight such sites; the single `resolve_resource` seam
-that replaces them is tracked in the Status table.
+**Satellite routing.** `ServerState::resolve_resource` is the one seam
+that classifies a wire id as local handle, satellite relay, or unknown.
+Command handlers in `runtime/commands.rs` route through it (ADR-0007).
 
 PTY supervision lives inside `resource/terminal/` (two `std::thread`s
 bridging blocking `portable_pty` I/O — via `portable-pty-adopt` for
@@ -257,6 +264,7 @@ src/
   selector.rs         — client-side TARGET selector resolution (ADR-0021)
   snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs,
   layout_ops.rs, ask.rs, agent_meta.rs, agent_prompt.rs, agent_wait.rs,
+  agent_session.rs (`phux agent session` / `emit` / `log`),
   vcs.rs, explain.rs, perf.rs, record.rs
                       — one module per agent-CLI verb's library half
                         (docs/consumers/agents.md); layout_ops, agent_meta,
@@ -303,7 +311,9 @@ src/
     server_frame/     — decodes server frames into client-side effects
     render.rs, paint.rs, repaint.rs, reflow.rs, rendered.rs
                       — TerminalRenderer: feeds RESOURCE_OUTPUT bytes into
-                        the local Terminal and paints dirty rows + chrome
+                        the local Terminal and paints the changed cells of
+                        dirty rows (diffed against a per-pane front buffer,
+                        phux-esge) + chrome
     input_dispatch/, action_registry.rs, actions.rs
                       — the configurable keybinding-to-action pipeline
     fleet.rs, focus.rs — multi-session/pane fleet view and focus tracking
@@ -321,9 +331,7 @@ src/
     theme.rs, breakpoints.rs, sgr.rs
 ```
 
-What this crate deliberately does not yet do: full client-side coverage of
-every `docs/consumers/tui.md` keybinding action, and `VIEWPORT_RESIZE`
-routing all the way to a live SIGWINCH handler. See
+SIGWINCH ships `VIEWPORT_RESIZE` through `attach/driver`. See
 [`predictive-echo.md`](./predictive-echo.md) for the predictive-local-echo
 design layered on top of the mirror Terminal (implemented in
 `phux-client-core::predict`, wired here).
@@ -342,8 +350,9 @@ src/
   engine.rs, engine/ghostty.rs — the generic terminal adapter trait plus
                         its libghostty implementation (feature
                         `native-engine`)
-  session.rs, session/  — the synchronous protocol-0.7 session kernel
-                        (kernel_rig.rs, property_tests.rs, tests.rs)
+  session.rs, session/  — the synchronous session kernel
+                        (agent_stream.rs, kernel_rig.rs, property_tests.rs,
+                        tests.rs)
   history.rs          — client-owned scrollback cache (ADR-0070)
   layout/             — pane-geometry layout tree + split math + the CBOR
                         metadata envelope persisted server-side
@@ -357,12 +366,13 @@ src/
   perf.rs             — the crate's ADR-0096 metric statics
 ```
 
-The session kernel is keyed by the wire `ResourceId` and treats every
-resource it is told about as a Terminal: one replica generation
-(`ReplicaKey`: terminal, stream, bootstrap, profile) per attached id, staged
-through `BootstrapBegin` / `BootstrapChunk` / `BootstrapReady` and published
-atomically. It carries no kind; the kind-aware kernel is tracked in the
-Status table.
+The session kernel is keyed by the wire `ResourceId` and records
+`ResourceKind` per id. A Terminal-kind resource gets one replica generation
+(`ReplicaKey`: terminal, stream, bootstrap, profile), staged through
+`BootstrapBegin` / `BootstrapChunk` / `BootstrapReady` and published
+atomically. An AgentSession-kind resource has no replica; `agent_stream.rs`
+parses `AgentEventsJsonlV1` records and derives session state. Input aimed
+at a non-Terminal is `NotATerminal`.
 
 `phux-client` and `phux-tui` both depend on this crate and re-export its
 modules so consumers keep stable `phux_client::{layout, multi_pane, predict}`
@@ -412,8 +422,8 @@ src/
     send_keys.rs, paste.rs, run.rs, wait.rs, watch.rs, snapshot.rs, ask.rs,
     tag.rs, play.rs, rec/, workspace.rs + workspace/archive/, host.rs,
     remote.rs, satellite.rs + satellite/, plugin.rs + plugin/,
-    agent/ (list/show/explain/set/clear/install-claude/config, the
-    `--phux-hook` shim and its hook_payload reader),
+    agent/ (list/show/explain/set/clear/install-claude/config,
+    session open|close, emit, log, the `--phux-hook` shim),
     server.rs, service.rs, supervise.rs, upgrade.rs, doctor.rs, logs.rs,
     config.rs + config/, config_action.rs, enroll.rs, pair.rs, relay.rs,
     stdio_bridge.rs, worktree.rs, status.rs, whoami.rs, completion.rs
@@ -435,8 +445,8 @@ recording/playback, workspace save/restore, and host/satellite/plugin
 management are all live verbs, not aspirational ones. The authoritative
 catalog is generated, not hand-maintained here — see
 [`docs/reference/`](../reference/) (from `just docs-gen`) and
-[`docs/consumers/tui.md`](../consumers/tui.md) §1 /
-[`docs/consumers/agents.md`](../consumers/agents.md) §2 for the narrated
+[`docs/consumers/tui.md`](../consumers/tui.md) /
+[`docs/consumers/agents.md`](../consumers/agents.md) for the narrated
 per-verb contract. Opt-in cargo features: `dhat-heap` (this binary) and
 `tokio-console` (via `phux-server`).
 
@@ -455,7 +465,12 @@ rather than a layer with its own internal architecture worth diagramming:
   terminate TLS on identical terms; ADR-0051 forbids the relay depending on
   `phux-server`, so the one implementation lives here, in the crate both
   already sit on. Each caller keeps its own error vocabulary and maps
-  `cert::CertError` into it.
+  `cert::CertError` into it. It also owns the one piece of QUIC *sending*
+  policy (`window.rs`): the congestion-tracked send window — quinn's window
+  held to the congestion window plus 16 KiB, re-read before every partial
+  write — that the server's QUIC and WebTransport writers and `phux-relay`'s
+  consumer-facing leg all write through (see
+  [`transport.md`](./transport.md)).
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): splices an
   inbound consumer connection onto an outbound connector tunnel. Never
   parses phux frames — only the connector's auth preamble.
@@ -504,8 +519,4 @@ rather than a layer with its own internal architecture worth diagramming:
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| `resource/agent_session/` engine (record ring, append validation, seq stamping, bootstrap from retained records, state derivation) | `ResourceFacetHandle` has one variant, `Terminal`; no engine accepts appended records and `Registry::new_agent_session` has no server caller. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.9 |
-| One `resolve_resource(id) -> Local(&ResourceHandle) \| Remote(relay)` seam | Eight `is_local()` checks in `runtime/commands.rs`, each with its own relay branch. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.5 |
-| Detector precedence Stream > Hook > Process > Screen; `AskedSource::Stream` | `agent_detect` derives from process, title, and screen; `AskedSource` ranks Scrape < Sentinel < Hook. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.11 |
-| Kind-aware `phux-client-core` kernel, `phux-client` selectors (`%name`), and TUI projection of AgentSession children | The kernel keys replicas by `ResourceId` with no kind; `phux ls --json` carries no `kind` or `parent`. | [ADR-0103](../../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.12, phux-am9y.14 |
-| Workspace rename `ResourceId` -> `ResourceId`, protocol 0.9.0 frame names | `ResourceId` is a `phux-core` alias only; the wire, `phux-client-core`, and the FFI keep the Terminal spelling. | [ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) | phux-am9y.18 |
+| Alternate-screen history harvest driver | `history_merge.rs` is a tested pure function; nothing calls it. ADR-0078 is Proposed. | [ADR-0078](../../ADR/0078-alternate-screen-history.md) | not scheduled |

@@ -19,12 +19,14 @@ Both deploy on push to `main` via GitHub Actions (below). No manual wrangler.
 
 ## 1. The site → Workers static assets
 
-A Workers static-assets worker (`phux-site`, config in `wrangler.jsonc` — no
-script, assets only). Deploys via `site-deploy.yml` at the phux repo root, or
-manually with `bun run deploy`. Build `bun run build`, output `dist`; the wasm
-client is committed under `src/lib/phux-web/`, so no Rust/Zig is needed. The
-`phux.sh` custom domain is declared in `wrangler.jsonc` and attaches on
-deploy.
+A Workers static-assets worker (`phux-site`, config in `wrangler.jsonc`) with
+a small host router (`host/index.ts`). Deploys via `site-deploy.yml` at the
+phux repo root, or manually with `bun run deploy`. Build `bun run build`,
+output `dist`; the wasm client is committed under `src/lib/phux-web/`, so no
+Rust/Zig is needed. Custom domains `phux.sh` (product) and `docs.phux.sh`
+(documentation) are declared in `wrangler.jsonc` and attach on deploy. The
+worker runs first (`run_worker_first`) so a docs path on `phux.sh` 301s to
+the same path on `docs.phux.sh`, and `docs.phux.sh/` 301s to `/overview`.
 
 ### The curl installers at `/install` and `/install-cockpit`
 
@@ -96,10 +98,10 @@ paths are scoped to `docs/site/**`.
    CLOUDFLARE_API_TOKEN   = <token>
    CLOUDFLARE_ACCOUNT_ID  = <account id>
    ```
-3. **Custom domains** attach once (`phux.sh` on the site worker,
-   `shell.phux.sh` on the demo worker — both are declared in the wrangler
-   configs, so `bun run deploy` / `bun run worker:deploy` attach them; the
-   zone must live in the same account).
+3. **Custom domains** attach once (`phux.sh` and `docs.phux.sh` on the site
+   worker, `shell.phux.sh` on the demo worker — all are declared in the
+   wrangler configs, so `bun run deploy` / `bun run worker:deploy` attach
+   them; the zone must live in the same account).
 
    **Pages-migration wart, learned the hard way:** deleting a Pages project
    does not reliably remove the zone CNAME its custom domain created. The

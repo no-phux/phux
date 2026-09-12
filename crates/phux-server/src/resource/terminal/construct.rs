@@ -274,6 +274,8 @@ impl TerminalActor {
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_cursor_owners: HashMap::new(),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            reflow_tombstoned: Vec::new(),
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             pending_native_bootstrap: None,
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_bootstrap_backlog: VecDeque::new(),

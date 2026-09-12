@@ -42,6 +42,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::state::{Outbound, SharedState};
 use crate::upgrade::blob::StateBlob;
+use phux_protocol::wire::{ListenerDisabledReason, RemoteListenerSlot, RemoteListenerTransport};
 
 pub mod attach;
 pub mod client;
@@ -706,6 +707,10 @@ impl ServerRuntime {
         clippy::future_not_send,
         reason = "ADR-0014: server runs on a LocalSet; per-pane actors are !Send"
     )]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "startup binds every transport once; splitting hides the accept-set assembly"
+    )]
     pub async fn run_async<F>(self, shutdown: F) -> Result<(), ServerError>
     where
         F: Future<Output = ()> + Send + 'static,
@@ -832,7 +837,7 @@ impl ServerRuntime {
                 // `tailscale` — is not resolved here at all; see
                 // `serve_auto_overlay_listeners` below.
                 let configured =
-                    ConfiguredListeners::bind(ws_addr_override, quic_addr_override).await;
+                    ConfiguredListeners::bind(ws_addr_override, quic_addr_override, &state).await;
                 // Optionally also accept WebTransport connections (phux-0wmf):
                 // HTTP/3 over QUIC, the browser's QUIC-class door (`phux-web`
                 // dials it, falling back to WebSocket). Opt-in via
@@ -840,7 +845,11 @@ impl ServerRuntime {
                 #[cfg(feature = "webtransport")]
                 let webtransport_listener = webtransport_addr_override
                     .or_else(|| env_socket_addr("PHUX_WT_ADDR"))
-                    .and_then(build_wt_listener);
+                    .and_then(|addr| {
+                        let (listener, slot) = build_wt_listener(addr);
+                        state.with_mut(|s| s.record_remote_listener(slot));
+                        listener
+                    });
 
                 if let Some(blob) = resume_blob {
                     resume_session_tree(&state, &blob, &root_token);
@@ -1273,7 +1282,11 @@ impl ConfiguredListeners {
     /// Resolve each opt-in transport's address — the flag wins, the
     /// environment variable is the fallback — and bind the ones that were
     /// asked for.
-    async fn bind(ws_override: Option<SocketAddr>, quic_override: Option<SocketAddr>) -> Self {
+    async fn bind(
+        ws_override: Option<SocketAddr>,
+        quic_override: Option<SocketAddr>,
+        state: &SharedState,
+    ) -> Self {
         // Optionally also accept WebSocket connections (phux-486.4) so
         // browser consumers (`phux-web`) can speak the identical wire.
         // Opt-in via `phux server --listen <ADDR>` or the `PHUX_WS_ADDR`
@@ -1281,14 +1294,22 @@ impl ConfiguredListeners {
         // on. The flag wins when both are set.
         let ws_addr = ws_override.or_else(|| env_socket_addr("PHUX_WS_ADDR"));
         let ws = match ws_addr {
-            Some(addr) => build_ws_listener(addr).await,
+            Some(addr) => {
+                let (listener, slot) = build_ws_listener(addr).await;
+                state.with_mut(|s| s.record_remote_listener(slot));
+                listener
+            }
             None => None,
         };
         // Optionally also accept QUIC connections (phux-y8v6, ADR-0007).
         // Opt-in via `phux server --quic <ADDR>` or `PHUX_QUIC_ADDR`;
         // QUIC carries the identical frames over a TLS 1.3 stream.
         let quic_addr = quic_override.or_else(|| env_socket_addr("PHUX_QUIC_ADDR"));
-        let quic = quic_addr.and_then(build_quic_listener);
+        let quic = quic_addr.and_then(|addr| {
+            let (listener, slot) = build_quic_listener(addr);
+            state.with_mut(|s| s.record_remote_listener(slot));
+            listener
+        });
         Self {
             ws_addr,
             quic_addr,
@@ -1518,12 +1539,18 @@ async fn serve_auto_overlay_listeners(
     };
 
     let ws_listener = match detected.filter(|_| ports.ws) {
-        Some(ip) => build_ws_listener(SocketAddr::new(ip, DEFAULT_WS_PORT)).await,
+        Some(ip) => {
+            let (listener, slot) = build_ws_listener(SocketAddr::new(ip, DEFAULT_WS_PORT)).await;
+            state.with_mut(|s| s.record_remote_listener(slot));
+            listener
+        }
         None => None,
     };
-    let quic_listener = detected
-        .filter(|_| ports.quic)
-        .and_then(|ip| build_quic_listener(SocketAddr::new(ip, DEFAULT_QUIC_PORT)));
+    let quic_listener = detected.filter(|_| ports.quic).and_then(|ip| {
+        let (listener, slot) = build_quic_listener(SocketAddr::new(ip, DEFAULT_QUIC_PORT));
+        state.with_mut(|s| s.record_remote_listener(slot));
+        listener
+    });
 
     let mut accepts: Vec<AcceptLoopFuture<'_>> = Vec::new();
     if let Some(ws) = &ws_listener {
@@ -1636,8 +1663,9 @@ fn unlink_socket_if_ours(path: &Path, bound: Option<(u64, u64)>) {
 /// Public-ish (`pub(crate)`) so tests can drive it directly inside
 /// their own `LocalSet`.
 /// Build the optional WebSocket listener for `PHUX_WS_ADDR`, applying the
-/// ADR-0031 remote-consumer policy. Returns `None` (WebSocket disabled, UDS
-/// only) on any setup failure rather than failing the whole server.
+/// ADR-0031 remote-consumer policy. Returns `(None, slot)` (WebSocket
+/// disabled, UDS only) on any setup failure rather than failing the whole
+/// server; `slot` always describes the bind outcome for `GET_STATE`.
 ///
 /// **The bind address is the toggle, so there is no remote-mode setup friction:**
 ///
@@ -1654,20 +1682,37 @@ fn unlink_socket_if_ours(path: &Path, bound: Option<(u64, u64)>) {
 /// the remote path locally). `PHUX_WS_TLS_CERT` + `PHUX_WS_TLS_KEY` override the
 /// auto-generated certificate with an operator-supplied one; `PHUX_WS_TOKENS`
 /// overrides the default token-store path.
-async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListener> {
+#[allow(
+    clippy::too_many_lines,
+    reason = "secure vs plaintext paths share one policy table; splitting obscures the bind outcome"
+)]
+async fn build_ws_listener(
+    addr: SocketAddr,
+) -> (Option<crate::transport::WsListener>, RemoteListenerSlot) {
     let force_secure = std::env::var_os("PHUX_WS_SECURE").is_some_and(|v| !v.is_empty());
     let secure = !addr.ip().is_loopback() || force_secure;
+    let addr_s = addr.to_string();
 
     if !secure {
         return match crate::transport::WsListener::bind(addr).await {
             Ok(ws) => {
-                let bound = ws.local_addr().map(|a| a.to_string()).unwrap_or_default();
+                let bound = ws.local_addr().map_or(addr_s, |a| a.to_string());
                 info!(addr = %bound, "WebSocket listening (plaintext, loopback)");
-                Some(ws)
+                (
+                    Some(ws),
+                    RemoteListenerSlot::bound(RemoteListenerTransport::Wss, bound),
+                )
             }
             Err(err) => {
                 warn!(addr = %addr, error = %err, "failed to bind WebSocket; UDS only");
-                None
+                (
+                    None,
+                    RemoteListenerSlot::disabled(
+                        RemoteListenerTransport::Wss,
+                        Some(addr_s),
+                        ListenerDisabledReason::BindFailed,
+                    ),
+                )
             }
         };
     }
@@ -1685,7 +1730,14 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
             crate::transport::tls::ensure_self_signed_for(&cert_path, &key_path, &advertised)
     {
         error!(error = %err, "failed to provision self-signed certificate; WebSocket disabled");
-        return None;
+        return (
+            None,
+            RemoteListenerSlot::disabled(
+                RemoteListenerTransport::Wss,
+                Some(addr_s),
+                ListenerDisabledReason::CertProvisionFailed,
+            ),
+        );
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, "wss");
     let acceptor = match crate::transport::tls::acceptor_from_pem_with_client_ca(
@@ -1694,7 +1746,14 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
         Ok(acceptor) => acceptor,
         Err(err) => {
             error!(error = %err, "TLS setup failed; WebSocket disabled");
-            return None;
+            return (
+                None,
+                RemoteListenerSlot::disabled(
+                    RemoteListenerTransport::Wss,
+                    Some(addr_s),
+                    ListenerDisabledReason::TlsSetupFailed,
+                ),
+            );
         }
     };
 
@@ -1704,7 +1763,14 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
         Ok(store) => store,
         Err(err) => {
             error!(error = %err, path = %tokens_path.display(), "failed to load token store; WebSocket disabled");
-            return None;
+            return (
+                None,
+                RemoteListenerSlot::disabled(
+                    RemoteListenerTransport::Wss,
+                    Some(addr_s),
+                    ListenerDisabledReason::TokenStoreLoadFailed,
+                ),
+            );
         }
     };
     if store.is_empty() {
@@ -1719,13 +1785,23 @@ async fn build_ws_listener(addr: SocketAddr) -> Option<crate::transport::WsListe
         .await
     {
         Ok(ws) => {
-            let bound = ws.local_addr().map(|a| a.to_string()).unwrap_or_default();
+            let bound = ws.local_addr().map_or(addr_s, |a| a.to_string());
             info!(addr = %bound, tokens = token_count, "WebSocket listening with TLS + token auth");
-            Some(ws)
+            (
+                Some(ws),
+                RemoteListenerSlot::bound(RemoteListenerTransport::Wss, bound),
+            )
         }
         Err(err) => {
             warn!(addr = %addr, error = %err, "failed to bind secure WebSocket; UDS only");
-            None
+            (
+                None,
+                RemoteListenerSlot::disabled(
+                    RemoteListenerTransport::Wss,
+                    Some(addr_s),
+                    ListenerDisabledReason::BindFailed,
+                ),
+            )
         }
     }
 }
@@ -1818,8 +1894,9 @@ fn env_socket_addr(var: &str) -> Option<SocketAddr> {
 }
 
 /// Build the optional QUIC listener for `addr` (phux-y8v6, ADR-0007). Returns
-/// `None` (QUIC disabled, other transports unaffected) on any setup failure
-/// rather than failing the whole server.
+/// `(None, slot)` (QUIC disabled, other transports unaffected) on any setup
+/// failure rather than failing the whole server; `slot` always describes the
+/// bind outcome for `GET_STATE`.
 ///
 /// QUIC is **always** TLS 1.3-encrypted, so a certificate is provisioned in
 /// both modes — it shares the persisted self-signed cert and token store with
@@ -1832,9 +1909,15 @@ fn env_socket_addr(var: &str) -> Option<SocketAddr> {
 /// * **Routable address (or `PHUX_WS_SECURE=1`) → TLS + bearer-token preamble.**
 ///   Off-loopback is treated as exposing the server, so a paired token is
 ///   required exactly as for a remote WebSocket consumer (ADR-0031).
-fn build_quic_listener(addr: SocketAddr) -> Option<crate::transport::quic::QuicListener> {
+fn build_quic_listener(
+    addr: SocketAddr,
+) -> (
+    Option<crate::transport::quic::QuicListener>,
+    RemoteListenerSlot,
+) {
     let force_secure = std::env::var_os("PHUX_WS_SECURE").is_some_and(|v| !v.is_empty());
     let secure = !addr.ip().is_loopback() || force_secure;
+    let addr_s = addr.to_string();
 
     let cert_env = std::env::var_os("PHUX_WS_TLS_CERT").map(PathBuf::from);
     let key_env = std::env::var_os("PHUX_WS_TLS_KEY").map(PathBuf::from);
@@ -1847,7 +1930,14 @@ fn build_quic_listener(addr: SocketAddr) -> Option<crate::transport::quic::QuicL
             crate::transport::tls::ensure_self_signed_for(&cert_path, &key_path, &advertised)
     {
         error!(error = %err, "failed to provision self-signed certificate; QUIC disabled");
-        return None;
+        return (
+            None,
+            RemoteListenerSlot::disabled(
+                RemoteListenerTransport::Quic,
+                Some(addr_s),
+                ListenerDisabledReason::CertProvisionFailed,
+            ),
+        );
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, "quic");
 
@@ -1858,7 +1948,14 @@ fn build_quic_listener(addr: SocketAddr) -> Option<crate::transport::quic::QuicL
             Ok(store) => store,
             Err(err) => {
                 error!(error = %err, path = %tokens_path.display(), "failed to load token store; QUIC disabled");
-                return None;
+                return (
+                    None,
+                    RemoteListenerSlot::disabled(
+                        RemoteListenerTransport::Quic,
+                        Some(addr_s),
+                        ListenerDisabledReason::TokenStoreLoadFailed,
+                    ),
+                );
             }
         };
         if store.is_empty() {
@@ -1887,24 +1984,35 @@ fn build_quic_listener(addr: SocketAddr) -> Option<crate::transport::quic::QuicL
         workload_registry,
     ) {
         Ok(quic) => {
-            let bound = quic.local_addr().map(|a| a.to_string()).unwrap_or_default();
+            let bound = quic.local_addr().map_or(addr_s, |a| a.to_string());
             if secure {
                 info!(addr = %bound, tokens = token_count, "QUIC listening with TLS + token auth");
             } else {
                 info!(addr = %bound, "QUIC listening (TLS, loopback, unauthenticated)");
             }
-            Some(quic)
+            (
+                Some(quic),
+                RemoteListenerSlot::bound(RemoteListenerTransport::Quic, bound),
+            )
         }
         Err(err) => {
             warn!(addr = %addr, error = %err, "failed to bind QUIC; UDS only");
-            None
+            (
+                None,
+                RemoteListenerSlot::disabled(
+                    RemoteListenerTransport::Quic,
+                    Some(addr_s),
+                    ListenerDisabledReason::BindFailed,
+                ),
+            )
         }
     }
 }
 
 /// Build the optional WebTransport listener for `addr` (phux-0wmf). Returns
-/// `None` (WebTransport disabled, other transports unaffected) on any setup
-/// failure rather than failing the whole server.
+/// `(None, slot)` (WebTransport disabled, other transports unaffected) on any
+/// setup failure rather than failing the whole server; `slot` always describes
+/// the bind outcome for `GET_STATE`.
 ///
 /// WebTransport is HTTP/3 over QUIC, so it is **always** TLS 1.3-encrypted;
 /// a certificate is provisioned in both modes. It shares the persisted
@@ -1921,9 +2029,15 @@ fn build_quic_listener(addr: SocketAddr) -> Option<crate::transport::quic::QuicL
 ///   `WebTransport` JS API cannot set headers — append `?token=<hex>` to the
 ///   session URL, still inside TLS.
 #[cfg(feature = "webtransport")]
-fn build_wt_listener(addr: SocketAddr) -> Option<crate::transport::webtransport::WtListener> {
+fn build_wt_listener(
+    addr: SocketAddr,
+) -> (
+    Option<crate::transport::webtransport::WtListener>,
+    RemoteListenerSlot,
+) {
     let force_secure = std::env::var_os("PHUX_WS_SECURE").is_some_and(|v| !v.is_empty());
     let secure = !addr.ip().is_loopback() || force_secure;
+    let addr_s = addr.to_string();
 
     let cert_env = std::env::var_os("PHUX_WS_TLS_CERT").map(PathBuf::from);
     let key_env = std::env::var_os("PHUX_WS_TLS_KEY").map(PathBuf::from);
@@ -1936,7 +2050,14 @@ fn build_wt_listener(addr: SocketAddr) -> Option<crate::transport::webtransport:
             crate::transport::tls::ensure_self_signed_for(&cert_path, &key_path, &advertised)
     {
         error!(error = %err, "failed to provision self-signed certificate; WebTransport disabled");
-        return None;
+        return (
+            None,
+            RemoteListenerSlot::disabled(
+                RemoteListenerTransport::Wt,
+                Some(addr_s),
+                ListenerDisabledReason::CertProvisionFailed,
+            ),
+        );
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, "webtransport");
 
@@ -1947,7 +2068,14 @@ fn build_wt_listener(addr: SocketAddr) -> Option<crate::transport::webtransport:
             Ok(store) => store,
             Err(err) => {
                 error!(error = %err, path = %tokens_path.display(), "failed to load token store; WebTransport disabled");
-                return None;
+                return (
+                    None,
+                    RemoteListenerSlot::disabled(
+                        RemoteListenerTransport::Wt,
+                        Some(addr_s),
+                        ListenerDisabledReason::TokenStoreLoadFailed,
+                    ),
+                );
             }
         };
         if store.is_empty() {
@@ -1965,17 +2093,27 @@ fn build_wt_listener(addr: SocketAddr) -> Option<crate::transport::webtransport:
     match crate::transport::webtransport::WtListener::from_pem(addr, &cert_path, &key_path, tokens)
     {
         Ok(wt) => {
-            let bound = wt.local_addr().map(|a| a.to_string()).unwrap_or_default();
+            let bound = wt.local_addr().map_or(addr_s, |a| a.to_string());
             if secure {
                 info!(addr = %bound, tokens = token_count, "WebTransport listening with TLS + token auth");
             } else {
                 info!(addr = %bound, "WebTransport listening (TLS, loopback, unauthenticated)");
             }
-            Some(wt)
+            (
+                Some(wt),
+                RemoteListenerSlot::bound(RemoteListenerTransport::Wt, bound),
+            )
         }
         Err(err) => {
             warn!(addr = %addr, error = %err, "failed to bind WebTransport; UDS only");
-            None
+            (
+                None,
+                RemoteListenerSlot::disabled(
+                    RemoteListenerTransport::Wt,
+                    Some(addr_s),
+                    ListenerDisabledReason::BindFailed,
+                ),
+            )
         }
     }
 }
@@ -3459,6 +3597,7 @@ mod tests {
                         rows: 24,
                         bytes: bytes::Bytes::new(),
                         reason: ResyncReason::OutboundGap,
+                        audience: crate::terminal_actor::ResyncAudience::Everyone,
                         base_seq: 1,
                     })
                     .expect("resync receiver");

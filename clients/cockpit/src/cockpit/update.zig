@@ -306,10 +306,7 @@ fn drainEveryPane(model: *Model, fx: *Fx) void {
     for (0..max_terminals) |index| {
         if (model.provider.states[index] != .active) continue;
         const pane = model.provider.slot(index);
-        flushOutbound(pane, fx);
-        // The drain may have freed room for query replies a full ring left
-        // retained in the emulator's buffer.
-        moveResponsesToOutbound(pane, fx);
+        runtime.drainPane(pane, fx);
     }
 }
 
@@ -396,7 +393,6 @@ fn syncPaletteHighlight(model: *const Model, workspace: *model_module.Workspace)
 }
 
 pub fn update(model: *Model, msg: Msg, fx: *Fx) void {
-    const focus_before = remoteFocusTarget(model);
     const owner_before = remoteFocusOwner(model);
     updateModel(model, msg, fx);
     acknowledgeVisibleAttention(model);
@@ -415,16 +411,12 @@ pub fn update(model: *Model, msg: Msg, fx: *Fx) void {
             armTopologyPersist(model, fx);
         }
     }
-    const focus_after = remoteFocusTarget(model);
     const owner_after = remoteFocusOwner(model);
-    if (!optRefEql(focus_before, focus_after)) {
+    if (!optOwnerEql(owner_before, owner_after)) {
         // Blur first, then focus: a provider that sees two focused terminals
         // for even one message would have to guess which owns the keyboard.
-        if (focus_before) |terminal_ref| sendRemoteFocus(model, terminal_ref, false);
-        if (focus_after) |terminal_ref| sendRemoteFocus(model, terminal_ref, true);
-    } else if (!optOwnerEql(owner_before, owner_after)) {
-        // Same identity, new replica: it has never received current focus.
-        if (focus_after) |terminal_ref| sendRemoteFocus(model, terminal_ref, true);
+        if (owner_before) |owner| sendRemoteFocus(model, owner, false);
+        if (owner_after) |owner| sendRemoteFocus(model, owner, true);
     }
 }
 
@@ -458,18 +450,8 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
                     moveResponsesToOutbound(pane, fx);
                 },
                 .exit => {
-                    pane.phase = if (event.reason == .rejected or event.reason == .spawn_failed) .failed else .ended;
-                    pane.exit_code = event.code;
-                    pane.exit_signal = event.signal;
-                    pane.exit_reason = event.reason;
+                    runtime.finishSession(pane, event);
                     endCapturesForTerminal(model, fx, pane.id);
-                    pane.native_delivery_failures = event.dropped_writes -| pane.write_refusals_total;
-                    pane.write_refusals = 0;
-                    pane.outbound_dropped += pane.outbound_len;
-                    pane.outbound_dropped += pane.session.pendingResponses().len;
-                    pane.outbound_head = 0;
-                    pane.outbound_len = 0;
-                    pane.session.clearResponses();
                     // A shell that ENDED means the pane is done, whatever its
                     // status. Exit code is the child's answer about the last
                     // command it ran, not a claim about whether this pane is
@@ -579,7 +561,7 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
             }
             const state = model.remoteUi(terminal_ref) orelse return;
             if (state.selecting) return;
-            const remote = model.phux() orelse return;
+            const remote = model.phuxForOwner(state.owner) orelse return;
             remote.scrollViewport(state.owner, .{ .kind = .bottom }) catch return;
             var input: KeyInput = .{
                 .action = .press,
@@ -643,13 +625,10 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
             for (0..model_module.max_terminals) |index| {
                 if (model.provider.states[index] != .active) continue;
                 const pane = model.provider.slot(index);
-                _ = pane.session.searchPump(grid.Session.search_frame_slice_steps);
+                runtime.maintainPane(pane, fx);
             }
-            // Outbound is drained here for the same reason the viewport arm
-            // drains it: this message can be the only one the pump returns for
-            // many consecutive frames, and a search must not starve a pane's
-            // pending writes.
-            drainEveryPane(model, fx);
+            // The shared per-pane maintenance slice also drains outbound, so
+            // search cannot starve a quiet child's retained writes/replies.
         },
         .flush_outbound => drainEveryPane(model, fx),
         .selection_autoscroll => handleSelectionAutoscroll(model, fx),
@@ -738,7 +717,7 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
             const rows = @trunc(state.wheel_accum / cell_h);
             if (rows != 0) {
                 state.wheel_accum -= rows * cell_h;
-                const remote = model.phux() orelse return;
+                const remote = model.phuxForOwner(state.owner) orelse return;
                 remote.scrollViewport(state.owner, .{
                     .kind = .delta,
                     .value = -@as(i64, @intFromFloat(rows)),
@@ -771,7 +750,7 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
                 }
                 return;
             }
-            const state = model.remoteUi(model.copy_owner.terminal_ref) orelse return;
+            const state = @import("terminal_interaction.zig").stateForOwner(model, model.copy_owner) orelse return;
             if (result.outcome == .ok) {
                 retainSelectionAfterCopy(state);
             } else {
@@ -803,7 +782,7 @@ fn updateModel(model: *Model, msg: Msg, fx: *Fx) void {
                 pasteClipboardText(model, pane, fx, result.text);
                 return;
             }
-            const remote = model.phux() orelse return;
+            const remote = model.phuxForOwner(model.paste_owner) orelse return;
             remote.sendPaste(model.paste_owner, result.text, false) catch {
                 model.paste_failed = true;
                 return;
@@ -1670,7 +1649,7 @@ fn copySelection(model: *Model, fx: *Fx, terminal_ref: TerminalRef) void {
 
     const state = model.remoteUi(terminal_ref) orelse return;
     state.copy_failed = false;
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForOwner(state.owner) orelse return;
     const text = remote.selectionText(state.owner, std.heap.page_allocator) catch {
         state.copy_failed = true;
         state.copied_bytes = 0;
@@ -1707,7 +1686,7 @@ fn commitPaneViewport(model: *Model, fx: *Fx, terminal_ref: TerminalRef, cols: u
         fx.ptyResize(pane.pty_key, cols, rows);
         return;
     }
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForRef(terminal_ref) orelse return;
     const viewport: Viewport = .{ .cols = cols, .rows = rows };
     if (remote.lastViewport(terminal_ref)) |last| {
         if (last.eql(viewport)) return;
@@ -2368,7 +2347,7 @@ fn dispatchKeyEvent(
         encodeKeyEvent(pane, fx, event, action);
         return;
     }
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForOwner(owner) orelse return;
     const physical = physicalKeyForEvent(event);
     if (@intFromEnum(physical) == 0) return;
     var input: KeyInput = .{
@@ -2383,20 +2362,17 @@ fn dispatchKeyEvent(
     remote.sendKey(owner, &input) catch {};
 }
 
-fn sendRemoteFocus(model: *Model, terminal_ref: ?TerminalRef, focused: bool) void {
-    const ref = terminal_ref orelse return;
-    if (providerKind(ref) != .phux) return;
-    const owner = model.terminalOwner(ref) orelse return;
-    const remote = model.phuxForRef(ref) orelse return;
+fn sendRemoteFocus(model: *Model, owner: ReplicaOwner, focused: bool) void {
+    const remote = model.phuxForOwner(owner) orelse return;
     remote.sendFocus(owner, focused) catch {};
 }
 
-fn beginRemoteSelection(model: *Model, terminal_ref: TerminalRef, state: *RemoteUiState) void {
+fn beginRemoteSelection(model: *Model, _: TerminalRef, state: *RemoteUiState) void {
     clearRemoteSelection(model, state);
-    const presentation = model.remotePresentation(terminal_ref) orelse return;
+    const presentation = @import("terminal_interaction.zig").presentationForOwner(model, state.owner) orelse return;
     const cursor = presentation.grid.cursor orelse canvas.TerminalCursor{};
     // The selection belongs to the coordinator that minted the pane.
-    const remote = model.phuxForRef(terminal_ref) orelse return;
+    const remote = model.phuxForOwner(state.owner) orelse return;
     const point: provider_contract.DocumentPoint = .{
         .space = .viewport,
         .row = @as(u32, cursor.y),
@@ -2421,7 +2397,7 @@ fn beginRemoteSelection(model: *Model, terminal_ref: TerminalRef, state: *Remote
 }
 
 fn applyRemoteSelection(model: *Model, state: *RemoteUiState) void {
-    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return;
+    const remote = model.phuxForOwner(state.owner) orelse return;
     const next = remote.createAnchor(state.owner, .{
         .space = .viewport,
         .row = state.head_y,
@@ -2441,8 +2417,8 @@ fn applyRemoteSelection(model: *Model, state: *RemoteUiState) void {
     state.end_anchor = next.opaque_id;
 }
 
-fn moveRemoteSelection(model: *Model, terminal_ref: TerminalRef, state: *RemoteUiState, dx: i32, dy: i32) void {
-    const presentation = model.remotePresentation(terminal_ref) orelse return;
+fn moveRemoteSelection(model: *Model, _: TerminalRef, state: *RemoteUiState, dx: i32, dy: i32) void {
+    const presentation = @import("terminal_interaction.zig").presentationForOwner(model, state.owner) orelse return;
     const max_x: i32 = @max(0, @as(i32, presentation.cols) - 1);
     const max_y: i64 = @max(0, @as(i64, presentation.rows) - 1);
     state.head_x = @intCast(std.math.clamp(@as(i32, state.head_x) + dx, 0, max_x));
@@ -2484,7 +2460,7 @@ fn clearRemoteSelection(model: *Model, state: *RemoteUiState) void {
         state.end_anchor = 0;
         state.gesture_handle = 0;
     }
-    const remote = model.phuxForRef(state.owner.terminal_ref) orelse return;
+    const remote = model.phuxForOwner(state.owner) orelse return;
     remote.clearSelection(state.owner) catch {};
     if (state.start_anchor != 0)
         remote.releaseAnchor(state.owner, .{ .opaque_id = state.start_anchor });
@@ -2500,7 +2476,7 @@ fn handleRemoteKey(model: *Model, fx: *Fx, terminal_ref: TerminalRef, event: can
     const state = model.remoteUi(terminal_ref) orelse return;
     const mods = event.modifiers;
     const primary = mods.hasCommandModifier();
-    const remote = model.phux() orelse return;
+    const remote = model.phuxForOwner(state.owner) orelse return;
 
     if (primary and mods.shift and keyIs(event.key, "space")) {
         latchAppShortcut(model, event.key);
@@ -2520,7 +2496,7 @@ fn handleRemoteKey(model: *Model, fx: *Fx, terminal_ref: TerminalRef, event: can
     if (!state.selecting and primary) {
         if (keyIs(event.key, "arrowup") or keyIs(event.key, "arrowdown")) {
             latchAppShortcut(model, event.key);
-            const amount: i64 = if (mods.shift) @intCast((model.remotePresentation(terminal_ref) orelse return).rows) else 1;
+            const amount: i64 = if (mods.shift) @intCast((@import("terminal_interaction.zig").presentationForOwner(model, state.owner) orelse return).rows) else 1;
             remote.scrollViewport(state.owner, .{
                 .kind = .delta,
                 .value = if (keyIs(event.key, "arrowup")) -amount else amount,
@@ -2557,7 +2533,7 @@ fn handleRemoteKey(model: *Model, fx: *Fx, terminal_ref: TerminalRef, event: can
         if (keyIs(event.key, "arrowdown")) return moveRemoteSelection(model, terminal_ref, state, 0, 1);
         return;
     }
-    const presentation = model.remotePresentation(terminal_ref) orelse return;
+    const presentation = @import("terminal_interaction.zig").presentationForOwner(model, state.owner) orelse return;
     if (presentation.phase != .live) return;
     rememberHeldTerminalKey(model, state.owner, event.key);
     dispatchKeyEvent(model, fx, state.owner, event, .press);

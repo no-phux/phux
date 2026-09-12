@@ -1,4 +1,4 @@
-//! mTLS workload authority material and registry (ADR-0114).
+//! mTLS workload authority material and registry (ADR-0116).
 //!
 //! TLS proves possession of a client private key; this module owns the local
 //! authority that decides which public keys are admitted and what their scope

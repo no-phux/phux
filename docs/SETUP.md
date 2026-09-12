@@ -342,6 +342,96 @@ This direct SDK run uses the ordinary app name; distinguish it by executable
 path and PID. The separate-name bundled runner remains available for
 release-mode acceptance.
 
+#### Retaining identity-bound Cockpit diagnostics
+
+With the native Debug run above publishing, bind its PID from a second shell
+at `clients/cockpit`. This companion uses the already-built matching CLI; it
+does not compile or restart the app:
+
+```sh
+# APP_PID must be the process launched by your native dev invocation.
+RUN="$(python3 scripts/dev-diagnostics.py begin --pid "$APP_PID" \
+  --native "$NATIVE" --require-markup-watch \
+  --ffi-lib "$PWD/../../target/ffi-dev/libphux_client_ffi.a" \
+  --socket "$PHUX_SOCKET")"
+python3 scripts/dev-diagnostics.py watch --run "$RUN"
+```
+
+`begin` prints the retained directory even if its first snapshot check fails;
+check its exit status before starting `watch`. The default artifact is
+`zig-out/bin/phux-cockpit`; `--binary PATH` selects another executable. The
+publisher's executable path and CWD must match the artifact and app source root.
+Both normal and dev-named Cockpit processes are counted: exactly the selected
+PID must be live. Each capture checks the process start time, publisher PID,
+and unchanged binary/CLI file identities on both sides of inspection. Snapshot
+publication times/ages are retained; a file from
+before this process started (or its ambiguous launch second) is refused. Retry
+after the app has published. `--require-markup-watch` verifies the live `armed`
+field, including when the binary was launched directly without building.
+
+At a problem, use another shell at the app root:
+
+```sh
+python3 scripts/dev-diagnostics.py mark-problem --run "$RUN" \
+  --input-scope terminal
+```
+
+Input scope is explicitly operator-declared (`terminal`, `chrome`, `switcher`,
+`settings`, `web`, or `unknown`). The current SDK writes unescaped window/view/
+widget labels into its snapshot body: embedded quotes and newlines can forge
+even balanced structural records. Capture therefore retains only the typed
+first header (publisher, frame/command counts, uptime, error/drop counts, and
+markup-watch state). The body is omitted wholesale and structure is marked
+unsupported. A valid capture proves publisher/header checks, **not** a healthy
+or nonempty UI. GPU/view diagnostics, widget identities, focus/selection, input
+routing scope, and provider ResourceId are unavailable. `--target` requests
+verification and produces an invalid capture/refusal at this pin; even a real
+widget's presence cannot be proved from this format. Structural evidence needs
+an escaped or length-framed SDK surface, not more permissive text parsing.
+
+The private `.dev-run/diagnostics/<timestamp>-<unique-id>/` directory retains an
+immutable `run.json` and timestamped diagnostic samples/incident files. The
+manifest records source root/revision/dirty/diff hashes, binary and CLI SHA-256,
+SDK source pin and materialized package candidates, and available FFI input
+hashes. Captures separately record current source identity, so a hot markup
+edit cannot rewrite the original run identity. Untracked file status is hashed;
+untracked contents are not included. Pass `--phux-cli PATH` with `--socket` at
+`begin` to add read-only `phux status --json` peer-PID/process evidence. Socket
+selection is operator-declared; coordinator incarnation is unavailable through
+that status surface and remains null.
+
+`--log PATH` at `begin` adds bounded diagnostic category counts from that
+invocation's log to each retained sample. Raw log lines are likewise unframed,
+so apparent launch timestamps may be payload and are not retained. The last
+1 MiB is inspected; truncation is explicit. A two-second `watch` retains runtime
+diagnostics until Ctrl-C or the first invalid capture, including process-exit
+refusals. It never stops the app. Logs/snapshots are not copied wholesale:
+terminal text, widget names/text values, clipboard, key payloads, dispatch-error
+details, config contents, and process arguments/environment are excluded. Raw
+logs redirected by the operator and SDK dropbox files stay outside this bundle
+and may contain content. Retained evidence persists until explicitly deleted;
+`dev-run.sh --fresh` removes the whole default `.dev-run` home, including it.
+
+New evidence uses schema 2. Existing run manifests remain readable, but earlier
+schema-1 captures may contain payload-forged body fields and are not sanitized
+retroactively; take new captures for diagnostic handoff. Git inspection failures
+and timeouts retain an invalid incident envelope with null current-source
+identity and a safe refusal reason, even when runtime inspection cannot proceed.
+
+An on-disk hash is not proof of bytes already mapped into a process. Source SDK
+pins, candidate FFI archives, and license notices do not attest what an existing
+binary linked. The manifest says so: optimize/provider/linked SDK/linked FFI
+configuration remains unknown. Likewise, `dev-run.sh --no-build` reports unknown
+configuration and refuses first-frame measurement rather than labeling an old
+package with newly supplied build flags. Use the normal build path for
+configuration-dependent measurement.
+
+Keep live automation serial. The companion's nonblocking lock serializes its
+own captures; a busy capture is a retryable refusal, not permission to drive the
+app concurrently with another automation owner. No screenshot in this evidence
+claims real macOS raster output. Offline checks for this companion are
+`python3 clients/cockpit/scripts/dev-diagnostics_test.py` from the repository root.
+
 ### Mutation testing
 
 Mutation tools are optional and separate from contributor and ordinary CI

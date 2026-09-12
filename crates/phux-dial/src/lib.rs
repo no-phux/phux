@@ -19,6 +19,10 @@
 //!
 //! No wire bytes are defined here; the crate moves opaque streams and the
 //! auth preamble ADR-0031 already specifies.
+//!
+//! It also owns the one piece of QUIC *sending* policy every phux writer
+//! shares, dialing or listening: the congestion-tracked send window
+//! ([`window`]) that keeps a slow path from buffering megabytes.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
@@ -27,11 +31,15 @@
 #[cfg(feature = "provision")]
 pub mod cert;
 pub mod quic;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 pub mod tls;
+pub mod window;
 pub mod ws;
 
 pub use quic::QuicDial;
 pub use tls::CertTrust;
+pub use window::{SendWindow, TrackedSend};
 pub use ws::{WsDial, WsTarget};
 
 /// Errors surfaced while establishing a remote transport.

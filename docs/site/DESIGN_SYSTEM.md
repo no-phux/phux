@@ -5,17 +5,19 @@ The site has one active visual mode, selected by `SITE.designMode` in
 single value to switch modes; mode-specific values belong in the token block in
 `src/styles/global.css`, not in components.
 
-The active mode is `terminal`. It is not a terminal costume and does not mimic
-a shell prompt. It derives its structure from phux's renderer and state model:
-exact tiled allocation, one-cell dividers, content-owned interiors, explicit
-overflow, semantic state, and calm incremental updates.
+The active mode is `terminal`. The marketing page is a product site that
+contains a terminal; it is not itself a terminal costume. Structure still
+comes from phux's renderer: exact rules, content-owned interiors, explicit
+overflow, and semantic state. The live island is the product. Chrome around
+it stays quiet.
 
 ### Type roles
 
-- The entire interface uses the platform monospace stack. This is an
-  operational instrument, not an editorial product shell.
-- Hierarchy comes from size, weight, case, rule weight, and position rather
-  than switching type families.
+- IBM Plex Sans for marketing, docs chrome, and long-form reading.
+- IBM Plex Mono for commands, selectors, protocol symbols, and the
+  live island.
+- Nav is sentence case. The wordmark stays lowercase `phux`.
+- Hierarchy comes from size, weight, rule, and position.
 
 ### Color roles
 
@@ -37,7 +39,8 @@ overflow, semantic state, and calm incremental updates.
 - All radii are zero. Surfaces meet on exact rules; nothing floats in a lozenge.
 - Shadows and ornamental gradients are prohibited.
 - Light rules divide peers. A heavy or accent rule marks focus and ownership.
-- `--page-gutter`: fluid page edge spacing.
+- `--page-gutter`: fluid page edge spacing. The canvas is flat; the live
+  terminal is the texture, not a page grid.
 - `--content-wide`: landing and terminal maximum width.
 - `--reading-width`: long-form prose measure.
 

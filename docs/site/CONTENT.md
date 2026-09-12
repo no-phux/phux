@@ -1,4 +1,4 @@
-# phux.sh — content & positioning north star
+# phux.sh / docs.phux.sh — content & positioning north star
 
 The single source of truth for what this site says and how it says it. Every
 page, every piece of copy, and the synced docs build against this. If a sentence
@@ -81,20 +81,25 @@ This is why the project deserves to exist.
   protocol symbols, versions, and terminal output. General interface and prose
   use proportional type so technical signals retain their emphasis.
 - Precise, technical, dry. No hype, no superlatives, no "revolutionary."
-- **Honest about maturity.** It's pre-alpha, spec-first. Say so. This audience
-  respects "here's the bet, here's what works today, here's where it's going."
-- Confident about the architecture, modest about the timeline.
+- **What's here, what isn't.** State the facts. Don't lead with a disclaimer
+  and don't decorate every page with "pre-alpha."
+- Confident about the architecture. Gaps live in concepts.
 
 ## What we DON'T say
 
 - ❌ "A better tmux for everyone." (It will drown. Its right to exist is the
   passthrough niche + the agent-wire bet, not general muxing.)
 - ❌ Lead with federation. (Vision footnote, not a reason anyone shows up.)
-- ❌ Oversell agents as a shipped feature. (It's the point and the direction;
-  don't claim it's done.)
+- ❌ Treat the CLI/MCP agent loop as unfinished. It works today; JSON may
+  move. AgentSession is in this tree (`phux status --json` for older
+  releases). Don't say "still landing" as if the verbs are vapor.
 - ❌ Treat panes/splits as the product. (They're a view.)
+- ❌ Say Cockpit or hub-and-spoke federation is "designed, not wired."
+  Both ship. The unshipped list is a public SDK crate and an on-disk journal.
 - ❌ Hand-wave the demo's safety. (The demo runs phux-edge — a curated shell —
   as WASM in a Durable Object: no OS, no processes, nothing to break out of.)
+- ❌ Capitalize the wordmark. It is always `phux`. The macOS app bundle is
+  `Phux Cockpit` because that is the filename; prose still says Cockpit.
 
 ---
 
@@ -105,43 +110,25 @@ This is why the project deserves to exist.
 `src/pages/index.astro`. The `<PhuxTerminal client:load>` wasm island is the
 hero; the narrative sections run top to bottom below it.
 
-1. **Hero + live proof** — headline is the wedge: "you and your agents share the
-   same terminals." Subhead: panes are a view; every terminal is an object on a
-   wire anything can drive. A full-width install band sits above everything
-   else in the hero with both copy-paste paths side by side — the `phux` CLI
-   (macOS / Linux) and the Cockpit cask (native macOS) — each with its latest
-   release badge. Both lead with the checksum-verified curl installer;
-   Homebrew is the documented alternative. The wasm island sits below it as immediate proof —
-   launch-gated (poster of a real session + click to go live; the
-   Worker's session cap means auto-connect would burn capacity).
-2. **The passthrough is the proof** — the rendered stream is the *actual* bytes a
-   gui or an agent gets off the wire, not a screenshot. Demo caption: "the same
-   bytes a gui or an agent gets off the wire." Plus the honest demo-backend
-   note: phux-edge, a curated os-less shell as WASM in a Durable Object — no
-   network, nothing persists past the session.
-3. **Not tmux** — the structural argument: tmux re-parses and always lags; phux
-   never re-parses because the same libghostty engine runs on both ends. No
-   comparison table — the architecture is the argument.
-4. **A terminal is an object on a wire** — spawn / observe / drive; L1 (bytes +
-   input) and L3 (metadata + links) at a glance. The panes you saw are one
-   consumer. Links to `/wire` and `/concepts`.
-5. **The wire is the product** (the wedge, internally) — the tui is the
-   on-ramp; humans + agents are co-present on the same terminals; the tui is a
-   *pure consumer* with no protocol privilege (per ADR-0017). Links to
-   `/consumers/tui`. NOTE: "the wedge" is positioning vocabulary for THIS file —
-   it never appears in public copy. The site states the fact; it doesn't name
-   the move.
-6. **Built for agents** — structured agent state is a *local projection*: CLI +
-   JSON, not gRPC on the wire. The agent SDK copies what the phux-web browser
-   client already does. Early/the direction — state it plainly, never say
-   "honestly" (being honest is shown, not claimed). Links to
-   `/consumers/agents`.
-7. **Status** — v0.0.x pre-alpha, stated once, plainly: the README's three-tier
-   stable / real-but-moving / designed-not-wired line, plus license and the
-   GitHub link. Never claim a distribution channel (brew, crates.io) before it
-   ships.
-8. **Get going** — router cards: quickstart / concepts / the wire / consumers /
-   github.
+Marketing lives on `phux.sh`. Documentation lives on `docs.phux.sh`. Nav is
+Docs / Apps / Agents / GitHub.
+
+1. **Hero** — headline, short lede, Install + Docs, then the live terminal
+   as the product. No SYS badge, no install wall above the fold.
+2. **Features** — four rows, phux's own ladder: panes are a view, same
+   objects / many consumers, co-presence, bytes stay bytes. Each row
+   links into docs.
+3. **Install** — the closer. CLI and Cockpit copy-paste commands, then
+   Homebrew and the full install guide. Checksums and platform notes stay
+   here, not in the hero.
+
+### `/overview` — docs landing on docs.phux.sh
+
+`src/pages/overview.astro`. The docs host root 301s here. Surfaces (CLI,
+Cockpit, Web, Agents), pick-your-path (new / tmux / agents / peer), then Get
+started / Build / Resources columns. This is the persuasion surface for
+readers who already arrived to read; it does not replace `docs/README.md`
+(`/docs`), which stays the full index.
 
 ### `/concepts` — the mental model
 Synced + curated from `docs/CONCEPTS.md`. The terminal as the unit; the wire in
@@ -150,7 +137,7 @@ fully explained.
 
 ### `/quickstart` — run it today
 Synced from `docs/QUICKSTART.md` (+ `INSTALL.md`, `operations.md`).
-Build-from-source, the prefix keys, attach/detach. Honest pre-alpha caveats.
+Build-from-source, the prefix keys, attach/detach.
 
 ### `/wire` — the protocol (the crown jewel for builders)
 Synced from `docs/spec/`. L1 terminals (bytes + input), L3 metadata and links.

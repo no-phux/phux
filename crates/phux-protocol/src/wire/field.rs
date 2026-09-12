@@ -52,7 +52,7 @@ pub mod hello {
     /// declared length. Absent means "accepts nothing compressed".
     pub const COMPRESSION: u32 = 6;
     // Ids 7 and 8 are retired-unshipped: the `phux-workload/v1` offer fields
-    // (`docs/spec/proto.md` §6.1.1, ADR-0114) were specified but never
+    // (`docs/spec/proto.md` §6.1.1, ADR-0116) were specified but never
     // implemented. They stay reserved here: no sender emits them and a
     // decoder skips them.
     /// The ssh endpoints `phux stdio-bridge` stamps on a relayed HELLO.

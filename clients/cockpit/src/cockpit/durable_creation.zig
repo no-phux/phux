@@ -10,6 +10,15 @@ const session_navigation = @import("session_navigation.zig");
 const Model = model_module.Model;
 const TerminalRef = contract.TerminalRef;
 
+const SpawnSource = struct {
+    provider: u64,
+    host: u64,
+
+    fn matches(self: SpawnSource, remote: *const support.PhuxProvider) bool {
+        return self.provider == remote.context_id and self.host == remote.host.context_id;
+    }
+};
+
 pub const Kind = enum { tab, window, split_right, split_down };
 const Pending = struct {
     navigation: ?session_navigation.Navigation = null,
@@ -42,6 +51,9 @@ const Pending = struct {
     focus: ?TerminalRef = null,
     focus_window: ?usize = null,
     may_focus: bool = true,
+    /// Only adopted bound spawns transfer conditional cleanup ownership here.
+    instance: ?[16]u8 = null,
+    spawn_source: ?SpawnSource = null,
 };
 
 pub const Creation = struct {
@@ -55,6 +67,49 @@ pub const Creation = struct {
             n += 1;
         }
         return n;
+    }
+
+    /// First-tab evidence for the active provider this drain. Entries still
+    /// advancing report `.pending`; completed placements report their result.
+    /// `empty_session.settleAttachment` consumes opening flags from these
+    /// outcomes without treating an empty queue as refusal.
+    pub const EmptyFirstTab = struct {
+        window: usize,
+        window_epoch: u64,
+        connection_epoch: u64,
+        outcome: Outcome,
+
+        pub const Outcome = enum { pending, refused, placed };
+    };
+
+    pub fn collectEmptyFirstTabs(self: *const Creation, out: []EmptyFirstTab) usize {
+        var total: usize = 0;
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            if (total >= out.len) break;
+            if (entry.completion) |completion| {
+                const outcome: EmptyFirstTab.Outcome = switch (completion.placement) {
+                    .placed => .placed,
+                    .refused, .destination_lost, .unknown => .refused,
+                    .not_requested => continue,
+                };
+                out[total] = .{
+                    .window = entry.placement_window orelse entry.window,
+                    .window_epoch = if (entry.placement_window != null) entry.placement_window_epoch else entry.window_epoch,
+                    .connection_epoch = entry.epoch,
+                    .outcome = outcome,
+                };
+            } else {
+                out[total] = .{
+                    .window = entry.placement_window orelse entry.window,
+                    .window_epoch = if (entry.placement_window != null) entry.placement_window_epoch else entry.window_epoch,
+                    .connection_epoch = entry.epoch,
+                    .outcome = .pending,
+                };
+            }
+            total += 1;
+        }
+        return total;
     }
 
     fn vacant(self: *Creation) !*?Pending {
@@ -87,6 +142,49 @@ pub const Creation = struct {
 
     pub fn requestCorrelated(self: *Creation, model: *Model, kind: Kind, command_id: u64) !void {
         return self.spawn(model, kind, command_id, "", .focused);
+    }
+
+    /// Transfer an already successful bound spawn into the normal publication
+    /// pump. Errors leave the receipt and all cleanup authority with the caller.
+    /// Once reserved, even synchronous attachment failure is a retained result;
+    /// it must never return the same spawn to a second cleanup owner.
+    pub fn adoptSpawnIn(self: *Creation, model: *Model, remote: *support.PhuxProvider, result: support.OperationResult, window: usize, epoch: u64, command_id: u64, may_focus: bool) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const ref = try validateAdoptedSpawn(model, remote, result);
+        try self.requireUniqueCommand(command_id);
+        _ = try self.duplicateTerminal(ref, command_id);
+        const slot = try self.vacant();
+        var entry = try self.prepareAdoption(model, window, epoch);
+        entry.epoch = result.connection_epoch;
+        entry.command_id = command_id;
+        entry.operation_request = result.request_id;
+        entry.terminal = ref;
+        entry.instance = result.instance;
+        entry.spawn_source = .{ .provider = remote.context_id, .host = remote.host.context_id };
+        entry.may_focus = may_focus;
+        slot.* = entry;
+        acceptResult(model, &slot.*.?, result) catch |err| {
+            finishFailure(model, &slot.*.?, failurePlacement(err), failureReason(err));
+        };
+        _ = self.pump(model);
+    }
+
+    fn prepareAdoption(self: *const Creation, model: *Model, window: usize, epoch: u64) !Pending {
+        if (!model.windowOpen(window)) return error.StaleDestination;
+        if (model.window_epochs[window] != epoch) return error.StaleDestination;
+        if (epoch == @import("std").math.maxInt(u64)) return error.StaleDestination;
+        if (!hasCapacity(model, self.count())) return error.TerminalCapacity;
+        const workspace = model.wsAtConst(window) orelse return error.StaleDestination;
+        try validateDestinationCapacity(workspace, .tab, self.reservedInWindow(model, window, .tab), true);
+        return .{
+            .window = window,
+            .window_epoch = epoch,
+            .kind = .tab,
+            .origin = null,
+            .session = model.shared_workspace.session,
+            .focus = model.focusedTerminalRef(),
+            .focus_window = model.active_window,
+        };
     }
 
     /// Reserve command/result ownership before selectSession or leaveSession.
@@ -216,7 +314,7 @@ pub const Creation = struct {
         entry.command_id = command_id;
         slot.* = entry;
         errdefer slot.* = null;
-        try allocateDestination(model, entry);
+        try allocateDestination(model, remote, entry);
         errdefer retireEmptyDestination(model, entry);
         slot.*.?.request = try remote.requestSpawnIn(owner, spawnViewport(remote, owner), cwd);
         slot.*.?.operation_request = slot.*.?.request;
@@ -224,13 +322,18 @@ pub const Creation = struct {
     }
 
     fn reservedAtDestination(self: *const Creation, model: *const Model, kind: Kind) usize {
+        return self.reservedInWindow(model, model.active_window, kind);
+    }
+
+    fn reservedInWindow(self: *const Creation, model: *const Model, window: usize, kind: Kind) usize {
+        const workspace = model.wsAtConst(window) orelse return 0;
         var reserved: usize = 0;
         for (self.pending) |slot| {
             const entry = slot orelse continue;
             if (entry.completion != null) continue;
-            if (entry.window != model.active_window) continue;
+            if (entry.window != window) continue;
             if (entry.window_epoch != model.window_epochs[entry.window]) continue;
-            if (sharesCapacity(entry, model.wsConst(), kind)) reserved += 1;
+            if (sharesCapacity(entry, workspace, kind)) reserved += 1;
         }
         return reserved;
     }
@@ -611,9 +714,42 @@ fn recordCompletion(entry: *Pending, placement: results.Placement, focus: result
 }
 
 fn finishFailure(model: anytype, entry: *Pending, placement: results.Placement, reason: results.Reason) void {
+    if (comptime @TypeOf(model) == *Model) cleanupAdoptedSpawn(model, entry, placement);
     // Retiring a provisional native window says nothing about durable execution.
     if (placement == .unknown) retireEmptyDestination(model, entry.*) else refusePlacement(model, entry.*);
     recordCompletion(entry, placement, if (entry.may_focus) .not_requested else .superseded, reason);
+}
+
+fn validateAdoptedSpawn(model: *Model, remote: *support.PhuxProvider, result: support.OperationResult) !TerminalRef {
+    if (model.phux() != remote) return error.StaleContext;
+    if (remote.state() != .attached) return error.NotReady;
+    if (result.connection_epoch != remote.connectionEpoch()) return error.StaleContext;
+    if (result.kind != .spawn) return error.InvalidOperation;
+    try requireOperationSuccess(result, true);
+    const ref = result.terminal_ref orelse return error.MissingIdentity;
+    if (result.instance == null) return error.MissingIdentity;
+    if (ref.provider_id != remote.providerId()) return error.IdentityMismatch;
+    try requireWorkspace(model);
+    return ref;
+}
+
+/// A sent mutation can still win after local projection or destination failure.
+/// Only a known refusal permits cleanup then; unknown outcomes never replay.
+fn cleanupAdoptedSpawn(model: *Model, entry: *Pending, placement: results.Placement) void {
+    if (comptime !support.phux_enabled) return;
+    const instance = entry.instance orelse return;
+    entry.instance = null;
+    if (placement == .unknown) return;
+    if (entry.mutation_identity != 0 and entry.mutation_outcome != .refused) return;
+    const remote = model.phux() orelse return;
+    if (!adoptedCleanupCurrent(model, entry.*, remote)) return;
+    _ = remote.requestKillIf(entry.terminal.?, instance) catch return;
+}
+
+fn adoptedCleanupCurrent(model: *Model, entry: Pending, remote: *support.PhuxProvider) bool {
+    if (!entryContextCurrent(model, entry, remote.connectionEpoch())) return false;
+    // Another writer may have admitted the terminal independently of this add.
+    return !sharedMember(model, entry.terminal.?);
 }
 
 fn failurePlacement(err: anyerror) results.Placement {
@@ -674,10 +810,15 @@ fn prepareDestination(model: *Model, kind: Kind, reserved: usize, requires_capac
     return entry;
 }
 
-fn allocateDestination(model: *Model, entry: Pending) !void {
+fn allocateDestination(model: *Model, remote: *const support.PhuxProvider, entry: Pending) !void {
     // Result storage is already reserved; no fallible allocation follows spawn.
     if (entry.kind != .window) return;
     _ = model.openWindow(entry.window) orelse return error.WindowCapacity;
+    // Bound before it is selected, as a peer's New Window is (peer_edits):
+    // until its tab lands, New Session from this empty window must reach the
+    // coordinator creating it, not the canonical local default. The errdefer
+    // that retires it closes the window, and closing clears the binding.
+    model.bindWindowAttachment(entry.window, remote.context_id);
 }
 
 fn validateDestinationCapacity(workspace: *const model_module.Workspace, kind: Kind, reserved: usize, requires_capacity: bool) !void {
@@ -774,6 +915,10 @@ fn finishPublication(model: *Model, entry: *Pending) bool {
 }
 
 fn entryContextCurrent(model: *Model, entry: Pending, epoch: u64) bool {
+    if (entry.spawn_source) |source| {
+        const remote = model.phux() orelse return false;
+        if (!source.matches(remote)) return false;
+    }
     if (entry.navigation) |navigation| {
         const remote = model.phux() orelse return false;
         if (!navigation.contextCurrent(remote)) return false;
@@ -1090,6 +1235,7 @@ fn validateSplit(workspace: *const model_module.Workspace, reserved: usize) !voi
 
 test {
     _ = @import("session_navigation_tests.zig");
+    _ = @import("durable_creation_adopt_tests.zig");
 }
 
 const ConfirmationFixture = struct {

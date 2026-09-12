@@ -110,6 +110,57 @@ pub enum ResyncReason {
     OutboundGap,
 }
 
+/// One output pump on a pane: the server-local client that owns it and the
+/// wire stream it publishes on.
+///
+/// The same pair a [`PaneOutput::Control`] frame is routed by (`owner`, then
+/// the frame's own `stream_id`), so a resync can be addressed as precisely
+/// as a tombstone already is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ResyncTarget {
+    /// Server-local client id of the pump's consumer.
+    pub owner: u64,
+    /// Stream the pump publishes its generations on.
+    pub stream_id: phux_protocol::ids::StreamId,
+    /// The generation the resync replaces: the one the pump was fenced on, or
+    /// the one a reflow tombstoned. Owner and stream alone can collide — an
+    /// `ATTACH` pump's stream id comes from its attach id and an
+    /// `ATTACH_RESOURCE` pump's from its client id — so without the generation
+    /// one addressed resync could revive two pumps, and their native captures
+    /// would race for the owner-keyed binding.
+    pub bootstrap_id: phux_protocol::ids::BootstrapId,
+}
+
+/// Which output pumps a [`PaneOutput::Resync`] replaces the generation of.
+///
+/// A resync is expensive for every pump that takes it: a tombstone, a full
+/// bootstrap on the wire, and for a native consumer a checkpoint capture on
+/// the actor. It is owed to *every* consumer only when the grid itself
+/// changed under them (a resize reflow). A pump that fell behind (a
+/// broadcast `Lagged`, or a chunk past the pump's staleness budget) lost
+/// frames nobody else lost, so its resync is addressed to it alone and every
+/// other pump on the pane keeps its generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResyncAudience {
+    /// Every subscriber replaces its generation.
+    Everyone,
+    /// Only the named pumps replace their generation; every other subscriber
+    /// ignores this resync. More than one when several pumps asked inside
+    /// the same debounce window: they share one synthesis.
+    Only(std::sync::Arc<[ResyncTarget]>),
+}
+
+impl ResyncAudience {
+    /// Is `target` one of the pumps this resync is for?
+    #[must_use]
+    pub fn includes(&self, target: ResyncTarget) -> bool {
+        match self {
+            Self::Everyone => true,
+            Self::Only(targets) => targets.contains(&target),
+        }
+    }
+}
+
 /// Payload of the per-resource output broadcast ([`ResourceHandle::output`]).
 ///
 /// Subscribers (the per-attach output pumps in `runtime::attach`) map each
@@ -157,6 +208,8 @@ pub enum PaneOutput {
         rows: u16,
         /// Why the prior generation can no longer continue.
         reason: ResyncReason,
+        /// Which pumps must replace their generation; the rest ignore it.
+        audience: ResyncAudience,
         /// Resource-global raw sequence included by the replacement cut.
         base_seq: u64,
         /// Synthesized grid replay (with reset preamble) for `vt_write`.

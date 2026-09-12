@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * sync-docs.ts — DRY docs pipeline for phux.sh
+ * sync-docs.ts — DRY docs pipeline for docs.phux.sh
  * ----------------------------------------------------------------------------
  * Reads selected markdown from the phux source repo and writes it into
  * `src/content/docs/_synced/` as the source for an Astro content collection.
@@ -199,7 +199,6 @@ const SECTION_ROOTS: { dir: string; group: Group; urlPrefix: string }[] = [
 const DENYLIST = new Set<string>([
   "docs/demo.md",
   "docs/CONVENTIONS.md",
-  "docs/architecture/DIAGRAM.md",
   "docs/architecture/l2-server-design.md",
 ]);
 
@@ -369,48 +368,11 @@ async function discover(): Promise<{ entries: Entry[]; excluded: string[] }> {
     });
   }
 
-  splitLongGuide(entries, "docs/consumers/agents.md", [
-    {
-      slug: "consumers/agents",
-      title: "Agents and automation",
-      sections: [0, 1, 5],
-      summary: "Use the read-act-wait loop to inspect and drive shared terminals, then go deeper only when you need exact CLI or JSON contracts.",
-    },
-    { slug: "consumers/agents/cli", title: "Agent CLI", sections: [2] },
-    { slug: "consumers/agents/targeting", title: "Agent targeting", sections: [3] },
-    { slug: "consumers/agents/json", title: "Agent JSON contracts", sections: [4] },
-    { slug: "consumers/agents/integrations", title: "Agent integrations", sections: [6] },
-  ]);
-  splitLongGuide(entries, "docs/consumers/tui.md", [
-    {
-      slug: "consumers/tui",
-      title: "Interactive TUI",
-      sections: [0, 2, 13],
-      summary: "Use phux interactively: understand the terminal model, navigate the first session, then open focused guides for commands and customization.",
-    },
-    { slug: "consumers/tui/commands", title: "TUI commands and selectors", sections: [1, 3] },
-    { slug: "consumers/tui/configuration", title: "TUI configuration and keybindings", sections: [4, 5] },
-    { slug: "consumers/tui/interface", title: "TUI layout, mouse, and status bar", sections: [6, 7, 8] },
-    { slug: "consumers/tui/automation", title: "TUI hooks and recording", sections: [9, 10] },
-    { slug: "consumers/tui/reference", title: "TUI defaults and scope", sections: [11, 12, 14] },
-  ]);
+  // tui.md and agents.md used to be sliced by numbered H2s. Both are now
+  // single product pages with a Fumadocs TOC; splitting them would 404 the
+  // old /commands /cli /json routes and throw on unnumbered headings.
 
   return { entries, excluded };
-}
-
-function splitLongGuide(
-  entries: Entry[],
-  repoPath: string,
-  pages: { slug: string; title: string; sections: number[]; summary?: string }[],
-) {
-  const index = entries.findIndex((entry) => entry.repoPath === repoPath);
-  if (index === -1) return;
-  const source = entries[index];
-  entries.splice(
-    index,
-    1,
-    ...pages.map((page, order) => ({ ...source, ...page, order: source.order + order / 10 })),
-  );
 }
 
 // ── routing tables (derived from DISCOVERED entries) ─────────────────────────
@@ -604,6 +566,67 @@ function resolveHref(href: string, fromDir: string): string | null {
 }
 
 // ── yaml-safe scalar ────────────────────────────────────────────────────────
+/**
+ * Site-owned docs landing. The visual page is `src/pages/overview.astro`;
+ * this stub keeps the Fumadocs tree and the static search index in sync.
+ */
+async function writeOverviewPage(versions: {
+  protocolVersion: string;
+  projectVersion: string;
+}): Promise<number> {
+  const title = "Get started";
+  const summary =
+    "Install phux, pick a surface, and attach. CLI, Cockpit, web, and agents share the same live terminals.";
+  const body = `# Get started
+
+Install it, pick a surface, and attach. Every interface — the TUI, Cockpit, the browser, a script, or an agent — talks to the same live terminals.
+
+## Surfaces
+
+- [CLI](/consumers/tui) — the reference TUI. Attach, split, detach.
+- [Cockpit](/consumers/cockpit) — native macOS app for the same terminals.
+- [Web](/consumers/web) — browser client with its own engine.
+- [Agents](/consumers/agents) — CLI, JSON, MCP, OpenCode, Pi, Claude.
+
+## Pick your path
+
+- [New here](/quickstart) — install, attach, detach.
+- [Coming from tmux](/concepts) — panes are a view; the terminal is an object on a wire.
+- [You run agents](/consumers/agents) — read, act, wait.
+- [Building a peer](/wire) — PROTO, then required L1.
+
+## Get started
+
+[Quickstart](/quickstart) · [Install](/quickstart/install) · [Concepts](/concepts) · [When to use phux](/concepts/when-to-use)
+
+## Build
+
+[Agent loop](/consumers/agents) · [MCP adapter](/consumers/mcp) · [Cockpit](/consumers/cockpit) · [Wire tutorial](/wire/tutorial)
+
+## Resources
+
+[Protocol](/wire) · [Generated reference](/reference) · [Architecture](/architecture) · [Decisions](/decisions)
+`;
+  const fm = [
+    "---",
+    `title: ${yamlString(title)}`,
+    `summary: ${yamlString(summary)}`,
+    `description: ${yamlString(summary)}`,
+    `codeLanguages: []`,
+    `group: ${yamlString(GROUPS.start)}`,
+    `order: -1`,
+    `sourcePath: ${yamlString("docs/site/src/pages/overview.astro")}`,
+    `sourceRevision: ${yamlString(SOURCE_REVISION)}`,
+    `protocolVersion: ${yamlString(versions.protocolVersion)}`,
+    `projectVersion: ${yamlString(versions.projectVersion)}`,
+    `stability: ${yamlString("stable")}`,
+    "---",
+    "",
+  ].join("\n");
+  await writeFile(join(OUT_DIR, "overview.md"), fm + body, "utf8");
+  return 1;
+}
+
 function yamlString(s: string): string {
   // Always quote; escape backslashes and double-quotes for YAML double-quoted.
   return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
@@ -631,6 +654,7 @@ const FOLDER_TITLES: Record<string, string> = {
 };
 
 const ROOT_PAGES = [
+  "overview",
   "docs",
   "quickstart",
   "concepts",
@@ -670,9 +694,11 @@ const REFERENCE_PAGES = [
 const GUIDE_PAGES = [
   "index",
   "tui",
+  "cockpit",
   "agents",
   "opencode",
   "pi",
+  "claude",
   "mcp",
   "recording",
   "web",
@@ -776,6 +802,8 @@ async function run() {
     await writeFile(outFile, fm + rewritten, "utf8");
     written++;
   }
+
+  written += await writeOverviewPage(versions);
 
   // Fumadocs `meta.json` per folder: display title + explicit page order
   // (index first, then the sync script's discovery/nav-order). Never hand-edit.

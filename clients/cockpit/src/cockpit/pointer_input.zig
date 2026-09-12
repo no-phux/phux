@@ -10,6 +10,7 @@ const app_types = @import("app_types.zig");
 const runtime = @import("terminal_runtime.zig");
 const projection = @import("native/workspace_projection.zig");
 const grid = @import("../terminal/grid.zig");
+const interaction = @import("terminal_interaction.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -74,10 +75,9 @@ fn sendPointerToOwner(
     if (comptime !phux_enabled) return false;
     if (!model.ownerIsCurrent(owner)) return false;
     const frame = terminalFrame(model, owner.terminal_ref) orelse return false;
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
-    if (frame.width <= 0 or frame.height <= 0 or presentation.cols == 0 or presentation.rows == 0)
-        return false;
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return false;
+    if (!usablePointerGrid(frame, presentation)) return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
     if (!(remote.mouseTracking(owner) catch return false)) return false;
 
     const local_x = @max(0, @min(
@@ -112,39 +112,33 @@ fn sendPointerToOwner(
     return true;
 }
 
+fn usablePointerGrid(frame: geometry.RectF, presentation: provider_contract.Presentation) bool {
+    return frame.width > 0 and frame.height > 0 and presentation.cols > 0 and presentation.rows > 0;
+}
+
+fn monitorOwner(model: *Model, event: anytype) ?ReplicaOwner {
+    const pointer_state = model.pointer_state orelse return null;
+    if (pointer_state.capture) |capture| {
+        if (model.ownerIsCurrent(capture.owner)) return capture.owner;
+        // Keep a tombstone through motion, so a later release cannot become
+        // a new client's event. Only a fresh press may acquire a new owner.
+        if (event.eventKind() != .motion) pointer_state.capture = null;
+        if (event.eventKind() != .button_down) return null;
+    }
+    const ref = terminalRefAtPoint(model, @floatCast(event.x), @floatCast(event.y)) orelse return null;
+    if (providerKind(ref) != .phux) return null;
+    return model.terminalOwner(ref);
+}
+
 fn dispatchPointerEvent(model: *Model, event: anytype) void {
     if (comptime !phux_enabled) return;
     const pointer_state = model.pointer_state orelse return;
     pointer_state.last_x = event.x;
     pointer_state.last_y = event.y;
-    const action: MouseAction = switch (event.eventKind() orelse return) {
-        .button_down => .press,
-        .button_up => .release,
-        .motion => .move,
-    };
+    const action = monitorAction(event) orelse return;
     const button = pointerButton(event.button);
 
-    var owner = if (pointer_state.capture) |capture|
-        capture.owner
-    else blk: {
-        const terminal_ref = terminalRefAtPoint(
-            model,
-            @floatCast(event.x),
-            @floatCast(event.y),
-        ) orelse return;
-        if (providerKind(terminal_ref) != .phux) return;
-        break :blk model.terminalOwner(terminal_ref) orelse return;
-    };
-    if (!model.ownerIsCurrent(owner)) {
-        pointer_state.capture = null;
-        const terminal_ref = terminalRefAtPoint(
-            model,
-            @floatCast(event.x),
-            @floatCast(event.y),
-        ) orelse return;
-        if (providerKind(terminal_ref) != .phux) return;
-        owner = model.terminalOwner(terminal_ref) orelse return;
-    }
+    const owner = monitorOwner(model, event) orelse return;
 
     const sent = sendPointerToOwner(
         model,
@@ -160,6 +154,39 @@ fn dispatchPointerEvent(model: *Model, event: anytype) void {
     } else if (action == .release) {
         pointer_state.capture = null;
     }
+}
+
+fn monitorAction(event: anytype) ?MouseAction {
+    return switch (event.eventKind() orelse return null) {
+        .button_down => .press,
+        .button_up => .release,
+        .motion => .move,
+    };
+}
+
+test "retired monitor owner stays captured through motion until its release" {
+    if (comptime !phux_enabled) return error.SkipZigTest;
+    const engine = try @import("native/ts_engine.zig").Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const remote = try support.PhuxProvider.create(std.testing.allocator, std.testing.io, .{ .unix = "/monitor-source-unused" }, null, "monitor");
+    engine.model.phux_provider = remote;
+    try support.PhuxProvider.test_support.attachHost(remote.host);
+    var refs: [provider_contract.workspace.max_replicas]TerminalRef = undefined;
+    try std.testing.expect(remote.terminalRefs(&refs) > 0);
+    const owner = remote.owner(refs[0]).?;
+    var state: model_module.PointerState = .{ .capture = .{ .owner = owner, .button = .left } };
+    const previous = engine.model.pointer_state;
+    engine.model.pointer_state = &state;
+    defer engine.model.pointer_state = previous;
+    remote.host.freezePublished();
+    try std.testing.expect(!engine.model.ownerIsCurrent(owner));
+    var event: support.pointer_module.Event = .{ .kind = 2, .button = 0, .modifiers = 0, .x = 0, .y = 0 };
+    try std.testing.expect(monitorOwner(engine.model, event) == null);
+    try std.testing.expect(state.capture.?.owner.eql(owner));
+    event.kind = 1;
+    try std.testing.expect(monitorOwner(engine.model, event) == null);
+    try std.testing.expect(state.capture == null);
+    try std.testing.expect(!remote.bridge.outgoing.hasPending());
 }
 
 fn releasePointerCapture(model: *Model) void {

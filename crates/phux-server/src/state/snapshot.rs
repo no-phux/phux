@@ -156,12 +156,15 @@ impl ServerState {
             ),
         };
 
-        Some(
+        let mut snapshot =
             SessionSnapshot::new(focused_session_wire, focused_window_wire, focused_pane_wire)
                 .with_sessions(sessions)
                 .with_windows(windows)
-                .with_resources(panes),
-        )
+                .with_resources(panes);
+        if self.has_remote_listener_report() {
+            snapshot = snapshot.with_listeners(self.remote_listeners().clone());
+        }
+        Some(snapshot)
     }
 
     /// Collect panes in `session` that have live actor handles, with wire ids.

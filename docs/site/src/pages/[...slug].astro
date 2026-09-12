@@ -1,8 +1,8 @@
 ---
 // /[...slug] — every docs page, routed by the Fumadocs page tree. The old
 // per-section routers (docs/index, quickstart/[...slug], wire/[...slug], …)
-// are replaced by this one catch-all; static pages (/, /embed) take
-// precedence, and slugs outside the tree 404.
+// are replaced by this one catch-all; static pages (/, /embed, /overview)
+// take precedence, and slugs outside the tree 404.
 import { render, type CollectionEntry } from "astro:content";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import type { TOCItemType } from "fumadocs-core/toc";
@@ -16,10 +16,15 @@ interface Props {
 }
 
 export async function getStaticPaths() {
-  return source.getPages().map((page) => ({
-    params: { slug: page.slugs.length > 0 ? page.slugs.join("/") : undefined },
-    props: { page: (page.data as { _raw: CollectionEntry<"docs"> })._raw },
-  }));
+  return source.getPages().flatMap((page) => {
+    const slug = page.slugs.length > 0 ? page.slugs.join("/") : undefined;
+    // /overview is a dedicated Astro page with custom chrome; skip the
+    // catch-all so the two routes do not collide.
+    if (slug === "overview") return [];
+    const raw = (page.data as { _raw?: CollectionEntry<"docs"> })._raw;
+    if (!raw) return [];
+    return [{ params: { slug }, props: { page: raw } }];
+  });
 }
 
 const { page } = Astro.props;
@@ -39,7 +44,7 @@ const description = page.data.description || SITE.description;
 const pathname = Astro.url.pathname.replace(/\.html$/, "");
 ---
 
-<Layout title={title} description={description}>
+<Layout title={title} description={description} origin={SITE.docsUrl}>
   <Docs
     tree={source.getPageTree()}
     pathname={pathname}

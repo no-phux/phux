@@ -7,6 +7,7 @@ const support = @import("../phux_support.zig");
 const model_module = @import("../model.zig");
 const pointer = @import("../pointer_input.zig");
 const selection = @import("../update.zig").remote_selection;
+const interaction = @import("../terminal_interaction.zig");
 const Model = model_module.Model;
 const Raw = sdk.platform.GpuSurfaceInputEvent;
 const Point = sdk.geometry.PointF;
@@ -15,6 +16,7 @@ const Owner = contract.ReplicaOwner;
 
 const Capture = struct {
     owner: Owner,
+    retired: bool = false,
     window_id: sdk.platform.WindowId,
     window_index: usize,
     pointer_id: u64,
@@ -54,17 +56,24 @@ pub const State = struct {
     pub fn route(self: *State, model: *Model, raw: Raw, clicks: u8) ?bool {
         if (comptime !support.phux_enabled) return null;
         if (self.captureIndex(raw)) |index| {
-            switch (raw.kind) {
-                .pointer_drag, .pointer_move, .pointer_up, .pointer_cancel => return self.tail(model, raw, index),
-                else => {},
-            }
+            if (self.routeCaptured(model, raw, index)) |handled| return handled;
         }
         const ref = pointer.terminalRefAtPoint(model, raw.x, raw.y) orelse return null;
         if (contract.isLocal(ref)) return null;
-        const owner = model.terminalOwner(ref) orelse return false;
+        const state = model.remoteUi(ref) orelse return false;
+        const owner = state.owner;
         if (!ready(model, owner)) return false;
         const frame = pointer.paneFrameForTerminal(model, ref) orelse return false;
         return self.uncaptured(model, raw, owner, frame, clicks);
+    }
+
+    fn routeCaptured(self: *State, model: *Model, raw: Raw, index: usize) ?bool {
+        switch (raw.kind) {
+            .pointer_drag, .pointer_move, .pointer_up, .pointer_cancel => return self.tail(model, raw, index),
+            .pointer_down => self.finish(model, index),
+            else => {},
+        }
+        return null;
     }
 
     fn uncaptured(self: *State, model: *Model, raw: Raw, owner: Owner, frame: Rect, clicks: u8) bool {
@@ -77,9 +86,9 @@ pub const State = struct {
     }
 
     fn wheelTarget(self: *State, model: *Model, raw: Raw, owner: Owner, frame: Rect) bool {
-        const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+        const remote = model.phuxForOwner(owner) orelse return false;
         const mode = if (raw.modifiers.shift) .off else remote.mouseMode(owner) catch return false;
-        const state = model.remoteUi(owner.terminal_ref) orelse return false;
+        const state = interaction.stateForOwner(model, owner) orelse return false;
         const same_owner = if (self.wheel_owner) |previous| previous.eql(owner) else false;
         if (!same_owner or mode != self.wheel_mode) {
             state.wheel_accum = 0;
@@ -96,6 +105,10 @@ pub const State = struct {
             if (capture.window_id == raw.window_id and capture.pointer_id == raw.pointer_id) return index;
         }
         return null;
+    }
+
+    pub fn hasCapture(self: *const State, raw: Raw) bool {
+        return self.captureIndex(raw) != null;
     }
 
     fn freeIndex(self: *const State) ?usize {
@@ -127,17 +140,21 @@ pub const State = struct {
             .reporting = tracking,
             .point = point,
             .cell = cell,
-            .gesture_handle = if (model.remoteUi(owner.terminal_ref)) |state| state.gesture_handle else 0,
+            .gesture_handle = if (interaction.stateForOwner(model, owner)) |state| state.gesture_handle else 0,
             .modifiers = modifiers(raw),
         };
         return true;
     }
 
     fn tail(self: *State, model: *Model, raw: Raw, index: usize) bool {
+        if (raw.kind == .pointer_cancel) {
+            self.finish(model, index);
+            return true;
+        }
         defer if (raw.kind == .pointer_up) self.finish(model, index);
         const captured = self.captures[index].?;
-        if (!captureCurrent(model, captured) or raw.kind == .pointer_cancel) {
-            self.finish(model, index);
+        if (!captureCurrent(model, captured)) {
+            self.retire(model, index);
             return true;
         }
         const frame = pointer.paneFrameForTerminal(model, captured.owner.terminal_ref) orelse return true;
@@ -155,6 +172,19 @@ pub const State = struct {
     fn finish(self: *State, model: *Model, index: usize) void {
         const capture = self.captures[index] orelse return;
         self.captures[index] = null;
+        if (!capture.retired) releaseCapture(model, capture);
+    }
+
+    /// Release the old gesture once, but retain its pointer identity so later
+    /// motion cannot become an uncaptured event for a replacement attachment.
+    fn retire(self: *State, model: *Model, index: usize) void {
+        const capture = self.captures[index] orelse return;
+        if (capture.retired) return;
+        self.captures[index].?.retired = true;
+        releaseCapture(model, capture);
+    }
+
+    fn releaseCapture(model: *Model, capture: Capture) void {
         if (!ready(model, capture.owner)) {
             retireSelection(model, capture.owner);
             return;
@@ -167,6 +197,13 @@ pub const State = struct {
     pub fn cancelAll(self: *State, model: *Model) void {
         if (comptime !support.phux_enabled) return;
         for (0..self.captures.len) |index| self.finish(model, index);
+    }
+
+    pub fn cancelWindow(self: *State, model: *Model, window_id: sdk.platform.WindowId) void {
+        for (self.captures, 0..) |slot, index| {
+            const capture = slot orelse continue;
+            if (capture.window_id == window_id) self.finish(model, index);
+        }
     }
 
     pub fn autoscrollActive(self: *const State, model: *const Model) bool {
@@ -182,7 +219,7 @@ pub const State = struct {
         for (self.captures, 0..) |slot, index| {
             const capture = slot orelse continue;
             if (!captureCurrent(model, capture)) {
-                self.finish(model, index);
+                self.retire(model, index);
                 continue;
             }
             scrollSelection(model, capture);
@@ -192,18 +229,26 @@ pub const State = struct {
 
 fn ready(model: *const Model, owner: Owner) bool {
     if (!model.ownerIsCurrent(owner)) return false;
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return false;
     return presentation.phase == .live;
 }
 
 fn captureCurrent(model: *const Model, capture: Capture) bool {
+    if (capture.retired) return false;
     if (!model.focused or !ready(model, capture.owner)) return false;
     if (model.active_window != capture.window_index) return false;
-    const tree = model.selectedTreeConst() orelse return false;
-    if (tree.find(capture.owner.terminal_ref) == null) return false;
+    if (!ownerInSelectedTree(model, capture.owner)) return false;
     if (capture.reporting) return true;
-    const state = model.remoteUiConst(capture.owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwnerConst(model, capture.owner) orelse return false;
     return state.gesture_handle != 0 and state.gesture_handle == capture.gesture_handle;
+}
+
+fn ownerInSelectedTree(model: *const Model, owner: Owner) bool {
+    const tree = model.selectedTreeConst() orelse return false;
+    if (tree.find(owner.terminal_ref) == null) return false;
+    const remote = model.phuxForTreeConst(tree) orelse return false;
+    const visible_owner = remote.owner(owner.terminal_ref) orelse return false;
+    return visible_owner.eql(owner);
 }
 
 fn retireSelection(model: *Model, owner: Owner) void {
@@ -223,7 +268,7 @@ fn autoscrollDirection(model: *const Model, capture: Capture) i64 {
 fn scrollSelection(model: *Model, capture: Capture) void {
     const direction = autoscrollDirection(model, capture);
     if (direction == 0) return;
-    const remote = model.phuxForRef(capture.owner.terminal_ref) orelse return;
+    const remote = model.phuxForOwner(capture.owner) orelse return;
     remote.scrollViewport(capture.owner, .{ .kind = .delta, .value = direction }) catch return;
     const frame = pointer.paneFrameForTerminal(model, capture.owner.terminal_ref) orelse return;
     const cell = coordinate(model, capture.owner, capture.point, frame) orelse return;
@@ -241,7 +286,7 @@ fn buttonFor(button: i32) contract.MouseButton {
 
 fn coordinate(model: *const Model, owner: Owner, point: Point, frame: Rect) ?contract.DocumentPoint {
     if (!validGeometry(point, frame)) return null;
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return null;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return null;
     if (presentation.cols == 0 or presentation.rows == 0) return null;
     const measured = presentation.measured_cell orelse return null;
     if (!validCellExtent(measured.width) or !validCellExtent(measured.height)) return null;
@@ -268,7 +313,7 @@ fn cellAt(value: f32, extent: f32, cells: u16) u16 {
 }
 
 fn tracksMouse(model: *Model, owner: Owner) bool {
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
     return remote.mouseTracking(owner) catch false;
 }
 
@@ -279,7 +324,7 @@ fn report(model: *Model, owner: Owner, action: contract.MouseAction, button: con
 
 fn sendCell(model: *Model, owner: Owner, action: contract.MouseAction, button: contract.MouseButton, mods: contract.ModifierMask, cell: contract.DocumentPoint) bool {
     if (!ready(model, owner)) return false;
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
     const mode = remote.mouseMode(owner) catch return false;
     if (!reportsAction(mode, action, button)) return false;
     remote.sendMouse(owner, &.{ .action = action, .button = button, .modifiers = mods, .x = @floatFromInt(cell.column), .y = @floatFromInt(cell.row) }) catch return false;
@@ -311,26 +356,26 @@ fn reportPress(model: *Model, raw: Raw, owner: Owner, frame: Rect) bool {
 }
 
 fn clearSelection(model: *Model, owner: Owner) void {
-    const state = model.remoteUi(owner.terminal_ref) orelse return;
+    const state = interaction.stateForOwner(model, owner) orelse return;
     selection.clear(model, state);
 }
 
 fn beginSelection(model: *Model, owner: Owner, cell: contract.DocumentPoint, clicks: u8, point: Point, frame: Rect) bool {
-    const state = model.remoteUi(owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwner(model, owner) orelse return false;
     selection.clear(model, state);
     return applyGesture(model, owner, .press, clicks, cell, point, frame);
 }
 
 fn dragSelection(model: *Model, capture: Capture, cell: contract.DocumentPoint, point: Point, frame: Rect) void {
-    const state = model.remoteUi(capture.owner.terminal_ref) orelse return;
+    const state = interaction.stateForOwner(model, capture.owner) orelse return;
     if (state.gesture_handle != capture.gesture_handle or state.gesture_handle == 0) return;
     _ = applyGesture(model, capture.owner, .drag, 1, cell, point, frame);
 }
 
 fn finishSelection(model: *Model, capture: Capture) void {
-    const state = model.remoteUi(capture.owner.terminal_ref) orelse return;
+    const state = interaction.stateForOwner(model, capture.owner) orelse return;
     if (state.gesture_handle != capture.gesture_handle or state.gesture_handle == 0) return;
-    const remote = model.phuxForRef(capture.owner.terminal_ref) orelse return;
+    const remote = model.phuxForOwner(capture.owner) orelse return;
     _ = remote.selectionGesture(capture.owner, .{
         .phase = .release,
         .handle = capture.gesture_handle,
@@ -345,9 +390,9 @@ fn finishSelection(model: *Model, capture: Capture) void {
 }
 
 fn applyGesture(model: *Model, owner: Owner, gesture_phase: @FieldType(contract.SelectionGesture, "phase"), clicks: u8, cell: contract.DocumentPoint, point: Point, frame: Rect) bool {
-    const state = model.remoteUi(owner.terminal_ref) orelse return false;
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwner(model, owner) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return false;
     const measured = presentation.measured_cell orelse return false;
     const result = remote.selectionGesture(owner, .{
         .phase = gesture_phase,
@@ -377,11 +422,11 @@ fn applyGesture(model: *Model, owner: Owner, gesture_phase: @FieldType(contract.
 fn wheel(model: *Model, raw: Raw, owner: Owner, frame: Rect, reporting: bool) bool {
     if (!validWheelDelta(raw)) return false;
     const quantum = wheelQuantum(model, owner, frame) orelse return false;
-    const state = model.remoteUi(owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwner(model, owner) orelse return false;
     const rows = wheelRows(&state.wheel_accum, raw.delta_y, quantum);
     if (reporting) return horizontalWheel(model, raw, owner, frame, rows);
     if (rows == 0) return true;
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
     remote.scrollViewport(owner, .{ .kind = .delta, .value = -rows }) catch return false;
     return true;
 }
@@ -392,16 +437,16 @@ fn validWheelDelta(raw: Raw) bool {
 }
 
 fn horizontalWheel(model: *Model, raw: Raw, owner: Owner, frame: Rect, rows: i64) bool {
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return false;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return false;
     const measured = presentation.measured_cell orelse return false;
-    const state = model.remoteUi(owner.terminal_ref) orelse return false;
+    const state = interaction.stateForOwner(model, owner) orelse return false;
     const columns = wheelRows(&state.wheel_accum_x, raw.delta_x, measured.width);
     return reportWheel(model, raw, owner, frame, rows, columns);
 }
 
 fn wheelQuantum(model: *const Model, owner: Owner, frame: Rect) ?f32 {
     _ = frame;
-    const presentation = model.remotePresentation(owner.terminal_ref) orelse return null;
+    const presentation = interaction.presentationForOwner(model, owner) orelse return null;
     if (presentation.rows == 0) return null;
     const quantum = (presentation.measured_cell orelse return null).height;
     if (!std.math.isFinite(quantum) or quantum <= 0) return null;
@@ -434,7 +479,7 @@ pub fn pasteDrop(model: *Model, terminal: contract.TerminalRef, text: []const u8
     if (comptime !support.phux_enabled) return false;
     const owner = model.terminalOwner(terminal) orelse return false;
     if (!ready(model, owner)) return false;
-    const remote = model.phuxForRef(owner.terminal_ref) orelse return false;
+    const remote = model.phuxForOwner(owner) orelse return false;
     remote.sendPaste(owner, text, false) catch return false;
     if (model.selectedTree()) |tree| _ = tree.focusTerminal(terminal);
     return true;
@@ -465,6 +510,18 @@ pub fn cancelLocal(model: *Model, fx: anytype, raw: Raw) void {
         .frame = previous.frame,
         .modifiers = previous.modifiers,
     });
+}
+
+pub fn cancelLocalWindow(model: *Model, fx: anytype, window_id: sdk.platform.WindowId) void {
+    for (model.pointer_captures) |capture| {
+        if (!capture.active or capture.window_id != window_id) continue;
+        cancelLocal(model, fx, .{
+            .window_id = window_id,
+            .label = "",
+            .kind = .pointer_cancel,
+            .pointer_id = capture.pointer_id,
+        });
+    }
 }
 
 pub fn localCaptured(model: *const Model, raw: Raw) bool {
@@ -516,4 +573,122 @@ pub fn dispatchLocal(model: *Model, fx: anytype, raw: Raw, clicks: u8) bool {
         .modifiers = .{ .shift = raw.modifiers.shift, .control = raw.modifiers.control, .alt = raw.modifiers.option, .super = raw.modifiers.command },
     });
     return true;
+}
+
+const SourceFixture = @import("remote_presentation_commands.zig").test_support;
+
+fn sourcePointerLayout(fixture: SourceFixture, both: bool) void {
+    const model = fixture.engine.model;
+    fixture.seedUi();
+    model.focused = true;
+    model.primary.web_selected = false;
+    model.primary.selected_tab = 0;
+    model.primary.surface_size = .{ .width = 1100, .height = 640 };
+    model.primary.tabs[0] = @import("../layout.zig").Tree.initLeaf(fixture.owner_a.terminal_ref);
+    model.primary.tabs[0].attachment_id = fixture.a.context_id;
+    model.primary.tabs[1] = @import("../layout.zig").Tree.initLeaf(fixture.owner_b.terminal_ref);
+    model.primary.tabs[1].attachment_id = fixture.b.context_id;
+    model.primary.tab_count = if (both) 2 else 1;
+}
+
+fn enableSourceMotion(remote: *support.PhuxProvider, owner: Owner) !void {
+    // RESOURCE_OUTPUT uses the same production-decoded TLVs as the shipping
+    // pointer fixtures: resource 7, stream 7, bootstrap 1, first output frame.
+    const text = "\x1b[?1003h\x1b[?1006h";
+    var storage: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&storage);
+    try writer.writeAll(&.{ 0, 0, 0, 0, 0x90, 1, 4, 5, 0, 0, 0, 0, 7, 2, 4, 8 });
+    try writer.writeInt(u64, 1, .big);
+    try writer.writeAll(&.{ 3, 4, text.len });
+    try writer.writeAll(text);
+    try writer.writeAll(&.{ 4, 4, 8 });
+    try writer.writeInt(u64, 7, .big);
+    try writer.writeAll(&.{ 5, 4, 8 });
+    try writer.writeInt(u64, 1, .big);
+    const bytes = writer.buffered();
+    std.mem.writeInt(u32, bytes[0..4], @intCast(bytes.len - 4), .big);
+    try std.testing.expect(remote.bridge.incoming.stage(bytes));
+    _ = try remote.drainReadiness();
+    try std.testing.expectEqual(contract.MouseMode.any_motion, try remote.mouseMode(owner));
+    remote.host.recordMeasuredCell(owner, .{ .width = 8, .height = 16 });
+    remote.bridge.outgoing.reset();
+}
+
+fn sourcePointerEvent(model: *const Model, owner: Owner) !Raw {
+    const frame = pointer.paneFrameForTerminal(model, owner.terminal_ref) orelse return error.MissingFrame;
+    return .{ .window_id = 1, .label = "source-pointer", .kind = .pointer_down, .pointer_id = 7, .button = 0, .x = frame.x + 2, .y = frame.y + 2 };
+}
+
+test "shipping captured source uses selected tree when the global ref is ambiguous" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const fixture = try SourceFixture.init();
+    defer fixture.engine.destroy();
+    sourcePointerLayout(fixture, true);
+    try enableSourceMotion(fixture.a, fixture.owner_a);
+    try enableSourceMotion(fixture.b, fixture.owner_b);
+    const model = fixture.engine.model;
+    try std.testing.expect(model.phuxForRef(fixture.owner_a.terminal_ref) == null);
+    try std.testing.expect(model.ownerIsCurrent(fixture.owner_a));
+    try std.testing.expect(model.ownerIsCurrent(fixture.owner_b));
+    var state: State = .{};
+    var raw = try sourcePointerEvent(model, fixture.owner_a);
+    const frame = pointer.paneFrameForTerminal(model, fixture.owner_a.terminal_ref).?;
+    try std.testing.expect(state.press(model, raw, fixture.owner_a, frame, 1));
+    try std.testing.expect(fixture.a.bridge.outgoing.hasPending());
+    fixture.a.bridge.outgoing.reset();
+    raw.kind = .pointer_drag;
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    try std.testing.expect(state.captures[0] != null);
+    try std.testing.expect(fixture.a.bridge.outgoing.hasPending());
+    try std.testing.expect(!fixture.b.bridge.outgoing.hasPending());
+    state.cancelAll(model);
+}
+
+fn retiredSourceTail(autoscroll: bool, release_first: bool) !void {
+    const fixture = try SourceFixture.init();
+    defer fixture.engine.destroy();
+    sourcePointerLayout(fixture, false);
+    try enableSourceMotion(fixture.a, fixture.owner_a);
+    try enableSourceMotion(fixture.b, fixture.owner_b);
+    const model = fixture.engine.model;
+    var state: State = .{};
+    var raw = try sourcePointerEvent(model, fixture.owner_a);
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    try std.testing.expect(state.captures[0] != null);
+    fixture.a.host.freezePublished();
+    model.primary.tabs[0] = model.primary.tabs[1];
+    fixture.a.bridge.outgoing.reset();
+    if (autoscroll) state.autoscroll(model);
+    raw.kind = .pointer_drag;
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    raw.kind = .pointer_move;
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    try std.testing.expect(!fixture.b.bridge.outgoing.hasPending());
+    if (release_first) {
+        raw.kind = .pointer_up;
+        try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+        try std.testing.expect(state.captures[0] == null);
+    }
+    try std.testing.expect(!fixture.a.bridge.outgoing.hasPending());
+    try std.testing.expect(!fixture.b.bridge.outgoing.hasPending());
+    raw.kind = .pointer_down;
+    try std.testing.expectEqual(@as(?bool, true), state.route(model, raw, 1));
+    try std.testing.expect(state.captures[0].?.owner.eql(fixture.owner_b));
+    try std.testing.expect(fixture.b.bridge.outgoing.hasPending());
+    state.cancelAll(model);
+}
+
+test "shipping retired source consumes multiple motion events and release before a fresh press" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try retiredSourceTail(false, true);
+}
+
+test "shipping autoscroll retirement retains the source tombstone through release" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try retiredSourceTail(true, true);
+}
+
+test "shipping fresh press can replace a retired source tombstone before its old release" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    try retiredSourceTail(false, false);
 }

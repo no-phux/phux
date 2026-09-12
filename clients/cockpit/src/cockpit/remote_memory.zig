@@ -11,7 +11,7 @@
 //! front is shown again (cockpit/native/peer_restore.zig).
 //!
 //! Three formats. v1, what earlier releases wrote, is a fixed header plus
-//! exactly one `target=` line. v2 is a fixed header plus one to `max_hosts`
+//! exactly one `target=` line. v2 is a fixed header plus distinct
 //! distinct `target=` lines, oldest first. v3 is v2 where at least one
 //! `target=` line is followed by one `shown=` record; it is written only when
 //! a record exists, so a file without one stays readable by v2 releases.
@@ -22,9 +22,8 @@
 //! others as not front. The file is written only when its bytes change, and
 //! then atomically (a temporary file, synced, replaces it), so a torn write
 //! cannot occur. Anything else (a hand edit, an unknown format) is treated as
-//! absent: the cost of forgetting is one Connect to Host, and the cost of
-//! misreading is dialing a host nobody chose, or showing a session nobody
-//! had on screen.
+//! unavailable and write-protected: the source is preserved for a compatible
+//! release or repair, and no unknown record is interpreted as a dial target.
 
 const std = @import("std");
 const config_module = @import("../config/config.zig");
@@ -35,13 +34,13 @@ pub const list_header = "phux-cockpit-remote v2\n";
 pub const shown_header = "phux-cockpit-remote v3\n";
 const key = "target=";
 const shown_key = "shown=";
-/// This Mac plus three hosts is Cockpit's coordinator bound.
-pub const max_hosts: usize = 3;
 pub const max_file_bytes = header.len + key.len + config_module.max_phux_remote_bytes + 1;
 /// `shown=` session `,` `@` creation time (at most 20 bytes, as i64's
 /// minimum) or a 16-digit server hash `,` window id or `-` `,` front, newline.
 const max_shown_line_bytes = shown_key.len + 10 + 1 + 21 + 1 + 32 + 1 + 1 + 1;
-pub const max_list_file_bytes = shown_header.len + max_hosts * (key.len + config_module.max_phux_remote_bytes + 1 + max_shown_line_bytes);
+/// Small caller buffer retained for compatibility; persistence allocates the
+/// actual encoded size and does not use this as a catalog limit.
+pub const max_list_file_bytes = shown_header.len + 3 * (key.len + config_module.max_phux_remote_bytes + 1 + max_shown_line_bytes);
 
 /// What a remembered host's coordinator was showing (ADR-0110): the session,
 /// by id and creation time, the shared window of its selected tab, and
@@ -87,13 +86,28 @@ pub fn serverHash(server_id: []const u8) u64 {
 /// Remembered hosts, oldest first, each a valid `phux-remote` value, each
 /// with at most one record of what it showed.
 pub const Hosts = struct {
-    storage: [max_hosts][config_module.max_phux_remote_bytes]u8 = undefined,
-    lens: [max_hosts]usize = @splat(0),
-    shown: [max_hosts]?Shown = @splat(null),
+    const Target = struct {
+        bytes: [config_module.max_phux_remote_bytes]u8 = undefined,
+        len: usize = 0,
+    };
+
+    allocator: std.mem.Allocator = std.heap.page_allocator,
+    storage: std.ArrayList(Target) = .empty,
+    shown: []?Shown = &.{},
     count: usize = 0,
+    /// Invalid or unreadable source data must not be overwritten by a later
+    /// status/restore refresh, including an empty in-memory catalog.
+    writable: bool = true,
+
+    pub fn deinit(self: *Hosts) void {
+        self.storage.deinit(self.allocator);
+        self.allocator.free(self.shown);
+        self.* = .{ .allocator = self.allocator };
+    }
 
     pub fn get(self: *const Hosts, index: usize) []const u8 {
-        return self.storage[index][0..self.lens[index]];
+        const target = &self.storage.items[index];
+        return target.bytes[0..target.len];
     }
 
     pub fn contains(self: *const Hosts, target: []const u8) bool {
@@ -107,25 +121,37 @@ pub const Hosts = struct {
         return null;
     }
 
-    /// False when `target` is invalid, already listed, or the list is full.
+    /// False when invalid, already listed, or allocation fails. Growth is
+    /// transactional: no existing target/restore record changes on failure.
     pub fn add(self: *Hosts, target: []const u8) bool {
         if (target.len == 0 or target.len > config_module.max_phux_remote_bytes) return false;
         if (!config_module.validPhuxRemote(target)) return false;
-        if (self.contains(target) or self.count == max_hosts) return false;
-        @memcpy(self.storage[self.count][0..target.len], target);
-        self.lens[self.count] = target.len;
+        if (self.contains(target)) return false;
+        self.ensureCapacity() catch return false;
+        var value: Target = .{ .len = target.len };
+        @memcpy(value.bytes[0..target.len], target);
+        self.storage.appendAssumeCapacity(value);
         self.shown[self.count] = null;
         self.count += 1;
         return true;
+    }
+
+    fn ensureCapacity(self: *Hosts) !void {
+        try self.storage.ensureUnusedCapacity(self.allocator, 1);
+        if (self.shown.len >= self.storage.capacity) return;
+        self.shown = try self.allocator.realloc(self.shown, self.storage.capacity);
+    }
+
+    pub fn encodedCapacity(self: *const Hosts) usize {
+        return shown_header.len + self.count * (key.len + config_module.max_phux_remote_bytes + 1 + max_shown_line_bytes);
     }
 
     /// False when `target` was not listed. Its record goes with it; the
     /// others keep their order and their records.
     pub fn remove(self: *Hosts, target: []const u8) bool {
         const index = self.indexOf(target) orelse return false;
+        _ = self.storage.orderedRemove(index);
         for (index + 1..self.count) |next| {
-            self.storage[next - 1] = self.storage[next];
-            self.lens[next - 1] = self.lens[next];
             self.shown[next - 1] = self.shown[next];
         }
         self.count -= 1;
@@ -151,35 +177,45 @@ pub const Hosts = struct {
 /// The remembered hosts, from any format, into `out`: false, with `out`
 /// empty, for anything malformed.
 pub fn parseAll(bytes: []const u8, out: *Hosts) bool {
-    out.* = .{};
-    if (parse(bytes)) |target| return out.add(target);
+    out.deinit();
+    if (parse(bytes)) |target| {
+        if (!out.add(target)) return reject(out);
+        return true;
+    }
     const records = std.mem.startsWith(u8, bytes, shown_header);
-    if (!records and !std.mem.startsWith(u8, bytes, list_header)) return false;
+    if (!records and !std.mem.startsWith(u8, bytes, list_header)) return reject(out);
     var rest = bytes[list_header.len..];
-    var front_seen = false;
+    var parser: RecordParser = .{ .records = records };
     while (rest.len != 0) {
         const line_end = std.mem.indexOfScalar(u8, rest, '\n') orelse return reject(out);
         const line = rest[0..line_end];
         rest = rest[line_end + 1 ..];
-        if (std.mem.startsWith(u8, line, key)) {
-            if (!out.add(line[key.len..])) return reject(out);
-            continue;
-        }
-        // A record only in v3, only directly after its host, at most one each.
-        if (!records or out.count == 0 or out.shown[out.count - 1] != null) return reject(out);
-        if (!std.mem.startsWith(u8, line, shown_key)) return reject(out);
-        var value = parseShown(line[shown_key.len..]) orelse return reject(out);
-        // At most one tab is the front window's selected tab. A file that
-        // names more keeps the first and reads the rest as not front, rather
-        // than forgetting every host.
-        if (value.front and front_seen) value.front = false;
-        if (value.front) front_seen = true;
-        out.shown[out.count - 1] = value;
+        if (!parser.line(line, out)) return reject(out);
     }
     // A v3 file always carries a record, since one without is written as v2.
     if (records and !out.hasShown()) return reject(out);
     return out.count != 0 or reject(out);
 }
+
+const RecordParser = struct {
+    records: bool,
+    front_seen: bool = false,
+
+    fn line(self: *RecordParser, text: []const u8, out: *Hosts) bool {
+        if (std.mem.startsWith(u8, text, key)) return out.add(text[key.len..]);
+        // A record only in v3, directly after its host, at most one each.
+        if (!self.records or out.count == 0) return false;
+        if (out.shown[out.count - 1] != null) return false;
+        if (!std.mem.startsWith(u8, text, shown_key)) return false;
+        var value = parseShown(text[shown_key.len..]) orelse return false;
+        // Preserve the first front record if old data contains several.
+        const was_front = value.front;
+        if (self.front_seen) value.front = false;
+        self.front_seen = self.front_seen or was_front;
+        out.shown[out.count - 1] = value;
+        return true;
+    }
+};
 
 fn parseShown(text: []const u8) ?Shown {
     var fields = std.mem.splitScalar(u8, text, ',');
@@ -223,7 +259,8 @@ fn parseCreated(text: []const u8) ?i64 {
 }
 
 fn reject(out: *Hosts) bool {
-    out.* = .{};
+    out.deinit();
+    out.writable = false;
     return false;
 }
 
@@ -265,12 +302,13 @@ fn append(out: []u8, at: usize, text: []const u8) ?usize {
 
 /// Every remembered host into `out`; empty when there is none.
 pub fn loadAll(io: std.Io, file_path: []const u8, out: *Hosts) void {
-    out.* = .{};
-    var file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch return;
-    defer file.close(io);
-    var bytes: [max_list_file_bytes + 1]u8 = undefined;
-    const read = file.readPositionalAll(io, &bytes, 0) catch return;
-    _ = parseAll(bytes[0..read], out);
+    out.deinit();
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, file_path, out.allocator, .unlimited) catch |err| {
+        out.writable = err == error.FileNotFound;
+        return;
+    };
+    defer out.allocator.free(bytes);
+    _ = parseAll(bytes, out);
 }
 
 /// Remember exactly `hosts`, or forget every host when it is empty. Best
@@ -284,12 +322,15 @@ pub fn storeAll(io: std.Io, file_path: []const u8, hosts: *const Hosts) void {
 /// a write goes to a temporary file in the same directory, is synced, and
 /// then replaces the file whole, so a torn write never forgets every host.
 pub fn save(io: std.Io, file_path: []const u8, hosts: *const Hosts) bool {
+    if (!hosts.writable) return false;
     const cwd = std.Io.Dir.cwd();
-    var bytes: [max_list_file_bytes]u8 = undefined;
-    const encoded = encodeAll(hosts, &bytes) orelse {
+    if (hosts.count == 0) {
         cwd.deleteFile(io, file_path) catch return false;
         return true;
-    };
+    }
+    const bytes = hosts.allocator.alloc(u8, hosts.encodedCapacity()) catch return false;
+    defer hosts.allocator.free(bytes);
+    const encoded = encodeAll(hosts, bytes) orelse return false;
     if (fileHolds(io, file_path, encoded)) return false;
     if (std.fs.path.dirname(file_path)) |dir| cwd.createDirPath(io, dir) catch {};
     writeAtomic(io, file_path, encoded) catch return false;
@@ -299,8 +340,9 @@ pub fn save(io: std.Io, file_path: []const u8, hosts: *const Hosts) bool {
 fn fileHolds(io: std.Io, file_path: []const u8, expected: []const u8) bool {
     var file = std.Io.Dir.cwd().openFile(io, file_path, .{}) catch return false;
     defer file.close(io);
-    var current: [max_list_file_bytes + 1]u8 = undefined;
-    const read = file.readPositionalAll(io, &current, 0) catch return false;
+    const current = std.heap.page_allocator.alloc(u8, expected.len + 1) catch return false;
+    defer std.heap.page_allocator.free(current);
+    const read = file.readPositionalAll(io, current, 0) catch return false;
     return std.mem.eql(u8, current[0..read], expected);
 }
 
@@ -357,6 +399,7 @@ pub fn parse(bytes: []const u8) ?[]const u8 {
 /// null when there is none.
 pub fn load(io: std.Io, file_path: []const u8, out: []u8) ?[]const u8 {
     var hosts: Hosts = .{};
+    defer hosts.deinit();
     loadAll(io, file_path, &hosts);
     if (hosts.count == 0) return null;
     const target = hosts.get(0);
@@ -379,4 +422,87 @@ pub fn store(io: std.Io, file_path: []const u8, target: ?[]const u8) void {
     // first remembered host may be what creates it.
     if (std.fs.path.dirname(file_path)) |dir| cwd.createDirPath(io, dir) catch {};
     writeAtomic(io, file_path, encoded) catch {};
+}
+
+test "v3 preserves six remembered machines and their session identities" {
+    const bytes = shown_header ++
+        "target=one\nshown=1,@123,-,0\n" ++
+        "target=two\nshown=2,@124,-,0\n" ++
+        "target=three\nshown=3,@125,-,0\n" ++
+        "target=four\nshown=4,@126,-,0\n" ++
+        "target=five\nshown=5,@127,-,1\n" ++
+        "target=six\nshown=6,@128,-,0\n";
+    var hosts: Hosts = .{};
+    defer hosts.deinit();
+    try std.testing.expect(parseAll(bytes, &hosts));
+    try std.testing.expectEqual(@as(usize, 6), hosts.count);
+    try std.testing.expectEqualStrings("six", hosts.get(5));
+    try std.testing.expectEqual(@as(?i64, 128), hosts.shown[hosts.count - 1].?.created);
+    var encoded: [4096]u8 = undefined;
+    try std.testing.expectEqualStrings(bytes, encodeAll(&hosts, &encoded).?);
+}
+
+test "unknown future remote memory survives a later save" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(directory);
+    const file_path = try std.fs.path.join(std.testing.allocator, &.{ directory, "future.remote" });
+    defer std.testing.allocator.free(file_path);
+    const future = "phux-cockpit-remote v99\ntarget=precious\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "future.remote", .data = future });
+    var hosts: Hosts = .{};
+    defer hosts.deinit();
+    loadAll(io, file_path, &hosts);
+    try std.testing.expectEqual(@as(usize, 0), hosts.count);
+    try std.testing.expect(!save(io, file_path, &hosts));
+    const retained = try tmp.dir.readFileAlloc(io, "future.remote", std.testing.allocator, .unlimited);
+    defer std.testing.allocator.free(retained);
+    try std.testing.expectEqualStrings(future, retained);
+}
+
+test "failed catalog growth keeps existing targets and restore records" {
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var hosts: Hosts = .{ .allocator = failing.allocator() };
+    defer hosts.deinit();
+    try std.testing.expect(hosts.add("one"));
+    _ = hosts.setShown(0, .{ .session = 12, .created = 500, .front = true });
+    // Fill the allocated capacity, then fail the next allocation.
+    var name: [32]u8 = undefined;
+    while (hosts.count < hosts.storage.capacity) {
+        const target = try std.fmt.bufPrint(&name, "host-{d}", .{hosts.count});
+        try std.testing.expect(hosts.add(target));
+    }
+    const count = hosts.count;
+    failing.fail_index = failing.alloc_index;
+    failing.resize_fail_index = failing.resize_index;
+    try std.testing.expect(!hosts.add("next"));
+    try std.testing.expectEqual(count, hosts.count);
+    try std.testing.expectEqualStrings("one", hosts.get(0));
+    try std.testing.expectEqual(@as(u32, 12), hosts.shown[0].?.session);
+}
+
+test "v1 allocation failures preserve the source through later save" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const directory = try tmp.dir.realPathFileAlloc(io, ".", std.testing.allocator);
+    defer std.testing.allocator.free(directory);
+    const file_path = try std.fs.path.join(std.testing.allocator, &.{ directory, "old.remote" });
+    defer std.testing.allocator.free(file_path);
+    const original = header ++ "target=precious\n";
+    // Parsing has two owned allocations: target storage and shown records.
+    for (0..2) |failure| {
+        try tmp.dir.writeFile(io, .{ .sub_path = "old.remote", .data = original });
+        var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = failure });
+        var hosts: Hosts = .{ .allocator = failing.allocator() };
+        defer hosts.deinit();
+        try std.testing.expect(!parseAll(original, &hosts));
+        try std.testing.expect(!hosts.writable);
+        try std.testing.expect(!save(io, file_path, &hosts));
+        const retained = try tmp.dir.readFileAlloc(io, "old.remote", std.testing.allocator, .unlimited);
+        defer std.testing.allocator.free(retained);
+        try std.testing.expectEqualStrings(original, retained);
+    }
 }

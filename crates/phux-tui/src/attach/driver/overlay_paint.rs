@@ -101,6 +101,9 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
             slot.renderer.set_selection(None);
         }
         let _ = paint_copy_mode_status(out, sel, viewport_dims, theme);
+        // phux-esge: the strip lands on the bottom viewport row, which is a
+        // pane row under a top-docked bar or no bar at all.
+        crate::attach::pane_state::invalidate_all_fronts(panes);
         if matches!(
             bar_pos,
             Some(crate::render::chrome::status_bar::Position::Bottom)
@@ -137,11 +140,17 @@ pub(super) fn paint_active_overlay<W: crate::attach::RenderSink>(
                     )
                 });
         let _ = overlays.paint_clipped(out, viewport_dims, overlay_content, clip, theme.shadow);
+        // phux-esge: the box and its shadow sit over pane cells. Pane paint
+        // is suppressed while it is up and dismissal forces a full repaint,
+        // so this is insurance, not a fix — but it is free.
+        crate::attach::pane_state::invalidate_all_fronts(panes);
         painted
     } else {
         // Full-screen overlay (no bounded region): clear + paint.
         let _ = out.write_all(b"\x1b[2J\x1b[H");
         let _ = overlays.paint(out, viewport_dims);
+        // phux-esge: the clear and the overlay replaced every pane cell.
+        crate::attach::pane_state::invalidate_all_fronts(panes);
         StatusBarPaint::NotPublished
     }
 }

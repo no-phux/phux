@@ -121,7 +121,7 @@ pub const Palette = struct {
         // (the `bg_color_palette` / `bg_color_rgb` content tags), so a second
         // derivation would disagree with the paint on exactly the cells that
         // are hardest to notice.
-        color = palette.contrasted(color, bg orelse palette.background, cp);
+        color = contrasted(palette.minimum_contrast, color, bg orelse palette.background, cp);
         return color;
     }
 
@@ -159,18 +159,18 @@ pub const Palette = struct {
     /// WCAG curve is two things to keep in step, and the failure when they
     /// drift is a readout that tells the user their colours are fine while the
     /// renderer is quietly overriding them.
-    fn contrasted(palette: *const Palette, fg: canvas.Color, bg: canvas.Color, cp: u21) canvas.Color {
+    pub fn contrasted(minimum_contrast: f32, fg: canvas.Color, bg: canvas.Color, cp: u21) canvas.Color {
         // Written as a negated `>` rather than `<= 1` so a NaN floor DISABLES
         // the check. The parser refuses a NaN today, but the failure mode if
         // one ever arrives is not symmetric: `ratio >= NaN` is false for every
         // ratio, so the wrong branch here repaints every cell in the terminal
         // pure white.
-        if (!(palette.minimum_contrast > 1)) return fg;
+        if (!(minimum_contrast > 1)) return fg;
         if (noMinimumContrast(cp)) return fg;
 
         const bg_luminance = theme_module.relativeLuminance(bg.r, bg.g, bg.b);
         const fg_luminance = theme_module.relativeLuminance(fg.r, fg.g, fg.b);
-        if (theme_module.contrastRatioLuminance(fg_luminance, bg_luminance) >= palette.minimum_contrast) {
+        if (theme_module.contrastRatioLuminance(fg_luminance, bg_luminance) >= minimum_contrast) {
             return fg;
         }
 

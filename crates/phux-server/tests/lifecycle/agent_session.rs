@@ -632,6 +632,133 @@ fn append_delivers_live_records_to_two_subscribers() {
 // 3. Bootstrap replay.
 // ---------------------------------------------------------------------------
 
+/// Capture the envelope too: a multi-record append distinguishes the actual
+/// record cut from the former documentation's separate frame counter.
+async fn next_agent_output(stream: &mut UnixStream, agent: &ResourceId) -> (u64, Vec<u8>) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let (
+                _,
+                FrameKind::ResourceOutput {
+                    terminal_id,
+                    seq,
+                    bytes,
+                    ..
+                },
+            ) = recv_typed(stream).await
+                && &terminal_id == agent
+            {
+                return (seq, bytes.to_vec());
+            }
+        }
+    })
+    .await
+    .expect("agent output must arrive")
+}
+
+fn parse_records(payload: &[u8]) -> Vec<serde_json::Value> {
+    payload
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).unwrap())
+        .collect()
+}
+
+#[test]
+fn multi_record_append_envelope_and_bootstrap_use_the_last_record_cut() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let (mut owner, shutdown_tx, server_handle) = connect_and_attach(&tmp).await;
+        let parent = spawn_parent_terminal(&mut owner, 1).await;
+        let session = match spawn_session(&mut owner, 2, parent, "claude").await {
+            SpawnResult::Ok(id) => id,
+            other => panic!("spawn session failed: {other:?}"),
+        };
+        let mut watcher = connect_bare(&tmp).await;
+        attach_terminal(&mut watcher, 100, session.clone()).await;
+        let result = append(
+            &mut owner,
+            3,
+            session.clone(),
+            "{\"type\":\"prompt\"}\n{\"type\":\"ask\"}\n{\"type\":\"stop\"}\n",
+        )
+        .await;
+        assert!(matches!(result, CommandResult::OkWith(_)));
+        let (seq, payload) = next_agent_output(&mut watcher, &session).await;
+        let records = parse_records(&payload);
+        assert_eq!(
+            seq, 3,
+            "live envelope is final record seq, not append count 1"
+        );
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record["seq"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        let mut replacement = connect_bare(&tmp).await;
+        send_frame(
+            &mut replacement,
+            &FrameKind::Command {
+                request_id: 101,
+                command: Command::AttachResource {
+                    terminal_id: session.clone(),
+                },
+            },
+        )
+        .await;
+        let mut cut = None;
+        let mut retained = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match recv_typed(&mut replacement).await.1 {
+                    FrameKind::BootstrapBegin {
+                        terminal_id,
+                        base_seq,
+                        ..
+                    } if terminal_id == session => cut = Some(base_seq),
+                    FrameKind::BootstrapChunk {
+                        terminal_id,
+                        payload,
+                        ..
+                    } if terminal_id == session => retained.extend_from_slice(&payload),
+                    FrameKind::BootstrapReady { terminal_id, .. } if terminal_id == session => {
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(cut, Some(3));
+        assert_eq!(parse_records(&retained), records);
+        assert!(matches!(
+            append(
+                &mut owner,
+                4,
+                session.clone(),
+                "{\"type\":\"prompt\"}\n{\"type\":\"ask\"}\n"
+            )
+            .await,
+            CommandResult::OkWith(_)
+        ));
+        let (seq, payload) = next_agent_output(&mut replacement, &session).await;
+        assert_eq!(seq, 5);
+        assert_eq!(
+            parse_records(&payload)
+                .iter()
+                .map(|record| record["seq"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![4, 5]
+        );
+        drop(watcher);
+        drop(replacement);
+        shutdown(owner, shutdown_tx, server_handle).await;
+    });
+}
+
 #[test]
 fn bootstrap_replays_retained_records_on_attach() {
     run_local(async {

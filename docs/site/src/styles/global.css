@@ -27,10 +27,11 @@
   --color-cyan: #7dcfff;
 
   --font-reading:
-    -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica,
+    Arial, sans-serif;
   --font-code:
-    ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo, Monaco, Consolas,
-    monospace;
+    "IBM Plex Mono", ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo,
+    Monaco, Consolas, monospace;
   --font-mono: var(--font-code);
   --font-sans: var(--font-reading);
 }
@@ -53,7 +54,6 @@
 }
 
 [data-design="terminal"] {
-  --font-reading: var(--font-code);
   --color-bg: #07080b;
   --color-bg-soft: #0b0d12;
   --color-fg: #c0caf5;
@@ -66,7 +66,7 @@
   --radius-sm: 0;
   --radius-md: 0;
   --radius-lg: 0;
-  --page-gutter: clamp(12px, 2.4vw, 32px);
+  --page-gutter: clamp(20px, 3vw, 40px);
   --content-wide: 1240px;
   --reading-width: 78ch;
 }
@@ -76,18 +76,16 @@ body {
   background: var(--color-bg);
   color: var(--color-fg);
   font-family: var(--font-reading);
-  font-size: 15px;
-  line-height: 1.6;
+  font-size: 16px;
+  line-height: 1.65;
   margin: 0;
 }
 
 body {
   padding: 0;
-  background-image:
-    linear-gradient(to right, color-mix(in srgb, var(--color-rule) 18%, transparent) 1px, transparent 1px),
-    linear-gradient(to bottom, color-mix(in srgb, var(--color-rule) 12%, transparent) 1px, transparent 1px);
-  background-size: 8px 100%, 100% 16px;
 }
+
+
 
 pre,
 code {
@@ -173,100 +171,65 @@ a:hover {
   padding-inline: var(--page-gutter);
 }
 
+.site-frame {
+  width: min(100%, var(--content-wide));
+  margin: 0 auto;
+  padding-inline: var(--page-gutter);
+}
+
 /* ── nav ────────────────────────────────────────────────────────────────── */
 .nav {
   display: flex;
-  align-items: baseline;
-  gap: 20px;
-  min-height: 64px;
+  align-items: center;
+  gap: 28px;
+  height: 64px;
   border-bottom: 1px solid var(--color-rule);
 }
-.nav .links {
-  flex-wrap: wrap;
-  row-gap: 4px;
-}
 .nav .brand {
-  font-family: var(--font-code);
+  font-family: var(--font-reading);
   font-weight: 700;
+  font-size: 20px;
+  letter-spacing: -0.045em;
   color: var(--color-fg);
   text-decoration: none;
 }
 .nav .brand:hover {
-  background: none;
-  color: var(--color-accent);
-}
-.nav .brand b {
   color: var(--color-accent);
 }
 .nav .links {
   display: flex;
-  gap: 16px;
+  align-items: center;
+  gap: 22px;
   margin-left: auto;
 }
 .nav .links a {
   text-decoration: none;
   color: var(--color-dim);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 500;
-  padding: 7px 0;
 }
-.nav .links a:hover {
-  background: none;
+.nav .links a:hover,
+.nav .links a[aria-current="page"] {
   color: var(--color-fg);
-}
-
-/* ── hero ───────────────────────────────────────────────────────────────── */
-.hero {
-  padding: 56px 0 32px;
-}
-.hero h1 {
-  font-size: 30px;
-  line-height: 1.15;
-  margin: 0 0 14px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-}
-.hero h1 .mark {
-  color: var(--color-accent);
-}
-.hero .tagline {
-  font-size: 15px;
-  color: #b9b9c0;
-  max-width: 60ch;
-  margin: 0 0 22px;
-}
-.hero .badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  color: var(--color-dim);
-  font-size: 12px;
-}
-.hero .badges b {
-  color: var(--color-signal);
-  font-weight: 400;
 }
 
 .cta {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  border: 1px solid var(--color-fg);
-  background: var(--color-fg);
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
   color: var(--color-bg);
-  padding: 9px 15px;
+  padding: 10px 16px;
   border-radius: var(--radius-sm);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 600;
   text-decoration: none;
-  transition:
-    background 0.12s ease,
-    color 0.12s ease;
 }
 .cta:hover {
-  background: #fff;
+  background: #9ab6f9;
+  border-color: #9ab6f9;
   color: var(--color-bg);
-  border-color: #fff;
 }
 .cta.ghost {
   border-color: var(--color-rule);
@@ -658,25 +621,80 @@ a:hover {
 
 /* ── footer ─────────────────────────────────────────────────────────────── */
 .foot {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.4fr) repeat(3, minmax(0, 1fr));
+  gap: 32px;
   border-top: 1px solid var(--color-rule);
-  padding: 22px 0 48px;
+  padding: 40px 0 24px;
   color: var(--color-dim);
-  font-size: 12px;
-  font-family: var(--font-code);
+  font-size: 14px;
+}
+.foot-brand .brand {
+  display: inline-block;
+  margin-bottom: 10px;
+  color: var(--color-fg);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  text-decoration: none;
+}
+.foot-brand p {
+  max-width: 32ch;
+  margin: 0;
+  line-height: 1.55;
+}
+.foot-col {
   display: flex;
-  gap: 16px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 8px;
+}
+.foot-col h2 {
+  margin: 0 0 6px;
+  color: var(--color-fg);
+  font-size: 13px;
+  font-weight: 600;
 }
 .foot a {
   text-decoration: none;
   color: var(--color-dim);
 }
 .foot a:hover {
-  background: none;
   color: var(--color-fg);
 }
-.foot .sp {
+.foot-end {
+  margin: 0;
+  padding: 0 0 40px;
+  color: var(--color-subtle);
+  font-size: 12px;
+}
+.docs-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 20px;
+  border-top: 1px solid var(--color-rule);
+  padding: 20px 0 40px;
+  color: var(--color-dim);
+  font-size: 13px;
+}
+.docs-foot a {
+  color: var(--color-dim);
+  text-decoration: none;
+}
+.docs-foot a:hover {
+  color: var(--color-fg);
+}
+.docs-foot span {
   margin-left: auto;
+}
+@media (max-width: 720px) {
+  .foot {
+    grid-template-columns: 1fr 1fr;
+    gap: 28px 16px;
+    padding-top: 28px;
+  }
+  .foot-brand {
+    grid-column: 1 / -1;
+  }
 }
 
 /* ── Fumadocs chrome ─────────────────────────────────────────────────────────
@@ -728,8 +746,9 @@ a:hover {
 
 /* Brand: phux's `ph` prefix uses the flux-violet accent. The brand anchor is
    the nav title link pointing at "/". */
-#nd-docs-layout a[href="/"] b {
-  color: var(--color-fd-primary);
+#nd-docs-layout a[href="/overview"] {
+  font-weight: 700;
+  letter-spacing: -0.04em;
 }
 
 /* Prose: keep link accent + underline, drop the inherited invert. */
@@ -961,7 +980,7 @@ a:hover {
   margin: 8px 0 48px;
   border: 1px solid var(--color-rule);
   border-radius: var(--radius-lg);
-  background: linear-gradient(145deg, rgba(157, 139, 255, 0.06), transparent 45%), var(--color-surface);
+  background: var(--color-surface);
   padding: clamp(20px, 4vw, 32px);
 }
 .protocol-flow {
@@ -1060,6 +1079,120 @@ a:hover {
   font-size: 13px;
   line-height: 1.5;
 }
+
+.docs-wordmark {
+  color: var(--color-dim);
+  font-weight: 500;
+}
+
+.docs-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 42px;
+  margin: 8px 0 24px;
+}
+.overview-lede {
+  max-width: 68ch;
+  margin: 0;
+  color: #a9b1d6;
+  font-size: 16px;
+  line-height: 1.7;
+}
+.docs-overview > section > h2,
+.overview-columns > section > h2 {
+  margin: 0 0 10px;
+  color: var(--color-fg);
+  font-size: 15px;
+  font-weight: 600;
+}
+.docs-overview > section > p {
+  max-width: 68ch;
+  margin: 0 0 16px;
+  color: var(--color-dim);
+  font-size: 14px;
+  line-height: 1.65;
+}
+.overview-apps,
+.overview-paths {
+  display: block;
+  border-top: 1px solid var(--color-rule);
+}
+.overview-apps a,
+.overview-paths a {
+  display: grid;
+  grid-template-columns: 32px minmax(88px, 0.22fr) 1fr;
+  gap: 12px;
+  align-items: baseline;
+  padding: 16px 0;
+  border-bottom: 1px solid var(--color-rule);
+  text-decoration: none;
+  color: inherit;
+}
+.overview-paths a {
+  grid-template-columns: minmax(168px, 0.32fr) 1fr;
+}
+.overview-apps small {
+  color: var(--color-subtle);
+  font-family: var(--font-code);
+  font-size: 10px;
+}
+.overview-apps b,
+.overview-paths b {
+  color: var(--color-accent);
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.overview-apps span,
+.overview-paths span {
+  color: var(--color-dim);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.overview-apps a:hover,
+.overview-paths a:hover {
+  background: var(--color-surface-raised);
+}
+.overview-columns {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0 32px;
+  border-top: 1px solid var(--color-rule);
+  padding-top: 22px;
+}
+.overview-columns ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.overview-columns li {
+  border-bottom: 1px solid var(--color-rule);
+}
+.overview-columns a {
+  display: block;
+  padding: 10px 0;
+  color: var(--color-accent);
+  text-decoration: none;
+  font-size: 13px;
+}
+.overview-columns a:hover {
+  text-decoration: underline;
+}
+@media (max-width: 820px) {
+  .overview-columns {
+    grid-template-columns: 1fr;
+  }
+  .overview-apps a {
+    grid-template-columns: 32px 1fr;
+  }
+  .overview-apps span {
+    grid-column: 2;
+  }
+  .overview-paths a {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+}
 .protocol-tiers a:hover,
 .protocol-paths a:hover {
   background: var(--color-bg-soft) !important;
@@ -1132,142 +1265,11 @@ a:hover {
   }
 }
 
-/* Operational surface ------------------------------------------------------
-   The page follows the renderer: exact cells, shared rules, content-owned
-   interiors, and state expressed by glyph as well as color. */
-.wrap {
-  width: min(100%, var(--content-wide));
-}
-
-.nav {
-  min-height: 48px;
-  align-items: stretch;
-  gap: 0;
-  border-bottom-color: var(--color-rule);
-  font-size: 12px;
-}
-.nav .brand,
-.nav-state,
-.nav .links a {
-  display: flex;
-  align-items: center;
-  min-height: 48px;
-  padding-inline: 14px;
-  border-right: 1px solid var(--color-rule);
-}
-.nav .brand {
-  padding-left: 0;
-  color: var(--color-fg);
-}
-.nav .brand b {
-  margin-right: 7px;
-  color: var(--color-accent);
-  font-size: 9px;
-}
-.nav-state {
-  gap: 7px;
-  color: var(--color-subtle);
-  white-space: nowrap;
-}
-.nav-state i {
-  width: 6px;
-  height: 6px;
-  background: var(--color-signal);
-}
-.nav .links {
-  gap: 0;
-  margin-left: auto;
-  border-left: 1px solid var(--color-rule);
-}
-.nav .links a {
-  padding-block: 0;
-  color: var(--color-dim);
-  font-size: 11px;
-  font-weight: 500;
-}
-.nav .links a::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  margin-right: 7px;
-  border: 1px solid var(--color-subtle);
-  transform: rotate(45deg);
-}
-.nav .links a[aria-current="page"]::before,
-.nav .links a:hover::before {
-  background: var(--color-accent);
-  border-color: var(--color-accent);
-}
-.nav .links a:hover {
-  background: var(--color-surface-raised);
-  color: var(--color-fg);
-}
-
-.cta {
-  min-height: 44px;
-  border-color: var(--color-accent);
-  border-radius: 0;
-  background: var(--color-accent);
-  color: var(--color-bg);
-  padding: 8px 14px;
-  font-family: var(--font-code);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-.cta:hover {
-  border-color: var(--color-cyan);
-  background: var(--color-cyan);
-}
-.cta.ghost {
-  border-color: var(--color-rule);
-  background: var(--color-surface);
-}
-.cta.ghost:hover {
-  border-color: var(--color-accent);
-  background: var(--color-surface-raised);
-}
-
-.section {
-  border-top-color: var(--color-rule);
-}
-.section h2 {
-  font-family: var(--font-code);
-  letter-spacing: -0.04em;
-}
-.section h2 {
-  border-left: 2px solid var(--color-warn);
-  padding-left: 10px;
-}
-
 .pterm,
 .pterm-label,
 .pterm-launch {
   border-radius: 0;
   box-shadow: none;
-}
-.pterm {
-  border-color: var(--color-accent-soft);
-  background: #050609;
-}
-.pterm-launch {
-  border-color: var(--color-signal);
-  color: var(--color-signal);
-  min-height: 44px;
-}
-.pterm-launch:hover {
-  background: var(--color-signal);
-  color: var(--color-bg);
-}
-
-.foot {
-  position: relative;
-  padding: 14px 0 32px;
-  border-top-color: var(--color-rule);
-}
-.foot::before {
-  content: "└─";
-  color: var(--color-subtle);
 }
 
 .dark,
@@ -1338,13 +1340,15 @@ a:hover {
 }
 
 #nd-page .prose {
-  color: #a9b1d6;
-  font-size: 15px;
-  line-height: 1.72;
+  color: #c0caf5;
+  font-size: 16px;
+  line-height: 1.7;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
 }
 #nd-page .prose :is(h1, h2, h3, h4) {
-  font-family: var(--font-code);
-  letter-spacing: -0.035em;
+  font-family: inherit;
+  letter-spacing: -0.02em;
 }
 #nd-page .prose h2 {
   padding-top: 18px;
@@ -1363,7 +1367,10 @@ a:hover {
 .protocol-tiers,
 .protocol-paths,
 .section-primer,
-.section-primer > div {
+.section-primer > div,
+.overview-apps,
+.overview-paths,
+.overview-columns {
   border-radius: 0;
   box-shadow: none;
 }

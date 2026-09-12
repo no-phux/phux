@@ -601,6 +601,7 @@ pub(crate) fn handle_terminal_resize(
             cell_px: None,
             resync_clients: true,
             resync_only: false,
+            resync_for: None,
         }) {
             Ok(()) => {}
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
@@ -1891,6 +1892,19 @@ struct PumpResync {
 }
 
 impl AttachResourcePumpCtx {
+    /// How a gap resync names this pump, and the generation it replaces, to
+    /// the actor.
+    const fn resync_target(
+        &self,
+        generation: &crate::runtime::pump::PumpGeneration,
+    ) -> crate::terminal_actor::ResyncTarget {
+        crate::terminal_actor::ResyncTarget {
+            owner: self.client_id.0,
+            stream_id: self.stream_id,
+            bootstrap_id: generation.bootstrap_id(),
+        }
+    }
+
     /// Forward this pane's output to one `ATTACH_RESOURCE` consumer until the
     /// generation is cancelled, replaced, or the consumer goes away.
     ///
@@ -1982,8 +1996,17 @@ impl AttachResourcePumpCtx {
                 rows,
                 bytes,
                 reason,
+                audience,
                 base_seq,
             }) => {
+                // A gap resync some other pump asked for is not ours to
+                // take (phux-auqy).
+                if !stream
+                    .generation
+                    .takes_resync(&audience, self.resync_target(&stream.generation))
+                {
+                    return PumpStep::Continue;
+                }
                 let resync = PumpResync {
                     cols,
                     rows,
@@ -2114,7 +2137,7 @@ impl AttachResourcePumpCtx {
             );
         }
         stream.generation.note_resync_requested();
-        self.request_resync().await
+        self.request_resync(&stream.generation).await
     }
 
     /// The resync asked for at the last gap has not arrived within its
@@ -2133,7 +2156,7 @@ impl AttachResourcePumpCtx {
             "ATTACH_RESOURCE output pump is still waiting on its in-band resync; re-requesting",
         );
         stream.generation.note_resync_requested();
-        self.request_resync().await
+        self.request_resync(&stream.generation).await
     }
 
     /// The gap spent its whole request budget without the actor ever
@@ -2151,8 +2174,9 @@ impl AttachResourcePumpCtx {
 
     /// Queue the resync request, abandoning the connection if the actor will
     /// not take it.
-    async fn request_resync(&self) -> PumpStep {
-        if crate::runtime::attach::enqueue_output_resync(&self.resize).await {
+    async fn request_resync(&self, generation: &crate::runtime::pump::PumpGeneration) -> PumpStep {
+        let pump = self.resync_target(generation);
+        if crate::runtime::attach::enqueue_output_resync(&self.resize, pump).await {
             return PumpStep::Continue;
         }
         self.fail_unrecoverable_gap().await
@@ -3373,11 +3397,19 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
                 let focus = s
                     .most_recently_touched_session()
                     .or_else(|| s.registry().sessions().next().map(|(id, _)| id));
-                focus.and_then(|sid| s.build_session_snapshot(sid))
+                let mut snapshot = focus
+                    .and_then(|sid| s.build_session_snapshot(sid))
+                    .unwrap_or_else(empty_session_snapshot);
+                // `build_session_snapshot` already attaches the report when the
+                // registry has a focus session; an empty registry still needs
+                // the listener table so `phux doctor` can see a boot-time
+                // disable with no panes (phux-kyna).
+                if snapshot.listeners().is_none() && s.has_remote_listener_report() {
+                    snapshot = snapshot.with_listeners(s.remote_listeners().clone());
+                }
+                snapshot
             });
-            CommandResult::OkWith(CommandValue::State(
-                snapshot.unwrap_or_else(empty_session_snapshot),
-            ))
+            CommandResult::OkWith(CommandValue::State(snapshot))
         }
         // `StateScope` is `#[non_exhaustive]`; a narrower scope a newer
         // peer requests is not yet supported.
@@ -4584,6 +4616,7 @@ pub(crate) fn handle_viewport_resize(
                 cell_px,
                 resync_clients: true,
                 resync_only: false,
+                resync_for: None,
             }) {
                 Ok(()) => {}
                 Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {

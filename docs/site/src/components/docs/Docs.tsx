@@ -15,7 +15,7 @@ import type { ReactNode } from "react";
 import { navigate } from "astro:transitions/client";
 import { RootProvider } from "fumadocs-ui/provider/astro";
 import type { AstroProviderProps } from "fumadocs-core/framework/astro";
-import { NAV } from "../../lib/site";
+import { DOCS_NAV } from "../../lib/site";
 import SearchDialogComponent from "./search";
 import { PierreCodeEnhancer } from "./PierreCodeEnhancer";
 
@@ -51,6 +51,7 @@ export function Docs({
 }: Props) {
   const isProtocol = pathname === "/wire" || pathname.startsWith("/wire/");
   const isProtocolHome = pathname === "/wire" || pathname === "/wire/";
+  const isOverview = pathname === "/overview" || pathname === "/overview/";
   return (
     <RootProvider
       pathname={pathname}
@@ -64,11 +65,11 @@ export function Docs({
         themeSwitch={{ enabled: false }}
         nav={{
           title: (
-            <span><b aria-hidden="true">◆</b> phux</span>
+            <span>phux <span className="docs-wordmark">docs</span></span>
           ),
-          url: "/",
+          url: "/overview",
         }}
-        links={NAV.map((item) =>
+        links={DOCS_NAV.map((item) =>
           "external" in item && item.external
             ? { type: "main", text: item.label, url: item.href, external: true }
             : { type: "main", text: item.label, url: item.href },
@@ -77,27 +78,29 @@ export function Docs({
         <DocsPage {...page}>
           <nav className="docs-crumb" aria-label="Breadcrumb">
             <ol>
-              <li><a href="/docs">root</a></li>
+              <li><a href="/overview">overview</a></li>
               {isProtocol && <li><a href="/wire">wire</a></li>}
-              <li aria-current="page">{title}</li>
+              {!isOverview && <li aria-current="page">{title}</li>}
             </ol>
           </nav>
           <DocsTitle>{title}</DocsTitle>
-          <DocsDescription>{description}</DocsDescription>
-          <div className="docs-meta" aria-label="Document provenance">
-            {isProtocol && <span className="meta-primary">wire {protocolVersion}</span>}
-            <span>{stability} document</span>
-          </div>
-          {summary !== description && (
+          {!isOverview && <DocsDescription>{description}</DocsDescription>}
+          {!isOverview && (
+            <div className="docs-meta" aria-label="Document provenance">
+              {isProtocol && <span className="meta-primary">wire {protocolVersion}</span>}
+              <span>{stability} document</span>
+            </div>
+          )}
+          {summary !== description && !isOverview && (
             <details className="docs-source-summary">
               <summary>Full source summary</summary>
               <p>{summary}</p>
             </details>
           )}
           {isProtocolHome && <ProtocolPrimer version={protocolVersion} />}
-          {!isProtocolHome && <SectionPrimer pathname={pathname} />}
-          <DocsBody>{children}</DocsBody>
-          <PierreCodeEnhancer languages={codeLanguages} />
+          {!isProtocolHome && !isOverview && <SectionPrimer pathname={pathname} />}
+          {isOverview ? children : <DocsBody>{children}</DocsBody>}
+          {!isOverview && <PierreCodeEnhancer languages={codeLanguages} />}
           {sourceUrl && <EditOnGitHub href={sourceUrl}>View exact source</EditOnGitHub>}
         </DocsPage>
       </DocsLayout>
@@ -107,39 +110,39 @@ export function Docs({
 
 const sectionContent: Record<string, { label: string; intro: string; links: [string, string, string][] }> = {
   "/docs": {
-    label: "Start by outcome",
+    label: "Start here",
     intro: "You do not need the protocol to use phux. Pick the shortest path for what you are trying to do.",
     links: [
-      ["Run phux", "/quickstart", "Install, create a persistent terminal, and reattach."],
-      ["Connect an agent", "/consumers/agents", "Use the CLI read-act-wait loop or a host integration."],
-      ["Build a peer", "/wire", "Start with the protocol walkthrough, then use normative reference."],
+      ["Decide", "/concepts/when-to-use", "Whether phux fits you today."],
+      ["Run it", "/quickstart", "Install, attach, detach, drive it from a second terminal."],
+      ["The model", "/concepts", "What a terminal is on the wire."],
     ],
   },
   "/consumers": {
     label: "Choose an interface",
     intro: "Every interface is a peer over the same terminals. Choose by operator, not by protocol privilege.",
     links: [
-      ["For a person", "/consumers/tui", "Interactive sessions, panes, and local navigation."],
-      ["For an agent", "/consumers/agents", "CLI, JSON, wait loops, OpenCode, Pi, and MCP."],
-      ["For an application", "/consumers/web", "Browser, iOS, or an in-tree client library."],
+      ["TUI", "/consumers/tui", "Interactive sessions, splits, and local navigation."],
+      ["Cockpit", "/consumers/cockpit", "Native macOS client for the same terminals."],
+      ["Agents", "/consumers/agents", "CLI, JSON, MCP, and host integrations."],
     ],
   },
   "/consumers/agents": {
     label: "Agent path",
-    intro: "Start with the operating loop. Open exact contracts only when your integration needs them.",
+    intro: "Start with the loop. Open JSON and session verbs only when you need them.",
     links: [
-      ["Drive a terminal", "/consumers/agents#5-the-read-act-wait-loop-and-exit-code-mirroring", "The bounded loop an agent should use in practice."],
-      ["Find a command", "/consumers/agents/cli", "CLI verbs grouped by task and side effect."],
-      ["Consume JSON", "/consumers/agents/json", "Versioned machine shapes and compatibility rules."],
+      ["The loop", "/consumers/agents#2-the-loop", "Read, act, wait, read again."],
+      ["Selectors", "/consumers/agents#3-selectors", "How to name a pane, including %name."],
+      ["Agent sessions", "/consumers/agents#6-agentsession-verbs-vs-detector-verbs", "The second resource kind versus the pane detector."],
     ],
   },
   "/consumers/tui": {
     label: "Interactive path",
-    intro: "Get oriented first. Commands, customization, and deep interface behavior live on focused pages.",
+    intro: "Attach, split, detach. Commands and chrome live on this page; the TOC is the map.",
     links: [
-      ["Commands", "/consumers/tui/commands", "Session verbs, selectors, and headless spatial edits."],
-      ["Customize", "/consumers/tui/configuration", "Configuration, themes, keybindings, and actions."],
-      ["Interface", "/consumers/tui/interface", "Layout, mouse behavior, status bar, and notices."],
+      ["First minutes", "/consumers/tui#first-minutes", "Prefix keys and detach."],
+      ["Selectors", "/consumers/tui#selectors", "How to name a pane."],
+      ["Keys", "/consumers/tui#keys", "Prefix table, cheat sheet, copy-mode."],
     ],
   },
   "/reference": {
@@ -155,9 +158,9 @@ const sectionContent: Record<string, { label: string; intro: string; links: [str
     label: "Understand the implementation",
     intro: "Architecture explains what the code is. The protocol defines interoperability; decisions explain why the shape exists.",
     links: [
-      ["System shape", "/architecture/process-model", "Processes, supervision, ownership, and runtime boundaries."],
-      ["Data and rendering", "/architecture/data-model", "Terminal identity, state synchronization, and layered rendering."],
-      ["Change it safely", "/architecture/verification", "Crate boundaries, tests, performance, and verification."],
+      ["Glance diagram", "/architecture/diagram", "PTY in, resource engines, the frame seam, client replicas."],
+      ["Process model", "/architecture/process-model", "One server per user, supervision, runtime boundaries."],
+      ["State sync", "/architecture/state-sync", "What happens on attach."],
     ],
   },
   "/decisions": {

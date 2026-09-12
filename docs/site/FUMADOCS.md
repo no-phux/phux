@@ -45,8 +45,9 @@ the phux palette (see "Themeing" below).
 - `src/components/PhuxTerminal.tsx` + `src/components/terminal/*` + `src/lib/phux-web/*`
 - `worker/**`, `edge/**`, the `/embed` status handshake with phall.io
   (`PhuxDeck.astro`), and the `wss` demo URL config (`PUBLIC_PHUX_DEMO_WS`)
-- URLs: `/docs`, `/quickstart`, `/quickstart/install`, `/wire/l1`, ...,
-  `/decisions/adr-0017`, etc. all keep their exact paths.
+- Pathnames: `/docs`, `/quickstart`, `/quickstart/install`, `/wire/l1`, ...,
+  `/decisions/adr-0017` stay the same. The docs host is `docs.phux.sh`;
+  `phux.sh` 301s those paths across. `/overview` is the docs landing.
 
 ## What changes
 
@@ -70,7 +71,8 @@ so the page tree matches the URL tree exactly.
 The seven per-section routers (`docs/index.astro`, `concepts/[...slug].astro`,
 `wire/[...slug].astro`, …) collapse into **one** catch-all
 `src/pages/[...slug].astro` that renders `Fumadocs Docs` island. Static pages
-(`/`, `/embed`) take precedence over the catch-all; unknown slugs 404.
+(`/`, `/embed`, `/overview`) take precedence over the catch-all; unknown slugs
+404. `/overview` is excluded from `getStaticPaths` so it does not collide.
 
 ### 4. Search
 

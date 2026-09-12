@@ -1,8 +1,9 @@
 <import src="components/cockpit-window.native"/>
-<use template="cockpit-window" tabs="{window4Tabs}" rail="{window4RailRows}" width="{window4TabWidth}" more="{window4HasOverflow}" cue="{window4OverflowLabel}" paletteopen="{window4PaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" paletteprevious="{palettePrevious}" palettenext="{paletteNext}" palettenotice="{paletteNotice}" status="{window4Status}" reconnect="{canReconnect}" commandnotice="{commandNotice}">
+<use template="cockpit-window" tabs="{window4Tabs}" rail="{window4RailRows}" width="{window4TabWidth}" more="{window4HasOverflow}" cue="{window4OverflowLabel}" paletteopen="{window4PaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" paletteprevious="{palettePrevious}" palettenext="{paletteNext}" palettenotice="{paletteNotice}" status="{window4Status}" title="{window4Context.title}" detail="{window4Context.detail}">
   <use template="cockpit-settings" settingsopen="{window4SettingsOpen}" themes="{themes}" configexists="{configExists}" confignotice="{configNotice}" />
   <use template="cockpit-host" hostopen="{window4HostOpen}" />
   <use template="cockpit-directory" diropen="{window4DirOpen}" />
   <use template="cockpit-rename" renameopen="{window4RenameOpen}" />
-  <use template="cockpit-empty" emptyopen="{window4EmptyOpen}" />
+  <use template="cockpit-empty" emptyopen="{window4EmptyOpen}" name="{window4Context.emptyName}" detail="{window4Context.emptyDetail}" picked="{window4Context.emptyPicked}" />
+  <use template="cockpit-agents" open="{window4AgentsOpen}" rows="{paletteRows}" notice="{paletteNotice}" previous="{palettePrevious}" next="{paletteNext}" status="{window4Status}" />
 </use>

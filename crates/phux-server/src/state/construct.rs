@@ -23,6 +23,7 @@ impl ServerState {
             // see `Lifecycle::new`.
             lifecycle: Lifecycle::new(),
             close_reasons: std::collections::HashMap::new(),
+            remote_listeners: phux_protocol::wire::RemoteListenersReport::new(),
         }
     }
 }

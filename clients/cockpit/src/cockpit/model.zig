@@ -689,7 +689,7 @@ pub const PaletteDestination = union(enum) {
     peer_unavailable: support.ProviderId,
 };
 
-pub const PeerSession = struct { coordinator: support.ProviderId, id: u32 };
+pub const PeerSession = struct { coordinator: support.ProviderId, id: u32, attachment_id: ?u64 = null };
 
 /// Bound on the session name an `EmptyPick` keeps for display.
 pub const max_empty_pick_name_bytes: usize = 64;
@@ -700,6 +700,9 @@ pub const max_empty_pick_name_bytes: usize = 64;
 /// `tab_requested`, which shows the session on that peer; `tab_queued` once
 /// its first tab's spawn is on its way there.
 pub const EmptyPick = struct {
+    attachment_id: u64 = 0,
+    window_epoch: u64 = 0,
+    created: bool = false,
     coordinator: support.ProviderId,
     session: u32,
     window: usize,
@@ -722,8 +725,24 @@ pub const EmptyPick = struct {
     }
 };
 
-/// Coordinators beside the active one: this Mac's plus registered hosts.
-pub const max_phux_peers: usize = 3;
+/// Heap-stable ownership for a coordinator attachment. Collection growth never
+/// moves its projection or pending lifecycle state. Empty entries may be reused,
+/// but their retired channel handles are never reused.
+pub const Peer = struct {
+    provider: ?*PhuxProvider = null,
+    coordinator_context: ?u64 = null,
+    session_created_at: ?i64 = null,
+    selection_epoch: ?u64 = null,
+    workspace: @import("shared_workspace.zig").State = .{},
+    reopen: bool = false,
+    failed: bool = false,
+    restore: ?PeerRestore = null,
+    channel_key: u64 = 0,
+    closing_key: ?u64 = null,
+    retry_key: ?u64 = null,
+    retry_delay_ms: u64 = 0,
+    listed_since: ?std.Io.Timestamp = null,
+};
 
 /// What a peer's remembered host showed at the last quit (ADR-0110), keyed
 /// by that peer's own coordinator id (native/peer_restore.zig).
@@ -783,21 +802,11 @@ pub const Model = struct {
     /// (`TerminalRef.provider_id`), so every ref routes to exactly the
     /// provider that minted it (`phuxForRef`), never to another server that
     /// happens to use the same numeric id.
-    phux_peers: [max_phux_peers]?*PhuxProvider = @splat(null),
-    /// A peer's channel is closing for a restart; reopen on its close event
-    /// (the occupancy's generation is Engine.peer_reopen_generation).
-    phux_peer_reopen: [max_phux_peers]bool = @splat(false),
-    /// A peer's connection failed or was lost, and it has not listed since.
-    /// Its group then shows why, instead of disappearing.
-    peer_failed: [max_phux_peers]bool = @splat(false),
-    /// Each showing peer's projection, as `shared_workspace` is the active
-    /// coordinator's. A listing peer's is empty.
-    peer_workspaces: [max_phux_peers]@import("shared_workspace.zig").State = [_]@import("shared_workspace.zig").State{.{}} ** max_phux_peers,
+    peers: std.ArrayList(*Peer) = .empty,
+    window_attachments: [max_windows]?struct { id: u64, epoch: u64 } = @splat(null),
     /// A peer's empty session picked in the switcher (EmptyPick).
     empty_pick: ?EmptyPick = null,
-    /// What each peer's remembered host was showing at the last quit
-    /// (ADR-0110, native/peer_restore.zig), until its list judges it.
-    peer_restore: [max_phux_peers]?PeerRestore = @splat(null),
+    empty_picks: [max_windows]?EmptyPick = @splat(null),
     /// The configured Phux provider could not reach or attach a server-owned
     /// session. Local terminals remain usable but are explicitly ephemeral;
     /// the chrome keeps this difference visible until a complete attach lands.
@@ -1090,7 +1099,14 @@ pub const Model = struct {
     /// every close path drains them through the ordinary pane-close cascade
     /// first, so this only releases storage the model no longer names.
     pub fn closeWindow(model: *Model, index: usize) void {
-        if (index < max_windows) model.window_epochs[index] +|= 1;
+        if (index < max_windows) {
+            model.window_epochs[index] +|= 1;
+            // The epoch already makes the old binding stale, but a stale
+            // binding resolves to NO provider (`phuxForWindowConst`), so a
+            // window opened later at this index would reach no coordinator
+            // instead of the default one. A closed window has no attachment.
+            model.window_attachments[index] = null;
+        }
         if (index == 0) {
             model.primary_open = false;
             model.primary = .{};
@@ -1139,34 +1155,34 @@ pub const Model = struct {
     /// The first peer: the one a single remote host stands beside.
     pub fn phuxPeer(model: *Model) ?*PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        for (model.phux_peers) |slot| if (slot) |peer| return peer;
+        for (model.peers.items) |entry| if (entry.provider) |peer| return peer;
         return null;
     }
 
     pub fn phuxPeerConst(model: *const Model) ?*const PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        for (model.phux_peers) |slot| if (slot) |peer| return peer;
+        for (model.peers.items) |entry| if (entry.provider) |peer| return peer;
         return null;
     }
 
     pub fn phuxPeerAt(model: *Model, slot: usize) ?*PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        if (slot >= max_phux_peers) return null;
-        return model.phux_peers[slot];
+        if (slot >= model.peers.items.len) return null;
+        return model.peers.items[slot].provider;
     }
 
     pub fn phuxPeerAtConst(model: *const Model, slot: usize) ?*const PhuxProvider {
         if (comptime !support.phux_enabled) return null;
-        if (slot >= max_phux_peers) return null;
-        return model.phux_peers[slot];
+        if (slot >= model.peers.items.len) return null;
+        return model.peers.items[slot].provider;
     }
 
     /// The slot of the peer connected to coordinator `id`.
     pub fn peerSlot(model: *const Model, id: support.ProviderId) ?usize {
         if (comptime !support.phux_enabled) return null;
         if (id == .local) return null;
-        for (model.phux_peers, 0..) |slot, index| {
-            const peer = slot orelse continue;
+        for (model.peers.items, 0..) |entry, index| {
+            const peer = entry.provider orelse continue;
             if (peer.providerId() == id) return index;
         }
         return null;
@@ -1179,7 +1195,7 @@ pub const Model = struct {
         if (id == .local) return null;
         if (model.phux_provider) |active| if (active.providerId() == id) return active;
         const slot = model.peerSlot(id) orelse return null;
-        return model.phux_peers[slot];
+        return model.peers.items[slot].provider;
     }
 
     pub fn phuxForConst(model: *const Model, id: support.ProviderId) ?*const PhuxProvider {
@@ -1187,17 +1203,173 @@ pub const Model = struct {
         if (id == .local) return null;
         if (model.phux_provider) |active| if (active.providerId() == id) return active;
         const slot = model.peerSlot(id) orelse return null;
-        return model.phux_peers[slot];
+        return model.peers.items[slot].provider;
     }
 
     /// Where a ref's input, sizing and presentation go: the coordinator
     /// that minted it, and no other.
     pub fn phuxForRef(model: *Model, ref: TerminalRef) ?*PhuxProvider {
-        return model.phuxFor(ref.provider_id);
+        return @constCast(model.phuxForRefConst(ref));
     }
 
     pub fn phuxForRefConst(model: *const Model, ref: TerminalRef) ?*const PhuxProvider {
+        const projected = model.projectedAttachment(ref);
+        if (projected.ambiguous) return null;
+        if (projected.id) |id| {
+            const remote = model.phuxForAttachmentConst(id) orelse return null;
+            return if (remote.providerId() == ref.provider_id) remote else null;
+        }
         return model.phuxForConst(ref.provider_id);
+    }
+
+    /// Stable process-local attachment identity, independent of coordinator ID.
+    pub fn phuxForAttachment(model: *Model, id: u64) ?*PhuxProvider {
+        return @constCast(model.phuxForAttachmentConst(id));
+    }
+
+    pub fn phuxForAttachmentConst(model: *const Model, id: u64) ?*const PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (model.phux_provider) |remote| if (remote.context_id == id) return remote;
+        for (model.peers.items) |entry| {
+            const remote = entry.provider orelse continue;
+            if (remote.context_id == id) return remote;
+        }
+        return null;
+    }
+
+    pub fn phuxForOwner(model: *Model, owner: ReplicaOwner) ?*PhuxProvider {
+        return @constCast(model.phuxForOwnerConst(owner));
+    }
+
+    pub fn phuxForOwnerConst(model: *const Model, owner: ReplicaOwner) ?*const PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (owner.source_context == 0) return model.phuxForRefConst(owner.terminal_ref);
+        if (model.phux_provider) |remote| if (remote.host.context_id == owner.source_context) return remote;
+        for (model.peers.items) |entry| {
+            const remote = entry.provider orelse continue;
+            if (remote.host.context_id == owner.source_context) return remote;
+        }
+        return null;
+    }
+
+    pub fn phuxForTree(model: *Model, pane_tree: *const layout.Tree) ?*PhuxProvider {
+        return @constCast(model.phuxForTreeConst(pane_tree));
+    }
+
+    pub fn phuxForTreeConst(model: *const Model, pane_tree: *const layout.Tree) ?*const PhuxProvider {
+        const authority = @import("shared_workspace.zig").tabAuthority(pane_tree) orelse return null;
+        if (pane_tree.attachment_id) |id| {
+            const remote = model.phuxForAttachmentConst(id) orelse return null;
+            return if (remote.providerId() == authority) remote else null;
+        }
+        return model.phuxForConst(authority);
+    }
+
+    pub fn peerSlotForAttachment(model: *const Model, id: u64) ?usize {
+        if (comptime !support.phux_enabled) return null;
+        for (model.peers.items, 0..) |entry, slot| {
+            const remote = entry.provider orelse continue;
+            if (remote.context_id == id) return slot;
+        }
+        return null;
+    }
+
+    pub fn sharedWorkspaceForAttachment(model: *Model, id: u64) ?*@import("shared_workspace.zig").State {
+        if (comptime !support.phux_enabled) return null;
+        if (model.phux()) |remote| if (remote.context_id == id) return &model.shared_workspace;
+        const slot = model.peerSlotForAttachment(id) orelse return null;
+        return &model.peers.items[slot].workspace;
+    }
+
+    pub fn bindWindowAttachment(model: *Model, window: usize, id: u64) void {
+        if (!model.windowOpen(window)) return;
+        model.window_attachments[window] = .{ .id = id, .epoch = model.window_epochs[window] };
+    }
+
+    pub fn bindSharedAttachment(model: *Model, remote: *PhuxProvider) void {
+        if (comptime !support.phux_enabled) return;
+        const state = model.sharedWorkspaceForAttachment(remote.context_id) orelse return;
+        if (state.attachment_id != null) return;
+        // Migrate only a projection confirmed by this State's connection and
+        // session before attachment tags existed.
+        if (state.epoch == remote.connectionEpoch() and state.session == remote.selectedSessionId()) model.tagLegacyProjection(remote);
+        state.attachment_id = remote.context_id;
+    }
+
+    fn tagLegacyProjection(model: *Model, remote: *const PhuxProvider) void {
+        for (0..max_windows) |window| {
+            const workspace = model.wsAt(window) orelse continue;
+            for (workspace.tabs[0..workspace.tab_count]) |*pane_tree| {
+                if (pane_tree.attachment_id != null) continue;
+                if (@import("shared_workspace.zig").tabAuthority(pane_tree) != remote.providerId()) continue;
+                pane_tree.attachment_id = remote.context_id;
+            }
+        }
+    }
+
+    pub fn phuxForWindow(model: *Model, window: usize) ?*PhuxProvider {
+        return @constCast(model.phuxForWindowConst(window));
+    }
+
+    pub fn phuxForWindowConst(model: *const Model, window: usize) ?*const PhuxProvider {
+        if (!model.windowOpen(window)) return null;
+        const workspace = model.wsAtConst(window) orelse return null;
+        if (workspace.treeConst(workspace.selected_tab)) |pane_tree| {
+            if (@import("shared_workspace.zig").tabAuthority(pane_tree)) |id| {
+                if (id != .local) return model.phuxForTreeConst(pane_tree);
+            }
+        }
+        if (model.window_attachments[window]) |binding| {
+            if (binding.epoch != model.window_epochs[window]) return null;
+            return model.phuxForAttachmentConst(binding.id);
+        }
+        return model.defaultWindowProvider(window, workspace.tab_count == 0);
+    }
+
+    fn defaultWindowProvider(model: *const Model, window: usize, empty: bool) ?*const PhuxProvider {
+        if (empty and window == model.firstOpenWindow()) return model.phuxConst();
+        return model.localPhuxProviderConst();
+    }
+
+    pub fn localPhuxProviderConst(model: *const Model) ?*const PhuxProvider {
+        if (comptime !support.phux_enabled) return null;
+        if (model.phuxConst()) |remote| if (model.isCanonicalLocal(remote)) return remote;
+        for (model.peers.items) |entry| {
+            const remote = entry.provider orelse continue;
+            if (model.isCanonicalLocal(remote)) return remote;
+        }
+        return null;
+    }
+
+    fn isCanonicalLocal(model: *const Model, remote: *const PhuxProvider) bool {
+        if (comptime !support.phux_enabled) return false;
+        const endpoint = remote.endpointDescriptor();
+        if (endpoint != .unix) return false;
+        return std.mem.eql(u8, endpoint.unix, model.config.phux_socket.slice());
+    }
+
+    const ProjectedAttachment = struct {
+        id: ?u64 = null,
+        ambiguous: bool = false,
+
+        fn include(self: *ProjectedAttachment, pane_tree: *const layout.Tree, ref: TerminalRef) void {
+            if (pane_tree.find(ref) == null) return;
+            const id = pane_tree.attachment_id orelse return;
+            if (self.id) |previous| if (previous != id) {
+                self.ambiguous = true;
+            };
+            self.id = id;
+        }
+    };
+
+    fn projectedAttachment(model: *const Model, ref: TerminalRef) ProjectedAttachment {
+        var result: ProjectedAttachment = .{};
+        for (0..max_windows) |window| {
+            if (!model.windowOpen(window)) continue;
+            const workspace = model.wsAtConst(window) orelse continue;
+            for (workspace.tabs[0..workspace.tab_count]) |*pane_tree| result.include(pane_tree, ref);
+        }
+        return result;
     }
 
     /// Whether coordinator `id`'s terminals are on screen: the active one's
@@ -1207,7 +1379,7 @@ pub const Model = struct {
         if (comptime !support.phux_enabled) return false;
         if (model.phux_provider) |active| if (active.providerId() == id) return true;
         const slot = model.peerSlot(id) orelse return false;
-        return model.phux_peers[slot].?.showing();
+        return model.peers.items[slot].provider.?.showing();
     }
 
     /// The projection state for coordinator `id`'s shared workspace.
@@ -1215,7 +1387,29 @@ pub const Model = struct {
         if (comptime !support.phux_enabled) return null;
         if (model.phux_provider) |active| if (active.providerId() == id) return &model.shared_workspace;
         const slot = model.peerSlot(id) orelse return null;
-        return &model.peer_workspaces[slot];
+        return &model.peers.items[slot].workspace;
+    }
+
+    /// Reserve owned entries before mutating any provider. Callers report
+    /// allocation failure without disturbing existing visible work.
+    pub fn ensurePeerSlots(model: *Model, count: usize) !void {
+        const gpa = std.heap.page_allocator;
+        try model.peers.ensureTotalCapacity(gpa, count);
+        while (model.peers.items.len < count) {
+            const entry = try gpa.create(Peer);
+            errdefer gpa.destroy(entry);
+            entry.* = .{ .channel_key = try support.allocatePeerHandle() };
+            model.peers.appendAssumeCapacity(entry);
+        }
+    }
+
+    pub fn freePeerSlot(model: *Model) !usize {
+        for (model.peers.items, 0..) |entry, slot| {
+            if (entry.provider == null) return slot;
+        }
+        const slot = model.peers.items.len;
+        try model.ensurePeerSlots(slot + 1);
+        return slot;
     }
 
     /// The coordinator whose placements carry saved attachment evidence:
@@ -1226,15 +1420,30 @@ pub const Model = struct {
         return .phux;
     }
 
-    /// Whether a ref is the active coordinator's own terminal.
+    /// Whether a ref is the active coordinator's own terminal, as the active
+    /// window shows it. Independent attachments of one coordinator (two
+    /// sessions of one machine) project refs that compare equal, and the
+    /// global lookup then refuses to choose (`phuxForRefConst`). The active
+    /// window's selected tree names its exact attachment, so a pane it holds
+    /// resolves through that attachment; only a ref outside that tree falls
+    /// back to the global lookup. Without this, window 0's own pane read as a
+    /// peer's and New Window or a split spawned in the other session.
     pub fn activeOwnsRef(model: *const Model, ref: TerminalRef) bool {
-        return ref.provider_id == model.attachmentAuthority();
+        return model.phuxForActiveRefConst(ref) == model.phuxConst();
+    }
+
+    fn phuxForActiveRefConst(model: *const Model, ref: TerminalRef) ?*const PhuxProvider {
+        const pane_tree = model.selectedTreeConst() orelse return model.phuxForRefConst(ref);
+        if (pane_tree.find(ref) == null) return model.phuxForRefConst(ref);
+        const remote = model.phuxForTreeConst(pane_tree) orelse return null;
+        return if (remote.providerId() == ref.provider_id) remote else null;
     }
 
     /// A tab another coordinator projected. Cockpit's tab and split commands
     /// address the active coordinator, so they refuse such a tab rather than
     /// send one machine's window or terminal to another.
     pub fn foreignTree(model: *const Model, tab: *const layout.Tree) bool {
+        if (tab.attachment_id != null) return model.phuxForTreeConst(tab) != model.phuxConst();
         const owner = @import("shared_workspace.zig").tabAuthority(tab) orelse return false;
         return owner != .local and owner != model.attachmentAuthority();
     }
@@ -1261,19 +1470,30 @@ pub const Model = struct {
     }
 
     pub fn terminalOwner(model: *const Model, terminal_ref: TerminalRef) ?ReplicaOwner {
-        if (model.attachmentPending(terminal_ref)) return null;
-        return switch (support.providerKind(terminal_ref)) {
-            .local => model.provider.owner(terminal_ref),
-            .phux => if (model.phuxForRefConst(terminal_ref)) |remote| remote.owner(terminal_ref) else null,
-        };
+        if (support.providerKind(terminal_ref) == .local) return model.provider.owner(terminal_ref);
+        const remote = model.phuxForInteractionConst(terminal_ref) orelse return null;
+        if (model.pendingFor(remote, terminal_ref)) return null;
+        return remote.owner(terminal_ref);
     }
 
     pub fn ownerIsCurrent(model: *const Model, owner_value: ReplicaOwner) bool {
-        if (model.attachmentPending(owner_value.terminal_ref)) return false;
-        return switch (support.providerKind(owner_value.terminal_ref)) {
-            .local => model.provider.ownerIsCurrent(owner_value),
-            .phux => if (model.phuxForRefConst(owner_value.terminal_ref)) |remote| remote.ownerIsCurrent(owner_value) else false,
-        };
+        if (support.providerKind(owner_value.terminal_ref) == .local) return model.provider.ownerIsCurrent(owner_value);
+        const remote = model.phuxForOwnerConst(owner_value) orelse return false;
+        if (model.pendingFor(remote, owner_value.terminal_ref)) return false;
+        return remote.ownerIsCurrent(owner_value);
+    }
+
+    fn pendingFor(model: *const Model, remote: *const PhuxProvider, ref: TerminalRef) bool {
+        return remote == model.phuxConst() and model.attachmentPending(ref);
+    }
+
+    /// Initial keyboard/pointer ownership comes from the selected tree. Held
+    /// and asynchronous operations use phuxForOwner instead of reacquiring it.
+    pub fn phuxForInteractionConst(model: *const Model, ref: TerminalRef) ?*const PhuxProvider {
+        if (model.selectedTreeConst()) |pane_tree| {
+            if (pane_tree.find(ref) != null) return model.phuxForTreeConst(pane_tree);
+        }
+        return model.phuxForRefConst(ref);
     }
 
     /// The agent sessions running under one terminal, in catalog order.
@@ -1307,10 +1527,23 @@ pub const Model = struct {
     }
 
     pub fn remotePresentation(model: *const Model, terminal_ref: TerminalRef) ?Presentation {
-        if (model.attachmentPending(terminal_ref)) return null;
         if (support.providerKind(terminal_ref) != .phux) return null;
-        const remote = model.phuxForRefConst(terminal_ref) orelse return null;
+        const remote = model.phuxForInteractionConst(terminal_ref) orelse return null;
+        if (model.pendingFor(remote, terminal_ref)) return null;
         return remote.presentation(terminal_ref);
+    }
+
+    pub fn remotePaintPresentationIn(model: *const Model, pane_tree: *const layout.Tree, ref: TerminalRef) ?Presentation {
+        if (comptime !support.phux_enabled) return null;
+        if (pane_tree.find(ref) == null) return null;
+        const remote = model.phuxForTreeConst(pane_tree) orelse return null;
+        if (!model.pendingFor(remote, ref)) return remote.presentation(ref);
+        for (model.frozen_paint) |entry| {
+            const frozen = entry orelse continue;
+            if (frozen.owner.source_context != remote.host.context_id) continue;
+            if (frozen.reference.terminal_ref.eql(ref)) return frozen.snapshot.value;
+        }
+        return null;
     }
 
     /// Paint alone may read the previously proven display while a replacement
@@ -1397,6 +1630,7 @@ pub const Model = struct {
         for (&model.remote_ui) |*state| {
             if (state.terminal_ref) |known| {
                 if (!known.eql(terminal_ref)) continue;
+                if (state.owner.source_context != current_owner.source_context) continue;
                 if (!state.owner.eql(current_owner)) state.replaceOwner(current_owner, model.attachment_context);
                 // READY can precede the first metadata read. Bind UI created
                 // in that interval once this same replica's session is proven.
@@ -1414,6 +1648,10 @@ pub const Model = struct {
         // Retained presentation may be frozen, but must still belong to this
         // exact published owner. terminalOwner also enforces attachmentPending.
         const current_owner = model.terminalOwner(terminal_ref) orelse return null;
+        return model.remoteUiForOwnerConst(current_owner);
+    }
+
+    pub fn remoteUiForOwnerConst(model: *const Model, current_owner: ReplicaOwner) ?*const RemoteUiState {
         for (&model.remote_ui) |*state| {
             if (state.terminal_ref == null) continue;
             if (state.owner.eql(current_owner)) return state;
@@ -2252,7 +2490,6 @@ fn restoreLocalPane(provider: *LocalProvider, terminal: LocalResourceId) !void {
 
 pub fn deinitModel(model: *Model) void {
     model.shared_workspace.deinit();
-    for (&model.peer_workspaces) |*state| state.deinit();
     model.clearRemotePaint();
     if (comptime support.phux_enabled) {
         if (model.pointer_state) |pointer_state| {
@@ -2262,14 +2499,20 @@ pub fn deinitModel(model: *Model) void {
         }
         if (model.phux_provider) |remote| remote.destroy();
         model.phux_provider = null;
-        for (&model.phux_peers) |*slot| {
-            if (slot.*) |peer| peer.destroy();
-            slot.* = null;
-        }
     }
+    deinitPeers(model);
     for (&model.secondary) |*slot| {
         if (slot.*) |workspace| std.heap.page_allocator.destroy(workspace);
         slot.* = null;
     }
     model.provider.destroy();
+}
+
+fn deinitPeers(model: *Model) void {
+    for (model.peers.items) |entry| {
+        entry.workspace.deinit();
+        if (comptime support.phux_enabled) if (entry.provider) |peer| peer.destroy();
+        std.heap.page_allocator.destroy(entry);
+    }
+    model.peers.deinit(std.heap.page_allocator);
 }

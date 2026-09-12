@@ -33,6 +33,7 @@ same release.
 | The `cockpit-vX.Y.Z` tag and draft release | release-please |
 | Cockpit ZIP, DMG, signature/notarization evidence, and publication | `cockpit-release.yml` |
 | `phux-cockpit` Homebrew cask | `cockpit-release.yml` |
+| Moving `next` prerelease (green `main`) | `next-release.yml` |
 
 `release.yml` never creates a tag, release, or release body. It uploads assets
 onto the draft release-please made and only flips that draft to public after the
@@ -58,6 +59,7 @@ tap build.
 | Ask whether anything is stuck right now | `just release-drift` (needs an authenticated `gh`) |
 | Report a hand-recovered release to Linear | Dispatch **Actions -> linear-release** with the tag, `stage=building`, then again with `stage=released` |
 | Check a suspected install-doc drift | `bash scripts/check-install-surface.sh` |
+| Publish or rebuild the `next` channel | Dispatch **Actions -> next-release** (also runs after green `main` CI) |
 
 ## What runs when
 
@@ -80,6 +82,7 @@ tap build.
 | Scoped mutation | manual | Bounded Rust or Zig advisory scans; ordinary changed-code checks remain in the product lanes. |
 | Release drift | daily at 15:20 UTC, or manual | `scripts/check-release-drift.mjs`. Fails if a release is stuck. See "When a release goes quiet". |
 | Linear release report | called by release-please, or manual dispatch | `linear-release.yml`. `stage=building` at tag time, `stage=released` once artifacts are public. Dispatchable so a hand-recovered release can still be reported. |
+| next channel | `ci.yml` success on `main`, coalesced | Release-profile `phux` + `phux-mcp` for the three portable targets, attached to the moving `next` prerelease. No Homebrew. `phux update --channel next` follows `channel.json`. |
 
 ### Standard public runner policy
 
@@ -318,6 +321,11 @@ format, or adding a member to the tarball breaks every installed phux's ability
 to update itself — silently for the naming, loudly for the members. Change them
 together with `crates/phux/src/commands/update/release.rs` and
 `crates/phux/src/commands/update/apply.rs`, or not at all.
+
+The opt-in `next` channel ([ADR-0113](../ADR/0113-next-release-channel.md))
+reuses the same six members. GitHub's tag is the moving prerelease `next`;
+assets are `phux-next.<sha>-<target>.tar.gz` plus sidecar, and `channel.json`
+is the pointer `phux update --channel next` reads. Homebrew stays on stable.
 
 ## Versioning
 

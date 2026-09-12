@@ -6,9 +6,15 @@ const provider = @import("provider_contract");
 const host_mod = @import("phux_host");
 const transport = @import("phux_transport");
 const extension = @import("phux_extension");
+pub const machines = @import("machines.zig");
+pub const remote_api = extension.remote;
+const captured = @import("captured_registry.zig");
+pub const RegistryIdentity = captured.Identity;
 
 test {
     _ = @import("color_policy_tests.zig");
+    _ = captured;
+    _ = @import("captured_tunnel_tests.zig");
 }
 
 pub const enabled = true;
@@ -23,6 +29,7 @@ pub const SearchResult = host_mod.SearchResult;
 pub const Notice = host_mod.Notice;
 pub const SessionSummary = host_mod.SessionSummary;
 pub const RenameInfo = host_mod.Host.RenameInfo;
+pub const SessionCreateInfo = host_mod.Host.SessionCreateInfo;
 pub const Error = host_mod.Error;
 pub const OperationResult = host_mod.OperationResult;
 pub const ColorPolicy = host_mod.ColorPolicy;
@@ -92,12 +99,16 @@ pub const PhuxProvider = struct {
     attach_queued: bool = false,
     /// Failure record shared with each socket worker of a remote endpoint.
     remote_status: extension.remote.Status = .{},
+    local_status: extension.startup.Status = .{},
     /// What the catalog and status line call a remote endpoint: the registry
     /// entry's name when Connect to Host resolved one, else the target.
     remote_label: ?[]u8 = null,
     /// Connect to Host, applied by the next `open`/`reconnect` after the old
     /// worker has stopped; see `requestRetarget`.
     pending_retarget: ?Retarget = null,
+    /// A Machines-selected destination. Its opaque tunnel retains the checked
+    /// endpoint/pin/token provenance; only this credential-free identity is UI-facing.
+    capture: ?captured.Capture = null,
     /// The standby coordinator of a side-by-side switcher (`standBy`). It
     /// never attaches: attaching would make it a subscriber that clamps
     /// every pane under `window-size = smallest` to its placeholder size and
@@ -131,6 +142,66 @@ pub const PhuxProvider = struct {
         return self;
     }
 
+    /// Consumes the exact checked tunnel on every return. Registry identity is
+    /// copied before the callback's borrowed row can be refreshed or released.
+    pub fn createCaptured(gpa: std.mem.Allocator, io: std.Io, tunnel: extension.remote.Tunnel, identity: RegistryIdentity, client_name: []const u8) !*PhuxProvider {
+        var capture = try captured.Capture.init(gpa, tunnel, identity);
+        errdefer capture.deinit(gpa);
+        const session: ?[]const u8 = if (identity.session.len == 0) null else identity.session;
+        const self = try create(gpa, io, .{ .remote = .{ .target = identity.name } }, session, client_name);
+        self.capture = capture;
+        self.host.setProviderId(provider.phuxCoordinatorId(identity.endpoint));
+        return self;
+    }
+
+    pub fn registryIdentity(self: *const PhuxProvider) ?RegistryIdentity {
+        if (self.pending_retarget != null) return null;
+        const capture = self.capture orelse return null;
+        return capture.identity;
+    }
+
+    /// An independent client/worker for another visible session at this exact
+    /// captured destination. Only immutable dial config is copied. The caller
+    /// selects the session on the new provider before opening it.
+    pub fn createSiblingAttachment(self: *const PhuxProvider, gpa: std.mem.Allocator, io: std.Io, client_name: []const u8) !*PhuxProvider {
+        if (self.pending_retarget != null) return error.InvalidState;
+        if (self.endpoint != .remote) return create(gpa, io, self.endpointDescriptor(), null, client_name);
+        const identity = self.registryIdentity() orelse return error.InvalidRegistryIdentity;
+        const tunnel = try self.capture.?.cloneTunnel();
+        return createCaptured(gpa, io, tunnel, identity, client_name);
+    }
+
+    /// Machines Retry supplies a fresh registry-validated tunnel for the same
+    /// exact identity, then invokes reconnect. Consumes even when rejected.
+    pub fn replaceCapturedTunnel(self: *PhuxProvider, tunnel: extension.remote.Tunnel, identity: RegistryIdentity) !void {
+        if (self.pending_retarget != null) {
+            tunnel.close();
+            return error.InvalidRegistryIdentity;
+        }
+        const capture = if (self.capture) |*value| value else {
+            tunnel.close();
+            return error.InvalidRegistryIdentity;
+        };
+        try capture.replace(tunnel, identity);
+    }
+
+    fn clearCapture(self: *PhuxProvider) void {
+        if (self.capture) |*capture| capture.deinit(self.gpa);
+        self.capture = null;
+    }
+
+    fn cancelCapturedTunnel(self: *PhuxProvider) void {
+        if (self.capture) |*capture| capture.cancel();
+    }
+
+    fn startWorker(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !*extension.Worker {
+        if (self.capture) |*capture| {
+            const tunnel = try capture.take();
+            return extension.Worker.startCaptured(self.io, self.gpa, self.bridge, handle, self.workerEndpoint(), tunnel);
+        }
+        return extension.Worker.startWithOptions(self.io, self.gpa, self.bridge, handle, self.workerEndpoint(), .{ .status = &self.local_status });
+    }
+
     /// The coordinator an endpoint reaches (contract.phuxCoordinatorId).
     pub fn coordinatorId(endpoint: Endpoint) provider.ProviderId {
         return provider.phuxCoordinatorId(switch (endpoint) {
@@ -148,6 +219,7 @@ pub const PhuxProvider = struct {
 
     /// The coordinator this provider dials next, pending retarget included.
     pub fn effectiveProviderId(self: *const PhuxProvider) provider.ProviderId {
+        if (self.pending_retarget == null) return self.providerId();
         return coordinatorId(self.effectiveEndpoint().borrowed());
     }
 
@@ -157,6 +229,7 @@ pub const PhuxProvider = struct {
         self.bridge.deinit();
         self.gpa.destroy(self.bridge);
         self.endpoint.deinit(self.gpa);
+        self.clearCapture();
         self.clearPendingRetarget();
         if (self.remote_label) |label| self.gpa.free(label);
         if (self.session) |session| self.gpa.free(session);
@@ -165,13 +238,15 @@ pub const PhuxProvider = struct {
     }
 
     pub fn open(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !void {
+        errdefer self.cancelCapturedTunnel();
         if (self.worker != null) return error.InvalidState;
         self.applyPendingRetarget();
         if (self.host.state() == .new) try self.host.start(self.client_name);
-        self.worker = try extension.Worker.start(self.io, self.gpa, self.bridge, handle, self.workerEndpoint());
+        self.worker = try self.startWorker(handle);
     }
 
     pub fn stop(self: *PhuxProvider) void {
+        self.cancelCapturedTunnel();
         if (self.worker) |worker| worker.stop();
         self.worker = null;
         self.host.disconnect();
@@ -204,6 +279,7 @@ pub const PhuxProvider = struct {
     }
 
     fn restartConnection(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !void {
+        errdefer self.cancelCapturedTunnel();
         self.host.freezePublished();
         errdefer self.host.freezePublished();
         if (self.worker) |worker| worker.stop();
@@ -214,7 +290,7 @@ pub const PhuxProvider = struct {
         self.prepareSessionSwitch();
         try self.host.reconnect(self.client_name);
         self.attach_queued = false;
-        self.worker = try extension.Worker.start(self.io, self.gpa, self.bridge, handle, self.workerEndpoint());
+        self.worker = try self.startWorker(handle);
     }
 
     /// Point the next connection at a different coordinator: a registered
@@ -319,6 +395,7 @@ pub const PhuxProvider = struct {
     /// switch, so they are released before the new host can publish.
     fn applyPendingRetarget(self: *PhuxProvider) void {
         const next = self.pending_retarget orelse return;
+        self.clearCapture();
         self.pending_retarget = null;
         self.endpoint.deinit(self.gpa);
         self.endpoint = next.endpoint;
@@ -391,6 +468,8 @@ pub const PhuxProvider = struct {
     };
 
     pub fn copyTarget(self: *const PhuxProvider, gpa: std.mem.Allocator) !TargetCopy {
+        // An alias-only copy cannot carry the checked pin/token provenance.
+        if (self.registryIdentity() != null) return error.CapturedTunnelRequired;
         var endpoint = try OwnedEndpoint.init(gpa, self.effectiveEndpoint().borrowed());
         errdefer endpoint.deinit(gpa);
         const source: ?[]const u8 = if (self.pending_retarget) |pending| pending.session else self.currentSessionName();
@@ -414,7 +493,13 @@ pub const PhuxProvider = struct {
 
     /// The last recorded connection failure, copied into `out`.
     pub fn remoteFailure(self: *const PhuxProvider, out: []u8) []const u8 {
+        if (self.endpoint == .unix) return self.local_status.failureInto(out);
         return self.remote_status.failureInto(out);
+    }
+
+    pub fn localToolCli(self: *const PhuxProvider, out: []u8) ?[]const u8 {
+        if (self.endpoint != .unix) return null;
+        return self.local_status.cliInto(out);
     }
 
     /// Whether this host has connected since it was selected, which is what
@@ -446,7 +531,11 @@ pub const PhuxProvider = struct {
     /// ATTACH is queued once after negotiation. The host still withholds every
     /// first presentation until the ATTACHED/READY barrier completes.
     pub fn drainReadiness(self: *PhuxProvider) !SyncDelta {
-        const delta = try self.host.drainReadiness();
+        return self.drainReadinessBudget(self.bridge.incoming.pendingCount());
+    }
+
+    pub fn drainReadinessBudget(self: *PhuxProvider, frame_limit: usize) !SyncDelta {
+        const delta = try self.host.drainReadinessBudget(frame_limit);
         if (self.host.state() == .detached) {
             self.attach_queued = false;
             return delta;
@@ -527,6 +616,18 @@ pub const PhuxProvider = struct {
         return self.host.renameInfo();
     }
 
+    pub fn requestCreateSession(self: *PhuxProvider, name: []const u8, keep_empty: bool) !u32 {
+        return self.host.requestCreateSession(name, keep_empty);
+    }
+
+    pub fn sessionCreateInfo(self: *PhuxProvider, request_id: u32) SessionCreateInfo {
+        return self.host.sessionCreateInfo(request_id);
+    }
+
+    pub fn releaseSessionCreate(self: *PhuxProvider, request_id: u32) void {
+        self.host.releaseSessionCreate(request_id);
+    }
+
     /// CONDITIONAL_KILL on this coordinator's current connection (ADR-0109).
     pub fn conditionalKillSupported(self: *const PhuxProvider) bool {
         return self.host.conditionalKillSupported();
@@ -536,10 +637,30 @@ pub const PhuxProvider = struct {
         return self.host.requestSpawnBound(owner_ref, viewport, cwd);
     }
 
+    /// Dedicated LOCAL tool creation never inherits the focused remote owner.
+    pub fn requestSpawnArgvBound(self: *PhuxProvider, owner_ref: ?provider.TerminalRef, viewport: provider.Viewport, cwd: []const u8, argv: []const []const u8) !u32 {
+        if (self.endpoint != .unix) return error.InvalidState;
+        return self.host.requestSpawnArgvBound(owner_ref, viewport, cwd, argv);
+    }
+
     /// A conditional kill of this coordinator's own bound spawn, on this
     /// coordinator's connection alone (host.requestKillIf).
     pub fn requestKillIf(self: *PhuxProvider, terminal_ref: provider.TerminalRef, instance: [16]u8) !u32 {
         return self.host.requestKillIf(terminal_ref, instance);
+    }
+
+    /// Close only on the connection epoch captured with the invoking owner.
+    pub fn requestCloseResource(self: *PhuxProvider, terminal_ref: provider.TerminalRef, expected_epoch: u64) !u32 {
+        return self.host.requestCloseResource(terminal_ref, expected_epoch);
+    }
+
+    pub fn requestCloseResources(self: *PhuxProvider, refs: []const provider.TerminalRef, expected_epoch: u64) !u32 {
+        return self.host.requestCloseResources(refs, expected_epoch);
+    }
+
+    /// Owned by the caller's buffer; copy immediately after a synchronous refusal.
+    pub fn copyLastError(self: *const PhuxProvider, out: []u8) []const u8 {
+        return self.host.copyLastError(out);
     }
 
     pub fn requestDetach(self: *PhuxProvider, terminal_ref: provider.TerminalRef) !u32 {

@@ -1,18 +1,48 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-07-09
+last-reviewed: 2026-09-12
 ---
 
 # Protocol reference
 
-**TL;DR.** The normative phux wire protocols. Start with the terminal tutorial
-for one complete connection; use proto/workload-auth/L1/L3/input for terminal
-synchronization and authenticated endpoint admission; use coordinator.md for
-the independently versioned durable-work endpoint. Encoding and reserved
-appendices remain the source of truth for implementations.
+**TL;DR.** The normative terminal wire. HELLO fixes version, layers, and
+bootstrap; L1 is required, L3 is optional, L2 is unused. Start with the
+tutorial to implement a consumer, or the catalogs to look up a frame.
+Durable work is a different endpoint. Encoding and reserved appendices
+are the codec source of truth.
 
 ---
+
+The product model — what a Terminal is, why the wire is asymmetric, why
+both ends run libghostty — lives in [concepts](../CONCEPTS.md). This
+directory is the byte contract.
+
+## Two-minute model
+
+The wire is asymmetric. Server to client, terminal content is VT bytes
+forwarded from the PTY. Client to server, input is structured key, mouse,
+focus, and paste events. HELLO is the one negotiation: it admits
+`major.minor` (this version: `0.9`), intersects layers, and selects one
+bootstrap profile. After HELLO_OK those terms do not change.
+
+L1 is required. L3 is optional and opted into via `HELLO.layers`. L2 is a
+hole: the discriminant range is reserved and unused
+([L2.md](./L2.md)). Grouping is L3 metadata plus client logic; atomic
+multi-terminal teardown is the L1 `KILL_RESOURCES` op.
+
+The coordinator is a different endpoint with its own HELLO, version, and
+frame catalog ([coordinator.md](./coordinator.md)). It is not step 2 of
+terminal onboarding. A client that only wants terminals never speaks it.
+
+## Two reader paths
+
+- **Implement a consumer.** Read [TUTORIAL.md](./TUTORIAL.md) once, then
+  the specs each step links. That path is one terminal session: HELLO,
+  attach, bootstrap, output, input, detach.
+- **Look up a frame, tag, or error.** Use the catalogs in
+  [proto.md](./proto.md), [L1.md](./L1.md), [L3.md](./L3.md), and
+  [input.md](./input.md). Status cells are checked against the codec.
 
 ## Files
 

@@ -1,5 +1,5 @@
 //! `STREAM_BIND` header for QUIC multi-stream (`docs/spec/proto.md` §4.2,
-//! ADR-0113).
+//! ADR-0115).
 //!
 //! Transport establishment, not a phux frame: the first bytes a client writes
 //! on a newly opened Terminal stream, binding that QUIC stream to one

@@ -81,6 +81,9 @@ pub const min_fraction: f32 = 0.05;
 pub const max_fraction: f32 = 0.95;
 
 pub const Tree = struct {
+    /// Process-local session attachment that published this tree. It travels
+    /// with native tab moves, but is never a durable terminal or wire identity.
+    attachment_id: ?u64 = null,
     nodes: [max_nodes]Node = [_]Node{.{}} ** max_nodes,
     root: NodeId = none,
     /// Always a leaf when the tree is non-empty.

@@ -19,7 +19,10 @@ pub const header_len: usize = protocol.snapshot_header_len + 10;
 // Compact strip labels; the paginated navigation catalog carries full labels.
 pub const max_title_bytes: usize = 20;
 pub const max_cwd_bytes: usize = 8;
-pub const max_bytes: usize = 4096;
+/// Mirrors protocol.ts SNAPSHOT_MAX_BYTES. Raised from 4096 for the per-window
+/// `window_contexts` record beside a full tab table; the SDK accepts host
+/// results up to 256 KiB, so this remains Cockpit's own bound.
+pub const max_bytes: usize = 8192;
 
 pub const Error = error{BufferTooSmall};
 
@@ -28,8 +31,12 @@ pub const Error = error{BufferTooSmall};
 /// not know a kind steps over it by its length instead of reading what
 /// follows as something it is not, so a later kind costs the seam nothing.
 /// `empty_session` (empty_session.zig): which windows show the Empty session
-/// state, written only when one does.
-pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4 };
+/// state, written only when one does. `window_contexts` (window_contexts.zig):
+/// each open window's own machine, session, connection and Empty session
+/// state; decoders that know it prefer it over kinds 3 and 4 for headers.
+/// `parent_agent_rows` (ts_agents.zig): identity-bound inspection rows. Kind 5
+/// is already window_contexts, so identity rows take the next free value.
+pub const ExtensionKind = enum(u8) { agent_rows = 1, tab_contexts = 2, navigation_context = 3, empty_session = 4, window_contexts = 5, parent_agent_rows = 6 };
 pub const max_session_bytes: usize = 64;
 pub const max_endpoint_bytes: usize = 160;
 pub const max_connection_detail_bytes: usize = 80;
@@ -62,7 +69,7 @@ pub const max_config_path_bytes: usize = 200;
 comptime {
     var theme_bytes: usize = 0;
     for (theme_module.builtins) |theme| theme_bytes += 1 + @min(theme.name.len, 32);
-    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len + navigation_context_bytes + @import("empty_session.zig").record_bytes;
+    const fixed = header_len + 4 + theme_bytes + max_config_path_bytes + 1 + model_module.max_secondary_windows * 7 + model_module.max_windows + agent_record_bytes + 3 + tab_commands.context_len + navigation_context_bytes + @import("empty_session.zig").record_bytes + @import("window_contexts.zig").record_bytes;
     const tabs = model_module.max_windows * model_module.max_tabs * (7 + max_title_bytes + max_cwd_bytes);
     std.debug.assert(fixed + tabs <= max_bytes);
 }
@@ -105,6 +112,8 @@ pub fn encode(model: *const Model, sequence: u64, revision: u64, runs: WindowRun
     written = try encodeAgentRows(model, out, written);
     written = try encodeNavigationContext(model, out, written);
     written = try @import("empty_session.zig").encode(model, @intFromEnum(ExtensionKind.empty_session), out, written);
+    written = try @import("window_contexts.zig").encode(model, @intFromEnum(ExtensionKind.window_contexts), out, written);
+    written = @import("ts_agents.zig").snapshot(model, out[0..@min(out.len, max_bytes)], written) catch return error.BufferTooSmall;
     return out[0..written];
 }
 
@@ -264,7 +273,7 @@ fn encodeTabs(model: *const Model, workspace: *const model_module.Workspace, out
         if (written + needed > out.len) return error.BufferTooSmall;
 
         std.mem.writeInt(u32, out[written..][0..4], workspace.tabId(index) orelse 0, .little);
-        out[written + 4] = if (projection.terminalNeedsAttention(model, terminal)) 1 else 0;
+        out[written + 4] = if (projection.tabNeedsAttention(model, workspace, index)) 1 else 0;
         out[written + 5] = @intCast(bounded.len);
         out[written + 6] = @intCast(cwd.len);
         @memcpy(out[written + 7 ..][0..bounded.len], bounded);

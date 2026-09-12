@@ -157,6 +157,26 @@ test "a pane sized without a text-measure provider uses the mono cell, not a san
     try testing.expect(uncorrected.width < corrected.width * 1.5);
 }
 
+// The `font-family` knob was parsed, validated and warned about, yet the grid
+// tokens never read it: every choice measured and painted the bundled Nerd
+// Font, so choosing Geist Mono changed nothing on screen.
+test "the font-family knob selects the face the terminal grids measure and paint" {
+    var model: app.Model = .{ .provider = undefined, .config = app.parseConfig("font-family = Geist Mono") };
+    const geist = app.terminalTokens(&model);
+    try testing.expectEqual(canvas.default_mono_font_id, geist.typography.mono_font_id);
+    // Geist has no registered companions. Zero asks the renderers for their
+    // shared synthesis instead of mixing JetBrains bold with Geist regular.
+    try testing.expectEqual(@as(canvas.FontId, 0), geist.typography.mono_bold_font_id);
+    // Unset and unsupported names both keep the bundled family and its
+    // registered companions; the unsupported one is only a config warning.
+    for ([_][]const u8{ "", "font-family = Comic Mono" }) |text| {
+        var fallback: app.Model = .{ .provider = undefined, .config = app.parseConfig(text) };
+        const tokens = app.terminalTokens(&fallback);
+        try testing.expectEqual(canvas.min_registered_font_id, tokens.typography.mono_font_id);
+        try testing.expectEqual(@as(canvas.FontId, canvas.min_registered_font_id + 1), tokens.typography.mono_bold_font_id);
+    }
+}
+
 test "the registered terminal face is a 0.6 em monospace" {
     const gpa = testing.allocator;
     const harness = try native_sdk.TestHarness().create(gpa, .{ .size = geometry.SizeF.init(980, 640) });

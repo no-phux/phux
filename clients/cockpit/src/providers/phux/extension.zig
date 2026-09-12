@@ -8,7 +8,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
 const transport = @import("phux_transport");
-const startup = @import("startup.zig");
+pub const startup = @import("startup.zig");
 /// phux-client-ffi's remote-host tunnel. The provider reaches it through this
 /// re-export so the file belongs to exactly one build module.
 pub const remote = @import("remote_tunnel.zig");
@@ -100,9 +100,42 @@ pub const Worker = struct {
         endpoint: Endpoint,
         options: startup.Options,
     ) !*Worker {
+        return startOwned(io, gpa, bridge, handle, endpoint, options, null);
+    }
+
+    /// Adopts the exact registry-checked tunnel, including its endpoint, pin and
+    /// config/token provenance. No registry lookup occurs on this path. Ownership
+    /// transfers on EVERY return, including allocation, wake and thread failure.
+    /// The caller relinquishes the tunnel before the socket thread can start it;
+    /// stop joins that thread before freeing the FFI handle.
+    pub fn startCaptured(
+        io: std.Io,
+        gpa: std.mem.Allocator,
+        bridge: *transport.Bridge,
+        handle: native_sdk.ChannelHandle,
+        endpoint: Endpoint,
+        tunnel: remote.Tunnel,
+    ) !*Worker {
+        if (endpoint != .remote) {
+            tunnel.close();
+            return error.InvalidCapturedEndpoint;
+        }
+        return startOwned(io, gpa, bridge, handle, endpoint, .{}, tunnel);
+    }
+
+    fn startOwned(
+        io: std.Io,
+        gpa: std.mem.Allocator,
+        bridge: *transport.Bridge,
+        handle: native_sdk.ChannelHandle,
+        endpoint: Endpoint,
+        options: startup.Options,
+        tunnel: ?remote.Tunnel,
+    ) !*Worker {
+        errdefer if (tunnel) |owned| owned.close();
         const worker = try gpa.create(Worker);
         errdefer gpa.destroy(worker);
-        worker.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .handle = handle, .endpoint = endpoint };
+        worker.* = .{ .gpa = gpa, .io = io, .bridge = bridge, .handle = handle, .endpoint = endpoint, .tunnel = tunnel };
         worker.startup_options = options;
         worker.outgoing_wake_fd = try bridge.outgoing.enableWake();
         errdefer bridge.outgoing.disableWake();
@@ -160,15 +193,37 @@ pub const Worker = struct {
             worker.disconnected(.socket_lost);
             return;
         };
+        // Attach first. Optional setup-CLI discovery must never hold the socket
+        // pump behind installed executable probes, including during reconnect.
+        const discovery = worker.discoverLocal();
+        defer if (discovery) |task| task.stop();
         worker.runSocket(fd);
+    }
+
+    fn discoverLocal(worker: *Worker) ?*startup.Discovery {
+        return switch (worker.endpoint) {
+            .unix => |path| startup.Discovery.start(worker.gpa, worker.io, path, worker.startup_options.status) catch null,
+            .tcp, .remote => null,
+        };
     }
 
     fn ensureCoordinator(worker: *Worker) !void {
         switch (worker.endpoint) {
-            .unix => |path| try startup.ensure(worker.gpa, worker.io, path, &worker.stopping, worker.startup_options),
+            .unix => |path| try worker.ensureLocal(path),
             // A remote coordinator is the remote host's to supervise.
             .tcp, .remote => {},
         }
+    }
+
+    fn ensureLocal(worker: *Worker, path: []const u8) !void {
+        var evidence: startup.Evidence = .{};
+        var options = worker.startup_options;
+        options.evidence = &evidence;
+        startup.ensure(worker.gpa, worker.io, path, &worker.stopping, options) catch |err| {
+            if (options.status) |status| status.record(evidence, path, err);
+            return err;
+        };
+        if (options.status) |status| status.record(evidence, path, null);
     }
 
     fn runSocket(worker: *Worker, fd: posix.fd_t) void {
@@ -427,18 +482,25 @@ fn connect(worker: *Worker) !posix.fd_t {
 /// can tell a local coordinator from a remote one.
 fn connectRemote(worker: *Worker, endpoint: Endpoint.Remote) !posix.fd_t {
     if (worker.stopping.load(.acquire)) return error.Canceled;
-    const tunnel = remote.Tunnel.resolve(endpoint.target, endpoint.config_path) catch |err| {
+    const tunnel = worker.tunnel orelse try resolveRemote(endpoint);
+    // From here stop owns the tunnel, including failed resolution/start paths.
+    worker.tunnel = tunnel;
+    return connectTunnel(worker, tunnel, endpoint.status);
+}
+
+fn resolveRemote(endpoint: Endpoint.Remote) !remote.Tunnel {
+    return remote.Tunnel.resolve(endpoint.target, endpoint.config_path) catch |err| {
         if (endpoint.status) |status| status.recordFailure("that is not a host name Cockpit can look up");
         return err;
     };
+}
+
+fn connectTunnel(worker: *Worker, tunnel: remote.Tunnel, status: ?*remote.Status) !posix.fd_t {
     const described = tunnel.describe();
     if (described.state != .resolved) {
-        if (endpoint.status) |status| status.recordFailure(described.message.slice());
-        tunnel.close();
+        if (status) |record| record.recordFailure(described.message.slice());
         return error.RemoteUnresolved;
     }
-    // From here `stop` owns the tunnel, whatever happens below.
-    worker.tunnel = tunnel;
     const pair = try remoteSocketPair();
     if (!worker.publishFd(pair[0])) {
         for (pair) |fd| _ = std.c.close(fd);
@@ -937,6 +999,71 @@ test "Unix worker ensures selected coordinator before attempting its socket" {
     }
     try std.testing.expectEqual(transport.DisconnectReason.socket_lost, reason.?);
     try fixture.expectExitCode("0");
+}
+
+extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
+extern "c" fn unsetenv([*:0]const u8) c_int;
+
+test "running coordinator socket pump starts before optional slow CLI discovery" {
+    var fixture = try startup.TestFixture.init();
+    defer fixture.deinit();
+    const previous = if (std.c.getenv("PHUX_CLI")) |value| try std.testing.allocator.dupeZ(u8, std.mem.span(value)) else null;
+    defer {
+        if (previous) |value| {
+            _ = setenv("PHUX_CLI", value, 1);
+            std.testing.allocator.free(value);
+        } else _ = unsetenv("PHUX_CLI");
+    }
+    const cli_z = try std.testing.allocator.dupeZ(u8, fixture.cli);
+    defer std.testing.allocator.free(cli_z);
+    try std.testing.expectEqual(@as(c_int, 0), setenv("PHUX_CLI", cli_z, 1));
+    const listener = try listenTestUnix(fixture.socket);
+    defer _ = std.c.close(listener);
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    var status: startup.Status = .{};
+    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = fixture.socket }, .{ .status = &status });
+    var stopped = false;
+    defer if (!stopped) worker.stop();
+
+    // The availability probe is not the transport connection. Accept and discard
+    // it first, then require the real socket pump while the CLI is still blocked.
+    var polls = [_]posix.pollfd{.{ .fd = listener, .events = posix.POLL.IN, .revents = 0 }};
+    try std.testing.expectEqual(@as(usize, 1), try posix.poll(&polls, 5000));
+    const probe = std.c.accept(listener, null, null);
+    try std.testing.expect(probe >= 0);
+    _ = std.c.close(probe);
+    const started = monotonicTime().?;
+    while (!fixture.ready()) {
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+    }
+    try std.testing.expectEqual(@as(usize, 1), try posix.poll(&polls, 0));
+    const connected = std.c.accept(listener, null, null);
+    try std.testing.expect(connected >= 0);
+    defer _ = std.c.close(connected);
+    const frame = "\x00\x00\x00\x01k";
+    try std.testing.expect(bridge.outgoing.stage(frame));
+    try receiveTestFrame(connected, frame);
+    const stopping_started = monotonicTime().?;
+    worker.stop();
+    stopped = true;
+    try std.testing.expect(elapsedNanos(stopping_started, monotonicTime().?) < std.time.ns_per_s);
+    try fixture.expectReaped();
+}
+
+fn listenTestUnix(path: []const u8) !posix.fd_t {
+    var address = std.mem.zeroes(posix.sockaddr.un);
+    if (path.len >= address.path.len) return error.TestSocketTooLong;
+    address.len = @intCast(@offsetOf(posix.sockaddr.un, "path") + path.len + 1);
+    address.family = posix.AF.UNIX;
+    @memcpy(address.path[0..path.len], path);
+    const fd = std.c.socket(posix.AF.UNIX, posix.SOCK.STREAM, 0);
+    if (fd < 0) return error.TestSocketFailed;
+    errdefer _ = std.c.close(fd);
+    if (std.c.bind(fd, @ptrCast(&address), address.len) != 0) return error.TestBindFailed;
+    if (std.c.listen(fd, 8) != 0) return error.TestListenFailed;
+    return fd;
 }
 
 test "stopping during coordinator ensure cancels and reaps helper without posting" {

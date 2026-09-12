@@ -39,7 +39,8 @@
 #   --fresh              Delete the dev home first: config, workspace layout,
 #                        dropbox. A clean first-launch.
 #   --detach             Print the pid and exit instead of staying attached.
-#   --no-build           Run what is already staged. Skips zig entirely.
+#   --no-build           Restage the existing package. Skips zig entirely;
+#                        build configuration is unknown, flags cannot change it.
 #   --phux               -Dphux-enabled=true, with the FFI directories the build
 #                        already knows how to find.
 #   --ffi-profile NAME   Cargo FFI profile directory (default ffi-release).
@@ -181,6 +182,11 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
+if [[ "$BUILD" == "0" && "$MEASURE_FIRST_FRAME" == "1" ]]; then
+    printf 'error: --measure-first-frame requires a build to establish its optimize/provider/automation configuration\n' >&2
+    exit 2
+fi
+
 [[ "$(uname -s)" == "Darwin" ]] || { printf 'error: macOS only\n' >&2; exit 1; }
 
 if [[ "$FRESH" == "1" ]]; then
@@ -215,7 +221,14 @@ read -r staged_id staged_executable staged_name <<<"$(dev_app_identity "$STAGED_
 APP_INSTANCE_NAME="$staged_executable"
 printf '\n'
 printf 'running:  %s\n' "$STAGED_APP"
-printf '  build:      %s%s\n' "$OPTIMIZE" "$([[ "$AUTOMATION" == "1" ]] && printf ', automation' || true)"
+if [[ "$BUILD" == "1" ]]; then
+    printf '  build:      %s%s\n' "$OPTIMIZE" "$([[ "$AUTOMATION" == "1" ]] && printf ', automation' || true)"
+else
+    printf '  build:      existing package; optimize/provider/automation/FFI profile UNKNOWN\n'
+    printf '              build flags have no effect with --no-build; verify the live publisher\n'
+fi
+BINARY_SHA="$(shasum -a 256 "$EXECUTABLE" | cut -d ' ' -f 1)"
+printf '  binary sha: %s\n' "$BINARY_SHA"
 printf '  bundle id:  %s\n' "$staged_id"
 printf '  process:    %s      (pgrep -x %s)\n' "$staged_executable" "$staged_executable"
 printf '  menu name:  %s\n' "$staged_name"
@@ -275,7 +288,7 @@ until osascript -e "tell application \"System Events\" to set frontmost of proce
     sleep 0.5
 done
 
-if [[ "$AUTOMATION" == "1" ]]; then
+if [[ "$AUTOMATION" == "1" && "$BUILD" == "1" ]]; then
     printf '\nautomation is on. The dropbox is resolved against the app CWD, which\n'
     printf 'is the dev home, so drive it from there:\n\n'
     printf '  eval "$(%s/scripts/build-automation-cli.sh --export)"\n' "$ROOT"

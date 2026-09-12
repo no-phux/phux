@@ -6,13 +6,23 @@
 //! module reads the resulting structured state back out via
 //! `RenderState` (per-row dirty tracking) and emits VT to stdout.
 //!
-//! v0 emits a **dirty-row redraw**: for each row reported dirty by
-//! `RenderState`, position the cursor at the row, then walk its cells
-//! emitting an SGR sequence only when a cell's style differs from the one
-//! currently active on the outer terminal (a run of same-style cells costs
-//! one SGR plus the glyphs) and writing each cell's graphemes. Per-row dirty
-//! bits are reset after the row is drawn so subsequent renders skip clean
-//! rows.
+//! The paint is a **cell diff over dirty rows** (`phux-esge`). libghostty
+//! tracks dirt per row, so the rows to visit are the ones `RenderState`
+//! reports dirty. Each visited row is compared against the pane's
+//! `FrontBuffer` — what this renderer last wrote to the outer terminal at
+//! those cells — and only the changed spans are emitted, each positioned with
+//! a `CUP` (or bridged by rewriting a short unchanged gap when that is
+//! cheaper). A row the front buffer does not know (first paint, a forced
+//! full-frame paint, anything that invalidated it) is emitted whole, exactly
+//! as the pre-diff dirty-row painter did. Within a span an SGR sequence is
+//! emitted only when a cell's style differs from the one currently active on
+//! the outer terminal, so a run of same-style cells costs one SGR plus the
+//! glyphs. Per-row dirty bits are reset after the row is drawn so subsequent
+//! renders skip clean rows.
+//!
+//! The front buffer is only as good as the claim that nothing else wrote
+//! over the pane's cells since; see `FrontBuffer` for every writer that
+//! invalidates it.
 //!
 //! Two frame-level contracts hold across everything below (`phux-l96p.2`):
 //!
@@ -190,6 +200,168 @@ pub struct TerminalRenderer<'alloc> {
     /// Per-frame emission buffers, reused for the life of the pane
     /// (`phux-l96p.2`). See [`CellScratch`].
     scratch: CellScratch,
+    /// What this pane last emitted to the outer terminal, cell by cell
+    /// (`phux-esge`). A visited row whose front row is still known emits
+    /// only the cells that differ from it. See [`FrontBuffer`].
+    front: FrontBuffer,
+}
+
+/// The outer terminal's contents at this pane's cells, as this renderer last
+/// wrote them (`phux-esge`).
+///
+/// libghostty tracks dirt per ROW, so a full-screen animation (cmatrix, a
+/// progress spinner that redraws its line, a TUI that clears and repaints)
+/// dirties every row every frame, and repainting each dirty row whole made
+/// every such frame a full-screen rewrite: ~25x the bytes tmux sends for the
+/// same program, all of it crossing the link when the client runs on the far
+/// side of ssh. The front buffer turns the row dirt into cell dirt: a dirty
+/// row is diffed against what the outer terminal already shows, and only the
+/// changed spans are written.
+///
+/// # The invariant, and who can break it
+///
+/// A KNOWN front row is a claim that the outer terminal's cells at that row
+/// hold exactly the recorded clusters in exactly the recorded pens. Anything
+/// that writes those cells behind the renderer's back falsifies the claim, and
+/// a diff against a false claim leaves stale cells on screen. So every such
+/// writer invalidates, and an invalidated row falls back to the pre-front
+/// behaviour exactly: when libghostty next reports it dirty it is repainted
+/// whole. That is the safety argument for the whole design — wherever the
+/// front buffer is unknown the renderer is byte-for-byte the old dirty-row
+/// painter, so an over-eager invalidation costs bandwidth, never correctness.
+///
+/// The renderer invalidates on its own when:
+///
+/// * the paint is forced ([`TerminalRenderer::render_at_full`], the
+///   full-frame path's repaint after its `ED2`);
+/// * the paint's origin or clipped extent moves (a split, a zoom, a resize, a
+///   relayout, a letterbox pad appearing or vanishing, a sidebar toggle);
+/// * the replica generation changes (bootstrap, republish, reattach);
+/// * the pane switches between the primary and alternate screen;
+/// * the copy-mode selection changes;
+/// * kitty graphics were replayed over the pane.
+///
+/// Writers outside the renderer invalidate explicitly through
+/// [`TerminalRenderer::invalidate_front`] and
+/// [`TerminalRenderer::invalidate_front_rows`]: the predictive-echo overlay
+/// (the rows it painted); and, for the whole pane, the full-frame clear (at
+/// the clear itself, not trusting each pane's forced paint to get that far),
+/// the SIGWINCH clear, a stdout-writer resync, an incremental frame that
+/// failed to ship, modal overlays and the copy-mode status strip.
+///
+/// A forced paint records nothing: it emits straight from the batched read
+/// and leaves its rows unknown, so a failed forced frame cannot leave a false
+/// claim behind. And a row becomes known only after its bytes reach the sink.
+#[derive(Debug, Default)]
+struct FrontBuffer {
+    /// The paint identity the rows were recorded under. A paint under any
+    /// other identity cannot trust them.
+    key: Option<FrontKey>,
+    /// One entry per painted row, pane-local.
+    rows: Vec<FrontRow>,
+}
+
+/// Everything that decides WHERE a pane's cells land and WHICH grid they come
+/// from. The front rows are valid only under the key they were recorded with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrontKey {
+    /// Outer-viewport origin of the paint.
+    origin: (u16, u16),
+    /// Clipped painted extent `(cols, rows)`.
+    extent: (u16, u16),
+    /// Replica walk identity (`phux-994s`).
+    generation: TerminalGeneration,
+    /// Whether the alternate screen was active.
+    alt_screen: bool,
+}
+
+impl FrontBuffer {
+    /// Forget every recorded row.
+    fn invalidate_all(&mut self) {
+        for row in &mut self.rows {
+            row.known = false;
+        }
+    }
+
+    /// Forget the recorded rows in `rows` (pane-local, clamped to the buffer).
+    fn invalidate_rows(&mut self, rows: std::ops::Range<u16>) {
+        let end = usize::from(rows.end).min(self.rows.len());
+        let start = usize::from(rows.start).min(end);
+        for row in &mut self.rows[start..end] {
+            row.known = false;
+        }
+    }
+
+    /// Ready the buffer for a paint under `key`: a forced paint or a moved key
+    /// forgets everything, and the row count follows the painted extent.
+    fn prepare(&mut self, key: FrontKey, force_full: bool) {
+        if force_full || self.key != Some(key) {
+            self.invalidate_all();
+            self.key = Some(key);
+        }
+        self.rows
+            .resize_with(usize::from(key.extent.1), FrontRow::default);
+    }
+}
+
+/// One row as the renderer last emitted it — or, while [`CellScratch::next`],
+/// as it is about to be emitted.
+///
+/// Clusters are stored back to back in `text` and pens are deduplicated into
+/// `pens` per style run, so recording a row costs two `Vec` appends per cell
+/// and no allocation once the buffers have grown to the row's width.
+#[derive(Debug, Default)]
+struct FrontRow {
+    /// Whether the outer terminal is known to hold this row's cells. `false`
+    /// until the row is first painted and after any invalidation.
+    known: bool,
+    /// One record per painted column.
+    cells: Vec<FrontCell>,
+    /// Every cell's cluster, UTF-8, back to back.
+    text: Vec<u8>,
+    /// The emitted pen of each style run in the row: the cell's [`Style`]
+    /// with the copy-mode inversion already applied, plus the resolved
+    /// colours — exactly the `(style, fg, bg)` [`emit_sgr_if_changed`] is
+    /// handed, so two equal entries emit identical SGR.
+    pens: Vec<EmittedStyle>,
+}
+
+/// One painted column of a [`FrontRow`].
+#[derive(Clone, Copy, Debug)]
+struct FrontCell {
+    /// Byte offset of the cluster in [`FrontRow::text`].
+    text_start: u32,
+    /// Byte length of the cluster; `0` is a blank (emitted as a space).
+    text_len: u32,
+    /// Index into [`FrontRow::pens`]. A spacer tail borrows its base's pen: it
+    /// emits nothing, so its own style can never reach the terminal.
+    pen: u16,
+    /// Wide-glyph role. Compared like the cluster: a cell that changes role
+    /// changes what the outer terminal shows around it.
+    wide: CellWide,
+}
+
+impl FrontRow {
+    /// Empty the row for re-recording, keeping its capacity.
+    fn clear(&mut self) {
+        self.known = false;
+        self.cells.clear();
+        self.text.clear();
+        self.pens.clear();
+    }
+
+    /// The cluster bytes of `cell`.
+    fn text_of(&self, cell: FrontCell) -> &[u8] {
+        let start = cell.text_start as usize;
+        &self.text[start..start + cell.text_len as usize]
+    }
+
+    /// Whether column `col` is a wide glyph's spacer tail.
+    fn is_tail(&self, col: usize) -> bool {
+        self.cells
+            .get(col)
+            .is_some_and(|cell| matches!(cell.wide, CellWide::SpacerTail))
+    }
 }
 
 /// The renderer's reusable per-frame emission buffers.
@@ -228,6 +400,12 @@ struct CellScratch {
     /// It grows to the widest row the pane has seen and then never allocates
     /// again.
     rowbuf: RowBuf,
+    /// The row being painted, recorded from [`Self::rowbuf`] before any byte
+    /// is emitted (`phux-esge`). Emission reads from here — the diff against
+    /// the pane's [`FrontBuffer`] row and the full-row paint alike — and the
+    /// two are then swapped, so the old front row's buffers become the next
+    /// row's scratch and the steady state stays allocation-free.
+    next: FrontRow,
 }
 
 impl<'alloc> TerminalRenderer<'alloc> {
@@ -242,14 +420,43 @@ impl<'alloc> TerminalRenderer<'alloc> {
             last_origin: (0, 0),
             selection: None,
             scratch: CellScratch::default(),
+            front: FrontBuffer::default(),
         })
     }
 
     /// Set (or clear) the copy-mode selection to reverse-video on the next
     /// render. Transient — see [`SelectionRect`]; callers set it before a
     /// copy-mode repaint and clear it (`None`) immediately after.
-    pub const fn set_selection(&mut self, selection: Option<SelectionRect>) {
+    ///
+    /// A change forgets the front buffer (`phux-esge`). The inversion is part
+    /// of every recorded pen, so a diff would already see it; forgetting is
+    /// the cheap insurance for a selection repaint that is not also forced.
+    pub fn set_selection(&mut self, selection: Option<SelectionRect>) {
+        if self.selection != selection {
+            self.front.invalidate_all();
+        }
         self.selection = selection;
+    }
+
+    /// Forget what this pane last emitted, so the next paint of each row
+    /// rewrites it whole (`phux-esge`).
+    ///
+    /// Call this after writing anything over the pane's cells outside the
+    /// renderer — a modal, a status strip, a cleared screen — that is not
+    /// followed by a forced repaint. See the private `FrontBuffer` for the invariant
+    /// and why forgetting is always safe.
+    pub fn invalidate_front(&mut self) {
+        self.front.invalidate_all();
+    }
+
+    /// Forget what this pane last emitted on the pane-local rows `rows`.
+    ///
+    /// The narrow form of [`Self::invalidate_front`], for a writer that knows
+    /// which rows it touched: the predictive-echo overlay paints its guesses
+    /// straight over the cursor row, and only that row needs rewriting when
+    /// the authoritative echo lands.
+    pub fn invalidate_front_rows(&mut self, rows: std::ops::Range<u16>) {
+        self.front.invalidate_rows(rows);
     }
 
     /// Cursor (row, col) as of the most recent [`Self::render`] call.
@@ -585,12 +792,12 @@ impl<'alloc> TerminalRenderer<'alloc> {
         let dirty = frame_dirty(&snapshot, force_full)?;
 
         if matches!(dirty, Dirty::Clean) {
-            let emitted_kitty = kitty_replay::emit_kitty_graphics_replay(
+            let emitted_kitty = replay_kitty(
                 walk.terminal,
                 &mut self.kitty_placements,
+                &mut self.front,
                 out,
-                origin,
-                clip,
+                (origin, clip),
             )?;
             render_clean_frame_cursor(
                 &snapshot,
@@ -612,24 +819,37 @@ impl<'alloc> TerminalRenderer<'alloc> {
         out.write_all(b"\x1b[?25l")?;
 
         let extent = clipped_extent(&snapshot, clip)?;
+        // Anything that moves where this pane's cells land, or which grid
+        // they come from, voids what the front buffer says is on screen.
+        self.front.prepare(
+            FrontKey {
+                origin,
+                extent,
+                generation: walk.generation,
+                alt_screen: super::input_dispatch::terminal_in_alt_screen(walk.terminal),
+            },
+            force_full,
+        );
         let mut row_iter = rows.update(&snapshot)?;
         paint_dirty_rows(
             out,
             &mut self.scratch,
+            &mut self.front,
             &mut row_iter,
             cells,
             dirty,
             origin,
             extent,
             self.selection,
+            !force_full,
         )?;
 
-        let _ = kitty_replay::emit_kitty_graphics_replay(
+        let _ = replay_kitty(
             walk.terminal,
             &mut self.kitty_placements,
+            &mut self.front,
             out,
-            origin,
-            clip,
+            (origin, clip),
         )?;
 
         emit_frame_epilogue(
@@ -642,6 +862,30 @@ impl<'alloc> TerminalRenderer<'alloc> {
         sync.end(out)?;
         Ok(dirty)
     }
+}
+
+/// Replay the pane's kitty graphics over its cells at `at = (origin, clip)`,
+/// returning whether any placement was emitted.
+///
+/// A replay places images over the pane's cells. Text under a placement
+/// survives it in every terminal we know of, but nothing promises that, so a
+/// replay that emitted anything forgets the front buffer (`phux-esge`). A
+/// free function rather than a method because the paint that calls it still
+/// holds the pooled render state's borrow of the renderer.
+fn replay_kitty<'alloc>(
+    terminal: &GhosttyTerminal<'alloc, '_>,
+    placements: &mut libghostty_vt::kitty::graphics::PlacementIterator<'alloc>,
+    front: &mut FrontBuffer,
+    out: &mut impl Write,
+    at: ((u16, u16), (u16, u16)),
+) -> Result<bool, RenderError> {
+    let (origin, clip) = at;
+    let emitted =
+        kitty_replay::emit_kitty_graphics_replay(terminal, placements, out, origin, clip)?;
+    if emitted {
+        front.invalidate_all();
+    }
+    Ok(emitted)
 }
 
 /// The frame-level dirty verdict this paint acts on.
@@ -674,87 +918,560 @@ fn clipped_extent(
 /// Walk rows, painting each one that needs redrawing.
 ///
 /// Under `Dirty::Full` paint every row; under `Dirty::Partial` skip rows whose
-/// per-row dirty bit is clear.
+/// per-row dirty bit is clear. Which rows are VISITED is unchanged by the
+/// front buffer (`phux-esge`); what a visited row EMITS is decided against it
+/// in [`paint_row`].
+///
+/// `record` is `false` for a forced paint: every row is then emitted straight
+/// from its batched read and left unknown, and the next incremental paint of
+/// the row records it (see [`emit_and_record`]).
 #[allow(
     clippy::too_many_arguments,
-    reason = "one row-walk context: sink, scratch, the libghostty trio, and the clip/selection policy"
+    reason = "one row-walk context: sink, scratch, front buffer, the libghostty trio, and the clip/selection/record policy"
 )]
 fn paint_dirty_rows<'alloc>(
     out: &mut impl Write,
     scratch: &mut CellScratch,
+    front: &mut FrontBuffer,
     row_iter: &mut RowIteration<'alloc, '_>,
     cells: &mut CellIterator<'alloc>,
     dirty: Dirty,
     origin: (u16, u16),
     extent: (u16, u16),
     selection: Option<SelectionRect>,
+    record: bool,
 ) -> Result<(), RenderError> {
     let (cols_total, rows_total) = extent;
+    // The outer pen is unknown at the start of every pane paint: chrome,
+    // another pane, or an overlay may have written anything since this pane
+    // last emitted. From here on nothing else writes until the paint ends, so
+    // the pen each span leaves carries to the next, across jumps and rows.
+    let mut pass = PaintPass {
+        selection,
+        record,
+        pen: SpanPen::UNKNOWN,
+    };
     let mut row_index: u16 = 0;
     while let Some(row) = row_iter.next() {
         if row_index >= rows_total {
             break;
         }
         if matches!(dirty, Dirty::Full) || row.dirty()? {
-            paint_row(
-                out, scratch, row, cells, row_index, origin, cols_total, selection,
-            )?;
+            let Some(front_row) = front.rows.get_mut(usize::from(row_index)) else {
+                break;
+            };
+            let at = RowAt {
+                row_index,
+                origin,
+                cols_total,
+            };
+            paint_row(out, scratch, front_row, row, cells, at, &mut pass)?;
         }
         row_index += 1;
     }
     Ok(())
 }
 
-/// Paint one row: position the cursor at its start, emit every cell up to
-/// `cols_total`, then clear the row's dirty bit.
-///
-/// The row is composed into [`CellScratch::row`] and handed to `out` in a
-/// single `write_all`. The bytes are identical to the previous
-/// write-per-cell emission; what changes is that a 200-column row costs the
-/// sink one call instead of ~200.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one row-paint context: sink, scratch, the libghostty trio, and the clip/selection policy"
-)]
-fn paint_row<'alloc>(
-    out: &mut impl Write,
-    scratch: &mut CellScratch,
-    row: &RowIteration<'alloc, '_>,
-    cells: &mut CellIterator<'alloc>,
+/// What one pane paint threads across its rows: the copy-mode selection,
+/// whether rows are recorded into the front buffer, and the outer terminal's
+/// pen as the paint has left it so far.
+#[derive(Debug)]
+struct PaintPass {
+    selection: Option<SelectionRect>,
+    record: bool,
+    pen: SpanPen,
+}
+
+/// Where one painted row lands: its pane-local index, the pane's
+/// outer-viewport origin, and the clipped column count.
+#[derive(Clone, Copy, Debug)]
+struct RowAt {
     row_index: u16,
     origin: (u16, u16),
     cols_total: u16,
-    selection: Option<SelectionRect>,
+}
+
+impl RowAt {
+    /// The row's outer-viewport row.
+    const fn outer_row(self) -> u16 {
+        self.row_index.saturating_add(self.origin.1)
+    }
+
+    /// The outer-viewport column of pane-local column `col`.
+    fn outer_col(self, col: usize) -> u16 {
+        u16::try_from(col)
+            .unwrap_or(u16::MAX)
+            .saturating_add(self.origin.0)
+    }
+}
+
+/// Paint one row, then clear its dirty bit.
+///
+/// The emission is composed into [`CellScratch::row`] and handed to `out` in
+/// a single `write_all`, and a known row that did not change at all emits
+/// nothing. See [`emit_and_record`] for what is emitted.
+fn paint_row<'alloc>(
+    out: &mut impl Write,
+    scratch: &mut CellScratch,
+    front_row: &mut FrontRow,
+    row: &RowIteration<'alloc, '_>,
+    cells: &mut CellIterator<'alloc>,
+    at: RowAt,
+    pass: &mut PaintPass,
 ) -> Result<(), RenderError> {
     let CellScratch {
-        row: buf, rowbuf, ..
+        row: buf,
+        rowbuf,
+        next,
+        ..
     } = scratch;
     buf.clear();
-    let (ox, oy) = origin;
-    write_cup(buf, row_index.saturating_add(oy), ox)?;
-    // Force a reset at row start so the previous row's tail
-    // style can't leak into the current row. After this the
-    // active outer-terminal SGR state is the default style,
-    // which `emitted = None` represents.
-    buf.extend_from_slice(b"\x1b[0m");
-    let mut state = RowState {
-        emitted: None,
-        prev_pen: None,
-    };
 
     // One crossing into libghostty for the whole row. Every cell consumes
     // one column, including a wide glyph's spacer tail (which emits nothing),
     // so walking the columns in step with the cells clips at `cols_total`
     // exactly as the old per-cell walk did.
     let batch = cells.update(row)?.read_row(rowbuf)?;
-    walk_row_cells(&batch, cols_total, |col, cell| {
-        emit_cell(buf, &batch, cell, &mut state, selection, (row_index, col))
-    })?;
-    out.write_all(buf)?;
+    let recorded = emit_and_record(buf, front_row, next, &batch, at, pass)?;
+
+    if !buf.is_empty() {
+        out.write_all(buf)?;
+    }
+    // The recording is a claim about the terminal, so it becomes known only
+    // once its bytes have been handed to the sink: a failed write returns
+    // above with the row still unknown (and its dirty bit still set).
+    front_row.known = recorded;
     // Reset per-row dirty bit after drawing, per the libghostty
     // contract.
     row.set_dirty(false)?;
     Ok(())
+}
+
+/// Emit one row into `buf` and make its recording the front row.
+///
+/// If the pane's front row is KNOWN, the row is recorded into `next` and only
+/// the cells that differ are emitted ([`emit_row_diff`]). Otherwise the whole
+/// row is emitted WHILE it is recorded, in the one walk ([`begin_full_row`]
+/// then [`record_row`]), byte-identical to the pre-front-buffer paint. The
+/// old front row's buffers are then swapped into `next`, to be reused as
+/// scratch by the next row painted.
+///
+/// Returns whether `front_row` now holds a recording of the row. It is left
+/// UNKNOWN either way: [`paint_row`] marks it known only once the emitted
+/// bytes have reached the sink.
+fn emit_and_record(
+    buf: &mut Vec<u8>,
+    front_row: &mut FrontRow,
+    next: &mut FrontRow,
+    batch: &RowCells<'_>,
+    at: RowAt,
+    pass: &mut PaintPass,
+) -> Result<bool, RenderError> {
+    // Run indices belong to one row read, so the run memory starts empty on
+    // every row; the outer pen itself carries over.
+    pass.pen.last_pen = None;
+    if !pass.record {
+        // A forced paint rewrites every row onto a cleared screen, the path
+        // that can least use a recording: emit straight from the batch and
+        // leave the row unknown, to be recorded by its next incremental paint.
+        begin_full_row(buf, at, &mut pass.pen)?;
+        front_row.known = false;
+        emit_unrecorded_row(buf, batch, at, pass)?;
+        return Ok(false);
+    }
+    let painted = batch.len().min(usize::from(at.cols_total));
+    if front_row.known && front_row.cells.len() == painted {
+        record_row(next, batch, at, pass.selection, None)?;
+        emit_row_diff(buf, front_row, next, at, &mut pass.pen)?;
+    } else {
+        begin_full_row(buf, at, &mut pass.pen)?;
+        record_row(next, batch, at, pass.selection, Some((buf, &mut pass.pen)))?;
+    }
+    std::mem::swap(front_row, next);
+    front_row.known = false;
+    Ok(true)
+}
+
+/// Emit a whole row straight from its batched read, recording nothing — the
+/// forced-paint path, and the pre-`phux-esge` cell loop exactly: a cell whose
+/// pen identity ([`PenKey`]) matches its predecessor's skips straight to its
+/// glyphs, and a spacer tail writes nothing.
+///
+/// This loop and [`record_row`]'s emitting mode must stay byte-identical: a
+/// row painted forced and the same row painted as an unknown incremental row
+/// must reach the terminal as the same bytes. The byte-identity gate
+/// (`batched_row_read_emits_the_same_bytes_as_the_per_cell_walk` and its two
+/// siblings) runs both paths against the per-cell walk and against each
+/// other, so a change to one that is not made to the other fails there.
+fn emit_unrecorded_row(
+    buf: &mut Vec<u8>,
+    batch: &RowCells<'_>,
+    at: RowAt,
+    pass: &mut PaintPass,
+) -> Result<(), RenderError> {
+    let mut prev: Option<PenKey> = None;
+    walk_row_cells(batch, at.cols_total, |col, cell| {
+        if matches!(cell.wide, CellWide::SpacerTail) {
+            return Ok(());
+        }
+        let inverted = selection_covers_cell(pass.selection, at.row_index, col, cell.wide);
+        let key = PenKey {
+            style_index: cell.style_index,
+            fg: cell.fg,
+            bg: cell.bg,
+            inverted,
+        };
+        if prev != Some(key) {
+            let mut style = batch.style(cell.style_index)?;
+            style.inverse ^= inverted;
+            emit_sgr_if_changed(buf, &mut pass.pen.emitted, style, cell.fg, cell.bg);
+            prev = Some(key);
+        }
+        emit_cell_glyphs(buf, cell.text.as_bytes());
+        Ok(())
+    })
+}
+
+/// Record one row's cells into `next`, clipped to `at.cols_total`.
+///
+/// Each cell's pen is resolved exactly as the emitter will send it — the
+/// copy-mode inversion applied — so a recorded row is a faithful statement of
+/// what emitting it puts on screen. A cell whose pen IDENTITY ([`PenKey`]:
+/// this row's style-run index plus the resolved colours and the selection
+/// flip) matches its predecessor's is by construction another member of the
+/// same run, so it shares the run's pen entry and the 72-byte [`Style`] is
+/// materialised once per run rather than once per cell.
+///
+/// The per-cell walk this replaced also consulted the ROW's `styled` flag to
+/// skip the style and foreground reads wholesale on an unstyled row. It is
+/// dead weight now: the batched read resolves an unstyled row to a single
+/// default style-table entry anyway. The byte-identity gate
+/// (`batched_row_read_emits_the_same_bytes_as_the_per_cell_walk`) holds this
+/// path to the old one, flag and all, and to [`emit_unrecorded_row`], its
+/// forced-paint twin.
+///
+/// With `emit`, the row is also written to the sink as it is recorded — the
+/// whole-row paint, fused into the same walk so an unknown row costs one pass
+/// rather than a recording pass plus an emitting one. The caller has already
+/// written the row prologue ([`begin_full_row`]), so the pen is known.
+fn record_row(
+    next: &mut FrontRow,
+    batch: &RowCells<'_>,
+    at: RowAt,
+    selection: Option<SelectionRect>,
+    mut emit: Option<(&mut Vec<u8>, &mut SpanPen)>,
+) -> Result<(), RenderError> {
+    next.clear();
+    let mut prev_pen: Option<PenKey> = None;
+    walk_row_cells(batch, at.cols_total, |col, cell| {
+        let run = record_pen(
+            next,
+            batch,
+            cell,
+            (at.row_index, col),
+            selection,
+            &mut prev_pen,
+        )?;
+        let tail = matches!(cell.wide, CellWide::SpacerTail);
+        if !tail && let Some((buf, pen)) = &mut emit {
+            if let Some((style, fg, bg)) = run {
+                emit_sgr_if_changed(buf, &mut pen.emitted, style, fg, bg);
+            }
+            emit_cell_glyphs(buf, cell.text.as_bytes());
+        }
+        record_cell(next, cell);
+        Ok(())
+    })
+}
+
+/// Settle `cell`'s pen entry in `next`, returning the pen when the cell opens
+/// a new style run (the only point at which the emitted SGR can change).
+///
+/// A spacer tail emits nothing, so its style never reaches the terminal: it
+/// borrows the base's pen (a row that somehow opens on a tail records its
+/// own) and leaves the run identity untouched.
+fn record_pen(
+    next: &mut FrontRow,
+    batch: &RowCells<'_>,
+    cell: &RowCell<'_>,
+    at: (u16, u16),
+    selection: Option<SelectionRect>,
+    prev: &mut Option<PenKey>,
+) -> Result<Option<EmittedStyle>, RenderError> {
+    let tail = matches!(cell.wide, CellWide::SpacerTail);
+    if tail && !next.pens.is_empty() {
+        return Ok(None);
+    }
+    let inverted = !tail && selection_covers_cell(selection, at.0, at.1, cell.wide);
+    let key = PenKey {
+        style_index: cell.style_index,
+        fg: cell.fg,
+        bg: cell.bg,
+        inverted,
+    };
+    let opens_run = *prev != Some(key) || next.pens.is_empty();
+    if !tail {
+        *prev = Some(key);
+    }
+    if !opens_run {
+        return Ok(None);
+    }
+    let mut style = batch.style(cell.style_index)?;
+    style.inverse ^= inverted;
+    let pen = (style, cell.fg, cell.bg);
+    next.pens.push(pen);
+    Ok(Some(pen))
+}
+
+/// Append `cell`'s cluster and record to `next`, under the pen entry
+/// [`record_pen`] just settled.
+fn record_cell(next: &mut FrontRow, cell: &RowCell<'_>) {
+    let text_start = u32::try_from(next.text.len()).unwrap_or(u32::MAX);
+    next.text.extend_from_slice(cell.text.as_bytes());
+    next.cells.push(FrontCell {
+        text_start,
+        text_len: u32::try_from(cell.text.len()).unwrap_or(u32::MAX),
+        pen: u16::try_from(next.pens.len().saturating_sub(1)).unwrap_or(u16::MAX),
+        wide: cell.wide,
+    });
+}
+
+/// Open a whole-row paint: position the cursor at the row's start and reset
+/// the pen. [`record_row`] then writes every cell.
+///
+/// Together they are the pre-`phux-esge` row paint, byte for byte — the path
+/// an unknown front row (first paint, forced paint, any invalidation) takes,
+/// and the one `batched_row_read_emits_the_same_bytes_as_the_per_cell_walk`
+/// holds to the per-cell walk it descends from.
+fn begin_full_row(buf: &mut Vec<u8>, at: RowAt, pen: &mut SpanPen) -> io::Result<()> {
+    write_cup(buf, at.outer_row(), at.origin.0)?;
+    // Force a reset at row start so the previous row's tail style can't leak
+    // into the current row. After this the active outer-terminal SGR state is
+    // the default style.
+    buf.extend_from_slice(b"\x1b[0m");
+    *pen = SpanPen::DEFAULT;
+    Ok(())
+}
+
+/// Emit only the cells of `next` that differ from `front`, as positioned
+/// spans.
+///
+/// A span is a maximal run of changed columns, widened so no wide glyph is
+/// half-written: it starts on the base of any wide glyph (old or new) whose
+/// spacer tail it would otherwise start on, and it runs on through any tail
+/// that follows its last cell. Between two spans the cursor either JUMPS
+/// (`CUP`) or the unchanged cells between them are simply rewritten, whichever
+/// is fewer bytes ([`bridge_gap`]).
+///
+/// A jump does not touch the outer pen — a `CUP` changes no SGR state, and
+/// nothing else writes between the spans of one pane paint — so `pen`, the
+/// pen the paint has left so far, carries across it and the next span emits
+/// only the SGR it actually needs. The pen is unknown only at the start of a
+/// pane paint, where the first cell emits a complete SGR (a reset included).
+fn emit_row_diff(
+    buf: &mut Vec<u8>,
+    front: &FrontRow,
+    next: &FrontRow,
+    at: RowAt,
+    pen: &mut SpanPen,
+) -> io::Result<()> {
+    let len = next.cells.len();
+    let mut memo = PenMemo::default();
+    // Pane-local column the outer cursor sits at after the last span, or
+    // `None` before the first span on this row.
+    let mut cursor: Option<usize> = None;
+    let mut col = 0;
+    while let Some(changed) = (col..len).find(|&c| cell_changed(front, next, c, &mut memo)) {
+        let start = span_start(front, next, changed).max(col);
+        let end = span_end(front, next, changed, &mut memo);
+        let bridged = cursor.is_some_and(|from| bridge_gap(buf, next, from, start, at, pen));
+        if !bridged {
+            write_cup(buf, at.outer_row(), at.outer_col(start))?;
+        }
+        emit_cells(buf, next, start..end, pen);
+        cursor = Some(end);
+        col = end;
+    }
+    Ok(())
+}
+
+/// Whether column `c` shows something different in `next` than in `front`:
+/// a different cluster, a different wide-glyph role, or a different pen.
+fn cell_changed(front: &FrontRow, next: &FrontRow, c: usize, memo: &mut PenMemo) -> bool {
+    let (was, now) = (front.cells[c], next.cells[c]);
+    let (shown, wanted) = (front.text_of(was), next.text_of(now));
+    was.wide != now.wide || shown != wanted || memo.differs(front, was.pen, next, now.pen)
+}
+
+/// The first column of the span whose first changed column is `changed`.
+///
+/// Backs up onto the base of a wide glyph whose spacer tail `changed` is — in
+/// either row. Writing into a tail on the outer terminal erases the glyph it
+/// belongs to, and a new tail can only be drawn by writing its base.
+fn span_start(front: &FrontRow, next: &FrontRow, changed: usize) -> usize {
+    let mut start = changed;
+    while start > 0 && (front.is_tail(start) || next.is_tail(start)) {
+        start -= 1;
+    }
+    start
+}
+
+/// One past the last column of the span whose first changed column is
+/// `changed`: it runs while columns keep changing, and on through any spacer
+/// tail (old or new) that follows, because writing the column before a tail
+/// rewrites — or erases — the glyph that tail belongs to.
+fn span_end(front: &FrontRow, next: &FrontRow, changed: usize, memo: &mut PenMemo) -> usize {
+    let len = next.cells.len();
+    let mut end = changed + 1;
+    while end < len
+        && (front.is_tail(end) || next.is_tail(end) || cell_changed(front, next, end, memo))
+    {
+        end += 1;
+    }
+    end
+}
+
+/// Move the outer cursor from `from` to `to` (pane-local columns, same row)
+/// by rewriting the unchanged cells between them, if that costs no more
+/// bytes than the `CUP` a jump would. Returns whether it did; on `false`
+/// nothing was written and `pen` is untouched.
+///
+/// The rewrite is tried and rolled back rather than estimated, because what
+/// it costs depends on the pens in the gap and on the pen already active.
+fn bridge_gap(
+    buf: &mut Vec<u8>,
+    next: &FrontRow,
+    from: usize,
+    to: usize,
+    at: RowAt,
+    pen: &mut SpanPen,
+) -> bool {
+    let jump = cup_len(at.outer_row(), at.outer_col(to));
+    if to < from || to - from > jump {
+        return false;
+    }
+    let mark = buf.len();
+    let saved = *pen;
+    emit_cells(buf, next, from..to, pen);
+    if buf.len() - mark <= jump {
+        return true;
+    }
+    buf.truncate(mark);
+    *pen = saved;
+    false
+}
+
+/// Bytes [`write_cup`] spends to reach 0-based `(row, col)`.
+fn cup_len(row: u16, col: u16) -> usize {
+    const fn digits(n: u32) -> usize {
+        match n {
+            0..=9 => 1,
+            10..=99 => 2,
+            100..=999 => 3,
+            1_000..=9_999 => 4,
+            _ => 5,
+        }
+    }
+    // ESC [ row ; col H
+    4 + digits(u32::from(row) + 1) + digits(u32::from(col) + 1)
+}
+
+/// Pen comparisons between two recorded rows, memoised on the last pair.
+///
+/// Pens are compared by value — a run index means nothing across rows — and a
+/// row's cells come in runs, so consecutive cells almost always ask about the
+/// same `(front pen, next pen)` pair. Remembering the last answer makes the
+/// ~100-byte comparison a per-run cost instead of a per-cell one.
+#[derive(Debug, Default)]
+struct PenMemo {
+    last: Option<(u16, u16, bool)>,
+}
+
+impl PenMemo {
+    fn differs(&mut self, front: &FrontRow, was: u16, next: &FrontRow, now: u16) -> bool {
+        if let Some((a, b, differs)) = self.last
+            && a == was
+            && b == now
+        {
+            return differs;
+        }
+        let differs = front.pens[usize::from(was)] != next.pens[usize::from(now)];
+        self.last = Some((was, now, differs));
+        differs
+    }
+}
+
+/// The outer terminal's pen as a pane paint's emission has left it.
+#[derive(Clone, Copy, Debug)]
+struct SpanPen {
+    /// Whether the outer pen is known at all. `false` at the start of a pane
+    /// paint, until the paint emits its first SGR or row prologue: no paint
+    /// trusts state another writer left.
+    known: bool,
+    /// The active pen when `known`; `None` is the default style. This is the
+    /// coalescing state [`emit_sgr_if_changed`] maintains.
+    emitted: Option<EmittedStyle>,
+    /// The recorded pen index of the last cell that settled the SGR state. A
+    /// cell sharing it is another member of the same run and cannot change
+    /// the emitted sequence.
+    last_pen: Option<u16>,
+}
+
+impl SpanPen {
+    /// Just after a row-leading `\x1b[0m`: the default style is active.
+    const DEFAULT: Self = Self {
+        known: true,
+        emitted: None,
+        last_pen: None,
+    };
+    /// At the start of a pane paint: nothing is assumed.
+    const UNKNOWN: Self = Self {
+        known: false,
+        emitted: None,
+        last_pen: None,
+    };
+}
+
+/// Emit the recorded cells `cols` of `row`, settling the pen at each run
+/// change. A wide glyph's spacer tail writes nothing at all.
+fn emit_cells(buf: &mut Vec<u8>, row: &FrontRow, cols: std::ops::Range<usize>, pen: &mut SpanPen) {
+    for cell in &row.cells[cols] {
+        if matches!(cell.wide, CellWide::SpacerTail) {
+            // Account for the tail column, but emit no overwrite. The active
+            // outer-terminal state is untouched, so the run identity carries
+            // across the tail to the next real cell.
+            continue;
+        }
+        if pen.last_pen != Some(cell.pen) {
+            let (style, fg, bg) = row.pens[usize::from(cell.pen)];
+            if pen.known {
+                emit_sgr_if_changed(buf, &mut pen.emitted, style, fg, bg);
+            } else {
+                emit_sgr_absolute(buf, &mut pen.emitted, style, fg, bg);
+                pen.known = true;
+            }
+            pen.last_pen = Some(cell.pen);
+        }
+        emit_cell_glyphs(buf, row.text_of(*cell));
+    }
+}
+
+/// Settle the outer pen to `(style, fg, bg)` from an UNKNOWN state: a bare
+/// reset for the default pen, otherwise the full reset-and-set.
+fn emit_sgr_absolute(
+    out: &mut Vec<u8>,
+    emitted: &mut Option<EmittedStyle>,
+    style: Style,
+    fg: Option<RgbColor>,
+    bg: Option<RgbColor>,
+) {
+    if is_default_render(&style, fg, bg) {
+        out.extend_from_slice(b"\x1b[0m");
+        *emitted = None;
+        return;
+    }
+    emit_sgr_set(out, &style, fg, bg);
+    *emitted = Some((style, fg, bg));
 }
 
 /// The per-column cell source a row walk reads.
@@ -823,71 +1540,15 @@ where
     Ok(())
 }
 
-/// Emit one cell at `at = (row, col)`: apply the copy-mode inversion, then
-/// hand the coalesced style and cluster to [`emit_cell_glyphs`].
-///
-/// A wide glyph's `SpacerTail` column writes nothing at all.
-///
-/// Nothing here crosses into libghostty: `cell` was read as part of its whole
-/// row in a single call (see [`CellScratch::rowbuf`]). What is left to avoid
-/// is materialising a [`Style`] per cell — it is 72 bytes, and the run
-/// coalescing in [`emit_sgr_if_changed`] has to compare one against the
-/// active state. A cell whose pen IDENTITY ([`PenKey`]: this row's style-run
-/// index plus the resolved colours and the selection flip) matches its
-/// predecessor's is by construction another member of the same run, so it
-/// cannot change the emitted SGR: it skips straight to its glyphs, and the
-/// `Style` is built once per run instead.
-///
-/// The per-cell walk this replaced also consulted the ROW's `styled` flag to
-/// skip the style and foreground reads wholesale on an unstyled row — worth
-/// 24 000 crossings a frame back when those reads were crossings. It is dead
-/// weight now and has been dropped: the batched read resolves an unstyled
-/// row to a single default style-table entry anyway, so the flag bought
-/// nothing and cost two crossings per row to read. The byte-identity gate
-/// (`batched_row_read_emits_the_same_bytes_as_the_per_cell_walk`) holds this
-/// path to the old one, flag and all.
-fn emit_cell(
-    out: &mut Vec<u8>,
-    batch: &RowCells<'_>,
-    cell: &RowCell<'_>,
-    state: &mut RowState,
-    selection: Option<SelectionRect>,
-    at: (u16, u16),
-) -> Result<(), RenderError> {
-    let (row, col) = at;
-    if matches!(cell.wide, CellWide::SpacerTail) {
-        // Account for the tail column, but emit no overwrite. The active
-        // outer-terminal state is untouched, so the run identity carries
-        // across the tail to the next real cell.
-        return Ok(());
-    }
-    // Toggle inverse so selected cells differ from their normal state.
-    let inverted = selection_covers_cell(selection, row, col, cell.wide);
-    let pen = PenKey {
-        style_index: cell.style_index,
-        fg: cell.fg,
-        bg: cell.bg,
-        inverted,
-    };
-    if state.prev_pen != Some(pen) {
-        let mut style = batch.style(cell.style_index)?;
-        style.inverse ^= inverted;
-        emit_sgr_if_changed(out, &mut state.emitted, style, cell.fg, cell.bg);
-        state.prev_pen = Some(pen);
-    }
-    emit_cell_glyphs(out, cell.text);
-    Ok(())
-}
-
-/// Write one cell's glyphs, after [`emit_cell`] has settled the style.
-fn emit_cell_glyphs(out: &mut Vec<u8>, cluster: &str) {
+/// Write one cell's glyphs, after [`emit_cells`] has settled the style.
+fn emit_cell_glyphs(out: &mut Vec<u8>, cluster: &[u8]) {
     if cluster.is_empty() {
         // A regular blank advances one column with a space.
         out.push(b' ');
         return;
     }
     // Already UTF-8: libghostty encoded the cluster into the row buffer.
-    out.extend_from_slice(cluster.as_bytes());
+    out.extend_from_slice(cluster);
 }
 
 /// Close out a painted frame: reset SGR, place and cache the cursor, apply the
@@ -1402,20 +2063,6 @@ fn write_blank_run(out: &mut impl Write, n: u16) -> io::Result<()> {
     Ok(())
 }
 
-/// The state [`paint_row`] threads across one row's cells.
-#[derive(Debug)]
-struct RowState {
-    /// The style currently active on the outer terminal, for run coalescing.
-    /// `None` means the default style is active — true at row start, just
-    /// after the row-leading `\x1b[0m`.
-    emitted: Option<EmittedStyle>,
-    /// The pen identity of the last cell that settled the SGR state, or
-    /// `None` at row start. A cell matching it cannot change the emitted
-    /// sequence, which is what lets [`emit_cell`] skip building a [`Style`]
-    /// for every cell in a run.
-    prev_pen: Option<PenKey>,
-}
-
 /// The cell style currently active on the outer terminal, as a comparable
 /// key for run coalescing. `fg`/`bg` are tracked alongside `Style` because
 /// the renderer sources the resolved RGB foreground/background from the
@@ -1437,8 +2084,9 @@ type EmittedStyle = (Style, Option<RgbColor>, Option<RgbColor>);
 /// is why the miss path still does the real `(Style, fg, bg)` comparison.
 ///
 /// The indices belong to one `read_row` and are never reused across rows, so
-/// [`RowState::prev_pen`] is reset at every row start and no key from one row
-/// is ever compared against a key from another.
+/// [`record_row`] starts every row with no previous key and no key from one
+/// row is ever compared against a key from another. Across rows — and across
+/// frames, in the front buffer — pens are compared by VALUE ([`PenMemo`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PenKey {
     /// This cell's run within the row's style table — valid only within the
@@ -2203,6 +2851,9 @@ mod tests {
         invisible: bool,
         strikethrough: bool,
         overline: bool,
+        /// Emitted from `style.underline_color` directly (it has no resolved
+        /// accessor), so a pen that drops or mangles it shows here.
+        underline_color: StyleColor,
     }
 
     impl VisAttrs {
@@ -2217,6 +2868,7 @@ mod tests {
                 invisible: style.invisible,
                 strikethrough: style.strikethrough,
                 overline: style.overline,
+                underline_color: style.underline_color,
             }
         }
     }
@@ -3144,27 +3796,61 @@ mod tests {
     /// The row payload the PRODUCTION path emits for a full-dirty frame —
     /// `paint_dirty_rows` alone, with no prologue, cursor or epilogue, so the
     /// comparison isolates the cell loop.
+    ///
+    /// Both whole-row paths are held to it: the one that records the row as
+    /// it emits (an incremental paint of an unknown row) and the one that
+    /// records nothing (a forced paint). They must agree byte for byte.
     fn production_row_bytes(
         terminal: &GhosttyTerminal<'_, '_>,
         extent: (u16, u16),
         selection: Option<SelectionRect>,
+    ) -> Vec<u8> {
+        let recorded = production_row_bytes_with(terminal, extent, selection, true);
+        let unrecorded = production_row_bytes_with(terminal, extent, selection, false);
+        assert_same_bytes(
+            "recording vs forced whole-row paint",
+            &recorded,
+            &unrecorded,
+        );
+        recorded
+    }
+
+    fn production_row_bytes_with(
+        terminal: &GhosttyTerminal<'_, '_>,
+        extent: (u16, u16),
+        selection: Option<SelectionRect>,
+        record: bool,
     ) -> Vec<u8> {
         let mut state = RenderState::new().expect("RenderState");
         let mut rows_it = RowIterator::new().expect("RowIterator");
         let mut cells_it = CellIterator::new().expect("CellIterator");
         let snap = state.update(terminal).expect("snapshot");
         let mut scratch = CellScratch::default();
+        // A fresh front buffer knows nothing, so every row takes the
+        // full-row path — the one this gate holds to the per-cell walk.
+        let mut front = FrontBuffer::default();
+        front.prepare(
+            FrontKey {
+                origin: (0, 0),
+                extent,
+                generation: 1,
+                alt_screen: false,
+            },
+            true,
+        );
         let mut out = Vec::new();
         let mut row_iter = rows_it.update(&snap).expect("rows");
         paint_dirty_rows(
             &mut out,
             &mut scratch,
+            &mut front,
             &mut row_iter,
             &mut cells_it,
             Dirty::Full,
             (0, 0),
             extent,
             selection,
+            record,
         )
         .expect("paint");
         out
@@ -3341,6 +4027,895 @@ mod tests {
                     &reference_row_bytes(&edge_case_terminal(), extent, selection),
                 );
             }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // phux-esge: the cell-diff paint and its front buffer
+    // ---------------------------------------------------------------
+
+    /// One screen cell as a viewer sees it: the whole cluster, the wide-glyph
+    /// role, the resolved colours, and every attribute. A blank and a written
+    /// space are the same verdict, and a spacer head (the blank a wide glyph
+    /// leaves when it wraps) is read as the ordinary blank the renderer paints
+    /// for it — a pre-existing projection the diff neither causes nor fixes.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct Seen {
+        text: String,
+        wide: CellWide,
+        fg: Option<RgbColor>,
+        bg: Option<RgbColor>,
+        attrs: VisAttrs,
+    }
+
+    /// Read the `extent = (cols, rows)` region of `terminal` whose top-left is
+    /// `origin = (x, y)`.
+    fn read_seen(
+        terminal: &GhosttyTerminal<'_, '_>,
+        origin: (u16, u16),
+        extent: (u16, u16),
+    ) -> Vec<Seen> {
+        let (ox, oy) = origin;
+        let (cols, rows) = extent;
+        let mut state = RenderState::new().expect("RenderState");
+        let mut rows_it = RowIterator::new().expect("RowIterator");
+        let mut cells_it = CellIterator::new().expect("CellIterator");
+        let snap = state.update(terminal).expect("snapshot");
+        let mut out = Vec::new();
+        let mut row_iter = rows_it.update(&snap).expect("rows");
+        let mut y: u16 = 0;
+        while let Some(row) = row_iter.next() {
+            if y >= oy.saturating_add(rows) {
+                break;
+            }
+            if y >= oy {
+                let mut cell_iter = cells_it.update(row).expect("cells");
+                let mut x: u16 = 0;
+                while let Some(cell) = cell_iter.next() {
+                    if x >= ox.saturating_add(cols) {
+                        break;
+                    }
+                    if x >= ox {
+                        let mut text = String::new();
+                        cell.graphemes_utf8(&mut text).expect("graphemes");
+                        if text == " " {
+                            text.clear();
+                        }
+                        let wide = match cell.raw_cell().expect("raw").wide().expect("wide") {
+                            CellWide::SpacerHead => CellWide::Narrow,
+                            other => other,
+                        };
+                        out.push(Seen {
+                            text,
+                            wide,
+                            fg: cell.fg_color().expect("fg"),
+                            bg: cell.bg_color().expect("bg"),
+                            attrs: VisAttrs::of(&cell.style().expect("style")),
+                        });
+                    }
+                    x += 1;
+                }
+            }
+            y += 1;
+        }
+        out
+    }
+
+    /// The outer terminal in these tests: a fresh libghostty grid the
+    /// renderer's bytes are replayed into, frame after frame, so what it
+    /// shows is what a real terminal would show after the same stream.
+    struct Glass {
+        screen: GhosttyTerminal<'static, 'static>,
+    }
+
+    impl Glass {
+        fn new(cols: u16, rows: u16) -> Self {
+            Self {
+                screen: fresh(cols, rows),
+            }
+        }
+
+        /// Paint `pane` through `renderer` with its top-left at `origin`,
+        /// replay the bytes onto the glass, and return them.
+        fn paint(
+            &mut self,
+            renderer: &mut TerminalRenderer<'static>,
+            pane: &GhosttyTerminal<'static, 'static>,
+            origin: (u16, u16),
+            force: bool,
+        ) -> Vec<u8> {
+            let clip = pane_extent(pane);
+            let walk = ReplicaWalk::for_test(pane);
+            let mut out = Vec::new();
+            if force {
+                renderer.render_at_full(walk, &mut out, origin, clip)
+            } else {
+                renderer.render_at(walk, &mut out, origin, clip)
+            }
+            .expect("render");
+            self.screen.vt_write(&out);
+            out
+        }
+
+        /// Write bytes onto the glass behind the renderer's back — a modal,
+        /// a prediction, a clear.
+        fn scribble(&mut self, bytes: &[u8]) {
+            self.screen.vt_write(bytes);
+        }
+
+        /// The pane region of the glass.
+        fn seen(&self, origin: (u16, u16), extent: (u16, u16)) -> Vec<Seen> {
+            read_seen(&self.screen, origin, extent)
+        }
+    }
+
+    fn pane_extent(pane: &GhosttyTerminal<'_, '_>) -> (u16, u16) {
+        (pane.cols().expect("cols"), pane.rows().expect("rows"))
+    }
+
+    /// Fail with the first diverging cell when the glass does not show the
+    /// pane at `origin`.
+    fn assert_glass_shows(
+        glass: &Glass,
+        pane: &GhosttyTerminal<'_, '_>,
+        origin: (u16, u16),
+        label: &str,
+    ) {
+        let extent = pane_extent(pane);
+        let want = read_seen(pane, (0, 0), extent);
+        let got = glass.seen(origin, extent);
+        assert_same_screen(label, &want, &got, extent.0);
+    }
+
+    fn assert_same_screen(label: &str, want: &[Seen], got: &[Seen], cols: u16) {
+        if want == got {
+            return;
+        }
+        let at = want
+            .iter()
+            .zip(got)
+            .position(|(a, b)| a != b)
+            .unwrap_or_else(|| want.len().min(got.len()));
+        let cols = usize::from(cols.max(1));
+        panic!(
+            "{label}: screens diverge at row {}, col {}\n  want: {:?}\n  got:  {:?}\n\
+             want grid:\n{}got grid:\n{}",
+            at / cols,
+            at % cols,
+            want.get(at),
+            got.get(at),
+            dump_screen(want, cols),
+            dump_screen(got, cols),
+        );
+    }
+
+    /// A readable grid for a failure message: each cell's text (`.` for a
+    /// blank, `~` for a spacer tail), with a styled cell bracketed.
+    fn dump_screen(cells: &[Seen], cols: usize) -> String {
+        let mut out = String::new();
+        for row in cells.chunks(cols) {
+            out.push_str("    |");
+            for cell in row {
+                let text = match (cell.wide, cell.text.as_str()) {
+                    (CellWide::SpacerTail, _) => "~",
+                    (_, "") => ".",
+                    (_, text) => text,
+                };
+                let plain = cell.fg.is_none()
+                    && cell.bg.is_none()
+                    && cell.attrs == VisAttrs::of(&Style::default());
+                if plain {
+                    out.push_str(text);
+                } else {
+                    out.push('[');
+                    out.push_str(text);
+                    out.push(']');
+                }
+            }
+            out.push_str("|\n");
+        }
+        out
+    }
+
+    /// The printable text in `bytes`, every escape sequence removed.
+    ///
+    /// Written over raw bytes with numeric constants: bracket character
+    /// literals throw the project's `lizard` complexity report off its parse.
+    fn printed(bytes: &[u8]) -> String {
+        const ESC: u8 = 0x1b;
+        const CSI: u8 = 0x5b;
+        const STRING_OPENERS: [u8; 3] = [0x5f, 0x5d, 0x50];
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            let byte = bytes[i];
+            i += 1;
+            if byte != ESC {
+                out.push(byte);
+                continue;
+            }
+            let kind = bytes.get(i).copied().unwrap_or(0);
+            i += 1;
+            if kind == CSI {
+                i = csi_end(bytes, i);
+            } else if STRING_OPENERS.contains(&kind) {
+                i = string_end(bytes, i);
+            }
+        }
+        String::from_utf8_lossy(&out).into_owned()
+    }
+
+    /// One past the final byte of the CSI whose parameters start at `i`.
+    fn csi_end(bytes: &[u8], mut i: usize) -> usize {
+        while i < bytes.len() && !(0x40..=0x7e).contains(&bytes[i]) {
+            i += 1;
+        }
+        i + 1
+    }
+
+    /// One past the BEL or ST that ends the control string starting at `i`.
+    fn string_end(bytes: &[u8], mut i: usize) -> usize {
+        while i < bytes.len() {
+            if bytes[i] == 0x07 {
+                return i + 1;
+            }
+            if bytes[i] == 0x1b && bytes.get(i + 1) == Some(&0x5c) {
+                return i + 2;
+            }
+            i += 1;
+        }
+        i
+    }
+
+    /// The acceptance case: one changed cell on an otherwise steady screen
+    /// costs one positioned glyph, not a row.
+    #[test]
+    fn an_incremental_frame_after_a_single_cell_change_emits_only_that_cell() {
+        let mut pane = fresh(20, 3);
+        pane.vt_write(b"\x1b[1;32mhello world\x1b[0m\r\nsecond row here\r\nthird");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(20, 3);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+
+        pane.vt_write(b"\x1b[2;8HX");
+        let frame = glass.paint(&mut renderer, &pane, (0, 0), false);
+        let s = String::from_utf8_lossy(&frame);
+        assert_eq!(
+            printed(&frame),
+            "X",
+            "only the changed cell may be written; {s:?}"
+        );
+        assert!(
+            s.contains("\x1b[2;8H"),
+            "the span lands on the changed cell; {s:?}"
+        );
+        assert_glass_shows(&glass, &pane, (0, 0), "single-cell change");
+    }
+
+    /// Within one pane paint the pen a span leaves is still active after the
+    /// next jump, on the same row and on the next one: three same-pen changes
+    /// cost one SGR and no reset between them, and replay to the same grid.
+    #[test]
+    fn the_pen_carries_across_jumps_within_a_paint() {
+        let mut pane = fresh(30, 3);
+        pane.vt_write(b"abcdefghijklmnopqrstuvwxyz\r\nabcdefghijklmnopqrstuvwxyz");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(30, 3);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        pane.vt_write(b"\x1b[1;38;2;0;200;0m\x1b[1;3HX\x1b[1;20HY\x1b[2;7HZ\x1b[0m");
+        let frame = glass.paint(&mut renderer, &pane, (0, 0), false);
+        let s = String::from_utf8_lossy(&frame);
+        assert_eq!(
+            count(&frame, b"38;2;0;200;0"),
+            1,
+            "one SGR for three spans; {s:?}"
+        );
+        assert_eq!(
+            count(&frame, b"\x1b[0m"),
+            2,
+            "only the first span's reset-and-set and the epilogue reset; {s:?}"
+        );
+        assert!(
+            s.contains("\x1b[1;20HY") && s.contains("\x1b[2;7HZ"),
+            "later spans jump straight to their glyph; {s:?}"
+        );
+        assert_glass_shows(&glass, &pane, (0, 0), "pen carried across jumps");
+    }
+
+    /// The FIRST span of a pane paint carries its own complete SGR: it may not
+    /// inherit the pen of whatever another writer left before it.
+    #[test]
+    fn the_first_span_of_a_paint_sets_its_pen_from_scratch() {
+        let mut pane = fresh(30, 2);
+        pane.vt_write(b"\x1b[1;31mred bold text\x1b[0m and plain");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(30, 2);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        // Leave the glass's pen bold red, as some other writer might.
+        glass.scribble(b"\x1b[1;31m");
+        pane.vt_write(b"\x1b[1;20Hq");
+        let frame = glass.paint(&mut renderer, &pane, (0, 0), false);
+        let s = String::from_utf8_lossy(&frame);
+        let glyph = s.find('q').expect("the change is written");
+        assert!(
+            s[..glyph].ends_with("\x1b[0m"),
+            "a default-pen span after a jump resets explicitly; {s:?}"
+        );
+        assert_glass_shows(&glass, &pane, (0, 0), "pen after a jump");
+    }
+
+    /// A dirty row whose cells did not actually change writes no cells.
+    #[test]
+    fn a_dirty_row_whose_cells_did_not_change_emits_no_cells() {
+        let mut pane = fresh(10, 2);
+        pane.vt_write(b"abc");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(10, 2);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        pane.vt_write(b"\x1b[1;1Habc");
+        let frame = glass.paint(&mut renderer, &pane, (0, 0), false);
+        assert_eq!(printed(&frame), "", "{:?}", String::from_utf8_lossy(&frame));
+        assert_glass_shows(&glass, &pane, (0, 0), "rewrite of identical cells");
+    }
+
+    /// The motivating shape (cmatrix): every row dirty, few cells changed. The
+    /// frame must cost a small fraction of a whole-screen repaint.
+    #[test]
+    fn a_full_dirty_frame_with_few_changes_costs_a_fraction_of_a_repaint() {
+        let (cols, rows) = (80u16, 24u16);
+        let mut pane = fresh(cols, rows);
+        for r in 0..rows {
+            let text: String = support::deterministic_line(usize::from(r))
+                .chars()
+                .take(usize::from(cols))
+                .collect();
+            let line = format!(
+                "\x1b[{};1H\x1b[38;5;{}m{text:<width$}",
+                r + 1,
+                16 + u32::from(r) * 7,
+                width = usize::from(cols) - 1,
+            );
+            pane.vt_write(line.as_bytes());
+        }
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(cols, rows);
+        let repaint = glass.paint(&mut renderer, &pane, (0, 0), false);
+
+        for r in 0..rows {
+            let at = format!("\x1b[{};{}H\x1b[1;38;5;46m#", r + 1, (r * 3) % cols + 1);
+            pane.vt_write(at.as_bytes());
+        }
+        let frame = glass.paint(&mut renderer, &pane, (0, 0), false);
+        assert!(
+            frame.len() * 3 < repaint.len(),
+            "{} bytes for {rows} changed cells against a {}-byte repaint",
+            frame.len(),
+            repaint.len()
+        );
+        assert_eq!(
+            printed(&frame).chars().filter(|&c| c == '#').count(),
+            usize::from(rows)
+        );
+        assert_glass_shows(&glass, &pane, (0, 0), "few changes per dirty row");
+    }
+
+    /// A short gap between two changes is bridged by rewriting it when that is
+    /// cheaper than a `CUP`, and still lands the right screen.
+    #[test]
+    fn a_short_gap_between_changes_is_rewritten_instead_of_jumped() {
+        let mut pane = fresh(40, 1);
+        pane.vt_write(b"0123456789abcdefghij");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(40, 1);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        pane.vt_write(b"\x1b[1;3HX\x1b[1;5HY");
+        let frame = glass.paint(&mut renderer, &pane, (0, 0), false);
+        let s = String::from_utf8_lossy(&frame);
+        assert!(
+            printed(&frame).contains("X3Y"),
+            "a one-cell gap is rewritten; {s:?}"
+        );
+        assert!(
+            !s.contains("\x1b[1;5H"),
+            "no jump for a one-cell gap; {s:?}"
+        );
+        assert_glass_shows(&glass, &pane, (0, 0), "bridged gap");
+    }
+
+    fn overlay_case(invalidate: bool) -> (Glass, GhosttyTerminal<'static, 'static>) {
+        let mut pane = fresh(20, 4);
+        pane.vt_write(b"row zero\r\nrow one is here\r\nrow two\r\nrow three");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(20, 4);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        // A modal's box lands over row 1, outside the renderer.
+        glass.scribble(b"\x1b[2;1H\x1b[7m### MODAL ###\x1b[0m");
+        if invalidate {
+            renderer.invalidate_front();
+        }
+        pane.vt_write(b"\x1b[2;18HZ");
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        (glass, pane)
+    }
+
+    /// Invalidation after an overlay: the next paint of the dirty row rewrites
+    /// it whole and the box is gone. The control proves the case has teeth —
+    /// without the invalidation the diff trusts its stale claim and leaves the
+    /// box on screen.
+    #[test]
+    fn an_overlay_over_the_pane_is_healed_after_invalidation() {
+        let (glass, pane) = overlay_case(true);
+        assert_glass_shows(&glass, &pane, (0, 0), "overlay then invalidate");
+
+        let (glass, pane) = overlay_case(false);
+        assert_ne!(
+            glass.seen((0, 0), pane_extent(&pane)),
+            read_seen(&pane, (0, 0), pane_extent(&pane)),
+            "control: an un-invalidated front buffer must leave the box (or the test proves nothing)"
+        );
+    }
+
+    fn prediction_case(invalidate: bool) -> (Glass, GhosttyTerminal<'static, 'static>) {
+        let mut pane = fresh(20, 2);
+        pane.vt_write(b"$ abc");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(20, 2);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        // A backspace guess: an underlined blank over the `c` — the shape the
+        // predictive-echo overlay writes. The shell ignores the key, so the
+        // `c` stays, and something else on the row changes.
+        glass.scribble(b"\x1b[1;5H\x1b[0m\x1b[4m \x1b[0m");
+        if invalidate {
+            renderer.invalidate_front_rows(0..1);
+        }
+        pane.vt_write(b"\x1b[1;15H!");
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        (glass, pane)
+    }
+
+    /// The predictive-echo overlay never erases its guesses. Forgetting the
+    /// rows it painted puts them back on the whole-row path, so a wrong guess
+    /// over an unchanged cell heals when its row is next painted.
+    #[test]
+    fn predicted_cells_are_rewritten_when_their_rows_are_forgotten() {
+        let (glass, pane) = prediction_case(true);
+        assert_glass_shows(&glass, &pane, (0, 0), "prediction then invalidate rows");
+
+        let (glass, pane) = prediction_case(false);
+        assert_ne!(
+            glass.seen((0, 0), pane_extent(&pane)),
+            read_seen(&pane, (0, 0), pane_extent(&pane)),
+            "control: without forgetting the row, the stale guess must survive"
+        );
+    }
+
+    /// The full-frame path: a cleared screen and a forced paint redraw every
+    /// cell, whatever the front buffer recorded.
+    #[test]
+    fn a_forced_paint_after_a_screen_clear_repaints_every_cell() {
+        let mut pane = fresh(16, 3);
+        pane.vt_write(b"\x1b[44mblue\x1b[0m line\r\nsecond\r\nthird \xe4\xb8\x96!");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(16, 3);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        glass.scribble(b"\x1b[2J");
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), true);
+        assert_glass_shows(&glass, &pane, (0, 0), "forced paint after ED2");
+    }
+
+    /// Touch every row without changing a cell, so every row is dirty and the
+    /// diff alone would write nothing.
+    ///
+    /// The first glyphs are read BEFORE anything is written: reading walks a
+    /// separate render state, and a walk between a write and the renderer's
+    /// own consumes the dirty bits the renderer needs to see.
+    fn touch_every_row(pane: &mut GhosttyTerminal<'static, 'static>) {
+        let (_, rows) = pane_extent(pane);
+        let firsts: Vec<String> = (0..rows)
+            .map(|r| {
+                read_seen(pane, (0, r), (1, 1))
+                    .pop()
+                    .map(|cell| cell.text)
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or_else(|| " ".to_owned())
+            })
+            .collect();
+        for (r, glyph) in (1u16..).zip(firsts) {
+            pane.vt_write(format!("\x1b[{r};1H{glyph}").as_bytes());
+        }
+    }
+
+    /// A relayout that moves the pane (split, zoom, sidebar toggle) voids the
+    /// front buffer: the dirty rows are rewritten whole at the new origin.
+    #[test]
+    fn a_moved_pane_rewrites_its_dirty_rows_whole() {
+        let mut pane = fresh(12, 3);
+        pane.vt_write(b"alpha\r\nbravo\r\ncharlie");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(12, 6);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        glass.scribble(b"\x1b[2J");
+        touch_every_row(&mut pane);
+        let _ = glass.paint(&mut renderer, &pane, (0, 3), false);
+        assert_glass_shows(&glass, &pane, (0, 3), "moved origin");
+    }
+
+    /// A grid resize voids the front buffer too.
+    #[test]
+    fn a_resized_grid_rewrites_its_dirty_rows_whole() {
+        let mut pane = fresh(10, 3);
+        pane.vt_write(b"one\r\ntwo\r\nthree");
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(16, 3);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        glass.scribble(b"\x1b[2J");
+        pane.resize(16, 3, 0, 0).expect("resize");
+        touch_every_row(&mut pane);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        assert_glass_shows(&glass, &pane, (0, 0), "resized grid");
+    }
+
+    /// Selection changes paint the right inversion both ways, forced (how
+    /// copy mode repaints) and on an ordinary dirty row.
+    #[test]
+    fn selection_changes_repaint_the_inverted_cells_correctly() {
+        let mut pane = fresh(12, 2);
+        pane.vt_write(b"selectme now\r\nsecond");
+        let extent = pane_extent(&pane);
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(12, 2);
+        let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+        let sel = SelectionRect {
+            start_row: 0,
+            start_col: 0,
+            end_row: 0,
+            end_col: 3,
+            rectangle: false,
+        };
+        let inverted_prefix = |glass: &Glass| {
+            glass.seen((0, 0), extent)[..4]
+                .iter()
+                .all(|cell| cell.attrs.inverse)
+        };
+
+        for force in [false, true] {
+            renderer.set_selection(Some(sel));
+            pane.vt_write(b"\x1b[1;12H!");
+            let _ = glass.paint(&mut renderer, &pane, (0, 0), force);
+            assert!(
+                inverted_prefix(&glass),
+                "selected cells are inverted (force={force})"
+            );
+            assert!(
+                !glass.seen((0, 0), extent)[4].attrs.inverse,
+                "the cell after the selection is not (force={force})"
+            );
+
+            renderer.set_selection(None);
+            pane.vt_write(b"\x1b[1;12H?");
+            let _ = glass.paint(&mut renderer, &pane, (0, 0), force);
+            assert_glass_shows(&glass, &pane, (0, 0), "selection cleared");
+        }
+    }
+
+    /// Wide glyphs appearing, vanishing, and being overwritten through their
+    /// tails keep the glass consistent: a span never half-writes a pair.
+    #[test]
+    fn wide_glyph_edits_keep_the_glass_consistent() {
+        let mut pane = fresh(12, 1);
+        let mut renderer = TerminalRenderer::new().expect("renderer");
+        let mut glass = Glass::new(12, 1);
+        let steps: [&str; 9] = [
+            "ab\u{4e16}cd\u{754c}",
+            "\x1b[1;2H\u{4e16}",
+            "\x1b[1;5Hx",
+            "\x1b[1;4Hy",
+            "\x1b[1;1H\x1b[P",
+            "\x1b[1;3H\x1b[2@",
+            "\x1b[1;6H\x1b[31m\u{754c}\x1b[0m",
+            "\x1b[1;7H\x1b[1mZ\x1b[0m",
+            "\x1b[1;1H\u{1f980}\u{1f980}e\u{301}",
+        ];
+        for (i, step) in steps.into_iter().enumerate() {
+            pane.vt_write(step.as_bytes());
+            let _ = glass.paint(&mut renderer, &pane, (0, 0), false);
+            assert_glass_shows(&glass, &pane, (0, 0), &format!("wide step {i}"));
+        }
+    }
+
+    /// A deterministic generator, so the property test needs no dependency
+    /// and every failure replays from its seed.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        fn below(&mut self, n: u64) -> u64 {
+            self.next() % n
+        }
+
+        fn pick<'a>(&mut self, from: &[&'a str]) -> &'a str {
+            from[usize::try_from(self.below(from.len() as u64)).unwrap_or(0)]
+        }
+    }
+
+    const GLYPHS: [&str; 10] = [
+        "a",
+        "Z",
+        "#",
+        " ",
+        ".",
+        "\u{4e16}",
+        "\u{754c}",
+        "e\u{301}",
+        "\u{1f980}",
+        "\u{e9}",
+    ];
+    const PENS: [&str; 10] = [
+        "\x1b[0m",
+        "\x1b[1m",
+        "\x1b[31m",
+        "\x1b[38;5;120m",
+        "\x1b[48;2;10;20;30m",
+        "\x1b[7m",
+        "\x1b[4m",
+        "\x1b[3;9m",
+        "\x1b[0;2;38;2;200;100;0m",
+        "\x1b[4;58;5;196m",
+    ];
+
+    /// One random edit of the kind real programs make: positioned styled
+    /// text, erases, inserts and deletes, scrolls, screen switches, and
+    /// rewrites that change nothing.
+    fn random_edit(rng: &mut XorShift, cols: u16, rows: u16) -> String {
+        let row = rng.below(u64::from(rows)) + 1;
+        let col = rng.below(u64::from(cols)) + 1;
+        let n = rng.below(4) + 1;
+        match rng.below(12) {
+            0..=3 => {
+                let mut edit = format!("\x1b[{row};{col}H{}", rng.pick(&PENS));
+                for _ in 0..=rng.below(8) {
+                    edit.push_str(rng.pick(&GLYPHS));
+                }
+                edit
+            }
+            4 => format!("\x1b[{row};{col}H\x1b[0m\x1b[{}K", rng.below(3)),
+            5 => format!("\x1b[{row};{col}H\x1b[{n}@"),
+            6 => format!("\x1b[{row};{col}H\x1b[{n}P"),
+            7 => format!("\x1b[{rows};1H\r\n{}scrolled", rng.pick(&PENS)),
+            8 => format!("\x1b[{row};{col}H\x1b[{}J", rng.below(3)),
+            9 => ["\x1b[?1049h", "\x1b[?1049l"][usize::from(rng.below(2) == 1)].to_owned(),
+            10 => format!(
+                "\x1b[{row};{col}H\x1b[48;5;{}m\x1b[{n}X\x1b[0m",
+                rng.below(256)
+            ),
+            _ => format!("\x1b[{row};{col}H\x1b[{n}C"),
+        }
+    }
+
+    /// One paint target of the property test: its own pane, a renderer, and
+    /// the glass it paints. The LEGACY lane forgets its front buffer before
+    /// every paint, which is exactly the pre-`phux-esge` dirty-row painter (an
+    /// unknown row is emitted whole, byte for byte as before).
+    ///
+    /// Each lane owns its pane, fed the same bytes, because libghostty keeps
+    /// the dirty bits on the TERMINAL: two renderers walking one terminal
+    /// would each consume the other's.
+    struct Lane {
+        pane: GhosttyTerminal<'static, 'static>,
+        renderer: TerminalRenderer<'static>,
+        glass: Glass,
+        legacy: bool,
+    }
+
+    impl Lane {
+        fn new(pane: (u16, u16), glass: (u16, u16), legacy: bool) -> Self {
+            Self {
+                pane: fresh(pane.0, pane.1),
+                renderer: TerminalRenderer::new().expect("renderer"),
+                glass: Glass::new(glass.0, glass.1),
+                legacy,
+            }
+        }
+
+        fn paint(&mut self, origin: (u16, u16), force: bool) -> Vec<u8> {
+            if self.legacy {
+                self.renderer.invalidate_front();
+            }
+            self.glass
+                .paint(&mut self.renderer, &self.pane, origin, force)
+        }
+    }
+
+    /// The property: any sequence of edits, painted through the diff one frame
+    /// at a time — with modals scribbled and invalidated, predictions
+    /// forgotten row by row, and forced repaints after clears mixed in — leaves
+    /// the glass showing exactly what the pre-diff dirty-row painter shows
+    /// after the same frames, and exactly what one full repaint of the final
+    /// grid shows.
+    ///
+    /// The second half is asserted only while the dirty-row painter itself
+    /// agrees with a full repaint. It does not always: libghostty can change a
+    /// cell without marking its row dirty (erasing the continuation of a wide
+    /// glyph that wrapped rewrites the spacer head on the row above, and only
+    /// the erased row is reported — `phux-5js7`). No painter that trusts the
+    /// dirty bits can see that change, not even a forced paint through the
+    /// pooled render state; it predates the diff, and the test re-syncs both
+    /// lanes from fresh renderers before carrying on.
+    #[test]
+    fn random_edits_through_the_diff_painter_match_a_full_repaint() {
+        let mut tally = Tally::default();
+        for seed in 1..=48u64 {
+            let mut rng = XorShift(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+            let dims = [(16u16, 5u16), (23, 7), (9, 3)][usize::try_from(seed % 3).unwrap_or(0)];
+            // Offset panes exercise the origin arithmetic of every jump.
+            let origin = if seed % 2 == 0 { (0, 0) } else { (3, 2) };
+            let mut trial = Trial::new(dims, origin);
+            for step in 0..80 {
+                let force = trial.disturb(&mut rng);
+                let edit = random_edit(&mut rng, dims.0, dims.1);
+                trial.step(
+                    &edit,
+                    force,
+                    &format!("seed {seed} step {step} after {edit:?}"),
+                    &mut tally,
+                );
+            }
+        }
+        assert!(
+            tally.checked > tally.undetected * 20,
+            "the full-repaint half must check almost every step: {} checked, {} skipped for \
+             changes libghostty did not mark dirty",
+            tally.checked,
+            tally.undetected
+        );
+    }
+
+    /// How many property-test steps were held to a full repaint, and how many
+    /// were skipped because libghostty never reported the change dirty.
+    #[derive(Debug, Default)]
+    struct Tally {
+        checked: usize,
+        undetected: usize,
+    }
+
+    /// One seed of the property test: the diff lane, the dirty-row painter it
+    /// is held to, and a reference repainted in full every step.
+    struct Trial {
+        diff: Lane,
+        legacy: Lane,
+        reference: Lane,
+        origin: (u16, u16),
+        dims: (u16, u16),
+    }
+
+    impl Trial {
+        fn new(dims: (u16, u16), origin: (u16, u16)) -> Self {
+            let glass = (dims.0 + 5, dims.1 + 3);
+            let mut trial = Self {
+                diff: Lane::new(dims, glass, false),
+                legacy: Lane::new(dims, glass, true),
+                reference: Lane::new(dims, glass, false),
+                origin,
+                dims,
+            };
+            let _ = trial.diff.paint(origin, false);
+            let _ = trial.legacy.paint(origin, false);
+            trial
+        }
+
+        /// Maybe disturb the glass the way the driver's other writers do.
+        /// Returns whether the next paint must be forced, as it is after a
+        /// clear or a modal's dismissal.
+        fn disturb(&mut self, rng: &mut XorShift) -> bool {
+            let (cols, rows) = self.dims;
+            let (ox, oy) = self.origin;
+            let row = u16::try_from(rng.below(u64::from(rows))).unwrap_or(0);
+            match rng.below(16) {
+                0 => {
+                    self.scribble_both(b"\x1b[2J", None);
+                    true
+                }
+                1 => {
+                    // A modal over the pane and the whole front forgotten.
+                    let at = format!("\x1b[{};{}H\x1b[7m[modal]\x1b[0m", oy + row + 1, ox + 1);
+                    self.scribble_both(at.as_bytes(), Some((0, rows)));
+                    true
+                }
+                2 => {
+                    // A guess over one row, that row forgotten, and the row
+                    // then changed so it is visited.
+                    let col = u16::try_from(rng.below(u64::from(cols))).unwrap_or(0);
+                    let guess = format!(
+                        "\x1b[{};{}H\x1b[0m\x1b[4m?\x1b[0m",
+                        oy + row + 1,
+                        ox + col + 1
+                    );
+                    self.scribble_both(guess.as_bytes(), Some((row, row + 1)));
+                    let touch = format!("\x1b[{};{cols}H{}", row + 1, rng.pick(&GLYPHS[..5]));
+                    self.write_all(&touch);
+                    false
+                }
+                3 | 4 => {
+                    // Another writer leaves a non-default pen behind (bold,
+                    // underline, red bg) and touches no cell, so nothing is
+                    // forgotten. The next pane paint's first span must still
+                    // set its own pen rather than inherit this one.
+                    self.scribble_both(b"\x1b[1;4;41m", None);
+                    false
+                }
+                _ => false,
+            }
+        }
+
+        /// Write over both painted glasses behind their renderers, then
+        /// forget the rows `[start, end)` of their fronts, if given.
+        fn scribble_both(&mut self, bytes: &[u8], forget: Option<(u16, u16)>) {
+            for lane in [&mut self.diff, &mut self.legacy] {
+                lane.glass.scribble(bytes);
+                if let Some((start, end)) = forget {
+                    lane.renderer.invalidate_front_rows(start..end);
+                }
+            }
+        }
+
+        fn write_all(&mut self, bytes: &str) {
+            for lane in [&mut self.diff, &mut self.legacy, &mut self.reference] {
+                lane.pane.vt_write(bytes.as_bytes());
+            }
+        }
+
+        /// Apply `edit` everywhere, paint every lane, and hold the diff lane
+        /// to the dirty-row painter always and to a full repaint whenever the
+        /// dirty-row painter agrees with one.
+        fn step(&mut self, edit: &str, force: bool, label: &str, tally: &mut Tally) {
+            let origin = self.origin;
+            let region = self.dims;
+            self.write_all(edit);
+            let _ = self.diff.paint(origin, force);
+            let _ = self.legacy.paint(origin, force);
+            // A FRESH renderer each step: its render state reads every row
+            // from the grid, where a pooled one trusts the dirty bits.
+            self.reference.renderer = TerminalRenderer::new().expect("renderer");
+            self.reference.glass.scribble(b"\x1b[2J");
+            let _ = self.reference.paint(origin, true);
+
+            let seen = self.diff.glass.seen(origin, region);
+            let old = self.legacy.glass.seen(origin, region);
+            let cols = region.0;
+            assert_same_screen(
+                &format!("{label} (against the dirty-row painter)"),
+                &old,
+                &seen,
+                cols,
+            );
+
+            let full = self.reference.glass.seen(origin, region);
+            if old != full {
+                tally.undetected += 1;
+                for lane in [&mut self.diff, &mut self.legacy] {
+                    lane.renderer = TerminalRenderer::new().expect("renderer");
+                    lane.glass.scribble(b"\x1b[2J");
+                    let _ = lane.paint(origin, true);
+                }
+                return;
+            }
+            tally.checked += 1;
+            assert_same_screen(
+                &format!("{label} (against a full repaint)"),
+                &full,
+                &seen,
+                cols,
+            );
+            let grid = format!("{label} (against the grid)");
+            assert_glass_shows(&self.diff.glass, &self.diff.pane, origin, &grid);
         }
     }
 }

@@ -1,15 +1,14 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-09-12
 ---
 
 # Quickstart
 
 **TL;DR.** Install phux, run `phux`, and you have a shell-backed terminal that
 survives detach. Open a second terminal to inspect and drive that same pane
-through the structured CLI. This guide gets both the human and agent paths
-working before it sends you into configuration or protocol reference.
+through the structured CLI.
 
 ---
 
@@ -89,68 +88,24 @@ execute a one-shot command and return its output and exit code directly.
 
 ## 4. Connect an agent
 
-The release includes two agent-facing surfaces:
-
-- The `phux` CLI for direct shell calls and scripts.
-- `phux mcp`, which launches the bundled JSON-RPC stdio adapter for MCP clients.
-
-Start with the CLI guide for selectors, safe input, events, and result shapes:
-[`consumers/agents.md`](./consumers/agents.md). Use
-[`consumers/mcp.md`](./consumers/mcp.md) when the client speaks MCP.
-
-Useful first commands:
+The same pane is addressable from a script or an MCP client:
 
 ```sh
-phux --skill=quick
-phux --capabilities --json
-phux mcp --skill
-phux mcp --schema
 phux ls --json
 phux snapshot --json .
-phux watch --json .
-phux agent explain .
 ```
 
-`watch` streams terminal events until interrupted. `agent explain` reports the
-public state phux can infer for a coding agent in the pane, including its
-confidence and evidence. The two `--skill` endpoints are compiled into their
-respective installed binaries; `--schema` is the same MCP catalog returned by
-live `tools/list`.
+Selectors, input, wait, watch, and agent sessions:
+[`consumers/agents.md`](./consumers/agents.md).
 
 ## Know the edges
 
-phux is pre-alpha. Local persistent sessions, attach and detach, splits,
-multiple clients, modern terminal passthrough, the headless CLI, and the MCP
-adapter work today. Interfaces can still change before 1.0.
-
-Hub-and-spoke federation now routes Terminal-scoped operations to configured
-satellites; aggregate inventory exposes direct `host/@N` selectors, without
-federated session/window joins. Predictive local
-echo is implemented as an opt-in `[experimental]` setting and remains off by
-default. The exact line between shipped behavior and design intent lives in
-[`CONCEPTS.md`](./CONCEPTS.md); suitability by workflow lives in
-[`when-to-use.md`](./when-to-use.md).
+Gaps: [`CONCEPTS.md`](./CONCEPTS.md#status).
 
 ## When something misbehaves
 
-Three commands are the starting point for any debugging session:
-
-```sh
-phux status
-phux doctor
-phux logs
-```
-
-`phux status` answers the first question -- is the server running -- in one
-glance: its pid, how long it has been up, the protocol version it speaks,
-attached clients, one line per session, and where its logs live. With no
-server running it says so and names the commands that start one.
-`phux doctor` checks the install end to end -- config validity, socket path,
-server reachability, plugin manifests, and where the logs live -- and prints
-one verdict per line, with a hint for anything that is not a pass. `phux logs`
-names every log file phux writes (the canonical server log and the per-client
-logs), says whether each exists yet, and tails them: `phux logs --server -f`
-follows the server log, `phux logs --client` shows the newest client log.
+`phux status`, `phux doctor`, and `phux logs`. Details in the
+[README](../README.md#troubleshooting) and [operations](./operations.md).
 
 ## Next steps
 
@@ -158,8 +113,6 @@ follows the server log, `phux logs --client` shows the newest client log.
 |---|---|
 | Change keys, status, or hooks | [`CONFIG.md`](./CONFIG.md) |
 | Drive terminals from an agent | [`consumers/agents.md`](./consumers/agents.md) |
-| Connect an MCP client | [`consumers/mcp.md`](./consumers/mcp.md) |
-| Learn the terminal-on-a-wire model | [`CONCEPTS.md`](./CONCEPTS.md) |
-| Study the internal Rust client | [`consumers/sdk.md`](./consumers/sdk.md) |
-| Implement the protocol | [`spec/TUTORIAL.md`](./spec/TUTORIAL.md) |
-| Build phux from source | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |
+| Reach a server from another machine | [`remote-access.md`](./remote-access.md) |
+| Learn the model | [`CONCEPTS.md`](./CONCEPTS.md) |
+| Other install channels | [`INSTALL.md`](./INSTALL.md) |

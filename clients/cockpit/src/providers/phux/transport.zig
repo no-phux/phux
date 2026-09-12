@@ -225,6 +225,28 @@ pub const FrameQueue = struct {
         return queue.read_index != queue.frames.items.len;
     }
 
+    /// A multiplexed consumer must also drain a quiet source's disconnect.
+    pub fn hasReadiness(queue: *FrameQueue) bool {
+        queue.mutex.lock();
+        defer queue.mutex.unlock();
+        return queue.disconnect != null or queue.read_index != queue.frames.items.len;
+    }
+
+    pub fn pendingCount(queue: *FrameQueue) usize {
+        queue.mutex.lock();
+        defer queue.mutex.unlock();
+        return queue.frames.items.len - queue.read_index;
+    }
+
+    /// Preserve already-received final frames before consuming EOF. The
+    /// queue's existing byte/frame bounds still cap this terminal drain.
+    pub fn drainCount(queue: *FrameQueue, limit: usize) usize {
+        queue.mutex.lock();
+        defer queue.mutex.unlock();
+        const count = queue.frames.items.len - queue.read_index;
+        return if (queue.disconnect != null) count else @min(count, limit);
+    }
+
     pub fn release(queue: *FrameQueue, frame: []u8) void {
         queue.gpa.free(frame);
     }

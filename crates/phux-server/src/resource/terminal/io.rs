@@ -3,9 +3,9 @@
 
 use super::{
     Bytes, EncodedInputRequest, InputEncoderSnapshot, PANE_KILL_GRACE, PANE_KILL_POLL,
-    PANE_KILL_REAP_BUDGET, PaneOutput, PasteOutcome, PtyOwned, PtySize, ResyncReason,
-    SizeReportSize, SnapshotBytes, TerminalActor, TerminalInput, WriteCompletion, debug, error,
-    exit_status_to_wire, mpsc, trace, warn,
+    PANE_KILL_REAP_BUDGET, PaneOutput, PasteOutcome, PtyOwned, PtySize, ResyncAudience,
+    ResyncReason, SizeReportSize, SnapshotBytes, TerminalActor, TerminalInput, WriteCompletion,
+    debug, error, exit_status_to_wire, mpsc, trace, warn,
 };
 
 impl TerminalActor {
@@ -262,7 +262,10 @@ impl TerminalActor {
             (term.cols().unwrap_or(cols), term.rows().unwrap_or(rows))
         };
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        self.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
+        {
+            self.reflow_tombstoned = self
+                .invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
+        }
         self.cols = applied.0;
         self.rows = applied.1;
         self.size_report.set(SizeReportSize {
@@ -332,7 +335,13 @@ impl TerminalActor {
     /// state-sync path (`consumer_states`) because the runtime drives the
     /// broadcast/pump path; the q0e per-consumer tick is not wired into
     /// the runtime today.
-    pub(super) fn broadcast_resync(&self, reason: ResyncReason) {
+    ///
+    /// `audience` says which pumps replace their generation. It is still one
+    /// broadcast item on the ordered channel even when addressed to a single
+    /// pump: that is what orders the replacement cut after every live chunk
+    /// the pump already saw, and what lets a fenced pump draining at memory
+    /// speed reach it. Every other pump skips it.
+    pub(super) fn broadcast_resync(&self, reason: ResyncReason, audience: ResyncAudience) {
         // No subscribers → nothing to resync. `receiver_count` is the
         // broadcast channel's live-subscriber count; the seed receiver
         // held by the actor was dropped at construction, so this is the
@@ -357,6 +366,7 @@ impl TerminalActor {
                     cols: self.cols,
                     rows: self.rows,
                     reason,
+                    audience,
                     base_seq: self.core.seq(),
                     bytes: Bytes::from(snap.bytes),
                 });
