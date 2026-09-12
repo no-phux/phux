@@ -1641,6 +1641,25 @@ const Rig = struct {
         return error.TestUnexpectedResult;
     }
 
+    /// Like `settle`, but accepts any announcement at or after `sequence`:
+    /// queued work can announce again while it drains, so the exact sequence
+    /// captured before the drain is not the one carrying the final status.
+    fn settleAtLeast(self: *Rig, sequence: i64, status: []const u8) !void {
+        var wakes: usize = 0;
+        while (wakes < 8) : (wakes += 1) {
+            const model = self.app_state.model;
+            if (model.engineSequence.lo >= sequence and std.mem.eql(u8, model.status, status)) return;
+            try self.harness.runtime.dispatchPlatformEvent(self.decorated, .wake);
+        }
+        std.debug.print("settled at sequence {d} status '{s}', wanted at least {d} '{s}'\n", .{
+            self.app_state.model.engineSequence.lo,
+            self.app_state.model.status,
+            sequence,
+            status,
+        });
+        return error.TestUnexpectedResult;
+    }
+
     fn dispatch(self: *Rig, msg: core.Msg) !void {
         self.app_state.dispatch(&self.harness.runtime, 1, msg) catch |err| {
             std.debug.print("dispatch of {s} failed: {s}\n", .{ @tagName(msg), @errorName(err) });
@@ -4876,8 +4895,9 @@ test "shipping burst creation retains revision fence and reports refusal" {
     try std.testing.expect(!engine.intent_refused);
     // Draining the queue replays the second create at its captured revision,
     // which the first create already moved past: the fence refuses it and
-    // the refusal is reported instead of creating a third tab.
-    try rig.settle(@intCast(engine.sequence), "ACTION REFUSED");
+    // the refusal is reported instead of creating a third tab. The drain
+    // announces again, so accept the refusal on any later sequence.
+    try rig.settleAtLeast(@intCast(engine.sequence), "ACTION REFUSED");
     try std.testing.expectEqual(@as(usize, 2), engine.model.ws().tab_count);
     try std.testing.expect(engine.intent_refused);
 }
