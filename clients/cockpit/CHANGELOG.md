@@ -3,6 +3,14 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.1](https://github.com/no-phux/phux/compare/cockpit-v0.23.0...cockpit-v0.23.1) (2026-09-12)
+
+
+### Bug Fixes
+
+* **cockpit:** pass runtime to prepareInputAdmission in shortcut tests ([0d67caf](https://github.com/no-phux/phux/commit/0d67caf0e98c188ecba9e3b52dddfcdb9457e65a))
+* **cockpit:** reconcile OS-close and chrome after everyday-UX merge ([3da5f13](https://github.com/no-phux/phux/commit/3da5f1367b5d4b74b81d5172d533b17a22006804))
+
 ## [0.23.0](https://github.com/no-phux/phux/compare/cockpit-v0.22.0...cockpit-v0.23.0) (2026-09-12)
 
 
