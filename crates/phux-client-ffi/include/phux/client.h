@@ -1229,6 +1229,28 @@ typedef struct PhuxSessionRenameInfo {
 PhuxClientResult phux_client_rename_session(PhuxClient *client, uint32_t request_id, PhuxBytes current, PhuxBytes new_name);
 PhuxClientResult phux_client_session_rename_info(const PhuxClient *client, PhuxSessionRenameInfo *out_info);
 
+/* Create an empty durable session on this exact negotiated connection, using
+ * the CLI's nonce-correlated session-create operation. keep_empty must be true;
+ * a server without KEEP_EMPTY_SESSIONS is refused before any write. No ATTACH
+ * is sent and the current session remains selected. request_id shares the
+ * monotonic operation namespace. Names are UTF-8, 1..240 bytes, no controls. */
+PhuxClientResult phux_client_create_session(PhuxClient *client, uint32_t request_id, PhuxBytes name, bool keep_empty);
+
+typedef struct PhuxSessionCreateInfo {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    uint32_t status; /* 1 pending, 2 created, 3 refused, 4 unknown outcome */
+    uint32_t session_id; /* nonzero only after an authoritative state reply */
+    PhuxBytes message; /* borrowed until the next mutable client call */
+} PhuxSessionCreateInfo;
+
+/* Each request retains its own result under concurrency. Initialize size and
+ * version (PHUX_CLIENT_ABI_VERSION) before querying. Copy the message before
+ * releasing a completed result. Pending operations cannot be canceled. */
+PhuxClientResult phux_client_session_create_info(const PhuxClient *client, uint32_t request_id, PhuxSessionCreateInfo *out_info);
+PhuxClientResult phux_client_session_create_release(PhuxClient *client, uint32_t request_id);
+
 /* Follow renames any client makes, from the start of the connection.
  * Additive to ABI version 2. Queues the SUBSCRIBE_METADATA of
  * phux.session.name/v1 now if HELLO_OK has been applied, else as the first

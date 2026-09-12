@@ -12,6 +12,7 @@ mod grid_metadata;
 mod operations;
 mod pointer;
 mod remote;
+mod session_create;
 mod session_query;
 mod session_rename;
 mod types;
@@ -46,6 +47,7 @@ pub use pointer::{
 };
 pub use remote::registry::*;
 pub use remote::*;
+pub use session_create::*;
 pub use session_query::*;
 pub use session_rename::*;
 pub use types::*;
@@ -685,6 +687,9 @@ fn dispatch_frame(
     notify_attached: &mut bool,
 ) -> Result<(), BridgeError> {
     let Some(frame) = directory::dispatch(client, frame) else {
+        return Ok(());
+    };
+    let Some(frame) = session_create::dispatch(client, frame)? else {
         return Ok(());
     };
     let Some(frame) = session_query::dispatch(client, frame)? else {

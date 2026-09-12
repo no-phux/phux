@@ -24,6 +24,10 @@ phux-protocol.workspace = true
 # carries them as JSON lines again, so the same workspace-pinned encoder
 # re-emits them. No new crate enters the lockfile.
 serde_json.workspace = true
+# The server requires UUID-shaped create-operation nonces, just as the CLI
+# emits. Reuse the already-locked workspace v4 implementation rather than
+# inventing a second collision-prone generator for concurrent native clients.
+uuid.workspace = true
 # Remote hosts (`remote` module, ADR-0007/ADR-0031/ADR-0093 rung 1). The
 # `[[remote]]` registry is read through the CLI's own schema and loader, and
 # QUIC/WSS establishment (certificate pin, bearer preamble) goes through the
