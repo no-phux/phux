@@ -78,6 +78,31 @@ pub const State = struct {
         return before.changed(model);
     }
 
+    /// The host installation is part of accepting a Settings transition.
+    /// Save installs before writing, because a durable file cannot be rolled
+    /// back by restoring an in-memory snapshot. Other transitions are reversible.
+    /// The installer owns platform rollback and reports unknown installation
+    /// state if that rollback fails; this wrapper restores client state only.
+    pub fn applyWithBindings(self: *State, model: *Model, bytes: []const u8, installer: anytype) !void {
+        if (isSaveRequest(bytes) and self.initial != null) {
+            installer.sync(&model.config.keybindings) catch |err| {
+                self.outcome = .refused;
+                return err;
+            };
+            self.apply(model, bytes);
+            return;
+        }
+
+        const before = TransitionSnapshot.capture(self.*, model);
+        self.apply(model, bytes);
+        if (!acceptedTransition(self.outcome)) return;
+        installer.sync(&model.config.keybindings) catch |err| {
+            before.restore(self, model);
+            self.outcome = .refused;
+            return err;
+        };
+    }
+
     /// Requests are synchronous on the app loop; the core admits one at a time.
     /// Begin is idempotent, so reopening cannot overwrite the rollback point.
     pub fn apply(self: *State, model: *Model, bytes: []const u8) void {
@@ -276,6 +301,48 @@ pub const State = struct {
         return out[0..end];
     }
 };
+
+const TransitionSnapshot = struct {
+    state: State,
+    config: config.Config,
+    font_offset: f32,
+    placement: TabPlacement,
+    committed_placement: ?TabPlacement,
+    write_refused: bool,
+
+    fn capture(state: State, model: *const Model) TransitionSnapshot {
+        return .{
+            .state = state,
+            .config = model.config,
+            .font_offset = model.font_size_offset,
+            .placement = model.tab_placement,
+            .committed_placement = model.appearance_committed_placement,
+            .write_refused = model.config_write_refused,
+        };
+    }
+
+    fn restore(self: TransitionSnapshot, state: *State, model: *Model) void {
+        state.* = self.state;
+        model.config = self.config;
+        model.font_size_offset = self.font_offset;
+        model.tab_placement = self.placement;
+        model.appearance_committed_placement = self.committed_placement;
+        model.config_write_refused = self.write_refused;
+        applyLocalDefaults(model);
+    }
+};
+
+fn isSaveRequest(bytes: []const u8) bool {
+    if (bytes.len != 3) return false;
+    return bytes[0] == 1 and bytes[1] == 7;
+}
+
+fn acceptedTransition(outcome: Outcome) bool {
+    return switch (outcome) {
+        .preview, .saved, .canceled => true,
+        else => false,
+    };
+}
 
 fn linear(value: f32) f32 {
     return if (value <= 0.04045) value / 12.92 else std.math.pow(f32, (value + 0.055) / 1.055, 2.4);
@@ -685,6 +752,167 @@ test "binding conflict reload retains last good client settings" {
     try std.testing.expectEqual(.refused, state.outcome);
     try std.testing.expectEqual(config.default_font_size, engine.model.fontSize());
     try std.testing.expectEqual(@as(usize, 0), engine.model.config.keybindings.count);
+}
+
+// Failure injection exercises the Settings/installer transaction seam. Actual
+// AppKit registration and failed-platform-rollback evidence live with the host.
+const TestBindingInstaller = struct {
+    fail: bool = true,
+    calls: usize = 0,
+    attempted: config.keybindings_module.Overrides = .{},
+    applied: config.keybindings_module.Overrides = .{},
+
+    pub fn sync(self: *TestBindingInstaller, overrides: *const config.keybindings_module.Overrides) !void {
+        self.calls += 1;
+        self.attempted = overrides.*;
+        if (self.fail) return error.BindingInstallationFailed;
+        self.applied = overrides.*;
+    }
+};
+
+fn testBindingRegistry() !config.keybindings_module.Registry {
+    var registry: config.keybindings_module.Registry = .{};
+    try registry.add(.{ .id = "view.settings", .default = try config.keybindings_module.Chord.parse("Cmd+,") });
+    return registry;
+}
+
+fn expectTransitionRestored(before: TransitionSnapshot, state: *const State, model: *const Model) !void {
+    const testing = std.testing;
+    try testing.expectEqualDeep(before.config, model.config);
+    try testing.expectEqual(before.font_offset, model.font_size_offset);
+    try testing.expectEqual(before.placement, model.tab_placement);
+    try testing.expectEqual(before.committed_placement, model.appearance_committed_placement);
+    try testing.expectEqual(before.write_refused, model.config_write_refused);
+    try testing.expectEqualDeep(before.state.initial, state.initial);
+    try testing.expectEqual(before.state.source_hash, state.source_hash);
+    try testing.expectEqual(before.state.read_error, state.read_error);
+    try testing.expectEqual(before.state.system_scheme, state.system_scheme);
+    try testing.expectEqual(before.state.binding_registry, state.binding_registry);
+    try testing.expectEqual(.refused, state.outcome);
+    try testing.expectEqual(before.config.scrollback_bytes, model.provider.max_scrollback_bytes);
+    const pane = model.provider.terminalConst(model.focusedTerminalRef().?).?;
+    try testing.expectEqualStrings(@tagName(before.config.cursor_style), @tagName(pane.session.term.cursor.default_style));
+    try testing.expectEqual(@as(?bool, before.config.cursor_style_blink), pane.session.term.cursor.default_blink);
+    var buffer: [config.max_shell_bytes + 5]u8 = undefined;
+    const expected = try std.fmt.bufPrint(&buffer, "exec {s}", .{before.config.shell.slice()});
+    const argv = model.provider.defaultArgv();
+    try testing.expectEqualStrings(expected, argv[argv.len - 1]);
+}
+
+test "failed binding installation on Cancel restores preview and opening transaction" {
+    const Engine = @import("ts_engine.zig").Engine;
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const model = engine.model;
+    var registry = try testBindingRegistry();
+    var state: State = .{ .binding_registry = &registry };
+    state.apply(model, &.{ 1, 0, 0 });
+    state.apply(model, "\x02\x08\x07/bin/sh -i");
+    state.apply(model, "\x02\x08\x061048576");
+    state.apply(model, "\x02\x08\x05false");
+    state.apply(model, "\x02\x08\x04bar");
+    state.apply(model, &.{ 1, 5, 1 });
+    model.font_size_offset = 2;
+    model.config_write_refused = true;
+    try model.config.keybindings.set("view.settings", "Cmd+Alt+s");
+    const before = TransitionSnapshot.capture(state, model);
+    var installer: TestBindingInstaller = .{ .applied = model.config.keybindings };
+
+    try std.testing.expectError(error.BindingInstallationFailed, state.applyWithBindings(model, &.{ 1, 6, 0 }, &installer));
+    try std.testing.expectEqual(@as(usize, 0), installer.attempted.count); // the opening bindings were attempted
+    try expectTransitionRestored(before, &state, model);
+    try std.testing.expectEqualDeep(before.config.keybindings, installer.applied);
+    try std.testing.expect(state.hasPendingChanges(model));
+
+    installer.fail = false;
+    try state.applyWithBindings(model, &.{ 1, 6, 0 }, &installer);
+    try std.testing.expectEqual(.canceled, state.outcome);
+    try std.testing.expect(state.initial == null);
+    try std.testing.expectEqual(@as(usize, 0), installer.applied.count);
+    try std.testing.expect(!model.provider.shell_command.isSet());
+}
+
+test "failed binding installation on Reload restores full last-good config and local defaults" {
+    const Engine = @import("ts_engine.zig").Engine;
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const incoming = "font-size = 20\nshell = /bin/zsh -i\ncursor-style = underline\ntab-placement = top\nkeybind.view.settings = Cmd+Alt+s\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "config", .data = incoming });
+    const path = try tmp.dir.realPathFileAlloc(io, "config", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    const model = engine.model;
+    model.config_file.setPath(path);
+    model.config = config.parse("font-size = 16\nshell = /bin/sh -i\ncursor-style = bar\ncursor-style-blink = false\nscrollback-limit = 1048576\n");
+    _ = model.config.setPhuxSocket("/retained/socket", .environment);
+    model.font_size_offset = 3;
+    model.tab_placement = .side;
+    model.appearance_committed_placement = .top;
+    model.config_write_refused = true;
+    applyLocalDefaults(model);
+    var registry = try testBindingRegistry();
+    var state: State = .{ .binding_registry = &registry, .system_scheme = .light };
+    const before = TransitionSnapshot.capture(state, model);
+    var installer: TestBindingInstaller = .{};
+
+    try std.testing.expectError(error.BindingInstallationFailed, state.applyWithBindings(model, &.{ 2, 10, 0 }, &installer));
+    try std.testing.expectEqual(@as(usize, 1), installer.attempted.count);
+    try expectTransitionRestored(before, &state, model);
+    try std.testing.expectEqualDeep(before.config.keybindings, installer.applied);
+    var buffer: [1024]u8 = undefined;
+    try std.testing.expectEqualStrings(incoming, (try readDestination(io, path, &buffer)).bytes);
+
+    installer.fail = false;
+    try state.applyWithBindings(model, &.{ 2, 10, 0 }, &installer);
+    try std.testing.expectEqual(.saved, state.outcome);
+    try std.testing.expectEqual(@as(f32, 20), model.fontSize());
+    try std.testing.expectEqualStrings("/retained/socket", model.config.phux_socket.slice());
+    try std.testing.expectEqualDeep(model.config.keybindings, installer.applied);
+    const pane = model.provider.terminal(model.focusedTerminalRef().?).?;
+    try std.testing.expectEqual(.underline, pane.session.term.cursor.default_style);
+}
+
+test "failed binding installation on Save leaves disk untouched and successful retry persists" {
+    const Engine = @import("ts_engine.zig").Engine;
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    const original = "# preserve this file\nfont-size = 13\nfuture-key = retained\n";
+    try tmp.dir.writeFile(io, .{ .sub_path = "config", .data = original });
+    const path = try tmp.dir.realPathFileAlloc(io, "config", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    const model = engine.model;
+    model.config_file.setPath(path);
+    var registry = try testBindingRegistry();
+    var state: State = .{ .binding_registry = &registry };
+    state.apply(model, &.{ 1, 0, 0 });
+    state.apply(model, "\x02\x08\x07/bin/sh -i");
+    state.apply(model, &.{ 1, 2, 0 });
+    try model.config.keybindings.set("view.settings", "Cmd+Alt+s");
+    model.config_write_refused = true;
+    const before = TransitionSnapshot.capture(state, model);
+    var installer: TestBindingInstaller = .{ .applied = model.config.keybindings };
+
+    try std.testing.expectError(error.BindingInstallationFailed, state.applyWithBindings(model, &.{ 1, 7, 0 }, &installer));
+    try std.testing.expectEqual(@as(usize, 1), installer.calls);
+    try std.testing.expectEqualDeep(before.config.keybindings, installer.attempted);
+    try expectTransitionRestored(before, &state, model);
+    var buffer: [1024]u8 = undefined;
+    try std.testing.expectEqualStrings(original, (try readDestination(io, path, &buffer)).bytes);
+
+    installer.fail = false;
+    try state.applyWithBindings(model, &.{ 1, 7, 0 }, &installer);
+    try std.testing.expectEqual(.saved, state.outcome);
+    try std.testing.expect(state.initial == null);
+    const written = try readDestination(io, path, &buffer);
+    const loaded = config.parse(written.bytes);
+    try std.testing.expectEqual(@as(f32, 14), loaded.font_size);
+    try std.testing.expectEqualDeep(model.config.keybindings, loaded.keybindings);
+    try std.testing.expect(std.mem.indexOf(u8, written.bytes, "future-key = retained\n") != null);
 }
 
 fn editKey(source: []const u8, key: []const u8, value: []const u8, out: []u8, scratch: []u8) ![]const u8 {
