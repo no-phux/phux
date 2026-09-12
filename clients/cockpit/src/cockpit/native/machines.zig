@@ -6,7 +6,7 @@
 //! name:string16,endpoint:string16,session:string16,message:string16.
 const std = @import("std");
 const phux_options = @import("phux_options");
-const api = @import("../../providers/phux/machines.zig");
+const api = @import("phux_provider").machines;
 const Registry = if (phux_options.enabled) api.Registry else DisabledRegistry;
 pub const Tunnel = if (phux_options.enabled) api.Tunnel else struct {};
 pub const request_name = "cockpit.machines";
@@ -279,7 +279,7 @@ test "status joins the captured full identity and does not claim saved reachabil
 
 test "hermetic Machines list, exact connect, double activation, disconnect, forget and stale edit" {
     if (!phux_options.enabled) return error.SkipZigTest;
-    const remote = @import("../../providers/phux/remote_tunnel.zig");
+    const remote = @import("phux_provider").remote_api;
     var fixture = try remote.TestRegistry.init("machine", "ws://localhost:1");
     defer fixture.deinit();
     var state: State = .{ .config_path = fixture.path };
@@ -348,7 +348,7 @@ test "hermetic Machines list, exact connect, double activation, disconnect, forg
 
 test "registry pagination returns more than four entries and retains local row on malformed input" {
     if (!phux_options.enabled) return error.SkipZigTest;
-    const remote = @import("../../providers/phux/remote_tunnel.zig");
+    const remote = @import("phux_provider").remote_api;
     var fixture = try remote.TestRegistry.init("machine", "ws://localhost:1");
     defer fixture.deinit();
     const body = "[[remote]]\nname='one'\nendpoint='ssh://one'\n" ++
