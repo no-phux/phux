@@ -55,7 +55,7 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_SUCCESS, EXIT_USAGE};
 
 /// Version 2 permits `latest_version=null` when discovery is bypassed. Additive
 /// fields do not bump this, but changing a field from string to nullable does.
-const DOCUMENT_SCHEMA_VERSION: u8 = 2;
+pub(crate) const DOCUMENT_SCHEMA_VERSION: u8 = 2;
 
 /// Everything that can go wrong between "there is a newer release" and "it is
 /// installed", with the failure kept separate from how it is reported.
