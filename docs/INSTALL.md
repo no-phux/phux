@@ -7,11 +7,10 @@ last-reviewed: 2026-09-12
 # Install
 
 **TL;DR.** The curl installer is the universal one-liner. Homebrew is the
-recommended day-to-day path on supported macOS and Linux. Both install the
-same `phux` and `phux-mcp` binaries as the release tarballs. Source builds
-use native tools or Nix. `phux update` maintains a direct-release install
-and prints the native command for Homebrew, Cargo, or Nix. Windows and
-`cargo install phux` are not supported.
+recommended day-to-day path on supported macOS and Linux. Source builds
+use native tools or Nix. `phux update` maintains a direct-release install;
+`--channel next` tracks green `main`. Windows and `cargo install phux` are
+not supported.
 
 ---
 
@@ -73,9 +72,15 @@ It verifies the release `.sha256` sidecar before unpacking and transactionally
 installs `phux` and `phux-mcp` into `${PHUX_INSTALL_DIR:-$HOME/.local/bin}`.
 The previous pair is restored if publication is interrupted or either binary
 cannot be published. Set `PHUX_INSTALL_DIR` to choose a different bin
-directory. With no `--version`, it uses the latest GitHub release. On success,
-the installer prints the exact command to run next. It prints a copy-paste
-`PATH` remedy only when that directory is not already on `PATH`.
+directory. With no `--version`, it uses the latest GitHub release. Pass
+`--channel next` (or set `PHUX_CHANNEL=next`) to install the moving
+prerelease of green `main` instead:
+
+```sh
+curl -fsSL https://phux.sh/install | sh -s -- --channel next
+```
+
+Homebrew stays on stable. On success, the installer prints the exact command to run next. It prints a copy-paste `PATH` remedy only when that directory is not already on `PATH`.
 Every portable tarball and installer path includes `phux-mcp`; there is no
 separate MCP package to install.
 
@@ -191,15 +196,21 @@ subsequent `just rebuild` invocations stay entirely on the developer binary.
 ```sh
 phux update --check     # what is installed, what is published, how it got there
 phux update             # install it, then hand a running server off to it
+phux update --channel next   # follow green main instead of the latest vX.Y.Z
 ```
 
 `phux update` exists because a deployment is a lockstep set: mismatched peers
 refuse each other at HELLO. See
-[ADR-0071](../ADR/0071-what-phux-1-0-commits-to.md).
+[ADR-0071](../ADR/0071-what-phux-1-0-commits-to.md). Default is the latest
+numbered GitHub release. `--channel next` is the opt-in rail that tracks
+green `main` ([ADR-0113](../ADR/0113-next-release-channel.md)); the choice is
+remembered in `<bindir>/.phux-channel` so later `phux update` stays on that
+rail. Homebrew stays on stable.
 
 ### What `phux update` does
 
-1. Resolves the current GitHub release (or the tag you pass to `--version`).
+1. Resolves the current GitHub release (the latest `vX.Y.Z`, `--channel next`,
+   or the tag you pass to `--version`).
 2. Downloads `phux-<tag>-<target>.tar.gz` and its `.sha256` sidecar.
 3. **Verifies the checksum before unpacking anything.** A mismatch refuses,
    names both digests, and installs nothing.
@@ -254,10 +265,11 @@ re-execs its own path, so the two steps together preserve live panes.
 If you installed with the curl installer or by unpacking a tarball,
 `phux update` is the supported path — it repeats exactly what you did by hand,
 with the checksum verified for you. Re-running the curl installer also works
-and is equivalent:
+and is equivalent (add `--channel next` if that is the rail you are on):
 
 ```sh
 curl -fsSL https://phux.sh/install | sh
+curl -fsSL https://phux.sh/install | sh -s -- --channel next
 ```
 
 ### NixOS and Nix profiles
@@ -288,7 +300,8 @@ the re-exec mechanism replays the *same* path.
 phux update --check              # report only; never downloads an archive
 phux update --check --json       # the stable document (schema_version 1)
 phux update --dry-run            # download and verify, install nothing
-phux update --version vX.Y.Z     # install a specific release (downgrades too)
+phux update --channel next       # follow the moving next prerelease
+phux update --version vX.Y.Z     # install a specific stable release (downgrades too)
 phux update --no-restart         # replace binaries, leave the server alone
 ```
 

@@ -148,6 +148,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md) | A showing peer is re-shown at launch only in front | Accepted (amended by [0111](./0111-how-a-front-restore-is-judged.md)) |
 | [0111](./0111-how-a-front-restore-is-judged.md) | How a front restore is judged | Accepted (amends [0110](./0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md)) |
 | [0112](./0112-stable-split-sidebar-navigation.md) | Sidebar navigation stays put while status changes | Accepted (amends [0089](./0089-three-zone-attention-sidebar.md)) |
+| [0113](./0113-next-release-channel.md) | Opt-in next channel from green main | Accepted (builds on [0074](./0074-self-update-trust-boundary.md)) |
 
 ## When to write an ADR
 

@@ -11,10 +11,12 @@ set -eu
 
 usage() {
   cat <<'EOF'
-Usage: scripts/install.sh [--version <vX.Y.Z>] [options]
+Usage: scripts/install.sh [--version <vX.Y.Z>] [--channel stable|next] [options]
 
 Options:
   --version <vX.Y.Z>       Release tag to install (default: latest GitHub release).
+  --channel <stable|next>  Release channel (default: stable, or \$PHUX_CHANNEL).
+                           next tracks green main; omit --version with it.
   --install-dir <dir>      Directory for phux and phux-mcp (default: $HOME/.local/bin).
   --os <darwin|linux>      Override OS detection.
   --arch <arm64|aarch64|x86_64|amd64>
@@ -45,6 +47,7 @@ shell_quote() {
 }
 
 version=""
+channel=""
 install_dir="${PHUX_INSTALL_DIR:-${HOME:-}/.local/bin}"
 os=""
 arch=""
@@ -55,6 +58,11 @@ while [ "$#" -gt 0 ]; do
     --version)
       [ "$#" -ge 2 ] || die "--version requires a value"
       version="$2"
+      shift 2
+      ;;
+    --channel)
+      [ "$#" -ge 2 ] || die "--channel requires a value"
+      channel="$2"
       shift 2
       ;;
     --install-dir)
@@ -120,14 +128,54 @@ resolve_latest_version() {
   printf '%s\n' "$latest"
 }
 
-if [ -z "$version" ]; then
-  version="$(resolve_latest_version)"
+resolve_next_sha() {
+  channel_url="https://github.com/no-phux/phux/releases/download/next/channel.json"
+  if command -v curl >/dev/null 2>&1; then
+    body="$(curl -fsSL "$channel_url")" \
+      || die "could not download the next channel pointer"
+  elif command -v wget >/dev/null 2>&1; then
+    body="$(wget -qO- "$channel_url")" \
+      || die "could not download the next channel pointer"
+  else
+    die "curl or wget is required to resolve the next channel"
+  fi
+  next_sha="$(printf '%s\n' "$body" \
+    | sed -n 's/.*"sha"[[:space:]]*:[[:space:]]*"\([0-9a-f]\{40\}\)".*/\1/p' \
+    | head -n 1)"
+  [ -n "$next_sha" ] || die "the next channel pointer named no SHA"
+  printf '%s\n' "$next_sha"
+}
+
+if [ -z "$channel" ]; then
+  channel="${PHUX_CHANNEL:-stable}"
+fi
+case "$channel" in
+  stable|next) ;;
+  *) die "--channel must be stable or next" ;;
+esac
+
+if [ "$channel" = "next" ] && [ -n "$version" ]; then
+  die "--version pins a stable tag; omit it when using --channel next"
 fi
 
-case "$version" in
-  v*) ;;
-  *) die "--version must be a release tag like vX.Y.Z" ;;
-esac
+release_tag=""
+artifact_id=""
+if [ "$channel" = "next" ]; then
+  next_sha="$(resolve_next_sha)"
+  release_tag="next"
+  artifact_id="next.${next_sha}"
+  version="next.${next_sha}"
+else
+  if [ -z "$version" ]; then
+    version="$(resolve_latest_version)"
+  fi
+  case "$version" in
+    v*) ;;
+    *) die "--version must be a release tag like vX.Y.Z" ;;
+  esac
+  release_tag="$version"
+  artifact_id="$version"
+fi
 
 if [ -z "$install_dir" ]; then
   die "--install-dir resolved to an empty path"
@@ -180,12 +228,13 @@ if [ "$version" = "v0.0.1" ]; then
   die "v0.0.1 has no ${target} tarball; use a newer release or build from source"
 fi
 
-base_url="https://github.com/no-phux/phux/releases/download/${version}"
-artifact="phux-${version}-${target}.tar.gz"
+base_url="https://github.com/no-phux/phux/releases/download/${release_tag}"
+artifact="phux-${artifact_id}-${target}.tar.gz"
 archive_url="${base_url}/${artifact}"
 sha_url="${archive_url}.sha256"
 
 if [ "$dry_run" -eq 1 ]; then
+  echo "channel: ${channel}"
   echo "target: ${target}"
   echo "archive_url: ${archive_url}"
   echo "sha256_url: ${sha_url}"
@@ -249,8 +298,8 @@ trap 'exit 143' TERM
 archive_path="${tmp_dir}/${artifact}"
 sha_path="${archive_path}.sha256"
 extract_dir="${tmp_dir}/extract"
-stage_dir="${extract_dir}/phux-${version}-${target}"
-stage_name="phux-${version}-${target}"
+stage_dir="${extract_dir}/phux-${artifact_id}-${target}"
+stage_name="phux-${artifact_id}-${target}"
 
 download "$archive_url" "$archive_path"
 download "$sha_url" "$sha_path"
@@ -380,6 +429,7 @@ mv "${publish_dir}/phux" "${install_dir}/phux"
 published_phux_mcp=1
 mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"
 publish_complete=1
+printf '%s\n' "$channel" > "${install_dir}/.phux-channel"
 
 echo "installed phux ${version} for ${target} to ${install_dir}"
 installed_dir="$(cd "$install_dir" && pwd -P)"

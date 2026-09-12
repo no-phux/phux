@@ -936,17 +936,18 @@ pub(crate) enum Command {
         signal: SignalArg,
     },
 
-    /// Update phux to the latest release, keeping sessions alive.
+    /// Update phux to the latest stable or next release, keeping sessions alive.
     // `long_about` spelled out for the same reason `rec` and `signal` do it:
     // clap reflows doc-comment paragraphs and the worked examples need real
     // newlines.
     #[command(
-        about = "Update phux to the latest release, keeping sessions alive",
-        long_about = "Update phux to the latest release, keeping sessions alive.\n\n\
+        about = "Update phux to the latest stable or next release, keeping sessions alive",
+        long_about = "Update phux to the latest stable or next release, keeping sessions alive.\n\n\
             Checks the published release, downloads the archive for this platform, \
             verifies it against the checksum published beside it, replaces the \
             binaries atomically, and asks a running server to re-exec so live panes \
-            survive. A server, its local clients, its satellites, and its relays must \
+            survive. `--channel next` follows green `main` instead of the latest \
+            `vX.Y.Z`. A server, its local clients, its satellites, and its relays must \
             all run the same release, so this is the command that moves a whole \
             deployment in one step.\n\n\
             phux updates only installs it maintains: a release archive unpacked into \
@@ -960,6 +961,7 @@ pub(crate) enum Command {
             phux update --check\n  \
             phux update --check --json\n  \
             phux update\n  \
+            phux update --channel next\n  \
             phux update --dry-run --version v1.2.3\n  \
             phux update --rollback"
     )]
