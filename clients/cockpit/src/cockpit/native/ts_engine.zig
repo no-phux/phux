@@ -757,9 +757,18 @@ pub const Engine = struct {
         if (fingerprint == state.fingerprint) return;
         state.fingerprint = fingerprint;
         if (!state.enabled()) return;
+        // Replay claims the debounce timer and file write from the journal
+        // (native_effect_replay). Arming pending here would strand a latch
+        // the claimed terminal never clears.
+        if (effectReplayArmed(fx)) return;
         state.pending = true;
         state.retry_count = 0;
         self.armTopologyPersist(fx, on_fire);
+    }
+
+    fn effectReplayArmed(fx: anytype) bool {
+        if (!@hasField(@TypeOf(fx), "effects")) return false;
+        return fx.effects.replayArmed();
     }
 
     fn armTopologyPersist(_: *Engine, fx: anytype, on_fire: anytype) void {

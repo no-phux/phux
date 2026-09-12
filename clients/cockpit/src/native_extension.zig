@@ -39,6 +39,35 @@ test "shipping SDK journals fallback input phases" {
 test "shipping SDK refuses divergent shortcut replay" {
     try @import("keybindings_replay_tests.zig").checkDivergence(native_sdk, cockpit.keybindings_runtime, cockpit.keybindings_runtime.replay);
 }
+test "native replay original keys survive allocator advancement mux readmission and repeated retries" {
+    try @import("native_effect_replay_tests.zig").check(native_sdk, native_effect_replay, allocatePeerHandleThroughEngine);
+}
+test "native replay requires declared keys drain boundaries and exact file ownership" {
+    try @import("native_effect_replay_tests.zig").checkOwnership(native_sdk, native_effect_replay, allocatePeerHandleThroughEngine);
+}
+test "native replay policy owns production peer handles and no core channel" {
+    const handle = try allocatePeerHandleThroughEngine();
+    try std.testing.expect(handle >= peer_handle_first);
+    var sink = NativeReplay.init(std.testing.allocator, native_replay_key, native_replay_policy);
+    defer sink.deinit();
+    sink.armReplay();
+    for ([_]u64{ protocol.event_channel_key, ts_persist_outcome_channel_key, admission_channel_key }) |key| {
+        try std.testing.expect(!try sink.feed(.{ .kind = .channel, .key = key, .payload = &.{1} }));
+    }
+    try std.testing.expect(!try sink.feed(.{ .kind = .file, .key = cockpit.topology_state_file_key + 1, .file_op = .write }));
+    // Owned but undeclared: a production handle's result must never pass.
+    try std.testing.expectError(error.NativeReplayMismatch, sink.feed(.{ .kind = .channel, .key = handle, .payload = &.{1} }));
+}
+
+/// The production peer allocator, reached through a fresh Engine as the
+/// native_effect_replay_tests contract allows: the engine module exports
+/// Model.ensurePeerSlots, not support.allocatePeerHandle itself.
+fn allocatePeerHandleThroughEngine() !u64 {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    try engine.model.ensurePeerSlots(1);
+    return engine.model.peers.items[0].channel_key;
+}
 const native_sdk = @import("native_sdk");
 const core = @import("core");
 const cockpit = @import("cockpit_engine");
@@ -50,6 +79,28 @@ const Effects = Adapter.Effects;
 const canvas = native_sdk.canvas;
 const canvas_label = "phux-cockpit-canvas";
 const admission_channel_key = std.hash.Wyhash.hash(0, "cockpit.keybinding-admission.v1");
+const native_effect_replay = @import("native_effect_replay.zig");
+const NativeReplay = native_effect_replay.Replay(native_sdk);
+const native_replay_key = std.hash.Wyhash.hash(0, "cockpit.native-effect-replay.v1");
+/// The first support.allocatePeerHandle value (cockpit/phux_support.zig
+/// next_peer_handle). The engine module exports no allocator, so the policy
+/// test below pins this bound against a production allocation.
+const peer_handle_first: u64 = 0x5046_0000_0000_0000;
+/// The pinned SDK's private ts_ui_app.zig persist_outcome_channel_key: the one
+/// TS-core channel whose key lies inside the peer handle range.
+const ts_persist_outcome_channel_key: u64 = 0x5453_5052_0000_0001;
+/// Native registrations the core never sees: provider and pointer channels,
+/// dynamic peer wakes and retries, the topology debounce and its file write.
+/// Only channel and file records are ever claimed, so host replies and the
+/// clipboard (100, 101) and PTY (1 + index) results always reach the core.
+const native_replay_policy: native_effect_replay.Policy = .{
+    .channels = &.{ cockpit.phux_channel_key, cockpit.pointer_channel_key },
+    .timers = &.{cockpit.topology_persist_timer_key},
+    .files = &.{cockpit.topology_state_file_key},
+    .dynamic_first = peer_handle_first,
+    .dynamic_limit = std.math.maxInt(u64),
+    .reserved = &.{ admission_channel_key, native_replay_key, protocol.event_channel_key, ts_persist_outcome_channel_key },
+};
 
 /// The effects the engine drives, with this graph's own result constructors
 /// filled in: the engine names a clipboard verb and a key, and the answer
@@ -108,15 +159,31 @@ const EngineFx = struct {
     pub fn readClipboard(self: EngineFx, options: struct { key: u64 }) void {
         self.effects.readClipboard(.{ .key = options.key, .on_result = clipboardRead });
     }
+    /// Replay claims a recorded native timer by its platform ID. Installing
+    /// one again would shift core timer slots and rerun a native callback.
     pub fn startTimer(self: EngineFx, options: anytype) void {
+        if (self.effects.replayArmed()) return;
         self.effects.startTimer(.{
             .key = options.key,
             .interval_ms = options.interval_ms,
             .mode = options.mode,
             .on_fire = options.on_fire,
         });
+        bridge.native_replay.noteTimer(self.effects, options.key) catch |err| bridge.latchNativeReplay(err);
     }
+    /// Bracket the real write so its journaled terminal has a declared owner:
+    /// replay consumes that terminal and never reissues the IO. Bookkeeping
+    /// failure is latched, never allowed to drop the user's topology write.
     pub fn writeFile(self: EngineFx, options: anytype) void {
+        if (self.effects.replayArmed()) return;
+        const attempt = bridge.native_replay.beginFile(self.effects, options.key, .write) catch |err| {
+            bridge.latchNativeReplay(err);
+            return self.forwardWrite(options);
+        };
+        self.forwardWrite(options);
+        bridge.native_replay.noteFile(self.effects, attempt) catch |err| bridge.latchNativeReplay(err);
+    }
+    fn forwardWrite(self: EngineFx, options: anytype) void {
         self.effects.writeFile(.{
             .key = options.key,
             .path = options.path,
@@ -124,12 +191,17 @@ const EngineFx = struct {
             .on_result = options.on_result,
         });
     }
+    /// Under replay the recorded declaration owns the key. Reopening would
+    /// start provider transport and race the journal for the same results.
     pub fn openChannel(self: EngineFx, options: anytype) native_sdk.ChannelHandle {
-        return self.effects.openChannel(.{
+        if (self.effects.replayArmed()) return .{};
+        const handle = self.effects.openChannel(.{
             .key = options.key,
             .on_event = options.on_event,
             .max_pending = options.max_pending,
         });
+        bridge.native_replay.noteChannelOpen(options.key, handle.live()) catch |err| bridge.latchNativeReplay(err);
+        return handle;
     }
     pub fn closeChannel(self: EngineFx, key: u64) void {
         self.effects.closeChannel(key);
@@ -155,7 +227,7 @@ const EngineFx = struct {
     /// Arm a failed peer's automatic redial (Engine.schedulePeerRetry). A
     /// key already armed is replaced, so a slot holds one timer.
     pub fn schedulePeerRetry(self: EngineFx, key: u64, delay_ms: u64) void {
-        self.effects.startTimer(.{ .key = key, .interval_ms = delay_ms, .mode = .one_shot, .on_fire = peerRetryTimer });
+        self.startTimer(.{ .key = key, .interval_ms = delay_ms, .mode = .one_shot, .on_fire = peerRetryTimer });
     }
 };
 
@@ -228,6 +300,14 @@ const Bridge = struct {
     runtime: ?*native_sdk.Runtime = null,
     keybindings: ?Keybindings = null,
     admission: Admission = .{},
+    /// Native-only registrations, journaled while recording and claimed from
+    /// the journal while replaying (native_effect_replay.zig).
+    native_replay: NativeReplay = .init(std.heap.page_allocator, native_replay_key, native_replay_policy),
+    /// The first bookkeeping failure from a void EngineFx seam, returned by
+    /// the next PointerHost event or replay control.
+    native_replay_error: ?anyerror = null,
+    /// The adapter, for the entry-time drain boundary replay accounts on.
+    app_state: ?*Adapter.App = null,
     fallback_origin: ?Admission.Origin = null,
     command_admission: bool = true,
     accepted_bindings: cockpit.keybindings_runtime.bindings.Overrides = .{},
@@ -358,6 +438,33 @@ const Bridge = struct {
         if (!effects.replayArmed()) return false;
         self.interaction_mode = interactionMode(Adapter.Host.model());
         return true;
+    }
+
+    fn latchNativeReplay(self: *Bridge, err: anyerror) void {
+        if (self.native_replay_error == null) self.native_replay_error = err;
+    }
+
+    fn takeNativeReplayError(self: *Bridge) !void {
+        const err = self.native_replay_error orelse return;
+        self.native_replay_error = null;
+        return err;
+    }
+
+    /// Claimed native results count as delivered on the adapter's own drain
+    /// boundaries, judged from its state at event ENTRY. True means a recorded
+    /// native timer: skip it so no native callback reruns.
+    fn nativeReplayEvent(self: *Bridge, value: native_sdk.Event) !bool {
+        const effects = self.effects orelse return false;
+        const state = self.app_state orelse return false;
+        return self.native_replay.event(value, effects, .{
+            .installed = state.installed,
+            .primary_canvas_label = state.options.canvas_label,
+        });
+    }
+
+    fn resetNativeReplay(self: *Bridge) void {
+        self.native_replay.deinit();
+        self.native_replay = .init(std.heap.page_allocator, native_replay_key, native_replay_policy);
     }
 
     fn spawnShells(self: *Bridge, engine: *Engine, fx: EngineFx) void {
@@ -1037,7 +1144,16 @@ fn shellEvent(event: native_sdk.EffectPtyEvent) core.Msg {
     return .engine_wake;
 }
 
+/// Under replay every native registration is claimed from the journal, so a
+/// delivery here can only come from a slot opened before a mid-session arm.
+/// Its engine_wake stays inert: no provider, retry, or disk continuation.
+fn nativeReplayArmed() bool {
+    const effects = bridge.effects orelse return false;
+    return effects.replayArmed();
+}
+
 fn topologyTimer(_: native_sdk.EffectTimer) core.Msg {
+    if (nativeReplayArmed()) return .engine_wake;
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| engine.persistTopology(fx, topologyWritten);
     }
@@ -1045,6 +1161,7 @@ fn topologyTimer(_: native_sdk.EffectTimer) core.Msg {
 }
 
 fn topologyWritten(result: native_sdk.EffectFileResult) core.Msg {
+    if (nativeReplayArmed()) return .engine_wake;
     if (bridge.engine) |engine| {
         const before = engine.beginPublication();
         if (engineFx()) |fx| engine.topologyPersisted(result, fx, topologyTimer);
@@ -1066,6 +1183,7 @@ fn clipboardRead(event: native_sdk.EffectClipboardResult) core.Msg {
 }
 
 fn phuxChannel(event: native_sdk.EffectChannelEvent) core.Msg {
+    if (nativeReplayArmed()) return .engine_wake;
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| {
             const changed = engine.onPhuxChannel(fx, event, phuxChannel);
@@ -1082,6 +1200,7 @@ fn phuxChannel(event: native_sdk.EffectChannelEvent) core.Msg {
 /// coordinators"), told apart by channel key: a listing peer's session list
 /// or a showing peer's projection, each one ordered invalidation.
 fn peerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
+    if (nativeReplayArmed()) return .engine_wake;
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| {
             const changed = engine.onPeerChannel(fx, event, peerChannel);
@@ -1095,6 +1214,7 @@ fn peerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
 /// A failed peer's backoff elapsed (Engine.onPeerRetryTimer). A rejected
 /// timer arms nothing; the peer's row still retries it when picked.
 fn peerRetryTimer(event: native_sdk.EffectTimer) core.Msg {
+    if (nativeReplayArmed()) return .engine_wake;
     const engine = bridge.engine orelse return .engine_wake;
     if (event.outcome == .rejected) {
         if (engine.onPeerRetryRejected(event.key)) bridge.announce(engine);
@@ -1107,6 +1227,7 @@ fn peerRetryTimer(event: native_sdk.EffectTimer) core.Msg {
 }
 
 fn pointerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
+    if (nativeReplayArmed()) return .engine_wake;
     if (bridge.engine) |engine| {
         if (engineFx()) |fx| engine.onPointerChannel(fx, event, pointerChannel);
     }
@@ -1116,10 +1237,9 @@ fn pointerChannel(event: native_sdk.EffectChannelEvent) core.Msg {
 /// The app's activation is the terminal's focus: a bell that rings while
 /// deactivated notifies, and deactivation strands every capture.
 fn onLifecycle(event: native_sdk.LifecycleEvent) ?core.Msg {
-    if (bridge.replayInteraction()) {
-        registerReplayChannels(event);
-        return null;
-    }
+    // Recorded native registrations are declared in the journal. Replay opens
+    // no channel and starts no provider transport; the declarations own them.
+    if (bridge.replayInteraction()) return null;
     const engine = bridge.engine orelse return null;
     const fx = engineFx() orelse return null;
     switch (event) {
@@ -1136,17 +1256,6 @@ fn onLifecycle(event: native_sdk.LifecycleEvent) ?core.Msg {
         .frame => {},
     }
     return null;
-}
-
-/// Replay needs effect slots to consume recorded results, but must not start
-/// the provider transport which normally follows channel registration.
-fn registerReplayChannels(event: native_sdk.LifecycleEvent) void {
-    if (event != .start) return;
-    const engine = bridge.engine orelse return;
-    if (engine.model.phux() == null) return;
-    const fx = engineFx() orelse return;
-    _ = fx.openChannel(.{ .key = cockpit.phux_channel_key, .on_event = phuxChannel, .max_pending = 1 });
-    engine.openPeerWakeForReplay(fx, peerChannel);
 }
 
 /// Keys no markup widget claimed. The palette and settings surfaces are the
@@ -1501,12 +1610,15 @@ const PointerHost = struct {
         bridge.keybindings = try Bridge.Keybindings.init(runtime.options.shortcuts, runtime.options.menus);
         bridge.appearance.binding_registry = &bridge.keybindings.?.registry;
         try bridge.admission.start(std.heap.page_allocator, admission_channel_key, runtime.options.session_recorder);
+        bridge.native_replay.bindRecorder(runtime.options.session_recorder);
         startKeybindings(runtime);
         syncSystemAppearance(runtime.appearance);
         if (comptime cockpit.phux_enabled) try runtime.startTimer(workspace_timer_id, std.time.ns_per_s, true);
     }
     fn event(context: *anyopaque, runtime: *native_sdk.Runtime, value: native_sdk.Event) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
+        try bridge.takeNativeReplayError();
+        if (try bridge.nativeReplayEvent(value)) return;
         const previous_origin = bridge.fallback_origin;
         const previous_admission = bridge.command_admission;
         defer bridge.fallback_origin = previous_origin;
@@ -1567,20 +1679,37 @@ const PointerHost = struct {
     }
     fn replay(context: *anyopaque, control: native_sdk.runtime.ReplayControl) anyerror!void {
         const self: *PointerHost = @ptrCast(@alignCast(context));
+        try bridge.takeNativeReplayError();
         switch (control) {
             .arm => {
                 bridge.admission.deinit();
                 try bridge.admission.armReplay();
                 if (bridge.runtime) |runtime| try bridge.admission.start(std.heap.page_allocator, admission_channel_key, runtime.options.session_recorder);
+                bridge.native_replay.armReplay();
             },
-            .feed => |record| if (try bridge.admission.feed(record)) return,
-            .finish => {
-                defer bridge.admission.deinit();
-                try bridge.admission.finishReplay();
+            // A false feed is forwarded to the adapter exactly as it came.
+            .feed => |record| {
+                if (try bridge.admission.feed(record)) return;
+                if (try bridge.native_replay.feed(record)) return;
             },
+            .finish => return self.finishReplay(),
         }
         try self.inner.replayControl(control);
         _ = bridge.replayInteraction();
+    }
+
+    /// Every ledger checks its own leftovers. All three run before the first
+    /// failure is reported, so one ledger's refusal never hides another's.
+    fn finishReplay(self: *PointerHost) !void {
+        defer bridge.admission.deinit();
+        defer bridge.resetNativeReplay();
+        const admission = bridge.admission.finishReplay();
+        const native = bridge.native_replay.finish();
+        const inner = self.inner.replayControl(.finish);
+        _ = bridge.replayInteraction();
+        try admission;
+        try native;
+        try inner;
     }
 
     fn syncSelectionAutoscrollTimer(self: *PointerHost, runtime: *native_sdk.Runtime) !void {
@@ -1760,6 +1889,7 @@ fn activatedTab(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
 
 pub fn app(app_state: *Adapter.App) native_sdk.App {
     bridge.effects = &app_state.effects;
+    bridge.app_state = app_state;
     return pointer_host.wrap(app_state.app());
 }
 
@@ -1899,6 +2029,16 @@ const Rig = struct {
     }
 
     fn startWithReplay(want_phux: bool, replaying: bool) !Rig {
+        var rig = try create(want_phux, replaying, null);
+        errdefer rig.stop();
+        try rig.boot();
+        return rig;
+    }
+
+    /// Build the app and harness without starting either. A recorder has to
+    /// be bound before the first event, and replaySession starts the app
+    /// itself, so both shapes need the unstarted Rig.
+    fn create(want_phux: bool, replaying: bool, recorder: ?*native_sdk.runtime.SessionRecorder) !Rig {
         var core_options: Adapter.CoreOptions = .{};
         installEngine(&core_options, std.testing.allocator, std.testing.io);
         try std.testing.expect(bridge.engine != null);
@@ -1938,8 +2078,13 @@ const Rig = struct {
         harness.null_platform.gpu_surfaces = true;
         harness.runtime.options.shortcuts = @import("tests/shipping_commands.zig").shortcuts;
         harness.runtime.options.menus = @import("tests/shipping_commands.zig").menus;
-        try harness.start(decorated);
-        try harness.runtime.dispatchPlatformEvent(decorated, .{ .gpu_surface_frame = .{
+        harness.runtime.options.session_recorder = recorder;
+        return .{ .app_state = app_state, .decorated = decorated, .harness = harness };
+    }
+
+    fn boot(self: *Rig) !void {
+        try self.harness.start(self.decorated);
+        try self.harness.runtime.dispatchPlatformEvent(self.decorated, .{ .gpu_surface_frame = .{
             .label = canvas_label,
             .size = native_sdk.geometry.SizeF.init(1100, 640),
             .scale_factor = 1,
@@ -1948,10 +2093,10 @@ const Rig = struct {
         } });
         // The frame request is what commits the widget tree; input routed
         // before it has no tree to fall through and reaches nothing.
-        try harness.runtime.dispatchPlatformEvent(decorated, .frame_requested);
+        try self.harness.runtime.dispatchPlatformEvent(self.decorated, .frame_requested);
         // A press on the grid gives the surface keyboard focus, as a person's
         // first click does; unfocused input routes nowhere.
-        try harness.runtime.dispatchPlatformEvent(decorated, .{ .gpu_surface_input = .{
+        try self.harness.runtime.dispatchPlatformEvent(self.decorated, .{ .gpu_surface_input = .{
             .window_id = 1,
             .label = canvas_label,
             .kind = .pointer_down,
@@ -1961,7 +2106,6 @@ const Rig = struct {
         // Direct callback tests supply the same origin as their main canvas.
         // Production only borrows an origin inside PointerHost.event's scope.
         bridge.fallback_origin = .{ .window_id = 1, .view_label = canvas_label };
-        return .{ .app_state = app_state, .decorated = decorated, .harness = harness };
     }
 
     fn stop(self: *Rig) void {
@@ -1970,6 +2114,7 @@ const Rig = struct {
         self.harness.destroy(std.testing.allocator);
         bridge.deinitRequests();
         bridge.admission.deinit();
+        bridge.native_replay.deinit();
         if (bridge.engine) |engine| engine.destroy();
         bridge = .{};
     }
@@ -2276,6 +2421,147 @@ test "TypeScript topology changes use the shipping debounce and file effect" {
     try rig.app_state.drainEffects(&rig.harness.runtime);
     try std.testing.expect(!engine.model.state.inflight);
     try std.testing.expect(!engine.model.state.pending);
+}
+
+/// One shipping session journal: frames, host replies, keybinding admission
+/// and native replay declarations. Heap-only; it outgrows a test frame.
+const ShippingJournal = struct {
+    bytes: [4 * 1024 * 1024]u8 = undefined,
+    len: usize = 0,
+
+    fn sink(self: *ShippingJournal) native_sdk.runtime.SessionRecorderSink {
+        return .{ .context = self, .write_fn = write };
+    }
+
+    fn write(context: *anyopaque, bytes: []const u8) anyerror!void {
+        const self: *ShippingJournal = @ptrCast(@alignCast(context));
+        if (bytes.len > self.bytes.len - self.len) return error.NoSpaceLeft;
+        @memcpy(self.bytes[self.len..][0..bytes.len], bytes);
+        self.len += bytes.len;
+    }
+
+    fn journal(self: *const ShippingJournal) []const u8 {
+        return self.bytes[0..self.len];
+    }
+};
+
+/// A LEAF constructor: SessionRecorder is megabytes by value, and a returned
+/// aggregate would pin a temporary in the caller's frame for its whole body
+/// (tests/record_replay_tests.zig initSessionRecorder has the measurement).
+fn initShippingRecorder(slot: *native_sdk.runtime.SessionRecorder, sink: native_sdk.runtime.SessionRecorderSink) void {
+    slot.* = native_sdk.runtime.SessionRecorder.init(sink);
+}
+
+/// The platform timer ID the SDK routes to an fx timer: its base plus the
+/// occupied slot (effects.zig; the SDK exposes no key-to-ID accessor).
+fn nativeTimerId(effects: *const Effects, key: u64) ?u64 {
+    for (effects.timer_slots, 0..) |slot, index| {
+        if (slot.active and slot.key == key) return native_sdk.runtime.effect_timer_platform_id_base + index;
+    }
+    return null;
+}
+
+/// Feed the declaration a live session journals when `key` opens, produced
+/// by the real encoder rather than hand-built bytes.
+fn feedRecordedChannelOpen(app_iface: native_sdk.App, key: u64) !void {
+    const journal = try std.heap.page_allocator.create(ShippingJournal);
+    defer std.heap.page_allocator.destroy(journal);
+    journal.len = 0;
+    const recorder = try std.heap.page_allocator.create(native_sdk.runtime.SessionRecorder);
+    defer std.heap.page_allocator.destroy(recorder);
+    initShippingRecorder(recorder, journal.sink());
+    recorder.begin(.{ .platform_name = "test", .app_name = "phux-cockpit", .window_width = 1100, .window_height = 640 });
+    var live = NativeReplay.init(std.testing.allocator, native_replay_key, native_replay_policy);
+    defer live.deinit();
+    live.bindRecorder(recorder);
+    try live.noteChannelOpen(key, true);
+    recorder.finish();
+    var reader = try native_sdk.runtime.session_journal.Reader.init(journal.journal());
+    while (try reader.next()) |record| {
+        if (record == .effect) try app_iface.replayControl(.{ .feed = record.effect });
+    }
+}
+
+const topology_replay_path = "/tmp/phux-cockpit-tests/ts-replay-workspace.state";
+const RecordedPersistence = struct { fingerprint: u64, sequence: i64 };
+
+/// Record the shipping order: a platform shortcut makes a tab, the native
+/// debounce timer fires by platform ID, its callback writes the topology
+/// file, the successful write publishes, and the core answers with a
+/// snapshot request served by the host seam. Only platform events and
+/// effect results enter the journal; direct Rig.dispatch calls would not
+/// replay. A successful terminal keeps engine.state.write_failed false on
+/// both timelines — an exhausted-retry failure is not journaled as a
+/// retry_count mutation, so it cannot round-trip through claim-without-
+/// delivery alone.
+fn recordTopologyPersistence(recorder: *native_sdk.runtime.SessionRecorder) !RecordedPersistence {
+    var rig = try Rig.create(false, false, recorder);
+    defer rig.stop();
+    const engine = bridge.engine.?;
+    engine.model.state.setPath(topology_replay_path);
+    defer engine.model.state.setPath(null);
+    try rig.boot();
+    try rig.settle(0, "READY");
+    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "t") and !item.modifiers.shift) break item;
+    } else return error.TestExpectedNewTabShortcut;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{ .id = shortcut.id, .key = shortcut.key, .modifiers = shortcut.modifiers, .window_id = 1 } });
+    try rig.settle(1, "READY");
+    try std.testing.expect(engine.model.state.pending);
+    const timer_id = nativeTimerId(&rig.app_state.effects, cockpit.topology_persist_timer_key) orelse return error.TestExpectedTopologyTimer;
+
+    // The write parks on the fake executor; the journal records the terminal
+    // fed below. A live worker would race the drain and touch the disk.
+    const executor = rig.app_state.effects.executor;
+    rig.app_state.effects.executor = .fake;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .timer = .{ .id = timer_id } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    rig.app_state.effects.executor = executor;
+    try std.testing.expect(engine.model.state.inflight);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.effects.pendingFileCount());
+
+    const sequence = engine.sequence;
+    try rig.app_state.effects.feedFileResult(cockpit.topology_state_file_key, .ok, "");
+    // A successful write clears inflight/pending without flipping
+    // persistence_failed, so there is no new announcement to settle on.
+    // Deliver on a journaled wake so replay sees the terminal before finish.
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .wake);
+    try std.testing.expect(!engine.model.state.inflight);
+    try std.testing.expect(!engine.model.state.pending);
+    try std.testing.expectEqual(sequence, engine.sequence);
+    try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
+    return .{ .fingerprint = rig.harness.runtime.sessionStateFingerprint(), .sequence = rig.app_state.model.engineSequence.lo };
+}
+
+test "shipping replay owns the topology timer and file write before a core snapshot" {
+    const journal = try std.heap.page_allocator.create(ShippingJournal);
+    defer std.heap.page_allocator.destroy(journal);
+    journal.len = 0;
+    const recorder = try std.heap.page_allocator.create(native_sdk.runtime.SessionRecorder);
+    defer std.heap.page_allocator.destroy(recorder);
+    initShippingRecorder(recorder, journal.sink());
+    recorder.begin(.{ .platform_name = "test", .app_name = "phux-cockpit", .window_width = 1100, .window_height = 640 });
+    const recorded = try recordTopologyPersistence(recorder);
+    recorder.finish();
+    try std.testing.expect(!recorder.failed);
+
+    var rig = try Rig.create(false, false, null);
+    defer rig.stop();
+    const report = try native_sdk.runtime.replaySession(&rig.harness.runtime, rig.decorated, journal.journal(), .{ .require_same_platform = false });
+    try std.testing.expectEqual(@as(usize, 0), report.mismatch_count);
+    try std.testing.expectEqual(recorded.sequence, rig.app_state.model.engineSequence.lo);
+    try std.testing.expectEqualStrings("READY", rig.app_state.model.status);
+    // Ownership: the helper claims timer and file so neither is reissued.
+    // End fingerprint is not required here — skipping the recorded native
+    // timer platform event (claim-without-callback) omits UiApp drain work
+    // that the live recording folded into sessionStateFingerprint, while
+    // native_effect_replay_tests already pins byte-identical identity for
+    // the helper itself.
+    _ = recorded.fingerprint;
+    try std.testing.expectEqual(@as(usize, 0), rig.app_state.effects.pendingFileCount());
+    try std.testing.expect(nativeTimerId(&rig.app_state.effects, cockpit.topology_persist_timer_key) == null);
+    try std.testing.expect(!bridge.engine.?.model.state.inflight);
+    try std.testing.expect(!bridge.engine.?.model.state.pending);
 }
 
 fn firstPaintedTabMessage(node: Adapter.Ui.Node) ?core.Msg {
@@ -3154,7 +3440,11 @@ test "cold replay registers provider and PTY results without live startup" {
         .timestamp_ns = 2,
     } });
     try rig.app_state.effects.feedPtyOutput(key, "replayed output");
-    try rig.app_state.effects.feedChannelEvent(cockpit.phux_channel_key, .data, &.{1}, 0, 0);
+    // Replay reopens no provider channel: the recorded declaration owns the
+    // key, and the replayed data record is claimed without any delivery.
+    try std.testing.expect(rig.app_state.effects.channelHandle(cockpit.phux_channel_key) == null);
+    try feedRecordedChannelOpen(rig.decorated, cockpit.phux_channel_key);
+    try rig.decorated.replayControl(.{ .feed = .{ .kind = .channel, .key = cockpit.phux_channel_key, .payload = &.{1} } });
     try std.testing.expectEqual(.new, remote.state());
     try std.testing.expect(!remote.bridge.outgoing.hasPending());
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .timer = .{ .id = PointerHost.workspace_timer_id } });
