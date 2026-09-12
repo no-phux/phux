@@ -226,6 +226,18 @@ const DisabledPhuxProvider = struct {
     pub fn requestWorkspaceMutation(_: *DisabledPhuxProvider, _: provider_contract.workspace.Mutation) error{Disabled}!u32 {
         return error.Disabled;
     }
+    pub fn mouseMode(_: *const DisabledPhuxProvider, _: ReplicaOwner) error{Disabled}!provider_contract.MouseMode {
+        return error.Disabled;
+    }
+    pub fn mouseTracking(_: *const DisabledPhuxProvider, _: ReplicaOwner) error{Disabled}!bool {
+        return error.Disabled;
+    }
+    pub fn sendMouse(_: *DisabledPhuxProvider, _: ReplicaOwner, _: *const MouseInput) error{Disabled}!void {
+        return error.Disabled;
+    }
+    pub fn selectionGesture(_: *DisabledPhuxProvider, _: ReplicaOwner, _: provider_contract.SelectionGesture) error{Disabled}!provider_contract.SelectionGestureResult {
+        return error.Disabled;
+    }
     pub fn takeOperationResult(_: *DisabledPhuxProvider) ?@This().OperationResult {
         return null;
     }
