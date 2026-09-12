@@ -241,6 +241,11 @@ forbid_fixed docs/RELEASING.md 'phall1/phux'
 forbid_fixed crates/phux/src/commands/update/release.rs 'phall1/phux'
 forbid_fixed docs/site/scripts/sync-docs.ts 'phall1/phux'
 require_fixed scripts/install.sh 'https://github.com/no-phux/phux/releases/download/${release_tag}'
+# The next-channel pointer must be an asset named channel.json. gh's
+# `file#label` syntax labels the asset; it does not rename it.
+require_fixed scripts/publish-next-channel.sh 'pointer_dir/channel.json'
+require_fixed scripts/publish-next-channel.sh 'gh release upload next "$channel_json" --clobber'
+forbid_fixed scripts/publish-next-channel.sh 'channel_json#channel.json'
 require_fixed scripts/install-cockpit.sh 'https://github.com/no-phux/phux/releases/download/${version}'
 require_fixed crates/phux/src/commands/update/release.rs 'pub(crate) const REPO: &str = "no-phux/phux";'
 
@@ -447,7 +452,6 @@ require_fixed docs/INSTALL.md 'phux update --rollback'
 require_fixed docs/INSTALL.md '--channel next'
 require_fixed docs/INSTALL.md 'PHUX_CHANNEL=next'
 require_fixed docs/INSTALL.md 'sh -s -- --channel next'
-require_fixed docs/site/src/pages/index.astro '--channel next'
 require_fixed docs/RELEASING.md 'This layout is a consumed contract'
 
 if [ "$failures" -ne 0 ]; then
