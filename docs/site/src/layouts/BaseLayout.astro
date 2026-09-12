@@ -22,10 +22,10 @@ const path = Astro.url.pathname;
     <Head title={title} description={description} type="website" />
   </head>
   <body>
-    <a class="skip" href="#main">skip to content</a>
-    <header class="wrap">
+    <a class="skip" href="#main">Skip to content</a>
+    <header class="site-frame">
       <nav class="nav" aria-label="Primary navigation">
-        <a class="brand" href="/"><b aria-hidden="true">◆</b> phux</a>
+        <a class="brand" href="/">phux</a>
         <div class="links">
           {
             NAV.map((item) => (
@@ -52,13 +52,35 @@ const path = Astro.url.pathname;
       <slot />
     </main>
 
-    <footer class="wrap">
+    <footer class="site-frame">
       <div class="foot">
-        <span class="dim">phux · MIT/Apache-2.0</span>
-        <a href={SITE.github} target="_blank" rel="noopener">source</a>
-        <a href={docsHref("/overview")}>docs</a>
-        <span class="sp dim">© 2026 no-phux</span>
+        <div class="foot-brand">
+          <a class="brand" href="/">phux</a>
+          <p>You and your agents share the same terminals.</p>
+        </div>
+        <nav class="foot-col" aria-label="Product">
+          <h2>Product</h2>
+          <a href={docsHref("/consumers/tui")}>CLI</a>
+          <a href={docsHref("/consumers/cockpit")}>Cockpit</a>
+          <a href={docsHref("/consumers/web")}>Web</a>
+          <a href={docsHref("/consumers/agents")}>Agents</a>
+        </nav>
+        <nav class="foot-col" aria-label="Docs">
+          <h2>Docs</h2>
+          <a href={docsHref("/overview")}>Overview</a>
+          <a href={docsHref("/quickstart")}>Quickstart</a>
+          <a href={docsHref("/quickstart/install")}>Install</a>
+          <a href={docsHref("/wire")}>Protocol</a>
+        </nav>
+        <nav class="foot-col" aria-label="Project">
+          <h2>Project</h2>
+          <a href={SITE.github} target="_blank" rel="noopener">GitHub</a>
+          <a href="https://discord.gg/dUv5rzdHp" target="_blank" rel="noopener">Discord</a>
+          <a href={SITE.github + "/blob/main/LICENSE-MIT"} target="_blank" rel="noopener">MIT</a>
+          <a href={SITE.github + "/blob/main/LICENSE-APACHE"} target="_blank" rel="noopener">Apache-2.0</a>
+        </nav>
       </div>
+      <p class="foot-end">© 2026 no-phux</p>
     </footer>
 
     <script>
