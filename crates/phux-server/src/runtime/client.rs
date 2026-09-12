@@ -2758,14 +2758,17 @@ fn run_session_create(
 
 /// The result document published under a create's result key. `terminal_id`
 /// is `null` and `empty` is `true` for an empty session; a seeded session's
-/// document keeps its pre-ADR-0105 shape.
+/// document keeps its pre-ADR-0105 fields. `session_id` binds the receipt to
+/// the created identity even if another client later renames the session.
 fn session_create_payload(
     name: &str,
+    session_id: Option<u32>,
     wire: Option<&phux_protocol::ids::ResourceId>,
     request_token: Option<&str>,
 ) -> serde_json::Value {
     let mut payload = serde_json::json!({
         "name": name,
+        "session_id": session_id,
         "terminal_id": wire.map(phux_protocol::ids::ResourceId::local_id),
         "request_token": request_token,
     });
@@ -2976,7 +2979,13 @@ fn handle_session_create_metadata(
     }
     let outcome = run_session_create(state, request, root_token);
     if let Ok(wire) = &outcome {
-        let payload = session_create_payload(&name, wire.as_ref(), request_token.as_deref());
+        // Creation and this lookup run synchronously in the same server turn.
+        let session_id = state.with_mut(|s| {
+            s.find_session_by_name(&name)
+                .map(|id| s.idspace.intern_session(id).get())
+        });
+        let payload =
+            session_create_payload(&name, session_id, wire.as_ref(), request_token.as_deref());
         publish_session_create_result(
             state,
             client_id,
@@ -4987,6 +4996,56 @@ mod terminal_metadata_scope_tests {
             Some(authoritative),
             "ordinary clients must neither forge nor delete the safety record",
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn empty_create_receipt_keeps_original_identity_after_name_reuse() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let state = SharedState::new();
+                let root_token = CancellationToken::new();
+                let nonce = "11111111-1111-4111-8111-111111111111";
+                let value = serde_json::to_vec(&serde_json::json!({
+                    "name": "original", "request_token": nonce, "empty": true, "keep_empty": true,
+                }))
+                .expect("request JSON");
+                handle_set_metadata(
+                    &state,
+                    ClientId(1),
+                    1,
+                    &Scope::Global,
+                    phux_protocol::wire::frame::SESSION_CREATE_KEY,
+                    value,
+                    &root_token,
+                );
+                let key = super::session_create_result_key(Some(nonce));
+                let bytes = state
+                    .with(|s| s.metadata().get(&Scope::Global, &key))
+                    .expect("receipt");
+                let receipt: serde_json::Value = serde_json::from_slice(&bytes).expect("JSON");
+                let original_id = state.with(|s| {
+                    s.idspace
+                        .session_wire(s.find_session_by_name("original").expect("created"))
+                        .expect("wire ID")
+                        .get()
+                });
+                assert_eq!(receipt["session_id"], original_id);
+                state.with_mut(|s| s.rename_session("original", "renamed"));
+                crate::runtime::commands::create_empty_session(&state, "original")
+                    .expect("replacement");
+                let replacement_id = state.with_mut(|s| {
+                    s.idspace
+                        .intern_session(s.find_session_by_name("original").expect("replacement"))
+                        .get()
+                });
+                assert_ne!(original_id, replacement_id);
+                assert_eq!(
+                    state.with(|s| s.metadata().get(&Scope::Global, &key)),
+                    Some(bytes)
+                );
+                root_token.cancel();
+            })
+            .await;
     }
 
     #[tokio::test(flavor = "current_thread")]

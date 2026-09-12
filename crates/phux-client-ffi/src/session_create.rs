@@ -1,6 +1,6 @@
 //! Empty, keep-empty session creation over the CLI's owning-connection metadata
-//! operation. A nonce result confirms creation; an ordered state read supplies
-//! the server-owned ID. No attach, shell, or second coordinator is involved.
+//! operation. A nonce result binds the server-owned ID; an ordered state read
+//! verifies that exact session. No attach, shell, or second coordinator is involved.
 #![allow(clippy::redundant_pub_crate, reason = "private bridge module")]
 
 use std::collections::BTreeMap;
@@ -31,6 +31,7 @@ struct Creation {
     result_read: u32,
     state_read: u32,
     confirmed: bool,
+    receipt_id: Option<u32>,
     state_finished: bool,
     released: bool,
     status: u32,
@@ -39,7 +40,19 @@ struct Creation {
 }
 
 impl Creation {
+    fn unknown(&mut self, message: &str) {
+        self.status = UNKNOWN;
+        self.message = message.as_bytes().to_vec();
+    }
+
     fn refuse(&mut self, message: &str) {
+        if self.status == UNKNOWN {
+            return;
+        }
+        if self.confirmed {
+            self.unknown("Session creation was confirmed but its current state is unavailable. Refresh Sessions to check the outcome.");
+            return;
+        }
         self.status = REFUSED;
         self.message = message.as_bytes().to_vec();
     }
@@ -51,15 +64,22 @@ impl Creation {
         };
         if matches_result(&value, &self.name, &self.token) {
             self.confirmed = true;
+            if let Some(id) = receipt_session_id(&value) {
+                self.receipt_id = Some(id);
+            } else {
+                self.unknown("The server confirmed creation without an exact session identity. Refresh Sessions to find it.");
+            }
         } else {
-            self.refuse("the server returned an invalid session creation receipt");
+            self.unknown("The server returned an invalid session creation receipt. Refresh Sessions to check the outcome.");
         }
     }
 }
 
 impl SessionCreates {
     pub(crate) fn disconnect(&mut self) {
+        self.entries.retain(|_, entry| !entry.released);
         for entry in self.entries.values_mut() {
+            entry.state_finished = true;
             if entry.status == PENDING {
                 entry.status = UNKNOWN;
                 entry.message = b"connection ended before session creation was confirmed".to_vec();
@@ -72,6 +92,13 @@ impl SessionCreates {
             (request == id || entry.result_read == id || entry.state_read == id).then_some(request)
         })
     }
+}
+
+fn receipt_session_id(value: &[u8]) -> Option<u32> {
+    let doc: serde_json::Value = serde_json::from_slice(value).ok()?;
+    u32::try_from(doc["session_id"].as_u64()?)
+        .ok()
+        .filter(|id| *id != 0)
 }
 
 fn matches_result(value: &[u8], name: &str, token: &str) -> bool {
@@ -164,10 +191,12 @@ fn receive_state(
         entry.refuse("session identity arrived without a confirmed creation receipt");
         return Ok(());
     }
-    let sessions = crate::workspace::session_summaries(snapshot)?;
+    let sessions = crate::workspace::session_summaries(snapshot).inspect_err(|_| {
+        entry.refuse("could not decode the created session's state");
+    })?;
     let created = sessions
         .iter()
-        .find(|session| session.name == entry.name.as_bytes() && session.keep_empty);
+        .find(|session| Some(session.session_id) == entry.receipt_id && session.keep_empty);
     let Some(created) = created else {
         entry.refuse("created session is no longer available as a keep-empty session");
         return Ok(());
@@ -232,6 +261,7 @@ fn queue(client: &mut Client, id: u32, name: &str) -> Result<Creation, BridgeErr
         result_read,
         state_read,
         confirmed: false,
+        receipt_id: None,
         state_finished: false,
         released: false,
         status: PENDING,
@@ -331,7 +361,8 @@ pub unsafe extern "C" fn phux_client_session_create_info(
     })
 }
 
-/// Release a completed result after copying it; pending writes cannot be canceled.
+/// Release interest in a result. Pending writes continue; their reply correlation
+/// is retained until drained or disconnected, without exposing another result.
 ///
 /// # Safety
 /// Client is live and exclusively accessed on its owning thread.
@@ -346,13 +377,10 @@ pub unsafe extern "C" fn phux_client_session_create_release(
             .entries
             .get_mut(&request_id)
             .ok_or_else(|| BridgeError::invalid("unknown session creation request"))?;
-        if entry.status == PENDING {
-            return Err(BridgeError::state("session creation is still pending"));
-        }
         // A refused metadata read can precede the already-queued state reply.
         // Keep its correlation tombstone until that reply has been consumed.
         entry.released = true;
-        if entry.state_finished || entry.status == UNKNOWN {
+        if entry.state_finished {
             client.session_creates.entries.remove(&request_id);
         }
         Ok(())
@@ -416,9 +444,14 @@ mod tests {
     }
 
     fn receipt(client: &PhuxClient, id: u32) -> FrameKind {
+        receipt_with_id(client, id, if id == 2 { 22 } else { 42 })
+    }
+
+    fn receipt_with_id(client: &PhuxClient, id: u32, session: u32) -> FrameKind {
         let entry = &client.inner.session_creates.entries[&id];
         FrameKind::MetadataValue { request_id: entry.result_read, value: Some(serde_json::to_vec(&serde_json::json!({
             "name": entry.name, "request_token": entry.token, "terminal_id": null, "empty": true,
+            "session_id": session,
         })).unwrap()) }
     }
 
@@ -459,7 +492,7 @@ mod tests {
         assert_eq!(
             info(&client, 1).status,
             PENDING,
-            "receipt alone has no session ID"
+            "receipt alone cannot confirm current availability"
         );
         let response = state(&client, 1, 42);
         feed(&mut client, &response);
@@ -485,7 +518,7 @@ mod tests {
         feed(&mut client, &response);
         assert_eq!(info(&client, 1).status, PENDING);
         assert_eq!(info(&client, 2).session_id, 22);
-        let response = receipt(&client, 1);
+        let response = receipt_with_id(&client, 1, 11);
         feed(&mut client, &response);
         let response = state(&client, 1, 11);
         feed(&mut client, &response);
@@ -556,5 +589,114 @@ mod tests {
         );
         assert_eq!(info(&client, 1).status, UNKNOWN);
         assert_eq!(info(&client, 1).session_id, 0);
+    }
+
+    #[test]
+    fn same_name_replacement_cannot_authorize_a_different_session() {
+        let mut client = client();
+        assert_eq!(create(&mut client, 1, "work"), PhuxClientResult::Ok);
+        let response = receipt_with_id(&client, 1, 42);
+        feed(&mut client, &response);
+        // Another client renames created #42 and creates #99 with its old name.
+        let mut response = state(&client, 1, 99);
+        if let FrameKind::CommandResult {
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            ..
+        } = &mut response
+        {
+            snapshot
+                .sessions
+                .push(SessionInfo::new(SessionId::new(42), "renamed").with_keep_empty(true));
+        }
+        feed(&mut client, &response);
+        assert_eq!(info(&client, 1).status, CREATED);
+        assert_eq!(info(&client, 1).session_id, 42);
+    }
+
+    #[test]
+    fn confirmed_write_with_missing_identity_is_unknown_not_refused() {
+        let mut client = client();
+        assert_eq!(create(&mut client, 1, "work"), PhuxClientResult::Ok);
+        let response = receipt_with_id(&client, 1, 42);
+        feed(&mut client, &response);
+        let response = state(&client, 1, 99);
+        feed(&mut client, &response);
+        assert_eq!(info(&client, 1).status, UNKNOWN);
+    }
+
+    #[test]
+    fn disconnect_retires_released_refusal_tombstones() {
+        let mut client = client();
+        assert_eq!(create(&mut client, 1, "work"), PhuxClientResult::Ok);
+        let response = FrameKind::MetadataValue {
+            request_id: client.inner.session_creates.entries[&1].result_read,
+            value: None,
+        };
+        feed(&mut client, &response);
+        // SAFETY: owned client remains live and exclusively accessed.
+        unsafe { phux_client_session_create_release(&raw mut *client, 1) };
+        client.inner.session_creates.disconnect();
+        assert!(client.inner.session_creates.entries.is_empty());
+    }
+
+    #[test]
+    fn legacy_receipt_without_identity_is_unknown_and_release_drains_state() {
+        let mut client = client();
+        assert_eq!(create(&mut client, 1, "work"), PhuxClientResult::Ok);
+        let mut response = receipt(&client, 1);
+        if let FrameKind::MetadataValue {
+            value: Some(value), ..
+        } = &mut response
+        {
+            let mut doc: serde_json::Value = serde_json::from_slice(value).unwrap();
+            doc.as_object_mut().unwrap().remove("session_id");
+            *value = serde_json::to_vec(&doc).unwrap();
+        }
+        feed(&mut client, &response);
+        assert_eq!(info(&client, 1).status, UNKNOWN);
+        let response = state(&client, 1, 42);
+        // SAFETY: owned client remains live and exclusively accessed.
+        assert_eq!(
+            unsafe { phux_client_session_create_release(&raw mut *client, 1) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!(client.inner.session_creates.entries.len(), 1);
+        feed(&mut client, &response);
+        assert!(client.inner.session_creates.entries.is_empty());
+    }
+
+    #[test]
+    fn abandoned_pending_creation_retires_after_its_own_replies() {
+        let mut client = client();
+        assert_eq!(create(&mut client, 1, "work"), PhuxClientResult::Ok);
+        let receipt = receipt(&client, 1);
+        let state = state(&client, 1, 42);
+        // SAFETY: owned client remains live and exclusively accessed.
+        assert_eq!(
+            unsafe { phux_client_session_create_release(&raw mut *client, 1) },
+            PhuxClientResult::Ok
+        );
+        assert_eq!(client.inner.session_creates.entries.len(), 1);
+        feed(&mut client, &receipt);
+        feed(&mut client, &state);
+        assert!(client.inner.session_creates.entries.is_empty());
+    }
+
+    #[test]
+    fn state_error_after_confirmed_write_never_claims_nothing_was_created() {
+        let mut client = client();
+        assert_eq!(create(&mut client, 1, "work"), PhuxClientResult::Ok);
+        let response = receipt(&client, 1);
+        feed(&mut client, &response);
+        let response = FrameKind::CommandResult {
+            request_id: client.inner.session_creates.entries[&1].state_read,
+            result: CommandResult::Ok,
+        };
+        feed(&mut client, &response);
+        assert_eq!(info(&client, 1).status, UNKNOWN);
+        assert!(
+            String::from_utf8_lossy(&client.inner.session_creates.entries[&1].message)
+                .contains("Refresh Sessions")
+        );
     }
 }

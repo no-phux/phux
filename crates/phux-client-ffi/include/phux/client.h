@@ -1267,7 +1267,9 @@ typedef struct PhuxSessionCreateInfo {
 
 /* Each request retains its own result under concurrency. Initialize size and
  * version (PHUX_CLIENT_ABI_VERSION) before querying. Copy the message before
- * releasing a completed result. Pending operations cannot be canceled. */
+ * releasing a result. Release abandons interest; pending writes still execute
+ * and their reply correlations are retained until drained or disconnected.
+ * Release only on the original Client incarnation: reconnects may reuse IDs. */
 PhuxClientResult phux_client_session_create_info(const PhuxClient *client, uint32_t request_id, PhuxSessionCreateInfo *out_info);
 PhuxClientResult phux_client_session_create_release(PhuxClient *client, uint32_t request_id);
 
