@@ -1256,6 +1256,42 @@ pub const Host = struct {
     }
 
     pub const RenameStatus = enum(u32) { none = 0, pending = 1, renamed = 2, refused = 3, unknown_outcome = 4, _ };
+    /// Create on this exact coordinator connection. The FFI sends the CLI's
+    /// create metadata request and confirms its nonce before publishing an ID.
+    pub fn requestCreateSession(host: *Host, name: []const u8, keep_empty: bool) !u32 {
+        if (host.disconnected) return error.InvalidState;
+        const request_id = try host.operation_ledger.nextRequestId();
+        try resultError(c.phux_client_create_session(host.client, request_id, bytes(name), keep_empty));
+        host.operation_ledger.last_id = request_id;
+        host.stageOutgoing() catch host.disconnect();
+        return request_id;
+    }
+
+    pub const SessionCreateStatus = enum(u32) { none = 0, pending = 1, created = 2, refused = 3, unknown_outcome = 4, _ };
+    /// Message borrows the client until its next mutable call.
+    pub const SessionCreateInfo = struct {
+        status: SessionCreateStatus = .none,
+        request_id: u32 = 0,
+        session_id: u32 = 0,
+        message: []const u8 = "",
+    };
+
+    pub fn sessionCreateInfo(host: *Host, request_id: u32) SessionCreateInfo {
+        var raw = std.mem.zeroes(c.PhuxSessionCreateInfo);
+        raw.size = @sizeOf(c.PhuxSessionCreateInfo);
+        raw.version = c.PHUX_CLIENT_ABI_VERSION;
+        if (c.phux_client_session_create_info(host.client, request_id, &raw) != c.PHUX_CLIENT_OK) return .{};
+        if (raw.status == @intFromEnum(SessionCreateStatus.created)) {
+            host.refreshSessions() catch return .{ .status = .unknown_outcome, .request_id = request_id, .message = "Session created but its catalog could not be refreshed." };
+            host.metadata_changed = true;
+        }
+        return .{ .status = @enumFromInt(raw.status), .request_id = raw.request_id, .session_id = raw.session_id, .message = effectSlice(raw.message) catch "" };
+    }
+
+    pub fn releaseSessionCreate(host: *Host, request_id: u32) void {
+        _ = c.phux_client_session_create_release(host.client, request_id);
+    }
+
     /// `message` borrows the client until the next mutable host call.
     pub const RenameInfo = struct {
         status: RenameStatus = .none,
@@ -2456,6 +2492,28 @@ test "workspace refresh shares spawn IDs and discovers other sessions without re
     try std.testing.expectEqual(@as(usize, 2), host.sessionCatalog().len);
     try std.testing.expectEqualStrings("external", host.sessionCatalog()[1].name);
     try std.testing.expectEqualStrings("unplaced terminal", host.catalogTerminals()[1].title.slice());
+}
+
+test "session create uses negotiated owning connection and reports disconnect as unknown" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try host.start("session-create-test");
+    try test_support.stageFixture(&bridge, "hello_keep_empty.bin");
+    _ = try host.drainReadiness();
+    bridge.outgoing.reset();
+    try std.testing.expectError(error.InvalidState, host.requestCreateSession("work", false));
+    try test_support.expectOutgoingCount(&bridge, 0);
+    const id = try host.requestCreateSession("work", true);
+    try std.testing.expectEqual(@as(u32, 1), id);
+    try std.testing.expectEqual(Host.SessionCreateStatus.pending, host.sessionCreateInfo(id).status);
+    try test_support.expectOutgoingCount(&bridge, 3);
+    try std.testing.expectEqual(@as(?u32, null), host.selectedSessionId());
+    host.disconnect();
+    try std.testing.expectEqual(Host.SessionCreateStatus.unknown_outcome, host.sessionCreateInfo(id).status);
+    host.releaseSessionCreate(id);
+    try std.testing.expectEqual(Host.SessionCreateStatus.none, host.sessionCreateInfo(id).status);
 }
 
 test "workspace rename split resize queue mapped requests and adopt only confirmation" {

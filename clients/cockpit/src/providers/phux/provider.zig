@@ -23,6 +23,7 @@ pub const SearchResult = host_mod.SearchResult;
 pub const Notice = host_mod.Notice;
 pub const SessionSummary = host_mod.SessionSummary;
 pub const RenameInfo = host_mod.Host.RenameInfo;
+pub const SessionCreateInfo = host_mod.Host.SessionCreateInfo;
 pub const Error = host_mod.Error;
 pub const OperationResult = host_mod.OperationResult;
 pub const ColorPolicy = host_mod.ColorPolicy;
@@ -532,6 +533,18 @@ pub const PhuxProvider = struct {
 
     pub fn renameInfo(self: *const PhuxProvider) RenameInfo {
         return self.host.renameInfo();
+    }
+
+    pub fn requestCreateSession(self: *PhuxProvider, name: []const u8, keep_empty: bool) !u32 {
+        return self.host.requestCreateSession(name, keep_empty);
+    }
+
+    pub fn sessionCreateInfo(self: *PhuxProvider, request_id: u32) SessionCreateInfo {
+        return self.host.sessionCreateInfo(request_id);
+    }
+
+    pub fn releaseSessionCreate(self: *PhuxProvider, request_id: u32) void {
+        self.host.releaseSessionCreate(request_id);
     }
 
     /// CONDITIONAL_KILL on this coordinator's current connection (ADR-0109).
