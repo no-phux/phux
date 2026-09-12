@@ -79,3 +79,56 @@ async fn a_stalled_consumer_blocks_the_server_after_a_bounded_backlog() {
     drop(consumer);
     relay.shutdown().await;
 }
+
+/// Lower bound on what a consumer may upload toward a server that reads
+/// nothing: the relay's default stream credit toward the consumer (1.25 MB)
+/// plus the server's own credit toward the relay (1.25 MB), less generous
+/// slack. Were the consumer leg held to the tunnel's 64 KiB, the same write
+/// would stop near 1.3 MB.
+const MIN_CONSUMER_UPLOAD: usize = 2 * 1024 * 1024;
+
+/// Only tunnels are bounded: a consumer's upload — a large paste — keeps
+/// quinn's default credit at the relay instead of the tunnel's 64 KiB, so it
+/// is not paced at 64 KiB per round trip.
+#[tokio::test]
+async fn a_consumer_upload_is_not_held_to_the_tunnel_window() {
+    let dir = tempfile::tempdir().unwrap();
+    let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
+    let token = mint(&relay.tokens_path, ROUTE);
+    let (_endpoint, tunnel, _send0, _recv0) =
+        dial_tunnel_raw(relay.addr, &relay.fingerprint, ROUTE, Some(token))
+            .await
+            .expect("tunnel leg establishes");
+    await_route_live(relay.addr, &relay.fingerprint, ROUTE).await;
+
+    let mut consumer = dial_consumer(relay.addr, &relay.fingerprint, ROUTE)
+        .await
+        .expect("consumer dials the relay");
+    // The server side reads the bearer preamble, then nothing more, but
+    // keeps both halves open: the upload can only fill flow-control credit.
+    let (_tun_send, mut tun_recv) = timeout(WIRE_RECV_TIMEOUT, tunnel.accept_bi())
+        .await
+        .expect("bridge stream within deadline")
+        .expect("bridge stream");
+    assert_eq!(
+        read_preamble(&mut tun_recv).await.as_deref(),
+        Some(CONSUMER_TOKEN)
+    );
+
+    let chunk = vec![0xa5_u8; 64 * 1024];
+    let mut accepted = 0_usize;
+    while accepted < 16 * 1024 * 1024 {
+        match timeout(Duration::from_millis(500), consumer.send.write(&chunk)).await {
+            Ok(Ok(written)) => accepted += written,
+            Ok(Err(err)) => panic!("consumer write failed: {err}"),
+            Err(_) => break,
+        }
+    }
+    assert!(
+        accepted >= MIN_CONSUMER_UPLOAD,
+        "the relay held a consumer upload to {accepted} bytes of credit"
+    );
+
+    drop(consumer);
+    relay.shutdown().await;
+}

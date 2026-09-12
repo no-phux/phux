@@ -75,11 +75,12 @@ impl SendWindow {
     /// [`UNSENT_SLACK`].
     ///
     /// quinn's setter wakes the connection driver, so it is only called when
-    /// the value changes; the compare and the update happen under one lock so
-    /// the cached value always matches what quinn holds.
+    /// the value changes. The congestion window is read, compared and applied
+    /// under one lock: read outside it, two clones could race and the one
+    /// holding the older congestion window could overwrite the newer value.
     pub fn track(&self) {
-        let window = send_window_for(self.conn.stats().path.cwnd);
         let mut applied = self.applied.lock().unwrap_or_else(PoisonError::into_inner);
+        let window = send_window_for(self.conn.stats().path.cwnd);
         if *applied != window {
             self.conn.set_send_window(window);
             *applied = window;

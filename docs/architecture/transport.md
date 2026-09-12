@@ -109,16 +109,30 @@ seam changes.
   every consumer. **Through a relay**, the same stall has to cross the
   relay: when the relay-to-consumer hop is the slow one, the relay's splice
   blocks on its tracked consumer send and stops reading the tunnel stream,
-  and because the relay grants each stream only 64 KiB of receive credit
-  (`STREAM_RECEIVE_WINDOW`, against quinn's 1.25 MB default) the server's
-  writer blocks behind it and the pump goes stale just as it would on a
-  direct link. Lag through a relay is therefore bounded, but a relayed
-  consumer still sits behind up to that window more backlog than a direct
-  one (on a 300 kbit/s consumer, roughly 3 s of on-screen lag against 1.5 s
-  direct). The window is a tradeoff: it also caps each stream on the
-  server-to-relay hop at under one window per round trip. Of 16, 32 and
-  64 KiB, only 64 KiB carried a ~3.5 Mbit/s flood over a 50 ms
-  server-to-relay hop without resyncing a healthy consumer.
+  and because a tunnel connection gets only 64 KiB of receive credit per
+  bridged consumer (`TUNNEL_RECEIVE_WINDOW`, against quinn's 1.25 MB per
+  stream) the server's writer blocks behind it and the pump goes stale just
+  as it would on a direct link. Only tunnels are bounded. The relay cannot
+  tell a connector from a consumer until the handshake reveals the ALPN, and
+  quinn fixes a connection's per-stream window at accept time, so every
+  connection starts with 64 KiB of connection-wide credit; a consumer
+  connection is raised back to quinn's default as soon as its ALPN is read
+  (a large paste still crosses in about a round trip), and a tunnel is
+  resized as consumers bridge and leave. Being connection-wide, a tunnel's
+  window is shared by the consumers bridged on one route, so a stalled one
+  can hold the others back until it drains. Lag through a relay is
+  therefore bounded, but a relayed consumer still sits behind up to that
+  window more backlog than a direct one (on a 300 kbit/s consumer, roughly
+  3 s of on-screen lag against 1.5 s direct). **Throughput ceiling:** each
+  bridged consumer moves at most 64 KiB per round trip on the
+  server-to-relay hop — about 5.2 Mbit/s at a 100 ms RTT and 1.75 Mbit/s at
+  300 ms, less in practice — and output faster than that makes the server
+  resync even a healthy consumer. Of 16, 32 and 64 KiB, only 64 KiB carried
+  a ~3.5 Mbit/s flood over a 50 ms server-to-relay hop without resyncs.
+  With a healthy consumer and a 100 ms server-to-relay RTT, floods of ~0.5
+  and ~1.9 Mbit/s ran with no resyncs and the same lag as quinn's defaults;
+  at 300 ms the faster flood hit the ceiling (about 1.5 Mbit/s delivered,
+  0.2 resyncs a second, p50 lag 322 ms against 188 ms).
 - **WebTransport** (via `wtransport`) — QUIC-class transport for browsers,
   which cannot open raw QUIC connections. An HTTP/3 `CONNECT` session whose
   single bidirectional stream carries the identical length-prefixed frames;
