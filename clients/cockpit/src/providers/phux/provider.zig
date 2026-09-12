@@ -164,6 +164,8 @@ pub const PhuxProvider = struct {
     /// captured destination. Only immutable dial config is copied. The caller
     /// selects the session on the new provider before opening it.
     pub fn createSiblingAttachment(self: *const PhuxProvider, gpa: std.mem.Allocator, io: std.Io, client_name: []const u8) !*PhuxProvider {
+        if (self.pending_retarget != null) return error.InvalidState;
+        if (self.endpoint != .remote) return create(gpa, io, self.endpointDescriptor(), null, client_name);
         const identity = self.registryIdentity() orelse return error.InvalidRegistryIdentity;
         const tunnel = try self.capture.?.cloneTunnel();
         return createCaptured(gpa, io, tunnel, identity, client_name);

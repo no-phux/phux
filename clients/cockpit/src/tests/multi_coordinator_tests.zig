@@ -126,6 +126,41 @@ const Pair = struct {
     }
 };
 
+test "captured machine session pages admit only the supplied exact attachments" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const pair = try Pair.start(false);
+    defer pair.engine.destroy();
+    for ([_]*support.PhuxProvider{ pair.here, pair.mini }) |remote| {
+        remote.standBy();
+        try remote.host.start("captured-page");
+        try fixture.stageFixture(remote.bridge, "hello.bin");
+        _ = try remote.drainReadiness();
+        try fixture.stageFixture(remote.bridge, "standby_state.bin");
+        _ = try remote.drainReadiness();
+    }
+    var request = [_]u8{0} ** 27;
+    request[0] = 1;
+    request[1] = 4;
+    std.mem.writeInt(u64, request[2..10], pair.engine.revision, .little);
+    request[13] = 5;
+    request[14] = 12;
+    @memcpy(request[15..27], "opaque-token");
+    var out: [navigation.max_bytes]u8 = undefined;
+    try testing.expectError(error.UnavailableContext, navigation.encode(pair.engine.model, pair.engine.revision, &request, &out));
+    const page = try navigation.encodeForAttachments(pair.engine.model, pair.engine.revision, &request, &out, &.{pair.mini.context_id});
+    try testing.expectEqual(@as(u16, 2), std.mem.readInt(u16, page[27..29], .little));
+    try testing.expectEqual(@as(u8, 2), page[29]);
+    var at: usize = 30;
+    for (0..page[29]) |_| {
+        const label_len = page[at + 2];
+        const target_len = std.mem.readInt(u16, page[at + 3 ..][0..2], .little);
+        const captured = targets.decode(page[at + 5 ..][0..target_len]).?;
+        try testing.expectEqual(pair.mini.context_id, captured.context.provider);
+        at += 5 + target_len + label_len;
+    }
+    try testing.expectError(error.UnavailableContext, navigation.encodeForAttachments(pair.engine.model, pair.engine.revision, &request, &out, &.{std.math.maxInt(u64)}));
+}
+
 /// Channel, notification and peer-restart effects, counted; nothing real.
 const PeerFx = struct {
     restarts: usize = 0,

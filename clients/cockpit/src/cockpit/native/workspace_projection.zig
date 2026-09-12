@@ -1488,7 +1488,7 @@ pub const PaletteIterator = struct {
             return if (iterator.accepts(entry)) entry else null;
         }
         while (iterator.session_index < sessions.len) {
-            const entry: PaletteEntry = .{ .peer_session = .{ .coordinator = coordinator, .id = sessions[iterator.session_index].id } };
+            const entry: PaletteEntry = .{ .peer_session = .{ .coordinator = coordinator, .id = sessions[iterator.session_index].id, .attachment_id = peer.context_id } };
             iterator.session_index += 1;
             if (iterator.accepts(entry)) return entry;
         }
@@ -1854,6 +1854,7 @@ pub fn resolvePanesIn(model: *const Model, workspace: *const Workspace, size: ge
 }
 
 pub const PaneViewport = struct {
+    owner: ?@import("provider_contract").ReplicaOwner = null,
     terminal: support.TerminalRef,
     cols: u16,
     rows: u16,
@@ -1927,13 +1928,14 @@ pub fn proposedViewportsIn(
             result.count += 1;
             continue;
         }
-        const presentation = model.remotePresentation(pane.terminal) orelse continue;
+        const tree = workspace.selectedTreeConst() orelse continue;
+        const presentation = model.remotePaintPresentationIn(tree, pane.terminal) orelse continue;
         if (presentation.phase != .live) continue;
         const proposed = grid.Session.clampGrid(
             @intFromFloat(@max(2, inner.width / metrics.width)),
             @intFromFloat(@max(2, inner.height / metrics.height)),
         );
-        result.items[result.count] = .{ .terminal = pane.terminal, .cols = proposed.x, .rows = proposed.y };
+        result.items[result.count] = .{ .terminal = pane.terminal, .owner = presentation.owner, .cols = proposed.x, .rows = proposed.y };
         result.count += 1;
     }
     return result;
@@ -1948,7 +1950,7 @@ pub fn viewportDiffers(model: *const Model, proposal: PaneViewport) bool {
     if (model.provider.terminalConst(proposal.terminal)) |terminal| {
         return proposal.cols != terminal.cols or proposal.rows != terminal.rows;
     }
-    const remote = model.phuxForRefConst(proposal.terminal) orelse return false;
+    const remote = (if (proposal.owner) |owner| model.phuxForOwnerConst(owner) else model.phuxForRefConst(proposal.terminal)) orelse return false;
     const last = remote.lastViewport(proposal.terminal) orelse return true;
     return !last.eql(.{ .cols = proposal.cols, .rows = proposal.rows });
 }

@@ -624,9 +624,10 @@ pub fn nativeCloseRehomesWhileBusy() !void {
     const close = protocol.encodeIntent(.{ .kind = .close_window, .expected_revision = engine.revision, .window = 1, .argument = 0 });
     try testing.expect(engine.applyIntent(&close, &engine_module.NoShells{}));
     try testing.expect(!model.windowOpen(1));
-    try testing.expectEqual(@as(usize, 0), model.locateTerminal(ref).?.window);
-    try testing.expect(remote.ownerIsCurrent(owner));
-    try testing.expectEqual(@as(u32, 1), remote.host.operation_ledger.last_id);
+    try testing.expect(model.locateTerminal(ref) == null);
+    try testing.expectEqual(@as(usize, 0), model.primary.tab_count);
+    try testing.expect(!remote.ownerIsCurrent(owner));
+    try testing.expectEqual(@as(usize, 1), remote.workspaceSnapshot().windows.len);
 }
 
 pub fn offlineSharedCloseRefuses() !void {
@@ -641,8 +642,11 @@ pub fn offlineSharedCloseRefuses() !void {
         _ = engine.onPhuxChannel(&ChannelFx{}, .{ .key = support.phux_channel_key, .kind = .closed }, null);
         const close = protocol.encodeIntent(.{ .kind = kind, .expected_revision = engine.revision, .window = 1, .argument = if (kind == .native_command) @intFromEnum(protocol.NativeCommand.close_focused_pane) else 0 });
         try testing.expectEqual(kind == .close_window, engine.applyIntent(&close, &engine_module.NoShells{}));
-        const native_window: usize = if (kind == .close_window) 0 else 1;
-        try testing.expectEqual(native_window, model.locateTerminal(ref).?.window);
+        const detached = kind == .close_window;
+        if (detached) {
+            try testing.expect(model.locateTerminal(ref) == null);
+            try testing.expect(!model.windowOpen(1));
+        } else try testing.expectEqual(@as(usize, 1), model.locateTerminal(ref).?.window);
         try testing.expectEqual(@as(u32, 0), remote.host.operation_ledger.last_id);
         try testing.expect(!remote.bridge.outgoing.hasPending());
         try remote.host.reconnect("operations-test");
@@ -654,7 +658,12 @@ pub fn offlineSharedCloseRefuses() !void {
         try fixture.stageWorkspaceFixture(remote.bridge, "workspace_initial_state.bin");
         try drain(engine);
         try testing.expect(remote.owner(ref) != null);
-        try testing.expectEqual(native_window, model.locateTerminal(ref).?.window);
+        // A reconnect publishes durable layout, but cannot reopen a view the
+        // user closed. Refused topology commands retain their original view.
+        if (detached) {
+            try testing.expect(model.locateTerminal(ref) == null);
+            try testing.expectEqual(@as(usize, 0), model.primary.tab_count);
+        } else try testing.expectEqual(@as(usize, 1), model.locateTerminal(ref).?.window);
     }
 }
 

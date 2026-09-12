@@ -27,6 +27,14 @@ const lifecycle = @import("../workspace_lifecycle.zig");
 const durable_creation = @import("../durable_creation.zig");
 const shared_workspace = @import("../shared_workspace.zig");
 const peer_edits = @import("../peer_edits.zig");
+const session_attachments = @import("session_attachments.zig");
+pub const new_session = @import("new_session.zig");
+pub const new_session_runtime = @import("new_session_runtime.zig");
+pub const machine_runtime = @import("machine_runtime.zig");
+
+test {
+    _ = @import("machine_engine_tests.zig");
+}
 
 test "projection refusal publishes newly retained completion independently from refusal flag" {
     const engine = try Engine.create(std.testing.allocator, std.testing.io);
@@ -197,6 +205,7 @@ pub const Engine = struct {
     model: *Model,
     sequence: u64 = 0,
     revision: u64 = 1,
+    selection_epoch: u64 = 1,
     intent_refused: bool = false,
     /// The pty key each registry slot was last spawned for, so `spawnShells`
     /// is idempotent across frames and a reused slot spawns again.
@@ -327,6 +336,9 @@ pub const Engine = struct {
         model.saved_attachments = .{};
         model.pending_attachments = @splat(false);
         model.state.setPath(null);
+        const remote = model.phux().?;
+        model.shared_workspace.attachment_id = remote.context_id;
+        model.bindWindowAttachment(0, remote.context_id);
     }
 
     pub fn destroy(self: *Engine) void {
@@ -535,10 +547,15 @@ pub const Engine = struct {
             _ = self.creation.complete(model, result);
             // Subscription restoration may share the provider's deduplicated
             // attach request. Both exact owners must observe its completion.
-            _ = model.shared_workspace.completeSubscription(result, remote.workspaceSnapshot().request_id);
+            _ = completeSubscriptions(&model.shared_workspace, remote, result);
             changed = true;
         }
         return changed;
+    }
+
+    fn completeSubscriptions(state: *shared_workspace.State, remote: *support.PhuxProvider, result: support.OperationResult) bool {
+        if (state.attachment_id != null) return state.completeSubscriptionFrom(remote.context_id, result, remote.workspaceSnapshot().request_id);
+        return state.completeSubscription(result, remote.workspaceSnapshot().request_id);
     }
 
     fn synchronizeSharedWorkspace(self: *Engine) bool {
@@ -591,6 +608,7 @@ pub const Engine = struct {
         var remote_endpoint: [@import("../attachment_state.zig").max_endpoint_bytes]u8 = undefined;
         const endpoint = try coordinatorEndpoint(remote, &remote_endpoint);
         model.shared_workspace.authority = remote.providerId();
+        model.bindSharedAttachment(remote);
         model.shared_workspace.setContext(contextHash(endpoint, server));
         try model.setAttachmentContext(endpoint, server, session);
     }
@@ -1167,7 +1185,8 @@ pub const Engine = struct {
         return true;
     }
 
-    fn supersedeSelection(self: *Engine) void {
+    pub fn supersedeSelection(self: *Engine) void {
+        self.selection_epoch +|= 1;
         self.cancelPendingSelection();
         peer_restore.cancelFront(self.model);
     }
@@ -1231,25 +1250,10 @@ pub const Engine = struct {
     }
 
     fn selectSessionNavigation(self: *Engine, id: u32, fx: anytype) bool {
-        const Fx = navigationFxType(@TypeOf(fx));
-        if (comptime !@hasDecl(Fx, "restartPhux")) return false;
         const remote = self.model.phux() orelse return false;
-        const previous = remote.selectedSessionId() orelse return false;
-        const changed = remote.selectSession(id) catch return false;
-        // Selecting the current session is an accepted idempotent action;
-        // acknowledge it without restarting the connection or flashing refusal.
-        if (!changed) {
-            self.refreshWorkspace();
-            self.supersedeSelection();
-            return true;
-        }
-        self.model.shared_workspace.leaveSession(self.model) catch {
-            _ = remote.selectSession(previous) catch {};
-            return false;
-        };
-        const accepted = fx.restartPhux(self);
-        if (accepted) self.supersedeSelection();
-        return accepted;
+        const window = self.model.active_window;
+        self.showSessionFromInWindow(remote, id, window, self.model.window_epochs[window], fx) catch return false;
+        return true;
     }
 
     // ------------------------------------ coordinators beside the active one
@@ -1627,9 +1631,10 @@ pub const Engine = struct {
         const model = self.model;
         const peer = model.phuxPeerAt(slot).?;
         const state = &model.peers.items[slot].workspace;
+        model.bindSharedAttachment(peer);
         var changed = false;
         while (peer.takeOperationResult()) |result| {
-            _ = state.completeSubscription(result, peer.workspaceSnapshot().request_id);
+            _ = completeSubscriptions(state, peer, result);
             _ = self.peer_edits.complete(model, slot, result);
             changed = true;
         }
@@ -1663,9 +1668,18 @@ pub const Engine = struct {
         // Showing a session means seeing it: its first projection takes the
         // selection, so it is not taken back to listing as hidden.
         // A remembered tab (ADR-0110) is selected when it still exists.
-        if (first and state.session != 0) revealAuthority(model, peer.providerId(), peer_restore.takeHint(model, peer.providerId(), state.session));
+        if (first and state.session != 0) self.revealPeerProjection(peer, state.session);
         if (generation != state.projection_generation) self.split_drag = null;
         return projected;
+    }
+
+    fn revealPeerProjection(self: *Engine, peer: *support.PhuxProvider, session: u32) void {
+        const model = self.model;
+        const slot = model.peerSlotForAttachment(peer.context_id) orelse return;
+        const entry = model.peers.items[slot];
+        if (entry.selection_epoch) |epoch| if (epoch != self.selection_epoch) return;
+        const hint = peer_restore.takeHint(model, peer.providerId(), session);
+        session_attachments.revealProjected(model, peer.context_id, hint);
     }
 
     /// Select the tab coordinator `id` projected for shared window
@@ -1742,6 +1756,7 @@ pub const Engine = struct {
         const peer = model.phuxPeerAtConst(slot) orelse return false;
         if (!peer.showing()) return false;
         if (model.peers.items[slot].workspace.session == 0) return false;
+        if (model.peers.items[slot].workspace.attachment_id != null) return !session_attachments.visibleElsewhere(model, peer.context_id, model_module.max_windows);
         return !authorityVisible(model, peer.providerId());
     }
 
@@ -1837,6 +1852,9 @@ pub const Engine = struct {
         entry.reopen = false;
         entry.closing_key = null;
         entry.failed = false;
+        entry.coordinator_context = null;
+        entry.session_created_at = null;
+        entry.selection_epoch = null;
         self.resetPeerRetry(fx, slot);
         peer.stop();
         // Its close event may arrive after another peer takes the slot; the
@@ -1844,6 +1862,68 @@ pub const Engine = struct {
         self.retirePeerChannel(fx, slot);
         peer.destroy();
         self.revision +%= 1;
+    }
+
+    /// Transfer the captured provider into stable heap-owned peer storage.
+    pub fn adoptCapturedPeer(self: *Engine, remote: *support.PhuxProvider, fx: anytype) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const slot = self.model.freePeerSlot() catch |err| {
+            remote.destroy();
+            return err;
+        };
+        self.model.peers.items[slot].provider = remote;
+        remote.standBy();
+        self.model.bindSharedAttachment(remote);
+        if (!fx.restartPeer(self, slot)) {
+            self.dropPeer(fx, slot);
+            return error.ConnectionUnavailable;
+        }
+    }
+
+    pub fn retryCapturedPeer(self: *Engine, target: machine_runtime.Target, tunnel: @import("machines.zig").Tunnel, identity: machine_runtime.RegistryIdentity, fx: anytype) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        if (!target.matches(self.model)) {
+            tunnel.close();
+            return error.StaleTarget;
+        }
+        const remote = self.model.phuxForAttachment(target.attachment_id).?;
+        try remote.replaceCapturedTunnel(tunnel, identity);
+        if (self.model.peerSlotForAttachment(target.attachment_id)) |slot| {
+            self.cancelPeerRetry(fx, slot);
+            self.model.peers.items[slot].failed = false;
+            if (!fx.restartPeer(self, slot)) return error.ConnectionUnavailable;
+        } else {
+            if (!fx.restartPhux(self)) return error.ConnectionUnavailable;
+        }
+    }
+
+    pub fn disconnectCapturedPeers(self: *Engine, targets: []const machine_runtime.Target, fx: anytype) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        // Every exact target is checked before the first mutation.
+        for (targets) |target| {
+            if (!target.matches(self.model)) return error.StaleTarget;
+        }
+        for (targets) |target| {
+            if (self.model.peerSlotForAttachment(target.attachment_id)) |slot| {
+                self.dropPeer(fx, slot);
+            } else if (self.model.phuxForAttachment(target.attachment_id)) |remote| {
+                self.dropActiveAttachment(remote, fx);
+            }
+        }
+    }
+
+    fn dropActiveAttachment(self: *Engine, remote: *support.PhuxProvider, fx: anytype) void {
+        const model = self.model;
+        self.creation.disconnect(model);
+        model.shared_workspace.leaveSession(model) catch {};
+        remote.stop();
+        model.phux_provider = null;
+        model.phux_reconnect_after_close = false;
+        model.phux_connection_unavailable = false;
+        fx.closeChannel(support.phux_channel_key);
+        remote.destroy();
+        model.shared_workspace.deinit();
+        model.shared_workspace = .{};
     }
 
     /// Take a showing peer's tabs out of the windows and forget its
@@ -1946,27 +2026,46 @@ pub const Engine = struct {
         if (comptime !@hasDecl(Fx, "restartPeer")) return false;
         const model = self.model;
         const slot = self.showableSlot(coordinator, session) orelse return false;
-        // An empty session has no tab to display, so it is not attached: the
-        // window shows the Empty session state, and New Tab shows it
-        // (empty_session.zig).
+        // Compatibility for coordinator-only callers. Captured navigation uses
+        // showSessionFromInWindow and retains the exact per-window attachment.
         if (empty_session.peerSessionEmpty(model, coordinator, session)) {
             self.supersedeSelection();
             return empty_session.pickPeer(model, coordinator, session);
         }
-        const peer = model.peers.items[slot].provider.?;
-        const state = &model.peers.items[slot].workspace;
-        state.authority = peer.providerId();
-        if (peer.showing()) {
-            if (peer.selectedSessionId() == session and peer.state() == .attached) {
-                self.supersedeSelection();
-                return true;
-            }
-            state.leaveSession(model) catch return false;
-        }
-        peer.show(session) catch return false;
-        _ = fx.restartPeer(self, slot);
-        self.supersedeSelection();
+        self.showSessionFromInWindow(model.phuxPeerAt(slot).?, session, model.active_window, model.window_epochs[model.active_window], fx) catch return false;
         return true;
+    }
+
+    pub fn showSessionFromInWindow(self: *Engine, remote: *support.PhuxProvider, session: u32, window: usize, epoch: u64, fx: anytype) !void {
+        try session_attachments.show(self, remote, session, window, epoch, fx);
+    }
+
+    pub fn openPeerTabFromInWindow(self: *Engine, remote: *support.PhuxProvider, window: usize, epoch: u64, cwd: []const u8, may_focus: bool) !void {
+        _ = try self.peer_edits.createTabIn(self.model, remote, window, epoch, cwd, may_focus);
+    }
+
+    pub fn captureNewSessionDestination(self: *Engine) ?new_session.Destination {
+        return new_session_runtime.capture(self, self.model.phuxForWindow(self.model.active_window), self.selection_epoch);
+    }
+
+    pub fn newSessionDestinationCurrent(self: *Engine, destination: new_session.Destination) bool {
+        return new_session_runtime.current(self, destination);
+    }
+
+    pub fn sendNewSession(self: *Engine, destination: new_session.Destination, name: []const u8, keep_empty: bool) !u32 {
+        return new_session_runtime.send(self, destination, name, keep_empty);
+    }
+
+    pub fn pollNewSession(self: *Engine, destination: new_session.Destination, request: u32) new_session.Outcome {
+        return new_session_runtime.poll(self, destination, request);
+    }
+
+    pub fn releaseNewSession(self: *Engine, destination: new_session.Destination, request: u32) void {
+        new_session_runtime.release(self, destination, request);
+    }
+
+    pub fn didCreateSession(self: *Engine, destination: new_session.Destination, session: u32, fx: anytype) void {
+        new_session_runtime.didCreate(self, destination, session, self.selection_epoch, fx, Engine.showSessionFromInWindow);
     }
 
     /// The slot of a peer that lists `session` and may show it now.
@@ -2140,11 +2239,9 @@ pub const Engine = struct {
     }
 
     fn closeSharedWindow(self: *Engine, index: u8, fx: anytype) bool {
-        @import("../shared_workspace.zig").closeNativeWindow(self.model, index) catch return false;
+        session_attachments.closeWindow(self.model, fx, index) catch return false;
         self.supersedeSelection();
         pointer_input.endHiddenCaptures(self.model, fx);
-        if (index == 0) fx.closeWindow(scene.main_window_label);
-        if (self.model.openWindowCount() == 0) fx.quitApp();
         return true;
     }
 
@@ -3085,11 +3182,23 @@ pub const Engine = struct {
         if (frame.scale_factor > 0) workspace.surface_scale_factor = frame.scale_factor;
         const proposals = projection.proposedViewportsIn(model, workspace, frame.size);
         for (proposals.slice()) |proposal| {
-            interaction.resize(model, fx, proposal.terminal, .{ .cols = proposal.cols, .rows = proposal.rows });
+            self.resizeProjection(fx, proposal);
         }
         // A front record that waited for a measured window shows now, at
         // that window's real size (ADR-0110).
         _ = self.commitProviderChange(peer_restore.onFrame(self, fx));
+    }
+
+    fn resizeProjection(self: *Engine, fx: anytype, proposal: projection.PaneViewport) void {
+        const viewport: @import("provider_contract").Viewport = .{ .cols = proposal.cols, .rows = proposal.rows };
+        const owner = proposal.owner orelse {
+            interaction.resize(self.model, fx, proposal.terminal, viewport);
+            return;
+        };
+        const remote = self.model.phuxForOwner(owner) orelse return;
+        if (!self.model.ownerIsCurrent(owner)) return;
+        if (remote.lastViewport(proposal.terminal)) |last| if (last.eql(viewport)) return;
+        remote.viewportResize(proposal.terminal, viewport) catch {};
     }
 
     /// Paint the main window's grids beneath the markup chrome: the shipping

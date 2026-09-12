@@ -195,6 +195,7 @@ pub const Edits = struct {
     }
 
     fn orphan(self: *Edits, entry: Creation) void {
+        if (entry.kind != .window) return;
         const window = entry.window orelse return;
         for (&self.orphans) |*held| {
             if (held.* != null) continue;
@@ -249,6 +250,49 @@ pub const Edits = struct {
         }
         free.* = entry;
         return &free.*.?;
+    }
+
+    /// Adopt an already completed, instance-bound spawn from the exact client.
+    pub fn adoptSpawnIn(self: *Edits, model: *Model, remote: *support.PhuxProvider, result: support.OperationResult, window: usize, epoch: u64, may_focus: bool) !*Creation {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        if (result.kind != .spawn or result.status != .success) return error.OperationFailed;
+        if (result.connection_epoch != remote.connectionEpoch()) return error.StaleContext;
+        const ref = result.terminal_ref orelse return error.MissingIdentity;
+        if (ref.provider_id != remote.providerId()) return error.ForeignCoordinator;
+        const instance = result.instance orelse return error.MissingIdentity;
+        const slot = model.peerSlotForAttachment(remote.context_id) orelse return error.NoCoordinator;
+        const entry = try self.prepareTabIn(model, slot, window, epoch, may_focus);
+        errdefer entry.* = null;
+        entry.*.?.instance = instance;
+        try accept(model, slot, &entry.*.?, result);
+        return &entry.*.?;
+    }
+
+    pub fn createTabIn(self: *Edits, model: *Model, remote: *support.PhuxProvider, window: usize, epoch: u64, cwd: []const u8, may_focus: bool) !*Creation {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        const slot = model.peerSlotForAttachment(remote.context_id) orelse return error.NoCoordinator;
+        const entry = try self.prepareTabIn(model, slot, window, epoch, may_focus);
+        errdefer entry.* = null;
+        entry.*.?.request = try requestCreationSpawn(remote, null, cwd);
+        return &entry.*.?;
+    }
+
+    fn prepareTabIn(self: *Edits, model: *Model, slot: usize, window: usize, epoch: u64, may_focus: bool) !*?Creation {
+        if (!model.windowOpen(window) or model.window_epochs[window] != epoch) return error.StaleDestination;
+        const workspace = model.wsAtConst(window) orelse return error.StaleDestination;
+        if (workspace.tab_count == model_module.max_tabs) return error.TabCapacity;
+        try self.ensure(slot);
+        const peer_view = try view(model, slot);
+        _ = try currentSnapshot(peer_view);
+        if (!model.canAddPane()) return error.TerminalCapacity;
+        const free = self.vacant(slot) orelse return error.OperationCapacity;
+        free.* = .{ .coordinator = peer_view.peer.providerId(), .epoch = peer_view.peer.connectionEpoch(), .session = peer_view.shared_workspace.session, .kind = .tab, .request = 0, .window = window, .window_epoch = epoch, .may_focus = may_focus };
+        return free;
+    }
+
+    pub fn pendingTerminal(self: *const Edits, slot: usize, ref: TerminalRef) bool {
+        if (slot >= self.states.items.len) return false;
+        return self.holdsTerminal(slot, ref);
     }
 
     fn holdsTerminal(self: *const Edits, slot: usize, ref: TerminalRef) bool {
@@ -434,8 +478,13 @@ pub const Edits = struct {
         switch (entry.stage) {
             .spawning, .attaching => return false,
             .publishing => {
+                if (!creationWindowCurrent(model, entry.*)) {
+                    self.drop(slot, entry.*);
+                    held.* = null;
+                    return true;
+                }
                 const outcome = self.place(peer_view, slot, entry) catch {
-                    self.orphan(entry.*);
+                    self.drop(slot, entry.*);
                     held.* = null;
                     return true;
                 };
@@ -505,6 +554,11 @@ fn placeInWindow(model: *const Model, peer_view: *PeerView, entry: Creation) voi
     peer_view.shared_workspace.placement_hint = .{ .shared_id = id, .window = index, .window_epoch = entry.window_epoch };
 }
 
+fn creationWindowCurrent(model: *const Model, entry: Creation) bool {
+    const window = entry.window orelse return true;
+    return model.windowOpen(window) and model.window_epochs[window] == entry.window_epoch;
+}
+
 fn placement(entry: Creation, ref: TerminalRef, revision: u64) !Mutation {
     var mutation: Mutation = .{ .expected_revision = revision, .session_id = entry.session, .kind = .add, .terminal_ref = ref };
     if (!isSplit(entry.kind)) return mutation;
@@ -531,7 +585,16 @@ fn spawnOwner(model: *Model, coordinator: support.ProviderId, kind: Kind, choice
 }
 
 fn slotOf(model: *const Model, coordinator: support.ProviderId) !usize {
+    if (selectedAttachmentSlot(model, coordinator)) |slot| return slot;
     return model.peerSlot(coordinator) orelse error.NoCoordinator;
+}
+
+fn selectedAttachmentSlot(model: *const Model, coordinator: support.ProviderId) ?usize {
+    const workspace = model.wsAtConst(model.active_window) orelse return null;
+    const tree = workspace.treeConst(workspace.selected_tab) orelse return null;
+    if (shared_workspace.tabAuthority(tree) != coordinator) return null;
+    const attachment = tree.attachment_id orelse return null;
+    return model.peerSlotForAttachment(attachment);
 }
 
 /// A showing, attached peer whose workspace is projected for this
@@ -548,7 +611,7 @@ fn view(model: *Model, slot: usize) !PeerView {
 
 /// Whether coordinator `id` is a peer that can take an edit now.
 pub fn editable(model: *Model, coordinator: support.ProviderId) bool {
-    const slot = model.peerSlot(coordinator) orelse return false;
+    const slot = slotOf(model, coordinator) catch return false;
     _ = view(model, slot) catch return false;
     return true;
 }
