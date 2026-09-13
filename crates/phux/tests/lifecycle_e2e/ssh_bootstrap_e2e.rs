@@ -231,17 +231,16 @@ fn bootstrap_prints_one_line_that_is_enough_to_dial() {
         token: Some(unhex(token)),
         trust: CertTrust::Pinned(fingerprint.to_owned()),
     });
-    let conn = rt
+    let features = rt
         .block_on(tokio::time::timeout(
             Duration::from_secs(10),
             Connection::connect_dial(&dial),
         ))
         .expect("the dial completes")
-        .expect("the listener admits the token it printed");
-    assert!(
-        conn.negotiated_bootstrap()
-            .is_some_and(|n| n.server_features.contains(ServerFeature::OpenListener))
-    );
+        .expect("the listener admits the token it printed")
+        .negotiated_bootstrap()
+        .map(|n| n.server_features);
+    assert!(features.is_some_and(|caps| caps.contains(ServerFeature::OpenListener)));
 }
 
 /// The happy path: ssh bootstraps, and the attach rides QUIC to a real TUI.
