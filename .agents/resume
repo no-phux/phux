@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# No authentication, repair, or long-lived service is required after wake.
+exit 0
