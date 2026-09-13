@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -34,8 +34,29 @@ const pi = await json("integrations/pi/package.json");
 assert.equal(pi.private, undefined, "Pi extension must remain publishable");
 assert.equal(pi.publishConfig?.access, "public");
 assert.equal(pi.publishConfig?.provenance, true);
+assert.equal(pi.dependencies?.["@phux/integration-runtime"], "file:../runtime");
+assert.ok(
+  pi.bundledDependencies?.includes("@phux/integration-runtime"),
+  "Pi must carry the private runtime in its independently installable artifact",
+);
 
-process.stdout.write("agent integration versions: OpenCode, Pi, and Claude are coherent\n");
+const runtime = await json("integrations/runtime/package.json");
+const runtimeLock = await json("integrations/runtime/package-lock.json");
+assert.equal(runtime.private, true, "the shared runtime is an implementation module, not a public product");
+assert.equal(runtimeLock.version, runtime.version);
+assert.equal(runtimeLock.packages?.[""]?.version, runtime.version);
+
+const openCodeSource = await readdir(join(root, "integrations/opencode/src"), { recursive: true });
+for (const relative of openCodeSource.filter((path) => path.endsWith(".ts"))) {
+  const source = await readFile(join(root, "integrations/opencode/src", relative), "utf8");
+  assert.doesNotMatch(
+    source,
+    /(?:@phux\/pi|integrations\/pi|\.\.\/\.\.\/pi\/)/,
+    `OpenCode source must not import implementation owned by Pi: ${relative}`,
+  );
+}
+
+process.stdout.write("agent integration versions and neutral runtime ownership are coherent\n");
 
 async function json(path) {
   return JSON.parse(await readFile(join(root, path), "utf8"));
