@@ -27,6 +27,9 @@ BH_PANES=4
 PTY_PROBE="$REPO/scripts/bench/pty-echo.py"
 UDP_DELAY="$REPO/scripts/bench/udp-delay.py"
 RTT_MS=0
+PATH_MBIT=0
+LOSS_PERCENT=0
+LOSS_SEED=0
 PHUX_BIN="$REPO/target/release/phux"
 HERDR_BIN="${HERDR_BIN:-/opt/homebrew/bin/herdr}"
 TMUX_BIN="${TMUX_BIN:-tmux}"
@@ -54,6 +57,9 @@ Usage: scripts/bench/mux-compare.sh [options]
   --rtt-ms N              run the phux-quic lane through a userspace UDP relay
                           that adds N ms of round-trip delay (N/2 each way), so
                           a loopback run can show what costs a round trip
+  --path-mbit N           UDP payload Mbit/s per direction (default: unlimited)
+  --loss-percent N        independent seeded datagram loss (default: 0)
+  --loss-seed N           loss RNG seed (default: 0)
 USAGE
 }
 
@@ -69,6 +75,9 @@ while (($#)); do
     --pty-iters) PTY_ITERS="$2"; shift 2 ;;
     --big-history) BIG_HISTORY=1; shift ;;
     --rtt-ms) RTT_MS="$2"; shift 2 ;;
+    --path-mbit) PATH_MBIT="$2"; shift 2 ;;
+    --loss-percent) LOSS_PERCENT="$2"; shift 2 ;;
+    --loss-seed) LOSS_SEED="$2"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) printf 'unknown option: %s\n' "$1" >&2; usage >&2; exit 2 ;;
   esac
@@ -274,9 +283,11 @@ seed_herdr() {
 start_relay() {
   local ready="$RUN/relay-ready"
   rm -f "$ready"
-  log_cmd "python3 scripts/bench/udp-delay.py --listen 127.0.0.1:$QUIC_RELAY_PORT --to 127.0.0.1:$QUIC_PORT --delay-ms $(awk -v r="$RTT_MS" 'BEGIN{printf "%g", r/2}')"
+  log_cmd "python3 scripts/bench/udp-delay.py --listen 127.0.0.1:$QUIC_RELAY_PORT --to 127.0.0.1:$QUIC_PORT --delay-ms $(awk -v r="$RTT_MS" 'BEGIN{printf "%g", r/2}') --mbit $PATH_MBIT --loss-percent $LOSS_PERCENT --seed $LOSS_SEED --metrics-file $OUT_DIR/relay-metrics.json"
   python3 "$UDP_DELAY" --listen "127.0.0.1:$QUIC_RELAY_PORT" --to "127.0.0.1:$QUIC_PORT" \
     --delay-ms "$(awk -v r="$RTT_MS" 'BEGIN{printf "%g", r/2}')" --ready-file "$ready" \
+    --mbit "$PATH_MBIT" --loss-percent "$LOSS_PERCENT" --seed "$LOSS_SEED" \
+    --metrics-file "$OUT_DIR/relay-metrics.json" \
     >>"$OUT_DIR/relay.log" 2>&1 &
   RELAY_PID=$!
   local deadline=$((SECONDS + 10))
@@ -287,8 +298,18 @@ start_relay() {
 stop_relay() {
   [[ -n $RELAY_PID ]] || return 0
   kill "$RELAY_PID" 2>/dev/null || true
-  wait_gone "$RELAY_PID"
+  local status=0
+  wait "$RELAY_PID" || status=$?
   RELAY_PID=""
+  if (( status != 0 )); then
+    printf 'invalid shaped-path run: relay exited %s; see %s/relay.log\n' "$status" "$OUT_DIR" >&2
+    return "$status"
+  fi
+}
+
+path_shaping_enabled() {
+  awk -v r="$RTT_MS" -v b="$PATH_MBIT" -v l="$LOSS_PERCENT" \
+    'BEGIN { exit !(r != 0 || b != 0 || l != 0) }'
 }
 
 # Detach keys are each multiplexer's documented binding: phux C-a d, herdr C-b q.
@@ -304,9 +325,12 @@ setup_mux() {
       MUX_ARGV="$PHUX_BIN attach --ws ws://127.0.0.1:$WS_PORT bench" ;;
     phux-quic) FAMILY=phux; MUX_DETACH=(C-a d)
       local port=$QUIC_PORT
-      # A nonzero --rtt-ms puts the delay relay between client and server; the
+      # Requested shaping puts the relay between client and server; the
       # server still binds its own port and never learns it is being shaped.
-      (( $(printf '%.0f' "$RTT_MS") > 0 )) && { start_relay || exit 2; port=$QUIC_RELAY_PORT; }
+      if path_shaping_enabled; then
+        start_relay || exit 2
+        port=$QUIC_RELAY_PORT
+      fi
       MUX_ARGV="$PHUX_BIN attach --quic 127.0.0.1:$port bench" ;;
     herdr) FAMILY=herdr; MUX_DETACH=(C-b q); MUX_ARGV="$HERDR_BIN" ;;
     tmux) FAMILY=tmux; MUX_DETACH=(); MUX_ARGV="/bin/sh" ;;

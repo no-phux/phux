@@ -532,6 +532,32 @@ implementation. Tracked benchmark work: phux-slogic.5.7 and phux-69pq.5.
 
 Tracked work: phux-au1s.11.
 
+**Harness implementation (2026-09-13):** the UDP proxy now supports
+`--mbit`, `--loss-percent`, and `--seed`. Each direction has an independent
+serialization clock and seeded datagram-loss stream, with byte/packet queue
+bounds and separate random-drop, tail-drop, and shutdown-drop counts. Rates
+count UDP payload bytes, excluding headers. It does not reorder packets or
+model shared half-duplex capacity. The single-client routing assumption remains.
+Delay-only overflow exits nonzero and marks the experiment invalid.
+
+The mux harness exposes `--path-mbit`, `--loss-percent`, and `--loss-seed`,
+records `relay-metrics.json`, and rejects nonzero relay exit status. A sample
+invocation for a 150 ms RTT, 3 Mbit/s, 1% loss experiment is:
+
+```sh
+bash scripts/bench/mux-compare.sh --mux phux-quic --rtt-ms 150 \
+  --path-mbit 3 --loss-percent 1 --loss-seed 17 --out target/bench/shaped
+```
+
+This is a runnable experiment specification, not a recorded performance result.
+Nine proxy tests pass, including a real UDP echo, real queued shutdown under
+SIGTERM/SIGINT, deterministic loss, serialization ordering, independent
+directions, and invalid delay-only overflow. `bash -n` and a production shell
+function smoke check pass; ShellCheck reports only the preexisting SC2059
+dynamic-character `printf` finding. Independent source review dispositioned
+the proxy's initial silent-overflow and missing queued-shutdown-test findings.
+Lizard reports proxy ingress 3 → 3, new enqueue 5, and proxy run 3 → 9.
+
 ### Acceptance matrix
 
 | Dimension | Cases |
