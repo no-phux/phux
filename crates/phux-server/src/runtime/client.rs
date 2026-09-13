@@ -2342,6 +2342,7 @@ where
     // if it hasn't already exited via its own close-on-EOF path, and the
     // per-attach pumps go with it. Keeps lifecycle plumbing local.
     let mut plumbing = ClientPlumbing::spawn(writer, client_id);
+    let mut command_tasks = super::command_tasks::CommandTasks::new();
     // An attach id names one immutable aggregate generation for the life of
     // this connection. Reuse would collide with a completed stream/bootstrap
     // key even when the replacement otherwise followed the right barriers.
@@ -2377,6 +2378,7 @@ where
             biased;
             () = token.cancelled() => {
                 debug!(?client_id, "client task cancelled");
+                command_tasks.shutdown().await;
                 plumbing
                     .close_for_cancellation(&state, client_id, &root_token)
                     .await;
@@ -2384,6 +2386,7 @@ where
             }
             () = &mut hello_deadline, if negotiated.is_none() => {
                 warn!(?client_id, "client did not complete HELLO before deadline; closing");
+                command_tasks.shutdown().await;
                 plumbing.close(ConnectionClose {
                     attached_reason: None,
                     code: ErrorCode::VersionIncompatible,
@@ -2395,17 +2398,30 @@ where
                 Ok(Some(framed)) => framed,
                 Ok(None) => {
                     debug!("client disconnected (eof)");
+                    command_tasks.shutdown().await;
                     return Ok(());
                 }
                 Err(err) => {
                     let Some(close) = framing_violation_close(&err, client_id) else {
                         debug!(error = %err, "client read error; closing");
+                        command_tasks.shutdown().await;
                         return Ok(());
                     };
+                    command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
                     return Ok(());
                 }
             },
+            () = command_tasks.stopped() => {
+                warn!(?client_id, "bulk command worker stopped unexpectedly; closing");
+                command_tasks.shutdown().await;
+                plumbing.close(ConnectionClose {
+                    attached_reason: Some("bulk command worker stopped"),
+                    code: ErrorCode::InternalError,
+                    message: "bulk command worker stopped unexpectedly".to_owned(),
+                }, &state, client_id).await;
+                return Ok(());
+            }
             event = async {
                 match stream_events.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -2439,12 +2455,14 @@ where
         let frame = match decode_client_frame(&framed, negotiated.as_ref()) {
             Ok(frame) => frame,
             Err(close) => {
+                command_tasks.shutdown().await;
                 plumbing.close(close, &state, client_id).await;
                 return Ok(());
             }
         };
 
         if let Some(close) = reject_frame_before_hello(&frame, negotiated.is_some(), client_id) {
+            command_tasks.shutdown().await;
             plumbing.close(close, &state, client_id).await;
             return Ok(());
         }
@@ -2475,6 +2493,7 @@ where
                 )
                 .await
                 {
+                    command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
                     return Ok(());
                 }
@@ -2522,6 +2541,7 @@ where
                             code: ErrorCode::MalformedMessage,
                             message: "ATTACH attach_id must be nonzero".to_owned(),
                         };
+                        command_tasks.shutdown().await;
                         plumbing.close(close, &state, client_id).await;
                         return Ok(());
                     }
@@ -2873,6 +2893,45 @@ where
                     }
                     _ => None,
                 });
+                let retained = super::command_tasks::CommandTasks::retained_bytes(&command);
+                if let Some(retained) = retained {
+                    let task_state = state.clone();
+                    let task_out = plumbing.out_tx.clone();
+                    let task_input_lane = input_lane.clone();
+                    let task_token = token.clone();
+                    let task_root_token = root_token.clone();
+                    let client_caps = selection.client_caps;
+                    let profile = selection.profile;
+                    let limits = selection.limits;
+                    let task = async move {
+                        handle_command(
+                            &task_state,
+                            client_id,
+                            request_id,
+                            command,
+                            &task_out,
+                            client_caps,
+                            profile,
+                            limits,
+                            task_input_lane.as_ref(),
+                            &task_token,
+                            &task_root_token,
+                            defer_subscription,
+                        )
+                        .await;
+                        crate::perf::CMD_HANDLE.record_elapsed(command_started);
+                    };
+                    if let Err(result) = command_tasks.try_submit(retained, task) {
+                        let _ = plumbing
+                            .out_tx
+                            .send(Outbound::Frame(FrameKind::CommandResult {
+                                request_id,
+                                result,
+                            }))
+                            .await;
+                    }
+                    continue;
+                }
                 handle_command(
                     &state,
                     client_id,
@@ -2905,6 +2964,7 @@ where
                         "frame is not valid from a client in the negotiated phase: {other:?}"
                     ),
                 };
+                command_tasks.shutdown().await;
                 plumbing.close(close, &state, client_id).await;
                 return Ok(());
             }
