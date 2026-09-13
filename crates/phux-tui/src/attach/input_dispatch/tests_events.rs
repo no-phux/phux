@@ -1537,6 +1537,54 @@ async fn dispatch_queues_paste_then_paste_then_enter_in_terminal_order() {
 }
 
 #[tokio::test]
+async fn replay_send_failure_rolls_back_frames_not_handed_to_the_connection() {
+    use crate::attach::input_replay::{InputReplayJournal, ReplayDisposition};
+    use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+
+    let journal = std::cell::RefCell::new(InputReplayJournal::new());
+    assert!(
+        journal
+            .borrow_mut()
+            .begin_connection(Some(&[0xAB; 16]), true)
+            .is_empty()
+    );
+    for terminal in 1..=3 {
+        journal
+            .borrow_mut()
+            .submit(
+                tid(terminal),
+                vec![InputEvent::Paste(PasteEvent {
+                    trust: PasteTrust::Trusted,
+                    data: terminal.to_string().into_bytes(),
+                })],
+            )
+            .expect("queue independent terminal");
+    }
+    let (_, frames) = journal.borrow_mut().next_frames(&mut 1);
+    assert_eq!(frames.len(), 3);
+
+    let (stream, peer) = tokio::net::UnixStream::pair().expect("uds pair");
+    drop(peer);
+    let mut conn = Connection::from_stream(stream);
+    send_replay_frames(&mut conn, &journal, &frames)
+        .await
+        .expect_err("A send must fail before B/C are attempted");
+
+    let reports = journal
+        .borrow_mut()
+        .drain_unresolved("the connection send failed");
+    let dispositions: Vec<_> = reports.iter().map(|report| report.disposition).collect();
+    assert_eq!(
+        dispositions,
+        vec![
+            ReplayDisposition::Unknown,
+            ReplayDisposition::Refused,
+            ReplayDisposition::Refused,
+        ]
+    );
+}
+
+#[tokio::test]
 async fn bracketed_paste_populates_modal_text_without_reaching_the_pane() {
     use crate::render::overlay::{
         OverlayOutcome, PromptOverlay, RenderOverlay, SelectItem, SelectList,

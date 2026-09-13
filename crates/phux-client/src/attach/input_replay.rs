@@ -376,6 +376,40 @@ impl InputReplayJournal {
         self.build_frames(next_request_id, usize::MAX)
     }
 
+    /// Roll back a suffix returned by [`Self::next_frames`] that the caller
+    /// never handed to its connection.
+    ///
+    /// A sequential sender must exclude the frame whose `send` returned an
+    /// error: that handoff is uncertain. Only later frames are provably
+    /// unsent. Rolling those back removes their connection-local request ids
+    /// and reverses this build's attempt, while preserving any earlier attempt
+    /// (and therefore its unknown-delivery risk) across a replay.
+    pub fn rollback_unsent(&mut self, frames: &[FrameKind]) {
+        for frame in frames {
+            let FrameKind::Command { request_id, .. } = frame else {
+                continue;
+            };
+            let Some(attempt) = self
+                .connection
+                .as_mut()
+                .and_then(|ctx| ctx.in_flight.remove(request_id))
+            else {
+                continue;
+            };
+            let Some(op) = self
+                .ops
+                .iter_mut()
+                .find(|op| op.operation_id == attempt.operation_id)
+            else {
+                continue;
+            };
+            op.attempts = op.attempts.saturating_sub(1);
+            if op.attempts == 0 {
+                op.expected_server_id = None;
+            }
+        }
+    }
+
     fn build_frames(
         &mut self,
         next_request_id: &mut u32,
@@ -753,6 +787,55 @@ mod tests {
         let (_, frames) = journal.next_frames(&mut next);
         assert_eq!(frames.len(), 1);
         assert_eq!(command_parts(&frames[0]).2, &tid(2));
+    }
+
+    #[test]
+    fn unsent_suffix_rolls_back_to_definite_refusal_after_send_failure() {
+        let mut journal = armed_journal();
+        for terminal in 1..=3 {
+            journal
+                .submit(tid(terminal), paste(&terminal.to_string()))
+                .expect("queue");
+        }
+        let (_, frames) = journal.next_frames(&mut 1);
+        assert_eq!(frames.len(), 3);
+
+        // Sending A failed. A reached the transport API, but B/C never did.
+        journal.rollback_unsent(&frames[1..]);
+        let reports = journal.drain_unresolved("the connection send failed");
+        let dispositions: Vec<_> = reports.iter().map(|report| report.disposition).collect();
+        assert_eq!(
+            dispositions,
+            vec![
+                ReplayDisposition::Unknown,
+                ReplayDisposition::Refused,
+                ReplayDisposition::Refused,
+            ]
+        );
+    }
+
+    #[test]
+    fn rollback_of_replay_suffix_preserves_prior_attempt_uncertainty() {
+        let mut journal = armed_journal();
+        for terminal in 1..=3 {
+            journal
+                .submit(tid(terminal), paste(&terminal.to_string()))
+                .expect("queue");
+        }
+        let _ = journal.next_frames(&mut 1);
+        journal.connection_lost();
+        assert!(journal.begin_connection(Some(&SERVER_A), true).is_empty());
+
+        let (_, replay_frames) = journal.next_frames(&mut 10);
+        assert_eq!(replay_frames.len(), 3);
+        journal.rollback_unsent(&replay_frames[1..]);
+        let reports = journal.drain_unresolved("the replay send failed");
+        assert!(
+            reports
+                .iter()
+                .all(|report| report.disposition == ReplayDisposition::Unknown),
+            "every operation retains its prior attempt: {reports:?}"
+        );
     }
 
     #[test]

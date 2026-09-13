@@ -23,6 +23,7 @@ use crate::attach::actions::{self, PendingSplit};
 use crate::attach::connection::Connection;
 use crate::attach::focus::FocusHistory;
 use crate::attach::input::make_named_key;
+use crate::attach::input_replay::InputReplayJournal;
 use crate::attach::outcome::AttachError;
 use crate::attach::paint::{SidebarReservation, content_rect};
 use crate::attach::pane_state::{
@@ -1174,10 +1175,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             journal.next_frames(&mut *self.ctx.next_request_id)
         };
         journal.borrow_mut().defer_reports(reports);
-        for frame in frames {
-            self.conn.send(&frame).await?;
-        }
-        Ok(())
+        send_replay_frames(self.conn, journal, &frames).await
     }
 
     /// Paint the queued predictions. Predictions are pane-local; shift
@@ -1205,6 +1203,24 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             crate::attach::pane_state::invalidate_predicted_rows(slot, self.predict);
         }
     }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "the attach loop and its RefCell replay journal are current-thread state"
+)]
+pub(super) async fn send_replay_frames(
+    conn: &mut Connection,
+    journal: &std::cell::RefCell<InputReplayJournal>,
+    frames: &[FrameKind],
+) -> Result<(), AttachError> {
+    for (index, frame) in frames.iter().enumerate() {
+        if let Err(error) = conn.send(frame).await {
+            journal.borrow_mut().rollback_unsent(&frames[index + 1..]);
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn wheel_scroll_delta(mouse: &MouseEvent) -> Option<isize> {
