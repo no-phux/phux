@@ -60,10 +60,6 @@ const PREAMBLE_DEADLINE: Duration = Duration::from_secs(5);
 /// send its bearer preamble, so the bound only fires on stalled peers.
 const CONSUMER_STREAM_DEADLINE: Duration = Duration::from_secs(5);
 
-/// Maximum number of consumer bidi streams bridged onto one tunnel. This
-/// mirrors the server's and client connection mux caps and prevents a single
-/// consumer from turning a route into an unbounded task factory.
-
 /// How long shutdown waits for close frames to drain before returning.
 const SHUTDOWN_DRAIN: Duration = Duration::from_secs(2);
 
@@ -528,12 +524,13 @@ async fn bridge_consumer(
     };
     tracing::info!(route = %route, %remote, "consumer bridged");
     let window = SendWindow::new(conn.clone());
-    let mut control_bridge = tokio::spawn(splice(
+    let control_bridge = splice(
         consumer_streams.1,
         tun_send,
         tun_recv,
         TrackedSend::new(consumer_streams.0, window),
-    ));
+    );
+    tokio::pin!(control_bridge);
 
     // The tunnel wire has no consumer-group envelope. Forwarding a second
     // stream would make the production connector mistake it for a new
@@ -543,7 +540,7 @@ async fn bridge_consumer(
     let mut refused_streams = 0_u64;
     loop {
         tokio::select! {
-            _ = &mut control_bridge => break,
+            () = &mut control_bridge => break,
             opened = conn.accept_bi() => {
                 let Ok((mut cons_send, mut cons_recv)) = opened else { break };
                 refused_streams = refused_streams.saturating_add(1);
