@@ -28,14 +28,38 @@ function option(args, name) {
   return at === -1 ? undefined : args[at + 1];
 }
 
+function isAgent(request, verb, extra) {
+  return request.args[0] === "agent" && request.args[1] === verb &&
+    (extra === undefined || request.args[2] === extra);
+}
+
+function sessionOpenResult(parent, nativeId) {
+  return completed(JSON.stringify({
+    schema_version: 1,
+    resource: "@99",
+    parent,
+    provider: "opencode",
+    native_id: nativeId ?? null,
+  }));
+}
+
+function emitResult(type) {
+  return completed(JSON.stringify({
+    schema_version: 1, resource: "@99", seq: 1, ts_ms: 1, type,
+  }));
+}
+
 test("documented session status events declare owner-labelled identity, and never a state", async () => {
   const requests = [];
   let record;
   const cli = new PhuxCli({ runner: async (request) => {
     requests.push(request);
-    if (request.args[0] === "agent" && request.args[1] === "show") {
+    if (isAgent(request, "show")) {
       return completed(JSON.stringify({ schema_version: 1, agents: [] }));
     }
+    if (isAgent(request, "session", "open")) return sessionOpenResult("@5", option(request.args, "--native-id"));
+    if (isAgent(request, "emit")) return emitResult(option(request.args, "--type"));
+    if (isAgent(request, "session", "close")) return completed("@99\tclosed");
     if (request.args[0] !== "agent" || request.args[1] !== "set") {
       throw new Error(`unexpected lifecycle request: ${request.args.join(" ")}`);
     }
@@ -122,6 +146,11 @@ test("session deletion resolves a session/window selector and clears only the ow
       }));
     }
     if (request.args[1] === "clear") return completed("@6\t-");
+    if (request.args[1] === "session" && request.args[2] === "open") {
+      return sessionOpenResult("shared:window-0", option(request.args, "--native-id"));
+    }
+    if (request.args[1] === "emit") return emitResult(option(request.args, "--type"));
+    if (request.args[1] === "session" && request.args[2] === "close") return completed("@99\tclosed");
     throw new Error(`unexpected agent command: ${request.args.join(" ")}`);
   } });
   const hooks = activate({ cli, env: { PHUX_TARGET: "shared:window-0" } });
@@ -189,6 +218,11 @@ test("dispose isolates owned sessions when the first cleanup fails", async () =>
       }));
     }
     if (request.args[1] === "clear") return completed("@10\t-");
+    if (request.args[1] === "session" && request.args[2] === "open") {
+      return sessionOpenResult("@10", option(request.args, "--native-id"));
+    }
+    if (request.args[1] === "emit") return emitResult(option(request.args, "--type"));
+    if (request.args[1] === "session" && request.args[2] === "close") return completed("@99\tclosed");
     throw new Error(`unexpected agent command: ${request.args.join(" ")}`);
   } });
   const hooks = activate({
@@ -230,4 +264,100 @@ test("retry and unrelated public events do not invent lifecycle transitions", as
   await hooks.event({ event: { type: "file.edited", properties: { file: "x" } } });
   await hooks.dispose();
   assert.equal(calls, 0);
+});
+
+test("a permission prompt becomes blocked on the AgentSession stream and still writes no state", async () => {
+  const requests = [];
+  let record;
+  const cli = new PhuxCli({ runner: async (request) => {
+    requests.push(request);
+    if (isAgent(request, "show")) return completed(JSON.stringify({ schema_version: 1, agents: [] }));
+    if (isAgent(request, "session", "open")) return sessionOpenResult("@5", option(request.args, "--native-id"));
+    if (isAgent(request, "emit")) return emitResult(option(request.args, "--type"));
+    if (isAgent(request, "session", "close")) return completed("@99\tclosed");
+    if (request.args[1] === "set") {
+      record = {
+        name: option(request.args, "--name"),
+        kind: option(request.args, "--kind"),
+        state: option(request.args, "--state"),
+        attention: option(request.args, "--attention"),
+        session: option(request.args, "--session"),
+      };
+      return completed(`@5\t${JSON.stringify(record)}`);
+    }
+    throw new Error(`unexpected lifecycle request: ${request.args.join(" ")}`);
+  } });
+  const hooks = activate({ cli, env: { PHUX_TARGET: "@5" } });
+
+  await hooks.event({ event: {
+    type: "session.status",
+    properties: { sessionID: "session-public-1", status: { type: "busy" } },
+  } });
+  const setsAfterBusy = requests.filter((request) => request.args[1] === "set").length;
+  await hooks.event({ event: {
+    type: "permission.asked",
+    properties: { sessionID: "session-public-1", id: "perm-1", permission: "bash" },
+  } });
+
+  const ask = requests.find((request) =>
+    request.args[1] === "emit" && option(request.args, "--type") === "ask");
+  assert.ok(ask, "permission.asked maps to ask");
+  assert.match(option(ask.args, "--data") ?? "", /"kind":"permission"/);
+  assert.equal(record.state, undefined, "identity-only still does not write state");
+  assert.equal(
+    requests.filter((request) => request.args[1] === "set").length,
+    setsAfterBusy,
+    "a permission prompt must not rewrite identity",
+  );
+  await hooks.dispose();
+});
+
+test("unsupported session open fails closed and identity-only still works", async () => {
+  const requests = [];
+  let record;
+  const cli = new PhuxCli({ runner: async (request) => {
+    requests.push(request);
+    if (isAgent(request, "session", "open")) {
+      return {
+        termination: "completed",
+        exitCode: 2,
+        stdout: "",
+        stderr: JSON.stringify({ schema_version: 1, error: { code: "unsupported_server" } }),
+      };
+    }
+    if (isAgent(request, "emit")) {
+      throw new Error("emit must not run when open is unsupported");
+    }
+    if (request.args[1] === "set") {
+      record = {
+        name: option(request.args, "--name"),
+        kind: option(request.args, "--kind"),
+        state: option(request.args, "--state"),
+        attention: option(request.args, "--attention"),
+        session: option(request.args, "--session"),
+      };
+      return completed(`@5\t${JSON.stringify(record)}`);
+    }
+    if (isAgent(request, "show")) return completed(JSON.stringify({ schema_version: 1, agents: [] }));
+    if (isAgent(request, "session", "close")) {
+      throw new Error("close must not run when open never succeeded");
+    }
+    throw new Error(`unexpected lifecycle request: ${request.args.join(" ")}`);
+  } });
+  const hooks = activate({ cli, env: { PHUX_TARGET: "@5" } });
+
+  await hooks.event({ event: {
+    type: "session.status",
+    properties: { sessionID: "session-public-1", status: { type: "busy" } },
+  } });
+  await hooks.event({ event: {
+    type: "permission.asked",
+    properties: { sessionID: "session-public-1" },
+  } });
+  await hooks.dispose();
+
+  assert.equal(requests.filter((request) => request.args[2] === "open").length, 1);
+  assert.equal(requests.some((request) => request.args[1] === "emit"), false);
+  assert.equal(record.state, undefined);
+  assert.equal(record.name, "opencode");
 });

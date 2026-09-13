@@ -1,12 +1,30 @@
 import type {
   ExtensionAPI,
   ExtensionContext,
+  ProjectTrustEvent,
   SessionShutdownEvent,
   SessionStartEvent,
+  ToolExecutionEndEvent,
+  ToolExecutionStartEvent,
+  UIPromptStartEvent,
 } from "@earendil-works/pi-coding-agent";
 
-import { PhuxCli } from "./adapter.js";
-import { type AgentRecord, type AgentStateList } from "./schemas.js";
+import {
+  AgentSessionEmitter,
+  hasAgentSessionCli,
+  PhuxCli,
+  type AgentEmitOptions,
+  type AgentSessionOpenOptions,
+  type ExecutionOptions,
+} from "./adapter.js";
+import {
+  type AgentEmitResult,
+  type AgentEventType,
+  type AgentRecord,
+  type AgentSessionCloseResult,
+  type AgentSessionOpenResult,
+  type AgentStateList,
+} from "./schemas.js";
 import type { PhuxTargetSelection, PhuxTargetStore } from "./target-store.js";
 
 export interface LifecycleCommandOptions {
@@ -18,6 +36,9 @@ export interface PhuxLifecycleAdapter {
   agentShow(options: LifecycleCommandOptions & { readonly target: string }): Promise<AgentStateList>;
   agentSet(target: string, record: AgentRecord, options: LifecycleCommandOptions): Promise<AgentRecord>;
   agentClear(target: string, options: LifecycleCommandOptions): Promise<void>;
+  agentSessionOpen?(target: string, options: AgentSessionOpenOptions): Promise<AgentSessionOpenResult>;
+  agentEmit?(target: string, type: AgentEventType, options?: AgentEmitOptions): Promise<AgentEmitResult>;
+  agentSessionClose?(target: string, options?: ExecutionOptions): Promise<AgentSessionCloseResult>;
 }
 
 export interface LifecycleTimers {
@@ -79,6 +100,7 @@ export class PhuxLifecycle {
   private readonly timeoutMs: number;
   private readonly timers: LifecycleTimers;
   private readonly onError: (error: unknown) => void;
+  private readonly session: AgentSessionEmitter;
   private readonly inFlight = new Set<AbortController>();
   private timer: unknown;
   private tail: Promise<void> = Promise.resolve();
@@ -87,6 +109,7 @@ export class PhuxLifecycle {
   private preserveOnStop = false;
   private abandoned = false;
   private owner: string | null = null;
+  private sessionId: string | null = null;
   private target: PhuxTargetSelection | null = null;
   private desired: Binding | null = null;
   private applied: Binding | null = null;
@@ -105,12 +128,17 @@ export class PhuxLifecycle {
     }
     this.timers = options.timers ?? systemTimers;
     this.onError = options.onError ?? (() => {});
+    this.session = new AgentSessionEmitter(
+      hasAgentSessionCli(this.cli) ? this.cli : null,
+      { provider: "pi", onError: this.onError },
+    );
   }
 
   start(sessionId: string, target: PhuxTargetSelection | null, reload = false): void {
     this.active = true;
     this.preserveOnStop = false;
     this.abandoned = false;
+    this.sessionId = sessionId;
     this.owner = `pi:${sessionId}`;
     this.target = target;
     this.desired = this.binding();
@@ -118,18 +146,34 @@ export class PhuxLifecycle {
     if (reload) {
       // The previous extension instance deliberately left this declaration in
       // place. Adopt it without a clear/set flicker; the next real transition
-      // will confirm the current state.
+      // will confirm the current state. The AgentSession stays open too.
       this.applied = this.desired;
       this.owned = this.desired;
+      this.session.adopt(target?.selector ?? null);
       return;
     }
+    this.enqueueSessionBind();
     this.schedule();
   }
 
   setTarget(target: PhuxTargetSelection | null): void {
     if (!this.active) return;
     this.target = target;
+    this.enqueueSessionBind();
     this.transition();
+  }
+
+  /**
+   * Append one AgentSession record. No-ops when this instance did not open
+   * the session (missing verb, failed open, or no pane yet). Never writes
+   * detector `state`.
+   */
+  emit(type: AgentEventType, data?: Readonly<Record<string, unknown>>): void {
+    if (!this.active || this.session.isUnavailable) return;
+    this.enqueueWork(async () => {
+      if (this.abandoned || (!this.active && this.preserveOnStop)) return;
+      await this.runCommand((options) => this.session.emit(type, data, options));
+    });
   }
 
 
@@ -143,6 +187,11 @@ export class PhuxLifecycle {
     if (!reload) {
       this.desired = null;
       this.enqueue();
+      if (!this.session.isUnavailable) {
+        this.enqueueWork(async () => {
+          await this.runCommand((options) => this.session.finish(options));
+        });
+      }
     }
     if (!await this.waitForTail()) {
       this.abandoned = true;
@@ -168,6 +217,18 @@ export class PhuxLifecycle {
     return { target: this.target, owner: this.owner };
   }
 
+  private enqueueSessionBind(): void {
+    if (this.session.isUnavailable) return;
+    const target = this.target;
+    const sessionId = this.sessionId;
+    this.enqueueWork(async () => {
+      if (this.abandoned || (!this.active && this.preserveOnStop)) return;
+      if (sessionId === null) return;
+      await this.runCommand((options) =>
+        this.session.bind(target?.selector ?? null, sessionId, options));
+    });
+  }
+
   private schedule(): void {
     this.cancelTimer();
     this.timer = this.timers.setTimeout(() => {
@@ -183,7 +244,11 @@ export class PhuxLifecycle {
   }
 
   private enqueue(): void {
-    this.tail = this.tail.then(() => this.reconcile()).catch((error: unknown) => {
+    this.enqueueWork(() => this.reconcile());
+  }
+
+  private enqueueWork(operation: () => Promise<void>): void {
+    this.tail = this.tail.then(operation).catch((error: unknown) => {
       this.onError(error);
     });
   }
@@ -295,9 +360,29 @@ export function registerPhuxLifecycle(
       event.reason === "reload",
     );
   });
-  // No `agent_start` / `agent_settled` subscription: this integration declares
-  // identity, and the server derives state from `rules/pi.toml` (phux-w7z2.38).
-  // Subscribing to write nothing would only cost a debounce timer per turn.
+  // Per-turn events feed the AgentSession stream. They must not write
+  // detector `state` (phux-w7z2.38): identity stays on session start / target
+  // change, and the detector remains the fallback when emit is absent.
+  pi.on("agent_start", () => lifecycle.emit("prompt"));
+  pi.on("tool_execution_start", (event: ToolExecutionStartEvent) => {
+    lifecycle.emit("tool_start", { tool_name: event.toolName, tool_use_id: event.toolCallId });
+  });
+  pi.on("tool_execution_end", (event: ToolExecutionEndEvent) => {
+    lifecycle.emit("tool_end", {
+      tool_name: event.toolName,
+      tool_use_id: event.toolCallId,
+      ok: !event.isError,
+    });
+  });
+  pi.on("ui_prompt_start", (event: UIPromptStartEvent) => {
+    lifecycle.emit("ask", { kind: event.kind, ...(event.title === undefined ? {} : { question: event.title }) });
+  });
+  pi.on("project_trust", (event: ProjectTrustEvent) => {
+    lifecycle.emit("ask", { kind: "trust", question: event.cwd });
+    // Do not own the trust decision; report blocked and let Pi continue.
+    return { trusted: "undecided" as const };
+  });
+  pi.on("agent_settled", () => lifecycle.emit("stop"));
   pi.on("session_shutdown", async (event: SessionShutdownEvent) => {
     unsubscribe();
     unsubscribe = () => {};

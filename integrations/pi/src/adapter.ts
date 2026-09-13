@@ -7,7 +7,11 @@ import {
   type RunRequest,
 } from "./runner.js";
 import {
+  AGENT_EVENT_TYPES,
+  isAgentEventType,
+  parseAgentEmitResult,
   parseAgentRecord,
+  parseAgentSessionOpenResult,
   parseAgentStateList,
   parseAskedEvent,
   parseCreateResult,
@@ -22,7 +26,11 @@ import {
   parseSwapPaneResult,
   parseWatchEvent,
   SchemaValidationError,
+  type AgentEmitResult,
+  type AgentEventType,
   type AgentRecord,
+  type AgentSessionCloseResult,
+  type AgentSessionOpenResult,
   type AgentStateList,
   type AskedEvent,
   type CreateResult,
@@ -38,6 +46,14 @@ import {
   type TagRow,
   type WatchEvent,
 } from "./schemas.js";
+
+export type {
+  AgentEmitResult,
+  AgentEventType,
+  AgentSessionCloseResult,
+  AgentSessionOpenResult,
+} from "./schemas.js";
+export { AGENT_EVENT_TYPES, isAgentEventType } from "./schemas.js";
 
 export interface PhuxCliOptions {
   readonly executable?: string;
@@ -87,6 +103,15 @@ export interface RunOptions extends ExecutionOptions {
 
 export interface AgentTargetOptions extends ExecutionOptions {
   readonly target: string;
+}
+
+export interface AgentSessionOpenOptions extends ExecutionOptions {
+  readonly provider: string;
+  readonly nativeId?: string;
+}
+
+export interface AgentEmitOptions extends ExecutionOptions {
+  readonly data?: Readonly<Record<string, unknown>>;
 }
 
 export type SplitDirection = "horizontal" | "vertical";
@@ -345,6 +370,57 @@ export class PhuxCli {
     if (!/^@\d+\t-$/.test(result.stdout.trim())) {
       throw invalidResponse("agent clear", this.executable, args, "expected @N\\t- confirmation");
     }
+  }
+
+  /** Open an AgentSession bound to a pane; the caller becomes its producer. */
+  async agentSessionOpen(
+    target: string,
+    options: AgentSessionOpenOptions,
+  ): Promise<AgentSessionOpenResult> {
+    if (target.trim().length === 0) throw new TypeError("target must be non-empty");
+    if (options.provider.trim().length === 0) throw new TypeError("provider must be non-empty");
+    const args = ["agent", "session", "open", target, "--provider", options.provider];
+    if (options.nativeId !== undefined) {
+      if (options.nativeId.trim().length === 0) throw new TypeError("nativeId must be non-empty");
+      args.push("--native-id", options.nativeId);
+    }
+    args.push("--json");
+    this.pushSocket(args);
+    return this.jsonCommand("agent session open", args, options, parseAgentSessionOpenResult);
+  }
+
+  /** Append one closed-type record. No-op-refused by the server if this client is not the opener. */
+  async agentEmit(
+    target: string,
+    type: AgentEventType,
+    options: AgentEmitOptions = {},
+  ): Promise<AgentEmitResult> {
+    if (target.trim().length === 0) throw new TypeError("target must be non-empty");
+    if (!isAgentEventType(type)) {
+      throw new TypeError(`type must be one of ${AGENT_EVENT_TYPES.join(", ")}`);
+    }
+    const args = ["agent", "emit", target, "--type", type];
+    if (options.data !== undefined) {
+      if (typeof options.data !== "object" || Array.isArray(options.data)) {
+        throw new TypeError("data must be a JSON object");
+      }
+      args.push("--data", JSON.stringify(options.data));
+    }
+    args.push("--json");
+    this.pushSocket(args);
+    return this.jsonCommand("agent emit", args, options, parseAgentEmitResult);
+  }
+
+  /** Close a pane's AgentSession; the parent pane is untouched. */
+  async agentSessionClose(
+    target: string,
+    options: ExecutionOptions = {},
+  ): Promise<AgentSessionCloseResult> {
+    if (target.trim().length === 0) throw new TypeError("target must be non-empty");
+    const args = ["agent", "session", "close", target];
+    this.pushSocket(args);
+    const result = await this.completed("agent session close", args, options, false);
+    return parseSessionClosed("agent session close", this.executable, result.stdout, args);
   }
 
   async renderedSnapshot(options: RenderedSnapshotOptions): Promise<RenderedFrame> {
@@ -607,6 +683,21 @@ function parseAgentConfirmation(
   return parseJson(verb, executable, line.slice(tab + 1), args, parseAgentRecord);
 }
 
+function parseSessionClosed(
+  verb: string,
+  executable: string,
+  stdout: string,
+  args: string[],
+): AgentSessionCloseResult {
+  const line = stdout.trim();
+  const tab = line.indexOf("\t");
+  const resource = tab < 0 ? "" : line.slice(0, tab);
+  if (resource.length === 0 || line.slice(tab + 1) !== "closed") {
+    throw invalidResponse(verb, executable, args, "expected @N\\tclosed confirmation");
+  }
+  return { resource, closed: true };
+}
+
 function parseWatchLines(stdout: string, executable: string, args: string[]): WatchEvent[] {
   const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
   return lines.map((line, index) => {
@@ -760,5 +851,152 @@ function requireNonNegativeInteger(value: number, name: string): void {
 function requirePositiveInteger(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new RangeError(`${name} must be a positive safe integer`);
+  }
+}
+
+/** The three AgentSession CLI verbs, so hosts can inject a fake without constructing argv. */
+export interface AgentSessionCli {
+  agentSessionOpen(target: string, options: AgentSessionOpenOptions): Promise<AgentSessionOpenResult>;
+  agentEmit(target: string, type: AgentEventType, options?: AgentEmitOptions): Promise<AgentEmitResult>;
+  agentSessionClose(target: string, options?: ExecutionOptions): Promise<AgentSessionCloseResult>;
+}
+
+export function hasAgentSessionCli(cli: object): cli is AgentSessionCli {
+  const candidate = cli as Record<string, unknown>;
+  return typeof candidate.agentSessionOpen === "function" &&
+    typeof candidate.agentEmit === "function" &&
+    typeof candidate.agentSessionClose === "function";
+}
+
+/**
+ * True when `phux agent session open` is missing: an older binary without the
+ * verb, or a server that refuses with `unsupported_server`. Emit must then
+ * fail closed; identity-only `agent set` still runs.
+ */
+export function isAgentSessionUnsupported(error: unknown): boolean {
+  if (!(error instanceof PhuxError) || error.code !== "command_failed") return false;
+  const haystack = `${error.message}\n${error.stderr ?? ""}`;
+  return /unsupported_server|unrecognized subcommand|invalid subcommand|unknown command|not a valid command/i
+    .test(haystack);
+}
+
+export interface AgentSessionEmitterOptions {
+  readonly provider: string;
+  readonly onError?: (error: unknown) => void;
+}
+
+/**
+ * Open once per pane, emit only after a successful open, close the session we
+ * opened. A missing verb marks the emitter unavailable for the rest of its
+ * life so later hooks do not retry a command the server does not have.
+ */
+export class AgentSessionEmitter {
+  private readonly cli: AgentSessionCli | null;
+  private readonly provider: string;
+  private readonly onError: (error: unknown) => void;
+  private target: string | null = null;
+  private nativeId: string | null = null;
+  private opened = false;
+  private unavailable = false;
+
+  constructor(cli: AgentSessionCli | object | null, options: AgentSessionEmitterOptions) {
+    this.cli = cli !== null && hasAgentSessionCli(cli) ? cli : null;
+    this.provider = options.provider;
+    this.onError = options.onError ?? (() => {});
+    if (this.cli === null) this.unavailable = true;
+    if (this.provider.trim().length === 0) throw new TypeError("provider must be non-empty");
+  }
+
+  get isOpen(): boolean {
+    return this.opened;
+  }
+
+  get isUnavailable(): boolean {
+    return this.unavailable;
+  }
+
+  /** Take over a session this process left open (extension reload). */
+  adopt(target: string | null): void {
+    this.target = target;
+    this.opened = target !== null;
+    this.nativeId = null;
+  }
+
+  async bind(target: string | null, nativeId: string, options: ExecutionOptions = {}): Promise<void> {
+    if (this.unavailable) return;
+    if (target === this.target && this.opened && this.nativeId === nativeId) return;
+    if (this.opened && (this.target !== target || this.nativeId !== nativeId)) {
+      await this.finish(options);
+    }
+    if (target === null) return;
+    await this.open(target, nativeId, options);
+  }
+
+  async emit(
+    type: AgentEventType,
+    data: Readonly<Record<string, unknown>> | undefined,
+    options: ExecutionOptions = {},
+  ): Promise<void> {
+    if (this.unavailable || !this.opened || this.target === null || this.cli === null) return;
+    try {
+      await this.cli.agentEmit(this.target, type, {
+        ...options,
+        ...(data === undefined ? {} : { data }),
+      });
+    } catch (error) {
+      this.onError(error);
+    }
+  }
+
+  async finish(options: ExecutionOptions = {}): Promise<void> {
+    if (this.unavailable || !this.opened || this.target === null || this.cli === null) {
+      this.opened = false;
+      this.target = null;
+      this.nativeId = null;
+      return;
+    }
+    const target = this.target;
+    this.opened = false;
+    this.target = null;
+    this.nativeId = null;
+    try {
+      await this.cli.agentEmit(target, "session_end", options);
+    } catch (error) {
+      this.onError(error);
+    }
+    try {
+      await this.cli.agentSessionClose(target, options);
+    } catch (error) {
+      this.onError(error);
+    }
+  }
+
+  private async open(target: string, nativeId: string, options: ExecutionOptions): Promise<void> {
+    if (this.cli === null) return;
+    try {
+      await this.cli.agentSessionOpen(target, {
+        provider: this.provider,
+        nativeId,
+        ...options,
+      });
+    } catch (error) {
+      if (isAgentSessionUnsupported(error)) {
+        this.unavailable = true;
+        return;
+      }
+      this.onError(error);
+      return;
+    }
+    this.target = target;
+    this.nativeId = nativeId;
+    this.opened = true;
+    try {
+      await this.cli.agentEmit(target, "session_start", {
+        ...options,
+        data: { provider: this.provider, native_id: nativeId },
+      });
+    } catch (error) {
+      this.onError(error);
+    }
   }
 }
