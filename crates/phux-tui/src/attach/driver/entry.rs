@@ -44,7 +44,7 @@ enum AttachStart<'a> {
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
-async fn run_buffered(
+async fn run_from_start(
     start: AttachStart<'_>,
     target: AttachTarget,
     predict: PredictiveConfig,
@@ -91,6 +91,27 @@ async fn run_buffered(
     }
 }
 
+/// Test-visible dial wrapper preserving the original unrecorded/recorded sink
+/// seam while production connection reuse enters through [`run_from_start`].
+pub(super) async fn run_buffered(
+    dial: &Dial,
+    target: AttachTarget,
+    predict: PredictiveConfig,
+    rec: Option<Rc<RefCell<SessionRecorder>>>,
+    initial_notice: Option<Notice>,
+    input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
+) -> Result<AttachEnd, AttachError> {
+    run_from_start(
+        AttachStart::Dial(dial),
+        target,
+        predict,
+        rec,
+        initial_notice,
+        input_replay,
+    )
+    .await
+}
+
 /// Dial-aware production attach (UDS *or* QUIC) with predictive echo config.
 ///
 /// The CLI builds a [`Dial`] from its flags (a UDS path or a remote
@@ -135,7 +156,7 @@ pub async fn run_with_predict_dial(
     initial_notice: Option<Notice>,
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
-    run_buffered(
+    run_from_start(
         AttachStart::Dial(dial),
         target,
         predict,
@@ -162,7 +183,7 @@ pub async fn run_with_predict_connection(
     initial_notice: Option<Notice>,
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
-    run_buffered(
+    run_from_start(
         AttachStart::Connection(Box::new(connection)),
         target,
         predict,
@@ -192,7 +213,7 @@ pub async fn run_recorded_dial(
     initial_notice: Option<Notice>,
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
-    run_buffered(
+    run_from_start(
         AttachStart::Dial(dial),
         target,
         predict,
@@ -219,7 +240,7 @@ pub async fn run_recorded_connection(
     initial_notice: Option<Notice>,
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
-    run_buffered(
+    run_from_start(
         AttachStart::Connection(Box::new(connection)),
         target,
         predict,
