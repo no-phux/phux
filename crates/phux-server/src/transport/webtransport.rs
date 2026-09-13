@@ -385,11 +385,16 @@ fn unique_query_token(path: &str) -> UniqueToken<'_> {
     let Some((_, query)) = path.split_once('?') else {
         return UniqueToken::Missing;
     };
-    let mut values = query.split('&').filter_map(|kv| kv.strip_prefix("token="));
-    let Some(value) = values.next() else {
+    let mut carriers = query
+        .split('&')
+        .filter(|part| *part == "token" || part.starts_with("token="));
+    let Some(carrier) = carriers.next() else {
         return UniqueToken::Missing;
     };
-    if value.is_empty() || values.next().is_some() {
+    let Some(value) = carrier.strip_prefix("token=") else {
+        return UniqueToken::Invalid;
+    };
+    if value.is_empty() || carriers.next().is_some() {
         return UniqueToken::Invalid;
     }
     UniqueToken::Valid(value)
@@ -698,6 +703,18 @@ mod tests {
         tokio::select! {
             () = duplicate_client => {}
             _ = listener.accept() => panic!("duplicate query tokens were accepted"),
+        }
+
+        let bare_url = format!(
+            "https://127.0.0.1:{}/session?token={token}&token",
+            addr.port()
+        );
+        let bare_client = async {
+            assert!(client_endpoint().connect(bare_url).await.is_err());
+        };
+        tokio::select! {
+            () = bare_client => {}
+            _ = listener.accept() => panic!("bare duplicate query token was accepted"),
         }
 
         let malformed_url = format!("https://127.0.0.1:{}/session", addr.port());
