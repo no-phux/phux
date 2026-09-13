@@ -13,7 +13,8 @@ use super::{
     EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason, InputBlockReason,
     InputEligibility, KernelAction, KernelDamage, KernelDamageKind, KernelEffect, KernelError,
     KernelInput, KernelJob, KernelSend, KernelStatus, MAX_BOOTSTRAP_STAGING_BYTES,
-    MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME, SessionKernel, TombstoneRecord,
+    MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME_MS, SessionKernel,
+    TombstoneRecord,
 };
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
@@ -45,6 +46,7 @@ struct FakeReplica {
     geometry: CanonicalGeometry,
     transcript: Vec<u8>,
     finish_effects: bool,
+    reported_staging_bytes: usize,
 }
 
 impl EngineAdapter for FakeAdapter {
@@ -67,6 +69,7 @@ impl EngineAdapter for FakeAdapter {
             geometry,
             transcript: Vec::new(),
             finish_effects: false,
+            reported_staging_bytes: 0,
         })
     }
 
@@ -101,6 +104,13 @@ impl EngineAdapter for FakeAdapter {
         } else {
             Ok(BootstrapProgress::Pending)
         }
+    }
+
+    fn bootstrap_staging_bytes(&self, replica: &Self::Replica) -> usize {
+        replica
+            .transcript
+            .capacity()
+            .saturating_add(replica.reported_staging_bytes)
     }
 
     fn finish_bootstrap(
@@ -537,7 +547,7 @@ fn bootstrap_staging_byte_ceiling_is_connection_wide() {
 }
 
 #[test]
-fn bootstrap_staging_lifetime_is_checked_before_adapter_input() {
+fn bootstrap_staging_ceiling_counts_engine_and_pending_effect_capacity() {
     let mut kernel = kernel(ReadyMode::ChunkFirst);
     let id = terminal(1);
     let stream_id = stream(1);
@@ -549,12 +559,36 @@ fn bootstrap_staging_lifetime_is_checked_before_adapter_input() {
         .get_mut(&id)
         .and_then(|state| state.staging.as_mut())
         .expect("staging")
-        .started_at = std::time::Instant::now()
-        .checked_sub(MAX_BOOTSTRAP_STAGING_LIFETIME)
-        .expect("test instant supports thirty-second subtraction");
+        .engine
+        .reported_staging_bytes = MAX_BOOTSTRAP_STAGING_BYTES;
 
     let error = kernel
         .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: b"bootstrap-effects",
+            },
+            &mut effects,
+        )
+        .expect_err("engine and pending effects count against retained capacity");
+    assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
+    assert!(kernel.staging(&id).is_none());
+}
+
+#[test]
+fn bootstrap_staging_lifetime_is_checked_before_adapter_input() {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let id = terminal(1);
+    let stream_id = stream(1);
+    let bootstrap_id = bootstrap(1);
+    let mut effects = EffectBuffer::new();
+    begin(&mut kernel, &id, stream_id, bootstrap_id, 9, &mut effects);
+    let error = kernel
+        .update_at(
+            MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1,
             KernelInput::BootstrapChunk {
                 terminal_id: &id,
                 stream_id,
@@ -577,17 +611,9 @@ fn bootstrap_staging_lifetime_is_checked_at_protocol_ready() {
     let bootstrap_id = bootstrap(1);
     let mut effects = EffectBuffer::new();
     begin(&mut kernel, &id, stream_id, bootstrap_id, 11, &mut effects);
-    kernel
-        .terminals
-        .get_mut(&id)
-        .and_then(|state| state.staging.as_mut())
-        .expect("staging")
-        .started_at = std::time::Instant::now()
-        .checked_sub(MAX_BOOTSTRAP_STAGING_LIFETIME)
-        .expect("test instant supports thirty-second subtraction");
-
     let error = kernel
-        .update(
+        .update_at(
+            MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1,
             KernelInput::BootstrapReady {
                 terminal_id: &id,
                 stream_id,
@@ -605,6 +631,55 @@ fn bootstrap_staging_lifetime_is_checked_at_protocol_ready() {
             reason: TombstoneReason::CodecFailure,
             last_valid_seq: 11,
         })
+    );
+}
+
+#[test]
+fn silent_bootstrap_staging_expires_on_driver_tick() {
+    let mut kernel = kernel(ReadyMode::ProtocolFirst);
+    let first = terminal(1);
+    let second = terminal(2);
+    let stream_id = stream(1);
+    let bootstrap_id = bootstrap(1);
+    let mut effects = EffectBuffer::new();
+    begin(
+        &mut kernel,
+        &first,
+        stream_id,
+        bootstrap_id,
+        7,
+        &mut effects,
+    );
+    begin(
+        &mut kernel,
+        &second,
+        stream_id,
+        bootstrap_id,
+        9,
+        &mut effects,
+    );
+
+    assert_eq!(
+        kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_LIFETIME_MS, &mut effects),
+        0,
+        "the exact lifetime remains valid"
+    );
+    assert_eq!(
+        kernel.expire_bootstrap_staging(MAX_BOOTSTRAP_STAGING_LIFETIME_MS + 1, &mut effects),
+        2
+    );
+    assert!(kernel.staging(&first).is_none());
+    assert!(kernel.staging(&second).is_none());
+    assert_eq!(
+        effects
+            .as_slice()
+            .iter()
+            .filter(|effect| matches!(
+                effect,
+                KernelEffect::Status(KernelStatus::ResyncRequired { .. })
+            ))
+            .count(),
+        2
     );
 }
 

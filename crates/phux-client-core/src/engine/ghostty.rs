@@ -558,6 +558,13 @@ impl EngineAdapter for GhosttyAdapter {
         Ok(progress)
     }
 
+    fn bootstrap_staging_bytes(&self, replica: &Self::Replica) -> usize {
+        match &replica.state {
+            ReplicaState::Native(native) => native.feed.data.capacity(),
+            ReplicaState::Synthesized { .. } => 0,
+        }
+    }
+
     fn finish_bootstrap(
         &mut self,
         replica: &mut Self::Replica,
@@ -1315,6 +1322,20 @@ mod tests {
 
     fn native_adapter() -> GhosttyAdapter {
         GhosttyAdapter::new(BootstrapLimits::default())
+    }
+
+    #[test]
+    fn native_staging_capacity_reports_owned_feed_allocation() {
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(native_profile(), geometry())
+            .expect("native replica");
+        assert_eq!(adapter.bootstrap_staging_bytes(&replica), 0);
+        let payload = b"incomplete snapshot fragment";
+        adapter
+            .apply_bootstrap_chunk(&mut replica, payload, &mut EngineEffectBuffer::new())
+            .expect("bounded fragment");
+        assert!(adapter.bootstrap_staging_bytes(&replica) >= payload.len());
     }
 
     #[test]

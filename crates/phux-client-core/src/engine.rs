@@ -181,6 +181,15 @@ pub trait EngineAdapter {
         effects: &mut EngineEffectBuffer,
     ) -> Result<BootstrapProgress, Self::Error>;
 
+    /// Heap bytes retained by an incomplete engine bootstrap.
+    ///
+    /// The connection-wide staging ceiling counts this in addition to accepted
+    /// wire payload and generation-bound effects. Adapters that retain bootstrap
+    /// input must report allocation capacity, not only logical length.
+    fn bootstrap_staging_bytes(&self, _replica: &Self::Replica) -> usize {
+        0
+    }
+
     /// Apply the client-local decoded scrollback memory budget.
     fn configure_history_budget(
         &mut self,

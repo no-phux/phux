@@ -1,9 +1,9 @@
 //! Synchronous, transport-neutral session state machine.
 
-use std::{
-    collections::{HashMap, HashSet},
-    time::{Duration, Instant},
-};
+use std::collections::{HashMap, HashSet};
+
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::TombstoneReason;
@@ -32,7 +32,7 @@ const MAX_BOOTSTRAP_STAGING_BYTES: usize = 64 * 1024 * 1024;
 /// Hard connection-wide ceiling for bootstrap chunks accepted before READY.
 const MAX_BOOTSTRAP_STAGING_CHUNKS: usize = 4_096;
 /// A peer must complete one bootstrap generation within this interval.
-const MAX_BOOTSTRAP_STAGING_LIFETIME: Duration = Duration::from_secs(30);
+const MAX_BOOTSTRAP_STAGING_LIFETIME_MS: u64 = 30_000;
 
 /// Why one history cursor became unavailable without retiring live state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -842,7 +842,25 @@ struct Staging<R> {
     pending_effects: Vec<EngineEffect>,
     accepted_bytes: usize,
     accepted_chunks: usize,
-    started_at: Instant,
+    started_at_ms: u64,
+}
+
+const fn staging_expired<R>(staging: &Staging<R>, now_ms: u64) -> bool {
+    now_ms.saturating_sub(staging.started_at_ms) > MAX_BOOTSTRAP_STAGING_LIFETIME_MS
+}
+
+fn retained_engine_effect_bytes(capacity: usize, effects: &[EngineEffect]) -> usize {
+    let allocation = capacity.saturating_mul(std::mem::size_of::<EngineEffect>());
+    effects.iter().fold(allocation, |total, effect| {
+        let owned = match effect {
+            EngineEffect::Status(EngineStatus::Title(title)) => title.capacity(),
+            EngineEffect::Send(EngineSend::PtyWrite(bytes)) => bytes.capacity(),
+            EngineEffect::Damage(_)
+            | EngineEffect::Status(EngineStatus::Bell)
+            | EngineEffect::Job(_) => 0,
+        };
+        total.saturating_add(owned)
+    })
 }
 
 struct TerminalState<R> {
@@ -971,6 +989,12 @@ pub struct SessionKernel<E: EngineAdapter> {
     history_config: HistoryCacheConfig,
     /// Per-terminal echo arming for `crate::perf::ECHO_RTT`.
     perf_echo: crate::perf::EchoProbe,
+    /// Caller-supplied monotonic time, selected by [`Self::update_at`].
+    injected_now_ms: Option<u64>,
+    /// Native default clock. Web hosts inject their own monotonic time because
+    /// `std::time::Instant::now` panics on `wasm32-unknown-unknown`.
+    #[cfg(not(target_arch = "wasm32"))]
+    monotonic_origin: Instant,
 }
 impl<E: EngineAdapter> std::fmt::Debug for SessionKernel<E> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1014,6 +1038,70 @@ impl<E: EngineAdapter> SessionKernel<E> {
             engine_effects: EngineEffectBuffer::new(),
             history_config,
             perf_echo: crate::perf::EchoProbe::default(),
+            injected_now_ms: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            monotonic_origin: Instant::now(),
+        }
+    }
+
+    /// Apply one input at a caller-supplied monotonic millisecond timestamp.
+    ///
+    /// This is the portable clock seam for browser and deterministic hosts.
+    /// Once selected, callers must keep supplying timestamps; values that move
+    /// backward are clamped to the last observed value. Native hosts may keep
+    /// using [`Self::update`], which uses a process-local [`Instant`] origin.
+    pub fn update_at(
+        &mut self,
+        now_ms: u64,
+        input: KernelInput<'_>,
+        effects: &mut EffectBuffer,
+    ) -> Result<(), KernelError<E::Error>> {
+        self.injected_now_ms = Some(
+            self.injected_now_ms
+                .map_or(now_ms, |previous| previous.max(now_ms)),
+        );
+        self.update(input, effects)
+    }
+
+    /// Retire every incomplete terminal bootstrap older than the hard staging lifetime.
+    ///
+    /// A synchronous kernel cannot observe a silent peer by itself. Drivers
+    /// should call this from their existing connection timer using the same
+    /// monotonic millisecond source passed to [`Self::update_at`].
+    pub fn expire_bootstrap_staging(&mut self, now_ms: u64, effects: &mut EffectBuffer) -> usize {
+        self.injected_now_ms = Some(
+            self.injected_now_ms
+                .map_or(now_ms, |previous| previous.max(now_ms)),
+        );
+        effects.clear();
+        let now_ms = self.monotonic_now_ms();
+        let expired: Vec<_> = self
+            .terminals
+            .iter()
+            .filter_map(|(terminal_id, state)| {
+                state.staging.as_ref().and_then(|staging| {
+                    staging_expired(staging, now_ms)
+                        .then(|| (terminal_id.clone(), generation_of(&staging.key)))
+                })
+            })
+            .collect();
+        for (terminal_id, generation) in &expired {
+            self.retire_staging_limit(terminal_id, *generation, effects);
+        }
+        expired.len()
+    }
+
+    fn monotonic_now_ms(&self) -> u64 {
+        if let Some(now_ms) = self.injected_now_ms {
+            return now_ms;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            u64::try_from(self.monotonic_origin.elapsed().as_millis()).unwrap_or(u64::MAX)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            0
         }
     }
 
@@ -2010,6 +2098,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         base_seq: u64,
         effects: &mut EffectBuffer,
     ) -> Result<(), KernelError<E::Error>> {
+        let started_at_ms = self.monotonic_now_ms();
         if self.closed.contains(terminal_id) {
             return Err(KernelError::ClosedTerminal(terminal_id.clone()));
         }
@@ -2091,7 +2180,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             pending_effects: Vec::new(),
             accepted_bytes: 0,
             accepted_chunks: 0,
-            started_at: Instant::now(),
+            started_at_ms,
         }) {
             state.retired.insert(
                 generation_of(&old_staging.key),
@@ -2117,6 +2206,21 @@ impl<E: EngineAdapter> SessionKernel<E> {
         }
         (bytes <= MAX_BOOTSTRAP_STAGING_BYTES && chunks <= MAX_BOOTSTRAP_STAGING_CHUNKS)
             .then_some((bytes, chunks))
+    }
+
+    fn bootstrap_retained_bytes(&self) -> Option<usize> {
+        self.terminals
+            .values()
+            .filter_map(|state| state.staging.as_ref())
+            .try_fold(0_usize, |total, staging| {
+                total
+                    .checked_add(staging.accepted_bytes)?
+                    .checked_add(self.adapter.bootstrap_staging_bytes(&staging.engine))?
+                    .checked_add(retained_engine_effect_bytes(
+                        staging.pending_effects.capacity(),
+                        &staging.pending_effects,
+                    ))
+            })
     }
 
     fn validate_bootstrap_chunk(
@@ -2167,7 +2271,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .get(terminal_id)
             .and_then(|state| state.staging.as_ref())
             .filter(|staging| generation_of(&staging.key) == generation)
-            .is_some_and(|staging| staging.started_at.elapsed() > MAX_BOOTSTRAP_STAGING_LIFETIME);
+            .is_some_and(|staging| staging_expired(staging, self.monotonic_now_ms()));
         expired || self.next_bootstrap_staging_usage(payload_len).is_none()
     }
 
@@ -2191,7 +2295,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         if staging.protocol_ready {
             return Err(KernelError::DuplicateProtocolReady);
         }
-        Ok(staging.started_at.elapsed() > MAX_BOOTSTRAP_STAGING_LIFETIME)
+        Ok(staging_expired(staging, self.monotonic_now_ms()))
     }
 
     fn retire_staging_limit(
@@ -2286,6 +2390,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .ok_or(KernelError::BootstrapStagingLimitExceeded)?;
         staging.engine_ready |= progress.is_ready();
         self.buffer_bootstrap_effects(terminal_id, generation);
+        if self
+            .bootstrap_retained_bytes()
+            .is_none_or(|bytes| bytes > MAX_BOOTSTRAP_STAGING_BYTES)
+        {
+            self.retire_staging_limit(terminal_id, generation, effects);
+            return Err(KernelError::BootstrapStagingLimitExceeded);
+        }
         Ok(())
     }
 
