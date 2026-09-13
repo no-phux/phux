@@ -32,7 +32,9 @@ satisfy the sample. Each other PTY reports a correlated start marker, waits at
 a barrier, and is then told to generate a bounded requested flood while
 quiet-pane echo and control `PING`/`PONG` samples run. `requested_bytes` is the
 exact formatted line volume requested from the PTYs; it is not a claim that all
-bytes reached the client before the timed samples ended.
+bytes reached the client before the timed samples ended. Readiness and start
+tokens are assembled by shell `printf` substitutions, so the full token is
+absent from the submitted command and cannot match the shell's command echo.
 
 Reported fields mean:
 
@@ -198,24 +200,27 @@ drop in its 65 packets. The old selective-stall shaper forwarded 1.332 MiB
 before shutdown. That aggregate UDP count does not establish which stream
 consumed the bytes or that its receive window blocked.
 
-### Refreshed post-review representatives
+### Post-review representatives
 
-These bounded representatives include all six review corrections. The two
-samples in echo/control rows use nearest-rank tails; READY samples are the eight
-Terminals in one attach. Each matrix case requested 1,835,337 flood bytes from
-seven PTYs after all seven start markers arrived.
+The two samples in echo/control rows use nearest-rank tails; READY samples are
+the eight Terminals in one attach. Each matrix case requested 1,835,337 flood
+bytes from seven PTYs. The direct/raw and selective rows were rerun after making
+the complete marker absent from the shell command. The StateSync and relay rows
+predate that correction and remain provisional; they are retained only to show
+the negotiation/ACK checks that passed.
 
 | Route/mode | Terminal streams | READY p50/max | Echo p50/max | Control p50/max | ACKs | Result |
 |---|---|---:|---:|---:|---:|---|
-| direct/raw | negotiated | 8.239/8.940 ms | 7.469/25.677 ms | 12.554/14.261 ms | 0 | pass |
-| direct/StateSync | negotiated | 9.251/9.932 ms | 2.615/21.264 ms | 1.677/1.827 ms | 18 | pass |
-| relay/raw | explicit single-stream fallback | 9.943/12.748 ms | 3.131/14.058 ms | 46.010/87.934 ms | 0 | pass |
-| direct/raw selective unpolled stream | negotiated | n/a | 1.227 ms | 98.843 ms | 0 | pass |
+| direct/raw | negotiated | 7.884/8.649 ms | 2.913/13.312 ms | 23.060/44.400 ms | 0 | pass |
+| direct/StateSync | negotiated | 9.251/9.932 ms | 2.615/21.264 ms | 1.677/1.827 ms | 18 | provisional: pre-marker fix |
+| relay/raw | explicit single-stream fallback | 9.943/12.748 ms | 3.131/14.058 ms | 46.010/87.934 ms | 0 | provisional: pre-marker fix |
+| direct/raw selective unpolled stream | negotiated | n/a | 0.952 ms | 96.106 ms | 0 | pass |
 
 All four runs hard-rejected queue/shutdown drops and completed with zero of
-either. The selective case recorded its flood-start marker before leaving the
-stream unpolled and requested 16,777,256 bytes; it does not claim that volume
-was delivered or that stream flow control was exhausted.
+either. Only the direct/raw and selective rows are marker-safe accepted timing
+evidence. The selective case recorded its non-echoable flood-start marker before
+leaving the stream unpolled and requested 16,777,256 bytes; it does not claim
+that volume was delivered or that stream flow control was exhausted.
 
 ### PUT_FILE diagnostic matrix
 

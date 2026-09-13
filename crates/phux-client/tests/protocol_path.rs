@@ -1085,7 +1085,9 @@ async fn prepare_quiet_probe(
     terminal: &ResourceId,
     mode: WireMode,
 ) {
-    let command = b"stty -echo; printf 'PHUX_PROBE_READY\\n'; while IFS= read -r line; do printf 'PHUX_RESPONSE_%s\\n' \"$line\"; done\n";
+    // Assemble the marker at execution time so the shell's echoed command
+    // cannot satisfy the readiness wait before `stty -echo` takes effect.
+    let command = b"stty -echo; printf 'PHUX_PROBE_%s\\n' READY; while IFS= read -r line; do printf 'PHUX_RESPONSE_%s\\n' \"$line\"; done\n";
     send_line(connection, terminal, command.strip_suffix(b"\n").unwrap()).await;
     wait_for_bytes(connection, traffic, terminal, b"PHUX_PROBE_READY", mode).await;
     traffic.tails.entry(terminal.clone()).or_default().clear();
@@ -1104,8 +1106,7 @@ async fn start_floods(
     for (index, terminal) in ids[1..].iter().enumerate() {
         let started_marker = format!("PHUX_FLOOD_STARTED_{index}").into_bytes();
         let command = format!(
-            "stty -echo; printf '{}\\n'; IFS= read -r go; i=0; while [ \"$i\" -lt {lines} ]; do printf 'FLOOD-%08d-abcdefghijklmnopqrstuvwxyz-0123456789\\n' \"$i\"; i=$((i+1)); done",
-            String::from_utf8_lossy(&started_marker),
+            "stty -echo; printf 'PHUX_FLOOD_%s_{index}\\n' STARTED; IFS= read -r go; i=0; while [ \"$i\" -lt {lines} ]; do printf 'FLOOD-%08d-abcdefghijklmnopqrstuvwxyz-0123456789\\n' \"$i\"; i=$((i+1)); done",
         );
         send_line(connection, terminal, command.as_bytes()).await;
         wait_for_bytes(connection, traffic, terminal, &started_marker, mode).await;
@@ -2060,7 +2061,7 @@ fn stalled_terminal_reader_preserves_quiet_echo_and_control() {
             let (mut stalled_send, mut stalled_recv) = raw_bind(&connection, &ids[1], 2).await;
             raw_wait_ready(&mut quiet_recv, &ids[0]).await;
 
-            let quiet_setup = b"stty -echo; printf 'PHUX_PROBE_READY\\n'; while IFS= read -r line; do printf 'PHUX_RESPONSE_%s\\n' \"$line\"; done\n";
+            let quiet_setup = b"stty -echo; printf 'PHUX_PROBE_%s\\n' READY; while IFS= read -r line; do printf 'PHUX_RESPONSE_%s\\n' \"$line\"; done\n";
             raw_send_line(
                 &mut quiet_send,
                 &ids[0],
@@ -2071,7 +2072,7 @@ fn stalled_terminal_reader_preserves_quiet_echo_and_control() {
 
             let lines = case.flood_bytes.div_ceil(STALL_LINE_BYTES);
             let flood = format!(
-                "stty -echo; printf 'PHUX_STALL_STARTED\\n'; IFS= read -r go; i=0; while [ \"$i\" -lt {lines} ]; do printf 'STALL-%08d-abcdefghijklmnopqrstuvwxyz-0123456789\\n' \"$i\"; i=$((i+1)); done\n"
+                "stty -echo; printf 'PHUX_STALL_%s\\n' STARTED; IFS= read -r go; i=0; while [ \"$i\" -lt {lines} ]; do printf 'STALL-%08d-abcdefghijklmnopqrstuvwxyz-0123456789\\n' \"$i\"; i=$((i+1)); done\n"
             );
             raw_send_line(&mut stalled_send, &ids[1], flood.trim_end().as_bytes()).await;
             raw_wait_for_output(&mut stalled_recv, &ids[1], b"PHUX_STALL_STARTED").await;
