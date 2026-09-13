@@ -3,6 +3,13 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.3](https://github.com/no-phux/phux/compare/cockpit-v0.23.2...cockpit-v0.23.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* **release:** pin portable CPU baselines ([5344cdc](https://github.com/no-phux/phux/commit/5344cdc732b723b94114aad311caa5b96cedeea4))
+
 ## [0.23.2](https://github.com/no-phux/phux/compare/cockpit-v0.23.1...cockpit-v0.23.2) (2026-09-13)
 
 

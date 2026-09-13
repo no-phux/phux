@@ -9,6 +9,33 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.36.0](https://github.com/no-phux/phux/compare/v0.35.0...v0.36.0) (2026-09-13)
+
+
+### Features
+
+* **agent:** add fleet-wide agent wait ([29f7eef](https://github.com/no-phux/phux/commit/29f7eefca8acec910cc749fc8a4a91d62b203267))
+* **site:** show blocked agent inbox handoff ([34533ce](https://github.com/no-phux/phux/commit/34533ce429af0697f6b3563bd7b840d9faafdf1f))
+* **tui:** expose daily-driver management views ([c564a55](https://github.com/no-phux/phux/commit/c564a55dd6d9971591376060fcfa7f9dc80894d4))
+
+
+### Bug Fixes
+
+* **ci:** restore green pull request base ([#604](https://github.com/no-phux/phux/issues/604)) ([d5aa316](https://github.com/no-phux/phux/commit/d5aa3168c844ad6765d749d6e13d23c07453ecb0))
+* **release:** pin portable CPU baselines ([5344cdc](https://github.com/no-phux/phux/commit/5344cdc732b723b94114aad311caa5b96cedeea4))
+* **server:** keep WebSocket accept causes at debug ([c817cd3](https://github.com/no-phux/phux/commit/c817cd3ff56828f9bc98fea2b7b4da4c1e33662f))
+* **update:** make install transaction crash-durable ([1779122](https://github.com/no-phux/phux/commit/17791220c2e10c971a7bff9a9448638ad297199e))
+
+
+### Performance
+
+* **server:** measure complete native bootstrap budgets ([02b98f9](https://github.com/no-phux/phux/commit/02b98f980270a7de5c57d5ebf848df5efbc37e65))
+
+
+### Documentation
+
+* **skills:** treat agent sessions as RESOURCE_KINDS, not a branch ([3a68971](https://github.com/no-phux/phux/commit/3a68971ac36187ce95bf862f370b8c6ebf0947da))
+
 ## [0.35.0](https://github.com/no-phux/phux/compare/v0.34.0...v0.35.0) (2026-09-13)
 
 
