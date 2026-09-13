@@ -1336,14 +1336,14 @@ pub(crate) fn subscribe_attach_terminal(
     })
 }
 
-/// Whether a negotiated bootstrap profile streams incremental libghostty
-/// checkpoints rather than a synthesized VT bootstrap.
+/// Whether a negotiated bootstrap profile streams the official progressive
+/// libghostty snapshot rather than a synthesized VT bootstrap.
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const fn native_checkpoint_profile(profile: phux_protocol::caps::BootstrapStreamProfile) -> bool {
     matches!(
         profile,
         phux_protocol::caps::BootstrapStreamProfile::NativeState {
-            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+            codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1
         }
     )
 }

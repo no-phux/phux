@@ -68,6 +68,11 @@ pub(crate) const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
 pub(crate) trait FrameReader {
     async fn read_frame(&mut self) -> io::Result<Option<BytesMut>>;
 
+    /// Logical stream that supplied the most recently returned frame.
+    fn frame_origin(&self) -> FrameOrigin {
+        FrameOrigin::Control
+    }
+
     /// Terminal-stream events (QUIC multi-stream only).
     ///
     /// After the connection negotiates `QUIC_STREAMS`, the client task calls
@@ -78,6 +83,14 @@ pub(crate) trait FrameReader {
     fn take_stream_events(&mut self) -> Option<tokio::sync::mpsc::Receiver<quic::QuicStreamEvent>> {
         None
     }
+}
+
+/// Logical stream that supplied a transport frame. Single-stream transports
+/// are control-only; the QUIC mux distinguishes Terminal data after upgrade.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum FrameOrigin {
+    Control,
+    Terminal,
 }
 
 /// Write side: writes one complete pre-encoded frame.

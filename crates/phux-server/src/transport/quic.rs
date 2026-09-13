@@ -552,6 +552,7 @@ pub(crate) struct QuicMuxReader {
     control_open: bool,
     control_done: Option<tokio::sync::oneshot::Receiver<io::Result<()>>>,
     tasks: tokio::task::JoinSet<()>,
+    last_origin: crate::transport::FrameOrigin,
 }
 
 impl QuicMuxReader {
@@ -570,6 +571,7 @@ impl QuicMuxReader {
             control_open: true,
             control_done: None,
             tasks: tokio::task::JoinSet::new(),
+            last_origin: crate::transport::FrameOrigin::Control,
         }
     }
 }
@@ -586,6 +588,7 @@ impl FrameReader for QuicMuxReader {
                     "quic mux upgraded without its control stream",
                 ));
             };
+            self.last_origin = crate::transport::FrameOrigin::Control;
             return reader.read_frame().await;
         };
         loop {
@@ -615,10 +618,19 @@ impl FrameReader for QuicMuxReader {
                     }) {
                         continue;
                     }
+                    self.last_origin = if admitted.origin.is_some() {
+                        crate::transport::FrameOrigin::Terminal
+                    } else {
+                        crate::transport::FrameOrigin::Control
+                    };
                     return Ok(Some(admitted.bytes));
                 },
             }
         }
+    }
+
+    fn frame_origin(&self) -> crate::transport::FrameOrigin {
+        self.last_origin
     }
 
     fn take_stream_events(&mut self) -> Option<tokio::sync::mpsc::Receiver<QuicStreamEvent>> {

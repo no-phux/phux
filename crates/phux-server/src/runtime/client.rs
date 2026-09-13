@@ -41,8 +41,43 @@ use crate::transport::quic::{
     QuicStreamEvent, QuicStreamFailure, QuicWriter, pump_terminal_stream, refuse_terminal_stream,
 };
 use crate::transport::{
-    AcceptErrorDisposition, FrameReader, FrameWriter, Incoming, WS_REJECTION_WARN_INTERVAL,
+    AcceptErrorDisposition, FrameOrigin, FrameReader, FrameWriter, Incoming,
+    WS_REJECTION_WARN_INTERVAL,
 };
+
+const MAX_PENDING_INPUT_RECEIPTS: usize = 128;
+
+fn spawn_input_receipt(
+    receipts: &mut JoinSet<()>,
+    slot: tokio::sync::OwnedSemaphorePermit,
+    out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    request_id: u32,
+    receipt: super::input_lane::InputReceipt,
+) {
+    receipts.spawn_local(async move {
+        let _slot = slot;
+        let result = receipt.await;
+        let _ = out_tx
+            .send(Outbound::Frame(FrameKind::CommandResult {
+                request_id,
+                result,
+            }))
+            .await;
+    });
+}
+
+const fn requires_terminal_stream(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::InputKey { .. }
+            | FrameKind::InputMouse { .. }
+            | FrameKind::InputFocus { .. }
+            | FrameKind::InputPaste { .. }
+            | FrameKind::InputTerminalReply { .. }
+            | FrameKind::FrameAck { .. }
+            | FrameKind::HistoryRequest { .. }
+    )
+}
 
 #[derive(Debug, Clone, Copy)]
 struct NegotiatedConnection {
@@ -2205,13 +2240,13 @@ async fn serve_history_request(
     if !matches!(
         selection.profile,
         BootstrapProfile::NativeState {
-            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+            codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
             ..
         }
     ) {
         warn!(
             ?terminal_id,
-            "HISTORY_REQUEST requires negotiated native checkpoint v2"
+            "HISTORY_REQUEST requires negotiated native snapshot v1"
         );
         let _ = out_tx
             .send(Outbound::Frame(tombstone(
@@ -2343,6 +2378,9 @@ where
     // per-attach pumps go with it. Keeps lifecycle plumbing local.
     let mut plumbing = ClientPlumbing::spawn(writer, client_id);
     let mut command_tasks = super::command_tasks::CommandTasks::new();
+    let mut input_receipts = JoinSet::new();
+    let input_receipt_slots =
+        std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_INPUT_RECEIPTS));
     // An attach id names one immutable aggregate generation for the life of
     // this connection. Reuse would collide with a completed stream/bootstrap
     // key even when the replacement otherwise followed the right barriers.
@@ -2374,10 +2412,11 @@ where
         // The frame arm deliberately precedes the event arm: a stream pump
         // queues every complete frame before its `Ended`, so draining a ready
         // frame first preserves input-before-FIN causality.
-        let framed = tokio::select! {
+        let (framed, frame_origin) = tokio::select! {
             biased;
             () = token.cancelled() => {
                 debug!(?client_id, "client task cancelled");
+                input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing
                     .close_for_cancellation(&state, client_id, &root_token)
@@ -2386,6 +2425,7 @@ where
             }
             () = &mut hello_deadline, if negotiated.is_none() => {
                 warn!(?client_id, "client did not complete HELLO before deadline; closing");
+                input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(ConnectionClose {
                     attached_reason: None,
@@ -2395,18 +2435,21 @@ where
                 return Ok(());
             }
             res = reader.read_frame() => match res {
-                Ok(Some(framed)) => framed,
+                Ok(Some(framed)) => (framed, reader.frame_origin()),
                 Ok(None) => {
                     debug!("client disconnected (eof)");
+                    input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     return Ok(());
                 }
                 Err(err) => {
                     let Some(close) = framing_violation_close(&err, client_id) else {
                         debug!(error = %err, "client read error; closing");
+                        input_receipts.shutdown().await;
                         command_tasks.shutdown().await;
                         return Ok(());
                     };
+                    input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
                     return Ok(());
@@ -2414,6 +2457,7 @@ where
             },
             () = command_tasks.stopped() => {
                 warn!(?client_id, "bulk command worker stopped unexpectedly; closing");
+                input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(ConnectionClose {
                     attached_reason: Some("bulk command worker stopped"),
@@ -2422,6 +2466,7 @@ where
                 }, &state, client_id).await;
                 return Ok(());
             }
+            Some(_) = input_receipts.join_next(), if !input_receipts.is_empty() => continue,
             event = async {
                 match stream_events.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -2455,13 +2500,38 @@ where
         let frame = match decode_client_frame(&framed, negotiated.as_ref()) {
             Ok(frame) => frame,
             Err(close) => {
+                input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(close, &state, client_id).await;
                 return Ok(());
             }
         };
 
+        if negotiated.is_some_and(|selection| {
+            selection
+                .server_features
+                .contains(ServerFeature::QuicStreams)
+        }) && frame_origin == FrameOrigin::Control
+            && requires_terminal_stream(&frame)
+        {
+            input_receipts.shutdown().await;
+            command_tasks.shutdown().await;
+            plumbing
+                .close(
+                    ConnectionClose {
+                        attached_reason: Some("Terminal frame sent on QUIC control stream"),
+                        code: ErrorCode::MalformedMessage,
+                        message: "Terminal-scoped frame requires a bound QUIC stream".to_owned(),
+                    },
+                    &state,
+                    client_id,
+                )
+                .await;
+            return Ok(());
+        }
+
         if let Some(close) = reject_frame_before_hello(&frame, negotiated.is_some(), client_id) {
+            input_receipts.shutdown().await;
             command_tasks.shutdown().await;
             plumbing.close(close, &state, client_id).await;
             return Ok(());
@@ -2493,6 +2563,7 @@ where
                 )
                 .await
                 {
+                    input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
                     return Ok(());
@@ -2541,6 +2612,7 @@ where
                             code: ErrorCode::MalformedMessage,
                             message: "ATTACH attach_id must be nonzero".to_owned(),
                         };
+                        input_receipts.shutdown().await;
                         command_tasks.shutdown().await;
                         plumbing.close(close, &state, client_id).await;
                         return Ok(());
@@ -2893,6 +2965,46 @@ where
                     }
                     _ => None,
                 });
+                if let Some(lane) = input_lane.as_ref()
+                    && matches!(
+                        &command,
+                        phux_protocol::wire::frame::Command::ApplyInput { .. }
+                            | phux_protocol::wire::frame::Command::RouteInput { .. }
+                    )
+                {
+                    let Ok(receipt_slot) = input_receipt_slots.clone().try_acquire_owned() else {
+                        let _ = plumbing
+                            .out_tx
+                            .send(Outbound::Frame(FrameKind::CommandResult {
+                                request_id,
+                                result: phux_protocol::wire::frame::CommandResult::Error {
+                                    code: ErrorCode::ResourceExhausted,
+                                    message: "input completion capacity exhausted".to_owned(),
+                                },
+                            }))
+                            .await;
+                        continue;
+                    };
+                    let receipt = match command {
+                        phux_protocol::wire::frame::Command::ApplyInput {
+                            operation_id,
+                            terminal_id,
+                            events,
+                        } => lane.begin_apply(client_id, operation_id, terminal_id, events),
+                        phux_protocol::wire::frame::Command::RouteInput { terminal_id, event } => {
+                            lane.begin_route(client_id, terminal_id, event)
+                        }
+                        _ => unreachable!("guarded input command"),
+                    };
+                    spawn_input_receipt(
+                        &mut input_receipts,
+                        receipt_slot,
+                        plumbing.out_tx.clone(),
+                        request_id,
+                        receipt,
+                    );
+                    continue;
+                }
                 let retained = super::command_tasks::CommandTasks::retained_bytes(&command);
                 if let Some(retained) = retained {
                     let task_state = state.clone();
@@ -2964,6 +3076,7 @@ where
                         "frame is not valid from a client in the negotiated phase: {other:?}"
                     ),
                 };
+                input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(close, &state, client_id).await;
                 return Ok(());
@@ -4816,17 +4929,21 @@ pub(crate) async fn writer_task<W: FrameWriter>(
 #[cfg(test)]
 mod writer_close_tests {
     use std::cell::RefCell;
+    use std::collections::VecDeque;
     use std::io;
     use std::rc::Rc;
 
     use bytes::BytesMut;
+    use phux_protocol::PROTOCOL_VERSION;
+    use phux_protocol::caps::ClientCapabilities;
+    use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
     use phux_protocol::wire::frame::{DetachReason, ErrorCode, FrameKind};
     use tokio::task::LocalSet;
     use tokio_util::sync::CancellationToken;
 
     use super::{handle_client, writer_task};
     use crate::state::{ClientId, Outbound, SharedState};
-    use crate::transport::{FrameReader, FrameWriter};
+    use crate::transport::{FrameOrigin, FrameReader, FrameWriter};
     use phux_protocol::policy::TransportType;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5128,6 +5245,82 @@ mod writer_close_tests {
         }
     }
 
+    struct ControlScriptReader(VecDeque<BytesMut>);
+
+    impl ControlScriptReader {
+        fn new(frames: impl IntoIterator<Item = FrameKind>) -> Self {
+            Self(
+                frames
+                    .into_iter()
+                    .map(|frame| {
+                        let mut encoded = BytesMut::new();
+                        frame.encode(&mut encoded);
+                        encoded
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    impl FrameReader for ControlScriptReader {
+        async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
+            if let Some(frame) = self.0.pop_front() {
+                return Ok(Some(frame));
+            }
+            std::future::pending().await
+        }
+
+        fn frame_origin(&self) -> FrameOrigin {
+            FrameOrigin::Control
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn negotiated_quic_rejects_terminal_frames_on_control() {
+        LocalSet::new()
+            .run_until(async {
+                let terminal_id = ResourceId::local(7);
+                let reader = ControlScriptReader::new([
+                    FrameKind::Hello {
+                        client_name: "origin-test".to_owned(),
+                        protocol_major: PROTOCOL_VERSION.major,
+                        protocol_minor: PROTOCOL_VERSION.minor,
+                        protocol_patch: PROTOCOL_VERSION.patch,
+                        client_caps: ClientCapabilities::default().with_quic_streams(true),
+                    },
+                    FrameKind::FrameAck {
+                        terminal_id,
+                        stream_id: StreamId::new(1).expect("stream"),
+                        bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                        seq: 1,
+                    },
+                ]);
+                let events = Rc::new(RefCell::new(Vec::new()));
+                handle_client(
+                    reader,
+                    RecordingWriter(Rc::clone(&events)),
+                    SharedState::new(),
+                    ClientId(11),
+                    CancellationToken::new(),
+                    CancellationToken::new(),
+                    None,
+                    TransportType::Quic,
+                    true,
+                )
+                .await
+                .expect("protocol close");
+                assert_eq!(
+                    events.borrow().as_slice(),
+                    [
+                        WriterEvent::Error,
+                        WriterEvent::Detached(Some(DetachReason::ProtocolError)),
+                        WriterEvent::Close,
+                    ]
+                );
+            })
+            .await;
+    }
+
     struct PingBeforeHelloReader {
         remaining: u8,
     }
@@ -5378,7 +5571,7 @@ mod fatal_preflight_close_tests {
                 });
 
                 let native = BootstrapCapabilities::new().with_native(
-                    EngineCodec::LibghosttyCheckpointV2,
+                    EngineCodec::LibghosttySnapshotV1,
                     EngineFeatureSet::required_native(),
                 );
                 let reader = ScriptReader::new([
@@ -5447,7 +5640,7 @@ mod fatal_preflight_close_tests {
                     hello,
                     FrameKind::HelloOk {
                         selected_profile: phux_protocol::caps::BootstrapProfile::NativeState {
-                            codec: EngineCodec::LibghosttyCheckpointV2,
+                            codec: EngineCodec::LibghosttySnapshotV1,
                             ..
                         },
                         ..
