@@ -582,11 +582,13 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             // fully parallel `just test` (phux-2390) with an empty marker
             // in 0.7s: not a timeout, a missing synchronization point.
             let script = dir.path().join("foreground.sh");
+            // A builtin wait lets HUP run the trap directly; an external sleep
+            // adds child-exit scheduling to the production's 500 ms grace.
             std::fs::write(
                 &script,
                 "trap 'printf flushed > \"$PHUX_TEST_MARKER\"; exit 0' HUP\n\
                      printf armed > \"$PHUX_TEST_ARMED\"\n\
-                     while :; do sleep 30; done\n",
+                     while :; do read _; done\n",
             )
             .expect("write foreground script");
 
