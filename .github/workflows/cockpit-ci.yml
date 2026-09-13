@@ -157,6 +157,11 @@ jobs:
         working-directory: clients/cockpit
         run: bash ./scripts/build-shipping-app.sh --summary all
 
+      - name: Check ring P-256 helpers survived dead_strip
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        working-directory: clients/cockpit
+        run: python3 ./scripts/check-ring-p256-helpers.py zig-out/bin/phux-cockpit
+
       - name: Package and verify the arm64 macOS app
         if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         run: |

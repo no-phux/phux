@@ -132,6 +132,7 @@ class BuildContracts(unittest.TestCase):
         app = re.search(r"(?ms)^      - name: Build the production macOS app\n(.*?)(?=^      - name:)", workflow).group(1)
         self.assertIn("if: github.event_name == 'pull_request'", app)
         self.assertIn("build-shipping-app.sh", app)
+        self.assertIn("check-ring-p256-helpers.py zig-out/bin/phux-cockpit", workflow)
         self.assertIn("zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all", workflow)
         self.assertEqual(len(re.findall(r"zig-build\.sh test", workflow)), 1)
         self.assertNotIn("Test the app graph without the Phux provider", workflow)
