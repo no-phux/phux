@@ -12,14 +12,9 @@
 //!    docs, never in `--help` — an installed binary's user has no checkout.
 //! 3. The verbs that carry worked examples render them one per line
 //!    (`EXAMPLE_BLOCKS`), and the root help documents EXIT STATUS.
-//! 4. The compiled agent skill (`crate::SKILL`, printed by `phux skill`)
-//!    mentions every visible top-level verb, every `phux agent` subcommand,
-//!    and every selector sigil the parser accepts. That is the anti-drift
-//!    gate the skill exists for: it is compiled in so it cannot lag the
-//!    binary, and these tests are what make "it mentions the surface" true
-//!    by CI rather than by memory. The skill had already drifted before it
-//!    was compiled in — `agent wait` and `agent send-keys` shipped and the
-//!    example copy never learned they existed.
+//! 4. The compiled agent skill (`crate::skill::SOURCE`, printed by `phux
+//!    skill`) teaches every selector sigil and the small set of invariants an
+//!    agent needs before consulting the generated `phux help` surface.
 
 use clap::CommandFactory;
 
@@ -69,7 +64,7 @@ fn all_long_help(cmd: &clap::Command, buf: &mut String) {
 /// `phux-foz.5`, `phux-l5xa` — is flagged.
 fn ticket_like_tokens(help: &str) -> Vec<String> {
     const ALLOW: &[&str] = &[
-        "plugin", "server", "web", "ask", "config", "core", "client", "protocol",
+        "plugin", "server", "web", "ask", "config", "core", "client", "protocol", "mcp",
     ];
     const NEEDLE: &str = "phux-";
     let mut hits = Vec::new();
@@ -546,10 +541,6 @@ fn the_agent_selector_is_advertised_as_live() {
         !skill.contains("no shipped verb resolves it"),
         "the compiled skill must not call `%name` parser-reserved any more"
     );
-    assert!(
-        skill.contains("agent session open") && skill.contains("agent emit"),
-        "the compiled skill must teach the agent session verbs"
-    );
 }
 
 // ---------------------------------------------------------------------------
@@ -557,67 +548,16 @@ fn the_agent_selector_is_advertised_as_live() {
 //
 // `skill::SOURCE` is `include_str!`d, so it always belongs to this build — but
 // "compiled in" only guarantees it ships together with the binary, not that it
-// still says true things about it. These three tests are the part that catches
-// drift, on the same principle as
+// still says true things about it. These tests catch drift, on the same
+// principle as
 // `refdocs::tests::generated_reference_docs_match_the_tree`: derive the
 // expectation from the clap tree and the selector parser rather than from a
 // second checked-in list.
 // ---------------------------------------------------------------------------
 
-/// The remedy every skill-drift failure names. One string so the three tests
-/// cannot teach three different fixes.
-const SKILL_REMEDY: &str = "document it in skills/phux/SKILL.md (the file \
+/// The remedy every skill-drift failure names.
+const SKILL_REMEDY: &str = "document it in .agents/skills/using-phux/SKILL.md (the file \
      `phux skill` prints, compiled into the binary by include_str!)";
-
-/// Every visible top-level verb is named in the compiled skill.
-///
-/// The skill is the agent-to-agent UX: it is what another agent reads to learn
-/// what this CLI can do. A verb the skill never mentions is a verb no agent
-/// will ever call, which is how `take`, `give`, `signal`, `rec`, `play`, and
-/// `worktree` stayed invisible for releases at a time. Hidden verbs
-/// (`gen-reference-docs`, `stdio-bridge`) are machine plumbing and are
-/// deliberately excluded, exactly as they are from the curated `--help`.
-#[test]
-fn skill_names_every_visible_top_level_verb() {
-    let skill = crate::skill::render(crate::skill::SkillScope::Full);
-    for sub in Cli::command().get_subcommands() {
-        let name = sub.get_name();
-        if name == "help" || sub.is_hide_set() {
-            continue;
-        }
-        let needle = format!("phux {name}");
-        assert!(
-            skill.contains(&needle),
-            "the compiled agent skill never mentions `{needle}`; {SKILL_REMEDY}"
-        );
-    }
-}
-
-/// Every visible `phux agent` subcommand is named in the compiled skill.
-///
-/// The `agent` namespace is the skill's whole subject, so this is where drift
-/// costs the most: `agent wait` and `agent send-keys` both shipped while the
-/// hand-maintained example skill still described a surface without them.
-#[test]
-fn skill_names_every_agent_subcommand() {
-    let skill = crate::skill::render(crate::skill::SkillScope::Agent);
-    let root = Cli::command();
-    let agent = root
-        .get_subcommands()
-        .find(|sub| sub.get_name() == "agent")
-        .expect("no `agent` subcommand in the tree");
-    for sub in agent.get_subcommands() {
-        let name = sub.get_name();
-        if name == "help" || sub.is_hide_set() {
-            continue;
-        }
-        let needle = format!("agent {name}");
-        assert!(
-            skill.contains(&needle),
-            "the compiled agent skill never mentions `phux {needle}`; {SKILL_REMEDY}"
-        );
-    }
-}
 
 /// The token the skill must use to teach the selector form `selector` is.
 ///

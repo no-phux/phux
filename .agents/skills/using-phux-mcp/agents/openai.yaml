@@ -1,0 +1,4 @@
+interface:
+  display_name: "Using phux through MCP"
+  short_description: "Drive persistent terminals through phux MCP"
+  default_prompt: "Use $using-phux-mcp to operate this persistent terminal workflow through MCP."

@@ -237,7 +237,7 @@ fn skill_flag_is_clean_and_matches_the_legacy_verb() {
     assert_eq!(flag_stdout, verb_stdout);
     assert_eq!(flag_stdout, explicit_flag);
     assert_eq!(flag_stdout, explicit_verb);
-    assert!(flag_stdout.starts_with("---\nname: phux\n"));
+    assert!(flag_stdout.starts_with("---\nname: using-phux\n"));
     assert!(flag_stdout.ends_with('\n'));
     assert!(flag_stderr.is_empty(), "--skill stderr={flag_stderr:?}");
     assert!(verb_stderr.is_empty(), "skill stderr={verb_stderr:?}");
@@ -249,7 +249,7 @@ fn scoped_skills_match_across_flag_and_verb_forms() {
         let (_, flag, flag_err) = run(&[&format!("--skill={scope}")]);
         let (_, verb, verb_err) = run(&["skill", scope]);
         assert_eq!(flag, verb, "scope={scope}");
-        assert!(flag.starts_with("---\nname: phux\n"));
+        assert!(flag.starts_with("---\nname: using-phux\n"));
         assert!(!flag.contains("phux-skill-region:"));
         assert!(flag_err.is_empty());
         assert!(verb_err.is_empty());

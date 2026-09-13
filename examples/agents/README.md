@@ -94,11 +94,10 @@ That command may invoke configured account/API behavior; it is never run by CI.
 
 ## See also
 
-- [`../skills/phux-terminal/SKILL.md`](../skills/phux-terminal/SKILL.md) —
-  when to reach for phux over a one-shot shell, and the `run`/`wait`
-  surface in prose.
-- [`../skills/phux-agent-cli/SKILL.md`](../skills/phux-agent-cli/SKILL.md) —
-  the JSON-driven CLI-wrapping playbook that points at these scripts.
+- [`using-phux`](../../.agents/skills/using-phux/SKILL.md) — the canonical
+  CLI skill, including when to use phux and the full supervision loop.
+- [`using-phux-mcp`](../../.agents/skills/using-phux-mcp/SKILL.md) — the
+  canonical MCP skill and live-schema workflow.
 - [`../../docs/consumers/tui.md`](../../docs/consumers/tui.md) — the full
   CLI shape.
 - [`../../docs/consumers/pi.md`](../../docs/consumers/pi.md) — package setup

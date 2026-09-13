@@ -173,7 +173,7 @@ retains the visible `check`/`test` job names.
 | Root crates | Rust + Cockpit coordinator coverage; browser also runs for its Rust/demo-server dependency closure |
 | Cargo/toolchain/build inputs | Affected products plus clean native setup assurance |
 | `.config/zig-toolchain.json`, engine source/vendor/installer | Affected products plus byte-identical engine reproduction |
-| Embedded `skills/**` | Rust + Cockpit; these Markdown files are compiled product inputs |
+| Embedded `.agents/skills/using-phux*/**` | Rust + Cockpit; these versioned project skills are compiled product inputs |
 
 `bash scripts/ci/check-classify-changes.sh` exercises routes and actual event
 diffs, including cross-surface renames and the browser server's manifest closure.

@@ -29,7 +29,8 @@ class RoutingTests(unittest.TestCase):
             (["new-product/source.xyz"], ALL),
             (["docs/RELEASING.md"], set()),
             (["clients/cockpit/README.md"], set()),
-            (["skills/phux/SKILL.md"], {"phux", "cockpit"}),
+            ([".agents/skills/using-phux/SKILL.md"], {"phux", "cockpit"}),
+            ([".agents/skills/using-phux-mcp/SKILL.md"], {"phux", "cockpit"}),
             (["clients/cockpit/src/main.zig"], {"cockpit"}),
             (["clients/phux-web/src/lib.rs"], {"web"}),
             (["clients/phux-vt-web/src/lib.rs"], {"web"}),
@@ -86,7 +87,7 @@ class RoutingTests(unittest.TestCase):
     def test_cheap_flags(self):
         for paths, docs, workflows in [
             (["docs/SETUP.md", "clients/cockpit/README.md"], "true", "false"),
-            (["skills/phux/SKILL.md"], "false", "false"),
+            ([".agents/skills/using-phux/SKILL.md"], "false", "false"),
             ([".github/workflows/ci.yml", ".github/workflows/release.yml"], "false", "true"),
             ([".github/workflows/ci.yml", "crates/phux/src/main.rs"], "false", "false"),
             ([], "false", "false"),
@@ -103,7 +104,7 @@ class RoutingTests(unittest.TestCase):
             (["docs/SETUP.md"], ""),
             (["Cargo.toml"], ""),
             (["justfile"], ""),
-            (["skills/phux/SKILL.md"], ""),
+            ([".agents/skills/using-phux/SKILL.md"], ""),
             ([".github/workflows/ci.yml"], ""),
             (["new-product/source.xyz"], ""),
             (["crates/phux-protocol/src/lib.rs"], "rdeps(=phux-protocol)"),
@@ -203,7 +204,7 @@ class EventTests(unittest.TestCase):
             ["clients/cockpit/src/main.zig"], ["clients/phux-web/src/lib.rs"],
             ["crates/phux-server/src/lib.rs"], ["crates/phux-protocol/Cargo.toml"],
             ["Cargo.toml"], ["new-product/source.xyz"],
-            [".github/workflows/release.yml"], ["skills/phux/SKILL.md"],
+            [".github/workflows/release.yml"], [".agents/skills/using-phux/SKILL.md"],
             ["clients/cockpit/src/main.zig", "clients/phux-web/src/lib.rs"],
         ]:
             head = self.revision(paths)

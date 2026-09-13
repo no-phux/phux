@@ -14,12 +14,13 @@ assert_document() {
   first=$(sed -n '1p' "$output")
   skill_name=$(sed -n '2p' "$output")
   description=$(sed -n '3p' "$output")
-  closing=$(sed -n '4p' "$output")
+  closing=$(awk 'NR > 1 && $0 == "---" { print; exit }' "$output")
   first_heading=$(grep -m1 '^# ' "$output" || true)
 
   [ "$first" = '---' ]
   [ "$skill_name" = "name: $name" ]
   [ -n "${description#description: }" ]
+  grep -Eq '^  version: "[0-9]+\.[0-9]+\.[0-9]+" # x-release-please-version$' "$output"
   [ "$closing" = '---' ]
   [ -n "$first_heading" ]
   [ "$(tail -c 1 "$output" | od -An -tuC | tr -d ' ')" = 10 ]
@@ -59,11 +60,11 @@ check_binary() {
   [ ! -s "$stderr" ]
 }
 
-sed '/<!-- phux-skill-region:/d' "$root/skills/phux/SKILL.md" > "$tmp/phux.expected"
-cp "$root/skills/phux-mcp/SKILL.md" "$tmp/phux-mcp.expected"
+sed '/<!-- phux-skill-region:/d' "$root/.agents/skills/using-phux/SKILL.md" > "$tmp/phux.expected"
+cp "$root/.agents/skills/using-phux-mcp/SKILL.md" "$tmp/phux-mcp.expected"
 
-check_binary phux "$root/target/debug/phux" "$tmp/phux.expected" '--skill=quick ls'
-check_binary phux-mcp "$root/target/debug/phux-mcp" "$tmp/phux-mcp.expected" '--skill --schema'
+check_binary using-phux "$root/target/debug/phux" "$tmp/phux.expected" '--skill=quick ls'
+check_binary using-phux-mcp "$root/target/debug/phux-mcp" "$tmp/phux-mcp.expected" '--skill --schema'
 
 # The ergonomic launcher must be a transparent exec boundary: exact discovery
 # bytes, live stdio transport, and no phux config/socket initialization first.

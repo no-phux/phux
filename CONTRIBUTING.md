@@ -46,7 +46,7 @@ else at the root is product source, not an agent zoo.
 | [`.claude/settings.json`](./.claude/settings.json) | Claude Code session hooks (`bd prime`). |
 | [`.codex/hooks.json`](./.codex/hooks.json) | Codex session hooks (`bd codex-hook`). |
 | [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) | The Claude Code plugin this repo ships. |
-| [`.agents/skills/beads`](./.agents/skills/beads) | Beads skill for agents that load project skills. |
+| [`.agents/skills`](./.agents/skills) | Standard project skills: Beads workflow guidance and the canonical, versioned phux CLI/MCP guides compiled into releases. |
 
 ## Bar for any change
 
