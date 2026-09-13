@@ -221,6 +221,63 @@ async fn bootstrapped_loop_with(
     (state, client, server, out)
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn attached_generation_discards_delayed_stream_bind_reply() {
+    let (mut state, mut client, _server, _out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.pending_stream_binds.insert(41, ResourceId::local(2));
+    state
+        .coordinate_multistream_frame(&mut client, &initial_attached())
+        .await
+        .unwrap();
+    assert!(state.pending_stream_binds.is_empty());
+
+    state
+        .coordinate_multistream_frame(
+            &mut client,
+            &FrameKind::CommandResult {
+                request_id: 41,
+                result: phux_protocol::wire::frame::CommandResult::Ok,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(state.pending_stream_binds.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn correlated_error_releases_pending_stream_bind() {
+    let (mut state, mut client, _server, _out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.pending_stream_binds.insert(42, ResourceId::local(2));
+    state
+        .coordinate_multistream_frame(
+            &mut client,
+            &FrameKind::Error {
+                request_id: Some(42),
+                code: phux_protocol::wire::frame::ErrorCode::ResourceExhausted,
+                message: "refused".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(state.pending_stream_binds.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pending_stream_bind_tracking_matches_connection_cap() {
+    let (mut state, _client, _server, _out) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    for request_id in 0..u32::try_from(MAX_PENDING_STREAM_BINDS).unwrap() {
+        state
+            .track_pending_stream_bind(request_id, ResourceId::local(request_id + 1))
+            .unwrap();
+    }
+    assert!(matches!(
+        state.track_pending_stream_bind(u32::MAX, ResourceId::local(u32::MAX)),
+        Err(AttachError::Protocol(message)) if message.contains("stream cap exceeded")
+    ));
+}
+
 /// Drain sent frames through a FIFO barrier, with no timing-based idle guess.
 async fn sidebar_frames_sent(client: &mut Connection, server: &mut Connection) -> Vec<FrameKind> {
     client

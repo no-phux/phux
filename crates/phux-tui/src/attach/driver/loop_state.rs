@@ -36,6 +36,9 @@ use crate::attach::input_dispatch::{
     DispatchCtx, DragGrab, ReattachTarget, dispatch_input_events, encode_layout_or_log,
     sync_overlays_to_focused_pane,
 };
+
+/// The QUIC connection keeps one of its 128 bidi streams for control.
+const MAX_PENDING_STREAM_BINDS: usize = 127;
 use crate::attach::onboarding::{AttachClaim, AttachMoment};
 use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::attach::paint::{
@@ -773,6 +776,7 @@ impl SessionLoop {
             ..HistoryCacheConfig::default()
         };
         let settings = TuiSettings::load_tolerant();
+        let server_features = negotiated.server_features;
         let (plugin_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel::<PluginRunResult>();
         // phux-huhi: stamp the configured breakpoints once, before anything
         // can be pushed. `OverlayState::push` hands them to each overlay from
@@ -781,30 +785,21 @@ impl SessionLoop {
         overlays.set_breakpoints(settings.chrome);
         let viewport_dims = current_viewport().map_or((80, 24), |v| (v.cols.max(1), v.rows.max(1)));
         let cell_px_dims = current_viewport().map_or(HOST_CELL_PX_FALLBACK, |v| host_cell_px(&v));
-        let conditional_kill_supported = negotiated
-            .server_features
-            .contains(ServerFeature::ConditionalKill);
+        let conditional_kill_supported = server_features.contains(ServerFeature::ConditionalKill);
         let mut orphan_kills = super::orphans::OrphanKills::default();
         orphan_kills.set_conditional_kill(conditional_kill_supported);
         Ok(Self {
             control_dial: None,
-            acknowledged_input_supported: negotiated
-                .server_features
+            acknowledged_input_supported: server_features
                 .contains(ServerFeature::AcknowledgedInput),
             input_replay: None,
-            terminal_reply_supported: negotiated
-                .server_features
-                .contains(ServerFeature::TerminalReply),
-            spawn_initial_size_supported: negotiated
-                .server_features
-                .contains(ServerFeature::SpawnInitialSize),
+            terminal_reply_supported: server_features.contains(ServerFeature::TerminalReply),
+            spawn_initial_size_supported: server_features.contains(ServerFeature::SpawnInitialSize),
             directory_support: crate::attach::directory_picker::DirectorySupport::from_features(
-                negotiated.server_features,
+                server_features,
             ),
-            host_sessions_supported: negotiated
-                .server_features
-                .contains(ServerFeature::HostSessions),
-            whoami_supported: negotiated.server_features.contains(ServerFeature::Whoami),
+            host_sessions_supported: server_features.contains(ServerFeature::HostSessions),
+            whoami_supported: server_features.contains(ServerFeature::Whoami),
             host_refresh_request: false,
             session_picker_dirty: false,
             wants_state_sync,
@@ -1927,6 +1922,7 @@ impl SessionLoop {
             if !self.detach_pending {
                 conn.send(&FrameKind::Detach).await?;
                 conn.unbind_all_terminals();
+                self.pending_stream_binds.clear();
                 self.detach_pending = true;
             }
             return Ok(Step::Continue);
@@ -2361,6 +2357,27 @@ impl SessionLoop {
     ) -> Result<bool, AttachError> {
         if matches!(frame, FrameKind::Attached { .. }) {
             self.pending_attach_ready = None;
+            // ATTACHED establishes a new aggregate generation. Replies to
+            // AttachResource commands from the retired generation must not
+            // open streams into it.
+            self.pending_stream_binds.clear();
+        }
+        if let FrameKind::Error {
+            request_id: Some(request_id),
+            ..
+        } = frame
+        {
+            self.pending_stream_binds.remove(request_id);
+        }
+        if let FrameKind::CommandResult { request_id, result } = frame
+            && let Some(terminal_id) = self.pending_stream_binds.remove(request_id)
+        {
+            if conn.multistream_enabled()
+                && matches!(result, phux_protocol::wire::frame::CommandResult::Ok)
+            {
+                conn.bind_terminal(&terminal_id).await?;
+            }
+            return Ok(false);
         }
         if !conn.multistream_enabled() {
             return Ok(false);
@@ -2371,13 +2388,6 @@ impl SessionLoop {
                     if resource.kind == ResourceKind::Terminal {
                         conn.bind_terminal(&resource.id).await?;
                     }
-                }
-            }
-            FrameKind::CommandResult { request_id, result } => {
-                if let Some(terminal_id) = self.pending_stream_binds.remove(request_id)
-                    && matches!(result, phux_protocol::wire::frame::CommandResult::Ok)
-                {
-                    conn.bind_terminal(&terminal_id).await?;
                 }
             }
             FrameKind::AttachReady { .. } => {
@@ -2677,13 +2687,17 @@ impl SessionLoop {
     /// The engine rejected a generation after emitting a typed resync status;
     /// issue a fresh in-connection ATTACH while the frozen published replica
     /// stays visible.
-    async fn request_rebootstrap(&self, conn: &mut Connection) -> Result<FrameStep, AttachError> {
+    async fn request_rebootstrap(
+        &mut self,
+        conn: &mut Connection,
+    ) -> Result<FrameStep, AttachError> {
         if self.session_name.is_empty() {
             return Err(AttachError::Protocol(
                 "engine requested rebootstrap before ATTACHED named the session".to_owned(),
             ));
         }
         conn.unbind_all_terminals();
+        self.pending_stream_binds.clear();
         let attach_id = send_attach(conn, AttachTarget::ByName(self.session_name.clone())).await?;
         tracing::warn!(
             attach_id,
@@ -2691,6 +2705,20 @@ impl SessionLoop {
             "engine generation rejected; requested replacement bootstrap"
         );
         Ok(FrameStep::Rebootstrap)
+    }
+
+    fn track_pending_stream_bind(
+        &mut self,
+        request_id: u32,
+        terminal_id: ResourceId,
+    ) -> Result<(), AttachError> {
+        if self.pending_stream_binds.len() >= MAX_PENDING_STREAM_BINDS {
+            return Err(AttachError::Protocol(format!(
+                "QUIC Terminal stream cap exceeded ({MAX_PENDING_STREAM_BINDS})"
+            )));
+        }
+        self.pending_stream_binds.insert(request_id, terminal_id);
+        Ok(())
     }
 
     /// A peer headless placement can add a layout leaf without this attached
@@ -2704,7 +2732,10 @@ impl SessionLoop {
         for terminal_id in terminal_ids {
             let request_id = self.next_request_id;
             self.next_request_id = self.next_request_id.wrapping_add(1);
-            send_unless_peer_gone(
+            if conn.multistream_enabled() {
+                self.track_pending_stream_bind(request_id, terminal_id.clone())?;
+            }
+            if let Err(error) = send_unless_peer_gone(
                 conn,
                 &FrameKind::Command {
                     request_id,
@@ -2713,10 +2744,10 @@ impl SessionLoop {
                     },
                 },
             )
-            .await?;
-            if conn.multistream_enabled() {
-                self.pending_stream_binds
-                    .insert(request_id, terminal_id.clone());
+            .await
+            {
+                self.pending_stream_binds.remove(&request_id);
+                return Err(error);
             }
         }
         Ok(())
@@ -2737,8 +2768,11 @@ impl SessionLoop {
             };
             let request_id = self.next_request_id;
             self.next_request_id = self.next_request_id.wrapping_add(1);
+            if conn.multistream_enabled() {
+                self.track_pending_stream_bind(request_id, terminal_id.clone())?;
+            }
             self.park_adopt(request_id, adopt);
-            send_unless_peer_gone(
+            if let Err(error) = send_unless_peer_gone(
                 conn,
                 &FrameKind::Command {
                     request_id,
@@ -2747,9 +2781,10 @@ impl SessionLoop {
                     },
                 },
             )
-            .await?;
-            if conn.multistream_enabled() {
-                self.pending_stream_binds.insert(request_id, terminal_id);
+            .await
+            {
+                self.pending_stream_binds.remove(&request_id);
+                return Err(error);
             }
         }
         Ok(())
