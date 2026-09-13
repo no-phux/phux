@@ -327,7 +327,9 @@ fn wait_schema() -> Value {
     schema(
         "phux_agent_wait",
         "Block until a pane's agent TRANSITIONS into one of `until` (default: idle, blocked, \
-         done — the three ways a turn ends), then return the result document. \
+         done — the three ways a turn ends), then return the result document. Set `any` to wait \
+         for the first matching transition from any local agent in the fleet; `target` and `any` \
+         are mutually exclusive. \
          EDGE-TRIGGERED, and that is the whole point of the verb: a pane ALREADY RESTING in a \
          target state does not satisfy it and the call ends at the deadline with \
          `satisfied: false`. Read that as \"no transition was observed\", never as \"still \
@@ -344,6 +346,7 @@ fn wait_schema() -> Value {
          the detector's confidence and sources.",
         json!({
             "target": { "type": "string", "minLength": 1, "maxLength": 4096, "description": TARGET_DESC },
+            "any": { "type": "boolean", "description": "Wait across every local agent in the fleet. Mutually exclusive with target." },
             "until": {
                 "type": "array",
                 "maxItems": 4,
@@ -363,7 +366,15 @@ fn wait_schema() -> Value {
 }
 
 async fn wait(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
-    strict_object(args, &["target", "until", "timeout_secs", "socket"], &[])?;
+    strict_object(
+        args,
+        &["target", "any", "until", "timeout_secs", "socket"],
+        &[],
+    )?;
+    let any = bool_arg(args, "any")?;
+    if any && args.get("target").is_some() {
+        return Err(ToolError::new("`target` and `any` are mutually exclusive"));
+    }
     let until = bounded_strings(args, "until", false)?;
     for state in &until {
         if !WAITABLE_STATES.contains(&state.as_str()) {
@@ -383,6 +394,9 @@ async fn wait(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
     };
 
     let mut argv = vec!["agent".to_owned(), "wait".to_owned()];
+    if any {
+        argv.push("--any".to_owned());
+    }
     for state in until {
         argv.extend(["--until".to_owned(), state]);
     }
@@ -1387,6 +1401,24 @@ esac
             ],
         )
         .await;
+
+        assert_argv(
+            &adapter,
+            &log,
+            "phux_agent_wait",
+            json!({ "any": true, "until": ["blocked"], "timeout_secs": 20 }),
+            &[
+                "agent",
+                "wait",
+                "--any",
+                "--until",
+                "blocked",
+                "--timeout",
+                "20",
+                "--json",
+            ],
+        )
+        .await;
     }
 
     /// Validation happens before any subprocess: an adapter pointed at a
@@ -1415,6 +1447,8 @@ esac
             ("phux_agent_wait", json!({ "until": ["unknown"] })),
             ("phux_agent_wait", json!({ "timeout_secs": 0 })),
             ("phux_agent_wait", json!({ "timeout_secs": 3601 })),
+            ("phux_agent_wait", json!({ "any": "yes" })),
+            ("phux_agent_wait", json!({ "target": "@1", "any": true })),
             ("phux_agent_prompt", json!({ "target": "@1" })),
             (
                 "phux_agent_prompt",

@@ -741,19 +741,22 @@ Arguments:
           Target selector (resolves to one pane). Omit for the focused pane
 
 Options:
+      --any
+          Wait for the first matching transition from any local agent in the fleet instead of resolving one pane
+
       --until <STATE>
           Lifecycle state to wait for; repeat to OR several. Defaults to `idle`, `blocked`, `done` — the three ways a turn ends. `unknown` is not spellable: it is departure, not a state
 
           [possible values: idle, working, blocked, done]
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
       --timeout <SECS>
           Give up after this many seconds and exit 124. Unbounded when omitted, matching `phux wait` — always pass one in a script
 
       --json
           Emit the machine-readable result document instead of a line
-
-      --socket <PATH>
-          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
   -h, --help
           Print help (see a summary with '-h')

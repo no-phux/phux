@@ -156,7 +156,9 @@ Contract facts `--schema` descriptions do not collect:
 - **`phux_watch`** is a bounded one-shot (`max_events` and/or
   `timeout_secs`). The result envelope is versioned even though CLI
   `phux watch --json` is unmarked NDJSON. A host that wants a live stream
-  shells out.
+  shells out. With no `target`, it includes agent-state changes for every
+  local Terminal through the same enumerate-and-follow stream as
+  `phux agent wait --any`.
 - **`phux_paste`** is one paste event. A paste inserts without
   submitting; follow with `phux_send_keys` sending `Enter`. A dropped
   untrusted payload still reports `sent: true`.
@@ -173,7 +175,8 @@ Contract facts `--schema` descriptions do not collect:
 - **`phux_whoami`**: executes `phux whoami --json`. An older server is
   refused (`server_too_old`), not guessed. No `remote` argument.
 - **`phux_agent_wait`**: exit 124 returns as `satisfied: false`, not a
-  tool failure. Edge-triggered and always bounded.
+  tool failure. Edge-triggered and always bounded. Set `any: true` to wait
+  across every local agent; `any` and `target` are mutually exclusive.
 - **`phux_agent_log`**: no `follow` argument. A following read is a
   stream, and this adapter has no streaming result shape.
 - **Agent session tools** (`phux_agent_session_open` / `close`,

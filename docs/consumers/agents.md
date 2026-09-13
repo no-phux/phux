@@ -265,10 +265,16 @@ show` names the winning rung in `sources[0].kind` (`stream` when the
 session stream decided it) and reports the session under
 `agent_session`.
 
-`agent wait` is edge-triggered. A satellite `TARGET` is refused
-(`satellite_target`, exit 2): `phux.agent/v1` is hub-local. Run the wait
-on the satellite's own server. `watch` still carries that pane's agent
-*events* across the hub.
+`agent wait` is edge-triggered. `--any` waits for the first matching
+transition from any local agent in the fleet; it cannot be combined with a
+`TARGET`. The client subscribes to server-wide resource lifecycle events
+before enumerating panes, installs one `phux.agent/v1` subscription per local
+Terminal, follows resource creation and closure, and periodically re-enumerates
+as a loss-recovery floor. An agent already resting in a requested state only
+establishes its baseline and does not satisfy the fleet wait. Satellite panes
+remain excluded because L3 metadata is hub-local. A satellite `TARGET` is
+refused (`satellite_target`, exit 2); run the wait on that satellite's own
+server. `watch` still carries the pane's agent *events* across the hub.
 
 `--expect-agent` matches `name`. A detector-written `name` is a per-kind
 constant (`claude` on every Claude pane), not a per-pane label. Set
@@ -482,6 +488,9 @@ includes the evidence trail; the human view is what expands.
 or `"poll"` (the re-read floor recovering a dropped notification).
 `baseline` is recorded and **never evaluated**. `detection` is one
 `agents[]` entry for this pane, or `null` when the post-wait read fails.
+With `--any`, a successful document has the same shape and names the Terminal
+that won the race; `observations` additionally carries `agents`. On timeout,
+`terminal`, `edge`, `baseline`, `state`, and `agent` are `null`.
 
 `agent send-keys --json` is emitted only on a fully delivered batch:
 `verified`, `delivery` (`ok`), `operation_id`, `attempts`, `keys`.
