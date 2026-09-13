@@ -686,6 +686,7 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
                 "foreground process must run its SIGHUP flush handler before \
                      the pane is killed; marker={body:?}",
             );
+            drop(holder_cleanup);
         })
         .await;
 }
@@ -845,6 +846,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
                      marker={body:?} cat_status={cat_status:?} cat_err={cat_err:?} \
                      shutdown_took={shutdown_took:?}",
             );
+            drop(holder_cleanup);
         })
         .await;
 }
