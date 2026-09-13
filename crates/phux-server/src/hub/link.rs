@@ -72,8 +72,10 @@
 //! the child's stdin pipe), and the keepalive tick doubles as the sweep
 //! that prunes relayed commands whose consumer stopped waiting.
 
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -113,6 +115,16 @@ const LINK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// an unbounded write would pend forever and wedge the whole supervisor
 /// loop — inbound dispatch and the keepalive tick included.
 const LINK_SEND_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Capacity of the established link's independent ordered writer. Saturation
+/// closes the link explicitly rather than parking inbound dispatch or dropping
+/// a request whose correlation state was already registered.
+const LINK_WRITE_QUEUE: usize = 64;
+const LINK_WRITE_QUEUE_BYTES: usize = 32 * 1024 * 1024;
+
+/// Delivery retry cadence for downstream subscribers with retained frames.
+/// This is independent of the ten-second transport housekeeping interval.
+const RELAY_DELIVERY_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 
 /// How long a connection must stay up before the failure streak is
 /// forgotten. SSH auth/connect failures surface *after* the spawn
@@ -623,34 +635,34 @@ pub(crate) struct NegotiatedBootstrap {
 /// (length prefix included, the `FrameKind::encode`/`decode` unit) the
 /// relay session (phux-v45.4) pumps in both directions.
 pub(crate) trait LinkConn {
-    /// Put one complete encoded frame on the wire.
-    async fn send_frame(&mut self, frame: &[u8]) -> Result<(), String>;
+    type Reader: LinkReader;
+    type Writer: LinkWriter + 'static;
 
-    /// Receive the next complete frame. `Ok(None)` is a clean close by
-    /// the satellite; `Err` carries a human-readable loss reason.
-    ///
-    /// Must be cancel-safe: the supervisor polls it inside a `select!`
-    /// against the relay mailbox and the cancellation token, recreating
-    /// the future each iteration.
-    async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String>;
+    fn into_parts(self) -> (Self::Reader, Self::Writer);
 
     /// Exact bounds selected before this connection was returned.
-    ///
-    /// Returns an error if a transport violates the connection-construction
-    /// contract and returns before installing its negotiated selection.
     fn bootstrap_limits(&self) -> Result<BootstrapLimits, String>;
 
     /// Exact synchronization profile selected before this connection returned.
-    ///
-    /// Returns an error if a transport violates the connection-construction
-    /// contract and returns before installing its negotiated selection.
     fn bootstrap_profile(&self) -> Result<BootstrapProfile, String>;
 
     /// Features the satellite advertised in its `HELLO_OK`.
-    ///
-    /// Returns an error if a transport violates the connection-construction
-    /// contract and returns before installing its negotiated selection.
     fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String>;
+}
+
+pub(crate) trait LinkReader {
+    /// Receive the next complete frame.
+    async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String>;
+
+    /// Take the structured framing violation associated with the last error.
+    fn take_framing_violation(&mut self) -> Option<FramingError> {
+        None
+    }
+}
+
+pub(crate) trait LinkWriter {
+    /// Put one complete encoded frame on the wire.
+    async fn send_frame(&mut self, frame: &[u8]) -> Result<(), String>;
 
     /// Transport-level liveness probe, driven by the supervisor's
     /// [`LINK_KEEPALIVE_INTERVAL`] tick while the link is up. WS links
@@ -820,26 +832,24 @@ pub(crate) async fn run_link<T: LinkTransport>(
 )]
 async fn run_relay_session<C: LinkConn>(
     host: &SatelliteHost,
-    mut conn: C,
+    conn: C,
     relay_rx: &mut tokio::sync::mpsc::Receiver<super::relay::RelayRequest>,
     unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<super::relay::Unsubscribe>,
     cancel: &CancellationToken,
 ) -> Option<String> {
-    let profile = match conn.bootstrap_profile() {
-        Ok(profile) => profile,
+    let mut session = match negotiated_relay_session(host, &conn) {
+        Ok(session) => session,
         Err(error) => return Some(error),
     };
-    let limits = match conn.bootstrap_limits() {
-        Ok(limits) => limits,
-        Err(error) => return Some(error),
-    };
-    let features = match conn.server_features() {
-        Ok(features) => features,
-        Err(error) => return Some(error),
-    };
-    info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
-    let mut session =
-        super::relay::RelaySession::new_negotiated(host.clone(), limits, profile, features);
+    let (mut reader, writer) = conn.into_parts();
+    let (write_tx, write_rx) = tokio::sync::mpsc::channel(LINK_WRITE_QUEUE);
+    let queued_write_bytes = Rc::new(Cell::new(0usize));
+    let (write_error_tx, mut write_error_rx) = tokio::sync::mpsc::channel(1);
+    let _writer_task = AbortOnDrop(tokio::task::spawn_local(drive_link_writer(
+        writer,
+        write_rx,
+        write_error_tx,
+    )));
     // Housekeeping tick: transport keepalive + pending-map pruning. First
     // tick one interval out — the connection was live zero seconds ago.
     let mut keepalive = tokio::time::interval_at(
@@ -847,14 +857,20 @@ async fn run_relay_session<C: LinkConn>(
         LINK_KEEPALIVE_INTERVAL,
     );
     keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut delivery_retry = tokio::time::interval(RELAY_DELIVERY_RETRY_INTERVAL);
+    delivery_retry.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let (lost, reason) = loop {
         tokio::select! {
             () = cancel.cancelled() => break (false, "hub is shutting down".to_owned()),
+            error = write_error_rx.recv() => {
+                break (true, error.unwrap_or_else(|| "satellite writer stopped".to_owned()));
+            }
             request = relay_rx.recv() => {
                 let Some(request) = request else {
                     break (false, "relay handles dropped".to_owned());
                 };
-                if let Err(error) = send_relay_request(&mut conn, &mut session, request).await {
+                let frames = prepare_relay_request(&mut session, request);
+                if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(frames)) {
                     break (true, error);
                 }
             }
@@ -865,35 +881,109 @@ async fn run_relay_session<C: LinkConn>(
                 let Some(unsubscribe) = unsubscribe else {
                     break (false, "relay handles dropped".to_owned());
                 };
-                let mut lost_reason = None;
-                for frame in session.handle_unsubscribe(unsubscribe) {
-                    if let Err(error) = send_bounded(&mut conn, &frame).await {
-                        lost_reason = Some(error);
-                        break;
-                    }
-                }
-                if let Some(error) = lost_reason {
+                let frames = session.handle_unsubscribe(unsubscribe);
+                if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(frames)) {
                     break (true, error);
                 }
             }
-            inbound = conn.recv_frame() => match inbound {
-                Ok(Some(frame)) => {
-                    if let Err(error) = session.handle_inbound(&frame) {
-                        break (true, error);
-                    }
+            inbound = reader.recv_frame() => {
+                if let Err(error) = handle_relay_inbound(
+                    &mut reader,
+                    inbound,
+                    &mut session,
+                    &write_tx,
+                    &queued_write_bytes,
+                ).await {
+                    break (true, error);
                 }
-                Ok(None) => break (true, "connection closed by satellite".to_owned()),
-                Err(error) => break (true, error),
             },
             _ = keepalive.tick() => {
-                if let Err(error) = maintain_relay_session(&mut conn, &mut session).await {
+                if let Err(error) = maintain_relay_session(&mut session) {
+                    break (true, error);
+                }
+                if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Keepalive) {
+                    break (true, error);
+                }
+            }
+            _ = delivery_retry.tick() => {
+                session.flush_pending_snapshots();
+                let detaches = session.take_delivery_detaches();
+                if let Err(error) = queue_link_write(&write_tx, &queued_write_bytes, LinkWrite::Frames(detaches)) {
                     break (true, error);
                 }
             }
         }
     };
+    drop(write_tx);
     session.teardown(&reason);
     lost.then_some(reason)
+}
+
+fn negotiated_relay_session<C: LinkConn>(
+    host: &SatelliteHost,
+    conn: &C,
+) -> Result<super::relay::RelaySession, String> {
+    let profile = conn.bootstrap_profile()?;
+    let limits = conn.bootstrap_limits()?;
+    let features = conn.server_features()?;
+    info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
+    Ok(super::relay::RelaySession::new_negotiated(
+        host.clone(),
+        limits,
+        profile,
+        features,
+    ))
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "called only by the LocalSet-bound hub session with its Rc-local bounded writer"
+)]
+async fn handle_relay_inbound<R: LinkReader>(
+    reader: &mut R,
+    inbound: Result<Option<Vec<u8>>, String>,
+    session: &mut super::relay::RelaySession,
+    write_tx: &tokio::sync::mpsc::Sender<QueuedLinkWrite>,
+    queued_write_bytes: &Rc<Cell<usize>>,
+) -> Result<(), String> {
+    match inbound {
+        Ok(Some(frame)) => {
+            session.handle_inbound(&frame)?;
+            queue_link_write(
+                write_tx,
+                queued_write_bytes,
+                LinkWrite::Frames(session.take_delivery_detaches()),
+            )
+        }
+        Ok(None) => Err("connection closed by satellite".to_owned()),
+        Err(error) => {
+            if let Some(violation) = reader.take_framing_violation() {
+                send_framing_goodbye(write_tx, queued_write_bytes, violation).await;
+            }
+            Err(error)
+        }
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "called only by the LocalSet-bound hub session with its Rc-local bounded writer"
+)]
+async fn send_framing_goodbye(
+    write_tx: &tokio::sync::mpsc::Sender<QueuedLinkWrite>,
+    queued_write_bytes: &Rc<Cell<usize>>,
+    violation: FramingError,
+) {
+    let (sent, received) = tokio::sync::oneshot::channel();
+    if queue_link_write(
+        write_tx,
+        queued_write_bytes,
+        LinkWrite::Final(encode_frame_too_large(violation), sent),
+    )
+    .is_ok()
+    {
+        let _ = tokio::time::timeout(LINK_SEND_TIMEOUT, received).await;
+    }
 }
 
 /// Bound reply retention and retry slow snapshots before probing the transport.
@@ -901,41 +991,135 @@ async fn run_relay_session<C: LinkConn>(
     clippy::future_not_send,
     reason = "ADR-0014: runs on the server's LocalSet inside run_relay_session"
 )]
-async fn maintain_relay_session<C: LinkConn>(
-    conn: &mut C,
-    session: &mut super::relay::RelaySession,
-) -> Result<(), String> {
+fn maintain_relay_session(session: &mut super::relay::RelaySession) -> Result<(), String> {
     session.check_detach_deadlines()?;
     session.prune_abandoned();
-    // Retry without requiring another incoming frame for the terminal.
-    session.flush_pending_snapshots();
-    tokio::time::timeout(LINK_SEND_TIMEOUT, conn.keepalive())
-        .await
-        .map_err(|_| {
-            format!(
-                "keepalive write to satellite stalled for {}s",
-                LINK_SEND_TIMEOUT.as_secs()
-            )
-        })?
+    Ok(())
 }
 
-/// Queue any upstream generation barrier before registering/forwarding attach.
-#[allow(
-    clippy::future_not_send,
-    reason = "ADR-0014: runs on the server's LocalSet inside run_relay_session"
-)]
-async fn send_relay_request<C: LinkConn>(
-    conn: &mut C,
+fn prepare_relay_request(
     session: &mut super::relay::RelaySession,
     request: super::relay::RelayRequest,
-) -> Result<(), String> {
-    for frame in session.prepare_request(&request) {
-        send_bounded(conn, &frame).await?;
-    }
+) -> Vec<Vec<u8>> {
+    let mut frames = session.prepare_request(&request);
     if let Some(frame) = session.handle_request_checked(request) {
-        send_bounded(conn, &frame).await?;
+        frames.push(frame);
     }
-    Ok(())
+    frames
+}
+
+enum LinkWrite {
+    Frames(Vec<Vec<u8>>),
+    Keepalive,
+    Final(Vec<u8>, tokio::sync::oneshot::Sender<()>),
+}
+
+struct QueuedLinkWrite {
+    write: Option<LinkWrite>,
+    bytes: usize,
+    total: Rc<Cell<usize>>,
+}
+
+impl QueuedLinkWrite {
+    fn into_write(mut self) -> Option<LinkWrite> {
+        self.total.set(self.total.get().saturating_sub(self.bytes));
+        self.bytes = 0;
+        self.write.take()
+    }
+}
+
+impl Drop for QueuedLinkWrite {
+    fn drop(&mut self) {
+        self.total.set(self.total.get().saturating_sub(self.bytes));
+    }
+}
+
+impl LinkWrite {
+    fn encoded_bytes(&self) -> usize {
+        match self {
+            Self::Frames(frames) => frames.iter().map(Vec::len).sum(),
+            Self::Keepalive => 0,
+            Self::Final(frame, _) => frame.len(),
+        }
+    }
+}
+
+fn queue_link_write(
+    tx: &tokio::sync::mpsc::Sender<QueuedLinkWrite>,
+    queued_bytes: &Rc<Cell<usize>>,
+    write: LinkWrite,
+) -> Result<(), String> {
+    if matches!(&write, LinkWrite::Frames(frames) if frames.is_empty()) {
+        return Ok(());
+    }
+    let bytes = write.encoded_bytes();
+    let next_bytes = queued_bytes.get().saturating_add(bytes);
+    if next_bytes > LINK_WRITE_QUEUE_BYTES {
+        return Err(format!(
+            "satellite ordered writer queue exceeded {LINK_WRITE_QUEUE_BYTES} bytes; closing link without dropping accepted requests"
+        ));
+    }
+    queued_bytes.set(next_bytes);
+    tx.try_send(QueuedLinkWrite {
+        write: Some(write),
+        bytes,
+        total: Rc::clone(queued_bytes),
+    })
+    .map_err(|error| match error {
+        tokio::sync::mpsc::error::TrySendError::Full(_) => {
+            "satellite ordered writer queue saturated; closing link without dropping accepted requests".to_owned()
+        }
+        tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+            "satellite ordered writer stopped".to_owned()
+        }
+    })
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "the hub writer runs on ADR-0014's current-thread LocalSet and its byte accounting is Rc-local"
+)]
+async fn drive_link_writer<W: LinkWriter>(
+    mut writer: W,
+    mut rx: tokio::sync::mpsc::Receiver<QueuedLinkWrite>,
+    errors: tokio::sync::mpsc::Sender<String>,
+) {
+    while let Some(queued) = rx.recv().await {
+        let Some(write) = queued.into_write() else {
+            continue;
+        };
+        let result = match write {
+            LinkWrite::Frames(frames) => {
+                let mut result = Ok(());
+                for frame in frames {
+                    if let Err(error) = send_bounded(&mut writer, &frame).await {
+                        result = Err(error);
+                        break;
+                    }
+                }
+                result
+            }
+            LinkWrite::Keepalive => tokio::time::timeout(LINK_SEND_TIMEOUT, writer.keepalive())
+                .await
+                .unwrap_or_else(|_| {
+                    Err(format!(
+                        "keepalive write to satellite stalled for {}s",
+                        LINK_SEND_TIMEOUT.as_secs()
+                    ))
+                }),
+            LinkWrite::Final(frame, sent) => {
+                let result = send_bounded(&mut writer, &frame).await;
+                if result.is_ok() {
+                    let _ = sent.send(());
+                }
+                result
+            }
+        };
+        if let Err(error) = result {
+            let _ = errors.send(error).await;
+            return;
+        }
+    }
 }
 
 /// Put one frame on the wire with [`LINK_SEND_TIMEOUT`] as the stall
@@ -945,7 +1129,7 @@ async fn send_relay_request<C: LinkConn>(
     clippy::future_not_send,
     reason = "ADR-0014: runs on the server's LocalSet inside run_relay_session"
 )]
-async fn send_bounded<C: LinkConn>(conn: &mut C, frame: &[u8]) -> Result<(), String> {
+async fn send_bounded<C: LinkWriter>(conn: &mut C, frame: &[u8]) -> Result<(), String> {
     tokio::time::timeout(LINK_SEND_TIMEOUT, conn.send_frame(frame))
         .await
         .unwrap_or_else(|_elapsed| {
@@ -958,7 +1142,9 @@ async fn send_bounded<C: LinkConn>(conn: &mut C, frame: &[u8]) -> Result<(), Str
 
 /// Complete the mandatory network-transport version handshake before the
 /// relay session can send commands.
-async fn negotiate_link<C: LinkConn>(conn: &mut C) -> Result<NegotiatedBootstrap, String> {
+async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
+    conn: &mut C,
+) -> Result<NegotiatedBootstrap, String> {
     let offered = hub_link_capabilities();
     let mut encoded = bytes::BytesMut::new();
     FrameKind::Hello {
@@ -1187,12 +1373,50 @@ pub(crate) enum NetLinkConn {
         /// a bounded tail (`SSH_STDERR_TAIL_MAX`) and yields it at EOF so
         /// `ssh_exit_reason` can compose the failure reason; it is aborted
         /// on drop when the link is torn down before EOF.
-        stderr_reader: AbortOnDrop,
+        stderr_reader: AbortOnDrop<Vec<u8>>,
         /// Reassembly buffer: same cancel-safe frame peeling as the
         /// QUIC path.
         buf: bytes::BytesMut,
         /// Exact selection installed once before `connect` returns.
         negotiated: Option<NegotiatedBootstrap>,
+    },
+}
+
+pub(crate) enum NetLinkReader {
+    Quic {
+        _endpoint: quinn::Endpoint,
+        recv: quinn::RecvStream,
+        buf: bytes::BytesMut,
+        framing_violation: Option<FramingError>,
+    },
+    Ws {
+        stream: futures_util::stream::SplitStream<phux_dial::ws::Ws>,
+        last_inbound: Arc<Mutex<std::time::Instant>>,
+        framing_violation: Option<FramingError>,
+    },
+    Ssh {
+        child: tokio::process::Child,
+        stdout: tokio::process::ChildStdout,
+        stderr_reader: AbortOnDrop<Vec<u8>>,
+        buf: bytes::BytesMut,
+        framing_violation: Option<FramingError>,
+    },
+}
+
+pub(crate) enum NetLinkWriter {
+    Quic {
+        _connection: quinn::Connection,
+        send: quinn::SendStream,
+    },
+    Ws {
+        sink: futures_util::stream::SplitSink<
+            phux_dial::ws::Ws,
+            tokio_tungstenite::tungstenite::Message,
+        >,
+        last_inbound: Arc<Mutex<std::time::Instant>>,
+    },
+    Ssh {
+        stdin: tokio::process::ChildStdin,
     },
 }
 
@@ -1328,6 +1552,78 @@ impl LinkTransport for NetLinkTransport {
 }
 
 impl LinkConn for NetLinkConn {
+    type Reader = NetLinkReader;
+    type Writer = NetLinkWriter;
+
+    fn into_parts(self) -> (Self::Reader, Self::Writer) {
+        match self {
+            Self::Quic {
+                _endpoint: endpoint,
+                _connection: connection,
+                send,
+                recv,
+                buf,
+                ..
+            } => (
+                NetLinkReader::Quic {
+                    _endpoint: endpoint,
+                    recv,
+                    buf,
+                    framing_violation: None,
+                },
+                NetLinkWriter::Quic {
+                    _connection: connection,
+                    send,
+                },
+            ),
+            Self::Ws {
+                ws, last_inbound, ..
+            } => {
+                let (sink, stream) = futures_util::StreamExt::split(*ws);
+                let last_inbound = Arc::new(Mutex::new(last_inbound));
+                (
+                    NetLinkReader::Ws {
+                        stream,
+                        last_inbound: Arc::clone(&last_inbound),
+                        framing_violation: None,
+                    },
+                    NetLinkWriter::Ws { sink, last_inbound },
+                )
+            }
+            Self::Ssh {
+                child,
+                stdin,
+                stdout,
+                stderr_reader,
+                buf,
+                ..
+            } => (
+                NetLinkReader::Ssh {
+                    child,
+                    stdout,
+                    stderr_reader,
+                    buf,
+                    framing_violation: None,
+                },
+                NetLinkWriter::Ssh { stdin },
+            ),
+        }
+    }
+
+    fn bootstrap_limits(&self) -> Result<BootstrapLimits, String> {
+        self.negotiated().map(|selection| selection.limits)
+    }
+
+    fn bootstrap_profile(&self) -> Result<BootstrapProfile, String> {
+        self.negotiated().map(|selection| selection.profile)
+    }
+
+    fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String> {
+        self.negotiated().map(|selection| selection.server_features)
+    }
+}
+
+impl LinkWriter for NetLinkConn {
     async fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
         match self {
             Self::Quic { send, .. } => send
@@ -1350,18 +1646,27 @@ impl LinkConn for NetLinkConn {
         }
     }
 
-    fn bootstrap_limits(&self) -> Result<BootstrapLimits, String> {
-        self.negotiated().map(|selection| selection.limits)
+    async fn keepalive(&mut self) -> Result<(), String> {
+        match self {
+            Self::Quic { .. } | Self::Ssh { .. } => Ok(()),
+            Self::Ws {
+                ws, last_inbound, ..
+            } => {
+                if let Some(reason) = ws_idle_error(last_inbound.elapsed()) {
+                    return Err(reason);
+                }
+                futures_util::SinkExt::send(
+                    ws.as_mut(),
+                    tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into()),
+                )
+                .await
+                .map_err(|err| format!("keepalive ping to satellite: {err}"))
+            }
+        }
     }
+}
 
-    fn bootstrap_profile(&self) -> Result<BootstrapProfile, String> {
-        self.negotiated().map(|selection| selection.profile)
-    }
-
-    fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String> {
-        self.negotiated().map(|selection| selection.server_features)
-    }
-
+impl LinkReader for NetLinkConn {
     async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
         // A SPEC §5 framing violation is answered *after* this match rather
         // than inside it: every arm holds `self` destructured into its
@@ -1469,36 +1774,142 @@ impl LinkConn for NetLinkConn {
         let _ = send_bounded(self, &encode_frame_too_large(violation)).await;
         Err(framing_loss_reason(violation))
     }
+}
+
+impl LinkWriter for NetLinkWriter {
+    async fn send_frame(&mut self, frame: &[u8]) -> Result<(), String> {
+        match self {
+            Self::Quic { send, .. } => tokio::io::AsyncWriteExt::write_all(send, frame)
+                .await
+                .map_err(|err| format!("write to satellite: {err}")),
+            Self::Ws { sink, .. } => futures_util::SinkExt::send(
+                sink,
+                tokio_tungstenite::tungstenite::Message::Binary(frame.to_vec().into()),
+            )
+            .await
+            .map_err(|err| format!("write to satellite: {err}")),
+            Self::Ssh { stdin } => tokio::io::AsyncWriteExt::write_all(stdin, frame)
+                .await
+                .map_err(|err| format!("write to ssh transport: {err}")),
+        }
+    }
 
     async fn keepalive(&mut self) -> Result<(), String> {
         match self {
-            // quinn already originates keepalives and enforces the idle
-            // timeout at the transport layer (`phux-dial` sets
-            // `keep_alive_interval` + `max_idle_timeout`); expiry surfaces
-            // as a `recv_frame` error, so there is nothing to drive here.
-            // The ssh child likewise *is* the transport: the dial argv
-            // carries ServerAliveInterval/ServerAliveCountMax (see
-            // `ssh_argv`), so SSH itself probes the peer and a silent
-            // partition makes the child exit — surfaced as a
-            // `recv_frame` EOF with the exit status and stderr as the
-            // reason. The bridged stream stays byte-transparent — there
-            // is no in-band phux ping to originate on either.
             Self::Quic { .. } | Self::Ssh { .. } => Ok(()),
             Self::Ws {
-                ws, last_inbound, ..
+                sink, last_inbound, ..
             } => {
-                if let Some(reason) = ws_idle_error(last_inbound.elapsed()) {
+                let idle_for = last_inbound
+                    .lock()
+                    .map_err(|_| "satellite liveness clock poisoned".to_owned())?
+                    .elapsed();
+                if let Some(reason) = ws_idle_error(idle_for) {
                     return Err(reason);
                 }
-                // Solicit a pong so a healthy quiet satellite keeps
-                // resetting `last_inbound`; a partitioned one cannot.
                 futures_util::SinkExt::send(
-                    ws.as_mut(),
+                    sink,
                     tokio_tungstenite::tungstenite::Message::Ping(Vec::new().into()),
                 )
                 .await
                 .map_err(|err| format!("keepalive ping to satellite: {err}"))
             }
+        }
+    }
+}
+
+impl LinkReader for NetLinkReader {
+    async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
+        match self {
+            Self::Quic {
+                recv,
+                buf,
+                framing_violation,
+                ..
+            } => read_length_prefixed(recv, buf, framing_violation, "satellite").await,
+            Self::Ws {
+                stream,
+                last_inbound,
+                framing_violation,
+            } => loop {
+                match futures_util::StreamExt::next(stream).await {
+                    None => return Ok(None),
+                    Some(Ok(message)) => {
+                        *last_inbound
+                            .lock()
+                            .map_err(|_| "satellite liveness clock poisoned".to_owned())? =
+                            std::time::Instant::now();
+                        match message {
+                            tokio_tungstenite::tungstenite::Message::Close(_) => return Ok(None),
+                            tokio_tungstenite::tungstenite::Message::Binary(data) => {
+                                if let Err(violation) =
+                                    phux_protocol::wire::framing::check_frame(&data)
+                                {
+                                    *framing_violation = Some(violation);
+                                    return Err(framing_loss_reason(violation));
+                                }
+                                return Ok(Some(data.to_vec()));
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(Err(err)) => return Err(format!("connection error: {err}")),
+                }
+            },
+            Self::Ssh {
+                child,
+                stdout,
+                stderr_reader,
+                buf,
+                framing_violation,
+            } => {
+                match read_length_prefixed(stdout, buf, framing_violation, "ssh transport").await {
+                    Ok(None) => Err(ssh_exit_reason(child, stderr_reader).await),
+                    other => other,
+                }
+            }
+        }
+    }
+
+    fn take_framing_violation(&mut self) -> Option<FramingError> {
+        match self {
+            Self::Quic {
+                framing_violation, ..
+            }
+            | Self::Ws {
+                framing_violation, ..
+            }
+            | Self::Ssh {
+                framing_violation, ..
+            } => framing_violation.take(),
+        }
+    }
+}
+
+async fn read_length_prefixed<R: tokio::io::AsyncRead + Unpin>(
+    reader: &mut R,
+    buf: &mut bytes::BytesMut,
+    framing_violation: &mut Option<FramingError>,
+    source: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    loop {
+        match phux_protocol::wire::framing::split_frame(buf) {
+            Ok(Some(framed)) => return Ok(Some(framed.to_vec())),
+            Ok(None) => {}
+            Err(violation) => {
+                *framing_violation = Some(violation);
+                return Err(framing_loss_reason(violation));
+            }
+        }
+        let n = tokio::io::AsyncReadExt::read_buf(reader, buf)
+            .await
+            .map_err(|err| format!("read from {source}: {err}"))?;
+        if n == 0 {
+            return if buf.is_empty() {
+                Ok(None)
+            } else {
+                Err(format!("{source} closed the stream mid-frame"))
+            };
         }
     }
 }
@@ -1527,9 +1938,9 @@ const SSH_EXIT_GRACE: Duration = Duration::from_secs(5);
 /// stops the background stderr drainer instead of leaking it past the
 /// child's death.
 #[derive(Debug)]
-pub(crate) struct AbortOnDrop(tokio::task::JoinHandle<Vec<u8>>);
+pub(crate) struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
 
-impl Drop for AbortOnDrop {
+impl<T> Drop for AbortOnDrop<T> {
     fn drop(&mut self) {
         self.0.abort();
     }
@@ -1548,7 +1959,7 @@ impl Drop for AbortOnDrop {
 /// either way).
 async fn ssh_exit_reason(
     child: &mut tokio::process::Child,
-    stderr_reader: &mut AbortOnDrop,
+    stderr_reader: &mut AbortOnDrop<Vec<u8>>,
 ) -> String {
     let gathered = tokio::time::timeout(SSH_EXIT_GRACE, async {
         // The child's exit is the authoritative loss signal; the drainer
@@ -1956,6 +2367,31 @@ mod tests {
         keepalive_error: Option<String>,
     }
 
+    struct ScriptReader {
+        closed: Option<tokio::sync::mpsc::Receiver<String>>,
+    }
+
+    struct ScriptWriter {
+        keepalive_error: Option<String>,
+    }
+
+    struct BlockedWriteConn {
+        inbound: tokio::sync::mpsc::Receiver<Vec<u8>>,
+        write_started: Arc<tokio::sync::Notify>,
+        release_write: Arc<tokio::sync::Notify>,
+        writer_dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct BlockedWriteReader {
+        inbound: tokio::sync::mpsc::Receiver<Vec<u8>>,
+    }
+
+    struct BlockedWriteWriter {
+        write_started: Arc<tokio::sync::Notify>,
+        release_write: Arc<tokio::sync::Notify>,
+        dropped: Arc<std::sync::atomic::AtomicBool>,
+    }
+
     impl ScriptConn {
         /// A connection that stays up for the whole test.
         const fn open_forever() -> Self {
@@ -2014,8 +2450,18 @@ mod tests {
         reason = "the scripted test connection implements the production async transport trait without I/O"
     )]
     impl LinkConn for ScriptConn {
-        async fn send_frame(&mut self, _frame: &[u8]) -> Result<(), String> {
-            Ok(())
+        type Reader = ScriptReader;
+        type Writer = ScriptWriter;
+
+        fn into_parts(self) -> (Self::Reader, Self::Writer) {
+            (
+                ScriptReader {
+                    closed: self.closed,
+                },
+                ScriptWriter {
+                    keepalive_error: self.keepalive_error,
+                },
+            )
         }
 
         fn bootstrap_limits(&self) -> Result<BootstrapLimits, String> {
@@ -2031,17 +2477,233 @@ mod tests {
                 phux_protocol::caps::ServerFeature::ListDirectory,
             ]))
         }
+    }
 
+    impl LinkConn for BlockedWriteConn {
+        type Reader = BlockedWriteReader;
+        type Writer = BlockedWriteWriter;
+
+        fn into_parts(self) -> (Self::Reader, Self::Writer) {
+            (
+                BlockedWriteReader {
+                    inbound: self.inbound,
+                },
+                BlockedWriteWriter {
+                    write_started: self.write_started,
+                    release_write: self.release_write,
+                    dropped: self.writer_dropped,
+                },
+            )
+        }
+
+        fn bootstrap_limits(&self) -> Result<BootstrapLimits, String> {
+            Ok(BootstrapLimits::default())
+        }
+
+        fn bootstrap_profile(&self) -> Result<BootstrapProfile, String> {
+            Ok(BootstrapProfile::SynthesizedVtRaw)
+        }
+
+        fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String> {
+            Ok(phux_protocol::caps::ServerFeatureSet::with(&[
+                phux_protocol::caps::ServerFeature::ListDirectory,
+            ]))
+        }
+    }
+
+    impl LinkReader for BlockedWriteReader {
+        async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
+            Ok(self.inbound.recv().await)
+        }
+    }
+
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "test writer implements the production async transport trait"
+    )]
+    impl LinkWriter for BlockedWriteWriter {
+        async fn send_frame(&mut self, _frame: &[u8]) -> Result<(), String> {
+            self.write_started.notify_waiters();
+            self.release_write.notified().await;
+            Ok(())
+        }
+
+        async fn keepalive(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    impl Drop for BlockedWriteWriter {
+        fn drop(&mut self) {
+            self.dropped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl LinkReader for ScriptReader {
         async fn recv_frame(&mut self) -> Result<Option<Vec<u8>>, String> {
             match &mut self.closed {
                 Some(rx) => rx.recv().await.map_or(Ok(None), Err),
                 None => std::future::pending().await,
             }
         }
+    }
+
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "scripted test writer implements the production async transport trait"
+    )]
+    impl LinkWriter for ScriptWriter {
+        async fn send_frame(&mut self, _frame: &[u8]) -> Result<(), String> {
+            Ok(())
+        }
 
         async fn keepalive(&mut self) -> Result<(), String> {
             self.keepalive_error.clone().map_or(Ok(()), Err)
         }
+    }
+
+    #[tokio::test]
+    async fn blocked_outbound_write_does_not_stall_inbound_fanout() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let host = host();
+                let (relay, mailbox) = relay_pair(&host);
+                let (inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1);
+                let write_started = Arc::new(tokio::sync::Notify::new());
+                let release_write = Arc::new(tokio::sync::Notify::new());
+                let writer_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let conn = BlockedWriteConn {
+                    inbound: inbound_rx,
+                    write_started: Arc::clone(&write_started),
+                    release_write: Arc::clone(&release_write),
+                    writer_dropped,
+                };
+                let cancel = CancellationToken::new();
+                let session_host = host.clone();
+                let session_cancel = cancel.clone();
+                let session = tokio::task::spawn_local(async move {
+                    let super::super::relay::RelayMailbox {
+                        mut requests,
+                        mut unsubscribes,
+                    } = mailbox;
+                    run_relay_session(
+                        &session_host,
+                        conn,
+                        &mut requests,
+                        &mut unsubscribes,
+                        &session_cancel,
+                    )
+                    .await
+                });
+                let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(4);
+                let started = write_started.notified();
+                tokio::pin!(started);
+                relay.subscribe(
+                    super::super::relay::ProxySubscription {
+                        terminal: 9,
+                        client: crate::state::ClientId(7),
+                        out_tx,
+                        seq: 0,
+                        awaits_snapshot: false,
+                        bootstrap_profile: None,
+                        bootstrap_limits: None,
+                    },
+                    FrameKind::SubscribeEvents {
+                        terminal: Some(phux_protocol::ResourceId::local(9)),
+                    },
+                );
+                tokio::time::timeout(Duration::from_secs(1), &mut started)
+                    .await
+                    .expect("the ordered writer entered its blocked send");
+
+                let mut encoded = bytes::BytesMut::new();
+                FrameKind::Event {
+                    terminal: Some(phux_protocol::ResourceId::local(9)),
+                    event: phux_protocol::wire::frame::AgentEvent::CommandStarted,
+                }
+                .encode(&mut encoded);
+                inbound_tx
+                    .send(encoded.to_vec())
+                    .await
+                    .expect("inject inbound event");
+                assert!(matches!(
+                    tokio::time::timeout(Duration::from_millis(250), out_rx.recv())
+                        .await
+                        .expect("inbound fanout must not wait for the write")
+                        .expect("subscriber remains live"),
+                    crate::mailbox::Outbound::Frame(FrameKind::Event { .. })
+                ));
+
+                cancel.cancel();
+                release_write.notify_waiters();
+                let _ = session.await;
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn aborting_session_cancels_a_blocked_transport_writer() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let host = host();
+                let (relay, mailbox) = relay_pair(&host);
+                let (_inbound_tx, inbound_rx) = tokio::sync::mpsc::channel(1);
+                let write_started = Arc::new(tokio::sync::Notify::new());
+                let writer_dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let conn = BlockedWriteConn {
+                    inbound: inbound_rx,
+                    write_started: Arc::clone(&write_started),
+                    release_write: Arc::new(tokio::sync::Notify::new()),
+                    writer_dropped: Arc::clone(&writer_dropped),
+                };
+                let session_host = host.clone();
+                let session = tokio::task::spawn_local(async move {
+                    let super::super::relay::RelayMailbox {
+                        mut requests,
+                        mut unsubscribes,
+                    } = mailbox;
+                    run_relay_session(
+                        &session_host,
+                        conn,
+                        &mut requests,
+                        &mut unsubscribes,
+                        &CancellationToken::new(),
+                    )
+                    .await
+                });
+                let (out_tx, _out_rx) = tokio::sync::mpsc::channel(1);
+                let started = write_started.notified();
+                tokio::pin!(started);
+                relay.subscribe(
+                    super::super::relay::ProxySubscription {
+                        terminal: 9,
+                        client: crate::state::ClientId(7),
+                        out_tx,
+                        seq: 0,
+                        awaits_snapshot: false,
+                        bootstrap_profile: None,
+                        bootstrap_limits: None,
+                    },
+                    FrameKind::SubscribeEvents {
+                        terminal: Some(phux_protocol::ResourceId::local(9)),
+                    },
+                );
+                tokio::time::timeout(Duration::from_secs(1), &mut started)
+                    .await
+                    .expect("writer entered blocked send");
+                session.abort();
+                for _ in 0..10 {
+                    tokio::task::yield_now().await;
+                    if writer_dropped.load(std::sync::atomic::Ordering::SeqCst) {
+                        return;
+                    }
+                }
+                panic!("blocked transport writer survived session cancellation");
+            })
+            .await;
     }
 
     /// A live relay handle + mailbox pair for driving [`run_link`]; the

@@ -75,7 +75,7 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, SatelliteHost, StreamId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, DirectoryErrorCode, DirectoryListingError, DirectoryListingResult,
-    ErrorCode, FrameKind, SpawnError, SpawnResult,
+    ErrorCode, FrameKind, SpawnError, SpawnResult, TombstoneReason,
 };
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, trace, warn};
@@ -577,14 +577,19 @@ impl RelayHandle {
         }
     }
 
-    /// Relay a fire-and-forget frame. Drops with a warn on a saturated or
-    /// dead link — the same contract those frames already have locally.
+    /// Relay an uncorrelated frame. Input and state acknowledgements have
+    /// distinct drop categories: neither is retried here, and the warning says
+    /// which semantic class failed before reaching the ordered link writer.
     pub(crate) fn forward(&self, frame: FrameKind) {
+        let category = forward_drop_category(&frame);
         if let Err(err) = self.tx.try_send(RelayRequest::Forward { frame }) {
             warn!(
                 satellite = %self.host,
                 reason = %trysend_reason(&err),
-                "satellite relay frame dropped (fire-and-forget)"
+                category,
+                disposition = "dropped_before_satellite",
+                retry = false,
+                "satellite relay frame was not forwarded"
             );
         }
     }
@@ -678,6 +683,17 @@ const fn trysend_reason(err: &mpsc::error::TrySendError<RelayRequest>) -> &'stat
     match err {
         mpsc::error::TrySendError::Full(_) => "mailbox full",
         mpsc::error::TrySendError::Closed(_) => "link task gone",
+    }
+}
+
+const fn forward_drop_category(frame: &FrameKind) -> &'static str {
+    match frame {
+        FrameKind::InputKey { .. }
+        | FrameKind::InputMouse { .. }
+        | FrameKind::InputFocus { .. }
+        | FrameKind::InputPaste { .. } => "input_unacknowledged",
+        FrameKind::FrameAck { .. } => "state_ack",
+        _ => "uncorrelated_control",
     }
 }
 
@@ -798,6 +814,9 @@ struct ProxySubscriber {
     /// delta can never overtake the snapshot across the two-hop attach. See
     /// [`SnapshotGate`].
     gate: SnapshotGate,
+    /// Remove this subscriber only after its queued `RESOURCE_CLOSED` has
+    /// actually been delivered.
+    retire_after_flush: bool,
 }
 
 /// The per-subscriber snapshot-ordering gate on the return leg (L1 §9.1,
@@ -827,6 +846,26 @@ enum SnapshotGate {
         retained_bytes: usize,
         open_after: bool,
     },
+    /// Delivery exceeded the bounded retained queue. The subscriber remains
+    /// registered until this resource-scoped failure actually reaches its
+    /// mailbox; only then is it removed and detached upstream.
+    Retiring { failure: FrameKind },
+}
+
+#[derive(Clone, Copy)]
+enum FanOutKind {
+    Bootstrap {
+        open_after: bool,
+        replace_legacy_begin: bool,
+    },
+    Content,
+}
+
+struct FanOutFrame<'a> {
+    host: &'a SatelliteHost,
+    terminal: u32,
+    frame: &'a FrameKind,
+    kind: FanOutKind,
 }
 
 /// One in-flight relayed command: the waiting consumer plus, when the
@@ -1007,6 +1046,9 @@ pub(crate) struct RelaySession {
     bootstrap_flows: HashMap<u32, RelayBootstrapFlow>,
     retained_bytes: usize,
     retained_frames: usize,
+    /// Terminals whose final downstream subscriber was removed by delivery
+    /// failure. The link driver drains these into ordered upstream detaches.
+    orphaned_by_delivery: HashSet<u32>,
     inflight_generation_bytes: u64,
     inflight_generation_frames: u32,
     encode_buf: BytesMut,
@@ -1050,6 +1092,7 @@ impl RelaySession {
             bootstrap_flows: HashMap::new(),
             retained_bytes: 0,
             retained_frames: 0,
+            orphaned_by_delivery: HashSet::new(),
             inflight_generation_bytes: 0,
             inflight_generation_frames: 0,
             encode_buf: BytesMut::with_capacity(1024),
@@ -1294,9 +1337,11 @@ impl RelaySession {
             bootstrap_profile: _,
             bootstrap_limits: _,
         } = subscription;
+        self.orphaned_by_delivery.remove(&terminal);
         let subs = self.subscribers.entry(terminal).or_default();
         if let Some(existing) = subs.iter_mut().find(|s| s.client == client) {
             existing.out_tx = out_tx;
+            existing.retire_after_flush = false;
             // Advance to the freshest token seen: a re-attach must never
             // regress the stored order below a withdrawal it superseded.
             existing.seq = existing.seq.max(seq);
@@ -1332,6 +1377,7 @@ impl RelaySession {
                 } else {
                     SnapshotGate::Open
                 },
+                retire_after_flush: false,
             });
             Registration::New
         }
@@ -1695,11 +1741,14 @@ impl RelaySession {
         let Some(id) = self.retag_inbound(Some(terminal_id)) else {
             return;
         };
-        // Best-effort delivery bypassing the snapshot gate
-        // (phux-v45.14 sub-finding a): the subscriptions are
-        // reaped on the next line, so a subscriber still awaiting
-        // its first snapshot must still learn the terminal closed
-        // rather than be silently dropped.
+        if let Some(subscribers) = self.subscribers.get_mut(&id) {
+            for subscriber in subscribers {
+                subscriber.retire_after_flush = true;
+            }
+        }
+        // The close bypasses an AwaitingFirst gate, but follows any already
+        // retained live output. Subscribers are removed only after the close
+        // itself reaches their mailbox.
         self.fan_out_ungated(
             id,
             &FrameKind::ResourceClosed {
@@ -1708,9 +1757,9 @@ impl RelaySession {
                 reason,
             },
         );
-        // The satellite terminal is gone; its proxy
-        // subscriptions go with it.
-        self.subscribers.remove(&id);
+        // No upstream detach is needed: the satellite already declared the
+        // terminal gone.
+        self.orphaned_by_delivery.remove(&id);
         self.recalculate_retained_totals();
         self.retire_bootstrap_flow(id);
         self.explicit_content.remove(&id);
@@ -2192,120 +2241,251 @@ impl RelaySession {
             return;
         };
         let is_begin = matches!(frame, FrameKind::BootstrapBegin { .. });
-        let is_chunk = matches!(frame, FrameKind::BootstrapChunk { .. });
-        let is_ready = matches!(frame, FrameKind::BootstrapReady { .. });
-        let replace_legacy_begin = is_begin && !self.enforce_bootstrap_flow;
-        let is_tombstone = matches!(frame, FrameKind::BootstrapTombstone { .. });
+        let kind = if is_begin
+            || matches!(
+                frame,
+                FrameKind::BootstrapChunk { .. }
+                    | FrameKind::BootstrapReady { .. }
+                    | FrameKind::BootstrapTombstone { .. }
+            ) {
+            FanOutKind::Bootstrap {
+                open_after: matches!(frame, FrameKind::BootstrapReady { .. }),
+                replace_legacy_begin: is_begin && !self.enforce_bootstrap_flow,
+            }
+        } else {
+            FanOutKind::Content
+        };
+        let outbound = FanOutFrame {
+            host,
+            terminal: id,
+            frame,
+            kind,
+        };
         let mut retained_bytes = self.retained_bytes;
         let mut retained_frames = self.retained_frames;
         subs.retain_mut(|sub| {
-            if replace_legacy_begin {
-                sub.gate = SnapshotGate::AwaitingFirst;
-            }
-            if is_begin || is_chunk || is_ready || is_tombstone {
-                return Self::push_bootstrap_frame(
-                    sub,
-                    frame.clone(),
-                    is_ready,
-                    &mut retained_bytes,
-                    &mut retained_frames,
-                );
-            }
-            let (may_send, alive) = Self::flush_pending_snapshot(sub);
-            if !alive {
-                return false;
-            }
-            if !may_send {
-                return true;
-            }
-            matches!(sub.out_tx.try_send(Outbound::Frame(frame.clone())), Ok(()))
+            Self::fan_out_to_subscriber(sub, &outbound, &mut retained_bytes, &mut retained_frames)
         });
         self.retained_bytes = retained_bytes;
         self.retained_frames = retained_frames;
         if subs.is_empty() {
             self.subscribers.remove(&id);
+            self.orphaned_by_delivery.insert(id);
         }
         self.recalculate_retained_totals();
+    }
+
+    fn fan_out_to_subscriber(
+        sub: &mut ProxySubscriber,
+        outbound: &FanOutFrame<'_>,
+        retained_bytes: &mut usize,
+        retained_frames: &mut usize,
+    ) -> bool {
+        if matches!(sub.gate, SnapshotGate::Retiring { .. }) {
+            return Self::flush_pending_snapshot(sub).1;
+        }
+        if let FanOutKind::Bootstrap {
+            open_after,
+            replace_legacy_begin,
+        } = outbound.kind
+        {
+            if replace_legacy_begin {
+                sub.gate = SnapshotGate::AwaitingFirst;
+            }
+            return Self::push_bootstrap_frame(
+                sub,
+                outbound.frame.clone(),
+                open_after,
+                Self::delivery_failure(outbound.host, outbound.terminal, outbound.frame),
+                retained_bytes,
+                retained_frames,
+            );
+        }
+        let awaiting_first = matches!(sub.gate, SnapshotGate::AwaitingFirst);
+        let (may_send, alive) = Self::flush_pending_snapshot(sub);
+        if !alive {
+            return false;
+        }
+        if !may_send {
+            if !awaiting_first {
+                Self::retain_fan_out_frame(sub, outbound, retained_bytes, retained_frames);
+            }
+            return true;
+        }
+        Self::deliver_fan_out_frame(sub, outbound, retained_bytes, retained_frames)
+    }
+
+    fn deliver_fan_out_frame(
+        sub: &mut ProxySubscriber,
+        outbound: &FanOutFrame<'_>,
+        retained_bytes: &mut usize,
+        retained_frames: &mut usize,
+    ) -> bool {
+        match sub.out_tx.try_send(Outbound::Frame(outbound.frame.clone())) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                Self::retain_fan_out_frame(sub, outbound, retained_bytes, retained_frames);
+                true
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        }
+    }
+
+    fn retain_fan_out_frame(
+        sub: &mut ProxySubscriber,
+        outbound: &FanOutFrame<'_>,
+        retained_bytes: &mut usize,
+        retained_frames: &mut usize,
+    ) {
+        Self::retain_ordered_frame(
+            sub,
+            outbound.frame.clone(),
+            Self::delivery_failure(outbound.host, outbound.terminal, outbound.frame),
+            retained_bytes,
+            retained_frames,
+        );
     }
 
     fn push_bootstrap_frame(
         sub: &mut ProxySubscriber,
         frame: FrameKind,
         open_after: bool,
+        delivery_failure: FrameKind,
         connection_bytes: &mut usize,
         connection_frames: &mut usize,
     ) -> bool {
         let frame_bytes = Self::retained_frame_bytes(&frame);
         let gate = std::mem::replace(&mut sub.gate, SnapshotGate::AwaitingFirst);
         match gate {
+            SnapshotGate::Retiring { failure } => {
+                sub.gate = SnapshotGate::Retiring { failure };
+                true
+            }
             SnapshotGate::Retained {
-                mut frames,
+                frames,
                 retained_bytes,
                 open_after: prior_open_after,
-            } => {
-                let next_bytes = retained_bytes.saturating_add(frame_bytes);
-                let next_frames = frames.len().saturating_add(1);
-                if next_bytes > MAX_RELAY_SUBSCRIBER_RETAINED_BYTES
-                    || next_frames > MAX_RELAY_SUBSCRIBER_RETAINED_FRAMES
-                    || connection_bytes.saturating_add(frame_bytes)
-                        > MAX_RELAY_CONNECTION_RETAINED_BYTES
-                    || connection_frames.saturating_add(1) > MAX_RELAY_CONNECTION_RETAINED_FRAMES
-                {
-                    *connection_bytes = connection_bytes.saturating_sub(retained_bytes);
-                    *connection_frames = connection_frames.saturating_sub(frames.len());
-                    warn!(
-                        client = ?sub.client,
-                        "reaping saturated relay subscriber whose retained bootstrap exceeded bounds"
-                    );
-                    sub.gate = SnapshotGate::Open;
-                    return false;
-                }
-                frames.push_back(frame);
-                *connection_bytes += frame_bytes;
-                *connection_frames += 1;
-                sub.gate = SnapshotGate::Retained {
-                    frames,
-                    retained_bytes: next_bytes,
-                    open_after: prior_open_after || open_after,
+            } => Self::retain_bootstrap_frame(
+                sub,
+                frame,
+                frames,
+                retained_bytes,
+                prior_open_after || open_after,
+                delivery_failure,
+                connection_bytes,
+                connection_frames,
+            ),
+            SnapshotGate::AwaitingFirst | SnapshotGate::Open => Self::deliver_bootstrap_frame(
+                sub,
+                frame,
+                frame_bytes,
+                open_after,
+                delivery_failure,
+                connection_bytes,
+                connection_frames,
+            ),
+        }
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "retained bootstrap state and both aggregate counters move together atomically"
+    )]
+    fn retain_bootstrap_frame(
+        sub: &mut ProxySubscriber,
+        frame: FrameKind,
+        mut frames: VecDeque<FrameKind>,
+        retained_bytes: usize,
+        open_after: bool,
+        delivery_failure: FrameKind,
+        connection_bytes: &mut usize,
+        connection_frames: &mut usize,
+    ) -> bool {
+        let frame_bytes = Self::retained_frame_bytes(&frame);
+        if Self::retention_exceeded(
+            frame_bytes,
+            retained_bytes,
+            frames.len(),
+            *connection_bytes,
+            *connection_frames,
+        ) {
+            *connection_bytes = connection_bytes.saturating_sub(retained_bytes);
+            *connection_frames = connection_frames.saturating_sub(frames.len());
+            warn!(client = ?sub.client, "relay subscriber exceeded retained delivery bounds; scheduling explicit failure");
+            sub.gate = SnapshotGate::Retiring {
+                failure: delivery_failure,
+            };
+            return true;
+        }
+        frames.push_back(frame);
+        *connection_bytes += frame_bytes;
+        *connection_frames += 1;
+        sub.gate = SnapshotGate::Retained {
+            frames,
+            retained_bytes: retained_bytes.saturating_add(frame_bytes),
+            open_after,
+        };
+        true
+    }
+
+    fn deliver_bootstrap_frame(
+        sub: &mut ProxySubscriber,
+        frame: FrameKind,
+        frame_bytes: usize,
+        open_after: bool,
+        delivery_failure: FrameKind,
+        connection_bytes: &mut usize,
+        connection_frames: &mut usize,
+    ) -> bool {
+        match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
+            Ok(()) => {
+                sub.gate = if open_after {
+                    SnapshotGate::Open
+                } else {
+                    SnapshotGate::AwaitingFirst
                 };
                 true
             }
-            SnapshotGate::AwaitingFirst | SnapshotGate::Open => {
-                match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
-                    Ok(()) => {
-                        sub.gate = if open_after {
-                            SnapshotGate::Open
-                        } else {
-                            SnapshotGate::AwaitingFirst
-                        };
-                        true
-                    }
-                    Err(mpsc::error::TrySendError::Full(_)) => {
-                        if frame_bytes > MAX_RELAY_SUBSCRIBER_RETAINED_BYTES
-                            || connection_bytes.saturating_add(frame_bytes)
-                                > MAX_RELAY_CONNECTION_RETAINED_BYTES
-                            || connection_frames.saturating_add(1)
-                                > MAX_RELAY_CONNECTION_RETAINED_FRAMES
-                        {
-                            sub.gate = SnapshotGate::Open;
-                            return false;
-                        }
-                        *connection_bytes += frame_bytes;
-                        *connection_frames += 1;
-                        sub.gate = SnapshotGate::Retained {
-                            frames: VecDeque::from([frame]),
-                            retained_bytes: frame_bytes,
-                            open_after,
-                        };
-                        true
-                    }
-                    Err(mpsc::error::TrySendError::Closed(_)) => {
-                        sub.gate = SnapshotGate::Open;
-                        false
-                    }
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                if Self::retention_exceeded(
+                    frame_bytes,
+                    0,
+                    0,
+                    *connection_bytes,
+                    *connection_frames,
+                ) {
+                    sub.gate = SnapshotGate::Retiring {
+                        failure: delivery_failure,
+                    };
+                    return true;
                 }
+                *connection_bytes += frame_bytes;
+                *connection_frames += 1;
+                sub.gate = SnapshotGate::Retained {
+                    frames: VecDeque::from([frame]),
+                    retained_bytes: frame_bytes,
+                    open_after,
+                };
+                true
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                sub.gate = SnapshotGate::Open;
+                false
             }
         }
+    }
+
+    const fn retention_exceeded(
+        frame_bytes: usize,
+        retained_bytes: usize,
+        retained_frames: usize,
+        connection_bytes: usize,
+        connection_frames: usize,
+    ) -> bool {
+        retained_bytes.saturating_add(frame_bytes) > MAX_RELAY_SUBSCRIBER_RETAINED_BYTES
+            || retained_frames.saturating_add(1) > MAX_RELAY_SUBSCRIBER_RETAINED_FRAMES
+            || connection_bytes.saturating_add(frame_bytes) > MAX_RELAY_CONNECTION_RETAINED_BYTES
+            || connection_frames.saturating_add(1) > MAX_RELAY_CONNECTION_RETAINED_FRAMES
     }
 
     fn retained_frame_bytes(frame: &FrameKind) -> usize {
@@ -2317,6 +2497,95 @@ impl RelaySession {
             _ => 0,
         };
         payload.saturating_add(RETAINED_FRAME_OVERHEAD)
+    }
+
+    fn delivery_failure(host: &SatelliteHost, terminal: u32, frame: &FrameKind) -> FrameKind {
+        let identity = match frame {
+            FrameKind::ResourceOutput {
+                stream_id,
+                bootstrap_id,
+                seq,
+                ..
+            } => Some((*stream_id, *bootstrap_id, seq.saturating_sub(1))),
+            FrameKind::BootstrapBegin {
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::BootstrapChunk {
+                stream_id,
+                bootstrap_id,
+                ..
+            }
+            | FrameKind::BootstrapReady {
+                stream_id,
+                bootstrap_id,
+                ..
+            } => Some((*stream_id, *bootstrap_id, 0)),
+            _ => None,
+        };
+        identity.map_or_else(
+            || FrameKind::Error {
+                request_id: None,
+                code: ErrorCode::ResourceExhausted,
+                message: format!(
+                    "satellite {host} terminal {terminal} relay delivery exceeded bounded downstream capacity; subscription closed"
+                ),
+            },
+            |(stream_id, bootstrap_id, last_valid_seq)| FrameKind::BootstrapTombstone {
+                terminal_id: ResourceId::satellite(host.clone(), terminal),
+                stream_id,
+                bootstrap_id,
+                reason: TombstoneReason::OutboundGap,
+                last_valid_seq,
+            },
+        )
+    }
+
+    fn retain_ordered_frame(
+        sub: &mut ProxySubscriber,
+        frame: FrameKind,
+        delivery_failure: FrameKind,
+        connection_bytes: &mut usize,
+        connection_frames: &mut usize,
+    ) {
+        let frame_bytes = Self::retained_frame_bytes(&frame);
+        let gate = std::mem::replace(&mut sub.gate, SnapshotGate::AwaitingFirst);
+        let (mut frames, retained_bytes, open_after) = match gate {
+            SnapshotGate::Retained {
+                frames,
+                retained_bytes,
+                open_after,
+            } => (frames, retained_bytes, open_after),
+            SnapshotGate::Open => (VecDeque::new(), 0, true),
+            SnapshotGate::AwaitingFirst => (VecDeque::new(), 0, false),
+            SnapshotGate::Retiring { failure } => {
+                sub.gate = SnapshotGate::Retiring { failure };
+                return;
+            }
+        };
+        let next_bytes = retained_bytes.saturating_add(frame_bytes);
+        let next_frames = frames.len().saturating_add(1);
+        if next_bytes > MAX_RELAY_SUBSCRIBER_RETAINED_BYTES
+            || next_frames > MAX_RELAY_SUBSCRIBER_RETAINED_FRAMES
+            || connection_bytes.saturating_add(frame_bytes) > MAX_RELAY_CONNECTION_RETAINED_BYTES
+            || connection_frames.saturating_add(1) > MAX_RELAY_CONNECTION_RETAINED_FRAMES
+        {
+            *connection_bytes = connection_bytes.saturating_sub(retained_bytes);
+            *connection_frames = connection_frames.saturating_sub(frames.len());
+            sub.gate = SnapshotGate::Retiring {
+                failure: delivery_failure,
+            };
+            return;
+        }
+        frames.push_back(frame);
+        *connection_bytes = connection_bytes.saturating_add(frame_bytes);
+        *connection_frames = connection_frames.saturating_add(1);
+        sub.gate = SnapshotGate::Retained {
+            frames,
+            retained_bytes: next_bytes,
+            open_after,
+        };
     }
 
     /// Best-effort deliver a snapshot-independent frame to every proxy
@@ -2333,13 +2602,47 @@ impl RelaySession {
     /// fire-and-forget: refusal reaps the saturated or closed subscriber so
     /// a permanently unread mailbox cannot retain relay state.
     fn fan_out_ungated(&mut self, id: u32, frame: &FrameKind) {
+        let host = &self.host;
         let Some(subs) = self.subscribers.get_mut(&id) else {
             trace!(satellite = %self.host, terminal = id, "ungated frame with no proxy subscribers");
             return;
         };
-        subs.retain(|sub| matches!(sub.out_tx.try_send(Outbound::Frame(frame.clone())), Ok(())));
+        let mut retained_bytes = self.retained_bytes;
+        let mut retained_frames = self.retained_frames;
+        subs.retain_mut(|sub| {
+            if matches!(
+                sub.gate,
+                SnapshotGate::Retained { .. } | SnapshotGate::Retiring { .. }
+            ) {
+                Self::retain_ordered_frame(
+                    sub,
+                    frame.clone(),
+                    Self::delivery_failure(host, id, frame),
+                    &mut retained_bytes,
+                    &mut retained_frames,
+                );
+                return true;
+            }
+            match sub.out_tx.try_send(Outbound::Frame(frame.clone())) {
+                Ok(()) => !sub.retire_after_flush,
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    Self::retain_ordered_frame(
+                        sub,
+                        frame.clone(),
+                        Self::delivery_failure(host, id, frame),
+                        &mut retained_bytes,
+                        &mut retained_frames,
+                    );
+                    true
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => false,
+            }
+        });
+        self.retained_bytes = retained_bytes;
+        self.retained_frames = retained_frames;
         if subs.is_empty() {
             self.subscribers.remove(&id);
+            self.orphaned_by_delivery.insert(id);
         }
         self.recalculate_retained_totals();
     }
@@ -2350,6 +2653,15 @@ impl RelaySession {
     /// mailbox is reported dead so callers reap it immediately.
     fn flush_pending_snapshot(sub: &mut ProxySubscriber) -> (bool, bool) {
         let gate = std::mem::replace(&mut sub.gate, SnapshotGate::AwaitingFirst);
+        if let SnapshotGate::Retiring { failure } = gate {
+            return match sub.out_tx.try_send(Outbound::Frame(failure.clone())) {
+                Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => (false, false),
+                Err(mpsc::error::TrySendError::Full(_)) => {
+                    sub.gate = SnapshotGate::Retiring { failure };
+                    (false, true)
+                }
+            };
+        }
         let SnapshotGate::Retained {
             mut frames,
             mut retained_bytes,
@@ -2386,7 +2698,7 @@ impl RelaySession {
         } else {
             SnapshotGate::AwaitingFirst
         };
-        (open_after, true)
+        (open_after, !sub.retire_after_flush)
     }
 
     /// Retry every subscriber's retained attach snapshot (phux-v45.12).
@@ -2395,17 +2707,33 @@ impl RelaySession {
     /// return-leg frame arrives for its terminal to trigger the inline retry
     /// in [`Self::fan_out`].
     pub(crate) fn flush_pending_snapshots(&mut self) {
-        for subs in self.subscribers.values_mut() {
+        let mut orphaned = Vec::new();
+        for (terminal, subs) in &mut self.subscribers {
             subs.retain_mut(|sub| {
-                if matches!(sub.gate, SnapshotGate::Retained { .. }) {
+                if matches!(
+                    sub.gate,
+                    SnapshotGate::Retained { .. } | SnapshotGate::Retiring { .. }
+                ) {
                     Self::flush_pending_snapshot(sub).1
                 } else {
                     true
                 }
             });
+            if subs.is_empty() {
+                orphaned.push(*terminal);
+            }
         }
         self.subscribers.retain(|_, subs| !subs.is_empty());
+        self.orphaned_by_delivery.extend(orphaned);
         self.recalculate_retained_totals();
+    }
+
+    pub(crate) fn take_delivery_detaches(&mut self) -> Vec<Vec<u8>> {
+        let orphaned = std::mem::take(&mut self.orphaned_by_delivery)
+            .into_iter()
+            .filter(|terminal| !self.subscribers.contains_key(terminal))
+            .collect();
+        self.encode_withdrawals(orphaned)
     }
 
     fn recalculate_retained_totals(&mut self) {
@@ -3255,7 +3583,7 @@ mod tests {
     }
 
     #[test]
-    fn saturated_open_closed_and_retained_subscribers_are_reaped() {
+    fn saturated_subscribers_converge_or_receive_an_explicit_failure() {
         let mut open = RelaySession::new(host(), BootstrapLimits::default());
         let (open_tx, mut open_rx) = mpsc::channel(1);
         subscribe(&mut open, 9, ClientId(1), open_tx.clone());
@@ -3269,8 +3597,15 @@ mod tests {
                 event: AgentEvent::CommandStarted,
             },
         );
-        assert!(!open.subscribers.contains_key(&9));
         let _ = open_rx.try_recv().expect("filler remains");
+        open.flush_pending_snapshots();
+        assert!(open.subscribers.contains_key(&9));
+        assert!(matches!(
+            open_rx
+                .try_recv()
+                .expect("retained event resumes after drain"),
+            Outbound::Frame(FrameKind::Event { .. })
+        ));
 
         let mut closed = RelaySession::new(host(), BootstrapLimits::default());
         let (closed_tx, closed_rx) = mpsc::channel(1);
@@ -3286,7 +3621,7 @@ mod tests {
         assert!(!closed.subscribers.contains_key(&9));
 
         let mut retained = RelaySession::new(host(), BootstrapLimits::default());
-        let (retained_tx, _retained_rx) = mpsc::channel(1);
+        let (retained_tx, mut retained_rx) = mpsc::channel(1);
         subscribe(&mut retained, 9, ClientId(1), retained_tx.clone());
         retained_tx
             .try_send(Outbound::Frame(FrameKind::Detach))
@@ -3303,13 +3638,27 @@ mod tests {
                 },
             );
         }
-        assert!(!retained.subscribers.contains_key(&9));
+        assert!(retained.subscribers.contains_key(&9));
         assert_eq!(retained.retained_bytes, 0);
         assert_eq!(retained.retained_frames, 0);
+        let _ = retained_rx.try_recv().expect("filler remains");
+        retained.flush_pending_snapshots();
+        assert!(!retained.subscribers.contains_key(&9));
+        let Outbound::Frame(FrameKind::BootstrapTombstone {
+            terminal_id,
+            reason,
+            ..
+        }) = retained_rx.try_recv().expect("explicit saturation failure")
+        else {
+            panic!("content saturation must deliver a generation tombstone")
+        };
+        assert_eq!(terminal_id, ResourceId::satellite("devbox", 9));
+        assert_eq!(reason, TombstoneReason::OutboundGap);
+        assert_eq!(retained.take_delivery_detaches().len(), 1);
     }
 
     #[test]
-    fn connection_wide_retention_budget_reaps_excess_subscriber() {
+    fn connection_wide_retention_budget_marks_excess_subscriber_for_failure() {
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let mut receivers = Vec::new();
         for client in 1..=9 {
@@ -3330,7 +3679,7 @@ mod tests {
                 payload,
             },
         );
-        assert_eq!(session.subscribers[&9].len(), 8);
+        assert_eq!(session.subscribers[&9].len(), 9);
         assert_eq!(session.retained_bytes, MAX_RELAY_CONNECTION_RETAINED_BYTES);
         assert_eq!(session.retained_frames, 8);
         assert_eq!(receivers.len(), 9);
@@ -3830,6 +4179,38 @@ mod tests {
             }))
             .expect("valid satellite frame");
         assert!(out_rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn terminal_close_follows_retained_output_before_subscription_removal() {
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (out_tx, mut out_rx) = mpsc::channel(1);
+        subscribe(&mut session, 9, ClientId(1), out_tx.clone());
+        out_tx
+            .try_send(Outbound::Frame(FrameKind::Detach))
+            .expect("fill downstream mailbox");
+        session.fan_out(9, &output_frame(9, 2, b"before-close"));
+        session
+            .handle_inbound(&encode(&FrameKind::ResourceClosed {
+                terminal_id: ResourceId::local(9),
+                exit_status: Some(0),
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            }))
+            .expect("valid close");
+        assert!(session.subscribers.contains_key(&9));
+
+        let _ = out_rx.try_recv().expect("filler");
+        session.flush_pending_snapshots();
+        assert!(matches!(
+            out_rx.try_recv().expect("retained output first"),
+            Outbound::Frame(FrameKind::ResourceOutput { .. })
+        ));
+        session.flush_pending_snapshots();
+        assert!(matches!(
+            out_rx.try_recv().expect("close follows output"),
+            Outbound::Frame(FrameKind::ResourceClosed { .. })
+        ));
+        assert!(!session.subscribers.contains_key(&9));
     }
 
     // --- attach snapshot ordering under backpressure (phux-v45.12) --------
