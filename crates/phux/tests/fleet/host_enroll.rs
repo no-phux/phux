@@ -73,6 +73,29 @@ impl EnrollHome {
         path
     }
 
+    /// Put no-op init-system clients first on `PATH` so a Linux CI runner can
+    /// prove the unit was armed without requiring a live user systemd session.
+    /// The test must never address the developer's real service manager.
+    fn isolated_path(&self) -> std::ffi::OsString {
+        let bin = self.dir.path().join("fake-bin");
+        std::fs::create_dir_all(&bin).expect("create fake init-tool dir");
+        for tool in ["launchctl", "systemctl"] {
+            let path = bin.join(tool);
+            std::fs::write(&path, "#!/bin/sh\nexit 0\n").expect("write fake init tool");
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod fake init tool");
+            }
+        }
+        let mut paths = vec![bin];
+        if let Some(inherited) = std::env::var_os("PATH") {
+            paths.extend(std::env::split_paths(&inherited));
+        }
+        std::env::join_paths(paths).expect("construct isolated PATH")
+    }
+
     /// Run `phux <args...>` against this home's private config and state,
     /// with `$PHUX_SSH` pointed at `ssh` (a missing path proves the run
     /// never sshed). Returns `(exit_code, stdout, stderr)`.
@@ -93,6 +116,7 @@ impl EnrollHome {
             .env("XDG_STATE_HOME", self.dir.path().join("state"))
             .env("PHUX_PROFILE", "default")
             .env("PHUX_SSH", ssh)
+            .env("PATH", self.isolated_path())
             .args(args)
             .output()
             .expect("run phux binary");
