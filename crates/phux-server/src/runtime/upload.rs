@@ -17,6 +17,7 @@ use phux_protocol::wire::frame::{
     MAX_FILE_UPLOAD_SIZE,
 };
 use sha2::{Digest, Sha256};
+use tokio::sync::{Semaphore, SemaphorePermit};
 
 use crate::state::SharedState;
 
@@ -25,6 +26,53 @@ use crate::state::SharedState;
 /// checks + writes atomic without holding the registry lock across disk I/O.
 static UPLOAD_LOCK: Mutex<()> = Mutex::new(());
 const MAX_EXTENSION_LEN: usize = 16;
+// Includes work waiting in spawn_blocking and work already running. Payload
+// admission is independent of the protocol's per-frame maximum; a disconnected
+// caller cannot release a running disk worker's reservation.
+static UPLOAD_BUDGET: UploadBudget = UploadBudget::new(16, 32 * 1024 * 1024);
+
+struct UploadBudget {
+    jobs: Semaphore,
+    payload: Semaphore,
+}
+
+struct UploadReservation {
+    _job: SemaphorePermit<'static>,
+    _payload: SemaphorePermit<'static>,
+}
+
+impl UploadBudget {
+    const fn new(jobs: usize, payload_bytes: usize) -> Self {
+        Self {
+            jobs: Semaphore::const_new(jobs),
+            payload: Semaphore::const_new(payload_bytes),
+        }
+    }
+
+    fn reserve(&'static self, chunk: &PutFileChunk) -> Result<UploadReservation, CommandResult> {
+        let retained = chunk
+            .data
+            .capacity()
+            .saturating_add(chunk.extension.capacity());
+        let bytes = u32::try_from(retained).map_err(|_| upload_busy())?;
+        let job = self.jobs.try_acquire().map_err(|_| upload_busy())?;
+        let payload = self
+            .payload
+            .try_acquire_many(bytes)
+            .map_err(|_| upload_busy())?;
+        Ok(UploadReservation {
+            _job: job,
+            _payload: payload,
+        })
+    }
+}
+
+fn upload_busy() -> CommandResult {
+    error(
+        ErrorCode::ResourceExhausted,
+        "file upload worker budget exhausted; retry this chunk",
+    )
+}
 
 pub(super) struct PutFileChunk {
     pub upload_id: FileUploadId,
@@ -66,14 +114,25 @@ pub(super) async fn handle_put_file(state: &SharedState, chunk: PutFileChunk) ->
         Ok(root) => root,
         Err(message) => return error(ErrorCode::InternalError, message),
     };
+    run_upload(root, chunk).await
+}
+
+async fn run_upload(root: PathBuf, chunk: PutFileChunk) -> CommandResult {
+    let reservation = match UPLOAD_BUDGET.reserve(&chunk) {
+        Ok(reservation) => reservation,
+        Err(result) => return result,
+    };
     match tokio::task::spawn_blocking(move || {
+        let _reservation = reservation;
         let _guard = UPLOAD_LOCK.lock().map_err(|_| {
             (
                 ErrorCode::InternalError,
                 "file upload lock poisoned".to_owned(),
             )
         })?;
-        write_chunk(&root, &chunk)
+        let result = write_chunk(&root, &chunk);
+        drop(chunk);
+        result
     })
     .await
     {
@@ -514,6 +573,61 @@ mod tests {
             final_chunk,
             sha256,
         }
+    }
+
+    #[test]
+    fn upload_admission_counts_capacity_and_releases_failed_job_claim() {
+        static BUDGET: UploadBudget = UploadBudget::new(2, 1024);
+        let mut request = chunk(id(1), 0, b"a", false, None);
+        request.data = Vec::with_capacity(2048);
+        request.data.push(b'a');
+        assert!(matches!(
+            BUDGET.reserve(&request),
+            Err(CommandResult::Error {
+                code: ErrorCode::ResourceExhausted,
+                ..
+            })
+        ));
+        assert_eq!(BUDGET.jobs.available_permits(), 2);
+        assert_eq!(BUDGET.payload.available_permits(), 1024);
+
+        request.data = b"small".to_vec();
+        let first = BUDGET.reserve(&request).expect("first worker");
+        let second = BUDGET.reserve(&request).expect("second worker");
+        assert!(
+            BUDGET.reserve(&request).is_err(),
+            "job count is independently bounded"
+        );
+        drop((first, second));
+        assert_eq!(BUDGET.jobs.available_permits(), 2);
+        assert_eq!(BUDGET.payload.available_permits(), 1024);
+    }
+
+    #[tokio::test]
+    async fn upload_admission_survives_cancellation_of_running_worker() {
+        static BUDGET: UploadBudget = UploadBudget::new(1, 1024);
+        let request = chunk(id(1), 0, b"payload", false, None);
+        let reservation = BUDGET.reserve(&request).expect("worker admission");
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (finish_tx, finish_rx) = std::sync::mpsc::channel();
+        let worker = tokio::task::spawn_blocking(move || {
+            let _reservation = reservation;
+            started_tx.send(()).expect("announce start");
+            finish_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("finish worker");
+        });
+        started_rx.await.expect("worker started");
+        worker.abort();
+        assert!(
+            BUDGET.reserve(&request).is_err(),
+            "a running worker still owns admission"
+        );
+        finish_tx.send(()).expect("release worker");
+        worker
+            .await
+            .expect("running blocking worker completes despite abort");
+        assert!(BUDGET.reserve(&request).is_ok());
     }
 
     #[test]
