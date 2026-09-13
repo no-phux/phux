@@ -164,7 +164,7 @@ jobs:
         env:
           PHUX_BUILD_CHANNEL: next
           PHUX_BUILD_SHA: ${{ needs.gate.outputs.sha }}
-        run: cargo build --locked --release --bin phux --bin phux-mcp
+        run: bash scripts/build-release-binaries.sh "${{ matrix.target }}"
 
       - name: Check binary portability
         run: bash scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp

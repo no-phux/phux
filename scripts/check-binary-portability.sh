@@ -25,12 +25,9 @@
 # precisely to keep this floor low, and a runner image bump would silently raise
 # it. PHUX_GLIBC_MAX overrides the ceiling.
 #
-# NOT COVERED: CPU baseline. libghostty-vt's build.rs passes -Dtarget only when
-# `target != host` (crates/libghostty-vt-sys/build.rs), so the native release
-# legs let zig auto-detect host CPU features and can emit instructions the
-# runner has but an older machine does not. That is an ILLEGAL INSTRUCTION at
-# runtime, invisible to any link-level check including this one, and it is fixed
-# in the libghostty-rs fork, not here. See release.yml's header.
+# CPU inputs are pinned by scripts/build-release-binaries.sh. ELF GNU property
+# notes are checked below as a second, artifact-level guard against a compiler
+# declaring an x86-64-v2-or-newer requirement.
 set -euo pipefail
 
 GLIBC_MAX="${PHUX_GLIBC_MAX:-2.35}"
@@ -72,7 +69,12 @@ check_macho() {
 }
 
 check_elf() {
-  local bin="$1" line soname maxver key ceiling
+  local bin="$1" line soname maxver key ceiling notes
+
+  notes="$(readelf -n "$bin" 2>/dev/null || true)"
+  if grep -Eq 'x86 ISA needed:.*x86-64-v[234]' <<<"$notes"; then
+    fail "$bin declares a newer-than-x86-64 baseline: $(grep -E 'x86 ISA needed:' <<<"$notes" | head -n 1)"
+  fi
 
   # NEEDED entries: the names the loader will look up.
   while read -r soname; do

@@ -14,6 +14,10 @@ esac
 # shellcheck source=clients/cockpit/scripts/native-cargo-target.sh
 source "${ROOT}/clients/cockpit/scripts/native-cargo-target.sh"
 phux_native_cargo_setup "$ROOT" "$PROFILE"
+if [[ "$PROFILE" == "ffi-release" ]]; then
+    export RUSTFLAGS="-C target-cpu=apple-m1"
+    export LIBGHOSTTY_VT_SYS_CPU=baseline
+fi
 cd "$ROOT"
 cargo rustc "${CARGO_ARGS[@]}" -p phux-client-ffi --lib --crate-type staticlib
 cargo build "${CARGO_ARGS[@]}" -p phux

@@ -51,6 +51,8 @@ jobs:
     timeout-minutes: 45
     env:
       RELEASE_TAG: ${{ inputs.tag }}
+      LIBGHOSTTY_VT_SYS_CPU: baseline
+      RUSTFLAGS: -C target-cpu=apple-m1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
