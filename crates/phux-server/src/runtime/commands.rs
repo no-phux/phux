@@ -2038,7 +2038,11 @@ impl AttachResourcePumpCtx {
             stream_id: self.stream_id,
             bootstrap_id: stream.generation.bootstrap_id(),
             seq,
-            bytes: crate::runtime::attach::downsample_for_caps(bytes, self.client_caps),
+            bytes: crate::runtime::attach::live_bytes_for_profile(
+                bytes,
+                self.client_caps,
+                self.stream_profile,
+            ),
         };
         if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
             return PumpStep::Stop;
@@ -2127,15 +2131,15 @@ impl AttachResourcePumpCtx {
                 terminal_id = ?self.wire_terminal_id,
                 dropped,
                 "ATTACH_RESOURCE output pump lagged again while a resync was \
-                 already in flight; re-requesting",
+                 already in flight; waiting",
             );
-        } else {
-            warn!(
-                terminal_id = ?self.wire_terminal_id,
-                dropped,
-                "ATTACH_RESOURCE output pump lagged; requesting in-band resync",
-            );
+            return PumpStep::Continue;
         }
+        warn!(
+            terminal_id = ?self.wire_terminal_id,
+            dropped,
+            "ATTACH_RESOURCE output pump lagged; requesting in-band resync",
+        );
         stream.generation.note_resync_requested();
         self.request_resync(&stream.generation).await
     }

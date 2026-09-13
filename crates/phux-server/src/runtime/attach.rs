@@ -46,6 +46,23 @@ pub(crate) fn downsample_for_caps(
     }
 }
 
+/// Preserve native live bytes exactly; only synthesized profiles may adapt
+/// presentation capabilities.
+pub(crate) fn live_bytes_for_profile(
+    bytes: &bytes::Bytes,
+    caps: phux_protocol::ClientCapabilities,
+    profile: phux_protocol::caps::BootstrapStreamProfile,
+) -> bytes::Bytes {
+    if matches!(
+        profile,
+        phux_protocol::caps::BootstrapStreamProfile::NativeState { .. }
+    ) {
+        bytes.clone()
+    } else {
+        downsample_for_caps(bytes, caps)
+    }
+}
+
 fn bootstrap_source_ceiling(
     remaining_bytes: usize,
     caps: phux_protocol::ClientCapabilities,
@@ -566,7 +583,7 @@ impl OutputPumpContext {
             stream_id: self.stream_id,
             bootstrap_id: generation.bootstrap_id(),
             seq,
-            bytes: downsample_for_caps(bytes, self.client_caps),
+            bytes: live_bytes_for_profile(bytes, self.client_caps, self.profile),
         }
     }
 
@@ -856,9 +873,10 @@ impl OutputPumpContext {
             debug!(
                 terminal_id = ?self.wire_terminal_id,
                 %cause,
-                "{} lagged again while a resync was already in flight; re-requesting",
+                "{} lagged again while a resync was already in flight; waiting",
                 self.lag_label,
             );
+            return ControlFlow::Continue(());
         } else if matches!(cause, GapCause::Stale(_)) {
             // A consumer slower than its link goes stale every cycle by
             // design, so this is DEBUG: a WARN here would log once a second
@@ -3979,6 +3997,29 @@ mod tests {
         );
         assert_eq!(adapted.retained_bytes, source_capacity);
         assert!(adapted.peak_bytes <= peak_budget);
+    }
+
+    #[test]
+    fn native_live_bytes_ignore_restrictive_presentation_caps() {
+        let caps = ClientCapabilities::default()
+            .with_color_support(phux_protocol::caps::ColorSupport::Mono)
+            .with_hyperlinks(false)
+            .with_image_protocols(phux_protocol::caps::ImageProtocolSet::new());
+        let bytes = bytes::Bytes::from_static(
+            b"\x1b[38;2;1;2;3m\x1b]8;;https://example.invalid\x1b\\exact\xff",
+        );
+        let profile = phux_protocol::caps::BootstrapStreamProfile::NativeState {
+            codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
+        };
+
+        let adapted = live_bytes_for_profile(&bytes, caps, profile);
+
+        assert_eq!(adapted, bytes);
+        assert_eq!(
+            adapted.as_ptr(),
+            bytes.as_ptr(),
+            "native path keeps the shared bytes"
+        );
     }
 
     #[test]
