@@ -57,6 +57,7 @@ mod upgrade;
 mod upload;
 mod voice;
 mod whoami;
+mod workload_auth;
 
 pub(crate) use attach::*;
 pub(crate) use client::*;
@@ -1806,45 +1807,6 @@ async fn build_ws_listener(
     }
 }
 
-/// Resolve the optional workload CA used for mTLS listeners.
-///
-/// The opt-in environment gate keeps existing bearer-paired deployments
-/// bootable while clients are being enrolled. Once enabled, QUIC uses the
-/// persisted CA and requires a client certificate at TLS time. WSS remains on
-/// the bearer path until its upgrade can retain the TLS peer certificate for
-/// registry identity stamping.
-fn workload_ca_for_secure(secure: bool) -> Option<PathBuf> {
-    if !secure || std::env::var_os("PHUX_WORKLOAD_MTLS").is_none() {
-        return None;
-    }
-    let cert = std::env::var_os("PHUX_WORKLOAD_CA")
-        .map_or_else(crate::workload::default_ca_cert_path, PathBuf::from);
-    let key = std::env::var_os("PHUX_WORKLOAD_CA_KEY")
-        .map_or_else(crate::workload::default_ca_key_path, PathBuf::from);
-    if let Err(error) = crate::workload::ensure_ca(&cert, &key) {
-        warn!(error = %error, "workload mTLS CA unavailable; listener remains bearer-only");
-        return None;
-    }
-    Some(cert)
-}
-
-/// Load the registry paired with an mTLS CA. A malformed registry disables
-/// the paired listener rather than turning an empty snapshot into authority.
-fn workload_registry_for(
-    ca_path: Option<&Path>,
-) -> Option<std::sync::Arc<crate::workload::WorkloadRegistry>> {
-    ca_path?;
-    let path = std::env::var_os("PHUX_WORKLOAD_KEYS")
-        .map_or_else(crate::workload::default_registry_path, PathBuf::from);
-    match crate::workload::WorkloadRegistry::load(&path) {
-        Ok(registry) => Some(std::sync::Arc::new(registry)),
-        Err(error) => {
-            warn!(error = %error, path = %path.display(), "workload registry unavailable; mTLS disabled");
-            None
-        }
-    }
-}
-
 /// Log, do not fail, when the persisted certificate does not name the address
 /// this listener binds (phux-q9a0, ADR-0091).
 ///
@@ -1941,40 +1903,34 @@ fn build_quic_listener(
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, "quic");
 
-    let tokens = if secure {
-        let tokens_path = std::env::var_os("PHUX_WS_TOKENS")
-            .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
-        let store = match crate::auth::ReloadingTokenStore::load(tokens_path.clone()) {
-            Ok(store) => store,
-            Err(err) => {
-                error!(error = %err, path = %tokens_path.display(), "failed to load token store; QUIC disabled");
-                return (
-                    None,
-                    RemoteListenerSlot::disabled(
-                        RemoteListenerTransport::Quic,
-                        Some(addr_s),
-                        ListenerDisabledReason::TokenStoreLoadFailed,
-                    ),
-                );
-            }
-        };
-        if store.is_empty() {
-            warn!(
-                path = %tokens_path.display(),
-                "no pairing tokens; run `phux pair` -- it takes effect immediately, with no restart"
-            );
-        }
-        Some(std::sync::Arc::new(store))
-    } else {
-        None
+    let Ok(tokens) = quic_tokens(secure) else {
+        return (
+            None,
+            RemoteListenerSlot::disabled(
+                RemoteListenerTransport::Quic,
+                Some(addr_s),
+                ListenerDisabledReason::TokenStoreLoadFailed,
+            ),
+        );
     };
     let token_count = tokens.as_ref().map_or(0, |s| s.len());
 
+    let workload_auth = match workload_auth::WorkloadAuth::from_env() {
+        Ok(auth) => auth,
+        Err(err) => {
+            error!(error = %err, "configured workload mTLS unavailable; QUIC disabled");
+            return (
+                None,
+                RemoteListenerSlot::disabled(
+                    RemoteListenerTransport::Quic,
+                    Some(addr_s),
+                    ListenerDisabledReason::TlsSetupFailed,
+                ),
+            );
+        }
+    };
     let (workload_ca, workload_registry) =
-        workload_ca_for_secure(secure).map_or((None, None), |ca| {
-            workload_registry_for(Some(&ca))
-                .map_or((None, None), |registry| (Some(ca), Some(registry)))
-        });
+        workload_auth.map_or((None, None), |auth| (Some(auth.ca), Some(auth.registry)));
     match crate::transport::quic::QuicListener::from_pem_with_client_ca_and_registry(
         addr,
         &cert_path,
@@ -1985,7 +1941,9 @@ fn build_quic_listener(
     ) {
         Ok(quic) => {
             let bound = quic.local_addr().map_or(addr_s, |a| a.to_string());
-            if secure {
+            if workload_ca.is_some() {
+                info!(addr = %bound, "QUIC listening with workload mTLS authentication");
+            } else if secure {
                 info!(addr = %bound, tokens = token_count, "QUIC listening with TLS + token auth");
             } else {
                 info!(addr = %bound, "QUIC listening (TLS, loopback, unauthenticated)");
@@ -2007,6 +1965,23 @@ fn build_quic_listener(
             )
         }
     }
+}
+
+fn quic_tokens(
+    secure: bool,
+) -> Result<Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>, crate::auth::AuthError> {
+    if !secure {
+        return Ok(None);
+    }
+    let path = std::env::var_os("PHUX_WS_TOKENS")
+        .map_or_else(crate::auth::default_token_store_path, PathBuf::from);
+    let store = crate::auth::ReloadingTokenStore::load(path.clone()).inspect_err(|err| {
+        error!(error = %err, path = %path.display(), "failed to load token store; QUIC disabled");
+    })?;
+    if store.is_empty() {
+        warn!(path = %path.display(), "no pairing tokens; run `phux pair` -- it takes effect immediately, with no restart");
+    }
+    Ok(Some(std::sync::Arc::new(store)))
 }
 
 /// Build the optional WebTransport listener for `addr` (phux-0wmf). Returns
