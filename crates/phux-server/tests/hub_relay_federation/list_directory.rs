@@ -109,8 +109,7 @@ fn a_named_satellite_lists_through_the_hub() {
         std::fs::create_dir_all(tree.join("beta")).unwrap();
         std::fs::create_dir_all(tree.join("alpha")).unwrap();
         std::fs::write(tree.join("notes.txt"), b"x").unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],
@@ -163,8 +162,8 @@ fn an_unknown_host_or_a_non_hub_server_refuses_naming_the_host() {
 
         // A server that is not a hub refuses any host instead of listing its
         // own filesystem under the satellite's name...
-        let (plain_shutdown, plain_task) =
-            spawn_satellite(tmp.path().join("plain.sock"), free_port());
+        let (_plain_port, plain_shutdown, plain_task) =
+            spawn_satellite(tmp.path().join("plain.sock"));
         let mut plain = connect_l3(&tmp.path().join("plain.sock")).await;
         let not_hub = refusal(list_on(&mut plain, 2, "/", Some("sat")).await);
         assert!(

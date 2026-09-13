@@ -30,8 +30,7 @@ impl Topology {
     /// Boot both servers and wait until the hub's link answers.
     async fn boot() -> Self {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
         let seed = discover_satellite_pane(ws_port).await;
         let satellite = wait_for_socket(&tmp.path().join("sat.sock"), STEP_DEADLINE).await;
         let hub_path = tmp.path().join("hub.sock");

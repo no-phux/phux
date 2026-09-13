@@ -81,8 +81,7 @@ async fn create_other_session(stream: &mut UnixStream) -> ResourceId {
 fn exact_owner_satellite_spawn_preserves_window_and_initial_size() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
         let seed = discover_satellite_pane(ws_port).await;
         let mut satellite = wait_for_socket(&tmp.path().join("sat.sock"), STEP_DEADLINE).await;
         let other = create_other_session(&mut satellite).await;
@@ -158,8 +157,7 @@ fn exact_owner_satellite_spawn_preserves_window_and_initial_size() {
 fn satellite_spawn_refuses_wrong_owners_and_provenance_without_creating_panes() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
         let seed = discover_satellite_pane(ws_port).await;
         let (hub_shutdown, hub_task) = spawn_hub_with_session(
             tmp.path().join("hub.sock"),
