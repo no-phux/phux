@@ -94,10 +94,11 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 // harness
 // ---------------------------------------------------------------------------
 
-/// Per-scenario XDG isolation: a private `XDG_CONFIG_HOME` and
-/// `XDG_STATE_HOME` so no test ever reads the developer's real config or
-/// asserts against their real log paths.
+/// Per-scenario isolation: a private `HOME` plus XDG dirs so no test
+/// reads the developer's config, host registry, or log paths, and so
+/// `phux doctor` cannot inherit `PHUX_*` from a live pane (phux-vlv1).
 struct Isolation {
+    home: tempfile::TempDir,
     config: tempfile::TempDir,
     state: tempfile::TempDir,
 }
@@ -105,6 +106,7 @@ struct Isolation {
 impl Isolation {
     fn new() -> Self {
         Self {
+            home: tempfile::tempdir().expect("isolated home"),
             config: tempfile::tempdir().expect("isolated config home"),
             state: tempfile::tempdir().expect("isolated state home"),
         }
@@ -127,13 +129,36 @@ impl Isolation {
     /// build, which resolves the `dev` profile (ADR-0080), so without this
     /// the paths asserted below would describe a layout no user ever sees.
     fn apply(&self, cmd: &mut Command) {
-        cmd.env("XDG_CONFIG_HOME", self.config.path())
+        // `env_clear` drops inherited `PHUX_SOCKET` / `PHUX_WS_*` /
+        // `PHUX_SERVICE_MANAGED` from a maintainer running the suite
+        // inside a live pane (phux-lru0). Re-arm only the isolation
+        // table, matching `first_five_minutes_e2e` / `whoami_e2e`.
+        cmd.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        }
+        if let Some(tmp) = std::env::var_os("TMPDIR") {
+            cmd.env("TMPDIR", tmp);
+        }
+        cmd.env("HOME", self.home.path())
+            .env("XDG_CONFIG_HOME", self.config.path())
             .env("XDG_STATE_HOME", self.state.path())
+            .env("XDG_CACHE_HOME", self.home.path())
+            .env("XDG_DATA_HOME", self.home.path())
+            .env("XDG_RUNTIME_DIR", self.home.path())
             .env("PHUX_PROFILE", "default")
             // Default profile would auto-bind overlay WSS/QUIC (ADR-0081).
             // That races the host's real server for 8787/8788 and leaves
             // bind_failed slots that doctor (phux-kyna) correctly fails on.
-            .env("PHUX_NO_AUTO_LISTEN", "1");
+            .env("PHUX_NO_AUTO_LISTEN", "1")
+            // Overlay detect shells out to `tailscale` and then dials
+            // :8787. Point the seam at a missing binary so a host with
+            // tailscale on PATH cannot leak the operator's tailnet into
+            // this file (phux-vlv1).
+            .env(
+                "PHUX_TAILSCALE",
+                self.home.path().join("no-such-tailscale"),
+            );
     }
 
     /// The canonical server-log path `phux_server::telemetry` resolves

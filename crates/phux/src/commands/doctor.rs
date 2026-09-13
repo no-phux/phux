@@ -1017,9 +1017,29 @@ fn remote_listeners_check(
 ///
 /// So this one leaves the machine: it dials its own advertised address with
 /// the same stack a real client uses, and reports what came back. Skipped
-/// when there is no overlay address to dial, which is the common local-only
-/// case and not a fault.
+/// when this server has no wss listener (probing the host overlay would
+/// dial a different process) or when there is no overlay address to dial.
 fn check_remote_reachable(socket_path: &std::path::Path) -> Check {
+    // Ask *this* server first. Overlay detection shells out to tailscale
+    // and then dials whatever is on :8787 — on a machine with a live
+    // unsupervised server that is a different process, and the 4s probe
+    // made `phux doctor` in isolated tests non-hermetic (phux-vlv1).
+    match server_wss_offer(socket_path) {
+        WssOffer::Disabled(reason) => {
+            return remote_reachable_check(
+                "this server's wss listener",
+                Reachability::NoListener,
+                Some(reason),
+            );
+        }
+        WssOffer::Absent => {
+            return Check::pass(
+                "remote-reachable",
+                "this server has no wss listener; nothing routable to probe",
+            );
+        }
+        WssOffer::Bound => {}
+    }
     let advertised = phux_config::overlay::detect();
     let Some(addr) = advertised.first().copied() else {
         return Check::pass(
@@ -1032,31 +1052,52 @@ fn check_remote_reachable(socket_path: &std::path::Path) -> Check {
         phux_server::transport::tls::san_name(addr),
         phux_server::runtime::DEFAULT_WS_PORT
     );
-    let server_disabled = server_wss_disabled_reason(socket_path);
-    remote_reachable_check(&url, probe_remote_listener(&url), server_disabled)
+    remote_reachable_check(&url, probe_remote_listener(&url), None)
 }
 
-/// Ask the running server whether its wss listener is known-disabled.
-fn server_wss_disabled_reason(
-    socket_path: &std::path::Path,
-) -> Option<phux_protocol::wire::ListenerDisabledReason> {
+/// What this instance's GET_STATE says about its wss listener.
+#[derive(Debug, Clone, Copy)]
+enum WssOffer {
+    /// A bound, healthy wss slot — the only case where an overlay dial
+    /// asks about *this* server.
+    Bound,
+    /// A wss slot exists and the server disabled it.
+    Disabled(phux_protocol::wire::ListenerDisabledReason),
+    /// No server, no listener table, or no wss slot.
+    Absent,
+}
+
+/// Ask the running server what it is doing with wss.
+fn server_wss_offer(socket_path: &std::path::Path) -> WssOffer {
     if !socket_path.exists() {
-        return None;
+        return WssOffer::Absent;
     }
     let Ok(rt) = cli_runtime() else {
-        return None;
+        return WssOffer::Absent;
     };
     let Ok(view) = rt.block_on(phux_client::state::get_state(socket_path)) else {
-        return None;
+        return WssOffer::Absent;
     };
-    view.snapshot().listeners().and_then(|report| {
-        report.listeners.iter().find_map(|slot| {
-            (slot.transport == phux_protocol::wire::RemoteListenerTransport::Wss
-                && slot.is_unhealthy())
-            .then_some(slot.disabled_reason)
-            .flatten()
-        })
-    })
+    let Some(report) = view.snapshot().listeners() else {
+        return WssOffer::Absent;
+    };
+    let Some(slot) = report
+        .listeners
+        .iter()
+        .find(|slot| slot.transport == phux_protocol::wire::RemoteListenerTransport::Wss)
+    else {
+        return WssOffer::Absent;
+    };
+    if slot.is_unhealthy() {
+        return slot
+            .disabled_reason
+            .map_or(WssOffer::Absent, WssOffer::Disabled);
+    }
+    if slot.bound {
+        WssOffer::Bound
+    } else {
+        WssOffer::Absent
+    }
 }
 
 /// Dial `url` and classify the answer.
