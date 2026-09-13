@@ -41,7 +41,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::{TcpListener, TcpStream, UnixListener};
 use tokio_tungstenite::WebSocketStream;
-use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request};
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 
 use phux_protocol::wire::framing::{self, LENGTH_PREFIX_LEN as LENGTH_PREFIX};
@@ -571,7 +571,7 @@ impl Incoming for WsListener {
                             || Err(unauthorized_response()),
                             |credential| {
                                 *sink.borrow_mut() = Some(credential);
-                                Ok(resp)
+                                Ok(select_ws_protocol(req, resp))
                             },
                         )
                     }),
@@ -586,13 +586,16 @@ impl Incoming for WsListener {
                 (ws, id)
             }
             None => (
-                tokio::time::timeout(HANDSHAKE_DEADLINE, tokio_tungstenite::accept_async(stream))
-                    .await
-                    .map_err(|_| {
-                        tracing::debug!(%source_ip, "WebSocket upgrade timed out");
-                        ws_accept_error(WsAcceptStage::Upgrade, source_ip)
-                    })?
-                    .map_err(|error| classify_ws_upgrade_error(&error, source_ip))?,
+                tokio::time::timeout(
+                    HANDSHAKE_DEADLINE,
+                    tokio_tungstenite::accept_hdr_async(stream, anonymous_ws_upgrade),
+                )
+                .await
+                .map_err(|_| {
+                    tracing::debug!(%source_ip, "WebSocket upgrade timed out");
+                    ws_accept_error(WsAcceptStage::Upgrade, source_ip)
+                })?
+                .map_err(|error| classify_ws_upgrade_error(&error, source_ip))?,
                 None,
             ),
         };
@@ -775,20 +778,85 @@ enum PeerRejectionWarnDecision {
     Emit { suppressed: u64 },
 }
 
-/// Extract and verify the `Authorization: Bearer <hex>` pairing token from a
-/// WebSocket upgrade request. Returns the stable credential id on success,
-/// `None` on a missing, malformed, or unrecognized token.
+/// Verify either the native Authorization header or the browser's credential
+/// subprotocol. Ambiguous carriers are refused before the HTTP upgrade.
 fn authorize_request(
     req: &Request,
     store: &crate::auth::ReloadingTokenStore,
 ) -> Option<crate::auth::AuthenticatedCredential> {
-    let header = req.headers().get("authorization")?.to_str().ok()?;
-    let token_hex = header
-        .strip_prefix("Bearer ")
-        .or_else(|| header.strip_prefix("bearer "))?
-        .trim();
+    let token_hex = request_token(req)?;
+    if token_hex.len() != crate::auth::TOKEN_LEN * 2 {
+        return None;
+    }
     let token = hex::decode(token_hex).ok()?;
     store.authenticate(&token)
+}
+
+fn request_token(req: &Request) -> Option<&str> {
+    let (browser_protocol, browser_token) = browser_auth_protocols(req)?;
+    let mut headers = req.headers().get_all("authorization").iter();
+    let header = headers.next();
+    if headers.next().is_some() || (header.is_some() && browser_token.is_some()) {
+        return None;
+    }
+    match header {
+        Some(header) => {
+            let header = header.to_str().ok()?;
+            Some(
+                header
+                    .strip_prefix("Bearer ")
+                    .or_else(|| header.strip_prefix("bearer "))?
+                    .trim(),
+            )
+        }
+        None if browser_protocol => browser_token,
+        None => None,
+    }
+}
+
+/// Parse the small browser auth vocabulary without copying credential bytes.
+fn browser_auth_protocols(req: &Request) -> Option<(bool, Option<&str>)> {
+    let mut application = false;
+    let mut bearer = None;
+    for header in req.headers().get_all("sec-websocket-protocol") {
+        for protocol in header.to_str().ok()?.split(',').map(str::trim) {
+            if protocol == "phux.v1" {
+                if application {
+                    return None;
+                }
+                application = true;
+            } else if let Some(token) = protocol.strip_prefix("phux.bearer.")
+                && bearer.replace(token).is_some()
+            {
+                return None;
+            }
+        }
+    }
+    Some((application, bearer))
+}
+
+/// Select only the public application protocol. Never echo the auth carrier.
+fn select_ws_protocol(req: &Request, mut response: Response) -> Response {
+    if matches!(browser_auth_protocols(req), Some((true, _))) {
+        response.headers_mut().insert(
+            "sec-websocket-protocol",
+            tokio_tungstenite::tungstenite::http::HeaderValue::from_static("phux.v1"),
+        );
+    }
+    response
+}
+
+/// A browser asking for paired authentication must not accidentally establish
+/// an anonymous connection when the listener has no authority store.
+#[allow(
+    clippy::result_large_err,
+    reason = "tungstenite fixes the HTTP upgrade callback error type"
+)]
+fn anonymous_ws_upgrade(req: &Request, response: Response) -> Result<Response, ErrorResponse> {
+    match browser_auth_protocols(req) {
+        Some((_, None)) => Ok(select_ws_protocol(req, response)),
+        _ => Err(unauthorized_response()),
+    }
 }
 
 /// The HTTP 401 the handshake returns when the pairing token is absent or
@@ -842,6 +910,96 @@ mod tests {
             format!("Bearer {token_hex}").parse().unwrap(),
         );
         req
+    }
+
+    fn browser_request(addr: SocketAddr, protocols: &str) -> Request {
+        let mut req = format!("ws://{addr}/").into_client_request().unwrap();
+        req.headers_mut()
+            .insert("sec-websocket-protocol", protocols.parse().unwrap());
+        req
+    }
+
+    #[tokio::test]
+    async fn browser_subprotocol_auth_stamps_identity_without_echoing_secret() {
+        let (listener, addr, token, _tokens) = token_listener().await;
+        let request = browser_request(addr, &format!("phux.v1, phux.bearer.{token}"));
+        let frame = vec![0, 0, 0, 3, 0xde, 0xad, 0xbe];
+        let server = async {
+            let (mut reader, _writer, peer) = listener.accept().await.unwrap();
+            let received = reader.read_frame().await.unwrap().unwrap();
+            (received, peer)
+        };
+        let client = async {
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            let (mut ws, response) = tokio_tungstenite::client_async(request, tcp).await.unwrap();
+            assert_eq!(response.headers()["sec-websocket-protocol"], "phux.v1");
+            assert!(!format!("{:?}", response.headers()).contains(&token));
+            ws.send(Message::Binary(frame.clone().into()))
+                .await
+                .unwrap();
+            ws
+        };
+        let ((received, peer), _ws) = tokio::join!(server, client);
+        assert_eq!(received.as_ref(), frame);
+        assert_eq!(peer.credential.unwrap().id, "test-credential");
+    }
+
+    #[tokio::test]
+    async fn browser_auth_rejects_ambiguous_and_malformed_carriers() {
+        let (listener, addr, token, _tokens) = token_listener().await;
+        for protocols in [
+            format!("phux.bearer.{token}"),
+            "phux.v1, phux.bearer.not-hex".to_owned(),
+            format!("phux.v1, phux.bearer.{token}, phux.bearer.{token}"),
+            format!("phux.v1, phux.v1, phux.bearer.{token}"),
+            "phux.v1".to_owned(),
+        ] {
+            let (error, response) =
+                refused_handshake(&listener, addr, browser_request(addr, &protocols)).await;
+            assert_generic_unauthorized(response);
+            assert!(!error.contains(&token));
+        }
+        let mut mixed = bearer_request(addr, &token);
+        mixed.headers_mut().insert(
+            "sec-websocket-protocol",
+            format!("phux.v1, phux.bearer.{token}").parse().unwrap(),
+        );
+        let (_, response) = refused_handshake(&listener, addr, mixed).await;
+        assert_generic_unauthorized(response);
+
+        let mut repeated = bearer_request(addr, &token);
+        repeated
+            .headers_mut()
+            .append("authorization", format!("Bearer {token}").parse().unwrap());
+        let (_, response) = refused_handshake(&listener, addr, repeated).await;
+        assert_generic_unauthorized(response);
+    }
+
+    #[tokio::test]
+    async fn anonymous_listener_refuses_browser_credentials_but_accepts_public_protocol() {
+        let listener = WsListener::bind("127.0.0.1:0".parse().unwrap())
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let token = hex::encode(TEST_TOKEN);
+        let (_, response) = refused_handshake(
+            &listener,
+            addr,
+            browser_request(addr, &format!("phux.v1, phux.bearer.{token}")),
+        )
+        .await;
+        assert_generic_unauthorized(response);
+
+        let client = async {
+            let tcp = TcpStream::connect(addr).await.unwrap();
+            tokio_tungstenite::client_async(browser_request(addr, "phux.v1"), tcp)
+                .await
+                .unwrap()
+        };
+        let (accepted, (_ws, response)) = tokio::join!(listener.accept(), client);
+        let (_, _, identity) = accepted.unwrap();
+        assert!(identity.credential.is_none());
+        assert_eq!(response.headers()["sec-websocket-protocol"], "phux.v1");
     }
 
     #[tokio::test]
