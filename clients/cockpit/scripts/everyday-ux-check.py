@@ -61,6 +61,37 @@ class InstrumentTests(unittest.TestCase):
                 journey.input('keystroke "x"')
             journey.applescript.assert_not_called()
 
+    def test_pointer_lookup_dereferences_entire_contents_items(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journey = smoke.Journey(Path(directory), "/native", "/phux")
+            journey.app = Mock(pid=123)
+            journey.snapshot = Mock()
+            journey.frontmost = Mock(return_value="123")
+            journey.applescript = Mock(return_value="1132,195,206,139,1100,640")
+            journey.pointer_click = Mock()
+
+            self.assertTrue(journey.click_named("Machines"))
+            script = journey.applescript.call_args.args[0]
+            self.assertIn("set candidate to contents of elementRef", script)
+            self.assertIn('description of candidate is "Machines"', script)
+            self.assertIn("on error\nend try", script)
+            journey.pointer_click.assert_called_once_with("1132,195")
+
+    def test_pointer_lookup_refuses_offscreen_accessibility_target(self):
+        with tempfile.TemporaryDirectory() as directory:
+            journey = smoke.Journey(Path(directory), "/native", "/phux")
+            journey.app = Mock(pid=123)
+            journey.snapshot = Mock()
+            journey.frontmost = Mock(return_value="123")
+            journey.applescript = Mock(return_value="592,1078,230,115,1100,640")
+            journey.pointer_click = Mock()
+
+            self.assertFalse(journey.click_named("Edit Configuration"))
+            journey.pointer_click.assert_not_called()
+
+    def test_applescript_strings_preserve_unicode_menu_labels(self):
+        self.assertEqual(smoke.applescript_string("Show All Windows…"), '"Show All Windows…"')
+
     def test_missing_publisher_is_infrastructure_failure(self):
         with self.assertRaises(smoke.InfrastructureError):
             smoke.publisher("ready=true\n")

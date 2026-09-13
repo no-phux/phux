@@ -66,7 +66,9 @@ independent frontmost-PID check. AppKit menu inventory comes from System Events;
 rendered widget assertions require the expected semantic role, enabled state,
 positive geometry, and invoking window, excluding menu declarations and source fixtures.
 Pointer activation resolves the named host accessibility element and sends a
-System Events click at its center. No SDK synthetic input is used.
+CoreGraphics pointer down/up at its on-screen center. Scrollable actions use a
+real CoreGraphics wheel event before the pointer click. No SDK synthetic input
+is used.
 Missing Accessibility permission produces exit 2 before any input. Grant it to
 the responsible hosting application in macOS System Settings before rerunning;
 remote launch chains can have a different TCC attribution than the visible terminal.
