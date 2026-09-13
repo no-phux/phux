@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # Ways to use phux
@@ -20,6 +20,8 @@ server and one terminal model.
 |---|---|
 | Work interactively in a terminal | [The reference TUI](./tui.md) |
 | Read and drive terminals from a script or coding agent | [Agents and the CLI](./agents.md) |
+| Emit working/blocked/idle from a harness | [Harness authors](./harness.md) |
+| Speak the wire from a new client | [Build a client](./build-a-client.md) |
 | Connect a tool client over MCP | [The MCP adapter](./mcp.md) |
 | Give OpenCode terminal tools and fleet awareness | [The OpenCode integration](./opencode.md) |
 | Give Pi target persistence and fleet awareness | [The Pi integration](./pi.md) |
@@ -43,6 +45,8 @@ Gaps: [`../CONCEPTS.md`](../CONCEPTS.md#status).
 | [web.md](./web.md) | Browser client that carries its own engine over the WebSocket wire codec. |
 | [ios.md](./ios.md) | Swift/UniFFI iOS client and the `phux pair` connect-link contract. |
 | [agents.md](./agents.md) | Agent surface: CLI verbs, JSON contracts, asks, workspace save/restore. |
+| [harness.md](./harness.md) | Producer contract: open an AgentSession, emit, never write detector state. |
+| [build-a-client.md](./build-a-client.md) | Third-party client paths: CLI, MCP, phux-protocol, FFI. |
 | [opencode.md](./opencode.md) | OpenCode package: tools, fleet context, target precedence, safety. |
 | [pi.md](./pi.md) | Pi package: tools, fleet context, target persistence, safety. |
 | [claude.md](./claude.md) | Claude Code plugin: MCP tools plus lifecycle identity. |

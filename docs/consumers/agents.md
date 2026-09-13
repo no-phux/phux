@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # The phux agent CLI
@@ -54,7 +54,8 @@ This tree serves **AgentSession**. The server advertises
 and `phux agent log` exist; `%name` resolves an AgentSession. Check
 `phux status --json` for `features`. An older brew/curl *release* may
 omit the bit; those verbs then refuse with `unsupported_server` before
-touching a resource.
+touching a resource. A live session stream outranks the pane detector.
+Harness authors emit into that stream; see [`harness.md`](./harness.md).
 
 The pane **detector** is a different surface: `phux agent show` /
 `explain` (and `list` / `set` / `clear` / `wait` / `send-keys` /

@@ -1,15 +1,15 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # Remote access
 
 **TL;DR.** Attach to a phux server on another machine with one command. The
 first run pairs the host; every later run is a direct encrypted QUIC dial
-with no ssh in the path. Manual overlay, enroll, and relay paths are below
-for when that command cannot.
+with no ssh in the path and no phux account. Manual overlay, enroll, and
+relay paths are below for when that command cannot.
 
 ---
 
