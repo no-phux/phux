@@ -58,6 +58,8 @@ class RoutingTests(unittest.TestCase):
             (["scripts/ci/classify-changes.sh"], set()),
             (["scripts/ci/validation_receipt.py"], set()),
             (["scripts/ci/wait_validation.py"], set()),
+            (["scripts/ci/extract_changelog_section.py"], set()),
+            (["scripts/check-release-orchestration.mjs"], set()),
             (["scripts/ci/cockpit_artifacts.py"], {"cockpit"}),
             (["clients/cockpit/src/main.zig", "integrations/pi/src/index.ts"], {"cockpit", "integrations"}),
             (["docs/SETUP.md", "clients/phux-web/src/lib.rs"], {"web"}),
