@@ -9,8 +9,9 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::doc_markdown, reason = "tests")]
-#![allow(unused_unsafe, reason = "env::set_var is unsafe only on edition 2024")]
 
+use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Ceiling for the attach handshake drain below.
@@ -28,16 +29,30 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
-use phux_server_testkit::{assert_protocol_error_detach, encode_frame_vec, free_port};
+use phux_server_testkit::{assert_protocol_error_detach, encode_frame_vec};
 use tempfile::TempDir;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, LocalSet};
 use tokio_tungstenite::tungstenite::Message;
 
+/// Bind an ephemeral loopback port and hold the listener.
+///
+/// [`phux_server_testkit::free_port`] reads the number and drops the
+/// listener, so the kernel can reissue it before `listen_ws` runs. That is
+/// the lease-not-reservation defect (phux-ahg6 / phux-vbnr). Keep this
+/// alive until the moment the server is about to bind, then drop it —
+/// two LISTEN sockets cannot share the port.
+fn reserve_loopback() -> (SocketAddr, TcpListener) {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    (addr, listener)
+}
+
 fn spawn_ws_server(
-    socket_path: std::path::PathBuf,
+    socket_path: PathBuf,
     seeded: &str,
+    ws_addr: SocketAddr,
 ) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
     let (tx, rx) = oneshot::channel::<()>();
     let cfg = ServerConfig {
@@ -49,6 +64,7 @@ fn spawn_ws_server(
     };
     let handle = tokio::task::spawn_local(async move {
         ServerRuntime::new(cfg)
+            .listen_ws(ws_addr)
             .run_async(async move {
                 let _ = rx.await;
             })
@@ -60,12 +76,10 @@ fn spawn_ws_server(
 #[allow(clippy::too_many_lines)]
 #[test]
 fn ws_hello_attach_receives_attached_and_snapshot() {
-    let port = free_port();
-    let addr = format!("127.0.0.1:{port}");
-    unsafe {
-        std::env::set_var("PHUX_WS_ADDR", &addr);
-    }
-
+    // Reserve before the runtime/tempdir work so a neighbour cannot take
+    // the number during setup (phux-ahg6). Drop `hold` only when the
+    // server is about to bind — two LISTEN sockets cannot share the port.
+    let (addr, hold) = reserve_loopback();
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -73,7 +87,8 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
     let local = LocalSet::new();
     local.block_on(&rt, async move {
         let tmp = TempDir::new().unwrap();
-        let (shutdown, server) = spawn_ws_server(tmp.path().join("phux.sock"), "default");
+        drop(hold);
+        let (shutdown, server) = spawn_ws_server(tmp.path().join("phux.sock"), "default", addr);
 
         // Connect over WebSocket, retrying until the listener is up.
         let url = format!("ws://{addr}/");
