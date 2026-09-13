@@ -217,6 +217,8 @@ fn on_frame_ack_advances_last_acked_seq_in_order() {
         .expect("register");
 
     for seq in 1..=3 {
+        actor.vt_write_for_test(b"x");
+        actor.tick_emit();
         actor.on_frame_ack(client, seq);
         assert_eq!(
             actor.consumer_state(client).expect("state").last_acked_seq,
@@ -241,6 +243,10 @@ fn on_frame_ack_older_or_duplicate_is_dropped() {
         .register_consumer(client, tx, 11, true)
         .expect("register");
 
+    for _ in 0..6 {
+        actor.vt_write_for_test(b"x");
+        actor.tick_emit();
+    }
     actor.on_frame_ack(client, 5);
     assert_eq!(actor.consumer_state(client).unwrap().last_acked_seq, 5);
 
@@ -318,6 +324,10 @@ fn on_frame_ack_after_detach_is_noop() {
     actor
         .register_consumer(client, tx, 11, true)
         .expect("register");
+    for _ in 0..2 {
+        actor.vt_write_for_test(b"x");
+        actor.tick_emit();
+    }
     actor.on_frame_ack(client, 2);
     assert_eq!(actor.consumer_state(client).unwrap().last_acked_seq, 2);
 
@@ -328,6 +338,53 @@ fn on_frame_ack_after_detach_is_noop() {
     actor.on_frame_ack(client, 9);
     assert!(actor.consumer_state(client).is_none());
     assert_eq!(actor.consumer_count(), 0);
+}
+
+#[test]
+fn future_ack_cannot_erase_pending_data_or_poison_later_acknowledgements() {
+    let mut actor = TerminalActor::new_with_seed(20, 5, b"hello").unwrap().actor;
+    let client = ClientId(1);
+    let (tx, _rx) = dummy_outbound();
+    actor.register_consumer(client, tx, 11, true).unwrap();
+    actor.enable_loss_tolerance(client);
+    actor.vt_write_for_test(b"one");
+    actor.tick_emit();
+    let next = actor.consumer_state(client).unwrap().next_seq;
+    assert_eq!(next, 2);
+    let state = actor.consumer_state(client).unwrap();
+    let pending = state.emit_instants.len();
+    let stream = state.stream_id;
+    let bootstrap = state.bootstrap_id;
+    let acked_rows = state.acked_reference.rows_body.clone();
+    assert_eq!(state.pending_refs.len(), 1);
+    for (stream_id, bootstrap_id, seq) in [
+        (stream, bootstrap, next),
+        (stream, bootstrap, u64::MAX),
+        (
+            phux_protocol::ids::StreamId::new(999).unwrap(),
+            bootstrap,
+            1,
+        ),
+        (
+            stream,
+            phux_protocol::ids::BootstrapId::new(999).unwrap(),
+            1,
+        ),
+    ] {
+        assert!(!actor.on_generation_frame_ack(client, stream_id, bootstrap_id, seq));
+        let state = actor.consumer_state(client).unwrap();
+        assert_eq!(state.last_acked_seq, 0);
+        assert_eq!(state.emit_instants.len(), pending);
+        assert_eq!(state.pending_refs.len(), 1);
+        assert_eq!(state.acked_reference.rows_body, acked_rows);
+        assert!(state.rtt.smoothed().is_none());
+    }
+    assert!(actor.on_generation_frame_ack(client, stream, bootstrap, 1));
+    let state = actor.consumer_state(client).unwrap();
+    assert_eq!(state.last_acked_seq, 1);
+    assert!(state.emit_instants.is_empty());
+    assert!(state.pending_refs.is_empty());
+    assert_ne!(state.acked_reference.rows_body, acked_rows);
 }
 
 /// phux-0q8 coexistence gate: with a consumer registered but the

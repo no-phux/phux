@@ -337,6 +337,36 @@ impl TerminalActor {
             );
             return false;
         };
+        if !Self::accepts_frame_ack(consumer, client_id, seq, force_all_consumers) {
+            return false;
+        }
+        consumer.last_acked_seq = seq;
+
+        if consumer.loss_tolerant {
+            Self::advance_acked_reference(consumer, seq);
+        }
+        let sampled = Self::fold_rtt_sample(client_id, consumer, seq);
+        // Refresh the informational cursor/mode capture. Uses a one-shot
+        // `RenderState` so it doesn't disturb the per-consumer reference.
+        if let Some(cm) = Self::capture_acked_cursor_mode(&self.terminal.borrow(), client_id, seq) {
+            consumer.last_cursor_mode = cm;
+        }
+
+        trace!(
+            ?client_id,
+            seq, "FRAME_ACK applied: last_acked_seq advanced"
+        );
+        sampled
+    }
+
+    /// Admission is read-only: rejected ACKs must not change accounting, RTT,
+    /// reference snapshots, or terminal rendering state.
+    fn accepts_frame_ack(
+        consumer: &ConsumerSyncState,
+        client_id: ClientId,
+        seq: u64,
+        force_all_consumers: bool,
+    ) -> bool {
         // phux-38k6: only a tick-managed consumer's acks belong to this
         // per-consumer seq space. A raw (broadcast-pump) consumer acks the
         // pump's *local* seq, which is unrelated to this state's `next_seq` /
@@ -363,23 +393,19 @@ impl TerminalActor {
             );
             return false;
         }
-        consumer.last_acked_seq = seq;
-
-        if consumer.loss_tolerant {
-            Self::advance_acked_reference(consumer, seq);
+        if seq >= consumer.next_seq {
+            // Cumulative acknowledgements cannot cover data never emitted.
+            // Accepting a future sequence would erase the in-flight accounting
+            // and suppress every subsequent legitimate ACK in this generation.
+            trace!(
+                ?client_id,
+                seq,
+                next_seq = consumer.next_seq,
+                "FRAME_ACK beyond emitted sequence; dropping"
+            );
+            return false;
         }
-        let sampled = Self::fold_rtt_sample(client_id, consumer, seq);
-        // Refresh the informational cursor/mode capture. Uses a one-shot
-        // `RenderState` so it doesn't disturb the per-consumer reference.
-        if let Some(cm) = Self::capture_acked_cursor_mode(&self.terminal.borrow(), client_id, seq) {
-            consumer.last_cursor_mode = cm;
-        }
-
-        trace!(
-            ?client_id,
-            seq, "FRAME_ACK applied: last_acked_seq advanced"
-        );
-        sampled
+        true
     }
 
     /// Advance a loss-tolerant consumer's acked reference to cover `seq`
@@ -399,8 +425,14 @@ impl TerminalActor {
         {
             consumer.acked_reference = snapshot;
         }
-        // Keep only strictly-newer pending snapshots (still in flight).
-        consumer.pending_refs = consumer.pending_refs.split_off(&seq.saturating_add(1));
+        // Drain only covered entries; preserve the in-flight tree in place.
+        while consumer
+            .pending_refs
+            .first_key_value()
+            .is_some_and(|(&key, _)| key <= seq)
+        {
+            consumer.pending_refs.pop_first();
+        }
     }
 
     /// Turn the ack for `seq` into an RTT sample and prune the acked emit
@@ -419,11 +451,15 @@ impl TerminalActor {
             .range(..=seq)
             .next_back()
             .map(|(_, &emitted_at)| now.saturating_duration_since(emitted_at));
-        // `split_off(&(seq + 1))` keeps only the strictly-greater keys; the
-        // returned (acked) half is dropped. `seq + 1` cannot overflow in
-        // practice (u64 seq at the clamped cadence) but saturate for safety.
-        let still_in_flight = consumer.emit_instants.split_off(&seq.saturating_add(1));
-        consumer.emit_instants = still_in_flight;
+        // No split/rebuild of the retained in-flight tree on every ACK, and no
+        // successor arithmetic at the sequence boundary.
+        while consumer
+            .emit_instants
+            .first_key_value()
+            .is_some_and(|(&key, _)| key <= seq)
+        {
+            consumer.emit_instants.pop_first();
+        }
         let Some(sample) = rtt_sample else {
             return false;
         };
