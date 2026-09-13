@@ -36,7 +36,7 @@ fn run_with_config(config: Option<&str>, args: &[&str]) -> (i32, String, String)
         std::fs::create_dir_all(&config_dir).expect("config dir");
         std::fs::write(config_dir.join("config.toml"), config).expect("write config");
     }
-    let out = Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         .env("XDG_CONFIG_HOME", dir.path().join("config"))
         .env("XDG_STATE_HOME", dir.path().join("state"))
         .env("PHUX_PROFILE", "default")

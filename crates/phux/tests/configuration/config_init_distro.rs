@@ -9,7 +9,6 @@
 #![allow(clippy::expect_used, reason = "tests")]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use tempfile::TempDir;
 
@@ -27,7 +26,7 @@ fn repo_distros_dir() -> PathBuf {
 /// Run phux with an isolated `XDG_CONFIG_HOME` and a pinned
 /// `PHUX_DISTROS_DIR` so bundled-name resolution is hermetic.
 fn run(args: &[&str], xdg_config_home: &Path, distros_dir: &Path) -> (i32, String, String) {
-    let out = Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         .env("XDG_CONFIG_HOME", xdg_config_home)
         .env("PHUX_DISTROS_DIR", distros_dir)
         .args(args)

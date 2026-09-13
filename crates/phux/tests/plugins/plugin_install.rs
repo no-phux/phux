@@ -38,7 +38,7 @@ impl TestHome {
     }
 
     fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = Command::new(PHUX)
+        let out = crate::common::phux_cmd(PHUX)
             .env("XDG_CONFIG_HOME", &self.xdg_config)
             .env("XDG_DATA_HOME", &self.xdg_data)
             .args(args)

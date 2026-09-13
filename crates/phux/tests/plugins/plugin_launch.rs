@@ -7,7 +7,6 @@
 //! integration template -> `${PHUX_PLUGIN_ROOT}` expansion) in one shot.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
@@ -24,7 +23,7 @@ fn demo_xdg() -> PathBuf {
 }
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         .env("XDG_CONFIG_HOME", demo_xdg())
         .args(args)
         .output()

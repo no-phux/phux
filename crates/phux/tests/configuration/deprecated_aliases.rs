@@ -26,8 +26,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use std::process::Command;
-
 use tempfile::TempDir;
 
 /// The canonical deprecation table, compiled straight from the binary's
@@ -52,7 +50,7 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// `(exit_code, stdout, stderr)`, with `dhat:` build diagnostics stripped
 /// (the `--all-features` profile prints heap stats on clean exit).
 fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, String, String) {
-    let out = Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         .env("XDG_CONFIG_HOME", xdg_config_home)
         .args(args)
         .output()

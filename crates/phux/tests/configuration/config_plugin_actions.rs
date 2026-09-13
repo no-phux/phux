@@ -1,8 +1,6 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-use std::process::Command;
-
 use tempfile::TempDir;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -46,7 +44,7 @@ enabled = {enabled}
 }
 
 fn run_with_xdg(args: &[&str], xdg: &std::path::Path) -> (i32, String, String) {
-    let out = Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         .env("XDG_CONFIG_HOME", xdg)
         .args(args)
         .output()

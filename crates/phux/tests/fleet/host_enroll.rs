@@ -23,7 +23,6 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 
 use std::path::Path;
-use std::process::Command;
 
 use tempfile::TempDir;
 
@@ -110,7 +109,7 @@ impl EnrollHome {
     /// machine's service unit, and without a sandbox that lands in the
     /// developer's real `~/Library/LaunchAgents` (or systemd user dir).
     fn run(&self, args: &[&str], ssh: &Path) -> (i32, String, String) {
-        let out = Command::new(PHUX)
+        let out = crate::common::phux_cmd(PHUX)
             .env("HOME", self.dir.path())
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env("XDG_STATE_HOME", self.dir.path().join("state"))

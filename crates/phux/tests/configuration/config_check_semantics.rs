@@ -5,8 +5,6 @@
 
 #![allow(clippy::expect_used, reason = "tests")]
 
-use std::process::Command;
-
 use tempfile::TempDir;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -22,7 +20,7 @@ fn run_check(tmp: &TempDir, config: &str, json: bool) -> (i32, String) {
     if json {
         args.push("--json");
     }
-    let out = Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         // Isolate from the developer's real config; check reads only the
         // explicit PATH, but never trust a test that depends on $HOME.
         .env("XDG_CONFIG_HOME", tmp.path())

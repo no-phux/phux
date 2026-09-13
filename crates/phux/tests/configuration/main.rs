@@ -1,5 +1,8 @@
 //! Configuration layers, distribution defaults, and CLI compatibility tests.
 
+#[path = "../common/ambient.rs"]
+mod common;
+
 mod config_agents;
 mod config_check_semantics;
 mod config_init_distro;

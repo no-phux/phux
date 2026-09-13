@@ -23,14 +23,12 @@
 #![allow(clippy::unwrap_used, reason = "tests")]
 #![allow(clippy::panic, reason = "tests")]
 
-use std::process::Command;
-
 /// The freshly built binary under test, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         // The allowlist is env-extensible on purpose; a developer who has
         // this set must not turn `target/debug` into a "recognized" install
         // and quietly disarm the unknown-source scenarios below.
