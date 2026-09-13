@@ -39,7 +39,7 @@ workload field on any endpoint. Each endpoint SHALL define:
 The terminal endpoint's scope schemas are `TerminalScopeSet` and
 `TerminalEffectiveScopeSet` (§5). A separate coordinator endpoint uses
 its own schema; a coordinator frame is never sent to an L1 parser
-([ADR-0092](../../ADR/0092-durable-work-coordinator-authority.md)).
+([ADR-0092](../adr/0092-durable-work-coordinator-authority.md)).
 Endpoints SHALL NOT translate names or bits from another endpoint. No
 `service` string exists: the TLS session already binds identity to
 channel, so there is nothing to name.
@@ -145,7 +145,7 @@ grant before any stateful frame is processed.
   routing, so a consumer certificate does not survive to the server:
   consumer↔relay and tunnel↔server authenticate separately, and
   authority across a relay is the tunnel's enrolled route authority
-  ([ADR-0116](../../ADR/0116-workload-auth-is-mtls.md)).
+  ([ADR-0116](../adr/0116-workload-auth-is-mtls.md)).
 
 There is deliberately no nonce, no transcript, and no exporter
 derivation in this profile: replay of a captured handshake is

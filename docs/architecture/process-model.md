@@ -77,7 +77,7 @@ Inside the server, a PTY-backed Terminal engine (`resource::terminal`, the
 per-resource actor of ADR-0014) runs **two** independent
 timers on its `select!`: the state-sync tick that paces output emission to its
 consumers, and a second, slower agent-state detector tick
-([ADR-0046](../../ADR/0046-server-side-agent-state-detection.md)) that
+([ADR-0046](../adr/0046-server-side-agent-state-detection.md)) that
 re-derives the pane's `phux.agent/v1` record from the PTY's foreground process,
 the OSC title, and the live screen, and publishes the privacy-bounded
 `phux.pane-occupant/v1` foreground basename/shell answer from the same process
@@ -93,4 +93,4 @@ task that owns the metadata write. No new process, no new thread.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery | The server keeps session state only in memory. Those paths are not written. | [ADR-0003](../../ADR/0003-server-process-model.md), [ADR-0092](../../ADR/0092-durable-work-coordinator-authority.md) | phux-p91i |
+| `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery | The server keeps session state only in memory. Those paths are not written. | [ADR-0003](../adr/0003-server-process-model.md), [ADR-0092](../adr/0092-durable-work-coordinator-authority.md) | phux-p91i |

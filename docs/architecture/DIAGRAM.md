@@ -161,5 +161,5 @@ in [`../CONCEPTS.md`](../CONCEPTS.md).
 - [`transport.md`](./transport.md) — the frame seam and the five streams
 - [`process-model.md`](./process-model.md) — server/client lifecycle
 - [`render-layering.md`](./render-layering.md) — client-side rendering split
-- [ADR-0013](../../ADR/0013-libghostty-bytes-on-wire.md) — libghostty bytes on the wire
-- [ADR-0007](../../ADR/0007-mosh-class-transport-and-satellites.md) — transports and satellites
+- [ADR-0013](../adr/0013-libghostty-bytes-on-wire.md) — libghostty bytes on the wire
+- [ADR-0007](../adr/0007-mosh-class-transport-and-satellites.md) — transports and satellites

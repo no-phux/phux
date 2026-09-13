@@ -11,7 +11,7 @@
 //! survives on the protocol side is the *advertised tier itself* —
 //! [`ColorSupport`] — which the rewriter consults to decide what to emit.
 //!
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
 
 /// A client's color tier (SPEC §6.2).
 ///
@@ -1488,7 +1488,7 @@ impl Default for ClientCapabilities {
 /// The client declares what it *wants* via [`ClientCapabilities`]; the
 /// server declares what it *implements* here. The negotiated conformance
 /// tier set is the intersection of the two `layers` bit-fields
-/// ([ADR-0015](../../ADR/0015-protocol-layering.md) §"Conformance tiers").
+/// ([ADR-0015](../../../docs/adr/0015-protocol-layering.md) §"Conformance tiers").
 /// L1 is always implemented and always present on the wire.
 ///
 /// This is deliberately narrow today — `layers` is the only negotiated

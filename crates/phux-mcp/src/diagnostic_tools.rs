@@ -13,7 +13,7 @@
 //!
 //! `phux status`, `phux doctor`, and `phux whoami` answer different questions
 //! and are separate tools rather than one `action`-multiplexed diagnostic,
-//! for the reason [ADR-0071](../../../ADR/0071-what-phux-1-0-commits-to.md)
+//! for the reason [ADR-0071](../../../docs/adr/0071-what-phux-1-0-commits-to.md)
 //! point 7(b) gives for the `phux_agent_*` split: a multiplexer's frozen
 //! schema is the union of every action it will ever carry, and after 1.0
 //! nothing can leave that union. The shapes happen to coincide today
@@ -69,7 +69,7 @@
 //!   it can call.
 //! - **No log-reading tool.** Both documents report the log *paths*; turning
 //!   an MCP tool into a file reader is the surface
-//!   [ADR-0077](../../../ADR/0077-agent-read-surface.md) point 1 already
+//!   [ADR-0077](../../../docs/adr/0077-agent-read-surface.md) point 1 already
 //!   declined for captures.
 
 #![allow(

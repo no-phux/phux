@@ -109,7 +109,7 @@ pub static HELP_BINDINGS: &[HardcodedBinding] = &[
 /// showing only chrome and no windows would be useless.
 const MIN_FOOTER_HEIGHT: u16 = 4;
 
-/// Whole-cell spacing tokens, shared by every sidebar row (DESIGN.md).
+/// Whole-cell spacing tokens, shared by every sidebar row (docs/experience.md).
 const GUTTER: u16 = 1;
 const ICON_COLUMNS: usize = 2;
 

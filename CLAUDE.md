@@ -83,14 +83,14 @@ See `docs/RELEASING.md` for the routing matrix.
 
 phux is a **libghostty-backed terminal control plane**. The wire is
 asymmetric: server→client *terminal content* is **VT bytes** forwarded
-from the PTY ([ADR-0013](./ADR/0013-libghostty-bytes-on-wire.md));
+from the PTY ([ADR-0013](./docs/adr/0013-libghostty-bytes-on-wire.md));
 client→server *input* is **structured key, mouse, focus, and paste
 events** built from libghostty's atoms (ADR-0006, ADR-0008). The
 protocol is layered as L1 Terminal substrate + L2 Collection + L3
-Metadata ([ADR-0015](./ADR/0015-protocol-layering.md)). One server per
-user ([ADR-0003](./ADR/0003-server-process-model.md)); one tokio
+Metadata ([ADR-0015](./docs/adr/0015-protocol-layering.md)). One server per
+user ([ADR-0003](./docs/adr/0003-server-process-model.md)); one tokio
 current-thread runtime; UDS transport with a QUIC future
-([ADR-0007](./ADR/0007-mosh-class-transport-and-satellites.md)).
+([ADR-0007](./docs/adr/0007-mosh-class-transport-and-satellites.md)).
 
 Authoritative docs, in order of priority:
 
@@ -107,7 +107,7 @@ Authoritative docs, in order of priority:
 - [`docs/operations.md`](./docs/operations.md) — error model, logging,
   security boundaries.
 - [`docs/vision.md`](./docs/vision.md) — the long arc.
-- [`ADR/`](./ADR/) — decisions, with rationale and tradeoffs.
+- [`docs/adr/`](./docs/adr/) — decisions, with rationale and tradeoffs.
 
 Crates: eighteen, all under `crates/*`, all workspace members. The ones
 you touch most: `phux-protocol` (wire), `phux-core` (domain),

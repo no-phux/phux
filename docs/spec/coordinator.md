@@ -28,14 +28,14 @@ are interpreted as RFC 2119 requirements.
 
 The coordinator owns durable Objective, Run, WorkSession, Artifact, Signal,
 binding, operation-result, ordered-event, and evidence state under
-[ADR-0092](../../ADR/0092-durable-work-coordinator-authority.md). Terminal
+[ADR-0092](../adr/0092-durable-work-coordinator-authority.md). Terminal
 owners remain authoritative for processes, PTYs, terminal output order,
 bootstrap generations, input leases, input results, and process signals.
 
 This is not L1, L2, L3, or an extension of the terminal frame namespace.
-[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)'s
+[ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md)'s
 closed list, as generalized by
-[ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md), remains normative for terminal synchronization. In particular:
+[ADR-0102](../adr/0102-resources-the-server-serves-kinds.md), remains normative for terminal synchronization. In particular:
 
 - no frame in this document is legal on a terminal connection;
 - terminal bytes, cells, input atoms, history, and bootstrap never appear here;
@@ -197,7 +197,7 @@ TLS handshake (mTLS client certificate) -> COORD_HELLO -> COORD_HELLO_OK
 
 COORD_PING is the only permitted pre-COORD_HELLO interleaving.
 Authentication is the TLS handshake per [workload-auth.md](./workload-auth.md)
-as amended by [ADR-0116](../../ADR/0116-workload-auth-is-mtls.md): the server
+as amended by [ADR-0116](../adr/0116-workload-auth-is-mtls.md): the server
 verifies an mTLS client certificate against the phux CA and authorizes the
 credential id against the registry before COORD_HELLO is evaluated. There
 are no `WORKLOAD_CHALLENGE` / `WORKLOAD_RESPONSE` frames and no
@@ -272,7 +272,7 @@ Authenticated scopes, idempotent commands/results, whole-authority snapshots,
 live events, credit, GAP, and fresh-snapshot replacement are baseline.
 Capability-gated records/commands are refused when their bit is absent.
 Allocations are permanent; additive growth uses a bit or unknown-skippable
-field under [ADR-0061](../../ADR/0061-capabilities-add-versions-break.md).
+field under [ADR-0061](../adr/0061-capabilities-add-versions-break.md).
 
 ## 6. Closed scopes and total read visibility
 

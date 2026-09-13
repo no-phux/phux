@@ -110,14 +110,22 @@ fn missing_path_spec_is_unreadable_not_unknown() {
 }
 
 #[test]
-fn repo_checkout_fallback_finds_the_bundled_herdr() {
+fn repo_checkout_fallback_finds_the_bundled_starter() {
     // The public `resolve_distro` search list ends with the repo
-    // checkout's distros/ directory; the in-tree herdr package must be
+    // checkout's distros/ directory; the in-tree starter package must be
     // reachable through `search_dirs` even with no environment set up.
     let dirs = phux_config::distro::search_dirs();
-    let resolved = resolve_distro_in("herdr", &dirs).expect("bundled herdr resolves in-repo");
+    let resolved = resolve_distro_in("starter", &dirs).expect("bundled starter resolves in-repo");
     assert!(
-        resolved.ends_with("distros/herdr/herdr.toml"),
+        resolved.ends_with("distros/starter/starter.toml"),
         "{resolved:?}"
     );
+}
+
+#[test]
+fn herdr_still_resolves_as_an_alias_of_starter() {
+    let dirs = phux_config::distro::search_dirs();
+    let via_alias = resolve_distro_in("herdr", &dirs).expect("herdr aliases starter");
+    let via_name = resolve_distro_in("starter", &dirs).expect("starter resolves");
+    assert_eq!(via_alias, via_name);
 }

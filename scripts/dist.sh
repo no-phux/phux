@@ -32,7 +32,7 @@ out="dist"
 rm -rf "${out:?}/${stage}"
 mkdir -p "${out}/${stage}"
 cp "${bin_dir}/phux" "${bin_dir}/phux-mcp" "${out}/${stage}/"
-cp README.md LICENSE-MIT LICENSE-APACHE "${out}/${stage}/"
+cp README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md "${out}/${stage}/"
 
 tar -czf "${out}/${stage}.tar.gz" -C "${out}" "${stage}"
 rm -rf "${out:?}/${stage}"

@@ -121,11 +121,11 @@
 //! corpus tests is the shape of the data, not the constructors' guards. The
 //! guards are test 1 above.
 //!
-//! [ADR-0012]: ../../../ADR/0012-tui-layout-model.md
-//! [ADR-0017]: ../../../ADR/0017-tui-client-architecture.md
-//! [ADR-0019]: ../../../ADR/0019-tui-multi-pane-rendering.md
-//! [ADR-0032]: ../../../ADR/0032-graceful-upgrade.md
-//! [ADR-0048]: ../../../ADR/0048-tui-command-surface.md
+//! [ADR-0012]: ../../../docs/adr/0012-tui-layout-model.md
+//! [ADR-0017]: ../../../docs/adr/0017-tui-client-architecture.md
+//! [ADR-0019]: ../../../docs/adr/0019-tui-multi-pane-rendering.md
+//! [ADR-0032]: ../../../docs/adr/0032-graceful-upgrade.md
+//! [ADR-0048]: ../../../docs/adr/0048-tui-command-surface.md
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]

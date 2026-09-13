@@ -144,9 +144,9 @@ client consumer doc](../consumers/web.md).
 
 ## Protocol layering and this implementation
 
-[ADR-0015](../../ADR/0015-protocol-layering.md) layers the wire into tiers
+[ADR-0015](../adr/0015-protocol-layering.md) layers the wire into tiers
 plus two orthogonal cross-cuts, and
-[ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md) makes L1
+[ADR-0102](../adr/0102-resources-the-server-serves-kinds.md) makes L1
 the resource substrate. Mapping each onto code currently in tree:
 
 | Layer | Concept | Implemented in tree as |
@@ -157,14 +157,14 @@ the resource substrate. Mapping each onto code currently in tree:
 
 Cross-cuts:
 
-- **Federation** ([ADR-0007](../../ADR/0007-mosh-class-transport-and-satellites.md)) — hub-and-spoke resource routing. Normal servers construct `LOCAL` ids; a hub retags aggregate inventory, spawn replies, and relayed frames as `SATELLITE { host, id }`. Satellite session/window models are not merged, and routes do not chain.
+- **Federation** ([ADR-0007](../adr/0007-mosh-class-transport-and-satellites.md)) — hub-and-spoke resource routing. Normal servers construct `LOCAL` ids; a hub retags aggregate inventory, spawn replies, and relayed frames as `SATELLITE { host, id }`. Satellite session/window models are not merged, and routes do not chain.
 - **Automation** — server-side event hooks (`phux-server::hooks`, `[[hooks.<name>]]` and plugin `[[events]]`) fire argv on L1 events; there is no in-process rule engine.
 
 A consumer's tier set is declared at HELLO time. Today's `phux-tui`
 is an L1+L3 TUI consumer. `phux-client`'s headless free
 functions use L1 and the L3 keys they need. The reference TUI is **not**
 protocol-privileged
-([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)) — the wire
+([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)) — the wire
 carries nothing that exists for it alone.
 
 Of the cascades ADR-0015 queued, the id rename to `ResourceId`, the L3
@@ -177,4 +177,4 @@ listed in the Status table. Wire bytes are normative in
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| L1 mountable without the L3 service | One `ServerRuntime` serves both tiers. `GET_STATE` still carries `WindowInfo` and layout. There are no `WINDOW_*`, `LAYOUT_CHANGED`, or `FOCUS_CHANGED` frames. | [ADR-0015](../../ADR/0015-protocol-layering.md) | not scheduled |
+| L1 mountable without the L3 service | One `ServerRuntime` serves both tiers. `GET_STATE` still carries `WindowInfo` and layout. There are no `WINDOW_*`, `LAYOUT_CHANGED`, or `FOCUS_CHANGED` frames. | [ADR-0015](../adr/0015-protocol-layering.md) | not scheduled |

@@ -155,7 +155,7 @@ Synced from `docs/architecture/`. Process model, crate graph, two-renderer
 model, threading, transport. Links to rustdocs + crates.io when they exist.
 
 ### `/decisions` — the ADR index (NEW, promoted to top-level nav)
-Synced from `ADR/`. `ADR/README.md` -> `/decisions`; each `NNNN-*.md` ->
+Synced from `docs/adr/`. `docs/adr/README.md` -> `/decisions`; each `NNNN-*.md` ->
 `/decisions/adr-NNNN`. The record of why phux is shaped the way it is — ADR-0017
 (tui not protocol-privileged) and ADR-0030 (engine-delegated wire, projection
 consumers) are the load-bearing ones for the landing's claims.

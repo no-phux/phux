@@ -79,7 +79,7 @@ a path containing spaces. Its launch check runs only when the rendered Edit
 Configuration action exists.
 
 This is a discovery smoke, not full acceptance of
-[the product contract](../../../specs/phux-2jza/PRODUCT.md). Real remote
+[the product contract](../docs/specs/phux-2jza/PRODUCT.md). Real remote
 transport, minimized-window raising, same-session multiwindow ownership,
 lifecycle/resource survival, exhaustive settings transactions, keyboard
 remapping, terminal interaction latency, and visual fidelity require their

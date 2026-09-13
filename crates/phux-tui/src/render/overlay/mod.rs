@@ -269,7 +269,7 @@ pub enum OverlayCommand {
     /// engine ([ADR-0030]); the dispatcher resolves the [`CopyRequest`]
     /// against that engine and emits OSC 52 — nothing goes on the wire.
     ///
-    /// [ADR-0030]: ../../../../ADR/0030-engine-delegated-wire-and-projection-consumers.md
+    /// [ADR-0030]: ../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md
     Copy(CopyRequest),
     /// Keep the overlay active and scroll the focused pane's client-local
     /// viewport by `delta` rows (negative means up into scrollback).

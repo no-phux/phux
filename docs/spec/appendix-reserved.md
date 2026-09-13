@@ -22,7 +22,7 @@ For implementers extending the protocol:
 - `WORKLOAD_RESPONSE = 0x04` and `WORKLOAD_CHALLENGE = 0x84` were allocated
   to the endpoint-neutral `phux-workload/v1` profile
   ([workload-auth.md](./workload-auth.md)) but never shipped; per
-  [ADR-0116](../../ADR/0116-workload-auth-is-mtls.md) they are
+  [ADR-0116](../adr/0116-workload-auth-is-mtls.md) they are
   retired-unshipped back to the reserved pool. `0x04..=0x0F` and
   `0x84..=0x8F` remain open for connection lifecycle — with the caution
   that an old draft peer could in theory emit these two bytes, so a
@@ -87,7 +87,7 @@ their own one-byte tag inside it. Allocated tags:
 
 `KILL_RESOURCES` at tag `0x09` reuses the slot freed by the removed
 `CREATE_SESSION` command. Per
-[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
+[ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md)
 (option B), the leaked session/collection lifecycle verbs are withdrawn and
 their tags are freed:
 
@@ -146,6 +146,6 @@ failing it would both hide the ending and make each new value a fleet-wide
 break. New values are therefore additive and need no version bump.
 
 (Earlier drafts of the SPEC reserved a `DiffOp` tag range here; per
-[ADR-0013](../../ADR/0013-libghostty-bytes-on-wire.md), Terminal
+[ADR-0013](../adr/0013-libghostty-bytes-on-wire.md), Terminal
 content is now a VT byte stream and `DiffOp` no
 longer exists as a wire concept.)

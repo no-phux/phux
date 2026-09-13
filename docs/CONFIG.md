@@ -285,7 +285,7 @@ the plugin root.
 
 A config file may name shared layers — a team baseline, a curated
 distribution — with a top-level `extends` key
-([ADR-0039](../ADR/0039-layered-config.md)):
+([ADR-0039](adr/0039-layered-config.md)):
 
 ```toml
 extends = ["distro.toml", "minimal"]
@@ -383,14 +383,14 @@ per element).
 A *distro* is a config layer curated as a starting point — the lazyvim
 idea applied to phux: keybindings, a status lineup, a theme, and a plugin
 set, shipped as one referenced file rather than pasted into yours. The
-repo bundles one, [`herdr`](../distros/herdr/README.md), which today
+repo bundles one, [`starter`](../distros/starter/README.md), which today
 carries only the demo plugin set: the keybindings, status lineup, and
 theme it used to add are now the shipped defaults, because a setting
 everyone should have does not belong behind an opt-in. A distro is for
 offering a genuine choice.
 
 ```sh
-phux config init --distro herdr            # bundled name
+phux config init --distro starter            # bundled name
 phux config init --distro ./my/layer.toml  # or any path (a directory
                                            #   means <dir>/<dirname>.toml)
 ```
@@ -399,7 +399,7 @@ This writes the usual commented starter config with exactly one live
 statement at the top:
 
 ```toml
-extends = ["/absolute/path/to/distros/herdr/herdr.toml"]
+extends = ["/absolute/path/to/distros/starter/starter.toml"]
 ```
 
 Nothing is copied out of the distro. Your file stays a sparse overlay:

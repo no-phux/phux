@@ -41,7 +41,7 @@ document is where that leads.
 ## Lazy state synchronization as the wire's destination
 
 Lazy state synchronization of libghostty terminal state ships as an opt-in
-output mode for custom consumers ([ADR-0018](../ADR/0018-lazy-state-synchronization.md)).
+output mode for custom consumers ([ADR-0018](adr/0018-lazy-state-synchronization.md)).
 The server synthesizes the minimum VT transition from each consumer's last
 reference state. Bundled TUI and web clients still request raw output, which is
 the lowest-latency path for their current use cases. Federation adds the links
@@ -56,7 +56,7 @@ Durable work identity and evidence belong to a phux coordinator; clients
 own presentation. Objective, Run, WorkSession, Artifact, and Signal are not
 TUI layout vocabulary and are not inferred independently by each client. The
 proposed contract and its delivery order live in
-[ADR-0092](../ADR/0092-durable-work-coordinator-authority.md). That surface
+[ADR-0092](adr/0092-durable-work-coordinator-authority.md). That surface
 does not ship.
 
 ## Milestones

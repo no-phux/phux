@@ -3,7 +3,7 @@
 //! No external binaries, ever (ADR-0060). `agg`, `vhs`, and `ffmpeg` are not
 //! runtime dependencies of this feature — asciinema's own `agg` is
 //! GPL-3.0-or-later with `gifski` (AGPL-3.0-or-later) underneath, which is
-//! incompatible with phux's `MIT OR Apache-2.0` even as a vendored fork, and
+//! incompatible with phux's `Apache-2.0` even as a vendored fork, and
 //! shelling out to a tool the user may not have installed is not a feature,
 //! it is a support burden.
 //!

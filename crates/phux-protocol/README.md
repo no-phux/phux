@@ -16,19 +16,19 @@ to it.
 ## What's on the wire
 
 The wire is deliberately asymmetric (see
-[ADR-0013](https://github.com/no-phux/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md)):
+[ADR-0013](https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md)):
 
 - **server → client** carries **VT bytes** forwarded from the PTY — the
   terminal's own output, unmodified, so a libghostty terminal on the client
   reproduces the server's screen exactly.
 - **client → server** carries **structured input** — key, mouse, focus, and
   paste events built from libghostty's own atoms
-  ([ADR-0008](https://github.com/no-phux/phux/blob/main/ADR/0008-use-libghostty-types-directly.md)),
+  ([ADR-0008](https://github.com/no-phux/phux/blob/main/docs/adr/0008-use-libghostty-types-directly.md)),
   not re-encoded escape sequences.
 
 The protocol is layered: an L1 terminal substrate, an L2 collection layer, and
 an L3 metadata layer
-([ADR-0015](https://github.com/no-phux/phux/blob/main/ADR/0015-protocol-layering.md)).
+([ADR-0015](https://github.com/no-phux/phux/blob/main/docs/adr/0015-protocol-layering.md)).
 
 ## Features
 
@@ -59,4 +59,4 @@ before you upgrade.
 
 ## License
 
-MIT OR Apache-2.0.
+Apache-2.0.

@@ -30,7 +30,7 @@ server and one terminal model.
 | Pair a phone over `wss://` (contract) | [The iOS client](./ios.md) |
 
 Every interface here is a peer of the others; the TUI has no protocol-level
-standing ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)).
+standing ([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)).
 
 Gaps: [`../CONCEPTS.md`](../CONCEPTS.md#status).
 

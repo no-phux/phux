@@ -10,7 +10,7 @@ last-reviewed: 2026-05-28
 awesome-libghostty list as of 2026-05-25. Identifies what phux should
 study, what's safely orthogonal, and what (if anything) invalidates
 the current ADRs. Research artifact, not a decision; follow-ups are
-filed as bd issues under [phux-a97](../ADR/README.md).
+filed as bd issues under [phux-a97](../docs/adr/README.md).
 
 **Source**: <https://github.com/Uzaaft/awesome-libghostty> as of 2026-05-25.
 **Scope**: Identify projects on the awesome-libghostty list that overlap phux's
@@ -22,9 +22,9 @@ SPEC or ADRs.
 - **Closest neighbor**: [`psyclyx/vanish`](https://github.com/psyclyx/vanish) — same substrate
   (libghostty-vt), same problem class (multiplexer + persistence + multi-client).
   Picks raw VT bytes for its native wire and is single-session-per-daemon, so
-  phux's distinctive bets ([ADR-0002](../ADR/0002-diff-based-protocol.md) cell
-  diffs on every transport, [ADR-0003](../ADR/0003-server-process-model.md)
-  forest-per-daemon, [ADR-0006](../ADR/0006-input-mirrors-libghostty.md)
+  phux's distinctive bets ([ADR-0002](../docs/adr/0002-diff-based-protocol.md) cell
+  diffs on every transport, [ADR-0003](../docs/adr/0003-server-process-model.md)
+  forest-per-daemon, [ADR-0006](../docs/adr/0006-input-mirrors-libghostty.md)
   structured input) remain differentiated.
 - **Threats to spec or ADRs**: none.
 - **Steal candidates**:
@@ -65,7 +65,7 @@ to steal or something that invalidates our design.
     cell-level delta streaming over SSE. Structurally close to phux's diff
     bet, but only on the web path.
 - **Overlap**: Multiplexer-on-libghostty-vt — yes. Per-session daemon (we
-  are per-user daemon, see [ADR-0003](../ADR/0003-server-process-model.md)).
+  are per-user daemon, see [ADR-0003](../docs/adr/0003-server-process-model.md)).
   Cell-diff wire — only on the web transport, not the primary one.
   Satellite/swarm/predictive-echo — no.
 - **Steal**:
@@ -78,7 +78,7 @@ to steal or something that invalidates our design.
      `COMMAND` could grow a `RolePolicy` for the agent-watching-agent
      use case. Filed as a follow-up (see below).
 - **Invalidates?** No. Vanish chose VT-bytes for the native path (the path
-  [ADR-0002](../ADR/0002-diff-based-protocol.md) rejects) and is
+  [ADR-0002](../docs/adr/0002-diff-based-protocol.md) rejects) and is
   single-session-per-daemon. Different shape, overlapping libraries.
 
 ### 2. `neurosnap/zmx` (Zig)
@@ -92,7 +92,7 @@ to steal or something that invalidates our design.
 - **Overlap**: Persistence + libghostty-vt — yes. Cell-diff wire — no.
   Satellite/swarm — no. Predictive echo — no.
 - **Steal**: Already covered by
-  [ADR-0005](../ADR/0005-relationship-to-zmx-and-zmosh.md). We've already
+  [ADR-0005](../docs/adr/0005-relationship-to-zmx-and-zmosh.md). We've already
   picked up the non-exhaustive tag-enum pattern.
 - **Notable absent feature in zmx that phux has**: scrollback survives
   detach because phux ships diffs and snapshots, not VT byte replay.
@@ -126,7 +126,7 @@ to steal or something that invalidates our design.
   wire — no, it's a TTY app. Satellite/swarm — no. Predictive echo — no.
 - **Steal**: Nothing. The "compose with zmx for persistence" inversion is
   the opposite of phux's "one server owns persistence + multiplexing"
-  stance ([ADR-0003](../ADR/0003-server-process-model.md)); useful
+  stance ([ADR-0003](../docs/adr/0003-server-process-model.md)); useful
   datapoint, not a model to copy. Explicitly **don't** copy the NDJSON
   plugin protocol — SPEC §11.1's typed-command stance is the opposite
   direction and should hold.
@@ -142,7 +142,7 @@ to steal or something that invalidates our design.
   libghostty-vt itself.
 - **Steal**: Nothing for phux's protocol. Useful as another existence
   proof that libghostty-vt can be embedded in non-Ghostty hosts —
-  reassuring for [ADR-0004](../ADR/0004-libghostty-vt-as-grid.md).
+  reassuring for [ADR-0004](../docs/adr/0004-libghostty-vt-as-grid.md).
 - **Invalidates?** No.
 
 ### 6. `coder/mux` — only real swarm competitor
@@ -159,7 +159,7 @@ to steal or something that invalidates our design.
   in-process WASM, not a remote multiplexer protocol.
 - **Overlap**: Worktree-based parallel agentic dev — direct overlap.
   Remote execution via SSH — overlap with the satellite story in
-  [ADR-0007](../ADR/0007-mosh-class-transport-and-satellites.md).
+  [ADR-0007](../docs/adr/0007-mosh-class-transport-and-satellites.md).
   Cell-diff wire across a network — no, they terminate the terminal at
   the renderer in-process. Predictive echo — N/A (no remote terminal
   protocol).
@@ -182,7 +182,7 @@ to steal or something that invalidates our design.
   bytes, the xterm.js contract. README's example uses a websocket
   carrying raw VT both directions.
 - **Overlap**: Uses libghostty-vt — yes. Wire format — raw VT bytes,
-  exactly what [ADR-0002](../ADR/0002-diff-based-protocol.md) rejects.
+  exactly what [ADR-0002](../docs/adr/0002-diff-based-protocol.md) rejects.
 - **Steal**: Bookmark for a future browser phux-client — we'd use
   ghostty-web's `Terminal` as a *rendering surface* receiving phux
   `PANE_DIFF` events, not as a VT parser. Same trick vanish does in its
@@ -205,7 +205,7 @@ to steal or something that invalidates our design.
 - **SSH / Mosh clients** (`Echo`, `Spectty`, `Geistty`, `Quay`, `remux`,
   `RootShell`, `VVTerm`, `NeoShell`, `Sshotty`): mobile/desktop SSH UIs
   that happen to render with libghostty. Mosh-compat is explicitly
-  out of scope per [ADR-0007](../ADR/0007-mosh-class-transport-and-satellites.md).
+  out of scope per [ADR-0007](../docs/adr/0007-mosh-class-transport-and-satellites.md).
 - **Editor embeds** (`emacs-libgterm`, `Ghostel`, `obsidian-ghostty-terminal`,
   `onyx-shell`, `vscode-bootty`, `shade`, `jupyterlab-ghostty-terminal`):
   terminal-in-editor; orthogonal.

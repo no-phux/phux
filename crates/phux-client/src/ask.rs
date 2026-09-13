@@ -3,13 +3,13 @@
 //! Two directions, both over the existing wire:
 //!
 //! - **Reporting** ([`report`]) is the opt-in hook ingress of
-//!   [ADR-0036](../../../ADR/0036-agent-asked-detection.md) point 1. An
+//!   [ADR-0036](../../../docs/adr/0036-agent-asked-detection.md) point 1. An
 //!   integration whose agent has blocked for a human answer calls it, and the
 //!   server emits the normal `AgentEvent::Asked` without the agent having to
 //!   write an OSC title sentinel into its own pane.
 //! - **Answering** ([`parse_ask_title`] + [`deliver_answer`]) is the return
 //!   leg. It exists because `Asked` carries the *suggestions the asking agent
-//!   itself published* ([ADR-0035](../../../ADR/0035-agent-asked-event.md)),
+//!   itself published* ([ADR-0035](../../../docs/adr/0035-agent-asked-event.md)),
 //!   so an orchestrator can reply with a validated choice instead of a blind
 //!   keystroke.
 //!

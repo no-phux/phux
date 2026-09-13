@@ -979,7 +979,7 @@ Write a commented starter config to the canonical path.
 
 The file is the shipped defaults, fully commented out: inert until you uncomment a line, so the binary's defaults stay authoritative. Refuses to overwrite an existing config unless `--force`.
 
-With `--distro`, the scaffold additionally carries one active `extends` line layering the named starter distribution (a bundled name like `herdr`, or a path to a distro layer `.toml`) between the shipped defaults and your file.
+With `--distro`, the scaffold additionally carries one active `extends` line layering the named starter distribution (a bundled name like `starter`, or a path to a distro layer `.toml`) between the shipped defaults and your file.
 
 Usage: phux config init [OPTIONS]
 

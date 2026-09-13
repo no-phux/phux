@@ -17,7 +17,7 @@
 //! — is ignored, so this stays a thin, forward-compatible view over a
 //! richer package format (unknown keys are **not** rejected).
 //!
-//! [ADR-0042]: ../../ADR/0042-launch-executor.md
+//! [ADR-0042]: ../../docs/adr/0042-launch-executor.md
 
 use std::path::{Path, PathBuf};
 

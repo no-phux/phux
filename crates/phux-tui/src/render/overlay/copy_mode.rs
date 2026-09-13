@@ -2,7 +2,7 @@
 //!
 //! Provides terminal-based text selection with visual feedback. The overlay
 //! captures arrow keys to adjust selection boundaries and Enter to copy the
-//! selected text. Per [ADR-0030](../../../../ADR/0030-engine-delegated-wire-and-projection-consumers.md),
+//! selected text. Per [ADR-0030](../../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md),
 //! selection is a *client-local projection*: the overlay tracks the selection
 //! rectangle in pane-local viewport cells, and on Enter the dispatcher
 //! resolves it against the focused pane's own libghostty engine

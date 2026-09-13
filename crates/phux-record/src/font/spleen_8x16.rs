@@ -5,7 +5,7 @@
 //! Copyright (c) 2018-2024, Frederic Cambus. Licensed BSD-2-Clause, whose
 //! redistribution clause requires the copyright notice and disclaimer to travel
 //! with both source and binary forms of phux; that notice lives verbatim at
-//! `/LICENSE-SPLEEN` in the repository root. Do not delete that file, and do not
+//! `/THIRD-PARTY-NOTICES.md` in the repository root. Do not delete that file, and do not
 //! swap this face for an OFL-1.1 one -- OFL-1.1 is not on deny.toml's allow list.
 //!
 //! Regenerate with `scripts/gen-bitmap-font.py` after upgrading the .bdf. The

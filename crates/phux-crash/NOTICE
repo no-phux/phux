@@ -15,12 +15,9 @@ Apache License ("You must cause any modified files to carry prominent notices
 stating that You changed the files"). Each modified source file also carries a
 `MODIFIED FROM UPSTREAM` banner naming the change.
 
-IMPORTANT — LICENSE SCOPE
-
-The phux workspace as a whole is licensed `MIT OR Apache-2.0`. This crate is
-the sole exception: it is available under the Apache License 2.0 ONLY, because
-that is the only grant the upstream code carries. Consumers who require the
-MIT option must not link this crate.
+The phux workspace is Apache-2.0. This crate keeps its own LICENSE and
+NOTICE so the upstream grant and the local modifications stay visible on
+exactly the vendored files.
 
 Modifications by the phux project are contributed under the same Apache-2.0
 terms so the crate stays licensed as a single coherent unit.

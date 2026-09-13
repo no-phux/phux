@@ -11,7 +11,7 @@
 //! There is no in-process host: the launched program is a child-process
 //! argv, exactly like plugin actions and event hooks.
 //!
-//! [ADR-0042]: ../../ADR/0042-launch-executor.md
+//! [ADR-0042]: ../../docs/adr/0042-launch-executor.md
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

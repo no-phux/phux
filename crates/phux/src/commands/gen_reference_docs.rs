@@ -6,7 +6,7 @@
 //! a pure function of this binary's own inventories: the clap tree is
 //! already compiled in, an xtask would compile the dependency graph a
 //! second time, and a build script must not write into the source tree.
-//! Rationale in `ADR/0069-generated-reference-docs.md`.
+//! Rationale in `../../../../docs/adr/0069-generated-reference-docs.md`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;

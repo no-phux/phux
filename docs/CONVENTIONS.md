@@ -34,7 +34,7 @@ Reference (one source of truth per concept, addressable)
   docs/reference/ ───────► GENERATED from the binary (just docs-gen; no hand edits)
 
 Decision (one decision per file, strict)
-  ADR/ ──────────────────► Nygard template, 150-line cap, immutable once accepted
+  docs/adr/ ──────────────────► Nygard template, 150-line cap, immutable once accepted
 
 Discipline (this file + CI)
   docs/CONVENTIONS.md ───► you are here
@@ -55,13 +55,13 @@ has a **single owner** for each kind of content:
 
 | Question | Owner | Don't restate it in |
 |---|---|---|
-| What is phux? | `docs/CONCEPTS.md` | README, VISION, ARCH, DESIGN |
+| What is phux? | `docs/CONCEPTS.md` | README, VISION, ARCH, experience |
 | What's the wire byte? | `docs/spec/*` | ARCH, ADRs (link instead) |
 | How does the server process model work? | `docs/architecture/process-model.md` | SPEC, READMEs |
 | Which tools do I need to build/test this area? | `docs/SETUP.md` | Agent instructions, client READMEs (link instead) |
 | What does the TUI's keybind syntax look like? | `docs/consumers/tui.md` | SPEC, README |
 | What does a consumer surface look like? | `docs/consumers/` (tui, agents, mcp, web, cockpit, recording, integrations) | CONCEPTS, README |
-| Why did we pick X over Y? | `ADR/NNNN-*.md` | Anywhere else |
+| Why did we pick X over Y? | `docs/adr/NNNN-*.md` | Anywhere else |
 | What's the long arc? | `docs/vision.md` | README, CONCEPTS (link only) |
 
 If you find yourself writing a paragraph that already exists somewhere
@@ -72,7 +72,7 @@ place — don't fork.
 
 ## Frontmatter (required on every doc)
 
-Every Markdown file under `docs/`, `ADR/`, `research/`, and every
+Every Markdown file under `docs/` (including `docs/adr/`), `research/`, and every
 top-level `.md` (AGENTS, CLAUDE, CONTRIBUTING) starts with YAML
 frontmatter:
 
@@ -203,9 +203,9 @@ One short paragraph per real alternative. Not an essay.
 
 Hard cap: **150 lines**, frontmatter included. If a decision needs more,
 the body belongs in `docs/architecture/` and the ADR points at it. The
-`adr-length` gate in `just docs-check` counts every `ADR/NNNN-*.md` and
+`adr-length` gate in `just docs-check` counts every `docs/adr/NNNN-*.md` and
 fails any file over the cap. ADRs that were already over it when the gate
-arrived are listed in `ADR/.length-baseline`, one number per line; that
+arrived are listed in `docs/adr/.length-baseline`, one number per line; that
 list only shrinks. Bring a listed ADR under the cap and delete its entry in
 the same commit — the gate also fails while a listed ADR fits the cap, so
 the baseline cannot become a standing exemption. New ADRs are never added
@@ -263,7 +263,7 @@ accepted or withdrawn.
 
 ### The index row
 
-Every ADR adds exactly one row to [`ADR/README.md`](../ADR/README.md)'s
+Every ADR adds exactly one row to [`docs/adr/README.md`](./adr/README.md)'s
 index, inserted at its numeric position, in the same commit that adds the
 ADR. This is not only navigation — the row is a deliberate collision
 point. Two parallel branches claiming the same ADR number touch disjoint
@@ -277,7 +277,7 @@ version rows are the other, and both are checked by the same
 strict ordering, and, where a row links, a link that resolves). See
 [CONTRIBUTING.md](../CONTRIBUTING.md) §"Multi-agent fan-out" for why.
 Every Proposed or Accepted ADR also has exactly one line in
-[`ADR/IN-FORCE.md`](../ADR/IN-FORCE.md), the topic-ordered view of the
+[`docs/adr/IN-FORCE.md`](./adr/IN-FORCE.md), the topic-ordered view of the
 decisions currently in force, and a Superseded or Deprecated ADR has none;
 the `adr-in-force-sync` gate enforces both directions.
 
@@ -312,7 +312,7 @@ eventually shipped, and only human review caught it.
 **In `docs/spec/` and `docs/consumers/`, any described surface the reference
 implementation does not provide carries an implementation-status marker, and
 the marker names a code symbol so CI can check it.** Design with no marker
-reads as shipped. Design that is not yet worth marking belongs in `ADR/`,
+reads as shipped. Design that is not yet worth marking belongs in `docs/adr/`,
 which is the tier whose whole job is to hold decisions ahead of code.
 
 ### The marker
@@ -429,7 +429,7 @@ scope.
   roadmap capability.
 - **No competitor comparison tables** built on unverifiable claims.
   Positioning is the substrate-vs-product argument
-  ([ADR-0009](../ADR/0009-phux-vs-mux-positioning.md)) in plain prose.
+  ([ADR-0009](adr/0009-phux-vs-mux-positioning.md)) in plain prose.
 
 ### TL;DR discipline
 
@@ -452,10 +452,10 @@ The discipline layer is mechanically checked. See
 | tldr-present | A doc whose first non-header content isn't `**TL;DR.**` |
 | dead-link | A relative link that doesn't resolve |
 | adr-status | An ADR with a non-vocabulary `Status:` line |
-| adr-number-unique | Two files under `ADR/` sharing the same leading `NNNN` number |
-| adr-index-sync | An ADR file with no row in `ADR/README.md`'s index, an index row that does not resolve to its file, or rows out of numeric order |
-| adr-length | An ADR over 150 lines that is not in `ADR/.length-baseline`, a baselined ADR that now fits the cap, or a baseline entry with no ADR file |
-| adr-in-force-sync | A Proposed or Accepted ADR missing from or duplicated in `ADR/IN-FORCE.md`, a Superseded or Deprecated ADR still listed there, or a link that does not resolve to its file |
+| adr-number-unique | Two files under `docs/adr/` sharing the same leading `NNNN` number |
+| adr-index-sync | An ADR file with no row in `docs/adr/README.md`'s index, an index row that does not resolve to its file, or rows out of numeric order |
+| adr-length | An ADR over 150 lines that is not in `docs/adr/.length-baseline`, a baselined ADR that now fits the cap, or a baseline entry with no ADR file |
+| adr-in-force-sync | A Proposed or Accepted ADR missing from or duplicated in `docs/adr/IN-FORCE.md`, a Superseded or Deprecated ADR still listed there, or a link that does not resolve to its file |
 | spec-version-sync | `docs/spec/CHANGELOG.md` head version vs `phux-protocol`'s declared protocol version, plus a version claimed by two rows or rows out of descending order |
 | impl-status | A `shipped` / `partial` / `spec-only` claim in `docs/spec/` or `docs/consumers/` that the code contradicts, and a `> **Status` callout with no marker behind it |
 
@@ -498,7 +498,7 @@ The rules:
   generator: regeneration is byte-idempotent and does not churn dates.
 
 Rationale — why a hidden subcommand and not an xtask or build script —
-in [ADR-0069](../ADR/0069-generated-reference-docs.md).
+in [ADR-0069](adr/0069-generated-reference-docs.md).
 
 ---
 

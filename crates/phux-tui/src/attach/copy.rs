@@ -1,6 +1,6 @@
 //! Client-local copy-mode extraction and clipboard emission (phux-v6jw).
 //!
-//! Per [ADR-0030](../../../../ADR/0030-engine-delegated-wire-and-projection-consumers.md),
+//! Per [ADR-0030](../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md),
 //! selection is a *client-side projection* over the consumer's own libghostty
 //! engine — not a wire tier. When copy-mode commits (Enter), the client maps
 //! the overlay's viewport [`CopyRequest`] onto its focused pane's own
@@ -203,7 +203,7 @@ pub fn osc52_set_clipboard(text: &str) -> Vec<u8> {
 /// the overlay layer stays engine-free and hands the dispatcher a plain-data
 /// [`CopyRequest`], which arrives here. `format_selection_alloc` (block when
 /// `req.rectangle`) or a `select_*` grab does the work; nothing goes on the
-/// wire ([ADR-0030](../../../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)).
+/// wire ([ADR-0030](../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md)).
 /// Best-effort: an empty/unselectable range writes nothing.
 pub fn resolve_and_copy(
     req: CopyRequest,

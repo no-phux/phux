@@ -70,7 +70,7 @@ The byte-level codec is [`spec/appendix-encoding.md`](./spec/appendix-encoding.m
 
 ## Consumers are peers
 
-The reference TUI, the headless CLI, the browser client, and Cockpit are peers. None has protocol-level standing: if a consumer needs a capability the wire does not provide, the answer is an ADR that extends the spec, not a consumer-shaped hook ([ADR-0017](../ADR/0017-tui-not-protocol-privileged.md)).
+The reference TUI, the headless CLI, the browser client, and Cockpit are peers. None has protocol-level standing: if a consumer needs a capability the wire does not provide, the answer is an ADR that extends the spec, not a consumer-shaped hook ([ADR-0017](adr/0017-tui-not-protocol-privileged.md)).
 
 - TUI: [`consumers/tui.md`](./consumers/tui.md)
 - CLI: [`consumers/agents.md`](./consumers/agents.md)
@@ -93,10 +93,10 @@ Target-versus-shipped gaps as of the last review. Each row names the ADR that ow
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Working-directory and command-boundary events as an L1 Terminal-facet frame | `TERMINAL_EVENT` has no codec entry. `cwd_changed`, `command_started`, and `command_finished` reach consumers only through the `SUBSCRIBE_RESOURCE_EVENTS` gate path. | [ADR-0015](../ADR/0015-protocol-layering.md) | phux-ue2r |
-| On-disk output journal and crash recovery | The server keeps every resource in memory. Nothing is journaled and there is no recovery flag. | [ADR-0092](../ADR/0092-durable-work-coordinator-authority.md) | phux-p91i |
-| Workload authentication enforcement | The mTLS + scope-matrix profile is specified in `workload-auth.md`. The reference server requests no client certificate and enforces no scope matrix. | [ADR-0116](../ADR/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
-| Cockpit projection of agent sessions | Cockpit lists Terminal-kind resources only; AgentSession children are not shown under their parent. | [ADR-0103](../ADR/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.25 |
+| Working-directory and command-boundary events as an L1 Terminal-facet frame | `TERMINAL_EVENT` has no codec entry. `cwd_changed`, `command_started`, and `command_finished` reach consumers only through the `SUBSCRIBE_RESOURCE_EVENTS` gate path. | [ADR-0015](adr/0015-protocol-layering.md) | phux-ue2r |
+| On-disk output journal and crash recovery | The server keeps every resource in memory. Nothing is journaled and there is no recovery flag. | [ADR-0092](adr/0092-durable-work-coordinator-authority.md) | phux-p91i |
+| Workload authentication enforcement | The mTLS + scope-matrix profile is specified in `workload-auth.md`. The reference server requests no client certificate and enforces no scope matrix. | [ADR-0116](adr/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
+| Cockpit projection of agent sessions | Cockpit lists Terminal-kind resources only; AgentSession children are not shown under their parent. | [ADR-0103](adr/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.25 |
 
 ## Where to go next
 
@@ -109,6 +109,6 @@ Target-versus-shipped gaps as of the last review. Each row names the ADR that ow
 | Use the browser client | [`consumers/web.md`](./consumers/web.md) |
 | Use Cockpit | [`consumers/cockpit.md`](./consumers/cockpit.md) |
 | Understand the TUI surface | [`consumers/tui.md`](./consumers/tui.md) |
-| See why we decided X | [`../ADR/README.md`](../ADR/README.md) |
+| See why we decided X | [`adr/README.md`](adr/README.md) |
 | Read the long arc | [`vision.md`](./vision.md) |
 | Contribute | [`../CONTRIBUTING.md`](../CONTRIBUTING.md) |

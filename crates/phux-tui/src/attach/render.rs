@@ -181,7 +181,7 @@ fn read_row<'alloc, 'buf>(
 /// The copy-mode selection rectangle the renderer reverse-videos while painting.
 ///
 /// Relocated to the shared contract module by
-/// [ADR-0045](../../../../ADR/0045-client-side-copy-mode.md): the renderer and
+/// [ADR-0045](../../../../docs/adr/0045-client-side-copy-mode.md): the renderer and
 /// the selection UX (`render::overlay::copy_mode`) must agree byte-for-byte on
 /// what a selection covers — including block vs linear geometry
 /// ([`SelectionRect::contains`]) — so the type and its geometry live in one

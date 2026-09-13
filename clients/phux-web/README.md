@@ -106,10 +106,10 @@ Single terminal; text + color + cursor. Splits/layout are the TUI's job. Image
 drawing (sixel/Kitty graphics — which the engine *parses*) is a future renderer
 pass.
 
-[ADR-0017]: ../../ADR/0017-tui-not-protocol-privileged.md
-[ADR-0024]: ../../ADR/0024-wire-owns-input-atoms.md
-[ADR-0025]: ../../ADR/0025-browser-web-client.md
+[ADR-0017]: ../../docs/adr/0017-tui-not-protocol-privileged.md
+[ADR-0024]: ../../docs/adr/0024-wire-owns-input-atoms.md
+[ADR-0025]: ../../docs/adr/0025-browser-web-client.md
 
 ## License
 
-MIT OR Apache-2.0.
+Apache-2.0.

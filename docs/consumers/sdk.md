@@ -39,11 +39,11 @@ state rather than adding a privileged wire tier
 It is one consumer among peers — the reference TUI, the
 [web client](./web.md), the [CLI agent surface](./agents.md), and the
 [MCP adapter](./mcp.md) — none protocol-privileged
-([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)).
+([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)).
 
 ## How it fits the projection thesis
 
-[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
+[ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md)
 states the wire carries opaque terminal bytes, not structured screen
 state. A consumer that wants structure computes it from an engine it
 runs. The reference shape for that is [phux-web](./web.md): Rust to
@@ -96,5 +96,5 @@ compatibility facade. Use the [CLI agent surface](./agents.md) or
 - The wire codec the library encodes against:
   [`../spec/appendix-encoding.md`](../spec/appendix-encoding.md).
 - The projection thesis that places this crate among its peers:
-  [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
+  [ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md)
   §4.

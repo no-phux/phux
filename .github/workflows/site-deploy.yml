@@ -1,6 +1,6 @@
 name: site-deploy
 
-# Push to main touching docs/, ADR/, or the curl installer → build the Astro
+# Push to main touching docs/ or the curl installer → build the Astro
 # site (docs/site) and deploy it as a Workers static-assets worker (phux-site)
 # on phux.sh and docs.phux.sh. Site, docs, and installer share this repository,
 # so an edit to any of them rebuilds the site directly — no cross-repo
@@ -13,7 +13,6 @@ on:
     branches: [main]
     paths:
       - "docs/**"
-      - "ADR/**"
       # The site serves scripts/install.sh verbatim at /install and
       # scripts/install-cockpit.sh at /install-cockpit, so an installer
       # change has to redeploy the site or phux.sh keeps handing out the old

@@ -36,7 +36,7 @@
 //! [`phux_protocol::wire::frame::FrameKind`] as of this commit). See the
 //! TODO comments at the call sites in `attach::driver`.
 //!
-//! [ADR-0019]: ../../../ADR/0019-tui-multi-pane-rendering.md
+//! [ADR-0019]: ../../../docs/adr/0019-tui-multi-pane-rendering.md
 
 use std::io::{self, Write};
 

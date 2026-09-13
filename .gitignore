@@ -36,3 +36,10 @@ dhat-heap.json
 
 # `just scaffold-config` writes a throwaway config here for local testing.
 .phux-xdg/
+
+# Generated local analysis; never a source of truth.
+graphify-out/
+
+# Gastown city runtime and packs. Maintainer-local, not product source.
+.gc/
+.ghui/

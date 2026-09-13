@@ -57,7 +57,7 @@ built by letting the providers diverge.
 
 ## An emptied window closes — including the main one
 
-**Keep-empty exception, 2026-09-11:** [ADR-0114](../../../ADR/0114-cockpit-closes-terminals-and-detaches-windows.md)
+**Keep-empty exception, 2026-09-11:** [ADR-0114](../../../docs/adr/0114-cockpit-closes-terminals-and-detaches-windows.md)
 retains an Empty session view after a keep-empty session's last terminal ends.
 Cmd+W there closes the client window without ending the named session. The
 last-window close still quits. Close Pane/Tab ends work; OS-window close detaches

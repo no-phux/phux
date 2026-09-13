@@ -1,7 +1,7 @@
 //! `phux config init --distro` end to end (phux-r82.9).
 //!
 //! Drives the real binary: scaffold a fresh config on top of the
-//! bundled herdr distribution, confirm the file validates (`config
+//! bundled starter distribution, confirm the file validates (`config`
 //! show` re-parses the whole stack) and that the shown effective config
 //! carries distro values. Also pins the failure modes: unknown bundled
 //! name, broken distro layer, and the refuse-to-overwrite contract.
@@ -41,14 +41,17 @@ fn run(args: &[&str], xdg_config_home: &Path, distros_dir: &Path) -> (i32, Strin
 }
 
 #[test]
-fn init_distro_herdr_then_show_reflects_distro_values() {
+fn init_distro_starter_then_show_reflects_distro_values() {
     let tmp = TempDir::new().expect("tempdir");
     let xdg = tmp.path().join("xdg");
     let distros = repo_distros_dir();
 
-    // Fresh scaffold on top of the bundled herdr package (bare name).
-    let (code, stdout, stderr) = run(&["config", "init", "--distro", "herdr"], &xdg, &distros);
-    assert_eq!(code, 0, "init --distro herdr must succeed; stderr={stderr}");
+    // Fresh scaffold on top of the bundled starter package (bare name).
+    let (code, stdout, stderr) = run(&["config", "init", "--distro", "starter"], &xdg, &distros);
+    assert_eq!(
+        code, 0,
+        "init --distro starter must succeed; stderr={stderr}"
+    );
     let config_path = xdg.join("phux").join("config.toml");
     assert!(
         stdout.contains(&config_path.display().to_string()),
@@ -60,8 +63,8 @@ fn init_distro_herdr_then_show_reflects_distro_values() {
         "scaffold carries the active extends line: {written}"
     );
     assert!(
-        written.contains("herdr.toml"),
-        "extends points at the herdr layer: {written}"
+        written.contains("starter.toml"),
+        "extends points at the starter layer: {written}"
     );
 
     // Validation: `config show` re-resolves and re-merges the stack; a
@@ -109,7 +112,7 @@ fn init_distro_herdr_then_show_reflects_distro_values() {
 fn init_distro_accepts_a_path_spec() {
     let tmp = TempDir::new().expect("tempdir");
     let xdg = tmp.path().join("xdg");
-    let herdr_path = repo_distros_dir().join("herdr").join("herdr.toml");
+    let starter_path = repo_distros_dir().join("starter").join("starter.toml");
     // Empty distros dir: the path spec must not consult it.
     let empty = tmp.path().join("empty-distros");
     std::fs::create_dir_all(&empty).expect("mkdir");
@@ -119,7 +122,7 @@ fn init_distro_accepts_a_path_spec() {
             "config",
             "init",
             "--distro",
-            herdr_path.to_str().expect("utf8"),
+            starter_path.to_str().expect("utf8"),
         ],
         &xdg,
         &empty,
@@ -175,12 +178,12 @@ fn init_distro_refuses_to_overwrite_without_force() {
     let xdg = tmp.path().join("xdg");
     let distros = repo_distros_dir();
 
-    let (code, _, _) = run(&["config", "init", "--distro", "herdr"], &xdg, &distros);
+    let (code, _, _) = run(&["config", "init", "--distro", "starter"], &xdg, &distros);
     assert_eq!(code, 0);
     let config_path = xdg.join("phux").join("config.toml");
     std::fs::write(&config_path, "# user edits\n").expect("simulate user edits");
 
-    let (code, _, stderr) = run(&["config", "init", "--distro", "herdr"], &xdg, &distros);
+    let (code, _, stderr) = run(&["config", "init", "--distro", "starter"], &xdg, &distros);
     assert_ne!(code, 0, "second init must refuse without --force");
     assert!(
         stderr.contains("--force"),
@@ -193,7 +196,7 @@ fn init_distro_refuses_to_overwrite_without_force() {
     );
 
     let (code, _, stderr) = run(
-        &["config", "init", "--distro", "herdr", "--force"],
+        &["config", "init", "--distro", "starter", "--force"],
         &xdg,
         &distros,
     );
@@ -203,5 +206,20 @@ fn init_distro_refuses_to_overwrite_without_force() {
             .expect("read back")
             .contains("extends = ["),
         "forced init rewrites the distro scaffold"
+    );
+}
+
+#[test]
+fn init_distro_herdr_alias_still_scaffolds_starter() {
+    let tmp = TempDir::new().expect("tempdir");
+    let xdg = tmp.path().join("xdg");
+    let distros = repo_distros_dir();
+
+    let (code, _, stderr) = run(&["config", "init", "--distro", "herdr"], &xdg, &distros);
+    assert_eq!(code, 0, "herdr alias must succeed; stderr={stderr}");
+    let written = std::fs::read_to_string(xdg.join("phux").join("config.toml")).expect("written");
+    assert!(
+        written.contains("starter.toml"),
+        "herdr alias must extend starter: {written}"
     );
 }

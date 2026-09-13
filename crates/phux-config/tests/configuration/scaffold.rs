@@ -106,7 +106,7 @@ fn write_creates_then_refuses_overwrite() {
 /// everything else stays the inert comment-projection.
 #[test]
 fn distro_scaffold_has_exactly_one_active_line_the_extends() {
-    let scaffold = distro_reference_config(Path::new("/opt/phux/distros/herdr/herdr.toml"));
+    let scaffold = distro_reference_config(Path::new("/opt/phux/distros/starter/starter.toml"));
     let active: Vec<&str> = scaffold
         .lines()
         .filter(|line| {
@@ -116,7 +116,7 @@ fn distro_scaffold_has_exactly_one_active_line_the_extends() {
         .collect();
     assert_eq!(
         active,
-        vec![r#"extends = ["/opt/phux/distros/herdr/herdr.toml"]"#],
+        vec![r#"extends = ["/opt/phux/distros/starter/starter.toml"]"#],
         "distro scaffold must be inert apart from the extends line"
     );
     // And the shared body still documents the real defaults.

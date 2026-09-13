@@ -2,7 +2,7 @@
 //!
 //! This used to be a single `phux_agent` tool multiplexed on an `action`
 //! string over `list`/`show`/`explain`/`set`/`clear`. It is split here
-//! because [ADR-0071](../../../ADR/0071-what-phux-1-0-commits-to.md) point 1
+//! because [ADR-0071](../../../docs/adr/0071-what-phux-1-0-commits-to.md) point 1
 //! freezes the MCP tool *names and arguments* at 1.0, and point 7(b) names
 //! this split as a precondition of that freeze.
 //!
@@ -37,7 +37,7 @@
 //!   has gone away.
 //! - **No notification tool.** `phux answer` is hook-shaped, and hooks run on
 //!   the human's machine, not inside a model's tool call.
-//! - **No `phux_agent_read`.** [ADR-0077](../../../ADR/0077-agent-read-surface.md)
+//! - **No `phux_agent_read`.** [ADR-0077](../../../docs/adr/0077-agent-read-surface.md)
 //!   point 1 refuses a read-source vocabulary: the read modifiers `--tail`
 //!   and `--unwrap` hang off `phux_snapshot`, where the rest of the read
 //!   knobs already live. A second read tool would be exactly the vocabulary
@@ -48,7 +48,7 @@
 //!   an MCP tool a file reader.
 //!
 //! `phux_agent_prompt` is deliberately the fused submit-and-wait operation
-//! [ADR-0076](../../../ADR/0076-agent-prompt-and-lifecycle-wait.md) point 6
+//! [ADR-0076](../../../docs/adr/0076-agent-prompt-and-lifecycle-wait.md) point 6
 //! admits. Two MCP calls are two CLI processes and two connections with no
 //! shared ordering point; the fused tool holds one process across delivery
 //! and observation so a fast turn cannot finish between calls.

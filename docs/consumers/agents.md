@@ -20,7 +20,7 @@ the errors. Flags and inventories live in the generated CLI reference.
 The CLI plus its versioned `--json` documents is the agent contract.
 Structured screen state, command results, and semantic events are a local
 projection over the shared engine, not a second wire model
-([ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md);
+([ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md);
 mental model in [`../CONCEPTS.md`](../CONCEPTS.md)). The MCP adapter and
 the in-tree client library wrap the same functions; they add no
 privilege.

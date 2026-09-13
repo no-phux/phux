@@ -27,7 +27,7 @@
 //! through small local shim types (`CborLayoutNode`, `CborSplitDir`,
 //! `CborResourceId`) that mirror the wire shape and convert via `From`.
 //!
-//! [ADR-0019]: ../../ADR/0019-tui-multi-pane-rendering.md
+//! [ADR-0019]: ../../docs/adr/0019-tui-multi-pane-rendering.md
 
 use std::borrow::Cow;
 use std::io::Cursor;

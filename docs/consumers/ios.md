@@ -126,5 +126,5 @@ unreachable host both end in "nothing happened".
 - [`web.md`](./web.md) — the WASM edition of the same pattern.
 - [`../spec/proto.md`](../spec/proto.md) — the normative wire specification.
 
-[ADR-0030]: ../../ADR/0030-engine-delegated-wire-and-projection-consumers.md
-[ADR-0031]: ../../ADR/0031-remote-consumer-auth-and-encryption.md
+[ADR-0030]: ../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md
+[ADR-0031]: ../../docs/adr/0031-remote-consumer-auth-and-encryption.md

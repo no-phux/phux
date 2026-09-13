@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-08-09
+last-reviewed: 2026-09-12
 ---
 
 # Contributing to phux
@@ -33,6 +33,20 @@ Start with [Contributor setup](./docs/SETUP.md): choose docs, Rust core, native
 terminal, an agent integration, browser, or Cockpit. Native tools and Nix run
 the same commands. You do not need Nix or maintainer task-tracking tools to
 contribute; a GitHub issue or PR is enough to coordinate a contribution.
+
+## Agent entrypoints
+
+These are the files that configure coding agents in this repo. Everything
+else at the root is product source, not an agent zoo.
+
+| File | Job |
+|---|---|
+| [`AGENTS.md`](./AGENTS.md) | Shell hygiene, worktrees, beads. Most coding agents load this. |
+| [`CLAUDE.md`](./CLAUDE.md) | Architecture map. Claude Code also loads this. |
+| [`.claude/settings.json`](./.claude/settings.json) | Claude Code session hooks (`bd prime`). |
+| [`.codex/hooks.json`](./.codex/hooks.json) | Codex session hooks (`bd codex-hook`). |
+| [`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json) | The Claude Code plugin this repo ships. |
+| [`.agents/skills/beads`](./.agents/skills/beads) | Beads skill for agents that load project skills. |
 
 ## Bar for any change
 
@@ -207,21 +221,21 @@ because the thing they check does not exist on a runner.
   `ClientCapabilities` byte, or an additive field id; a version bump is for
   changes no additive shape can express, and the PR says so out loud. The
   rule is normative in [`docs/spec/proto.md`](./docs/spec/proto.md) §6.3 and
-  argued in [`ADR/0061`](./ADR/0061-capabilities-add-versions-break.md).
+  argued in [`docs/adr/0061`](./docs/adr/0061-capabilities-add-versions-break.md).
 - **Do not document what you did not build.** In `docs/spec/` and
   `docs/consumers/`, a surface the reference implementation does not provide
   carries an `impl-status` marker naming a code symbol, and `just docs-check`
   verifies the marker against the code. See
   [`docs/CONVENTIONS.md`](./docs/CONVENTIONS.md) §"Implementation status".
 - **Write an ADR for any decision that closes off a design space.** See
-  [`ADR/README.md`](./ADR/README.md). You do not need an ADR for a bug
+  [`docs/adr/README.md`](./docs/adr/README.md). You do not need an ADR for a bug
   fix; you do for "should this be in `core` or `server`?"
 - **Public APIs are documented.** Workspace lints warn on missing docs
   for library crates. The binary crate is exempt.
 - **Alias a wire type at the import when its bare name is taken.** Several
   domain concepts are modelled twice on purpose — `phux-core` holds the
   in-memory shape, `phux-protocol` holds the wire shape, and
-  [`ADR/0011`](./ADR/0011-protocol-core-independence.md) keeps the two crates
+  [`docs/adr/0011`](./docs/adr/0011-protocol-core-independence.md) keeps the two crates
   independent of each other. Where both are in scope, or where the importing
   crate defines its own, import the protocol one under a `Wire` prefix:
   `use phux_protocol::ids::ResourceId as WireResourceId;`. That puts the seam
@@ -343,7 +357,7 @@ mechanically enforced, both by `check_registry_rows` in
 
 | Registry | Key | Order | Gate |
 |---|---|---|---|
-| `ADR/README.md` index (see docs/CONVENTIONS.md §"The index row") | ADR number `NNNN` | ascending, and the row's link must resolve to that ADR | `adr-index-sync` |
+| `docs/adr/README.md` index (see docs/CONVENTIONS.md §"The index row") | ADR number `NNNN` | ascending, and the row's link must resolve to that ADR | `adr-index-sync` |
 | `docs/spec/CHANGELOG.md` | wire version, e.g. `0.9.0-draft.1` | descending, newest at the top | `spec-version-sync` |
 
 Each enforces unique keys and strict ordering, so a second claim on the same

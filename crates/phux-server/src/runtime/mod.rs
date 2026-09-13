@@ -109,7 +109,7 @@ pub struct ServerConfig {
     /// over the resolved default shell ([`Self::shell`]).
     pub seed_command: Option<portable_pty::CommandBuilder>,
     /// Per-pane scrollback bounds (`defaults.history-limit` and
-    /// `defaults.history-bytes`, SPEC DESIGN.md §4.2). Threaded into every
+    /// `defaults.history-bytes`, docs/experience.md §4.2). Threaded into every
     /// `TerminalActor`'s scrollback configuration at construction — both the
     /// pre-seeded session and any session created later via
     /// `AttachTarget::CreateIfMissing` or `SPAWN_RESOURCE`. libghostty prunes
@@ -124,7 +124,7 @@ pub struct ServerConfig {
     /// `phux_config`; [`Self::with_default_socket`] uses the schema default.
     pub agent_log_bytes: u32,
     /// How a freshly-spawned pane chooses its working directory
-    /// (`defaults.cwd-inheritance`, SPEC DESIGN.md). Threaded into
+    /// (`defaults.cwd-inheritance`, docs/experience.md). Threaded into
     /// shared state so `SPAWN_RESOURCE` resolves the new pane's CWD when
     /// the wire frame leaves `cwd` unset:
     /// [`phux_config::CwdInheritance::InheritFocused`] reads the spawning

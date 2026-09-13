@@ -41,7 +41,7 @@ the ADR or reference doc that supersedes it.
 
 - [`archive/2026-05-26-state-sync-algorithm.md`](./archive/2026-05-26-state-sync-algorithm.md) —
   algorithm-composition study for long-arc wire semantics. Ratified by
-  [ADR-0018](../ADR/0018-lazy-state-synchronization.md).
+  [ADR-0018](../docs/adr/0018-lazy-state-synchronization.md).
 - [`archive/2026-06-23-agent-asked-capture-harness.md`](./archive/2026-06-23-agent-asked-capture-harness.md) —
   clean-room harness notes for collecting empirical agent-asked evidence.
   The capture surfaces it drove shipped as the agent-asked wire events;

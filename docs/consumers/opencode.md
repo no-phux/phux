@@ -154,7 +154,7 @@ also survives compaction without using a private compactor hook. A missing
 server emits one edge-filtered `unavailable` checkpoint and does not fail the
 user turn. Awareness is current at model-dispatch boundaries rather than
 continuously while a provider response is streaming. The shared rationale is
-[ADR-0067](../../ADR/0067-cache-preserving-agent-fleet-context.md).
+[ADR-0067](../adr/0067-cache-preserving-agent-fleet-context.md).
 
 ## The six tools
 
@@ -221,7 +221,7 @@ Records use `name=opencode`, `kind=opencode`, and owner
 `opencode:<public OpenCode session id>` — **identity only, never a `state`**. A
 declared `state` outranks the server's own derivation for the record's whole
 lifetime ([`../spec/L3.md`](../spec/L3.md) §3.7,
-[ADR-0046](../../ADR/0046-server-side-agent-state-detection.md) point 8), so
+[ADR-0046](../adr/0046-server-side-agent-state-detection.md) point 8), so
 reporting one would stand the shipped `rules/opencode.toml` detector down on
 every pane running this plugin. The server derives `working` and `blocked` from
 that manifest instead.

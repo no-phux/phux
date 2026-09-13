@@ -232,4 +232,4 @@ SSH-stdio. Relay and WebTransport writers share the QUIC send-window cap.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Roaming-aware client that uses QUIC connection migration | The stack supports migration and 0-RTT; the attach client does not yet drive them. | [ADR-0007](../../ADR/0007-mosh-class-transport-and-satellites.md) | not scheduled |
+| Roaming-aware client that uses QUIC connection migration | The stack supports migration and 0-RTT; the attach client does not yet drive them. | [ADR-0007](../adr/0007-mosh-class-transport-and-satellites.md) | not scheduled |

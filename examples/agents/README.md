@@ -103,5 +103,5 @@ That command may invoke configured account/API behavior; it is never run by CI.
   CLI shape.
 - [`../../docs/consumers/pi.md`](../../docs/consumers/pi.md) — package setup
   when Pi should drive the same CLI surface.
-- [`../../ADR/0022-tool-for-agents.md`](../../ADR/0022-tool-for-agents.md) —
+- [`../../docs/adr/0022-tool-for-agents.md`](../../docs/adr/0022-tool-for-agents.md) —
   why the CLI is the agent surface.

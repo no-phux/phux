@@ -20,11 +20,11 @@ Single-terminal today; splits and layout are out of scope.
 ## What it is, and why it is the reference
 
 phux-web is a peer consumer alongside the reference TUI and the agent client
-([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)): same wire,
+([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)): same wire,
 different projection. The TUI projects the terminal to VT bytes on a real tty;
 the web client projects it to a canvas grid in a browser.
 
-[ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md) §4
+[ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md) §4
 names phux-web the **reference pattern** for any consumer that wants structured
 terminal state: **carry your own engine and project locally.** The wire carries
 opaque terminal bytes, not a structured screen model; phux-web runs libghostty
@@ -34,7 +34,7 @@ structured wire tier. phux-web is the concrete, shipping proof that the
 projection thesis works: the engine is shared, never re-encoded, so there is no
 second terminal model on the wire to drift.
 
-This is the design from [ADR-0025](../../ADR/0025-browser-web-client.md),
+This is the design from [ADR-0025](../adr/0025-browser-web-client.md),
 realized in code and verified end-to-end in headless Chrome.
 
 Two crates make it up, plus one vendored artifact:
@@ -53,7 +53,7 @@ so `phux-vt-web` loads it through the plain `WebAssembly` JS API, with no Zig
 linked into the Rust wasm binary. Linking them would mean sharing one wasm
 linear memory between two toolchains; instead the Rust module runs the engine
 as a sibling instance and copies bytes across the boundary
-([ADR-0025](../../ADR/0025-browser-web-client.md)).
+([ADR-0025](../adr/0025-browser-web-client.md)).
 
 ```text
 phux_web_bg.wasm  (Rust client)
@@ -78,7 +78,7 @@ web-sys ------+                                          v  (consumed by phux-si
 ```
 
 `phux-protocol` is the same wire codec the server uses. It became wasm-safe in
-[ADR-0024](../../ADR/0024-wire-owns-input-atoms.md): the wire owns its input
+[ADR-0024](../adr/0024-wire-owns-input-atoms.md): the wire owns its input
 atoms, so the codec no longer pulls in libghostty on the client. The codec is
 the one documented in [`../spec/appendix-encoding.md`](../spec/appendix-encoding.md).
 

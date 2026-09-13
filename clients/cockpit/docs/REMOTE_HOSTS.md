@@ -27,7 +27,7 @@ front is shown again.
 
 There is one registry: `[[remote]]` in the phux `config.toml`
 (`$XDG_CONFIG_HOME/phux/config.toml`, else `~/.config/phux/config.toml`;
-[ADR-0055](../../../ADR/0055-machine-registries.md)). `phux host add`,
+[ADR-0055](../../../docs/adr/0055-machine-registries.md)). `phux host add`,
 `phux host enroll` and `phux --remote` write it. Cockpit only reads it,
 through phux-client-ffi, which uses phux-config's own loader and schema.
 
@@ -41,7 +41,7 @@ a routable host needs its certificate pin, and a routable WebSocket also
 needs a bearer token.
 
 Cockpit never pairs a host. Rungs 2 to 4 of the
-[resolution ladder](../../../ADR/0093-remote-target-as-a-resolution-ladder.md)
+[resolution ladder](../../../docs/adr/0093-remote-target-as-a-resolution-ladder.md)
 (a pasted code, an ssh pairing, a refusal) write credentials and may prompt,
 so they stay in the CLI. An unregistered host fails with a reason naming
 `phux --remote NAME` and `phux host enroll NAME`.
@@ -169,11 +169,11 @@ coordinator id. Within a run, saved placements carry the endpoint
 so a placement never matches the wrong coordinator.
 
 One fact about what was on screen survives a relaunch
-([ADR-0110](../../../ADR/0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md),
+([ADR-0110](../../../docs/adr/0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md),
 `src/cockpit/native/peer_restore.zig`). Beside each remembered host the file
 keeps the session that host's coordinator was showing, by id and by its
 creation time in that host's session list
-([ADR-0111](../../../ADR/0111-how-a-front-restore-is-judged.md)), the shared
+([ADR-0111](../../../docs/adr/0111-how-a-front-restore-is-judged.md)), the shared
 window of its selected tab, and
 whether that tab was the selected tab of the front window: one `shown=`
 line after its `target=` line, in a v3 file (a file without one is still
@@ -190,7 +190,7 @@ later that tab stays selected; a choice that lands with it takes the tab, and
 the host goes back to listing as any hidden peer does. A front record
 survives one failed connection, before or after its list, as long as it has
 not been shown: the backoff redial, which only lists, is judged when it lists
-([ADR-0111](../../../ADR/0111-how-a-front-restore-is-judged.md)). A graceful
+([ADR-0111](../../../docs/adr/0111-how-a-front-restore-is-judged.md)). A graceful
 upgrade of the host's server keeps session ids and creation times, so it
 keeps the record; a record an earlier build wrote names the server's
 `HELLO_OK.server_id` hash instead, and is judged by it. A record whose
@@ -387,7 +387,7 @@ A rename whose connection ended first reads as refused, outcome unknown.
 
 ### Empty sessions
 
-A keep-empty session ([ADR-0105](../../../ADR/0105-sessions-can-outlive-their-last-window.md))
+A keep-empty session ([ADR-0105](../../../docs/adr/0105-sessions-can-outlive-their-last-window.md))
 survives its last window, so a coordinator can hold a session with no
 windows. phux-client-ffi reads the mark from the snapshot's trailing
 keep-empty list ([L1.md](../../../docs/spec/L1.md) section 9.1) and reports
@@ -464,7 +464,7 @@ projected reads "workspace unavailable" on its session rows.
   bound to the server's instance token, and once the peer lists again Cockpit
   asks it to kill such a terminal only if nobody else has attached or used it
   since (`KILL_RESOURCE_IF`,
-  [ADR-0109](../../../ADR/0109-late-kills-are-conditional-on-instance-and-attachment.md));
+  [ADR-0109](../../../docs/adr/0109-late-kills-are-conditional-on-instance-and-attachment.md));
   a refused kill leaves it running. The terminal stays running, unplaced,
   when the server lacks that bit (the spawn is unbound and nothing is killed,
   conditionally or otherwise), when the spawn's reply never arrived, when its
@@ -476,7 +476,7 @@ projected reads "workspace unavailable" on its session rows.
   without the server's conditional kill.
 - Relaunch shows again only the remembered host whose tab was the front
   window's selected tab
-  ([ADR-0110](../../../ADR/0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md)).
+  ([ADR-0110](../../../docs/adr/0110-a-showing-peer-is-re-shown-at-launch-only-in-front.md)).
   A host that was showing a session in another window, or behind another
   coordinator's tab, comes back listing, and so does every host when the
   front tab was this Mac's. Only the session and which of its tabs was
@@ -485,11 +485,11 @@ projected reads "workspace unavailable" on its session rows.
   restart drops it, except that creation times are whole seconds: a session
   given the remembered id in the same second the remembered one was created
   would be shown in its place, on its own coordinator
-  ([ADR-0111](../../../ADR/0111-how-a-front-restore-is-judged.md)). A record
+  ([ADR-0111](../../../docs/adr/0111-how-a-front-restore-is-judged.md)). A record
   written before creation times were kept is dropped by any restart, an
   upgrade included. A host whose connection fails twice before it is shown (its
   first dial and the backoff redial after it,
-  [ADR-0111](../../../ADR/0111-how-a-front-restore-is-judged.md)) does not
+  [ADR-0111](../../../docs/adr/0111-how-a-front-restore-is-judged.md)) does not
   come back on screen on that launch, and one
   held only through `phux-remote` or `PHUX_REMOTE` is not remembered, so
   nothing of it is kept. The front host appears once it lists and the
