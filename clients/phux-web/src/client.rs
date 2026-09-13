@@ -42,13 +42,53 @@ const CONNECT_DEADLINE_MS: u32 = 10_000;
 const MAX_OUTBOUND_BYTES: usize = 1024 * 1024;
 const PHUX_WS_PROTOCOL: &str = "phux.v1";
 const PHUX_WS_BEARER_PREFIX: &str = "phux.bearer.";
+const BOOTSTRAP_EXPIRY_POLL_MS: i32 = 1_000;
+
+struct AttemptDeadline {
+    end_ms: f64,
+}
+
+impl AttemptDeadline {
+    fn new() -> Result<Self, JsValue> {
+        let now = monotonic_now_ms()?;
+        Ok(Self {
+            end_ms: now + f64::from(CONNECT_DEADLINE_MS),
+        })
+    }
+
+    fn remaining_ms(&self) -> u32 {
+        let remaining = monotonic_now_ms()
+            .map(|now| (self.end_ms - now).ceil())
+            .unwrap_or(0.0);
+        remaining.clamp(0.0, f64::from(CONNECT_DEADLINE_MS)) as u32
+    }
+}
+
+fn monotonic_now_ms() -> Result<f64, JsValue> {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map(|performance| performance.now())
+        .ok_or_else(|| JsValue::from_str("monotonic browser clock unavailable"))
+}
+
+async fn load_vt() -> Result<Rc<Vt>, JsValue> {
+    match select(
+        Box::pin(Vt::load()),
+        Box::pin(TimeoutFuture::new(CONNECT_DEADLINE_MS)),
+    )
+    .await
+    {
+        Either::Left((result, _)) => result,
+        Either::Right(((), _)) => Err(JsValue::from_str("terminal engine load timed out")),
+    }
+}
 
 /// DOM id of the element that holds the focused pane's agent badges.
 pub const BADGE_CONTAINER_ID: &str = "phux-agent-badges";
 
 /// Connect to a phux server over WebSocket and render the attached terminal
 /// into the given canvas, routing keyboard input back. Resolves only after the
-/// server validates HELLO; the handlers then run for the connection's lifetime.
+/// aggregate attach reaches READY; handlers then run for the connection's lifetime.
 ///
 /// # Errors
 /// Fails if the engine can't load, the canvas has no 2D context, or the
@@ -59,7 +99,8 @@ pub async fn run(
     cols: u16,
     rows: u16,
 ) -> Result<Client, JsValue> {
-    run_websocket(ws_url, None, canvas, cols, rows, false).await
+    let vt = load_vt().await?;
+    run_websocket(ws_url, None, canvas, cols, rows, false, &vt).await
 }
 
 /// Connect over WebSocket while explicitly advertising synthesized
@@ -73,7 +114,8 @@ pub async fn run_synthesized_compat(
     cols: u16,
     rows: u16,
 ) -> Result<Client, JsValue> {
-    run_websocket(ws_url, None, canvas, cols, rows, true).await
+    let vt = load_vt().await?;
+    run_websocket(ws_url, None, canvas, cols, rows, true, &vt).await
 }
 
 async fn run_websocket(
@@ -83,16 +125,18 @@ async fn run_websocket(
     cols: u16,
     rows: u16,
     synthesized_only: bool,
+    vt: &Rc<Vt>,
 ) -> Result<Client, JsValue> {
+    let deadline = AttemptDeadline::new()?;
     let ws = websocket(ws_url, bearer_hex)?;
     ws.set_binary_type(BinaryType::Arraybuffer);
 
     let tx = WireTx::Ws(WsTx::new(ws.clone()));
-    let (app, ready) = build_app(tx, canvas, cols, rows, synthesized_only).await?;
+    let (app, ready) = build_app(vt, tx, canvas, cols, rows, synthesized_only)?;
     install_transport_failure_hook(&app);
 
     install_websocket_handlers(&app, &ws);
-    await_protocol_ready(&app, ready).await?;
+    await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
 
     install_keyboard(&app)?;
     install_cursor_blink(&app)?;
@@ -120,14 +164,21 @@ pub async fn run_with_fallback(
     cols: u16,
     rows: u16,
 ) -> Result<Client, JsValue> {
-    match run_webtransport(wt_url, canvas.clone(), cols, rows).await {
+    let fallback_token = fallback_token_from_webtransport_url(wt_url);
+    if matches!(fallback_token, FallbackToken::Invalid) {
+        return Err(JsValue::from_str(
+            "WebTransport URL contains an invalid or duplicate token",
+        ));
+    }
+    let vt = load_vt().await?;
+    match run_webtransport_loaded(wt_url, canvas.clone(), cols, rows, &vt).await {
         Ok(client) => Ok(client),
         Err(_) => {
             web_sys::console::warn_1(&JsValue::from_str(
                 "phux-web: WebTransport unavailable; falling back to WebSocket",
             ));
-            let bearer = token_from_webtransport_url(wt_url);
-            run_websocket(ws_url, bearer, canvas, cols, rows, false).await
+            let bearer = fallback_token.valid();
+            run_websocket(ws_url, bearer, canvas, cols, rows, false, &vt).await
         }
     }
 }
@@ -145,14 +196,30 @@ pub async fn run_webtransport(
     cols: u16,
     rows: u16,
 ) -> Result<Client, JsValue> {
+    let vt = load_vt().await?;
+    run_webtransport_loaded(wt_url, canvas, cols, rows, &vt).await
+}
+
+async fn run_webtransport_loaded(
+    wt_url: &str,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+    vt: &Rc<Vt>,
+) -> Result<Client, JsValue> {
+    let deadline = AttemptDeadline::new()?;
     // `WebTransport::new` throws (rather than returning Err) when the API is
     // absent from the global scope; the `catch` binding surfaces both cases
     // as Err so the caller's fallback fires either way.
     let wt = WebTransport::new(wt_url)
         .map_err(|_| JsValue::from_str("WebTransport initialization failed"))?;
-    if await_js_promise(wt.ready(), "WebTransport readiness")
-        .await
-        .is_err()
+    if await_js_promise_with_deadline(
+        wt.ready(),
+        "WebTransport readiness",
+        deadline.remaining_ms(),
+    )
+    .await
+    .is_err()
     {
         wt.close();
         return Err(JsValue::from_str("WebTransport readiness failed"));
@@ -160,9 +227,10 @@ pub async fn run_webtransport(
 
     // One bidirectional stream carries the whole wire, mirroring the QUIC
     // transport's one-stream-per-connection contract.
-    let stream: web_sys::WebTransportBidirectionalStream = match await_js_promise(
+    let stream: web_sys::WebTransportBidirectionalStream = match await_js_promise_with_deadline(
         wt.create_bidirectional_stream(),
         "WebTransport stream creation",
+        deadline.remaining_ms(),
     )
     .await
     {
@@ -178,7 +246,7 @@ pub async fn run_webtransport(
         .map_err(|_| JsValue::from_str("WebTransport reader initialization failed"))?;
 
     let tx = WireTx::Wt(Rc::new(WtTx::new(writer, wt.clone())));
-    let (app, ready) = build_app(tx, canvas, cols, rows, false).await?;
+    let (app, ready) = build_app(vt, tx, canvas, cols, rows, false)?;
     install_transport_failure_hook(&app);
 
     // The session is already established (unlike the WebSocket path there is
@@ -203,7 +271,7 @@ pub async fn run_webtransport(
         });
     }
 
-    await_protocol_ready(&app, ready).await?;
+    await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
 
     install_keyboard(&app)?;
     install_cursor_blink(&app)?;
@@ -278,7 +346,7 @@ impl Client {
     ///
     /// # Errors
     /// Returns an error while the current client is still live, or when both
-    /// replacement transports fail to reach `HELLO_OK` within the deadline.
+    /// replacement transports fail to reach aggregate attach READY within the deadline.
     pub async fn reconnect_with_fallback(
         &self,
         wt_url: &str,
@@ -541,6 +609,7 @@ struct AppBindings {
     websocket: Option<WebSocketBindings>,
     keyboard: Option<KeyboardBinding>,
     blink: Option<BlinkBinding>,
+    bootstrap_expiry: Option<BlinkBinding>,
     wt_reader_cancel: Option<oneshot::Sender<()>>,
 }
 
@@ -554,6 +623,9 @@ impl AppBindings {
         }
         if let Some(blink) = self.blink.take() {
             blink.dispose();
+        }
+        if let Some(expiry) = self.bootstrap_expiry.take() {
+            expiry.dispose();
         }
         if let Some(cancel) = self.wt_reader_cancel.take() {
             let _ = cancel.send(());
@@ -619,6 +691,8 @@ struct App {
     reconnect: RefCell<Option<ReconnectConfig>>,
     self_owner: RefCell<Option<Rc<RefCell<App>>>>,
 }
+
+type AppReady = (Rc<RefCell<App>>, oneshot::Receiver<Result<(), String>>);
 
 impl App {
     fn send(&self, frames: Vec<Vec<u8>>) -> Result<(), String> {
@@ -742,16 +816,16 @@ impl Drop for App {
     }
 }
 
-/// Load the engine, grab the canvas 2D context, and assemble the shared
-/// [`App`] around an established transport send half.
-async fn build_app(
+/// Grab the canvas context and assemble an [`App`] around a preloaded engine
+/// and established transport send half.
+fn build_app(
+    vt: &Rc<Vt>,
     tx: WireTx,
     canvas: HtmlCanvasElement,
     cols: u16,
     rows: u16,
     synthesized_only: bool,
-) -> Result<(Rc<RefCell<App>>, oneshot::Receiver<Result<(), String>>), JsValue> {
-    let vt = Vt::load().await?;
+) -> Result<AppReady, JsValue> {
     let ctx: CanvasRenderingContext2d = canvas
         .get_context("2d")?
         .ok_or_else(|| JsValue::from_str("no 2D context"))?
@@ -760,9 +834,9 @@ async fn build_app(
     let (ready_tx, ready_rx) = oneshot::channel();
     let app = Rc::new(RefCell::new(App {
         session: if synthesized_only {
-            crate::Session::new_synthesized_compat(&vt, cols, rows)
+            crate::Session::new_synthesized_compat(vt, cols, rows)
         } else {
-            crate::Session::new(&vt, cols, rows)
+            crate::Session::new(vt, cols, rows)
         },
         tx,
         canvas,
@@ -775,6 +849,7 @@ async fn build_app(
         reconnect: RefCell::new(None),
         self_owner: RefCell::new(None),
     }));
+    install_bootstrap_expiry(&app)?;
     Ok((app, ready_rx))
 }
 
@@ -828,15 +903,43 @@ fn authenticated_websocket_protocols(token: &str) -> [String; 2] {
     ]
 }
 
-fn token_from_webtransport_url(url: &str) -> Option<&str> {
-    let query = url.split_once('?')?.1.split('#').next()?;
-    let token = query
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FallbackToken<'a> {
+    Missing,
+    Valid(&'a str),
+    Invalid,
+}
+
+impl<'a> FallbackToken<'a> {
+    const fn valid(self) -> Option<&'a str> {
+        match self {
+            Self::Valid(token) => Some(token),
+            Self::Missing | Self::Invalid => None,
+        }
+    }
+}
+
+fn fallback_token_from_webtransport_url(url: &str) -> FallbackToken<'_> {
+    let Some(query) = url.split_once('?').map(|(_, rest)| rest) else {
+        return FallbackToken::Missing;
+    };
+    let mut tokens = query
+        .split('#')
+        .next()
+        .unwrap_or_default()
         .split('&')
-        .find_map(|part| part.strip_prefix("token="))?;
-    (!token.is_empty()
-        && token.len() % 2 == 0
-        && token.bytes().all(|byte| byte.is_ascii_hexdigit()))
-    .then_some(token)
+        .filter_map(|part| part.strip_prefix("token="));
+    let Some(token) = tokens.next() else {
+        return FallbackToken::Missing;
+    };
+    if tokens.next().is_some()
+        || token.is_empty()
+        || token.len() % 2 != 0
+        || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return FallbackToken::Invalid;
+    }
+    FallbackToken::Valid(token)
 }
 
 fn install_transport_failure_hook(app: &Rc<RefCell<App>>) {
@@ -939,23 +1042,19 @@ fn send_handshake(app: &Rc<RefCell<App>>) {
 async fn await_protocol_ready(
     app: &Rc<RefCell<App>>,
     ready: oneshot::Receiver<Result<(), String>>,
+    deadline_ms: u32,
 ) -> Result<(), JsValue> {
-    match select(ready, TimeoutFuture::new(CONNECT_DEADLINE_MS)).await {
+    match select(ready, TimeoutFuture::new(deadline_ms)).await {
         Either::Left((Ok(Ok(())), _)) => Ok(()),
         Either::Left((Ok(Err(message)), _)) => Err(JsValue::from_str(&message)),
-        Either::Left((Err(_), _)) => Err(JsValue::from_str("connection closed before HELLO_OK")),
+        Either::Left((Err(_), _)) => {
+            Err(JsValue::from_str("connection closed before ATTACH_READY"))
+        }
         Either::Right(((), _)) => {
-            close_with_transport_error(app, "protocol HELLO timed out");
-            Err(JsValue::from_str("protocol HELLO timed out"))
+            close_with_transport_error(app, "protocol attach timed out");
+            Err(JsValue::from_str("protocol attach timed out"))
         }
     }
-}
-
-async fn await_js_promise<T: wasm_bindgen::convert::FromWasmAbi + 'static>(
-    promise: js_sys::Promise<T>,
-    stage: &'static str,
-) -> Result<T, JsValue> {
-    await_js_promise_with_deadline(promise, stage, CONNECT_DEADLINE_MS).await
 }
 
 async fn await_js_promise_with_deadline<T: wasm_bindgen::convert::FromWasmAbi + 'static>(
@@ -1177,7 +1276,7 @@ fn apply_frame(app: &Rc<RefCell<App>>, frame: FrameKind) -> BatchEffects {
             ..BatchEffects::default()
         };
     }
-    if a.session.selected_profile().is_some() {
+    if a.session.is_attach_ready() {
         a.signal_ready();
     }
     BatchEffects {
@@ -1303,6 +1402,34 @@ fn install_cursor_blink(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
     Ok(())
 }
 
+fn install_bootstrap_expiry(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
+    let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    let weak = Rc::downgrade(app);
+    let callback = Closure::<dyn FnMut()>::new(move || {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        let expired = app.borrow_mut().session.expire_bootstrap_staging();
+        if expired {
+            close_with_protocol_error(&app, "terminal bootstrap staging timed out");
+        }
+    });
+    let interval = window.set_interval_with_callback_and_timeout_and_arguments_0(
+        callback.as_ref().unchecked_ref(),
+        BOOTSTRAP_EXPIRY_POLL_MS,
+    )?;
+    app.borrow()
+        .bindings
+        .borrow_mut()
+        .bootstrap_expiry
+        .replace(BlinkBinding {
+            window,
+            interval,
+            callback,
+        });
+    Ok(())
+}
+
 /// Map a browser `KeyboardEvent` to a wire `KeyEvent`. Returns `None` for
 /// modifier-only keydowns (which carry no terminal input on their own).
 fn key_event_from_browser(e: &KeyboardEvent) -> Option<KeyEvent> {
@@ -1395,9 +1522,9 @@ mod tests {
     use std::rc::Rc;
 
     use super::{
-        BatchEffects, FrameBuffer, MAX_OUTBOUND_BYTES, OutboundQueue, ReceiveFlow,
+        BatchEffects, FallbackToken, FrameBuffer, MAX_OUTBOUND_BYTES, OutboundQueue, ReceiveFlow,
         WebTransportExit, authenticated_websocket_protocols, await_js_promise_with_deadline,
-        poisoned_framing_flow, token_from_webtransport_url, webtransport_eof_exit,
+        fallback_token_from_webtransport_url, poisoned_framing_flow, webtransport_eof_exit,
         webtransport_exit_flow,
     };
     use futures_channel::oneshot;
@@ -1578,16 +1705,20 @@ mod tests {
     #[wasm_bindgen_test]
     fn fallback_token_carrier_is_strict_and_fragment_free() {
         assert_eq!(
-            token_from_webtransport_url("https://host/session?x=1&token=00aF#ignored"),
-            Some("00aF")
+            fallback_token_from_webtransport_url("https://host/session?x=1&token=00aF#ignored"),
+            FallbackToken::Valid("00aF")
         );
         assert_eq!(
-            token_from_webtransport_url("https://host/session?token=secret"),
-            None
+            fallback_token_from_webtransport_url("https://host/session?token=secret"),
+            FallbackToken::Invalid
         );
         assert_eq!(
-            token_from_webtransport_url("https://host/session#token=00"),
-            None
+            fallback_token_from_webtransport_url("https://host/session#token=00"),
+            FallbackToken::Missing
+        );
+        assert_eq!(
+            fallback_token_from_webtransport_url("https://host/session?token=00&token=00"),
+            FallbackToken::Invalid
         );
         assert_eq!(
             authenticated_websocket_protocols("00aF"),
@@ -1642,14 +1773,26 @@ mod tests {
     }
 
     #[wasm_bindgen_test]
+    async fn malformed_token_fails_closed_before_an_available_ws_fallback() {
+        let result = super::run_with_fallback(
+            "https://127.0.0.1:9/session?token=not-hex",
+            "ws://127.0.0.1:47654/",
+            test_canvas(),
+            80,
+            24,
+        )
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[wasm_bindgen_test]
     async fn closed_ws_send_and_repeated_reconnect_teardown_release_every_app() {
         let ws = closed_websocket().await;
+        let vt = Vt::load().await.unwrap();
         let document = web_sys::window().unwrap().document().unwrap();
         for _ in 0..8 {
             let tx = super::WireTx::Ws(super::WsTx::new(ws.clone()));
-            let (app, _ready) = super::build_app(tx, test_canvas(), 80, 24, false)
-                .await
-                .unwrap();
+            let (app, _ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
             super::install_transport_failure_hook(&app);
             super::install_websocket_handlers(&app, &ws);
             super::install_keyboard(&app).unwrap();
@@ -1666,6 +1809,7 @@ mod tests {
                 assert!(bindings.websocket.is_none());
                 assert!(bindings.keyboard.is_none());
                 assert!(bindings.blink.is_none());
+                assert!(bindings.bootstrap_expiry.is_none());
             }
             document
                 .dispatch_event(&web_sys::KeyboardEvent::new("keydown").unwrap())

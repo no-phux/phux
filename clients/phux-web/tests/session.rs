@@ -47,6 +47,19 @@ fn hello_ok(profile: BootstrapProfile, limits: BootstrapLimits) -> FrameKind {
     }
 }
 
+#[wasm_bindgen_test]
+async fn hello_ok_without_aggregate_ready_is_not_connection_ready() {
+    let vt = Vt::load().await.expect("load engine");
+    let mut session = Session::new(&vt, 80, 24);
+    let outcome = session.on_frame(hello_ok(
+        BootstrapProfile::SynthesizedVtRaw,
+        BootstrapLimits::default(),
+    ));
+    assert!(outcome.fatal.is_none());
+    assert_eq!(outcome.send.len(), 1, "HELLO_OK starts attach");
+    assert!(!session.is_attach_ready(), "HELLO_OK alone is not usable");
+}
+
 fn attached(terminal_id: ResourceId, cols: u16, rows: u16) -> FrameKind {
     FrameKind::Attached {
         attach_id: 1,
@@ -167,6 +180,7 @@ async fn raw_transcript_waits_for_dual_and_global_ready_without_ack() {
 
     let ready = session.on_frame(FrameKind::AttachReady { attach_id: 1 });
     assert!(ready.render);
+    assert!(session.is_attach_ready());
     assert!(session.render_visible());
     assert!(session.key_frame(key()).is_some());
     let grid = session.grid();

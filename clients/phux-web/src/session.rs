@@ -523,6 +523,7 @@ pub struct Session {
     terminal_reply_supported: bool,
     failed: bool,
     render_visible: bool,
+    attach_ready: bool,
 }
 
 impl Session {
@@ -557,6 +558,7 @@ impl Session {
             terminal_reply_supported: false,
             failed: false,
             render_visible: false,
+            attach_ready: false,
         }
     }
     /// Negotiated decode limits after `HELLO_OK`.
@@ -587,6 +589,12 @@ impl Session {
     #[must_use]
     pub const fn is_failed(&self) -> bool {
         self.failed
+    }
+
+    /// Whether the aggregate attach and every terminal bootstrap reached READY.
+    #[must_use]
+    pub const fn is_attach_ready(&self) -> bool {
+        self.attach_ready
     }
 
     /// Permanently fail this session after a transport or framing violation.
@@ -930,7 +938,11 @@ impl Session {
                 outcome
             }
             FrameKind::AttachReady { attach_id } => {
-                self.apply_kernel(KernelInput::AttachReady { attach_id }).0
+                let (outcome, applied) = self.apply_kernel(KernelInput::AttachReady { attach_id });
+                if applied {
+                    self.attach_ready = true;
+                }
+                outcome
             }
             _ => Outcome::default(),
         }
@@ -991,7 +1003,7 @@ impl Session {
                 false,
             );
         };
-        let result = kernel.update(input, &mut self.effects);
+        let result = kernel.update_at(browser_monotonic_ms(), input, &mut self.effects);
         let focused = self.focused_terminal.as_ref();
         let mut outcome = Outcome::default();
         for effect in self.effects.as_slice() {
@@ -1066,6 +1078,20 @@ impl Session {
         }
     }
 
+    /// Retire browser-side bootstrap state that exceeded the hard staging lifetime.
+    ///
+    /// Returning `true` asks the browser driver to tear down this connection;
+    /// web clients do not expose the native resynchronization-status channel.
+    pub fn expire_bootstrap_staging(&mut self) -> bool {
+        let Some(kernel) = self.kernel.as_mut() else {
+            self.effects.clear();
+            return false;
+        };
+        let expired = kernel.expire_bootstrap_staging(browser_monotonic_ms(), &mut self.effects);
+        self.effects.clear();
+        expired > 0
+    }
+
     fn protocol_failure(&mut self, message: &str) -> Outcome {
         self.fail_protocol(message);
         Outcome {
@@ -1100,6 +1126,12 @@ impl Session {
             .published(&terminal_id)
             .map(|replica| replica.geometry())
     }
+}
+
+fn browser_monotonic_ms() -> u64 {
+    web_sys::window()
+        .and_then(|window| window.performance())
+        .map_or(0, |performance| performance.now().max(0.0) as u64)
 }
 
 fn encode(frame: &FrameKind) -> Vec<u8> {
