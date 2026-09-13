@@ -1,16 +1,16 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
-# Coming from tmux, herdr, screen
+# Coming from tmux, screen, or the old phux distro
 
 **TL;DR.** Translate existing multiplexer muscle memory into phux. tmux
-users keep attach, split, and prefix habits. herdr users already have
-those defaults. screen users get detach without the rest of screen.
-phux's extra surface is that every pane is a live terminal other programs
-attach to.
+users keep attach, split, and prefix habits. Anyone who used the in-tree
+starter formerly named `herdr` already has those defaults as stock phux.
+screen users get detach without the rest of screen. phux's extra surface
+is that every pane is a live terminal other programs attach to.
 
 ---
 
@@ -49,12 +49,14 @@ If you want a battle-hardened local multiplexer and nothing else, tmux
 is still the answer. phux is the multiplexer you use when a human and
 an agent should share the same terminal. [When to use phux](./when-to-use.md).
 
-## herdr
+## The old phux `herdr` distro
 
-herdr was phux's curated starter distro. Its opinions — which-key delay,
-split and palette chords, tab strip, tokyonight chrome — are the shipped
-defaults. A naked `phux` already behaves the way installing herdr used
-to.
+This section is the in-tree starter formerly named `herdr`, not the
+separately developed herdr.dev product.
+
+That starter's opinions — which-key delay, split and palette chords, tab
+strip, tokyonight chrome — are the shipped defaults. A naked `phux`
+already behaves the way installing that distro used to.
 
 What remains as a distro is the demo plugin set (workspace
 autosave/restore and agent-tools), because an embedded default cannot
