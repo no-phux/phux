@@ -82,8 +82,13 @@ impl EnrollHome {
     /// build, so it would otherwise resolve the `dev` profile and this file's
     /// path assertions would be describing a layout no user ever sees
     /// (ADR-0080).
+    ///
+    /// `HOME` is redirected too: `--role satellite` writes or patches this
+    /// machine's service unit, and without a sandbox that lands in the
+    /// developer's real `~/Library/LaunchAgents` (or systemd user dir).
     fn run(&self, args: &[&str], ssh: &Path) -> (i32, String, String) {
         let out = Command::new(PHUX)
+            .env("HOME", self.dir.path())
             .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
             .env("XDG_STATE_HOME", self.dir.path().join("state"))
             .env("PHUX_PROFILE", "default")
@@ -149,6 +154,107 @@ impl EnrollHome {
             "the other role's token directory must stay untouched"
         );
     }
+
+    /// The per-user service unit `--role satellite` patches or writes.
+    ///
+    /// macOS reads `$HOME/Library/LaunchAgents`; Linux reads
+    /// `$XDG_CONFIG_HOME/systemd/user`. Both `HOME` and `XDG_CONFIG_HOME` are
+    /// the tempdir (see [`Self::run`]).
+    fn hub_unit_path(&self) -> std::path::PathBuf {
+        if cfg!(target_os = "macos") {
+            self.dir
+                .path()
+                .join("Library/LaunchAgents/com.phux.server.plist")
+        } else {
+            self.dir.path().join("config/systemd/user/phux.service")
+        }
+    }
+
+    fn write_hub_unit(&self, body: &str) {
+        let path = self.hub_unit_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("create unit dir");
+        }
+        std::fs::write(path, body).expect("write unit");
+    }
+}
+
+/// Direct-exec unit with a QUIC listener and a socket override, no `--hub`.
+/// Those two flags are exactly what a reinstall would drop (ADR-0083).
+const fn unit_without_hub() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "\
+<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<plist version=\"1.0\">
+<dict>
+  <key>Label</key>
+  <string>com.phux.server</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/phux</string>
+    <string>server</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PHUX_QUIC_ADDR</key>
+    <string>0.0.0.0:8788</string>
+    <key>PHUX_SOCKET</key>
+    <string>/tmp/custom/phux.sock</string>
+  </dict>
+</dict>
+</plist>
+"
+    } else {
+        "\
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/phux server
+Environment=\"PHUX_QUIC_ADDR=0.0.0.0:8788\"
+Environment=\"PHUX_SOCKET=/tmp/custom/phux.sock\"
+"
+    }
+}
+
+fn unit_with_hub() -> String {
+    if cfg!(target_os = "macos") {
+        unit_without_hub().replace(
+            "<string>server</string>",
+            "<string>server</string>\n    <string>--hub</string>",
+        )
+    } else {
+        unit_without_hub().replace(
+            "ExecStart=/usr/local/bin/phux server",
+            "ExecStart=/usr/local/bin/phux server --hub",
+        )
+    }
+}
+
+fn assert_token_never_printed(stdout: &str, stderr: &str) {
+    assert!(
+        !stdout.contains(TOKEN) && !stderr.contains(TOKEN),
+        "the pairing token must not appear in argv, config, or logs; \
+         stdout={stdout} stderr={stderr}"
+    );
+}
+
+fn unit_kept_existing_flags(body: &str) {
+    assert!(
+        body.contains("0.0.0.0:8788") && body.contains("/tmp/custom/phux.sock"),
+        "existing listener/socket flags must survive --hub ensure:\n{body}"
+    );
+    if cfg!(target_os = "macos") {
+        assert!(
+            body.contains("<string>--hub</string>"),
+            "expected --hub in ProgramArguments:\n{body}"
+        );
+    } else {
+        assert!(
+            body.contains("ExecStart=/usr/local/bin/phux server --hub"),
+            "expected --hub on ExecStart:\n{body}"
+        );
+    }
 }
 
 /// The default role's tail: `[[remote]]` in the registry, the token under
@@ -176,6 +282,11 @@ fn enroll_remote_registers_remote_registry_and_remote_token_dir() {
         "the reported certificate fingerprint must be pinned; config={config}"
     );
     home.assert_token_routed(&home.token_path("remotes", "mini"), "satellites");
+    assert_token_never_printed(&stdout, &stderr);
+    assert!(
+        !home.hub_unit_path().exists(),
+        "--role remote must not write a local hub unit"
+    );
 }
 
 /// `--role satellite` flips every role-specific decision at once: the
@@ -199,6 +310,23 @@ fn enroll_satellite_registers_satellite_registry_and_satellite_token_dir() {
         "config={config}"
     );
     home.assert_token_routed(&home.token_path("satellites", "edge"), "remotes");
+    assert_token_never_printed(&stdout, &stderr);
+    assert!(
+        stdout.contains("local hub service installed with --hub"),
+        "a missing local unit is written with --hub; stdout={stdout}"
+    );
+    let unit = std::fs::read_to_string(home.hub_unit_path()).expect("hub unit written");
+    if cfg!(target_os = "macos") {
+        assert!(
+            unit.contains("<string>--hub</string>"),
+            "installed unit must run with --hub:\n{unit}"
+        );
+    } else {
+        assert!(
+            unit.contains(" --hub") || unit.contains("server --hub"),
+            "installed unit must run with --hub:\n{unit}"
+        );
+    }
 }
 
 /// `--ssh-only` registers `ssh://HOST` in the role-correct registry without
@@ -240,7 +368,14 @@ fn ssh_only_registers_ssh_endpoint_without_contacting_the_host() {
         "ssh-only satellite role registers ssh://HOST as a satellite; \
          config={config}"
     );
-    assert!(!home.dir.path().join("state").exists());
+    assert!(
+        !home.token_path("satellites", "edge").exists(),
+        "an ssh:// satellite still rides ssh trust: no pairing token"
+    );
+    assert!(
+        home.hub_unit_path().exists(),
+        "ssh-only satellite enroll still enables local --hub"
+    );
 }
 
 /// The `--json` success document: the same `schema_version`-1 `"host"`
@@ -271,6 +406,10 @@ fn enroll_json_emits_the_documented_host_document() {
         "exactly the two documented top-level keys; document: {doc}"
     );
     assert_eq!(host.len(), 7, "exactly the seven documented host keys");
+    assert!(
+        doc.get("hub_service").is_none(),
+        "--role remote JSON must not grow a hub_service key; document: {doc}"
+    );
 
     // The full satellite path fills the auth material in the same shape.
     let home = EnrollHome::new();
@@ -296,4 +435,49 @@ fn enroll_json_emits_the_documented_host_document() {
         home.token_path("satellites", "edge"),
         "the document names the role-correct token path"
     );
+    assert_eq!(
+        doc["hub_service"], "installed",
+        "no pre-existing unit is written with --hub; document: {doc}"
+    );
+    assert_token_never_printed(&stdout, &stderr);
+}
+
+/// An installed unit that already has listeners must gain `--hub` without
+/// losing them. A re-run of `phux service install --hub` would drop both
+/// (ADR-0083); this is the whole reason enroll patches in place.
+#[test]
+fn satellite_enroll_adds_hub_without_dropping_existing_unit_flags() {
+    let home = EnrollHome::new();
+    home.write_hub_unit(unit_without_hub());
+    let ssh = home.install_fake_ssh();
+
+    let (code, stdout, stderr) = home.run(&["host", "enroll", "edge", "--role", "satellite"], &ssh);
+    assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
+    assert!(
+        stdout.contains("existing listeners kept"),
+        "stdout={stdout}"
+    );
+    let body = std::fs::read_to_string(home.hub_unit_path()).expect("read unit");
+    unit_kept_existing_flags(&body);
+    assert_token_never_printed(&stdout, &stderr);
+}
+
+/// A unit that already runs with `--hub` is left byte-for-byte alone.
+#[test]
+fn satellite_enroll_is_a_noop_when_the_local_unit_already_is_a_hub() {
+    let home = EnrollHome::new();
+    let original = unit_with_hub();
+    home.write_hub_unit(&original);
+    let ssh = home.install_fake_ssh();
+
+    let (code, stdout, stderr) = home.run(
+        &["host", "enroll", "edge", "--role", "satellite", "--json"],
+        &ssh,
+    );
+    assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
+    let doc: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout is one JSON document");
+    assert_eq!(doc["hub_service"], "already", "document: {doc}");
+    let body = std::fs::read_to_string(home.hub_unit_path()).expect("read unit");
+    assert_eq!(body, original, "an already-hub unit must not be rewritten");
 }

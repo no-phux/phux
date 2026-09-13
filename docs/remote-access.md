@@ -144,6 +144,41 @@ the transport.
 The rest of this page is the manual path: what `enroll` automates, and what
 to do when it cannot reach the host.
 
+### Joining a satellite to this hub
+
+`--remote` and `phux host enroll` (default `--role remote`) attach *to*
+another machine. To have this machine *dial* another as a federation
+satellite, pass `--role satellite`:
+
+```sh
+phux host enroll --role satellite mini
+```
+
+One command, typically under a minute if `mini` already has phux and you
+can `ssh mini`:
+
+1. Confirms phux is on `mini` and installs its per-user service (launchd
+   on macOS, systemd `--user` on Linux) with a QUIC listener, so the
+   satellite survives logout and reboot.
+2. Mints a pairing token there and pins the certificate fingerprint.
+3. Registers `mini` in this machine's `[[satellites]]` registry. The token
+   is stored owner-only (`0600`) under the state dir; it never lands in
+   argv, `config.toml`, or logs.
+4. Ensures this machine's per-user service runs with `--hub`. If a unit
+   already exists, `--hub` is patched into its argv and existing
+   `--quic` / `--listen` / `--restore` / `--socket` arguments stay. A
+   naive `phux service install --hub` would drop them
+   ([ADR-0083](adr/0083-in-place-supervisor-unit-reconcile.md)).
+
+Afterwards this machine is the hub: host-qualified operations reach
+`mini` over the hub-and-spoke link. Join stays accountless QUIC on your
+overlay; there is no phux-operated relay on this path.
+
+If the local server is already running without `--hub`, the unit is
+updated and hub mode starts the next time that server starts — the
+running process is not restarted, so panes stay up. `--no-service` skips
+installing the *remote* unit only; the local `--hub` ensure still runs.
+
 ## Why an overlay
 
 phux already ships everything a remote attach needs except reachability: wss://
