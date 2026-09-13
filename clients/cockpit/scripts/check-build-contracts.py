@@ -37,18 +37,39 @@ class BuildContracts(unittest.TestCase):
         self.assertEqual(len(steps), 2)
         return steps
 
-    def test_cache_covers_wrapper_default(self):
-        env = dict(os.environ, PHUX_ZIG_CACHE_MODE="isolated")
+    def test_ci_uses_shared_zig_cache_without_isolated_duplicate(self):
+        env = dict(os.environ, GITHUB_ACTIONS="true")
+        env.pop("PHUX_ZIG_CACHE_MODE", None)
+        env.pop("PHUX_ZIG_BUILD_TIMEOUT", None)
         config = subprocess.check_output(
             ["bash", str(ROOT / "scripts/zig-build.sh"), "--print-config"],
             env=env, text=True,
         )
-        cache = re.search(r"(?m)^global cache:  (.+)$", config).group(1)
-        relative = Path(cache).relative_to(REPO_ROOT).as_posix()
+        self.assertRegex(config, r"(?m)^isolation:     shared$")
+        self.assertRegex(config, r"(?m)^timeout:       none$")
+        self.assertNotIn(".zig-global-cache", config)
+        workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
+        self.assertIn("PHUX_ZIG_CACHE_MODE: shared", workflow)
+        self.assertIn('PHUX_ZIG_BUILD_TIMEOUT: "0"', workflow)
         for step in self.cache_steps():
-            self.assertIn(f"            {relative}\n", step)
             self.assertIn("            ~/.cache/zig\n", step)
             self.assertIn("            clients/cockpit/.zig-cache\n", step)
+            self.assertNotIn(".zig-global-cache", step)
+
+    def test_local_default_stays_isolated(self):
+        env = dict(os.environ)
+        env.pop("GITHUB_ACTIONS", None)
+        env.pop("PHUX_ZIG_CACHE_MODE", None)
+        env.pop("PHUX_ZIG_BUILD_TIMEOUT", None)
+        config = subprocess.check_output(
+            ["bash", str(ROOT / "scripts/zig-build.sh"), "--print-config"],
+            env=env, text=True,
+        )
+        self.assertRegex(config, r"(?m)^isolation:     isolated$")
+        self.assertRegex(config, r"(?m)^timeout:       600s$")
+        cache = re.search(r"(?m)^global cache:  (.+)$", config).group(1)
+        self.assertEqual(Path(cache).relative_to(REPO_ROOT).as_posix(),
+                         "clients/cockpit/.zig-global-cache")
 
     def test_cache_is_reusable_with_stable_fallback(self):
         # A commit-SHA suffix makes every main push a unique immutable entry
@@ -59,10 +80,10 @@ class BuildContracts(unittest.TestCase):
         self.assertNotIn("${{ github.sha }}", key)
         self.assertIn("${{ runner.os }}", key)
         self.assertIn("${{ runner.arch }}", key)
-        self.assertTrue(key.startswith("mini-v1-cockpit-zig-"))
+        self.assertTrue(key.startswith("mini-v2-cockpit-zig-"))
         self.assertIn("hashFiles(", key)
         self.assertIn(f"          key: {key}", save)
-        self.assertRegex(restore, r"restore-keys: \|\n            mini-v1-cockpit-zig-0\.16\.0-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}-\n")
+        self.assertRegex(restore, r"restore-keys: \|\n            mini-v2-cockpit-zig-0\.16\.0-\$\{\{ runner.os \}\}-\$\{\{ runner.arch \}\}-\n")
         self.assertIn("github.ref == 'refs/heads/main'", save)
         self.assertIn("steps.zig-cache.outputs.cache-hit != 'true'", save)
 
@@ -83,6 +104,8 @@ class BuildContracts(unittest.TestCase):
             actual = re.search(r"(?ms)^          path: \|\n(.*?)^          key:", workflow).group(1)
             self.assertEqual(actual, paths, name)
             self.assertIn("./scripts/zig-build.sh", workflow)
+            self.assertIn("PHUX_ZIG_CACHE_MODE: shared", workflow)
+            self.assertIn('PHUX_ZIG_BUILD_TIMEOUT: "0"', workflow)
             self.assertNotRegex(workflow, r"(?m)^\s*(?:run:\s*)?zig\s+build\b")
         package = (ROOT / "scripts/package-macos.sh").read_text()
         self.assertIn("bash ./scripts/build-shipping-app.sh package", package)

@@ -70,7 +70,7 @@ printf '  root: %s\n' "$ROOT"
 # disabled half, "the path is under the root" would pass for a script that
 # ignored the setting entirely.
 shared_path="$(PHUX_ZIG_CACHE_MODE=shared "$ZB" --print-config | awk '/^global cache:/ {print $3}')"
-iso_path="$("$ZB" --print-config | awk '/^global cache:/ {print $3}')"
+iso_path="$(PHUX_ZIG_CACHE_MODE=isolated "$ZB" --print-config | awk '/^global cache:/ {print $3}')"
 
 case "$shared_path" in
     "$ROOT"/*) bad "fix-disabled mode still produced a per-root cache ($shared_path); this check cannot fail" ;;
