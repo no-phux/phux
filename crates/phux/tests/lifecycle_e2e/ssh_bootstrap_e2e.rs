@@ -231,15 +231,14 @@ fn bootstrap_prints_one_line_that_is_enough_to_dial() {
         token: Some(unhex(token)),
         trust: CertTrust::Pinned(fingerprint.to_owned()),
     });
-    let features = rt
-        .block_on(tokio::time::timeout(
-            Duration::from_secs(10),
-            Connection::connect_dial(&dial),
-        ))
-        .expect("the dial completes")
-        .expect("the listener admits the token it printed")
-        .negotiated_bootstrap()
-        .map(|n| n.server_features);
+    let features = rt.block_on(async {
+        tokio::time::timeout(Duration::from_secs(10), Connection::connect_dial(&dial))
+            .await
+            .expect("the dial completes")
+            .expect("the listener admits the token it printed")
+            .negotiated_bootstrap()
+            .map(|n| n.server_features)
+    });
     assert!(features.is_some_and(|caps| caps.contains(ServerFeature::OpenListener)));
 }
 
