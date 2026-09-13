@@ -440,6 +440,52 @@ fn paint_attention_overlay<W: Write>(
     out.flush()
 }
 
+/// Paint a transient notice as a compact right-aligned toast over the bar.
+/// The one-cell padding gives the reversed region a chip boundary without
+/// adding punctuation to the notice itself.
+fn paint_notice_overlay<W: Write>(
+    out: &mut W,
+    notice: &Notice,
+    row_index: u16,
+    x: u16,
+    cols: u16,
+) -> io::Result<()> {
+    let Some((buffer, start, width)) = notice_buffer(notice, cols) else {
+        return Ok(());
+    };
+    write_buffer(out, &buffer, row_index, x.saturating_add(start), width)
+}
+
+/// Build the clipped cells shared by the live toast and rendered snapshots.
+fn notice_buffer(notice: &Notice, cols: u16) -> Option<(Buffer, u16, u16)> {
+    let label = format!(" {} ", notice.text);
+    let span = notice_span(notice, cols)?;
+    let width = span.end - span.start;
+    Some((
+        full_row_buffer(&label, notice.severity.style(), width),
+        span.start,
+        width,
+    ))
+}
+
+/// Columns occupied by the right-aligned toast, including its padding.
+fn notice_span(notice: &Notice, cols: u16) -> Option<std::ops::Range<u16>> {
+    let width = u16::try_from(crate::render::display_width(&format!(" {} ", notice.text)))
+        .unwrap_or(u16::MAX)
+        .min(cols);
+    (width > 0).then(|| cols - width..cols)
+}
+
+/// Copy the transient toast into the status snapshot's already-composed row.
+fn overlay_notice_into_buffer(buffer: &mut Buffer, notice: &Notice, cols: u16) {
+    let Some((toast, start, width)) = notice_buffer(notice, cols) else {
+        return;
+    };
+    for offset in 0..width {
+        buffer[(start + offset, 0)] = toast[(offset, 0)].clone();
+    }
+}
+
 /// ADR-0033 / phux-foz.1: overlay a badge into a composed bar buffer (the
 /// `phux snapshot --rendered` path), right-aligned `right_offset` cells in
 /// from the right edge, so the dense-cell snapshot matches the live VT paint.
@@ -511,7 +557,7 @@ pub const NOTICE_TTL: Duration = Duration::from_secs(7);
 
 /// phux-i0e8.2.1: severity of a transient status-bar [`Notice`].
 ///
-/// Picks the full-row style only; it carries no routing semantics. `Warn`
+/// Picks the toast-chip style only; it carries no routing semantics. `Warn`
 /// renders bold (matching the persistent error strip's weight), `Info`
 /// renders plain reverse video.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -539,8 +585,9 @@ impl NoticeSeverity {
 /// lifecycle events that deserve a moment of visibility but no persistent
 /// chrome — input-authority handovers, degraded federation, pane exits.
 /// One slot, newest-wins: a fresh notice replaces the current one and
-/// restarts the [`NOTICE_TTL`] clock. The persistent error line
-/// ([`StatusBarPainter::error_line`]) always outranks it.
+/// restarts the [`NOTICE_TTL`] clock. It floats as a compact right-aligned
+/// chip over the normal bar instead of replacing the whole row. The persistent
+/// error line ([`StatusBarPainter::error_line`]) always outranks it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Notice {
     /// Render severity; see [`NoticeSeverity`].
@@ -618,9 +665,8 @@ pub struct StatusBarPainter {
     /// silently empty row.
     error: Option<String>,
     /// phux-i0e8.2.1: the transient notice slot and its expiry deadline.
-    /// One slot, newest-wins; painted full-row (like the error strip, via
-    /// the shared [`Self::paint_full_row_message`]) until
-    /// [`Self::clear_expired_notice`] drops it. Never set while `error`
+    /// One slot, newest-wins; painted as a compact right-aligned toast over
+    /// the normal bar until [`Self::clear_expired_notice`] drops it. Never set while `error`
     /// is active (the persistent diagnostic outranks it) and never set on
     /// an empty bar (no row is reserved to paint it on — see
     /// [`Self::set_notice`]).
@@ -980,7 +1026,7 @@ impl StatusBarPainter {
         if cols == 0 {
             return Ok(false);
         }
-        if let Some(outcome) = self.paint_row_takeover(out, x, cols, rows)? {
+        if let Some(outcome) = self.paint_error_takeover(out, x, cols, rows)? {
             return Ok(outcome);
         }
         // The supervisory badge rides the normal bar row, so it only paints
@@ -1021,16 +1067,13 @@ impl StatusBarPainter {
         Ok(true)
     }
 
-    /// Paint whichever full-row message has taken the bar over, if any, and
-    /// report its outcome; `None` when the widget pipeline still owns the row.
+    /// Paint the persistent full-row error that has taken the bar over, if
+    /// any, and report its outcome; `None` when the widget pipeline owns the row.
     ///
     /// phux-9vf: an error-line painter bypasses the widget pipeline and
     /// paints the fixed diagnostic. It takes priority over the normal
     /// "empty bar with no windows is a no-op" short-circuit in the caller.
-    /// phux-i0e8.2.1: an active transient notice likewise takes the row over
-    /// from the widget pipeline until it expires. Full-row like the error
-    /// strip; only reachable on a non-empty bar (see `set_notice`).
-    fn paint_row_takeover<W: Write>(
+    fn paint_error_takeover<W: Write>(
         &mut self,
         out: &mut W,
         x: u16,
@@ -1040,11 +1083,7 @@ impl StatusBarPainter {
         if self.error.is_some() {
             return self.paint_error_line(out, x, cols, rows).map(Some);
         }
-        let Some((notice, _)) = self.notice.clone() else {
-            return Ok(None);
-        };
-        self.paint_full_row_message(out, &notice.text, notice.severity.style(), x, cols, rows)
-            .map(Some)
+        Ok(None)
     }
 
     /// Inject the painter-owned window list (and the rest of its own state)
@@ -1111,7 +1150,7 @@ impl StatusBarPainter {
         }
     }
 
-    /// Overlay the badge and attention hint atop the freshly-painted row.
+    /// Overlay the badges and transient toast atop the freshly-painted row.
     ///
     /// ADR-0033: the supervisory badge overlays the widget row
     /// (right-aligned). Emitted after the row so it wins; the full-row
@@ -1142,6 +1181,9 @@ impl StatusBarPainter {
                 self.attention_offset(),
                 self.attention_fg,
             )?;
+        }
+        if let Some((notice, _)) = &self.notice {
+            paint_notice_overlay(out, notice, row_index, x, cols)?;
         }
         Ok(())
     }
@@ -1177,15 +1219,6 @@ impl StatusBarPainter {
         };
         if let Some(message) = &self.error {
             return Some((full_row_buffer(message, alarm_style(), cols), x, row_index));
-        }
-        // phux-i0e8.2.1: mirror the live paint — an active transient notice
-        // composes full-row into the snapshot, styled by severity.
-        if let Some((notice, _)) = &self.notice {
-            return Some((
-                full_row_buffer(&notice.text, notice.severity.style(), cols),
-                x,
-                row_index,
-            ));
         }
         // Match `paint`: the badge only composes onto a non-empty bar row.
         if self.bar.is_empty() && self.windows.is_empty() {
@@ -1228,6 +1261,12 @@ impl StatusBarPainter {
                     .add_modifier(Modifier::REVERSED | Modifier::BOLD),
             );
         }
+        // phux-i0e8.2.1: mirror the live paint. The transient notice is a
+        // compact toast over the normal row and temporarily outranks the
+        // persistent right-edge chips beneath it.
+        if let Some((notice, _)) = &self.notice {
+            overlay_notice_into_buffer(&mut buffer, notice, cols);
+        }
         Some((buffer, x, row_index))
     }
 
@@ -1255,8 +1294,7 @@ impl StatusBarPainter {
     /// phux-i0e8.2.1: paint `message` full-row onto the bar row in `style`,
     /// truncated to `cols` and padded to the span's full width.
     ///
-    /// Shared by the persistent error line and the transient notice. Cached
-    /// on `last_row` / `last_viewport` like the normal path so repeated
+    /// Cached on `last_row` / `last_viewport` like the normal path so repeated
     /// paints with unchanged dims are no-ops; the cache is keyed on the span
     /// only — every message change goes through a setter that calls
     /// [`Self::invalidate`] (the error message is fixed for the painter's
@@ -1340,9 +1378,14 @@ impl StatusBarPainter {
         let (origin, cols, row) = self.last_row.as_ref()?;
         let col = x.checked_sub(*origin)?;
         if self
-            .supervisory
-            .as_deref()
-            .is_some_and(|s| badge_span(s, *cols, 0).contains(&col))
+            .notice
+            .as_ref()
+            .and_then(|(notice, _)| notice_span(notice, *cols))
+            .is_some_and(|span| span.contains(&col))
+            || self
+                .supervisory
+                .as_deref()
+                .is_some_and(|s| badge_span(s, *cols, 0).contains(&col))
             || self
                 .attention
                 .as_deref()
@@ -1655,10 +1698,10 @@ mod tests {
         assert_eq!(buf.len(), first_len, "unchanged dims must be a no-op");
     }
 
-    /// phux-i0e8.2.1: an accepted notice takes the row over full-row, and a
-    /// newer notice replaces it (newest-wins single slot).
+    /// phux-i0e8.2.1: an accepted notice floats over the normal row as a
+    /// compact toast, and a newer notice replaces it (newest-wins single slot).
     #[test]
-    fn notice_paints_full_row_and_newest_wins() {
+    fn notice_paints_compact_toast_without_covering_bar_and_newest_wins() {
         let cfg = StatusCfg {
             left: vec![Widget::Bare("session-name".into())],
             ..Default::default()
@@ -1675,8 +1718,8 @@ mod tests {
             "notice must paint the bar row: {printable:?}"
         );
         assert!(
-            !printable.contains("sess"),
-            "the notice takes the full row over from the widgets: {printable:?}"
+            printable.contains("sess"),
+            "the normal bar must remain visible under the toast: {printable:?}"
         );
         assert!(p.set_notice(Notice::warn("second notice"), now));
         buf.clear();
@@ -1686,6 +1729,56 @@ mod tests {
         assert!(
             printable.contains("second notice") && !printable.contains("first notice"),
             "newest notice must win the slot: {printable:?}"
+        );
+    }
+
+    #[test]
+    fn notice_snapshot_is_right_aligned_and_leaves_the_bar_visible() {
+        let cfg = StatusCfg {
+            left: vec![Widget::Bare("session-name".into())],
+            ..Default::default()
+        };
+        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
+        assert!(p.set_notice(
+            Notice::warn("pane 4: exited 127"),
+            std::time::Instant::now()
+        ));
+        let (buffer, _, _) = p
+            .compose_buffer(BarInset::NONE, 40, 24, &ctx_default("main"))
+            .expect("configured bar composes");
+        let row: String = (0..40).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(row.starts_with("main"), "left-side bar survives: {row:?}");
+        assert!(
+            row.ends_with(" pane 4: exited 127 "),
+            "toast is compact and right-aligned: {row:?}"
+        );
+    }
+
+    #[test]
+    fn notice_toast_does_not_expose_covered_bar_hit_targets() {
+        let cfg = StatusCfg {
+            right: vec![Widget::Bare("windows".into())],
+            ..Default::default()
+        };
+        let mut p = StatusBarPainter::new(build_bar(&cfg), Position::Top);
+        p.set_windows(vec![WindowInfo {
+            name: "shell".to_owned(),
+            active: true,
+            zoomed: false,
+            attention: false,
+            branch: None,
+        }]);
+        assert!(p.set_notice(
+            Notice::warn("pane 4: exited 127"),
+            std::time::Instant::now()
+        ));
+        let mut out = Vec::new();
+        p.paint(&mut out, BarInset::NONE, 40, 24, &ctx_default("main"))
+            .unwrap();
+        assert_eq!(
+            p.hit_at(39),
+            None,
+            "the toast must temporarily mask the window tab beneath it"
         );
     }
 

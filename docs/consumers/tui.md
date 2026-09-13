@@ -311,15 +311,14 @@ cannot move this viewport. Attention clears when you focus the pane
 **and type or paste**; merely focusing does not. The flag is per-attach
 and does not persist across detach.
 
-**Notices.** Lifecycle events take the bar row for about seven seconds,
-newest-wins: input-lease handovers on the focused pane, a satellite
-becoming unreachable, a pane dying with a non-zero exit (clean `exit 0`
-and a kill you requested are silent), and re-attach after a server
-restart. An empty `[status]` reserves no row, so notices degrade to log
-lines. When the last pane of a default session dies, the TUI tears down
-and prints one cooked-terminal line naming the exit. A keep-empty
-session stays attached and paints `Empty session` with the `new-window`
-chord.
+**Notices.** Lifecycle events appear in a compact right-aligned bar toast for
+about seven seconds, newest-wins: input-lease handovers on the focused pane, a
+satellite becoming unreachable, a pane dying with a non-zero exit (clean
+`exit 0` and a kill you requested are silent), and re-attach after a server
+restart. An empty `[status]` reserves no row, so notices degrade to log lines.
+When the last pane of a default session dies, the TUI tears down and prints one
+cooked-terminal line naming the exit. A keep-empty session stays attached and
+paints `Empty session` with the `new-window` chord.
 
 **Reconnect.** If the server vanishes mid-session, the TUI drops to the
 cooked screen and waits: 10 seconds, polling every 100 ms, on the local
