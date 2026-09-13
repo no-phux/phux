@@ -1,6 +1,6 @@
 //! Host enrollment, remote targets, credentials, and fleet transport tests.
 
-#[path = "../common/mod.rs"]
+#[path = "../common/ambient.rs"]
 mod common;
 
 mod host_enroll;

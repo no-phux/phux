@@ -1,6 +1,6 @@
 //! Workspace inspection, worktree serialization, and command output contracts.
 
-#[path = "../common/mod.rs"]
+#[path = "../common/ambient.rs"]
 mod common;
 
 mod output_hygiene;

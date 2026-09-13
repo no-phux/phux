@@ -11,7 +11,7 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
-#[path = "../common/mod.rs"]
+#[path = "../common/ambient.rs"]
 mod common;
 
 use std::path::{Path, PathBuf};
