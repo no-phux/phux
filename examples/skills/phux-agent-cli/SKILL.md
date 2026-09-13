@@ -219,25 +219,25 @@ mappings are direct:
 | spatial verbs | `phux_insert_pane`, `phux_move_pane`, `phux_swap_pane` | exact local same-session panes |
 | `signal` | `phux_signal` | destructive signals require `confirm: true` |
 | `agent` | `phux_agent_list`, `phux_agent_show`, `phux_agent_explain`, `phux_agent_set`, `phux_agent_clear`, `phux_agent_wait`, `phux_agent_send_keys`, `phux_agent_prompt`, `phux_agent_answer`, `phux_agent_start` | one strict tool per lifecycle operation |
-| `agent session open --json` | `phux_agent_session_open` | landing on the resource-model branch; Terminal target, `--provider` required; the opener is the only producer |
-| `agent session close` | `phux_agent_session_close` | landing on the resource-model branch; closes the session only, never its pane |
-| `agent emit --json` | `phux_agent_emit` | landing on the resource-model branch; closed `--type` set, `data` a JSON object, nothing written on refusal |
-| `agent log --json [--tail N]` | `phux_agent_log` | landing on the resource-model branch; CLI `--follow` is a stream with no timeout flag, bound it like `watch`; MCP has no follow |
+| `agent session open --json` | `phux_agent_session_open` | requires `RESOURCE_KINDS`; Terminal target, `--provider` required; the opener is the only producer |
+| `agent session close` | `phux_agent_session_close` | requires `RESOURCE_KINDS`; closes the session only, never its pane |
+| `agent emit --json` | `phux_agent_emit` | requires `RESOURCE_KINDS`; closed `--type` set, `data` a JSON object, nothing written on refusal |
+| `agent log --json [--tail N]` | `phux_agent_log` | requires `RESOURCE_KINDS`; CLI `--follow` is a stream with no timeout flag, bound it like `watch`; MCP has no follow |
 | `workspace` | `phux_workspace` | inspect/save/restore only |
 | `status --json` | `phux_status` | read-only; never auto-starts a server, and `running: false` is a document, not a tool error |
 | `doctor --json` | `phux_doctor` | read-only; `ok: false` is a document, and `server-health` repeats one row per condition |
 
 The remaining tools cover send-keys, kill, tags, rename, plugin actions, and
 plugin workspace profiles. `tools/list` is authoritative. The four
-agent-session rows describe a surface that is not in a released binary: on
-a server that does not advertise `RESOURCE_KINDS` they refuse with
-`unsupported_server`, and `phux ls --json` without a `resources` array is
-the cheap way to know before calling. When they are present, an agent
-session is a child resource of a pane (`kind: agent_session`, `parent: @N`
-in `resources`), never a pane: do not pass its id to `snapshot`, `run`,
-`send-keys`, or a layout verb, which refuse it with `wrong_resource_kind`. Every parity schema
-rejects unknown properties, invokes argv directly rather than through a shell,
-and returns canonical CLI JSON or a documented small projection.
+agent-session rows require `RESOURCE_KINDS`: on a server that does not
+advertise it they refuse with `unsupported_server`, and `phux ls --json`
+without a `resources` array is the cheap way to know before calling. When
+they are present, an agent session is a child resource of a pane
+(`kind: agent_session`, `parent: @N` in `resources`), never a pane: do not
+pass its id to `snapshot`, `run`, `send-keys`, or a layout verb, which
+refuse it with `wrong_resource_kind`. Every parity schema rejects unknown
+properties, invokes argv directly rather than through a shell, and returns
+canonical CLI JSON or a documented small projection.
 
 MCP has no headless focus tool and deliberately has no durable input-authority
 tool. It also does not accept remote credentials or mutate satellite trust.
