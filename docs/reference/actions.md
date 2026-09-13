@@ -44,7 +44,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `command-palette` | — |  | Open the fuzzy commands and help finder |
 | `context-menu` | Pane |  | Open the context menu for the focused pane (ADR-0058) |
 | `window-picker` | Window |  | Pick a window from all sessions (grouped) |
-| `session-picker` | Session |  | Pick a session from a filterable list |
+| `session-picker` | Session |  | Browse sessions and live host availability |
 | `agent-fleet` | View |  | Agent fleet: every pane's agent, state, and attention |
 | `focus-pane` | — | `window` (window index), `pane` (DFS leaf ordinal) | Focus a pane by window index and DFS leaf ordinal |
 | `next-attention` | Pane |  | Jump to the next pane waiting for an answer |

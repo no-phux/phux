@@ -1324,7 +1324,7 @@ impl StatusBarPainter {
     pub fn window_hit_at(&self, x: u16) -> Option<usize> {
         match self.hit_at(x)? {
             phux_config::widget::CellHit::Window(i) => Some(i),
-            phux_config::widget::CellHit::Switch => None,
+            phux_config::widget::CellHit::Switch | phux_config::widget::CellHit::Action(_) => None,
         }
     }
 
@@ -2388,7 +2388,7 @@ mod tests {
         let visible = strip_csi(&String::from_utf8(buf).unwrap());
 
         assert!(
-            visible.contains("C-b  Space palette"),
+            visible.contains("C-b  s Sessions"),
             "configured prefix should reach hints widget: {visible:?}"
         );
         assert!(

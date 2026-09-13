@@ -183,14 +183,20 @@ fn write_stage(path: &Path, stage: Stage) -> std::io::Result<()> {
 pub(super) fn hint_lines(keybindings: Option<&KeybindingsCfg>) -> Vec<String> {
     let detach = binding_label(keybindings, "detach", "Detach action");
     let palette = binding_label(keybindings, "command-palette", "Command palette");
+    let sessions = binding_label(keybindings, "session-picker", "Sessions & hosts");
+    let settings = binding_label(keybindings, "settings", "Settings");
+    let copy = binding_label(keybindings, "copy-mode", "Copy mode");
     vec![
         "Keep working normally. phux keeps this session alive when you leave.".to_owned(),
         String::new(),
         format!("  {detach:<18} leave this view"),
         "  phux               come back from any shell".to_owned(),
-        format!("  {palette:<18} browse commands"),
+        format!("  {sessions:<18} sessions across hosts"),
+        format!("  {palette:<18} browse every command"),
+        format!("  {settings:<18} edit configuration"),
+        format!("  {copy:<18} select scrollback; Shift-drag uses host selection"),
         String::new(),
-        "Getting started stays available in the command palette.".to_owned(),
+        "These destinations stay clickable in the status bar and sidebar.".to_owned(),
     ]
 }
 
@@ -342,6 +348,10 @@ mod tests {
         let body = hint_lines(Some(&keys)).join("\n");
         assert!(body.contains("C-b x"), "detach binding:\n{body}");
         assert!(body.contains("C-b p"), "palette binding:\n{body}");
+        assert!(body.contains("C-b s"), "session binding:\n{body}");
+        assert!(body.contains("C-b S"), "settings binding:\n{body}");
+        assert!(body.contains("C-b ["), "copy binding:\n{body}");
+        assert!(body.contains("Shift-drag"), "native selection:\n{body}");
         assert!(!body.contains("C-a d"), "must not advertise stale defaults");
     }
 }

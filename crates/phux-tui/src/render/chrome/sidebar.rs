@@ -6,8 +6,8 @@
 //! window names directly beneath it. Neither area's position depends on its
 //! population, and empty areas keep their headers and placeholders.
 //!
-//! The strip's last two rows are the `+ new` / `= menu` affordances
-//! (phux-fce4), bottom-anchored, with a collapse chevron in the bottom
+//! The strip's last two rows hold New window plus a shared Commands / Settings
+//! action row (phux-fce4), bottom-anchored, with a collapse chevron in the bottom
 //! corner cell (phux-foz.9; clicking it runs `toggle-sidebar`).
 //! [`hit_test`] maps a mouse position back onto the same row model so
 //! clicks land exactly where the paint says they should. A vertical rule
@@ -43,6 +43,10 @@ pub const NEW_LABEL: &str = "+ new window";
 /// window, session, and plugin actions (`new-session` included) through
 /// the action registry.
 pub const MENU_LABEL: &str = "= commands";
+/// Label of the Settings affordance on the shared footer row.
+pub const SETTINGS_LABEL: &str = "S settings";
+/// Gap between the two independently clickable actions on the footer's menu row.
+const FOOTER_ACTION_GAP: &str = "  ";
 /// Agents header. The legacy API name now refers to the full agent list.
 pub const NEEDS_YOU_HEADER: &str = "Agents";
 /// Sessions header, including the current session.
@@ -89,6 +93,10 @@ pub static HELP_BINDINGS: &[HardcodedBinding] = &[
     HardcodedBinding {
         chord: MENU_LABEL,
         action: "open the command palette (sidebar click)",
+    },
+    HardcodedBinding {
+        chord: SETTINGS_LABEL,
+        action: "open Settings (sidebar click)",
     },
     HardcodedBinding {
         chord: COLLAPSE_GLYPH,
@@ -296,7 +304,7 @@ pub enum SidebarRow {
     Blank,
     /// The `+ new` affordance (create a window).
     NewWindow,
-    /// The `= menu` affordance (open the command palette).
+    /// The shared `= commands  S settings` affordance row.
     Menu,
 }
 
@@ -322,6 +330,8 @@ pub enum SidebarHit {
     NewWindow,
     /// The `= menu` affordance.
     Menu,
+    /// The `S settings` affordance.
+    Settings,
     /// The collapse chevron in the bottom corner (phux-foz.9) —
     /// clicking runs `toggle-sidebar`.
     Collapse,
@@ -476,9 +486,10 @@ fn push_session_entries(rows: &mut Vec<SidebarRow>, counts: SidebarCounts, limit
 
 /// Resolve an outer-viewport mouse cell to a sidebar target.
 ///
-/// `None` when it misses the strip (or lands on a header, the separator
-/// column, or a blank row). `counts` must be the same shape the painter was
-/// fed, so a click resolves against the frame it landed on. The bottom
+/// `None` when it misses the strip (or lands on the separator column or a
+/// blank row). Section headers route to their full management views. `counts`
+/// must be the same shape the painter was fed, so a click resolves against the
+/// frame it landed on. The bottom
 /// corner cell — on the separator column, which is otherwise never a
 /// target — is the collapse chevron (phux-foz.9).
 #[must_use]
@@ -497,7 +508,28 @@ pub fn hit_test(rect: Rect, counts: SidebarCounts, x: u16, y: u16) -> Option<Sid
     if local_x >= rect.w.saturating_sub(1) {
         return None;
     }
-    row_hit(*row_model(counts, rect.h).get(usize::from(local_y))?)
+    let row = *row_model(counts, rect.h).get(usize::from(local_y))?;
+    if row == SidebarRow::Menu {
+        return footer_action_hit(local_x, rect.w);
+    }
+    row_hit(row)
+}
+
+/// Resolve the two actions that share the final footer row against the exact
+/// text columns used by [`SidebarPainter::footer_actions_line`]. On narrow
+/// strips only the visible Commands label remains interactive.
+fn footer_action_hit(local_x: u16, width: u16) -> Option<SidebarHit> {
+    let text_w = usize::from(width.saturating_sub(1 + GUTTER * 2));
+    let content_x = usize::from(local_x.checked_sub(GUTTER)?);
+    let menu_w = display_width(MENU_LABEL).min(text_w);
+    if content_x < menu_w {
+        return Some(SidebarHit::Menu);
+    }
+
+    let settings_start = display_width(MENU_LABEL) + display_width(FOOTER_ACTION_GAP);
+    let settings_end = settings_start + display_width(SETTINGS_LABEL);
+    (settings_end <= text_w && (settings_start..settings_end).contains(&content_x))
+        .then_some(SidebarHit::Settings)
 }
 
 const fn collapse_visible(rect: Rect) -> bool {
@@ -509,12 +541,10 @@ const fn row_hit(row: SidebarRow) -> Option<SidebarHit> {
         SidebarRow::WindowName(i) => Some(SidebarHit::Window(i)),
         SidebarRow::NeedsYou(j) => Some(SidebarHit::NeedsYou(j)),
         SidebarRow::RosterEntry(j) | SidebarRow::RosterHost(j) => Some(SidebarHit::Roster(j)),
-        SidebarRow::NeedsYouOverflow => Some(SidebarHit::Fleet),
-        SidebarRow::RosterOverflow => Some(SidebarHit::Sessions),
+        SidebarRow::NeedsYouHeader | SidebarRow::NeedsYouOverflow => Some(SidebarHit::Fleet),
+        SidebarRow::SpacesHeader | SidebarRow::RosterOverflow => Some(SidebarHit::Sessions),
         SidebarRow::NewWindow => Some(SidebarHit::NewWindow),
-        SidebarRow::Menu => Some(SidebarHit::Menu),
-        SidebarRow::NeedsYouHeader
-        | SidebarRow::SpacesHeader
+        SidebarRow::Menu
         | SidebarRow::AgentsEmpty
         | SidebarRow::SessionsEmpty
         | SidebarRow::Blank => None,
@@ -896,13 +926,34 @@ impl SidebarPainter {
     /// word stays in the recessive `dim` tone.
     fn affordance_line(&self, label: &str, text_w: u16) -> Line<'static> {
         let label = truncate(label, usize::from(text_w));
+        Line::from(self.affordance_spans(&label))
+    }
+
+    fn affordance_spans(&self, label: &str) -> Vec<Span<'static>> {
         let mut chars = label.chars();
         let glyph = chars.next().map(String::from).unwrap_or_default();
         let rest = chars.as_str().to_owned();
-        Line::from(vec![
+        vec![
             Span::styled(glyph, Style::default().fg(self.theme.chord)),
             Span::styled(rest, Style::default().fg(self.theme.text)),
-        ])
+        ]
+    }
+
+    /// Keep both global destinations permanently visible without taking a
+    /// third row away from agents and sessions. The minimum sidebar width fits
+    /// both labels; smaller embedded surfaces degrade to Commands alone.
+    fn footer_actions_line(&self, text_w: u16) -> Line<'static> {
+        let required = display_width(MENU_LABEL)
+            + display_width(FOOTER_ACTION_GAP)
+            + display_width(SETTINGS_LABEL);
+        if required > usize::from(text_w) {
+            return self.affordance_line(MENU_LABEL, text_w);
+        }
+
+        let mut spans = self.affordance_spans(MENU_LABEL);
+        spans.push(Span::raw(FOOTER_ACTION_GAP));
+        spans.extend(self.affordance_spans(SETTINGS_LABEL));
+        Line::from(spans)
     }
 
     /// Render the sections + affordances + separator into a fresh
@@ -974,7 +1025,7 @@ impl SidebarPainter {
             SidebarRow::RosterOverflow => self.sessions_overflow_line(hidden, text_w),
             SidebarRow::Blank => Line::from(""),
             SidebarRow::NewWindow => self.affordance_line(NEW_LABEL, text_w),
-            SidebarRow::Menu => self.affordance_line(MENU_LABEL, text_w),
+            SidebarRow::Menu => self.footer_actions_line(text_w),
         }
     }
 
@@ -2153,7 +2204,7 @@ mod tests {
         let rect = Rect {
             x: 0,
             y: 0,
-            w: 20,
+            w: 28,
             h: 8,
         };
         let buf = p.compose_buffer(rect);
@@ -2167,10 +2218,15 @@ mod tests {
             "row 7 should hold the menu affordance: {:?}",
             row_text(&buf, rect, 7)
         );
+        assert!(
+            row_text(&buf, rect, 7).contains(SETTINGS_LABEL),
+            "row 7 should hold the settings affordance: {:?}",
+            row_text(&buf, rect, 7)
+        );
         // The bottom corner cell carries the collapse chevron instead of
         // the separator rule.
-        assert_eq!(buf[(19, 7)].symbol(), COLLAPSE_GLYPH);
-        assert_eq!(buf[(19, 6)].symbol(), "│");
+        assert_eq!(buf[(27, 7)].symbol(), COLLAPSE_GLYPH);
+        assert_eq!(buf[(27, 6)].symbol(), "│");
         // A 3-row strip is below the footer minimum: no affordances, no
         // chevron.
         let short = Rect {
@@ -2200,7 +2256,7 @@ mod tests {
         let rect = Rect {
             x: 0,
             y: 0,
-            w: 20,
+            w: 28,
             h: 14,
         };
         let quiet = SidebarCounts {
@@ -2222,24 +2278,26 @@ mod tests {
                 MENU_LABEL => {
                     assert_eq!(hit_test(rect, quiet, 3, 13), Some(SidebarHit::Menu));
                 }
+                SETTINGS_LABEL => {
+                    assert_eq!(hit_test(rect, quiet, 14, 13), Some(SidebarHit::Settings));
+                }
                 COLLAPSE_GLYPH => {
-                    assert_eq!(hit_test(rect, quiet, 19, 13), Some(SidebarHit::Collapse));
+                    assert_eq!(hit_test(rect, quiet, 27, 13), Some(SidebarHit::Collapse));
                 }
                 NEEDS_YOU_HEADER => {
-                    // A taller strip so the queue and zone 2 both fit.
                     let tall = Rect { h: 12, ..rect };
                     assert_eq!(
-                        hit_test(tall, counts(2, 1, 0), 3, 1),
-                        Some(SidebarHit::NeedsYou(0)),
-                        "a queue row click jumps to that agent"
+                        hit_test(tall, counts(2, 1, 0), 3, 0),
+                        Some(SidebarHit::Fleet),
+                        "the Agents header opens the fleet"
                     );
                 }
                 SPACES_HEADER => {
                     let tall = Rect { h: 12, ..rect };
                     assert_eq!(
-                        hit_test(tall, counts(0, 1, 2), 3, 6),
-                        Some(SidebarHit::Roster(0)),
-                        "a roster row click switches session"
+                        hit_test(tall, counts(0, 1, 2), 3, 5),
+                        Some(SidebarHit::Sessions),
+                        "the Sessions header opens host and session management"
                     );
                 }
                 OVERFLOW_LABEL => {
@@ -2429,7 +2487,7 @@ mod tests {
             active_session: Some(0),
             ..counts(0, 2, 1)
         };
-        assert_eq!(hit_test(rect, c, 3, 0), None);
+        assert_eq!(hit_test(rect, c, 3, 0), Some(SidebarHit::Fleet));
         assert_eq!(hit_test(rect, c, 3, 9), Some(SidebarHit::Window(0)));
         assert_eq!(hit_test(rect, c, 3, 10), Some(SidebarHit::Window(1)));
         // Padding rows miss.
@@ -2450,16 +2508,16 @@ mod tests {
         };
         // 2 queued + 1 window: rows 0 header, 1-2 queue, 3 gap, 4 `here`.
         let c = counts(2, 1, 0);
-        assert_eq!(hit_test(rect, c, 3, 0), None, "header is inert");
+        assert_eq!(hit_test(rect, c, 3, 0), Some(SidebarHit::Fleet));
         assert_eq!(hit_test(rect, c, 3, 1), Some(SidebarHit::NeedsYou(0)));
         assert_eq!(hit_test(rect, c, 3, 2), Some(SidebarHit::NeedsYou(1)));
-        assert_eq!(hit_test(rect, c, 3, 4), None, "`here` header is inert");
+        assert_eq!(hit_test(rect, c, 3, 4), Some(SidebarHit::Sessions));
         assert_eq!(hit_test(rect, c, 3, 5), None, "empty Sessions placeholder");
 
         // Roster rows.
         let tall = Rect { h: 12, ..rect };
         let c = counts(0, 1, 2);
-        assert_eq!(hit_test(tall, c, 3, 5), None, "Sessions header is inert");
+        assert_eq!(hit_test(tall, c, 3, 5), Some(SidebarHit::Sessions));
         assert_eq!(hit_test(tall, c, 3, 6), Some(SidebarHit::Roster(0)));
         assert_eq!(hit_test(tall, c, 3, 7), Some(SidebarHit::Roster(0)));
         assert_eq!(hit_test(tall, c, 3, 8), Some(SidebarHit::Roster(1)));
@@ -2559,7 +2617,7 @@ mod tests {
         let rect = Rect {
             x: 0,
             y: 0,
-            w: 24,
+            w: 26,
             h: 14,
         };
         let windows = vec![
@@ -2587,11 +2645,11 @@ mod tests {
             match row {
                 SidebarRow::NeedsYouHeader => {
                     assert!(row_text(&buf, rect, y16).contains(NEEDS_YOU_HEADER));
-                    assert_eq!(hit, None);
+                    assert_eq!(hit, Some(SidebarHit::Fleet));
                 }
                 SidebarRow::SpacesHeader => {
                     assert!(row_text(&buf, rect, y16).contains(SPACES_HEADER));
-                    assert_eq!(hit, None);
+                    assert_eq!(hit, Some(SidebarHit::Sessions));
                 }
                 SidebarRow::WindowName(i) => {
                     assert!(row_text(&buf, rect, y16).contains(&windows[*i].name));
@@ -2629,7 +2687,9 @@ mod tests {
                 }
                 SidebarRow::Menu => {
                     assert!(row_text(&buf, rect, y16).contains(MENU_LABEL));
+                    assert!(row_text(&buf, rect, y16).contains(SETTINGS_LABEL));
                     assert_eq!(hit, Some(SidebarHit::Menu));
+                    assert_eq!(hit_test(rect, c, 14, y16), Some(SidebarHit::Settings));
                 }
             }
         }

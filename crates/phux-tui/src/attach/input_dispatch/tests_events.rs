@@ -530,15 +530,15 @@ fn str_arg(r: &phux_config::keybind::ResolvedAction, key: &str) -> Option<String
 
 /// The pure click→action mapping: window blocks commit
 /// `select-window { index }`, the footer rows `new-window` and
-/// `command-palette`, the collapse corner `toggle-sidebar`, and
-/// header/blank/separator cells nothing.
+/// `command-palette` / `settings`, the collapse corner `toggle-sidebar`, and
+/// section headers their corresponding management views.
 #[test]
 fn sidebar_click_action_maps_rows_to_registry_actions() {
     // Body has 21 rows: Agents starts at 0, Sessions at 10, footer at 21.
     let strip = crate::layout::Rect {
         x: 0,
         y: 0,
-        w: 20,
+        w: 28,
         h: 23,
     };
     let quiet = targets(0, 2, 1);
@@ -550,15 +550,20 @@ fn sidebar_click_action_maps_rows_to_registry_actions() {
     assert!(new.args.is_empty());
     let menu = sidebar_click_action(strip, &quiet, 4, 22).expect("menu row hits");
     assert_eq!(menu.action, "command-palette");
+    let settings = sidebar_click_action(strip, &quiet, 14, 22).expect("settings label hits");
+    assert_eq!(settings.action, "settings");
     // phux-foz.9: the collapse chevron in the bottom corner.
-    let collapse = sidebar_click_action(strip, &quiet, 19, 22).expect("collapse corner hits");
+    let collapse = sidebar_click_action(strip, &quiet, 27, 22).expect("collapse corner hits");
     assert_eq!(collapse.action, "toggle-sidebar");
     assert!(collapse.args.is_empty());
-    // Header row, blank padding row, and the separator column (outside
-    // the chevron corner) commit nothing.
-    assert!(sidebar_click_action(strip, &quiet, 4, 0).is_none());
-    assert!(sidebar_click_action(strip, &quiet, 4, 10).is_none());
-    assert!(sidebar_click_action(strip, &quiet, 19, 0).is_none());
+    let fleet = sidebar_click_action(strip, &quiet, 4, 0).expect("Agents header hits");
+    assert_eq!(fleet.action, "agent-fleet");
+    let sessions = sidebar_click_action(strip, &quiet, 4, 10).expect("Sessions header hits");
+    assert_eq!(sessions.action, "session-picker");
+    // Blank padding and the separator column (outside the chevron corner)
+    // commit nothing.
+    assert!(sidebar_click_action(strip, &quiet, 4, 9).is_none());
+    assert!(sidebar_click_action(strip, &quiet, 27, 0).is_none());
 }
 
 /// phux-k0cw: a queue row commits a LOCAL focus or a CROSS-SESSION
@@ -570,7 +575,7 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
     let strip = crate::layout::Rect {
         x: 0,
         y: 0,
-        w: 20,
+        w: 28,
         h: 23,
     };
     // Agent activity never moves Sessions from row 10.
@@ -584,16 +589,12 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
     assert_eq!(str_arg(&peer, "name").as_deref(), Some("peer-1"));
     assert_eq!(usize_arg(&peer, "window"), Some(2));
     assert_eq!(usize_arg(&peer, "pane"), Some(3));
-    assert!(
-        sidebar_click_action(strip, &t, 4, 0).is_none(),
-        "the queue header is inert"
-    );
+    let fleet = sidebar_click_action(strip, &t, 4, 0).expect("Agents header hits");
+    assert_eq!(fleet.action, "agent-fleet");
 
     let mut t = targets(0, 2, 2);
-    assert!(
-        sidebar_click_action(strip, &t, 4, 10).is_none(),
-        "the sessions header is inert"
-    );
+    let sessions = sidebar_click_action(strip, &t, 4, 10).expect("Sessions header hits");
+    assert_eq!(sessions.action, "session-picker");
     let space = sidebar_click_action(strip, &t, 4, 11).expect("roster row hits");
     assert_eq!(space.action, "switch-session");
     assert_eq!(str_arg(&space, "name").as_deref(), Some("space-0"));
@@ -1160,6 +1161,51 @@ fn bar_click_action_maps_tab_columns_to_select_window() {
     assert!(bar_click_action(Some(&painter), 6).is_none(), "separator");
     assert!(bar_click_action(Some(&painter), 40).is_none(), "padding");
     assert!(bar_click_action(None, 8).is_none(), "no painter");
+}
+
+#[test]
+fn bar_click_action_dispatches_every_painted_navigation_hint() {
+    use crate::render::chrome::status_bar::{BarInset, Position, StatusBarPainter, make_context};
+    use phux_config::widget::{CellHit, StatusBar, WidgetRegistry};
+
+    let cfg = phux_config::StatusCfg {
+        center: vec![phux_config::Widget::Bare("help-hints".into())],
+        ..Default::default()
+    };
+    let bar = StatusBar::build(&cfg, &WidgetRegistry::with_builtins()).expect("bar builds");
+    let mut painter = StatusBarPainter::new(bar, Position::Bottom);
+    let mut sink = Vec::new();
+    painter
+        .paint(
+            &mut sink,
+            BarInset::NONE,
+            100,
+            24,
+            &make_context("", std::time::SystemTime::UNIX_EPOCH),
+        )
+        .expect("paint");
+
+    let mut actions = std::collections::BTreeSet::new();
+    for x in 0..100 {
+        if matches!(painter.hit_at(x), Some(CellHit::Action(_))) {
+            let resolved = bar_click_action(Some(&painter), x).expect("painted action dispatches");
+            assert!(resolved.args.is_empty());
+            actions.insert(resolved.action);
+        }
+    }
+    assert_eq!(
+        actions,
+        [
+            "command-palette",
+            "copy-mode",
+            "session-picker",
+            "settings",
+            "show-help",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect()
+    );
 }
 
 // -- phux-npb3: per-pane mouse opt-out + drag double-press hardening ---

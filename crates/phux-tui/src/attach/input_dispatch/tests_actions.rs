@@ -2498,6 +2498,7 @@ fn host_fixture() -> Vec<phux_protocol::wire::info::HostInventory> {
                     .with_active_resource(Some(satellite_id("edge", 11))),
             ],
         ),
+        HostInventory::reachable(SatelliteHost::new("idle"), Vec::new()),
         HostInventory::unreachable(SatelliteHost::new("down"), "link is down"),
     ]
 }
@@ -2519,15 +2520,21 @@ fn session_picker_groups_rows_by_host() {
     assert_eq!(
         labels,
         vec![
-            "This host",
+            "Local",
             "work",
-            "edge",
+            "edge - 2 sessions",
             "build",
             "logs",
-            "down (unreachable)"
+            "idle - connected, no sessions",
+            "down - unreachable: link is down"
         ],
     );
-    assert!(items[0].is_header() && items[2].is_header() && items[5].is_header());
+    assert!(
+        items[0].is_header()
+            && items[2].is_header()
+            && items[5].is_header()
+            && items[6].is_header()
+    );
     assert!(
         items[1].indented && items[3].indented,
         "session rows nest under their host header"
@@ -2551,7 +2558,7 @@ fn session_picker_groups_rows_by_host() {
         "the row names its host, so it still reads under a typed query"
     );
     // The unreachable host contributes its header and nothing else.
-    assert!(items[5].is_header());
+    assert!(items[6].is_header());
 }
 
 /// With no inventory (a non-hub server, or one without the feature) the

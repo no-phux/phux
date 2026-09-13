@@ -332,8 +332,36 @@ fn help_hints_widget_uses_configured_prefix() {
     // The prefix is stated once and the hints are its continuations.
     assert_eq!(
         text_of(&widget.render(&ctx)),
-        "C-b  Space palette · ? help · [ copy"
+        "C-b  s Sessions · Space Commands · S Settings · ? Help · [ Copy"
     );
+}
+
+#[test]
+fn help_hints_widget_stamps_each_destination_with_its_action() {
+    use phux_config::widget::CellHit;
+
+    let widget = build_spec("help-hints", &[]).expect("help-hints builds");
+    let ctx = WidgetContext::new(fixed_time(), "", "C-b", &[]);
+    let row = widget.render(&ctx);
+    let actions: Vec<_> = row
+        .cells
+        .iter()
+        .filter_map(|cell| match cell.hit {
+            Some(CellHit::Action(action)) => Some(action),
+            Some(CellHit::Window(_) | CellHit::Switch) | None => None,
+        })
+        .collect();
+
+    for action in [
+        "session-picker",
+        "command-palette",
+        "settings",
+        "show-help",
+        "copy-mode",
+    ] {
+        assert!(actions.contains(&action), "missing hit target for {action}");
+    }
+    assert_eq!(row.cells[0].hit, None, "the prefix label stays inert");
 }
 
 /// The hints exist to be read by someone who does not know the keys yet,
@@ -345,12 +373,20 @@ fn help_hints_widget_drops_whole_hints_as_it_narrows() {
     let ctx = WidgetContext::new(fixed_time(), "", "C-b", &[]);
     let at = |budget| text_of(&widget.render_within(&ctx, budget));
 
-    assert_eq!(at(36), "C-b  Space palette · ? help · [ copy");
-    assert_eq!(at(35), "C-b  Space palette · ? help");
-    assert_eq!(at(26), "C-b  Space palette");
-    assert_eq!(at(17), "");
+    assert_eq!(
+        at(63),
+        "C-b  s Sessions · Space Commands · S Settings · ? Help · [ Copy"
+    );
+    assert_eq!(
+        at(62),
+        "C-b  s Sessions · Space Commands · S Settings · ? Help"
+    );
+    assert_eq!(at(53), "C-b  s Sessions · Space Commands · S Settings");
+    assert_eq!(at(44), "C-b  s Sessions · Space Commands");
+    assert_eq!(at(31), "C-b  s Sessions");
+    assert_eq!(at(14), "");
     // No ellipsis ever appears in this widget's output.
-    for budget in 0..40 {
+    for budget in 0..70 {
         assert!(!at(budget).contains('…'), "clipped at budget {budget}");
     }
 }

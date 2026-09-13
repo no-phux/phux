@@ -82,7 +82,8 @@ fn a_roomy_terminal_shows_the_whole_lineup() {
     let text = shipped_text(120, "phux", &windows);
 
     assert!(text.starts_with(" 0:zsh   1:nvim   2:server "), "{text:?}");
-    assert!(text.contains("C-a  Space palette"), "{text:?}");
+    assert!(text.contains("C-a  s Sessions"), "{text:?}");
+    assert!(text.contains("S Settings"), "{text:?}");
     assert!(text.contains("phux"), "{text:?}");
     // The `switch` chip is for narrow terminals only.
     assert!(!text.contains("switch"), "{text:?}");

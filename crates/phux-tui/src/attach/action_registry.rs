@@ -279,7 +279,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     ActionSpec {
         name: "session-picker",
         category: Category::Session,
-        description: "Pick a session from a filterable list",
+        description: "Browse sessions and live host availability",
         params: "",
         args: &[],
     },
@@ -591,9 +591,17 @@ fn bound_chord(cfg: &KeybindingsCfg, target: &ResolvedAction) -> Option<String> 
     scan(cfg, target, false)
 }
 
+/// Canonical presentation chord when the shipped table retains a compatibility
+/// alias for the same action. A user's remaining binding still wins when the
+/// preferred chord has been removed or rebound.
+const PRIMARY_PREFIX_BINDINGS: &[(&str, &str)] = &[("session-picker", "s")];
+
 /// Scan the prefix table then globals for a binding to `target`'s action.
 /// With `exact`, the binding's args must also equal `target.args`.
 fn scan(cfg: &KeybindingsCfg, target: &ResolvedAction, exact: bool) -> Option<String> {
+    if let Some(chord) = primary_prefix_chord(cfg, target, exact) {
+        return Some(format!("{} {chord}", cfg.prefix));
+    }
     for (chord, action) in &cfg.prefix_table {
         if binding_matches(action, target, exact) {
             return Some(format!("{} {chord}", cfg.prefix));
@@ -605,6 +613,18 @@ fn scan(cfg: &KeybindingsCfg, target: &ResolvedAction, exact: bool) -> Option<St
         }
     }
     None
+}
+
+fn primary_prefix_chord(
+    cfg: &KeybindingsCfg,
+    target: &ResolvedAction,
+    exact: bool,
+) -> Option<&'static str> {
+    let chord = PRIMARY_PREFIX_BINDINGS
+        .iter()
+        .find_map(|(action, chord)| (*action == target.action).then_some(*chord))?;
+    let action = cfg.prefix_table.get(chord)?;
+    binding_matches(action, target, exact).then_some(chord)
 }
 
 /// `true` when `action` names `target.action` (and, when `exact`, its
@@ -822,6 +842,26 @@ mod tests {
                 .filter(|i| !i.is_header())
                 .all(|i| i.secondary.as_deref() == Some("unbound")),
             "no config ⇒ every selectable row unbound",
+        );
+    }
+
+    #[test]
+    fn session_picker_prefers_the_documented_chord_over_its_legacy_alias() {
+        let mut cfg =
+            phux_config::parse_with_defaults("", std::path::Path::new("<embedded default.toml>"))
+                .expect("defaults parse")
+                .keybindings;
+        let target = ResolvedAction {
+            action: "session-picker".to_owned(),
+            args: BTreeMap::new(),
+        };
+        assert_eq!(bound_chord(&cfg, &target).as_deref(), Some("C-a s"));
+
+        cfg.prefix_table.remove("s");
+        assert_eq!(
+            bound_chord(&cfg, &target).as_deref(),
+            Some("C-a a"),
+            "the compatibility alias remains discoverable when it is the binding"
         );
     }
 

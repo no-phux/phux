@@ -97,12 +97,13 @@ pub(super) fn session_menu(keybindings: Option<&KeybindingsCfg>, session: &str) 
     let rows = vec![
         row(keybindings, "New window", "new-window", &[]),
         row(keybindings, "Pick window…", "window-picker", &[]),
-        row(keybindings, "Pick session…", "session-picker", &[]),
+        row(keybindings, "Sessions & hosts…", "session-picker", &[]),
         row(keybindings, "Rename session…", "rename-session", &[]),
         MenuRow::Separator,
         row(keybindings, "Agent fleet", "agent-fleet", &[]),
+        row(keybindings, "Settings…", "settings", &[]),
+        row(keybindings, "Commands & Help…", "show-help", &[]),
         row(keybindings, "Toggle sidebar", "toggle-sidebar", &[]),
-        row(keybindings, "All commands…", "command-palette", &[]),
         MenuRow::Separator,
         row(keybindings, "Detach", "detach", &[]),
     ];
@@ -184,6 +185,29 @@ mod tests {
                 "menu `{}` must not open on a separator",
                 spec.title,
             );
+        }
+    }
+
+    #[test]
+    fn session_menu_exposes_the_management_destinations() {
+        let spec = session_menu(None, "work");
+        let rows: Vec<_> = spec
+            .rows
+            .iter()
+            .filter_map(|row| match row {
+                MenuRow::Item { label, action, .. } => {
+                    Some((label.as_str(), action.action.as_str()))
+                }
+                MenuRow::Separator => None,
+            })
+            .collect();
+        for destination in [
+            ("Sessions & hosts…", "session-picker"),
+            ("Agent fleet", "agent-fleet"),
+            ("Settings…", "settings"),
+            ("Commands & Help…", "show-help"),
+        ] {
+            assert!(rows.contains(&destination), "missing {destination:?}");
         }
     }
 

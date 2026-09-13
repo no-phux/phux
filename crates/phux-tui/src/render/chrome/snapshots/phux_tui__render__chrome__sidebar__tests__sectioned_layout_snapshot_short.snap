@@ -11,4 +11,4 @@ expression: "strip_text(&p, rect)"
    on mini               │
  +1 sessions, +2 windows │
  + new window            │
- = commands              ‹
+ = commands  S settings  ‹

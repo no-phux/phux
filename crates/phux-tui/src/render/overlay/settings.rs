@@ -1356,7 +1356,7 @@ impl RenderOverlay for SettingsOverlay {
         }
         lines.extend(detail_lines);
 
-        Modal::new(&self.theme, "settings", lines)
+        Modal::new(&self.theme, "Settings", lines)
             .footer_hints(self.footer_hints())
             .render_into(modal, buf);
 

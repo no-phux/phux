@@ -244,7 +244,7 @@ pub(super) fn session_picker_items(
 }
 
 /// Header for this host's group in the host-grouped session picker.
-pub(super) const LOCAL_HOST_HEADER: &str = "This host";
+pub(super) const LOCAL_HOST_HEADER: &str = "Local";
 
 /// Live-refresh key for the session picker: the driver rebuilds its rows
 /// when a fresh host inventory lands, so a picker opened before the
@@ -303,10 +303,22 @@ fn satellite_host_items(
     host: &phux_protocol::wire::info::HostInventory,
     workspace: &Workspace,
 ) -> Vec<SelectItem> {
-    if !host.is_reachable() {
-        return vec![SelectItem::header(format!("{} (unreachable)", host.host))];
+    if let Some(reason) = host.unreachable.as_deref() {
+        return vec![SelectItem::header(format!(
+            "{} - unreachable: {reason}",
+            host.host
+        ))];
     }
-    let mut items = vec![SelectItem::header(host.host.to_string())];
+    let status = if host.sessions.is_empty() {
+        "connected, no sessions".to_owned()
+    } else {
+        count_label(
+            u16::try_from(host.sessions.len()).unwrap_or(u16::MAX),
+            "session",
+            "sessions",
+        )
+    };
+    let mut items = vec![SelectItem::header(format!("{} - {status}", host.host))];
     let mut sessions: Vec<_> = host.sessions.iter().collect();
     sessions.sort_by(|a, b| a.name.cmp(&b.name));
     items.extend(

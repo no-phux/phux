@@ -96,6 +96,13 @@ pub enum CellHit {
     /// target you can hit with a pointer rather than a glyph you must
     /// land on exactly.
     Switch,
+    /// Clicking this cell invokes a named, argument-free TUI action.
+    ///
+    /// Status widgets use this for persistent navigation affordances such
+    /// as Sessions, Settings, and Help. The TUI maps the name through its
+    /// ordinary action dispatcher, so click and keybinding paths share the
+    /// same behavior.
+    Action(&'static str),
 }
 
 /// A single status-bar cell.

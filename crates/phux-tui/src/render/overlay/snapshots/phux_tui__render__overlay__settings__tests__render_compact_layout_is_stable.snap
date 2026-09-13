@@ -2,7 +2,7 @@
 source: crates/phux-tui/src/render/overlay/settings.rs
 expression: text
 ---
-┌──────────────────────── settings ────────────────────────┐
+┌──────────────────────── Settings ────────────────────────┐
 │> filter…                       ~/.config/phux/config.toml│
 │                                                          │
 │Keybindings                                               │

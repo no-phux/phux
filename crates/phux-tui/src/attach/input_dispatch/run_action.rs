@@ -49,7 +49,7 @@ pub(super) fn push_action_finder(ctx: &mut DispatchCtx<'_>) {
         ctx.plugin_panes,
     );
     ctx.overlays.push(Box::new(SelectList::new(
-        "commands & help",
+        "Commands & Help",
         items,
         ctx.theme,
     )));
@@ -754,7 +754,7 @@ fn push_window_picker(ctx: &mut DispatchCtx<'_>, effects: &mut ActionEffects) {
         return;
     }
     ctx.overlays
-        .push(Box::new(SelectList::new("windows", items, ctx.theme)));
+        .push(Box::new(SelectList::new("Windows", items, ctx.theme)));
 }
 
 /// phux-4li.20: push the session picker. The current session is
@@ -773,7 +773,8 @@ fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
     let items = session_picker_rows(ctx.sessions, ctx.focused_session, ctx.hosts, ctx.workspace);
     *ctx.host_refresh_request = true;
     ctx.overlays.push(Box::new(
-        SelectList::new("sessions", items, ctx.theme).with_live_key(SESSION_PICKER_LIVE_KEY),
+        SelectList::new("Sessions & hosts", items, ctx.theme)
+            .with_live_key(SESSION_PICKER_LIVE_KEY),
     ));
 }
 
@@ -817,7 +818,7 @@ fn push_agent_fleet(
         return;
     }
     ctx.overlays.push(Box::new(
-        SelectList::new("agent fleet", items, ctx.theme)
+        SelectList::new("Agent fleet", items, ctx.theme)
             .with_live_key(crate::attach::fleet::FLEET_LIVE_KEY),
     ));
 }

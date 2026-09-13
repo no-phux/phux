@@ -45,7 +45,7 @@ Options:
 
 ## `help-hints`
 
-Dim, prefix-aware affordance hints (`<prefix>  Space palette · ? help · [ copy`), rendered with the configured prefix chord. Drops hints from the right as the bar narrows, and disappears entirely rather than showing a fragment.
+Clickable, prefix-aware navigation (`<prefix>  s Sessions · Space Commands · S Settings · ? Help · [ Copy`), rendered with the configured prefix chord. Drops complete destinations from the right as the bar narrows, and disappears entirely rather than showing a fragment.
 
 No kind-specific options.
 

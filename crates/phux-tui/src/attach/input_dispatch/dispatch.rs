@@ -1527,9 +1527,9 @@ pub(super) const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) ->
 /// * Agents overflow opens `agent-fleet`; Sessions overflow opens `session-picker`;
 /// * `+ new` commits `new-window` (the strip lists windows, so its create
 ///   affordance creates one);
-/// * `= menu` commits `command-palette` — the menu covering window,
-///   session (`new-session` included), and plugin actions via the action
-///   registry;
+/// * the Agents / Sessions headings open their complete management views;
+/// * the shared footer row maps `= commands` and `S settings` to distinct
+///   actions through the registry;
 /// * the collapse chevron in the bottom corner (phux-foz.9) commits
 ///   `toggle-sidebar`.
 pub(super) fn sidebar_click_action(
@@ -1549,6 +1549,7 @@ pub(super) fn sidebar_click_action(
         SidebarHit::Fleet => ("agent-fleet", std::collections::BTreeMap::new()),
         SidebarHit::NewWindow => ("new-window", std::collections::BTreeMap::new()),
         SidebarHit::Menu => ("command-palette", std::collections::BTreeMap::new()),
+        SidebarHit::Settings => ("settings", std::collections::BTreeMap::new()),
         SidebarHit::Collapse => ("toggle-sidebar", std::collections::BTreeMap::new()),
     };
     Some(phux_config::keybind::ResolvedAction {
@@ -1612,14 +1613,15 @@ fn sidebar_session_action(
 
 /// phux-foz.12: map a left press on the status-bar row to the action it
 /// commits, or `None` when it lands on a non-tab cell (separator, another
-/// widget, blank padding) or no painter/strip is available.
+/// widget, blank padding) or no painter/strip is available. Named navigation
+/// cells dispatch their argument-free action through this same path.
 ///
 /// Same shape as [`sidebar_click_action`]: the mapping goes through
 /// [`phux_config::keybind::ResolvedAction`] so a tab click runs exactly
 /// what a keybinding, palette row, or sidebar click would — one dispatch
 /// path, no bespoke click semantics. A window tab commits
 /// `select-window { index }`; the hit test itself lives with the painter
-/// ([`crate::render::chrome::status_bar::StatusBarPainter::window_hit_at`])
+/// ([`crate::render::chrome::status_bar::StatusBarPainter::hit_at`])
 /// so paint and click targets derive from the same composed strip.
 pub(super) fn bar_click_action(
     painter: Option<&crate::render::chrome::status_bar::StatusBarPainter>,
@@ -1647,6 +1649,12 @@ pub(super) fn bar_click_action(
             action: "agent-fleet".to_owned(),
             args: std::collections::BTreeMap::new(),
         }),
+        phux_config::widget::CellHit::Action(action) => {
+            Some(phux_config::keybind::ResolvedAction {
+                action: action.to_owned(),
+                args: std::collections::BTreeMap::new(),
+            })
+        }
     }
 }
 

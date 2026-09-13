@@ -473,8 +473,11 @@ which-key-delay-ms = 400
 # Right: session name + clock (the leading space in the time format keeps
 # them apart).
 #
-# The shipped lineup: padded window tabs left, contextual help hints
-# center, session name + clock right. The tab `format` carries a leading
+# The shipped lineup: padded window tabs left, clickable navigation hints
+# center, session name + clock right. The hints expose Sessions, Commands,
+# Settings, Help, and Copy through the same actions as their keybindings,
+# dropping complete destinations from the right as space tightens. The tab
+# `format` carries a leading
 # and trailing space with a one-cell separator, so the active tab's fill
 # reads as a padded chip rather than a highlight hugging the glyphs — and
 # because every cell of a segment (padding included) is a click target,
@@ -554,7 +557,9 @@ right = [
 #
 # Clicking an agent row navigates to its window, switching sessions if needed.
 # Session names and host rows switch to that session with its host qualifier.
-# Agents overflow opens the fleet dashboard; Sessions overflow opens the picker.
+# The Agents and Sessions headings open their full management views. Agents
+# overflow opens the fleet dashboard; Sessions overflow opens the picker.
+# The footer keeps New window on one row and Commands + Settings on the next.
 #
 # Width 0 (the default) adapts to one quarter of the viewport, bounded to
 # 28–40 columns. A positive width reserves exactly that many columns.

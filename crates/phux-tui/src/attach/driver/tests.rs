@@ -1381,7 +1381,8 @@ fn shipped_frame_at_a_roomy_viewport() {
     let rows = shipped_frame_rows((100, 12), &windows);
     let bar = rows.first().expect("a top bar row");
     assert!(bar.contains(" 1:nvim "), "{bar:?}");
-    assert!(bar.contains("Space palette"), "{bar:?}");
+    assert!(bar.contains("s Sessions"), "{bar:?}");
+    assert!(bar.contains("S Settings"), "{bar:?}");
     assert!(bar.contains("phux"), "{bar:?}");
     assert!(!bar.contains("switch"), "{bar:?}");
     assert!(rows.join("\n").contains(PROBE_PANE_TEXT), "{rows:?}");

@@ -42,11 +42,14 @@ Install, then:
 phux
 ```
 
-Work in it like a normal terminal. The default prefix is `Ctrl-A`. Four
-continuations are enough for a first run:
+Work in it like a normal terminal. The default prefix is `Ctrl-A`. The status
+bar also exposes the main destinations as clickable labels. These continuations
+are enough for a first run:
 
 | Keys | Action |
 |---|---|
+| `C-a s` | Sessions & hosts |
+| `C-a S` | Settings |
 | `C-a ?` | Commands and help (the same overlay as `C-a :`) |
 | `C-a %` | Split left and right |
 | `C-a "` | Split top and bottom |
@@ -56,12 +59,12 @@ Run `phux` again to reattach. The full first-run path, including driving
 the same pane from a second terminal, is [`../QUICKSTART.md`](../QUICKSTART.md).
 
 On the first attach for a profile, a compact overlay explains that the
-session outlives the view, how to detach, and how to open the command
-palette. It shows the effective `detach` and `command-palette` bindings,
-not assumed defaults. The first key dismisses it and still does what that
-key normally does. After the first intentional detach, the cooked
-terminal prints that the session is still running; the next attach shows
-a brief status-bar confirmation. Later attaches are quiet. The palette's
+session outlives the view and shows the effective bindings for detach,
+Sessions & hosts, Commands, Settings, and copy mode. It also points out that
+Shift-drag uses the host terminal's selection. The first key dismisses it and
+still does what that key normally does. After the first intentional detach, the
+cooked terminal prints that the session is still running; the next attach
+shows a brief status-bar confirmation. Later attaches are quiet. The palette's
 **Getting started** row reopens the introduction without changing
 progress.
 
@@ -275,7 +278,10 @@ When the three slots want more than the row, **right** takes up to half,
 **left** (the tab strip) gets the rest, **center** gets the surviving
 gap. Within a slot, later widgets yield first. Widgets drop whole units,
 never fragments: `windows` drops whole tabs around the active one;
-`help-hints` drops whole hints. `min-cols` / `max-cols` hide a widget
+`help-hints` shows Sessions, Commands, Settings, Help, and Copy. Each complete
+label is a click target for the same action as its keybinding; the prefix and
+separators are inert. It drops whole hints from the right, leaving Sessions as
+the last route on a tight bar. `min-cols` / `max-cols` hide a widget
 outright. The shipped lineup uses that to change shape at 64 columns:
 session name and clock give way to a clickable `switch` chip that opens
 the fleet dashboard.
@@ -354,11 +360,12 @@ host-qualified satellite sessions. The current session expands its
 windows. A satellite session shows a pane count and `?`, because its
 per-terminal metadata is not subscribable from here.
 
-Click targets commit the same actions as keys: window rows select,
-overflow opens the matching picker, `+ new window` / `= commands` / the
-collapse chevron run `new-window`, `command-palette`, and
-`toggle-sidebar`. Pointer events over the strip never leak into pane
-routing.
+Click targets commit the same actions as keys. The **Agents** and **Sessions**
+headings open their full management views; window and roster rows select their
+destination; overflow opens the matching view. The footer keeps `+ new window`
+on one row and `= commands  S settings` on the next, with an independent target
+for each action. The collapse chevron runs `toggle-sidebar`. Pointer events over
+the strip never leak into pane routing.
 
 ### Small terminals
 
@@ -431,7 +438,7 @@ terminal **keeps** copy-mode open and adopts the new size.
 ## Command palette, pickers, and settings
 
 `C-a :` (`command-palette`) and `C-a ?` (`show-help`) are two aliases
-for one filterable **commands & help** overlay. Every action is annotated
+for one filterable **Commands & Help** overlay. Every action is annotated
 with its currently-bound chord. Empty query: rows grouped under Pane,
 Window, Session, View. Typing ranks a fuzzy match; Enter commits through
 the same dispatcher a keybinding uses. Navigate with arrows / `C-n` /
@@ -444,9 +451,12 @@ appear under a trailing **Plugin** header.
 > and is skipped with a logged warning. `split`, `tab`, and `zoomed`
 > open a real server-side Terminal.
 
-The **session picker** (`C-a s`) lists other sessions; choosing one
+The **Sessions & hosts** view (`C-a s`) lists other sessions; choosing one
 re-attaches this client in-process. A trailing "+ New session" row
-creates one. Against a federation hub the picker is grouped by host. A
+creates one. Against a federation hub the view is grouped by host and refreshes
+in place as inventory changes. A reachable host shows its session count, an
+empty reachable host says `connected, no sessions`, and an unreachable host
+keeps its diagnostic visible. A
 satellite row cannot re-attach this client to that remote session:
 `ATTACH` is not federation-routable. Choosing it opens that session's
 active pane as a window of the session you are already in. The window
@@ -464,7 +474,8 @@ remote host. With a satellite pane focused, and a hub that advertises
 
 ### Settings page
 
-`C-a S` opens the config as a page: sections down the left, keys on the
+`C-a S`, the status-bar Settings label, or the sidebar footer opens the config
+as a page: sections down the left, keys on the
 right, a detail panel underneath. Each row shows the effective value and
 where it came from (`default`, `you`, or an `extends` layer). Editing
 writes **your** `config.toml` one key at a time, comments intact, then
@@ -513,6 +524,7 @@ on detach, so divider drags work in a plain shell.
 | Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback, alt screen becomes arrows |
 | Right-click in a pane | Pane context menu, unless the inner program has mouse tracking |
 | Click a status-bar tab | `select-window` |
+| Click a status-bar destination | Open Sessions, Commands, Settings, Help, or Copy |
 | Click a sidebar row | The same action the keyboard binding would run |
 
 Hold **Shift** to bypass application mouse reporting and use the host
@@ -522,7 +534,8 @@ this client's mouse handling while that pane is focused; a click on it
 still focuses it, which is the path back in.
 
 Right-click opens a menu for the pane, the window, or the session,
-listing the actions that apply. Each row commits the same action a
+listing the actions that apply. The session menu includes Sessions & hosts,
+Agent fleet, Settings, and Commands & Help. Each row commits the same action a
 keybinding would. An inner program with mouse tracking on keeps every
 button, so no menu opens over it; bind `context-menu` for the keyboard
 path. A terminal resize closes the menu; other overlays reflow.

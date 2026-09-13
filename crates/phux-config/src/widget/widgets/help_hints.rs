@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::widget::{
-    CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError, WidgetKindSpec,
-    reject_unknown_opts,
+    Cell, CellHit, CellStyle, StatusWidget, WidgetCells, WidgetContext, WidgetError,
+    WidgetKindSpec, reject_unknown_opts,
 };
 
 const KIND: &str = "help-hints";
@@ -11,11 +11,11 @@ const KIND: &str = "help-hints";
 /// documented option surface is the enforced one (phux-i0e8.11.3).
 pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
     kind: KIND,
-    summary: "Dim, prefix-aware affordance hints (`<prefix>  Space \
-              palette · ? help · [ copy`), rendered with the configured \
-              prefix chord. Drops hints from the right as the bar \
-              narrows, and disappears entirely rather than showing a \
-              fragment.",
+    summary: "Clickable, prefix-aware navigation (`<prefix>  s Sessions · \
+              Space Commands · S Settings · ? Help · [ Copy`), rendered \
+              with the configured prefix chord. Drops complete destinations \
+              from the right as the bar narrows, and disappears entirely \
+              rather than showing a fragment.",
     options: &[],
 };
 
@@ -24,9 +24,36 @@ pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
 const SEP: &str = " · ";
 
 /// The hints, most useful first. The order is the drop order in reverse:
-/// the palette is the one chord worth knowing if you only learn one, so
-/// it is the last to go.
-const HINTS: [&str; 3] = ["Space palette", "? help", "[ copy"];
+/// cross-host session navigation is the route that remains when only one
+/// destination fits.
+#[derive(Debug, Clone, Copy)]
+struct Hint {
+    label: &'static str,
+    action: &'static str,
+}
+
+const HINTS: [Hint; 5] = [
+    Hint {
+        label: "s Sessions",
+        action: "session-picker",
+    },
+    Hint {
+        label: "Space Commands",
+        action: "command-palette",
+    },
+    Hint {
+        label: "S Settings",
+        action: "settings",
+    },
+    Hint {
+        label: "? Help",
+        action: "show-help",
+    },
+    Hint {
+        label: "[ Copy",
+        action: "copy-mode",
+    },
+];
 
 /// `help-hints` widget.
 #[derive(Debug, Clone, Copy, Default)]
@@ -52,19 +79,33 @@ impl HelpHintsWidget {
             if i > 0 {
                 text.push_str(SEP);
             }
-            text.push_str(hint);
+            text.push_str(hint.label);
         }
         Some(text)
     }
 
-    fn cells(text: &str) -> WidgetCells {
-        WidgetCells::from_styled(
-            text,
-            Some(CellStyle {
-                dim: true,
-                ..CellStyle::default()
-            }),
-        )
+    fn cells(ctx: &WidgetContext<'_>, n: usize) -> WidgetCells {
+        let style = Some(CellStyle {
+            dim: true,
+            ..CellStyle::default()
+        });
+        let mut cells = WidgetCells::from_styled(ctx.prefix, style.clone()).cells;
+        cells.extend(WidgetCells::from_styled("  ", style.clone()).cells);
+        for (i, hint) in HINTS.iter().take(n).enumerate() {
+            if i > 0 {
+                cells.extend(WidgetCells::from_styled(SEP, style.clone()).cells);
+            }
+            let mut target = WidgetCells::from_styled(hint.label, style.clone()).cells;
+            stamp_action(&mut target, hint.action);
+            cells.extend(target);
+        }
+        WidgetCells { cells }
+    }
+}
+
+fn stamp_action(cells: &mut [Cell], action: &'static str) {
+    for cell in cells {
+        cell.hit = Some(CellHit::Action(action));
     }
 }
 
@@ -72,7 +113,7 @@ impl StatusWidget for HelpHintsWidget {
     fn render(&self, ctx: &WidgetContext<'_>) -> WidgetCells {
         Self::line(ctx, HINTS.len()).map_or_else(
             || WidgetCells { cells: Vec::new() },
-            |text| Self::cells(&text),
+            |_| Self::cells(ctx, HINTS.len()),
         )
     }
 
@@ -87,7 +128,7 @@ impl StatusWidget for HelpHintsWidget {
             if let Some(text) = Self::line(ctx, n)
                 && text.chars().count() <= budget
             {
-                return Self::cells(&text);
+                return Self::cells(ctx, n);
             }
         }
         WidgetCells { cells: Vec::new() }

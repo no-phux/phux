@@ -713,7 +713,7 @@ mod tests {
                 .map(|c| {
                     c.hit.and_then(|h| match h {
                         CellHit::Window(i) => Some(i),
-                        CellHit::Switch => None,
+                        CellHit::Switch | CellHit::Action(_) => None,
                     })
                 })
                 .collect()
@@ -801,7 +801,7 @@ mod tests {
             .map(|c| {
                 c.hit.and_then(|h| match h {
                     CellHit::Window(i) => Some(i),
-                    CellHit::Switch => None,
+                    CellHit::Switch | CellHit::Action(_) => None,
                 })
             })
             .collect();
