@@ -16,13 +16,28 @@ A terminal multiplexer. Your shells live in a background server. Split,
 detach, they keep running. The TUI, Cockpit, a script, and an agent all
 attach to the same live terminal.
 
+## Install
+
 ```sh
-curl -fsSL https://phux.sh/install | sh
-phux
+brew trust --tap no-phux/tap
+brew install no-phux/tap/phux
 ```
 
-Prefix is `Ctrl-A`. `Ctrl-A d` detaches. Homebrew and other channels:
-[Install](./docs/INSTALL.md).
+Or use the verified release installer:
+
+```sh
+curl -fsSL https://phux.sh/install | sh
+```
+
+Release builds support macOS arm64, Linux x86_64, and Linux arm64. Windows is
+not supported. For the native macOS Cockpit:
+
+```sh
+curl -fsSL https://phux.sh/install-cockpit | sh
+```
+
+Run `phux` to start. Prefix is `Ctrl-A`; `Ctrl-A d` detaches. Other channels
+and source builds: [Install](./docs/INSTALL.md).
 
 ## Coming from
 

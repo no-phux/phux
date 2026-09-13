@@ -230,6 +230,13 @@ impl AttachedClient {
             })
             .expect("open attach PTY");
         let config = tempfile::tempdir().expect("isolated config dir");
+        let state_dir = config.path().join("phux");
+        std::fs::create_dir_all(&state_dir).expect("create isolated state dir");
+        std::fs::write(
+            state_dir.join("onboarding.json"),
+            r#"{"version":1,"stage":"complete"}"#,
+        )
+        .expect("preseed completed onboarding state");
         let mut command = CommandBuilder::new(PHUX);
         command.args([
             "attach",
@@ -240,9 +247,12 @@ impl AttachedClient {
         command.env("SHELL", "/bin/sh");
         command.env("TERM", "xterm-256color");
         command.env("RUST_LOG", "off");
-        // A fresh prefix so the default config applies — the sidebar ships
-        // enabled, and a developer's own config must not decide this test.
+        // A fresh profile keeps both config and first-run state hermetic. The
+        // sidebar ships enabled, and neither a developer's config nor the
+        // onboarding overlay may decide whether this test reaches its paint.
+        command.env("PHUX_PROFILE", "default");
         command.env("XDG_CONFIG_HOME", config.path());
+        command.env("XDG_STATE_HOME", config.path());
         let child = pair
             .slave
             .spawn_command(command)
@@ -296,6 +306,37 @@ impl AttachedClient {
             std::thread::sleep(POLL);
         }
     }
+}
+
+/// Find the most recently painted Sessions roster cell for `name`.
+///
+/// The stripped PTY transcript retains sidebar separators but not cursor
+/// movement. Splitting on the separator isolates painted cells without relying
+/// on the last `Sessions` text, which may be the status-bar shortcut. Agent
+/// rows share the badge and session name prefix, so their prose suffixes are
+/// rejected in favor of the roster's optional state histogram.
+fn latest_roster_cell<'a>(painted: &'a str, name: &str) -> Option<&'a str> {
+    painted.rsplit('│').map(str::trim).find(|cell| {
+        ["● ", "○ ", "◆ ", "◐ "].iter().any(|badge| {
+            let Some(suffix) = cell
+                .strip_prefix(badge)
+                .and_then(|rest| rest.strip_prefix(name))
+            else {
+                return false;
+            };
+            (suffix.is_empty() || suffix.starts_with(char::is_whitespace))
+                && suffix.chars().all(|c| {
+                    c.is_whitespace() || c.is_ascii_digit() || matches!(c, '!' | '◆' | '*' | '?')
+                })
+        })
+    })
+}
+
+#[test]
+fn roster_cell_parser_ignores_agent_rows_and_status_shortcuts() {
+    let painted = "Agents│● scratch blocked - claude│Sessions│○ work│● scratch !1│C-a s Sessions";
+    assert_eq!(latest_roster_cell(painted, "scratch"), Some("● scratch !1"));
+    assert_eq!(latest_roster_cell(painted, "work"), Some("○ work"));
 }
 
 /// phux-k0cw.10: the peer sweep still describes the roster after moving off
@@ -359,28 +400,17 @@ fn deferred_peer_sweep_still_describes_the_spaces_roster() {
     // peer's counts into the current session's row would also double every
     // local layout broadcast. The stripped transcript concatenates each
     // frame's cells with `│`, and the Agents panel carries its own
-    // "● scratch blocked - claude" row, so rows are matched as badge-plus-name
-    // cells AFTER the last "Sessions" header — never by whole lines.
-    let panel = painted
-        .rfind("Sessions")
-        .map_or(painted.as_str(), |index| &painted[index..]);
-    let roster_cell = |name: &str| {
-        for badge in ["● ", "○ ", "◆ ", "◐ "] {
-            let needle = format!("{badge}{name}");
-            if let Some(start) = panel.find(&needle) {
-                let rest = &panel[start..];
-                let end = rest.find('│').unwrap_or(rest.len());
-                return &rest[..end];
-            }
-        }
-        panic!("no Sessions row for {name}:\n{painted}");
-    };
-    let peer_row = roster_cell(PEER);
+    // "● scratch blocked - claude" row, so rows are matched as semantic
+    // badge-plus-name cells rather than by whole lines or a header position.
+    // The status bar also says "Sessions" after the panel has painted.
+    let peer_row = latest_roster_cell(&painted, PEER)
+        .unwrap_or_else(|| panic!("no Sessions row for {PEER}:\n{painted}"));
     assert!(
         peer_row.contains("!1"),
         "the peer's row carries its swept histogram:\n{painted}"
     );
-    let session_row = roster_cell(SESSION);
+    let session_row = latest_roster_cell(&painted, SESSION)
+        .unwrap_or_else(|| panic!("no Sessions row for {SESSION}:\n{painted}"));
     assert!(
         !session_row.contains('!'),
         "the peer's histogram must not leak into the attached session's row:\n{painted}"
