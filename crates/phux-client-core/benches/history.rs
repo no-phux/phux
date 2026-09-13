@@ -31,6 +31,14 @@ use support::{
     deterministic_page, percentile,
 };
 
+#[cfg(feature = "native-engine")]
+use libghostty_vt::{
+    Terminal as GhosttyTerminal,
+    snapshot::{CaptureEvent, CaptureOptions},
+};
+#[cfg(feature = "native-engine")]
+use phux_client_core::engine::ghostty::GhosttyAdapter;
+
 #[derive(Debug, Default)]
 struct BenchReplica {
     active: Vec<u8>,
@@ -95,6 +103,7 @@ impl EngineAdapter for BenchAdapter {
         &mut self,
         replica: &mut Self::Replica,
         payload: &[u8],
+        declared_rows: u32,
         effects: &mut EngineEffectBuffer,
     ) -> Result<HistoryApplyOutcome, Self::Error> {
         while replica.history_bytes.saturating_add(payload.len()) > replica.history_budget {
@@ -111,6 +120,7 @@ impl EngineAdapter for BenchAdapter {
         Ok(HistoryApplyOutcome {
             progress: BootstrapProgress::Ready,
             retained: true,
+            authenticated_rows: declared_rows as usize,
         })
     }
 
@@ -135,14 +145,14 @@ impl EngineAdapter for BenchAdapter {
 
 const fn native_profile() -> BootstrapProfile {
     BootstrapProfile::NativeState {
-        codec: EngineCodec::LibghosttyCheckpointV2,
+        codec: EngineCodec::LibghosttySnapshotV1,
         features: EngineFeatureSet::required_native(),
     }
 }
 
 const fn stream_profile() -> BootstrapStreamProfile {
     BootstrapStreamProfile::NativeState {
-        codec: EngineCodec::LibghosttyCheckpointV2,
+        codec: EngineCodec::LibghosttySnapshotV1,
     }
 }
 
@@ -275,7 +285,7 @@ fn replace_ready(
                 terminal_id: terminal,
                 stream_id: stream,
                 bootstrap_id: replacement,
-                history_cursor: None,
+                history_cursor: Some(b"replacement-cursor"),
             },
             effects,
         )
@@ -341,6 +351,216 @@ fn criterion_history(c: &mut Criterion) {
         );
     }
     group.finish();
+}
+
+#[cfg(feature = "native-engine")]
+struct NativePageFixture {
+    ready: Vec<u8>,
+    page: Vec<u8>,
+    rows: u32,
+}
+
+#[cfg(feature = "native-engine")]
+fn native_page_fixture() -> NativePageFixture {
+    let mut terminal = GhosttyTerminal::new(200, 3).expect("native benchmark terminal");
+    terminal
+        .set_scrollback_max_lines(Some(5_000))
+        .expect("scrollback rows");
+    terminal
+        .set_scrollback_max_bytes(None)
+        .expect("scrollback bytes");
+    for row in 0..3_000 {
+        terminal.vt_write(format!("native-history-{row:04}\r\n").as_bytes());
+    }
+    let record_bytes = HISTORY_PAGE_LIMIT;
+    let mut capture = terminal
+        .capture_snapshot(CaptureOptions {
+            max_record_bytes: record_bytes,
+            max_pages: 1_000,
+        })
+        .expect("native capture");
+    let mut buffer = vec![0; record_bytes];
+    let mut ready = Vec::new();
+    loop {
+        let event = capture.next(&mut buffer).expect("READY record");
+        ready.extend_from_slice(&buffer[..event.written()]);
+        if matches!(event, CaptureEvent::Ready { .. }) {
+            break;
+        }
+    }
+    let mut capture = capture.detach().expect("detached history");
+    let mut page = Vec::new();
+    let rows = loop {
+        let event = capture
+            .next(&mut terminal, &mut buffer)
+            .expect("history record");
+        page.extend_from_slice(&buffer[..event.written()]);
+        match event {
+            CaptureEvent::HistoryPage {
+                rows, remaining, ..
+            } => {
+                assert!(remaining > 0, "fixture needs at least two history pages");
+                break u32::try_from(rows).expect("bounded page rows");
+            }
+            CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
+            other => panic!("expected history page, got {other:?}"),
+        }
+    };
+    NativePageFixture { ready, page, rows }
+}
+
+#[cfg(feature = "native-engine")]
+fn native_kernel_fixture(
+    fixture: &NativePageFixture,
+) -> (
+    SessionKernel<GhosttyAdapter>,
+    ResourceId,
+    StreamId,
+    BootstrapId,
+    EffectBuffer,
+) {
+    let terminal = ResourceId::local(17);
+    let stream = StreamId::new(19).expect("stream");
+    let bootstrap = BootstrapId::new(23).expect("bootstrap");
+    let limits = phux_protocol::caps::BootstrapLimits::default();
+    let mut kernel = SessionKernel::with_history_config(
+        GhosttyAdapter::new(limits),
+        native_profile(),
+        HistoryCacheConfig::default(),
+    );
+    let mut effects = EffectBuffer::with_capacity(8);
+    kernel
+        .update(
+            KernelInput::BootstrapBegin {
+                terminal_id: &terminal,
+                stream_id: stream,
+                bootstrap_id: bootstrap,
+                profile: stream_profile(),
+                geometry: CanonicalGeometry::new(200, 3).expect("geometry"),
+                base_seq: 0,
+            },
+            &mut effects,
+        )
+        .expect("native begin");
+    for (chunk_seq, payload) in fixture.ready.chunks(64 * 1024).enumerate() {
+        kernel
+            .update(
+                KernelInput::BootstrapChunk {
+                    terminal_id: &terminal,
+                    stream_id: stream,
+                    bootstrap_id: bootstrap,
+                    chunk_seq: u32::try_from(chunk_seq).expect("chunk sequence"),
+                    payload,
+                },
+                &mut effects,
+            )
+            .expect("native READY chunk");
+    }
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &terminal,
+                stream_id: stream,
+                bootstrap_id: bootstrap,
+                history_cursor: Some(b"native-cursor"),
+            },
+            &mut effects,
+        )
+        .expect("native READY");
+    (kernel, terminal, stream, bootstrap, effects)
+}
+
+#[cfg(feature = "native-engine")]
+fn criterion_native_history(c: &mut Criterion) {
+    let fixture = native_page_fixture();
+    c.bench_function("client-kernel-history/native-engine-page", |b| {
+        b.iter_batched(
+            || native_kernel_fixture(&fixture),
+            |(mut kernel, terminal, stream, bootstrap, mut effects)| {
+                kernel
+                    .update(
+                        KernelInput::HistoryPage {
+                            terminal_id: &terminal,
+                            stream_id: stream,
+                            bootstrap_id: bootstrap,
+                            page_seq: 1,
+                            rows: fixture.rows,
+                            payload: black_box(&fixture.page),
+                            cursor: b"native-cursor",
+                            next_cursor: Some(b"native-cursor"),
+                        },
+                        &mut effects,
+                    )
+                    .expect("real native history page");
+                black_box(kernel);
+            },
+            BatchSize::SmallInput,
+        );
+    });
+}
+
+#[cfg(feature = "native-engine")]
+fn checked_native_history_gate() {
+    let fixture = native_page_fixture();
+    for _ in 0..WARMUP_SAMPLES {
+        let (mut kernel, terminal, stream, bootstrap, mut effects) =
+            native_kernel_fixture(&fixture);
+        kernel
+            .update(
+                KernelInput::HistoryPage {
+                    terminal_id: &terminal,
+                    stream_id: stream,
+                    bootstrap_id: bootstrap,
+                    page_seq: 1,
+                    rows: fixture.rows,
+                    payload: &fixture.page,
+                    cursor: b"native-cursor",
+                    next_cursor: Some(b"native-cursor"),
+                },
+                &mut effects,
+            )
+            .expect("native history warmup");
+    }
+    let mut samples = Vec::with_capacity(MEASURED_SAMPLES);
+    for _ in 0..MEASURED_SAMPLES {
+        let (mut kernel, terminal, stream, bootstrap, mut effects) =
+            native_kernel_fixture(&fixture);
+        let started = Instant::now();
+        kernel
+            .update(
+                KernelInput::HistoryPage {
+                    terminal_id: &terminal,
+                    stream_id: stream,
+                    bootstrap_id: bootstrap,
+                    page_seq: 1,
+                    rows: fixture.rows,
+                    payload: &fixture.page,
+                    cursor: b"native-cursor",
+                    next_cursor: Some(b"native-cursor"),
+                },
+                &mut effects,
+            )
+            .expect("native history measurement");
+        samples.push(started.elapsed());
+    }
+    let p95 = percentile(&mut samples, 95);
+    println!(
+        "metric=client-native-history corpus=real-ghostsnp-v1 clients=1 page_p95_us={} page_bytes={} authenticated_rows={} history_deferred=true",
+        p95.as_micros(),
+        fixture.page.len(),
+        fixture.rows,
+    );
+    Threshold {
+        metric: "client-native-history-page-p95",
+        corpus: Corpus::Unicode50k,
+        clients: 1,
+        comparison: Comparison::AtMost,
+        observed: p95.as_secs_f64() * 1_000.0,
+        limit: 4.0,
+        unit: "ms",
+    }
+    .check()
+    .unwrap_or_else(|error| panic!("{error}"));
 }
 
 fn checked_history_gates() {
@@ -561,8 +781,12 @@ fn main() {
         .sample_size(40)
         .configure_from_args();
     criterion_history(&mut criterion);
+    #[cfg(feature = "native-engine")]
+    criterion_native_history(&mut criterion);
     criterion.final_summary();
     drop(criterion);
     checked_history_gates();
     checked_memory_and_resync_gate();
+    #[cfg(feature = "native-engine")]
+    checked_native_history_gate();
 }

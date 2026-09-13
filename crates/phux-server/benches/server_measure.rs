@@ -14,27 +14,26 @@ use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use libghostty_vt::Terminal as GhosttyTerminal;
+use libghostty_vt::{
+    Terminal as GhosttyTerminal,
+    snapshot::{CaptureEvent, CaptureOptions},
+};
 use phux_server::grid::{SCROLLBACK_ALL, SnapshotSynthesizer};
-use std::io::Cursor;
 
 use crate::support::{Corpus, deterministic_line};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CaptureMeasurement {
-    /// Time until the synchronous encoder releases the canonical terminal.
-    pub(crate) capture_blocking: Duration,
-    /// End-to-end codec time to capture, decode, and authenticate READY.
-    pub(crate) ready: Duration,
-    /// Time to decode and authenticate the already-available prefix through READY.
-    pub(crate) decode_ready: Duration,
+    pub(crate) protocol_ready: Duration,
     pub(crate) full_history: Duration,
-    pub(crate) ready_bytes: usize,
+    pub(crate) engine_ready_bytes: usize,
+    pub(crate) protocol_ready_bytes: usize,
+    pub(crate) engine_history_bytes: usize,
     pub(crate) full_history_bytes: usize,
-    pub(crate) history_slice_max: Duration,
-    pub(crate) history_slice_max_bytes: usize,
     pub(crate) chunks: usize,
-    pub(crate) caller_buffer_growths: usize,
+    pub(crate) history_pages: usize,
+    pub(crate) history_step_max: Duration,
+    pub(crate) history_page_max_bytes: usize,
     pub(crate) payload_copies: usize,
 }
 
@@ -54,6 +53,9 @@ pub(crate) fn build_terminal(corpus: Corpus) -> GhosttyTerminal<'static, 'static
         terminal
             .set_scrollback_max_lines(Some(max_scrollback))
             .expect("benchmark terminal");
+        terminal
+            .set_scrollback_max_bytes(None)
+            .expect("benchmark scrollback byte budget");
         terminal
     };
 
@@ -94,6 +96,9 @@ pub(crate) fn build_unicode_ready_control() -> GhosttyTerminal<'static, 'static>
             .set_scrollback_max_lines(Some(50_000))
             .expect("Unicode READY control terminal");
         terminal
+            .set_scrollback_max_bytes(None)
+            .expect("Unicode READY control bytes");
+        terminal
     };
     for index in 49_940..50_000 {
         terminal.vt_write(deterministic_line(index).as_bytes());
@@ -114,105 +119,91 @@ pub(crate) fn synthesized_measurement(terminal: &GhosttyTerminal<'_, '_>) -> Cap
         .synthesize_with_scrollback(terminal, Some(SCROLLBACK_ALL))
         .expect("synthesized full-history snapshot");
     let full_elapsed = full_start.elapsed();
-    let history_slice_bytes = full.scrollback.len();
     CaptureMeasurement {
-        capture_blocking: ready_elapsed,
-        ready: ready_elapsed,
-        decode_ready: Duration::ZERO,
+        protocol_ready: ready_elapsed,
         full_history: full_elapsed,
-        ready_bytes: ready.bytes.len(),
+        engine_ready_bytes: ready.bytes.len(),
+        protocol_ready_bytes: ready.bytes.len(),
+        engine_history_bytes: full.scrollback.len(),
         full_history_bytes: full.bytes.len().saturating_add(full.scrollback.len()),
-        history_slice_max: if history_slice_bytes == 0 {
-            Duration::ZERO
-        } else {
-            full_elapsed
-        },
-        history_slice_max_bytes: history_slice_bytes,
         chunks: usize::from(!full.scrollback.is_empty()).saturating_add(1),
-        caller_buffer_growths: usize::from(ready.bytes.capacity() != 0)
-            .saturating_add(usize::from(full.bytes.capacity() != 0))
-            .saturating_add(usize::from(full.scrollback.capacity() != 0)),
-        payload_copies: 0,
+        history_pages: usize::from(!full.scrollback.is_empty()),
+        history_step_max: full_elapsed,
+        history_page_max_bytes: full.scrollback.len(),
+        payload_copies: usize::from(!ready.bytes.is_empty())
+            .saturating_add(usize::from(!full.scrollback.is_empty())),
     }
 }
 
-pub(crate) fn native_ready_measurement(
+/// Measure bounded native capture through protocol READY and lazy FINISH.
+pub(crate) fn native_progressive_measurement(
     terminal: &mut GhosttyTerminal<'_, '_>,
 ) -> CaptureMeasurement {
+    let record_bytes = usize::try_from(phux_protocol::DEFAULT_HISTORY_PAGE_BYTES)
+        .expect("default history page bound");
+    let chunk_bytes =
+        usize::try_from(phux_protocol::DEFAULT_BOOTSTRAP_CHUNK_BYTES).expect("default chunk bound");
     let started = Instant::now();
-    let mut encoded = Vec::new();
-    terminal
-        .encode_snapshot(&mut encoded)
-        .expect("encode snapshot");
-    let capture_elapsed = started.elapsed();
-    let mut reader = Cursor::new(encoded.as_slice());
-    let decoder = libghostty_vt::snapshot::Decoder::new(&mut reader).expect("decoder");
-    let decode_started = Instant::now();
-    drop(decoder.ready().expect("ready"));
-    let decode_ready = decode_started.elapsed();
-    let ready_bytes = usize::try_from(reader.position()).expect("offset");
-    CaptureMeasurement {
-        capture_blocking: capture_elapsed,
-        ready: capture_elapsed.saturating_add(decode_ready),
-        decode_ready,
-        ready_bytes,
-        chunks: 1,
-        caller_buffer_growths: 1,
-        payload_copies: 0,
-        ..CaptureMeasurement::default()
-    }
-}
-
-pub(crate) fn native_full_measurement(
-    terminal: &mut GhosttyTerminal<'_, '_>,
-) -> CaptureMeasurement {
-    let started = Instant::now();
-    let mut encoded = Vec::new();
-    terminal
-        .encode_snapshot(&mut encoded)
-        .expect("encode snapshot");
-    let encode_elapsed = started.elapsed();
-    let mut ready_reader = Cursor::new(encoded.as_slice());
-    let ready_decoder =
-        libghostty_vt::snapshot::Decoder::new(&mut ready_reader).expect("ready decoder");
-    drop(ready_decoder.ready().expect("ready"));
-    let ready_bytes = usize::try_from(ready_reader.position()).expect("offset");
-    let mut reader = Cursor::new(encoded.as_slice());
-    let decoder = libghostty_vt::snapshot::Decoder::new(&mut reader).expect("decoder");
-    let decode_started = Instant::now();
-    let mut decoder = decoder.ready().expect("ready");
-    let decode_ready = decode_started.elapsed();
-    let mut previous_offset = ready_bytes;
-    let mut history_slice_max = Duration::ZERO;
-    let mut history_slice_max_bytes = 0_usize;
-    let full_decode_started = Instant::now();
+    let mut capture = terminal
+        .capture_snapshot(CaptureOptions {
+            max_record_bytes: record_bytes,
+            max_pages: 4_096,
+        })
+        .expect("progressive capture");
+    let mut buffer = vec![0; record_bytes];
+    let mut protocol_ready_bytes = 0_usize;
+    let mut chunks = 0_usize;
+    let mut payload_copies = 0_usize;
     loop {
-        let page_started = Instant::now();
-        let Some(progress) = decoder.next().expect("decode history page") else {
+        let event = capture.next(&mut buffer).expect("prefix capture step");
+        protocol_ready_bytes = protocol_ready_bytes.saturating_add(event.written());
+        chunks = chunks.saturating_add(event.written().div_ceil(chunk_bytes));
+        payload_copies = payload_copies.saturating_add(usize::from(event.written() != 0));
+        if matches!(event, CaptureEvent::Ready { .. }) {
             break;
-        };
-        history_slice_max = history_slice_max.max(page_started.elapsed());
-        let offset = progress
-            .as_decoder()
-            .source_offset()
-            .expect("history source offset");
-        history_slice_max_bytes =
-            history_slice_max_bytes.max(offset.saturating_sub(previous_offset));
-        previous_offset = offset;
+        }
     }
-    let full_decode_elapsed = full_decode_started.elapsed();
+    let protocol_ready = started.elapsed();
+    let mut capture = capture.detach().expect("detached history capture");
+    let mut engine_history_bytes = 0_usize;
+    let mut history_pages = 0_usize;
+    let mut history_step_max = Duration::ZERO;
+    let mut history_page_max_bytes = 0_usize;
+    let mut pending_unit_bytes = 0_usize;
+    loop {
+        let step_started = Instant::now();
+        let event = capture
+            .next(terminal, &mut buffer)
+            .expect("history capture step");
+        history_step_max = history_step_max.max(step_started.elapsed());
+        engine_history_bytes = engine_history_bytes.saturating_add(event.written());
+        pending_unit_bytes = pending_unit_bytes.saturating_add(event.written());
+        chunks = chunks.saturating_add(event.written().div_ceil(chunk_bytes));
+        payload_copies = payload_copies.saturating_add(usize::from(event.written() != 0));
+        match event {
+            CaptureEvent::HistoryPage { .. } => {
+                history_pages = history_pages.saturating_add(1);
+                history_page_max_bytes = history_page_max_bytes.max(pending_unit_bytes);
+                pending_unit_bytes = 0;
+            }
+            CaptureEvent::Finish { .. } => break,
+            CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
+            CaptureEvent::Invalidated(reason) => panic!("capture invalidated: {reason:?}"),
+            CaptureEvent::Ready { .. } => unreachable!(),
+        }
+    }
     CaptureMeasurement {
-        capture_blocking: encode_elapsed,
-        ready: encode_elapsed.saturating_add(decode_ready),
-        decode_ready,
-        full_history: full_decode_elapsed,
-        ready_bytes,
-        full_history_bytes: encoded.len(),
-        history_slice_max,
-        history_slice_max_bytes,
-        chunks: 1,
-        caller_buffer_growths: 1,
-        payload_copies: 0,
+        protocol_ready,
+        full_history: started.elapsed(),
+        engine_ready_bytes: protocol_ready_bytes,
+        protocol_ready_bytes,
+        engine_history_bytes,
+        full_history_bytes: protocol_ready_bytes.saturating_add(engine_history_bytes),
+        chunks,
+        history_pages,
+        history_step_max,
+        history_page_max_bytes,
+        payload_copies,
     }
 }
 

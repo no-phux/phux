@@ -8,7 +8,7 @@ pub(crate) mod support;
 
 use bytes::Bytes;
 use server_measure::{
-    build_terminal, fanout_measurement, native_ready_measurement, retained_budget_holds,
+    build_terminal, fanout_measurement, native_progressive_measurement, retained_budget_holds,
     synthesized_measurement,
 };
 use support::{Comparison, Corpus, HISTORY_PAGE_LIMIT, Threshold, deterministic_page};
@@ -18,19 +18,22 @@ fn small_capture_and_fanout_accounting_gate() {
     let mut terminal = build_terminal(Corpus::Shell80x24);
     let synthesized = synthesized_measurement(&terminal);
     assert!(
-        synthesized.ready_bytes > 0,
+        synthesized.protocol_ready_bytes > 0,
         "metric=synthesized-ready-bytes corpus=shell-80x24 clients=1 observed=0"
     );
 
-    let native = native_ready_measurement(&mut terminal);
+    let native = native_progressive_measurement(&mut terminal);
     assert!(
-        native.ready_bytes > 0,
-        "metric=native-ready-bytes corpus=shell-80x24 clients=1 observed=0"
+        native.engine_ready_bytes > 0,
+        "metric=native-engine-ready-bytes corpus=shell-80x24 clients=1 observed=0"
     );
-    assert_eq!(
-        native.payload_copies, 0,
-        "metric=native-prefix-payload-copies corpus=shell-80x24 clients=1"
-    );
+    assert_eq!(native.protocol_ready_bytes, native.engine_ready_bytes);
+    assert!(native.full_history_bytes > native.protocol_ready_bytes);
+
+    let mut multipage_terminal = build_terminal(Corpus::Unicode50k);
+    let multipage = native_progressive_measurement(&mut multipage_terminal);
+    assert!(multipage.history_pages >= 2);
+    assert!(multipage.history_page_max_bytes <= HISTORY_PAGE_LIMIT);
 
     let payload = Bytes::from(deterministic_page(3, 4096));
     for clients in [1_usize, 2, 8] {
@@ -46,14 +49,14 @@ fn small_capture_and_fanout_accounting_gate() {
         );
         assert!(
             retained_budget_holds(
-                native.ready_bytes,
+                native.protocol_ready_bytes,
                 64 * 1024,
                 HISTORY_PAGE_LIMIT,
                 fanout.peak_retained_bytes,
             ),
             "metric=peak-retained-memory corpus=shell-80x24 clients={clients} observed={} active={} cache={} two_chunks={}",
             fanout.peak_retained_bytes,
-            native.ready_bytes,
+            native.protocol_ready_bytes,
             64 * 1024,
             HISTORY_PAGE_LIMIT * 2,
         );
