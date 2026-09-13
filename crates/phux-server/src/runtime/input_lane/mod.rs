@@ -65,7 +65,10 @@ use phux_protocol::ids::InputOperationId;
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{CommandResult, ErrorCode};
 use phux_protocol::{MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS};
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use tokio::sync::{mpsc, oneshot};
 
 pub(crate) use self::acknowledged::AcknowledgedReservation;
@@ -150,6 +153,71 @@ pub(crate) struct InputLaneHandle {
     cache: SharedOperationCache,
 }
 
+/// Owned completion of an input command whose lane admission already ran.
+#[derive(Debug)]
+pub(crate) struct InputReceipt {
+    state: ReceiptState,
+}
+
+#[derive(Debug)]
+enum ReceiptState {
+    Ready(Option<CommandResult>),
+    Waiting {
+        result: oneshot::Receiver<CommandResult>,
+        failure: ReceiptFailure,
+    },
+}
+
+#[derive(Debug)]
+enum ReceiptFailure {
+    Internal(&'static str),
+    DeliveryUnknown,
+    DeliveryUnknownAndCache {
+        cache: SharedOperationCache,
+        operation_id: InputOperationId,
+    },
+}
+
+impl Future for InputReceipt {
+    type Output = CommandResult;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match &mut self.state {
+            ReceiptState::Ready(result) => {
+                Poll::Ready(result.take().unwrap_or_else(|| CommandResult::Error {
+                    code: ErrorCode::InternalError,
+                    message: "input receipt polled after completion".to_owned(),
+                }))
+            }
+            ReceiptState::Waiting { result, failure } => match Pin::new(result).poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Ok(result)) => Poll::Ready(result),
+                Poll::Ready(Err(_)) => Poll::Ready(failure.result()),
+            },
+        }
+    }
+}
+
+impl ReceiptFailure {
+    fn result(&self) -> CommandResult {
+        match self {
+            Self::Internal(message) => CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: (*message).to_owned(),
+            },
+            Self::DeliveryUnknown => delivery_unknown_result(),
+            Self::DeliveryUnknownAndCache {
+                cache,
+                operation_id,
+            } => {
+                let result = delivery_unknown_result();
+                cache.set_final(*operation_id, &result);
+                result
+            }
+        }
+    }
+}
+
 impl InputLaneHandle {
     /// Enqueue an input event for off-thread routing. Non-blocking: a full
     /// queue drops the event with a `warn!` (fire-and-forget, SPEC §9), a
@@ -180,59 +248,79 @@ impl InputLaneHandle {
         }
     }
 
-    /// Route attach-free command input through the same FIFO as `INPUT_*` and
-    /// wait for the lane's lease/mailbox result.
-    pub(crate) async fn route_command(
+    /// Synchronously admit attach-free command input to the same FIFO as
+    /// `INPUT_*`, returning an owned lease/mailbox completion.
+    pub(crate) fn begin_route(
         &self,
         client_id: ClientId,
         terminal_id: phux_protocol::ids::ResourceId,
         event: InputEvent,
-    ) -> CommandResult {
+    ) -> InputReceipt {
         let (reply, result) = oneshot::channel();
         let routed = RoutedInput {
             client_id,
             terminal_id,
             kind: RoutedInputKind::Headless { event, reply },
         };
-        // A command has a correlated result (including TerminalNotFound and
-        // InputLeaseHeld), so unlike fire-and-forget INPUT_* it waits for lane
-        // capacity rather than losing the authority check on queue overflow.
-        if self.tx.send(routed).await.is_err() {
-            return CommandResult::Error {
+        let failure = match self.tx.try_send(routed) {
+            Ok(()) => None,
+            Err(mpsc::error::TrySendError::Full(_)) => Some(CommandResult::Error {
+                code: ErrorCode::ResourceExhausted,
+                message: "input lane queue is full for ROUTE_INPUT".to_owned(),
+            }),
+            Err(mpsc::error::TrySendError::Closed(_)) => Some(CommandResult::Error {
                 code: ErrorCode::InternalError,
                 message: "input lane unavailable for ROUTE_INPUT".to_owned(),
-            };
+            }),
+        };
+        if let Some(failure) = failure {
+            return ready_receipt(failure);
         }
-        result.await.unwrap_or_else(|_| CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "input lane stopped before ROUTE_INPUT completed".to_owned(),
-        })
+        waiting_receipt(
+            result,
+            ReceiptFailure::Internal("input lane stopped before ROUTE_INPUT completed"),
+        )
     }
 
-    /// Route an idempotent atomic input batch and wait for PTY write/flush.
-    pub(crate) async fn apply_input(
+    /// Route attach-free command input and wait for its owned receipt.
+    pub(crate) async fn route_command(
+        &self,
+        client_id: ClientId,
+        terminal_id: phux_protocol::ids::ResourceId,
+        event: InputEvent,
+    ) -> CommandResult {
+        self.begin_route(client_id, terminal_id, event).await
+    }
+
+    /// Synchronously run dedupe/admission and enqueue an idempotent atomic
+    /// batch, returning an owned PTY write/flush completion.
+    pub(crate) fn begin_apply(
         &self,
         client_id: ClientId,
         operation_id: InputOperationId,
         terminal_id: phux_protocol::ids::ResourceId,
         events: Vec<InputEvent>,
-    ) -> CommandResult {
+    ) -> InputReceipt {
         let (digest, events) = operation_digest(operation_id, &terminal_id, events);
         match self
             .cache
             .claim_at(operation_id, digest, std::time::Instant::now())
         {
-            CacheClaim::Final(result) => return result,
+            CacheClaim::Final(result) => return ready_receipt(result),
             CacheClaim::Conflict => {
-                return invalid_command("APPLY_INPUT operation id reused with a different payload");
+                return ready_receipt(invalid_command(
+                    "APPLY_INPUT operation id reused with a different payload",
+                ));
             }
             CacheClaim::Full => {
-                return acknowledged_resource_exhausted("acknowledged-input dedupe cache is full");
+                return ready_receipt(acknowledged_resource_exhausted(
+                    "acknowledged-input dedupe cache is full",
+                ));
             }
             CacheClaim::Pending(result) => {
-                return result.await.unwrap_or_else(|_| delivery_unknown_result());
+                return waiting_receipt(result, ReceiptFailure::DeliveryUnknown);
             }
-            CacheClaim::PendingUncertain => return delivery_unknown_result(),
+            CacheClaim::PendingUncertain => return ready_receipt(delivery_unknown_result()),
             CacheClaim::Owner => {}
         }
         let Some(reservation) = AcknowledgedReservation::try_acquire(&self.admission, &terminal_id)
@@ -241,7 +329,7 @@ impl InputLaneHandle {
                 "another APPLY_INPUT operation is in flight for this terminal",
             );
             self.cache.set_retryable(operation_id, &result);
-            return result;
+            return ready_receipt(result);
         };
         let (reply, result) = oneshot::channel();
         let routed = RoutedInput {
@@ -260,7 +348,7 @@ impl InputLaneHandle {
                 drop(routed);
                 let result = acknowledged_resource_exhausted("input lane queue is full");
                 self.cache.set_retryable(operation_id, &result);
-                return result;
+                return ready_receipt(result);
             }
             // The lane thread itself is gone: this operation was never even
             // enqueued, let alone handed to a pane actor or a PTY writer.
@@ -269,14 +357,29 @@ impl InputLaneHandle {
                 drop(routed);
                 let result = acknowledged_not_written("input lane unavailable for APPLY_INPUT");
                 self.cache.set_retryable(operation_id, &result);
-                return result;
+                return ready_receipt(result);
             }
         }
-        result.await.unwrap_or_else(|_| {
-            let result = delivery_unknown_result();
-            self.cache.set_final(operation_id, &result);
-            result
-        })
+        let cache = self.cache.clone();
+        waiting_receipt(
+            result,
+            ReceiptFailure::DeliveryUnknownAndCache {
+                cache,
+                operation_id,
+            },
+        )
+    }
+
+    /// Route an idempotent atomic input batch and wait for PTY write/flush.
+    pub(crate) async fn apply_input(
+        &self,
+        client_id: ClientId,
+        operation_id: InputOperationId,
+        terminal_id: phux_protocol::ids::ResourceId,
+        events: Vec<InputEvent>,
+    ) -> CommandResult {
+        self.begin_apply(client_id, operation_id, terminal_id, events)
+            .await
     }
 
     #[cfg(test)]
@@ -356,6 +459,21 @@ impl InputLaneHandle {
             return Err(result);
         }
         Ok(result)
+    }
+}
+
+const fn ready_receipt(result: CommandResult) -> InputReceipt {
+    InputReceipt {
+        state: ReceiptState::Ready(Some(result)),
+    }
+}
+
+const fn waiting_receipt(
+    result: oneshot::Receiver<CommandResult>,
+    failure: ReceiptFailure,
+) -> InputReceipt {
+    InputReceipt {
+        state: ReceiptState::Waiting { result, failure },
     }
 }
 
@@ -2272,6 +2390,66 @@ mod tests {
                     .expect("completion")
                     .complete(WriteCompletion::Delivered);
                 assert_eq!(held.await.unwrap(), CommandResult::Ok);
+                fx.token.cancel();
+                other.token.cancel();
+            })
+            .await;
+    }
+
+    /// Connection readers can synchronously admit B/control before awaiting
+    /// A's owned receipt. This pins the seam used to detach only completion,
+    /// rather than spawning admission and allowing later raw input to overtake.
+    #[tokio::test(flavor = "current_thread")]
+    async fn owned_receipts_admit_other_input_before_first_completion() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut fx = spawn_fixture();
+                let mut other = add_second_pane(&fx);
+                let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
+                let handle = lane.handle();
+
+                let first_receipt = handle.begin_apply(
+                    fx.client_a,
+                    operation_id(24),
+                    fx.wire.clone(),
+                    vec![InputEvent::Paste(paste_event(b"held"))],
+                );
+                let first = fx.writer_rx.recv().await.expect("first pane write");
+
+                let second_receipt = handle.begin_apply(
+                    fx.client_a,
+                    operation_id(25),
+                    other.wire.clone(),
+                    vec![InputEvent::Paste(paste_event(b"other"))],
+                );
+                let second = tokio::time::timeout(LANE_DELIVERY_DEADLINE, other.writer_rx.recv())
+                    .await
+                    .expect("B is admitted before A completes")
+                    .expect("second pane writer open");
+                second
+                    .completion
+                    .expect("completion")
+                    .complete(WriteCompletion::Delivered);
+                assert_eq!(second_receipt.await, CommandResult::Ok);
+
+                let route_receipt = handle.begin_route(
+                    fx.client_a,
+                    other.wire.clone(),
+                    InputEvent::Paste(paste_event(b"control")),
+                );
+                assert_eq!(route_receipt.await, CommandResult::Ok);
+                let routed = tokio::time::timeout(LANE_DELIVERY_DEADLINE, other.writer_rx.recv())
+                    .await
+                    .expect("ROUTE_INPUT is admitted before A completes")
+                    .expect("second pane writer open");
+                assert_eq!(routed.bytes.as_ref(), b"control");
+
+                first
+                    .completion
+                    .expect("completion")
+                    .complete(WriteCompletion::Delivered);
+                assert_eq!(first_receipt.await, CommandResult::Ok);
                 fx.token.cancel();
                 other.token.cancel();
             })
