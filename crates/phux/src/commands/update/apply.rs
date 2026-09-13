@@ -14,11 +14,13 @@
 //!    `phux-server/src/runtime/upgrade.rs`, which happens after installation,
 //!    on the server side, where a failure is harmless because nothing has
 //!    been closed yet.
-//! 3. **The destination path never holds a partial file.** Staging happens in
-//!    a sibling directory of the target — same directory, therefore same
-//!    filesystem, therefore `rename(2)` is atomic — and the final step is a
-//!    rename over the destination. A crash at any point leaves either the old
-//!    binary or the new one, never half of either.
+//! 3. **Publication is a recoverable transaction.** A persistent advisory
+//!    lock serializes publishers. The old pair and its manifest are fsynced in
+//!    a sibling journal before either destination changes; each rename is
+//!    followed by a directory fsync. Renaming that journal into the rollback
+//!    directory is the durable commit point. A later update or rollback first
+//!    recovers an interrupted pre-commit pair, while a committed pair stays
+//!    new. No destination ever holds a partial file or a lasting mixed pair.
 //!
 //! Permissions come from the file being replaced, not from the archive. That
 //! preserves a deliberately restrictive mode (a `0o700` binary in a shared
@@ -27,8 +29,8 @@
 
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Read;
-use std::os::unix::fs::PermissionsExt;
+use std::io::{Read, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -54,6 +56,13 @@ pub(crate) const BACKUP_DIR: &str = ".phux-update-backup";
 
 /// The manifest written beside the saved binaries.
 const BACKUP_MANIFEST: &str = "manifest.json";
+
+/// Stable names used by the crash-recovery state machine.
+const PREPARING_DIR: &str = ".phux-update-transaction.preparing";
+const TRANSACTION_DIR: &str = ".phux-update-transaction";
+const PREVIOUS_BACKUP_DIR: &str = ".phux-update-backup.previous";
+const ROLLBACK_COMMITTED_DIR: &str = ".phux-update-rollback-committed";
+const UPDATE_LOCK: &str = ".phux-update.lock";
 
 /// Compute the SHA-256 of a file as lowercase hex.
 pub(crate) fn sha256_file(path: &Path) -> std::io::Result<String> {
@@ -307,6 +316,84 @@ pub(crate) struct Replaced {
     pub(crate) previous_version: String,
 }
 
+/// Fault-injection boundaries in an install publication transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallCheckpoint {
+    Journal,
+    FirstBinaryVisible,
+    FirstBinary,
+    AllBinariesVisible,
+    AllBinaries,
+    PreviousBackupVisible,
+    PreviousBackup,
+    CommitVisible,
+    Commit,
+}
+
+/// Fault-injection boundaries in a rollback transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RollbackCheckpoint {
+    Journal,
+    FirstBinaryVisible,
+    FirstBinary,
+    AllBinariesVisible,
+    AllBinaries,
+    CommitVisible,
+    Commit,
+}
+
+/// The persistent lock serializing update and rollback publication.
+struct UpdateLock {
+    file: fs::File,
+}
+
+impl UpdateLock {
+    fn acquire(bin_dir: &Path) -> Result<Self, UpdateError> {
+        let path = bin_dir.join(UPDATE_LOCK);
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .mode(0o600)
+            .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits().cast_signed())
+            .open(&path)
+            .map_err(|err| {
+                UpdateError::Install(format!(
+                    "could not open update lock {}: {err}",
+                    path.display()
+                ))
+            })?;
+        if !file
+            .metadata()
+            .map_err(|err| {
+                UpdateError::Install(format!(
+                    "could not inspect update lock {}: {err}",
+                    path.display()
+                ))
+            })?
+            .is_file()
+        {
+            return Err(UpdateError::Install(format!(
+                "update lock {} is not a regular file",
+                path.display()
+            )));
+        }
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive).map_err(|err| {
+            UpdateError::Install(format!("could not lock {}: {err}", path.display()))
+        })?;
+        let lock = Self { file };
+        recover_interrupted_transaction(bin_dir)?;
+        Ok(lock)
+    }
+}
+
+impl Drop for UpdateLock {
+    fn drop(&mut self) {
+        let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);
+    }
+}
+
 /// Atomically replace the release binaries in `bin_dir` from `staged`.
 ///
 /// `phux-mcp` is replaced alongside `phux` when it is present beside it. That
@@ -318,6 +405,16 @@ pub(crate) fn replace_binaries(
     staged: &Path,
     previous_version: &str,
 ) -> Result<Replaced, UpdateError> {
+    replace_binaries_with_checkpoint(bin_dir, staged, previous_version, |_| {})
+}
+
+fn replace_binaries_with_checkpoint(
+    bin_dir: &Path,
+    staged: &Path,
+    previous_version: &str,
+    mut checkpoint: impl FnMut(InstallCheckpoint),
+) -> Result<Replaced, UpdateError> {
+    let _lock = UpdateLock::acquire(bin_dir)?;
     // Only replace what is actually installed here. `phux` itself is
     // mandatory; `phux-mcp` is replaced when it is already a sibling.
     let targets: Vec<&str> = RELEASE_BINARIES
@@ -326,30 +423,82 @@ pub(crate) fn replace_binaries(
         .filter(|name| *name == "phux" || bin_dir.join(name).exists())
         .collect();
 
-    let backup = prepare_backup(bin_dir, &targets, previous_version)?;
+    let transaction = prepare_transaction(bin_dir, &targets, previous_version)?;
+    checkpoint(InstallCheckpoint::Journal);
 
-    let mut moved: Vec<String> = Vec::new();
-    for name in &targets {
-        let from = staged.join(name);
-        let to = bin_dir.join(name);
-        if let Err(err) = adopt_permissions(&from, &to) {
-            undo(bin_dir, &backup, &moved);
-            return Err(err);
+    let publish = (|| {
+        let mut moved = Vec::new();
+        for (index, name) in targets.iter().enumerate() {
+            let from = staged.join(name);
+            let to = bin_dir.join(name);
+            adopt_permissions(&from, &to)?;
+            fs::File::open(&from)
+                .and_then(|file| file.sync_all())
+                .map_err(|err| {
+                    UpdateError::Install(format!(
+                        "could not make staged binary {} durable: {err}",
+                        from.display()
+                    ))
+                })?;
+            fs::rename(&from, &to).map_err(|err| {
+                UpdateError::Install(format!("could not install {}: {err}", to.display()))
+            })?;
+            if index == 0 && targets.len() > 1 {
+                checkpoint(InstallCheckpoint::FirstBinaryVisible);
+            } else if index + 1 == targets.len() {
+                checkpoint(InstallCheckpoint::AllBinariesVisible);
+            }
+            sync_directory(bin_dir)?;
+            moved.push((*name).to_owned());
+            if index == 0 && targets.len() > 1 {
+                checkpoint(InstallCheckpoint::FirstBinary);
+            }
         }
-        if let Err(err) = fs::rename(&from, &to) {
-            let failure =
-                UpdateError::Install(format!("could not install {}: {err}", to.display()));
-            undo(bin_dir, &backup, &moved);
-            return Err(failure);
+        checkpoint(InstallCheckpoint::AllBinaries);
+
+        let backup = bin_dir.join(BACKUP_DIR);
+        let previous_backup = bin_dir.join(PREVIOUS_BACKUP_DIR);
+        if backup.exists() {
+            fs::rename(&backup, &previous_backup).map_err(|err| {
+                UpdateError::Install(format!(
+                    "could not preserve previous backup {}: {err}",
+                    backup.display()
+                ))
+            })?;
+            checkpoint(InstallCheckpoint::PreviousBackupVisible);
+            sync_directory(bin_dir)?;
+            checkpoint(InstallCheckpoint::PreviousBackup);
         }
-        moved.push((*name).to_owned());
+        fs::rename(&transaction, &backup).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not publish rollback backup {}: {err}",
+                backup.display()
+            ))
+        })?;
+        checkpoint(InstallCheckpoint::CommitVisible);
+        sync_directory(bin_dir)?;
+        checkpoint(InstallCheckpoint::Commit);
+
+        if previous_backup.exists() {
+            let _ = fs::remove_dir_all(&previous_backup);
+            let _ = sync_directory(bin_dir);
+        }
+
+        Ok(Replaced {
+            binaries: moved,
+            backup,
+            previous_version: previous_version.to_owned(),
+        })
+    })();
+
+    if publish.is_err()
+        && let Err(recovery) = recover_interrupted_transaction(bin_dir)
+    {
+        return Err(UpdateError::Install(format!(
+            "update failed and recovery also failed: {recovery}"
+        )));
     }
-
-    Ok(Replaced {
-        binaries: moved,
-        backup,
-        previous_version: previous_version.to_owned(),
-    })
+    publish
 }
 
 /// Give the staged file the mode of the file it is about to replace.
@@ -368,35 +517,32 @@ fn adopt_permissions(staged: &Path, target: &Path) -> Result<(), UpdateError> {
     })
 }
 
-/// Save the current binaries into `bin_dir/.phux-update-backup`.
-fn prepare_backup(
+/// Save the current binaries into a durable pre-commit journal.
+fn prepare_transaction(
     bin_dir: &Path,
     targets: &[&str],
     previous_version: &str,
 ) -> Result<PathBuf, UpdateError> {
-    let backup = bin_dir.join(BACKUP_DIR);
-    // A stale backup from an earlier update is not useful — its binaries are
-    // two versions behind whatever is live — and keeping it would make the
-    // manifest lie about what rolling back restores.
-    if backup.exists() {
-        fs::remove_dir_all(&backup).map_err(|err| {
-            UpdateError::Install(format!(
-                "could not clear the previous backup at {}: {err}",
-                backup.display()
-            ))
-        })?;
+    for name in targets {
+        let live = bin_dir.join(name);
+        if !live.is_file() {
+            return Err(UpdateError::Install(format!(
+                "cannot start an update transaction because {} is missing or not a regular file",
+                live.display()
+            )));
+        }
     }
-    fs::create_dir(&backup).map_err(|err| {
-        UpdateError::Install(format!("could not create {}: {err}", backup.display()))
+
+    let transaction = bin_dir.join(TRANSACTION_DIR);
+    let preparing = bin_dir.join(PREPARING_DIR);
+    fs::create_dir(&preparing).map_err(|err| {
+        UpdateError::Install(format!("could not create {}: {err}", preparing.display()))
     })?;
 
     let mut saved = Vec::new();
     for name in targets {
         let live = bin_dir.join(name);
-        if !live.exists() {
-            continue;
-        }
-        let into = backup.join(name);
+        let into = preparing.join(name);
         // A hard link is free and keeps the exact inode — including its mode
         // — so a rollback restores byte-for-byte what was there. `fs::copy`
         // is the fallback for filesystems that refuse links.
@@ -408,6 +554,14 @@ fn prepare_backup(
                 ))
             })?;
         }
+        fs::File::open(&into)
+            .and_then(|file| file.sync_all())
+            .map_err(|err| {
+                UpdateError::Install(format!(
+                    "could not make saved binary {} durable: {err}",
+                    into.display()
+                ))
+            })?;
         saved.push((*name).to_owned());
     }
 
@@ -420,24 +574,199 @@ fn prepare_backup(
     let rendered = serde_json::to_string_pretty(&manifest).map_err(|err| {
         UpdateError::Install(format!("could not render the backup manifest: {err}"))
     })?;
-    fs::write(backup.join(BACKUP_MANIFEST), rendered).map_err(|err| {
+    let manifest_path = preparing.join(BACKUP_MANIFEST);
+    let mut manifest_file = fs::File::create(&manifest_path).map_err(|err| {
         UpdateError::Install(format!(
             "could not write {}: {err}",
-            backup.join(BACKUP_MANIFEST).display()
+            manifest_path.display()
         ))
     })?;
-    Ok(backup)
+    manifest_file
+        .write_all(rendered.as_bytes())
+        .and_then(|()| manifest_file.sync_all())
+        .map_err(|err| {
+            UpdateError::Install(format!(
+                "could not make {} durable: {err}",
+                manifest_path.display()
+            ))
+        })?;
+    sync_directory(&preparing)?;
+    fs::rename(&preparing, &transaction).map_err(|err| {
+        UpdateError::Install(format!(
+            "could not publish transaction journal {}: {err}",
+            transaction.display()
+        ))
+    })?;
+    sync_directory(bin_dir)?;
+    Ok(transaction)
 }
 
-/// Put back everything that already moved, after a mid-pair failure.
-///
-/// Best effort by necessity — if this also fails the user is told to run
-/// `phux update --rollback`, and the saved binaries are still on disk for it
-/// to find.
-fn undo(bin_dir: &Path, backup: &Path, moved: &[String]) {
-    for name in moved {
-        let _ = fs::rename(backup.join(name), bin_dir.join(name));
+fn sync_directory(path: &Path) -> Result<(), UpdateError> {
+    fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|err| {
+            UpdateError::Install(format!(
+                "could not make directory {} durable: {err}",
+                path.display()
+            ))
+        })
+}
+
+fn manifest_names(directory: &Path) -> Result<Vec<String>, UpdateError> {
+    let path = directory.join(BACKUP_MANIFEST);
+    let raw = fs::read_to_string(&path).map_err(|err| {
+        UpdateError::Install(format!(
+            "could not read transaction {}: {err}",
+            path.display()
+        ))
+    })?;
+    let manifest: serde_json::Value = serde_json::from_str(&raw).map_err(|err| {
+        UpdateError::Install(format!(
+            "transaction {} is malformed: {err}",
+            path.display()
+        ))
+    })?;
+    let names: Vec<String> = manifest
+        .get("binaries")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str().map(str::to_owned))
+        .collect();
+    if names.is_empty()
+        || names
+            .iter()
+            .any(|name| !RELEASE_BINARIES.contains(&name.as_str()))
+    {
+        return Err(UpdateError::Install(format!(
+            "transaction {} names no valid release binaries",
+            path.display()
+        )));
     }
+    Ok(names)
+}
+
+/// Publish `source` over `target` without consuming the recovery source.
+fn restore_file(source: &Path, target: &Path, bin_dir: &Path) -> Result<(), UpdateError> {
+    let name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("binary");
+    let temporary = bin_dir.join(format!(".phux-update-recover-{name}"));
+    let _ = fs::remove_file(&temporary);
+    if fs::hard_link(source, &temporary).is_err() {
+        fs::copy(source, &temporary).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not stage recovery of {}: {err}",
+                target.display()
+            ))
+        })?;
+    }
+    fs::File::open(&temporary)
+        .and_then(|file| file.sync_all())
+        .map_err(|err| {
+            UpdateError::Install(format!(
+                "could not make recovered binary {} durable: {err}",
+                temporary.display()
+            ))
+        })?;
+    fs::rename(&temporary, target).map_err(|err| {
+        UpdateError::Install(format!("could not recover {}: {err}", target.display()))
+    })?;
+    sync_directory(bin_dir)
+}
+
+/// Recover any state whose durable commit marker was not published.
+fn recover_interrupted_transaction(bin_dir: &Path) -> Result<(), UpdateError> {
+    let preparing = bin_dir.join(PREPARING_DIR);
+    if preparing.exists() {
+        fs::remove_dir_all(&preparing).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not clear incomplete journal {}: {err}",
+                preparing.display()
+            ))
+        })?;
+        sync_directory(bin_dir)?;
+    }
+
+    let committed_rollback = bin_dir.join(ROLLBACK_COMMITTED_DIR);
+    if committed_rollback.exists() {
+        let backup = bin_dir.join(BACKUP_DIR);
+        if backup.exists() {
+            fs::remove_dir_all(&backup).map_err(|err| {
+                UpdateError::Install(format!(
+                    "could not finish committed rollback at {}: {err}",
+                    backup.display()
+                ))
+            })?;
+            sync_directory(bin_dir)?;
+        }
+        fs::remove_dir_all(&committed_rollback).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not clear committed rollback {}: {err}",
+                committed_rollback.display()
+            ))
+        })?;
+        sync_directory(bin_dir)?;
+    }
+
+    let transaction = bin_dir.join(TRANSACTION_DIR);
+    if transaction.exists() {
+        let names = manifest_names(&transaction)?;
+        for name in &names {
+            let saved = transaction.join(name);
+            if !saved.is_file() {
+                return Err(UpdateError::Install(format!(
+                    "interrupted transaction is missing {}",
+                    saved.display()
+                )));
+            }
+        }
+        for name in &names {
+            restore_file(&transaction.join(name), &bin_dir.join(name), bin_dir)?;
+        }
+
+        let previous = bin_dir.join(PREVIOUS_BACKUP_DIR);
+        let backup = bin_dir.join(BACKUP_DIR);
+        if previous.exists() && !backup.exists() {
+            fs::rename(&previous, &backup).map_err(|err| {
+                UpdateError::Install(format!(
+                    "could not restore previous rollback backup {}: {err}",
+                    backup.display()
+                ))
+            })?;
+            sync_directory(bin_dir)?;
+        }
+        fs::remove_dir_all(&transaction).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not clear recovered transaction {}: {err}",
+                transaction.display()
+            ))
+        })?;
+        sync_directory(bin_dir)?;
+    }
+
+    let previous = bin_dir.join(PREVIOUS_BACKUP_DIR);
+    if previous.exists() {
+        let backup = bin_dir.join(BACKUP_DIR);
+        if backup.exists() {
+            fs::remove_dir_all(&previous).map_err(|err| {
+                UpdateError::Install(format!(
+                    "could not clear superseded backup {}: {err}",
+                    previous.display()
+                ))
+            })?;
+        } else {
+            fs::rename(&previous, &backup).map_err(|err| {
+                UpdateError::Install(format!(
+                    "could not recover previous backup {}: {err}",
+                    backup.display()
+                ))
+            })?;
+        }
+        sync_directory(bin_dir)?;
+    }
+    Ok(())
 }
 
 /// What a rollback restored.
@@ -451,11 +780,14 @@ pub(crate) struct RolledBack {
 
 /// Restore the binaries saved by the last successful update.
 ///
-/// The restore is renames within one directory, so each binary is swapped
-/// atomically and the backup directory is removed only once every one of them
-/// is back. A rollback with nothing saved is an error, not a silent no-op.
+/// The restore uses a durable journal and atomic renames within one directory.
+/// The backup is consumed only after the journal's commit rename is durable. A
+/// rollback with nothing saved is an error, not a silent no-op.
 pub(crate) fn rollback(bin_dir: &Path) -> Result<RolledBack, UpdateError> {
-    let backup = bin_dir.join(BACKUP_DIR);
+    rollback_with_checkpoint(bin_dir, |_| {})
+}
+
+fn read_backup_manifest(backup: &Path) -> Result<(String, Vec<String>), UpdateError> {
     let manifest_path = backup.join(BACKUP_MANIFEST);
     let raw = fs::read_to_string(&manifest_path).map_err(|err| {
         UpdateError::NoBackup(format!("no saved binaries at {}: {err}", backup.display()))
@@ -474,19 +806,30 @@ pub(crate) fn rollback(bin_dir: &Path) -> Result<RolledBack, UpdateError> {
     let names: Vec<String> = manifest
         .get("binaries")
         .and_then(serde_json::Value::as_array)
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| entry.as_str().map(std::borrow::ToOwned::to_owned))
-                .collect()
-        })
-        .unwrap_or_default();
-    if names.is_empty() {
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.as_str().map(str::to_owned))
+        .collect();
+    if names.is_empty()
+        || names
+            .iter()
+            .any(|name| !RELEASE_BINARIES.contains(&name.as_str()))
+    {
         return Err(UpdateError::NoBackup(format!(
-            "{} lists no saved binaries",
+            "{} lists no valid saved binaries",
             manifest_path.display()
         )));
     }
+    Ok((version, names))
+}
+
+fn rollback_with_checkpoint(
+    bin_dir: &Path,
+    mut checkpoint: impl FnMut(RollbackCheckpoint),
+) -> Result<RolledBack, UpdateError> {
+    let _lock = UpdateLock::acquire(bin_dir)?;
+    let backup = bin_dir.join(BACKUP_DIR);
+    let (version, names) = read_backup_manifest(&backup)?;
 
     // Refuse before moving anything if any saved file is missing, so a
     // rollback is all-or-nothing rather than half-applied.
@@ -500,28 +843,94 @@ pub(crate) fn rollback(bin_dir: &Path) -> Result<RolledBack, UpdateError> {
         }
     }
 
-    let mut restored = Vec::new();
-    for name in &names {
-        let saved = backup.join(name);
-        let live = bin_dir.join(name);
-        fs::rename(&saved, &live).map_err(|err| {
+    let target_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let transaction = prepare_transaction(bin_dir, &target_refs, "unknown")?;
+    checkpoint(RollbackCheckpoint::Journal);
+
+    let restore = (|| {
+        let mut restored = Vec::new();
+        for (index, name) in names.iter().enumerate() {
+            let saved = backup.join(name);
+            let incoming = transaction.join(format!("{name}.incoming"));
+            if fs::hard_link(&saved, &incoming).is_err() {
+                fs::copy(&saved, &incoming).map_err(|err| {
+                    UpdateError::Install(format!(
+                        "could not stage rollback of {}: {err}",
+                        bin_dir.join(name).display()
+                    ))
+                })?;
+            }
+            fs::File::open(&incoming)
+                .and_then(|file| file.sync_all())
+                .map_err(|err| {
+                    UpdateError::Install(format!(
+                        "could not make rollback binary {} durable: {err}",
+                        incoming.display()
+                    ))
+                })?;
+            fs::rename(&incoming, bin_dir.join(name)).map_err(|err| {
+                UpdateError::Install(format!(
+                    "could not restore {} from {}: {err}",
+                    bin_dir.join(name).display(),
+                    saved.display()
+                ))
+            })?;
+            if index == 0 && names.len() > 1 {
+                checkpoint(RollbackCheckpoint::FirstBinaryVisible);
+            } else if index + 1 == names.len() {
+                checkpoint(RollbackCheckpoint::AllBinariesVisible);
+            }
+            sync_directory(bin_dir)?;
+            restored.push(name.clone());
+            if index == 0 && names.len() > 1 {
+                checkpoint(RollbackCheckpoint::FirstBinary);
+            }
+        }
+        checkpoint(RollbackCheckpoint::AllBinaries);
+
+        let committed = bin_dir.join(ROLLBACK_COMMITTED_DIR);
+        fs::rename(&transaction, &committed).map_err(|err| {
             UpdateError::Install(format!(
-                "could not restore {} from {}: {err}\n\
-                 {} restored so far; the rest are still in {}",
-                live.display(),
-                saved.display(),
-                restored.join(", "),
+                "could not commit rollback at {}: {err}",
+                committed.display()
+            ))
+        })?;
+        checkpoint(RollbackCheckpoint::CommitVisible);
+        sync_directory(bin_dir)?;
+        checkpoint(RollbackCheckpoint::Commit);
+
+        fs::remove_dir_all(&backup).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not clear consumed backup {}: {err}",
                 backup.display()
             ))
         })?;
-        restored.push(name.clone());
-    }
+        // The consumed backup must be durably absent before the commit marker
+        // can disappear. Otherwise a crash could resurrect the backup without
+        // the marker and make a second rollback apply it in the wrong direction.
+        sync_directory(bin_dir)?;
+        fs::remove_dir_all(&committed).map_err(|err| {
+            UpdateError::Install(format!(
+                "could not clear committed rollback {}: {err}",
+                committed.display()
+            ))
+        })?;
+        sync_directory(bin_dir)?;
+        Ok(RolledBack {
+            binaries: restored,
+            version,
+        })
+    })();
 
-    let _ = fs::remove_dir_all(&backup);
-    Ok(RolledBack {
-        binaries: restored,
-        version,
-    })
+    if restore.is_err()
+        && transaction.exists()
+        && let Err(recovery) = recover_interrupted_transaction(bin_dir)
+    {
+        return Err(UpdateError::Install(format!(
+            "rollback failed and recovery also failed: {recovery}"
+        )));
+    }
+    restore
 }
 
 #[cfg(test)]
@@ -529,10 +938,15 @@ pub(crate) fn rollback(bin_dir: &Path) -> Result<RolledBack, UpdateError> {
 mod tests {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::panic::AssertUnwindSafe;
     use std::path::{Path, PathBuf};
+    use std::sync::mpsc;
+    use std::time::Duration;
 
     use super::{
-        BACKUP_DIR, Staging, UpdateError, expected_digest, replace_binaries, rollback, sha256_file,
+        BACKUP_DIR, InstallCheckpoint, PREPARING_DIR, RollbackCheckpoint, Staging, TRANSACTION_DIR,
+        UpdateError, UpdateLock, expected_digest, replace_binaries,
+        replace_binaries_with_checkpoint, rollback, rollback_with_checkpoint, sha256_file,
         unpack_verified, verify_archive,
     };
 
@@ -765,6 +1179,162 @@ mod tests {
             b"#!/bin/sh\nold mcp\n"
         );
         assert!(!bin.join(BACKUP_DIR).exists());
+    }
+
+    fn staged_release(scratch: &Scratch, bin: &Path) -> (Staging, PathBuf) {
+        let stage = "phux-v1.0.0-aarch64-apple-darwin";
+        let archive = build_archive(scratch.path(), stage, None);
+        let staging = Staging::create(bin).unwrap();
+        let staged = unpack_verified(&archive, stage, staging.path()).unwrap();
+        (staging, staged)
+    }
+
+    fn assert_pair(bin: &Path, phux: &[u8], mcp: &[u8]) {
+        assert_eq!(fs::read(bin.join("phux")).unwrap(), phux);
+        assert_eq!(fs::read(bin.join("phux-mcp")).unwrap(), mcp);
+    }
+
+    #[test]
+    fn interrupted_install_recovers_old_pair_until_the_durable_commit() {
+        let checkpoints = [
+            InstallCheckpoint::Journal,
+            InstallCheckpoint::FirstBinaryVisible,
+            InstallCheckpoint::FirstBinary,
+            InstallCheckpoint::AllBinariesVisible,
+            InstallCheckpoint::AllBinaries,
+            InstallCheckpoint::PreviousBackupVisible,
+            InstallCheckpoint::PreviousBackup,
+            InstallCheckpoint::CommitVisible,
+            InstallCheckpoint::Commit,
+        ];
+
+        for fault in checkpoints {
+            let scratch = Scratch::new(&format!("install-fault-{fault:?}"));
+            let bin = scratch.path().join("bin");
+            fs::create_dir(&bin).unwrap();
+            seed_bin_dir(&bin, 0o755);
+
+            // Exercise the asymmetric backup rotation boundary too: the old
+            // generation must survive until the new transaction commits.
+            if matches!(
+                fault,
+                InstallCheckpoint::PreviousBackupVisible
+                    | InstallCheckpoint::PreviousBackup
+                    | InstallCheckpoint::CommitVisible
+                    | InstallCheckpoint::Commit
+            ) {
+                let previous = bin.join(BACKUP_DIR);
+                fs::create_dir(&previous).unwrap();
+                fs::write(previous.join("sentinel"), b"older backup").unwrap();
+            }
+
+            let (_staging, staged) = staged_release(&scratch, &bin);
+            let interrupted = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let _ = replace_binaries_with_checkpoint(&bin, &staged, "0.12.1", |at| {
+                    assert_ne!(at, fault, "injected interruption at {at:?}");
+                });
+            }));
+            assert!(interrupted.is_err(), "checkpoint {fault:?} was not reached");
+
+            // A new updater acquires the same lock and repairs the journal
+            // before doing any new work.
+            drop(UpdateLock::acquire(&bin).unwrap());
+            if matches!(
+                fault,
+                InstallCheckpoint::CommitVisible | InstallCheckpoint::Commit
+            ) {
+                assert_pair(&bin, b"#!/bin/sh\nnew phux\n", b"#!/bin/sh\nnew mcp\n");
+            } else {
+                assert_pair(&bin, b"#!/bin/sh\nold phux\n", b"#!/bin/sh\nold mcp\n");
+            }
+            assert!(
+                !bin.join(TRANSACTION_DIR).exists(),
+                "journal survived recovery at {fault:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_rollback_recovers_new_pair_until_the_durable_commit() {
+        let checkpoints = [
+            RollbackCheckpoint::Journal,
+            RollbackCheckpoint::FirstBinaryVisible,
+            RollbackCheckpoint::FirstBinary,
+            RollbackCheckpoint::AllBinariesVisible,
+            RollbackCheckpoint::AllBinaries,
+            RollbackCheckpoint::CommitVisible,
+            RollbackCheckpoint::Commit,
+        ];
+
+        for fault in checkpoints {
+            let scratch = Scratch::new(&format!("rollback-fault-{fault:?}"));
+            let bin = scratch.path().join("bin");
+            fs::create_dir(&bin).unwrap();
+            seed_bin_dir(&bin, 0o755);
+            let (_staging, staged) = staged_release(&scratch, &bin);
+            replace_binaries(&bin, &staged, "0.12.1").unwrap();
+
+            let interrupted = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let _ = rollback_with_checkpoint(&bin, |at| {
+                    assert_ne!(at, fault, "injected interruption at {at:?}");
+                });
+            }));
+            assert!(interrupted.is_err(), "checkpoint {fault:?} was not reached");
+
+            drop(UpdateLock::acquire(&bin).unwrap());
+            if matches!(
+                fault,
+                RollbackCheckpoint::CommitVisible | RollbackCheckpoint::Commit
+            ) {
+                assert_pair(&bin, b"#!/bin/sh\nold phux\n", b"#!/bin/sh\nold mcp\n");
+                assert!(!bin.join(BACKUP_DIR).exists());
+            } else {
+                assert_pair(&bin, b"#!/bin/sh\nnew phux\n", b"#!/bin/sh\nnew mcp\n");
+                assert!(bin.join(BACKUP_DIR).exists());
+            }
+            assert!(!bin.join(TRANSACTION_DIR).exists());
+        }
+    }
+
+    #[test]
+    fn update_lock_serializes_publishers() {
+        let scratch = Scratch::new("lock");
+        let bin = scratch.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        let first = UpdateLock::acquire(&bin).unwrap();
+        let second_bin = bin;
+        let (sent, received) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let _second = UpdateLock::acquire(&second_bin).unwrap();
+            sent.send(()).unwrap();
+        });
+
+        assert!(
+            matches!(
+                received.recv_timeout(Duration::from_millis(100)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "a second publisher acquired the lock concurrently"
+        );
+        drop(first);
+        received.recv_timeout(Duration::from_secs(2)).unwrap();
+        waiter.join().unwrap();
+    }
+
+    #[test]
+    fn an_interrupted_journal_build_is_discarded_before_publication() {
+        let scratch = Scratch::new("preparing");
+        let bin = scratch.path().join("bin");
+        fs::create_dir(&bin).unwrap();
+        seed_bin_dir(&bin, 0o755);
+        let preparing = bin.join(PREPARING_DIR);
+        fs::create_dir(&preparing).unwrap();
+        fs::write(preparing.join("phux"), b"incomplete journal").unwrap();
+
+        drop(UpdateLock::acquire(&bin).unwrap());
+
+        assert!(!preparing.exists());
+        assert_pair(&bin, b"#!/bin/sh\nold phux\n", b"#!/bin/sh\nold mcp\n");
     }
 
     #[test]

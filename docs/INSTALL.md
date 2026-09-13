@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # Install
@@ -218,10 +218,13 @@ rail. Homebrew stays on stable.
 3. **Verifies the checksum before unpacking anything.** A mismatch refuses,
    names both digests, and installs nothing.
 4. Unpacks to a staging directory beside the installed binaries — same
-   filesystem — and replaces them with an atomic `rename`, preserving the mode
-   of the file being replaced. `phux-mcp` is replaced alongside `phux` when it
-   is installed next to it, because a new `phux` beside a stale `phux-mcp` is
-   the mismatch this command exists to prevent.
+   filesystem — and publishes under an update lock. Before either binary
+   changes, it fsyncs a recovery journal containing the old pair; each atomic
+   `rename` is followed by a directory fsync, and publishing that journal as
+   the rollback backup is the commit point. A later update or rollback repairs
+   any interrupted pre-commit transaction before proceeding, so `phux` and an
+   installed sibling `phux-mcp` recover together as the old or new release.
+   Replacement preserves the mode of each file being replaced.
 5. Asks a running server to graceful-upgrade (the `phux upgrade` path), so live
    panes survive the swap. Pass `--no-restart` to skip that.
 
