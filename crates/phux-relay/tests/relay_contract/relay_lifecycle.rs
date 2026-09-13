@@ -158,6 +158,44 @@ async fn concurrent_consumers_one_route() {
     }
 }
 
+/// The tunnel has no authenticated consumer-group envelope, so a second QUIC
+/// stream from one consumer is reset locally and never becomes a connector
+/// accept for another identity. The consumer's control stream and a distinct
+/// consumer continue independently.
+#[tokio::test]
+async fn extra_consumer_stream_never_crosses_the_tunnel_identity_boundary() {
+    let dir = tempfile::tempdir().unwrap();
+    let relay = spawn_relay(dir.path(), DEFAULT_MAX_CONNS).await;
+    let token = mint(&relay.tokens_path, "alpha");
+    let connector = spawn_connector(relay.addr, &relay.fingerprint, "alpha", token, b"E:").await;
+    await_route_live(relay.addr, &relay.fingerprint, "alpha").await;
+
+    let mut first = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
+        .await
+        .expect("first consumer");
+    expect_echo(&mut first, b"E:", b"first-control").await;
+
+    let (mut extra_send, mut extra_recv) = first.conn.open_bi().await.expect("extra stream opens");
+    let _ = extra_send.write_all(b"must-not-cross").await;
+    let mut byte = [0_u8; 1];
+    timeout(WIRE_RECV_TIMEOUT, extra_recv.read(&mut byte))
+        .await
+        .expect("extra stream reset is bounded")
+        .expect_err("extra stream is refused");
+    assert_eq!(
+        connector.streams_seen(),
+        1,
+        "extra stream never reached connector-global accept"
+    );
+
+    expect_echo(&mut first, b"", b"first-still-progresses").await;
+    let mut second = dial_consumer(relay.addr, &relay.fingerprint, "alpha")
+        .await
+        .expect("second consumer");
+    expect_echo(&mut second, b"E:", b"second-distinct").await;
+    assert_eq!(connector.bridged(), 2);
+}
+
 /// The outline's replace-on-remint (token-route bijection): re-minting a
 /// route rotates its token. The live tunnel is NOT torn down (revocation
 /// is at the next handshake), the OLD token is refused with `AUTH_FAILED`
