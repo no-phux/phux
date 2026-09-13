@@ -539,6 +539,7 @@ async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
         )
         .await?
         .into_parts();
+    drop(conn);
     match result {
         CommandResult::OkWith(CommandValue::Json(count)) => {
             let detached = count.trim().parse::<u64>().map_err(|_| {
