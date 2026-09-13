@@ -1437,24 +1437,35 @@ impl SessionLoop {
     ) -> Result<(), AttachError> {
         // Server-scoped (`terminal: None`) so we see control events for every
         // pane, not just one.
-        conn.send(&FrameKind::SubscribeEvents { terminal: None })
-            .await?;
+        //
+        // phux-501l: these bootstrap writes race last-pane death. The e2e
+        // waits only until the server has processed ATTACH; `exit 7` can
+        // reap the session while we are still sending Subscribe*/GetMetadata.
+        // A write into that closed UDS must not become `Io(BrokenPipe)` —
+        // RESOURCE_CLOSED is already in the decode buffer for the recv loop.
+        send_unless_peer_gone(conn, &FrameKind::SubscribeEvents { terminal: None }).await?;
         // phux-foz.5: watch the config-reload doorbell so a `phux config
         // reload` from any shell reaches this client as a METADATA_CHANGED
         // broadcast (the config itself never crosses the wire — we re-read
         // our own file). Torn down implicitly on detach like every metadata
         // subscription.
-        conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Global,
-            key: CONFIG_RELOAD_KEY.to_owned(),
-        })
+        send_unless_peer_gone(
+            conn,
+            &FrameKind::SubscribeMetadata {
+                scope: Scope::Global,
+                key: CONFIG_RELOAD_KEY.to_owned(),
+            },
+        )
         .await?;
         // ADR-0105: follow the keep-empty mark, so a mark set or cleared after
         // attach still decides whether the last pane's close detaches.
-        conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Global,
-            key: phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY.to_owned(),
-        })
+        send_unless_peer_gone(
+            conn,
+            &FrameKind::SubscribeMetadata {
+                scope: Scope::Global,
+                key: phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY.to_owned(),
+            },
+        )
         .await?;
         if subscribe_layout && let Some(session) = self.peers.focused_session {
             // phux-4li.5: ask the server for any persisted layout, then
@@ -1468,16 +1479,22 @@ impl SessionLoop {
             self.layout_get_request_id = Some(req_id);
             self.layout_read_complete = false;
             self.next_request_id = self.next_request_id.wrapping_add(1);
-            conn.send(&FrameKind::GetMetadata {
-                request_id: req_id,
-                scope: Scope::Group(DEFAULT_GROUP_ID),
-                key: key.clone(),
-            })
+            send_unless_peer_gone(
+                conn,
+                &FrameKind::GetMetadata {
+                    request_id: req_id,
+                    scope: Scope::Group(DEFAULT_GROUP_ID),
+                    key: key.clone(),
+                },
+            )
             .await?;
-            conn.send(&FrameKind::SubscribeMetadata {
-                scope: Scope::Group(DEFAULT_GROUP_ID),
-                key,
-            })
+            send_unless_peer_gone(
+                conn,
+                &FrameKind::SubscribeMetadata {
+                    scope: Scope::Group(DEFAULT_GROUP_ID),
+                    key,
+                },
+            )
             .await?;
         }
         // ADR-0040: read + watch every bootstrap pane's `phux.agent/v1` record

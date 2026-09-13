@@ -14,6 +14,8 @@ use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 use crate::layout::{LayoutState, Workspace};
 
+use super::session_io::send_unless_peer_gone;
+
 /// The per-leaf rect map of the zoom- and sidebar-honoring view, used as the
 /// pre-toggle snapshot for the reflow handshake. Returns an empty map when
 /// there is no active window or its tree is unseeded (single-pane bootstrap).
@@ -90,11 +92,14 @@ async fn emit_layout_reflow(
 ) -> Result<(), AttachError> {
     let diff = crate::attach::reflow::compute_reflow(layout, prev_rects, content);
     for (terminal_id, new_rect) in &diff.changed {
-        conn.send(&FrameKind::ResizeTerminal {
-            terminal_id: terminal_id.clone(),
-            cols: new_rect.w,
-            rows: new_rect.h,
-        })
+        send_unless_peer_gone(
+            conn,
+            &FrameKind::ResizeTerminal {
+                terminal_id: terminal_id.clone(),
+                cols: new_rect.w,
+                rows: new_rect.h,
+            },
+        )
         .await?;
     }
     Ok(())
