@@ -52,7 +52,7 @@ pub const NEEDS_YOU_HEADER: &str = "Agents";
 /// Sessions header, including the current session.
 pub const SPACES_HEADER: &str = "Sessions";
 /// Quiet placeholders keep both fixed areas recognizable.
-pub const AGENTS_EMPTY: &str = "no agents";
+pub const AGENTS_EMPTY: &str = "none running yet";
 /// Placeholder when no sessions are available.
 pub const SESSIONS_EMPTY: &str = "no sessions";
 /// Label of a truncated area's overflow row.

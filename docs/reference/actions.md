@@ -33,7 +33,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `focus-direction` | Pane | `direction` = `left` \| `right` \| `up` \| `down` | Move focus to the pane on the left |
 | `resize-pane` | Pane | `direction` = `left` \| `right` \| `up` \| `down`; `amount` (cells) | Grow the focused pane to the left |
 | `show-help` | — |  | Open the fuzzy commands and help finder |
-| `getting-started` | View |  | Getting started: detach, return, and command discovery |
+| `getting-started` | View |  | Getting started: detach, return, the Agents list, and command discovery |
 | `copy-mode` | — |  | Enter copy-mode on the focused pane (scrollback navigation, selection, yank) |
 | `detach` | View |  | Detach this client from the session |
 | `next-pane` | Pane |  | Cycle focus to the next pane |

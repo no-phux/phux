@@ -321,7 +321,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     ActionSpec {
         name: "getting-started",
         category: Category::View,
-        description: "Getting started: detach, return, and command discovery",
+        description: "Getting started: detach, return, the Agents list, and command discovery",
         params: "",
         args: &[],
     },
