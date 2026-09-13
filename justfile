@@ -135,8 +135,8 @@ cockpit-test: cockpit-ffi cockpit-build-contracts
     ./scripts/lib/measure_test.sh
     ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
 
-# The same tests with the default app graph, which has no Phux provider
-# (DisabledPhuxProvider). cockpit-ci runs it too (phux-q0i3).
+# Optional full run of the default app graph (DisabledPhuxProvider). CI
+# typechecks that graph inside `just cockpit-test` instead of re-running tests.
 [group('cockpit')]
 [doc('Cockpit tests with the app graph built without the Phux provider.')]
 [working-directory('clients/cockpit')]
