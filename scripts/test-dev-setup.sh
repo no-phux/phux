@@ -49,6 +49,34 @@ expect_fail 'ADR number 0008 is also used' "$repo/scripts/check-docs.sh" --only=
 rm -f "$repo/ADR/0008-duplicate.md"
 printf '| [0008](./0008-first.md) | Duplicate |\n' >>"$repo/ADR/README.md"
 expect_fail 'more than one row' "$repo/scripts/check-docs.sh" --only=adr-index-sync
+
+# spec-id-unique: the spec allocation tables are registries on the wire ID
+# column - a bare message table and appendix-reserved.md's backticked
+# command-tag table cover the two row shapes.
+mkdir -p "$repo/docs/spec"
+cat >"$repo/docs/spec/proto.md" <<'MD'
+| ID    | Direction | Name     | Reference | Status  |
+|-------|-----------|----------|-----------|---------|
+| 0x01  | C → S     | `HELLO`  | §6.1      | shipped |
+| 0x02  | C → S     | `ATTACH` | §7.1      | shipped |
+MD
+cat >"$repo/docs/spec/appendix-reserved.md" <<'MD'
+| Tag    | Command       | Owner            | Status  |
+|--------|---------------|------------------|---------|
+| `0x07` | `GET_SCREEN`  | [L1.md](./L1.md) | shipped |
+| `0x08` | `ROUTE_INPUT` | [L1.md](./L1.md) | shipped |
+MD
+expect_pass "$repo/scripts/check-docs.sh" --only=spec-id-unique
+printf '| 0x01  | C → S     | `BOGUS`  | §6.1      | shipped |\n' >>"$repo/docs/spec/proto.md"
+expect_fail 'more than one row for message ID 0x01' "$repo/scripts/check-docs.sh" --only=spec-id-unique
+cat >"$repo/docs/spec/proto.md" <<'MD'
+| ID    | Direction | Name     | Reference | Status  |
+|-------|-----------|----------|-----------|---------|
+| 0x01  | C → S     | `HELLO`  | §6.1      | shipped |
+| 0x02  | C → S     | `ATTACH` | §7.1      | shipped |
+MD
+printf '| `0x07` | `BOGUS`       | [L1.md](./L1.md) | shipped |\n' >>"$repo/docs/spec/appendix-reserved.md"
+expect_fail 'more than one row for command tag 0x07' "$repo/scripts/check-docs.sh" --only=spec-id-unique
 expect_fail 'usage:' "$repo/scripts/doctor.sh" typo
 expect_fail 'bash scripts/setup-rust.sh core' "$repo/scripts/doctor.sh" core
 rm -f "$bin/uname"

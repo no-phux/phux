@@ -32,6 +32,10 @@
 #                           with phux-protocol's PROTOCOL_VERSION, and its
 #                           version rows are unique and strictly descending
 #                           (skipped while the SPEC split is in flight)
+#   - spec-id-unique      : every wire-ID row in the spec allocation tables
+#                           (message IDs, command tags, agent event kinds)
+#                           is unique and strictly ascending, so two
+#                           branches cannot claim the same wire ID
 #   - impl-status         : every shipped/partial/spec-only claim in
 #                           docs/spec/ and docs/consumers/ agrees with
 #                           the code it names
@@ -62,6 +66,7 @@ ALL_GATES=(
     adr-length
     adr-in-force-sync
     spec-version-sync
+    spec-id-unique
     impl-status
 )
 
@@ -1113,6 +1118,102 @@ gate_spec_version_sync() {
 }
 
 # ---------------------------------------------------------------------------
+# Gate 6b: spec-id-unique
+# ---------------------------------------------------------------------------
+
+# The spec's allocation tables are registries keyed on the wire ID column:
+# the message-ID catalogs in proto.md and L1.md, the L3 metadata frames in
+# L3.md, the command-tag table in docs/spec/appendix-reserved.md, and the
+# agent event-kind table in L1.md. impl-status resolves each row's NAME
+# against a const but never reads the ID, so two branches claiming the same
+# ID passed every check — the doc half of phux-ke0c (the const half is now
+# closed by the FrameType/CommandTag enums and the assert_unique_tags lists
+# in crates/phux-protocol/src/wire/frame/mod.rs). Each table is checked on
+# its own file: the same ID legitimately appears in both the proto.md and
+# L1.md catalogs, and the L1.md event kinds are a separate namespace from
+# the message IDs even where the byte values would not collide.
+
+# Rank for a wire-ID key: the byte value. Accepts the `0x1A` form used by
+# every table; `16#` reads the hex digits.
+registry_rank_hex_byte() {
+    [[ "$1" =~ ^0[xX][0-9A-Fa-f]{1,2}$ ]] || return 1
+    local h="${1#0x}"
+    h="${h#0X}"
+    printf '%d\n' "$((16#$h))"
+}
+
+gate_spec_id_unique() {
+    local spec="$ROOT/docs/spec"
+    [[ -d "$spec" ]] || return
+
+    local hint="allocate an open ID from docs/spec/appendix-reserved.md's reserved ranges and keep rows in ascending ID order; if a sibling branch already claimed this ID, renumber yours"
+
+    # The message catalogs in proto.md and L1.md share one row shape:
+    # `| 0x01 | C -> S | `NAME` | reference | status |`. Requiring at least
+    # five cells keeps L1.md's three-cell event-kind table out of the
+    # message namespace; that table is checked separately below.
+    local msg_row='^\|[[:space:]]*(0x[0-9A-Fa-f]{2})[[:space:]]*(\|[^|]*){4}\|'
+    local file
+    for file in proto.md L1.md; do
+        [[ -f "$spec/$file" ]] || continue
+        check_registry_rows "$spec/$file" spec-id-unique "message ID" \
+            "$msg_row" registry_rank_hex_byte ascending "" "$hint"
+        if (( ${#REGISTRY_ROW_TARGET[@]} == 0 )); then
+            violate spec-id-unique "$spec/$file" \
+                "no message-ID rows matched - the table's shape changed and the registry check is now inert; fix the row pattern in scripts/check-docs.sh"
+        fi
+    done
+
+    # L3.md's metadata frames live in one table whose rows group by
+    # direction rather than running ascending across the whole table
+    # (`0x50..=0x54`, then `0xD0..=0xD2`, then `0x55` and `0xD3`), so each
+    # direction is its own registry: C->S rows and S->C rows each ascend.
+    if [[ -f "$spec/L3.md" ]]; then
+        check_registry_rows "$spec/L3.md" spec-id-unique "message ID" \
+            '^\|[[:space:]]*(0x[0-9A-Fa-f]{2})[[:space:]]*\|[[:space:]]*C[[:space:]]' \
+            registry_rank_hex_byte ascending "" "$hint"
+        if (( ${#REGISTRY_ROW_TARGET[@]} == 0 )); then
+            violate spec-id-unique "$spec/L3.md" \
+                "no client-to-server message-ID rows matched - the table's shape changed and the registry check is now inert; fix the row pattern in scripts/check-docs.sh"
+        fi
+        check_registry_rows "$spec/L3.md" spec-id-unique "message ID" \
+            '^\|[[:space:]]*(0x[0-9A-Fa-f]{2})[[:space:]]*\|[[:space:]]*S[[:space:]]' \
+            registry_rank_hex_byte ascending "" "$hint"
+        if (( ${#REGISTRY_ROW_TARGET[@]} == 0 )); then
+            violate spec-id-unique "$spec/L3.md" \
+                "no server-to-client message-ID rows matched - the table's shape changed and the registry check is now inert; fix the row pattern in scripts/check-docs.sh"
+        fi
+    fi
+
+    # The command-tag table in appendix-reserved.md §2 backticks its ID
+    # column: `| `0x07` | `GET_SCREEN` | owner | status |`.
+    local reserved="$spec/appendix-reserved.md"
+    if [[ -f "$reserved" ]]; then
+        check_registry_rows "$reserved" spec-id-unique "command tag" \
+            '^\|[[:space:]]*`(0x[0-9A-Fa-f]{2})`' \
+            registry_rank_hex_byte ascending "" "$hint"
+        if (( ${#REGISTRY_ROW_TARGET[@]} == 0 )); then
+            violate spec-id-unique "$reserved" \
+                "no command-tag rows matched - the table's shape changed and the registry check is now inert; fix the row pattern in scripts/check-docs.sh"
+        fi
+    fi
+
+    # L1.md's agent event-kind table is a second registry in the same file,
+    # three cells with a backticked kind name: `| 0x00 | `command_started`
+    # | payload |`. Its tags mirror the EVENT_TAG_ consts, a separate
+    # namespace from the message IDs above.
+    if [[ -f "$spec/L1.md" ]]; then
+        check_registry_rows "$spec/L1.md" spec-id-unique "event kind" \
+            '^\|[[:space:]]*(0x[0-9A-Fa-f]{2})[[:space:]]*\|[[:space:]]*`[a-z_]+`[[:space:]]*\|' \
+            registry_rank_hex_byte ascending "" "$hint"
+        if (( ${#REGISTRY_ROW_TARGET[@]} == 0 )); then
+            violate spec-id-unique "$spec/L1.md" \
+                "no event-kind rows matched - the table's shape changed and the registry check is now inert; fix the row pattern in scripts/check-docs.sh"
+        fi
+    fi
+}
+
+# ---------------------------------------------------------------------------
 # Gate 7: impl-status
 # ---------------------------------------------------------------------------
 
@@ -1367,6 +1468,7 @@ run_gate() {
         adr-length)          gate_adr_length          ;;
         adr-in-force-sync)   gate_adr_in_force_sync   ;;
         spec-version-sync)   gate_spec_version_sync   ;;
+        spec-id-unique)      gate_spec_id_unique      ;;
         impl-status)         gate_impl_status         ;;
         *) echo "internal error: unknown gate '$gate'" >&2; exit 2 ;;
     esac
