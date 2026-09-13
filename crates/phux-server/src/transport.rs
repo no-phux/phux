@@ -154,6 +154,13 @@ pub(crate) trait Incoming {
         false
     }
 
+    /// Whether this route owns a separate connection for each consumer and
+    /// supplies the per-Terminal stream multiplexer. QUIC transport alone is
+    /// insufficient: a relay connector shares its tunnel across consumers.
+    fn supports_quic_streams(&self) -> bool {
+        false
+    }
+
     /// The transport behind this listener, stamped into `PeerIdentity` at
     /// accept and consulted when HELLO advertises transport-gated features
     /// (`QUIC_STREAMS` is QUIC-only).
