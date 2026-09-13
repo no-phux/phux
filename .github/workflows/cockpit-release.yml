@@ -53,6 +53,8 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
       LIBGHOSTTY_VT_SYS_CPU: baseline
       RUSTFLAGS: -C target-cpu=apple-m1
+      PHUX_ZIG_CACHE_MODE: shared
+      PHUX_ZIG_BUILD_TIMEOUT: "0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -97,10 +99,9 @@ jobs:
           path: |
             ~/.cache/zig
             clients/cockpit/.zig-cache
-            clients/cockpit/.zig-global-cache
-          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
+          key: mini-v2-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
           restore-keys: |
-            mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
+            mini-v2-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Build the same-checkout Phux FFI and coordinator CLI
         if: hashFiles('.github/actions/cockpit-rust-artifacts/action.yml') != ''

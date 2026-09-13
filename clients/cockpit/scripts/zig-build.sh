@@ -63,15 +63,17 @@ ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE_DIR="$ROOT/.zig-global-cache"
 SHARED_PKG_CACHE="${ZIG_SHARED_PKG_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/zig/p}"
 
-# The escape hatch, spelled so it shows up in a log. `shared` restores the
-# pre-fix behaviour (the machine-wide global cache) and is what CI and the main
-# checkout can use, where there is exactly one build and nothing to starve.
-CACHE_MODE="${PHUX_ZIG_CACHE_MODE:-isolated}"
-
-# Watchdog. A cold `zig build test` in a fresh worktree measured 51s here
-# (date +%s around it; 67s including the first `--fetch=all`), so 600s is ~9x
-# headroom and still turns the observed 30-minute starve into a failed build.
-TIMEOUT_SECONDS="${PHUX_ZIG_BUILD_TIMEOUT:-600}"
+# Isolation is for local worktrees that share a machine. CI has one checkout
+# and a job-level timeout; isolated mode there restored a duplicate
+# `.zig-global-cache` (its `p/` symlink doubled the package cache into a 4.4GB
+# Actions restore) and the 600s watchdog killed legitimate shipping compiles.
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+    CACHE_MODE="${PHUX_ZIG_CACHE_MODE:-shared}"
+    TIMEOUT_SECONDS="${PHUX_ZIG_BUILD_TIMEOUT:-0}"
+else
+    CACHE_MODE="${PHUX_ZIG_CACHE_MODE:-isolated}"
+    TIMEOUT_SECONDS="${PHUX_ZIG_BUILD_TIMEOUT:-600}"
+fi
 
 ALLOW_FOREIGN_CWD=0
 ACTION=build
@@ -157,7 +159,11 @@ print_config() {
     printf 'global cache:  %s\n' "$(resolved_cache_dir)"
     printf 'package cache: %s\n' "$SHARED_PKG_CACHE"
     printf 'isolation:     %s\n' "$CACHE_MODE"
-    printf 'timeout:       %ss\n' "$TIMEOUT_SECONDS"
+    if [ "$TIMEOUT_SECONDS" = "0" ]; then
+        printf 'timeout:       none\n'
+    else
+        printf 'timeout:       %ss\n' "$TIMEOUT_SECONDS"
+    fi
 }
 
 case "$ACTION" in
@@ -204,12 +210,18 @@ if [ "$ALLOW_FOREIGN_CWD" = 0 ]; then
     fi
 fi
 
-reap_own_orphans
 [ "$CACHE_MODE" = "shared" ] || prepare_cache
-
 print_config >&2
-
 cd "$ROOT"
+
+# Timeout 0: the caller (Actions job, an operator) owns the limit. Exec zig
+# directly so a shipping compile is not killed at 10 minutes and CI does not
+# pay for process-group / watchdog / orphan-reaper machinery it does not need.
+if [ "$TIMEOUT_SECONDS" = "0" ]; then
+    exec zig build --global-cache-dir "$(resolved_cache_dir)" "${ZIG_ARGS[@]}"
+fi
+
+reap_own_orphans
 
 # Own-lifetime guard. `set -m` puts zig in its own process group, and the trap
 # tears that group down on any exit path -- so cancelling this script does not
