@@ -13,8 +13,9 @@ agents on idle and changing screens. Results below are loaded-host diagnostics.
 
 ## Method
 
-`crates/phux-client/tests/polling_reuse.rs` runs each case in an isolated
-current-thread runtime. The server is the production `ServerRuntime`, seeded
+`crates/phux-client/tests/polling_reuse.rs` runs the matrix serially in a
+current-thread runtime, with a fresh server and proxy per case. The server is
+the production `ServerRuntime`, seeded
 with the host's default shell in a real PTY. Poll requests use the production
 Unix-domain-socket framing and handshake.
 
@@ -31,6 +32,12 @@ the public `poll_until` API, which owns one `ScreenPollConnection` per bounded
 wait and reconnects only on transport loss. Idle cases wait 750 ms for an
 absent marker. Changing cases route `printf MARKER` to the PTY after 400 ms and
 wait up to 3 seconds. Both use a 25 ms requested interval.
+
+The changing-screen condition measures when the marker becomes visible in a
+screen read, including shell input echo; it does not assert command execution
+or application completion. The latency clock starts with the polling agent,
+so it includes the deliberate 400 ms mutation delay. Proxy connection pumps
+are owned and reaped before the fixture finishes.
 
 Process CPU is the actual `getrusage(RUSAGE_SELF)` delta exposed by
 `phux_perf::ProcessStats`. Because client, proxy, and in-process server share a
@@ -80,6 +87,25 @@ for 32. The 32-agent persistent case completed one extra polling round per
 agent before observing the marker (480 versus 448 total polls), yet still used
 47.2% less process CPU. These are results from one loaded-host run, not stable
 latency baselines.
+
+### Integrated rerun
+
+The parent reran all 12 cases after owning/reaping proxy pumps and switching
+to the published incremental engine dependency. Every connection-count
+assertion passed. The CPU benefit reproduced, while detection timing varied
+within the requested polling interval:
+
+| Workload | Agents | One-shot CPU | Persistent CPU | Persistent minus one-shot detection |
+|---|---:|---:|---:|---:|
+| idle | 1 | 14.209 ms | 7.164 ms | timeout |
+| idle | 8 | 43.310 ms | 21.432 ms | timeout |
+| idle | 32 | 130.713 ms | 62.549 ms | timeout |
+| changing | 1 | 7.590 ms | 4.928 ms | -8.262 ms |
+| changing | 8 | 23.629 ms | 13.035 ms | +14.515 ms |
+| changing | 32 | 74.892 ms | 39.960 ms | +2.338 ms |
+
+The rerun reduced process CPU by 35.1–52.1%. It supports lower connection
+churn and CPU cost, not a consistent detection-latency improvement.
 
 ## Acceptance evidence
 

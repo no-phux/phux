@@ -35,7 +35,7 @@ use tempfile::TempDir;
 use tokio::io::copy_bidirectional;
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::oneshot;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio::time::{Instant, sleep, timeout};
 
 const TERMINAL: ResourceId = ResourceId::local(1);
@@ -90,6 +90,7 @@ struct Fixture {
     accepted: Arc<AtomicUsize>,
     shutdown: oneshot::Sender<()>,
     server: JoinHandle<Result<(), phux_server::ServerError>>,
+    proxy_stop: oneshot::Sender<()>,
     proxy: JoinHandle<()>,
 }
 
@@ -119,8 +120,16 @@ impl Fixture {
 
         let proxy_backend = backend.clone();
         let proxy_count = Arc::clone(&accepted);
+        let (proxy_stop, proxy_stopped) = oneshot::channel();
         let proxy = tokio::task::spawn_local(async move {
-            serve_counting_proxy(listener, proxy_backend, proxy_count, drop_first_after).await;
+            serve_counting_proxy(
+                listener,
+                proxy_backend,
+                proxy_count,
+                drop_first_after,
+                proxy_stopped,
+            )
+            .await;
         });
 
         // Warm the PTY-backed screen before process-rusage measurement. This
@@ -136,12 +145,17 @@ impl Fixture {
             accepted,
             shutdown,
             server,
+            proxy_stop,
             proxy,
         }
     }
 
     async fn stop(self) {
-        self.proxy.abort();
+        let _ = self.proxy_stop.send(());
+        timeout(JOIN_DEADLINE, self.proxy)
+            .await
+            .expect("proxy stopped before deadline")
+            .expect("proxy and connection pumps joined");
         let _ = self.shutdown.send(());
         timeout(JOIN_DEADLINE, self.server)
             .await
@@ -170,12 +184,18 @@ async fn serve_counting_proxy(
     backend: PathBuf,
     accepted: Arc<AtomicUsize>,
     drop_first_after: Option<Duration>,
+    mut stopped: oneshot::Receiver<()>,
 ) {
+    let mut pumps = JoinSet::new();
     loop {
-        let (frontend, _) = listener.accept().await.expect("accept polling connection");
+        let (frontend, _) = tokio::select! {
+            _ = &mut stopped => break,
+            _ = pumps.join_next(), if !pumps.is_empty() => continue,
+            accepted = listener.accept() => accepted.expect("accept polling connection"),
+        };
         let sequence = accepted.fetch_add(1, Ordering::Relaxed);
         let backend = backend.clone();
-        tokio::task::spawn_local(async move {
+        pumps.spawn_local(async move {
             proxy_connection(
                 frontend,
                 &backend,
@@ -184,6 +204,7 @@ async fn serve_counting_proxy(
             .await;
         });
     }
+    pumps.shutdown().await;
 }
 
 async fn proxy_connection(

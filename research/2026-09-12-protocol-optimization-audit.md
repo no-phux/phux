@@ -425,6 +425,16 @@ paying setup again. Carry an absolute deadline through the entire attempt
 and return a successful negotiated connection for use by attach.
 Tracked work: phux-1vob.
 
+**Remediation evidence (2026-09-13):** remote reconnect now retains the
+successful negotiated connection and transfers it into the TUI attach entry.
+Both initial attach and reconnect use `connect_for_attach`, preserving the
+same HELLO capability contract. The outer absolute deadline covers each probe.
+The parent ran all 15 CLI attach tests, including a real WebSocket peer that
+compares initial/reconnect HELLO frames and accepts PING on each negotiated
+connection without a second HELLO, plus a peer that accepts transport but
+withholds protocol negotiation. The local UDS readiness policy remains covered
+by the same suite.
+
 Current dialing constructs fresh endpoint/TLS configuration and awaits the
 handshake; no explicit application 0-RTT path is implemented
 ([quic dial](../crates/phux-dial/src/quic.rs), 181–207). Passive NAT rebinding
@@ -507,6 +517,19 @@ the side-effect-free screen-read contract. This path is UDS-based; these
 numbers are not repeated remote TLS-handshake measurements.
 
 Tracked work: phux-69pq.8.
+
+**Measurement evidence (2026-09-13):** the persistent production polling path
+was compared with the unchanged one-shot screen helper against real
+`ServerRuntime`/PTY fixtures over counted Unix sockets. Across paired 1/8/32
+agent idle and changing-screen cases, accepted polling connections fell by
+92.9–96.4% and whole-experiment process CPU by 46.1–52.5%. These are one
+loaded-host run's diagnostics, not latency baselines or client-only CPU
+attribution. An integrated parent rerun reproduced 35.1–52.1% lower process
+CPU and the connection-count invariants; detection timing varied by less than
+one requested polling interval, without a consistent speedup. The
+[polling report](2026-09-13-polling-reuse-measurements.md)
+records the reproduction command, raw case table, timing origins, and
+reconnection/deadline regression.
 
 **Acceptance experiment:** 1/8/32 concurrent waits on idle and changing
 terminals, measuring connections opened, allocations, server CPU, and
