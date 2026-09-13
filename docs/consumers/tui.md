@@ -59,12 +59,15 @@ Run `phux` again to reattach. The full first-run path, including driving
 the same pane from a second terminal, is [`../QUICKSTART.md`](../QUICKSTART.md).
 
 On the first attach for a profile, a compact overlay explains that the
-session outlives the view and shows the effective bindings for detach,
-Sessions & hosts, Commands, Settings, and copy mode. It also points out that
-Shift-drag uses the host terminal's selection. The first key dismisses it and
-still does what that key normally does. After the first intentional detach, the
-cooked terminal prints that the session is still running; the next attach
-shows a brief status-bar confirmation. Later attaches are quiet. The palette's
+session outlives the view, names the Agents list as the fleet inbox, and
+shows the blocked (`●`) and working (`◐`) glyphs next to the live bindings
+for detach, Sessions & hosts, Commands, Settings, and copy mode. If the
+sidebar is off, the overlay names the live `toggle-sidebar` chord instead of
+assuming the list is already on screen. It also points out that Shift-drag
+uses the host terminal's selection. The first key dismisses it and still does
+what that key normally does. After the first intentional detach, the cooked
+terminal prints that the session is still running; the next attach shows a
+brief status-bar confirmation. Later attaches are quiet. The palette's
 **Getting started** row reopens the introduction without changing
 progress.
 
@@ -342,10 +345,12 @@ its columns rather than spanning underneath. After two footer rows, the
 upper half is **Agents** and the lower half is **Sessions**. The split
 depends only on viewport height.
 
-**Agents** lists agent rows in session / window / pane order. Status
-updates in place; the list does not sort by urgency. A local row
-selects that window; a peer row is a one-step `switch-session` onto
-that pane. Overflow is a `+N more` row that opens the fleet dashboard.
+**Agents** lists agent rows in session / window / pane order. A filled
+dot (`●`) is blocked on you; a half-filled ring (`◐`) is still working.
+When none are running, the list says `none running yet`. Status updates
+in place; the list does not sort by urgency. A local row selects that
+window; a peer row is a one-step `switch-session` onto that pane.
+Overflow is a `+N more` row that opens the fleet dashboard.
 
 <!-- impl-status: shipped; probe: AgentSessionRow -->
 > **Status: shipped.** When a pane has a live agent session, the sidebar

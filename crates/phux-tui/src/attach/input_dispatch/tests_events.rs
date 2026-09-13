@@ -225,7 +225,7 @@ async fn dispatch_with_passthrough_popup(
     if onboarding {
         overlays.push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
             super::super::onboarding::ONBOARDING_TITLE,
-            super::super::onboarding::hint_lines(Some(&cfg.keybindings)),
+            super::super::onboarding::hint_lines(Some(&cfg.keybindings), true),
             &theme,
         )));
     } else {

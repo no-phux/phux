@@ -702,7 +702,7 @@ fn push_getting_started(ctx: &mut DispatchCtx<'_>) {
     ctx.overlays
         .push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
             crate::attach::onboarding::ONBOARDING_TITLE,
-            crate::attach::onboarding::hint_lines(ctx.keybindings),
+            crate::attach::onboarding::hint_lines(ctx.keybindings, *ctx.sidebar_enabled),
             ctx.theme,
         )));
 }

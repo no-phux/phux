@@ -3,7 +3,7 @@ source: crates/phux-tui/src/attach/driver/tests.rs
 expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  Agents            │────────────────────────────────────────────────────────────
-   no agents       │PANE-BASE
+   none running y… │PANE-BASE
                    │
                    │
                    │

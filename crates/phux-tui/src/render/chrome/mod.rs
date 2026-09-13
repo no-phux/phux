@@ -36,6 +36,11 @@ pub struct AgentBadge {
     pub emphatic: bool,
 }
 
+/// Filled dot: blocked, or a pane that asked for a human.
+pub(crate) const AGENT_BLOCKED_GLYPH: &str = "●";
+/// Half-filled ring: actively working, not waiting.
+pub(crate) const AGENT_WORKING_GLYPH: &str = "◐";
+
 /// Resolve the badge for one agent pane.
 ///
 /// ```text
@@ -60,10 +65,10 @@ pub fn agent_badge(
     };
     let unreviewed_done = state == AgentMetaState::Done && !seen;
     let glyph = match state {
-        AgentMetaState::Blocked => "●",
+        AgentMetaState::Blocked => AGENT_BLOCKED_GLYPH,
         // "look at me": finished, unread.
         AgentMetaState::Done if !seen => "◆",
-        AgentMetaState::Working => "◐",
+        AgentMetaState::Working => AGENT_WORKING_GLYPH,
         AgentMetaState::Done | AgentMetaState::Idle | AgentMetaState::Unknown => "○",
     };
     AgentBadge {
@@ -82,7 +87,7 @@ pub fn agent_badge(
 #[must_use]
 pub const fn attention_badge(theme: &Theme) -> AgentBadge {
     AgentBadge {
-        glyph: "●",
+        glyph: AGENT_BLOCKED_GLYPH,
         color: theme.attention,
         emphatic: true,
     }
