@@ -34,10 +34,10 @@ Prefix is `Ctrl-A`. `Ctrl-A d` detaches. Homebrew and other channels:
 | You used | |
 |---|---|
 | **tmux** | Same attach, split, and prefix muscle memory. Every pane is also a real terminal an agent can read and type into. |
-| **herdr** | You are already here. The old herdr distro's defaults are phux's defaults. `phux config init --distro starter` for the demo plugins. |
+| **old phux `herdr` distro** | Not herdr.dev. Those defaults are stock phux. `phux config init --distro starter` for the demo plugins. |
 | **screen** | Attach and detach. The rest is in the docs. |
 
-Longer translation: [Coming from tmux, herdr, screen](./docs/coming-from.md).
+Longer translation: [Coming from tmux, screen, or the old phux distro](./docs/coming-from.md).
 
 Keys, remote, agents, Cockpit, the wire: [docs.phux.sh](https://docs.phux.sh/overview).
 Harness authors: [emit contract](./docs/consumers/harness.md).

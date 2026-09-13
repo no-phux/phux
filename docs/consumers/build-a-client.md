@@ -42,4 +42,4 @@ not a downstream dependency; see [`sdk.md`](./sdk.md).
 
 A worked byte-level walkthrough is [`../spec/TUTORIAL.md`](../spec/TUTORIAL.md).
 Protocol version and changelog: [`../spec/CHANGELOG.md`](../spec/CHANGELOG.md).
-The TUI has no extra standing ([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)).
+The TUI has no extra standing ([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)).
