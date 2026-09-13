@@ -47,6 +47,10 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def applescript_string(value):
+    return json.dumps(value, ensure_ascii=False)
+
+
 def ensure_serial(expected=None):
     pids = set()
     for name in ("phux-cockpit", "phux-cockpit-dev"):
@@ -176,6 +180,9 @@ class Journey:
     def setup(self, bundle):
         ensure_serial()
         self.save("Cockpit config", "# Isolated daily-journey configuration\nfont-size = 13")
+        registry = Path(self.env["XDG_CONFIG_HOME"]) / "phux/config.toml"
+        registry.parent.mkdir()
+        registry.write_text("# Isolated empty machine registry\n")
         editor = self.work / "Fixture editor"
         editor.write_text(f"#!{sys.executable}\nimport json, pathlib, sys\n"
                           f"pathlib.Path({str(self.work / 'editor-argv.json')!r}).write_text(json.dumps(sys.argv[1:]))\n"
@@ -255,6 +262,48 @@ class Journey:
         self.save("activation.json", json.dumps(dict(expected=self.app.pid, actual=actual)))
         return actual == str(self.app.pid)
 
+    def pointer_click(self, point):
+        match = re.fullmatch(r"(-?\d+),(-?\d+)", point)
+        if not match:
+            raise InfrastructureError(f"invalid AX pointer coordinates: {point!r}")
+        x, y = match.groups()
+        script = (
+            'ObjC.import("CoreGraphics");'
+            f'const p=$.CGPointMake({x},{y});'
+            'function post(type){const event=$.CGEventCreateMouseEvent(null,type,p,$.kCGMouseButtonLeft);'
+            '$.CGEventPost($.kCGHIDEventTap,event);}'
+            'post($.kCGEventMouseMoved);delay(0.1);post($.kCGEventLeftMouseDown);'
+            'delay(0.08);post($.kCGEventLeftMouseUp);'
+        )
+        run(["osascript", "-l", "JavaScript", "-e", script])
+
+    def pointer_scroll(self, point, lines=-12):
+        match = re.fullmatch(r"(-?\d+),(-?\d+)", point)
+        if not match:
+            raise InfrastructureError(f"invalid AX scroll coordinates: {point!r}")
+        x, y = match.groups()
+        script = (
+            'ObjC.import("CoreGraphics");'
+            f'const p=$.CGPointMake({x},{y});'
+            'const move=$.CGEventCreateMouseEvent(null,$.kCGEventMouseMoved,p,$.kCGMouseButtonLeft);'
+            '$.CGEventPost($.kCGHIDEventTap,move);delay(0.1);'
+            f'const wheel=$.CGEventCreateScrollWheelEvent(null,$.kCGScrollEventUnitLine,1,{lines});'
+            '$.CGEventPost($.kCGHIDEventTap,wheel);'
+        )
+        run(["osascript", "-l", "JavaScript", "-e", script])
+
+    def scroll_active_window(self):
+        self.snapshot("before-input")
+        if self.frontmost() != str(self.app.pid):
+            raise InfrastructureError("AppKit focus changed; refusing to scroll another app")
+        point = self.applescript(f'tell (first process whose unix id is {self.app.pid})\n'
+                                 'set p to position of window 1\nset s to size of window 1\n'
+                                 'set targetX to round ((item 1 of p) + (item 1 of s) * 3 / 4)\n'
+                                 'set targetY to round ((item 2 of p) + (item 2 of s) * 5 / 8)\n'
+                                 'return (targetX as text) & "," & (targetY as text)\nend tell')
+        self.pointer_scroll(point)
+        time.sleep(0.3)
+
     def input(self, statement):
         self.snapshot("before-input")
         if self.frontmost() != str(self.app.pid):
@@ -264,18 +313,39 @@ class Journey:
         return result
 
     def click_named(self, name):
-        """Host AX locates the target; System Events sends a real pointer click."""
-        result = self.input(f'tell (first process whose unix id is {self.app.pid})\n'
-                            'repeat with element in (entire contents of window 1)\n'
-                            f'if name of element is {json.dumps(name)} and role of element is "AXButton" and enabled of element then\n'
-                            'set p to position of element\nset s to size of element\n'
-                            'if (item 1 of s) > 0 and (item 2 of s) > 0 then\n'
-                            'click at {(item 1 of p) + (item 1 of s) / 2, (item 2 of p) + (item 2 of s) / 2}\n'
-                            'return "clicked"\nend if\nend if\nend repeat\nreturn "absent"\nend tell')
-        return result == "clicked"
+        """Host AX locates the target; CoreGraphics sends a real pointer click."""
+        self.snapshot("before-input")
+        if self.frontmost() != str(self.app.pid):
+            raise InfrastructureError("AppKit focus changed; refusing to click another app")
+        point = self.applescript(f'tell (first process whose unix id is {self.app.pid})\n'
+                                 'set allElements to entire contents of window 1\n'
+                                 'repeat with elementRef in allElements\n'
+                                 'try\n'
+                                 'set candidate to contents of elementRef\n'
+                                 f'if description of candidate is {applescript_string(name)} and role of candidate is "AXButton" and enabled of candidate then\n'
+                                 'set p to position of candidate\nset s to size of candidate\n'
+                                 'if (item 1 of s) > 0 and (item 2 of s) > 0 then\n'
+                                 'set centerX to round ((item 1 of p) + (item 1 of s) / 2)\n'
+                                 'set centerY to round ((item 2 of p) + (item 2 of s) / 2)\n'
+                                 'set wp to position of window 1\nset ws to size of window 1\n'
+                                 'return (centerX as text) & "," & (centerY as text) & "," & '
+                                 '(item 1 of wp as text) & "," & (item 2 of wp as text) & "," & '
+                                 '(item 1 of ws as text) & "," & (item 2 of ws as text)\n'
+                                 'end if\nend if\non error\nend try\nend repeat\nreturn "absent"\nend tell')
+        if point == "absent":
+            return False
+        values = [int(value) for value in point.split(",")]
+        if len(values) != 6:
+            raise InfrastructureError(f"invalid AX target coordinates: {point!r}")
+        center_x, center_y, window_x, window_y, window_width, window_height = values
+        if not (window_x <= center_x < window_x + window_width and window_y <= center_y < window_y + window_height):
+            return False
+        self.pointer_click(f"{center_x},{center_y}")
+        time.sleep(0.3)
+        return True
 
     def chord(self, key, modifiers="command down"):
-        self.input(f"keystroke {json.dumps(key)} using {{{modifiers}}}")
+        self.input(f"keystroke {applescript_string(key)} using {{{modifiers}}}")
 
     def escape(self):
         self.input("key code 53")
@@ -290,13 +360,13 @@ class Journey:
         self.snapshot("before-menu")
         self.activate()
         text = self.applescript(f'tell (first process whose unix id is {self.app.pid})\n'
-                               f'get name of every menu item of menu 1 of menu bar item {json.dumps(title)} of menu bar 1\nend tell')
+                               f'get name of every menu item of menu 1 of menu bar item {applescript_string(title)} of menu bar 1\nend tell')
         self.save(f"menu-{title}.txt", text)
         return text
 
     def menu_click(self, title, item):
         self.input(f'tell (first process whose unix id is {self.app.pid})\n'
-                   f'click menu item {json.dumps(item)} of menu 1 of menu bar item {json.dumps(title)} of menu bar 1\nend tell')
+                   f'click menu item {applescript_string(item)} of menu 1 of menu bar item {applescript_string(title)} of menu bar 1\nend tell')
 
     def commands(self):
         before = self.snapshot("commands-before")
@@ -359,16 +429,16 @@ class Journey:
         self.assertion("New Window creates a second platform window", len(re.findall(r"^window @", after, re.M)) == 2,
                        "runtime platform windows, not a fixture window list")
         menu = self.menu("Window")
-        available = "Show All Windows" in menu
+        available = "Show All Windows…" in menu
         self.assertion("Window menu offers Show All Windows", available, "actual AppKit menu inventory")
         if available:
             window = active_window(after)
             self.assertion("Window overview initially closed", not named(after, "Open windows", role="list"), "negative control")
-            self.menu_click("Window", "Show All Windows")
+            self.menu_click("Window", "Show All Windows…")
             overview = self.snapshot("windows-overview")
-            rows = list_rows(overview, "Open windows", window)
-            self.assertion("Window overview opens", named(overview, "Open windows", role="list", window=window) and rows >= 2,
-                           "distinctive Open windows list with both created windows after actual menu activation")
+            rows = list_rows(overview, "Terminals and sessions", window)
+            self.assertion("Window overview opens", named(overview, "Terminals and sessions", role="list", window=window) and rows >= 2,
+                            "window/session list contains both created windows after actual menu activation")
             self.escape()
 
     def settings(self):
@@ -400,7 +470,13 @@ class Journey:
     def editor(self):
         marker = self.work / "editor-argv.json"
         self.assertion("Editor not already launched", not marker.exists(), "negative control")
-        self.assertion("Edit Configuration pointer activation", self.click_named("Edit Configuration"), "actual AppKit pointer input")
+        clicked = self.click_named("Edit Configuration")
+        for _ in range(6):
+            if clicked:
+                break
+            self.scroll_active_window()
+            clicked = self.click_named("Edit Configuration")
+        self.assertion("Edit Configuration pointer activation", clicked, "actual AppKit pointer input after scrolling when needed")
         deadline = time.monotonic() + 10
         while not marker.exists() and time.monotonic() < deadline:
             time.sleep(0.2)
