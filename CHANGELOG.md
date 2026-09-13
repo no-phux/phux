@@ -9,6 +9,133 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.36.0](https://github.com/no-phux/phux/compare/v0.35.0...v0.36.0) (2026-09-13)
+
+
+### Features
+
+* **agent:** add fleet-wide agent wait ([29f7eef](https://github.com/no-phux/phux/commit/29f7eefca8acec910cc749fc8a4a91d62b203267))
+* **cli:** auto-start remote server on attach ([141cbbe](https://github.com/no-phux/phux/commit/141cbbe3a5054d45d79df3cfaec304bf95df6a70))
+* **cli:** enable local --hub on satellite enroll without dropping flags ([9faeef3](https://github.com/no-phux/phux/commit/9faeef30fcf5f5fbdf09c9613f44fcb72eb28b06))
+* **client-core:** decode progressive native history ([1b23310](https://github.com/no-phux/phux/commit/1b23310b9b5001a4c48cac4004c8aa74b2b48c5f))
+* **integrations:** emit AgentSession lifecycle from pi and opencode ([467883e](https://github.com/no-phux/phux/commit/467883ed32f8c0dfd992b5c804cd88bf99ac1985))
+* **protocol:** allocate official snapshot codec ([4cfe791](https://github.com/no-phux/phux/commit/4cfe7911298e68acbf9790782598ac467c53e933))
+* **quic:** negotiate isolated terminal streams ([422c588](https://github.com/no-phux/phux/commit/422c5889000ac27b87ce64f0378ab7993095e9da))
+* **server:** add bounded ordered bulk command worker ([aab61b1](https://github.com/no-phux/phux/commit/aab61b117943e06dc4ad69a3bc2976060fe81395))
+* **server:** add bounded stream diagnostics helper ([a820eba](https://github.com/no-phux/phux/commit/a820eba6f3a40c4f64ccf242f4cda51e351e5e0f))
+* **server:** capture native history progressively ([cba8794](https://github.com/no-phux/phux/commit/cba87942cb29d156a85edeaa68c324dee1e5b3cc))
+* **site:** show blocked agent inbox handoff ([34533ce](https://github.com/no-phux/phux/commit/34533ce429af0697f6b3563bd7b840d9faafdf1f))
+* **tui:** accept negotiated attach connections ([09b86ed](https://github.com/no-phux/phux/commit/09b86ed72330e6396789c53ad15c7fe0f371e018))
+* **tui:** expose daily-driver management views ([c564a55](https://github.com/no-phux/phux/commit/c564a55dd6d9971591376060fcfa7f9dc80894d4))
+* **tui:** make the fleet inbox obvious on first attach ([#598](https://github.com/no-phux/phux/issues/598)) ([675b495](https://github.com/no-phux/phux/commit/675b4959ce4be0ad3dd2c72fdb34d0e867f413a5))
+* **tui:** move panes from destination picker ([3fdbe6d](https://github.com/no-phux/phux/commit/3fdbe6df3cad06b43bb1d0d109020d8f5af8c5fb))
+
+
+### Bug Fixes
+
+* **attach:** preserve the TUI profile when reconnecting ([d695c95](https://github.com/no-phux/phux/commit/d695c958ceba28ec1db687855086829a2b4cd8d8))
+* **attach:** reuse successful reconnect probes ([f1ede2e](https://github.com/no-phux/phux/commit/f1ede2e814a1b4a1c125dfb24ff1760919d9db2d))
+* **auth:** fail closed when configured workload mTLS cannot load ([39d4873](https://github.com/no-phux/phux/commit/39d48731c3e8a004e582ab5754091b3eedcb9b2e))
+* **ci:** align cockpit cache contract with reusable Zig keys ([1561895](https://github.com/no-phux/phux/commit/1561895b191fa7d85dc3373950bb6c45335177b6))
+* **ci:** pin a deterministic ghostty-vt.wasm rebuild ([a67ab02](https://github.com/no-phux/phux/commit/a67ab020b59f1eeddebd98aa31a1866d0d7171e3))
+* **ci:** restore green pull request base ([#604](https://github.com/no-phux/phux/issues/604)) ([d5aa316](https://github.com/no-phux/phux/commit/d5aa3168c844ad6765d749d6e13d23c07453ecb0))
+* **ci:** retry Cockpit Zig package fetches on a cold cache ([0a7ebca](https://github.com/no-phux/phux/commit/0a7ebcaa701aa3c14b9dad6bfb9a2ede5fbae945))
+* **ci:** stop isolated Zig cache and 10-minute watchdog in Cockpit jobs ([b213a66](https://github.com/no-phux/phux/commit/b213a6640cf097bbe54f157612fe1fe7f0bb6d1e))
+* **ci:** stop setup-zig caches accumulating every run ([a1b7973](https://github.com/no-phux/phux/commit/a1b7973bb3e2d8d5694d2a9de3aba12ebd2f9f7f))
+* **cli:** backtick GET_STATE in doctor docs ([d3c9981](https://github.com/no-phux/phux/commit/d3c998118bec7b90b131ed91372650c33cc7314c))
+* **client-core:** authenticate progressive history units ([acac653](https://github.com/no-phux/phux/commit/acac653c2925b9c624e23dc590527312b455d3d1))
+* **client-core:** bound bootstrap staging ([d587111](https://github.com/no-phux/phux/commit/d58711126fcabe8d89983afada79cca41de3b0d8))
+* **client-core:** make bootstrap expiry portable ([fbe220c](https://github.com/no-phux/phux/commit/fbe220cbc0bba415de769d888e75cfcaefe50870))
+* **client:** release connections after final use ([d179e9d](https://github.com/no-phux/phux/commit/d179e9d38069b43171e796fb6860324217d3496b))
+* **cli:** keep doctor overlay probes on this server ([817a4ce](https://github.com/no-phux/phux/commit/817a4ce94372969c604924a6d6b93473f622e187))
+* **cli:** match first-time pairing notice in remote e2e ([c5dfb6e](https://github.com/no-phux/phux/commit/c5dfb6e45bd2a941e52509b0aa4039b7aa85bed2))
+* **cli:** satisfy clippy on the adoption sweep helper ([ee0bd98](https://github.com/no-phux/phux/commit/ee0bd98bb2ea2ee27fe84a209193d55666694038))
+* **cli:** sweep spent adoption markers on live ensure ([2d4c55e](https://github.com/no-phux/phux/commit/2d4c55e2c30f3aecb387b3fa5caeed0043986a79))
+* **cli:** tighten connection lifetimes ([719aa52](https://github.com/no-phux/phux/commit/719aa52eb076bef816e9f22fca6bd95690eb7ae8))
+* **hub:** bound federation delivery backpressure ([d4ab21b](https://github.com/no-phux/phux/commit/d4ab21bd5fe876a05051308509e25645433226f6))
+* **hub:** close federation retention gaps ([3825902](https://github.com/no-phux/phux/commit/382590296daf0dbfa8795c9bd813a47bfea64a99))
+* **hub:** terminate exhausted relay consumers ([517c0c9](https://github.com/no-phux/phux/commit/517c0c9ce7978e7bb16f0054b98bf047077eb87d))
+* **input:** detach command completion from admission ([b898c99](https://github.com/no-phux/phux/commit/b898c99190bac6b09d7fac85073863a38b849f75))
+* **input:** preserve acknowledged replay certainty ([a40890c](https://github.com/no-phux/phux/commit/a40890c66d179f99a356a8f598f751383be8e4ed))
+* **input:** roll back unsent replay suffixes ([67added](https://github.com/no-phux/phux/commit/67added59439d5c92b71760c50d976992b8e695f))
+* **mcp:** drop detach connection after the request ([7786531](https://github.com/no-phux/phux/commit/77865314e4fd52c931d571662cd1fa3689ae76e1))
+* **native:** complete bounded history capture ([6e63b36](https://github.com/no-phux/phux/commit/6e63b36bcba75eb6cf56df360438071da8838037))
+* **native:** pin resize-safe progressive engine ([f24bc24](https://github.com/no-phux/phux/commit/f24bc2465e4b3fd253ab3eb4992069ed6888dc98))
+* **native:** preserve queued history across owner retirement ([eac205c](https://github.com/no-phux/phux/commit/eac205c1bacb3b6004c9f5f94ac0642ed7393cc3))
+* **native:** route official codec through checkpoint capture ([2cedd66](https://github.com/no-phux/phux/commit/2cedd6632dae6a9e36243b44b02ac2168c062b0f))
+* **protocol:** harden path measurements ([af1d6d6](https://github.com/no-phux/phux/commit/af1d6d6d2e8b7a42cdff3dae346261614c88ab1d))
+* **protocol:** make PTY barriers non-echoable ([431c3b7](https://github.com/no-phux/phux/commit/431c3b71281d5602ece0b93ea8b7b9a1a6c3ddd2))
+* **protocol:** measure inflight upload disconnect ([bb6d1b0](https://github.com/no-phux/phux/commit/bb6d1b0345e81954d0ccc45bfa98f49f18010bc8))
+* **quic:** fence client stream generations ([21380b8](https://github.com/no-phux/phux/commit/21380b8e5e4389af258be88c6fb05f79149ccd78))
+* **quic:** order client stream endings ([462f420](https://github.com/no-phux/phux/commit/462f420db07a26e532bca3e97c4f2b843dc117c4))
+* **quic:** order server stream endings ([0647c10](https://github.com/no-phux/phux/commit/0647c10d2686e251e0b0f1653105964c754ad229))
+* **quic:** require live terminal bindings ([24b6c7a](https://github.com/no-phux/phux/commit/24b6c7a822d67afe4bf090575d8fd8d29574d3eb))
+* **relay:** keep consumer routes single-stream ([0acd534](https://github.com/no-phux/phux/commit/0acd5349b74620987456876add850c741484c46e))
+* **relay:** own consumer splice lifetime ([4641ffb](https://github.com/no-phux/phux/commit/4641ffbc5c22bf2962a1cbae4af29d2f4a5f3239))
+* **release:** pin portable CPU baselines ([5344cdc](https://github.com/no-phux/phux/commit/5344cdc732b723b94114aad311caa5b96cedeea4))
+* **runtime:** make owned connection lifetimes explicit ([03fffd4](https://github.com/no-phux/phux/commit/03fffd40231cd291f4f175d66c2abf8d9bdafcfe))
+* **server:** bound pending and active upload workers ([10e7f80](https://github.com/no-phux/phux/commit/10e7f80ae36913527ccc03deafc46ef80e05cef6))
+* **server:** bound stream retirement and expose diagnostics ([bd7ec4d](https://github.com/no-phux/phux/commit/bd7ec4dc0f859384cb557b7d1aa804d7c4db6002))
+* **server:** bound WebTransport session admission ([3d97591](https://github.com/no-phux/phux/commit/3d975915557c81eb12b2461c52a8d0a88c3ca37c))
+* **server:** document relay subscription context ([b613082](https://github.com/no-phux/phux/commit/b613082d6effd4f38caaab69b5954362a0e85fd1))
+* **server:** isolate QUIC control dispatch ([6b417fa](https://github.com/no-phux/phux/commit/6b417fad838ae35c3ddc3c1661a8660b850820e8))
+* **server:** keep bulk commands off control loop ([a840798](https://github.com/no-phux/phux/commit/a84079847d58226b2e456e551e38947b8b5312bf))
+* **server:** keep WebSocket accept causes at debug ([c817cd3](https://github.com/no-phux/phux/commit/c817cd3ff56828f9bc98fea2b7b4da4c1e33662f))
+* **server:** make command dispatch cancellation-aware ([9a715ae](https://github.com/no-phux/phux/commit/9a715aeffaa9a3d1116f0f970f6b90ee0bfaa302))
+* **server:** preserve native output and gap clocks ([a754e89](https://github.com/no-phux/phux/commit/a754e891a2255c00e5e4522142fb8f3ba8f1754b))
+* **server:** reject ambiguous WebTransport auth ([e924f4f](https://github.com/no-phux/phux/commit/e924f4f9c4dab85da5ad770a1f612b69a38fc13e))
+* **server:** reject bare WebTransport token carriers ([858a4d5](https://github.com/no-phux/phux/commit/858a4d5546060bad6dde09a7c0ce45efef90a789))
+* **server:** require explicit route support for QUIC streams ([e24e2de](https://github.com/no-phux/phux/commit/e24e2def2f2e5a9b6c1241d0bd0448f2dbfa6ddc))
+* **server:** thread consumer cancellation to relay ([c8fc03b](https://github.com/no-phux/phux/commit/c8fc03ba6d8c75e24009a6537c07efc3020c5f1c))
+* **sync:** reject future acknowledgements before mutating consumer state ([ad5ec1e](https://github.com/no-phux/phux/commit/ad5ec1edd2cdf063132ae54db367c70a456622db))
+* **sync:** retain absolute gap recovery response deadlines ([b56eacb](https://github.com/no-phux/phux/commit/b56eacbc5f5d189713d207982289f84e159dbceb))
+* **sync:** share ACK metadata capture with the tick render cache ([68c1e22](https://github.com/no-phux/phux/commit/68c1e2210a3346f6b40e78e844bbb0462eeeb0e0))
+* **tui:** drain acknowledged replay batches ([5bcb131](https://github.com/no-phux/phux/commit/5bcb1318a552dce5cd2ec09760d91ad043b3933b))
+* **tui:** fence pending stream binds ([26b7afb](https://github.com/no-phux/phux/commit/26b7afba5601ebbd5198788a23cedf73c5a130b1))
+* **tui:** preserve attach capabilities on probes ([cb0acd1](https://github.com/no-phux/phux/commit/cb0acd1c5eccbd832caa6e39eb30459b6a035d65))
+* **tui:** preserve buffered attach test seam ([5e71b43](https://github.com/no-phux/phux/commit/5e71b434931016db7ab873098edc8e282a75d82a))
+* **tui:** test-gate buffered dial seam ([b4d112d](https://github.com/no-phux/phux/commit/b4d112d386a877d667dad18a1a687befd30faee4))
+* **update:** keep live servers up across a broken distro path ([73d9e8c](https://github.com/no-phux/phux/commit/73d9e8c52d2945e20e3a8915b4247e6df18a2db6))
+* **update:** make install transaction crash-durable ([1779122](https://github.com/no-phux/phux/commit/17791220c2e10c971a7bff9a9448638ad297199e))
+* **web:** authenticate browser WebSocket subprotocol credentials ([ea432ab](https://github.com/no-phux/phux/commit/ea432ab2b8ddd8e06f59582b68c27419f3dcd7fe))
+* **web:** dispose failed reconnect attempts ([7074aa9](https://github.com/no-phux/phux/commit/7074aa9ab69c42638ba8a849a66eccf762c0ce92))
+* **web:** guard transport establishment cleanup ([678bd98](https://github.com/no-phux/phux/commit/678bd9828b62470e4a94004b2b19cb3971dae1e6))
+* **web:** require usable attach before ready ([8f19a73](https://github.com/no-phux/phux/commit/8f19a739d66ad0be0cdd8c7b1a32105daf1e1a05))
+* **web:** supervise browser transport lifecycle ([32249d9](https://github.com/no-phux/phux/commit/32249d9f76845bb27f9a5d179d800e264f584940))
+
+
+### Performance
+
+* **client:** reuse screen polling connections ([3adc00c](https://github.com/no-phux/phux/commit/3adc00c3bfed16e4600b0189fd11d45780d2afff))
+* **protocol:** reuse tagged-field encoder scratch ([f8c23e2](https://github.com/no-phux/phux/commit/f8c23e2b04513b8814a0f40b46b864a01c180a4e))
+* **server:** measure complete native bootstrap budgets ([02b98f9](https://github.com/no-phux/phux/commit/02b98f980270a7de5c57d5ebf848df5efbc37e65))
+
+
+### Refactors
+
+* **integrations:** move shared runtime to neutral ownership ([a5abca9](https://github.com/no-phux/phux/commit/a5abca918322924d5104651b603dc789c9433364))
+
+
+### Documentation
+
+* **adr:** clarify canonical protocol decision identities ([96343d4](https://github.com/no-phux/phux/commit/96343d40740c46f09a5950d50dcb91c3cba7e959))
+* **audit:** record browser acceptance and upload evidence ([bb2abb7](https://github.com/no-phux/phux/commit/bb2abb749492ce527d4b58a085f65789e25f7915))
+* occupy the public sentence, emit contract, and accountless join ([#597](https://github.com/no-phux/phux/issues/597)) ([5d60967](https://github.com/no-phux/phux/commit/5d60967657debc20e4febf52b582dd84a9740fac))
+* **perf:** record integrated marker-safe path representatives ([7847e72](https://github.com/no-phux/phux/commit/7847e723812a93fba780c3461116d3476fc87a1e))
+* **protocol:** audit end-to-end transport and synchronization gaps ([0a99337](https://github.com/no-phux/phux/commit/0a993371430e46f785a351484cada149fa612c41))
+* **protocol:** require authenticated history completion ([5276457](https://github.com/no-phux/phux/commit/52764575c369b8f4681308fb9d678e51360937ad))
+* **protocol:** specify bilateral QUIC streams ([ae8b8e5](https://github.com/no-phux/phux/commit/ae8b8e59820a8654aa44038812dc95d8b3540f13))
+* record protocol audit remediation acceptance ([0be9fe2](https://github.com/no-phux/phux/commit/0be9fe255fae56dfb4728c1353ff5be1803ec865))
+* **server:** clarify WebTransport header uniqueness boundary ([88c1cd9](https://github.com/no-phux/phux/commit/88c1cd988382fc4830607e82e86ed5a614bf740c))
+* **skills:** treat agent sessions as RESOURCE_KINDS, not a branch ([3a68971](https://github.com/no-phux/phux/commit/3a68971ac36187ce95bf862f370b8c6ebf0947da))
+* **transport:** clarify QUIC isolation limits ([9dd16ec](https://github.com/no-phux/phux/commit/9dd16ec365da719a0b07c196aed853794bdf6ea5))
+* **transport:** reconcile QUIC routing and ordering with ADR-0115 ([ac710e6](https://github.com/no-phux/phux/commit/ac710e6614a2372a04fbfdd849f768f3cca8572e))
+
+
+### Build System
+
+* **engine:** pin published incremental snapshot APIs ([98499e6](https://github.com/no-phux/phux/commit/98499e6a848c6152539777536cb05f90ed860f7a))
+
 ## [0.35.0](https://github.com/no-phux/phux/compare/v0.34.0...v0.35.0) (2026-09-13)
 
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/no-phux/phux/compare/opencode-plugin-v0.2.2...opencode-plugin-v0.3.0) (2026-09-13)
+
+
+### Features
+
+* **integrations:** emit AgentSession lifecycle from pi and opencode ([467883e](https://github.com/no-phux/phux/commit/467883ed32f8c0dfd992b5c804cd88bf99ac1985))
+
+
+### Refactors
+
+* **integrations:** move shared runtime to neutral ownership ([a5abca9](https://github.com/no-phux/phux/commit/a5abca918322924d5104651b603dc789c9433364))
+
 ## [0.2.2](https://github.com/no-phux/phux/compare/opencode-plugin-v0.2.1...opencode-plugin-v0.2.2) (2026-09-07)
 
 
