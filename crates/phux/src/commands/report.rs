@@ -17,7 +17,7 @@ use phux_tui::report::{
 pub(crate) fn run_report(action: Option<ReportAction>, list_json: bool) -> ExitCode {
     match action {
         None => run_list(list_json),
-        Some(ReportAction::New { note, json }) => run_new(note, json.json),
+        Some(ReportAction::New { note, json }) => run_new(&note, json.json),
         Some(ReportAction::Show { id, json }) => run_show(id, json.json),
     }
 }
@@ -65,7 +65,7 @@ fn run_list(json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn run_new(note: Vec<String>, json: bool) -> ExitCode {
+fn run_new(note: &[String], json: bool) -> ExitCode {
     let note = {
         let joined = note.join(" ");
         let trimmed = joined.trim();
@@ -105,10 +105,10 @@ fn run_new(note: Vec<String>, json: bool) -> ExitCode {
 fn run_show(id: Option<String>, json: bool) -> ExitCode {
     let root = reports_dir();
     let Some(report) = resolve_report(&root, id.as_deref()) else {
-        let message = match id {
-            Some(id) => format!("no report named {id} in {}", root.display()),
-            None => format!("no reports in {}", root.display()),
-        };
+        let message = id.map_or_else(
+            || format!("no reports in {}", root.display()),
+            |id| format!("no report named {id} in {}", root.display()),
+        );
         if json {
             return crate::commands::json_err::emit(
                 true,

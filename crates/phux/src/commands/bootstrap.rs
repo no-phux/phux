@@ -116,7 +116,9 @@ async fn open_listener(
         port_range,
         linger_secs,
     };
-    match command_on(&mut conn, 1, command).await {
+    let result = command_on(&mut conn, 1, command).await;
+    drop(conn);
+    match result {
         Ok(CommandResult::OkWith(CommandValue::Json(json))) => serde_json::from_str(&json)
             .map_err(|err| format!("the server's OPEN_LISTENER reply did not parse: {err}")),
         Ok(CommandResult::Error { code, message }) => Err(format!(
