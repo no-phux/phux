@@ -259,8 +259,10 @@ fn clear_preserves_partial_dcs_and_utf8() {
     }
 }
 
-fn native_capture(pending: &[u8]) -> (Vec<u8>, Vec<u8>, u32) {
-    use std::io::Cursor;
+type CapturedHistory = Vec<(Vec<u8>, u32)>;
+
+fn native_capture(pending: &[u8]) -> (Vec<u8>, CapturedHistory, u32) {
+    use libghostty_vt::snapshot::{CaptureEvent, CaptureOptions};
     let mut source = libghostty_vt::Terminal::new(40, 12).unwrap();
     source.set_scrollback_max_lines(Some(100)).unwrap();
     source.set_continuation_max_bytes(64 * 1024 * 1024).unwrap();
@@ -269,13 +271,40 @@ fn native_capture(pending: &[u8]) -> (Vec<u8>, Vec<u8>, u32) {
     }
     let rows = u32::try_from(source.scrollback_rows().unwrap()).unwrap();
     source.vt_write(pending);
-    let mut encoded = Vec::new();
-    source.encode_snapshot(&mut encoded).unwrap();
-    let mut reader = Cursor::new(encoded.as_slice());
-    let decoder = libghostty_vt::snapshot::Decoder::new(&mut reader).unwrap();
-    drop(decoder.ready().unwrap());
-    let offset = usize::try_from(reader.position()).unwrap();
-    (encoded[..offset].to_vec(), encoded[offset..].to_vec(), rows)
+    let mut capture = source
+        .capture_snapshot(CaptureOptions {
+            max_record_bytes: 64 * 1024,
+            max_pages: 1_000,
+        })
+        .unwrap();
+    let mut buffer = vec![0; 64 * 1024];
+    let mut ready = Vec::new();
+    loop {
+        let event = capture.next(&mut buffer).unwrap();
+        ready.extend_from_slice(&buffer[..event.written()]);
+        if matches!(event, CaptureEvent::Ready { .. }) {
+            break;
+        }
+    }
+    let mut history = capture.detach().unwrap();
+    let mut pages = Vec::new();
+    let mut pending = Vec::new();
+    loop {
+        let event = history.next(&mut source, &mut buffer).unwrap();
+        pending.extend_from_slice(&buffer[..event.written()]);
+        match event {
+            CaptureEvent::HistoryPage { rows, .. } => {
+                pages.push((std::mem::take(&mut pending), u32::try_from(rows).unwrap()));
+            }
+            CaptureEvent::Finish { .. } => {
+                pages.push((pending, 0));
+                break;
+            }
+            CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
+            other => panic!("unexpected history event: {other:?}"),
+        }
+    }
+    (ready, pages, rows)
 }
 
 fn feed_native_bootstrap(client: *mut PhuxClient, bootstrap_id: u64, bytes: &[u8]) {
@@ -288,7 +317,7 @@ fn feed_native_bootstrap(client: *mut PhuxClient, bootstrap_id: u64, bytes: &[u8
             stream_id,
             bootstrap_id,
             profile: phux_protocol::BootstrapStreamProfile::NativeState {
-                codec: phux_protocol::EngineCodec::LibghosttyCheckpointV2,
+                codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
             },
             cols: 40,
             rows: 12,
@@ -328,7 +357,7 @@ fn native_client(bootstrap: &[u8]) -> *mut PhuxClient {
     inner.attach_queued = true;
     inner.expected_attach_id = Some(7);
     inner.selected_profile = Some(phux_protocol::BootstrapProfile::NativeState {
-        codec: phux_protocol::EngineCodec::LibghosttyCheckpointV2,
+        codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
         features: phux_protocol::EngineFeatureSet::required_native(),
     });
     inner.install_profile(
@@ -369,14 +398,20 @@ fn native_client(bootstrap: &[u8]) -> *mut PhuxClient {
     client
 }
 
-fn history_page(bootstrap_id: u64, bytes: &[u8], rows: u32) -> FrameKind {
+fn history_page(
+    bootstrap_id: u64,
+    bytes: &[u8],
+    rows: u32,
+    page_seq: u64,
+    final_page: bool,
+) -> FrameKind {
     FrameKind::HistoryPage {
         terminal_id: phux_protocol::ResourceId::local(1),
         stream_id: phux_protocol::StreamId::new(7).unwrap(),
         bootstrap_id: phux_protocol::BootstrapId::new(bootstrap_id).unwrap(),
         cursor: bytes::Bytes::from_static(b"older"),
-        page_seq: 1,
-        next_cursor: None,
+        page_seq,
+        next_cursor: (!final_page).then(|| bytes::Bytes::from_static(b"older")),
         rows,
         payload: bytes::Bytes::copy_from_slice(bytes),
     }
@@ -384,7 +419,7 @@ fn history_page(bootstrap_id: u64, bytes: &[u8], rows: u32) -> FrameKind {
 
 #[test]
 fn clear_cancels_native_history_without_retiring_live_or_replacement_generations() {
-    let (bootstrap, history, rows) = native_capture(b"");
+    let (bootstrap, history, _) = native_capture(b"");
     let client = native_client(&bootstrap);
     let terminal = PhuxResourceId {
         id: 1,
@@ -400,10 +435,15 @@ fn clear_cancels_native_history_without_retiring_live_or_replacement_generations
         );
         assert_eq!(phux_client_outgoing_count(client), 0);
     }
-    assert_eq!(
-        feed_kind(client, &history_page(1, &history, rows)),
-        PhuxClientResult::Ok
-    );
+    for (i, (bytes, rows)) in history.iter().enumerate() {
+        assert_eq!(
+            feed_kind(
+                client,
+                &history_page(1, bytes, *rows, i as u64 + 1, i + 1 == history.len())
+            ),
+            PhuxClientResult::Ok
+        );
+    }
     let (cleared, text) = grid(client);
     assert!(text.trim().is_empty());
     assert!(!cleared.history_loading && !cleared.history_has_more);
@@ -412,10 +452,15 @@ fn clear_cancels_native_history_without_retiring_live_or_replacement_generations
     assert!(grid(client).1.starts_with("NEW LIVE OUTPUT"));
     feed_native_bootstrap(client, 2, &bootstrap);
     assert!(grid(client).0.history_loading);
-    assert_eq!(
-        feed_kind(client, &history_page(2, &history, rows)),
-        PhuxClientResult::Ok
-    );
+    for (i, (bytes, rows)) in history.iter().enumerate() {
+        assert_eq!(
+            feed_kind(
+                client,
+                &history_page(2, bytes, *rows, i as u64 + 1, i + 1 == history.len())
+            ),
+            PhuxClientResult::Ok
+        );
+    }
     let (replacement, text) = grid(client);
     assert!(text.contains("original row"));
     assert!(replacement.history_total_rows > u64::from(replacement.rows));

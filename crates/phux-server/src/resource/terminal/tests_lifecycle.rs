@@ -1813,48 +1813,105 @@ async fn saturated_history_busy_hint_clamps_rows_on_the_public_wire() {
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
-    let bundle = TerminalActor::new(20, 5).expect("actor");
-    let mut actor = bundle.actor;
-    let (outbound, _outbound_rx) = mpsc::channel(2);
-    let mut replies = Vec::new();
-    for owner in [7, 8] {
-        let permit = outbound
-            .clone()
-            .reserve_owned()
-            .await
-            .expect("history permit");
-        let (reply, response) = oneshot::channel();
-        actor.handle_native_history(NativeHistoryRequest {
-            permit,
-            owner,
-            terminal_id: phux_protocol::ids::ResourceId::local(1),
-            stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
-            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
-            cursor: Bytes::from_static(b"pending-cursor"),
-            max_bytes: 1024,
-            max_rows: 64,
-            limits: phux_protocol::caps::BootstrapLimits::default(),
-            reply,
-        });
-        replies.push(response);
-    }
+    use phux_protocol::wire::frame::HistoryTombstoneReason;
+    for mode in ["release", "reattach", "expire"] {
+        let bundle = TerminalActor::new(20, 5).expect("actor");
+        let mut actor = bundle.actor;
+        let (outbound, _outbound_rx) = mpsc::channel(2);
+        let mut replies = Vec::new();
+        for owner in [7, 8] {
+            let permit = outbound
+                .clone()
+                .reserve_owned()
+                .await
+                .expect("history permit");
+            let (reply, response) = oneshot::channel();
+            actor.handle_native_history(NativeHistoryRequest {
+                permit,
+                owner,
+                terminal_id: phux_protocol::ids::ResourceId::local(1),
+                stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+                bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+                cursor: Bytes::from_static(b"pending-cursor"),
+                max_bytes: 1024,
+                max_rows: 64,
+                limits: phux_protocol::caps::BootstrapLimits::default(),
+                reply,
+            });
+            replies.push(response);
+        }
 
-    actor.release_native_owner(7);
-    let released = replies.remove(0).await.expect("released reply").result;
-    assert!(matches!(
-        released,
-        Ok(FrameKind::HistoryTombstone {
-            reason: phux_protocol::wire::frame::HistoryTombstoneReason::Released,
-            ..
-        })
-    ));
-    assert_eq!(
-        actor
-            .pending_native_history
-            .as_ref()
-            .map(|pending| pending.request.owner),
-        Some(8)
-    );
+        let expected_reason = if mode == "expire" {
+            actor.native_cursor_owners.insert(
+                7,
+                NativeCursorOwner {
+                    cursor: [0; 32],
+                    record_index: 0,
+                    touched: tokio::time::Instant::now() - NATIVE_HISTORY_TTL,
+                    next_page_seq: 1,
+                    terminal_id: phux_protocol::ids::ResourceId::local(1),
+                    stream_id: phux_protocol::ids::StreamId::new(1).expect("stream"),
+                    bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap"),
+                },
+            );
+            let mut controls = actor.core.output_tx.subscribe();
+            actor.expire_native_cursors();
+            assert!(matches!(
+                controls.try_recv().expect("expiry control"),
+                PaneOutput::Control {
+                    frame: FrameKind::HistoryTombstone {
+                        reason: HistoryTombstoneReason::Expired,
+                        ..
+                    },
+                    ..
+                }
+            ));
+            HistoryTombstoneReason::Expired
+        } else if mode == "reattach" {
+            actor.invalidate_native_owner(
+                7,
+                phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
+            );
+            HistoryTombstoneReason::Released
+        } else {
+            actor.release_native_owner(7);
+            HistoryTombstoneReason::Released
+        };
+        let released = replies
+            .remove(0)
+            .try_recv()
+            .expect("released reply without a later actor turn")
+            .result;
+        assert!(matches!(
+            released,
+            Ok(FrameKind::HistoryTombstone {
+                reason,
+                ..
+            }) if reason == expected_reason
+        ));
+        assert_eq!(
+            actor
+                .pending_native_history
+                .as_ref()
+                .map(|pending| pending.request.owner),
+            Some(8)
+        );
+        let _ = actor
+            .invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
+        assert!(actor.pending_native_history.is_none());
+        assert!(actor.native_history_backlog.is_empty());
+        assert!(matches!(
+            replies
+                .remove(0)
+                .try_recv()
+                .expect("resize answers parked request")
+                .result,
+            Ok(FrameKind::HistoryTombstone {
+                reason: phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+                ..
+            })
+        ));
+    }
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

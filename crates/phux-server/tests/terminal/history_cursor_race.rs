@@ -93,7 +93,7 @@ async fn connect_native(path: &std::path::Path) -> UnixStream {
             protocol_patch: PROTOCOL_VERSION.patch,
             client_caps: ClientCapabilities::new().with_bootstrap(
                 BootstrapCapabilities::new().with_native(
-                    EngineCodec::LibghosttyCheckpointV2,
+                    EngineCodec::LibghosttySnapshotV1,
                     EngineFeatureSet::required_native(),
                 ),
             ),
@@ -106,7 +106,7 @@ async fn connect_native(path: &std::path::Path) -> UnixStream {
             reply,
             FrameKind::HelloOk {
                 selected_profile: BootstrapProfile::NativeState {
-                    codec: EngineCodec::LibghosttyCheckpointV2,
+                    codec: EngineCodec::LibghosttySnapshotV1,
                     ..
                 },
                 ..
@@ -226,7 +226,7 @@ async fn split_pane(stream: &mut UnixStream, request_id: u32) -> SpawnedGenerati
                     matches!(
                         profile,
                         phux_protocol::caps::BootstrapStreamProfile::NativeState {
-                            codec: EngineCodec::LibghosttyCheckpointV2,
+                            codec: EngineCodec::LibghosttySnapshotV1,
                         }
                     ),
                     "the split pane must bootstrap under the negotiated native \

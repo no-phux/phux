@@ -189,7 +189,7 @@ fn late_server_retry_keeps_the_fresh_seed_on_its_current_generation() {
                 &hello_ok,
                 FrameKind::HelloOk {
                     selected_profile: BootstrapProfile::NativeState {
-                        codec: EngineCodec::LibghosttyCheckpointV2,
+                        codec: EngineCodec::LibghosttySnapshotV1,
                         ..
                     },
                     ..

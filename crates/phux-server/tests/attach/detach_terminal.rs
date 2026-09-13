@@ -394,7 +394,7 @@ fn detach_terminal_stops_state_sync_actor_output() {
 
 const fn native_caps() -> ClientCapabilities {
     ClientCapabilities::new().with_bootstrap(BootstrapCapabilities::new().with_native(
-        EngineCodec::LibghosttyCheckpointV2,
+        EngineCodec::LibghosttySnapshotV1,
         EngineFeatureSet::required_native(),
     ))
 }

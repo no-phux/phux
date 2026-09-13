@@ -805,7 +805,11 @@ impl TerminalActor {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn start_next_native_history(&mut self) {
-        self.pending_native_history = self.native_history_backlog.pop_front();
+        // Completion can release an owner, which already promotes the next
+        // request through cancellation cleanup. Never overwrite that owner.
+        if self.pending_native_history.is_none() {
+            self.pending_native_history = self.native_history_backlog.pop_front();
+        }
     }
 
     /// Validate and advance one request. `None` means the engine made bounded
@@ -996,6 +1000,12 @@ impl TerminalActor {
         &mut self,
         reason: phux_protocol::wire::frame::TombstoneReason,
     ) -> Vec<crate::resource::ResyncTarget> {
+        if let Some(pending) = self.pending_native_history.take() {
+            answer_released_history(pending.request);
+        }
+        for pending in self.native_history_backlog.drain(..) {
+            answer_released_history(pending.request);
+        }
         self.native_bootstrap_backlog.clear();
         if let Some(pending) = self.pending_native_bootstrap.take() {
             self.fail_native_bootstrap(pending, crate::native_state::NativeStateError::Resize);
@@ -1033,6 +1043,10 @@ impl TerminalActor {
         owner: u64,
         reason: phux_protocol::wire::frame::TombstoneReason,
     ) {
+        self.cancel_native_history_requests(
+            owner,
+            phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+        );
         if let Some(pending) = self.pending_native_bootstrap.as_mut() {
             pending.waiters.retain(|waiter| waiter.owner != owner);
         }
@@ -1064,7 +1078,10 @@ impl TerminalActor {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn release_native_owner(&mut self, owner: u64) {
-        self.cancel_native_history_requests(owner);
+        self.cancel_native_history_requests(
+            owner,
+            phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+        );
         if let Some(pending) = self.pending_native_bootstrap.as_mut() {
             pending.waiters.retain(|waiter| waiter.owner != owner);
         }
@@ -1085,19 +1102,23 @@ impl TerminalActor {
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    fn cancel_native_history_requests(&mut self, owner: u64) {
+    fn cancel_native_history_requests(
+        &mut self,
+        owner: u64,
+        reason: phux_protocol::wire::frame::HistoryTombstoneReason,
+    ) {
         if self
             .pending_native_history
             .as_ref()
             .is_some_and(|pending| pending.request.owner == owner)
             && let Some(pending) = self.pending_native_history.take()
         {
-            answer_released_history(pending.request);
+            answer_tombstoned_history(pending.request, reason);
         }
         let mut retained = VecDeque::with_capacity(self.native_history_backlog.len());
         while let Some(pending) = self.native_history_backlog.pop_front() {
             if pending.request.owner == owner {
-                answer_released_history(pending.request);
+                answer_tombstoned_history(pending.request, reason);
             } else {
                 retained.push_back(pending);
             }
@@ -1117,6 +1138,10 @@ impl TerminalActor {
             .filter_map(|(owner, binding)| (binding.touched <= cutoff).then_some(*owner))
             .collect();
         for owner in owners {
+            self.cancel_native_history_requests(
+                owner,
+                phux_protocol::wire::frame::HistoryTombstoneReason::Expired,
+            );
             let Some(binding) = self.native_cursor_owners.get(&owner) else {
                 continue;
             };
@@ -1278,8 +1303,18 @@ fn answer_history(
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn answer_released_history(request: NativeHistoryRequest) {
-    let frame = history_request_id(&request)
-        .tombstone(phux_protocol::wire::frame::HistoryTombstoneReason::Released);
+    answer_tombstoned_history(
+        request,
+        phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+    );
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn answer_tombstoned_history(
+    request: NativeHistoryRequest,
+    reason: phux_protocol::wire::frame::HistoryTombstoneReason,
+) {
+    let frame = history_request_id(&request).tombstone(reason);
     answer_history(request.reply, request.permit, Ok(frame));
 }
 

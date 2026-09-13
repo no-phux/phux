@@ -1866,6 +1866,7 @@ fn grown_history_limits_survive_busy_then_reach_authenticated_finish() {
         HistoryRejectionReason::TooSmall,
         HistoryRejectionReason::Busy,
     ] {
+        effects.clear();
         kernel
             .update(
                 KernelInput::HistoryRejected {
@@ -1890,6 +1891,7 @@ fn grown_history_limits_survive_busy_then_reach_authenticated_finish() {
         )));
     }
 
+    effects.clear();
     kernel
         .update(
             KernelInput::HistoryPage {
