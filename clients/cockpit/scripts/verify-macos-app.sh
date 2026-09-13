@@ -234,6 +234,8 @@ ARCHITECTURES="$(/usr/bin/lipo -archs "${EXECUTABLE}" 2>/dev/null)" ||
 [[ "${ARCHITECTURES}" == 'arm64' ]] ||
     fail "expected an arm64-only executable, found: ${ARCHITECTURES}"
 printf 'ok: executable architecture = arm64 only\n'
+python3 "${ROOT}/scripts/check-ring-p256-helpers.py" "${EXECUTABLE}" ||
+    fail 'ring P-256 helper was dead-stripped; QUIC TLS would abort'
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "${APP}" ||
     fail 'strict code-signature verification failed'

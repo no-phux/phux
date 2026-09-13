@@ -253,10 +253,19 @@ fn addNativeRegressionTests(
     }
 
     const tests = b.addTest(.{ .name = "cockpit-native-engine-regressions", .root_module = root });
+    if (phux_enabled) keepRingP256Helpers(tests);
     test_step.dependOn(&b.addRunArtifact(tests).step);
 }
 
 // ---------------------------------------------------------------- phux FFI
+
+/// ring 0.17's Apple ARM64 P-256 wrappers `bl` file-local helpers
+/// (`__ecp_nistz256_mul_mont`). Mach-O `.subsections_via_symbols` plus
+/// dead_strip drops those helpers and leaves the wrappers' PC-relative `bl`
+/// pointing at zeros, so a QUIC TLS handshake aborts in `phux-remote-tunnel`.
+fn keepRingP256Helpers(compile: *std.Build.Step.Compile) void {
+    compile.link_gc_sections = false;
+}
 
 /// A validated location for the phux client FFI: a directory holding
 /// `phux/client.h` and a directory holding `libphux_client_ffi.a`.
@@ -537,6 +546,7 @@ fn addPhuxGraphTests(
     };
     for (rooted) |entry| {
         const tests = b.addTest(.{ .name = entry.name, .root_module = entry.module });
+        keepRingP256Helpers(tests);
         test_step.dependOn(&b.addRunArtifact(tests).step);
     }
 }
@@ -762,6 +772,7 @@ pub fn build(b: *std.Build) void {
         .name = "phux-cockpit",
         .native_extension = "src/native_extension.zig",
     });
+    keepRingP256Helpers(artifacts.exe);
     const app_module = artifacts.exe.root_module;
     if (app_module.resolved_target.?.result.os.tag != .macos)
         @panic("phux-cockpit supports macOS only");

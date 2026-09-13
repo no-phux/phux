@@ -139,6 +139,8 @@ class BuildContracts(unittest.TestCase):
         self.assertIn("bash clients/cockpit/scripts/build-phux-artifacts.sh", workflow)
         build = (ROOT / "build.zig").read_text()
         self.assertIn("addDisabledProviderCompileCheck", build)
+        self.assertIn("keepRingP256Helpers(artifacts.exe)", build)
+        self.assertIn("compile.link_gc_sections = false", build)
         self.assertIn('.name = "disabled-phux-provider"', build)
         self.assertIn("if (phux_enabled) addDisabledProviderCompileCheck", build)
         self.assertIn("cancel-in-progress: true", workflow)
