@@ -42,6 +42,15 @@ try {
   const installedEntry = join(consumerRoot, "node_modules", "@phux", "opencode", "dist", "index.js");
   const bundledSource = await readFile(installedEntry, "utf8");
   assert.doesNotMatch(bundledSource, /(?:from\s+|import\s*\()["'](?:@phux\/pi|\.\.\/\.\.\/pi)/);
+  const bundledTypes = await readFile(
+    join(consumerRoot, "node_modules", "@phux", "opencode", "dist", "index.d.ts"),
+    "utf8",
+  );
+  assert.doesNotMatch(
+    `${bundledSource}\n${bundledTypes}`,
+    /(?:@phux\/integration-runtime|\.\.\/\.\.\/runtime)/,
+    "the packed plugin must inline the private runtime in JavaScript and declarations",
+  );
   assert.match(bundledSource, /@opencode-ai\/plugin/, "the package must use OpenCode's public runtime dependency");
   assert.match(bundledSource, /child_process/);
 

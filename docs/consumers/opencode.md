@@ -250,16 +250,16 @@ a plugin reload from final disposal, so reload preservation is not claimed.
 A process crash, `SIGKILL`, or other forced termination cannot run disposal.
 Metadata failures and local deadlines do not fail terminal tools.
 
-## Shared CLI boundary and other adapters
+## Shared Node runtime and other adapters
 
-The source reuses the host-independent `PhuxCli` adapter maintained with the
-[Pi integration](./pi.md). The OpenCode build bundles that adapter, its schema
-validation, and the tool runtime into the artifact. The packed runtime has no
-dependency on `@phux/pi`; it retains an exact production dependency on the
-public OpenCode plugin API and still executes the external phux CLI. This
-shared implementation boundary does not
-make Pi target persistence, commands, or lifecycle behavior part of the
-OpenCode contract.
+The source reuses the host-independent `PhuxCli`, result schemas, lifecycle
+emitter, and fleet-awareness implementation from the private
+`@phux/integration-runtime` module. Pi and OpenCode are sibling adapters at
+that neutral seam; neither integration imports source owned by the other.
+The OpenCode build bundles the runtime into its artifact, so the packed plugin
+has no production package dependency beyond the exact public OpenCode plugin
+interface and still executes the external phux CLI. Pi target persistence,
+commands, and host lifecycle behavior remain outside the OpenCode contract.
 
 Use [Pi](./pi.md) when Pi-native target persistence and human commands are the
 needed host surface. Use [phux-mcp](./mcp.md) when a client speaks MCP over

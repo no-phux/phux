@@ -1,4 +1,4 @@
-# Release agent integration — the publish lane for integrations/*.
+# Release agent integration — the publish lane for public host adapters.
 #
 # Flow: release-please merges a release PR, creates `<component>-vX.Y.Z`, and
 # leaves a DRAFT GitHub release (release-please-config.json sets "draft": true
@@ -164,6 +164,17 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: ${{ needs.prepare.outputs.directory }}/package-lock.json
+
+      - name: Build and verify shared integration runtime
+        if: needs.prepare.outputs.component != 'claude-plugin'
+        env:
+          npm_config_audit: "false"
+          npm_config_fund: "false"
+        run: |
+          npm install --global npm@11.5.1
+          npm --prefix integrations/runtime ci
+          npm --prefix integrations/runtime run gates
+          git diff --exit-code -- integrations/runtime/dist
 
       - name: Install and run component gates
         working-directory: ${{ needs.prepare.outputs.directory }}

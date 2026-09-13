@@ -205,6 +205,8 @@ Then, without Rust, Zig, or Nix:
 
 ```sh
 bash scripts/doctor.sh integrations
+npm --prefix integrations/runtime ci
+npm --prefix integrations/runtime run gates
 npm --prefix integrations/pi ci
 npm --prefix integrations/pi run gates
 # Equivalent: just integration-check pi
