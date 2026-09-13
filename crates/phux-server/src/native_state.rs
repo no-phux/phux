@@ -2,7 +2,7 @@
 //!
 //! Prefix capture advances one bounded engine record at a time through READY.
 //! Detaching READY is O(1): the engine registers a history cut and encodes
-//! nothing. Each later HISTORY_REQUEST borrows the live terminal for one
+//! nothing. Each later `HISTORY_REQUEST` borrows the live terminal for one
 //! bounded scan or record step, so live PTY bytes continue between client
 //! pulls. Phux forwards exact engine records and typed metadata without
 //! decoding terminal contents.

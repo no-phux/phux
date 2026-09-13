@@ -1857,23 +1857,7 @@ fn env_socket_addr(var: &str) -> Option<SocketAddr> {
     }
 }
 
-/// Build the optional QUIC listener for `addr` (phux-y8v6, ADR-0007). Returns
-/// `(None, slot)` (QUIC disabled, other transports unaffected) on any setup
-/// failure rather than failing the whole server; `slot` always describes the
-/// bind outcome for `GET_STATE`.
-///
-/// QUIC is **always** TLS 1.3-encrypted, so a certificate is provisioned in
-/// both modes — it shares the persisted self-signed cert and token store with
-/// the `wss://` path (so a single `phux pair` token authorizes either), keyed
-/// off the same `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` / `PHUX_WS_TOKENS`
-/// overrides:
-///
-/// * **Loopback address → TLS, no token.** Local dev; the dialer sends no
-///   preamble.
-/// * **Routable address (or `PHUX_WS_SECURE=1`) → TLS + bearer-token preamble.**
-///   Off-loopback is treated as exposing the server, so a paired token is
-///   required exactly as for a remote WebSocket consumer (ADR-0031).
-/// The certificate and key a QUIC listener bound to `addr` presents: the
+/// Certificate and key a QUIC listener bound to `addr` presents: the
 /// operator's (`PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`) when set, otherwise
 /// the shared self-signed pair, provisioned on first use (ADR-0031). An
 /// existing pair is never regenerated (ADR-0091), so the fingerprint paired
@@ -1900,6 +1884,22 @@ fn quic_certificate(addr: SocketAddr) -> Option<(PathBuf, PathBuf)> {
     Some((cert_path, key_path))
 }
 
+/// Build the optional QUIC listener for `addr` (phux-y8v6, ADR-0007). Returns
+/// `(None, slot)` (QUIC disabled, other transports unaffected) on any setup
+/// failure rather than failing the whole server; `slot` always describes the
+/// bind outcome for `GET_STATE`.
+///
+/// QUIC is **always** TLS 1.3-encrypted, so a certificate is provisioned in
+/// both modes — it shares the persisted self-signed cert and token store with
+/// the `wss://` path (so a single `phux pair` token authorizes either), keyed
+/// off the same `PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY` / `PHUX_WS_TOKENS`
+/// overrides:
+///
+/// * **Loopback address → TLS, no token.** Local dev; the dialer sends no
+///   preamble.
+/// * **Routable address (or `PHUX_WS_SECURE=1`) → TLS + bearer-token preamble.**
+///   Off-loopback is treated as exposing the server, so a paired token is
+///   required exactly as for a remote WebSocket consumer (ADR-0031).
 fn build_quic_listener(
     addr: SocketAddr,
 ) -> (

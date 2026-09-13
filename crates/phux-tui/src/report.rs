@@ -6,6 +6,7 @@
 //! screen dump. `latest` points at the newest bundle so a new session can
 //! find it without copying a long path.
 
+use std::fmt::Write as _;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -95,7 +96,7 @@ pub fn write_bundle_in(root: &Path, draft: &ReportDraft) -> io::Result<WrittenRe
     let meta = Meta {
         schema_version: 1,
         id: id.clone(),
-        captured_at: captured_at.clone(),
+        captured_at,
         version: draft.version.clone(),
         profile: phux_config::instance::profile(),
         pid: std::process::id(),
@@ -141,20 +142,22 @@ pub fn write_bundle_in(root: &Path, draft: &ReportDraft) -> io::Result<WrittenRe
 /// Reports currently on disk under `root`, newest first.
 #[must_use]
 pub fn list_reports(root: &Path) -> Vec<WrittenReport> {
-    let mut reports = match fs::read_dir(root) {
-        Ok(entries) => entries
-            .filter_map(Result::ok)
-            .filter(|entry| {
-                entry.file_type().is_ok_and(|kind| kind.is_dir())
-                    && entry.file_name() != LATEST_NAME
-            })
-            .map(|entry| WrittenReport {
-                id: entry.file_name().to_string_lossy().into_owned(),
-                dir: entry.path(),
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
+    let mut reports = fs::read_dir(root).map_or_else(
+        |_| Vec::new(),
+        |entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry.file_type().is_ok_and(|kind| kind.is_dir())
+                        && entry.file_name() != LATEST_NAME
+                })
+                .map(|entry| WrittenReport {
+                    id: entry.file_name().to_string_lossy().into_owned(),
+                    dir: entry.path(),
+                })
+                .collect()
+        },
+    );
     reports.sort_by(|a, b| b.id.cmp(&a.id));
     reports
 }
@@ -165,7 +168,7 @@ pub fn resolve_report(root: &Path, id: Option<&str>) -> Option<WrittenReport> {
     match id {
         Some(id) if id != LATEST_NAME => {
             let dir = root.join(id);
-            dir.is_dir().then(|| WrittenReport {
+            dir.is_dir().then_some(WrittenReport {
                 id: id.to_owned(),
                 dir,
             })
@@ -187,7 +190,7 @@ pub fn latest_report(root: &Path) -> Option<WrittenReport> {
         root.join(target)
     };
     let id = dir.file_name()?.to_string_lossy().into_owned();
-    dir.is_dir().then(|| WrittenReport { id, dir })
+    dir.is_dir().then_some(WrittenReport { id, dir })
 }
 
 #[derive(Debug, Serialize)]
@@ -240,38 +243,38 @@ fn iso8601_now() -> String {
 
 fn render_markdown(meta: &Meta, draft: &ReportDraft, root: &Path) -> String {
     let mut body = String::new();
-    body.push_str(&format!("# phux bug report `{}`\n\n", meta.id));
+    let _ = writeln!(body, "# phux bug report `{}`\n", meta.id);
     body.push_str("Hand this path to an agent:\n\n");
-    body.push_str(&format!("    {}\n\n", root.join(&meta.id).display()));
+    let _ = writeln!(body, "    {}\n", root.join(&meta.id).display());
     body.push_str("Or from a shell:\n\n");
-    body.push_str(&format!("    phux report show {}\n\n", meta.id));
-    body.push_str(&format!("- captured: {}\n", meta.captured_at));
-    body.push_str(&format!("- version: {}\n", meta.version));
-    body.push_str(&format!("- profile: {}\n", meta.profile));
-    body.push_str(&format!("- pid: {}\n", meta.pid));
-    body.push_str(&format!("- os: {}/{}\n", meta.os, meta.arch));
+    let _ = writeln!(body, "    phux report show {}\n", meta.id);
+    let _ = writeln!(body, "- captured: {}", meta.captured_at);
+    let _ = writeln!(body, "- version: {}", meta.version);
+    let _ = writeln!(body, "- profile: {}", meta.profile);
+    let _ = writeln!(body, "- pid: {}", meta.pid);
+    let _ = writeln!(body, "- os: {}/{}", meta.os, meta.arch);
     if let Some(ref session) = meta.session {
-        body.push_str(&format!("- session: {session}\n"));
+        let _ = writeln!(body, "- session: {session}");
     }
     if let Some(ref pane) = meta.pane {
-        body.push_str(&format!("- pane: {pane}\n"));
+        let _ = writeln!(body, "- pane: {pane}");
     }
     if let Some(window) = meta.window {
-        body.push_str(&format!("- window: {window}\n"));
+        let _ = writeln!(body, "- window: {window}");
     }
     if let Some(vp) = meta.viewport {
-        body.push_str(&format!("- viewport: {}x{}\n", vp.cols, vp.rows));
+        let _ = writeln!(body, "- viewport: {}x{}", vp.cols, vp.rows);
     }
     if let Some(alt) = meta.alt_screen {
-        body.push_str(&format!("- alt_screen: {alt}\n"));
+        let _ = writeln!(body, "- alt_screen: {alt}");
     }
     if let Some(mouse) = meta.mouse_tracking {
-        body.push_str(&format!("- mouse_tracking: {mouse}\n"));
+        let _ = writeln!(body, "- mouse_tracking: {mouse}");
     }
     if let Some(ref note) = meta.note {
         body.push_str("\n## Note\n\n");
         body.push_str(note);
-        body.push_str("\n");
+        body.push('\n');
     }
     body.push_str("\n## Files in this bundle\n\n");
     body.push_str("- `report.md` — this file\n");
@@ -280,8 +283,8 @@ fn render_markdown(meta: &Meta, draft: &ReportDraft, root: &Path) -> String {
         body.push_str("- `screen.txt` — focused pane dump at capture time\n");
     }
     body.push_str("- `server.log.tail` / `client.log.tail` — last log lines, when present\n");
-    body.push_str(&format!("- server log path: {}\n", meta.server_log));
-    body.push_str(&format!("- client log path: {}\n", meta.client_log));
+    let _ = writeln!(body, "- server log path: {}", meta.server_log);
+    let _ = writeln!(body, "- client log path: {}", meta.client_log);
     if let Some(ref screen) = draft.screen {
         body.push_str("\n## Screen\n\n```\n");
         body.push_str(screen);
