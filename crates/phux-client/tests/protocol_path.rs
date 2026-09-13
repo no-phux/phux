@@ -180,7 +180,7 @@ struct UploadResult {
     control_us: LatencySummary,
     rss_before_bytes: u64,
     rss_after_bytes: u64,
-    cancellation_us: u64,
+    server_shutdown_us: u64,
     shaper_metrics: String,
     server_perf: String,
 }
@@ -237,6 +237,7 @@ impl Server {
 struct Shaper {
     child: Option<Child>,
     metrics: PathBuf,
+    addr: SocketAddr,
 }
 
 impl Shaper {
@@ -341,6 +342,28 @@ fn validate_shaper_metrics(raw: &str) {
             );
         }
     }
+}
+
+fn metric_value(raw: &str, name: &str) -> Option<u64> {
+    let report: serde_json::Value = serde_json::from_str(raw).ok()?;
+    report
+        .get("metrics")?
+        .as_array()?
+        .iter()
+        .find_map(|metric| {
+            (metric.get("name")?.as_str()? == name)
+                .then(|| metric.get("value")?.as_u64())
+                .flatten()
+        })
+}
+
+fn shaper_value(raw: &str, direction: &str, name: &str) -> u64 {
+    serde_json::from_str::<serde_json::Value>(raw)
+        .expect("parse UDP shaper metrics")
+        .get(direction)
+        .and_then(|values| values.get(name))
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_else(|| panic!("shaper metrics missing {direction}.{name}"))
 }
 
 fn summarize(mut samples: Vec<u64>) -> LatencySummary {
@@ -517,14 +540,14 @@ fn upload_goodput_bps(bytes: usize, elapsed_us: u64) -> u64 {
 }
 
 fn emit_upload_result(result: &UploadResult) {
-    let policy = if result.case.configured_chunk_bytes == UPLOAD_FULL_BYTES {
-        "shipping-8mib"
+    let scenario = if result.case.configured_chunk_bytes == UPLOAD_FULL_BYTES {
+        "legal-wire-ceiling"
     } else {
         "harness-proposal"
     };
     let rss_delta = i128::from(result.rss_after_bytes) - i128::from(result.rss_before_bytes);
     eprintln!(
-        "protocol_upload_case={{policy:{policy},configured_chunk_bytes:{},actual_max_chunk_bytes:{},file_bytes:{},chunks:{},rtt_ms:{UPLOAD_RTT_MS},mbit:{}}}",
+        "protocol_upload_case={{scenario:{scenario},configured_chunk_bytes:{},actual_max_chunk_bytes:{},file_bytes:{},chunks:{},rtt_ms:{UPLOAD_RTT_MS},mbit:{}}}",
         result.case.configured_chunk_bytes,
         result.actual_max_chunk_bytes,
         result.case.file_bytes,
@@ -532,12 +555,12 @@ fn emit_upload_result(result: &UploadResult) {
         result.case.mbit,
     );
     eprintln!(
-        "protocol_upload_result={{upload_us:{},goodput_bps:{},rss_before_bytes:{},rss_after_bytes:{},rss_delta_bytes:{rss_delta},cancellation_us:{}}}",
+        "protocol_upload_result={{upload_us:{},goodput_bps:{},rss_before_bytes:{},rss_after_bytes:{},rss_delta_bytes:{rss_delta},server_shutdown_us:{}}}",
         result.upload_us,
         result.goodput_bps,
         result.rss_before_bytes,
         result.rss_after_bytes,
-        result.cancellation_us,
+        result.server_shutdown_us,
     );
     eprintln!("protocol_upload_send_us={:?}", result.send_us);
     eprintln!("protocol_upload_chunk_ack_us={:?}", result.chunk_ack_us);
@@ -737,6 +760,7 @@ async fn start_shaper(dir: &Path, case: Case, listen: SocketAddr, target: Socket
     Shaper {
         child: Some(child),
         metrics,
+        addr: listen,
     }
 }
 
@@ -1430,7 +1454,7 @@ async fn run_upload_case(case: UploadCase) -> UploadResult {
     let server_perf = server_perf(&mut connection, &mut traffic, WireMode::Raw).await;
     connection.shutdown().await;
     let shaper_metrics = shaper.stop();
-    let cancellation_us = server.stop().await;
+    let server_shutdown_us = server.stop().await;
 
     UploadResult {
         case,
@@ -1444,10 +1468,66 @@ async fn run_upload_case(case: UploadCase) -> UploadResult {
         control_us: summarize(samples.control_us),
         rss_before_bytes,
         rss_after_bytes,
-        cancellation_us,
+        server_shutdown_us,
         shaper_metrics,
         server_perf,
     }
+}
+
+async fn await_connection_cleanup(
+    connection: &mut Connection,
+    traffic: &mut Traffic,
+    aborted_at: Instant,
+) -> u64 {
+    let deadline = tokio::time::Instant::now() + STEP_DEADLINE;
+    loop {
+        let report = server_perf(connection, traffic, WireMode::Raw).await;
+        if metric_value(&report, "proc.clients") == Some(1) {
+            return micros(aborted_at.elapsed());
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "aborted upload connection remained in proc.clients"
+        );
+        sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn abort_backpressured_upload(
+    mut connection: Connection,
+    terminal_id: ResourceId,
+) -> Instant {
+    let (started_tx, started_rx) = oneshot::channel();
+    let send_task = tokio::task::spawn_local(async move {
+        started_tx.send(()).ok();
+        connection
+            .send(&FrameKind::Command {
+                request_id: 3_000_000,
+                command: Command::PutFile {
+                    upload_id: FileUploadId::new([0x6b; 16]).unwrap(),
+                    terminal_id,
+                    extension: "bin".to_owned(),
+                    offset: 0,
+                    data: vec![0x5a; MAX_FILE_UPLOAD_CHUNK],
+                    final_chunk: false,
+                    sha256: None,
+                },
+            })
+            .await
+    });
+    started_rx.await.expect("upload send task started");
+    sleep(Duration::from_millis(500)).await;
+    assert!(
+        !send_task.is_finished(),
+        "legal wire-ceiling frame did not remain backpressured on the thin path"
+    );
+    send_task.abort();
+    let error = timeout(STEP_DEADLINE, send_task)
+        .await
+        .expect("aborted upload task did not join")
+        .expect_err("aborted upload task unexpectedly completed");
+    assert!(error.is_cancelled(), "upload task did not cancel: {error}");
+    Instant::now()
 }
 
 async fn write_quic_frame(send: &mut quinn::SendStream, frame: &FrameKind) {
@@ -1859,6 +1939,71 @@ fn put_file_chunk_matrix() {
                 .expect("PUT_FILE path case exceeded its deadline");
             emit_upload_result(&result);
         }
+    });
+}
+
+#[test]
+#[ignore = "real in-flight PUT_FILE disconnect over thin shaped QUIC; run explicitly and serially"]
+fn inflight_upload_disconnect_releases_server_connection() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async {
+        timeout(CASE_DEADLINE, async {
+            let temp = TempDir::new().expect("upload cancellation tempdir");
+            let cert = temp.path().join("cert.pem");
+            let key = temp.path().join("key.pem");
+            let upload_dir = temp.path().join("uploads");
+            let _env = EnvGuard::tls(&cert, &key, None).with_upload_dir(&upload_dir);
+            let socket = temp.path().join("phux.sock");
+            let case = UploadCase {
+                configured_chunk_bytes: MAX_FILE_UPLOAD_CHUNK,
+                file_bytes: MAX_FILE_UPLOAD_CHUNK,
+                mbit: 0.3,
+            };
+            let (server, shaper, connection, _traffic, ids) = connect_upload_case(
+                temp.path(),
+                &socket,
+                free_udp_addr(),
+                free_udp_addr(),
+                case,
+            )
+            .await;
+            let shaper_addr = shaper.addr;
+            let aborted_at = abort_backpressured_upload(connection, ids[0].clone()).await;
+
+            let mut probe = dial_shaped(
+                shaper_addr,
+                "localhost",
+                None,
+                CertTrust::SkipVerify,
+                WireMode::Raw,
+            )
+            .await;
+            let mut probe_traffic = Traffic::default();
+            let cleanup_us =
+                await_connection_cleanup(&mut probe, &mut probe_traffic, aborted_at).await;
+            probe.shutdown().await;
+            sleep(Duration::from_millis(100)).await;
+            let metrics = shaper.stop();
+            let sent_bytes = shaper_value(&metrics, "upstream", "sent_bytes");
+            assert!(
+                sent_bytes > 8 * 1024,
+                "shaped case sent no meaningful upstream traffic"
+            );
+            assert!(
+                sent_bytes < u64::try_from(MAX_FILE_UPLOAD_CHUNK).unwrap(),
+                "entire wire-ceiling payload crossed before cancellation"
+            );
+            eprintln!(
+                "protocol_upload_disconnect={{frame_bytes:{MAX_FILE_UPLOAD_CHUNK},mbit:0.3,send_backpressured:true,upstream_total_sent_bytes:{sent_bytes},server_connection_cleanup_us:{cleanup_us}}}"
+            );
+            server.stop().await;
+        })
+        .await
+        .expect("in-flight upload disconnect case exceeded its deadline");
     });
 }
 

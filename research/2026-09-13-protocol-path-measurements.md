@@ -108,10 +108,12 @@ blocked. This low-level read-control case does not claim to exercise the
 production `Connection` receive merger; the ordinary matrix does.
 
 Run the production `PUT_FILE` chunk experiment at 50 ms RTT separately. The
-10 Mbit/s cases send an 8 MiB file, so the 8 MiB policy case emits the actual
-maximum-sized production wire command. The 0.3 and 3 Mbit/s thin-path cases
-send 256 KiB to keep the experiment bounded; their `actual_max_chunk_bytes`
-field therefore says 256 KiB even when the configured policy is 8 MiB.
+10 Mbit/s cases send an 8 MiB file, so the 8 MiB case emits the largest legal
+production wire command. Repository search found no shipping upload producer
+that selects this size: it is a wire-ceiling stress experiment, not a shipping
+client policy. The 0.3 and 3 Mbit/s thin-path cases send 256 KiB to keep the
+experiment bounded; their `actual_max_chunk_bytes` field therefore says
+256 KiB even when the configured experiment chunk is 8 MiB.
 
 ```sh
 PHUX_PROTOCOL_UPLOAD_CHUNK_KIB=16,64,256,8192 \
@@ -137,7 +139,33 @@ runs from the first send attempt through the final acknowledged publication;
 goodput uses useful file bits, not UDP/IP bytes. The published file is read
 back and compared byte-for-byte. RSS-after is sampled after that verification,
 payload drop, and a 100 ms settling interval while server and connection remain
-alive. Cancellation is measured after the completed upload, not mid-command.
+alive. The old `cancellation_us` field was only orderly `ServerRuntime::stop`
+after a completed upload; it is now correctly named `server_shutdown_us` and
+is not presented as active-upload cancellation evidence.
+
+Run the active disconnect case separately:
+
+```sh
+CARGO_BUILD_JOBS=1 cargo test --locked -p phux-client \
+  --test protocol_path inflight_upload_disconnect_releases_server_connection \
+  -- --ignored --nocapture --test-threads=1
+```
+
+This sends one legal 8 MiB wire-ceiling frame over a 0.3 Mbit/s shaped path,
+requires the production `Connection::send` to remain backpressured, and then
+aborts the task that owns the connection. A fresh production connection polls
+`GET_PERF` until `proc.clients` proves the aborted connection was removed. The
+shaper must show a meaningful but incomplete upstream prefix with zero queue or
+shutdown drops. No production metric currently exposes upload-worker budget or
+writer retention, so this case proves prompt connection teardown only; budget
+release under an already admitted worker remains pending instrumentation.
+
+The bounded run passed: `Connection::send` was still backpressured at 500 ms,
+the task owning it was aborted, and the shaper recorded 56,942 total upstream
+bytes while the complete 8 MiB frame had not crossed. `proc.clients` showed
+cleanup after 1.046 s. Queue and shutdown drops were zero in both directions.
+The final server stop was only test fixture cleanup and is not reported as
+upload cancellation.
 
 ## Results actually run
 
@@ -197,22 +225,23 @@ validation did not hard-reject nonzero queue/shutdown counters. They came from
 the same active development host and carry the same loaded-host-only
 qualification. Latency cells are p50/p95/p99/max in ms.
 The 16, 64, and 256 KiB rows are harness proposals only; no chunk selection is
-recommended here. The 8 MiB/10 Mbit/s row is the actual current maximum-chunk
-behavior. Every row completed file verification, parseable `GET_PERF`, clean
-shaper shutdown with zero drops, and bounded server cancellation.
+recommended here. The 8 MiB/10 Mbit/s row is the legal wire-ceiling experiment,
+not a shipping producer policy. Every row completed file verification,
+parseable `GET_PERF`, clean shaper shutdown with zero drops, and bounded orderly
+server shutdown.
 
-| Policy chunk | File | Rate | Total | Goodput | Send | Chunk ACK | Quiet echo | Control | RSS delta | Cancel |
+| Experiment chunk | File | Rate | Total | Goodput | Send | Chunk ACK | Quiet echo | Control | RSS delta | Server shutdown |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 16 KiB | 8 MiB | 10 | 35.743 s | 1.878 Mbit/s | 0.010/0.013/0.023/0.052 | 65.176/80.151/85.022/137.253 | 53.539/55.137/59.267/69.725 | 65.167/80.144/85.011/137.214 | +16.88 MiB | 0.634 ms |
 | 64 KiB | 8 MiB | 10 | 13.652 s | 4.916 Mbit/s | 0.016/0.042/0.072/1.206 | 105.336/109.533/122.988/195.525 | 53.399/54.033/55.256/98.219 | 105.311/109.517/122.934/195.471 | +0.67 MiB | 1.191 ms |
 | 256 KiB | 8 MiB | 10 | 8.635 s | 7.771 Mbit/s | 0.030/0.073/0.085/0.175 | 266.232/266.844/279.211/367.947 | 53.584/54.563/58.167/59.086 | 266.205/266.819/279.140/367.863 | +0.89 MiB | 0.987 ms |
 | 8 MiB | 8 MiB | 10 | 7.055 s | 9.512 Mbit/s | 6069.182/6069.182/6069.182/6069.182 | 7054.264/7054.264/7054.264/7054.264 | 896.983/896.983/896.983/896.983 | 985.084/985.084/985.084/985.084 | +17.11 MiB | 1.283 ms |
 
-The thin-path file is 256 KiB, so the 8 MiB policy rows below emit one 256 KiB
-chunk and intentionally duplicate the 256 KiB wire shape. Thin-path latency
-cells are p50/max in ms; full percentiles remain in the machine output.
+The thin-path file is 256 KiB, so the 8 MiB experiment rows below emit one
+256 KiB chunk and intentionally duplicate the 256 KiB wire shape. Thin-path
+latency cells are p50/max in ms; full percentiles remain in the machine output.
 
-| Policy chunk | Actual max | Rate | Total | Goodput | Quiet echo | Control | RSS delta | Cancel |
+| Experiment chunk | Actual max | Rate | Total | Goodput | Quiet echo | Control | RSS delta | Server shutdown |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|
 | 16 KiB | 16 KiB | 0.3 | 8.353 s | 0.251 Mbit/s | 133.180/136.652 | 520.968/531.375 | +0.83 MiB | 0.671 ms |
 | 16 KiB | 16 KiB | 3 | 1.634 s | 1.283 Mbit/s | 59.681/60.378 | 98.426/133.823 | +0.19 MiB | 0.568 ms |
@@ -230,11 +259,12 @@ for 16 KiB, 64 KiB, 256 KiB, and 8 MiB respectively. The 8 MiB case held
 that send returned, the second-Terminal echo took 896.983 ms and the control
 PING took 985.084 ms.
 
-The required refreshed shipping-policy representative passed after the review
-fixes: 8 MiB at 10 Mbit/s completed in 7.048 s at 9.522 Mbit/s goodput;
+The required refreshed legal wire-ceiling representative passed after the
+review fixes: 8 MiB at 10 Mbit/s completed in 7.048 s at 9.522 Mbit/s goodput;
 `Connection::send` occupied 6.054 s, then quiet echo took 892.237 ms and PING
-took 993.333 ms. RSS delta was +35.13 MiB and cancellation was 0.490 ms. The
-shaper reported zero random, queue, and shutdown drops in both directions.
+took 993.333 ms. RSS delta was +35.13 MiB and orderly server shutdown was
+0.490 ms. The shaper reported zero random, queue, and shutdown drops in both
+directions.
 
 ## Deliberate limits
 
