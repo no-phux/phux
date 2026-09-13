@@ -550,6 +550,20 @@ fn successful_service_helper_is_reaped_and_coordinator_survives() {
 }
 
 #[test]
+fn live_ensure_sweeps_a_stale_adoption_marker() {
+    let mut fixture = Fixture::new();
+    assert_success(&fixture.ensure());
+    let marker = fixture.dir.path().join("phux-ensure/service-adopt-pending");
+    std::fs::write(&marker, "stale\n").expect("stale marker");
+    assert_success(&fixture.ensure());
+    assert!(
+        !marker.exists(),
+        "ensure_server's live path must sweep a marker whose unit has vanished (phux-dqf3)"
+    );
+    fixture.assert_cleaned_up();
+}
+
+#[test]
 fn ensure_rejects_foreground_options_instead_of_ignoring_them() {
     let fixture = Fixture::new();
     for args in [
