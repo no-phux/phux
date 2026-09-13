@@ -576,7 +576,7 @@ Tracked work: phux-au1s.12.
   cannot move live bytes ahead of their bootstrap or resurrect a tombstoned
   generation.
 - Keep the negotiated TLV codec decision from
-  [ADR-0117](../ADR/0117-wire-codec-stays-tlv.md). Measure allocations,
+  [ADR-0117](../docs/adr/0117-wire-codec-stays-tlv.md). Measure allocations,
   copies, batching, and compression around opaque payloads before pricing a
   serialization-format migration. The machine-readable schema and codec
   agreement tests are tracked work: phux-au1s.8.

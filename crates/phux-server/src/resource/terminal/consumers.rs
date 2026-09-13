@@ -346,9 +346,14 @@ impl TerminalActor {
             Self::advance_acked_reference(consumer, seq);
         }
         let sampled = Self::fold_rtt_sample(client_id, consumer, seq);
-        // Refresh the informational cursor/mode capture. Uses a one-shot
-        // `RenderState` so it doesn't disturb the per-consumer reference.
-        if let Some(cm) = Self::capture_acked_cursor_mode(&self.terminal.borrow(), client_id, seq) {
+        // Capture through the tick renderer: a second RenderState would consume
+        // canonical dirty bits without refreshing the tick's cached row bodies.
+        if let Some(cm) = Self::capture_acked_cursor_mode(
+            &mut self.synth.borrow_mut(),
+            &self.terminal.borrow(),
+            client_id,
+            seq,
+        ) {
             consumer.last_cursor_mode = cm;
         }
 
@@ -476,26 +481,15 @@ impl TerminalActor {
     }
 
     /// Capture the informational cursor/mode state an ack should be paired
-    /// with, or `None` when the one-shot `RenderState` could not be built or
+    /// with, or `None` when the reusable `RenderState` could not be built or
     /// updated (the prior capture is then kept).
     fn capture_acked_cursor_mode(
-        terminal: &GhosttyTerminal<'_, '_>,
+        synth: &mut crate::grid::SnapshotSynthesizer<'static>,
+        terminal: &GhosttyTerminal<'static, '_>,
         client_id: ClientId,
         seq: u64,
     ) -> Option<LastAckedCursorMode> {
-        let mut rs = match RenderState::new() {
-            Ok(rs) => rs,
-            Err(err) => {
-                warn!(
-                    ?client_id,
-                    seq,
-                    error = %err,
-                    "FRAME_ACK: cursor/mode RenderState alloc failed; keeping prior capture",
-                );
-                return None;
-            }
-        };
-        match rs.update(terminal) {
+        match synth.metadata_snapshot(terminal) {
             Ok(snapshot) => Some(LastAckedCursorMode::capture(terminal, &snapshot)),
             Err(err) => {
                 warn!(

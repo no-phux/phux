@@ -686,6 +686,16 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
         Ok(self.diff_consumer(cols, rows_n, live_cm, reference))
     }
 
+    /// Refresh informational metadata through the same render cache as ticks.
+    /// A separate `RenderState` would consume canonical dirty bits and leave this
+    /// pool's row bodies stale when an ACK arrives between PTY output and a tick.
+    pub(crate) fn metadata_snapshot(
+        &mut self,
+        terminal: &GhosttyTerminal<'alloc, '_>,
+    ) -> Result<Snapshot<'alloc, '_>, SynthesisError> {
+        Ok(self.pool.begin(terminal, 0)?.snapshot)
+    }
+
     /// phux-ahk.2: render the current grid ONCE per tick into the shared
     /// `tick_*` buffers; returns the consumer-independent `(cols, rows,
     /// live_cm)`. Each consumer's [`Self::diff_consumer`] then diffs against

@@ -387,6 +387,66 @@ fn future_ack_cannot_erase_pending_data_or_poison_later_acknowledgements() {
     assert_ne!(state.acked_reference.rows_body, acked_rows);
 }
 
+#[test]
+fn ack_between_pty_mutation_and_tick_preserves_pending_row_changes() {
+    let mut actor = TerminalActor::new_with_seed(20, 5, b"hello").unwrap().actor;
+    let (tx, _rx) = dummy_outbound();
+    actor.register_consumer(ClientId(1), tx, 11, true).unwrap();
+    actor.vt_write_for_test(b"\x1b[1;1Hfirst");
+    actor.tick_emit();
+    actor.vt_write_for_test(b"\x1b[2;1HSECOND\x1b[1;6H");
+    assert!(actor.on_frame_ack(ClientId(1), 1));
+    actor.tick_emit();
+    let state = actor.consumer_state(ClientId(1)).unwrap();
+    assert!(
+        state.reference.rows_body[1]
+            .windows(6)
+            .any(|bytes| bytes == b"SECOND")
+    );
+}
+
+#[test]
+fn ack_render_reuse_preserves_independent_consumers_across_resize_and_modes() {
+    let mut actor = TerminalActor::new_with_seed(20, 5, b"hello").unwrap().actor;
+    let (tx, _rx) = dummy_outbound();
+    for client in [ClientId(1), ClientId(2)] {
+        actor
+            .register_consumer(client, tx.clone(), 11, true)
+            .unwrap();
+    }
+    actor.vt_write_for_test(b"\x1b[2;4H\x1b[?2004h");
+    actor.tick_emit();
+    assert!(actor.on_frame_ack(ClientId(1), 1));
+    let first = actor.consumer_state(ClientId(1)).unwrap().last_cursor_mode;
+    assert_eq!((first.cursor_x, first.cursor_y), (Some(3), Some(1)));
+    assert!(first.bracketed_paste);
+
+    actor.terminal.borrow_mut().resize(30, 8, 8, 16).unwrap();
+    actor.vt_write_for_test(b"\x1b[?1049h\x1b[3;7H\x1b[?2004l\x1b[?25l");
+    actor.tick_emit();
+    assert!(actor.on_frame_ack(ClientId(2), 2));
+    let second = actor.consumer_state(ClientId(2)).unwrap().last_cursor_mode;
+    assert_eq!((second.cursor_x, second.cursor_y), (Some(6), Some(2)));
+    assert!(!second.bracketed_paste);
+    assert!(!second.cursor_visible);
+    assert!(second.alt_screen_save);
+    // The shared scratch must not alias either consumer's informational value.
+    let still_first = actor.consumer_state(ClientId(1)).unwrap().last_cursor_mode;
+    assert_eq!(
+        (still_first.cursor_x, still_first.cursor_y),
+        (Some(3), Some(1))
+    );
+    assert!(still_first.bracketed_paste);
+
+    actor.vt_write_for_test(b"\x1b[?1049l\x1b[?25h\x1b[4;5H");
+    actor.tick_emit();
+    assert!(actor.on_frame_ack(ClientId(1), 3));
+    let restored = actor.consumer_state(ClientId(1)).unwrap().last_cursor_mode;
+    assert_eq!((restored.cursor_x, restored.cursor_y), (Some(4), Some(3)));
+    assert!(restored.cursor_visible);
+    assert!(!restored.alt_screen_save);
+}
+
 /// phux-0q8 coexistence gate: with a consumer registered but the
 /// emission gate forced OFF (`consumer_tick_emits == false`),
 /// `tick_emit` MUST NOT push any frame onto the consumer's outbound
