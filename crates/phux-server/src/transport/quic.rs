@@ -458,9 +458,22 @@ const FRAME_BODY_DEADLINE: Duration = Duration::from_secs(10);
 #[derive(Debug)]
 pub(crate) struct AdmittedFrame {
     bytes: BytesMut,
-    _connection_bytes: tokio::sync::OwnedSemaphorePermit,
+    _connection_bytes: Option<tokio::sync::OwnedSemaphorePermit>,
     _terminal_bytes: Option<tokio::sync::OwnedSemaphorePermit>,
     origin: Option<Arc<AtomicBool>>,
+    event: Option<QuicStreamEvent>,
+}
+
+impl AdmittedFrame {
+    fn event(event: QuicStreamEvent) -> Self {
+        Self {
+            bytes: BytesMut::new(),
+            _connection_bytes: None,
+            _terminal_bytes: None,
+            origin: None,
+            event: Some(event),
+        }
+    }
 }
 
 /// Depth of the Terminal-stream event channel. Binds and stream ends are
@@ -553,6 +566,7 @@ pub(crate) struct QuicMuxReader {
     control_done: Option<tokio::sync::oneshot::Receiver<io::Result<()>>>,
     tasks: tokio::task::JoinSet<()>,
     last_origin: crate::transport::FrameOrigin,
+    stream_events_tx: Option<tokio::sync::mpsc::Sender<QuicStreamEvent>>,
 }
 
 impl QuicMuxReader {
@@ -572,6 +586,7 @@ impl QuicMuxReader {
             control_done: None,
             tasks: tokio::task::JoinSet::new(),
             last_origin: crate::transport::FrameOrigin::Control,
+            stream_events_tx: None,
         }
     }
 }
@@ -613,6 +628,18 @@ impl FrameReader for QuicMuxReader {
                     let Some(admitted) = frame else {
                         return Ok(None);
                     };
+                    if let Some(event) = admitted.event {
+                        let Some(events) = self.stream_events_tx.as_ref() else {
+                            return Err(io::Error::new(
+                                io::ErrorKind::NotConnected,
+                                "quic mux lost its stream event channel",
+                            ));
+                        };
+                        if events.send(event).await.is_err() {
+                            return Ok(None);
+                        }
+                        continue;
+                    }
                     if admitted.origin.as_ref().is_some_and(|origin| {
                         !origin.load(Ordering::Acquire)
                     }) {
@@ -642,6 +669,7 @@ impl FrameReader for QuicMuxReader {
         let terminal_frame_bytes =
             std::sync::Arc::new(tokio::sync::Semaphore::new(MUX_TERMINAL_FRAME_BYTES));
         let (events_tx, events_rx) = tokio::sync::mpsc::channel(MUX_EVENT_CHANNEL);
+        self.stream_events_tx = Some(events_tx.clone());
         let (control_done_tx, control_done_rx) = tokio::sync::oneshot::channel();
         let control = self.control.take()?;
         let conn = self.conn.clone();
@@ -769,7 +797,7 @@ pub(crate) async fn pump_terminal_stream(
     terminal_id: phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
     frames_tx: tokio::sync::mpsc::Sender<AdmittedFrame>,
-    events_tx: tokio::sync::mpsc::Sender<QuicStreamEvent>,
+    _events_tx: tokio::sync::mpsc::Sender<QuicStreamEvent>,
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     terminal_frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     active: Arc<AtomicBool>,
@@ -789,7 +817,7 @@ pub(crate) async fn pump_terminal_stream(
             Ok(Some(frame)) => frame,
             Ok(None) => {
                 send_stream_event(
-                    &events_tx,
+                    &frames_tx,
                     &cancelled,
                     QuicStreamEvent::Ended {
                         terminal_id,
@@ -802,7 +830,7 @@ pub(crate) async fn pump_terminal_stream(
             Err(err) => {
                 let failure = stream_failure(&err);
                 send_stream_event(
-                    &events_tx,
+                    &frames_tx,
                     &cancelled,
                     QuicStreamEvent::Failed {
                         terminal_id,
@@ -821,7 +849,7 @@ pub(crate) async fn pump_terminal_stream(
                 "frame refused on mismatched Terminal stream"
             );
             send_stream_event(
-                &events_tx,
+                &frames_tx,
                 &cancelled,
                 QuicStreamEvent::Failed {
                     terminal_id,
@@ -844,13 +872,13 @@ pub(crate) async fn pump_terminal_stream(
 }
 
 async fn send_stream_event(
-    events: &tokio::sync::mpsc::Sender<QuicStreamEvent>,
+    frames: &tokio::sync::mpsc::Sender<AdmittedFrame>,
     cancelled: &tokio_util::sync::CancellationToken,
     event: QuicStreamEvent,
 ) {
     tokio::select! {
         () = cancelled.cancelled() => {}
-        _ = events.send(event) => {}
+        _ = frames.send(AdmittedFrame::event(event)) => {}
     }
 }
 
@@ -1040,9 +1068,10 @@ async fn read_framed_bounded(
     let (framed, connection_bytes, terminal_bytes) = admitted;
     Ok(Some(AdmittedFrame {
         bytes: framed,
-        _connection_bytes: connection_bytes,
+        _connection_bytes: Some(connection_bytes),
         _terminal_bytes: terminal_bytes,
         origin,
+        event: None,
     }))
 }
 
@@ -1340,7 +1369,12 @@ mod tests {
                 .unwrap()
                 .unwrap();
             // A clean client finish surfaces as the detach signal.
-            let ended = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            let ended = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    event = events.recv() => event,
+                    frame = reader.read_frame() => panic!("unexpected frame after clean FIN: {frame:?}"),
+                }
+            })
                 .await
                 .expect("end event arrives")
                 .expect("event channel open");
@@ -1508,7 +1542,12 @@ mod tests {
                 Arc::new(AtomicBool::new(true)),
                 tokio_util::sync::CancellationToken::new(),
             ));
-            let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+            let event = tokio::time::timeout(Duration::from_secs(5), async {
+                tokio::select! {
+                    event = events.recv() => event,
+                    frame = reader.read_frame() => panic!("unexpected frame after malformed length: {frame:?}"),
+                }
+            })
                 .await
                 .expect("failure arrives")
                 .expect("event channel open");
