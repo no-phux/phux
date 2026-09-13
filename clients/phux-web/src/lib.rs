@@ -32,7 +32,8 @@ pub async fn start(ws_url: String, canvas_id: String, cols: u16, rows: u16) -> R
 /// JS entry point for the WebTransport-first path: try HTTP/3-over-QUIC at
 /// `wt_url` (an `https://` session URL; append `?token=<hex>` for a
 /// token-authenticated listener) and fall back to the WebSocket at `ws_url`
-/// when the API or the endpoint is unavailable.
+/// when the API or the endpoint is unavailable. After initial readiness the
+/// entry point supervises transport loss and repeats the bounded fallback.
 ///
 /// # Errors
 /// Fails if the canvas element is missing or both transports fail to
@@ -46,9 +47,9 @@ pub async fn start_webtransport(
     rows: u16,
 ) -> Result<(), JsValue> {
     let canvas = canvas_by_id(&canvas_id)?;
-    client::run_with_fallback(&wt_url, &ws_url, canvas, cols, rows)
-        .await
-        .map(|_| ())
+    let client = client::run_with_fallback(&wt_url, &ws_url, canvas, cols, rows).await?;
+    client.enable_auto_reconnect(&wt_url, &ws_url);
+    Ok(())
 }
 
 /// Resolve the `<canvas>` element the terminal renders into.

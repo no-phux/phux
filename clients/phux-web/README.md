@@ -19,12 +19,18 @@ web-sys       ── WebSocket, <canvas>, KeyboardEvent                 "the bro
 
 `phux-web` connects to a phux server — over WebTransport (HTTP/3 over QUIC,
 via `phux server --webtransport`; the browser's QUIC-class transport) when a
-session URL is supplied, falling back to a WebSocket — decodes each frame
+session URL is supplied, falling back to a WebSocket after a bounded setup
+and protocol HELLO — decodes each frame
 with `phux-protocol`, feeds the terminal bytes into the engine via
 `phux-vt-web`, paints the grid (with a blinking cursor), and sends keystrokes
 back as `INPUT_KEY` frames. Both transports carry the identical wire; the
 WebTransport stream is length-prefixed frames reassembled by
 `framing::FrameBuffer`, a WebSocket message is one frame.
+
+The `start_webtransport` entry point supervises post-connect transport loss:
+each replacement attempt has bounded WT and HELLO setup, then retries through
+the authenticated WebSocket fallback after a short delay. Direct `run*` Rust
+callers receive a failure-visible `Client` and may reconnect explicitly.
 
 ## The dependency chain (build time)
 
@@ -71,7 +77,8 @@ await init();
 // finds <canvas id="…">, connects, attaches, and runs for the connection's life
 await start("wss://host/session", "my-canvas", /*cols*/ 100, /*rows*/ 24);
 // or WebTransport-first (phux server --webtransport), WebSocket fallback;
-// on a token-authenticated listener append ?token=<hex> to the https URL:
+// on a token-authenticated listener append ?token=<hex> to the https URL.
+// Fallback carries that token in Sec-WebSocket-Protocol, never the WSS URL:
 await start_webtransport("https://host:4433/session", "wss://host/session",
                          "my-canvas", 100, 24);
 ```

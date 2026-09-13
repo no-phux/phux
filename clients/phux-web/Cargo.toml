@@ -24,6 +24,9 @@ bytes = "1"
 wasm-bindgen = "=0.2.128"
 js-sys = "0.3"
 wasm-bindgen-futures = "0.4"
+futures-channel = "0.3"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+gloo-timers = { version = "0.4", features = ["futures"] }
 # The WebTransport* features are unstable in web-sys (the W3C spec is a
 # draft) and additionally require the `web_sys_unstable_apis` cfg — set for
 # this standalone workspace in `.cargo/config.toml`. The plain stream types
@@ -58,4 +61,3 @@ web-sys = { version = "0.3", features = [
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
-gloo-timers = { version = "0.4", features = ["futures"] }

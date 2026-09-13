@@ -459,6 +459,8 @@ name = "phux-web"
 version = "0.0.0"
 dependencies = [
  "bytes",
+ "futures-channel",
+ "futures-util",
  "gloo-timers",
  "js-sys",
  "phux-client-core",
