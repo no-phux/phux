@@ -91,9 +91,7 @@ async fn run_websocket(
     let (app, ready) = build_app(tx, canvas, cols, rows, synthesized_only).await?;
     install_transport_failure_hook(&app);
 
-    install_websocket_open_handler(&app, &ws);
-    install_websocket_message_handler(&app, &ws);
-    install_websocket_exit_handlers(&app, &ws);
+    install_websocket_handlers(&app, &ws);
     await_protocol_ready(&app, ready).await?;
 
     install_keyboard(&app)?;
@@ -193,9 +191,15 @@ pub async fn run_webtransport(
     // complete frames before decoding. `wt` is moved in to keep the session
     // handle alive for the pump's lifetime.
     {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        app.borrow()
+            .bindings
+            .borrow_mut()
+            .wt_reader_cancel
+            .replace(cancel_tx);
         let app = Rc::clone(&app);
         wasm_bindgen_futures::spawn_local(async move {
-            run_webtransport_reader(app, reader, wt).await;
+            run_webtransport_reader(app, reader, wt, cancel_rx).await;
         });
     }
 
@@ -227,6 +231,10 @@ impl Client {
             cols,
             rows,
         }));
+        self.app
+            .borrow()
+            .self_owner
+            .replace(Some(Rc::clone(&self.app)));
     }
 
     /// The current styled grid as one `String` per row (for inspection/tests).
@@ -288,6 +296,15 @@ impl Client {
     }
 }
 
+impl Drop for Client {
+    fn drop(&mut self) {
+        let supervised = self.app.borrow().self_owner.borrow().is_some();
+        if !supervised {
+            self.app.borrow_mut().dispose();
+        }
+    }
+}
+
 /// The send half of whichever transport carried the connection. Both carry
 /// identical encoded frames; only the byte-stream mechanics differ.
 enum WireTx {
@@ -318,11 +335,7 @@ impl WireTx {
                 let _ = tx.socket.close();
             }
             Self::Wt(tx) => {
-                tx.session.close();
-                let pending = tx.writer.close();
-                wasm_bindgen_futures::spawn_local(async move {
-                    let _ = JsFuture::from(pending).await;
-                });
+                tx.shutdown();
             }
         }
     }
@@ -379,6 +392,7 @@ struct WtTx {
     queue: RefCell<OutboundQueue>,
     writing: Cell<bool>,
     failed: Cell<bool>,
+    cancel: RefCell<Option<oneshot::Sender<()>>>,
     failure: FailureHook,
 }
 
@@ -390,6 +404,7 @@ impl WtTx {
             queue: RefCell::new(OutboundQueue::default()),
             writing: Cell::new(false),
             failed: Cell::new(false),
+            cancel: RefCell::new(None),
             failure: FailureHook::default(),
         }
     }
@@ -406,24 +421,38 @@ impl WtTx {
     }
 
     fn spawn_writer(self: Rc<Self>) {
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        self.cancel.replace(Some(cancel_tx));
         wasm_bindgen_futures::spawn_local(async move {
-            self.write_queued().await;
+            self.write_queued(cancel_rx).await;
         });
     }
 
-    async fn write_queued(&self) {
+    async fn write_queued(&self, mut cancel: oneshot::Receiver<()>) {
         loop {
             let Some(frame) = self.queue.borrow_mut().pop() else {
-                self.writing.set(false);
+                self.finish_writer();
                 return;
             };
-            let ready = JsFuture::from(self.writer.ready()).await;
-            let written = if ready.is_ok() {
-                let chunk = js_sys::Uint8Array::from(frame.as_slice());
-                JsFuture::from(self.writer.write_with_chunk(&chunk)).await
-            } else {
-                ready
+            let PromiseOutcome::Completed(ready, next_cancel) =
+                await_or_cancel(self.writer.ready(), cancel).await
+            else {
+                self.finish_writer();
+                return;
             };
+            cancel = next_cancel;
+            if ready.is_err() {
+                self.fail("WebTransport write failed");
+                return;
+            }
+            let chunk = js_sys::Uint8Array::from(frame.as_slice());
+            let PromiseOutcome::Completed(written, next_cancel) =
+                await_or_cancel(self.writer.write_with_chunk(&chunk), cancel).await
+            else {
+                self.finish_writer();
+                return;
+            };
+            cancel = next_cancel;
             if written.is_err() {
                 self.fail("WebTransport write failed");
                 return;
@@ -433,13 +462,46 @@ impl WtTx {
     }
 
     fn fail(&self, message: &str) {
+        if self.failed.get() {
+            return;
+        }
+        self.shutdown();
+        self.failure.notify(message);
+    }
+
+    fn shutdown(&self) {
         if self.failed.replace(true) {
             return;
         }
         self.queue.borrow_mut().clear();
-        self.writing.set(false);
+        if let Some(cancel) = self.cancel.borrow_mut().take() {
+            let _ = cancel.send(());
+        }
         self.session.close();
-        self.failure.notify(message);
+        let pending = self.writer.abort();
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = JsFuture::from(pending).await;
+        });
+    }
+
+    fn finish_writer(&self) {
+        self.cancel.borrow_mut().take();
+        self.writing.set(false);
+    }
+}
+
+enum PromiseOutcome<T> {
+    Completed(Result<T, JsValue>, oneshot::Receiver<()>),
+    Cancelled,
+}
+
+async fn await_or_cancel<T: wasm_bindgen::convert::FromWasmAbi + 'static>(
+    promise: js_sys::Promise<T>,
+    cancel: oneshot::Receiver<()>,
+) -> PromiseOutcome<T> {
+    match select(cancel, Box::pin(JsFuture::from(promise))).await {
+        Either::Left(_) => PromiseOutcome::Cancelled,
+        Either::Right((result, cancel)) => PromiseOutcome::Completed(result, cancel),
     }
 }
 
@@ -474,6 +536,75 @@ impl OutboundQueue {
     }
 }
 
+#[derive(Default)]
+struct AppBindings {
+    websocket: Option<WebSocketBindings>,
+    keyboard: Option<KeyboardBinding>,
+    blink: Option<BlinkBinding>,
+    wt_reader_cancel: Option<oneshot::Sender<()>>,
+}
+
+impl AppBindings {
+    fn dispose(&mut self) {
+        if let Some(websocket) = self.websocket.take() {
+            websocket.dispose();
+        }
+        if let Some(keyboard) = self.keyboard.take() {
+            keyboard.dispose();
+        }
+        if let Some(blink) = self.blink.take() {
+            blink.dispose();
+        }
+        if let Some(cancel) = self.wt_reader_cancel.take() {
+            let _ = cancel.send(());
+        }
+    }
+}
+
+struct WebSocketBindings {
+    socket: WebSocket,
+    onopen: Closure<dyn FnMut()>,
+    onmessage: Closure<dyn FnMut(MessageEvent)>,
+    onerror: Closure<dyn FnMut(web_sys::Event)>,
+    onclose: Closure<dyn FnMut(web_sys::Event)>,
+}
+
+impl WebSocketBindings {
+    fn dispose(self) {
+        self.socket.set_onopen(None);
+        self.socket.set_onmessage(None);
+        self.socket.set_onerror(None);
+        self.socket.set_onclose(None);
+        drop((self.onopen, self.onmessage, self.onerror, self.onclose));
+    }
+}
+
+struct KeyboardBinding {
+    document: web_sys::Document,
+    callback: Closure<dyn FnMut(KeyboardEvent)>,
+}
+
+impl KeyboardBinding {
+    fn dispose(self) {
+        let _ = self
+            .document
+            .remove_event_listener_with_callback("keydown", self.callback.as_ref().unchecked_ref());
+    }
+}
+
+struct BlinkBinding {
+    window: web_sys::Window,
+    interval: i32,
+    callback: Closure<dyn FnMut()>,
+}
+
+impl BlinkBinding {
+    fn dispose(self) {
+        self.window.clear_interval_with_handle(self.interval);
+        drop(self.callback);
+    }
+}
+
 struct App {
     session: crate::Session,
     tx: WireTx,
@@ -482,10 +613,11 @@ struct App {
     metrics: Metrics,
     /// Cursor blink phase; toggled by an interval in `run`.
     cursor_on: Cell<bool>,
-    blink_interval: Cell<Option<i32>>,
+    bindings: RefCell<AppBindings>,
     ready: RefCell<Option<oneshot::Sender<Result<(), String>>>>,
     failure_reason: RefCell<Option<String>>,
     reconnect: RefCell<Option<ReconnectConfig>>,
+    self_owner: RefCell<Option<Rc<RefCell<App>>>>,
 }
 
 impl App {
@@ -509,18 +641,26 @@ impl App {
     }
 
     fn fail(&mut self, message: &str) {
+        if self.failure_reason.borrow().is_some() {
+            return;
+        }
         self.failure_reason.replace(Some(message.to_owned()));
         self.session.fail_protocol(message);
         self.signal_failed(message);
+        self.bindings.get_mut().dispose();
         self.tx.close();
-        if let Some(interval) = self.blink_interval.take()
-            && let Some(window) = web_sys::window()
-        {
-            window.clear_interval_with_handle(interval);
-        }
-        if let Some(config) = self.reconnect.borrow_mut().take() {
+        let reconnect = self.reconnect.get_mut().take();
+        self.self_owner.get_mut().take();
+        if let Some(config) = reconnect {
             spawn_reconnect(config);
         }
+    }
+
+    fn dispose(&mut self) {
+        self.bindings.get_mut().dispose();
+        self.tx.close();
+        self.reconnect.get_mut().take();
+        self.self_owner.get_mut().take();
     }
 
     /// Project the focused pane's agent badges into the DOM: one
@@ -596,6 +736,12 @@ impl App {
     }
 }
 
+impl Drop for App {
+    fn drop(&mut self) {
+        self.dispose();
+    }
+}
+
 /// Load the engine, grab the canvas 2D context, and assemble the shared
 /// [`App`] around an established transport send half.
 async fn build_app(
@@ -623,10 +769,11 @@ async fn build_app(
         ctx,
         metrics: Metrics::default(),
         cursor_on: Cell::new(true),
-        blink_interval: Cell::new(None),
+        bindings: RefCell::new(AppBindings::default()),
         ready: RefCell::new(Some(ready_tx)),
         failure_reason: RefCell::new(None),
         reconnect: RefCell::new(None),
+        self_owner: RefCell::new(None),
     }));
     Ok((app, ready_rx))
 }
@@ -702,27 +849,60 @@ fn install_transport_failure_hook(app: &Rc<RefCell<App>>) {
     app.borrow().tx.install_failure_hook(hook);
 }
 
-fn install_websocket_open_handler(app: &Rc<RefCell<App>>, ws: &WebSocket) {
+fn install_websocket_handlers(app: &Rc<RefCell<App>>, ws: &WebSocket) {
     // Engine loading is asynchronous, so a local socket may already be open.
     // The latch also handles a queued open event arriving after the state check.
     let hello_sent = Rc::new(Cell::new(false));
-    let handler_app = Rc::clone(app);
-    let handler_latch = Rc::clone(&hello_sent);
-    let onopen = Closure::<dyn FnMut()>::new(move || {
-        if !handler_latch.replace(true) {
-            send_handshake(&handler_app);
-        }
-    });
+    let onopen = websocket_open_callback(app, Rc::clone(&hello_sent));
+    let onmessage = websocket_message_callback(app);
+    let onerror = websocket_failure_callback(app, "WebSocket transport error");
+    let onclose = websocket_failure_callback(app, "WebSocket closed by peer");
+
     ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
-    onopen.forget();
+    ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+    ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+    ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+    let old = app
+        .borrow()
+        .bindings
+        .borrow_mut()
+        .websocket
+        .replace(WebSocketBindings {
+            socket: ws.clone(),
+            onopen,
+            onmessage,
+            onerror,
+            onclose,
+        });
+    if let Some(old) = old {
+        old.dispose();
+    }
+
     if ws.ready_state() == WebSocket::OPEN && !hello_sent.replace(true) {
         send_handshake(app);
     }
 }
 
-fn install_websocket_message_handler(app: &Rc<RefCell<App>>, ws: &WebSocket) {
-    let app = Rc::clone(app);
-    let onmessage = Closure::<dyn FnMut(MessageEvent)>::new(move |event: MessageEvent| {
+fn websocket_open_callback(
+    app: &Rc<RefCell<App>>,
+    hello_sent: Rc<Cell<bool>>,
+) -> Closure<dyn FnMut()> {
+    let weak = Rc::downgrade(app);
+    Closure::new(move || {
+        if !hello_sent.replace(true)
+            && let Some(app) = weak.upgrade()
+        {
+            send_handshake(&app);
+        }
+    })
+}
+
+fn websocket_message_callback(app: &Rc<RefCell<App>>) -> Closure<dyn FnMut(MessageEvent)> {
+    let weak = Rc::downgrade(app);
+    Closure::new(move |event: MessageEvent| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
         if app.borrow().session.is_failed() {
             return;
         }
@@ -733,34 +913,25 @@ fn install_websocket_message_handler(app: &Rc<RefCell<App>>, ws: &WebSocket) {
             }
             Err(message) => close_with_protocol_error(&app, &message),
         }
-    });
-    ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
-    onmessage.forget();
+    })
 }
 
-fn install_websocket_exit_handlers(app: &Rc<RefCell<App>>, ws: &WebSocket) {
+fn websocket_failure_callback(
+    app: &Rc<RefCell<App>>,
+    message: &'static str,
+) -> Closure<dyn FnMut(web_sys::Event)> {
     let weak = Rc::downgrade(app);
-    let onerror = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
+    Closure::new(move |_| {
         if let Some(app) = weak.upgrade() {
-            close_with_transport_error(&app, "WebSocket transport error");
+            close_with_transport_error(&app, message);
         }
-    });
-    ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
-    onerror.forget();
-
-    let weak = Rc::downgrade(app);
-    let onclose = Closure::<dyn FnMut(web_sys::Event)>::new(move |_| {
-        if let Some(app) = weak.upgrade() {
-            close_with_transport_error(&app, "WebSocket closed by peer");
-        }
-    });
-    ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
-    onclose.forget();
+    })
 }
 
 fn send_handshake(app: &Rc<RefCell<App>>) {
     let frames = app.borrow().session.handshake();
-    if let Err(message) = app.borrow().send(frames) {
+    let result = app.borrow().send(frames);
+    if let Err(message) = result {
         close_with_transport_error(app, &message);
     }
 }
@@ -821,11 +992,20 @@ async fn run_webtransport_reader(
     app: Rc<RefCell<App>>,
     reader: ReadableStreamDefaultReader,
     session: WebTransport,
+    mut cancel: oneshot::Receiver<()>,
 ) {
     let _session = session;
     let mut frames = FrameBuffer::new();
     loop {
-        let result = match JsFuture::from(reader.read()).await {
+        let read = Box::pin(JsFuture::from(reader.read()));
+        let result = match select(cancel, read).await {
+            Either::Left(_) => return,
+            Either::Right((result, next_cancel)) => {
+                cancel = next_cancel;
+                result
+            }
+        };
+        let result = match result {
             Ok(result) => result,
             Err(_) => {
                 let _ = webtransport_exit_flow(
@@ -1055,11 +1235,14 @@ fn close_webtransport_exit(app: &Rc<RefCell<App>>, message: &str, protocol: bool
 
 /// Keyboard: each keydown becomes an `INPUT_KEY` for the attached terminal.
 fn install_keyboard(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
-    let app = Rc::clone(app);
     let document = web_sys::window()
         .and_then(|w| w.document())
         .ok_or_else(|| JsValue::from_str("no document"))?;
+    let weak = Rc::downgrade(app);
     let onkey = Closure::<dyn FnMut(KeyboardEvent)>::new(move |e: KeyboardEvent| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
         let Some(event) = key_event_from_browser(&e) else {
             return;
         };
@@ -1074,25 +1257,49 @@ fn install_keyboard(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
         }
     });
     document.add_event_listener_with_callback("keydown", onkey.as_ref().unchecked_ref())?;
-    onkey.forget();
+    let old = app
+        .borrow()
+        .bindings
+        .borrow_mut()
+        .keyboard
+        .replace(KeyboardBinding {
+            document,
+            callback: onkey,
+        });
+    if let Some(old) = old {
+        old.dispose();
+    }
     Ok(())
 }
 
 /// Cursor blink: toggle the phase and repaint on a fixed cadence.
 fn install_cursor_blink(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
-    let blink_app = Rc::clone(app);
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
+    let weak = Rc::downgrade(app);
     let blink = Closure::<dyn FnMut()>::new(move || {
-        let a = blink_app.borrow();
-        a.cursor_on.set(!a.cursor_on.get());
-        a.paint();
+        if let Some(app) = weak.upgrade() {
+            let app = app.borrow();
+            app.cursor_on.set(!app.cursor_on.get());
+            app.paint();
+        }
     });
     let interval = window.set_interval_with_callback_and_timeout_and_arguments_0(
         blink.as_ref().unchecked_ref(),
         530,
     )?;
-    app.borrow().blink_interval.set(Some(interval));
-    blink.forget();
+    let old = app
+        .borrow()
+        .bindings
+        .borrow_mut()
+        .blink
+        .replace(BlinkBinding {
+            window,
+            interval,
+            callback: blink,
+        });
+    if let Some(old) = old {
+        old.dispose();
+    }
     Ok(())
 }
 
@@ -1185,12 +1392,16 @@ fn code_to_physical_key(code: &str) -> PhysicalKey {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
+    use std::rc::Rc;
+
     use super::{
         BatchEffects, FrameBuffer, MAX_OUTBOUND_BYTES, OutboundQueue, ReceiveFlow,
         WebTransportExit, authenticated_websocket_protocols, await_js_promise_with_deadline,
         poisoned_framing_flow, token_from_webtransport_url, webtransport_eof_exit,
         webtransport_exit_flow,
     };
+    use futures_channel::oneshot;
+    use gloo_timers::future::TimeoutFuture;
     use phux_protocol::PROTOCOL_VERSION;
     use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ServerCapabilities};
     use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
@@ -1198,7 +1409,11 @@ mod tests {
     use phux_protocol::wire::frame::{FrameKind, MAX_FRAME_LEN};
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
     use phux_vt_web::Vt;
-    use wasm_bindgen_test::wasm_bindgen_test;
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
+    use web_sys::{HtmlCanvasElement, WebSocket};
+
+    wasm_bindgen_test_configure!(run_in_browser);
 
     #[wasm_bindgen_test]
     fn poisoned_framing_stops_pump_and_invokes_close() {
@@ -1355,6 +1570,9 @@ mod tests {
 
         queue.push(&vec![0; MAX_OUTBOUND_BYTES]).unwrap();
         assert!(queue.push(&[1]).is_err());
+        queue.clear();
+        assert_eq!(queue.bytes, 0);
+        assert!(queue.frames.is_empty());
     }
 
     #[wasm_bindgen_test]
@@ -1382,6 +1600,79 @@ mod tests {
         let pending = js_sys::Promise::new(&mut |_, _| {});
         let result = await_js_promise_with_deadline(pending, "blackholed transport", 1).await;
         assert!(result.is_err());
+    }
+
+    #[wasm_bindgen_test]
+    async fn cancellation_drops_a_pending_writer_promise() {
+        let pending = js_sys::Promise::new(&mut |_, _| {});
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        cancel_tx.send(()).unwrap();
+        let outcome = super::await_or_cancel(pending, cancel_rx).await;
+        assert!(matches!(outcome, super::PromiseOutcome::Cancelled));
+    }
+
+    async fn closed_websocket() -> WebSocket {
+        let ws = WebSocket::new("ws://127.0.0.1:47654/").expect("create test WebSocket");
+        for _ in 0..200 {
+            if ws.ready_state() == WebSocket::OPEN {
+                break;
+            }
+            TimeoutFuture::new(10).await;
+        }
+        assert_eq!(ws.ready_state(), WebSocket::OPEN, "test WebSocket opened");
+        ws.close().expect("close test WebSocket");
+        for _ in 0..200 {
+            if ws.ready_state() == WebSocket::CLOSED {
+                return ws;
+            }
+            TimeoutFuture::new(10).await;
+        }
+        panic!("test WebSocket did not close");
+    }
+
+    fn test_canvas() -> HtmlCanvasElement {
+        web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .create_element("canvas")
+            .unwrap()
+            .dyn_into()
+            .unwrap()
+    }
+
+    #[wasm_bindgen_test]
+    async fn closed_ws_send_and_repeated_reconnect_teardown_release_every_app() {
+        let ws = closed_websocket().await;
+        let document = web_sys::window().unwrap().document().unwrap();
+        for _ in 0..8 {
+            let tx = super::WireTx::Ws(super::WsTx::new(ws.clone()));
+            let (app, _ready) = super::build_app(tx, test_canvas(), 80, 24, false)
+                .await
+                .unwrap();
+            super::install_transport_failure_hook(&app);
+            super::install_websocket_handlers(&app, &ws);
+            super::install_keyboard(&app).unwrap();
+            super::install_cursor_blink(&app).unwrap();
+            app.borrow().self_owner.replace(Some(Rc::clone(&app)));
+            let weak = Rc::downgrade(&app);
+
+            super::send_handshake(&app);
+            assert!(app.borrow().session.is_failed());
+            assert!(app.borrow().self_owner.borrow().is_none());
+            {
+                let app = app.borrow();
+                let bindings = app.bindings.borrow();
+                assert!(bindings.websocket.is_none());
+                assert!(bindings.keyboard.is_none());
+                assert!(bindings.blink.is_none());
+            }
+            document
+                .dispatch_event(&web_sys::KeyboardEvent::new("keydown").unwrap())
+                .unwrap();
+            drop(app);
+            assert!(weak.upgrade().is_none(), "failed App must be released");
+        }
     }
 
     #[wasm_bindgen_test]
