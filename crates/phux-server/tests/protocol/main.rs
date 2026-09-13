@@ -2,6 +2,7 @@
 
 mod byc_6_5_keystroke_merge_order;
 mod command_dispatch;
+mod command_isolation;
 mod fault_matrix;
 mod frame_too_large;
 mod l2_adversarial;
