@@ -222,12 +222,40 @@ impl ServerGuard {
         panic!("attached client did not apply a new grid for {pane:?} (still {before:?})");
     }
 
-    fn pane_contains(&self, pane: &ResourceId, marker: &str) -> bool {
+    fn pane_lines(&self, pane: &ResourceId) -> Vec<String> {
         self.pane_snapshot(pane)["lines"]
             .as_array()
             .expect("snapshot lines")
             .iter()
             .filter_map(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .collect()
+    }
+
+    fn pane_has_output(&self, pane: &ResourceId) -> bool {
+        self.pane_lines(pane)
+            .iter()
+            .any(|line| !line.trim().is_empty())
+    }
+
+    /// Chrome resize proves the client attached and reflowed; it does not
+    /// prove the seed pane's `/bin/sh` has been scheduled (phux-5wxp shape
+    /// 5). Typed markers ride INPUT to that shell, so a blank grid here is
+    /// an ambient miss, not a focus regression.
+    fn wait_for_shell_output(&self, pane: &ResourceId) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if self.pane_has_output(pane) {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!("pane {pane:?} never painted shell output");
+    }
+
+    fn pane_contains(&self, pane: &ResourceId, marker: &str) -> bool {
+        self.pane_lines(pane)
+            .iter()
             .any(|line| line.contains(marker))
     }
 
@@ -239,7 +267,11 @@ impl ServerGuard {
             }
             std::thread::sleep(POLL);
         }
-        panic!("marker {marker:?} did not reach {pane:?}");
+        panic!(
+            "marker {marker:?} did not reach {pane:?} (grid {:?}, lines {:?})",
+            self.pane_size(pane),
+            self.pane_lines(pane)
+        );
     }
 }
 
@@ -348,12 +380,14 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
     let initial = server.wait_for_layout();
     assert_eq!(initial.windows[0].state.tree, Some(leaf(&seed)));
     // Metadata was seeded before attach, so `wait_for_layout` can return
-    // before this client has subscribed. Chrome resize is the attach barrier.
+    // before this client has subscribed. Chrome resize plus a painted
+    // prompt is the attach barrier (client ready *and* the seed shell).
     server.wait_for_applied_grid(&seed, NO_TTY_DEFAULT);
+    server.wait_for_shell_output(&seed);
+    let seed_attached = server.pane_size(&seed);
 
     let second = server.spawn_pane();
     let third = server.spawn_pane();
-    let second_unplaced = server.pane_size(&second);
     let third_unplaced = server.pane_size(&third);
 
     // User-facing `vertical` means a vertical divider and side-by-side panes;
@@ -371,7 +405,7 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
         &server,
         split(SplitDir::Horizontal, leaf(&seed), leaf(&second)),
     );
-    server.wait_for_applied_grid(&second, second_unplaced);
+    server.wait_for_applied_grid(&seed, seed_attached);
     attached.type_marker("FOCUS_AFTER_VERTICAL_INSERT");
     server.wait_for_marker(&seed, "FOCUS_AFTER_VERTICAL_INSERT");
     assert!(!server.pane_contains(&second, "FOCUS_AFTER_VERTICAL_INSERT"));
