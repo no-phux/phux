@@ -1,7 +1,7 @@
 //! `phux config init --distro` end to end (phux-r82.9).
 //!
 //! Drives the real binary: scaffold a fresh config on top of the
-//! bundled starter distribution, confirm the file validates (`config`
+//! bundled starter distribution, confirm the file validates (`config
 //! show` re-parses the whole stack) and that the shown effective config
 //! carries distro values. Also pins the failure modes: unknown bundled
 //! name, broken distro layer, and the refuse-to-overwrite contract.
