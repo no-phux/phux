@@ -115,6 +115,8 @@ phux agent uninstall-claude
 phux agent wait
 phux ask
 phux attach
+phux channel
+phux cockpit
 phux completion
 phux config
 phux config agents
@@ -393,6 +395,11 @@ const EXAMPLE_BLOCKS: &[(&str, &[&str])] = &[
             "phux ask @3 --json \"Need approval\"",
         ],
     ),
+    (
+        "channel",
+        &["phux channel", "phux channel next", "phux channel latest"],
+    ),
+    ("cockpit", &["phux cockpit", "phux cockpit --json"]),
 ];
 
 #[test]

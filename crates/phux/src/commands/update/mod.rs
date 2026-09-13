@@ -199,8 +199,8 @@ pub(crate) struct UpdateOpts {
     #[arg(long = "version", value_name = "TAG", conflicts_with = "rollback")]
     pub(crate) tag: Option<String>,
 
-    /// Release channel to follow. `stable` is the default (`vX.Y.Z`).
-    /// `next` tracks green `main` via the moving prerelease.
+    /// Release channel to follow. `stable` (also `latest`) is the default
+    /// (`vX.Y.Z`). `next` tracks green `main` via the moving prerelease.
     #[arg(long, value_enum, value_name = "CHANNEL", conflicts_with = "rollback")]
     pub(crate) channel: Option<Channel>,
 

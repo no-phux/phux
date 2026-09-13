@@ -9,8 +9,8 @@ last-reviewed: 2026-09-13
 **TL;DR.** The curl installer is the universal one-liner. Homebrew is the
 recommended day-to-day path on supported macOS and Linux. Source builds
 use native tools or Nix. `phux update` maintains a direct-release install;
-`--channel next` tracks green `main`. Windows and `cargo install phux` are
-not supported.
+`phux channel next` tracks green `main`, `phux channel latest` the numbered
+releases. Windows and `cargo install phux` are not supported.
 
 ---
 
@@ -109,8 +109,14 @@ pipe it anywhere. With no `--version`, it installs the latest `cockpit-vX.Y.Z`
 release; pin one with `sh -s -- --version cockpit-vX.Y.Z`. It verifies the
 release `SHA256SUMS` before unpacking, places **Phux Cockpit.app** in
 `/Applications` (`~/Applications` when `/Applications` is not writable),
+writes a `phux-cockpit` launcher into
+`${PHUX_COCKPIT_BIN_DIR:-${PHUX_INSTALL_DIR:-$HOME/.local/bin}}`,
 clears the quarantine attribute, and restores the previous install if
-placement fails.
+placement fails. After install:
+
+```sh
+phux cockpit            # open the app (also `phux-cockpit`)
+```
 
 The Homebrew cask installs the same app from the same release assets:
 
@@ -199,16 +205,19 @@ subsequent `just rebuild` invocations stay entirely on the developer binary.
 ```sh
 phux update --check     # what is installed, what is published, how it got there
 phux update             # install it, then hand a running server off to it
-phux update --channel next   # follow green main instead of the latest vX.Y.Z
+phux channel            # which rail this install follows
+phux channel next       # follow green main
+phux channel latest     # back to the latest vX.Y.Z
 ```
 
 `phux update` exists because a deployment is a lockstep set: mismatched peers
 refuse each other at HELLO. See
 [ADR-0071](adr/0071-what-phux-1-0-commits-to.md). Default is the latest
-numbered GitHub release. `--channel next` is the opt-in rail that tracks
-green `main` ([ADR-0113](adr/0113-next-release-channel.md)); the choice is
-remembered in `<bindir>/.phux-channel` so later `phux update` stays on that
-rail. Homebrew stays on stable.
+numbered GitHub release. `phux channel next` is the opt-in rail that tracks
+green `main` ([ADR-0113](adr/0113-next-release-channel.md)); `phux channel
+latest` (also `stable`) is the numbered releases. The choice is remembered in
+`<bindir>/.phux-channel` so later `phux update` stays on that rail. Homebrew
+stays on stable. `phux update --channel next` is the same switch.
 
 ### What `phux update` does
 
@@ -306,7 +315,8 @@ the re-exec mechanism replays the *same* path.
 phux update --check              # report only; never downloads an archive
 phux update --check --json       # the stable document (schema_version 1)
 phux update --dry-run            # download and verify, install nothing
-phux update --channel next       # follow the moving next prerelease
+phux channel next                # follow the moving next prerelease
+phux channel latest              # follow the latest numbered release
 phux update --version vX.Y.Z     # install a specific stable release (downgrades too)
 phux update --no-restart         # replace binaries, leave the server alone
 ```

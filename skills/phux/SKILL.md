@@ -669,6 +669,8 @@ binary, so nothing is invisible to you.
 | `phux worktree` | `new` / `open` / `list` / `remove` git worktrees with sessions bound to them |
 | `phux completion` | print a shell completion script |
 | `phux update` | update phux to the latest release, keeping sessions alive |
+| `phux channel` | show or switch the release channel (`next` or `latest`) |
+| `phux cockpit` | open the native macOS Cockpit app |
 | `phux upgrade` | hot-swap the running server binary in place |
 | `phux host` | register the machines phux talks to: remotes and satellites |
 | `phux pair` | mint a pairing token for a remote consumer |

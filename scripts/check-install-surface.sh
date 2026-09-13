@@ -164,7 +164,10 @@ require_fixed scripts/install-cockpit.sh 'com.apple.quarantine'
 require_fixed scripts/install-cockpit.sh 'rollback_publish'
 require_fixed scripts/install-cockpit.sh '.phux-cockpit-install.lock'
 require_fixed scripts/install-cockpit.sh 'printf '\''next: open %s\n'\'' "$(shell_quote "$installed_app")"'
+require_fixed scripts/install-cockpit.sh 'write_cli_launcher()'
+require_fixed scripts/install-cockpit.sh '${bin_dir}/phux-cockpit'
 require_fixed scripts/test-install.sh 'cockpit installer transaction tests passed'
+require_fixed scripts/test-install.sh 'phux-cockpit launcher'
 forbid_fixed scripts/test-install.sh 'bash "$ROOT/scripts/install-cockpit.sh"'
 
 # --- The installer is POSIX sh, and phux.sh serves it -------------------------

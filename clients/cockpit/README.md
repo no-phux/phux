@@ -288,10 +288,11 @@ curl -fsSL https://phux.sh/install-cockpit | sh
 It resolves the latest `cockpit-vX.Y.Z` release (pin one with
 `sh -s -- --version cockpit-vX.Y.Z`), verifies the release `SHA256SUMS`
 before unpacking, places **Phux Cockpit** in `/Applications`
-(`~/Applications` when `/Applications` is not writable), and clears the
-quarantine attribute. That URL serves `scripts/install-cockpit.sh` from the
-phux repository byte for byte — read it before you pipe it anywhere, the way
-you should with any installer.
+(`~/Applications` when `/Applications` is not writable), writes a
+`phux-cockpit` launcher onto `PATH`, and clears the quarantine attribute.
+Open it with `phux cockpit` or `phux-cockpit`. That URL serves
+`scripts/install-cockpit.sh` from the phux repository byte for byte — read it
+before you pipe it anywhere, the way you should with any installer.
 
 Or with Homebrew:
 

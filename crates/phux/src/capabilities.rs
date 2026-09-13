@@ -56,6 +56,8 @@ fn schema_contracts() -> Value {
         { "invocation": "phux rec|play --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux logs|doctor --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux update --json", "schema_version": crate::commands::update::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux channel --json", "schema_version": crate::commands::update::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
+        { "invocation": "phux cockpit --json", "schema_version": crate::commands::cockpit::DOCUMENT_SCHEMA_VERSION, "kind": "document" },
         { "invocation": "phux whoami --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux run --json", "schema_version": null, "kind": "document", "note": "unversioned result" },
         { "invocation": "phux watch --json", "schema_version": null, "kind": "ndjson", "note": "event vocabulary is the compatibility contract" },
