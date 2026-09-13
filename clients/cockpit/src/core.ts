@@ -3745,9 +3745,12 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
       // Native retirement already matched the actual OS window incarnation.
       // Withdraw its declaration before the SDK rebuilds; this label never
       // authorizes a second lifecycle mutation against a recycled slot.
-      return [forgetClosedWindow(model, msg.window), Cmd.request("cockpit.snapshot", NO_BYTES, {
-        key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
-      })];
+      return [forgetClosedWindow(model, msg.window), Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.request("cockpit.snapshot", NO_BYTES, {
+          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
+        }),
+      ])];
     }
     case "toggle_tab_placement": {
       const placement: TabPlacement = model.tabPlacement === "top" ? "side" : "top";
