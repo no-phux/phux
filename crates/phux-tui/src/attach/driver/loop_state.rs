@@ -455,6 +455,23 @@ const fn fleet_projection_dirty(outcome: &FrameOutcome) -> bool {
         || outcome.sessions.is_some()
 }
 
+/// Send a replay batch in request order. The frame whose write fails remains
+/// uncertain; frames not yet handed to the transport return to their previous
+/// definite state.
+async fn send_replay_batch(
+    conn: &mut Connection,
+    journal: &std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>,
+    frames: &[FrameKind],
+) -> Result<(), AttachError> {
+    for (index, frame) in frames.iter().enumerate() {
+        if let Err(error) = conn.send(frame).await {
+            journal.borrow_mut().rollback_unsent(&frames[index + 1..]);
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
 /// Every local the attach loop carries across `select!` iterations.
 ///
 /// phux-4li.4: `panes` holds N client-side Terminals keyed by `ResourceId`,
@@ -490,6 +507,9 @@ pub(super) struct SessionLoop {
     /// Control-stream `ATTACH_READY` held until all per-Terminal streams have
     /// delivered READY or CLOSED. QUIC has no cross-stream ordering.
     pending_attach_ready: Option<FrameKind>,
+    /// `ATTACH_RESOURCE` requests waiting for an affirmative command result.
+    /// A QUIC stream is never bound before the server registers membership.
+    pending_stream_binds: HashMap<u32, ResourceId>,
 
     /// The client-side terminal engine every pane's replica lives in.
     engine_kernel: SessionKernel<GhosttyAdapter>,
@@ -778,6 +798,7 @@ impl SessionLoop {
             session_picker_dirty: false,
             wants_state_sync,
             pending_attach_ready: None,
+            pending_stream_binds: HashMap::new(),
             engine_kernel: SessionKernel::with_history_config(
                 GhosttyAdapter::new(negotiated.limits),
                 negotiated.profile,
@@ -1485,7 +1506,7 @@ impl SessionLoop {
         let mut reports = journal
             .borrow_mut()
             .begin_connection(conn.server_id(), self.acknowledged_input_supported);
-        let (more, replay_frame) = journal.borrow_mut().next_frame(&mut self.next_request_id);
+        let (more, replay_frames) = journal.borrow_mut().next_frames(&mut self.next_request_id);
         reports.extend(more);
         let now = std::time::Instant::now();
         for report in reports {
@@ -1502,10 +1523,7 @@ impl SessionLoop {
                 tracing::warn!(line = %line, "acknowledged paste stranded");
             }
         }
-        if let Some(frame) = replay_frame {
-            conn.send(&frame).await?;
-        }
-        Ok(())
+        send_replay_batch(conn, journal.as_ref(), &replay_frames).await
     }
 
     /// ADR-0053: the reply to one of the journal's own `APPLY_INPUT`
@@ -1526,7 +1544,7 @@ impl SessionLoop {
             .resolve(request_id, result)
             .into_iter()
             .collect();
-        let (more, next_frame) = journal.borrow_mut().next_frame(&mut self.next_request_id);
+        let (more, next_frames) = journal.borrow_mut().next_frames(&mut self.next_request_id);
         reports.extend(more);
         let now = std::time::Instant::now();
         for report in reports {
@@ -1549,10 +1567,7 @@ impl SessionLoop {
                 tracing::warn!(line = %line, "acknowledged paste outcome");
             }
         }
-        if let Some(frame) = next_frame {
-            super::session_io::send_unless_peer_gone(conn, &frame).await?;
-        }
-        Ok(())
+        send_replay_batch(conn, journal.as_ref(), &next_frames).await
     }
 
     /// phux-i0e8.2.3: seed the post-reconnect notice now that the session is
@@ -2125,7 +2140,7 @@ impl SessionLoop {
             vcs: &mut self.vcs,
             input_replay: self.input_replay.as_deref(),
         };
-        let layout_changed = dispatch_input_events(
+        let mut layout_changed = dispatch_input_events(
             out,
             conn,
             events,
@@ -2138,6 +2153,26 @@ impl SessionLoop {
         )
         .await?;
         self.focus_history = ctx.focus_history;
+        let reports = self
+            .input_replay
+            .as_ref()
+            .map_or_else(Vec::new, |journal| journal.borrow_mut().take_reports());
+        let now = std::time::Instant::now();
+        for report in reports {
+            if matches!(
+                report.disposition,
+                crate::attach::input_replay::ReplayDisposition::Delivered
+            ) {
+                continue;
+            }
+            let line = report.notice_line();
+            if let Some(status) = self.settings.status_bar.as_mut() {
+                layout_changed |=
+                    status.set_notice(crate::render::chrome::status_bar::Notice::warn(line), now);
+            } else {
+                tracing::warn!(line = %line, "acknowledged input outcome");
+            }
+        }
         Ok(layout_changed)
     }
 
@@ -2217,16 +2252,7 @@ impl SessionLoop {
             let Some(frame) = self.orphan_kills.observe(frame) else {
                 continue;
             };
-            if matches!(frame, FrameKind::Attached { .. }) {
-                self.pending_attach_ready = None;
-            }
-            if matches!(frame, FrameKind::AttachReady { .. })
-                && conn.multistream_enabled()
-                && self
-                    .engine_kernel
-                    .attach_ready_pending()
-                    .is_some_and(|pending| pending > 0)
-            {
+            if self.coordinate_multistream_frame(conn, &frame).await? {
                 self.pending_attach_ready = Some(frame);
                 continue;
             }
@@ -2308,6 +2334,46 @@ impl SessionLoop {
             self.sweep_peer_layouts(conn).await?;
         }
         Ok(Step::Continue)
+    }
+
+    /// Apply the QUIC stream lifecycle barriers carried by one control frame.
+    /// Returns true when `ATTACH_READY` must be held until every Terminal
+    /// stream publishes its own READY/CLOSED outcome.
+    async fn coordinate_multistream_frame(
+        &mut self,
+        conn: &mut Connection,
+        frame: &FrameKind,
+    ) -> Result<bool, AttachError> {
+        if matches!(frame, FrameKind::Attached { .. }) {
+            self.pending_attach_ready = None;
+        }
+        if !conn.multistream_enabled() {
+            return Ok(false);
+        }
+        match frame {
+            FrameKind::Attached { snapshot, .. } => {
+                for resource in &snapshot.resources {
+                    if resource.kind == ResourceKind::Terminal {
+                        conn.bind_terminal(&resource.id).await?;
+                    }
+                }
+            }
+            FrameKind::CommandResult { request_id, result } => {
+                if let Some(terminal_id) = self.pending_stream_binds.remove(request_id)
+                    && matches!(result, phux_protocol::wire::frame::CommandResult::Ok)
+                {
+                    conn.bind_terminal(&terminal_id).await?;
+                }
+            }
+            FrameKind::AttachReady { .. } => {
+                return Ok(self
+                    .engine_kernel
+                    .attach_ready_pending()
+                    .is_some_and(|pending| pending > 0));
+            }
+            _ => {}
+        }
+        Ok(false)
     }
 
     /// Fold a peer-scoped reply into the foreign caches, or hand the frame
@@ -2602,6 +2668,7 @@ impl SessionLoop {
                 "engine requested rebootstrap before ATTACHED named the session".to_owned(),
             ));
         }
+        conn.unbind_all_terminals();
         let attach_id = send_attach(conn, AttachTarget::ByName(self.session_name.clone())).await?;
         tracing::warn!(
             attach_id,
@@ -2632,7 +2699,10 @@ impl SessionLoop {
                 },
             )
             .await?;
-            conn.bind_terminal(terminal_id).await?;
+            if conn.multistream_enabled() {
+                self.pending_stream_binds
+                    .insert(request_id, terminal_id.clone());
+            }
         }
         Ok(())
     }
@@ -2663,7 +2733,9 @@ impl SessionLoop {
                 },
             )
             .await?;
-            conn.bind_terminal(&terminal_id).await?;
+            if conn.multistream_enabled() {
+                self.pending_stream_binds.insert(request_id, terminal_id);
+            }
         }
         Ok(())
     }

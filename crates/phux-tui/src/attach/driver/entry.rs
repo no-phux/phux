@@ -365,9 +365,7 @@ async fn connect_attach_dial(
         .then(crate::attach::terminal_probe::default_colors)
         .flatten();
     let client_caps = attach_client_caps(default_colors, dial);
-    Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps)
-        .await
-        .map_err(AttachError::from)
+    Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await
 }
 
 fn negotiated_output_mode(conn: &Connection) -> Result<OutputMode, AttachError> {
