@@ -815,11 +815,12 @@ fn profile_selection_prefers_native_then_explicit_compatibility() {
 fn native_selection_uses_the_highest_exact_known_common_codec() {
     let future_codec_bit = 1_u64 << 63;
     let v2_bit = 1_u64 << EngineCodec::LibghosttyCheckpointV2.as_wire();
-    let client_codecs = EngineCodecSet::from_wire(future_codec_bit | v2_bit);
-    let server_codecs = EngineCodecSet::from_wire(v2_bit);
+    let snapshot_v1_bit = 1_u64 << EngineCodec::LibghosttySnapshotV1.as_wire();
+    let client_codecs = EngineCodecSet::from_wire(future_codec_bit | v2_bit | snapshot_v1_bit);
+    let server_codecs = EngineCodecSet::from_wire(v2_bit | snapshot_v1_bit);
     assert_eq!(
         client_codecs.highest_common(server_codecs),
-        Some(EngineCodec::LibghosttyCheckpointV2)
+        Some(EngineCodec::LibghosttySnapshotV1)
     );
 
     let native_only = BootstrapProfileSet::with(&[BootstrapProfileKind::NativeState]);
@@ -836,9 +837,35 @@ fn native_selection_uses_the_highest_exact_known_common_codec() {
     assert_eq!(
         select_bootstrap_profile(&client, &server).unwrap().0,
         BootstrapProfile::NativeState {
-            codec: EngineCodec::LibghosttyCheckpointV2,
+            codec: EngineCodec::LibghosttySnapshotV1,
             features: EngineFeatureSet::required_native(),
         }
+    );
+}
+
+#[test]
+fn official_snapshot_v1_and_legacy_checkpoint_v2_fall_back_to_synthesis() {
+    let client =
+        ClientCapabilities::new().with_bootstrap(BootstrapCapabilities::new().with_native(
+            EngineCodec::LibghosttyCheckpointV2,
+            EngineFeatureSet::required_native(),
+        ));
+    let server = BootstrapCapabilities::new().with_native(
+        EngineCodec::LibghosttySnapshotV1,
+        EngineFeatureSet::required_native(),
+    );
+
+    assert_eq!(
+        select_bootstrap_profile(&client, &server).unwrap().0,
+        BootstrapProfile::SynthesizedVtRaw,
+        "different native contracts must never be inferred compatible"
+    );
+    assert_eq!(EngineCodec::LibghosttyCheckpointV2.as_wire(), 2);
+    assert_eq!(EngineCodec::LibghosttySnapshotV1.as_wire(), 3);
+    assert_eq!(
+        EngineCodec::from_wire(2),
+        Some(EngineCodec::LibghosttyCheckpointV2),
+        "legacy checkpoint-v2 remains decodable"
     );
 }
 

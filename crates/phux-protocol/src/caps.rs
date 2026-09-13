@@ -403,6 +403,12 @@ impl Default for BootstrapProfileSet {
 pub enum EngineCodec {
     /// libghostty terminal checkpoint format version 2.
     LibghosttyCheckpointV2 = 2,
+    /// Official `GHOSTSNPv1` feed snapshot with a progressive READY boundary.
+    ///
+    /// The capability id is `3`, not the snapshot envelope's internal version:
+    /// capability `2` names the older checkpoint-v2 contract whose decoder
+    /// requires FINISH before publication. The contracts are not compatible.
+    LibghosttySnapshotV1 = 3,
 }
 
 impl EngineCodec {
@@ -417,6 +423,7 @@ impl EngineCodec {
     pub const fn from_wire(value: u8) -> Option<Self> {
         match value {
             2 => Some(Self::LibghosttyCheckpointV2),
+            3 => Some(Self::LibghosttySnapshotV1),
             _ => None,
         }
     }
@@ -459,7 +466,8 @@ pub struct EngineCodecSet(u64);
 
 impl EngineCodecSet {
     const V2_BIT: u64 = 1 << 2;
-    const KNOWN: u64 = Self::V2_BIT;
+    const SNAPSHOT_V1_BIT: u64 = 1 << 3;
+    const KNOWN: u64 = Self::V2_BIT | Self::SNAPSHOT_V1_BIT;
 
     /// Empty codec set.
     #[must_use]
@@ -506,7 +514,9 @@ impl EngineCodecSet {
     /// Highest exact codec shared by both sets.
     #[must_use]
     pub const fn highest_common(self, other: Self) -> Option<EngineCodec> {
-        if self.0 & other.0 & Self::V2_BIT != 0 {
+        if self.0 & other.0 & Self::SNAPSHOT_V1_BIT != 0 {
+            Some(EngineCodec::LibghosttySnapshotV1)
+        } else if self.0 & other.0 & Self::V2_BIT != 0 {
             Some(EngineCodec::LibghosttyCheckpointV2)
         } else {
             None
