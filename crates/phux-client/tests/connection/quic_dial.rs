@@ -56,7 +56,10 @@ fn server_endpoint(cert: &Path, key: &Path) -> (quinn::Endpoint, SocketAddr) {
     .unwrap();
     tls.alpn_protocols = vec![QUIC_ALPN.to_vec()];
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls).unwrap();
-    let server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    let mut transport = quinn::TransportConfig::default();
+    transport.max_concurrent_bidi_streams(quinn::VarInt::from_u32(128));
+    server_config.transport_config(Arc::new(transport));
     let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
     let addr = endpoint.local_addr().unwrap();
     (endpoint, addr)
@@ -100,6 +103,12 @@ async fn accept_hello_with_caps(
     let FrameKind::Hello { client_caps, .. } = read_frame(recv).await else {
         panic!("expected HELLO");
     };
+    if server_caps.features.contains(ServerFeature::QuicStreams) {
+        assert!(
+            client_caps.quic_streams,
+            "QUIC_STREAMS selection requires an explicit client offer"
+        );
+    }
     let (selected_profile, bootstrap_limits) =
         select_bootstrap_profile(&client_caps, &BootstrapCapabilities::new())
             .expect("fixture profiles intersect");
@@ -242,6 +251,108 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
 
     let (_server, got) = tokio::join!(server, client);
     assert_eq!(got, from_server);
+}
+
+#[tokio::test]
+async fn malformed_terminal_stream_length_fails_promptly() {
+    let (_dir, cert, key) = cert_pair();
+    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let terminal_id = ResourceId::local(9);
+
+    let server_terminal_id = terminal_id.clone();
+    let server = async move {
+        let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
+        accept_hello_with_caps(
+            &mut control_send,
+            &mut control_recv,
+            ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
+        )
+        .await;
+        let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
+        let bind = read_stream_bind(&mut terminal_recv).await;
+        assert_eq!(bind.terminal_id, server_terminal_id);
+        terminal_send.write_all(&[0, 0, 0, 0]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    };
+
+    let client = async move {
+        let dial = QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+        };
+        let mut conn = Connection::connect_quic(&dial).await.expect("dial");
+        conn.bind_terminal(&terminal_id).await.expect("bind");
+        tokio::time::timeout(std::time::Duration::from_secs(2), conn.recv())
+            .await
+            .expect("malformed length fails promptly")
+            .expect_err("zero-length frame is invalid")
+            .to_string()
+    };
+
+    let ((), error) = tokio::join!(server, client);
+    assert!(
+        error.contains("frame length 0"),
+        "unexpected error: {error}"
+    );
+}
+
+#[tokio::test]
+async fn client_terminal_stream_cap_accounts_for_the_control_stream() {
+    let (_dir, cert, key) = cert_pair();
+    let (endpoint, addr) = server_endpoint(&cert, &key);
+
+    let server = async move {
+        let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
+        accept_hello_with_caps(
+            &mut control_send,
+            &mut control_recv,
+            ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
+        )
+        .await;
+        let mut streams = Vec::new();
+        for expected in 1..=127 {
+            let (send, mut recv) = conn.accept_bi().await.unwrap();
+            let bind = read_stream_bind(&mut recv).await;
+            assert_eq!(bind.terminal_id, ResourceId::local(expected));
+            streams.push((send, recv));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        streams
+    };
+
+    let client = async move {
+        let dial = QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+        };
+        let mut conn = Connection::connect_quic(&dial).await.expect("dial");
+        for id in 1..=127 {
+            conn.bind_terminal(&ResourceId::local(id))
+                .await
+                .expect("127 Terminal streams fit beside control");
+        }
+        let error = conn
+            .bind_terminal(&ResourceId::local(128))
+            .await
+            .expect_err("the 128th Terminal stream exceeds the connection cap")
+            .to_string();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        error
+    };
+
+    let (_streams, error) = tokio::join!(server, client);
+    assert!(
+        error.contains("cap exceeded (127)"),
+        "unexpected error: {error}"
+    );
 }
 
 #[tokio::test]

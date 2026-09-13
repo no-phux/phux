@@ -1374,6 +1374,12 @@ pub struct ClientCapabilities {
     /// bridge adds it on the HELLO it relays. It is a top-level HELLO field on
     /// the wire, folded in here the same way `compression` is.
     pub ssh_origin: Option<crate::wire::ssh_origin::SshOrigin>,
+    /// Whether this client can open and demultiplex per-Terminal QUIC streams.
+    ///
+    /// This is an explicit offer, not a transport inference. It defaults to
+    /// false so old clients and byte-copy QUIC adapters retain the complete
+    /// single-stream contract.
+    pub quic_streams: bool,
 }
 
 /// Effective default colors reported by the client's outer terminal.
@@ -1413,6 +1419,7 @@ impl ClientCapabilities {
             bootstrap: BootstrapCapabilities::new(),
             compression: CompressionSet::new(),
             ssh_origin: None,
+            quic_streams: false,
         }
     }
 
@@ -1428,6 +1435,13 @@ impl ClientCapabilities {
     #[must_use]
     pub const fn with_ssh_origin(mut self, origin: crate::wire::ssh_origin::SshOrigin) -> Self {
         self.ssh_origin = Some(origin);
+        self
+    }
+
+    /// Builder setter for [`Self::quic_streams`].
+    #[must_use]
+    pub const fn with_quic_streams(mut self, enabled: bool) -> Self {
+        self.quic_streams = enabled;
         self
     }
 

@@ -61,6 +61,9 @@ pub mod hello {
     /// §3.9). The server honors it only from a same-uid Unix-socket peer, and
     /// only to report the route.
     pub const SSH_ORIGIN: u32 = 9;
+    /// Whether this client can demultiplex the QUIC stream-per-Terminal shape.
+    /// Absent is false so single-stream adapters remain compatible.
+    pub const QUIC_STREAMS: u32 = 10;
 }
 
 /// `HELLO_OK` body fields (`docs/spec/proto.md` §6.1).

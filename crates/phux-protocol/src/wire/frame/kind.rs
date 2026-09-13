@@ -1438,6 +1438,9 @@ impl FrameKind {
                 crate::wire::ssh_origin::encode_ssh_origin(&origin, e);
             });
         }
+        if client_caps.quic_streams {
+            enc.write_field_with(field::hello::QUIC_STREAMS, |e| e.write_u8(1));
+        }
     }
 
     /// Write the exact protocol version `HELLO_OK` admits the peer at.

@@ -660,6 +660,7 @@ fn hello_round_trips_across_capability_shapes() {
             .with_kbd_protocols(KeyboardProtocolSet::with(&[KeyboardProtocol::Kitty]))
             .with_hyperlinks(false),
         ClientCapabilities::new().with_output_mode(OutputMode::StateSync),
+        ClientCapabilities::new().with_quic_streams(true),
         ClientCapabilities::new().with_default_colors(TerminalDefaultColors {
             foreground: TerminalColor {
                 r: 0xd0,

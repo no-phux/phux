@@ -432,6 +432,7 @@ impl<'a> Decoder<'a> {
         let mut client_caps: Option<crate::caps::ClientCapabilities> = None;
         let mut compression: Option<crate::caps::CompressionSet> = None;
         let mut ssh_origin = None;
+        let mut quic_streams = false;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::hello::CLIENT_NAME => {
@@ -462,6 +463,9 @@ impl<'a> Decoder<'a> {
                 field::hello::SSH_ORIGIN => {
                     ssh_origin = super::ssh_origin::decode_ssh_origin(value);
                 }
+                field::hello::QUIC_STREAMS => {
+                    quic_streams = sub!(value, |d: &mut Decoder<'_>| d.read_u8()) != 0;
+                }
                 _ => {}
             }
         }
@@ -477,6 +481,7 @@ impl<'a> Decoder<'a> {
         if let Some(compression) = compression {
             client_caps = client_caps.with_compression(compression);
         }
+        client_caps = client_caps.with_quic_streams(quic_streams);
         Ok(FrameKind::Hello {
             client_name: client_name.ok_or(DecodeError::UnexpectedEof)?,
             protocol_major: protocol_major.ok_or(DecodeError::UnexpectedEof)?,

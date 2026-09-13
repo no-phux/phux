@@ -144,9 +144,11 @@ struct Multistream {
     /// value (a new generation, per L1 §4.6).
     next_stream_id: u64,
     /// Merged frames from every bound Terminal stream's pump task.
-    frames_rx: tokio::sync::mpsc::Receiver<BytesMut>,
+    frames_rx: tokio::sync::mpsc::Receiver<Result<MuxFrame, String>>,
     /// Sender half the pump tasks hold.
-    frames_tx: tokio::sync::mpsc::Sender<BytesMut>,
+    frames_tx: tokio::sync::mpsc::Sender<Result<MuxFrame, String>>,
+    /// Connection-wide queued/incomplete Terminal-stream frame byte budget.
+    frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     /// `Ended` notifications from pump tasks (stream finish/reset).
     ended_rx: tokio::sync::mpsc::Receiver<(ResourceId, StreamId)>,
     /// Sender half the pump tasks hold.
@@ -160,13 +162,23 @@ struct MuxBinding {
     stream_id: StreamId,
     /// This stream's send half; Terminal-addressed frames route here.
     send: quinn::SendStream,
+    /// Receive pump for this generation; aborted on every local teardown.
+    receive_task: tokio::task::AbortHandle,
+}
+
+#[derive(Debug)]
+struct MuxFrame {
+    bytes: BytesMut,
+    _bytes: tokio::sync::OwnedSemaphorePermit,
 }
 
 /// Depth of the mux's merged frame channel. Small: a stalled reader stalls
 /// every stream's pump, which is ordinary backpressure (the frames wait in
 /// QUIC's per-stream flow control), not loss.
 const MUX_FRAME_CHANNEL: usize = 64;
-const MAX_CLIENT_TERMINAL_STREAMS: usize = 128;
+const MUX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+const MAX_CLIENT_TERMINAL_STREAMS: usize = 127;
+const TERMINAL_STREAM_OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Multistream {
     fn new(conn: quinn::Connection) -> Self {
@@ -178,6 +190,7 @@ impl Multistream {
             next_stream_id: 1,
             frames_rx,
             frames_tx,
+            frame_bytes: std::sync::Arc::new(tokio::sync::Semaphore::new(MUX_FRAME_BYTES)),
             ended_rx,
             ended_tx,
         }
@@ -201,21 +214,70 @@ async fn pump_terminal_stream(
     mut recv: quinn::RecvStream,
     terminal_id: ResourceId,
     stream_id: StreamId,
-    frames_tx: tokio::sync::mpsc::Sender<BytesMut>,
+    frames_tx: tokio::sync::mpsc::Sender<Result<MuxFrame, String>>,
     ended_tx: tokio::sync::mpsc::Sender<(ResourceId, StreamId)>,
+    frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
 ) {
-    let mut buf = BytesMut::with_capacity(8192);
     loop {
-        match recv.read_buf(&mut buf).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => loop {
-                let Ok(Some(frame)) = framing::split_frame(&mut buf) else {
-                    break;
-                };
-                if frames_tx.send(frame).await.is_err() {
-                    return;
-                }
-            },
+        let mut header = [0_u8; framing::LENGTH_PREFIX_LEN];
+        match recv.read_exact(&mut header).await {
+            Ok(()) => {}
+            Err(quinn::ReadExactError::FinishedEarly(0)) => break,
+            Err(error) => {
+                let _ = frames_tx
+                    .send(Err(format!(
+                        "Terminal stream truncated before frame header: {error}"
+                    )))
+                    .await;
+                break;
+            }
+        }
+        let body_len = match framing::decode_length(header) {
+            Ok(body_len) => body_len,
+            Err(error) => {
+                let _ = frames_tx.send(Err(error.to_string())).await;
+                break;
+            }
+        };
+        let total = framing::LENGTH_PREFIX_LEN + body_len;
+        let bytes = match frame_bytes
+            .clone()
+            .acquire_many_owned(u32::try_from(total).expect("frame cap fits u32"))
+            .await
+        {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                let _ = frames_tx
+                    .send(Err(format!("Terminal stream byte budget closed: {error}")))
+                    .await;
+                break;
+            }
+        };
+        let mut frame = match framing::frame_buffer(header) {
+            Ok(frame) => frame,
+            Err(error) => {
+                let _ = frames_tx.send(Err(error.to_string())).await;
+                break;
+            }
+        };
+        if let Err(error) = recv
+            .read_exact(&mut frame[framing::LENGTH_PREFIX_LEN..])
+            .await
+        {
+            let _ = frames_tx
+                .send(Err(format!("Terminal stream finished mid-frame: {error}")))
+                .await;
+            break;
+        }
+        if frames_tx
+            .send(Ok(MuxFrame {
+                bytes: frame,
+                _bytes: bytes,
+            }))
+            .await
+            .is_err()
+        {
+            return;
         }
     }
     let _ = ended_tx.send((terminal_id, stream_id)).await;
@@ -462,7 +524,8 @@ impl Connection {
         client_caps: ClientCapabilities,
     ) -> Result<Self, AttachError> {
         let mut conn = Self::connect_quic_transport(dial).await?;
-        conn.negotiate(client_name, client_caps).await?;
+        conn.negotiate(client_name, client_caps.with_quic_streams(true))
+            .await?;
         Ok(conn)
     }
 
@@ -481,13 +544,13 @@ impl Connection {
                 send,
                 out: BytesMut::with_capacity(4096),
                 endpoint,
-                connection,
+                connection: connection.clone(),
             }),
             peer_pid: None,
             negotiated_bootstrap: None,
             server_id: None,
             next_attach_id: 1,
-            multistream: None,
+            multistream: Some(Multistream::new(connection.clone())),
         })
     }
 
@@ -782,11 +845,11 @@ impl Connection {
                 "QUIC Terminal stream id exhausted".to_owned(),
             ));
         };
-        let (mut send, recv) = mux
-            .conn
-            .open_bi()
-            .await
-            .map_err(|err| AttachError::Connect(format!("opening Terminal stream: {err}")))?;
+        let (mut send, recv) =
+            tokio::time::timeout(TERMINAL_STREAM_OPEN_DEADLINE, mux.conn.open_bi())
+                .await
+                .map_err(|_| AttachError::Connect("opening Terminal stream timed out".to_owned()))?
+                .map_err(|err| AttachError::Connect(format!("opening Terminal stream: {err}")))?;
         let mut header = BytesMut::with_capacity(64);
         phux_protocol::wire::stream_bind::encode(
             &phux_protocol::wire::stream_bind::StreamBind {
@@ -795,22 +858,31 @@ impl Connection {
             },
             &mut header,
         );
-        send.write_all(&header)
+        tokio::time::timeout(TERMINAL_STREAM_OPEN_DEADLINE, send.write_all(&header))
             .await
+            .map_err(|_| AttachError::Connect("writing STREAM_BIND timed out".to_owned()))?
             .map_err(|err| AttachError::Io(io::Error::other(err)))?;
 
         let frames_tx = mux.frames_tx.clone();
         let ended_tx = mux.ended_tx.clone();
+        let frame_bytes = mux.frame_bytes.clone();
         let ended_terminal = terminal_id.clone();
-        mux.bindings
-            .insert(terminal_id.clone(), MuxBinding { stream_id, send });
-        tokio::spawn(pump_terminal_stream(
+        let receive_task = tokio::spawn(pump_terminal_stream(
             recv,
             ended_terminal,
             stream_id,
             frames_tx,
             ended_tx,
+            frame_bytes,
         ));
+        mux.bindings.insert(
+            terminal_id.clone(),
+            MuxBinding {
+                stream_id,
+                send,
+                receive_task: receive_task.abort_handle(),
+            },
+        );
         Ok(())
     }
 
@@ -819,6 +891,7 @@ impl Connection {
         if let Some(mux) = self.multistream.as_mut()
             && let Some(mut binding) = mux.bindings.remove(terminal_id)
         {
+            binding.receive_task.abort();
             let _ = binding.send.finish();
         }
     }
@@ -827,6 +900,7 @@ impl Connection {
     pub fn unbind_all_terminals(&mut self) {
         if let Some(mux) = self.multistream.as_mut() {
             for (_, mut binding) in mux.bindings.drain() {
+                binding.receive_task.abort();
                 let _ = binding.send.finish();
             }
         }
@@ -882,7 +956,8 @@ impl Connection {
             let reader = &mut self.reader;
             tokio::select! {
                 result = reader.recv() => return result,
-                Some(mut bytes) = mux.frames_rx.recv() => {
+                Some(received) = mux.frames_rx.recv() => {
+                    let mut bytes = received.map_err(AttachError::Protocol)?.bytes;
                     return decode_buffered(&mut bytes, limits)?.ok_or_else(||
                         AttachError::Protocol("Terminal stream ended with a partial frame".to_owned())
                     );
@@ -904,6 +979,26 @@ impl Connection {
     /// back-to-back burst after the first `recv` so the whole run coalesces
     /// into a single paint (phux-jhv8).
     pub fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
+        let limits = self
+            .negotiated_bootstrap
+            .map_or_else(BootstrapLimits::default, |negotiated| negotiated.limits);
+        if let Some(mux) = self.multistream.as_mut() {
+            while let Ok((terminal_id, stream_id)) = mux.ended_rx.try_recv() {
+                if mux
+                    .bindings
+                    .get(&terminal_id)
+                    .is_some_and(|binding| binding.stream_id == stream_id)
+                {
+                    mux.bindings.remove(&terminal_id);
+                }
+            }
+            match mux.frames_rx.try_recv() {
+                Ok(Ok(mut frame)) => return decode_buffered(&mut frame.bytes, limits),
+                Ok(Err(error)) => return Err(AttachError::Protocol(error)),
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+                | Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            }
+        }
         self.reader.try_recv()
     }
 

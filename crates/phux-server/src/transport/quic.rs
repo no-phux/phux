@@ -30,6 +30,7 @@
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use bytes::BytesMut;
@@ -272,6 +273,10 @@ impl Incoming for QuicListener {
         TransportType::Quic
     }
 
+    fn supports_quic_streams(&self) -> bool {
+        true
+    }
+
     #[allow(
         clippy::too_many_lines,
         reason = "transport admission keeps TLS, bearer, and workload identity checks in one ordered gate"
@@ -390,9 +395,10 @@ impl Incoming for QuicListener {
                 source_addr: Some(remote.ip()),
             };
 
+            let window = SendWindow::new(conn.clone());
             return Ok((
-                QuicMuxReader::new(recv, conn.clone()),
-                QuicWriter::from_stream(send, SendWindow::new(conn)),
+                QuicMuxReader::new(recv, conn, window.clone()),
+                QuicWriter::from_stream(send, window),
                 crate::auth::ConnectionIdentity {
                     peer: peer_identity,
                     credential,
@@ -435,12 +441,31 @@ pub(crate) async fn authorize_preamble(
 /// per-stream isolation lives in QUIC flow control and the per-stream
 /// writer queues, not here.
 const MUX_FRAME_CHANNEL: usize = 64;
+const MUX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+/// Terminal streams may occupy only one maximum wire frame of the aggregate
+/// budget. The remaining capacity is permanently available to ordinary
+/// control traffic even while that maximum Terminal body is incomplete.
+const MUX_TERMINAL_FRAME_BYTES: usize =
+    phux_protocol::wire::frame::MAX_FRAME_LEN as usize + LENGTH_PREFIX;
+/// Once a valid header announces a body, it must arrive within this absolute
+/// bound. A peer cannot reserve byte permits indefinitely with a partial body.
+const FRAME_BODY_DEADLINE: Duration = Duration::from_secs(10);
+
+#[derive(Debug)]
+pub(crate) struct AdmittedFrame {
+    bytes: BytesMut,
+    _connection_bytes: tokio::sync::OwnedSemaphorePermit,
+    _terminal_bytes: Option<tokio::sync::OwnedSemaphorePermit>,
+    origin: Option<Arc<AtomicBool>>,
+}
 
 /// Depth of the Terminal-stream event channel. Binds and stream ends are
 /// infrequent (one per attach/detach); the accept loop awaits sends, so a
 /// full channel only ever reflects a client task that stopped polling —
 /// which is connection teardown by another name.
 const MUX_EVENT_CHANNEL: usize = 32;
+/// Half-open streams that may concurrently wait for `STREAM_BIND`.
+const MAX_PENDING_STREAM_BINDS: usize = 16;
 
 /// QUIC application error code resetting a stream whose `STREAM_BIND` was
 /// malformed or never completed within the admission deadline.
@@ -450,8 +475,9 @@ const BIND_REFUSED_CODE: u32 = 0x10;
 /// unauthorized Terminal, failed bootstrap): reset it unread per proto.md
 /// §4.2. The uncorrelated `ERROR` on control carries the reason; the reset
 /// carries none.
-pub(crate) fn refuse_terminal_stream(mut send: quinn::SendStream) {
+pub(crate) fn refuse_terminal_stream(mut send: quinn::SendStream, mut recv: quinn::RecvStream) {
     let _ = send.reset(quinn::VarInt::from_u32(BIND_REFUSED_CODE));
+    let _ = recv.stop(quinn::VarInt::from_u32(BIND_REFUSED_CODE));
 }
 
 /// A Terminal stream's lifecycle event, delivered to the client task after
@@ -468,8 +494,18 @@ pub(crate) enum QuicStreamEvent {
         stream_id: phux_protocol::ids::StreamId,
         /// This stream's send half, for the per-stream writer.
         send: quinn::SendStream,
-        /// The connection the stream rides, for congestion tracking.
-        conn: quinn::Connection,
+        /// Receive half retained unread until bind authorization succeeds.
+        recv: quinn::RecvStream,
+        /// The connection-scoped congestion tracker shared by every writer.
+        window: SendWindow,
+        /// Merged destination used only after bind admission.
+        frames: tokio::sync::mpsc::Sender<AdmittedFrame>,
+        /// Lifecycle destination used by the admitted receive pump.
+        events: tokio::sync::mpsc::Sender<Self>,
+        /// Connection-wide queued/incomplete frame byte budget.
+        frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
+        /// Terminal-only share of the connection byte budget.
+        terminal_frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     },
     /// A bound stream ended (client `finish` or reset): the detach signal.
     /// The client task unsubscribes the pump exactly as for an explicit
@@ -480,6 +516,20 @@ pub(crate) enum QuicStreamEvent {
         /// The generation the ended stream opened under.
         stream_id: phux_protocol::ids::StreamId,
     },
+    /// A bound stream ended because framing or transport failed. The typed
+    /// cause survives the mux so runtime can report the right protocol code.
+    Failed {
+        terminal_id: phux_protocol::ids::ResourceId,
+        stream_id: phux_protocol::ids::StreamId,
+        failure: QuicStreamFailure,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) enum QuicStreamFailure {
+    Framing(framing::FramingError),
+    IncompleteFrame,
+    Transport(String),
 }
 
 /// QUIC read half with multi-stream upgrade (`docs/spec/proto.md` §4.2).
@@ -493,19 +543,25 @@ pub(crate) enum QuicStreamEvent {
 pub(crate) struct QuicMuxReader {
     control: Option<QuicReader>,
     conn: quinn::Connection,
-    frames_rx: Option<tokio::sync::mpsc::Receiver<BytesMut>>,
+    window: SendWindow,
+    frames_rx: Option<tokio::sync::mpsc::Receiver<AdmittedFrame>>,
     control_open: bool,
-    control_done: Option<tokio::sync::oneshot::Receiver<()>>,
+    control_done: Option<tokio::sync::oneshot::Receiver<io::Result<()>>>,
     tasks: tokio::task::JoinSet<()>,
 }
 
 impl QuicMuxReader {
     /// Wrap the just-accepted control stream. Single-stream behavior until
     /// [`FrameReader::take_stream_events`] upgrades the connection.
-    pub(crate) fn new(recv: quinn::RecvStream, conn: quinn::Connection) -> Self {
+    pub(crate) fn new(
+        recv: quinn::RecvStream,
+        conn: quinn::Connection,
+        window: SendWindow,
+    ) -> Self {
         Self {
             control: Some(QuicReader::from_stream(recv)),
             conn,
+            window,
             frames_rx: None,
             control_open: true,
             control_done: None,
@@ -528,25 +584,36 @@ impl FrameReader for QuicMuxReader {
             };
             return reader.read_frame().await;
         };
-        if !self.control_open {
-            return Ok(None);
-        }
-        tokio::select! {
-            biased;
-            done = async {
-                match self.control_done.as_mut() {
-                    Some(rx) => rx.await.map_err(|_| ()),
-                    None => core::future::pending().await,
-                }
-            } => {
-                // Control end is connection end, even with live Terminal
-                // streams: without control there is no HELLO/COMMAND/DETACH
-                // channel, so the attach cannot continue.
-                let _ = done;
-                self.control_open = false;
-                Ok(None)
+        loop {
+            if !self.control_open {
+                return Ok(None);
             }
-            frame = rx.recv() => Ok(frame),
+            tokio::select! {
+                biased;
+                done = async {
+                    match self.control_done.as_mut() {
+                        Some(rx) => rx.await,
+                        None => core::future::pending().await,
+                    }
+                } => {
+                    // Control end is connection end, even with live Terminal
+                    // streams: without control there is no HELLO/COMMAND/DETACH
+                    // channel, so the attach cannot continue.
+                    self.control_open = false;
+                    return done.map_or_else(|_| Ok(None), |result| result.map(|()| None));
+                }
+                frame = rx.recv() => {
+                    let Some(admitted) = frame else {
+                        return Ok(None);
+                    };
+                    if admitted.origin.as_ref().is_some_and(|origin| {
+                        !origin.load(Ordering::Acquire)
+                    }) {
+                        continue;
+                    }
+                    return Ok(Some(admitted.bytes));
+                },
+            }
         }
     }
 
@@ -555,27 +622,52 @@ impl FrameReader for QuicMuxReader {
             return None;
         }
         let (frames_tx, frames_rx) = tokio::sync::mpsc::channel(MUX_FRAME_CHANNEL);
+        let frame_bytes = std::sync::Arc::new(tokio::sync::Semaphore::new(MUX_FRAME_BYTES));
+        let terminal_frame_bytes =
+            std::sync::Arc::new(tokio::sync::Semaphore::new(MUX_TERMINAL_FRAME_BYTES));
         let (events_tx, events_rx) = tokio::sync::mpsc::channel(MUX_EVENT_CHANNEL);
         let (control_done_tx, control_done_rx) = tokio::sync::oneshot::channel();
         let control = self.control.take()?;
         let conn = self.conn.clone();
+        let window = self.window.clone();
         // Control pump: the pre-upgrade direct read, moved into a task so
         // post-upgrade reads merge with Terminal streams. Its end is the
         // connection's end (see `read_frame`).
         let control_frames_tx = frames_tx.clone();
+        let control_frame_bytes = frame_bytes.clone();
         self.tasks.spawn(async move {
             let mut control = control;
-            while let Ok(Some(frame)) = control.read_frame().await {
-                if control_frames_tx.send(frame).await.is_err() {
-                    return;
+            loop {
+                match read_framed_bounded(&mut control.recv, &control_frame_bytes, None, None).await
+                {
+                    Ok(Some(frame)) => {
+                        if control_frames_tx.send(frame).await.is_err() {
+                            return;
+                        }
+                    }
+                    Ok(None) => {
+                        let _ = control_done_tx.send(Ok(()));
+                        return;
+                    }
+                    Err(err) => {
+                        let _ = control_done_tx.send(Err(err));
+                        return;
+                    }
                 }
             }
-            drop(control_done_tx);
         });
         // Stream-accept loop: binds only. The client task owns admission —
         // the mux forwards every well-formed bind and resets the rest.
         self.tasks.spawn(async move {
-            accept_terminal_streams(conn, frames_tx, events_tx).await;
+            accept_terminal_streams(
+                conn,
+                window,
+                frames_tx,
+                events_tx,
+                frame_bytes,
+                terminal_frame_bytes,
+            )
+            .await;
         });
         self.frames_rx = Some(frames_rx);
         self.control_done = Some(control_done_rx);
@@ -597,71 +689,210 @@ impl FrameReader for QuicMuxReader {
 /// (which closes both) always ends them.
 async fn accept_terminal_streams(
     conn: quinn::Connection,
-    frames_tx: tokio::sync::mpsc::Sender<BytesMut>,
+    window: SendWindow,
+    frames_tx: tokio::sync::mpsc::Sender<AdmittedFrame>,
     events_tx: tokio::sync::mpsc::Sender<QuicStreamEvent>,
+    frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
+    terminal_frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
 ) {
+    let pending = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_STREAM_BINDS));
+    let mut bind_tasks = tokio::task::JoinSet::new();
     loop {
-        let Ok((mut send, mut recv)) = conn.accept_bi().await else {
-            // Connection closed: the mux tasks end with it.
+        let accepted = tokio::select! {
+            accepted = conn.accept_bi() => accepted,
+            Some(_) = bind_tasks.join_next(), if !bind_tasks.is_empty() => continue,
+        };
+        let Ok((mut send, mut recv)) = accepted else {
             return;
         };
-        let bind = tokio::time::timeout(ADMISSION_DEADLINE, read_stream_bind(&mut recv)).await;
-        let Some(bind) = bind.ok().flatten() else {
-            debug!("quic terminal stream refused: no well-formed STREAM_BIND within deadline");
+        let Ok(permit) = pending.clone().try_acquire_owned() else {
+            debug!("quic terminal stream refused: pending bind capacity exhausted");
             let _ = send.reset(quinn::VarInt::from_u32(BIND_REFUSED_CODE));
             let _ = recv.stop(quinn::VarInt::from_u32(BIND_REFUSED_CODE));
             continue;
         };
-        let event = QuicStreamEvent::Bound {
-            terminal_id: bind.terminal_id.clone(),
-            stream_id: bind.stream_id,
-            send,
-            conn: conn.clone(),
-        };
-        if events_tx.send(event).await.is_err() {
-            return;
-        }
-        // Per-stream pump, so one stream's stall never parks the accept
-        // loop. Detached by design (see above); plain `spawn` (not
-        // `spawn_local`) because every future here is `Send` and the
-        // transport must not assume the caller's runtime shape.
-        let pump_frames = frames_tx.clone();
-        let pump_events = events_tx.clone();
-        let terminal_id = bind.terminal_id;
-        let stream_id = bind.stream_id;
-        tokio::task::spawn(async move {
-            pump_terminal_stream(recv, terminal_id, stream_id, pump_frames, pump_events).await;
+        let stream_window = window.clone();
+        let stream_frames = frames_tx.clone();
+        let stream_events = events_tx.clone();
+        let stream_frame_bytes = frame_bytes.clone();
+        let stream_terminal_frame_bytes = terminal_frame_bytes.clone();
+        bind_tasks.spawn(async move {
+            let _permit = permit;
+            let bind = tokio::time::timeout(ADMISSION_DEADLINE, read_stream_bind(&mut recv)).await;
+            let Some(bind) = bind.ok().flatten() else {
+                debug!("quic terminal stream refused: no well-formed STREAM_BIND within deadline");
+                let _ = send.reset(quinn::VarInt::from_u32(BIND_REFUSED_CODE));
+                let _ = recv.stop(quinn::VarInt::from_u32(BIND_REFUSED_CODE));
+                return;
+            };
+            let event = QuicStreamEvent::Bound {
+                terminal_id: bind.terminal_id,
+                stream_id: bind.stream_id,
+                send,
+                recv,
+                window: stream_window,
+                frames: stream_frames,
+                events: stream_events.clone(),
+                frame_bytes: stream_frame_bytes,
+                terminal_frame_bytes: stream_terminal_frame_bytes,
+            };
+            let _ = stream_events.send(event).await;
         });
     }
 }
 
 /// Pump one bound Terminal stream's frames into the merged channel until the
 /// stream ends, then emit `Ended`.
-async fn pump_terminal_stream(
+#[allow(
+    clippy::too_many_arguments,
+    clippy::significant_drop_tightening,
+    reason = "the admitted stream owns distinct transport, provenance, cancellation, and two-level budget handles; frame permits intentionally live through channel admission"
+)]
+pub(crate) async fn pump_terminal_stream(
     mut recv: quinn::RecvStream,
     terminal_id: phux_protocol::ids::ResourceId,
     stream_id: phux_protocol::ids::StreamId,
-    frames_tx: tokio::sync::mpsc::Sender<BytesMut>,
+    frames_tx: tokio::sync::mpsc::Sender<AdmittedFrame>,
     events_tx: tokio::sync::mpsc::Sender<QuicStreamEvent>,
+    frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
+    terminal_frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
+    active: Arc<AtomicBool>,
+    cancelled: tokio_util::sync::CancellationToken,
 ) {
     loop {
-        let Ok(Some(frame)) = read_framed(&mut recv).await else {
-            // Clean finish, reset, or transport error: the stream is over
-            // either way. A mid-frame truncation also ends here rather than
-            // poisoning the merged channel — the generation is bad and the
-            // tombstone machinery (L1 §4.6) owns recovery once the client
-            // re-binds.
-            let _ = events_tx
-                .send(QuicStreamEvent::Ended {
+        let read = tokio::select! {
+            () = cancelled.cancelled() => return,
+            read = read_framed_bounded(
+                &mut recv,
+                &frame_bytes,
+                Some(&terminal_frame_bytes),
+                Some(active.clone()),
+            ) => read,
+        };
+        let frame = match read {
+            Ok(Some(frame)) => frame,
+            Ok(None) => {
+                send_stream_event(
+                    &events_tx,
+                    &cancelled,
+                    QuicStreamEvent::Ended {
+                        terminal_id,
+                        stream_id,
+                    },
+                )
+                .await;
+                return;
+            }
+            Err(err) => {
+                let failure = stream_failure(&err);
+                send_stream_event(
+                    &events_tx,
+                    &cancelled,
+                    QuicStreamEvent::Failed {
+                        terminal_id,
+                        stream_id,
+                        failure,
+                    },
+                )
+                .await;
+                return;
+            }
+        };
+        if !terminal_frame_matches(&frame.bytes, &terminal_id, stream_id) {
+            debug!(
+                ?terminal_id,
+                ?stream_id,
+                "frame refused on mismatched Terminal stream"
+            );
+            send_stream_event(
+                &events_tx,
+                &cancelled,
+                QuicStreamEvent::Failed {
                     terminal_id,
                     stream_id,
-                })
-                .await;
-            return;
-        };
-        if frames_tx.send(frame).await.is_err() {
+                    failure: QuicStreamFailure::Transport(
+                        "frame provenance did not match STREAM_BIND".to_owned(),
+                    ),
+                },
+            )
+            .await;
             return;
         }
+        if tokio::select! {
+            () = cancelled.cancelled() => true,
+            result = frames_tx.send(frame) => result.is_err(),
+        } {
+            return;
+        }
+    }
+}
+
+async fn send_stream_event(
+    events: &tokio::sync::mpsc::Sender<QuicStreamEvent>,
+    cancelled: &tokio_util::sync::CancellationToken,
+    event: QuicStreamEvent,
+) {
+    tokio::select! {
+        () = cancelled.cancelled() => {}
+        _ = events.send(event) => {}
+    }
+}
+
+fn stream_failure(err: &io::Error) -> QuicStreamFailure {
+    if let Some(framing) = err
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<framing::FramingError>())
+    {
+        return QuicStreamFailure::Framing(*framing);
+    }
+    if err.kind() == io::ErrorKind::TimedOut || err.kind() == io::ErrorKind::UnexpectedEof {
+        return QuicStreamFailure::IncompleteFrame;
+    }
+    QuicStreamFailure::Transport(err.to_string())
+}
+
+/// Verify the stream's provenance before a frame can enter shared dispatch.
+fn terminal_frame_matches(
+    framed: &[u8],
+    terminal_id: &phux_protocol::ids::ResourceId,
+    stream_id: phux_protocol::ids::StreamId,
+) -> bool {
+    let Ok((frame, tail)) = phux_protocol::wire::frame::FrameKind::decode(framed) else {
+        return false;
+    };
+    if !tail.is_empty() {
+        return false;
+    }
+    match frame {
+        phux_protocol::wire::frame::FrameKind::InputKey {
+            terminal_id: id, ..
+        }
+        | phux_protocol::wire::frame::FrameKind::InputMouse {
+            terminal_id: id, ..
+        }
+        | phux_protocol::wire::frame::FrameKind::InputFocus {
+            terminal_id: id, ..
+        }
+        | phux_protocol::wire::frame::FrameKind::InputPaste {
+            terminal_id: id, ..
+        }
+        | phux_protocol::wire::frame::FrameKind::InputTerminalReply {
+            terminal_id: id, ..
+        }
+        | phux_protocol::wire::frame::FrameKind::ResizeTerminal {
+            terminal_id: id, ..
+        } => id == *terminal_id,
+        phux_protocol::wire::frame::FrameKind::FrameAck {
+            terminal_id: id,
+            stream_id: generation,
+            ..
+        }
+        | phux_protocol::wire::frame::FrameKind::HistoryRequest {
+            terminal_id: id,
+            stream_id: generation,
+            ..
+        } => id == *terminal_id && generation == stream_id,
+        _ => false,
     }
 }
 
@@ -696,6 +927,10 @@ async fn read_exact_quic(recv: &mut quinn::RecvStream, buf: &mut [u8]) -> io::Re
         // Zero bytes before the stream finished is a clean EOF at a frame
         // boundary; any other shortfall is a truncated frame.
         Err(quinn::ReadExactError::FinishedEarly(0)) => Ok(false),
+        Err(quinn::ReadExactError::FinishedEarly(_)) => Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "QUIC stream finished during a framed value",
+        )),
         Err(err) => Err(io::Error::other(err)),
     }
 }
@@ -717,6 +952,82 @@ async fn read_framed(recv: &mut quinn::RecvStream) -> io::Result<Option<BytesMut
         ));
     }
     Ok(Some(framed))
+}
+
+async fn read_framed_bounded(
+    recv: &mut quinn::RecvStream,
+    budget: &std::sync::Arc<tokio::sync::Semaphore>,
+    terminal_budget: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
+    origin: Option<Arc<AtomicBool>>,
+) -> io::Result<Option<AdmittedFrame>> {
+    let mut header = [0u8; LENGTH_PREFIX];
+    if !read_exact_quic(recv, &mut header[..1]).await? {
+        return Ok(None);
+    }
+    let admitted = tokio::time::timeout(FRAME_BODY_DEADLINE, async {
+        if !read_exact_quic(recv, &mut header[1..]).await? {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "QUIC stream finished mid-header",
+            ));
+        }
+        let body_len = framing::decode_length(header)?;
+        let total = LENGTH_PREFIX + body_len;
+        let permit_count = u32::try_from(total).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "QUIC frame size does not fit permit count",
+            )
+        })?;
+        // Acquire the Terminal sub-budget first. If connection permits came
+        // first, another maximum Terminal frame could consume the reserved
+        // control capacity while waiting here.
+        let terminal_bytes = if let Some(terminal_budget) = terminal_budget {
+            Some(
+                terminal_budget
+                    .clone()
+                    .acquire_many_owned(permit_count)
+                    .await
+                    .map_err(|_| {
+                        io::Error::new(
+                            io::ErrorKind::NotConnected,
+                            "QUIC Terminal byte budget closed",
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
+        let connection_bytes = budget
+            .clone()
+            .acquire_many_owned(permit_count)
+            .await
+            .map_err(|_| {
+                io::Error::new(io::ErrorKind::NotConnected, "QUIC mux byte budget closed")
+            })?;
+        let mut framed = framing::frame_buffer(header)?;
+        if !read_exact_quic(recv, &mut framed[LENGTH_PREFIX..]).await? {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "stream finished mid-frame",
+            ));
+        }
+        Ok::<_, io::Error>((framed, connection_bytes, terminal_bytes))
+    })
+    .await
+    .map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::TimedOut,
+            "QUIC incomplete-frame deadline elapsed",
+        )
+    })??;
+    let (framed, connection_bytes, terminal_bytes) = admitted;
+    Ok(Some(AdmittedFrame {
+        bytes: framed,
+        _connection_bytes: connection_bytes,
+        _terminal_bytes: terminal_bytes,
+        origin,
+    }))
 }
 
 #[cfg(test)]
@@ -771,6 +1082,40 @@ mod tests {
         let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
         endpoint.set_default_client_config(client_config);
         endpoint
+    }
+
+    async fn assert_truncated_control_frame(bytes: &[u8]) {
+        let (_dir, cert, key) = cert_pair();
+        let listener =
+            QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = async {
+            let (mut reader, _writer, _) = listener.accept().await.unwrap();
+            let err = reader
+                .read_frame()
+                .await
+                .expect_err("truncation must error");
+            assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
+        };
+        let client = async {
+            let endpoint = client_endpoint();
+            let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
+            let (mut send, _recv) = conn.open_bi().await.unwrap();
+            send.write_all(bytes).await.unwrap();
+            send.finish().unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+        tokio::join!(server, client);
+    }
+
+    #[tokio::test]
+    async fn partial_header_eof_is_typed_as_truncation() {
+        assert_truncated_control_frame(&[0, 0]).await;
+    }
+
+    #[tokio::test]
+    async fn partial_body_eof_is_typed_as_truncation() {
+        assert_truncated_control_frame(&[0, 0, 0, 3, 0xde]).await;
     }
 
     /// Frame a token as the auth preamble: `len: u32 BE` + token bytes.
@@ -897,6 +1242,38 @@ mod tests {
         buf.to_vec()
     }
 
+    #[test]
+    fn terminal_stream_provenance_rejects_cross_target_and_control_frames() {
+        use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
+        use phux_protocol::wire::frame::FrameKind;
+
+        let bound = ResourceId::local(7);
+        let stream = StreamId::new(3).unwrap();
+        let mut encoded = BytesMut::new();
+        FrameKind::HistoryRequest {
+            terminal_id: bound.clone(),
+            stream_id: stream,
+            bootstrap_id: BootstrapId::new(9).unwrap(),
+            cursor: bytes::Bytes::new(),
+            max_bytes: 1,
+            max_rows: 1,
+        }
+        .encode(&mut encoded);
+        assert!(terminal_frame_matches(&encoded, &bound, stream));
+
+        encoded.clear();
+        FrameKind::InputFocus {
+            terminal_id: ResourceId::local(8),
+            event: phux_protocol::input::focus::FocusEvent::Gained,
+        }
+        .encode(&mut encoded);
+        assert!(!terminal_frame_matches(&encoded, &bound, stream));
+
+        encoded.clear();
+        FrameKind::Ping { nonce: 1 }.encode(&mut encoded);
+        assert!(!terminal_frame_matches(&encoded, &bound, stream));
+    }
+
     #[tokio::test]
     async fn mux_upgrades_and_merges_terminal_streams() {
         let (_dir, cert, key) = cert_pair();
@@ -911,23 +1288,47 @@ mod tests {
             // Upgrade: takes the event channel; twice returns None.
             let mut events = reader.take_stream_events().expect("upgrade once");
             assert!(reader.take_stream_events().is_none(), "upgrade is one-shot");
-            // One frame off the terminal stream, merged into the same read.
-            let merged = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())
-                .await
-                .expect("merged frame arrives")
-                .unwrap()
-                .unwrap();
             // The bind event names the terminal and generation.
             let bound = tokio::time::timeout(Duration::from_secs(5), events.recv())
                 .await
                 .expect("bind event arrives")
                 .expect("event channel open");
+            let QuicStreamEvent::Bound {
+                terminal_id,
+                stream_id,
+                recv,
+                frames,
+                events: pump_events,
+                frame_bytes,
+                terminal_frame_bytes,
+                ..
+            } = bound
+            else {
+                panic!("expected Bound");
+            };
+            tokio::spawn(pump_terminal_stream(
+                recv,
+                terminal_id.clone(),
+                stream_id,
+                frames,
+                pump_events,
+                frame_bytes,
+                terminal_frame_bytes,
+                Arc::new(AtomicBool::new(true)),
+                tokio_util::sync::CancellationToken::new(),
+            ));
+            // Only an admitted pump can place a frame into shared dispatch.
+            let merged = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())
+                .await
+                .expect("merged frame arrives")
+                .unwrap()
+                .unwrap();
             // A clean client finish surfaces as the detach signal.
             let ended = tokio::time::timeout(Duration::from_secs(5), events.recv())
                 .await
                 .expect("end event arrives")
                 .expect("event channel open");
-            (control, merged, bound, ended)
+            (control, merged, terminal_id, stream_id, ended)
         };
         let client = async {
             let endpoint = client_endpoint();
@@ -939,32 +1340,31 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(200)).await;
             let (mut term_send, _term_recv) = conn.open_bi().await.unwrap();
             term_send.write_all(&stream_bind_bytes(7, 1)).await.unwrap();
-            term_send.write_all(&FRAME).await.unwrap();
+            let mut frame = BytesMut::new();
+            phux_protocol::wire::frame::FrameKind::InputFocus {
+                terminal_id: phux_protocol::ids::ResourceId::local(7),
+                event: phux_protocol::input::focus::FocusEvent::Gained,
+            }
+            .encode(&mut frame);
+            term_send.write_all(&frame).await.unwrap();
             tokio::time::sleep(Duration::from_millis(200)).await;
             term_send.finish().unwrap();
             tokio::time::sleep(Duration::from_millis(200)).await;
         };
 
-        let ((control, merged, bound, ended), ()) = tokio::join!(server, client);
+        let ((control, merged, terminal_id, stream_id, ended), ()) = tokio::join!(server, client);
         assert_eq!(control.as_ref(), &FRAME, "control frame pre-upgrade");
         assert_eq!(
-            merged.as_ref(),
-            &FRAME,
-            "terminal frame merged post-upgrade"
+            phux_protocol::wire::frame::FrameKind::decode(&merged)
+                .expect("valid merged frame")
+                .0,
+            phux_protocol::wire::frame::FrameKind::InputFocus {
+                terminal_id: phux_protocol::ids::ResourceId::local(7),
+                event: phux_protocol::input::focus::FocusEvent::Gained,
+            }
         );
-        match bound {
-            QuicStreamEvent::Bound {
-                terminal_id,
-                stream_id,
-                ..
-            } => {
-                assert_eq!(terminal_id, phux_protocol::ids::ResourceId::local(7));
-                assert_eq!(stream_id.get(), 1);
-            }
-            ended @ QuicStreamEvent::Ended { .. } => {
-                panic!("expected Bound, got {ended:?}")
-            }
-        }
+        assert_eq!(terminal_id, phux_protocol::ids::ResourceId::local(7));
+        assert_eq!(stream_id.get(), 1);
         match ended {
             QuicStreamEvent::Ended {
                 terminal_id,
@@ -973,8 +1373,8 @@ mod tests {
                 assert_eq!(terminal_id, phux_protocol::ids::ResourceId::local(7));
                 assert_eq!(stream_id.get(), 1);
             }
-            bound @ QuicStreamEvent::Bound { .. } => {
-                panic!("expected Ended, got {bound:?}")
+            other => {
+                panic!("expected Ended, got {other:?}")
             }
         }
     }
@@ -1020,6 +1420,239 @@ mod tests {
             // the server is asserting silence on.
             tokio::time::sleep(Duration::from_millis(600)).await;
             let _ = bad_send;
+        };
+
+        tokio::join!(server, client);
+    }
+
+    #[tokio::test]
+    async fn dropping_mux_aborts_incomplete_bind_workers() {
+        let (_dir, cert, key) = cert_pair();
+        let listener =
+            QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = async {
+            let (mut reader, _writer, _) = listener.accept().await.unwrap();
+            let _ = reader.read_frame().await.unwrap().unwrap();
+            let mut events = reader.take_stream_events().expect("upgrade once");
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            drop(reader);
+            let closed = tokio::time::timeout(Duration::from_secs(2), events.recv())
+                .await
+                .expect("bind worker ownership closes event channel");
+            assert!(closed.is_none());
+        };
+        let client = async {
+            let endpoint = client_endpoint();
+            let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
+            let (mut control, _recv) = conn.open_bi().await.unwrap();
+            control.write_all(&FRAME).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let (mut incomplete, _recv) = conn.open_bi().await.unwrap();
+            incomplete.write_all(&[0]).await.unwrap();
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        };
+
+        tokio::join!(server, client);
+    }
+
+    #[tokio::test]
+    async fn mux_preserves_typed_terminal_framing_failure() {
+        let (_dir, cert, key) = cert_pair();
+        let listener =
+            QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = async {
+            let (mut reader, _writer, _) = listener.accept().await.unwrap();
+            let _ = reader.read_frame().await.unwrap().unwrap();
+            let mut events = reader.take_stream_events().expect("upgrade once");
+            let QuicStreamEvent::Bound {
+                terminal_id,
+                stream_id,
+                recv,
+                frames,
+                events: pump_events,
+                frame_bytes,
+                terminal_frame_bytes,
+                ..
+            } = events.recv().await.unwrap()
+            else {
+                panic!("expected bind");
+            };
+            tokio::spawn(pump_terminal_stream(
+                recv,
+                terminal_id,
+                stream_id,
+                frames,
+                pump_events,
+                frame_bytes,
+                terminal_frame_bytes,
+                Arc::new(AtomicBool::new(true)),
+                tokio_util::sync::CancellationToken::new(),
+            ));
+            let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .expect("failure arrives")
+                .expect("event channel open");
+            assert!(matches!(
+                event,
+                QuicStreamEvent::Failed {
+                    failure: QuicStreamFailure::Framing(framing::FramingError::LengthOutOfRange {
+                        length: u32::MAX
+                    }),
+                    ..
+                }
+            ));
+        };
+        let client = async {
+            let endpoint = client_endpoint();
+            let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
+            let (mut control, _recv) = conn.open_bi().await.unwrap();
+            control.write_all(&FRAME).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let (mut terminal, _recv) = conn.open_bi().await.unwrap();
+            terminal.write_all(&stream_bind_bytes(7, 1)).await.unwrap();
+            terminal.write_all(&u32::MAX.to_be_bytes()).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        };
+
+        tokio::join!(server, client);
+    }
+
+    #[tokio::test]
+    async fn retired_terminal_frames_cannot_survive_into_shared_dispatch() {
+        let (_dir, cert, key) = cert_pair();
+        let listener =
+            QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = async {
+            let (mut reader, _writer, _) = listener.accept().await.unwrap();
+            let _ = reader.read_frame().await.unwrap().unwrap();
+            let mut events = reader.take_stream_events().expect("upgrade once");
+            let QuicStreamEvent::Bound {
+                terminal_id,
+                stream_id,
+                recv,
+                frames,
+                events: pump_events,
+                frame_bytes,
+                terminal_frame_bytes,
+                ..
+            } = events.recv().await.unwrap()
+            else {
+                panic!("expected bind");
+            };
+            let active = Arc::new(AtomicBool::new(true));
+            tokio::spawn(pump_terminal_stream(
+                recv,
+                terminal_id,
+                stream_id,
+                frames,
+                pump_events,
+                frame_bytes,
+                terminal_frame_bytes,
+                Arc::clone(&active),
+                tokio_util::sync::CancellationToken::new(),
+            ));
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            active.store(false, Ordering::Release);
+            let frame = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())
+                .await
+                .expect("control frame progresses")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                frame.as_ref(),
+                &FRAME,
+                "retired Terminal frame was discarded"
+            );
+        };
+        let client = async {
+            let endpoint = client_endpoint();
+            let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
+            let (mut control, _recv) = conn.open_bi().await.unwrap();
+            control.write_all(&FRAME).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let (mut terminal, _recv) = conn.open_bi().await.unwrap();
+            terminal.write_all(&stream_bind_bytes(7, 1)).await.unwrap();
+            let mut input = BytesMut::new();
+            phux_protocol::wire::frame::FrameKind::InputFocus {
+                terminal_id: phux_protocol::ids::ResourceId::local(7),
+                event: phux_protocol::input::focus::FocusEvent::Gained,
+            }
+            .encode(&mut input);
+            terminal.write_all(&input).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            control.write_all(&FRAME).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        };
+
+        tokio::join!(server, client);
+    }
+
+    #[tokio::test]
+    async fn incomplete_terminal_bodies_cannot_starve_control() {
+        let (_dir, cert, key) = cert_pair();
+        let listener =
+            QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let server = async {
+            let (mut reader, _writer, _) = listener.accept().await.unwrap();
+            let _ = reader.read_frame().await.unwrap().unwrap();
+            let mut events = reader.take_stream_events().expect("upgrade once");
+            for _ in 0..2 {
+                let QuicStreamEvent::Bound {
+                    terminal_id,
+                    stream_id,
+                    recv,
+                    frames,
+                    events: pump_events,
+                    frame_bytes,
+                    terminal_frame_bytes,
+                    ..
+                } = events.recv().await.unwrap()
+                else {
+                    panic!("expected bind");
+                };
+                tokio::spawn(pump_terminal_stream(
+                    recv,
+                    terminal_id,
+                    stream_id,
+                    frames,
+                    pump_events,
+                    frame_bytes,
+                    terminal_frame_bytes,
+                    Arc::new(AtomicBool::new(true)),
+                    tokio_util::sync::CancellationToken::new(),
+                ));
+            }
+            let control = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())
+                .await
+                .expect("control is not starved")
+                .unwrap()
+                .unwrap();
+            assert_eq!(control.as_ref(), &FRAME);
+        };
+        let client = async {
+            let endpoint = client_endpoint();
+            let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
+            let (mut control, _recv) = conn.open_bi().await.unwrap();
+            control.write_all(&FRAME).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let (mut first, _recv) = conn.open_bi().await.unwrap();
+            let (mut second, _recv) = conn.open_bi().await.unwrap();
+            first.write_all(&stream_bind_bytes(7, 1)).await.unwrap();
+            second.write_all(&stream_bind_bytes(8, 1)).await.unwrap();
+            let max_header = phux_protocol::wire::frame::MAX_FRAME_LEN.to_be_bytes();
+            first.write_all(&max_header).await.unwrap();
+            second.write_all(&max_header).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            control.write_all(&FRAME).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
         };
 
         tokio::join!(server, client);

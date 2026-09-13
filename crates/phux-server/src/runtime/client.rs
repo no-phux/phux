@@ -37,7 +37,9 @@ use super::{
 };
 use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState, TerminalInput};
 use crate::terminal_actor::ConsumerDetachRequest;
-use crate::transport::quic::{QuicStreamEvent, QuicWriter, refuse_terminal_stream};
+use crate::transport::quic::{
+    QuicStreamEvent, QuicStreamFailure, QuicWriter, pump_terminal_stream, refuse_terminal_stream,
+};
 use crate::transport::{
     AcceptErrorDisposition, FrameReader, FrameWriter, Incoming, WS_REJECTION_WARN_INTERVAL,
 };
@@ -113,7 +115,10 @@ mod negotiated_feature_tests {
     /// it (ADR-0115).
     #[tokio::test]
     async fn quic_streams_bit_advertised_on_quic_only() {
-        async fn negotiate(transport: TransportType) -> NegotiatedConnection {
+        async fn negotiate_with_caps(
+            transport: TransportType,
+            client_caps: ClientCapabilities,
+        ) -> NegotiatedConnection {
             let state = SharedState::new();
             let client_id = state.with_mut(crate::state::ServerState::new_client_id);
             state.with_mut(|s| {
@@ -144,10 +149,11 @@ mod negotiated_feature_tests {
                     protocol_major: PROTOCOL_VERSION.major,
                     protocol_minor: PROTOCOL_VERSION.minor,
                     protocol_patch: PROTOCOL_VERSION.patch,
-                    client_caps: ClientCapabilities::default(),
+                    client_caps,
                 },
                 &mut negotiated,
                 transport,
+                matches!(transport, TransportType::Quic),
             )
             .await
             .map_err(|close| close.message)
@@ -155,10 +161,25 @@ mod negotiated_feature_tests {
             negotiated.expect("negotiation caches the selection")
         }
 
-        let quic = negotiate(TransportType::Quic).await;
+        async fn negotiate(transport: TransportType) -> NegotiatedConnection {
+            negotiate_with_caps(transport, ClientCapabilities::default()).await
+        }
+
+        let quic = negotiate_with_caps(
+            TransportType::Quic,
+            ClientCapabilities::default().with_quic_streams(true),
+        )
+        .await;
         assert!(
             quic.server_features.contains(ServerFeature::QuicStreams),
             "QUIC connections advertise QUIC_STREAMS"
+        );
+        let legacy_quic = negotiate(TransportType::Quic).await;
+        assert!(
+            !legacy_quic
+                .server_features
+                .contains(ServerFeature::QuicStreams),
+            "QUIC without client opt-in must retain the single-stream shape"
         );
         for transport in [
             TransportType::UnixSocket,
@@ -1366,8 +1387,9 @@ pub(crate) async fn accept_loop<L: Incoming>(
                         let task_root_token = root_token.clone();
                         let task_input_lane = input_lane.clone();
                         let task_transport = listener.transport_type();
+                        let task_supports_quic_streams = listener.supports_quic_streams();
                         clients.spawn_local(async move {
-                            if let Err(err) = handle_client(reader, writer, task_state.clone(), client_id, client_token, task_root_token, task_input_lane, task_transport).await {
+                            if let Err(err) = handle_client(reader, writer, task_state.clone(), client_id, client_token, task_root_token, task_input_lane, task_transport, task_supports_quic_streams).await {
                                 warn!(error = %err, "client task ended with error");
                             }
                             // Implicit detach on EOF / error path, plus the
@@ -1646,6 +1668,23 @@ struct StreamBinding {
     tx: tokio::sync::mpsc::Sender<Outbound>,
     stream_id: StreamId,
     writer: JoinSet<()>,
+    ingress_active: Arc<std::sync::atomic::AtomicBool>,
+    ingress_cancel: CancellationToken,
+}
+
+impl StreamBinding {
+    fn retire(&mut self) {
+        self.ingress_active.store(false, Ordering::Release);
+        self.ingress_cancel.cancel();
+        self.writer.detach_all();
+    }
+}
+
+impl Drop for StreamBinding {
+    fn drop(&mut self) {
+        self.ingress_active.store(false, Ordering::Release);
+        self.ingress_cancel.cancel();
+    }
 }
 
 /// One connection's outbound plumbing: the mailbox every stage sends through,
@@ -1733,7 +1772,11 @@ impl ClientPlumbing {
         terminal_id: WireResourceId,
         stream_id: StreamId,
         writer: QuicWriter,
-    ) -> tokio::sync::mpsc::Sender<Outbound> {
+    ) -> (
+        tokio::sync::mpsc::Sender<Outbound>,
+        Arc<std::sync::atomic::AtomicBool>,
+        CancellationToken,
+    ) {
         let (tx, rx) = tokio::sync::mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
         let mut writer_tasks: JoinSet<()> = JoinSet::new();
         writer_tasks.spawn_local(writer_task(
@@ -1744,15 +1787,21 @@ impl ClientPlumbing {
             client_id,
         ));
         let sender = tx.clone();
-        self.stream_bindings.insert(
+        let ingress_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let ingress_cancel = CancellationToken::new();
+        if let Some(mut replaced) = self.stream_bindings.insert(
             terminal_id,
             StreamBinding {
                 tx,
                 stream_id,
                 writer: writer_tasks,
+                ingress_active: Arc::clone(&ingress_active),
+                ingress_cancel: ingress_cancel.clone(),
             },
-        );
-        sender
+        ) {
+            replaced.retire();
+        }
+        (sender, ingress_active, ingress_cancel)
     }
 
     /// Drop one stream binding, returning its generation for staleness
@@ -1760,7 +1809,7 @@ impl ClientPlumbing {
     /// pump's sender clone is gone; the caller aborts the pump first.
     fn drop_stream_binding(&mut self, terminal_id: &WireResourceId) -> Option<StreamId> {
         self.stream_bindings.remove(terminal_id).map(|mut binding| {
-            binding.writer.detach_all();
+            binding.retire();
             binding.stream_id
         })
     }
@@ -1771,7 +1820,7 @@ impl ClientPlumbing {
         self.stream_bindings
             .drain()
             .map(|(terminal_id, mut binding)| {
-                binding.writer.detach_all();
+                binding.retire();
                 (terminal_id, binding.stream_id)
             })
             .collect()
@@ -1906,6 +1955,7 @@ async fn negotiate_hello(
     hello: HelloRequest,
     negotiated: &mut Option<NegotiatedConnection>,
     transport: TransportType,
+    route_supports_quic_streams: bool,
 ) -> Result<(), ConnectionClose> {
     let HelloRequest {
         client_name,
@@ -1965,7 +2015,10 @@ async fn negotiate_hello(
     // ssh-stdio, WebSocket, and WebTransport keep the single-stream shape
     // permanently, so a client that sees the bit knows a second stream will
     // be accepted. Unknown transport variants fail closed (no bit).
-    if matches!(transport, TransportType::Quic) {
+    if matches!(transport, TransportType::Quic)
+        && route_supports_quic_streams
+        && client_caps.quic_streams
+    {
         server_features = ServerFeatureSet::from_wire(server_features.as_wire() | QUIC_STREAMS);
     }
     // The client's offer is the whole input: a server never compresses toward
@@ -2260,6 +2313,11 @@ async fn serve_history_request(
     clippy::too_many_arguments,
     reason = "the connection context (state, ids, tokens, lane, transport) threaded verbatim from the accept loop; the transport selects QUIC-only advertisement"
 )]
+#[allow(
+    clippy::significant_drop_tightening,
+    clippy::single_match_else,
+    reason = "the optional stream event receiver intentionally lives for the full connection loop and its closed-channel branch documents starvation prevention"
+)]
 pub(crate) async fn handle_client<R, W>(
     mut reader: R,
     writer: W,
@@ -2269,6 +2327,7 @@ pub(crate) async fn handle_client<R, W>(
     root_token: CancellationToken,
     input_lane: Option<InputLaneHandle>,
     transport: TransportType,
+    route_supports_quic_streams: bool,
 ) -> io::Result<()>
 where
     R: FrameReader + 'static,
@@ -2293,6 +2352,11 @@ where
     // Terminal-stream events, taken from the transport once HELLO negotiates
     // QUIC multi-stream. `None` on every other transport (and before HELLO).
     let mut stream_events: Option<tokio::sync::mpsc::Receiver<QuicStreamEvent>> = None;
+    // Absolute from runtime admission, not from the most recent frame: PING is
+    // permitted before HELLO for health probes but must not keep a silent or
+    // evasive peer alive forever after transport establishment.
+    let hello_deadline = tokio::time::sleep(crate::transport::HANDSHAKE_DEADLINE);
+    tokio::pin!(hello_deadline);
 
     loop {
         // Pull the next complete frame from the transport — length-prefixed on
@@ -2303,6 +2367,9 @@ where
         // Terminal-stream binds/ends arrive on their own channel (QUIC
         // multi-stream only); they are connection events, not frames, so
         // they bypass decode and dispatch straight to subscription handling.
+        // The frame arm deliberately precedes the event arm: a stream pump
+        // queues every complete frame before its `Ended`, so draining a ready
+        // frame first preserves input-before-FIN causality.
         let framed = tokio::select! {
             biased;
             () = token.cancelled() => {
@@ -2312,6 +2379,30 @@ where
                     .await;
                 return Ok(());
             }
+            () = &mut hello_deadline, if negotiated.is_none() => {
+                warn!(?client_id, "client did not complete HELLO before deadline; closing");
+                plumbing.close(ConnectionClose {
+                    attached_reason: None,
+                    code: ErrorCode::VersionIncompatible,
+                    message: "HELLO deadline elapsed".to_owned(),
+                }, &state, client_id).await;
+                return Ok(());
+            }
+            res = reader.read_frame() => match res {
+                Ok(Some(framed)) => framed,
+                Ok(None) => {
+                    debug!("client disconnected (eof)");
+                    return Ok(());
+                }
+                Err(err) => {
+                    let Some(close) = framing_violation_close(&err, client_id) else {
+                        debug!(error = %err, "client read error; closing");
+                        return Ok(());
+                    };
+                    plumbing.close(close, &state, client_id).await;
+                    return Ok(());
+                }
+            },
             event = async {
                 match stream_events.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -2331,26 +2422,15 @@ where
                         .await;
                         continue;
                     }
-                    // The mux ended with the connection; the control read
-                    // below will observe EOF next.
-                    None => continue,
+                    // Disable this select arm permanently. Polling a closed
+                    // receiver is immediately ready and would otherwise
+                    // starve the control reader from observing EOF.
+                    None => {
+                        stream_events = None;
+                        continue;
+                    }
                 }
             }
-            res = reader.read_frame() => match res {
-                Ok(Some(framed)) => framed,
-                Ok(None) => {
-                    debug!("client disconnected (eof)");
-                    return Ok(());
-                }
-                Err(err) => {
-                    let Some(close) = framing_violation_close(&err, client_id) else {
-                        debug!(error = %err, "client read error; closing");
-                        return Ok(());
-                    };
-                    plumbing.close(close, &state, client_id).await;
-                    return Ok(());
-                }
-            },
         };
 
         let frame = match decode_client_frame(&framed, negotiated.as_ref()) {
@@ -2388,6 +2468,7 @@ where
                     hello,
                     &mut negotiated,
                     transport,
+                    route_supports_quic_streams,
                 )
                 .await
                 {
@@ -2849,8 +2930,8 @@ async fn handle_stream_event(
         // Pre-HELLO binds cannot happen (the client learns the bit from
         // HELLO_OK), and a non-negotiating connection never opens a second
         // stream: either way this is a transport-level surprise, reset.
-        if let QuicStreamEvent::Bound { send, .. } = event {
-            refuse_terminal_stream(send);
+        if let QuicStreamEvent::Bound { send, recv, .. } = event {
+            refuse_terminal_stream(send, recv);
         }
         return;
     };
@@ -2859,8 +2940,8 @@ async fn handle_stream_event(
         .contains(ServerFeature::QuicStreams)
     {
         // Negotiated without the shape: same surprise, same reset.
-        if let QuicStreamEvent::Bound { send, .. } = event {
-            refuse_terminal_stream(send);
+        if let QuicStreamEvent::Bound { send, recv, .. } = event {
+            refuse_terminal_stream(send, recv);
         }
         return;
     }
@@ -2869,7 +2950,12 @@ async fn handle_stream_event(
             terminal_id,
             stream_id,
             send,
-            conn,
+            recv,
+            window,
+            frames,
+            events,
+            frame_bytes,
+            terminal_frame_bytes,
         } => {
             bind_terminal_stream(
                 state,
@@ -2877,7 +2963,12 @@ async fn handle_stream_event(
                 terminal_id,
                 stream_id,
                 send,
-                conn,
+                recv,
+                window,
+                frames,
+                events,
+                frame_bytes,
+                terminal_frame_bytes,
                 plumbing,
                 selection,
                 token,
@@ -2902,7 +2993,57 @@ async fn handle_stream_event(
             }
             teardown_terminal_stream(state, client_id, plumbing, &terminal_id).await;
         }
+        QuicStreamEvent::Failed {
+            terminal_id,
+            stream_id,
+            failure,
+        } => {
+            handle_stream_failure(state, client_id, plumbing, terminal_id, stream_id, failure)
+                .await;
+        }
     }
+}
+
+async fn handle_stream_failure(
+    state: &SharedState,
+    client_id: ClientId,
+    plumbing: &mut ClientPlumbing,
+    terminal_id: WireResourceId,
+    stream_id: StreamId,
+    failure: QuicStreamFailure,
+) {
+    let current = plumbing
+        .stream_bindings
+        .get(&terminal_id)
+        .map(|binding| binding.stream_id);
+    if current != Some(stream_id) {
+        debug!(
+            ?client_id,
+            ?terminal_id,
+            "stale terminal-stream failure ignored"
+        );
+        return;
+    }
+    let (code, message) = match failure {
+        QuicStreamFailure::Framing(framing) => (ErrorCode::FrameTooLarge, framing.wire_message()),
+        QuicStreamFailure::IncompleteFrame => (
+            ErrorCode::MalformedMessage,
+            "Terminal QUIC stream ended or timed out mid-frame".to_owned(),
+        ),
+        QuicStreamFailure::Transport(message) => (
+            ErrorCode::MalformedMessage,
+            format!("Terminal QUIC stream failed: {message}"),
+        ),
+    };
+    let _ = plumbing
+        .out_tx
+        .send(Outbound::Frame(FrameKind::Error {
+            request_id: None,
+            code,
+            message: format!("{terminal_id:?} stream {stream_id:?}: {message}"),
+        }))
+        .await;
+    teardown_terminal_stream(state, client_id, plumbing, &terminal_id).await;
 }
 
 /// Subscribe-and-bootstrap one bound Terminal stream.
@@ -2924,7 +3065,12 @@ async fn bind_terminal_stream(
     terminal_id: WireResourceId,
     stream_id: StreamId,
     send: quinn::SendStream,
-    conn: quinn::Connection,
+    recv: quinn::RecvStream,
+    window: SendWindow,
+    frames: tokio::sync::mpsc::Sender<crate::transport::quic::AdmittedFrame>,
+    events: tokio::sync::mpsc::Sender<QuicStreamEvent>,
+    frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
+    terminal_frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     plumbing: &mut ClientPlumbing,
     selection: &NegotiatedConnection,
     token: &CancellationToken,
@@ -2943,7 +3089,7 @@ async fn bind_terminal_stream(
         s.subscribers_for_terminal(local.id).contains(&client_id)
     });
     if !subscribed {
-        refuse_terminal_stream(send);
+        refuse_terminal_stream(send, recv);
         let _ = plumbing
             .out_tx
             .send(Outbound::Frame(FrameKind::Error {
@@ -2954,17 +3100,19 @@ async fn bind_terminal_stream(
             .await;
         return;
     }
-    let stream_tx = plumbing.bind_stream(
+    let (stream_tx, ingress_active, ingress_cancel) = plumbing.bind_stream(
         client_id,
         terminal_id.clone(),
         stream_id,
-        QuicWriter::from_stream(send, SendWindow::new(conn)),
+        QuicWriter::from_stream(send, window),
     );
     // Remember the subscription against control BEFORE bootstrapping with
     // the stream: lifecycle fanout must resolve to control even if the
     // Terminal dies mid-bootstrap.
     let subscription = subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx);
     let Some((core, handle)) = subscription else {
+        let mut recv = recv;
+        let _ = recv.stop(0x10_u32.into());
         plumbing.drop_stream_binding(&terminal_id);
         let _ = plumbing
             .out_tx
@@ -2976,6 +3124,17 @@ async fn bind_terminal_stream(
             .await;
         return;
     };
+    tokio::spawn(pump_terminal_stream(
+        recv,
+        terminal_id.clone(),
+        stream_id,
+        frames,
+        events,
+        frame_bytes,
+        terminal_frame_bytes,
+        ingress_active,
+        ingress_cancel,
+    ));
     if let Err(failure) = bootstrap_attach_terminal(
         state,
         client_id,
@@ -4896,6 +5055,60 @@ mod writer_close_tests {
         }
     }
 
+    struct PingBeforeHelloReader {
+        remaining: u8,
+    }
+
+    impl FrameReader for PingBeforeHelloReader {
+        async fn read_frame(&mut self) -> io::Result<Option<BytesMut>> {
+            if self.remaining == 0 {
+                return std::future::pending().await;
+            }
+            tokio::time::sleep(crate::transport::HANDSHAKE_DEADLINE / 4).await;
+            self.remaining -= 1;
+            let mut frame = BytesMut::new();
+            FrameKind::Ping {
+                nonce: u64::from(self.remaining),
+            }
+            .encode(&mut frame);
+            Ok(Some(frame))
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn pre_hello_ping_cannot_reset_absolute_handshake_deadline() {
+        LocalSet::new()
+            .run_until(async {
+                let events = Rc::new(RefCell::new(Vec::new()));
+                let task = tokio::task::spawn_local(handle_client(
+                    PingBeforeHelloReader { remaining: 8 },
+                    RecordingWriter(Rc::clone(&events)),
+                    SharedState::new(),
+                    ClientId(10),
+                    CancellationToken::new(),
+                    CancellationToken::new(),
+                    None,
+                    TransportType::WebTransport,
+                    false,
+                ));
+                tokio::time::advance(crate::transport::HANDSHAKE_DEADLINE).await;
+                task.await
+                    .expect("client task")
+                    .expect("deadline is a clean protocol close");
+                let events = events.borrow();
+                assert!(events.iter().any(|event| matches!(event, WriterEvent::Frame)));
+                assert!(
+                    events.ends_with(&[
+                        WriterEvent::Error,
+                        WriterEvent::Detached(Some(DetachReason::ProtocolError)),
+                        WriterEvent::Close,
+                    ]),
+                    "PINGs may receive PONGs but cannot extend the absolute HELLO deadline: {events:?}",
+                );
+            })
+            .await;
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn root_cancellation_flushes_server_shutdown_before_transport_close() {
         LocalSet::new()
@@ -4911,6 +5124,7 @@ mod writer_close_tests {
                     root_token.clone(),
                     None,
                     TransportType::UnixSocket,
+                    false,
                 ));
                 tokio::task::yield_now().await;
                 root_token.cancel();
@@ -5125,6 +5339,7 @@ mod fatal_preflight_close_tests {
                     CancellationToken::new(),
                     None,
                     TransportType::UnixSocket,
+                    false,
                 ));
                 let actor = tokio::task::spawn_local(async move {
                     let registration = consumer_attach_rx
