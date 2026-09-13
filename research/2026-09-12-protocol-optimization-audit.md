@@ -432,6 +432,12 @@ Existing write batching and byte-sharing are valuable foundations. The
 server already coalesces writes; adding another timer-based batcher can
 increase typing latency. No table entry is a measured speedup estimate.
 
+**Implementation evidence (2026-09-13):** phux-au1s.18 reuses encoder-local
+TLV scratch while preserving zero-based builder views and wire goldens.
+Measured ACK and 1 KiB output frame allocations fall from four to one per
+frame; Ping remains one. See the
+[wire encoding measurement report](2026-09-13-wire-encoding-measurements.md).
+
 ## Control traffic includes bulk payloads
 
 **Medium-to-high impact on thin paths; source-proven framing exposure.**
