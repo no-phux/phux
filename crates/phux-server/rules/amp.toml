@@ -1,0 +1,70 @@
+# Agent-state detection manifest for Amp CLI (ADR-0046).
+#
+# Predicates were verified against Amp 0.0.1789315238-g490ac9 running in a
+# phux pane. Fixtures under agent_detect/fixtures/amp are unedited
+# `phux snapshot --json` viewports captured from that binary.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not. No permission dialog was captured: this install ran
+# `touch` without painting an approval prompt. No blocked rule is shipped.
+
+kind = "amp"
+name = "amp"
+
+# Native `amp` argv[0] basename (~/.local/bin/amp -> ~/.amp/bin/amp).
+binaries = ["amp"]
+
+# --- Title rules -------------------------------------------------------------
+#
+# While a turn runs, Amp writes an animated braille spinner into the OSC
+# title ahead of the conversation title. Captured frames from
+# 0.0.1789315238-g490ac9:
+#
+#     '⠊ Terminal haiku - amp - /private/tmp/phux-agent-capture/ws-amp'
+#     '⠭ Terminal haiku - amp - /private/tmp/phux-agent-capture/ws-amp'
+#
+# When no turn is running the title is the conversation title with no
+# prefix (`Terminal haiku - amp - /path`), or absent on the startup splash.
+# The bare title is deliberately NOT given an `idle` rule: it means "not
+# running a turn", which would cover a permission dialog if one is captured.
+
+[[rules]]
+id = "title-busy-spinner"
+state = "working"
+priority = 100
+region = "title"
+match = { line-regex = "^[⠀-⣿] " }
+
+# --- Screen rules ------------------------------------------------------------
+#
+# A screen-side `working` backstop for a terminal that suppresses the OSC
+# title. Amp paints an activity verb into the prompt-box footer while a
+# turn runs. Captured footers:
+#
+#     idle:      "╰───────────────────────────────────── /path ─╯"
+#     working:   "╰ ≈ Waiting ────────────────────────── /path ─╯"
+#     working:   "╰ ∼ Streaming ──────────────────────── /path ─╯"
+#     working:   "╰ ∼ Sending ────────────────────────── /path ─╯"
+#     working:   "╰ ∼ Running Tools ──────────────────── /path ─╯"
+#
+# The marker after `╰` is either U+2248 ALMOST EQUAL TO or U+223C TILDE
+# OPERATOR; the rule matches either rather than enumerating verbs. The
+# idle footer has no such marker (`╰──── /path ─╯`). `prompt-box` strips
+# border glyphs and drops corner rows, so the activity footer is invisible
+# there; `bottom-lines` keeps the match on live chrome and off a quoted
+# footer in scrollback.
+
+[[rules]]
+id = "prompt-box-activity-footer"
+state = "working"
+priority = 60
+region = "bottom-lines"
+match = { line-regex = '╰ [∼≈] ' }
+
+# --- Rules deliberately NOT written ------------------------------------------
+#
+# No `idle` rule. The composer is painted identically idle vs working; only
+# the footer marker and the title spinner distinguish them. `idle` is the
+# detector's fail-safe default (ADR-0046 §D).
+#
+# No `blocked` rule. A permission prompt was not captured on this install.

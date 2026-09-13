@@ -1,0 +1,42 @@
+# Agent-state detection manifest for Cursor Agent CLI (ADR-0046).
+#
+# Identity is verified: `cursor-agent` is a bash wrapper that `exec -a "$0"`s
+# the bundled Node entry, so argv[0] is `cursor-agent`. The login splash
+# under agent_detect/fixtures/cursor-agent is an unedited `phux snapshot
+# --json` viewport captured from Cursor Agent 2026.09.10-fd3934a.
+#
+# No working or blocked screen was captured. This environment's CLI stopped
+# at "Press any key to log in..." / a browser sign-in URL, so those states
+# are not guessed. Identity still publishes: an identified pane whose
+# manifest matches nothing is idle, never blocked (ADR-0046 §D).
+
+kind = "cursor-agent"
+name = "cursor-agent"
+
+# The PATH shim is `cursor-agent`; `exec -a "$0"` keeps that basename on
+# the node process. Do not list `cursor` or `agent`: the former is a data
+# directory (`.cursor/`) and the latter is generic.
+binaries = ["cursor-agent"]
+
+# --- Screen rules ------------------------------------------------------------
+#
+# The captured login splash is not a lifecycle state. Matching it as
+# `blocked` would paint every unauthenticated pane red. The rule carries
+# no `state` so a match is evidence of nothing: the detector fails safe
+# to idle and still publishes identity. That is the point — a cursor-agent
+# pane waiting on browser login should appear in Agents, not vanish.
+
+[[rules]]
+id = "login-splash"
+priority = 50
+region = "viewport"
+match = { any = [
+  { contains = "press any key to log in" },
+  { contains = "signing in with the browser" },
+] }
+
+# --- Rules deliberately NOT written ------------------------------------------
+#
+# No `working` or `blocked` rule. The CLI required an interactive browser
+# login, so those screens were not captured. A rule matching a screen
+# nobody has seen is a guess.

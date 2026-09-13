@@ -302,7 +302,16 @@ mod tests {
     #[test]
     fn every_builtin_kind_is_listed_and_resolvable() {
         let listed = kinds();
-        for kind in ["claude", "codex", "opencode", "pi", "omp"] {
+        for kind in [
+            "claude",
+            "codex",
+            "opencode",
+            "pi",
+            "omp",
+            "grok",
+            "amp",
+            "cursor-agent",
+        ] {
             assert!(
                 listed.iter().any(|k| k == kind),
                 "{kind} missing: {listed:?}"
@@ -312,6 +321,10 @@ mod tests {
         // A binary alias resolves to its kind ...
         assert_eq!(resolve_kind("claude-code").as_deref(), Some("claude"));
         assert_eq!(resolve_kind("opencode2").as_deref(), Some("opencode"));
+        assert_eq!(
+            resolve_kind("cursor-agent").as_deref(),
+            Some("cursor-agent")
+        );
         // ... and a name that is neither resolves to nothing.
         assert_eq!(resolve_kind("not-an-agent"), None);
     }
