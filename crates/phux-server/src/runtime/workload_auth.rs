@@ -104,9 +104,15 @@ mod tests {
                 "failed explicit mTLS must never fall back to bearer or anonymous QUIC"
             );
             assert!(slot.is_unhealthy());
+            assert_eq!(
+                slot.disabled_reason,
+                Some(super::super::ListenerDisabledReason::TlsSetupFailed)
+            );
             return;
         }
-        for malformed_registry in [false, true] {
+        for (malformed_registry, secure) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
             let dir = tempfile::tempdir().unwrap();
             let leaf = dir.path().join("leaf.pem");
             let leaf_key = dir.path().join("leaf-key.pem");
@@ -123,6 +129,8 @@ mod tests {
             } else {
                 std::fs::write(&ca, "partial CA pair").unwrap();
             }
+            let tokens = dir.path().join("tokens.json");
+            crate::auth::write_test_credential(&tokens, &[0x11; crate::auth::TOKEN_LEN]);
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([
                     "--exact",
@@ -136,8 +144,8 @@ mod tests {
                 .env("PHUX_WORKLOAD_KEYS", registry)
                 .env("PHUX_WS_TLS_CERT", leaf)
                 .env("PHUX_WS_TLS_KEY", leaf_key)
-                .env("PHUX_WS_TOKENS", dir.path().join("tokens.json"))
-                .env_remove("PHUX_WS_SECURE")
+                .env("PHUX_WS_TOKENS", tokens)
+                .env("PHUX_WS_SECURE", if secure { "1" } else { "" })
                 .output()
                 .unwrap();
             assert!(
