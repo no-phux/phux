@@ -28,6 +28,7 @@ const durable_creation = @import("../durable_creation.zig");
 const shared_workspace = @import("../shared_workspace.zig");
 const peer_edits = @import("../peer_edits.zig");
 const session_attachments = @import("session_attachments.zig");
+const local_tool_launch = @import("local_tool_launch.zig");
 pub const new_session = @import("new_session.zig");
 pub const new_session_runtime = @import("new_session_runtime.zig");
 pub const machine_runtime = @import("machine_runtime.zig");
@@ -202,8 +203,19 @@ const SplitDrag = struct {
 /// not be decoded at all). Bits 0..6 belong to `ts_snapshot.snapshotFlags`.
 pub const intent_refused_flag: u8 = 1 << 7;
 
+const LocalToolPlacement = struct {
+    ticket: u64,
+    provider_context: u64,
+    host_context: u64,
+    connection_epoch: u64,
+    window: usize,
+    window_epoch: u64,
+    terminal_ref: TerminalRef,
+};
+
 pub const Engine = struct {
     model: *Model,
+    allocator: std.mem.Allocator = std.heap.page_allocator,
     sequence: u64 = 0,
     revision: u64 = 1,
     selection_epoch: u64 = 1,
@@ -248,6 +260,11 @@ pub const Engine = struct {
     /// coordinator, so a rename on one never refuses a rename on another.
     /// Each outcome is read from its own coordinator only.
     rename_flights: @import("session_commands.zig").Flights = .{},
+    /// Exact bound-spawn owner installed by the process composition root.
+    /// It gets first refusal on operation results before ordinary creators.
+    local_tool_sink: ?local_tool_launch.Sink = null,
+    local_tool_placements: [16]?LocalToolPlacement = @splat(null),
+    next_local_tool_ticket: u64 = 0x4c54_0000_0000_0001,
 
     const empty_session = @import("empty_session.zig");
     const peer_restore = @import("peer_restore.zig");
@@ -275,7 +292,7 @@ pub const Engine = struct {
         errdefer std.heap.page_allocator.destroy(model);
         model.* = try model_module.initialModelWithIo(gpa, io, session);
         const engine = try std.heap.page_allocator.create(Engine);
-        engine.* = .{ .model = model };
+        engine.* = .{ .model = model, .allocator = gpa };
         return engine;
     }
 
@@ -319,7 +336,7 @@ pub const Engine = struct {
         }
         if (model.phux() != null) initializeSharedPresentation(model);
         const engine = try std.heap.page_allocator.create(Engine);
-        engine.* = .{ .model = model };
+        engine.* = .{ .model = model, .allocator = model.provider.gpa };
         return engine;
     }
 
@@ -545,6 +562,10 @@ pub const Engine = struct {
         const remote = model.phux() orelse return false;
         var changed = false;
         while (remote.takeOperationResult()) |result| {
+            if (self.completeLocalTool(remote, result)) {
+                changed = true;
+                continue;
+            }
             _ = self.creation.complete(model, result);
             // Subscription restoration may share the provider's deduplicated
             // attach request. Both exact owners must observe its completion.
@@ -552,6 +573,11 @@ pub const Engine = struct {
             changed = true;
         }
         return changed;
+    }
+
+    fn completeLocalTool(self: *Engine, remote: *support.PhuxProvider, result: support.OperationResult) bool {
+        const sink = self.local_tool_sink orelse return false;
+        return sink.complete(sink.context, remote, result);
     }
 
     fn completeSubscriptions(state: *shared_workspace.State, remote: *support.PhuxProvider, result: support.OperationResult) bool {
@@ -690,6 +716,7 @@ pub const Engine = struct {
             empty_session.forgetAttachment(self.model, remote.context_id, false);
             remote.stop();
             while (remote.takeOperationResult()) |result| {
+                if (self.completeLocalTool(remote, result)) continue;
                 _ = self.creation.completeDisconnected(self.model, result);
             }
         }
@@ -900,6 +927,11 @@ pub const Engine = struct {
     pub fn navigationSnapshot(self: *Engine, request: []const u8, out: []u8) navigation.Error![]const u8 {
         self.refreshWorkspace();
         return navigation.encode(self.model, self.revision, request, out);
+    }
+
+    pub fn navigationSnapshotForAttachments(self: *Engine, request: []const u8, out: []u8, attachments: []const u64) navigation.Error![]const u8 {
+        self.refreshWorkspace();
+        return navigation.encodeForAttachments(self.model, self.revision, request, out, attachments);
     }
 
     fn selectNavigation(self: *Engine, intent: protocol.NavigationIntent, fx: anytype) bool {
@@ -1574,7 +1606,7 @@ pub const Engine = struct {
         while (peer.takeNotice()) |notice| peer.releaseNotice(notice);
         // A listing peer's only operations are conditional kills of its
         // strays: best effort, their outcomes are not waited for.
-        while (peer.takeOperationResult()) |_| {}
+        while (peer.takeOperationResult()) |result| _ = self.completeLocalTool(peer, result);
         // Listing again: its strays (spawns whose placement was never sent)
         // are killed there, each only if still unattached since its spawn.
         if (delta.sessions_listed) _ = self.peer_edits.sendStrays(self.model, slot);
@@ -1661,12 +1693,7 @@ pub const Engine = struct {
         const peer = model.phuxPeerAt(slot).?;
         const state = &model.peers.items[slot].workspace;
         model.bindSharedAttachment(peer);
-        var changed = false;
-        while (peer.takeOperationResult()) |result| {
-            _ = completeSubscriptions(state, peer, result);
-            _ = self.peer_edits.complete(model, slot, result);
-            changed = true;
-        }
+        var changed = self.drainShowingPeerOperations(peer, state, slot);
         changed = self.drainNotices(fx, peer) or changed;
         const published = peer.workspaceSnapshot();
         if (published.state == .unavailable) return changed;
@@ -1682,6 +1709,21 @@ pub const Engine = struct {
         if (published.status != .pending and self.peer_edits.pendingCreations(slot) == 0) state.releaseUnused(model);
         state.subscribe(model);
         return projected or changed;
+    }
+
+    fn drainShowingPeerOperations(self: *Engine, peer: *support.PhuxProvider, state: *shared_workspace.State, slot: usize) bool {
+        const model = self.model;
+        var changed = false;
+        while (peer.takeOperationResult()) |result| {
+            if (self.completeLocalTool(peer, result)) {
+                changed = true;
+                continue;
+            }
+            _ = completeSubscriptions(state, peer, result);
+            _ = self.peer_edits.complete(model, slot, result);
+            changed = true;
+        }
+        return changed;
     }
 
     /// After pumping an exact attachment, settle its empty picks from that
@@ -1941,6 +1983,34 @@ pub const Engine = struct {
         self.revision +%= 1;
     }
 
+    /// Start or restart the configured local coordinator without retargeting an
+    /// ambient remote provider or following the focused terminal's host.
+    pub fn connectConfiguredLocal(self: *Engine, origin: @import("ts_window_navigation.zig").Target, fx: anytype, phux_event: anytype) !void {
+        if (comptime !support.phux_enabled) return error.NoProvider;
+        if (!origin.validWindow(self.model)) return error.StaleTarget;
+        const path = self.model.config.phux_socket.slice();
+        if (path.len == 0) return error.NoProvider;
+        if (self.localToolProvider()) |remote| {
+            if (self.model.phux() == remote) {
+                self.openPhuxChannel(fx, phux_event, remote.state() != .new);
+                return;
+            }
+            const slot = self.model.peerSlotForAttachment(remote.context_id) orelse return error.StaleTarget;
+            self.model.peers.items[slot].failed = false;
+            if (!fx.restartPeer(self, slot)) return error.ConnectionUnavailable;
+            return;
+        }
+        const remote = try support.PhuxProvider.create(self.model.provider.gpa, self.model.provider.io, .{ .unix = path }, null, "phux-cockpit");
+        errdefer remote.destroy();
+        if (self.model.phux() == null) {
+            model_module.attachPhuxProvider(self.model, remote);
+            initializeSharedPresentation(self.model);
+            self.openPhuxChannel(fx, phux_event, false);
+            return;
+        }
+        try self.adoptCapturedPeer(remote, fx);
+    }
+
     /// Transfer the captured provider into stable heap-owned peer storage.
     pub fn adoptCapturedPeer(self: *Engine, remote: *support.PhuxProvider, fx: anytype) !void {
         if (comptime !support.phux_enabled) return error.NoProvider;
@@ -2119,6 +2189,105 @@ pub const Engine = struct {
 
     pub fn openPeerTabFromInWindow(self: *Engine, remote: *support.PhuxProvider, window: usize, epoch: u64, cwd: []const u8, may_focus: bool) !void {
         _ = try self.peer_edits.createTabIn(self.model, remote, window, epoch, cwd, may_focus);
+    }
+
+    pub fn localToolProvider(self: *Engine) ?*support.PhuxProvider {
+        return @constCast(self.model.localPhuxProviderConst());
+    }
+
+    pub fn localToolSelectionEpoch(self: *const Engine) u64 {
+        return self.selection_epoch;
+    }
+
+    /// A local tool never follows the focused remote. A listing local peer is
+    /// first attached to one of its own sessions in the invoking window; the
+    /// retained adapter retries only after that exact provider is ready.
+    pub fn ensureLocalSessionInWindow(self: *Engine, window: usize, epoch: u64, fx: anytype) !*support.PhuxProvider {
+        if (!self.model.windowOpen(window) or self.model.window_epochs[window] != epoch) return error.InvalidWindow;
+        const remote = self.localToolProvider() orelse return error.NotReady;
+        if (remote.state() == .attached and remote.selectedSessionId() != null) return remote;
+        if (self.model.peerSlotForAttachment(remote.context_id) != null) {
+            const catalog = remote.standbyCatalog();
+            if (catalog.len != 0) try self.showSessionFromInWindow(remote, catalog[0].id, window, epoch, fx);
+        }
+        return error.NotReady;
+    }
+
+    pub fn placeLocalToolSpawn(self: *Engine, remote: *support.PhuxProvider, window: usize, epoch: u64, result: support.OperationResult, may_focus: bool) !u64 {
+        const ref = result.terminal_ref orelse return error.MissingIdentity;
+        const slot = self.vacantLocalToolPlacement() orelse return error.OperationCapacity;
+        const ticket = self.next_local_tool_ticket;
+        const next = std.math.add(u64, ticket, 1) catch return error.OperationCapacity;
+        if (self.model.phux() == remote) {
+            try self.creation.adoptSpawnIn(self.model, remote, result, window, epoch, ticket, may_focus);
+        } else {
+            _ = try self.peer_edits.adoptSpawnIn(self.model, remote, result, window, epoch, may_focus);
+        }
+        slot.* = .{
+            .ticket = ticket,
+            .provider_context = remote.context_id,
+            .host_context = remote.host.context_id,
+            .connection_epoch = remote.connectionEpoch(),
+            .window = window,
+            .window_epoch = epoch,
+            .terminal_ref = ref,
+        };
+        self.next_local_tool_ticket = next;
+        return ticket;
+    }
+
+    pub fn localToolPlacementStatus(self: *Engine, remote: *support.PhuxProvider, ticket: u64) local_tool_launch.PlacementStatus {
+        const slot = self.localToolPlacement(ticket) orelse return .unknown;
+        const tracked = slot.*.?;
+        if (!localToolSourceCurrent(tracked, remote)) return finishLocalToolPlacement(slot, .unknown);
+        if (self.model.phux() == remote) return self.activeLocalToolPlacementStatus(slot, ticket);
+        return self.peerLocalToolPlacementStatus(slot, remote, tracked);
+    }
+
+    fn activeLocalToolPlacementStatus(self: *Engine, slot: *?LocalToolPlacement, ticket: u64) local_tool_launch.PlacementStatus {
+        const completion = self.creation.completionFor(ticket) orelse return .pending;
+        const status: local_tool_launch.PlacementStatus = switch (completion.placement) {
+            .placed => .placed,
+            .refused, .destination_lost => .refused,
+            .unknown, .not_requested => .unknown,
+        };
+        _ = self.creation.ackCompletion(ticket);
+        return finishLocalToolPlacement(slot, status);
+    }
+
+    fn peerLocalToolPlacementStatus(self: *Engine, slot: *?LocalToolPlacement, remote: *support.PhuxProvider, tracked: LocalToolPlacement) local_tool_launch.PlacementStatus {
+        if (localToolPlaced(self.model, tracked)) return finishLocalToolPlacement(slot, .placed);
+        const peer_slot = self.model.peerSlotForAttachment(remote.context_id) orelse return finishLocalToolPlacement(slot, .unknown);
+        if (self.peer_edits.pendingTerminal(peer_slot, tracked.terminal_ref)) return .pending;
+        return finishLocalToolPlacement(slot, if (remote.state() == .attached) .refused else .unknown);
+    }
+
+    fn vacantLocalToolPlacement(self: *Engine) ?*?LocalToolPlacement {
+        for (&self.local_tool_placements) |*slot| if (slot.* == null) return slot;
+        return null;
+    }
+
+    fn localToolPlacement(self: *Engine, ticket: u64) ?*?LocalToolPlacement {
+        for (&self.local_tool_placements) |*slot| {
+            const tracked = slot.* orelse continue;
+            if (tracked.ticket == ticket) return slot;
+        }
+        return null;
+    }
+
+    fn localToolSourceCurrent(tracked: LocalToolPlacement, remote: *const support.PhuxProvider) bool {
+        return tracked.provider_context == remote.context_id and tracked.host_context == remote.host.context_id and tracked.connection_epoch == remote.connectionEpoch();
+    }
+
+    fn localToolPlaced(model: *const Model, tracked: LocalToolPlacement) bool {
+        if (!model.windowOpen(tracked.window) or model.window_epochs[tracked.window] != tracked.window_epoch) return false;
+        const workspace = model.wsAtConst(tracked.window) orelse return false;
+        return workspace.tabOfTerminal(tracked.terminal_ref) != null;
+    }
+
+    fn finishLocalToolPlacement(slot: *?LocalToolPlacement, status: local_tool_launch.PlacementStatus) local_tool_launch.PlacementStatus {
+        slot.* = null;
+        return status;
     }
 
     pub fn captureNewSessionDestination(self: *Engine) ?new_session.Destination {
