@@ -112,6 +112,7 @@ phux-server.workspace = true
 # Production-path relay fallback measurements use the existing workspace relay
 # runtime; this is test-only and adds no external package.
 phux-relay.workspace = true
+sha2 = "0.11"
 tempfile.workspace = true
 rustls = { workspace = true }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }

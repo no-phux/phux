@@ -42,14 +42,16 @@ use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfileKind, BootstrapProfileSet, ClientCapabilities,
     ColorSupport, LayerSet, OutputMode, ServerFeature,
 };
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{FileUploadId, ResourceId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AttachTarget, Command, CommandResult, CommandValue, FrameKind, SpawnResult, ViewportInfo,
+    AttachTarget, Command, CommandResult, CommandValue, FrameKind, MAX_FILE_UPLOAD_CHUNK,
+    SpawnResult, ViewportInfo,
 };
 use phux_relay::{BoundRelay, RelayConfig, RelayRuntime, cert_fingerprint};
 use phux_server::{DEFAULT_GROUP_ID, ServerConfig, ServerRuntime};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -63,6 +65,11 @@ const DEFAULT_LOSS_PERCENT: &[f64] = &[0.0];
 const DEFAULT_MBIT: &[f64] = &[30.0];
 const DEFAULT_SAMPLES: usize = 7;
 const DEFAULT_FLOOD_BYTES: usize = 256 * 1024;
+const UPLOAD_RTT_MS: u64 = 50;
+const UPLOAD_FULL_BYTES: usize = MAX_FILE_UPLOAD_CHUNK;
+const UPLOAD_THIN_BYTES: usize = 256 * 1024;
+const UPLOAD_CHUNK_KIB: &[u64] = &[16, 64, 256, 8192];
+const UPLOAD_MBIT: &[f64] = &[10.0];
 const ROUTE_NAME: &str = "protocol-measure";
 const TUNNEL_TOKEN: [u8; 32] = [0x11; 32];
 const CONSUMER_TOKEN: [u8; 32] = [0x22; 32];
@@ -150,6 +157,31 @@ struct LatencySummary {
     max: u64,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct UploadCase {
+    configured_chunk_bytes: usize,
+    file_bytes: usize,
+    mbit: f64,
+}
+
+#[derive(Debug)]
+struct UploadResult {
+    case: UploadCase,
+    actual_max_chunk_bytes: usize,
+    chunks: usize,
+    upload_us: u64,
+    goodput_bps: u64,
+    send_us: LatencySummary,
+    chunk_ack_us: LatencySummary,
+    echo_us: LatencySummary,
+    control_us: LatencySummary,
+    rss_before_bytes: u64,
+    rss_after_bytes: u64,
+    cancellation_us: u64,
+    shaper_metrics: String,
+    server_perf: String,
+}
+
 struct Server {
     shutdown: Option<oneshot::Sender<()>>,
     handle: Option<JoinHandle<Result<(), phux_server::ServerError>>>,
@@ -227,8 +259,8 @@ impl EnvGuard {
             ("PHUX_WS_TLS_CERT", std::env::var_os("PHUX_WS_TLS_CERT")),
             ("PHUX_WS_TLS_KEY", std::env::var_os("PHUX_WS_TLS_KEY")),
         ];
-        // This integration binary has one ignored test, so no peer thread can
-        // observe these process-wide listener overrides.
+        // Every test in this integration binary must run serially, so no peer
+        // thread can observe these process-wide listener overrides.
         unsafe {
             std::env::set_var("PHUX_WS_TLS_CERT", cert);
             std::env::set_var("PHUX_WS_TLS_KEY", key);
@@ -238,6 +270,14 @@ impl EnvGuard {
             }
         }
         Self { previous }
+    }
+
+    fn with_upload_dir(mut self, path: &Path) -> Self {
+        self.previous
+            .push(("PHUX_UPLOAD_DIR", std::env::var_os("PHUX_UPLOAD_DIR")));
+        // This integration binary is required to run serially.
+        unsafe { std::env::set_var("PHUX_UPLOAD_DIR", path) };
+        self
     }
 }
 
@@ -374,6 +414,92 @@ fn selected_cases() -> Vec<Case> {
         }
     }
     cases
+}
+
+#[allow(
+    clippy::float_cmp,
+    reason = "the upload matrix permits exact named rates only"
+)]
+fn selected_upload_cases() -> Vec<UploadCase> {
+    let chunks = parse_list("PHUX_PROTOCOL_UPLOAD_CHUNK_KIB", UPLOAD_CHUNK_KIB);
+    let rates = parse_list("PHUX_PROTOCOL_UPLOAD_MBIT", UPLOAD_MBIT);
+    let mut cases = Vec::new();
+    for chunk_kib in chunks {
+        assert!(
+            matches!(chunk_kib, 16 | 64 | 256 | 8192),
+            "upload chunk KiB must be 16, 64, 256, or 8192"
+        );
+        for &mbit in &rates {
+            assert!(
+                matches!(mbit, 0.3 | 3.0 | 10.0),
+                "upload rate must be 0.3, 3, or 10 Mbit/s"
+            );
+            cases.push(UploadCase {
+                configured_chunk_bytes: usize::try_from(chunk_kib).unwrap() * 1024,
+                file_bytes: if mbit == 10.0 {
+                    UPLOAD_FULL_BYTES
+                } else {
+                    UPLOAD_THIN_BYTES
+                },
+                mbit,
+            });
+        }
+    }
+    cases
+}
+
+fn current_rss_bytes() -> u64 {
+    let output = ProcessCommand::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .expect("read current process RSS");
+    assert!(output.status.success(), "ps failed while reading RSS");
+    let kib: u64 = String::from_utf8(output.stdout)
+        .expect("ps RSS is UTF-8")
+        .trim()
+        .parse()
+        .expect("ps RSS is numeric KiB");
+    kib.saturating_mul(1024)
+}
+
+fn upload_goodput_bps(bytes: usize, elapsed_us: u64) -> u64 {
+    let bits = u128::try_from(bytes).unwrap().saturating_mul(8);
+    let per_second = bits
+        .saturating_mul(1_000_000)
+        .checked_div(u128::from(elapsed_us.max(1)))
+        .unwrap();
+    u64::try_from(per_second).unwrap_or(u64::MAX)
+}
+
+fn emit_upload_result(result: &UploadResult) {
+    let policy = if result.case.configured_chunk_bytes == UPLOAD_FULL_BYTES {
+        "shipping-8mib"
+    } else {
+        "harness-proposal"
+    };
+    let rss_delta = i128::from(result.rss_after_bytes) - i128::from(result.rss_before_bytes);
+    eprintln!(
+        "protocol_upload_case={{policy:{policy},configured_chunk_bytes:{},actual_max_chunk_bytes:{},file_bytes:{},chunks:{},rtt_ms:{UPLOAD_RTT_MS},mbit:{}}}",
+        result.case.configured_chunk_bytes,
+        result.actual_max_chunk_bytes,
+        result.case.file_bytes,
+        result.chunks,
+        result.case.mbit,
+    );
+    eprintln!(
+        "protocol_upload_result={{upload_us:{},goodput_bps:{},rss_before_bytes:{},rss_after_bytes:{},rss_delta_bytes:{rss_delta},cancellation_us:{}}}",
+        result.upload_us,
+        result.goodput_bps,
+        result.rss_before_bytes,
+        result.rss_after_bytes,
+        result.cancellation_us,
+    );
+    eprintln!("protocol_upload_send_us={:?}", result.send_us);
+    eprintln!("protocol_upload_chunk_ack_us={:?}", result.chunk_ack_us);
+    eprintln!("protocol_upload_echo_us={:?}", result.echo_us);
+    eprintln!("protocol_upload_control_us={:?}", result.control_us);
+    eprintln!("protocol_upload_shaper={}", result.shaper_metrics);
+    eprintln!("protocol_upload_server_perf={}", result.server_perf);
 }
 
 #[allow(
@@ -935,6 +1061,288 @@ async fn server_perf(connection: &mut Connection, traffic: &mut Traffic, mode: W
         .to_json()
 }
 
+struct UploadChunkResult {
+    send_us: u64,
+    ack_us: u64,
+    echo_us: u64,
+    control_us: u64,
+    path: Option<String>,
+}
+
+struct UploadChunk<'a> {
+    request_id: u32,
+    upload_id: FileUploadId,
+    terminal_id: &'a ResourceId,
+    quiet_terminal_id: &'a ResourceId,
+    offset: u64,
+    data: Vec<u8>,
+    final_chunk: bool,
+    digest: [u8; 32],
+}
+
+struct UploadSamples {
+    actual_max_chunk_bytes: usize,
+    send_us: Vec<u64>,
+    chunk_ack_us: Vec<u64>,
+    echo_us: Vec<u64>,
+    control_us: Vec<u64>,
+    completed_path: String,
+}
+
+async fn upload_chunk_probe(
+    connection: &mut Connection,
+    traffic: &mut Traffic,
+    chunk: UploadChunk<'_>,
+) -> UploadChunkResult {
+    let expected_offset = chunk.offset + u64::try_from(chunk.data.len()).unwrap();
+    let upload_started = Instant::now();
+    connection
+        .send(&FrameKind::Command {
+            request_id: chunk.request_id,
+            command: Command::PutFile {
+                upload_id: chunk.upload_id,
+                terminal_id: chunk.terminal_id.clone(),
+                extension: "bin".to_owned(),
+                offset: chunk.offset,
+                data: chunk.data,
+                final_chunk: chunk.final_chunk,
+                sha256: chunk.final_chunk.then_some(chunk.digest),
+            },
+        })
+        .await
+        .expect("send production PUT_FILE chunk");
+    let send_us = micros(upload_started.elapsed());
+
+    let ping_nonce = 0xfeed_0000_u64 + u64::from(chunk.request_id);
+    let control_started = Instant::now();
+    connection
+        .send(&FrameKind::Ping { nonce: ping_nonce })
+        .await
+        .expect("send upload-adjacent PING");
+    let echo_token = format!("upload-{:08}", chunk.request_id);
+    let echo_needle = format!("PHUX_RESPONSE_{echo_token}");
+    let echo_started = Instant::now();
+    type_line(connection, chunk.quiet_terminal_id, &echo_token).await;
+
+    let deadline = tokio::time::Instant::now() + STEP_DEADLINE;
+    let mut ack = None;
+    let mut echo_us = None;
+    let mut control_us = None;
+    while ack.is_none() || echo_us.is_none() || control_us.is_none() {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        let frame = timeout(remaining, connection.recv())
+            .await
+            .expect("PUT_FILE observation timed out")
+            .expect("PUT_FILE observation receive failed");
+        traffic.frames += 1;
+        match &frame {
+            FrameKind::CommandResult { request_id, result } if *request_id == chunk.request_id => {
+                let CommandResult::OkWith(CommandValue::FileUpload(upload_ack)) = result else {
+                    panic!("PUT_FILE failed: {result:?}");
+                };
+                assert_eq!(
+                    upload_ack.next_offset, expected_offset,
+                    "PUT_FILE next offset"
+                );
+                assert_eq!(
+                    upload_ack.path.is_some(),
+                    chunk.final_chunk,
+                    "only the final PUT_FILE chunk publishes a path"
+                );
+                ack = Some((micros(upload_started.elapsed()), upload_ack.path.clone()));
+            }
+            FrameKind::Pong { nonce } if *nonce == ping_nonce => {
+                control_us = Some(micros(control_started.elapsed()));
+            }
+            _ => {
+                acknowledge_output(connection, traffic, WireMode::Raw, &frame).await;
+                if echo_us.is_none()
+                    && observe(
+                        frame,
+                        traffic,
+                        Some(chunk.quiet_terminal_id),
+                        Some(echo_needle.as_bytes()),
+                    )
+                {
+                    echo_us = Some(micros(echo_started.elapsed()));
+                }
+                continue;
+            }
+        }
+        observe(frame, traffic, None, None);
+    }
+    let (ack_us, path) = ack.unwrap();
+    UploadChunkResult {
+        send_us,
+        ack_us,
+        echo_us: echo_us.unwrap(),
+        control_us: control_us.unwrap(),
+        path,
+    }
+}
+
+fn upload_payload(bytes: usize) -> Vec<u8> {
+    (0..bytes)
+        .map(|index| u8::try_from(index % 251).unwrap())
+        .collect()
+}
+
+async fn connect_upload_case(
+    temp: &Path,
+    socket: &Path,
+    server_addr: SocketAddr,
+    shaper_addr: SocketAddr,
+    case: UploadCase,
+) -> (Server, Shaper, Connection, Traffic, Vec<ResourceId>) {
+    let server = spawn_server(socket.to_owned(), Some(server_addr), Vec::new());
+    let mut setup = wait_for_uds(socket).await;
+    spawn_flood_panes(&mut setup, 2).await;
+    drop(setup);
+    dial_shaped(
+        server_addr,
+        "localhost",
+        None,
+        CertTrust::SkipVerify,
+        WireMode::Raw,
+    )
+    .await
+    .shutdown()
+    .await;
+
+    let shape = Case {
+        route: Route::Direct,
+        mode: WireMode::Raw,
+        terminals: 2,
+        rtt_ms: UPLOAD_RTT_MS,
+        loss_percent: 0.0,
+        mbit: case.mbit,
+        samples: 1,
+        flood_bytes: 0,
+    };
+    let shaper = start_shaper(temp, shape, shaper_addr, server_addr).await;
+    let mut connection = dial_shaped(
+        shaper_addr,
+        "localhost",
+        None,
+        CertTrust::SkipVerify,
+        WireMode::Raw,
+    )
+    .await;
+    let mut traffic = Traffic::default();
+    let ids = begin_attach(&mut connection, &mut traffic).await;
+    assert_eq!(
+        ids.len(),
+        2,
+        "upload experiment needs a second quiet Terminal"
+    );
+    await_ready(&mut connection, &mut traffic, &ids, Instant::now()).await;
+    prepare_quiet_probe(&mut connection, &mut traffic, &ids[1], WireMode::Raw).await;
+    (server, shaper, connection, traffic, ids)
+}
+
+async fn upload_payload_chunks(
+    connection: &mut Connection,
+    traffic: &mut Traffic,
+    ids: &[ResourceId],
+    case: UploadCase,
+    payload: &[u8],
+    digest: [u8; 32],
+) -> UploadSamples {
+    let upload_id = FileUploadId::new([0x5a; 16]).unwrap();
+    let mut send_us = Vec::new();
+    let mut chunk_ack_us = Vec::new();
+    let mut echo_us = Vec::new();
+    let mut control_us = Vec::new();
+    let mut completed_path = None;
+    let mut actual_max_chunk_bytes = 0;
+    for (index, bytes) in payload.chunks(case.configured_chunk_bytes).enumerate() {
+        actual_max_chunk_bytes = actual_max_chunk_bytes.max(bytes.len());
+        let offset = u64::try_from(index.saturating_mul(case.configured_chunk_bytes)).unwrap();
+        let final_chunk =
+            offset + u64::try_from(bytes.len()).unwrap() == u64::try_from(payload.len()).unwrap();
+        let result = upload_chunk_probe(
+            connection,
+            traffic,
+            UploadChunk {
+                request_id: 2_000_000 + u32::try_from(index).unwrap(),
+                upload_id,
+                terminal_id: &ids[0],
+                quiet_terminal_id: &ids[1],
+                offset,
+                data: bytes.to_vec(),
+                final_chunk,
+                digest,
+            },
+        )
+        .await;
+        send_us.push(result.send_us);
+        chunk_ack_us.push(result.ack_us);
+        echo_us.push(result.echo_us);
+        control_us.push(result.control_us);
+        if result.path.is_some() {
+            completed_path = result.path;
+        }
+    }
+    UploadSamples {
+        actual_max_chunk_bytes,
+        send_us,
+        chunk_ack_us,
+        echo_us,
+        control_us,
+        completed_path: completed_path.expect("final PUT_FILE ack publishes path"),
+    }
+}
+
+async fn run_upload_case(case: UploadCase) -> UploadResult {
+    let temp = TempDir::new().expect("upload case tempdir");
+    let cert = temp.path().join("cert.pem");
+    let key = temp.path().join("key.pem");
+    let upload_dir = temp.path().join("uploads");
+    let _env = EnvGuard::tls(&cert, &key, None).with_upload_dir(&upload_dir);
+    let socket = temp.path().join("phux.sock");
+    let server_addr = free_udp_addr();
+    let shaper_addr = free_udp_addr();
+    let (server, shaper, mut connection, mut traffic, ids) =
+        connect_upload_case(temp.path(), &socket, server_addr, shaper_addr, case).await;
+
+    let rss_before_bytes = current_rss_bytes();
+    let payload = upload_payload(case.file_bytes);
+    let digest: [u8; 32] = Sha256::digest(&payload).into();
+    let upload_started = Instant::now();
+    let samples =
+        upload_payload_chunks(&mut connection, &mut traffic, &ids, case, &payload, digest).await;
+    let upload_us = micros(upload_started.elapsed());
+    assert_eq!(
+        std::fs::read(&samples.completed_path).expect("read completed production upload"),
+        payload,
+        "published upload must match the sent bytes"
+    );
+    drop(payload);
+    sleep(Duration::from_millis(100)).await;
+    let rss_after_bytes = current_rss_bytes();
+    let server_perf = server_perf(&mut connection, &mut traffic, WireMode::Raw).await;
+    connection.shutdown().await;
+    let shaper_metrics = shaper.stop();
+    let cancellation_us = server.stop().await;
+
+    UploadResult {
+        case,
+        actual_max_chunk_bytes: samples.actual_max_chunk_bytes,
+        chunks: samples.chunk_ack_us.len(),
+        upload_us,
+        goodput_bps: upload_goodput_bps(case.file_bytes, upload_us),
+        send_us: summarize(samples.send_us),
+        chunk_ack_us: summarize(samples.chunk_ack_us),
+        echo_us: summarize(samples.echo_us),
+        control_us: summarize(samples.control_us),
+        rss_before_bytes,
+        rss_after_bytes,
+        cancellation_us,
+        shaper_metrics,
+        server_perf,
+    }
+}
+
 async fn write_quic_frame(send: &mut quinn::SendStream, frame: &FrameKind) {
     let mut encoded = BytesMut::new();
     frame.encode(&mut encoded);
@@ -1241,6 +1649,24 @@ fn shaped_quic_protocol_path_matrix() {
                 .await
                 .expect("protocol path case exceeded its deadline");
             emit_result(&result);
+        }
+    });
+}
+
+#[test]
+#[ignore = "real PUT_FILE + shaped QUIC measurement; run explicitly and serially"]
+fn put_file_chunk_matrix() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async {
+        for case in selected_upload_cases() {
+            let result = timeout(CASE_DEADLINE, run_upload_case(case))
+                .await
+                .expect("PUT_FILE path case exceeded its deadline");
+            emit_upload_result(&result);
         }
     });
 }
