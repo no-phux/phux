@@ -2,7 +2,7 @@
 
 use std::process::ExitCode;
 
-use clap::ValueEnum;
+use usage::ValueEnum;
 
 /// Amount and subject of agent guidance to print.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]

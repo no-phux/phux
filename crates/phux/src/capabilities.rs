@@ -3,25 +3,24 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use clap::Command;
 use serde_json::{Value, json};
 
 const CAPABILITIES_SCHEMA_VERSION: u8 = 1;
 
-fn collect_visible(prefix: &str, command: &Command, paths: &mut Vec<String>) {
-    for child in command.get_subcommands() {
-        if child.is_hide_set() || child.get_name() == "help" {
+fn collect_visible(prefix: &str, meta: &usage::spec::CommandMeta<'_>, paths: &mut Vec<String>) {
+    for child in meta.subcommands {
+        if child.hide || child.cmd.name == "help" {
             continue;
         }
-        let path = format!("{prefix} {}", child.get_name());
+        let path = format!("{prefix} {}", child.cmd.name);
         paths.push(path.clone());
         collect_visible(&path, child, paths);
     }
 }
 
-fn command_paths(command: &Command) -> Vec<String> {
+fn command_paths(meta: &usage::spec::CommandMeta<'_>) -> Vec<String> {
     let mut paths = Vec::new();
-    collect_visible("phux", command, &mut paths);
+    collect_visible("phux", meta, &mut paths);
     paths.sort_unstable();
     paths
 }
@@ -65,7 +64,7 @@ fn schema_contracts() -> Value {
     ])
 }
 
-fn document(command: &Command, mcp: Option<&Path>) -> Value {
+fn document(meta: &usage::spec::CommandMeta<'_>, mcp: Option<&Path>) -> Value {
     let protocol = phux_protocol::PROTOCOL_VERSION;
     let available = mcp.is_some();
     json!({
@@ -75,7 +74,7 @@ fn document(command: &Command, mcp: Option<&Path>) -> Value {
             "version": env!("CARGO_PKG_VERSION"),
             "wire_protocol": format!("{}.{}.{}", protocol.major, protocol.minor, protocol.patch),
         },
-        "commands": command_paths(command),
+        "commands": command_paths(meta),
         "skill": {
             "command": "phux --skill[=SCOPE]",
             "scopes": ["quick", "agent", "terminal", "full"],
@@ -93,9 +92,9 @@ fn document(command: &Command, mcp: Option<&Path>) -> Value {
     })
 }
 
-pub(crate) fn run(command: &Command) -> ExitCode {
+pub(crate) fn run() -> ExitCode {
     let mcp = crate::companion::find_live_mcp();
-    match serde_json::to_vec_pretty(&document(command, mcp.as_deref())) {
+    match serde_json::to_vec_pretty(&document(crate::Cli::spec().root, mcp.as_deref())) {
         Ok(mut rendered) => {
             rendered.push(b'\n');
             crate::output::bytes(&rendered);
@@ -111,8 +110,6 @@ pub(crate) fn run(command: &Command) -> ExitCode {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "test fixture assertions")]
 mod tests {
-    use clap::CommandFactory;
-
     use super::*;
 
     #[test]
@@ -139,7 +136,7 @@ mod tests {
 
     #[test]
     fn document_is_versioned_sorted_and_hides_plumbing() {
-        let doc = document(&crate::Cli::command(), None);
+        let doc = document(crate::Cli::spec().root, None);
         assert_eq!(doc["schema_version"], 1);
         assert_eq!(doc["binary"]["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(doc["binary"]["wire_protocol"], "0.9.0");

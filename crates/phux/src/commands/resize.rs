@@ -27,6 +27,14 @@ pub(crate) struct Geometry {
 /// Diagnostics name the offending half rather than re-printing the whole
 /// argument, because the overwhelmingly common mistakes are a transposed
 /// separator (`120,40`) and a zero (`0x40`), and both are one word to fix.
+impl std::str::FromStr for Geometry {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_geometry(value)
+    }
+}
+
 pub(crate) fn parse_geometry(value: &str) -> Result<Geometry, String> {
     let (cols, rows) = value
         .split_once(['x', 'X'])

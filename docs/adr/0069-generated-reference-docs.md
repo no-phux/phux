@@ -14,6 +14,7 @@ no new CI wiring: the test is the gate.
 
 Status: Accepted
 Date: 2026-08-02
+See [ADR-0121](./0121-cli-parser-is-usage-rs.md): the walk is the usage spec, not the clap tree.
 
 Numbering note: planning documents allocated ADR-0067 to this decision;
 0067 and 0068 were taken by decisions that landed first, so it carries 0069.

@@ -42,7 +42,7 @@ use crate::exit_codes::{EXIT_FAILURE, EXIT_USAGE};
 const SCHEMA_VERSION: u8 = 1;
 
 /// `phux agent session <open|close>`.
-#[derive(Debug, clap::Subcommand)]
+#[derive(Debug, usage::Subcommands)]
 pub(crate) enum SessionAction {
     /// Open an agent session bound to a pane.
     ///
@@ -62,14 +62,14 @@ pub(crate) enum SessionAction {
         /// `%name`, `session:window.pane`).
         target: String,
         /// Agent provider slug, e.g. `claude`.
-        #[arg(long, value_name = "P")]
+        #[usage(long, value_name = "P")]
         provider: String,
         /// The provider's own opaque session id, when it has one.
-        #[arg(long, value_name = "ID")]
+        #[usage(long, value_name = "ID")]
         native_id: Option<String>,
         /// Emit the machine-readable result document instead of the bare
         /// resource id.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
     /// Close a pane's agent session; the pane is untouched.
@@ -629,9 +629,7 @@ mod tests {
     /// and the record validator must then refuse it.
     #[test]
     fn an_unknown_record_type_is_a_record_invalid_refusal_not_a_usage_error() {
-        use clap::Parser as _;
-
-        let cli = crate::Cli::try_parse_from([
+        let cli = crate::parse_cli([
             "phux",
             "agent",
             "emit",

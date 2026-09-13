@@ -391,14 +391,10 @@ mod tests {
     use std::path::Path;
     use std::time::{Duration, SystemTime};
 
-    use clap::Parser as _;
-
     use super::{
         client_log_target, client_logs_newest_first, client_pid, inventory, json_doc, render_human,
         tail_file,
     };
-    use crate::Cli;
-
     /// Write a client log and pin its mtime, so "newest" is a controlled
     /// fact rather than a race against the filesystem clock.
     fn write_client_log(dir: &Path, name: &str, age: Duration) {
@@ -562,25 +558,25 @@ mod tests {
     /// choice; the tail modifiers require a tail target.
     #[test]
     fn logs_flag_grammar_rejects_contradictions() {
-        assert!(Cli::try_parse_from(["phux", "logs"]).is_ok());
-        assert!(Cli::try_parse_from(["phux", "logs", "--json"]).is_ok());
-        assert!(Cli::try_parse_from(["phux", "logs", "--server", "-f", "-n", "50"]).is_ok());
-        assert!(Cli::try_parse_from(["phux", "logs", "--client", "--pid", "42"]).is_ok());
+        assert!(crate::parse_cli(["phux", "logs"]).is_ok());
+        assert!(crate::parse_cli(["phux", "logs", "--json"]).is_ok());
+        assert!(crate::parse_cli(["phux", "logs", "--server", "-f", "-n", "50"]).is_ok());
+        assert!(crate::parse_cli(["phux", "logs", "--client", "--pid", "42"]).is_ok());
 
         assert!(
-            Cli::try_parse_from(["phux", "logs", "--json", "-f"]).is_err(),
+            crate::parse_cli(["phux", "logs", "--json", "-f"]).is_err(),
             "--json is the inventory; it cannot follow"
         );
         assert!(
-            Cli::try_parse_from(["phux", "logs", "--server", "--client"]).is_err(),
+            crate::parse_cli(["phux", "logs", "--server", "--client"]).is_err(),
             "one tail target at a time"
         );
         assert!(
-            Cli::try_parse_from(["phux", "logs", "-f"]).is_err(),
+            crate::parse_cli(["phux", "logs", "-f"]).is_err(),
             "-f without a tail target has nothing to follow"
         );
         assert!(
-            Cli::try_parse_from(["phux", "logs", "--pid", "42"]).is_err(),
+            crate::parse_cli(["phux", "logs", "--pid", "42"]).is_err(),
             "--pid only selects a client log"
         );
     }

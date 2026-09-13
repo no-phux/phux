@@ -47,7 +47,7 @@ pub(crate) mod source;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Args;
+use usage::Args;
 
 use self::channel::Channel;
 use self::release::{Artifact, NextHead, ReleaseSource, Version};
@@ -179,45 +179,45 @@ impl UpdateError {
 #[derive(Debug, Args)]
 #[allow(
     clippy::struct_excessive_bools,
-    reason = "a clap flag struct; each bool is one independent CLI switch, and \
+    reason = "a usage flag struct; each bool is one independent CLI switch, and \
               collapsing them into an enum would change the frozen grammar"
 )]
 pub(crate) struct UpdateOpts {
     /// Report the current and latest release and the install source, then
     /// stop. Changes nothing and never downloads an archive.
-    #[arg(long, conflicts_with_all = ["dry_run", "rollback"])]
+    #[usage(long, conflicts("--dry-run", "--rollback"))]
     pub(crate) check: bool,
 
     /// Do everything except the replacement: resolve, download, and verify
     /// the checksum, then report what would have been installed.
-    #[arg(long, conflicts_with = "rollback")]
+    #[usage(long, conflicts("--rollback"))]
     pub(crate) dry_run: bool,
 
     /// Install this release tag instead of the latest one. Accepts any tag
     /// from the releases page, including an older one (a downgrade).
     /// Stable-only: omit this when following `--channel next`.
-    #[arg(long = "version", value_name = "TAG", conflicts_with = "rollback")]
+    #[usage(long = "version", value_name = "TAG", conflicts("--rollback"))]
     pub(crate) tag: Option<String>,
 
     /// Release channel to follow. `stable` (also `latest`) is the default
     /// (`vX.Y.Z`). `next` tracks green `main` via the moving prerelease.
-    #[arg(long, value_enum, value_name = "CHANNEL", conflicts_with = "rollback")]
+    #[usage(long, value_enum, value_name = "CHANNEL", conflicts("--rollback"))]
     pub(crate) channel: Option<Channel>,
 
     /// Restore the binaries saved by the previous `phux update`.
-    #[arg(long)]
+    #[usage(long)]
     pub(crate) rollback: bool,
 
     /// Replace the binaries but do not ask a running server to re-exec.
     /// Live panes keep the old image until the server is upgraded or
     /// restarted.
-    #[arg(long)]
+    #[usage(long)]
     pub(crate) no_restart: bool,
 
     /// Emit the stable, versioned JSON document on stdout instead of the
     /// human view. On failure, stdout stays empty and stderr carries one
     /// JSON error object.
-    #[arg(long)]
+    #[usage(long)]
     pub(crate) json: bool,
 }
 

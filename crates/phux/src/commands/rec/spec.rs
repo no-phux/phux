@@ -130,20 +130,18 @@ pub(crate) fn plan(out: &Path, explicit: Option<RecFormat>) -> Result<RecordSpec
 /// tomorrow is guarded the day it lands. Only reached for an extension-less
 /// path, so building the command tree is not on any hot path.
 fn subcommand_named(out: &Path) -> Option<String> {
-    use clap::CommandFactory as _;
-
     // Only a bare word can be a verb; `./attach` or `dir/attach` is
     // unambiguously a path the user typed on purpose.
     let candidate = match out.to_str() {
         Some(text) if !text.contains('/') => text,
         _ => return None,
     };
-    let root = crate::Cli::command();
-    root.get_subcommands()
-        .find(|sub| {
-            sub.get_name() == candidate || sub.get_all_aliases().any(|alias| alias == candidate)
-        })
-        .map(|sub| sub.get_name().to_owned())
+    crate::Cli::spec()
+        .root
+        .subcommands
+        .iter()
+        .find(|sub| sub.cmd.name == candidate || sub.cmd.aliases.contains(&candidate))
+        .map(|sub| sub.cmd.name.to_owned())
 }
 
 #[cfg(test)]

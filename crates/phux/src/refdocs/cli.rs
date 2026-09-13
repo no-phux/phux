@@ -7,21 +7,20 @@
 //! aliases and internal tooling (including the generator itself) out of the
 //! user-facing pages while the inventory snapshot still pins them.
 
-use clap::CommandFactory;
-
 use super::Page;
 use crate::Cli;
 
-/// Recursively collect every visible command invocation path with its
-/// (built) `clap::Command`, skipping clap's auto-injected `help`
-/// pseudo-command and anything marked hidden.
-fn collect_visible(cmd: &clap::Command, path: &str, out: &mut Vec<(String, clap::Command)>) {
-    out.push((path.to_owned(), cmd.clone()));
-    for sub in cmd.get_subcommands() {
-        if sub.get_name() == "help" || sub.is_hide_set() {
+fn collect_visible<'a>(
+    meta: &'a usage::spec::CommandMeta<'a>,
+    path: &str,
+    out: &mut Vec<(String, &'a usage::spec::CommandMeta<'a>)>,
+) {
+    out.push((path.to_owned(), meta));
+    for sub in meta.subcommands {
+        if sub.hide || sub.cmd.name == "help" {
             continue;
         }
-        let child = format!("{path} {}", sub.get_name());
+        let child = format!("{path} {}", sub.cmd.name);
         collect_visible(sub, &child, out);
     }
 }
@@ -30,14 +29,8 @@ fn collect_visible(cmd: &clap::Command, path: &str, out: &mut Vec<(String, clap:
 pub(crate) fn page() -> Page {
     use std::fmt::Write as _;
 
-    // `build()` finalizes the tree the way a real parse would — in
-    // particular it propagates bin names, so a subcommand's usage line
-    // reads `Usage: phux agent set …` instead of a bare `set …`.
-    let mut root = Cli::command();
-    root.build();
-
     let mut entries = Vec::new();
-    collect_visible(&root, "phux", &mut entries);
+    collect_visible(Cli::spec().root, "phux", &mut entries);
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut body = String::from(
@@ -47,9 +40,8 @@ pub(crate) fn page() -> Page {
          ones the binary enforces. Hidden internal subcommands are omitted, \
          exactly as they are from `--help` itself.\n\n",
     );
-    for (path, cmd) in &mut entries {
-        let help = cmd.render_long_help().to_string();
-        // clap indents the blank spacer before a possible-values block.
+    for (path, cmd) in &entries {
+        let help = Cli::render_help(cmd.cmd, true).unwrap_or_default();
         // Preserve every visible byte of help while keeping generated
         // Markdown free of trailing whitespace.
         let help = help

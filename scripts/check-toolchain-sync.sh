@@ -30,11 +30,13 @@ rust_msrv="${rust_version%.*}"
 zig_version="$ZIG_VERSION"
 node_version="$(mise_value node)"
 bun_version="$(mise_value bun)"
+usage_version="$(mise_value usage)"
 
 [[ "$(mise_value rust)" == "$rust_version" ]] || fail "mise Rust must be $rust_version"
 [[ "$(mise_value zig)" == "$zig_version" ]] || fail "mise Zig must be $zig_version"
 [[ "$node_version" =~ ^[0-9]+$ ]] || fail "mise Node must use a major version"
 [[ "$bun_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "mise Bun must use an exact release"
+[[ "$usage_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "mise usage must use an exact release"
 
 # The Nix shell must resolve the same compilers and runtimes as the Mise path.
 # Nothing checked this before, and the two had already parted: nixpkgs carried
@@ -55,6 +57,13 @@ grep -Fq "pkgs.nodejs_$node_version" "$FLAKE" ||
 grep -Fq 'miseTools.bun' "$FLAKE" || fail 'flake.nix must read the Bun pin from mise.toml (bunVersion = miseTools.bun)'
 grep -Eq "^[[:space:]]*\"$bun_version\" = \{" "$FLAKE" ||
     fail "flake.nix bunDigests has no entry for Bun $bun_version; add the per-system hashes (see the comment there)"
+
+# usage CLI: same bun-style pin. The flake reads mise.toml, so the two
+# cannot hold different versions; the digest table is what can rot.
+grep -Fq 'miseTools.usage' "$FLAKE" || fail 'flake.nix must read the usage pin from mise.toml (usageVersion = miseTools.usage)'
+grep -Fq "usageDigests" "$FLAKE" || fail 'flake.nix must declare usageDigests'
+grep -Eq "^[[:space:]]*\"$usage_version\" = \{" "$FLAKE" ||
+    fail "flake.nix usageDigests has no entry for usage $usage_version; add the per-system hashes (see the comment there)"
 
 while IFS=: read -r file line; do
     version="$(printf '%s\n' "$line" | sed -n -E 's/.*"([0-9]+\.[0-9]+)".*/\1/p')"
@@ -81,4 +90,4 @@ if [[ "$failures" -ne 0 ]]; then
     exit 1
 fi
 
-printf 'toolchain sync passed (Rust %s, Zig %s, Node %s, Bun %s)\n' "$rust_version" "$zig_version" "$node_version" "$bun_version"
+printf 'toolchain sync passed (Rust %s, Zig %s, Node %s, Bun %s, usage %s)\n' "$rust_version" "$zig_version" "$node_version" "$bun_version" "$usage_version"

@@ -14,6 +14,7 @@ one JSON error shape, and no `-j` short flag.
 
 Status: Accepted
 Date: 2026-08-02
+See [ADR-0121](./0121-cli-parser-is-usage-rs.md) for the parser cutover; `--socket` remains a root global.
 
 ## Context
 

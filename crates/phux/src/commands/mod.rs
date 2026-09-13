@@ -1,10 +1,12 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use clap::{Args, Subcommand, ValueEnum};
+use pair::PairAction;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, TerminalSignal};
+use report::ReportAction;
+use usage::{Args, Subcommands, ValueEnum};
 
 /// CLI signal names for `phux signal TARGET SIGNAL` (ADR-0033), mapped to the
 /// wire [`TerminalSignal`].
@@ -27,9 +29,9 @@ pub(crate) enum SignalArg {
 /// (ADR-0065 §6). `h` / `v` are accepted shorthands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum SpawnSplit {
-    #[value(alias = "h")]
+    #[usage(visible_alias = "h")]
     Horizontal,
-    #[value(alias = "v")]
+    #[usage(visible_alias = "v")]
     Vertical,
 }
 
@@ -38,6 +40,44 @@ pub(crate) enum SpawnSplit {
 ///
 /// `Apng` covers both the `.png` and `.apng` extensions: a recording is an
 /// animation, and this surface never produces a still frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum CompletionShell {
+    Bash,
+    Elvish,
+    Zsh,
+    Fish,
+    Nu,
+    PowerShell,
+}
+
+impl From<CompletionShell> for usage::complete::Shell {
+    fn from(shell: CompletionShell) -> Self {
+        match shell {
+            CompletionShell::Bash => Self::Bash,
+            CompletionShell::Elvish => Self::Elvish,
+            CompletionShell::Zsh => Self::Zsh,
+            CompletionShell::Fish => Self::Fish,
+            CompletionShell::Nu => Self::Nu,
+            CompletionShell::PowerShell => Self::PowerShell,
+        }
+    }
+}
+
+/// One `KEY=VALUE` assignment for `phux new --env`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnvAssignment {
+    pub key: String,
+    pub value: String,
+}
+
+impl std::str::FromStr for EnvAssignment {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_env_assignment(value).map(|(key, value)| Self { key, value })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum RecFormat {
     /// asciinema cast — the archival, re-renderable artifact.
@@ -51,7 +91,7 @@ pub(crate) enum RecFormat {
 /// The `--rec` / `--rec-format` pair, declared on exactly the two paths that
 /// raise a TUI: the root command (naked `phux`) and `phux attach`.
 ///
-/// Shared through `#[command(flatten)]` rather than a `global = true` arg on
+/// Shared through `#[usage(flatten)]` rather than a `global` arg on
 /// the root: a global would parse — and advertise itself in `--help` — on
 /// every verb, including the headless ones that can never tee a composited
 /// frame. Scoping it here makes `phux ls --help` honest by construction
@@ -62,7 +102,7 @@ pub(crate) struct RecOpts {
     // Written out as `long_help` because clap reflows doc-comment paragraphs
     // into one run-on line; the example block only survives with real
     // newlines.
-    #[arg(
+    #[usage(
         long = "rec",
         value_name = "PATH",
         long_help = "Record this session while it runs and write the result to PATH.\n\n\
@@ -75,7 +115,7 @@ pub(crate) struct RecOpts {
     pub(crate) rec: Option<std::path::PathBuf>,
 
     /// Output format for --rec, overriding the extension.
-    #[arg(long = "rec-format", value_enum, value_name = "FMT", requires = "rec")]
+    #[usage(long = "rec-format", value_enum, value_name = "FMT", requires("--rec"))]
     pub(crate) rec_format: Option<RecFormat>,
 }
 
@@ -95,7 +135,7 @@ pub(crate) struct JsonOpt {
     /// Emit stable, versioned JSON on stdout instead of the human view.
     /// On failure, stdout stays empty and stderr carries one JSON error
     /// object.
-    #[arg(long)]
+    #[usage(long)]
     pub(crate) json: bool,
 }
 
@@ -110,7 +150,7 @@ pub(crate) struct RemoteOpt {
     /// QUIC or WSS, and an unregistered one is paired over your ssh trust
     /// first and remembered (with `--json` it is refused instead, naming the
     /// remedies). PORT defaults to 8788. Cannot combine with `--socket`.
-    #[arg(long, value_name = "[USER@]HOST[:PORT]")]
+    #[usage(long, value_name = "[USER@]HOST[:PORT]")]
     pub(crate) remote: Option<String>,
 }
 
@@ -142,18 +182,6 @@ pub(crate) fn verb_remote(command: &Command) -> Option<&str> {
         | Command::Rename { remote, .. }
         | Command::Detach { remote, .. } => remote.remote.as_deref(),
         _ => None,
-    }
-}
-
-/// Validates a split ratio as finite and strictly between zero and one.
-fn parse_spawn_ratio(value: &str) -> Result<f32, String> {
-    let ratio: f32 = value
-        .parse()
-        .map_err(|_| "ratio must be a number".to_owned())?;
-    if ratio.is_finite() && ratio > 0.0 && ratio < 1.0 {
-        Ok(ratio)
-    } else {
-        Err("ratio must be finite and strictly between 0 and 1".to_owned())
     }
 }
 
@@ -254,7 +282,7 @@ pub(crate) const DEFAULT_SESSION_NAME: &str = "default";
 /// The verb's display name when the resolved (sub)command never dials a
 /// server socket, or `None` when it consumes the root `--socket` global.
 ///
-/// `--socket` is declared once, `global = true`, on the root `Cli`
+/// `--socket` is declared once, `global`, on the root `Cli`
 /// (ADR-0065), so clap accepts it on every invocation path — including the
 /// verbs that are pure local operations (config scaffolding, registry
 /// edits, completions). Those must refuse a provided `--socket` rather
@@ -318,11 +346,11 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
     }
 }
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum Command {
     /// Inspect this binary's runtime protocol and capabilities without connecting.
     RuntimeInfo {
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
     /// Attach to a session (interactive).
@@ -334,10 +362,7 @@ pub(crate) enum Command {
     /// host add`) shadows a local session of the same name: `phux attach
     /// NAME` dials the registered host instead of the local socket.
     /// Pass `--socket` to force the local reading of the name.
-    // The group id is `remote_transport`, not `remote`: `--remote` is now an
-    // arg on this verb, and clap requires arg and group ids to be disjoint.
-    #[command(group = clap::ArgGroup::new("remote_transport").args(["quic", "ws"]).multiple(false))]
-    #[command(visible_alias = "a")]
+    #[usage(alias = "a")]
     Attach {
         /// Session name (matches the name used at creation time).
         ///
@@ -351,33 +376,33 @@ pub(crate) enum Command {
         /// resolving to loopback trusts the server's self-signed cert for
         /// local dev; any routable address requires `--cert-fingerprint`
         /// (the value `phux pair` prints on the server host).
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT", group = "remote_transport")]
         quic: Option<String>,
 
         /// Attach over WebSocket to a `phux server --listen` endpoint. Use
         /// `ws://HOST:PORT` for loopback dev, or `wss://HOST:PORT` with
         /// `--token` and `--cert-fingerprint` for routable remote attach. This
         /// is the TCP fallback when UDP/QUIC is blocked.
-        #[arg(long, value_name = "URL")]
+        #[usage(long, value_name = "URL", group = "remote_transport")]
         ws: Option<String>,
 
         /// Bearer pairing token (hex) for an authenticated QUIC listener, as
         /// minted by `phux pair`. QUIC sends it as the stream's opening
         /// preamble; WebSocket sends it as `Authorization: Bearer`.
         /// Requires `--quic` or `--ws`.
-        #[arg(long, requires = "remote_transport")]
+        #[usage(long, requires("--quic", "--ws"))]
         token: Option<String>,
 
         /// Pin the QUIC server's certificate by its SHA-256 fingerprint (the
         /// value `phux pair` prints). Required to dial any non-loopback
         /// `--quic`/`--ws wss://` address. Requires `--quic` or `--ws`.
-        #[arg(long, value_name = "FP", requires = "remote_transport")]
+        #[usage(long, value_name = "FP", requires("--quic", "--ws"))]
         cert_fingerprint: Option<String>,
 
         /// TLS server name (SNI) to offer the remote listener. QUIC defaults
         /// to `localhost`; WebSocket defaults to the URL host. Requires
         /// `--quic` or `--ws`.
-        #[arg(long, value_name = "NAME", requires = "remote_transport")]
+        #[usage(long, value_name = "NAME", requires("--quic", "--ws"))]
         tls_server_name: Option<String>,
 
         /// Attach to a phux server on another machine, ssh-style:
@@ -389,19 +414,23 @@ pub(crate) enum Command {
         /// PORT defaults to 8788, the port a server auto-binds on its
         /// overlay address. The `user@` half names the ssh destination used
         /// to pair; it is not sent on the wire.
-        #[arg(long, value_name = "[USER@]HOST[:PORT]", conflicts_with_all = ["quic", "ws", "ssh"])]
+        #[usage(
+            long,
+            value_name = "[USER@]HOST[:PORT]",
+            conflicts("--quic", "--ws", "--ssh")
+        )]
         remote: Option<String>,
 
         /// Pair `--remote` from a `https://phux.phall.io/connect?...` link
         /// (or its `phux://connect?...` spelling) instead of over ssh — the
         /// same link `phux pair` prints and `phux pair --qr` renders. Quote
         /// it: it contains `&`.
-        #[arg(long, value_name = "LINK", requires = "remote")]
+        #[usage(long, value_name = "LINK", requires("--remote"))]
         code: Option<String>,
 
         /// Never shell out to ssh for `--remote`. An unregistered host is
         /// refused with its remedies named instead of paired.
-        #[arg(long, requires = "remote")]
+        #[usage(long, requires("--remote"))]
         no_enroll: bool,
 
         /// Attach mosh-style over ssh: run `phux bootstrap` on the host
@@ -413,28 +442,28 @@ pub(crate) enum Command {
         /// the host. Falls back to `ssh -t HOST phux attach` when UDP cannot
         /// reach it. The host is anything ssh accepts, including
         /// `ssh://user@host:port` and aliases from `~/.ssh/config`.
-        #[arg(
+        #[usage(
             long,
             value_name = "[USER@]HOST",
-            conflicts_with_all = ["quic", "ws", "remote"]
+            conflicts("--quic", "--ws", "--remote")
         )]
         ssh: Option<String>,
 
         /// The `phux` to run on the `--ssh` host, for when a non-interactive
         /// ssh shell's `PATH` does not find it (a Homebrew or Nix install).
-        #[arg(long, value_name = "PATH", requires = "ssh", default_value = "phux")]
+        #[usage(long, value_name = "PATH", requires("--ssh"), default = "phux")]
         remote_phux: String,
 
         /// Bind the `--ssh` host's listener to a UDP port in this inclusive
         /// range, e.g. `60000-61000`, so one firewall rule covers every
         /// attach. Any free port by default.
-        #[arg(long, value_name = "MIN-MAX", requires = "ssh")]
+        #[usage(long, value_name = "MIN-MAX", requires("--ssh"))]
         udp_ports: Option<String>,
 
         /// Tee this attach's composited output to a recording. Declared here
         /// (and on the root command) rather than globally so it only shows up
         /// on the verbs that raise a TUI.
-        #[command(flatten)]
+        #[usage(flatten)]
         rec: RecOpts,
     },
 
@@ -453,21 +482,29 @@ pub(crate) enum Command {
         /// failures exit 1 with a diagnostic on stderr. Startup is bounded to
         /// 10 seconds, including lock contention. Does not attach or create
         /// another session on an existing server.
-        #[arg(long, conflicts_with_all = [
-            "session", "listen", "quic", "webtransport", "connect", "hub",
-            "exit_after_idle"
-        ])]
+        #[usage(
+            long,
+            conflicts(
+                "--session",
+                "--listen",
+                "--quic",
+                "--webtransport",
+                "--connect",
+                "--hub",
+                "--exit-after-idle"
+            )
+        )]
         ensure: bool,
 
         /// Name of the pre-seeded session. Matches what
         /// `phux attach <name>` will request.
-        #[arg(long, default_value = DEFAULT_SESSION_NAME)]
+        #[usage(long, default = "default")]
         session: String,
 
         /// Start with no pre-seeded session. `phux new --empty` starts a
         /// server this way when none is running, so the only session is the
         /// empty one it asked for.
-        #[arg(long, hide = true, conflicts_with = "seed_command")]
+        #[usage(long, hide, conflicts("--seed-command"))]
         no_seed: bool,
 
         /// Also accept WebSocket clients on this `HOST:PORT` (the UDS stays
@@ -475,7 +512,7 @@ pub(crate) enum Command {
         /// browser dev; any routable address (e.g. `0.0.0.0:8787`)
         /// auto-provisions TLS and requires a `phux pair` token.
         /// Overrides `$PHUX_WS_ADDR`.
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT")]
         listen: Option<std::net::SocketAddr>,
 
         /// Also accept QUIC clients on this `HOST:PORT` (the UDS stays on).
@@ -483,7 +520,7 @@ pub(crate) enum Command {
         /// auth (local dev), while any routable address requires a `phux pair`
         /// token sent as the stream's opening preamble.
         /// Overrides `$PHUX_QUIC_ADDR`.
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT")]
         quic: Option<std::net::SocketAddr>,
 
         /// Also accept WebTransport (HTTP/3 over QUIC) clients on this
@@ -494,7 +531,7 @@ pub(crate) enum Command {
         /// token carried in the CONNECT request (`Authorization: Bearer`
         /// from native consumers, `?token=<hex>` on the session URL from
         /// browsers). Overrides `$PHUX_WT_ADDR`.
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT")]
         webtransport: Option<std::net::SocketAddr>,
 
         /// Dial one relay outbound on `HOST:PORT`. If a matching
@@ -502,7 +539,7 @@ pub(crate) enum Command {
         /// are used; otherwise only a loopback endpoint is accepted for
         /// unauthenticated development. Without this flag, every configured
         /// connector is supervised independently.
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT")]
         connect: Option<String>,
 
         /// Run as a federation hub: consume the `[[satellites]]`
@@ -514,7 +551,7 @@ pub(crate) enum Command {
         /// relaying satellite-tagged frames over the links.
         /// A malformed enabled endpoint or a duplicate satellite name fails
         /// startup. Without this flag the registry is ignored.
-        #[arg(long)]
+        #[usage(long)]
         hub: bool,
 
         /// Exit once no client has been connected for SECS, even if panes
@@ -525,15 +562,19 @@ pub(crate) enum Command {
         ///
         /// Without this flag the server keeps the multiplexer contract and
         /// lives until its last pane is gone.
-        #[arg(long = "exit-after-idle", value_name = "SECS",
-              value_parser = clap::value_parser!(u64).range(1..=86_400))]
+        #[usage(
+            long = "exit-after-idle",
+            value_name = "SECS",
+            validate = "int(value) >= 1 && int(value) <= 86400",
+            validate_error = "must be between 1 and 86400 seconds"
+        )]
         exit_after_idle: Option<u64>,
 
         /// Detach from the controlling terminal via `setsid(2)` before
         /// binding. Set by the auto-spawn path so the server outlives
         /// the launching client's terminal; a foreground `phux server`
         /// run by hand leaves this off so Ctrl-C still works.
-        #[arg(long, hide = true, conflicts_with = "ensure")]
+        #[usage(long, hide, conflicts("--ensure"))]
         daemonize: bool,
 
         /// Run this command (via `$SHELL -c`) as the pre-seeded session's
@@ -541,14 +582,14 @@ pub(crate) enum Command {
         /// auto-spawn path passes `defaults.spawn-on-attach` here;
         /// `phux new` deliberately does not, so an
         /// explicitly-created session still gets a shell.
-        #[arg(long, hide = true, conflicts_with = "ensure")]
+        #[usage(long, hide, conflicts("--ensure"))]
         seed_command: Option<String>,
 
         /// Graceful-upgrade resume: read the handoff state blob
         /// from this inherited descriptor, adopt the inherited listener, and
         /// rebuild the live session tree instead of starting fresh. Set by
         /// the upgrade orchestrator's re-exec; never passed by hand.
-        #[arg(long, hide = true, conflicts_with = "ensure")]
+        #[usage(long, hide, conflicts("--ensure"))]
         resume: Option<std::os::fd::RawFd>,
     },
 
@@ -558,12 +599,12 @@ pub(crate) enum Command {
     /// start a server: with no server running it reports as much and exits
     /// non-zero (like `tmux ls`). Pass `--json` for the stable, versioned
     /// machine shape instead of the human text.
-    #[command(visible_alias = "list")]
+    #[usage(alias = "list")]
     Ls {
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         remote: RemoteOpt,
     },
 
@@ -577,10 +618,10 @@ pub(crate) enum Command {
     /// the user every pane runs as. With `--remote HOST` it reports what
     /// that dial authenticated as there. Does not start a server.
     Whoami {
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         remote: RemoteOpt,
     },
 
@@ -599,17 +640,8 @@ pub(crate) enum Command {
     // it lands on stdout as `{"running": false, ...}`. The flattened struct
     // cannot carry per-verb help, so the arg's help is overridden here to
     // state the exception next to the flag (phux-i0e8.11.6 wave-8 nit).
-    #[command(mut_arg("json", |a| a
-        .help("Emit stable, versioned JSON on stdout instead of the human view")
-        .long_help(
-            "Emit stable, versioned JSON on stdout instead of the human view. \
-             Exception to the shared failure contract: with no server running, \
-             stdout carries the `{\"running\": false, ...}` document (still \
-             exiting non-zero); any other failure leaves stdout empty and puts \
-             one JSON error object on stderr",
-        )))]
     Status {
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -626,13 +658,13 @@ pub(crate) enum Command {
     /// each interval on its own, so counters become rates and a stall
     /// shows up in the second it happened. Does not start a server.
     Perf {
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
         /// Poll every SECS seconds and print each interval as a delta.
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         watch: Option<f64>,
         /// Zero the server's metrics after each snapshot.
-        #[arg(long)]
+        #[usage(long)]
         reset: bool,
     },
 
@@ -654,52 +686,54 @@ pub(crate) enum Command {
     // a runtime gate, so the refusal is a usage error with usage text
     // (phux-i0e8.8.4). A group is used because `json` lives on the shared
     // flattened `JsonOpt` and cannot carry a per-verb `requires` itself.
-    #[command(group = clap::ArgGroup::new("json_mode").arg("json").requires("session"))]
     New {
         /// Session name. `phux new work` creates a session named "work".
         /// Omitted ⇒ the `session-name-template` (default: the cwd
         /// basename), redrawn if it uses `${random-name}` and the pick is
         /// taken, then disambiguated with a numeric suffix.
-        #[arg(value_name = "NAME")]
+        #[usage(value_name = "NAME")]
         name: Option<String>,
 
         /// Session name in flag form — equivalent to the positional NAME,
         /// and the form required by `--json`. An error if it conflicts
         /// with NAME.
-        #[arg(short = 's', long = "session")]
+        #[usage(short = 's', long = "session")]
         session: Option<String>,
 
         /// Working directory for the seed pane.
-        #[arg(short = 'c', long = "cwd")]
+        #[usage(short = 'c', long = "cwd")]
         cwd: Option<std::path::PathBuf>,
 
-        #[command(flatten)]
-        json: JsonOpt,
+        /// Emit stable, versioned JSON on stdout instead of the human view.
+        /// On failure, stdout stays empty and stderr carries one JSON error
+        /// object. Requires an explicit `-s NAME` (a positional NAME is not
+        /// enough).
+        #[usage(long, requires("--session"))]
+        json: bool,
 
         /// Environment assignment for the seed process. Repeat for multiple
         /// variables. Headless `--json` mode only.
-        #[arg(
+        #[usage(
             short = 'e',
             long = "env",
             value_name = "KEY=VALUE",
-            requires = "json",
-            value_parser = parse_env_assignment
+            requires("--json")
         )]
-        env: Vec<(String, String)>,
+        env: Vec<EnvAssignment>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         remote: RemoteOpt,
 
         /// Create the session with no terminal. An empty session is
         /// keep-empty: it survives its last window and only `phux kill`
         /// removes it. Without `--json` the new session is attached and shows
         /// an empty state; open a window from there.
-        #[arg(long, conflicts_with_all = ["command", "env", "cwd"])]
+        #[usage(long, conflicts("--command", "--env", "--cwd"))]
         empty: bool,
 
         /// Command (and arguments) to run in the seed pane instead of the
         /// default shell. Must follow `--`: `phux new work -- htop`.
-        #[arg(last = true)]
+        #[usage(double_dash = "required")]
         command: Vec<String>,
     },
 
@@ -716,31 +750,38 @@ pub(crate) enum Command {
         /// Route the spawn to a configured federation satellite (a name
         /// from `phux host ls --role satellite`, on a server running
         /// `--hub`).
-        #[arg(long, value_name = "NAME")]
+        #[usage(long, value_name = "NAME")]
         satellite: Option<String>,
 
         /// Existing local pane beside which to place the new pane.
-        #[arg(long, value_name = "TARGET", conflicts_with = "satellite")]
+        #[usage(long, value_name = "TARGET", conflicts("--satellite"))]
         target: Option<String>,
 
         /// Split axis for explicit placement (requires `--target`).
-        #[arg(long, value_enum, default_value = "horizontal", requires = "target")]
+        #[usage(long, value_enum, default = "horizontal", requires("--target"))]
         split: SpawnSplit,
 
         /// Fraction of the split retained by TARGET (requires `--target`).
-        #[arg(long, default_value_t = 0.5, requires = "target", value_parser = parse_spawn_ratio)]
+        #[usage(
+            long,
+            default = "0.5",
+            default_value_t = 0.5,
+            requires("--target"),
+            validate = "float(value) > 0 && float(value) < 1",
+            validate_error = "ratio must be finite and strictly between 0 and 1"
+        )]
         ratio: f32,
 
         /// Working directory for the new pane.
-        #[arg(short = 'c', long = "cwd")]
+        #[usage(short = 'c', long = "cwd")]
         cwd: Option<String>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
 
         /// Command (and arguments) to run instead of the default shell.
         /// Must follow `--`: `phux spawn -- htop`.
-        #[arg(last = true)]
+        #[usage(trailing_var_arg)]
         command: Vec<String>,
     },
 
@@ -756,40 +797,47 @@ pub(crate) enum Command {
     /// `phux launch codex -- --model o3`.
     Launch {
         /// Integration id to launch (from `phux launch --list`).
-        #[arg(value_name = "INTEGRATION", required_unless_present = "list")]
+        #[usage(value_name = "INTEGRATION", required_unless("--list"))]
         integration: Option<String>,
 
         /// List launchable integrations from enabled plugins and exit.
-        #[arg(long)]
+        #[usage(long)]
         list: bool,
 
         /// Resolve and print the launch argv (and cwd) without spawning a
         /// pane — a server-free dry run.
-        #[arg(long, visible_alias = "dry-run")]
+        #[usage(long, alias = "dry-run")]
         print: bool,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
 
         /// Existing local pane beside which to place the launched pane.
-        #[arg(long, value_name = "TARGET", conflicts_with_all = ["list", "print"])]
+        #[usage(long, value_name = "TARGET", conflicts("--list", "--print"))]
         target: Option<String>,
 
         /// Split axis for explicit placement (requires `--target`).
-        #[arg(long, value_enum, default_value = "horizontal", requires = "target")]
+        #[usage(long, value_enum, default = "horizontal", requires("--target"))]
         split: SpawnSplit,
 
         /// Fraction of the split retained by TARGET (requires `--target`).
-        #[arg(long, default_value_t = 0.5, requires = "target", value_parser = parse_spawn_ratio)]
+        #[usage(
+            long,
+            default = "0.5",
+            default_value_t = 0.5,
+            requires("--target"),
+            validate = "float(value) > 0 && float(value) < 1",
+            validate_error = "ratio must be finite and strictly between 0 and 1"
+        )]
         ratio: f32,
 
         /// Working directory for a `working_directory = "workspace"`
         /// template. Defaults to the current directory.
-        #[arg(short = 'c', long = "cwd", value_name = "DIR")]
+        #[usage(short = 'c', long = "cwd", value_name = "DIR")]
         cwd: Option<std::path::PathBuf>,
 
         /// Extra arguments appended to the agent command, after `--`.
-        #[arg(last = true)]
+        #[usage(trailing_var_arg)]
         extra: Vec<String>,
     },
 
@@ -803,9 +851,9 @@ pub(crate) enum Command {
     /// `--server` stops the server process instead, ending every session on
     /// it. Local socket only: the server accepts that stop on its local
     /// socket alone, so `--server` cannot combine with `--remote`.
-    #[command(group = clap::ArgGroup::new("kill_what").required(true).args(["target", "server"]))]
     Kill {
         /// What to kill (selector).
+        #[usage(group = "kill_what")]
         target: Option<String>,
         /// Stop the running server, ending every session it holds.
         ///
@@ -813,10 +861,10 @@ pub(crate) enum Command {
         /// than being restarted. Note that the next `phux attach`/`new` will
         /// auto-spawn a fresh server: this stops the current one, it does not
         /// disable phux.
-        #[arg(long)]
+        #[usage(long, group = "kill_what")]
         server: bool,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         remote: RemoteOpt,
     },
 
@@ -825,7 +873,7 @@ pub(crate) enum Command {
     /// Both selectors must each resolve to exactly one local pane in the same
     /// session. This command does not spawn: create `NEW_PANE` first with
     /// `phux spawn`, then insert it. Omitted direction defaults horizontal.
-    #[command(name = "insert-pane")]
+    #[usage(name = "insert-pane")]
     InsertPane {
         /// Existing layout leaf beside which `NEW_PANE` is inserted.
         target: String,
@@ -833,13 +881,19 @@ pub(crate) enum Command {
         new_pane: String,
         /// Split axis: `horizontal` stacks the panes, `vertical` places
         /// them side-by-side.
-        #[arg(long, value_enum, default_value = "horizontal")]
+        #[usage(long, value_enum, default = "horizontal")]
         split: SpawnSplit,
         /// Fraction assigned to TARGET; must be strictly between 0 and 1.
-        #[arg(long, default_value_t = 0.5, value_parser = parse_spawn_ratio)]
+        #[usage(
+            long,
+            default = "0.5",
+            default_value_t = 0.5,
+            validate = "float(value) > 0 && float(value) < 1",
+            validate_error = "ratio must be finite and strictly between 0 and 1"
+        )]
         ratio: f32,
         /// Emit a schema-versioned JSON result or error.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -849,7 +903,7 @@ pub(crate) enum Command {
     /// beside TARGET. Both selectors must resolve to exactly one local pane.
     /// When TARGET lives in a different session the pane is re-parented on
     /// the server first — its process, scrollback, and id survive the move.
-    #[command(name = "move-pane")]
+    #[usage(name = "move-pane")]
     MovePane {
         /// Pane to relocate.
         source: String,
@@ -857,13 +911,19 @@ pub(crate) enum Command {
         target: String,
         /// Destination split axis: `horizontal` stacks the panes,
         /// `vertical` places them side-by-side.
-        #[arg(long, value_enum, default_value = "horizontal")]
+        #[usage(long, value_enum, default = "horizontal")]
         split: SpawnSplit,
         /// Fraction assigned to TARGET; must be strictly between 0 and 1.
-        #[arg(long, default_value_t = 0.5, value_parser = parse_spawn_ratio)]
+        #[usage(
+            long,
+            default = "0.5",
+            default_value_t = 0.5,
+            validate = "float(value) > 0 && float(value) < 1",
+            validate_error = "ratio must be finite and strictly between 0 and 1"
+        )]
         ratio: f32,
         /// Emit a schema-versioned JSON result or error.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -871,14 +931,14 @@ pub(crate) enum Command {
     ///
     /// Both selectors must each resolve to exactly one local pane. Split
     /// geometry is preserved and attached clients retain their local focus.
-    #[command(name = "swap-pane")]
+    #[usage(name = "swap-pane")]
     SwapPane {
         /// First pane selector.
         first: String,
         /// Second pane selector.
         second: String,
         /// Emit a schema-versioned JSON result or error.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -886,9 +946,9 @@ pub(crate) enum Command {
     // Spelled out in `long_about` (the shape `rec` and `play` set) because
     // clap reflows doc-comment paragraphs: as a doc comment the examples
     // below collapse onto one run-on line.
-    #[command(
-        about = "Set a pane's grid size, with no TTY",
-        long_about = "Set a pane's grid size, with no TTY.\n\n\
+    #[usage(
+        help = "Set a pane's grid size, with no TTY",
+        long_help = "Set a pane's grid size, with no TTY.\n\n\
             The headless counterpart to resizing your terminal window: names one \
             pane and gives it an exact cell geometry. Nothing attaches and \
             nothing subscribes, so the pane is never dragged toward the 80x24 \
@@ -913,10 +973,10 @@ pub(crate) enum Command {
 
         /// New grid size, e.g. 120x40. Both axes are whole numbers of
         /// cells and at least 1.
-        #[arg(value_name = "COLSxROWS", value_parser = resize::parse_geometry)]
+        #[usage(value_name = "COLSxROWS")]
         geometry: resize::Geometry,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -932,7 +992,7 @@ pub(crate) enum Command {
         /// client on the server.
         session: Option<String>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         remote: RemoteOpt,
     },
 
@@ -960,9 +1020,9 @@ pub(crate) enum Command {
     /// Signal a pane's process group.
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the examples need real newlines.
-    #[command(
-        about = "Signal a pane's process group",
-        long_about = "Signal a pane's process group.\n\n\
+    #[usage(
+        help = "Signal a pane's process group",
+        long_help = "Signal a pane's process group.\n\n\
             Delivers a POSIX signal to the program running in the resolved pane and \
             every subprocess it spawned — distinct from `phux kill`, which destroys \
             the pane. `freeze` (SIGSTOP) pauses the process mid-step; `resume` \
@@ -977,6 +1037,7 @@ pub(crate) enum Command {
         target: String,
 
         /// Which signal to deliver.
+        #[usage(value_enum)]
         signal: SignalArg,
     },
 
@@ -984,9 +1045,9 @@ pub(crate) enum Command {
     // `long_about` spelled out for the same reason `rec` and `signal` do it:
     // clap reflows doc-comment paragraphs and the worked examples need real
     // newlines.
-    #[command(
-        about = "Update phux to the latest stable or next release, keeping sessions alive",
-        long_about = "Update phux to the latest stable or next release, keeping sessions alive.\n\n\
+    #[usage(
+        help = "Update phux to the latest stable or next release, keeping sessions alive",
+        long_help = "Update phux to the latest stable or next release, keeping sessions alive.\n\n\
             Checks the published release, downloads the archive for this platform, \
             verifies it against the checksum published beside it, replaces the \
             binaries atomically, and asks a running server to re-exec so live panes \
@@ -1014,15 +1075,15 @@ pub(crate) enum Command {
     )]
     Update {
         /// Update options.
-        #[command(flatten)]
+        #[usage(flatten)]
         opts: update::UpdateOpts,
     },
 
     /// Show or switch the release channel.
-    // `long_about` spelled out so the examples keep real newlines.
-    #[command(
-        about = "Show or switch the release channel",
-        long_about = "Show or switch the release channel.\n\n\
+    // `long_help` spelled out so the examples keep real newlines.
+    #[usage(
+        help = "Show or switch the release channel",
+        long_help = "Show or switch the release channel.\n\n\
             Bare `phux channel` reports the rail this install follows and what \
             is published there. `phux channel next` follows green `main`; \
             `phux channel latest` (also `stable`) follows the numbered GitHub \
@@ -1035,17 +1096,17 @@ pub(crate) enum Command {
     )]
     Channel {
         /// Channel to follow. Omit to report the current rail without changing it.
-        #[arg(value_enum, value_name = "CHANNEL")]
+        #[usage(value_enum, value_name = "CHANNEL")]
         channel: Option<update::channel::Channel>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
     /// Open the native macOS Cockpit app.
-    #[command(
-        about = "Open the native macOS Cockpit app",
-        long_about = "Open the native macOS Cockpit app.\n\n\
+    #[usage(
+        help = "Open the native macOS Cockpit app",
+        long_help = "Open the native macOS Cockpit app.\n\n\
             Finds Phux Cockpit.app in /Applications or ~/Applications and opens \
             it through Launch Services. Set PHUX_COCKPIT_APP to pin a specific \
             bundle. macOS-only; if the app is missing the remedy is the curl \
@@ -1055,7 +1116,7 @@ pub(crate) enum Command {
             phux cockpit --json"
     )]
     Cockpit {
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -1083,7 +1144,7 @@ pub(crate) enum Command {
         /// New session name.
         new_name: String,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         remote: RemoteOpt,
     },
 
@@ -1097,27 +1158,27 @@ pub(crate) enum Command {
     ///
     /// TARGET is a selector (see the top-level help); omit it for the
     /// most-recently-focused session.
-    #[command(about = "Capture a pane's screen as JSON or a boxed text view")]
+    #[usage(help = "Capture a pane's screen as JSON or a boxed text view")]
     Snapshot {
         /// Target selector. Omit for the most-recently-focused session.
-        #[arg(value_name = "TARGET")]
+        #[usage(value_name = "TARGET")]
         session: Option<String>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
 
         /// Include scrollback history above the viewport.
         /// Bare `--scrollback` requests all retained history; `--scrollback
         /// N` requests the most-recent N rows. History appears in the JSON
         /// `scrollback` field; the boxed view shows it above the viewport.
-        #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "0")]
+        #[usage(long, value_name = "N", num_args = 0..=1, default_missing = "0")]
         scrollback: Option<u32>,
 
         /// Include per-cell OSC-133 semantic marks + styles.
         /// Populates the JSON `cells` array (sparse: only cells with a
         /// non-default style or a semantic mark). No effect on the boxed
         /// view, which is plain text.
-        #[arg(long)]
+        #[usage(long)]
         cells: bool,
 
         /// Return the last N rendered rows (history above the viewport,
@@ -1127,13 +1188,13 @@ pub(crate) enum Command {
         // The literals are `phux_core::screen::ROW_WINDOW_DEFAULT` and
         // `ROW_WINDOW_MAX`; clap needs a `&'static str` here, so
         // `commands::snapshot`'s tests pin the two spellings together.
-        #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "80")]
+        #[usage(long, value_name = "N", num_args = 0..=1, default_missing = "80")]
         tail: Option<u32>,
 
         /// Join soft-wrapped rows into logical lines (rows as written, not
         /// as painted). Cannot be combined with `--cells`: cell coordinates
         /// are grid coordinates and do not survive the join.
-        #[arg(long, conflicts_with = "cells")]
+        #[usage(long, conflicts("--cells"))]
         unwrap: bool,
 
         /// Emit the CLIENT's composited multi-pane view — the assembled
@@ -1143,25 +1204,25 @@ pub(crate) enum Command {
         /// client render path). Mutually exclusive with `--cells` /
         /// `--scrollback` / `--tail` / `--unwrap`; sizes the composite via
         /// `--cols` / `--rows`.
-        #[arg(long, conflicts_with_all = ["cells", "scrollback", "tail", "unwrap"])]
+        #[usage(long, conflicts("--cells", "--scrollback", "--tail", "--unwrap"))]
         rendered: bool,
 
         /// Composited viewport width for `--rendered` (no TTY to measure).
-        #[arg(long, value_name = "COLS", default_value_t = 80)]
+        #[usage(long, value_name = "COLS", default = "80", default_value_t = 80)]
         cols: u16,
 
         /// Composited viewport height for `--rendered`.
-        #[arg(long, value_name = "ROWS", default_value_t = 24)]
+        #[usage(long, value_name = "ROWS", default = "24", default_value_t = 24)]
         rows: u16,
     },
 
     /// Send keys to a pane.
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the examples need real newlines.
-    #[command(
+    #[usage(
         name = "send-keys",
-        about = "Send keys to a pane",
-        long_about = "Send keys to a pane.\n\n\
+        help = "Send keys to a pane",
+        long_help = "Send keys to a pane.\n\n\
             tmux-shaped: each KEY is a named key (`Enter`, `Tab`, `Escape`, \
             `Up`, `C-c`, `M-x`, …) or a literal string. Literals normally type \
             character by character; a literal run immediately before `Enter` is \
@@ -1180,16 +1241,16 @@ pub(crate) enum Command {
         target: String,
 
         /// Keys to send: named keys and/or literal strings, in order.
-        #[arg(trailing_var_arg = true, required = true)]
+        #[usage(trailing_var_arg, required)]
         keys: Vec<String>,
     },
 
     /// Paste text into a pane.
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the examples need real newlines.
-    #[command(
-        about = "Paste text into a pane (bracketed when the pane asks for it)",
-        long_about = "Paste text into a pane.\n\n\
+    #[usage(
+        help = "Paste text into a pane (bracketed when the pane asks for it)",
+        long_help = "Paste text into a pane.\n\n\
             Delivers the payload as ONE paste event to the resolved pane \
             (`ROUTE_INPUT`), so the live pane is neither attached nor resized. \
             When the pane's program has bracketed paste (DEC mode 2004) switched \
@@ -1219,16 +1280,16 @@ pub(crate) enum Command {
         /// pane's untrusted-paste policy (reject by default) may silently
         /// drop an unsafe payload — e.g. anything multiline. Without this
         /// flag the paste is trusted and forwarded verbatim.
-        #[arg(long)]
+        #[usage(long)]
         untrusted: bool,
     },
 
     /// Block until a pane meets a condition.
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the examples need real newlines.
-    #[command(
-        about = "Block until a pane meets a condition",
-        long_about = "Block until a pane meets a condition.\n\n\
+    #[usage(
+        help = "Block until a pane meets a condition",
+        long_help = "Block until a pane meets a condition.\n\n\
             Polls the side-effect-free screen read — the poll \
             floor of the event surface: always works, no shell integration. \
             Exits 0 when the condition is met, and 124 when `--timeout` expires \
@@ -1251,21 +1312,21 @@ pub(crate) enum Command {
     )]
     Wait {
         /// Target selector. Omit for the most-recently-focused session.
-        #[arg(value_name = "TARGET")]
+        #[usage(value_name = "TARGET")]
         session: Option<String>,
 
         /// Succeed once any line contains this substring. NOTE: this matches
         /// ANY line, including the shell's echo of a command you just typed
         /// — match on text that appears only in OUTPUT, or pass
         /// `--output-only`.
-        #[arg(long, value_name = "TEXT", conflicts_with = "regex")]
+        #[usage(long, value_name = "TEXT", conflicts("--regex"))]
         until: Option<String>,
 
         /// Succeed once any line matches this Rust regular expression. One
         /// line at a time, so `^` and `$` anchor to a line you can see. An
         /// invalid pattern is a usage error (exit 2) reported before the
         /// wait starts, never a wait that quietly never matches.
-        #[arg(long, value_name = "PATTERN")]
+        #[usage(long, value_name = "PATTERN")]
         regex: Option<phux_client::wait::MatchRegex>,
 
         /// Match only within the last N lines, and read that much history to
@@ -1281,31 +1342,31 @@ pub(crate) enum Command {
         // The literals are `phux_core::screen::ROW_WINDOW_DEFAULT` and
         // `ROW_WINDOW_MAX`; clap needs a `&'static str` here, so
         // `commands::wait`'s tests pin the two spellings together.
-        #[arg(long, value_name = "N", num_args = 0..=1, default_missing_value = "80")]
+        #[usage(long, value_name = "N", num_args = 0..=1, default_missing = "80")]
         tail: Option<u32>,
 
         /// Ignore lines the shell marked as your own typed input, so a wait
         /// cannot be satisfied by the echo of the command that started the
         /// work. Needs a shell with OSC-133 integration; with none, nothing
         /// is filtered and phux says so on stderr rather than pretending.
-        #[arg(long)]
+        #[usage(long)]
         output_only: bool,
 
         /// Succeed once the matched lines hold still for this many
         /// milliseconds (the pane has settled). Default when neither
         /// `--until` nor `--regex` is given. With `--tail N`, only those
         /// lines have to hold still — a spinner further up does not count.
-        #[arg(long, value_name = "MS")]
+        #[usage(long, value_name = "MS")]
         idle: Option<u64>,
 
         /// Give up after this many seconds (exit 124), counted from the start
         /// of the command: connecting, resolving TARGET, and every screen
         /// read share the one budget. The first read always gets at least
         /// 2s, so 0 checks the condition once. Default: wait forever.
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -1332,9 +1393,9 @@ pub(crate) enum Command {
     ///   phux watch --until asked --timeout 120 reviewer
     // `long_about` because clap reflows doc-comment paragraphs and the exit
     // codes need to survive as their own lines.
-    #[command(
-        about = "Stream a pane's live events (bell, title, dirty/idle, lifecycle)",
-        long_about = "Stream a pane's live events (the push half of the agent surface).\n\n\
+    #[usage(
+        help = "Stream a pane's live events (bell, title, dirty/idle, lifecycle)",
+        long_help = "Stream a pane's live events (the push half of the agent surface).\n\n\
             Subscribes to the server's event stream and prints one event per line. The \
             subscription neither attaches nor resizes the pane — safe to watch a pane a human \
             or another agent is actively using. TARGET is a selector (see the top-level help); \
@@ -1353,7 +1414,7 @@ pub(crate) enum Command {
     )]
     Watch {
         /// Target selector. Omit for the most-recently-focused session.
-        #[arg(value_name = "TARGET")]
+        #[usage(value_name = "TARGET")]
         session: Option<String>,
 
         /// Exit 0 as soon as an event with this name arrives. Repeatable;
@@ -1363,15 +1424,15 @@ pub(crate) enum Command {
         /// `pane_closed`, `pane_spawned`, `title_changed`, `unknown`. An
         /// unrecognized name is a usage error (exit 2) reported before the
         /// watch starts, never a watch that quietly never matches.
-        #[arg(long, value_name = "EVENT")]
+        #[usage(long, value_name = "EVENT")]
         until: Vec<String>,
 
         /// Give up after this many seconds (exit 124). Applies with or
         /// without `--until`. Default: stream until EOF or Ctrl-C.
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -1380,9 +1441,9 @@ pub(crate) enum Command {
     // The user-facing text is spelled out in `long_about` (the same shape the
     // root command uses) because clap reflows doc-comment paragraphs: as a
     // doc comment the three examples below collapse onto one run-on line.
-    #[command(
-        about = "Record a pane and export it as a cast, GIF, or APNG",
-        long_about = "Record a pane and export it as an asciinema cast, an animated GIF, or an APNG.\n\n\
+    #[usage(
+        help = "Record a pane and export it as a cast, GIF, or APNG",
+        long_help = "Record a pane and export it as an asciinema cast, an animated GIF, or an APNG.\n\n\
             TARGET is a selector (default: the focused pane). Recording is a pure observer: \
             it does not attach the session and never resizes the pane, so it is safe to run \
             against a live session someone is using.\n\n\
@@ -1396,47 +1457,64 @@ pub(crate) enum Command {
     )]
     Rec {
         /// Pane selector. Defaults to the focused pane.
-        #[arg(value_name = "TARGET")]
+        #[usage(value_name = "TARGET")]
         target: Option<String>,
 
         /// Output path. The extension picks the format unless --format is
         /// given; a path with no extension gets `.gif`.
-        #[arg(short = 'o', long = "out", value_name = "PATH")]
+        #[usage(short = 'o', long = "out", value_name = "PATH")]
         out: std::path::PathBuf,
 
         /// Output format, overriding the extension.
-        #[arg(long, value_enum, value_name = "FMT")]
+        #[usage(long, value_enum, value_name = "FMT")]
         format: Option<RecFormat>,
 
         /// Re-render an existing .cast instead of capturing a live pane.
-        #[arg(long, value_name = "FILE", conflicts_with_all = ["target", "duration"])]
+        #[usage(long, value_name = "FILE", conflicts("--target", "--duration"))]
         from: Option<std::path::PathBuf>,
 
         /// Stop after SECS of recording (default: until Ctrl-C or the pane
         /// exits).
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         duration: Option<u64>,
 
         /// Animation sample rate for GIF/APNG output.
-        #[arg(long, value_name = "FPS", default_value_t = 10,
-              value_parser = clap::value_parser!(u8).range(1..=50))]
+        #[usage(
+            long,
+            value_name = "FPS",
+            default = "10",
+            default_value_t = 10,
+            validate = "int(value) >= 1 && int(value) <= 50",
+            validate_error = "must be between 1 and 50"
+        )]
         fps: u8,
 
         /// Collapse any pause longer than SECS down to SECS. 0 disables.
-        #[arg(long = "idle-limit", value_name = "SECS", default_value_t = 2.0)]
+        #[usage(
+            long = "idle-limit",
+            value_name = "SECS",
+            default = "2.0",
+            default_value_t = 2.0
+        )]
         idle_limit: f64,
 
         /// Stop encoding and warn once the output reaches BYTES.
-        #[arg(long = "max-bytes", value_name = "BYTES", default_value_t = 8 * 1024 * 1024)]
+        #[usage(long = "max-bytes", value_name = "BYTES", default = "8388608", default_value_t = 8 * 1024 * 1024)]
         max_bytes: u64,
 
         /// asciicast format version to write (2 is the interoperable
         /// default).
-        #[arg(long = "cast-version", value_name = "N", default_value_t = 2,
-              value_parser = clap::value_parser!(u8).range(2..=3))]
+        #[usage(
+            long = "cast-version",
+            value_name = "N",
+            default = "2",
+            default_value_t = 2,
+            validate = "int(value) >= 2 && int(value) <= 3",
+            validate_error = "must be 2 or 3"
+        )]
         cast_version: u8,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -1444,9 +1522,9 @@ pub(crate) enum Command {
     // Spelled out in `long_about` for the same reason `rec` is: clap reflows
     // doc-comment paragraphs into one run-on line and the examples need real
     // newlines.
-    #[command(
-        about = "Play a recording back as a live pane",
-        long_about = "Play a recording back as a live pane.\n\n\
+    #[usage(
+        help = "Play a recording back as a live pane",
+        long_help = "Play a recording back as a live pane.\n\n\
             Creates a new Terminal whose PTY is fed from FILE, then prints its id. The \
             result is an ordinary pane: attach it, `phux snapshot` it, `phux resize` it, \
             watch it from an agent, or `phux kill` it. It is not a viewer for your own \
@@ -1467,67 +1545,72 @@ pub(crate) enum Command {
     )]
     Play {
         /// The .cast file to play.
-        #[arg(value_name = "FILE")]
+        #[usage(value_name = "FILE")]
         file: std::path::PathBuf,
 
         /// Selector for the pane the playback pane is created beside.
         /// Defaults to `.` (the focused pane). Never written to.
-        #[arg(value_name = "TARGET")]
+        #[usage(value_name = "TARGET")]
         target: Option<String>,
 
         /// Playback rate. 1 is real time, 2 is twice as fast, 0.5 half
         /// speed. Between 0.01 and 100; no events are ever dropped.
-        #[arg(long, value_name = "N", default_value = "1",
-              value_parser = play::parse_speed)]
-        speed: phux_record::playback::Speed,
+        #[usage(long, value_name = "N", default = "1")]
+        speed: play::SpeedArg,
 
         /// Collapse any pause longer than SECS down to SECS. Defaults to
         /// the idle limit the recording itself declares; 0 plays the raw
         /// timeline.
-        #[arg(long = "idle-limit", value_name = "SECS")]
+        #[usage(long = "idle-limit", value_name = "SECS")]
         idle_limit: Option<f64>,
 
         /// Repeat the recording. Bare `--loop` repeats until the pane is
         /// killed; `--loop N` plays it N times.
-        #[arg(long = "loop", value_name = "N", num_args = 0..=1,
-              default_missing_value = "0")]
+        #[usage(long = "loop", value_name = "N", num_args = 0..=1,
+              default_missing = "0")]
         loops: Option<u32>,
 
         /// Split axis for the new pane.
-        #[arg(long, value_enum, default_value = "horizontal")]
+        #[usage(long, value_enum, default = "horizontal")]
         split: SpawnSplit,
 
         /// Fraction of the split retained by TARGET.
-        #[arg(long, default_value_t = 0.5, value_parser = parse_spawn_ratio)]
+        #[usage(
+            long,
+            default = "0.5",
+            default_value_t = 0.5,
+            validate = "float(value) > 0 && float(value) < 1",
+            validate_error = "ratio must be finite and strictly between 0 and 1"
+        )]
         ratio: f32,
 
         /// Leave the pane's grid alone instead of fitting it to the
         /// recording's. Output wider than the pane will wrap.
-        #[arg(long = "no-fit")]
+        #[usage(long = "no-fit")]
         no_fit: bool,
 
         /// Close the pane when playback ends, instead of holding the final
         /// frame until it is killed.
-        #[arg(long)]
+        #[usage(long)]
         close: bool,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
 
         /// Internal: this process IS the pane, so write the recording to
         /// stdout rather than spawning one. Hidden because it is an
         /// implementation detail of the pane this verb creates, not a
         /// promise that phux ships a shell-level cast viewer.
-        #[arg(long = "pty-writer", hide = true)]
+        #[usage(long = "pty-writer", hide)]
         pty_writer: bool,
     },
 
     /// Report that an agent in a pane is waiting on a human answer.
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the examples need real newlines.
-    #[command(
-        about = "Report an agent ask event for a pane",
-        long_about = "Report that an agent in a pane is waiting on a human answer.\n\n\
+    #[usage(
+        help = "Report an agent ask event for a pane",
+        long_help = "Report that an agent in a pane is waiting on a human answer.\n\n\
             This is the opt-in hook contract for configured integrations: it emits \
             the same `asked` event as the `phux-ask` title sentinel without writing \
             escape sequences into the target terminal. TARGET is resolved \
@@ -1542,18 +1625,18 @@ pub(crate) enum Command {
         target: String,
 
         /// Stable question id for answer correlation.
-        #[arg(long, default_value = "")]
+        #[usage(long, default = "")]
         id: String,
 
         /// Suggested answer. Repeat to preserve display order.
-        #[arg(long = "suggest", value_name = "TEXT")]
+        #[usage(long = "suggest", value_name = "TEXT")]
         suggestions: Vec<String>,
 
         /// Seconds the agent has already been waiting.
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         elapsed_seconds: Option<u64>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
 
         /// Human-facing question text.
@@ -1566,16 +1649,16 @@ pub(crate) enum Command {
     /// running in each pane. `set`/`clear` write and delete an explicit
     /// per-pane agent identity that overrides inference.
     Agent {
-        #[command(subcommand)]
+        #[usage(subcommand)]
         action: agent::AgentAction,
     },
 
     /// Run a command in a pane and capture its exit code.
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the examples need real newlines.
-    #[command(
-        about = "Run a command in a pane and capture its exit code",
-        long_about = "Run a command in a pane and capture its exit code.\n\n\
+    #[usage(
+        help = "Run a command in a pane and capture its exit code",
+        long_help = "Run a command in a pane and capture its exit code.\n\n\
             Reports the command's exit code, output, and duration. \
             Brackets the command with sentinels to capture `$?`, so it \
             assumes a POSIX shell (sh/bash/zsh). The process exit code mirrors \
@@ -1603,7 +1686,7 @@ pub(crate) enum Command {
         target: String,
 
         /// The command line: all trailing args, joined with spaces.
-        #[arg(trailing_var_arg = true, required = true)]
+        #[usage(trailing_var_arg, required)]
         command: Vec<String>,
 
         /// Give up after this many seconds (exit 125), counted from the start
@@ -1611,10 +1694,10 @@ pub(crate) enum Command {
         /// command, and every screen read share the one budget; input that
         /// has started gets up to 2s more to finish. Default: 600s. Pass 0 to
         /// wait indefinitely.
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -1625,7 +1708,7 @@ pub(crate) enum Command {
     /// subcommands never touch a running server, except `reload`,
     /// which signals attached clients to re-read their config in place.
     Config {
-        #[command(subcommand)]
+        #[usage(subcommand)]
         action: config_action::ConfigAction,
     },
 
@@ -1635,7 +1718,7 @@ pub(crate) enum Command {
     /// `phux-plugin.toml` manifests and edits `[[plugins]]` entries in the
     /// user's config without contacting a running server.
     Plugin {
-        #[command(subcommand)]
+        #[usage(subcommand)]
         action: PluginAction,
     },
 
@@ -1645,7 +1728,7 @@ pub(crate) enum Command {
     /// and never creates or deletes worktrees. Agents use it to map code
     /// checkouts to phux sessions/panes before spawning or attaching work.
     Workspace {
-        #[command(subcommand)]
+        #[usage(subcommand)]
         action: WorkspaceAction,
     },
 
@@ -1655,7 +1738,7 @@ pub(crate) enum Command {
     /// the `#tag` selector addresses every pane carrying that tag — e.g.
     /// `phux kill #build`, `phux snapshot #web`.
     Tag {
-        #[command(subcommand)]
+        #[usage(subcommand)]
         action: TagAction,
     },
 
@@ -1671,7 +1754,7 @@ pub(crate) enum Command {
     // invokes — a human never types it, so it stays out of `--help`, the
     // generated completions, and the docs/reference pages while continuing
     // to parse (phux-i0e8.12.5, re-landed by phux-06nn).
-    #[command(name = "stdio-bridge", hide = true)]
+    #[usage(name = "stdio-bridge", hide)]
     StdioBridge {},
 
     /// Open a one-attach QUIC listener on this host and print how to reach it.
@@ -1682,19 +1765,19 @@ pub(crate) enum Command {
     /// fingerprint to pin, and the token.
     // Hidden: `phux attach --ssh` runs it over ssh and no human types it,
     // the same reasoning as `stdio-bridge` above.
-    #[command(name = "bootstrap", hide = true)]
+    #[usage(name = "bootstrap", hide)]
     Bootstrap {
         /// The version of the phux that asked, named in a mismatch report.
-        #[arg(long, value_name = "VERSION")]
+        #[usage(long, value_name = "VERSION")]
         client_version: Option<String>,
 
         /// Inclusive UDP port range to bind from, e.g. `60000-61000`.
-        #[arg(long, value_name = "MIN-MAX")]
+        #[usage(long, value_name = "MIN-MAX")]
         port_range: Option<String>,
 
         /// Seconds the listener stays open with nobody connected; `0` asks
         /// for the server default.
-        #[arg(long, value_name = "SECS", default_value_t = 0)]
+        #[usage(long, value_name = "SECS", default = "0", default_value_t = 0)]
         linger: u32,
     },
 
@@ -1710,7 +1793,7 @@ pub(crate) enum Command {
     /// route-token store and a self-signed certificate) lives at fixed
     /// paths under the phux state directory.
     Relay {
-        #[command(subcommand)]
+        #[usage(subcommand)]
         action: relay::RelayAction,
     },
 
@@ -1723,18 +1806,17 @@ pub(crate) enum Command {
     /// directly and take effect without restarting the server.
     ///
     /// This never contacts a running server — it only writes the token file.
-    #[command(args_conflicts_with_subcommands = true)]
     Pair {
-        #[command(subcommand)]
-        action: Option<pair::PairAction>,
+        #[usage(subcommand)]
+        action: Option<PairAction>,
 
         /// Versioned credential store to update. Defaults to `PHUX_WS_TOKENS`.
-        #[arg(long, global = true, value_name = "PATH")]
+        #[usage(long, global, value_name = "PATH")]
         tokens: Option<std::path::PathBuf>,
 
         /// Server certificate PEM, used to print the pairing fingerprint.
         /// Defaults to `PHUX_WS_TLS_CERT`.
-        #[arg(long, value_name = "PATH")]
+        #[usage(long, value_name = "PATH")]
         cert: Option<std::path::PathBuf>,
 
         /// Also render the pairing payload as a scannable QR code. The QR
@@ -1742,7 +1824,7 @@ pub(crate) enum Command {
         /// printed as text, so a phone can pair by scanning instead of typing. Needs a server
         /// address: pass `--host`, or let it fall back to a detected overlay
         /// address plus the `PHUX_WS_ADDR` port.
-        #[arg(long)]
+        #[usage(long)]
         qr: bool,
 
         /// Server address (`host:port`, or a full `ws://`/`wss://` URL) to
@@ -1750,22 +1832,22 @@ pub(crate) enum Command {
         /// derived from the detected overlay address and the `PHUX_WS_ADDR`
         /// port when possible; otherwise no link is printed (the device
         /// enters the address itself).
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT")]
         host: Option<String>,
 
         /// Human-readable server name to embed in the connect link, shown by
         /// the device in its server list. Omitted: the device picks a default.
-        #[arg(long, value_name = "NAME")]
+        #[usage(long, value_name = "NAME")]
         name: Option<String>,
 
         /// Emit the mint, rotation, or revocation result as JSON on stdout.
         /// `phux host enroll` consumes the mint document over ssh.
-        #[arg(long, global = true)]
+        #[usage(long, global)]
         json: bool,
 
         /// Explicitly convert legacy anonymous token lines before pairing.
         /// Conversion preserves each bearer secret but stores only its verifier.
-        #[arg(long)]
+        #[usage(long)]
         migrate_legacy: bool,
     },
 
@@ -1781,7 +1863,7 @@ pub(crate) enum Command {
     // `enroll` verbs (ADR-0066), removed in v0.12.1 once their deprecation
     // window closed (phux-dpjf).
     Host {
-        #[command(subcommand)]
+        #[usage(subcommand)]
         action: host::HostAction,
     },
 
@@ -1795,16 +1877,16 @@ pub(crate) enum Command {
     /// the host. `install --restore` brings back session names, layout, and
     /// cwd, not running processes.
     Service {
-        #[command(subcommand)]
+        #[usage(subcommand)]
         action: ServiceAction,
     },
     /// Print a shell completion script on stdout.
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the three install commands need real
     // newlines — run together on one line they do copy-paste damage.
-    #[command(
-        about = "Print a shell completion script on stdout",
-        long_about = "Print a shell completion script on stdout.\n\n\
+    #[usage(
+        help = "Print a shell completion script on stdout",
+        long_help = "Print a shell completion script on stdout.\n\n\
             The script is generated from the binary's own argument parser, so it \
             always matches the verbs this build actually accepts. It contacts no \
             server and reads no config, which is what makes it safe to run from a \
@@ -1818,8 +1900,8 @@ pub(crate) enum Command {
     )]
     Completion {
         /// Shell dialect to generate for.
-        #[arg(value_name = "SHELL")]
-        shell: clap_complete::Shell,
+        #[usage(value_enum, value_name = "SHELL")]
+        shell: CompletionShell,
     },
 
     /// Run the bundled MCP stdio adapter.
@@ -1828,14 +1910,9 @@ pub(crate) enum Command {
     /// binary. All arguments are forwarded unchanged. With no arguments it
     /// serves MCP over stdin/stdout; discovery modes include `--skill`,
     /// `--schema`, `--help`, and `--version`.
-    #[command(disable_help_flag = true, disable_version_flag = true)]
     Mcp {
         /// Arguments forwarded unchanged to the MCP companion.
-        #[arg(
-            value_name = "ARGS",
-            trailing_var_arg = true,
-            allow_hyphen_values = true
-        )]
+        #[usage(value_name = "ARGS", trailing_var_arg, allow_hyphen_values)]
         args: Vec<std::ffi::OsString>,
     },
 
@@ -1843,9 +1920,9 @@ pub(crate) enum Command {
     // `long_about` spelled out for the same reason `completion` spells one
     // out: clap reflows doc-comment paragraphs, and the install one-liners
     // need real newlines or they run together and do copy-paste damage.
-    #[command(
-        about = "Print the agent skill this binary ships with, on stdout",
-        long_about = "Print the agent skill this binary ships with, on stdout.\n\n\
+    #[usage(
+        help = "Print the agent skill this binary ships with, on stdout",
+        long_help = "Print the agent skill this binary ships with, on stdout.\n\n\
             The text is compiled into the executable, so it describes the verbs \
             and flags THIS build actually has — it cannot drift from the binary \
             the way a copied file can. It contacts no server and reads no \
@@ -1864,7 +1941,7 @@ pub(crate) enum Command {
     )]
     Skill {
         /// Amount and subject of guidance to print.
-        #[arg(value_enum, default_value = "full", value_name = "SCOPE")]
+        #[usage(value_enum, default = "full", value_name = "SCOPE")]
         scope: crate::skill::SkillScope,
     },
 
@@ -1878,7 +1955,7 @@ pub(crate) enum Command {
     /// since a stopped server is a normal state and not a broken install.
     Doctor {
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -1888,8 +1965,10 @@ pub(crate) enum Command {
     /// worktree's directory basename. The derivation is a pure function of
     /// the path, so the binding is computed on demand and can never go
     /// stale — phux stores no worktree state and the server knows no git.
-    #[command(subcommand)]
-    Worktree(WorktreeAction),
+    Worktree {
+        #[usage(subcommand)]
+        action: WorktreeAction,
+    },
 
     /// Show where phux's logs live, or tail one of them.
     ///
@@ -1900,32 +1979,40 @@ pub(crate) enum Command {
     /// tails the server log and `--client` the newest client log (`--pid`
     /// picks a specific one); `-f` follows and `-n` sets the tail length.
     /// `--json` emits the inventory as a stable document.
-    #[command(group = clap::ArgGroup::new("which").args(["server", "client"]).multiple(false))]
     Logs {
         /// Tail the canonical server log.
-        #[arg(long)]
+        #[usage(long, group = "which")]
         server: bool,
 
         /// Tail the newest per-pid client log (or the one `--pid` names).
-        #[arg(long)]
+        #[usage(long, group = "which")]
         client: bool,
 
         /// With --client: the client pid whose log to tail, instead of the
         /// newest.
-        #[arg(long, value_name = "PID", requires = "client")]
+        #[usage(long, value_name = "PID", requires("--client"))]
         pid: Option<u32>,
 
         /// Follow the tailed log as it grows (needs --server or --client).
-        #[arg(short, long, requires = "which")]
+        #[usage(short, long, requires("--server"))]
         follow: bool,
 
         /// How many trailing lines to show (needs --server or --client).
-        #[arg(short = 'n', long, default_value_t = 200, requires = "which")]
+        #[usage(
+            short = 'n',
+            long,
+            default = "200",
+            default_value_t = 200,
+            requires("--server")
+        )]
         lines: u32,
 
         /// Emit the path inventory as a stable JSON document instead of
         /// human text. Inventory only — it cannot combine with a tail.
-        #[arg(long, conflicts_with_all = ["server", "client", "pid", "follow", "lines"])]
+        #[usage(
+            long,
+            conflicts("--server", "--client", "--pid", "--follow", "--lines")
+        )]
         json: bool,
     },
 
@@ -1938,11 +2025,11 @@ pub(crate) enum Command {
     /// `report-bug` (`C-a B`) while attached so the live session, pane, and
     /// screen are included. An agent given a report path can `cat` it or
     /// run `phux report show`.
-    #[command(visible_alias = "bug")]
+    #[usage(alias = "bug")]
     Report {
-        #[command(subcommand)]
-        action: Option<report::ReportAction>,
-        #[command(flatten)]
+        #[usage(subcommand)]
+        action: Option<ReportAction>,
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -1953,17 +2040,17 @@ pub(crate) enum Command {
     /// own inventories and writes them into the checkout. A unit test
     /// byte-compares the checked-in pages against this generator, so the
     /// published reference can never drift from the compiled binary.
-    #[command(name = "gen-reference-docs", hide = true)]
+    #[usage(name = "gen-reference-docs", hide)]
     GenReferenceDocs {
         /// Directory to write the pages into. Defaults to the checkout's
         /// generated-reference tree; run from the repository root.
-        #[arg(long, value_name = "DIR")]
+        #[usage(long, value_name = "DIR")]
         out: Option<std::path::PathBuf>,
     },
 }
 
 /// `phux service <action>` — manage the per-user service unit.
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum ServiceAction {
     /// Write the unit and hand it to the init system.
     ///
@@ -1976,25 +2063,25 @@ pub(crate) enum ServiceAction {
         // The same `SocketAddr` type as `server --quic`, so a bad address
         // fails at parse time here instead of at the supervised server's
         // first start (phux-i0e8.8.4).
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT")]
         quic: Option<std::net::SocketAddr>,
 
         /// Accept WebSocket clients on this `HOST:PORT`. The fallback for
         /// networks that block UDP.
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT")]
         listen: Option<String>,
 
         /// Save the workspace on stop and restore it on start. Off by
         /// default: a session list repopulated with fresh shells is a
         /// surprise unless asked for. Restores names, layout, and cwd —
         /// never running processes.
-        #[arg(long)]
+        #[usage(long)]
         restore: bool,
 
         /// Run the supervised server as a federation hub. The service loads
         /// enabled `[[satellites]]` entries and keeps their links connected
         /// across login, logout, and reboot.
-        #[arg(long)]
+        #[usage(long)]
         hub: bool,
 
         /// Never stop a running server to install. When one is live, write
@@ -2007,12 +2094,12 @@ pub(crate) enum ServiceAction {
         /// socket. With it, nothing is stopped and nothing crash-loops. The
         /// running process itself is never adopted: neither launchd nor
         /// systemd can restart-supervise a process it did not start.
-        #[arg(long)]
+        #[usage(long)]
         adopt: bool,
 
         /// Print the unit (and the restore wrapper) to stdout without
         /// writing or loading anything.
-        #[arg(long)]
+        #[usage(long)]
         print: bool,
     },
 
@@ -2029,7 +2116,7 @@ pub(crate) enum ServiceAction {
     /// login or reboot; the command says so rather than claiming otherwise.
     Reconcile {
         /// Print the reconciled unit to stdout without writing anything.
-        #[arg(long)]
+        #[usage(long)]
         print: bool,
     },
 
@@ -2042,39 +2129,39 @@ pub(crate) enum ServiceAction {
     /// Show the supervised server's log.
     Logs {
         /// Follow the log as it grows.
-        #[arg(short, long)]
+        #[usage(short = 'f', long)]
         follow: bool,
 
         /// How many trailing lines to show.
-        #[arg(short = 'n', long, default_value_t = 200)]
+        #[usage(short = 'n', long, default = "200", default_value_t = 200)]
         lines: u32,
     },
 
     /// Delete the accumulated per-pid `client-*.log` files.
-    #[command(name = "prune-logs")]
+    #[usage(name = "prune-logs")]
     PruneLogs {
         /// Report how many would be removed, and remove nothing.
-        #[arg(long)]
+        #[usage(long)]
         dry_run: bool,
     },
 }
 
 /// `phux worktree <action>` — git worktrees bound to sessions by name.
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum WorktreeAction {
     /// List the repository's worktrees and their bound sessions.
     ///
     /// The `bound` column reads `live` when a session by the derived name
     /// exists, `-` when it does not, and `?` when no server is running —
     /// "no server" and "no session" are different facts.
-    #[command(visible_alias = "ls")]
+    #[usage(alias = "ls")]
     List {
         /// Path inside the repository or worktree to list from.
-        #[arg(default_value = ".")]
+        #[usage(default = ".")]
         path: std::path::PathBuf,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -2089,23 +2176,23 @@ pub(crate) enum WorktreeAction {
         branch: String,
 
         /// Where to put the worktree. Defaults to a sibling of the repo.
-        #[arg(long, value_name = "PATH")]
+        #[usage(long, value_name = "PATH")]
         path: Option<std::path::PathBuf>,
 
         /// Start point for a newly created branch (default: current HEAD).
-        #[arg(long, value_name = "REF")]
+        #[usage(long, value_name = "REF")]
         from: Option<String>,
 
         /// Session name, overriding the name derived from the path.
-        #[arg(long, short = 's', value_name = "NAME")]
+        #[usage(long, short = 's', value_name = "NAME")]
         session: Option<String>,
 
         /// Path inside the repository the worktree belongs to.
-        #[arg(long, default_value = ".", value_name = "PATH")]
+        #[usage(long, default = ".", value_name = "PATH")]
         repo: std::path::PathBuf,
 
         /// Attach to the new session instead of creating it headlessly.
-        #[arg(long)]
+        #[usage(long)]
         attach: bool,
 
         /// Emit a stable JSON document — branch, path, session, and the seed
@@ -2113,11 +2200,11 @@ pub(crate) enum WorktreeAction {
         /// call in a fan-out script, and the id it returns is the pane the
         /// caller then sends its first prompt to. Cannot combine with
         /// `--attach`: an attached session owns stdout.
-        #[arg(long, conflicts_with = "attach")]
+        #[usage(long, conflicts("--attach"))]
         json: bool,
 
         /// Command to run in the new session instead of the default shell.
-        #[arg(last = true)]
+        #[usage(trailing_var_arg)]
         command: Vec<String>,
     },
 
@@ -2130,17 +2217,17 @@ pub(crate) enum WorktreeAction {
         target: String,
 
         /// Path inside the repository the worktree belongs to.
-        #[arg(long, default_value = ".", value_name = "PATH")]
+        #[usage(long, default = ".", value_name = "PATH")]
         repo: std::path::PathBuf,
 
         /// Attach to the session instead of only reporting its name.
-        #[arg(long)]
+        #[usage(long)]
         attach: bool,
 
         /// Emit the same document `worktree new --json` emits, whether the
         /// session was created now or was already live — so a script that
         /// re-enters a fleet gets the seed pane without special-casing.
-        #[arg(long, conflicts_with = "attach")]
+        #[usage(long, conflicts("--attach"))]
         json: bool,
     },
 
@@ -2149,22 +2236,22 @@ pub(crate) enum WorktreeAction {
     /// The session is killed before git runs, because git refuses to remove
     /// a worktree whose files are held open and a shell sitting in that
     /// directory holds it open. Refuses the worktree you are standing in.
-    #[command(visible_alias = "rm")]
+    #[usage(alias = "rm")]
     Remove {
         /// Worktree path, branch, or derived session name.
         target: String,
 
         /// Pass --force to git, removing a worktree with local changes.
-        #[arg(long)]
+        #[usage(long)]
         force: bool,
 
         /// Path inside the repository the worktree belongs to.
-        #[arg(long, default_value = ".", value_name = "PATH")]
+        #[usage(long, default = ".", value_name = "PATH")]
         repo: std::path::PathBuf,
 
         /// Emit a stable JSON document instead of human text. A fan-out
         /// teardown script has the same parsing problem creation does.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 }
@@ -2174,15 +2261,15 @@ pub(crate) enum WorktreeAction {
 /// Alias policy (ADR-0065 §5): every list/remove registry verb answers to
 /// both spellings. This registry's canonical names were the short ones, so
 /// the aliases here are the long forms.
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum TagAction {
     /// List the tags on each pane a selector resolves to.
-    #[command(visible_alias = "list")]
+    #[usage(alias = "list")]
     Ls {
         /// Target selector (session, `session:window`, `@id`, `.`, `#tag`).
         target: String,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -2191,35 +2278,35 @@ pub(crate) enum TagAction {
         /// Target selector.
         target: String,
         /// Tags to add (the leading `#` is optional).
-        #[arg(required = true)]
+        #[usage(required)]
         tags: Vec<String>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
     /// Remove one or more tags from each pane a selector resolves to.
-    #[command(visible_alias = "remove")]
+    #[usage(alias = "remove")]
     Rm {
         /// Target selector.
         target: String,
         /// Tags to remove (the leading `#` is optional).
-        #[arg(required = true)]
+        #[usage(required)]
         tags: Vec<String>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 }
 
 /// `phux plugin <action>` — local plugin registry lifecycle.
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum PluginAction {
     /// List configured plugin manifests.
-    #[command(visible_alias = "ls")]
+    #[usage(alias = "ls")]
     List {
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -2229,11 +2316,11 @@ pub(crate) enum PluginAction {
         manifest: std::path::PathBuf,
 
         /// Register the plugin but leave it disabled.
-        #[arg(long)]
+        #[usage(long)]
         disabled: bool,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -2252,19 +2339,19 @@ pub(crate) enum PluginAction {
     /// `plugins.lock` so `phux plugin update` can re-fetch it later.
     Install {
         /// Git URL, local plugin directory, or local tarball path.
-        #[arg(value_name = "REF")]
+        #[usage(value_name = "REF")]
         reference: String,
 
         /// Branch or tag to clone (git sources only).
-        #[arg(long, value_name = "REV")]
+        #[usage(long, value_name = "REV")]
         rev: Option<String>,
 
         /// Install and link the plugin but leave it disabled.
-        #[arg(long)]
+        #[usage(long)]
         disabled: bool,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -2280,7 +2367,7 @@ pub(crate) enum PluginAction {
         name: Option<String>,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -2289,13 +2376,13 @@ pub(crate) enum PluginAction {
     // remove-shaped registry verb answers to both, and this registry's
     // canonical name predates the policy. A code comment, not a doc comment —
     // ADR ids must not leak into `--help` (see `help_inventory`).
-    #[command(visible_aliases = ["rm", "remove"])]
+    #[usage(visible_aliases = ["rm", "remove"])]
     Unlink {
         /// Plugin id from its manifest.
         id: String,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -2305,7 +2392,7 @@ pub(crate) enum PluginAction {
         id: String,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -2315,7 +2402,7 @@ pub(crate) enum PluginAction {
         id: String,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -2325,29 +2412,29 @@ pub(crate) enum PluginAction {
         manifest: Option<std::path::PathBuf>,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 }
 
 /// `phux workspace <action>` — workspace inspection and session archives.
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum WorkspaceAction {
     /// Inspect the git repository and its checked-out worktrees.
     Inspect {
         /// Path inside the repository or worktree to inspect.
-        #[arg(default_value = ".")]
+        #[usage(default = ".")]
         path: std::path::PathBuf,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
     /// Save the running phux workspace as a JSON archive.
     Save {
         /// Write the archive to a path instead of stdout.
-        #[arg(long, short = 'o', value_name = "PATH")]
+        #[usage(long, short = 'o', value_name = "PATH")]
         output: Option<std::path::PathBuf>,
     },
 
@@ -2675,7 +2762,7 @@ fn attach_error_lines(
         {
             vec![format!(
                 "phux: no server at {}. Start one with: phux server --session {session}",
-                socket_path.display(),
+                socket_path.display()
             )]
         }
         AttachError::Refused(message) => {

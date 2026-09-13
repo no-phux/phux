@@ -42,12 +42,14 @@ echo 'export PHUX_ENV=mise' > .envrc.local && direnv allow
 `just toolchain-check` is a `just ci` gate that reads `mise.toml`, `flake.nix`,
 `rust-toolchain.toml`, `.config/zig-toolchain.json`, the Cargo manifests, the
 workflows, and the container builders and fails if any of them names a
-different Rust, Zig, Node, or Bun. `just toolchain-parity` is the runtime
-half: it resolves both environments and compares the binaries they actually
-hand you. Run it after bumping a pin or `flake.lock` — a static check cannot
-see nixpkgs quietly resolving a different release than the one `mise.toml`
-pins, which is how the Nix shell came to ship Bun 1.3.13 while `mise.toml`,
-`@types/bun`, and the site's production builder were all on 1.4.0.
+different Rust, Zig, Node, Bun, or usage CLI. `just toolchain-parity` is the
+runtime half: it resolves both environments and compares the binaries they
+actually hand you. Run it after bumping a pin or `flake.lock` — a static check
+cannot see nixpkgs quietly resolving a different release than the one
+`mise.toml` pins, which is how the Nix shell came to ship Bun 1.3.13 while
+`mise.toml`, `@types/bun`, and the site's production builder were all on
+1.4.0, and how nixpkgs `usage` lagged at 6.4.1/6.6.1 while the crate pin was
+6.9.0.
 
 `cargo-nextest` is the one root gate tool Mise does not supply: it has no
 prebuilt entry in Mise's registry, and building it from source can require a
@@ -84,10 +86,12 @@ use Python 3.11+ and Node.
 is a mirror for shell setup, not the source of truth for everything in it.
 `rust-toolchain.toml` remains Cargo/rustup's authoritative Rust input and
 `.config/zig-toolchain.json` remains the verified Zig release-and-digest input.
-Bun is the exception in the other direction: `flake.nix` reads its pin from
-`mise.toml` directly, so the Nix shell cannot lag behind it. `just
+Bun and the usage CLI are the exceptions in the other direction: `flake.nix`
+reads those pins from `mise.toml` directly and fetches the GitHub release
+until nixpkgs matches, so the Nix shell cannot lag behind. `just
 toolchain-check` gates every one of these surfaces against the others, so an
-update cannot leave any of them behind.
+update cannot leave any of them behind. The usage CLI is the same 6.9.x train
+as the `usage-rs` crate the phux binary parses with.
 
 These are dependency boundaries, not arbitrary directories: `phux-protocol`'s
 wire codec and input atoms are pure Rust. Its `server` feature adds libghostty

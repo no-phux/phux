@@ -34,6 +34,11 @@ actionlint = "1.7.12"
 shellcheck = "0.11.0"
 jq = "1.8.2"
 python = "3.14.7"
+# The usage CLI (jdx/usage) lints and renders the portable spec the phux
+# binary emits. Pin the same 6.9.x train as the `usage-rs` crate. nixpkgs
+# currently ships 6.4.1/6.6.1, so flake.nix reads this value and fetches the
+# GitHub release until nixpkgs catches up — the bun pin, applied to a CLI.
+usage = "6.9.0"
 
 # --- Deliberately absent ----------------------------------------------------
 # cargo-nextest has no prebuilt entry in Mise's registry, and the `cargo:`

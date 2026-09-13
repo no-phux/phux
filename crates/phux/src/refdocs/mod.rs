@@ -2,7 +2,7 @@
 //! the hidden `phux gen-reference-docs` subcommand and the freshness test.
 //!
 //! Every page under `docs/reference/` is a pure function of the compiled
-//! binary — the clap command tree today, further inventories (config schema,
+//! binary — the usage spec today, further inventories (config schema,
 //! actions, widgets, hooks) as they register here. The contract has three
 //! legs:
 //!
@@ -11,10 +11,9 @@
 //!    lists exactly these pages. Registering a renderer here is the ONLY way
 //!    a file legitimately appears under `docs/reference/`.
 //! 2. Rendering is deterministic. No timestamps, no environment reads, no
-//!    terminal-width probes (the workspace's clap has no `wrap_help`
-//!    feature, so help text never wraps to the terminal). Running the
-//!    generator twice yields identical bytes, which is what lets a unit test
-//!    byte-compare the checked-in tree against a fresh render.
+//!    terminal-width probes (help text never wraps to the terminal). Running
+//!    the generator twice yields identical bytes, which is what lets a unit
+//!    test byte-compare the checked-in tree against a fresh render.
 //! 3. Every page carries the doc-system scaffolding (frontmatter, TL;DR)
 //!    demanded by `scripts/check-docs.sh`, so the generated tree passes
 //!    `just docs-check` with no carve-outs, plus a GENERATED FILE marker so

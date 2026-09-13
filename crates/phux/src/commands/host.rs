@@ -48,7 +48,7 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Subcommand, ValueEnum};
+use usage::{Subcommands, ValueEnum};
 
 use super::JsonOpt;
 use super::enroll;
@@ -89,7 +89,7 @@ impl HostRole {
 
 /// `phux host <action>` — CRUD over both machine registries through one
 /// namespace.
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum HostAction {
     /// Register a machine, or replace an entry with the same name.
     ///
@@ -108,30 +108,30 @@ pub(crate) enum HostAction {
         endpoint: String,
 
         /// Which registry the entry lands in.
-        #[arg(long, value_enum, default_value = "remote")]
+        #[usage(long, value_enum, default = "remote")]
         role: HostRole,
 
         /// Absolute path to a file holding the pairing token minted by
         /// `phux pair` on the other machine.
-        #[arg(long, value_name = "PATH")]
+        #[usage(long, value_name = "PATH")]
         token_file: Option<PathBuf>,
 
         /// The other machine's TLS certificate SHA-256 fingerprint, as
         /// printed by `phux pair`. Required for `quic://` and `wss://`.
-        #[arg(long, value_name = "FP")]
+        #[usage(long, value_name = "FP")]
         cert_fingerprint: Option<String>,
 
         /// Session to attach on arrival (`--role remote` only). Omitted:
         /// the remote server's own last-attach memory decides.
-        #[arg(long, value_name = "NAME")]
+        #[usage(long, value_name = "NAME")]
         session: Option<String>,
 
         /// Register the entry but leave it disabled (`--role satellite`
         /// only).
-        #[arg(long)]
+        #[usage(long)]
         disabled: bool,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -155,37 +155,37 @@ pub(crate) enum HostAction {
         host: String,
 
         /// Which registry the enrolled machine lands in.
-        #[arg(long, value_enum, default_value = "remote")]
+        #[usage(long, value_enum, default = "remote")]
         role: HostRole,
 
         /// Local label to register. Defaults to HOST without any `user@`.
-        #[arg(long, value_name = "NAME")]
+        #[usage(long, value_name = "NAME")]
         name: Option<String>,
 
         /// Address to register instead of the remote's detected overlay
         /// address. Accepts `HOST:PORT` (dialed over QUIC) or a full
         /// `quic://`/`wss://` URI.
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT")]
         endpoint: Option<String>,
 
         /// QUIC port to configure on the remote and register.
-        #[arg(long, value_name = "PORT", default_value_t = super::enroll::default_quic_port())]
+        #[usage(long, value_name = "PORT", default = "8788", default_value_t = super::enroll::default_quic_port())]
         quic_port: u16,
 
         /// Skip installing the remote's service unit. The server will not
         /// come back on its own after a reboot.
-        #[arg(long)]
+        #[usage(long)]
         no_service: bool,
 
         /// Register an ssh:// entry without contacting the host at all.
-        #[arg(long, conflicts_with_all = ["endpoint", "no_service"])]
+        #[usage(long, conflicts("--endpoint", "--no-service"))]
         ssh_only: bool,
 
         /// Session to attach on arrival (`--role remote` only).
-        #[arg(long, value_name = "NAME")]
+        #[usage(long, value_name = "NAME")]
         session: Option<String>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -193,13 +193,13 @@ pub(crate) enum HostAction {
     ///
     /// With no `--role`, remotes and satellites are merged into one table
     /// with a ROLE column; `--role` filters to one registry.
-    #[command(name = "ls", visible_alias = "list")]
+    #[usage(name = "ls", alias = "list")]
     List {
         /// Show only this registry.
-        #[arg(long, value_enum)]
+        #[usage(long, value_enum)]
         role: Option<HostRole>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 
@@ -207,16 +207,16 @@ pub(crate) enum HostAction {
     ///
     /// With no `--role`, the name is resolved across both registries; a name
     /// registered in both is refused until `--role` disambiguates.
-    #[command(name = "rm", visible_alias = "remove")]
+    #[usage(name = "rm", alias = "remove")]
     Remove {
         /// Registered name.
         name: String,
 
         /// Which registry to remove from. Omitted: both are searched.
-        #[arg(long, value_enum)]
+        #[usage(long, value_enum)]
         role: Option<HostRole>,
 
-        #[command(flatten)]
+        #[usage(flatten)]
         json: JsonOpt,
     },
 }
