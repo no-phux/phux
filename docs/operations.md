@@ -439,9 +439,14 @@ re-running `phux service install` replaces it.
 ### Upgrades and version skew
 
 `phux update` asks the running server to re-exec in place (the listening
-fd is passed to the new image, so panes and scrollback survive). Package
-managers bypass that: `brew upgrade phux` swaps the binary while the old
-server keeps running, indefinitely.
+fd is passed to the new image, so panes and scrollback survive). Before
+that re-exec, the new image must pass `config check`; a broken `extends`
+layer aborts the upgrade and the old server keeps serving. The same
+command rewrites an installed service unit's binary path to this
+install, so a leftover Homebrew `ProgramArguments` cannot leave launchd
+pointing at a file that no longer exists. Package managers bypass the
+re-exec: `brew upgrade phux` swaps the binary while the old server keeps
+running, indefinitely.
 
 phux detects this. Each server records its version in the start history,
 so a client can see a mismatch the wire handshake cannot show it (that

@@ -60,6 +60,9 @@ The bundled name `starter` resolves through, in order: `$PHUX_DISTROS_DIR`,
 then the repo checkout's `distros/` directory. A path (`--distro
 ./distros/starter` or `--distro ./distros/starter/starter.toml`) works from
 anywhere. `--distro herdr` still resolves as an alias of `starter`.
+Configs that already `extends` the old `distros/herdr/herdr.toml` path
+keep loading: that file remains as a compatibility stub, and the loader
+rewrites a missing herdr path to starter when the new file is there.
 
 ## What you get
 

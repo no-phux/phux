@@ -973,7 +973,7 @@ fn report_policy_reach_with(
 }
 
 /// Reconcile an installed unit after `phux update` replaced the binary
-/// (phux-bd30).
+/// (phux-bd30, phux-69pq.12).
 ///
 /// Automatic *only* because the reconcile is non-destructive by construction:
 /// it rewrites a file and, on systemd, asks for a reload that stops nothing.
@@ -981,6 +981,12 @@ fn report_policy_reach_with(
 /// every pane in the middle of an update with no prompt at all — which is why
 /// phux-bd30's "have `phux update` do it" waited on phux-l1yx rather than
 /// shipping first.
+///
+/// Two independent patches, either of which may be a no-op:
+///
+/// - restart-policy keys (phux-l1yx)
+/// - the supervised binary path, so a leftover Homebrew `ProgramArguments` /
+///   `ExecStart` does not strand launchd after a next-channel install
 ///
 /// Silent unless it changed something and `print` is true, and never fatal: an
 /// update that succeeded must not report failure because a unit could not be
@@ -992,31 +998,173 @@ pub(crate) fn reconcile_after_update(print: bool) {
     let Ok(unit_path) = manager.unit_path(profile_suffix().as_deref()) else {
         return;
     };
-    let Ok(body) = std::fs::read_to_string(&unit_path) else {
+    let Ok(original) = std::fs::read_to_string(&unit_path) else {
         return;
     };
-    let Reconcile::Patched(patched) = reconcile_unit(manager, &body) else {
+    let mut body = original.clone();
+    let mut policy_changed = false;
+    let mut binary_changed = false;
+
+    if let Reconcile::Patched(patched) = reconcile_unit(manager, &body) {
+        body = patched;
+        policy_changed = true;
+    }
+    if let Ok(exe) = std::env::current_exe()
+        && let Reconcile::Patched(patched) = rewrite_unit_binary(manager, &body, &exe)
+    {
+        body = patched;
+        binary_changed = true;
+    }
+    if !policy_changed && !binary_changed {
         return;
-    };
-    if std::fs::write(&unit_path, &patched).is_err() {
+    }
+    if std::fs::write(&unit_path, &body).is_err() {
         return;
     }
 
     if print {
         outln!();
-        outln!(
-            "Your service unit predated the corrected restart policy; phux rewrote it in\n\
-             place. Nothing was stopped."
-        );
+        if policy_changed {
+            outln!(
+                "Your service unit predated the corrected restart policy; phux rewrote it in\n\
+                 place. Nothing was stopped."
+            );
+        }
+        if binary_changed {
+            outln!(
+                "Your service unit still named a different phux binary; phux pointed it at\n\
+                 this install. Nothing was stopped."
+            );
+        }
         outln!("  unit    {}", unit_path.display());
         outln!();
     }
     let live = print
         && socket::probe(
-            &unit_socket_override(manager, &body)
+            &unit_socket_override(manager, &original)
                 .unwrap_or_else(phux_server::runtime::default_socket_path),
         ) == SocketState::Live;
     report_policy_reach(manager, &unit_path, live, print);
+}
+
+/// Rewrite the supervised binary path in an installed unit, leaving every
+/// other byte alone — including `--hub` / `--listen` / `--quic` and socket
+/// overrides that a re-`install` would drop.
+///
+/// Pure: the replacement path is an argument so tests do not depend on
+/// `current_exe`.
+pub(crate) fn rewrite_unit_binary(manager: Manager, body: &str, binary: &Path) -> Reconcile {
+    match manager {
+        Manager::Launchd => rewrite_launchd_binary(body, binary),
+        Manager::Systemd => rewrite_systemd_binary(body, binary),
+    }
+}
+
+fn rewrite_launchd_binary(body: &str, binary: &Path) -> Reconcile {
+    let wanted = xml_escape(&path_string(binary));
+    let lines: Vec<&str> = body.split('\n').collect();
+    let mut out = Vec::with_capacity(lines.len());
+    let mut in_args = false;
+    let mut saw_first = false;
+    let mut changed = false;
+    for line in &lines {
+        let trimmed = line.trim();
+        if trimmed == "<key>ProgramArguments</key>" {
+            in_args = true;
+            out.push((*line).to_owned());
+            continue;
+        }
+        if in_args && trimmed == "</array>" {
+            in_args = false;
+            out.push((*line).to_owned());
+            continue;
+        }
+        if in_args
+            && !saw_first
+            && let Some(old) = trimmed
+                .strip_prefix("<string>")
+                .and_then(|rest| rest.strip_suffix("</string>"))
+        {
+            saw_first = true;
+            if old == wanted {
+                out.push((*line).to_owned());
+                continue;
+            }
+            let indent = line.len() - line.trim_start().len();
+            out.push(format!("{}<string>{wanted}</string>", " ".repeat(indent)));
+            changed = true;
+            continue;
+        }
+        out.push((*line).to_owned());
+    }
+    if !saw_first {
+        return Reconcile::Unrecognized("its ProgramArguments has no first <string> to rewrite");
+    }
+    if changed {
+        settled(body, &out)
+    } else {
+        Reconcile::Current
+    }
+}
+
+fn rewrite_systemd_binary(body: &str, binary: &Path) -> Reconcile {
+    let wanted = systemd_escape(&path_string(binary));
+    let mut out = Vec::new();
+    let mut saw_exec = false;
+    let mut changed = false;
+    for line in body.split('\n') {
+        let Some(rest) = line.strip_prefix("ExecStart=") else {
+            out.push(line.to_owned());
+            continue;
+        };
+        saw_exec = true;
+        let Some((first, tail)) = split_first_exec_arg(rest) else {
+            return Reconcile::Unrecognized("its ExecStart= line has no binary path to rewrite");
+        };
+        if first == wanted {
+            out.push(line.to_owned());
+            continue;
+        }
+        out.push(format!("ExecStart={wanted}{tail}"));
+        changed = true;
+    }
+    if !saw_exec {
+        return Reconcile::Unrecognized("no ExecStart= line to rewrite");
+    }
+    if changed {
+        settled(body, &out)
+    } else {
+        Reconcile::Current
+    }
+}
+
+/// Split `ExecStart=`'s remainder into the first argument and the rest of
+/// the line (including the leading space before remaining args).
+fn split_first_exec_arg(rest: &str) -> Option<(String, &str)> {
+    let rest = rest.trim_start();
+    if rest.is_empty() {
+        return None;
+    }
+    if rest.starts_with('"') {
+        let mut escaped = false;
+        for (index, ch) in rest.char_indices().skip(1) {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                let end = index + ch.len_utf8();
+                return Some((rest[..end].to_owned(), &rest[end..]));
+            }
+        }
+        return None;
+    }
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    Some((rest[..end].to_owned(), &rest[end..]))
 }
 
 /// Build the plan an install will write, resolving every path and default
@@ -2263,10 +2411,12 @@ mod tests {
         Manager, RESTART_THROTTLE_SECS, Reconcile, SERVICE_MANAGED_ENV, START_LIMIT_BURST,
         ServicePlan, arm_unit, config_home_from, dry_run_text, home_dir_from, launchd_label_for,
         launchd_policy_lines, reconcile_unit, render_launchd_plist, render_systemd_unit,
-        render_unit, render_wrapper_script, report_policy_reach_with, resolve_plan, sh_quote,
-        status_report, systemd_escape, systemd_policy_lines, systemd_quote, systemd_unit_for,
-        systemd_unquote, unit_socket_override, unit_supervises, xml_escape, xml_unescape,
+        render_unit, render_wrapper_script, report_policy_reach_with, resolve_plan,
+        rewrite_unit_binary, sh_quote, status_report, systemd_escape, systemd_policy_lines,
+        systemd_quote, systemd_unit_for, systemd_unquote, unit_socket_override, unit_supervises,
+        xml_escape, xml_unescape,
     };
+    use std::path::Path;
     use std::path::PathBuf;
 
     /// A captured init-system invocation, for driving [`status_report`]
@@ -3019,6 +3169,47 @@ WantedBy=default.target
                 );
             }
         }
+    }
+
+    #[test]
+    fn rewrite_unit_binary_points_launchd_and_systemd_at_the_new_install() {
+        let next = Path::new("/Users/me/.local/bin/phux");
+        let launchd = patched(rewrite_unit_binary(Manager::Launchd, LEGACY_PLIST, next));
+        assert!(
+            launchd.contains("<string>/Users/me/.local/bin/phux</string>"),
+            "{launchd}"
+        );
+        assert!(
+            !launchd.contains("<string>/usr/local/bin/phux</string>"),
+            "{launchd}"
+        );
+        assert!(
+            launchd.contains("<string>--hub</string>"),
+            "binary rewrite must not drop flags:\n{launchd}"
+        );
+
+        let systemd = patched(rewrite_unit_binary(Manager::Systemd, LEGACY_UNIT, next));
+        assert!(
+            systemd.contains("ExecStart=/Users/me/.local/bin/phux server --hub"),
+            "{systemd}"
+        );
+        assert!(
+            systemd.contains("Environment=\"PHUX_QUIC_ADDR=0.0.0.0:8788\""),
+            "binary rewrite must not drop env:\n{systemd}"
+        );
+    }
+
+    #[test]
+    fn rewrite_unit_binary_is_a_fixed_point_when_the_path_already_matches() {
+        let already = Path::new("/usr/local/bin/phux");
+        assert_eq!(
+            rewrite_unit_binary(Manager::Launchd, LEGACY_PLIST, already),
+            Reconcile::Current
+        );
+        assert_eq!(
+            rewrite_unit_binary(Manager::Systemd, LEGACY_UNIT, already),
+            Reconcile::Current
+        );
     }
 
     /// A legacy plist gains the policy and loses nothing else.
