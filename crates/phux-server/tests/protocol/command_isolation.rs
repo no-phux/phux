@@ -394,6 +394,73 @@ fn put_file_then_transcribe_is_fifo_and_replies_stay_correlated() {
     });
 }
 
+#[test]
+fn stalled_disk_upload_does_not_block_a_new_connection() {
+    run_local(async {
+        let _serial = BULK_TEST_LOCK.acquire().await.unwrap();
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let hold = tmp.path().join("upload-hold");
+        std::fs::create_dir(&hold).unwrap();
+        unsafe { std::env::set_var("PHUX_UPLOAD_DIR", tmp.path().join("uploads")) };
+        unsafe { std::env::set_var("PHUX_TEST_UPLOAD_HOLD", &hold) };
+
+        let (shutdown, server) = spawn_server_with(socket.clone(), Some(SESSION), |cfg| {
+            cfg.seed_with_pty = true;
+            cfg.seed_command = Some(portable_pty::CommandBuilder::new("cat"));
+        });
+        let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let terminal_id = attach(&mut stream).await;
+        let upload_id = FileUploadId::new([0x5d; 16]).unwrap();
+        let bytes = b"held disk";
+
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 30,
+                command: Command::PutFile {
+                    upload_id,
+                    terminal_id,
+                    extension: "wav".to_owned(),
+                    offset: 0,
+                    data: bytes.to_vec(),
+                    final_chunk: true,
+                    sha256: Some(Sha256::digest(bytes).into()),
+                },
+            },
+        )
+        .await;
+
+        timeout(WIRE_RECV_TIMEOUT, async {
+            while !hold.join("held").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("admitted upload worker must reach the disk-hold barrier");
+
+        timeout(Duration::from_secs(5), async {
+            let mut peer = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+            attach(&mut peer).await
+        })
+        .await
+        .expect("HELLO+ATTACH must complete while an admitted upload worker is held");
+
+        tokio::fs::write(hold.join("release"), b"").await.unwrap();
+        match await_command_result(&mut stream, 30).await {
+            CommandResult::OkWith(CommandValue::FileUpload(ack)) => {
+                assert!(ack.path.is_some(), "held PUT_FILE must still publish");
+            }
+            other => panic!("held PUT_FILE failed: {other:?}"),
+        }
+
+        unsafe { std::env::remove_var("PHUX_TEST_UPLOAD_HOLD") };
+        unsafe { std::env::remove_var("PHUX_UPLOAD_DIR") };
+        drop(stream);
+        join_after_shutdown(shutdown, server).await;
+    });
+}
+
 fn marker_entry(lines: &[String], label: &str) -> Option<u32> {
     lines
         .iter()

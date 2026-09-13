@@ -124,6 +124,7 @@ async fn run_upload(root: PathBuf, chunk: PutFileChunk) -> CommandResult {
     };
     match tokio::task::spawn_blocking(move || {
         let _reservation = reservation;
+        hold_admitted_upload_for_tests();
         let _guard = UPLOAD_LOCK.lock().map_err(|_| {
             (
                 ErrorCode::InternalError,
@@ -142,6 +143,23 @@ async fn run_upload(root: PathBuf, chunk: PutFileChunk) -> CommandResult {
             ErrorCode::InternalError,
             format!("file upload worker failed: {join_error}"),
         ),
+    }
+}
+
+/// Testkit barrier (phux-sk2g): park an already-admitted disk worker until
+/// `$PHUX_TEST_UPLOAD_HOLD/release` exists so a public-connection test can
+/// prove accept/HELLO still run. Absent the env var, this is a no-op.
+fn hold_admitted_upload_for_tests() {
+    let Some(dir) = std::env::var_os("PHUX_TEST_UPLOAD_HOLD") else {
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let _ = fs::create_dir_all(&dir);
+    let _ = fs::write(dir.join("held"), []);
+    let release = dir.join("release");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !release.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
 }
 
