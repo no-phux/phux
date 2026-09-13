@@ -1,7 +1,7 @@
 //! The per-client table: every map keyed on a connected client's identity,
 //! plus the monotonic allocator that mints those identities.
 //!
-//! Six fields that were flat on [`super::ServerState`] live here because
+//! The client-keyed fields that were flat on [`super::ServerState`] live here because
 //! they share one lifetime — a client's connection. An entry appears when
 //! the client identifies itself (HELLO, ATTACH, `SUBSCRIBE_EVENTS`, a
 //! session-create submission) and every one of them disappears by the time
@@ -19,8 +19,8 @@
 //! * **Attachment-scoped** — [`Self::attached`], the subscription maps, and
 //!   the session-create result keys. `ServerState::detach` clears these on
 //!   a mid-connection `DETACH` as well as on transport close.
-//! * **Connection-scoped** — [`Self::layers`] and [`Self::peer_identities`],
-//!   both established once at HELLO and unrepeatable on a live connection
+//! * **Connection-scoped** — [`Self::layers`], [`Self::peer_identities`], and
+//!   [`Self::connection_cancellations`], established for a live connection
 //!   (a second HELLO is a protocol error). Only
 //!   `ServerState::forget_connection` clears these, and only when the
 //!   transport is going away.
@@ -65,6 +65,7 @@ use phux_protocol::caps::{ClientCapabilities, ColorSupport, Layer, LayerSet};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{FrameKind, Scope};
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::client::{AttachedClient, ClientId};
 use super::events::{EventScope, EventSubscription};
@@ -158,6 +159,11 @@ pub(super) struct ClientTable {
     /// so it survives `DETACH` and is cleared only by
     /// `ServerState::forget_connection`.
     pub(super) peer_identities: HashMap<ClientId, crate::auth::ConnectionIdentity>,
+    /// Cancellation root for each live client transport. Relay delivery
+    /// retirement uses this connection-scoped signal because dropping one
+    /// outbound sender cannot close writers held alive by other sender clones.
+    /// Cleared only by `ServerState::forget_connection`.
+    pub(super) connection_cancellations: HashMap<ClientId, CancellationToken>,
     /// Nonce-bearing session-create result keys owned by each connection.
     ///
     /// Results are one-shot and connection-scoped even though their transport
@@ -185,6 +191,7 @@ impl ClientTable {
             metadata_mailboxes: HashMap::new(),
             terminal_mailboxes: HashMap::new(),
             peer_identities: HashMap::new(),
+            connection_cancellations: HashMap::new(),
             session_create_results: HashMap::new(),
         }
     }

@@ -7,6 +7,7 @@ use phux_protocol::caps::{
 use phux_protocol::ids::ResourceId as WireResourceId;
 use thiserror::Error;
 use tokio::sync::mpsc;
+use tokio_util::sync::CancellationToken;
 
 use super::ServerState;
 use crate::mailbox::Outbound;
@@ -138,6 +139,30 @@ impl ServerState {
     /// printing `client=0` are obviously a placeholder, not a real client.
     pub const fn new_client_id(&mut self) -> ClientId {
         self.clients.new_client_id()
+    }
+
+    /// Register the cancellation root for one live client transport.
+    ///
+    /// The relay clones this token into proxy subscriptions so an exhausted
+    /// downstream can terminate the real connection even though runtime
+    /// plumbing retains additional mailbox sender clones.
+    pub fn set_client_connection_cancellation(
+        &mut self,
+        client_id: ClientId,
+        token: CancellationToken,
+    ) {
+        self.clients
+            .connection_cancellations
+            .insert(client_id, token);
+    }
+
+    /// Clone the cancellation root for one live client transport.
+    #[must_use]
+    pub fn client_connection_cancellation(&self, client_id: ClientId) -> Option<CancellationToken> {
+        self.clients
+            .connection_cancellations
+            .get(&client_id)
+            .cloned()
     }
 
     /// Attach a client to the session with `session_name`.
@@ -348,6 +373,7 @@ impl ServerState {
     pub fn forget_connection(&mut self, client_id: ClientId) {
         self.detach(client_id);
         self.clients.layers.remove(&client_id);
+        self.clients.connection_cancellations.remove(&client_id);
         self.remove_peer_identity(client_id);
     }
 
@@ -391,5 +417,28 @@ impl ServerState {
         session: SessionId,
     ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
         self.clients.attached_in_session(session)
+    }
+}
+
+#[cfg(test)]
+mod connection_cancellation_tests {
+    use super::*;
+
+    #[test]
+    fn connection_cancellation_survives_detach_and_is_removed_on_forget() {
+        let mut state = ServerState::new();
+        let client = state.new_client_id();
+        let token = CancellationToken::new();
+        state.set_client_connection_cancellation(client, token.clone());
+
+        state.detach(client);
+        let registered = state
+            .client_connection_cancellation(client)
+            .expect("detach preserves connection-scoped cancellation");
+        registered.cancel();
+        assert!(token.is_cancelled());
+
+        state.forget_connection(client);
+        assert!(state.client_connection_cancellation(client).is_none());
     }
 }

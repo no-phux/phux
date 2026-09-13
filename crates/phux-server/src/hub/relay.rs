@@ -79,6 +79,7 @@ use phux_protocol::wire::frame::{
     TombstoneReason,
 };
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use crate::state::{ClientId, Outbound};
@@ -144,6 +145,10 @@ pub(crate) struct ProxySubscription {
     pub(crate) client: ClientId,
     /// The client's outbound mailbox.
     pub(crate) out_tx: mpsc::Sender<Outbound>,
+    /// Cancels the owning client connection when bounded failure delivery can
+    /// no longer make progress. Dropping one mailbox sender is insufficient:
+    /// production plumbing retains control- and stream-writer clones.
+    pub(crate) consumer_cancel: CancellationToken,
     /// Monotonic ordering token stamped by [`RelayHandle`] at enqueue
     /// (phux-v45.7 reorder guard). A registration and its later
     /// withdrawal ride *different* channels — the bounded request mailbox
@@ -805,6 +810,7 @@ const fn frame_label(frame: &FrameKind) -> &'static str {
 struct ProxySubscriber {
     client: ClientId,
     out_tx: mpsc::Sender<Outbound>,
+    consumer_cancel: CancellationToken,
     /// Issue-order token of the registration currently held for this
     /// `(terminal, client)` (see [`ProxySubscription::seq`]). Compared
     /// against a terminal withdrawal's token so a stale detach cannot
@@ -1348,6 +1354,7 @@ impl RelaySession {
             terminal,
             client,
             out_tx,
+            consumer_cancel,
             seq,
             awaits_snapshot,
             bootstrap_profile: _,
@@ -1357,6 +1364,7 @@ impl RelaySession {
         let subs = self.subscribers.entry(terminal).or_default();
         if let Some(existing) = subs.iter_mut().find(|s| s.client == client) {
             existing.out_tx = out_tx;
+            existing.consumer_cancel = consumer_cancel;
             // Advance to the freshest token seen: a re-attach must never
             // regress the stored order below a withdrawal it superseded.
             existing.seq = existing.seq.max(seq);
@@ -1383,6 +1391,7 @@ impl RelaySession {
             subs.push(ProxySubscriber {
                 client,
                 out_tx,
+                consumer_cancel,
                 seq,
                 // An attach gates until its own snapshot lands (phux-v45.14);
                 // an event-only subscription carries no snapshot, so it opens
@@ -2759,8 +2768,28 @@ impl RelaySession {
             } => (frames, retained_bytes, open_after),
             SnapshotGate::Open => (VecDeque::new(), 0, true),
             SnapshotGate::AwaitingFirst => (VecDeque::new(), 0, false),
-            retiring @ SnapshotGate::Retiring { .. } => {
-                sub.gate = retiring;
+            SnapshotGate::Retiring {
+                failure,
+                deadline,
+                detach_upstream,
+            } => {
+                if matches!(&frame, FrameKind::ResourceClosed { .. }) {
+                    // The authoritative upstream close supersedes any queued
+                    // local delivery-gap fence. Sending the stale tombstone
+                    // would hide the real lifecycle event and then schedule a
+                    // redundant detach for a resource already gone.
+                    sub.gate = SnapshotGate::Retiring {
+                        failure: frame,
+                        deadline,
+                        detach_upstream: false,
+                    };
+                } else {
+                    sub.gate = SnapshotGate::Retiring {
+                        failure,
+                        deadline,
+                        detach_upstream,
+                    };
+                }
                 return;
             }
         };
@@ -2867,6 +2896,11 @@ impl RelaySession {
                 Ok(()) | Err(mpsc::error::TrySendError::Closed(_)) => (false, false),
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     if std::time::Instant::now() >= deadline {
+                        // The mailbox sender stored here is only one of
+                        // several production clones. Cancel the owning
+                        // connection so its control and bound-stream writers
+                        // close even while those clones remain alive.
+                        sub.consumer_cancel.cancel();
                         (false, false)
                     } else {
                         sub.gate = SnapshotGate::Retiring {
@@ -3297,6 +3331,7 @@ mod tests {
                 terminal,
                 client,
                 out_tx,
+                consumer_cancel: CancellationToken::new(),
                 seq,
                 // The SUBSCRIBE_EVENTS shape: no return-leg snapshot, so the
                 // subscriber opens ungated.
@@ -3338,6 +3373,7 @@ mod tests {
                 terminal,
                 client,
                 out_tx,
+                consumer_cancel: CancellationToken::new(),
                 seq: 1,
                 awaits_snapshot: true,
                 bootstrap_profile: Some(selected_profile),
@@ -3675,6 +3711,7 @@ mod tests {
                 terminal: 7,
                 client: ClientId(1),
                 out_tx,
+                consumer_cancel: CancellationToken::new(),
                 seq: 1,
                 awaits_snapshot: true,
                 bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
@@ -3710,6 +3747,7 @@ mod tests {
                 terminal: 8,
                 client: ClientId(2),
                 out_tx,
+                consumer_cancel: CancellationToken::new(),
                 seq: 1,
                 awaits_snapshot: true,
                 bootstrap_profile: Some(native_profile()),
@@ -3991,13 +4029,30 @@ mod tests {
     }
 
     #[test]
-    fn permanently_full_retirement_expires_closes_downstream_and_detaches_upstream() {
+    fn permanently_full_retirement_cancels_consumer_and_detaches_upstream() {
         let mut session = RelaySession::new(host(), BootstrapLimits::default());
         let (out_tx, mut out_rx) = mpsc::channel(1);
+        let production_owner = out_tx.clone();
+        let consumer_cancel = CancellationToken::new();
         out_tx
             .try_send(Outbound::Frame(FrameKind::Detach))
             .expect("fill downstream mailbox");
-        subscribe(&mut session, 9, ClientId(1), out_tx);
+        let wire = session.handle_request(RelayRequest::Subscribe {
+            subscription: ProxySubscription {
+                terminal: 9,
+                client: ClientId(1),
+                out_tx,
+                consumer_cancel: consumer_cancel.clone(),
+                seq: 1,
+                awaits_snapshot: false,
+                bootstrap_profile: None,
+                bootstrap_limits: None,
+            },
+            forward: FrameKind::SubscribeEvents {
+                terminal: Some(ResourceId::local(9)),
+            },
+        });
+        assert!(!wire.is_empty());
         for chunk_seq in 0..=MAX_RELAY_SUBSCRIBER_RETAINED_FRAMES {
             session.fan_out(
                 9,
@@ -4022,7 +4077,13 @@ mod tests {
         session.flush_pending_snapshots();
         assert!(!session.subscribers.contains_key(&9));
         assert_eq!(session.take_delivery_detaches().len(), 1);
+        assert!(consumer_cancel.is_cancelled());
         let _ = out_rx.try_recv().expect("queued filler");
+        assert!(matches!(
+            out_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        drop(production_owner);
         assert!(matches!(
             out_rx.try_recv(),
             Err(mpsc::error::TryRecvError::Disconnected)
@@ -4583,6 +4644,7 @@ mod tests {
             terminal: 9,
             client: ClientId(1),
             out_tx: new_tx,
+            consumer_cancel: CancellationToken::new(),
             seq: 0,
             awaits_snapshot: true,
             bootstrap_profile: None,
@@ -4649,6 +4711,67 @@ mod tests {
                 && *failed_stream == stream_id
                 && *failed_bootstrap == bootstrap_id
         ));
+        assert!(session.take_delivery_detaches().is_empty());
+    }
+
+    #[test]
+    fn terminal_close_supersedes_an_existing_delivery_gap_retirement() {
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (out_tx, mut out_rx) = mpsc::channel(1);
+        out_tx
+            .try_send(Outbound::Frame(FrameKind::Detach))
+            .expect("fill downstream mailbox");
+        subscribe(&mut session, 9, ClientId(1), out_tx);
+        for chunk_seq in 0..=MAX_RELAY_SUBSCRIBER_RETAINED_FRAMES {
+            session.fan_out(
+                9,
+                &FrameKind::BootstrapChunk {
+                    terminal_id: ResourceId::satellite("devbox", 9),
+                    stream_id: StreamId::new(1).expect("stream"),
+                    bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                    chunk_seq: u32::try_from(chunk_seq).expect("small sequence"),
+                    payload: bytes::Bytes::from_static(b"x"),
+                },
+            );
+        }
+        assert!(matches!(
+            session.subscribers[&9][0].gate,
+            SnapshotGate::Retiring {
+                failure: FrameKind::BootstrapTombstone { .. },
+                detach_upstream: true,
+                ..
+            }
+        ));
+
+        session
+            .handle_inbound(&encode(&FrameKind::ResourceClosed {
+                terminal_id: ResourceId::local(9),
+                exit_status: Some(23),
+                reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            }))
+            .expect("valid close");
+        assert!(matches!(
+            session.subscribers[&9][0].gate,
+            SnapshotGate::Retiring {
+                failure: FrameKind::ResourceClosed {
+                    exit_status: Some(23),
+                    ..
+                },
+                detach_upstream: false,
+                ..
+            }
+        ));
+
+        let _ = out_rx.try_recv().expect("filler");
+        session.flush_pending_snapshots();
+        assert!(matches!(
+            out_rx.try_recv().expect("authoritative close"),
+            Outbound::Frame(FrameKind::ResourceClosed {
+                exit_status: Some(23),
+                ..
+            })
+        ));
+        assert!(!session.subscribers.contains_key(&9));
         assert!(session.take_delivery_detaches().is_empty());
     }
 
@@ -5495,6 +5618,7 @@ mod tests {
                 terminal: 9,
                 client: ClientId(1),
                 out_tx,
+                consumer_cancel: CancellationToken::new(),
                 seq: 1,
                 awaits_snapshot: true,
                 bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
@@ -5664,6 +5788,7 @@ mod tests {
                 terminal: 9,
                 client: ClientId(1),
                 out_tx,
+                consumer_cancel: CancellationToken::new(),
                 // Stamped by `handle.subscribe` at enqueue.
                 seq: 0,
                 awaits_snapshot: false,
@@ -5703,6 +5828,7 @@ mod tests {
                 terminal: 9,
                 client: ClientId(1),
                 out_tx,
+                consumer_cancel: CancellationToken::new(),
                 seq: 1,
                 // Ungated on purpose: this exercises the phux-v45.11 rollback
                 // path in isolation. If rollback regressed, the trailing
@@ -5779,6 +5905,7 @@ mod tests {
                 terminal: 9,
                 client: ClientId(2),
                 out_tx: tx_b.clone(),
+                consumer_cancel: CancellationToken::new(),
                 seq: 2,
                 awaits_snapshot: true,
                 bootstrap_profile: Some(BootstrapProfile::SynthesizedVtRaw),
@@ -5864,6 +5991,7 @@ mod tests {
                 terminal: 9,
                 client: ClientId(1),
                 out_tx,
+                consumer_cancel: CancellationToken::new(),
                 // The UPGRADE: a newer token than the pre-existing event-only
                 // registration at 1, now awaiting the attach's snapshot.
                 seq: 2,
