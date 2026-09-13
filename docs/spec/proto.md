@@ -80,6 +80,13 @@ The protocol runs over any reliable, ordered, bidirectional, octet-
 oriented byte stream. This version defines these concrete transports:
 
 - **Unix domain socket** of type `SOCK_STREAM`, for local clients.
+- **WebSocket** (`ws://` on loopback, `wss://` otherwise). One binary message
+  carries exactly one length-prefixed frame. A native paired client sends its
+  bearer in `Authorization: Bearer <hex>`. A browser, whose WebSocket API cannot
+  set that header, offers exactly `phux.v1` plus `phux.bearer.<hex>` as
+  subprotocols; the server authenticates the bearer but echoes only `phux.v1`.
+  Duplicate bearers, duplicate application protocols, or mixed header and
+  subprotocol credentials are refused during upgrade.
 - **Standard I/O of an SSH command**, historically used for remote attaches and
   federation hubs dialing `ssh://` satellites ([ADR-0007]). The dialing side
   invokes `ssh host phux stdio-bridge`; the bridge splices stdin/stdout to the
@@ -145,7 +152,8 @@ adds no frame, field, tag, or error code to the protocol.
 
 ### 4.2 QUIC multi-stream (`QUIC_STREAMS`)
 
-When `HELLO_OK` advertises `QUIC_STREAMS` ([§6.2](#62-capability-and-synchronization-profile-negotiation),
+When the client offers `HELLO.quic_streams = 1` and `HELLO_OK` advertises
+`QUIC_STREAMS` ([§6.2](#62-capability-and-synchronization-profile-negotiation),
 [ADR-0115](../adr/0115-quic-stream-per-terminal.md)), a QUIC
 connection is one **control stream** plus one **bidi stream per attached
 Terminal**, replacing the single-stream shape of §4 for that connection.
@@ -165,9 +173,9 @@ single-stream is their permanent shape.
   `ATTACH_RESOURCE` opens one for that resource); the server never
   opens one. Each carries exactly that Terminal's `RESOURCE_OUTPUT`,
   `BOOTSTRAP_*`, `HISTORY_*`, `FRAME_ACK`, and `INPUT_*` frames — the
-  L1 §4 mapping is normative for which frames ride where. Input and
-  output share the stream, so per-Terminal causal order (keystroke
-  before its echo) is stream order.
+  L1 §4 mapping is normative for which frames ride where. QUIC orders
+  each direction independently; application processing, not bidi stream
+  ordering, establishes any input-to-output causal relationship.
 - **Binding.** The first bytes on a new Terminal stream are a
   `STREAM_BIND` header — `len: u32 BE` + `terminal_id` in its canonical
   L1 encoding + `stream_id: u64 BE` — a transport-establishment detail
@@ -184,15 +192,15 @@ single-stream is their permanent shape.
   rebinding a `StreamId` to a fresh QUIC stream after migration or
   re-attach is the reconnect path it already specifies. The app-level
   `StreamId` is never the QUIC stream id.
-- **Flow control.** Each Terminal stream has independent QUIC flow
-  control: a flooding Terminal stalls only its own stream. The §8
-  application bounds (per-client queues, gap resync) apply per stream,
-  not per connection.
-- **Relay.** The relay forwards stream pairs without parsing (§4.1):
-  each consumer-opened stream is spliced to a fresh `tunnel.open_bi()`.
-  Stream 0 has no special status. Per-connection stream count is capped
-  on both legs; over cap closes the connection with the relay's
-  application close codes, emitting no phux frame.
+- **Flow control.** Each Terminal stream has independent QUIC stream flow
+  control. Congestion control, connection credit, transport CPU, and bounded
+  application queues remain connection-shared, so implementations MUST fairly
+  schedule admitted streams and protect control from a flooding Terminal.
+- **Relay.** A relay that cannot preserve one authenticated consumer's stream
+  group MUST keep that consumer on the single-stream shape. It MUST NOT expose
+  tunnel-global `accept_bi()` to an individual consumer dispatcher. Multi-stream
+  relay parity requires explicit consumer grouping on the tunnel; the current
+  opaque single-stream fallback does not claim it.
 
 A client MUST NOT open a second stream unless `HELLO_OK` advertised
 `QUIC_STREAMS`. A server that receives one anyway resets it.
@@ -268,6 +276,7 @@ HELLO {
     // (profile string + client nonce) was specified but never implemented
     // (ADR-0116). A sender MUST NOT emit them; a decoder skips them.
     ssh_origin: optional<SshOrigin>,  // field 9; L3.md §3.9, set only by phux stdio-bridge
+    quic_streams: optional<u8>,       // field 10; 1 opts into §4.2, absent/0 is false
 }
 
 SshOrigin = {                         // positional, inside field 9
@@ -356,7 +365,8 @@ BootstrapProfileKind = bitset (u8) {
 }
 
 EngineCodecSet = bitset (u64) {
-    LibghosttyCheckpointV2 = 1 << 2,
+    LibghosttyCheckpointV2 = 1 << 2, // legacy checkpoint-v2; decode-compatible only
+    LibghosttySnapshotV1   = 1 << 3, // official GHOSTSNPv1 progressive feed
 }
 
 ServerFeature = bitset (u32) {
@@ -400,7 +410,7 @@ BootstrapProfile = tagged_union {
     SynthesizedVtRaw,                      // tag 1
     SynthesizedVtStateSync,                // tag 2
     NativeState {                          // tag 3
-        codec: EngineCodec,                // exact u8 version: v2 = 2
+        codec: EngineCodec,                // exact capability id: legacy v2 = 2, snapshot v1 = 3
         features: EngineFeatureSet,
     },
     // tag 0 is permanently retired: incomplete pre-bounded-history NativeState.
@@ -411,13 +421,20 @@ The three profile variants are the complete mode matrix. Native always means
 exact checkpoint plus byte-identical raw PTY continuation; there is no native
 StateSync value to encode. `OutputMode` chooses a preferred synthesized profile
 only. Native is selected first when both peers advertise it, share an exact
-codec, and the feature intersection contains all four required v2 features,
-including `BOUNDED_HISTORY_CONTROL`. The current native offer bit/tag are
+codec, and the feature intersection contains all four required native features,
+including `BOUNDED_HISTORY_CONTROL`. `LibghosttySnapshotV1 = 3` names the
+official `GHOSTSNPv1` feed contract: READY may publish a validated prefix and
+complete history manifest/page units continue afterward. The distinct legacy
+`LibghosttyCheckpointV2 = 2` identity remains decodable, but its decoder requires
+FINISH before publication; implementations MUST NOT infer compatibility between
+the two. A current native producer/consumer advertises only snapshot-v1. A
+snapshot-v1 peer and a checkpoint-v2-only peer therefore select a shared
+synthesized profile, or fail negotiation when none was offered. No fallback
+occurs after HELLO_OK. The current native profile offer bit/tag are
 `0x08`/`3`; legacy native bit/tag `0x01`/`0` are permanently retired and ignored,
 so mixed peers fall back to a commonly advertised synthesized
 profile or fail with `CODEC_UNAVAILABLE` before attach. Otherwise the selected
-synthesized variant must be in both advertised sets. No fallback occurs after
-HELLO_OK.
+synthesized variant must be in both advertised sets.
 
 `ClientCapabilities` is one positional sub-record inside HELLO field 5. The
 positional order is frozen:
@@ -508,7 +525,9 @@ token in `RESOURCE_SPAWNED.instance` names the answering server's id space:
 through a hub, the satellite's ([L1.md](./L1.md) §3.1).
 
 `QUIC_STREAMS = 0x400000` gates a transport shape, not a frame: the §4.2
-control-plus-per-Terminal-streams connection. A client MUST NOT open a
+control-plus-per-Terminal-streams connection. The server advertises it only
+when the concrete QUIC route can preserve streams and `HELLO.quic_streams`
+is `1`; absent or `0` is an explicit single-stream offer. A client MUST NOT open a
 second QUIC stream unless `HELLO_OK` advertised the bit; a server that
 receives one anyway resets it. The bit is QUIC-only: it is never
 advertised on (and never affects) UDS, ssh-stdio, WebSocket, or
