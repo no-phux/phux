@@ -159,6 +159,7 @@ async fn wss_with_pinned_cert_sends_bearer_token() {
             };
             let mut conn = Connection::connect_ws(&dial).await.expect("dial");
             conn.send(&frame).await.expect("send");
+            drop(conn);
         }
     };
 

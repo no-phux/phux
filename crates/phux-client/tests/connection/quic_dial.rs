@@ -185,7 +185,9 @@ async fn loopback_skip_verify_round_trips_both_directions() {
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.send(&from_client).await.expect("send");
-        conn.recv().await.expect("recv")
+        let received = conn.recv().await.expect("recv");
+        drop(conn);
+        received
     };
 
     let (_server, got) = tokio::join!(server, client);
@@ -260,6 +262,7 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
             .await
             .expect_err("Terminal traffic cannot fall back to control after stream end");
         assert!(error.to_string().contains("requires a live QUIC binding"));
+        drop(conn);
         received
     };
 
@@ -300,11 +303,13 @@ async fn malformed_terminal_stream_length_fails_promptly() {
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("bind");
-        tokio::time::timeout(std::time::Duration::from_secs(2), conn.recv())
+        let error = tokio::time::timeout(std::time::Duration::from_secs(2), conn.recv())
             .await
             .expect("malformed length fails promptly")
             .expect_err("zero-length frame is invalid")
-            .to_string()
+            .to_string();
+        drop(conn);
+        error
     };
 
     let ((), error) = tokio::join!(server, client);
@@ -345,10 +350,13 @@ async fn partial_terminal_body_error_precedes_clean_end() {
         };
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("bind");
-        conn.recv()
+        let error = conn
+            .recv()
             .await
             .expect_err("partial body must not be hidden by its end event")
-            .to_string()
+            .to_string();
+        drop(conn);
+        error
     };
     let ((), error) = tokio::join!(server, client);
     assert!(error.contains("finished mid-frame"), "{error}");
@@ -391,11 +399,13 @@ async fn incomplete_terminal_body_does_not_block_control_and_expires() {
             conn.recv().await.expect("control remains live"),
             FrameKind::Pong { nonce: 77 }
         );
-        tokio::time::timeout(std::time::Duration::from_secs(12), conn.recv())
+        let error = tokio::time::timeout(std::time::Duration::from_secs(12), conn.recv())
             .await
             .expect("incomplete frame has an absolute deadline")
             .expect_err("incomplete Terminal frame must fail")
-            .to_string()
+            .to_string();
+        drop(conn);
+        error
     };
     let ((), error) = tokio::join!(server, client);
     assert!(error.contains("incomplete-frame deadline"), "{error}");
@@ -445,7 +455,9 @@ async fn queued_old_generation_is_discarded_after_rebind() {
         conn.bind_terminal(&terminal_id)
             .await
             .expect("replacement bind");
-        conn.recv().await.expect("current generation frame")
+        let received = conn.recv().await.expect("current generation frame");
+        drop(conn);
+        received
     };
     let ((), got) = tokio::join!(server, client);
     assert_eq!(got, current, "queued old generation never reaches dispatch");
@@ -496,6 +508,7 @@ async fn client_terminal_stream_cap_accounts_for_the_control_stream() {
             .expect_err("the 128th Terminal stream exceeds the connection cap")
             .to_string();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        drop(conn);
         error
     };
 
@@ -534,6 +547,7 @@ async fn pinned_fingerprint_accepts_matching_cert() {
             conn.send(&frame).await.expect("send");
             // Hold open until the server reads.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(conn);
         }
     };
 
@@ -566,10 +580,15 @@ async fn wrong_fingerprint_is_rejected() {
         result.is_err(),
         "a mismatched certificate pin must refuse the connection"
     );
+    drop(result);
     server.abort();
 }
 
 #[tokio::test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "Connection::shutdown consumes the connection at its final use; an explicit drop afterward is impossible"
+)]
 async fn shutdown_closes_connection_promptly() {
     // The reconnect probe (and any clean teardown) must close the QUIC
     // connection at once — a CONNECTION_CLOSE — rather than leaving the server
@@ -648,6 +667,7 @@ async fn token_preamble_precedes_frames() {
             let mut conn = Connection::connect_quic(&dial).await.expect("dial");
             conn.send(&frame).await.expect("send");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            drop(conn);
         }
     };
 
