@@ -1,0 +1,76 @@
+# Agent-state detection manifest for Grok Build TUI (ADR-0046).
+#
+# The rules below are structural excerpts from Grok 1.0.30 observed in a
+# phux pane. Tests use compact samples for the rule contracts, so incidental
+# viewport chrome does not become a drift surface.
+#
+# The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
+# `blocked` is not. No permission dialog was captured here: this environment's
+# Grok install ran tool calls without painting an approval prompt even with
+# `--permission-mode default`. A blocked rule matching a screen nobody captured
+# is a guess, so none is shipped.
+
+kind = "grok"
+name = "grok"
+
+# Native `grok` argv[0] basename. The Homebrew/internal installer puts a
+# symlink at ~/.local/bin/grok -> ~/.grok/bin/grok.
+binaries = ["grok"]
+
+# --- Title rules -------------------------------------------------------------
+#
+# While a turn runs, Grok writes an animated braille spinner into the OSC
+# title, then a dash, then a status verb, then the conversation title, then
+# ` - grok`. Captured frames from Grok 1.0.30:
+#
+#     '⠋ - Waiting for response… - grok'
+#     '⠙ - Waiting for response… - grok'
+#     '⠼ - Thinking - Migrate Phux CLI to usage-rs, scorched-e… - grok'
+#
+# When no turn is running the title is the bare `grok` (startup splash) or
+# the conversation title with a trailing ` - grok` and no spinner:
+#
+#     'grok'
+#     'Count Slowly from 1 to 80 Line by Line - grok'
+#
+# The rule matches a Braille Patterns prefix followed by ` - `, not the
+# status verb: the verb set is already two members and is likely to grow,
+# while no idle title begins with a braille glyph and a dash. The bare
+# title is deliberately NOT given an `idle` rule: it means "not running a
+# turn", which would cover a permission dialog if one is ever captured.
+
+[[rules]]
+id = "title-busy-spinner"
+state = "working"
+priority = 100
+region = "title"
+match = { line-regex = "^[⠀-⣿] - " }
+
+# --- Screen rules ------------------------------------------------------------
+#
+# A screen-side `working` backstop for a terminal that suppresses the OSC
+# title. Grok paints a braille spinner, status text, and elapsed seconds while
+# a turn runs. The rule matches that stable structure.
+#
+# An observed mid-session pane painted `⠼ Thinking… 18s`. The rule matches
+# by structure: a braille spinner, a status token with an ellipsis, and an
+# elapsed-seconds figure. The `bottom-lines(14)` window reaches that status
+# row without depending on unrelated transcript content or banner placement.
+
+[[rules]]
+id = "screen-status-elapsed-backstop"
+state = "working"
+priority = 60
+region = "bottom-lines(14)"
+match = { line-regex = '^\s*[⠀-⣿]\s+\S.*…\s+\d' }
+
+# --- Rules deliberately NOT written ------------------------------------------
+#
+# No `idle` rule. The composer and the opt-in banner are painted identically
+# whether or not a turn is running. `idle` is the detector's fail-safe
+# default (ADR-0046 §D).
+#
+# No `blocked` rule. A permission prompt was not captured. Grok's binary
+# contains "Allow once" / "Always allow this command" / "Reject" strings, but
+# a rule matching a screen nobody has seen is exactly the guess ADR-0046's
+# Tradeoffs record as having produced a first draft that matched nothing.

@@ -14,7 +14,7 @@ use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
 use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter};
 use crate::render::chrome::status_bar::StatusBarPainter;
-use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord, agent_name_from_title};
+use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 
 /// ADR-0033: compose the status-bar supervisory badge for the focused pane,
 /// or `None` when it is running and un-leased (so no badge paints). Reads the
@@ -239,32 +239,26 @@ pub(super) fn window_infos(
 /// phux-foz.9: build the sidebar's agents-section entries — one per
 /// agent-running pane, every window's leaves in display order.
 ///
-/// Identity + state per pane, in preference order:
+/// Identity + state per pane come from the server-owned sources:
 ///
-/// 1. **The structured `phux.agent/v1` record** (ADR-0040), when the pane
-///    declares one: name and state come straight from the record, and the
-///    row carries attention when the record's effective attention is high
-///    or the pane's ADR-0035 asked flag is up.
-/// 2. **The OSC-title identity heuristic**
-///    ([`agent_name_from_title`]) — the compatibility path for plain
-///    `claude` / `codex` CLI panes, which never call `phux agent set` and
-///    so never write a record. State is inferred from the only structured
-///    signal the client tracks per pane: the ADR-0035 asked flag maps to
-///    `blocked` (the agent is waiting on a human), otherwise `idle` — the
-///    same "no blocking cue found" default `phux agent`'s detector uses
-///    for a quiet screen, without scanning screen text on the render path.
+/// 1. **An `AgentSession` resource bound to the pane** (the record stream the
+///    server serves for it): one row per session, its state folded from the
+///    stream, its name from the `phux.agent/v1` record when one is declared
+///    and the stream's provider otherwise. The stream is the server-enforced
+///    source, so it outranks the advisory record for state.
+/// 2. **The structured `phux.agent/v1` record** (ADR-0040), when the pane
+///    declares one: name and state come straight from the record, and the row
+///    carries attention when the record's effective attention is high or the
+///    pane's ADR-0035 asked flag is up.
 ///
-/// Before either, **an `AgentSession` resource bound to the pane** (the
-/// record stream the server serves for it): one row per session, its state
-/// folded from the stream, its name from the `phux.agent/v1` record when one
-/// is declared and the stream's provider otherwise. The stream is the
-/// server-enforced source, so it outranks the advisory record for state.
-///
-/// A pane matching none of these produces no row: the agents section lists
-/// agents, not shells.
+/// A pane matching neither source produces no row: the agents section lists
+/// agents, not shells. There is intentionally no title-based compatibility
+/// path; agent identity is forward-only through the manifest-backed server
+/// detector and structured metadata.
 ///
 /// Rows retain window/leaf order. Lifecycle and review changes update badges
 /// in place; they must never move a navigation target under the pointer.
+///
 pub(super) fn agent_entries(
     workspace: &Workspace,
     panes: &HashMap<ResourceId, PaneSlot>,
@@ -305,7 +299,7 @@ pub(super) fn agent_entries(
                 }
                 continue;
             }
-            if let Some(entry) = advisory_agent_entry(base, record, panes.get(id)) {
+            if let Some(entry) = advisory_agent_entry(base, record) {
                 rows.push(entry);
             }
         }
@@ -313,28 +307,13 @@ pub(super) fn agent_entries(
     rows
 }
 
-/// Fill identity from advisory metadata, falling back to the pane title.
-fn advisory_agent_entry(
-    base: AgentEntry,
-    record: Option<&AgentRecord>,
-    pane: Option<&PaneSlot>,
-) -> Option<AgentEntry> {
-    if let Some(record) = record {
-        return Some(AgentEntry {
-            name: record.name.clone(),
-            state: record.state,
-            attention: base.attention || record.effective_attention() == AgentAttention::High,
-            ..base
-        });
-    }
-    let name = agent_name_from_title(&pane?.last_title)?;
+/// Fill identity from advisory metadata.
+fn advisory_agent_entry(base: AgentEntry, record: Option<&AgentRecord>) -> Option<AgentEntry> {
+    let record = record?;
     Some(AgentEntry {
-        name: name.to_owned(),
-        state: if base.attention {
-            AgentMetaState::Blocked
-        } else {
-            AgentMetaState::Idle
-        },
+        name: record.name.clone(),
+        state: record.state,
+        attention: base.attention || record.effective_attention() == AgentAttention::High,
         ..base
     })
 }
@@ -815,17 +794,16 @@ mod tests {
         assert!(!entries[0].attention);
     }
 
-    /// phux-foz.9: no record => the OSC-title heuristic identifies plain
-    /// `claude` / `codex` CLI panes; state is `idle` until the pane's
-    /// ADR-0035 asked flag flips it to `blocked`. A pane matching neither
-    /// source produces no row.
+    /// phux-foz.9: agent rows require server-owned structured identity.
+    /// Titles and attention flags alone must never turn a shell into an
+    /// agent; the manifest-backed detector supplies the record.
     #[test]
-    fn agent_entries_fall_back_to_the_title_heuristic() {
+    fn agent_entries_require_structured_identity() {
         let claude = ResourceId::local(1);
         let shell = ResourceId::local(2);
         let mut workspace = Workspace::single(claude.clone());
         workspace.add_window("scratch".to_owned(), shell.clone());
-        let (_, _, mut panes) = published_test_state(&[
+        let (_, _, panes) = published_test_state(&[
             (&claude, 80, 24, b"\x1b]2;Claude Code - ~/src/phux\x07"),
             (&shell, 80, 24, b"\x1b]2;~/src/phux\x07"),
         ]);
@@ -836,22 +814,10 @@ mod tests {
             &AgentMetaIndex::default(),
             &HashMap::new(),
         );
-        assert_eq!(entries.len(), 1, "the plain shell pane must not list");
-        assert_eq!(entries[0].name, "claude");
-        assert_eq!(entries[0].state, AgentMetaState::Idle);
-        assert!(!entries[0].attention);
-
-        // The asked flag (ADR-0035) is the one structured state signal the
-        // fallback trusts: it flips the row to blocked + attention.
-        panes.get_mut(&claude).expect("slot").attention = true;
-        let entries = agent_entries(
-            &workspace,
-            &panes,
-            &AgentMetaIndex::default(),
-            &HashMap::new(),
+        assert!(
+            entries.is_empty(),
+            "title and attention state are not agent identity",
         );
-        assert_eq!(entries[0].state, AgentMetaState::Blocked);
-        assert!(entries[0].attention);
     }
 
     /// phux-foz.9: a record declaring (or deriving) high attention marks

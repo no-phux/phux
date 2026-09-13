@@ -188,30 +188,6 @@ impl AgentRecord {
     }
 }
 
-/// Compatibility identity heuristic (phux-foz.9): infer an agent name
-/// from a pane's OSC 0/2 title when no `phux.agent/v1` record is
-/// declared.
-///
-/// Plain `claude` / `codex` CLI sessions do not write the ADR-0040
-/// record (nothing calls `phux agent set` for them), so a consumer that
-/// only trusted records would show no agent at all. This is the same
-/// built-in token matching `phux agent`'s detector uses for identity
-/// (`crates/phux/src/commands/agent/detect.rs`), kept deliberately
-/// narrow — case-insensitive substring on the two well-known CLI names,
-/// nothing screen-scraped. A declared record MUST still win wherever
-/// both exist (L3.md §3.7).
-#[must_use]
-pub fn agent_name_from_title(title: &str) -> Option<&'static str> {
-    let lower = title.to_lowercase();
-    if lower.contains("codex") {
-        return Some("codex");
-    }
-    if lower.contains("claude") {
-        return Some("claude");
-    }
-    None
-}
-
 /// Decode a `phux.agent/v1` metadata value.
 ///
 /// Returns `None` for bytes that are not a JSON object with a non-empty
@@ -293,19 +269,6 @@ mod tests {
         assert_eq!(parse_agent_record(br#"{"name":"  "}"#), None);
         assert_eq!(parse_agent_record(b"not json"), None);
         assert_eq!(parse_agent_record(br#"["name"]"#), None);
-    }
-
-    /// phux-foz.9: the OSC-title compatibility heuristic recognizes the two
-    /// well-known CLI names (case-insensitive, embedded in a longer title)
-    /// and nothing else.
-    #[test]
-    fn title_heuristic_matches_known_cli_names_only() {
-        assert_eq!(agent_name_from_title("claude"), Some("claude"));
-        assert_eq!(agent_name_from_title("Claude Code - ~/src"), Some("claude"));
-        assert_eq!(agent_name_from_title("codex resume"), Some("codex"));
-        assert_eq!(agent_name_from_title("CODEX"), Some("codex"));
-        assert_eq!(agent_name_from_title("vim src/main.rs"), None);
-        assert_eq!(agent_name_from_title(""), None);
     }
 
     #[test]

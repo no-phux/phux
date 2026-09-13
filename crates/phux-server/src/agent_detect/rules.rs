@@ -32,12 +32,18 @@ use super::regions::{Region, Screen, extract};
 
 /// Built-in manifests. Every predicate in these files is derived from the
 /// shipped CLI's observable output and pinned by captured-screen tests below.
-const BUILTIN_MANIFESTS: [(&str, &str); 5] = [
+const BUILTIN_MANIFESTS: [(&str, &str); 8] = [
     ("claude", include_str!("../../rules/claude.toml")),
     ("codex", include_str!("../../rules/codex.toml")),
     ("opencode", include_str!("../../rules/opencode.toml")),
     ("pi", include_str!("../../rules/pi.toml")),
     ("omp", include_str!("../../rules/omp.toml")),
+    ("grok", include_str!("../../rules/grok.toml")),
+    ("amp", include_str!("../../rules/amp.toml")),
+    (
+        "cursor-agent",
+        include_str!("../../rules/cursor-agent.toml"),
+    ),
 ];
 
 /// Env knob: `PHUX_AGENT_DETECT=0` disables the detector wholesale by
@@ -2054,6 +2060,9 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
             ("opencode", &["opencode", "opencode2"][..]),
             ("pi", &["pi"][..]),
             ("omp", &["omp"][..]),
+            ("grok", &["grok"][..]),
+            ("amp", &["amp"][..]),
+            ("cursor-agent", &["cursor-agent"][..]),
         ];
 
         for (kind, binaries) in expected {
@@ -2332,6 +2341,132 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         }
     }
 
+    // --- Grok Build TUI (1.0.30) --------------------------------------------
+
+    fn grok_eval(title: &str, screen: &[String]) -> super::Evaluation {
+        let set = compile(builtin("grok"));
+        let manifest = set.manifest("grok").expect("grok manifest");
+        manifest.evaluate(&Screen {
+            title,
+            progress: "",
+            lines: screen,
+        })
+    }
+
+    const GROK_IDLE_CAPTURE: &str = "grok prompt";
+    const GROK_WORKING_CAPTURE: &str = "⠋ Waiting for response… 1.1s";
+
+    fn grok_idle_screen() -> Vec<String> {
+        captured(GROK_IDLE_CAPTURE)
+    }
+
+    fn grok_working_screen() -> Vec<String> {
+        captured(GROK_WORKING_CAPTURE)
+    }
+
+    #[test]
+    fn grok_busy_title_is_working() {
+        for title in [
+            "⠋ - Waiting for response… - grok",
+            "⠼ - Thinking - Migrate Phux CLI to usage-rs - grok",
+        ] {
+            let got = grok_eval(title, &grok_idle_screen());
+            assert_eq!(got.state, Some(DetectedState::Working), "{title}");
+            assert_eq!(got.matched.as_deref(), Some("title-busy-spinner"));
+        }
+    }
+
+    #[test]
+    fn grok_quiet_title_asserts_nothing() {
+        for title in ["grok", "Count Slowly from 1 to 80 Line by Line - grok"] {
+            let got = grok_eval(title, &grok_idle_screen());
+            assert_eq!(got.state, None, "idle title must not assert: {title}");
+        }
+    }
+
+    #[test]
+    fn grok_captured_working_screen_is_working_without_a_title() {
+        let got = grok_eval("", &grok_working_screen());
+        assert_eq!(got.state, Some(DetectedState::Working));
+        assert_eq!(
+            got.matched.as_deref(),
+            Some("screen-status-elapsed-backstop")
+        );
+    }
+
+    #[test]
+    fn grok_captured_idle_screen_is_not_working() {
+        let got = grok_eval("grok", &grok_idle_screen());
+        assert_ne!(got.state, Some(DetectedState::Working));
+        assert_ne!(got.state, Some(DetectedState::Blocked));
+    }
+
+    // --- Amp CLI ------------------------------------------------------------
+
+    fn amp_eval(title: &str, screen: &[String]) -> super::Evaluation {
+        let set = compile(builtin("amp"));
+        let manifest = set.manifest("amp").expect("amp manifest");
+        manifest.evaluate(&Screen {
+            title,
+            progress: "",
+            lines: screen,
+        })
+    }
+
+    const AMP_IDLE_CAPTURE: &str = "╰──────────────── /tmp/ws ─╯";
+    const AMP_WORKING_CAPTURE: &str = "╰ ≈ Waiting ───── /tmp/ws ─╯";
+
+    fn amp_idle_screen() -> Vec<String> {
+        captured(AMP_IDLE_CAPTURE)
+    }
+
+    fn amp_working_screen() -> Vec<String> {
+        captured(AMP_WORKING_CAPTURE)
+    }
+
+    #[test]
+    fn amp_busy_title_is_working() {
+        let got = amp_eval("⠊ Terminal haiku - amp - /tmp/ws", &amp_idle_screen());
+        assert_eq!(got.state, Some(DetectedState::Working));
+        assert_eq!(got.matched.as_deref(), Some("title-busy-spinner"));
+    }
+
+    #[test]
+    fn amp_captured_working_screen_is_working_without_a_title() {
+        let got = amp_eval("", &amp_working_screen());
+        assert_eq!(got.state, Some(DetectedState::Working));
+        assert_eq!(got.matched.as_deref(), Some("prompt-box-activity-footer"));
+    }
+
+    #[test]
+    fn amp_captured_idle_screen_is_not_working() {
+        let got = amp_eval("Terminal haiku - amp - /tmp/ws", &amp_idle_screen());
+        assert_ne!(got.state, Some(DetectedState::Working));
+        assert_ne!(got.state, Some(DetectedState::Blocked));
+    }
+
+    // --- Cursor Agent CLI ---------------------------------------------------
+
+    const CURSOR_AGENT_LOGIN_CAPTURE: &str = "Press any key to log in\nSigning in with the browser";
+
+    #[test]
+    fn cursor_agent_login_splash_is_identity_only_idle() {
+        let set = compile(builtin("cursor-agent"));
+        let manifest = set.manifest("cursor-agent").expect("cursor-agent manifest");
+        let screen = captured(CURSOR_AGENT_LOGIN_CAPTURE);
+        let got = manifest.evaluate(&Screen {
+            title: "",
+            progress: "",
+            lines: &screen,
+        });
+        assert_eq!(
+            got.state, None,
+            "the login splash must not assert working or blocked"
+        );
+        assert!(!got.freeze, "a missing login must still publish identity");
+        assert_eq!(set.kind_for_binary("cursor-agent"), Some("cursor-agent"));
+    }
+
     /// The non-short-circuiting trace walker must agree with the
     /// short-circuiting production matcher on every rule of every built-in,
     /// against every committed golden capture. Two evaluators is how a
@@ -2380,10 +2515,13 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
                     include_str!("fixtures/omp/blocked_tool_approval.txt"),
                 ],
             ),
+            ("grok", &[GROK_IDLE_CAPTURE, GROK_WORKING_CAPTURE]),
+            ("amp", &[AMP_IDLE_CAPTURE, AMP_WORKING_CAPTURE]),
+            ("cursor-agent", &[CURSOR_AGENT_LOGIN_CAPTURE]),
         ];
 
-        // Titles that exercise both the spinner and the quiet arms, plus the
-        // empty title a capture file supplies by default.
+        // Titles exercise both spinner and quiet arms; screen captures are
+        // compact rule-focused samples rather than full viewport snapshots.
         let titles = ["", CLAUDE_TITLE_BUSY_A, CLAUDE_TITLE_QUIET, "\u{280b} tmp"];
 
         for (kind, screens) in goldens {
