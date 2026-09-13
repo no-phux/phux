@@ -26,7 +26,9 @@ use web_sys::CanvasRenderingContext2d;
 #[wasm_bindgen]
 pub async fn start(ws_url: String, canvas_id: String, cols: u16, rows: u16) -> Result<(), JsValue> {
     let canvas = canvas_by_id(&canvas_id)?;
-    client::run(&ws_url, canvas, cols, rows).await.map(|_| ())
+    let client = client::run(&ws_url, canvas, cols, rows).await?;
+    client.retain_until_failure();
+    Ok(())
 }
 
 /// JS entry point for the WebTransport-first path: try HTTP/3-over-QUIC at

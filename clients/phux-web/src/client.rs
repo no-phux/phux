@@ -19,6 +19,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
+#[cfg(test)]
+use std::rc::Weak;
 
 use futures_channel::oneshot;
 use futures_util::future::{Either, select};
@@ -44,8 +46,99 @@ const PHUX_WS_PROTOCOL: &str = "phux.v1";
 const PHUX_WS_BEARER_PREFIX: &str = "phux.bearer.";
 const BOOTSTRAP_EXPIRY_POLL_MS: i32 = 1_000;
 
+#[cfg(test)]
+thread_local! {
+    static RETAINED_APP_FOR_TEST: RefCell<Option<Weak<RefCell<App>>>> = const {
+        RefCell::new(None)
+    };
+}
+
 struct AttemptDeadline {
     end_ms: f64,
+}
+
+struct WebTransportAttempt {
+    session: Option<WebTransport>,
+}
+
+struct WebSocketAttempt {
+    socket: Option<WebSocket>,
+}
+
+impl WebSocketAttempt {
+    fn new(socket: WebSocket) -> Self {
+        Self {
+            socket: Some(socket),
+        }
+    }
+
+    fn socket(&self) -> &WebSocket {
+        self.socket
+            .as_ref()
+            .expect("WebSocket attempt is still armed")
+    }
+
+    fn transfer_to_app(&mut self) {
+        self.socket.take();
+    }
+}
+
+impl Drop for WebSocketAttempt {
+    fn drop(&mut self) {
+        if let Some(socket) = self.socket.take() {
+            let _ = socket.close();
+        }
+    }
+}
+
+impl WebTransportAttempt {
+    fn new(session: WebTransport) -> Self {
+        Self {
+            session: Some(session),
+        }
+    }
+
+    fn session(&self) -> &WebTransport {
+        self.session
+            .as_ref()
+            .expect("WebTransport attempt is still armed")
+    }
+
+    fn transfer_to_app(&mut self) {
+        self.session.take();
+    }
+}
+
+impl Drop for WebTransportAttempt {
+    fn drop(&mut self) {
+        if let Some(session) = self.session.take() {
+            session.close();
+        }
+    }
+}
+
+struct AppEstablishment {
+    app: Option<Rc<RefCell<App>>>,
+}
+
+impl AppEstablishment {
+    fn new(app: Rc<RefCell<App>>) -> Self {
+        Self { app: Some(app) }
+    }
+
+    fn complete(mut self) -> Client {
+        Client {
+            app: self.app.take().expect("App establishment is still armed"),
+        }
+    }
+}
+
+impl Drop for AppEstablishment {
+    fn drop(&mut self) {
+        if let Some(app) = self.app.take() {
+            app.borrow_mut().dispose();
+        }
+    }
 }
 
 impl AttemptDeadline {
@@ -129,19 +222,24 @@ async fn run_websocket(
 ) -> Result<Client, JsValue> {
     let deadline = AttemptDeadline::new()?;
     let ws = websocket(ws_url, bearer_hex)?;
-    ws.set_binary_type(BinaryType::Arraybuffer);
+    let mut attempt = WebSocketAttempt::new(ws);
+    attempt.socket().set_binary_type(BinaryType::Arraybuffer);
 
-    let tx = WireTx::Ws(WsTx::new(ws.clone()));
+    let app_socket = attempt.socket().clone();
+    let tx = WireTx::Ws(WsTx::new(app_socket.clone()));
     let (app, ready) = build_app(vt, tx, canvas, cols, rows, synthesized_only)?;
+    let app_attempt = AppEstablishment::new(Rc::clone(&app));
+    attempt.transfer_to_app();
     install_transport_failure_hook(&app);
 
-    install_websocket_handlers(&app, &ws);
+    install_websocket_handlers(&app, &app_socket);
     await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
+    ensure_app_live(&app)?;
 
     install_keyboard(&app)?;
     install_cursor_blink(&app)?;
 
-    Ok(Client { app })
+    Ok(app_attempt.complete())
 }
 
 /// Connect over WebTransport (HTTP/3 over QUIC), falling back to the
@@ -213,40 +311,40 @@ async fn run_webtransport_loaded(
     // as Err so the caller's fallback fires either way.
     let wt = WebTransport::new(wt_url)
         .map_err(|_| JsValue::from_str("WebTransport initialization failed"))?;
+    let mut attempt = WebTransportAttempt::new(wt);
     if await_js_promise_with_deadline(
-        wt.ready(),
+        attempt.session().ready(),
         "WebTransport readiness",
         deadline.remaining_ms(),
     )
     .await
     .is_err()
     {
-        wt.close();
         return Err(JsValue::from_str("WebTransport readiness failed"));
     }
 
     // One bidirectional stream carries the whole wire, mirroring the QUIC
     // transport's one-stream-per-connection contract.
     let stream: web_sys::WebTransportBidirectionalStream = match await_js_promise_with_deadline(
-        wt.create_bidirectional_stream(),
+        attempt.session().create_bidirectional_stream(),
         "WebTransport stream creation",
         deadline.remaining_ms(),
     )
     .await
     {
         Ok(stream) => stream,
-        Err(_) => {
-            wt.close();
-            return Err(JsValue::from_str("WebTransport stream creation failed"));
-        }
+        Err(_) => return Err(JsValue::from_str("WebTransport stream creation failed")),
     };
     let writer = WritableStreamDefaultWriter::new(&stream.writable())
         .map_err(|_| JsValue::from_str("WebTransport writer initialization failed"))?;
     let reader = ReadableStreamDefaultReader::new(&stream.readable())
         .map_err(|_| JsValue::from_str("WebTransport reader initialization failed"))?;
 
-    let tx = WireTx::Wt(Rc::new(WtTx::new(writer, wt.clone())));
+    let reader_session = attempt.session().clone();
+    let tx = WireTx::Wt(Rc::new(WtTx::new(writer, attempt.session().clone())));
     let (app, ready) = build_app(vt, tx, canvas, cols, rows, false)?;
+    let app_attempt = AppEstablishment::new(Rc::clone(&app));
+    attempt.transfer_to_app();
     install_transport_failure_hook(&app);
 
     // The session is already established (unlike the WebSocket path there is
@@ -267,16 +365,17 @@ async fn run_webtransport_loaded(
             .replace(cancel_tx);
         let app = Rc::clone(&app);
         wasm_bindgen_futures::spawn_local(async move {
-            run_webtransport_reader(app, reader, wt, cancel_rx).await;
+            run_webtransport_reader(app, reader, reader_session, cancel_rx).await;
         });
     }
 
     await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
+    ensure_app_live(&app)?;
 
     install_keyboard(&app)?;
     install_cursor_blink(&app)?;
 
-    Ok(Client { app })
+    Ok(app_attempt.complete())
 }
 
 /// A live connection handle. The event handlers run for the connection's
@@ -292,17 +391,32 @@ impl Client {
             let grid = app.session.grid();
             (app.canvas.clone(), grid.cols, grid.rows)
         };
-        self.app.borrow().reconnect.replace(Some(ReconnectConfig {
+        let config = ReconnectConfig {
             wt_url: wt_url.to_owned(),
             ws_url: ws_url.to_owned(),
             canvas,
             cols,
             rows,
-        }));
-        self.app
-            .borrow()
-            .self_owner
-            .replace(Some(Rc::clone(&self.app)));
+        };
+        let mut app = self.app.borrow_mut();
+        if app.session.is_failed() {
+            drop(app);
+            spawn_reconnect(config);
+            return;
+        }
+        app.reconnect.get_mut().replace(config);
+        app.self_owner.get_mut().replace(Rc::clone(&self.app));
+    }
+
+    pub(crate) fn retain_until_failure(&self) {
+        let mut app = self.app.borrow_mut();
+        if !app.session.is_failed() {
+            app.self_owner.get_mut().replace(Rc::clone(&self.app));
+            #[cfg(test)]
+            RETAINED_APP_FOR_TEST.with(|retained| {
+                retained.replace(Some(Rc::downgrade(&self.app)));
+            });
+        }
     }
 
     /// The current styled grid as one `String` per row (for inspection/tests).
@@ -928,9 +1042,12 @@ fn fallback_token_from_webtransport_url(url: &str) -> FallbackToken<'_> {
         .next()
         .unwrap_or_default()
         .split('&')
-        .filter_map(|part| part.strip_prefix("token="));
-    let Some(token) = tokens.next() else {
+        .filter(|part| *part == "token" || part.starts_with("token="));
+    let Some(carrier) = tokens.next() else {
         return FallbackToken::Missing;
+    };
+    let Some(token) = carrier.strip_prefix("token=") else {
+        return FallbackToken::Invalid;
     };
     if tokens.next().is_some()
         || token.is_empty()
@@ -1054,6 +1171,16 @@ async fn await_protocol_ready(
             close_with_transport_error(app, "protocol attach timed out");
             Err(JsValue::from_str("protocol attach timed out"))
         }
+    }
+}
+
+fn ensure_app_live(app: &Rc<RefCell<App>>) -> Result<(), JsValue> {
+    if app.borrow().session.is_failed() {
+        Err(JsValue::from_str(
+            "connection failed while completing protocol readiness",
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -1519,7 +1646,10 @@ fn code_to_physical_key(code: &str) -> PhysicalKey {
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 mod tests {
-    use std::rc::Rc;
+    use std::cell::Cell;
+    use std::future::Future as _;
+    use std::rc::{Rc, Weak};
+    use std::task::Poll;
 
     use super::{
         BatchEffects, FallbackToken, FrameBuffer, MAX_OUTBOUND_BYTES, OutboundQueue, ReceiveFlow,
@@ -1537,6 +1667,8 @@ mod tests {
     use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
     use phux_vt_web::Vt;
     use wasm_bindgen::JsCast as _;
+    use wasm_bindgen::{JsValue, closure::Closure};
+    use wasm_bindgen_futures::JsFuture;
     use wasm_bindgen_test::{wasm_bindgen_test, wasm_bindgen_test_configure};
     use web_sys::{HtmlCanvasElement, WebSocket};
 
@@ -1721,6 +1853,10 @@ mod tests {
             FallbackToken::Invalid
         );
         assert_eq!(
+            fallback_token_from_webtransport_url("https://host/session?token=00&token"),
+            FallbackToken::Invalid
+        );
+        assert_eq!(
             authenticated_websocket_protocols("00aF"),
             ["phux.v1", "phux.bearer.00aF"]
         );
@@ -1742,15 +1878,19 @@ mod tests {
         assert!(matches!(outcome, super::PromiseOutcome::Cancelled));
     }
 
-    async fn closed_websocket() -> WebSocket {
+    async fn open_websocket() -> WebSocket {
         let ws = WebSocket::new("ws://127.0.0.1:47654/").expect("create test WebSocket");
         for _ in 0..200 {
             if ws.ready_state() == WebSocket::OPEN {
-                break;
+                return ws;
             }
             TimeoutFuture::new(10).await;
         }
-        assert_eq!(ws.ready_state(), WebSocket::OPEN, "test WebSocket opened");
+        panic!("test WebSocket did not open");
+    }
+
+    async fn closed_websocket() -> WebSocket {
+        let ws = open_websocket().await;
         ws.close().expect("close test WebSocket");
         for _ in 0..200 {
             if ws.ready_state() == WebSocket::CLOSED {
@@ -1783,6 +1923,185 @@ mod tests {
         )
         .await;
         assert!(result.is_err());
+    }
+
+    #[wasm_bindgen_test]
+    async fn dropping_polled_establishment_disposes_app_reader_and_transport() {
+        let ws = open_websocket().await;
+        let vt = Vt::load().await.unwrap();
+        let tx = super::WireTx::Ws(super::WsTx::new(ws.clone()));
+        let (app, _ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
+        let weak = Rc::downgrade(&app);
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        app.borrow()
+            .bindings
+            .borrow_mut()
+            .wt_reader_cancel
+            .replace(cancel_tx);
+
+        let reader_finished = Rc::new(Cell::new(false));
+        let finished = Rc::clone(&reader_finished);
+        let reader_app = Rc::clone(&app);
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = cancel_rx.await;
+            drop(reader_app);
+            finished.set(true);
+        });
+
+        let mut establishment = Box::pin(async move {
+            let _guard = super::AppEstablishment::new(app);
+            futures_util::future::pending::<()>().await;
+        });
+        futures_util::future::poll_fn(|cx| {
+            assert!(establishment.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(establishment);
+
+        for _ in 0..20 {
+            if reader_finished.get() && ws.ready_state() != WebSocket::OPEN {
+                break;
+            }
+            TimeoutFuture::new(10).await;
+        }
+        assert!(reader_finished.get(), "reader task observed cancellation");
+        assert_ne!(ws.ready_state(), WebSocket::OPEN, "transport was closed");
+        assert!(weak.upgrade().is_none(), "establishment App was released");
+    }
+
+    #[wasm_bindgen_test]
+    async fn dropping_polled_webtransport_ready_closes_raw_session() {
+        let object = js_sys::Object::new();
+        let pending = js_sys::Promise::new(&mut |_, _| {});
+        js_sys::Reflect::set(&object, &JsValue::from_str("ready"), pending.as_ref()).unwrap();
+        let closed = Rc::new(Cell::new(false));
+        let close_latch = Rc::clone(&closed);
+        let close = Closure::<dyn FnMut()>::new(move || close_latch.set(true));
+        js_sys::Reflect::set(&object, &JsValue::from_str("close"), close.as_ref()).unwrap();
+        let transport: web_sys::WebTransport = object.unchecked_into();
+
+        let mut establishment = Box::pin(async move {
+            let guard = super::WebTransportAttempt::new(transport);
+            let _ = JsFuture::from(guard.session().ready()).await;
+        });
+        futures_util::future::poll_fn(|cx| {
+            assert!(establishment.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(establishment);
+
+        assert!(closed.get(), "raw WebTransport session was closed");
+        drop(close);
+    }
+
+    #[wasm_bindgen_test]
+    async fn exported_start_retains_live_client_until_transport_failure() {
+        let document = web_sys::window().unwrap().document().unwrap();
+        let canvas = test_canvas();
+        canvas.set_id("phux-start-retention-test");
+        document.body().unwrap().append_child(&canvas).unwrap();
+
+        crate::start(
+            "ws://127.0.0.1:47654/".to_owned(),
+            "phux-start-retention-test".to_owned(),
+            80,
+            24,
+        )
+        .await
+        .unwrap();
+        let app = super::RETAINED_APP_FOR_TEST
+            .with(|retained| retained.borrow().as_ref().and_then(Weak::upgrade))
+            .expect("exported start retained its live App");
+        assert!(!app.borrow().session.is_failed());
+
+        super::close_with_transport_error(&app, "test cleanup");
+        drop(app);
+        assert!(
+            super::RETAINED_APP_FOR_TEST
+                .with(|retained| retained.borrow().as_ref().and_then(Weak::upgrade))
+                .is_none()
+        );
+        canvas.remove();
+    }
+
+    #[wasm_bindgen_test]
+    async fn ready_then_malformed_same_chunk_remains_failed() {
+        let ws = open_websocket().await;
+        let vt = Vt::load().await.unwrap();
+        let tx = super::WireTx::Ws(super::WsTx::new(ws));
+        let (app, ready) = super::build_app(&vt, tx, test_canvas(), 80, 24, false).unwrap();
+        let terminal_id = ResourceId::new(1);
+        let stream_id = StreamId::new(1).unwrap();
+        let bootstrap_id = BootstrapId::new(1).unwrap();
+        let frames = [
+            FrameKind::HelloOk {
+                protocol_major: PROTOCOL_VERSION.major,
+                protocol_minor: PROTOCOL_VERSION.minor,
+                protocol_patch: PROTOCOL_VERSION.patch,
+                server_caps: ServerCapabilities::new(),
+                server_id: Vec::new(),
+                selected_profile: BootstrapProfile::SynthesizedVtRaw,
+                bootstrap_limits: BootstrapLimits::default(),
+            },
+            FrameKind::Attached {
+                attach_id: 1,
+                snapshot: SessionSnapshot::new(
+                    SessionId::new(1),
+                    WindowId::new(1),
+                    terminal_id.clone(),
+                )
+                .with_resources(vec![ResourceInfo::new(
+                    terminal_id.clone(),
+                    WindowId::new(1),
+                    80,
+                    24,
+                )]),
+                initial_client_id: ClientId::new(1),
+            },
+            FrameKind::BootstrapBegin {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                profile: phux_protocol::caps::BootstrapStreamProfile::SynthesizedVtRaw,
+                cols: 80,
+                rows: 24,
+                base_seq: 0,
+            },
+            FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: bytes::Bytes::from_static(b"ready"),
+            },
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            FrameKind::AttachReady { attach_id: 1 },
+        ];
+        let mut chunk = Vec::new();
+        for frame in frames {
+            let mut encoded = bytes::BytesMut::new();
+            frame.encode(&mut encoded);
+            chunk.extend_from_slice(&encoded);
+        }
+        chunk.extend_from_slice(&[0, 0, 0, 1, 0xff]);
+
+        assert_eq!(
+            super::process_webtransport_chunk(&app, &mut FrameBuffer::new(), &chunk),
+            ReceiveFlow::Stop
+        );
+        super::await_protocol_ready(&app, ready, 100)
+            .await
+            .expect("ATTACH_READY signalled first");
+        assert!(super::ensure_app_live(&app).is_err());
+        assert!(app.borrow().session.is_failed());
+        assert!(app.borrow().self_owner.borrow().is_none());
     }
 
     #[wasm_bindgen_test]
