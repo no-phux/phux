@@ -133,17 +133,14 @@ class BuildContracts(unittest.TestCase):
         self.assertIn("if: github.event_name == 'pull_request'", app)
         self.assertIn("build-shipping-app.sh", app)
         self.assertIn("zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all", workflow)
-        # The build without the Phux provider is compiled nowhere else
-        # (phux-q0i3): its step must live in the test job, run unconditionally,
-        # and fail the job. A substring would pass a commented-out command, an
-        # `if: false`, `continue-on-error: true`, or the step in another job.
-        job = re.search(r"(?ms)^  test:\n(.*?)(?=^  [A-Za-z0-9_-]+:\n|\Z)", workflow).group(1)
-        step = re.search(r"(?ms)^      - name: Test the app graph without the Phux provider\n(.*?)(?=^      - |\Z)", job)
-        self.assertIsNotNone(step, "the no-phux test step is missing from the test job")
-        body = step.group(1)
-        self.assertRegex(body, r"(?m)^        working-directory: clients/cockpit$")
-        self.assertRegex(body, r"(?m)^        run: \./scripts/zig-build\.sh test -Dplatform=null --summary all$")
-        self.assertNotRegex(body, r"(?m)^        (if|continue-on-error):")
+        self.assertEqual(len(re.findall(r"zig-build\.sh test", workflow)), 1)
+        self.assertNotIn("Test the app graph without the Phux provider", workflow)
+        self.assertNotIn("cockpit-rust-artifacts", workflow)
+        self.assertIn("bash clients/cockpit/scripts/build-phux-artifacts.sh", workflow)
+        build = (ROOT / "build.zig").read_text()
+        self.assertIn("addDisabledProviderCompileCheck", build)
+        self.assertIn('.name = "disabled-phux-provider"', build)
+        self.assertIn("if (phux_enabled) addDisabledProviderCompileCheck", build)
         self.assertIn("cancel-in-progress: true", workflow)
         self.assertIn("uses: ./.github/actions/classify-changes", workflow)
         self.assertNotRegex(workflow, r"(?m)^    paths:")

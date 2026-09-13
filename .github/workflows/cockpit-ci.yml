@@ -9,6 +9,7 @@ on:
   merge_group:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -70,7 +71,19 @@ jobs:
       # macOS ffi-release cache disjoint from ci.yml's Linux check/test
       # profiles. Save only from main pushes — GitHub's Actions cache is a
       # hard 10 GB per repo with LRU eviction, and PR saves would thrash the
-      # warm base (same policy as ci.yml's lanes).
+      # warm base (same policy as ci.yml's lanes). Workspace crates are not
+      # in that archive; sccache is the same GHA wrapper Linux already uses.
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - name: enable sccache
+        env:
+          SCCACHE_RW_MODE: ${{ github.ref == 'refs/heads/main' && 'READ_WRITE' || 'READ_ONLY' }}
+        run: |
+          {
+            echo "RUSTC_WRAPPER=sccache"
+            echo "SCCACHE_GHA_ENABLED=true"
+            echo "SCCACHE_GHA_RW_MODE=${SCCACHE_RW_MODE}"
+            echo "CARGO_INCREMENTAL=0"
+          } >> "$GITHUB_ENV"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: mini-v1-cockpit-ffi
@@ -97,7 +110,12 @@ jobs:
       # HttpConnectionClosing.
       - name: Fetch Zig packages
         working-directory: clients/cockpit
-        run: ./scripts/zig-build.sh --fetch=all -Dplatform=null
+        run: |
+          if [ -d "${HOME}/.cache/zig/p" ] && [ -n "$(ls -A "${HOME}/.cache/zig/p" 2>/dev/null)" ]; then
+            echo "Zig package cache already present; skipping --fetch"
+          else
+            ./scripts/zig-build.sh --fetch=all -Dplatform=null
+          fi
 
       - name: Check release, SDK, and measurement contracts
         working-directory: clients/cockpit
@@ -123,20 +141,14 @@ jobs:
           ./scripts/host-raster-check.sh --min-solid 4179
 
       - name: Build the same-checkout Phux FFI and coordinator CLI
-        uses: ./.github/actions/cockpit-rust-artifacts
+        run: bash clients/cockpit/scripts/build-phux-artifacts.sh
 
+      # One test graph. DisabledPhuxProvider is typechecked inside this
+      # invocation as the compile-only `disabled-phux-provider` step (phux-q0i3,
+      # phux-9ajd); do not add a second `zig build test` just to compile it.
       - name: Test the shipping TypeScript and native provider graph
         working-directory: clients/cockpit
         run: ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all
-
-      # The default app graph has no Phux provider (DisabledPhuxProvider).
-      # Only this step compiles it: provider calls it lacked once failed that
-      # build for days while every step above stayed green (phux-q0i3). It
-      # reuses the step above's cached compilation of everything but the app
-      # graph, and packages nothing.
-      - name: Test the app graph without the Phux provider
-        working-directory: clients/cockpit
-        run: ./scripts/zig-build.sh test -Dplatform=null --summary all
 
       # The null-platform tests do not compile the AppKit executable. Keep one
       # real production build on PRs while reserving archive/DMG work for main.
@@ -166,15 +178,6 @@ jobs:
           path: clients/cockpit/zig-out/soak-ci
           if-no-files-found: ignore
           retention-days: 7
-
-      # Save last so a failed build never poisons the cache with a partial
-      # compile, only from main so PRs never write (see above), and only on
-      # a miss — cache/save errors when the key already exists.
-      - name: Save validated same-tree Rust artifacts for release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: ./.github/actions/cockpit-rust-artifacts
-        with:
-          mode: save
 
       - uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         if: github.ref == 'refs/heads/main' && steps.zig-cache.outputs.cache-hit != 'true'

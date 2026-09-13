@@ -51,6 +51,49 @@ fn ensureTsToolchain(b: *std.Build, dependency: *std.Build.Dependency) void {
     std.debug.print("typescript-core: npm ci failed in {s}:\n{s}\n", .{ core_dir, result.stderr });
 }
 
+fn createTsEngine(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    sdk_module: *std.Build.Module,
+    measure: bool,
+    phux_enabled: bool,
+    ffi: ?PhuxFfi,
+) *std.Build.Module {
+    const contract = b.createModule(.{
+        .root_source_file = b.path("src/providers/contract.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    contract.addImport("native_sdk", sdk_module);
+    const phux_options = b.addOptions();
+    phux_options.addOption(bool, "enabled", phux_enabled);
+    const test_options = b.addOptions();
+    test_options.addOption(bool, "measure", measure);
+    const ghostty = b.dependency("ghostty", .{
+        .target = target,
+        .optimize = optimize,
+        .simd = false,
+        .@"emit-xcframework" = false,
+        .@"emit-macos-app" = false,
+    });
+    const engine = b.createModule(.{
+        .root_source_file = b.path("src/ts_engine.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    engine.addImport("native_sdk", sdk_module);
+    engine.addImport("provider_contract", contract);
+    engine.addImport("phux_options", phux_options.createModule());
+    engine.addImport("test_options", test_options.createModule());
+    engine.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
+    if (phux_enabled) {
+        const modules = createPhuxModules(b, target, optimize, sdk_module, contract, ffi.?);
+        attachPhuxModules(b, engine, modules);
+    }
+    return engine;
+}
+
 fn addTsEngineModules(
     b: *std.Build,
     artifacts: native_sdk.AppArtifacts,
@@ -73,39 +116,56 @@ fn addTsEngineModules(
         const optimize = root.optimize.?;
         const sdk_module = root.import_table.get("native_sdk") orelse
             @panic("native-sdk extension module did not expose the SDK root module");
-        const contract = b.createModule(.{
-            .root_source_file = b.path("src/providers/contract.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        contract.addImport("native_sdk", sdk_module);
-        const phux_options = b.addOptions();
-        phux_options.addOption(bool, "enabled", phux_enabled);
-        const test_options = b.addOptions();
-        test_options.addOption(bool, "measure", measure);
-        const ghostty = b.dependency("ghostty", .{
-            .target = target,
-            .optimize = optimize,
-            .simd = false,
-            .@"emit-xcframework" = false,
-            .@"emit-macos-app" = false,
-        });
-        const engine = b.createModule(.{
-            .root_source_file = b.path("src/ts_engine.zig"),
-            .target = target,
-            .optimize = optimize,
-        });
-        engine.addImport("native_sdk", sdk_module);
-        engine.addImport("provider_contract", contract);
-        engine.addImport("phux_options", phux_options.createModule());
-        engine.addImport("test_options", test_options.createModule());
-        engine.addImport("ghostty-vt", ghostty.module("ghostty-vt"));
-        if (phux_enabled) {
-            const modules = createPhuxModules(b, target, optimize, sdk_module, contract, ffi.?);
-            attachPhuxModules(b, engine, modules);
-        }
-        root.addImport("cockpit_engine", engine);
+        root.addImport("cockpit_engine", createTsEngine(
+            b,
+            target,
+            optimize,
+            sdk_module,
+            measure,
+            phux_enabled,
+            ffi,
+        ));
     }
+}
+
+/// Typecheck DisabledPhuxProvider inside the phux-enabled test graph so CI
+/// does not run a second `zig build test` just for compile coverage (phux-q0i3,
+/// phux-9ajd). Compile only: do not re-run the extension tests.
+fn addDisabledProviderCompileCheck(
+    b: *std.Build,
+    artifacts: native_sdk.AppArtifacts,
+    test_step: *std.Build.Step,
+    measure: bool,
+) void {
+    const extension = artifacts.extension orelse
+        @panic("native-sdk app graph did not expose the extension module");
+    const target = extension.resolved_target.?;
+    const optimize = extension.optimize.?;
+    const sdk_module = extension.import_table.get("native_sdk") orelse
+        @panic("native-sdk extension module did not expose the SDK root module");
+    const core = extension.import_table.get("core") orelse
+        @panic("native-sdk extension module did not expose the core module");
+    const check = b.createModule(.{
+        .root_source_file = b.path("src/native_extension.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    check.addImport("native_sdk", sdk_module);
+    check.addImport("core", core);
+    check.addImport("cockpit_engine", createTsEngine(
+        b,
+        target,
+        optimize,
+        sdk_module,
+        measure,
+        false,
+        null,
+    ));
+    const compiled = b.addTest(.{
+        .name = "disabled-phux-provider",
+        .root_module = check,
+    });
+    test_step.dependOn(&compiled.step);
 }
 
 /// Keep the native engine's broad pre-cutover regression suite while the
@@ -581,7 +641,7 @@ fn buildVerdict(
             found.lib_dir,
             found.origin,
             if (phux_enabled)
-                "phux provider (-Dphux-enabled=true)"
+                "phux provider (-Dphux-enabled=true); disabled provider compiled (disabled-phux-provider)"
             else
                 "local terminal provider (-Dphux-enabled defaults to false)",
             rule,
@@ -712,6 +772,7 @@ pub fn build(b: *std.Build) void {
         const test_step = &top_level.step;
         addNativeRegressionTests(b, artifacts, test_step, measure, phux_enabled, ffi);
         if (ffi) |found| addPhuxGraphTests(b, artifacts, test_step, found);
+        if (phux_enabled) addDisabledProviderCompileCheck(b, artifacts, test_step, measure);
         addTestVerdict(b, test_step, buildVerdict(b, phux_enabled, ffi, ffi_profile));
     }
 }
