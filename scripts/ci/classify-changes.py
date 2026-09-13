@@ -5,10 +5,18 @@ Root crate changes conservatively cover the complete bundled Cockpit coordinator
 and FFI closure. Browser workspaces are separate; only their shared Rust inputs
 route both. Native means the *clean setup assurance* lane, not all native Rust.
 Workflow orchestration is compile-free; Zig pins live in .config independently.
+
+`test_filterset` is the PR unit-test execution set (phux-14r7): rdeps of each
+changed workspace crate after a `--workspace` build. Empty means run
+everything — empty diffs, docs-only leftovers, or any path that is not a
+workspace crate (Cargo.toml, justfile, skills, scripts).
 """
 
 from fnmatch import fnmatchcase
+from pathlib import Path
+import re
 import sys
+import tomllib
 
 SURFACES = ("phux", "cockpit", "web", "web_engine", "integrations", "native")
 ALL = set(SURFACES)
@@ -58,6 +66,9 @@ WORKFLOWS = (
     "scripts/ci/extract_changelog_section.py", "scripts/ci/test_extract_changelog_section.py",
     "scripts/check-release-orchestration.mjs",
 )
+ROOT = Path(__file__).resolve().parents[2]
+# nextest package matchers treat an unprefixed name as a glob; `=` is exact.
+CRATE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def matches(path, patterns):
@@ -81,6 +92,42 @@ def surfaces_for(path):
     return selected or ALL.copy()
 
 
+def workspace_packages(root=ROOT):
+    """Workspace members from crate manifests — the cargo-metadata set."""
+    packages = []
+    for manifest in (root / "crates").glob("*/Cargo.toml"):
+        name = tomllib.loads(manifest.read_text())["package"]["name"]
+        if not CRATE_NAME.fullmatch(name):
+            continue
+        packages.append((name, str(manifest.parent.relative_to(root))))
+    packages.sort(key=lambda item: -len(item[1]))
+    return packages
+
+
+def crate_for(path, packages):
+    for name, prefix in packages:
+        if path == prefix or path.startswith(prefix + "/"):
+            return name
+    return None
+
+
+def test_filterset(files, packages=None):
+    """nextest `-E` expression, or empty to run the full unit pool."""
+    if packages is None:
+        packages = workspace_packages()
+    crates = set()
+    for path in files:
+        if not path or is_doc(path):
+            continue
+        crate = crate_for(path, packages)
+        if crate is None:
+            return ""
+        crates.add(crate)
+    if not crates:
+        return ""
+    return " + ".join(f"rdeps(={name})" for name in sorted(crates))
+
+
 def classify(files):
     files = [path for path in files if path]
     selected = set()
@@ -91,12 +138,16 @@ def classify(files):
     outputs = {surface + "_needed": surface in selected for surface in SURFACES}
     outputs["docs_only"] = bool(files) and all(is_doc(path) for path in files)
     outputs["workflow_only"] = bool(files) and all(matches(path, WORKFLOWS) for path in files)
+    outputs["test_filterset"] = test_filterset(files)
     return outputs
 
 
 def emit(outputs):
     for key, value in outputs.items():
-        print(f"{key}={str(value).lower()}")
+        if isinstance(value, bool):
+            print(f"{key}={str(value).lower()}")
+        else:
+            print(f"{key}={value}")
 
 
 if __name__ == "__main__":

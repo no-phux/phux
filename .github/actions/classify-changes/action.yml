@@ -25,6 +25,9 @@ outputs:
   native_needed:
     description: Clean native setup assurance (setup/toolchain/Cargo/build/link inputs).
     value: ${{ steps.detect.outputs.native_needed }}
+  test_filterset:
+    description: nextest rdeps expression for PR unit tests; empty runs the full pool.
+    value: ${{ steps.detect.outputs.test_filterset }}
 runs:
   using: composite
   steps:

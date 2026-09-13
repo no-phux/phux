@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # Quality bar: testing and performance
@@ -19,10 +19,12 @@ Tests are organized in three layers. All three run today.
 
 1. **Unit tests** colocated with the code they cover, plus crate
    integration tests under `crates/*/tests/`. The workspace pool is
-   `just test` (`cargo nextest run --workspace`). `just ci` includes that
-   pool plus compile-free contract gates (fmt, lint, rustdoc, deny,
-   `just docs-check`, and others listed in CONTRIBUTING.md). It does not
-   spawn real PTY-backed servers.
+   `just test` (`cargo nextest run --workspace`). CI pull requests may set
+   `PHUX_NEXTEST_FILTERSET` to the classifier's `rdeps()` expression so only
+   affected crates run; the build selection stays `--workspace`. `just ci`
+   includes that pool plus compile-free contract gates (fmt, lint, rustdoc,
+   deny, `just docs-check`, and others listed in CONTRIBUTING.md). It does
+   not spawn real PTY-backed servers.
 
 2. **Property tests** (`proptest`) for invariants that should hold across
    arbitrary inputs. They live in `phux-protocol` (codec roundtrip),

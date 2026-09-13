@@ -96,6 +96,44 @@ class RoutingTests(unittest.TestCase):
                 self.assertEqual(output["docs_only"], docs)
                 self.assertEqual(output["workflow_only"], workflows)
 
+    def test_affected_crate_filterset_is_fail_safe(self):
+        # Empty or unmappable -> full pool. Crate-only diffs emit exact rdeps.
+        cases = [
+            ([], ""),
+            (["docs/SETUP.md"], ""),
+            (["Cargo.toml"], ""),
+            (["justfile"], ""),
+            (["skills/phux/SKILL.md"], ""),
+            ([".github/workflows/ci.yml"], ""),
+            (["new-product/source.xyz"], ""),
+            (["crates/phux-protocol/src/lib.rs"], "rdeps(=phux-protocol)"),
+            (
+                ["crates/phux-tui/src/lib.rs", "docs/SETUP.md"],
+                "rdeps(=phux-tui)",
+            ),
+            (
+                ["crates/phux-protocol/src/lib.rs", "crates/phux-tui/src/lib.rs"],
+                "rdeps(=phux-protocol) + rdeps(=phux-tui)",
+            ),
+            (["crates/phux-protocol/src/lib.rs", "Cargo.lock"], ""),
+        ]
+        for paths, wanted in cases:
+            with self.subTest(paths=paths):
+                self.assertEqual(classify(paths)["test_filterset"], wanted)
+
+    def test_every_workspace_crate_maps_to_its_package_name(self):
+        manifests = {
+            path.parent.name: tomllib.loads(path.read_text())["package"]["name"]
+            for path in (ROOT / "crates").glob("*/Cargo.toml")
+        }
+        self.assertTrue(manifests)
+        for directory, name in manifests.items():
+            with self.subTest(crate=directory):
+                self.assertEqual(
+                    classify([f"crates/{directory}/src/lib.rs"])["test_filterset"],
+                    f"rdeps(={name})",
+                )
+
     def test_browser_native_server_dependency_closure(self):
         manifests = {path.parent.name: tomllib.loads(path.read_text())
                      for path in (ROOT / "crates").glob("*/Cargo.toml")}
@@ -221,6 +259,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("nix shell --inputs-from .", cheap_jobs)
         self.assertIn("if: needs.changes.outputs.integrations_needed == 'true'", cheap_jobs)
         self.assertEqual(workflow.count("if: needs.changes.outputs.phux_needed == 'true'"), 2)
+
+    def test_pr_unit_lane_uses_classifier_rdeps_filterset(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        recipe = (ROOT / "justfile").read_text()
+        action = (ROOT / ".github/actions/classify-changes/action.yml").read_text()
+        self.assertIn("test_filterset:", workflow)
+        self.assertIn("PHUX_NEXTEST_FILTERSET:", workflow)
+        self.assertIn("github.event_name != 'push'", workflow)
+        self.assertIn("needs.changes.outputs.test_filterset", workflow)
+        self.assertIn("PHUX_NEXTEST_FILTERSET", recipe)
+        self.assertIn("cargo nextest run --workspace", recipe)
+        self.assertNotIn("cargo nextest run -p", recipe)
+        self.assertIn("test_filterset:", action)
 
     def test_shared_detection_has_no_outer_path_filter(self):
         for name in ("ci", "native-setup", "cockpit-ci", "web-check"):
