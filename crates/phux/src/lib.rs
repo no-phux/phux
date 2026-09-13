@@ -2426,6 +2426,9 @@ mod tests {
             // -invoked by `attach --host`, hidden from humans (phux-06nn),
             // not deprecated.
             "phux stdio-bridge",
+            // Far end of `phux attach --ssh` (ADR-0120): machine-invoked
+            // over ssh, same reasoning as stdio-bridge.
+            "phux bootstrap",
             // Auto-spawn / upgrade plumbing on `phux server`.
             "phux server --daemonize",
             "phux server --seed-command",
