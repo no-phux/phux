@@ -784,9 +784,17 @@ impl Connection {
     pub async fn send(&mut self, frame: &FrameKind) -> Result<(), AttachError> {
         if let Some(terminal_id) = terminal_target(frame)
             && self.multistream_enabled()
-            && let Some(mux) = self.multistream.as_mut()
-            && let Some(binding) = mux.bindings.get_mut(terminal_id)
         {
+            let Some(mux) = self.multistream.as_mut() else {
+                return Err(AttachError::Protocol(
+                    "negotiated QUIC stream state is unavailable".to_owned(),
+                ));
+            };
+            let Some(binding) = mux.bindings.get_mut(terminal_id) else {
+                return Err(AttachError::Protocol(format!(
+                    "Terminal frame requires a live QUIC binding: {terminal_id:?}"
+                )));
+            };
             return send_quic_frame(&mut binding.send, frame).await;
         }
         self.writer.send(frame).await

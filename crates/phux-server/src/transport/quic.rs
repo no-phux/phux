@@ -441,12 +441,16 @@ pub(crate) async fn authorize_preamble(
 /// per-stream isolation lives in QUIC flow control and the per-stream
 /// writer queues, not here.
 const MUX_FRAME_CHANNEL: usize = 64;
-const MUX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+const MAX_WIRE_FRAME_BYTES: usize =
+    phux_protocol::wire::frame::MAX_FRAME_LEN as usize + LENGTH_PREFIX;
+/// Two full legal frames: one Terminal and one control. This is deliberately
+/// eight bytes above 32 MiB because each 16 MiB body also carries its four-byte
+/// length prefix; rounding down would deadlock one valid maximum frame.
+const MUX_FRAME_BYTES: usize = 2 * MAX_WIRE_FRAME_BYTES;
 /// Terminal streams may occupy only one maximum wire frame of the aggregate
 /// budget. The remaining capacity is permanently available to ordinary
 /// control traffic even while that maximum Terminal body is incomplete.
-const MUX_TERMINAL_FRAME_BYTES: usize =
-    phux_protocol::wire::frame::MAX_FRAME_LEN as usize + LENGTH_PREFIX;
+const MUX_TERMINAL_FRAME_BYTES: usize = MAX_WIRE_FRAME_BYTES;
 /// Once a valid header announces a body, it must arrive within this absolute
 /// bound. A peer cannot reserve byte permits indefinitely with a partial body.
 const FRAME_BODY_DEADLINE: Duration = Duration::from_secs(10);

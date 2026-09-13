@@ -229,6 +229,8 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
             write_frame(&mut terminal_send, &from_server).await;
             assert_eq!(read_frame(&mut terminal_recv).await, from_client);
             terminal_send.finish().unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            write_frame(&mut control_send, &FrameKind::Pong { nonce: 99 }).await;
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     };
@@ -246,7 +248,19 @@ async fn negotiated_quic_streams_bind_route_and_merge_terminal_frames() {
         conn.send(&from_client)
             .await
             .expect("send on Terminal stream");
-        conn.recv().await.expect("receive Terminal stream frame")
+        let received = conn.recv().await.expect("receive Terminal stream frame");
+        assert_eq!(
+            conn.recv()
+                .await
+                .expect("control progresses after stream end"),
+            FrameKind::Pong { nonce: 99 }
+        );
+        let error = conn
+            .send(&from_client)
+            .await
+            .expect_err("Terminal traffic cannot fall back to control after stream end");
+        assert!(error.to_string().contains("requires a live QUIC binding"));
+        received
     };
 
     let (_server, got) = tokio::join!(server, client);
