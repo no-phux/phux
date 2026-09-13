@@ -315,6 +315,46 @@ async fn malformed_terminal_stream_length_fails_promptly() {
 }
 
 #[tokio::test]
+async fn partial_terminal_body_error_precedes_clean_end() {
+    let (_dir, cert, key) = cert_pair();
+    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let terminal_id = ResourceId::local(9);
+    let server = async move {
+        let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
+        accept_hello_with_caps(
+            &mut control_send,
+            &mut control_recv,
+            ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
+        )
+        .await;
+        let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
+        let _ = read_stream_bind(&mut terminal_recv).await;
+        terminal_send.write_all(&8_u32.to_be_bytes()).await.unwrap();
+        terminal_send.write_all(&[1, 2]).await.unwrap();
+        terminal_send.finish().unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    };
+    let client = async move {
+        let dial = QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+        };
+        let mut conn = Connection::connect_quic(&dial).await.expect("dial");
+        conn.bind_terminal(&terminal_id).await.expect("bind");
+        conn.recv()
+            .await
+            .expect_err("partial body must not be hidden by its end event")
+            .to_string()
+    };
+    let ((), error) = tokio::join!(server, client);
+    assert!(error.contains("finished mid-frame"), "{error}");
+}
+
+#[tokio::test]
 async fn incomplete_terminal_body_does_not_block_control_and_expires() {
     let (_dir, cert, key) = cert_pair();
     let (endpoint, addr) = server_endpoint(&cert, &key);
