@@ -799,6 +799,10 @@ fn ensure_server_with(
     quiet: bool,
 ) -> std::io::Result<()> {
     if socket::probe(socket_path) == SocketState::Live {
+        // A live socket can be the supervised server login already started.
+        // Sweep a leftover `--adopt` marker so the first `phux` command
+        // retires it, not only `phux service status` (phux-dqf3).
+        super::service::sweep_stale_adoption_marker(socket_path);
         if !quiet {
             reconcile_version_skew(socket_path);
         }
@@ -814,6 +818,7 @@ fn ensure_server_with(
     // Re-probe under the lock. Whoever held it before us most likely spawned
     // the server we were about to duplicate.
     if socket::probe(socket_path) == SocketState::Live {
+        super::service::sweep_stale_adoption_marker(socket_path);
         return Ok(());
     }
 

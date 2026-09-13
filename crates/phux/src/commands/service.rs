@@ -1893,8 +1893,8 @@ fn supervision_state(subject: Subject<'_>) -> SupervisionState {
 /// server passes for a working one).
 ///
 /// Only looks. A marker whose unit has vanished is left for the paths that
-/// own the state ([`complete_pending_adoption`], [`run_uninstall`]); doctor
-/// reports, it does not repair.
+/// own the state ([`complete_pending_adoption`], [`sweep_stale_adoption_marker`],
+/// [`run_uninstall`]); doctor reports, it does not repair.
 pub(crate) fn armed_adoption_unit(socket_path: &Path) -> Option<PathBuf> {
     match supervision_state(Subject::Server(socket_path)) {
         SupervisionState::Armed { unit, .. } => Some(unit),
@@ -1911,6 +1911,55 @@ pub(crate) fn armed_adoption_unit(socket_path: &Path) -> Option<PathBuf> {
 fn unit_supervises(manager: Manager, body: &str, socket_path: &Path) -> bool {
     unit_socket_override(manager, body).unwrap_or_else(phux_server::runtime::default_socket_path)
         == socket_path
+}
+
+/// Whether a pending-adoption record is spent and should be swept.
+///
+/// `unit_running` is the init system's answer for the unit the marker
+/// names. A vanished unit can never complete, so it is spent even when
+/// that probe was not run (`false`).
+fn adoption_marker_is_spent(state: SupervisionState, unit_running: bool) -> bool {
+    match state {
+        SupervisionState::MarkerWithoutUnit => true,
+        SupervisionState::Armed { .. } => unit_running,
+        SupervisionState::NotArmed => false,
+    }
+}
+
+/// Ask the init system whether it is running this profile's unit.
+fn unit_is_running(manager: Manager) -> bool {
+    probe_unit(manager)
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+/// The captured init-system probe `phux service status` already ran.
+fn probe_unit(manager: Manager) -> std::io::Result<std::process::Output> {
+    match manager {
+        Manager::Launchd => std::process::Command::new("launchctl")
+            .args(["print", &launchd_target()])
+            .output(),
+        Manager::Systemd => std::process::Command::new("systemctl")
+            .args(["--user", "status", &systemd_unit()])
+            .output(),
+    }
+}
+
+/// Sweep an adoption marker that can no longer be pending for `socket_path`.
+///
+/// `complete_pending_adoption` clears the marker when *this* process starts
+/// the unit. Login bootstrap starts it without going through that path, so
+/// a later `ensure_server` that finds the socket already live must retire
+/// the record the same way `phux service status` does (phux-dqf3).
+pub(crate) fn sweep_stale_adoption_marker(socket_path: &Path) {
+    let state = supervision_state(Subject::Server(socket_path));
+    let running = match state {
+        SupervisionState::Armed { manager, .. } => unit_is_running(manager),
+        SupervisionState::MarkerWithoutUnit | SupervisionState::NotArmed => false,
+    };
+    if adoption_marker_is_spent(state, running) {
+        clear_adoption_pending();
+    }
 }
 
 /// Outcome of trying to complete an armed adoption from the auto-spawn path.
@@ -2349,14 +2398,7 @@ pub(crate) fn run_status() -> ExitCode {
     // on an unloaded job wrote "Bad request. / Could not find service ..."
     // straight to the terminal — three lines after the armed paragraph
     // explaining that unloaded is exactly what armed means.
-    let probe = || match manager {
-        Manager::Launchd => std::process::Command::new("launchctl")
-            .args(["print", &launchd_target()])
-            .output(),
-        Manager::Systemd => std::process::Command::new("systemctl")
-            .args(["--user", "status", &systemd_unit()])
-            .output(),
-    };
+    let probe = || probe_unit(manager);
 
     // `Subject::Unit`, not the running instance's socket: this verb's subject
     // is the unit printed above, whatever socket it was installed against.
@@ -2682,13 +2724,13 @@ fn config_home_from(
 mod tests {
     use super::{
         HubEnsure, Manager, RESTART_THROTTLE_SECS, Reconcile, SERVICE_MANAGED_ENV,
-        START_LIMIT_BURST, ServicePlan, arm_unit, config_home_from, dry_run_text,
-        ensure_hub_in_unit, ensure_hub_in_wrapper, home_dir_from, launchd_label_for,
-        launchd_policy_lines, reconcile_unit, render_launchd_plist, render_systemd_unit,
-        render_unit, render_wrapper_script, report_policy_reach_with, resolve_plan,
-        rewrite_unit_binary, sh_quote, status_report, systemd_escape, systemd_policy_lines,
-        systemd_quote, systemd_unit_for, systemd_unquote, unit_socket_override, unit_supervises,
-        xml_escape, xml_unescape,
+        START_LIMIT_BURST, ServicePlan, SupervisionState, adoption_marker_is_spent, arm_unit,
+        config_home_from, dry_run_text, ensure_hub_in_unit, ensure_hub_in_wrapper, home_dir_from,
+        launchd_label_for, launchd_policy_lines, reconcile_unit, render_launchd_plist,
+        render_systemd_unit, render_unit, render_wrapper_script, report_policy_reach_with,
+        resolve_plan, rewrite_unit_binary, sh_quote, status_report, systemd_escape,
+        systemd_policy_lines, systemd_quote, systemd_unit_for, systemd_unquote,
+        unit_socket_override, unit_supervises, xml_escape, xml_unescape,
     };
     use std::path::Path;
     use std::path::PathBuf;
@@ -2842,6 +2884,34 @@ mod tests {
             !report.text.contains("state armed"),
             "a completed hand-over must not still read as armed: {}",
             report.text
+        );
+    }
+
+    /// phux-dqf3: the live-server fast path sweeps the same spent records
+    /// `status` does — a vanished unit, or an armed record over a job the
+    /// init system is already running — and leaves a still-pending adopt
+    /// alone.
+    #[test]
+    fn a_spent_adoption_marker_is_the_live_path_sweep() {
+        let armed = || SupervisionState::Armed {
+            manager: Manager::Systemd,
+            unit: PathBuf::from("/tmp/phux-test.service"),
+        };
+        assert!(
+            adoption_marker_is_spent(SupervisionState::MarkerWithoutUnit, false),
+            "a marker whose unit has vanished can never complete"
+        );
+        assert!(
+            adoption_marker_is_spent(armed(), true),
+            "armed + running is the completed login hand-over"
+        );
+        assert!(
+            !adoption_marker_is_spent(armed(), false),
+            "armed + not-running is still waiting for the incumbent"
+        );
+        assert!(
+            !adoption_marker_is_spent(SupervisionState::NotArmed, true),
+            "no marker means there is nothing to sweep, even if a unit is running"
         );
     }
 
