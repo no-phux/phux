@@ -418,6 +418,24 @@ async fn wait_for_process_exit(pid: u32) {
     .unwrap_or_else(|_| panic!("transcriber process {pid} survived connection teardown"));
 }
 
+/// Drop leftover saturation clients and wait for their transcribers to die.
+///
+/// They share one Terminal with the replacement. Writing the release file
+/// while they are still alive races every paste onto one `APPLY_INPUT` slot
+/// (`another APPLY_INPUT operation is in flight for this terminal`).
+async fn wait_for_leftover_transcribers_to_exit(clients: Vec<UnixStream>, started: &[String]) {
+    let leftover_pids: Vec<u32> = (1_usize..4)
+        .map(|index| {
+            marker_entry(started, &format!("client-{index}"))
+                .expect("saturated connection recorded a start pid")
+        })
+        .collect();
+    drop(clients);
+    for pid in leftover_pids {
+        wait_for_process_exit(pid).await;
+    }
+}
+
 async fn submit_transcribe(
     stream: &mut UnixStream,
     request_id: u32,
@@ -535,6 +553,7 @@ fn saturation_refuses_without_starting_and_teardown_releases_global_capacity() {
             "refused and queued client-0 work must never start after teardown",
         );
 
+        wait_for_leftover_transcribers_to_exit(clients, &released_lines).await;
         tokio::fs::write(&release, b"go").await.unwrap();
         assert_eq!(
             transcript(await_command_result(&mut replacement, 501).await),
@@ -542,7 +561,6 @@ fn saturation_refuses_without_starting_and_teardown_releases_global_capacity() {
         );
         unsafe { std::env::remove_var("PHUX_UPLOAD_DIR") };
         drop(replacement);
-        drop(clients);
         join_after_shutdown(shutdown, server).await;
     });
 }
