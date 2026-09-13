@@ -32,8 +32,8 @@ use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, CloseReason, Command, CommandResult, CommandValue, ControlAction,
     DetachReason, DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
-    DirectoryListingResult, ErrorCode, FileUploadAck, InputMode, MAX_APPEND_BYTES,
-    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    DirectoryListingResult, ErrorCode, FileUploadAck, InputMode, ListenerTransport,
+    MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
     MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, MoveError,
     MoveResult, ReportedAgentState, ResourceLifecycle, Scope, SpawnError, SpawnResource,
     SpawnResult, StateScope, TerminalSignal, ViewportInfo,
@@ -1890,6 +1890,23 @@ fn command_simple_variants_round_trip() {
         },
         Command::GetPerf { reset: false },
         Command::GetPerf { reset: true },
+        Command::OpenListener {
+            transport: ListenerTransport::Quic,
+            port_range: None,
+            linger_secs: 0,
+        },
+        Command::OpenListener {
+            transport: ListenerTransport::Quic,
+            port_range: Some((60000, 61000)),
+            linger_secs: 120,
+        },
+        // An undefined transport and an inverted range still round-trip:
+        // refusing them is the server's job, with a message.
+        Command::OpenListener {
+            transport: ListenerTransport::Unknown(7),
+            port_range: Some((9, 3)),
+            linger_secs: u32::MAX,
+        },
         Command::Transcribe {
             upload_id: FileUploadId::new([9; 16]).expect("non-zero upload id"),
             terminal_id: ResourceId::local(7),

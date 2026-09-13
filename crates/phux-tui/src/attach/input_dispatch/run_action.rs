@@ -17,11 +17,14 @@ use phux_protocol::ids::SatelliteHost;
 use phux_protocol::wire::frame::{Command, FrameKind, InputMode};
 
 use crate::attach::actions::{self, ActionError, Adopt, PendingSplit, PendingWindow, SplitHost};
+use crate::attach::copy::extract_selection_text;
 use crate::attach::directory_picker::{DirectorySupport, ListingHost, PendingDirectory};
-use crate::attach::pane_state::PaneSlot;
+use crate::attach::pane_state::{PaneSlot, published_terminal};
 use crate::attach::plugin_panes::HostedPlacement;
 use crate::layout::{LayoutState, SplitDir, Workspace};
-use crate::render::overlay::{PendingOverlay, PromptOverlay, SelectItem, SelectList};
+use crate::render::overlay::{
+    CopyRequest, PendingOverlay, PromptOverlay, SelectItem, SelectList, SelectionGrab, ToastOverlay,
+};
 use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 
 use super::args::{
@@ -31,7 +34,7 @@ use super::args::{
 use super::ctx::DispatchCtx;
 use super::dispatch::{
     focused_pane_rect, open_context_menu, predicted_split_size, set_spawn_initial_size,
-    spawn_initial_size,
+    spawn_initial_size, terminal_in_alt_screen, terminal_wants_mouse_tracking,
 };
 use super::effects::{ActionEffects, PaneMoveIntent, ReattachTarget};
 use super::pickers::{
@@ -113,6 +116,7 @@ pub(super) fn run_action(
         "show-help" | "command-palette" => push_action_finder(ctx),
         "getting-started" => push_getting_started(ctx),
         "settings" => push_settings(ctx),
+        "report-bug" => report_bug(resolved, ctx, focused, e),
         "copy-mode" => push_copy_mode(ctx, focused),
         "context-menu" => push_context_menu(ctx, focused),
         "window-picker" => push_window_picker(ctx, e),
@@ -747,6 +751,91 @@ fn push_settings(ctx: &mut DispatchCtx<'_>) {
             phux_config::loader::config_path(),
             ctx.theme,
         )));
+}
+
+/// Capture a local bug-report bundle and toast its path.
+///
+/// The path is also copied to the host clipboard (OSC 52) so the user can
+/// paste it into an agent session. Capture is best-effort: a write failure
+/// bells and toasts the error instead of panicking the attach loop.
+fn report_bug(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    effects: &mut ActionEffects,
+) {
+    let screen = focused.and_then(|id| {
+        let terminal = published_terminal(ctx.engine_kernel, id)?;
+        extract_selection_text(
+            terminal,
+            CopyRequest {
+                start_row: 0,
+                start_col: 0,
+                end_row: 0,
+                end_col: 0,
+                mouse_anchor_screen: None,
+                rectangle: false,
+                cursor_row: 0,
+                cursor_col: 0,
+                grab: SelectionGrab::All,
+            },
+        )
+    });
+    let (alt_screen, mouse_tracking) = focused
+        .and_then(|id| published_terminal(ctx.engine_kernel, id))
+        .map(|terminal| {
+            (
+                terminal_in_alt_screen(terminal),
+                terminal_wants_mouse_tracking(terminal),
+            )
+        })
+        .unzip();
+    let session = {
+        let name = ctx.session_name.trim();
+        (!name.is_empty()).then(|| name.to_owned())
+    };
+    let draft = crate::report::ReportDraft {
+        note: str_arg(resolved, "note"),
+        session,
+        pane: focused.map(pane_selector),
+        window: Some(ctx.workspace.active),
+        viewport: Some(ctx.viewport),
+        alt_screen,
+        mouse_tracking,
+        screen,
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+    };
+    match crate::report::write_bundle(&draft) {
+        Ok(written) => {
+            let path = written.dir.display().to_string();
+            effects.clipboard = Some(path.clone());
+            ctx.overlays.push(Box::new(ToastOverlay::passthrough(
+                "bug report",
+                vec![
+                    format!("saved {}", written.id),
+                    path,
+                    "copied — phux report show".to_owned(),
+                ],
+                ctx.theme,
+            )));
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "report-bug: could not write bundle");
+            effects.bell = true;
+            ctx.overlays.push(Box::new(ToastOverlay::new(
+                "bug report failed",
+                vec![err.to_string()],
+                ctx.theme,
+            )));
+        }
+    }
+}
+
+fn pane_selector(id: &ResourceId) -> String {
+    match id {
+        ResourceId::Local { id } => format!("@{id}"),
+        ResourceId::Satellite { host, id } => format!("{host}/@{id}"),
+    }
 }
 
 /// Push the first-run onboarding hint card.

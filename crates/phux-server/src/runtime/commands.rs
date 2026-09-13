@@ -729,6 +729,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::DetachResource { .. } => "detach_terminal",
         Command::KillResource { .. } => "kill_terminal",
         Command::KillResourceIf { .. } => "kill_resource_if",
+        Command::OpenListener { .. } => "open_listener",
         Command::KillResources { .. } => "kill_terminals",
         Command::DetachClients { .. } => "detach_clients",
         Command::GetState { .. } => "get_state",
@@ -940,6 +941,21 @@ pub(crate) async fn handle_command(
             terminal_id,
             precondition,
         } => handle_kill_resource_if(state, &terminal_id, &precondition),
+        Command::OpenListener {
+            transport,
+            port_range,
+            linger_secs,
+        } => super::ephemeral_listener::handle_open_listener(
+            state,
+            client_id,
+            super::ephemeral_listener::OpenRequest {
+                transport,
+                port_range,
+                linger_secs,
+            },
+            input_lane,
+            root_token,
+        ),
         Command::GetTerminalState {
             terminal_id,
             include_scrollback,

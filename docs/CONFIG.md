@@ -231,11 +231,13 @@ Per-pane history has a line bound (`defaults.history-limit`) and a byte
 bound (`defaults.history-bytes`); libghostty prunes on whichever is
 reached first. On anything but a narrow grid the byte bound is what
 binds, so **raising `history-limit` on a wide grid buys no extra
-scrollback.** Raise `history-bytes` if you want depth. That is attach
-latency, not just memory: on attach the server re-encodes every retained
-page of every pane in the session, on one thread. The measured costs and
-the 64 MiB cap live in the comments of the shipped defaults (`phux config
-show --default`; also the annotated file in
+scrollback.** Raise `history-bytes` if you want depth. That is a memory
+setting, not attach latency: the server leases retained history at READY
+and encodes each page only when a client asks for it
+([ADR-0119](adr/0119-attach-leases-retained-history.md)). Budget it as
+resident memory per pane, multiplied by your pane count. The measured
+depths and the 64 MiB cap live in the comments of the shipped defaults
+(`phux config show --default`; also the annotated file in
 [`docs/reference/config.md`](./reference/config.md)).
 
 ---

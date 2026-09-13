@@ -187,6 +187,7 @@ impl From<SignalArg> for TerminalSignal {
 pub(crate) mod agent;
 pub(crate) mod ask;
 pub(crate) mod attach;
+pub(crate) mod bootstrap;
 pub(crate) mod channel;
 pub(crate) mod cockpit;
 pub(crate) mod completion;
@@ -215,6 +216,7 @@ pub(crate) mod relay;
 pub(crate) mod remote;
 pub(crate) mod remote_target;
 pub(crate) mod rename;
+pub(crate) mod report;
 pub(crate) mod resize;
 pub(crate) mod run;
 pub(crate) mod runtime_info;
@@ -226,6 +228,7 @@ pub(crate) mod service;
 pub(crate) mod snapshot;
 pub(crate) mod spatial;
 pub(crate) mod spawn;
+pub(crate) mod ssh_bootstrap;
 pub(crate) mod status;
 pub(crate) mod stdio_bridge;
 pub(crate) mod supervise;
@@ -309,6 +312,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Skill { .. } => Some("skill"),
         Command::Logs { .. } => Some("logs"),
         Command::RuntimeInfo { .. } => Some("runtime-info"),
+        Command::Report { .. } => Some("report"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
         _ => None,
     }
@@ -385,7 +389,7 @@ pub(crate) enum Command {
         /// PORT defaults to 8788, the port a server auto-binds on its
         /// overlay address. The `user@` half names the ssh destination used
         /// to pair; it is not sent on the wire.
-        #[arg(long, value_name = "[USER@]HOST[:PORT]", conflicts_with_all = ["quic", "ws"])]
+        #[arg(long, value_name = "[USER@]HOST[:PORT]", conflicts_with_all = ["quic", "ws", "ssh"])]
         remote: Option<String>,
 
         /// Pair `--remote` from a `https://phux.phall.io/connect?...` link
@@ -399,6 +403,33 @@ pub(crate) enum Command {
         /// refused with its remedies named instead of paired.
         #[arg(long, requires = "remote")]
         no_enroll: bool,
+
+        /// Attach mosh-style over ssh: run `phux bootstrap` on the host
+        /// through ssh, which starts the server there if needed and opens a
+        /// QUIC listener for this attach alone, then dial it directly. ssh
+        /// authenticates you (password and 2FA prompts work) and exits once
+        /// the session is up; the session itself rides QUIC, so it roams and
+        /// renders locally. Needs no pairing, service, or overlay network on
+        /// the host. Falls back to `ssh -t HOST phux attach` when UDP cannot
+        /// reach it. The host is anything ssh accepts, including
+        /// `ssh://user@host:port` and aliases from `~/.ssh/config`.
+        #[arg(
+            long,
+            value_name = "[USER@]HOST",
+            conflicts_with_all = ["quic", "ws", "remote"]
+        )]
+        ssh: Option<String>,
+
+        /// The `phux` to run on the `--ssh` host, for when a non-interactive
+        /// ssh shell's `PATH` does not find it (a Homebrew or Nix install).
+        #[arg(long, value_name = "PATH", requires = "ssh", default_value = "phux")]
+        remote_phux: String,
+
+        /// Bind the `--ssh` host's listener to a UDP port in this inclusive
+        /// range, e.g. `60000-61000`, so one firewall rule covers every
+        /// attach. Any free port by default.
+        #[arg(long, value_name = "MIN-MAX", requires = "ssh")]
+        udp_ports: Option<String>,
 
         /// Tee this attach's composited output to a recording. Declared here
         /// (and on the root command) rather than globally so it only shows up
@@ -1643,6 +1674,30 @@ pub(crate) enum Command {
     #[command(name = "stdio-bridge", hide = true)]
     StdioBridge {},
 
+    /// Open a one-attach QUIC listener on this host and print how to reach it.
+    ///
+    /// The far end of `phux attach --ssh`: starts the server if none is
+    /// running, asks it for a listener that admits only a token minted for
+    /// it, and prints one JSON line naming the port, the certificate
+    /// fingerprint to pin, and the token.
+    // Hidden: `phux attach --ssh` runs it over ssh and no human types it,
+    // the same reasoning as `stdio-bridge` above.
+    #[command(name = "bootstrap", hide = true)]
+    Bootstrap {
+        /// The version of the phux that asked, named in a mismatch report.
+        #[arg(long, value_name = "VERSION")]
+        client_version: Option<String>,
+
+        /// Inclusive UDP port range to bind from, e.g. `60000-61000`.
+        #[arg(long, value_name = "MIN-MAX")]
+        port_range: Option<String>,
+
+        /// Seconds the listener stays open with nobody connected; `0` asks
+        /// for the server default.
+        #[arg(long, value_name = "SECS", default_value_t = 0)]
+        linger: u32,
+    },
+
     /// Run a standalone relay, or enroll a route with it.
     ///
     /// The relay is a separate rendezvous process for reaching a phux
@@ -1872,6 +1927,23 @@ pub(crate) enum Command {
         /// human text. Inventory only — it cannot combine with a tail.
         #[arg(long, conflicts_with_all = ["server", "client", "pid", "follow", "lines"])]
         json: bool,
+    },
+
+    /// Capture or list local bug reports.
+    ///
+    /// Bare `phux report` lists bundles under the profile state directory
+    /// (newest first; `latest` is printed first). `phux report show [ID]`
+    /// prints one `report.md` (omit ID for the newest). `phux report new`
+    /// writes a logs-and-version bundle from a shell; prefer the TUI action
+    /// `report-bug` (`C-a B`) while attached so the live session, pane, and
+    /// screen are included. An agent given a report path can `cat` it or
+    /// run `phux report show`.
+    #[command(visible_alias = "bug")]
+    Report {
+        #[command(subcommand)]
+        action: Option<report::ReportAction>,
+        #[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Regenerate the repository's generated reference pages (internal).

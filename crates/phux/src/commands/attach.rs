@@ -961,27 +961,37 @@ pub(crate) fn run_attach_remote_outcome(
             None,
             rec,
         ),
-        // `exec`s into ssh, so this process — and any recorder it holds —
-        // ceases to exist here. Recording a `ssh://` remote means running
-        // `phux --rec` on the far side.
-        Endpoint::Ssh(host) => {
-            RemoteAttachOutcome::terminal(run_attach_over_ssh(&host, session.as_deref()))
-        }
+        // ADR-0120: bootstrap a direct QUIC attach over ssh first, and only
+        // fall back to `exec`ing `ssh -t HOST phux attach` when that cannot
+        // work. Only the direct path can carry a recording.
+        Endpoint::Ssh(host) => RemoteAttachOutcome::terminal(super::ssh_bootstrap::run(
+            super::ssh_bootstrap::SshAttach {
+                destination: host,
+                session,
+                remote_phux: "phux".to_owned(),
+                udp_ports: None,
+                rec,
+            },
+        )),
     }
 }
 
-/// Replace this process with `ssh -t HOST phux attach [SESSION]`.
+/// Replace this process with `ssh -t HOST REMOTE_PHUX attach [SESSION]`.
 ///
 /// `exec` rather than spawn-and-wait so the operator's terminal, signals, and
 /// exit code belong to ssh directly — an intermediate parent would only add a
 /// process that mangles Ctrl-C. `-t` forces a TTY, which the interactive
-/// attach requires.
-fn run_attach_over_ssh(host: &str, session: Option<&str>) -> ExitCode {
+/// attach requires. Any recorder this process holds ceases to exist here.
+pub(crate) fn run_attach_over_ssh(
+    host: &str,
+    remote_phux: &str,
+    session: Option<&str>,
+) -> ExitCode {
     use std::os::unix::process::CommandExt as _;
 
     let program = std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into());
     let mut command = std::process::Command::new(&program);
-    command.arg("-t").arg(host).arg("phux").arg("attach");
+    command.arg("-t").arg(host).arg(remote_phux).arg("attach");
     if let Some(session) = session {
         command.arg(session);
     }

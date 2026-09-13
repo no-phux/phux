@@ -148,6 +148,7 @@ fn feature_names(features: ServerFeatureSet) -> Vec<&'static str> {
         (ServerFeature::ListDirectoryHost, "list_directory_host"),
         (ServerFeature::SshOrigin, "ssh_origin"),
         (ServerFeature::ConditionalKill, "conditional_kill"),
+        (ServerFeature::OpenListener, "open_listener"),
     ];
     NAMED
         .iter()
@@ -600,12 +601,13 @@ mod tests {
         assert!(feature_names(ServerFeatureSet::new()).is_empty());
         let all = ServerFeatureSet::from_wire(u32::MAX);
         let names = feature_names(all);
-        assert_eq!(names.len(), 17, "one name per known bit: {names:?}");
+        assert_eq!(names.len(), 18, "one name per known bit: {names:?}");
         assert!(names.contains(&"conditional_kill"));
         assert!(names.contains(&"host_sessions"));
         assert!(names.contains(&"keep_empty_sessions"));
         assert!(names.contains(&"whoami"));
         assert!(names.contains(&"ssh_origin"));
+        assert!(names.contains(&"open_listener"));
         assert!(
             names.contains(&"resource_kinds"),
             "the agent session verbs' probe bit must be nameable: {names:?}"

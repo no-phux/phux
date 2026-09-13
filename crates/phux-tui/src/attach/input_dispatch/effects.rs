@@ -82,6 +82,10 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     if effects.bell {
         let _ = actions::write_bell(out);
     }
+    if let Some(text) = effects.clipboard {
+        let _ = out.write_all(&crate::attach::copy::osc52_set_clipboard(&text));
+        let _ = out.flush();
+    }
     send_detach(effects.detach, conn, detach_pending).await?;
     send_parked_spawns(
         effects.spawn_terminal,
@@ -645,6 +649,9 @@ pub(super) struct ActionEffects {
     /// layered loader after this batch and swaps its config-derived
     /// state atomically (old config kept on any failure).
     pub(super) reload_config: bool,
+    /// OSC 52 clipboard payload to emit on the host terminal after this
+    /// action (the `report-bug` path copies the bundle path).
+    pub(super) clipboard: Option<String>,
 }
 
 /// Exact move selected by the fuzzy destination picker.

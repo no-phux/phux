@@ -367,12 +367,13 @@ pub const CATALOG: &[SettingSpec] = &[
             min: 0,
             max: HISTORY_BYTES_MAX,
         },
-        summary: "Bytes of scrollback retained per pane; costs attach latency",
+        summary: "Bytes of scrollback retained per pane; costs resident memory",
         detail: "The bound that actually limits a pane's memory. Raising it buys depth and \
-                 costs attach latency, because every retained page is re-encoded per pane \
-                 when a client attaches, on the single server thread: roughly 8 ms at the \
-                 2 MiB default, 65 ms at 10 MiB, 222 ms at 32 MiB. 67108864 (64 MiB) is \
-                 the accepted maximum; phux config check rejects more.",
+                 costs resident memory, roughly this many bytes per pane for the life of \
+                 the session; attach is unaffected, because retained pages are leased \
+                 rather than re-encoded. The 2 MiB default keeps about 2,700 rows at 80 \
+                 columns. 67108864 (64 MiB) is the accepted maximum; phux config check \
+                 rejects more.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {

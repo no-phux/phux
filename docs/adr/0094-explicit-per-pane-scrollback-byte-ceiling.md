@@ -19,6 +19,7 @@ with one number and deserves to see both.
 
 Status: Accepted
 Date: 2026-09-02
+Superseded in part by [ADR-0119](./0119-attach-leases-retained-history.md): the claim that retained history costs attach latency (Context, Tradeoffs).
 
 ## Context
 

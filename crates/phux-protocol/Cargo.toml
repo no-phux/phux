@@ -43,6 +43,7 @@ png = { workspace = true, optional = true }
 [dev-dependencies]
 proptest.workspace = true
 insta.workspace = true
+tempfile.workspace = true
 
 [package.metadata.docs.rs]
 # Render the full API on docs.rs, including the libghostty-backed surface,

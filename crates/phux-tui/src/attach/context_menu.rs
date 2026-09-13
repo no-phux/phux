@@ -105,6 +105,7 @@ pub(super) fn session_menu(keybindings: Option<&KeybindingsCfg>, session: &str) 
         row(keybindings, "Settings…", "settings", &[]),
         row(keybindings, "Commands & Help…", "show-help", &[]),
         row(keybindings, "Toggle sidebar", "toggle-sidebar", &[]),
+        row(keybindings, "Report bug", "report-bug", &[]),
         MenuRow::Separator,
         row(keybindings, "Detach", "detach", &[]),
     ];

@@ -106,7 +106,8 @@ src/
     mod.rs, attach.rs, client.rs, commands.rs, resource_commands.rs
     (AgentSession spawn and `APPEND_RESOURCE_OUTPUT`), directory.rs (the
     LIST_DIRECTORY host query), pump.rs, resume.rs, upgrade.rs, upload.rs,
-    voice.rs, whoami.rs (the read-only phux.whoami/v1 key)
+    voice.rs, whoami.rs (the read-only phux.whoami/v1 key),
+    ephemeral_listener.rs (OPEN_LISTENER: a QUIC listener for one attach)
     input_lane/       — the dedicated input-encoding thread (ADR-0044) and
                         the acknowledged-input journal (ADR-0053)
   state/              — ServerState: sessions, windows, resources, leases,
@@ -426,7 +427,8 @@ src/
     session open|close, emit, log, the `--phux-hook` shim),
     server.rs, service.rs, supervise.rs, upgrade.rs, doctor.rs, logs.rs,
     config.rs + config/, config_action.rs, enroll.rs, pair.rs, relay.rs,
-    stdio_bridge.rs, worktree.rs, status.rs, whoami.rs, completion.rs
+    stdio_bridge.rs, worktree.rs, status.rs, whoami.rs, completion.rs,
+    bootstrap.rs + ssh_bootstrap.rs (the two ends of `attach --ssh`)
   refdocs/            — generators for docs/reference/ (cli.rs, config.rs,
                         actions.rs, widgets.rs, hooks.rs, exit_codes.rs,
                         deprecations.rs, files.rs) — see CONVENTIONS.md

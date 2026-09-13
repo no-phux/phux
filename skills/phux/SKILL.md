@@ -557,7 +557,7 @@ Branch on `error.code`, never on `message`. The vocabulary is closed. The codes
 you will actually meet: `no_server`, `server_disconnected`, `transport`,
 `no_such_target` (a miss against a complete view), `partial_view` (a miss
 against an incomplete fleet — retry), `no_agent_record`, `agent_departed`,
-`agent_mismatch`, `invalid_key_spec`, `json_serialize`. `remedy` is always
+`agent_mismatch`, `invalid_key_spec`, `json_serialize`, `io`. `remedy` is always
 present and non-empty: it is the next command to run, in prose.
 
 Two documented exceptions to "stdout stays empty on failure", both deliberate:
@@ -620,6 +620,7 @@ binary, so nothing is invisible to you.
 | `phux doctor` | diagnose the install: config, socket, server, plugins, shims |
 | `phux runtime-info --json` | read this binary's versioned protocol/capability contract without loading config or connecting to a server |
 | `phux logs` | where the logs live, or tail one |
+| `phux report` | list local bug-report bundles; `show [ID]` prints one; `new` captures logs. The TUI action `report-bug` (`C-a B`) writes a richer bundle (session, pane, screen) while attached |
 | `phux --skill` | print this file (`phux skill` is equivalent) |
 | `phux mcp` | run the bundled MCP stdio adapter; forwards `--skill`, `--schema`, help, and future arguments |
 

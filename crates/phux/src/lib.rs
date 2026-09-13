@@ -136,6 +136,7 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
           completion Print a shell completion script for phux\n  \
           doctor     Diagnose the install: config, socket, server, plugins\n  \
           logs       Show where phux's logs live, or tail one of them\n  \
+          report     List local bug-report bundles, print one, or capture logs\n  \
           config     Inspect config and run configured plugin actions\n  \
           plugin     Manage local plugin manifests in config\n  \
           workspace  Inspect worktrees and save/restore session archives\n  \
@@ -228,8 +229,13 @@ const ENVIRONMENT_HELP: &str = "ENVIRONMENT\n  \
         \x20                 HOST:PORT. Equivalent to `phux server --webtransport`.\n  \
         PHUX_SSH           OpenSSH-compatible program a federation hub spawns to\n  \
         \x20                 dial ssh:// satellites (default: `ssh` on PATH).\n  \
-        PHUX_TAILSCALE     Tailscale-compatible CLI `phux pair` runs to detect the\n  \
-        \x20                 overlay address (default: `tailscale` on PATH).\n  \
+        PHUX_TAILSCALE     Tailscale-compatible CLI run to detect the overlay\n  \
+        \x20                 address (default: `tailscale` on PATH) for `phux pair`,\n  \
+        \x20                 `phux doctor`, and the server's auto-bound remote\n  \
+        \x20                 listener. When set it is the only source consulted:\n  \
+        \x20                 the CGNAT route-probe fallback is disabled, so naming\n  \
+        \x20                 a command that reports nothing turns detection off\n  \
+        \x20                 everywhere (no overlay auto-listen, no doctor dial).\n  \
         PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE\n  \
         \x20                 Give an auto-spawned server an idle limit in seconds\n  \
         \x20                 (1..=86400), as if it were started with\n  \
@@ -695,6 +701,9 @@ struct AttachInvocation {
     remote: Option<String>,
     code: Option<String>,
     no_enroll: bool,
+    ssh: Option<String>,
+    remote_phux: String,
+    udp_ports: Option<String>,
     rec: commands::RecOpts,
     socket: Option<std::path::PathBuf>,
 }
@@ -712,6 +721,9 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         remote,
         code,
         no_enroll,
+        ssh,
+        remote_phux,
+        udp_ports,
         rec,
         socket,
     } = invocation;
@@ -730,9 +742,20 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
     // refusal is explicit here and covers both flag positions.
     // The `--remote` half of this rule is enforced post-parse (see
     // `socket_and_remote_collide`), ahead of the TTY preflight.
-    if socket.is_some() && (quic.is_some() || ws.is_some()) {
-        eprintln!("phux: --socket dials a local UDS and cannot combine with --quic/--ws; drop one");
+    if socket.is_some() && (quic.is_some() || ws.is_some() || ssh.is_some()) {
+        eprintln!(
+            "phux: --socket dials a local UDS and cannot combine with --quic/--ws/--ssh; drop one"
+        );
         return ExitCode::from(2);
+    }
+    if let Some(destination) = ssh {
+        return commands::ssh_bootstrap::run(commands::ssh_bootstrap::SshAttach {
+            destination,
+            session,
+            remote_phux,
+            udp_ports,
+            rec: rec_spec,
+        });
     }
     if let Some(target) = remote {
         return attach_remote_target(&target, session, code.as_deref(), no_enroll, rec_spec);
@@ -843,6 +866,9 @@ fn dispatch(
             remote,
             code,
             no_enroll,
+            ssh,
+            remote_phux,
+            udp_ports,
             rec,
         }) => run_attach(AttachInvocation {
             session,
@@ -854,6 +880,9 @@ fn dispatch(
             remote,
             code,
             no_enroll,
+            ssh,
+            remote_phux,
+            udp_ports,
             rec,
             socket,
         }),
@@ -1160,6 +1189,16 @@ fn dispatch(
         Some(Command::Workspace { action }) => commands::workspace::run_workspace(&action, socket),
         Some(Command::Tag { action }) => commands::tag::run_tag(&action, socket),
         Some(Command::StdioBridge {}) => commands::stdio_bridge::run_stdio_bridge(socket),
+        Some(Command::Bootstrap {
+            client_version,
+            port_range,
+            linger,
+        }) => commands::bootstrap::run(&commands::bootstrap::BootstrapArgs {
+            socket,
+            client_version,
+            port_range,
+            linger,
+        }),
         Some(Command::Relay { action }) => commands::relay::run_relay(action),
         Some(Command::Pair {
             action,
@@ -1185,6 +1224,7 @@ fn dispatch(
             lines,
             json,
         }) => commands::logs::run_logs(server, client, pid, follow, lines, json),
+        Some(Command::Report { action, json }) => commands::report::run_report(action, json.json),
         Some(Command::Host { action }) => commands::host::run_host(&action),
         Some(Command::Service { action }) => run_service(action, socket),
         Some(Command::GenReferenceDocs { out }) => {
@@ -2386,6 +2426,9 @@ mod tests {
             // -invoked by `attach --host`, hidden from humans (phux-06nn),
             // not deprecated.
             "phux stdio-bridge",
+            // Far end of `phux attach --ssh` (ADR-0120): machine-invoked
+            // over ssh, same reasoning as stdio-bridge.
+            "phux bootstrap",
             // Auto-spawn / upgrade plumbing on `phux server`.
             "phux server --daemonize",
             "phux server --seed-command",

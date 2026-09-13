@@ -191,6 +191,7 @@ Default prefix `C-a`. Override it in one line of config.
 | `C-a s` | `session-picker` (`C-a a` is a kept alias) |
 | `C-a A` | `agent-fleet` |
 | `C-a S` | `settings` |
+| `C-a B` | `report-bug` (local bug-report bundle) |
 | `C-a q` / `C-a Q` | `next-attention` / `return-from-attention` |
 | `C-a C` | `new-session` |
 | `C-a ,` / `C-a $` | `rename-window` / `rename-session` |
@@ -511,6 +512,24 @@ page tells you where it is.
 A change lands **now** for anything a reload covers, **next attach** for
 `[sidebar]`, `defaults.mouse`, and `experimental.*`, and **next server
 start** for `[defaults]` and `[voice]`.
+
+### Bug reports
+
+`report-bug` (`C-a B`, also a palette row and a session-menu row) writes a
+local bundle while you are attached, so the report is correlated with the
+session, the focused pane, the client and server logs, and a screen dump.
+Nothing is uploaded. The bundle lands under the profile state directory
+(`reports/<id>/`; see [`../reference/files.md`](../reference/files.md)),
+the path is copied to the host clipboard, and a toast names it.
+
+Hand that path to an agent, or from any shell:
+
+```
+phux report              # list bundles; latest first
+phux report show         # print the newest report.md
+phux report show ID      # print a specific one
+phux report new "note"   # logs-and-version only, when the TUI itself is down
+```
 
 ## Agent fleet
 

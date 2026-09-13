@@ -101,11 +101,23 @@ fn unit_paths_under(home: &Path) -> [std::path::PathBuf; 4] {
 /// would make their next cold `phux` try to bootstrap a service unit
 /// (ADR-0088). Sandboxing the state dir keeps the marker inside the tempdir
 /// that is deleted with the test.
+///
+/// `PHUX_TAILSCALE` names a program that cannot exist, which turns overlay
+/// detection off (setting the variable also suppresses the CGNAT route
+/// heuristic). Redirecting the XDG dirs sandboxes *files*; it does nothing
+/// about the one check in `phux doctor` that leaves the machine, and this
+/// file runs `doctor --json` twice (phux-vlv1). A nonexistent program
+/// rather than a stub script: a failed `execve` cannot blow the 2s
+/// detection deadline the way a `/bin/sh` stub can on a loaded box.
 fn sandboxed(home: &Path) -> Command {
     let mut cmd = Command::new(PHUX);
     cmd.env("HOME", home)
         .env("XDG_CONFIG_HOME", home.join(".config"))
-        .env("XDG_STATE_HOME", home.join(".local/state"));
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env(
+            "PHUX_TAILSCALE",
+            "/nonexistent/phux-service-install-guard-no-overlay",
+        );
     cmd
 }
 

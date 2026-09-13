@@ -400,6 +400,7 @@ ServerFeature = bitset (u32) {
                                      //   RESOURCE_SPAWNED.instance (L1.md §3.1, §5.2.1; ADR-0109)
     QUIC_STREAMS       = 0x00400000, // one control stream + one bidi stream per
                                      //   attached Terminal (§4.2; ADR-0115)
+    OPEN_LISTENER      = 0x00800000, // OPEN_LISTENER, Unix socket only (L1.md §5.6; ADR-0120)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -477,7 +478,8 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `RESOURCE_KINDS = 0x4000`, `LIST_DIRECTORY = 0x8000`,
 `HOST_SESSIONS = 0x10000`, `KEEP_EMPTY_SESSIONS = 0x20000`,
 `WHOAMI = 0x40000`, `LIST_DIRECTORY_HOST = 0x80000`,
-`SSH_ORIGIN = 0x100000`, and `CONDITIONAL_KILL = 0x200000`; unknown
+`SSH_ORIGIN = 0x100000`, `CONDITIONAL_KILL = 0x200000`,
+`QUIC_STREAMS = 0x400000`, and `OPEN_LISTENER = 0x800000`; unknown
 feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
@@ -540,6 +542,13 @@ WebTransport, whose single-stream shape is permanent. Unlike a frame bit,
 there is no degrading unadvertised case — one stream is the complete
 contract without it, which is exactly the pre-bit behavior, so old peers
 interoperate unchanged.
+
+`OPEN_LISTENER = 0x800000` gates a command, `OPEN_LISTENER` ([L1.md](./L1.md)
+§5.6). A client MUST see the bit before sending it: a server without it cannot
+decode tag `0x1c`. The bit says the server can open a listener for one remote
+attach, not that this connection may ask. A server refuses the command on any
+transport but its Unix socket, and advertises the bit on every transport so a
+consumer can tell "not here" from "not supported".
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,

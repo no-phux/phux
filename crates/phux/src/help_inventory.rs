@@ -115,6 +115,7 @@ phux agent uninstall-claude
 phux agent wait
 phux ask
 phux attach
+phux bootstrap
 phux channel
 phux cockpit
 phux completion
@@ -164,6 +165,9 @@ phux relay
 phux relay pair
 phux relay run
 phux rename
+phux report
+phux report new
+phux report show
 phux resize
 phux run
 phux runtime-info

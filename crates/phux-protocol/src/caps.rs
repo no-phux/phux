@@ -996,6 +996,10 @@ pub const CONDITIONAL_KILL: u32 = 0x0020_0000;
 /// ssh-stdio, WebSocket, or WebTransport.
 pub const QUIC_STREAMS: u32 = 0x0040_0000;
 
+/// Wire bit advertising on-demand listeners (`docs/spec/L1.md` §5.6,
+/// ADR-0120): `OPEN_LISTENER`, which `phux attach --ssh` drives over ssh.
+pub const OPEN_LISTENER: u32 = 0x0080_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1107,6 +1111,12 @@ pub enum ServerFeature {
     /// without this bit; without it the single-stream shape is the whole
     /// contract. QUIC-only.
     QuicStreams = QUIC_STREAMS,
+    /// The server accepts `OPEN_LISTENER` on its Unix socket (ADR-0120): it
+    /// binds a QUIC listener on demand that admits only a token minted for
+    /// it, and closes it once nobody has used it for the requested linger.
+    /// A client MUST see this bit before sending the command: an older
+    /// server cannot decode the tag.
+    OpenListener = OPEN_LISTENER,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1131,7 +1141,8 @@ impl ServerFeatureSet {
         | (ServerFeature::ListDirectoryHost as u32)
         | (ServerFeature::SshOrigin as u32)
         | (ServerFeature::ConditionalKill as u32)
-        | (ServerFeature::QuicStreams as u32);
+        | (ServerFeature::QuicStreams as u32)
+        | (ServerFeature::OpenListener as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1868,6 +1879,9 @@ mod tests {
             ServerFeatureSet::from_wire(CONDITIONAL_KILL).contains(ServerFeature::ConditionalKill)
         );
         assert!(!ServerFeatureSet::from_wire(SSH_ORIGIN).contains(ServerFeature::ConditionalKill));
+        assert_eq!(OPEN_LISTENER, 0x0080_0000);
+        assert!(ServerFeatureSet::from_wire(OPEN_LISTENER).contains(ServerFeature::OpenListener));
+        assert!(!ServerFeatureSet::from_wire(QUIC_STREAMS).contains(ServerFeature::OpenListener));
         let set = ServerFeatureSet::with(&[ServerFeature::GetPerf]);
         assert!(set.contains(ServerFeature::GetPerf));
         assert_eq!(set.as_wire(), GET_PERF);

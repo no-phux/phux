@@ -133,6 +133,19 @@ impl RemoteHome {
         cmd.env("PHUX_TAILSCALE", self.dir.path().join("no-such-tailscale"));
         cmd.env("PHUX_TEST_SSH_CALLS", self.dir.path().join("ssh-calls"));
         cmd.env("TERM", "xterm-256color");
+        // Everything below closes a door `PHUX_PROFILE=default` opens
+        // (phux-vlv1). The released profile is not just a path layout: it is
+        // also the local socket the operator's own server is on, and the
+        // gate that makes a server auto-bind the host's overlay port.
+        //
+        // * `PHUX_SOCKET` moves the local instance inside this scratch home.
+        // * `PHUX_NO_AUTO_LISTEN` is the documented opt-out from the
+        //   auto-overlay bind (ADR-0081).
+        // * `PHUX_TAILSCALE` above, pointed at a program that cannot exist,
+        //   turns overlay detection off; setting it also suppresses the
+        //   CGNAT route heuristic.
+        cmd.env("PHUX_SOCKET", self.dir.path().join("phux.sock"));
+        cmd.env("PHUX_NO_AUTO_LISTEN", "1");
 
         let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
         drop(pty.slave);

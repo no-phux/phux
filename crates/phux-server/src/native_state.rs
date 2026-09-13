@@ -1,10 +1,11 @@
 //! Native checkpoint hosts over libghostty's official GHOSTSNP snapshot codec.
 //!
 //! Prefix capture advances one bounded engine record at a time through READY.
-//! Detached history cuts then borrow the live terminal only for each bounded
-//! scan or record step, so live PTY bytes continue between client pulls. Phux
-//! forwards exact engine records and typed metadata without decoding terminal
-//! contents.
+//! Detaching READY is O(1): the engine registers a history cut and encodes
+//! nothing. Each later `HISTORY_REQUEST` borrows the live terminal for one
+//! bounded scan or record step, so live PTY bytes continue between client
+//! pulls. Phux forwards exact engine records and typed metadata without
+//! decoding terminal contents.
 
 use bytes::Bytes;
 use sha2::{Digest, Sha256};
@@ -510,6 +511,11 @@ impl NativeGenerationBounds {
 }
 
 /// The one native continuation produced by a capture that reached READY.
+///
+/// The continuation is leased, not encoded: [`OwnedCapture::detach`]
+/// registers engine lease state (tracked pins and the history generation at
+/// READY) and copies no page. It must be installed back into the actor-local
+/// manager rather than sent to another thread.
 #[derive(Debug)]
 pub(crate) struct NativeGenerationSeed {
     capture: HistoryCapture<'static>,
@@ -607,6 +613,10 @@ impl NativeRecordTable {
 struct NativeCheckpointGeneration {
     records: NativeRecordTable,
     capture: Option<HistoryCapture<'static>>,
+    /// Why the cut was spent before FINISH, when it was. A prune, mutation,
+    /// reset, or engine failure at the frontier is kept so every later
+    /// request from any owner gets that reason instead of `InvalidHandle`.
+    failure: Option<NativeStateError>,
     scratch: Vec<u8>,
     pending: Vec<u8>,
     retained_bytes: usize,
@@ -619,7 +629,21 @@ struct NativeCheckpointGeneration {
     charge: Arc<NativeGenerationCharge>,
 }
 
+impl NativeCheckpointGeneration {
+    /// Drop a cut that cannot resume, keeping the reason for every later
+    /// request at this frontier.
+    fn spend(&mut self, error: NativeStateError) -> NativeStateError {
+        self.capture = None;
+        self.failure = Some(error);
+        error
+    }
+}
+
 /// Actor-owned terminal and bounded concurrent native history cuts.
+///
+/// Generations hold detached engine cuts whose pins live in `terminal`'s
+/// page list. [`Drop`] releases those cuts first so a live lease cannot
+/// outlive the terminal it tracks.
 #[derive(Debug)]
 pub(crate) struct NativeTerminalManager {
     terminal: Option<GhosttyTerminal<'static, 'static>>,
@@ -836,6 +860,7 @@ impl NativeTerminalManager {
             NativeCheckpointGeneration {
                 records,
                 capture: Some(seed.capture),
+                failure: None,
                 scratch: Vec::new(),
                 pending: Vec::new(),
                 retained_bytes: 0,
@@ -888,12 +913,20 @@ impl NativeTerminalManager {
         cursor: &OpaqueHistoryCursor,
         index: usize,
     ) -> Result<(), NativeStateError> {
-        let generation = self
-            .generations
-            .get(cursor)
-            .ok_or(NativeStateError::InvalidHandle)?;
-        if generation.records.get(index).is_some() {
-            return Ok(());
+        {
+            let generation = self
+                .generations
+                .get(cursor)
+                .ok_or(NativeStateError::InvalidHandle)?;
+            if generation.records.get(index).is_some() {
+                return Ok(());
+            }
+            if let Some(failure) = generation.failure {
+                return Err(failure);
+            }
+            if generation.capture.is_none() {
+                return Err(NativeStateError::InvalidHandle);
+            }
         }
         let terminal = self.terminal.as_mut().ok_or(NativeStateError::ImportBusy)?;
         let generation = self
@@ -902,6 +935,9 @@ impl NativeTerminalManager {
             .ok_or(NativeStateError::InvalidHandle)?;
         Self::capture_one_history_step(terminal, generation)?;
         if generation.records.get(index).is_none() {
+            if let Some(failure) = generation.failure {
+                return Err(failure);
+            }
             return Err(NativeStateError::ImportBusy);
         }
         Ok(())
@@ -911,47 +947,80 @@ impl NativeTerminalManager {
         terminal: &mut GhosttyTerminal<'static, 'static>,
         generation: &mut NativeCheckpointGeneration,
     ) -> Result<(), NativeStateError> {
-        let NativeCheckpointGeneration {
-            capture,
-            scratch,
-            pending,
-            retained_bytes,
-            bounds,
-            ..
-        } = generation;
-        let capture = capture.as_mut().ok_or(NativeStateError::InvalidHandle)?;
-        let required = match capture.next(terminal, &mut []) {
-            Err(GhosttyError::OutOfSpace { required }) => required,
-            Ok(CaptureEvent::Scan) => return Ok(()),
-            Ok(event) if event.written() == 0 => {
-                return Self::store_history_event(generation, event);
-            }
-            Ok(_) => return Err(NativeStateError::InvalidState),
-            Err(error) => return Err(error.into()),
+        let required = match Self::probe_history_capture(terminal, generation)? {
+            HistoryProbe::Scan => return Ok(()),
+            HistoryProbe::Event(event) => return Self::store_history_event(generation, event),
+            HistoryProbe::Required(required) => required,
         };
-        if required > bounds.max_record_bytes {
+        if required > generation.bounds.max_record_bytes {
             return Err(NativeStateError::LimitExceeded);
         }
-        if scratch.capacity() < required {
-            scratch
-                .try_reserve_exact(required.saturating_sub(scratch.len()))
+        if generation.scratch.capacity() < required {
+            generation
+                .scratch
+                .try_reserve_exact(required.saturating_sub(generation.scratch.len()))
                 .map_err(|_| NativeStateError::OutOfMemory)?;
         }
-        scratch.resize(required, 0);
-        let event = capture.next(terminal, scratch)?;
+        generation.scratch.resize(required, 0);
+        let event = Self::read_history_capture(terminal, generation)?;
         let written = event.written();
-        pending
+        generation
+            .pending
             .try_reserve(written)
             .map_err(|_| NativeStateError::OutOfMemory)?;
-        pending.extend_from_slice(&scratch[..written]);
-        if retained_bytes
-            .checked_add(pending.capacity())
-            .and_then(|bytes| bytes.checked_add(scratch.capacity()))
-            .is_none_or(|bytes| bytes > bounds.max_total_bytes)
+        generation
+            .pending
+            .extend_from_slice(&generation.scratch[..written]);
+        if generation
+            .retained_bytes
+            .checked_add(generation.pending.capacity())
+            .and_then(|bytes| bytes.checked_add(generation.scratch.capacity()))
+            .is_none_or(|bytes| bytes > generation.bounds.max_total_bytes)
         {
             return Err(NativeStateError::LimitExceeded);
         }
         Self::store_history_event(generation, event)
+    }
+
+    fn probe_history_capture(
+        terminal: &mut GhosttyTerminal<'static, 'static>,
+        generation: &mut NativeCheckpointGeneration,
+    ) -> Result<HistoryProbe, NativeStateError> {
+        let result = {
+            let capture = generation
+                .capture
+                .as_mut()
+                .ok_or(NativeStateError::InvalidHandle)?;
+            capture.next(terminal, &mut [])
+        };
+        match result {
+            Err(GhosttyError::OutOfSpace { required }) => Ok(HistoryProbe::Required(required)),
+            Ok(CaptureEvent::Scan) => Ok(HistoryProbe::Scan),
+            Ok(event) if event.written() == 0 => Ok(HistoryProbe::Event(event)),
+            Ok(_) => Err(generation.spend(NativeStateError::InvalidState)),
+            Err(error) => Err(generation.spend(error.into())),
+        }
+    }
+
+    fn read_history_capture(
+        terminal: &mut GhosttyTerminal<'static, 'static>,
+        generation: &mut NativeCheckpointGeneration,
+    ) -> Result<CaptureEvent, NativeStateError> {
+        let result = {
+            let NativeCheckpointGeneration {
+                capture, scratch, ..
+            } = generation;
+            let capture = capture.as_mut().ok_or(NativeStateError::InvalidHandle)?;
+            capture.next(terminal, scratch)
+        };
+        match result {
+            Ok(event) => Ok(event),
+            Err(GhosttyError::OutOfSpace { required }) => Err(NativeStateError::OutOfSpace {
+                required_bytes: required,
+                required_rows: 0,
+            }),
+            Err(error) => Err(generation.spend(error.into())),
+        }
     }
 
     fn store_history_event(
@@ -968,8 +1037,8 @@ impl NativeTerminalManager {
                 generation.capture = None;
                 Ok(())
             }
-            CaptureEvent::Invalidated(reason) => Err(invalidation_error(reason)),
-            CaptureEvent::Ready { .. } => Err(NativeStateError::InvalidState),
+            CaptureEvent::Invalidated(reason) => Err(generation.spend(invalidation_error(reason))),
+            CaptureEvent::Ready { .. } => Err(generation.spend(NativeStateError::InvalidState)),
         }
     }
 
@@ -1062,6 +1131,23 @@ impl NativeTerminalManager {
     }
 }
 
+impl Drop for NativeTerminalManager {
+    fn drop(&mut self) {
+        // Detached cuts untrack pins from the terminal's page list when
+        // released, so they must go first. Cached payloads that already
+        // escaped through `Bytes` own their own allocations.
+        self.generations.clear();
+    }
+}
+
+/// First `HistoryCapture::next` against an empty buffer: a scan, a
+/// zero-byte event, or the exact byte count the next record needs.
+enum HistoryProbe {
+    Scan,
+    Event(CaptureEvent),
+    Required(usize),
+}
+
 /// Actor-owned prefix capture that no longer borrows the live terminal.
 #[derive(Debug)]
 pub(crate) struct NativeManagedCapture<'manager> {
@@ -1127,6 +1213,8 @@ impl NativeManagedCapture<'_> {
         let mut digest = self.digest;
         digest.update(self.generation.to_le_bytes());
         let cursor = digest.finalize().into();
+        // O(1): the engine registers a history lease and encodes nothing.
+        // Each HISTORY_REQUEST later encodes one page from the live cut.
         let (terminal, capture) =
             self.capture
                 .detach()
@@ -1154,7 +1242,8 @@ const fn invalidation_error(reason: CaptureInvalidation) -> NativeStateError {
         CaptureInvalidation::Reset => NativeStateError::Reset,
         CaptureInvalidation::Resize => NativeStateError::Resize,
         CaptureInvalidation::WrongTerminal => NativeStateError::WrongTerminal,
-        CaptureInvalidation::Mutation | CaptureInvalidation::Evicted => NativeStateError::Pruned,
+        CaptureInvalidation::Mutation => NativeStateError::Stale,
+        CaptureInvalidation::Evicted => NativeStateError::Pruned,
     }
 }
 
@@ -1196,6 +1285,25 @@ mod tests {
         terminal
     }
 
+    /// Wide enough that retained scrollback is a HISTORY suffix, not only
+    /// the READY active-area pages a 20x4 grid can fold into the prefix.
+    fn paged_history_terminal() -> GhosttyTerminal<'static, 'static> {
+        let mut terminal = GhosttyTerminal::new(80, 24).expect("paged history terminal");
+        terminal
+            .set_scrollback_max_lines(Some(100_000))
+            .expect("history rows");
+        terminal
+            .set_scrollback_max_bytes(None)
+            .expect("unlimited scrollback bytes");
+        terminal
+            .set_continuation_max_bytes(CONTINUATION_LIMIT)
+            .expect("continuation");
+        for row in 0..2_000 {
+            terminal.vt_write(format!("history-{row:04}\r\n").as_bytes());
+        }
+        terminal
+    }
+
     fn drain_ready(capture: &mut NativeManagedCapture<'_>) {
         loop {
             let required = match capture.step(&mut []) {
@@ -1212,24 +1320,168 @@ mod tests {
         }
     }
 
+    fn history_at(
+        manager: &mut NativeTerminalManager,
+        cursor: &OpaqueHistoryCursor,
+        index: usize,
+        max_bytes: u32,
+        max_rows: u32,
+    ) -> Result<CachedNativeHistoryRecord, NativeStateError> {
+        loop {
+            match manager.history_record_at(cursor, index, max_bytes, max_rows) {
+                Ok(record) => return Ok(record),
+                Err(NativeStateError::ImportBusy) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     fn next_record(
         manager: &mut NativeTerminalManager,
         cursor: &OpaqueHistoryCursor,
         index: usize,
         limits: BootstrapLimits,
     ) -> CachedNativeHistoryRecord {
-        loop {
-            match manager.history_record_at(
-                cursor,
-                index,
-                limits.max_history_page_bytes(),
-                phux_protocol::MAX_HISTORY_PAGE_ROWS,
-            ) {
-                Ok(record) => return record,
-                Err(NativeStateError::ImportBusy) => {}
-                Err(error) => panic!("history record: {error:?}"),
-            }
+        history_at(
+            manager,
+            cursor,
+            index,
+            limits.max_history_page_bytes(),
+            phux_protocol::MAX_HISTORY_PAGE_ROWS,
+        )
+        .unwrap_or_else(|error| panic!("history record: {error:?}"))
+    }
+
+    /// A 200x50 terminal pruned to `history_bytes` of retained scrollback,
+    /// filled with styled full-width rows so a row's cost is representative
+    /// rather than the best case an all-blank grid would give.
+    fn deep_terminal(history_bytes: usize) -> GhosttyTerminal<'static, 'static> {
+        let mut terminal = GhosttyTerminal::new(200, 50).expect("deep terminal");
+        terminal
+            .set_scrollback_max_lines(Some(10_000_000))
+            .expect("history rows");
+        terminal
+            .set_scrollback_max_bytes(Some(history_bytes))
+            .expect("retained byte ceiling");
+        terminal
+            .set_continuation_max_bytes(CONTINUATION_LIMIT)
+            .expect("continuation");
+        let body = "abcdefghij klmnopqrst uvwxyz0123 456789ABCD EFGHIJKLMN OPQRSTUVWX                     YZabcdefgh ijklmnopqr stuvwxyz01 23456789AB CDEFGHIJKL MNOPQRSTUV                     WXYZabcdef ghijklmnop qrstuvwx";
+        // Overshoot the ceiling so pruning, not the write volume, decides how
+        // much history the capture actually has to account for.
+        for row in 0..(history_bytes / 64 + 4_000) {
+            terminal.vt_write(
+                format!("\x1b[38;5;{}m{row:06} \x1b[0m{body}\r\n", 16 + row % 216).as_bytes(),
+            );
         }
+        terminal
+    }
+
+    /// The wall time one attach spends inside the terminal's mutation
+    /// exclusion, taken as the best of `samples` runs so a loaded build host
+    /// cannot turn a constant-time operation into a false regression.
+    fn best_detach_cost(
+        manager: &mut NativeTerminalManager,
+        limits: BootstrapLimits,
+        samples: usize,
+    ) -> std::time::Duration {
+        let mut best = std::time::Duration::MAX;
+        for _ in 0..samples {
+            let mut capture = manager
+                .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
+                .expect("generation capture");
+            drain_ready(&mut capture);
+            let started = std::time::Instant::now();
+            let detached = manager.finish_generation_capture(capture);
+            best = best.min(started.elapsed());
+            drop(detached.expect("detach generation READY continuation"));
+        }
+        best
+    }
+
+    fn detach_managed_generation(
+        manager: &mut NativeTerminalManager,
+        limits: BootstrapLimits,
+    ) -> (OpaqueHistoryCursor, NativeGenerationSeed) {
+        let mut capture = manager
+            .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
+            .expect("generation capture");
+        drain_ready(&mut capture);
+        manager
+            .finish_generation_capture(capture)
+            .expect("detach generation READY continuation")
+    }
+
+    fn install_leased_generation(
+        manager: &mut NativeTerminalManager,
+        limits: BootstrapLimits,
+    ) -> (OpaqueHistoryCursor, u32, u32) {
+        let (cursor, seed) = detach_managed_generation(manager, limits);
+        let bounds = seed.bounds();
+        let reserved = bounds
+            .required_reserved_bytes()
+            .expect("bounded generation reservation");
+        manager
+            .install_generation(cursor, seed, bounds, reserved)
+            .expect("install leased generation");
+        (
+            cursor,
+            u32::try_from(bounds.max_record_bytes).expect("protocol byte bound"),
+            u32::try_from(bounds.max_rows).expect("protocol row bound"),
+        )
+    }
+
+    fn drain_generation(
+        manager: &mut NativeTerminalManager,
+        cursor: &OpaqueHistoryCursor,
+        start: usize,
+        max_bytes: u32,
+        max_rows: u32,
+    ) -> Result<usize, NativeStateError> {
+        let mut rows = 0;
+        let mut index = start;
+        loop {
+            let record = history_at(manager, cursor, index, max_bytes, max_rows)?;
+            rows += record.rows;
+            if record.finish {
+                return Ok(rows);
+            }
+            index += 1;
+        }
+    }
+
+    fn lease_through(
+        manager: &mut NativeTerminalManager,
+        limits: BootstrapLimits,
+        mutation: &[u8],
+    ) -> Result<usize, NativeStateError> {
+        for row in 0..2_000 {
+            manager.vt_write(format!("history-{row:04}\r\n").as_bytes());
+        }
+        let (cursor, max_bytes, max_rows) = install_leased_generation(manager, limits);
+        let first = history_at(manager, &cursor, 0, max_bytes, max_rows)
+            .expect("HISTORY_BEGIN from a live lease");
+        assert!(
+            !first.finish,
+            "fixture must have a history page before FINISH"
+        );
+        manager.vt_write(mutation);
+        let outcome = drain_generation(manager, &cursor, 1, max_bytes, max_rows);
+        manager
+            .release_generation(&cursor)
+            .expect("release leased generation");
+        outcome
+    }
+
+    const fn is_lease_tombstone(error: NativeStateError) -> bool {
+        matches!(
+            error,
+            NativeStateError::Pruned
+                | NativeStateError::Stale
+                | NativeStateError::Reset
+                | NativeStateError::Resize
+                | NativeStateError::WrongGeneration
+        )
     }
 
     #[test]
@@ -1472,5 +1724,211 @@ mod tests {
         let record = next_record(&mut manager, &cursor, 0, limits);
         assert!(!record.bytes.is_empty());
         assert!(manager.has_generation(&cursor));
+    }
+
+    /// The attach critical path must not scale with `defaults.history-bytes`.
+    ///
+    /// Releasing a READY capture registers an engine lease and encodes
+    /// nothing, so the exclusion is held for the same time whatever the
+    /// scrollback depth. The bound is relative: 16 MiB may cost at most
+    /// three times what 2 MiB does, plus 2 ms for timer and scheduling noise
+    /// that best-of-seven sampling does not absorb.
+    #[test]
+    fn attach_detach_cost_is_flat_in_retained_history() {
+        let limits = BootstrapLimits::default();
+        let mut shallow =
+            NativeTerminalManager::new(deep_terminal(2 * 1024 * 1024), 4).expect("shallow manager");
+        let shallow_cost = best_detach_cost(&mut shallow, limits, 7);
+        let mut deep =
+            NativeTerminalManager::new(deep_terminal(16 * 1024 * 1024), 4).expect("deep manager");
+        let deep_cost = best_detach_cost(&mut deep, limits, 7);
+
+        let allowed = shallow_cost.saturating_mul(3) + std::time::Duration::from_millis(2);
+        assert!(
+            deep_cost <= allowed,
+            "detach cost grew with retained history: 2 MiB {shallow_cost:?}, \
+             16 MiB {deep_cost:?}, allowed {allowed:?}; a leased cut encodes \
+             nothing at attach"
+        );
+    }
+
+    /// A page evicted between cursor issue and request is a typed engine
+    /// status, never stale bytes.
+    #[test]
+    fn history_evicted_under_a_live_lease_tombstones_rather_than_lying() {
+        let limits = BootstrapLimits::default();
+        let mut manager =
+            NativeTerminalManager::new(deep_terminal(2 * 1024 * 1024), 4).expect("native manager");
+        let (cursor, max_bytes, max_rows) = install_leased_generation(&mut manager, limits);
+        history_at(&mut manager, &cursor, 0, max_bytes, max_rows)
+            .expect("HISTORY_BEGIN from a live lease");
+
+        for row in 0..200_000 {
+            manager.vt_write(format!("evicting-{row:06}\r\n").as_bytes());
+        }
+
+        let error = history_at(&mut manager, &cursor, 1, max_bytes, max_rows)
+            .expect_err("a pruned lease cannot serve a page");
+        assert!(
+            is_lease_tombstone(error),
+            "eviction must name its cause; `history_tombstone_reason` turns \
+             exactly these into a tombstone the client can act on, and anything \
+             else into an opaque CodecFailure. Got {error:?}"
+        );
+    }
+
+    /// An engine failure at the frontier reaches every owner with its cause.
+    #[test]
+    fn a_failed_frontier_gives_every_owner_the_engine_reason() {
+        let limits = BootstrapLimits::default();
+        let mut manager =
+            NativeTerminalManager::new(deep_terminal(2 * 1024 * 1024), 4).expect("native manager");
+        let (cursor, max_bytes, max_rows) = install_leased_generation(&mut manager, limits);
+        manager
+            .retain_generation(&cursor)
+            .expect("second generation owner");
+        history_at(&mut manager, &cursor, 0, max_bytes, max_rows)
+            .expect("HISTORY_BEGIN from a live lease");
+        for row in 0..200_000 {
+            manager.vt_write(format!("evicting-{row:06}\r\n").as_bytes());
+        }
+
+        let first = history_at(&mut manager, &cursor, 1, max_bytes, max_rows)
+            .expect_err("a pruned lease cannot serve a page");
+        assert!(
+            is_lease_tombstone(first),
+            "output past the oldest leased page is a typed invalidation, got {first:?}"
+        );
+        let second = history_at(&mut manager, &cursor, 1, max_bytes, max_rows)
+            .expect_err("the spent frontier cannot serve the second owner either");
+        assert_eq!(
+            second, first,
+            "every owner must get the engine's reason, not a spent-handle status"
+        );
+        assert!(
+            manager.generations[&cursor].capture.is_none(),
+            "a cut the engine marked dead must not be kept"
+        );
+        assert_eq!(manager.generations[&cursor].failure, Some(first));
+    }
+
+    /// A wide, styled pane still pages under the default 1 MiB page limit.
+    #[test]
+    fn a_wide_styled_pane_pages_under_the_default_page_limit() {
+        let limits = BootstrapLimits::default();
+        let mut manager =
+            NativeTerminalManager::new(deep_terminal(2 * 1024 * 1024), 4).expect("native manager");
+        let (cursor, _, max_rows) = install_leased_generation(&mut manager, limits);
+        let rows = drain_generation(
+            &mut manager,
+            &cursor,
+            0,
+            limits.max_history_page_bytes(),
+            max_rows,
+        )
+        .expect("every slice fits the default page limit");
+        assert!(rows > 500, "the pane's history was delivered: {rows} rows");
+    }
+
+    /// A live lease stays well-behaved across every way the terminal can
+    /// invalidate its history, and across the manager's own teardown.
+    #[test]
+    fn a_live_lease_survives_invalidation_and_manager_teardown() {
+        let limits = BootstrapLimits::default();
+        let mut manager =
+            NativeTerminalManager::new(paged_history_terminal(), 2).expect("native manager");
+
+        let alternate = lease_through(
+            &mut manager,
+            limits,
+            b"\x1b[?1049halternate screen output\r\n\x1b[?1049l",
+        );
+        assert!(
+            matches!(alternate, Ok(rows) if rows > 0),
+            "the primary screen's history is untouched by an alternate-screen \
+             visit: {alternate:?}"
+        );
+        let erased = lease_through(&mut manager, limits, b"\x1b[3J");
+        assert!(
+            matches!(
+                erased,
+                Err(NativeStateError::Stale | NativeStateError::Pruned)
+            ),
+            "erasing scrollback invalidates the cut: {erased:?}"
+        );
+        assert_eq!(
+            lease_through(&mut manager, limits, b"\x1bc"),
+            Err(NativeStateError::Reset),
+            "a full reset invalidates the cut"
+        );
+
+        let (resized, max_bytes, max_rows) = install_leased_generation(&mut manager, limits);
+        history_at(&mut manager, &resized, 0, max_bytes, max_rows)
+            .expect("HISTORY_BEGIN from a live lease");
+        manager.resize(21, 4, 8, 16).expect("resize live terminal");
+        assert!(
+            !manager.has_generation(&resized),
+            "resize retires every generation; the actor tombstones them as Resize"
+        );
+        assert_eq!(
+            manager.history_record_at(&resized, 1, max_bytes, max_rows),
+            Err(NativeStateError::InvalidHandle)
+        );
+
+        let (live, max_bytes, max_rows) = install_leased_generation(&mut manager, limits);
+        history_at(&mut manager, &live, 0, max_bytes, max_rows)
+            .expect("HISTORY_BEGIN from a live lease");
+        drop(manager);
+    }
+
+    /// Output under a scroll region between READY and the first request.
+    ///
+    /// The incremental lease reported `Stale` here: a fixed status line
+    /// (`DECSTBM`) rewrites the page holding the newest pin. The official
+    /// GHOSTSNP cut does not: both plain output and scroll-region output
+    /// leave the retained pages deliverable. Pin that so a later engine
+    /// change cannot silently start dropping the cut.
+    #[test]
+    fn scroll_region_output_after_ready_is_reported_not_misread() {
+        fn lease_unrequested_through(mutation: &[u8]) -> Result<usize, NativeStateError> {
+            let mut terminal = GhosttyTerminal::new(80, 24).expect("terminal with headroom");
+            terminal
+                .set_scrollback_max_lines(Some(100_000))
+                .expect("row headroom");
+            terminal
+                .set_scrollback_max_bytes(Some(16 * 1024 * 1024))
+                .expect("byte headroom, so nothing prunes");
+            terminal
+                .set_continuation_max_bytes(CONTINUATION_LIMIT)
+                .expect("continuation");
+            for row in 0..2_000 {
+                terminal.vt_write(format!("history-{row:04}\r\n").as_bytes());
+            }
+            let limits = BootstrapLimits::default();
+            let mut manager = NativeTerminalManager::new(terminal, 2).expect("native manager");
+            let (cursor, max_bytes, max_rows) = install_leased_generation(&mut manager, limits);
+            manager.vt_write(mutation);
+            drain_generation(&mut manager, &cursor, 0, max_bytes, max_rows)
+        }
+
+        let mut plain = Vec::new();
+        let mut region = b"\x1b[1;23r\x1b[23;1H".to_vec();
+        for row in 0..50 {
+            plain.extend_from_slice(format!("plain-{row:02}\r\n").as_bytes());
+            region.extend_from_slice(format!("region-{row:02}\r\n").as_bytes());
+        }
+        region.extend_from_slice(b"\x1b[24;1Hstatus line\x1b[r");
+
+        let control = lease_unrequested_through(&plain);
+        assert!(
+            matches!(control, Ok(rows) if rows >= 1_500),
+            "plain output after READY leaves the cut deliverable: {control:?}"
+        );
+        let region = lease_unrequested_through(&region);
+        assert!(
+            matches!(region, Ok(rows) if rows >= 1_500),
+            "scroll-region output after READY must leave the cut deliverable, \
+             not a different or truncated stream: {region:?}"
+        );
     }
 }

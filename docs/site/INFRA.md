@@ -153,10 +153,10 @@ retry action the client cannot guarantee.
   online" state, never dials. Production uses
   `wss://shell.phux.sh/session`; the workers.dev hostname is not a public
   frontend contract.
-- OAuth and WebSockets share `https://shell.phux.sh`, so the host-only
-  `Secure`, `HttpOnly`, `SameSite=Lax` session cookie is present on native
-  upgrades without exposing a token to browser JavaScript. Session cookies are
-  signed and expire after eight hours. GitHub uses numeric user IDs and requires
+- OAuth runs on `https://phux.sh/auth/*` (same Worker as `shell.phux.sh`).
+  Session cookies are `__Secure-`, `Domain=phux.sh`, so the WebSocket upgrade
+  to `wss://shell.phux.sh/session` still receives them. They are signed and
+  expire after eight hours. GitHub uses numeric user IDs and requires
   seven-day-old accounts; Google uses the signed OIDC `sub` and requires
   `email_verified`. Provider tokens are discarded after callback verification.
 - `/embed` sends lifecycle, authoritative backend, expiry, and normalized close
@@ -164,9 +164,12 @@ retry action the client cannot guarantee.
   sends user identity or raw close/provider details. `live` waits for both the
   session envelope and non-uniform terminal pixels.
 - Anonymous visitors see an explicit choice: authenticate with GitHub/Google for
-  native Linux, or launch the always-available edge shell. OAuth runs in a popup;
-  the callback reports only completion to the same-origin embed, which then
-  rechecks the HttpOnly session cookie. The popup never sends identity or tokens.
+  native Linux, or launch the always-available edge shell. OAuth runs in the
+  same tab against `/auth/{github|google}?return_to=/` or `/embed` on
+  `https://phux.sh`. The Worker redirects back to that path with `auth=success`
+  (or `auth=error`); the page strips the query and rechecks the HttpOnly
+  session cookie. The query name is `return_to`; `returnTo` is accepted only as
+  a compatibility alias. The flow never sends identity or tokens to JavaScript.
 
 ## File ownership
 

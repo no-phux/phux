@@ -652,6 +652,7 @@ pub(crate) fn maybe_auto_spawn_server(
     session: Option<&str>,
     seed_command: Option<&str>,
     quiet: bool,
+    login_shell: bool,
 ) -> std::io::Result<()> {
     let current_exe = std::env::current_exe()?;
     let log_path = phux_server::telemetry::server_log_path();
@@ -681,6 +682,12 @@ pub(crate) fn maybe_auto_spawn_server(
         .arg("--daemonize")
         .stdin(Stdio::null())
         .stdout(Stdio::null());
+    // A server started from an environment no login shell initialized gets
+    // the same marker a service unit stamps, so its panes run login shells
+    // and see the profile's `PATH` (phux-87rr, ADR-0120).
+    if login_shell {
+        cmd.env(super::service::SERVICE_MANAGED_ENV, "1");
+    }
     match session {
         Some(name) => {
             cmd.arg("--session").arg(name);
@@ -779,7 +786,7 @@ pub(crate) fn ensure_server(
     seed_command: Option<&str>,
     quiet: bool,
 ) -> std::io::Result<()> {
-    ensure_server_with(socket_path, Some(session), seed_command, quiet)
+    ensure_server_with(socket_path, Some(session), seed_command, quiet, false)
 }
 
 /// [`ensure_server`] for a caller that must not get a seed session: a server
@@ -787,7 +794,26 @@ pub(crate) fn ensure_server(
 /// with only the empty session it creates (ADR-0105). A server that is
 /// already running is used as it is.
 pub(crate) fn ensure_server_unseeded(socket_path: &Path, quiet: bool) -> std::io::Result<()> {
-    ensure_server_with(socket_path, None, None, quiet)
+    ensure_server_with(socket_path, None, None, quiet, false)
+}
+
+/// [`ensure_server`] for `phux bootstrap`, which ssh runs on this host for
+/// `phux attach --ssh` (ADR-0120).
+///
+/// Seeds the session naked `phux` would, and hands an older running server
+/// to this binary in place, so the listener command it is about to send is
+/// understood. Differs in one way: a server started here is marked as
+/// started without a login shell, because ssh ran this command
+/// non-interactively and a server spawned from that environment would give
+/// every pane the profile-less `PATH` a launchd unit sees (phux-87rr).
+pub(crate) fn ensure_server_for_bootstrap(socket_path: &Path) -> std::io::Result<()> {
+    ensure_server_with(
+        socket_path,
+        Some(&super::attach::resolved_default_session_name()),
+        super::attach::configured_spawn_on_attach().as_deref(),
+        false,
+        true,
+    )
 }
 
 /// The shared body of [`ensure_server`] and [`ensure_server_unseeded`].
@@ -797,6 +823,7 @@ fn ensure_server_with(
     session: Option<&str>,
     seed_command: Option<&str>,
     quiet: bool,
+    login_shell: bool,
 ) -> std::io::Result<()> {
     if socket::probe(socket_path) == SocketState::Live {
         // A live socket can be the supervised server login already started.
@@ -855,7 +882,7 @@ fn ensure_server_with(
         return result;
     }
 
-    let result = maybe_auto_spawn_server(socket_path, session, seed_command, quiet);
+    let result = maybe_auto_spawn_server(socket_path, session, seed_command, quiet, login_shell);
     drop(guard);
     result
 }

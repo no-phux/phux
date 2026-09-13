@@ -1,5 +1,6 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
+import AuthReturn from "../components/AuthReturn.astro";
 import AgentInboxDemo from "../components/AgentInboxDemo";
 import PhuxTerminal from "../components/PhuxTerminal.tsx";
 import { SITE, docsHref } from "../lib/site";
@@ -10,6 +11,7 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
 ---
 
 <BaseLayout>
+  <AuthReturn slot="head" />
   <section class="wrap hero">
     <div class="hero-copy">
       <h1>You and your agents share the same terminals.</h1>

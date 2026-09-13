@@ -1,0 +1,39 @@
+---
+// Same-tab (and leftover popup) completion for native GitHub/Google sign-in.
+// The Worker redirects here with ?auth=success|error after the provider
+// callback. Identity stays on the HttpOnly session cookie.
+---
+<script is:inline>
+  const result = new URLSearchParams(window.location.search).get("auth");
+  if (result === "success" || result === "error") {
+    if (window.opener) {
+      document.documentElement.dataset.authReturn = result;
+      window.opener.postMessage(
+        { source: "phux-auth", type: "complete", result },
+        window.location.origin,
+      );
+      window.close();
+    } else {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("auth");
+      history.replaceState({}, "", url);
+    }
+  }
+</script>
+
+<style is:global>
+  html[data-auth-return] body > * {
+    display: none;
+  }
+  html[data-auth-return] body::before {
+    content: "Sign-in complete. This window can be closed.";
+    min-height: 100dvh;
+    display: grid;
+    place-content: center;
+    padding: 24px;
+    box-sizing: border-box;
+    color: #b9ff65;
+    font: 12px / 1.6 ui-monospace, monospace;
+    text-align: center;
+  }
+</style>

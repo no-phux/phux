@@ -13,7 +13,12 @@
 
   // Stable first-party endpoint for auth callbacks, health, and terminal WSS.
   // Keep the generated workers.dev hostname as an operational fallback only.
-  "routes": [{ "pattern": "shell.phux.sh", "custom_domain": true }],
+  "routes": [
+    { "pattern": "shell.phux.sh", "custom_domain": true },
+    // Browser OAuth must not navigate to shell.phux.sh: Cloudflare 403s some
+    // document requests to that hostname before they reach this Worker.
+    { "pattern": "phux.sh/auth*", "zone_name": "phux.sh" }
+  ],
 
   // The modern DO + WebSocket surface require a recent compat date.
   "compatibility_date": "2025-05-01",

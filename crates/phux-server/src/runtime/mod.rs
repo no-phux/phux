@@ -49,6 +49,7 @@ pub mod client;
 mod command_tasks;
 pub mod commands;
 mod directory;
+mod ephemeral_listener;
 pub mod input_lane;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
@@ -1856,6 +1857,33 @@ fn env_socket_addr(var: &str) -> Option<SocketAddr> {
     }
 }
 
+/// Certificate and key a QUIC listener bound to `addr` presents: the
+/// operator's (`PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`) when set, otherwise
+/// the shared self-signed pair, provisioned on first use (ADR-0031). An
+/// existing pair is never regenerated (ADR-0091), so the fingerprint paired
+/// devices pin survives every listener that opens later. `None`, after
+/// logging, when the pair cannot be provisioned.
+///
+/// Shared by the configured listener and the on-demand one (ADR-0120) so
+/// both present the one certificate `phux pair` prints.
+fn quic_certificate(addr: SocketAddr) -> Option<(PathBuf, PathBuf)> {
+    let cert_env = std::env::var_os("PHUX_WS_TLS_CERT").map(PathBuf::from);
+    let key_env = std::env::var_os("PHUX_WS_TLS_KEY").map(PathBuf::from);
+    let operator_cert = cert_env.is_some() || key_env.is_some();
+    let cert_path = cert_env.unwrap_or_else(crate::transport::tls::default_cert_path);
+    let key_path = key_env.unwrap_or_else(crate::transport::tls::default_key_path);
+    let advertised = crate::transport::tls::advertised_for_bind(addr);
+    if !operator_cert
+        && let Err(err) =
+            crate::transport::tls::ensure_self_signed_for(&cert_path, &key_path, &advertised)
+    {
+        error!(error = %err, "failed to provision self-signed certificate; QUIC disabled");
+        return None;
+    }
+    warn_if_cert_omits_bind(&cert_path, &advertised, "quic");
+    Some((cert_path, key_path))
+}
+
 /// Build the optional QUIC listener for `addr` (phux-y8v6, ADR-0007). Returns
 /// `(None, slot)` (QUIC disabled, other transports unaffected) on any setup
 /// failure rather than failing the whole server; `slot` always describes the
@@ -1882,17 +1910,7 @@ fn build_quic_listener(
     let secure = !addr.ip().is_loopback() || force_secure;
     let addr_s = addr.to_string();
 
-    let cert_env = std::env::var_os("PHUX_WS_TLS_CERT").map(PathBuf::from);
-    let key_env = std::env::var_os("PHUX_WS_TLS_KEY").map(PathBuf::from);
-    let operator_cert = cert_env.is_some() || key_env.is_some();
-    let cert_path = cert_env.unwrap_or_else(crate::transport::tls::default_cert_path);
-    let key_path = key_env.unwrap_or_else(crate::transport::tls::default_key_path);
-    let advertised = crate::transport::tls::advertised_for_bind(addr);
-    if !operator_cert
-        && let Err(err) =
-            crate::transport::tls::ensure_self_signed_for(&cert_path, &key_path, &advertised)
-    {
-        error!(error = %err, "failed to provision self-signed certificate; QUIC disabled");
+    let Some((cert_path, key_path)) = quic_certificate(addr) else {
         return (
             None,
             RemoteListenerSlot::disabled(
@@ -1901,8 +1919,7 @@ fn build_quic_listener(
                 ListenerDisabledReason::CertProvisionFailed,
             ),
         );
-    }
-    warn_if_cert_omits_bind(&cert_path, &advertised, "quic");
+    };
 
     let Ok(tokens) = quic_tokens(secure) else {
         return (

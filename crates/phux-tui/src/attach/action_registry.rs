@@ -326,6 +326,13 @@ pub const REGISTRY: &[ActionSpec] = &[
         args: &[],
     },
     ActionSpec {
+        name: "report-bug",
+        category: Category::View,
+        description: "Write a local bug report (session, logs, screen) and copy its path",
+        params: "`note?` (optional free-text description)",
+        args: &[],
+    },
+    ActionSpec {
         name: "getting-started",
         category: Category::View,
         description: "Getting started: detach, return, the Agents list, and command discovery",

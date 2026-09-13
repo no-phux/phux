@@ -76,6 +76,7 @@ ORGANIZE
   completion Print a shell completion script for phux
   doctor     Diagnose the install: config, socket, server, plugins
   logs       Show where phux's logs live, or tail one of them
+  report     List local bug-report bundles, print one, or capture logs
   config     Inspect config and run configured plugin actions
   plugin     Manage local plugin manifests in config
   workspace  Inspect worktrees and save/restore session archives
@@ -163,8 +164,13 @@ ENVIRONMENT
                     HOST:PORT. Equivalent to `phux server --webtransport`.
   PHUX_SSH           OpenSSH-compatible program a federation hub spawns to
                     dial ssh:// satellites (default: `ssh` on PATH).
-  PHUX_TAILSCALE     Tailscale-compatible CLI `phux pair` runs to detect the
-                    overlay address (default: `tailscale` on PATH).
+  PHUX_TAILSCALE     Tailscale-compatible CLI run to detect the overlay
+                    address (default: `tailscale` on PATH) for `phux pair`,
+                    `phux doctor`, and the server's auto-bound remote
+                    listener. When set it is the only source consulted:
+                    the CGNAT route-probe fallback is disabled, so naming
+                    a command that reports nothing turns detection off
+                    everywhere (no overlay auto-listen, no doctor dial).
   PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE
                     Give an auto-spawned server an idle limit in seconds
                     (1..=86400), as if it were started with
@@ -852,6 +858,17 @@ Options:
 
       --no-enroll
           Never shell out to ssh for `--remote`. An unregistered host is refused with its remedies named instead of paired
+
+      --ssh <[USER@]HOST>
+          Attach mosh-style over ssh: run `phux bootstrap` on the host through ssh, which starts the server there if needed and opens a QUIC listener for this attach alone, then dial it directly. ssh authenticates you (password and 2FA prompts work) and exits once the session is up; the session itself rides QUIC, so it roams and renders locally. Needs no pairing, service, or overlay network on the host. Falls back to `ssh -t HOST phux attach` when UDP cannot reach it. The host is anything ssh accepts, including `ssh://user@host:port` and aliases from `~/.ssh/config`
+
+      --remote-phux <PATH>
+          The `phux` to run on the `--ssh` host, for when a non-interactive ssh shell's `PATH` does not find it (a Homebrew or Nix install)
+
+          [default: phux]
+
+      --udp-ports <MIN-MAX>
+          Bind the `--ssh` host's listener to a UDP port in this inclusive range, e.g. `60000-61000`, so one firewall rule covers every attach. Any free port by default
 
       --rec <PATH>
           Record this session while it runs and write the result to PATH.
@@ -2298,6 +2315,75 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+```
+
+## `phux report`
+
+```text
+Capture or list local bug reports.
+
+Bare `phux report` lists bundles under the profile state directory (newest first; `latest` is printed first). `phux report show [ID]` prints one `report.md` (omit ID for the newest). `phux report new` writes a logs-and-version bundle from a shell; prefer the TUI action `report-bug` (`C-a B`) while attached so the live session, pane, and screen are included. An agent given a report path can `cat` it or run `phux report show`.
+
+Usage: phux report [OPTIONS] [COMMAND]
+
+Commands:
+  new   Write a logs-and-version bundle (no live screen). Prefer the TUI action (`C-a B`) while attached so the session and pane are included
+  show  Print one report. Omit ID to show the latest
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux report new`
+
+```text
+Write a logs-and-version bundle (no live screen). Prefer the TUI action (`C-a B`) while attached so the session and pane are included
+
+Usage: phux report new [OPTIONS] [NOTE]...
+
+Arguments:
+  [NOTE]...
+          Optional free-text description of what went wrong
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help
+```
+
+## `phux report show`
+
+```text
+Print one report. Omit ID to show the latest
+
+Usage: phux report show [OPTIONS] [ID]
+
+Arguments:
+  [ID]
+          Report id (`r-…`), or `latest`
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help
 ```
 
 ## `phux resize`

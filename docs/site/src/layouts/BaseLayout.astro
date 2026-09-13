@@ -20,6 +20,7 @@ const path = Astro.url.pathname;
 <html lang="en" data-design={SITE.designMode}>
   <head>
     <Head title={title} description={description} type="website" />
+    <slot name="head" />
   </head>
   <body>
     <a class="skip" href="#main">Skip to content</a>

@@ -64,7 +64,7 @@ describe("OAuth starts", () => {
     expect(result.authorization.searchParams.get("code_challenge")?.length).toBe(43);
     expect(result.authorization.searchParams.has("scope")).toBe(false);
     expect(setCookies(result.response)[0]).toMatch(
-      /^__Host-phux_oauth_github=.*; Path=\/; Max-Age=600; HttpOnly; Secure; SameSite=Lax$/,
+      /^__Secure-phux_oauth_github=.*; Domain=phux.sh; Path=\/; Max-Age=600; HttpOnly; Secure; SameSite=Lax$/,
     );
   });
 
@@ -77,6 +77,35 @@ describe("OAuth starts", () => {
     ).toBe(400);
     expect((await handler(new Request(`${PUBLIC_AUTH_ORIGIN}/auth/github?return_to=//attacker.example`), env))?.status)
       .toBe(400);
+  });
+
+  test("starts GitHub OAuth on the public site origin so the browser never hits shell.phux.sh", async () => {
+    const handler = createAuthRequestHandler(async () => {
+      throw new Error("unexpected fetch");
+    });
+    const response = await handler(
+      new Request(`${PUBLIC_APP_ORIGIN}/auth/github?return_to=${encodeURIComponent("/")}`),
+      env,
+    );
+    expect(response?.status).toBe(302);
+    const location = new URL(response!.headers.get("Location")!);
+    expect(location.searchParams.get("redirect_uri")).toBe(`${PUBLIC_APP_ORIGIN}/auth/github/callback`);
+  });
+
+  test("accepts the frontend camelCase alias and still stores /embed", async () => {
+    const handler = createAuthRequestHandler(async () => {
+      throw new Error("unexpected fetch");
+    });
+    const response = await handler(
+      new Request(`${PUBLIC_AUTH_ORIGIN}/auth/google?returnTo=${encodeURIComponent("/embed")}`),
+      env,
+    );
+    expect(response?.status).toBe(302);
+    const cookie = setCookies(response!)[0]!;
+    const payload = JSON.parse(
+      Buffer.from(cookie.split(";", 1)[0]!.split("=")[1]!.split(".")[0]!, "base64url").toString(),
+    ) as { returnPath?: string };
+    expect(payload.returnPath).toBe("/embed");
   });
 });
 
@@ -99,7 +128,7 @@ describe("OAuth callbacks", () => {
     expect(response?.status).toBe(400);
     expect(fetches).toBe(0);
     expect(setCookies(response!)).toContain(
-      "__Host-phux_oauth_github=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
+      "__Secure-phux_oauth_github=; Domain=phux.sh; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
     );
   });
 
@@ -147,9 +176,9 @@ describe("OAuth callbacks", () => {
     expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/embed?auth=success`);
     expect(String(requests[0]?.init?.body)).toContain("code_verifier=");
     expect(new Headers(requests[1]?.init?.headers).get("Authorization")).toBe("Bearer transient-token");
-    const sessionSetCookie = setCookies(response!).find((value) => value.startsWith("__Host-phux_session="))!;
+    const sessionSetCookie = setCookies(response!).find((value) => value.startsWith("__Secure-phux_session="))!;
     expect(sessionSetCookie).toMatch(
-      /^__Host-phux_session=.*; Path=\/; Max-Age=28800; HttpOnly; Secure; SameSite=Lax$/,
+      /^__Secure-phux_session=.*; Domain=phux.sh; Path=\/; Max-Age=28800; HttpOnly; Secure; SameSite=Lax$/,
     );
     const identity = await verifySessionCookie(
       requestWithCookie(`${PUBLIC_AUTH_ORIGIN}/`, cookiePair(sessionSetCookie)),
@@ -157,6 +186,26 @@ describe("OAuth callbacks", () => {
     );
     expect(identity).toEqual({ principal: "github:123456", provider: "github", display: "octocat" });
     expect(sessionSetCookie).not.toContain("transient-token");
+  });
+
+  test("maps GitHub token-endpoint error bodies to a generic frontend error", async () => {
+    const handler = createAuthRequestHandler(async (input) => {
+      if (String(input).endsWith("/access_token")) {
+        return Response.json({ error: "incorrect_client_credentials" });
+      }
+      throw new Error("unexpected fetch");
+    });
+    const initiated = await start("github", handler);
+    const response = await handler(
+      requestWithCookie(
+        `${PUBLIC_AUTH_ORIGIN}/auth/github/callback?code=one-time-code&state=${initiated.authorization.searchParams.get("state")}`,
+        initiated.cookie,
+      ),
+      env,
+    );
+    expect(response?.status).toBe(302);
+    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/?auth=error`);
+    expect(response?.headers.get("Location")).not.toContain("incorrect_client");
   });
 
   test("rejects newly created GitHub accounts", async () => {
@@ -220,7 +269,7 @@ describe("OAuth callbacks", () => {
     );
 
     expect(response?.status).toBe(302);
-    const session = setCookies(response!).find((value) => value.startsWith("__Host-phux_session="))!;
+    const session = setCookies(response!).find((value) => value.startsWith("__Secure-phux_session="))!;
     expect(
       await verifySessionCookie(
         requestWithCookie(`${PUBLIC_AUTH_ORIGIN}/`, cookiePair(session)),
@@ -287,7 +336,7 @@ describe("sessions", () => {
     );
     return {
       handler,
-      session: cookiePair(setCookies(response!).find((value) => value.startsWith("__Host-phux_session="))!),
+      session: cookiePair(setCookies(response!).find((value) => value.startsWith("__Secure-phux_session="))!),
       now,
     };
   }
@@ -356,7 +405,7 @@ describe("sessions", () => {
     expect(response?.status).toBe(204);
     expect(response?.headers.get("Access-Control-Allow-Origin")).toBe(PUBLIC_APP_ORIGIN);
     expect(response?.headers.get("Set-Cookie")).toBe(
-      "__Host-phux_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
+      "__Secure-phux_session=; Domain=phux.sh; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
     );
   });
 });

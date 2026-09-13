@@ -60,6 +60,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `plugin-pane` | — | `plugin`, `pane` | Open an enabled plugin's manifest pane |
 | `reload-config` | View |  | Reload the config file (keybindings, theme, status bar) |
 | `settings` | View |  | Settings: browse, search, and edit every option in place |
+| `report-bug` | View | `note?` (optional free-text description) | Write a local bug report (session, logs, screen) and copy its path |
 
 Why the dash rows have no palette entry:
 

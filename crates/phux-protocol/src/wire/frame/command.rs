@@ -603,6 +603,66 @@ pub enum Command {
         /// What must hold for the kill to proceed.
         precondition: KillPrecondition,
     },
+    /// Open a listener for one remote attach (`docs/spec/L1.md` §5.6,
+    /// ADR-0120). The server binds `transport` on the wildcard address, on a
+    /// port from `port_range` or any free one, and admits only a bearer token
+    /// it mints for this listener alone. It closes the listener once
+    /// `linger_secs` pass with no connection open through it, before the
+    /// first connection or after the last, and never carries it across a
+    /// graceful upgrade.
+    ///
+    /// **Local only**, like [`Self::Shutdown`]: refused with
+    /// `PERMISSION_DENIED` on any transport but the Unix socket, so only the
+    /// server's own user can open a door into it.
+    ///
+    /// Reply: `COMMAND_RESULT { OkWith(Json) }` carrying the bound port, the
+    /// certificate fingerprint to pin, the token, and the effective linger.
+    /// Gated on
+    /// [`ServerFeature::OpenListener`](crate::caps::ServerFeature::OpenListener).
+    /// Backs `phux bootstrap`, which `phux attach --ssh` runs over ssh.
+    OpenListener {
+        /// The transport to listen on.
+        transport: ListenerTransport,
+        /// Inclusive port range to bind from, or `None` for any free port.
+        /// Encoded as two `u16`s, with `0, 0` meaning `None`.
+        port_range: Option<(u16, u16)>,
+        /// Seconds the listener stays open with no connection through it;
+        /// `0` asks for the server default.
+        linger_secs: u32,
+    },
+}
+
+/// The transport a [`Command::OpenListener`] asks for (`u8` on the wire).
+///
+/// Only [`Self::Quic`] is defined. A decoder keeps any other value, so a
+/// server can refuse it by name instead of the whole frame failing to decode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ListenerTransport {
+    /// QUIC over TLS 1.3, admitting a listener-scoped bearer token (`0x00`).
+    Quic,
+    /// A value this build does not define. A server refuses it with
+    /// `INVALID_COMMAND`.
+    Unknown(u8),
+}
+
+impl ListenerTransport {
+    /// Classify a wire byte, keeping values this build does not define.
+    #[must_use]
+    pub const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Quic,
+            other => Self::Unknown(other),
+        }
+    }
+
+    /// The wire byte.
+    #[must_use]
+    pub const fn to_u8(self) -> u8 {
+        match self {
+            Self::Quic => 0,
+            Self::Unknown(value) => value,
+        }
+    }
 }
 
 /// The preconditions a [`Command::KillResourceIf`] carries (ADR-0109).

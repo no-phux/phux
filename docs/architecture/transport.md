@@ -48,6 +48,15 @@ HELLO negotiation, length-prefixed I/O, and the bootstrap-profile bookkeeping
 over them. `phux-tui` drives that connection; every headless verb and
 `phux-mcp` reach it through `phux-client`.
 
+**On-demand QUIC listeners** (ADR-0120). Besides the listeners bound at
+startup, a server opens a QUIC listener at runtime when its owner sends
+`OPEN_LISTENER` over the Unix socket (`runtime/ephemeral_listener.rs`). It is
+an ordinary QUIC listener except in two ways. It admits one in-memory token
+instead of the pairing store (`QuicAdmission::Listener`), and it closes once
+no connection has used it for its linger. `phux attach --ssh` drives it
+through `phux bootstrap` over ssh, so ssh carries the bootstrap and never the
+session.
+
 **Hub side** (`phux-server::hub::link`). The federation hub dials satellites
 through its own crate-private `LinkTransport` / `LinkConn` pair
 (`connect`, `send_frame`, `recv_frame`); `NetLinkConn` has one variant per

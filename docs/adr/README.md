@@ -99,7 +99,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0052](./0052-connector-route-identity-and-config.md) | Connector route identity, registration, and config surface | Accepted (builds on [0051](./0051-outbound-dial-out-connector-transport.md)) |
 | [0053](./0053-acknowledged-idempotent-input.md) | Acknowledged idempotent input batches | Accepted (builds on [0021](./0021-control-plane-commands.md), [0024](./0024-wire-owns-input-atoms.md), and [0044](./0044-dedicated-input-lane.md)) |
 | [0054](./0054-worktree-bound-sessions.md) | Worktree-bound sessions by name convention | Accepted |
-| [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md) | Always-on server and ssh-bootstrapped enrollment | Accepted (superseded in part by [0080](./0080-socket-lifecycle-and-instance-isolation.md), [0096](./0096-always-on-performance-telemetry.md)) |
+| [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md) | Always-on server and ssh-bootstrapped enrollment | Accepted (superseded in part by [0080](./0080-socket-lifecycle-and-instance-isolation.md), [0096](./0096-always-on-performance-telemetry.md); amended by [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md)) |
 | [0056](./0056-cross-session-terminal-move.md) | Cross-session Terminal move | Accepted (builds on [0050](./0050-explicit-spawn-ownership.md)) |
 | [0057](./0057-minimal-reference-relay.md) | A minimal reference relay in-tree | Accepted (builds on [0051](./0051-outbound-dial-out-connector-transport.md), [0052](./0052-connector-route-identity-and-config.md)) |
 | [0058](./0058-right-click-context-menus.md) | Right-click context menus for panes, windows, and sessions | Accepted |
@@ -163,6 +163,8 @@ not a summary: the TL;DR lives in the ADR.
 | [0116](./0116-workload-auth-is-mtls.md) | Workload authentication is mTLS; the bespoke proof protocol is retired unshipped | Accepted (supersedes in part [0098](./0098-workload-proof-and-closed-scope-authority.md)) |
 | [0117](./0117-wire-codec-stays-tlv.md) | The wire codec stays hand-rolled TLV; protobuf considered and rejected | Accepted |
 | [0118](./0118-agent-integrations-share-a-neutral-runtime.md) | Agent integrations share a neutral Node runtime | Accepted |
+| [0119](./0119-attach-leases-retained-history.md) | Attach leases retained history instead of encoding it | Accepted (supersedes in part [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md)) |
+| [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md) | ssh bootstrap opens a listener for one attach | Accepted (amends [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
 
 ## When to write an ADR
 

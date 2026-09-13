@@ -58,7 +58,8 @@ for it.
 
 Per-pane scrollback is a config knob, not an ops table: raising
 `history-limit` on a wide grid does nothing, and raising `history-bytes`
-costs attach latency. See [`CONFIG.md`](./CONFIG.md#scrollback).
+costs resident memory per pane, not attach latency. See
+[`CONFIG.md`](./CONFIG.md#scrollback).
 
 ## Logging and observability
 
@@ -76,6 +77,14 @@ this section is the home for the facts.
   `--json`) — `telemetry::init_client()`. Logs to a **file only**: the
   attach loop owns the alt screen, so a stray log line corrupts the
   display.
+
+### Local bug reports
+
+A TUI `report-bug` (`C-a B`) or `phux report new` writes one directory under
+`$XDG_STATE_HOME/<profile-dir>/reports/`. Each bundle is owner-only (`0600`)
+and holds `report.md` (the file to hand an agent), `meta.json`, log tails, and
+an optional screen dump. `latest` points at the newest. `phux report` lists
+them; `phux report show` prints one. Nothing leaves the machine.
 
 Both fmt layers emit span-close timing (`FmtSpan::CLOSE`), so any
 `#[instrument]` span reports elapsed duration at close.
@@ -757,6 +766,30 @@ responsibility, like socket permissions: with a self-signed certificate,
 verifying the `phux pair` fingerprint on the device's first connect is
 what closes the trust-on-first-use MITM window.
 
+#### On-demand listeners (`phux attach --ssh`)
+
+`phux attach --ssh HOST` opens a routable QUIC port without any of the setup
+above ([ADR-0120](adr/0120-ssh-bootstrap-opens-a-listener-per-attach.md)).
+Its trust rests on ssh. Only a process that can reach the server's Unix
+socket, which on the host means the server's own user, can ask for one, and
+`phux bootstrap` asks for it inside the operator's authenticated ssh session.
+What that exposes, and for how long:
+
+- One UDP port on the wildcard address per attach, serving TLS 1.3 with the
+  server's persistent certificate. The client pins the fingerprint it
+  received over ssh, so there is no trust-on-first-use window.
+- A 256-bit token that admits only that listener. The server holds it in
+  memory and never writes it to the token store; pairing tokens do not work
+  on that listener, and its token works nowhere else. The token is outer
+  admission only ([ADR-0116](adr/0116-workload-auth-is-mtls.md)).
+- A bounded lifetime. The listener closes once no connection has been open
+  through it for its linger (120 seconds by default, at most an hour), and
+  never survives an upgrade or restart.
+- A server that `phux bootstrap` starts is marked as started without a login
+  shell, like a service unit, so its panes see the login profile's `PATH`.
+
+Restrict the port with `--udp-ports MIN-MAX` when a firewall has to name it.
+
 ### Connecting from another network (overlay reachability)
 
 The remote-consumer path authenticates and encrypts the link; it still
@@ -773,7 +806,21 @@ suppresses it; `--listen` / `--quic` (or `PHUX_WS_ADDR` /
 auto-binds — a port is global to the host, so a `dev`-profile server
 would otherwise race the installed one. Detection runs off-thread after
 the UDS accept loop is live, so a wedged overlay CLI costs a late remote
-listener, never a late server.
+listener (bounded at two seconds, after which detection falls back to
+the CGNAT route heuristic unless `PHUX_TAILSCALE` is set), never a late
+server.
+
+One detector feeds three consumers: `phux pair`, `phux doctor`'s
+remote-reachable check, and the auto-bound remote listener
+([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
+`PHUX_TAILSCALE` substitutes the CLI all three run (default: `tailscale`
+on PATH). Setting it also disables the CGNAT route-probe fallback,
+including after the CLI's two-second deadline: once you have named the
+overlay CLI, its answer is the whole answer. Pointing `PHUX_TAILSCALE`
+at a command that reports no address therefore turns detection off for
+all three: no overlay auto-listen, no advertised overlay address in
+`phux pair`, and no doctor dial (which is how test harnesses keep
+`phux doctor` off the network).
 
 ### Running the reference relay
 

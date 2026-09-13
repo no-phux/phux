@@ -340,6 +340,7 @@ point before any handler or satellite branch:
 | `DETACH_CLIENTS { session: Some }` | `SIGNAL` | resolved Group |
 | `DETACH_CLIENTS { session: None }` | `SIGNAL` | Global |
 | `SHUTDOWN` | `SIGNAL` plus transport predicate | Global, and the authenticated transport MUST be the owner UDS; remote paired grants cannot stop the server |
+| `OPEN_LISTENER` | `SIGNAL` plus transport predicate | Global, and the authenticated transport MUST be the owner UDS; remote paired grants cannot open a listener |
 | `GET_PERF { reset: false }` | `OBSERVE` | Global |
 | `GET_PERF { reset: true }` | `OBSERVE` and `BIND` | Global |
 | `APPEND_RESOURCE_OUTPUT` | `BIND` and `INPUT` | the named resource's parent Terminal; a grant naming only the child does not suffice, and a Terminal-kind target is refused after admission with `WRONG_RESOURCE_KIND` |

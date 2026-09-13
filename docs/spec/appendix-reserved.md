@@ -84,6 +84,7 @@ their own one-byte tag inside it. Allocated tags:
 | `0x19` | `TRANSCRIBE`                | [L1.md](./L1.md) | shipped |
 | `0x1a` | `APPEND_RESOURCE_OUTPUT`    | [L1.md §5.5](./L1.md) | shipped |
 | `0x1b` | `KILL_RESOURCE_IF`          | [L1.md §5.2.1](./L1.md) | shipped |
+| `0x1c` | `OPEN_LISTENER`             | [L1.md §5.6](./L1.md) | shipped |
 
 `KILL_RESOURCES` at tag `0x09` reuses the slot freed by the removed
 `CREATE_SESSION` command. Per

@@ -13,6 +13,7 @@ import {
   postEmbedStatus,
   type EmbedStatus,
 } from "./terminal/embed-status";
+import { nativeAuthStartUrl } from "./terminal/auth-start";
 
 interface Props {
   wsUrl?: string;
@@ -80,8 +81,6 @@ export default function PhuxTerminal({
   const started = useRef(false);
   const readinessAbort = useRef<AbortController | null>(null);
   const client = useRef<PhuxController | null>(null);
-  const popup = useRef<Window | null>(null);
-  const authPoll = useRef<number | null>(null);
 
   function signal(status: EmbedStatus) {
     if (!statusParentOrigin || window.parent === window) return;
@@ -89,7 +88,7 @@ export default function PhuxTerminal({
   }
 
   function authOrigin(): string {
-    return new URL(wsUrl.replace(/^ws/, "http")).origin;
+    return window.location.origin;
   }
 
   async function readIdentity(): Promise<Identity | null> {
@@ -215,33 +214,8 @@ export default function PhuxTerminal({
   }
 
   function beginAuth(provider: "github" | "google") {
-    const returnTo = encodeURIComponent("/embed");
-    popup.current = window.open(
-      `${authOrigin()}/auth/${provider}?returnTo=${returnTo}`,
-      "phux-auth",
-      "popup,width=620,height=760",
-    );
-    if (authPoll.current !== null) window.clearInterval(authPoll.current);
-    const deadline = Date.now() + 2 * 60_000;
-    let checking = false;
-    authPoll.current = window.setInterval(async () => {
-      if (checking) return;
-      if (Date.now() >= deadline) {
-        window.clearInterval(authPoll.current ?? undefined);
-        authPoll.current = null;
-        return;
-      }
-      checking = true;
-      const current = await readIdentity().catch(() => null);
-      checking = false;
-      if (!current) return;
-      window.clearInterval(authPoll.current ?? undefined);
-      authPoll.current = null;
-      popup.current?.close();
-      setIdentity(current);
-      setPhase("idle");
-      void launch();
-    }, 750);
+    const returnPath = window.location.pathname === "/embed" ? "/embed" : "/";
+    window.location.assign(nativeAuthStartUrl(authOrigin(), provider, returnPath));
   }
 
   async function logout() {
@@ -288,9 +262,6 @@ export default function PhuxTerminal({
       }
       const current = await readIdentity().catch(() => null);
       if (!active || !current) return;
-      if (authPoll.current !== null) window.clearInterval(authPoll.current);
-      authPoll.current = null;
-      popup.current?.close();
       setIdentity(current);
       setPhase("idle");
       void launch();
@@ -301,8 +272,6 @@ export default function PhuxTerminal({
       window.removeEventListener("message", authComplete);
       readinessAbort.current?.abort();
       client.current?.close();
-      if (authPoll.current !== null) window.clearInterval(authPoll.current);
-      popup.current?.close();
     };
   }, []);
 

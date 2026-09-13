@@ -5,6 +5,10 @@
 use super::test_support::*;
 use super::*;
 
+#[path = "tests_fixture_groups.rs"]
+mod fixture_groups;
+use fixture_groups::{FixtureGroup, FixturePane};
+
 #[test]
 fn seeded_default_colors_are_installed_before_actor_run() {
     use phux_protocol::caps::{TerminalColor, TerminalDefaultColors};
@@ -572,6 +576,7 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             let dir = tempfile::tempdir().expect("tempdir");
             let marker = dir.path().join("flushed");
             let armed = dir.path().join("armed");
+            let foreground = FixtureGroup::new(dir.path(), "PHUX_TEST_FOREGROUND");
 
             // The script announces that its HUP trap is installed. Without
             // that handshake the test races the shell: a distinct process
@@ -582,19 +587,15 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             // fully parallel `just test` (phux-2390) with an empty marker
             // in 0.7s: not a timeout, a missing synchronization point.
             let script = dir.path().join("foreground.sh");
-            let holder = dir.path().join("holder");
-            // Record the inner shell's pid first: a panic or nextest abort
-            // after spawn but before `token.cancel()` used to leak this
-            // `while :; do read _; done` process (phux-6xqf).
-            let holder_cleanup = DetachedHolderCleanup(holder.clone());
             // A builtin wait lets HUP run the trap directly; an external sleep
             // adds child-exit scheduling to the production's 500 ms grace.
             std::fs::write(
                 &script,
-                "printf %s \"$$\" > \"$PHUX_TEST_HOLDER\"\n\
-                     trap 'printf flushed > \"$PHUX_TEST_MARKER\"; exit 0' HUP\n\
+                foreground.script(
+                    "trap 'printf flushed > \"$PHUX_TEST_MARKER\"; exit 0' HUP\n\
                      printf armed > \"$PHUX_TEST_ARMED\"\n\
                      while :; do read _; done\n",
+                ),
             )
             .expect("write foreground script");
 
@@ -608,7 +609,7 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             ));
             cmd.env("PHUX_TEST_MARKER", &marker);
             cmd.env("PHUX_TEST_ARMED", &armed);
-            cmd.env("PHUX_TEST_HOLDER", &holder);
+            foreground.configure(&mut cmd);
 
             let token = CancellationToken::new();
             let bundle = TerminalActor::build_with_token(
@@ -623,7 +624,7 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
             let pty = actor.pty.as_ref().expect("test actor has PTY");
             let shell_group = i32::try_from(pty.child.process_id().expect("shell pid"))
                 .expect("shell pid fits i32");
-            let _shell_cleanup = ProcessGroupCleanup(shell_group);
+            let _pane_cleanup = FixturePane(shell_group);
             let master = std::sync::Arc::clone(&pty.master);
             let run = tokio::task::spawn_local(actor.run());
 
@@ -686,7 +687,6 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
                 "foreground process must run its SIGHUP flush handler before \
                      the pane is killed; marker={body:?}",
             );
-            drop(holder_cleanup);
         })
         .await;
 }
@@ -744,6 +744,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             let dir = tempfile::tempdir().expect("tempdir");
             let marker = dir.path().join("flushed");
             let armed = dir.path().join("armed");
+            let foreground = FixtureGroup::new(dir.path(), "PHUX_TEST_FOREGROUND");
             let payload = dir.path().join("payload");
             let status = dir.path().join("status");
             let stderr = dir.path().join("err");
@@ -757,16 +758,15 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             // and be scheduled, so the flush never started (phux-rfw7);
             // serial runs then saw an empty marker at ~523 ms shutdown.
             let script = dir.path().join("foreground.sh");
-            let holder = dir.path().join("holder");
-            let holder_cleanup = DetachedHolderCleanup(holder.clone());
             std::fs::write(
                 &script,
-                "printf %s \"$$\" > \"$PHUX_TEST_HOLDER\"\n\
-                     trap 'trap \"\" HUP; cat \"$PHUX_TEST_PAYLOAD\" 2>\"$PHUX_TEST_ERR\"; s=$?; \
+                foreground.script(
+                    "trap 'trap \"\" HUP; cat \"$PHUX_TEST_PAYLOAD\" 2>\"$PHUX_TEST_ERR\"; s=$?; \
                      printf %s \"$s\" > \"$PHUX_TEST_STATUS\"; \
                      [ \"$s\" -eq 0 ] && printf flushed > \"$PHUX_TEST_MARKER\"; exit 0' HUP\n\
                      printf armed > \"$PHUX_TEST_ARMED\"\n\
                      while :; do read _; done\n",
+                ),
             )
             .expect("write foreground script");
 
@@ -785,7 +785,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             cmd.env("PHUX_TEST_PAYLOAD", &payload);
             cmd.env("PHUX_TEST_STATUS", &status);
             cmd.env("PHUX_TEST_ERR", &stderr);
-            cmd.env("PHUX_TEST_HOLDER", &holder);
+            foreground.configure(&mut cmd);
 
             let token = CancellationToken::new();
             let bundle = TerminalActor::build_with_token(
@@ -800,7 +800,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             let pty = actor.pty.as_ref().expect("test actor has PTY");
             let shell_group = i32::try_from(pty.child.process_id().expect("shell pid"))
                 .expect("shell pid fits i32");
-            let _shell_cleanup = ProcessGroupCleanup(shell_group);
+            let _pane_cleanup = FixturePane(shell_group);
             let master = std::sync::Arc::clone(&pty.master);
             let run = tokio::task::spawn_local(actor.run());
 
@@ -851,64 +851,8 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
                      marker={body:?} cat_status={cat_status:?} cat_err={cat_err:?} \
                      shutdown_took={shutdown_took:?}",
             );
-            drop(holder_cleanup);
         })
         .await;
-}
-
-/// Kill a fixture's deliberately-detached holder process.
-///
-/// These two tests exist because a process escaped every group phux signals,
-/// which means nothing in the production path will ever clean it up — the
-/// test has to. `pkill -P <shell>` does not work here and quietly leaks: the
-/// holder is reparented to init the moment its shell dies, so by the time
-/// teardown finishes it has no parent to match on. A leaked `sleep 3600` is
-/// merely untidy, but a leaked spewing `cat` loop burns a core for the rest
-/// of the suite and starves every load-sensitive test after it — which is
-/// exactly what it did before this existed.
-///
-/// The fixtures therefore record the job's pid, and `set -m` guarantees it is
-/// also its own process group id, so one `killpg` takes the whole job.
-fn kill_detached_holder(holder_pid_file: &std::path::Path) {
-    use nix::sys::signal::{Signal, kill, killpg};
-    use nix::unistd::Pid;
-
-    let Ok(text) = std::fs::read_to_string(holder_pid_file) else {
-        return;
-    };
-    let Ok(raw) = text.trim().parse::<i32>() else {
-        return;
-    };
-    let pid = Pid::from_raw(raw);
-    let _ = killpg(pid, Signal::SIGKILL);
-    let _ = kill(pid, Signal::SIGKILL);
-}
-
-/// Tear down the deliberately escaped fixture even if an assertion unwinds.
-struct DetachedHolderCleanup(std::path::PathBuf);
-
-impl Drop for DetachedHolderCleanup {
-    fn drop(&mut self) {
-        kill_detached_holder(&self.0);
-    }
-}
-
-/// Kill a fixture process group on every unwind, including an assertion
-/// after spawn but before the actor's own teardown.
-///
-/// The flush tests' inner `foreground.sh` lives in a *different* group
-/// than this one (`set -m`); [`DetachedHolderCleanup`] covers that job.
-/// This covers the session-leader shell. `SIGKILL` of an already-reaped
-/// group is `ESRCH` and is ignored.
-struct ProcessGroupCleanup(i32);
-
-impl Drop for ProcessGroupCleanup {
-    fn drop(&mut self) {
-        use nix::sys::signal::{Signal, killpg};
-        use nix::unistd::Pid;
-
-        let _ = killpg(Pid::from_raw(self.0), Signal::SIGKILL);
-    }
 }
 
 /// A process that escaped the snapshotted groups and still holds the slave
@@ -955,17 +899,21 @@ async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
     local
         .run_until(async {
             let dir = tempfile::tempdir().expect("tempdir");
-            let holder = dir.path().join("holder");
-
-            let holder_cleanup = DetachedHolderCleanup(holder.clone());
+            let holder_cleanup = FixtureGroup::new(dir.path(), "PHUX_TEST_HOLDER");
+            let holder = holder_cleanup.pid_file().to_owned();
+            let script = dir.path().join("holder.sh");
+            // No `exec`: the holder shell stays its group's leader, so its
+            // command line still names this tempdir when cleanup checks that
+            // the group is ours. Shell and sleep both hold the slave open.
+            std::fs::write(&script, holder_cleanup.script("/bin/sleep 3600\n"))
+                .expect("write holder script");
             let mut cmd = CommandBuilder::new("/bin/sh");
             cmd.arg("-c");
             // `exec cat` so the pane's own child is an ordinary foreground
             // job that dies to the hangup, leaving only the detached holder.
-            // The holder's pid is recorded so the test can clean up what it
-            // deliberately made unreachable — see `kill_detached_holder`.
-            cmd.arg("set -m; sleep 3600 & printf %s \"$!\" > \"$PHUX_TEST_HOLDER\"; exec cat");
-            cmd.env("PHUX_TEST_HOLDER", &holder);
+            // The holder registers its group before holding the slave open.
+            cmd.arg(format!("set -m; /bin/sh {} & exec cat", script.display()));
+            holder_cleanup.configure(&mut cmd);
 
             let token = CancellationToken::new();
             let bundle = TerminalActor::build_with_token(
@@ -977,6 +925,7 @@ async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
             )
             .expect("build actor");
             let actor = bundle.actor;
+            let _pane_cleanup = FixturePane::for_actor(&actor);
             let run = tokio::task::spawn_local(actor.run());
 
             // Wait for the holder to exist rather than sleeping a fixed
@@ -1003,8 +952,6 @@ async fn pane_kill_is_bounded_when_a_detached_process_holds_the_slave_open() {
                 )
                 .expect("actor task failed");
             let shutdown_took = killed_at.elapsed();
-
-            drop(holder_cleanup);
 
             assert!(
                 shutdown_took < ceiling,
@@ -1042,10 +989,17 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
         .run_until(async {
             let dir = tempfile::tempdir().expect("tempdir");
             let armed = dir.path().join("armed");
-            let holder = dir.path().join("holder");
             let payload = dir.path().join("payload");
-            let holder_cleanup = DetachedHolderCleanup(holder.clone());
+            let foreground = FixtureGroup::new(dir.path(), "PHUX_TEST_FOREGROUND");
+            let holder_cleanup = FixtureGroup::new(dir.path(), "PHUX_TEST_HOLDER");
             std::fs::write(&payload, vec![b'.'; 256 * 1024]).expect("write payload");
+            let spewer = dir.path().join("holder.sh");
+            std::fs::write(
+                &spewer,
+                holder_cleanup
+                    .script("trap '' HUP\nwhile :; do cat \"$PHUX_TEST_PAYLOAD\" || exit; done\n"),
+            )
+            .expect("write holder script");
 
             // `trap '' HUP` sets SIG_IGN, inherited across `exec`; `set -m`
             // puts the background loop in its own process group, outside
@@ -1055,12 +1009,14 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
             let script = dir.path().join("foreground.sh");
             std::fs::write(
                 &script,
-                "trap '' HUP\n\
+                foreground.script(
+                    "trap '' HUP\n\
                      set -m\n\
-                     while :; do cat \"$PHUX_TEST_PAYLOAD\"; done &\n\
-                     printf %s \"$!\" > \"$PHUX_TEST_HOLDER\"\n\
+                     /bin/sh \"$PHUX_TEST_SPEWER\" &\n\
+                     while [ ! -s \"$PHUX_TEST_HOLDER\" ]; do /bin/sleep 0.01; done\n\
                      printf armed > \"$PHUX_TEST_ARMED\"\n\
                      wait\n",
+                ),
             )
             .expect("write foreground script");
 
@@ -1069,7 +1025,9 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
             cmd.arg(format!("set -m; trap '' HUP; /bin/sh {}", script.display()));
             cmd.env("PHUX_TEST_ARMED", &armed);
             cmd.env("PHUX_TEST_PAYLOAD", &payload);
-            cmd.env("PHUX_TEST_HOLDER", &holder);
+            cmd.env("PHUX_TEST_SPEWER", &spewer);
+            foreground.configure(&mut cmd);
+            holder_cleanup.configure(&mut cmd);
 
             let token = CancellationToken::new();
             let bundle = TerminalActor::build_with_token(
@@ -1081,6 +1039,7 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
             )
             .expect("build actor");
             let actor = bundle.actor;
+            let _pane_cleanup = FixturePane::for_actor(&actor);
             let run = tokio::task::spawn_local(actor.run());
 
             tokio::time::timeout(std::time::Duration::from_secs(30), async {
@@ -1106,17 +1065,14 @@ async fn pane_kill_is_bounded_when_an_escaped_child_ignores_the_hangup_and_spews
                 .expect("actor task failed");
             let shutdown_took = killed_at.elapsed();
 
-            drop(holder_cleanup);
-
             assert!(
                 shutdown_took < ceiling,
                 "teardown must be bounded by the grace, reap and join budgets, not by the \
                      child's willingness to exit; took {shutdown_took:?}",
             );
-            assert!(
-                holder.exists(),
-                "escaped fixture must record its PID for cleanup"
-            );
+            // The escaped spewer's PID is necessarily on record here:
+            // `foreground.sh` writes `armed` only after the holder file is
+            // non-empty, and the barrier above waited for `armed`.
         })
         .await;
 }
