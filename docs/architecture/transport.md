@@ -78,26 +78,21 @@ seam changes.
   lane gets from quinn and the hub link applies to its own WS satellites.
   Client-originated because every RFC 6455 peer must answer a ping, so it
   needs nothing of the server.
-- **QUIC** (via `quinn`, ADR-0007) — for remote clients. When both peers
-  negotiate `QUIC_STREAMS` (advertised on QUIC only, [ADR-0115](../adr/0115-quic-stream-per-terminal.md)),
-  the connection is one **control** stream plus one client-opened bidi
-  stream per attached Terminal. Control carries HELLO, COMMAND, attach,
-  lifecycle, keepalive, and the bearer preamble where required. The
-  client opens every Terminal stream. **Routing:** the
-  client writes `STREAM_BIND` as the first bytes of each Terminal stream;
-  the server never opens one. That stream then carries only that
-  Terminal's `RESOURCE_OUTPUT`, `BOOTSTRAP_*`, `HISTORY_*`, `FRAME_ACK`,
-  and `INPUT_*`. A relay splices each consumer-opened stream onto a
-  fresh tunnel stream without parsing frames (`docs/spec/proto.md`
-  §4.1–§4.2). Hub satellite links still speak one frame stream — the
-  hub never opens `STREAM_BIND`. **Ordering:** frames on one QUIC stream
-  stay ordered (a keystroke stays ahead of its echo); frames on different
-  streams have no order and cannot head-of-line block each other. There
-  is no connection-wide frame order. Without the bit — and on UDS,
-  WebSocket, WebTransport, and SSH-stdio — the single-stream shape is
-  the whole contract. Normative mapping: `docs/spec/proto.md` §4.2 and
-  `docs/spec/L1.md` §4.9. TLS 1.3 is
-  intrinsic; a routable listener authenticates each attachment
+- **QUIC** (via `quinn`, ADR-0007) — for remote clients. Every connection
+  starts with one control stream carrying the identical codec. A client whose
+  installed adapter explicitly offers `HELLO.quic_streams` may negotiate one
+  additional bidi stream per attached Terminal; without that bilateral opt-in,
+  one stream is the complete connection shape.
+  Control carries HELLO, COMMAND, attach, lifecycle, keepalive, and the bearer
+  preamble where required. The client opens every Terminal stream and writes
+  `STREAM_BIND` first; the server never opens one. Each bound stream carries
+  that Terminal's `RESOURCE_OUTPUT`, `BOOTSTRAP_*`, `HISTORY_*`, `FRAME_ACK`,
+  and `INPUT_*`. Relay/connector consumers and hub satellite links currently
+  retain one stream; they do not negotiate per-Terminal streams. Normative
+  mapping: [proto.md](../spec/proto.md) §4.2
+  and [L1.md](../spec/L1.md) §4.9; design history:
+  [ADR-0115](../adr/0115-quic-stream-per-terminal.md).
+  TLS 1.3 is intrinsic; a routable listener authenticates each attachment
   with a bearer-token preamble (ADR-0031 parity with the `wss://` path),
   reusing the same persisted self-signed cert and token store. Opt-in via
   `phux server --quic <HOST:PORT>`; connection migration and 0-RTT
@@ -138,12 +133,16 @@ seam changes.
   everything else with quinn's defaults, so a large paste still crosses in
   about a round trip. The tag selects a config, never a role: admission
   stays with the ALPN, and a consumer that copies the tag only shrinks its
-  own window. The bound is per stream, so a consumer that stops reading
-  holds only its own window and never freezes another consumer on the same
-  route. A tunnel from a connector that predates the tag gets quinn's
+  own window. The bound is per stream, but congestion control, connection
+  credit, CPU, and application queues are shared, so stream flow control alone
+  does not prove that one consumer can never delay another. A tunnel from a
+  connector that predates the tag gets quinn's
   defaults, unbounded as before the bound existed, and the relay logs it
   when admitted. Lag through a relay is
-  therefore bounded, but a relayed consumer still sits behind up to that
+  therefore bounded. The current relay route intentionally negotiates only the
+  single-stream fallback because its tunnel has no authenticated consumer-group
+  envelope; a consumer dispatcher must never accept tunnel-global streams.
+  A relayed consumer still sits behind up to that
   window more backlog than a direct one (on a 300 kbit/s consumer, roughly
   3 s of on-screen lag against 1.5 s direct). **Throughput ceiling:** each
   bridged consumer moves at most 64 KiB per round trip on the

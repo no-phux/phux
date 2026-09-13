@@ -53,7 +53,7 @@ Client sends (frame type 0x01):
       output_mode: Raw,            // synthesized-profile preference only
       default_colors: None,
       bootstrap_profiles: 0x0e,    // synth raw/state-sync + native-v2 offer
-      native_codecs: 1 << 2,       // exact LibghosttyCheckpointV2
+      native_codecs: 1 << 3,       // exact LibghosttySnapshotV1 capability
       native_features: 0x0000000f, // all four required native features
       max_chunk_bytes: 262144,
       max_history_page_bytes: 1048576,
@@ -71,7 +71,7 @@ Server replies (frame type 0x80):
     },
     server_id: "phux-server-abc123", // field 5, opaque incarnation bytes
     selected_profile: NativeState { // field 6; current native tag is 3
-      codec: LibghosttyCheckpointV2,
+      codec: LibghosttySnapshotV1,
       features: 0x0000000f,
     },
     max_chunk_bytes: 262144,        // field 7, negotiated minimum
@@ -89,7 +89,7 @@ Server replies (frame type 0x80):
   [L2.md](./L2.md)).
 - `BootstrapCapabilities::new()` offers only the two synthesized compatibility
   profiles. Native is explicit opt-in after a successful engine probe: both
-  peers must share the exact checkpoint-v2 codec and all four required features
+  peers must share the exact official snapshot-v1 codec and all four required features
   (`CONTINUATION`, `READY_BOUNDARY`, `HISTORY_PAGES`, and
   `BOUNDED_HISTORY_CONTROL`). The current native offer bit is `0x08`; the
   incomplete legacy `0x01` offer is permanently retired.
@@ -166,7 +166,7 @@ profile as a generation-scoped opaque stream:
 ```
 Server sends BOOTSTRAP_BEGIN (0x93):
   { terminal_id: LOCAL(42), stream_id: 9, bootstrap_id: 4,
-    codec: Native(LibghosttyCheckpointV2), cols: 120, rows: 40,
+    codec: Native(LibghosttySnapshotV1), cols: 120, rows: 40,
     output_mode: Raw, base_seq: 1 }
 Server sends BOOTSTRAP_CHUNK (0x94):
   { terminal_id: LOCAL(42), stream_id: 9, bootstrap_id: 4,
