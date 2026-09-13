@@ -291,7 +291,7 @@ impl EngineAdapter for RigAdapter {
         }
         Ok(HistoryApplyOutcome {
             progress: BootstrapProgress::Ready,
-            retained: true,
+            retained_rows: declared_rows as usize,
             authenticated_rows: declared_rows as usize,
         })
     }

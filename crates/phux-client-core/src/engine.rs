@@ -52,8 +52,8 @@ impl BootstrapProgress {
 pub struct HistoryApplyOutcome {
     /// Decoder continuation state after consuming the unit.
     pub progress: BootstrapProgress,
-    /// Whether the engine retained the imported page under its local limits.
-    pub retained: bool,
+    /// Rows from this unit retained by the engine under its local limits.
+    pub retained_rows: usize,
     /// Engine-authenticated rows represented by this unit.
     pub authenticated_rows: usize,
 }

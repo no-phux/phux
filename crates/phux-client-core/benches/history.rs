@@ -119,7 +119,7 @@ impl EngineAdapter for BenchAdapter {
         effects.push(EngineEffect::Damage(EngineDamage::Full));
         Ok(HistoryApplyOutcome {
             progress: BootstrapProgress::Ready,
-            retained: true,
+            retained_rows: declared_rows as usize,
             authenticated_rows: declared_rows as usize,
         })
     }

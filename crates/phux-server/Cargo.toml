@@ -272,6 +272,9 @@ tempfile.workspace = true
 # The retry-generation wire regression drives the production server through
 # the same strict native session kernel exposed to Cockpit.
 phux-client-ffi.workspace = true
+# Native actor regressions feed the server's real progressive frames through
+# the transport-neutral kernel without routing through the C ABI.
+phux-client-core.workspace = true
 # The relay e2e test (tests/relay_e2e.rs) runs the PRODUCTION
 # `RelayRuntime` between a real server and a phux-dial consumer. Dev-only
 # and one-directional on purpose: phux-relay must never depend on

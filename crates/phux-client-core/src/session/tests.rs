@@ -173,7 +173,11 @@ impl EngineAdapter for FakeAdapter {
         }
         Ok(HistoryApplyOutcome {
             progress: BootstrapProgress::Ready,
-            retained: payload != b"history-not-retained",
+            retained_rows: if payload == b"history-not-retained" {
+                0
+            } else {
+                declared_rows as usize
+            },
             authenticated_rows: declared_rows as usize,
         })
     }
@@ -284,7 +288,7 @@ impl EngineAdapter for RecordingNativeAdapter {
             } else {
                 BootstrapProgress::Ready
             },
-            retained: true,
+            retained_rows: declared_rows as usize,
             authenticated_rows: declared_rows as usize,
         })
     }
@@ -1717,13 +1721,78 @@ fn retained_history_limit_and_prefetch_threshold_are_explicit() {
         .unwrap();
     assert!(effects.as_slice().iter().any(|effect| matches!(
         effect,
-        KernelEffect::Status(KernelStatus::HistoryUnavailable {
-            reason: HistoryUnavailableReason::Limit,
-            ..
-        })
+        KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. })
+            if cursor == b"limited-1"
     )));
     assert_eq!(
         kernel.history_cache(&limited).unwrap().status().state,
+        HistoryLoadState::Loading
+    );
+    effects.clear();
+    kernel
+        .update(
+            KernelInput::HistoryPage {
+                terminal_id: &limited,
+                stream_id,
+                bootstrap_id,
+                cursor: b"limited-1",
+                next_cursor: None,
+                payload: b"finish",
+                page_seq: 1,
+                rows: 0,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    let status = kernel.history_cache(&limited).unwrap().status();
+    assert_eq!(status.state, HistoryLoadState::Complete);
+    assert_eq!(status.materialized_rows, 0);
+}
+
+#[test]
+fn busy_history_retries_are_automatic_and_bounded() {
+    let terminal_id = terminal(37);
+    let stream_id = stream(137);
+    let bootstrap_id = bootstrap(237);
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let mut effects = EffectBuffer::new();
+    publish_direct_with_history(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        50,
+        b"busy-cursor",
+        &mut effects,
+    );
+
+    for retry in 0..=64 {
+        effects.clear();
+        kernel
+            .update(
+                KernelInput::HistoryRejected {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    cursor: b"busy-cursor",
+                    reason: HistoryRejectionReason::Busy,
+                    required_bytes: 1,
+                    required_rows: 1,
+                },
+                &mut effects,
+            )
+            .unwrap();
+        let retried = effects.as_slice().iter().any(|effect| {
+            matches!(
+                effect,
+                KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. })
+                    if cursor == b"busy-cursor"
+            )
+        });
+        assert_eq!(retried, retry < 64);
+    }
+    assert_eq!(
+        kernel.history_cache(&terminal_id).unwrap().status().state,
         HistoryLoadState::Tombstoned
     );
 }

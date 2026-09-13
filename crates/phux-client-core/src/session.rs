@@ -2854,7 +2854,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
             BootstrapStreamProfile::NativeState { .. }
         );
         let finished = matches!(outcome.progress, BootstrapProgress::Finished);
-        if outcome.retained && native && finished == has_more {
+        if native && finished == has_more {
             return Err(HistoryPageRejection::codec_failure(
                 KernelError::HistoryCompletionMismatch {
                     progress: outcome.progress,
@@ -2862,13 +2862,6 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 },
             ));
         }
-        if !outcome.retained {
-            return Err(HistoryPageRejection {
-                reason: HistoryUnavailableReason::Limit,
-                error: None,
-            });
-        }
-
         let authenticated_rows = u32::try_from(outcome.authenticated_rows).map_err(|_| {
             HistoryPageRejection::codec_failure(KernelError::HistoryCompletionMismatch {
                 progress: outcome.progress,
@@ -2882,7 +2875,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 page.page_seq,
                 next_cursor,
                 authenticated_rows,
-                outcome.authenticated_rows,
+                outcome.retained_rows,
                 page.payload,
             )
             .map_err(|error| {
@@ -3082,19 +3075,20 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .filter(|replica| generation_of(&replica.key) == generation)
             .ok_or_else(|| mismatch_error(terminal_id, generation))?;
         let cursor = HistoryCursor::new(cursor);
-        let retry_limits = (reason == HistoryRejectionReason::TooSmall)
-            .then(|| replica.history.retry_limits(required_bytes, required_rows))
-            .flatten();
-        if !replica.history.cancel_fetch(&cursor) {
-            return Err(KernelError::HistoryCache(HistoryCacheError::Gap));
-        }
-        let next_request = retry_limits.and_then(|(max_bytes, max_rows)| {
-            replica
-                .history
-                .begin_fetch_with_limits(max_bytes, max_rows)
-                .map(|cursor| (cursor, max_bytes, max_rows))
-        });
-        if reason == HistoryRejectionReason::TooSmall && next_request.is_none() {
+        let next_request = Self::retry_rejected_history(
+            replica,
+            &cursor,
+            reason,
+            required_bytes,
+            required_rows,
+            self.history_config,
+        )
+        .map_err(KernelError::HistoryCache)?;
+        if matches!(
+            reason,
+            HistoryRejectionReason::TooSmall | HistoryRejectionReason::Busy
+        ) && next_request.is_none()
+        {
             replica.history.tombstone();
             self.adapter.clear_document_state(&mut replica.engine);
             effects.push(KernelEffect::Status(KernelStatus::HistoryUnavailable {
@@ -3115,6 +3109,37 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }));
         }
         Ok(())
+    }
+
+    fn retry_rejected_history(
+        replica: &mut Replica<E::Replica>,
+        cursor: &HistoryCursor,
+        reason: HistoryRejectionReason,
+        required_bytes: u32,
+        required_rows: u32,
+        config: HistoryCacheConfig,
+    ) -> Result<Option<(HistoryCursor, u32, u32)>, HistoryCacheError> {
+        let retry_limits = (reason == HistoryRejectionReason::TooSmall)
+            .then(|| replica.history.retry_limits(required_bytes, required_rows))
+            .flatten();
+        let retry_busy =
+            reason == HistoryRejectionReason::Busy && replica.history.allow_busy_retry();
+        if !replica.history.cancel_fetch(cursor) {
+            return Err(HistoryCacheError::Gap);
+        }
+        if let Some((max_bytes, max_rows)) = retry_limits {
+            return Ok(replica
+                .history
+                .begin_fetch_with_limits(max_bytes, max_rows)
+                .map(|cursor| (cursor, max_bytes, max_rows)));
+        }
+        if !retry_busy {
+            return Ok(None);
+        }
+        Ok(replica
+            .history
+            .begin_fetch()
+            .map(|cursor| (cursor, config.request_max_bytes, config.request_max_rows)))
     }
 
     fn buffer_bootstrap_effects(&mut self, terminal_id: &ResourceId, generation: GenerationId) {

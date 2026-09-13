@@ -1441,6 +1441,376 @@ async fn frame_ack_waits_until_progressive_prefix_returns_the_terminal() {
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn apply_native_wire_frame(
+    kernel: &mut phux_client_core::session::SessionKernel<
+        phux_client_core::engine::ghostty::GhosttyAdapter,
+    >,
+    frame: &FrameKind,
+    effects: &mut phux_client_core::session::EffectBuffer,
+) {
+    use phux_client_core::engine::CanonicalGeometry;
+    use phux_client_core::session::KernelInput;
+
+    let mut encoded = (&[][..]).into();
+    frame.encode(&mut encoded);
+    let (decoded, tail) = FrameKind::decode(&encoded).expect("public wire decode");
+    assert!(tail.is_empty());
+    let input = match &decoded {
+        FrameKind::BootstrapBegin {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            profile,
+            cols,
+            rows,
+            base_seq,
+        } => KernelInput::BootstrapBegin {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            profile: *profile,
+            geometry: CanonicalGeometry::new(*cols, *rows).expect("geometry"),
+            base_seq: *base_seq,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            chunk_seq,
+            payload,
+        } => KernelInput::BootstrapChunk {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            chunk_seq: *chunk_seq,
+            payload,
+        },
+        FrameKind::BootstrapReady {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            history_cursor,
+        } => KernelInput::BootstrapReady {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            history_cursor: history_cursor.as_deref(),
+        },
+        FrameKind::HistoryPage {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            page_seq,
+            cursor,
+            next_cursor,
+            payload,
+            rows,
+        } => KernelInput::HistoryPage {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            page_seq: *page_seq,
+            rows: *rows,
+            payload,
+            cursor,
+            next_cursor: next_cursor.as_deref(),
+        },
+        FrameKind::ResourceOutput {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            seq,
+            bytes,
+        } => KernelInput::ResourceOutput {
+            terminal_id,
+            stream_id: *stream_id,
+            bootstrap_id: *bootstrap_id,
+            seq: *seq,
+            payload: bytes,
+        },
+        other => panic!("unexpected native flow frame: {other:?}"),
+    };
+    kernel
+        .update(input, effects)
+        .expect("kernel accepts server wire frame");
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn take_history_request(
+    effects: &mut phux_client_core::session::EffectBuffer,
+) -> Option<(Vec<u8>, u32, u32)> {
+    use phux_client_core::session::{KernelEffect, KernelSend};
+
+    let request = effects
+        .as_slice()
+        .iter()
+        .rev()
+        .find_map(|effect| match effect {
+            KernelEffect::Send(KernelSend::HistoryRequest {
+                cursor,
+                max_bytes,
+                max_rows,
+                ..
+            }) => Some((cursor.clone(), *max_bytes, *max_rows)),
+            _ => None,
+        });
+    effects.clear();
+    request
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[allow(
+    clippy::future_not_send,
+    clippy::too_many_lines,
+    reason = "the LocalSet acceptance keeps the non-Send native actor and kernel in one real wire-flow fixture"
+)]
+async fn run_native_server_kernel_flow(
+    history_rows: usize,
+    history_config: phux_client_core::history::HistoryCacheConfig,
+    interleave_live: bool,
+) -> (phux_client_core::history::HistoryStatus, usize, usize) {
+    use phux_client_core::engine::ghostty::GhosttyAdapter;
+    use phux_client_core::session::{EffectBuffer, SessionKernel};
+    use phux_protocol::caps::{BootstrapProfile, EngineCodec, EngineFeatureSet};
+
+    let token = CancellationToken::new();
+    let bundle = TerminalActor::build_with_token(
+        200,
+        3,
+        None,
+        test_scrollback(u32::try_from(history_rows.max(16)).expect("test history rows")),
+        token.clone(),
+    )
+    .expect("native actor");
+    let handle = bundle.handle.clone();
+    let mut actor = bundle.actor;
+    for row in 0..history_rows {
+        actor.vt_write_for_test(format!("server-history-{row:04}\r\n").as_bytes());
+    }
+    let (pty_tx, _writer_rx) = actor.install_test_pty_channels();
+    let run = tokio::task::spawn_local(actor.run());
+
+    let terminal_id = phux_protocol::ids::ResourceId::local(71);
+    let stream_id = phux_protocol::ids::StreamId::new(72).expect("stream id");
+    let bootstrap_id = phux_protocol::ids::BootstrapId::new(73).expect("bootstrap id");
+    let limits = phux_protocol::caps::BootstrapLimits::default();
+    let (reply, captured) = oneshot::channel();
+    handle
+        .terminal()
+        .expect("terminal facet")
+        .native_bootstrap
+        .send(NativeBootstrapRequest {
+            owner: 71,
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            limits,
+            max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+            max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+            reply,
+        })
+        .await
+        .expect("bootstrap request");
+    let capture = captured
+        .await
+        .expect("bootstrap reply")
+        .expect("bootstrap capture");
+    let cursor = capture.publication_cursor;
+
+    let mut kernel = SessionKernel::with_history_config(
+        GhosttyAdapter::new(limits),
+        BootstrapProfile::NativeState {
+            codec: EngineCodec::LibghosttySnapshotV1,
+            features: EngineFeatureSet::required_native(),
+        },
+        history_config,
+    );
+    let mut effects = EffectBuffer::new();
+    for frame in &capture.frames {
+        apply_native_wire_frame(&mut kernel, frame, &mut effects);
+    }
+    assert!(kernel.published(&terminal_id).is_some());
+
+    let (publication_reply, published) = oneshot::channel();
+    handle
+        .terminal()
+        .expect("terminal facet")
+        .native_publication
+        .send(NativePublicationRequest {
+            owner: 71,
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            cursor,
+            reply: publication_reply,
+        })
+        .await
+        .expect("publication request");
+    let mut live = published
+        .await
+        .expect("publication reply")
+        .expect("publication")
+        .live;
+
+    let (outbound, _outbound_rx) = mpsc::channel(2);
+    let mut pages = 0_usize;
+    let mut authenticated_rows = 0_usize;
+    let mut next_request = take_history_request(&mut effects);
+    while let Some((wire_cursor, max_bytes, max_rows)) = next_request {
+        let permit = outbound
+            .clone()
+            .reserve_owned()
+            .await
+            .expect("history permit");
+        let (reply, response) = oneshot::channel();
+        handle
+            .terminal()
+            .expect("terminal facet")
+            .native_history
+            .send(NativeHistoryRequest {
+                permit,
+                owner: 71,
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                cursor: wire_cursor.into(),
+                max_bytes,
+                max_rows,
+                limits,
+                reply,
+            })
+            .await
+            .expect("history request");
+        let frame = response
+            .await
+            .expect("history reply")
+            .result
+            .expect("history capture");
+        let FrameKind::HistoryPage { rows, .. } = &frame else {
+            panic!("cooperative request must produce one authenticated unit: {frame:?}");
+        };
+        pages += 1;
+        authenticated_rows += *rows as usize;
+        apply_native_wire_frame(&mut kernel, &frame, &mut effects);
+        next_request = take_history_request(&mut effects);
+
+        if interleave_live && pages == 1 {
+            pty_tx
+                .send(PtyEvent::Bytes {
+                    chunk: Bytes::from_static(b"live-between-server-pages\r\n"),
+                    read_at: std::time::Instant::now(),
+                })
+                .await
+                .expect("live PTY bytes");
+            let PaneOutput::Live { seq, bytes, .. } = live.recv().await.expect("live output")
+            else {
+                panic!("expected live output");
+            };
+            apply_native_wire_frame(
+                &mut kernel,
+                &FrameKind::ResourceOutput {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    seq,
+                    bytes,
+                },
+                &mut effects,
+            );
+        }
+        assert!(pages < 10_000, "history flow must terminate");
+    }
+
+    let status = kernel
+        .history_cache(&terminal_id)
+        .expect("history cache")
+        .status();
+    token.cancel();
+    run.await.expect("actor run");
+    (status, pages, authenticated_rows)
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn actual_server_wire_kernel_history_reaches_finish_with_zero_and_discarded_rows() {
+    use phux_client_core::history::{HistoryCacheConfig, HistoryLoadState};
+
+    let local = tokio::task::LocalSet::new();
+    local
+        .run_until(async {
+            let (empty, empty_units, empty_rows) =
+                run_native_server_kernel_flow(0, HistoryCacheConfig::default(), false).await;
+            assert_eq!(empty.state, HistoryLoadState::Complete);
+            assert_eq!(empty_units, 1, "empty history still authenticates FINISH");
+            assert_eq!(empty_rows, 0);
+
+            let tiny = HistoryCacheConfig {
+                max_materialized_rows: 1,
+                prefetch_rows: 2,
+                request_max_rows: 1024,
+                ..HistoryCacheConfig::default()
+            };
+            let (history, units, authenticated_rows) =
+                run_native_server_kernel_flow(3_000, tiny, true).await;
+            assert_eq!(history.state, HistoryLoadState::Complete);
+            assert!(units >= 3, "two history pages plus FINISH are required");
+            assert!(authenticated_rows > history.materialized_rows);
+            assert!(history.materialized_rows <= 1);
+        })
+        .await;
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn saturated_history_busy_hint_clamps_rows_on_the_public_wire() {
+    let bundle = TerminalActor::new(20, 5).expect("actor");
+    let mut actor = bundle.actor;
+    let (outbound, _outbound_rx) = mpsc::channel(MAX_NATIVE_HISTORY_CLIENTS + 1);
+    let mut saturated = None;
+    for owner in 0..=MAX_NATIVE_HISTORY_CLIENTS {
+        let permit = outbound
+            .clone()
+            .reserve_owned()
+            .await
+            .expect("history permit");
+        let (reply, response) = oneshot::channel();
+        actor.handle_native_history(NativeHistoryRequest {
+            permit,
+            owner: owner as u64,
+            terminal_id: phux_protocol::ids::ResourceId::local(1),
+            stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+            cursor: Bytes::from_static(b"not-a-valid-native-cursor"),
+            max_bytes: u32::MAX,
+            max_rows: u32::MAX,
+            limits: phux_protocol::caps::BootstrapLimits::default(),
+            reply,
+        });
+        if owner == MAX_NATIVE_HISTORY_CLIENTS {
+            saturated = Some(response);
+        }
+    }
+    let frame = saturated
+        .expect("saturated reply")
+        .await
+        .expect("busy response")
+        .result
+        .expect("busy frame");
+    let mut encoded = (&[][..]).into();
+    frame.encode(&mut encoded);
+    let (decoded, tail) = FrameKind::decode(&encoded).expect("public wire decode");
+    assert!(tail.is_empty());
+    assert!(matches!(
+        decoded,
+        FrameKind::HistoryRejected {
+            reason: phux_protocol::wire::frame::HistoryRejectionReason::Busy,
+            required_rows: phux_protocol::MAX_HISTORY_PAGE_ROWS,
+            ..
+        }
+    ));
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes() {
     const CHUNKS: usize = 200;
@@ -1752,6 +2122,7 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
             limits: phux_protocol::caps::BootstrapLimits::default(),
             reply,
         });
+        actor.cooperative_native_step();
         answered
             .await
             .expect("history reply")
@@ -1836,49 +2207,37 @@ async fn capture_host_allocation_failures_release_state_and_history_still_pages(
                 outbound: &mpsc::Sender<Outbound>,
                 cursor: Bytes,
             ) -> FrameKind {
-                loop {
-                    let permit = outbound
-                        .clone()
-                        .reserve_owned()
-                        .await
-                        .expect("history request permit");
-                    let (reply, response) = oneshot::channel();
-                    handle
-                        .terminal()
-                        .expect("terminal facet")
-                        .native_history
-                        .send(NativeHistoryRequest {
-                            permit,
-                            owner: 11,
-                            terminal_id: phux_protocol::ids::ResourceId::local(2),
-                            stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
-                            bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
-                                .expect("bootstrap id"),
-                            cursor: cursor.clone(),
-                            max_bytes: phux_protocol::caps::BootstrapLimits::default()
-                                .max_history_page_bytes(),
-                            max_rows: 128,
-                            limits: phux_protocol::caps::BootstrapLimits::default(),
-                            reply,
-                        })
-                        .await
-                        .expect("send history request");
-                    let frame = response
-                        .await
-                        .expect("history reply")
-                        .result
-                        .expect("history host");
-                    if matches!(
-                        frame,
-                        FrameKind::HistoryRejected {
-                            reason: phux_protocol::wire::frame::HistoryRejectionReason::Busy,
-                            ..
-                        }
-                    ) {
-                        continue;
-                    }
-                    return frame;
-                }
+                let permit = outbound
+                    .clone()
+                    .reserve_owned()
+                    .await
+                    .expect("history request permit");
+                let (reply, response) = oneshot::channel();
+                handle
+                    .terminal()
+                    .expect("terminal facet")
+                    .native_history
+                    .send(NativeHistoryRequest {
+                        permit,
+                        owner: 11,
+                        terminal_id: phux_protocol::ids::ResourceId::local(2),
+                        stream_id: phux_protocol::ids::StreamId::new(2).expect("stream id"),
+                        bootstrap_id: phux_protocol::ids::BootstrapId::new(4)
+                            .expect("bootstrap id"),
+                        cursor,
+                        max_bytes: phux_protocol::caps::BootstrapLimits::default()
+                            .max_history_page_bytes(),
+                        max_rows: 128,
+                        limits: phux_protocol::caps::BootstrapLimits::default(),
+                        reply,
+                    })
+                    .await
+                    .expect("send history request");
+                response
+                    .await
+                    .expect("history reply")
+                    .result
+                    .expect("history host")
             }
 
             let bundle = TerminalActor::new(20, 5).expect("new actor");

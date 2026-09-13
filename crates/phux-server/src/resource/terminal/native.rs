@@ -8,7 +8,8 @@ use super::{
     MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeBootstrapReply,
     NativeBootstrapRequest, NativeCursorOwner, NativeHistoryReply, NativeHistoryRequest,
     NativePublicationGeneration, NativePublicationReply, NativePublicationRequest, PaneOutput,
-    PendingNativeBootstrap, VecDeque, native_step_bytes, reserve_native_bytes, warn,
+    PendingNativeBootstrap, PendingNativeHistory, VecDeque, native_step_bytes,
+    reserve_native_bytes, warn,
 };
 use super::{NativeActorRequest, TerminalActor};
 
@@ -721,32 +722,100 @@ impl TerminalActor {
         let _ = req.reply.send(Ok(NativePublicationReply { replay, live }));
     }
 
-    /// Serve one HISTORY request end to end: validate the cursor, size the
-    /// caller buffer against the generation bounds, pull or serve-from-cache,
-    /// and answer.
-    ///
-    /// Every exit path releases the permit and answers the request exactly
-    /// once, which is what the staged early returns below preserve.
+    /// Queue one HISTORY request for bounded cooperative capture.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn handle_native_history(&mut self, req: NativeHistoryRequest) {
-        let NativeHistoryRequest {
-            permit,
-            owner,
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor: wire_cursor,
-            max_bytes,
-            max_rows,
-            limits,
-            reply,
-        } = req;
-        let id = HistoryFrameId {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor: wire_cursor,
+        let pending = PendingNativeHistory {
+            request: req,
+            started_at: tokio::time::Instant::now(),
         };
+        if self.pending_native_history.is_none() {
+            self.pending_native_history = Some(pending);
+            return;
+        }
+        if self.native_history_backlog.len() < MAX_NATIVE_HISTORY_CLIENTS.saturating_sub(1) {
+            self.native_history_backlog.push_back(pending);
+            return;
+        }
+        let req = pending.request;
+        let row_bound = req.max_rows.clamp(1, phux_protocol::MAX_HISTORY_PAGE_ROWS);
+        let byte_bound = req
+            .max_bytes
+            .min(req.limits.max_history_page_bytes())
+            .max(1);
+        let id = HistoryFrameId {
+            terminal_id: req.terminal_id,
+            stream_id: req.stream_id,
+            bootstrap_id: req.bootstrap_id,
+            cursor: req.cursor,
+        };
+        answer_history(
+            req.reply,
+            req.permit,
+            Ok(id.rejected(
+                phux_protocol::wire::frame::HistoryRejectionReason::Busy,
+                byte_bound,
+                row_bound,
+            )),
+        );
+    }
+
+    /// Advance at most one engine history step for the oldest queued request.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pub(super) fn step_native_history(&mut self) {
+        let Some(pending) = self.pending_native_history.take() else {
+            return;
+        };
+        if pending.started_at.elapsed() > NATIVE_CAPTURE_LIFETIME {
+            let request = pending.request;
+            let owner = request.owner;
+            let frame = history_request_id(&request)
+                .tombstone(phux_protocol::wire::frame::HistoryTombstoneReason::Expired);
+            self.release_native_owner(owner);
+            answer_history(request.reply, request.permit, Ok(frame));
+            self.start_next_native_history();
+            return;
+        }
+        match self.native_history_frame(&pending.request) {
+            Ok(Some(frame)) => {
+                let request = pending.request;
+                let owner = request.owner;
+                let keep = self.native_cursor_owners.contains_key(&owner);
+                if request
+                    .reply
+                    .send(NativeHistoryReply {
+                        permit: request.permit,
+                        result: Ok(frame),
+                    })
+                    .is_err()
+                    && keep
+                {
+                    self.release_native_owner(owner);
+                }
+                self.start_next_native_history();
+            }
+            Ok(None) => self.pending_native_history = Some(pending),
+            Err(error) => {
+                let request = pending.request;
+                answer_history(request.reply, request.permit, Err(error));
+                self.start_next_native_history();
+            }
+        }
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn start_next_native_history(&mut self) {
+        self.pending_native_history = self.native_history_backlog.pop_front();
+    }
+
+    /// Validate and advance one request. `None` means the engine made bounded
+    /// progress but has not completed the next authenticated unit yet.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn native_history_frame(
+        &mut self,
+        req: &NativeHistoryRequest,
+    ) -> Result<Option<FrameKind>, crate::native_state::NativeStateError> {
+        let id = history_request_id(req);
         // A cursor the actor cannot honour is a routine race, not a fault: a
         // resize drains every binding (`invalidate_all_native_cursors`) while
         // the client's HISTORY_REQUEST for the generation it was just handed
@@ -767,60 +836,42 @@ impl TerminalActor {
                 terminal_id = ?id.terminal_id,
                 "HISTORY_REQUEST carried a malformed cursor"
             );
-            answer_history(reply, permit, Ok(id.tombstone(stale)));
-            return;
+            return Ok(Some(id.tombstone(stale)));
         };
-        let Some((page_seq, record_index)) = self.history_binding(owner, &id, cursor) else {
-            answer_history(reply, permit, Ok(id.tombstone(stale)));
-            return;
+        let Some((page_seq, record_index)) = self.history_binding(req.owner, &id, cursor) else {
+            return Ok(Some(id.tombstone(stale)));
         };
-        let bound = max_bytes.min(limits.max_history_page_bytes());
-        if bound == 0 || max_rows == 0 {
+        let bound = req.max_bytes.min(req.limits.max_history_page_bytes());
+        if bound == 0 || req.max_rows == 0 {
             let frame = id.rejected(
                 phux_protocol::wire::frame::HistoryRejectionReason::ZeroLimit,
                 1,
                 1,
             );
-            answer_history(reply, permit, Ok(frame));
-            return;
+            return Ok(Some(frame));
         }
-        let delivery = self.history_record_at(&cursor, record_index, bound, max_rows);
-        let (result, keep) = match delivery {
+        let row_bound = req.max_rows.min(phux_protocol::MAX_HISTORY_PAGE_ROWS);
+        let frame = match self.history_record_at(&cursor, record_index, bound, row_bound) {
             Ok(record) => {
                 let finish = record.finish;
-                match self.advance_history_binding(owner, &record, page_seq) {
-                    Ok(rows) => (Ok(id.page(page_seq, record.bytes, rows, finish)), !finish),
-                    Err(error) => {
-                        answer_history(reply, permit, Err(error));
-                        return;
-                    }
-                }
+                let rows = self.advance_history_binding(req.owner, &record, page_seq)?;
+                id.page(page_seq, record.bytes, rows, finish)
             }
             Err(crate::native_state::NativeStateError::OutOfSpace {
                 required_bytes,
                 required_rows,
             }) => {
-                let (frame, keep) =
-                    self.history_out_of_space(owner, id, limits, required_bytes, required_rows);
-                (Ok(frame), keep)
+                self.history_out_of_space(req.owner, id, req.limits, required_bytes, required_rows)
+                    .0
             }
-            Err(crate::native_state::NativeStateError::ImportBusy) => (
-                Ok(id.rejected(
-                    phux_protocol::wire::frame::HistoryRejectionReason::Busy,
-                    bound,
-                    max_rows,
-                )),
-                true,
-            ),
+            Err(crate::native_state::NativeStateError::ImportBusy) => return Ok(None),
             Err(error) => {
                 let reason = history_tombstone_reason(error);
-                self.release_native_owner(owner);
-                (Ok(id.tombstone(reason)), false)
+                self.release_native_owner(req.owner);
+                id.tombstone(reason)
             }
         };
-        if reply.send(NativeHistoryReply { permit, result }).is_err() && keep {
-            self.release_native_owner(owner);
-        }
+        Ok(Some(frame))
     }
 
     /// Resolve `owner`'s cursor binding, returning its next page sequence and
@@ -1084,9 +1135,24 @@ impl TerminalActor {
         }
     }
 
+    pub(super) const fn native_work_pending(&self) -> bool {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        {
+            self.pending_native_bootstrap.is_some() || self.pending_native_history.is_some()
+        }
+        #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
+        {
+            false
+        }
+    }
+
     pub(super) fn cooperative_native_step(&mut self) {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-        self.step_native_bootstrap();
+        if self.pending_native_bootstrap.is_some() {
+            self.step_native_bootstrap();
+        } else {
+            self.step_native_history();
+        }
     }
 }
 
@@ -1115,6 +1181,16 @@ struct HistoryFrameId {
     bootstrap_id: phux_protocol::ids::BootstrapId,
     /// The opaque cursor the client echoed.
     cursor: Bytes,
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn history_request_id(request: &NativeHistoryRequest) -> HistoryFrameId {
+    HistoryFrameId {
+        terminal_id: request.terminal_id.clone(),
+        stream_id: request.stream_id,
+        bootstrap_id: request.bootstrap_id,
+        cursor: request.cursor.clone(),
+    }
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

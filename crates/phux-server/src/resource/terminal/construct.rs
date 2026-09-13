@@ -277,6 +277,10 @@ impl TerminalActor {
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_bootstrap_backlog: VecDeque::new(),
             #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            pending_native_history: None,
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            native_history_backlog: VecDeque::new(),
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
             native_publications: HashMap::new(),
             set_default_colors_rx,
             screen_rx,

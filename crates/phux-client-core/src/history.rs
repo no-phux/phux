@@ -9,6 +9,8 @@ use std::sync::Arc;
 
 /// Hard client-side row cap for one progressive history response.
 pub const MAX_HISTORY_PAGE_ROWS: u32 = 4096;
+/// Maximum consecutive transient rejections before one cursor is retired.
+const MAX_HISTORY_BUSY_RETRIES: u8 = 64;
 
 /// Client-local history bounds and prefetch policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,11 +48,7 @@ impl HistoryCacheConfig {
         self.request_max_bytes = self
             .request_max_bytes
             .clamp(1, u32::try_from(self.max_bytes).unwrap_or(u32::MAX));
-        self.request_max_rows = self.request_max_rows.clamp(
-            1,
-            MAX_HISTORY_PAGE_ROWS
-                .min(u32::try_from(self.max_materialized_rows).unwrap_or(u32::MAX)),
-        );
+        self.request_max_rows = self.request_max_rows.clamp(1, MAX_HISTORY_PAGE_ROWS);
         self
     }
 }
@@ -279,6 +277,7 @@ pub struct HistoryCache {
     viewport: ViewportAnchor,
     projection_width: u16,
     unread_rows: u64,
+    busy_retries: u8,
 }
 
 impl HistoryCache {
@@ -316,6 +315,7 @@ impl HistoryCache {
             viewport: ViewportAnchor::Tail,
             projection_width: projection_width.max(2),
             unread_rows: 0,
+            busy_retries: 0,
         }
     }
 
@@ -408,7 +408,6 @@ impl HistoryCache {
             || (required_bytes <= self.request_max_bytes && required_rows <= self.request_max_rows)
             || required_bytes > u32::try_from(self.config.max_bytes).unwrap_or(u32::MAX)
             || required_rows > MAX_HISTORY_PAGE_ROWS
-            || required_rows > u32::try_from(self.config.max_materialized_rows).unwrap_or(u32::MAX)
         {
             return None;
         }
@@ -423,6 +422,17 @@ impl HistoryCache {
             && self.next_cursor.is_some()
             && (self.materialized_rows < self.config.prefetch_rows
                 || matches!(self.viewport, ViewportAnchor::Pinned(_)))
+    }
+
+    pub(crate) const fn allow_busy_retry(&mut self) -> bool {
+        let Some(next) = self.busy_retries.checked_add(1) else {
+            return false;
+        };
+        if next > MAX_HISTORY_BUSY_RETRIES {
+            return false;
+        }
+        self.busy_retries = next;
+        true
     }
 
     /// Validate ordering and duplicate identity without mutating the cache.
@@ -530,15 +540,6 @@ impl HistoryCache {
                 budget: self.config.max_bytes,
             });
         }
-        let required_rows = self
-            .pinned_materialized_rows
-            .saturating_add(declared_rows as usize);
-        if required_rows > self.config.max_materialized_rows {
-            return Err(HistoryCacheError::PinnedProjectionBudget {
-                required: required_rows,
-                budget: self.config.max_materialized_rows,
-            });
-        }
         Ok(())
     }
 
@@ -616,6 +617,7 @@ impl HistoryCache {
         } else {
             HistoryLoadState::Complete
         };
+        self.busy_retries = 0;
         self.evict_to_budget();
         Ok(id)
     }

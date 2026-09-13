@@ -437,7 +437,7 @@ impl EngineAdapter for WebEngine {
         else {
             return Ok(HistoryApplyOutcome {
                 progress: BootstrapProgress::Finished,
-                retained: true,
+                retained_rows: declared_rows as usize,
                 authenticated_rows: declared_rows as usize,
             });
         };
@@ -457,7 +457,7 @@ impl EngineAdapter for WebEngine {
             if remaining.is_empty() {
                 return Ok(HistoryApplyOutcome {
                     progress: BootstrapProgress::Ready,
-                    retained,
+                    retained_rows: if retained { declared_rows as usize } else { 0 },
                     authenticated_rows: declared_rows as usize,
                 });
             }
@@ -481,7 +481,7 @@ impl EngineAdapter for WebEngine {
                     }
                     return Ok(HistoryApplyOutcome {
                         progress: BootstrapProgress::Finished,
-                        retained,
+                        retained_rows: if retained { declared_rows as usize } else { 0 },
                         authenticated_rows: declared_rows as usize,
                     });
                 }

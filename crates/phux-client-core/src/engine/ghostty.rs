@@ -1338,7 +1338,7 @@ fn push_history(
     };
     Ok(HistoryApplyOutcome {
         progress: BootstrapProgress::Ready,
-        retained: progress.rows != 0,
+        retained_rows: progress.rows,
         authenticated_rows: progress.authenticated_rows,
     })
 }
@@ -1351,7 +1351,7 @@ fn finish_history_decoder(native: &mut NativeReplica) -> HistoryApplyOutcome {
     native.decoder = NativeDecoderState::Finished(decoder.into_terminal());
     HistoryApplyOutcome {
         progress: BootstrapProgress::Finished,
-        retained: true,
+        retained_rows: 0,
         authenticated_rows: 0,
     }
 }
@@ -2033,10 +2033,16 @@ mod tests {
             .configure_history_budget(&mut replica, 64 * 1024, 2)
             .expect("engine history limits");
         let mut physical_high_water = 0;
+        let mut authenticated_rows = 0;
+        let mut retained_rows = 0;
+        let mut discarded_page = false;
         for (page, rows) in &captured.history {
-            adapter
+            let outcome = adapter
                 .apply_history_page(&mut replica, page, *rows, &mut effects)
                 .expect("bounded history unit");
+            authenticated_rows += outcome.authenticated_rows;
+            retained_rows += outcome.retained_rows;
+            discarded_page |= outcome.authenticated_rows != 0 && outcome.retained_rows == 0;
             physical_high_water = physical_high_water.max(
                 replica
                     .terminal()
@@ -2050,6 +2056,8 @@ mod tests {
             assert!(projection.rows.len() <= 2);
         }
         assert!(physical_high_water <= crate::history::MAX_HISTORY_PAGE_ROWS as usize);
+        assert!(discarded_page);
+        assert!(authenticated_rows > retained_rows);
     }
 
     #[test]

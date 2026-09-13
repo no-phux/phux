@@ -63,7 +63,7 @@ enum TickOutcome {
     Emitted(usize),
 }
 
-/// The cooperative native-bootstrap pump's position for one `run` turn.
+/// The cooperative native-capture pump's position for one `run` turn.
 ///
 /// While a native bootstrap is in flight the loop alternates a yield to the
 /// runtime with exactly one record step, so prefix capture advances between
@@ -72,7 +72,7 @@ enum TickOutcome {
 /// (if either) the current turn owes.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BootstrapPump {
-    /// No bootstrap in flight: both pump arms stay disabled.
+    /// No capture work in flight: both pump arms stay disabled.
     Idle,
     /// This turn owes the in-flight bootstrap one record step.
     StepDue,
@@ -83,8 +83,8 @@ enum BootstrapPump {
 impl BootstrapPump {
     /// Resolve the pump from the actor's bootstrap state plus whether the
     /// previous turn left a step owed.
-    const fn resolve(bootstrap_pending: bool, step_owed: bool) -> Self {
-        if !bootstrap_pending {
+    const fn resolve(work_pending: bool, step_owed: bool) -> Self {
+        if !work_pending {
             return Self::Idle;
         }
         if step_owed {
@@ -249,7 +249,7 @@ impl TerminalActor {
             // here and there, so one read stands in for the ~ten separate
             // reads the guards used to make.
             let bootstrap_pending = self.native_bootstrap_pending();
-            let pump = BootstrapPump::resolve(bootstrap_pending, native_step_due);
+            let pump = BootstrapPump::resolve(self.native_work_pending(), native_step_due);
 
             tokio::select! {
                 biased;
@@ -669,7 +669,7 @@ impl TerminalActor {
             bytes: burst.payload,
             at: read_at,
         });
-        let native_step_due = self.native_bootstrap_pending();
+        let native_step_due = self.native_work_pending();
         if burst.saw_eof {
             self.handle_pty_eof();
         } else if burst.hit_byte_cap {

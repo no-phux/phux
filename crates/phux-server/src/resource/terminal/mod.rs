@@ -449,6 +449,13 @@ struct PendingNativeBootstrap {
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
+struct PendingNativeHistory {
+    request: NativeHistoryRequest,
+    started_at: tokio::time::Instant,
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug)]
 struct NativePublicationGeneration {
     base_seq: u64,
     replay: VecDeque<(u64, Bytes)>,
@@ -736,6 +743,10 @@ pub struct TerminalActor {
     pending_native_bootstrap: Option<PendingNativeBootstrap>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_bootstrap_backlog: VecDeque<NativeBootstrapRequest>,
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    pending_native_history: Option<PendingNativeHistory>,
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    native_history_backlog: VecDeque<PendingNativeHistory>,
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     native_publications:
         HashMap<crate::native_state::OpaqueHistoryCursor, NativePublicationGeneration>,
