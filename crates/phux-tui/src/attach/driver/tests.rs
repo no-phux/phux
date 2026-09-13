@@ -1000,34 +1000,6 @@ fn a_write_to_a_departed_peer_is_not_a_loop_ending_error() {
     assert!(!peer_gone(&AttachError::Protocol("bad frame".to_owned())));
 }
 
-/// phux-501l: last-pane death can close the UDS after ATTACH is acknowledged
-/// and before the client's bootstrap / post-paint sweeps finish. Those
-/// `Subscribe*` / `GetMetadata` writes must not become `Io(BrokenPipe)` — the
-/// `RESOURCE_CLOSED` that names the ending is already sitting in the
-/// decode buffer.
-#[tokio::test]
-async fn a_subscription_write_to_a_departed_peer_is_not_a_loop_ending_error() {
-    let (client_stream, server_stream) = UnixStream::pair().expect("pair");
-    let mut client = Connection::from_stream(client_stream);
-    drop(server_stream);
-
-    let sessions = vec![session_info(1, "work"), session_info(2, "scratch")];
-    let mut next_request_id = 1;
-    let mut pending = HashMap::new();
-    let mut subscribed = std::collections::HashSet::new();
-
-    sync_foreign_layout_subscriptions(
-        &mut client,
-        &sessions,
-        Some(phux_protocol::ids::SessionId::new(1)),
-        &mut next_request_id,
-        &mut pending,
-        &mut subscribed,
-    )
-    .await
-    .expect("a write into a socket the server already closed must not fail the attach loop");
-}
-
 #[test]
 fn headless_completion_drains_history_and_metadata_after_attach_ready() {
     let terminal_id = ResourceId::local(7);

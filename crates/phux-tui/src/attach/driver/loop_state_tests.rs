@@ -102,6 +102,10 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
             .bootstrap(&mut client, &mut out, initial_attached(), None)
             .await
             .unwrap();
+        state
+            .emit_deferred_bootstrap_outbound(&mut client)
+            .await
+            .unwrap();
         let request_id = state.layout_get_request_id.unwrap();
         let before = state.workspace.clone();
         let unsupported = metadata.is_some();
@@ -220,7 +224,101 @@ async fn bootstrapped_loop_with(
         .bootstrap(&mut client, &mut out, initial_attached(), None)
         .await
         .unwrap();
+    state
+        .emit_deferred_bootstrap_outbound(&mut client)
+        .await
+        .unwrap();
     (state, client, server, out)
+}
+
+/// phux-501l: ATTACHED replay must not put `Subscribe*` / `GetMetadata` /
+/// `RESIZE_TERMINAL` on the wire. Last-pane death can already have posted
+/// `RESOURCE_CLOSED`; the recv arm applies that close before these writes
+/// are allowed to spend.
+#[tokio::test(flavor = "current_thread")]
+async fn bootstrap_replay_does_not_write_until_the_recv_arm_drains() {
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let mut client = Connection::from_stream(a);
+    let mut server = Connection::from_stream(b);
+    let negotiated = NegotiatedBootstrap {
+        profile: BootstrapProfile::SynthesizedVtRaw,
+        limits: BootstrapLimits::default(),
+        server_features: ServerFeatureSet::new(),
+    };
+    let mut state = SessionLoop::new(
+        negotiated,
+        PredictiveConfig::disabled(),
+        false,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    state
+        .bootstrap(&mut client, &mut out, initial_attached(), None)
+        .await
+        .unwrap();
+    assert!(
+        server.try_recv().unwrap().is_none(),
+        "bootstrap replay wrote a frame before the recv arm could apply an already-buffered close",
+    );
+    drop(server);
+}
+
+/// phux-501l: a last-pane `RESOURCE_CLOSED` on the first recv-arm burst must
+/// end the attach without sending the deferred bootstrap subscriptions.
+#[tokio::test(flavor = "current_thread")]
+async fn last_pane_close_on_first_burst_skips_deferred_bootstrap_writes() {
+    let (a, b) = tokio::net::UnixStream::pair().unwrap();
+    let mut client = Connection::from_stream(a);
+    let mut server = Connection::from_stream(b);
+    let negotiated = NegotiatedBootstrap {
+        profile: BootstrapProfile::SynthesizedVtRaw,
+        limits: BootstrapLimits::default(),
+        server_features: ServerFeatureSet::new(),
+    };
+    let mut state = SessionLoop::new(
+        negotiated,
+        PredictiveConfig::disabled(),
+        false,
+        None,
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    let mut out = Vec::new();
+    state
+        .bootstrap(&mut client, &mut out, initial_attached(), None)
+        .await
+        .unwrap();
+    let closed = FrameKind::ResourceClosed {
+        terminal_id: ResourceId::local(1),
+        exit_status: Some(7),
+        reason: phux_protocol::wire::frame::CloseReason::Exited,
+    };
+    let step = state
+        .handle_frame_burst(&mut client, &mut out, None, closed)
+        .await
+        .unwrap();
+    match step {
+        Step::Exit(LoopExit::Detached {
+            end: AttachEnd::LastPaneClosed {
+                exit_status: Some(7),
+            },
+            ..
+        }) => {}
+        Step::Continue => panic!("expected LastPaneClosed(7), got Continue"),
+        Step::Exit(other) => panic!("expected LastPaneClosed(7), got {other:?}"),
+    }
+    assert!(
+        server.try_recv().unwrap().is_none(),
+        "last-pane close must not send Subscribe* / GetMetadata into a session that already ended",
+    );
+    drop(client);
+    drop(server);
 }
 
 #[tokio::test(flavor = "current_thread")]

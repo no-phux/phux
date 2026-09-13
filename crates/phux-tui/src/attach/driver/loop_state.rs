@@ -548,6 +548,12 @@ pub(super) struct SessionLoop {
     layout_get_request_id: Option<u32>,
     /// Shared writes remain fenced until the initial correlated GET succeeds.
     layout_read_complete: bool,
+    /// `Some(subscribe_layout)` until the first recv-arm drain. Bootstrap
+    /// `Subscribe*` / `GetMetadata` / `RESIZE_TERMINAL` wait so a last-pane
+    /// `RESOURCE_CLOSED` already in the decode buffer is applied first
+    /// (phux-501l). Writing them from `bootstrap` raced that close into
+    /// `Io(BrokenPipe)`.
+    bootstrap_outbound: Option<bool>,
     /// phux-4li.5: request-id allocator for L3 GET correlation.
     next_request_id: u32,
     /// phux-4li.12: in-flight `split-pane` actions parked by request id.
@@ -819,6 +825,7 @@ impl SessionLoop {
             zoomed: None,
             layout_get_request_id: None,
             layout_read_complete: false,
+            bootstrap_outbound: None,
             next_request_id: 1,
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
@@ -1356,7 +1363,12 @@ impl SessionLoop {
                 .unwrap_or(AttachEnd::Detached { reason: None });
             return Ok(Some(detached_loop_exit(end, false)));
         }
-        self.size_bootstrap_panes(conn, sidebar).await?;
+        // phux-501l: do not write yet. `wait_until_attached` only proves the
+        // server processed ATTACH; last-pane `exit 7` can already have posted
+        // RESOURCE_CLOSED. Those writes belong on the recv-arm drain, after
+        // that close has had a chance to fold the session (same deferral as
+        // `peers.sweep_pending`).
+        self.bootstrap_outbound = Some(outcome.subscribe_layout);
         self.vcs.apply_snapshot(outcome.pane_cwds);
         if let Some((list, focused)) = outcome.sessions {
             self.peers.sessions = list;
@@ -1376,8 +1388,6 @@ impl SessionLoop {
         if outcome.own_client_id.is_some() {
             self.own_client_id = outcome.own_client_id;
         }
-        self.subscribe_bootstrap(conn, outcome.subscribe_layout)
-            .await?;
         // phux-4li.17: seed the window/tab strip from the bootstrap layout so
         // the first bootstrap-driven bar paint shows the window.
         // phux-4h5a: the sidebar painter tracks the same window list so the strip's
@@ -1437,35 +1447,24 @@ impl SessionLoop {
     ) -> Result<(), AttachError> {
         // Server-scoped (`terminal: None`) so we see control events for every
         // pane, not just one.
-        //
-        // phux-501l: these bootstrap writes race last-pane death. The e2e
-        // waits only until the server has processed ATTACH; `exit 7` can
-        // reap the session while we are still sending Subscribe* / GetMetadata.
-        // A write into that closed UDS must not become `Io(BrokenPipe)` —
-        // RESOURCE_CLOSED is already in the decode buffer for the recv loop.
-        send_unless_peer_gone(conn, &FrameKind::SubscribeEvents { terminal: None }).await?;
+        conn.send(&FrameKind::SubscribeEvents { terminal: None })
+            .await?;
         // phux-foz.5: watch the config-reload doorbell so a `phux config
         // reload` from any shell reaches this client as a METADATA_CHANGED
         // broadcast (the config itself never crosses the wire — we re-read
         // our own file). Torn down implicitly on detach like every metadata
         // subscription.
-        send_unless_peer_gone(
-            conn,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Global,
-                key: CONFIG_RELOAD_KEY.to_owned(),
-            },
-        )
+        conn.send(&FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: CONFIG_RELOAD_KEY.to_owned(),
+        })
         .await?;
         // ADR-0105: follow the keep-empty mark, so a mark set or cleared after
         // attach still decides whether the last pane's close detaches.
-        send_unless_peer_gone(
-            conn,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Global,
-                key: phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY.to_owned(),
-            },
-        )
+        conn.send(&FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY.to_owned(),
+        })
         .await?;
         if subscribe_layout && let Some(session) = self.peers.focused_session {
             // phux-4li.5: ask the server for any persisted layout, then
@@ -1479,22 +1478,16 @@ impl SessionLoop {
             self.layout_get_request_id = Some(req_id);
             self.layout_read_complete = false;
             self.next_request_id = self.next_request_id.wrapping_add(1);
-            send_unless_peer_gone(
-                conn,
-                &FrameKind::GetMetadata {
-                    request_id: req_id,
-                    scope: Scope::Group(DEFAULT_GROUP_ID),
-                    key: key.clone(),
-                },
-            )
+            conn.send(&FrameKind::GetMetadata {
+                request_id: req_id,
+                scope: Scope::Group(DEFAULT_GROUP_ID),
+                key: key.clone(),
+            })
             .await?;
-            send_unless_peer_gone(
-                conn,
-                &FrameKind::SubscribeMetadata {
-                    scope: Scope::Group(DEFAULT_GROUP_ID),
-                    key,
-                },
-            )
+            conn.send(&FrameKind::SubscribeMetadata {
+                scope: Scope::Group(DEFAULT_GROUP_ID),
+                key,
+            })
             .await?;
         }
         // ADR-0040: read + watch every bootstrap pane's `phux.agent/v1` record
@@ -1502,6 +1495,22 @@ impl SessionLoop {
         // paint. The same sweep re-runs whenever the pane set changes.
         self.sync_agent_meta(conn).await?;
         self.adopt_input_replay(conn).await
+    }
+
+    /// Size the bootstrap PTYs and open the attach-lifetime subscriptions.
+    ///
+    /// Called from the recv-arm drain, not from [`Self::bootstrap`]: a last-pane
+    /// `RESOURCE_CLOSED` that beat these writes must fold the session first.
+    pub(super) async fn emit_deferred_bootstrap_outbound(
+        &mut self,
+        conn: &mut Connection,
+    ) -> Result<(), AttachError> {
+        let Some(subscribe_layout) = self.bootstrap_outbound.take() else {
+            return Ok(());
+        };
+        let sidebar = self.sidebar();
+        self.size_bootstrap_panes(conn, sidebar).await?;
+        self.subscribe_bootstrap(conn, subscribe_layout).await
     }
 
     /// Install the ADR-0053 replay journal the CLI's reconnect loop owns.
@@ -2311,6 +2320,10 @@ impl SessionLoop {
                 }
             }
         }
+        // Only a burst that did not end the attach may spend. Last-pane
+        // RESOURCE_CLOSED returns above, so these writes never run into a
+        // socket the server already closed for that reason.
+        self.emit_deferred_bootstrap_outbound(conn).await?;
         self.drain_repaint(out, sidebar, &mut repaint);
         // phux-l96p.3: settle whatever the pacer is still holding, rather
         // than leaving it to the `paint_deadline` arm. Two ways to get here,
@@ -3015,7 +3028,12 @@ impl SessionLoop {
         // removed them (ResourceClosed). Re-sweep so every
         // live pane has a `phux.agent/v1` watch; the len
         // guard keeps the steady state zero-cost.
-        if self.panes.len() != self.agent_meta.subscribed.len() {
+        // subscribe_bootstrap will open these watches once the recv arm
+        // proves the session is still attached (phux-501l). Writing them
+        // from the first output frame raced last-pane RESOURCE_CLOSED in
+        // the same burst.
+        if self.bootstrap_outbound.is_none() && self.panes.len() != self.agent_meta.subscribed.len()
+        {
             self.sync_agent_meta(conn).await?;
         }
         // phux-p4vp: the ATTACHED snapshot refreshes the pane-cwd index

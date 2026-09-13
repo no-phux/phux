@@ -15,8 +15,6 @@ use crate::layout::Workspace;
 use phux_client::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
-use super::session_io::send_unless_peer_gone;
-
 /// phux-foz.8: fetch each peer session's persisted layout — one
 /// `GET_METADATA` on the per-session layout key per session other than
 /// `focused` — so the window picker can render one-step cross-session
@@ -38,14 +36,11 @@ pub(super) async fn sync_foreign_layout_subscriptions(
         *next_request_id = next_request_id.wrapping_add(1);
         pending.insert(request_id, s.id);
         let key = layout_key(s.id);
-        send_unless_peer_gone(
-            conn,
-            &FrameKind::GetMetadata {
-                request_id,
-                scope: Scope::Group(DEFAULT_GROUP_ID),
-                key: key.clone(),
-            },
-        )
+        conn.send(&FrameKind::GetMetadata {
+            request_id,
+            scope: Scope::Group(DEFAULT_GROUP_ID),
+            key: key.clone(),
+        })
         .await?;
         // phux-k0cw: the GET is the level; this is the edge. Sent even when
         // the GET will answer `None` — a peer that has not persisted a layout
@@ -56,13 +51,10 @@ pub(super) async fn sync_foreign_layout_subscriptions(
         // UNSUBSCRIBE_METADATA verb (docs/spec/L3.md), so a subscription ends
         // with the connection.
         if subscribed.insert(s.id) {
-            send_unless_peer_gone(
-                conn,
-                &FrameKind::SubscribeMetadata {
-                    scope: Scope::Group(DEFAULT_GROUP_ID),
-                    key,
-                },
-            )
+            conn.send(&FrameKind::SubscribeMetadata {
+                scope: Scope::Group(DEFAULT_GROUP_ID),
+                key,
+            })
             .await?;
         }
     }
@@ -143,24 +135,18 @@ pub(super) async fn sync_foreign_agent_subscriptions(
         let request_id = *next_request_id;
         *next_request_id = next_request_id.wrapping_add(1);
         pending.insert(request_id, id.clone());
-        send_unless_peer_gone(
-            conn,
-            &FrameKind::GetMetadata {
-                request_id,
-                scope: Scope::Resource(id.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
+        conn.send(&FrameKind::GetMetadata {
+            request_id,
+            scope: Scope::Resource(id.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
+        })
         .await?;
         // The level, then the edge — same shape as the layout sweep.
         if subscribed.insert(id.clone()) {
-            send_unless_peer_gone(
-                conn,
-                &FrameKind::SubscribeMetadata {
-                    scope: Scope::Resource(id),
-                    key: RESOURCE_AGENT_KEY.to_owned(),
-                },
-            )
+            conn.send(&FrameKind::SubscribeMetadata {
+                scope: Scope::Resource(id),
+                key: RESOURCE_AGENT_KEY.to_owned(),
+            })
             .await?;
         }
     }
@@ -258,22 +244,16 @@ pub(super) async fn sync_agent_meta_subscriptions(
         let request_id = *next_request_id;
         *next_request_id = next_request_id.wrapping_add(1);
         agent_meta.pending.insert(request_id, id.clone());
-        send_unless_peer_gone(
-            conn,
-            &FrameKind::GetMetadata {
-                request_id,
-                scope: Scope::Resource(id.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
+        conn.send(&FrameKind::GetMetadata {
+            request_id,
+            scope: Scope::Resource(id.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
+        })
         .await?;
-        send_unless_peer_gone(
-            conn,
-            &FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(id.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            },
-        )
+        conn.send(&FrameKind::SubscribeMetadata {
+            scope: Scope::Resource(id.clone()),
+            key: RESOURCE_AGENT_KEY.to_owned(),
+        })
         .await?;
         agent_meta.subscribed.insert(id.clone());
     }
