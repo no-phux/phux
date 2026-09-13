@@ -33,10 +33,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::BytesMut;
+use futures_util::future::{FutureExt as _, LocalBoxFuture};
+use futures_util::stream::{FuturesUnordered, StreamExt as _};
 use phux_dial::window::{SendWindow, TrackedSend};
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::wire::framing;
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use wtransport::endpoint::{IncomingSession, SessionRequest};
 use wtransport::error::StreamReadExactError;
@@ -52,11 +55,25 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// quiet browser tab holds its session open across NATs.
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
+/// Complete the HTTP/3 request, token gate, session acceptance, and first
+/// phux stream within the same bound used by the other remote transports.
+const ESTABLISH_DEADLINE: Duration = super::HANDSHAKE_DEADLINE;
+
+/// Bound transport-live sessions which have not yet produced their phux
+/// stream. Each pending establishment retains an HTTP/3 session and QUIC
+/// state, so concurrency must be finite even though one slow peer must not
+/// serialize the listener.
+const MAX_PENDING_ESTABLISHMENTS: usize = 32;
+
+type Accepted = (WtReader, WtWriter, crate::auth::ConnectionIdentity);
+type PendingEstablishments = FuturesUnordered<LocalBoxFuture<'static, Option<Accepted>>>;
+
 /// A WebTransport listener: a wtransport server endpoint bound to a UDP
 /// socket, optionally token-authenticated for routable consumers.
 pub(crate) struct WtListener {
     endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
     tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+    pending: Mutex<PendingEstablishments>,
 }
 
 /// Errors from constructing a [`WtListener`].
@@ -98,6 +115,7 @@ impl WtListener {
         Ok(Self {
             endpoint: wtransport::Endpoint::server(config)?,
             tokens,
+            pending: Mutex::new(FuturesUnordered::new()),
         })
     }
 
@@ -111,9 +129,9 @@ impl WtListener {
     /// handshake, token gate, session accept, then the consumer's single
     /// bidirectional stream. `None` means "refused or failed — next session".
     async fn establish(
-        &self,
         incoming: IncomingSession,
-    ) -> Option<(WtReader, WtWriter, crate::auth::ConnectionIdentity)> {
+        tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+    ) -> Option<Accepted> {
         let request = match incoming.await {
             Ok(request) => request,
             Err(err) => {
@@ -126,7 +144,7 @@ impl WtListener {
         // Token gate BEFORE the session is accepted, mirroring the WebSocket
         // path's reject-at-the-upgrade: an unauthorized consumer sees HTTP
         // 403 and no WebTransport session ever exists.
-        let credential = match &self.tokens {
+        let credential = match &tokens {
             Some(store) => {
                 let Some(credential) = authorize_request(&request, store) else {
                     warn!(%remote, "webtransport consumer refused: missing or invalid token");
@@ -186,6 +204,21 @@ impl WtListener {
                 ssh_origin: None,
             },
         ))
+    }
+
+    /// Bound every stage after the endpoint yields an incoming session,
+    /// including the application-owned first-stream admission.
+    async fn establish_bounded(
+        incoming: IncomingSession,
+        tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+        deadline: Duration,
+    ) -> Option<Accepted> {
+        tokio::time::timeout(deadline, Self::establish(incoming, tokens))
+            .await
+            .unwrap_or_else(|_| {
+                debug!("webtransport establishment timed out");
+                None
+            })
     }
 }
 
@@ -264,14 +297,25 @@ impl Incoming for WtListener {
     }
 
     async fn accept(&self) -> io::Result<(WtReader, WtWriter, crate::auth::ConnectionIdentity)> {
-        // One endpoint multiplexes many sessions; a single bad handshake or
-        // refused token must not tear the listener down, so per-session
-        // failures loop (logged inside `establish`). This mirrors the QUIC
-        // listener's multiplexed accept loop.
         loop {
-            let incoming = self.endpoint.accept().await;
-            if let Some(accepted) = self.establish(incoming).await {
-                return Ok(accepted);
+            let mut pending = self.pending.lock().await;
+            let incoming = tokio::select! {
+                completed = pending.next(), if !pending.is_empty() => {
+                    if let Some(Some(accepted)) = completed {
+                        return Ok(accepted);
+                    }
+                    None
+                }
+                incoming = self.endpoint.accept(), if pending.len() < MAX_PENDING_ESTABLISHMENTS => {
+                    Some(incoming)
+                }
+            };
+            drop(pending);
+            if let Some(incoming) = incoming {
+                self.pending.lock().await.push(
+                    Self::establish_bounded(incoming, self.tokens.clone(), ESTABLISH_DEADLINE)
+                        .boxed_local(),
+                );
             }
         }
     }
@@ -591,5 +635,32 @@ mod tests {
                 panic!("server must not accept a session without a token");
             }
         }
+    }
+
+    #[tokio::test]
+    async fn no_stream_session_does_not_block_next_consumer() {
+        let (_dir, listener) = listener(None);
+        let addr = listener.local_addr().unwrap();
+        let url = format!("https://127.0.0.1:{}/session", addr.port());
+
+        let clients = async {
+            let stalled = client_endpoint().connect(&url).await.unwrap();
+            let conn = client_endpoint().connect(&url).await.unwrap();
+            let (mut send, _recv) = conn.open_bi().await.unwrap().await.unwrap();
+            send.write_all(&FRAME).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            drop(stalled);
+        };
+        let accepted = async {
+            let (mut reader, _writer, _peer) = listener.accept().await.unwrap();
+            reader.read_frame().await.unwrap().unwrap()
+        };
+
+        let ((), frame) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(clients, accepted)
+        })
+        .await
+        .expect("healthy consumer must not wait for stalled first stream");
+        assert_eq!(frame.as_ref(), FRAME);
     }
 }
