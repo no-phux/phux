@@ -20,6 +20,8 @@
 //!   * [`ClientHandle::wait_until`] — drain until a screen predicate holds.
 //!   * [`ClientHandle::converge`] — drain until the screen stops changing
 //!     for an idle window (the "screen settled" signal).
+//!   * [`ClientHandle::converge_until`] — same, but ignore idle gaps until
+//!     a completion predicate holds.
 //!   * [`ClientHandle::resize`] — send `VIEWPORT_RESIZE`.
 //!   * [`ClientHandle::detach`] / [`ClientHandle::reattach`] — drop the
 //!     stream / open a fresh one against the same session.
@@ -585,19 +587,39 @@ impl ClientHandle {
     /// within `idle_ms`, the screen is settled. A long-running emitter (an
     /// infinite output loop) never settles and the call returns at the
     /// [`WIRE_RECV_TIMEOUT`] ceiling.
+    ///
+    /// Idle-only settle is the wrong oracle for a burst that can pause
+    /// between rows. Use [`Self::converge_until`] when completion has a
+    /// marker.
     pub async fn converge(&mut self, idle_ms: u64) -> Duration {
+        self.converge_until(idle_ms, |_| true).await
+    }
+
+    /// [`converge`](Self::converge), but a quiet gap is not settle until
+    /// `pred` holds.
+    ///
+    /// Colored-output seeds build each SGR row in a shell loop. Under
+    /// load that loop can go quiet for longer than [`DEFAULT_IDLE_MS`]
+    /// before `COLORDONE`. Treating that gap as completion makes the
+    /// latency gate race the emitter (phux-4s38). The idle window starts
+    /// only after the predicate is true; first-byte timing is unchanged.
+    pub async fn converge_until<P>(&mut self, idle_ms: u64, mut pred: P) -> Duration
+    where
+        P: FnMut(&mut Screen) -> bool,
+    {
         let idle = Duration::from_millis(idle_ms);
         let hard_deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
         let mut first_byte_at: Option<Instant> = None;
+        let mut complete = pred(&mut self.screen);
         loop {
             let now = tokio::time::Instant::now();
             if now >= hard_deadline {
                 break;
             }
-            // Before the first byte, wait the full remaining budget (a
-            // deferred burst must not look settled). After it, only wait
-            // out the idle window.
-            let budget = if first_byte_at.is_some() {
+            // Before the first byte, or before the completion marker, wait
+            // the remaining hard budget so a transient gap is not settle.
+            // After both, only wait out the idle window.
+            let budget = if first_byte_at.is_some() && complete {
                 (hard_deadline - now).min(idle)
             } else {
                 hard_deadline - now
@@ -606,9 +628,10 @@ impl ClientHandle {
                 Ok((tb, FrameKind::ResourceOutput { bytes, .. })) if tb == TYPE_RESOURCE_OUTPUT => {
                     first_byte_at.get_or_insert_with(Instant::now);
                     self.screen.write(&bytes);
+                    complete = pred(&mut self.screen);
                 }
                 Ok(_) => {}      // non-output frame; not a screen change, keep waiting
-                Err(_) => break, // idle window (or first-byte wait) elapsed: settled
+                Err(_) => break, // idle window (or hard first-byte/marker wait) elapsed
             }
         }
         // Time-to-settle is measured from the first byte (input->render

@@ -84,9 +84,11 @@ fn colored_burst_settles_under_ceiling() {
             .viewport(COLS, ROWS)
             .run(|mut clients| async move {
                 let client = &mut clients[0];
-                // Converge: drain until the screen is idle for the window.
-                // The returned duration is first-byte→settle.
-                let settle = client.converge(DEFAULT_IDLE_MS).await;
+                // Marker-gated settle: a quiet gap between SGR rows is not
+                // completion. First-byte→idle after COLORDONE (phux-4s38).
+                let settle = client
+                    .converge_until(DEFAULT_IDLE_MS, |s| s.contains("COLORDONE"))
+                    .await;
                 let screen = client.screenshot().await.snapshot_text();
                 cap.attach_screen(screen.clone());
 
