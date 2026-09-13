@@ -90,18 +90,38 @@ pub(super) fn default_colors() -> Option<TerminalDefaultColors> {
 /// `None` means the probe cannot continue at all. An interrupted wait retries
 /// against the same deadline so a signal cannot extend the budget.
 fn wait_readable<Fd: AsFd>(tty: &Fd, deadline: Instant) -> Option<bool> {
+    wait_with(deadline, Instant::now, |timeout| {
+        // Rustix 1 takes a precise `Timespec`; retain the old round-up so a
+        // sub-millisecond tail still waits rather than spinning to deadline.
+        let timeout = Timespec::try_from(timeout).map_err(|_| Errno::INVAL)?;
+        let mut fds = [PollFd::new(tty, PollFlags::IN)];
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(0) => Ok(false),
+            Ok(_) => Ok(true),
+            Err(e) => Err(e),
+        }
+    })
+}
+
+/// One deadline, one remaining-time poll, EINTR retries the same Instant.
+///
+/// The host-wall clock is not an oracle here: a descheduled test thread
+/// can outlive `PROBE_BUDGET * 4` without the probe restarting its budget
+/// (phux-tur1). Tests drive this with a fake clock so contention cannot
+/// be mistaken for a restarted deadline.
+fn wait_with(
+    deadline: Instant,
+    mut now: impl FnMut() -> Instant,
+    mut poll_once: impl FnMut(Duration) -> Result<bool, Errno>,
+) -> Option<bool> {
     loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+        let remaining = deadline.saturating_duration_since(now());
         if remaining.is_zero() {
             return Some(false);
         }
-        // Rustix 1 takes a precise `Timespec`; retain the old round-up so a
-        // sub-millisecond tail still waits rather than spinning to deadline.
-        let timeout = Timespec::try_from(remaining.max(Duration::from_millis(1))).ok()?;
-        let mut fds = [PollFd::new(tty, PollFlags::IN)];
-        match rustix::event::poll(&mut fds, Some(&timeout)) {
-            Ok(0) => return Some(false),
-            Ok(_) => return Some(true),
+        match poll_once(remaining.max(Duration::from_millis(1))) {
+            Ok(false) => return Some(false),
+            Ok(true) => return Some(true),
             Err(Errno::INTR) => {}
             Err(_) => return None,
         }
@@ -228,67 +248,99 @@ mod tests {
         assert_eq!(parse_responses(b"\x1b]10;rgb:ff/ff/ff"), (None, None));
     }
 
-    /// A terminal that never answers must cost the probe its budget once, not
-    /// a `VTIME` timeout per read.
+    /// A silent source costs one remaining-time poll, not a restarted budget.
+    ///
+    /// The clock and `poll` are fakes so host descheduling cannot be judged
+    /// as probe work (phux-tur1). A restarted deadline would poll again
+    /// with a fresh 20 ms after the first timeout.
     #[test]
     fn silent_source_gives_up_at_the_deadline() {
-        let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "sleep 30"])
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn silent source");
-        let stdout = child.stdout.take().expect("piped stdout");
-        let started = Instant::now();
-        let waited = wait_readable(&stdout, started + Duration::from_millis(20));
-        let elapsed = started.elapsed();
-        let _ = child.kill();
-        let _ = child.wait();
+        let start = Instant::now();
+        let budget = Duration::from_millis(20);
+        let deadline = start + budget;
+        let mut now = start;
+        let mut polls = Vec::new();
+        let waited = wait_with(
+            deadline,
+            || now,
+            |timeout| {
+                assert!(
+                    polls.len() < 2,
+                    "a timed-out poll must not restart the deadline"
+                );
+                polls.push(timeout);
+                now += timeout;
+                Ok(false)
+            },
+        );
         assert_eq!(waited, Some(false));
-        assert!(
-            elapsed < PROBE_BUDGET * 4,
-            "a silent source must not outlive the budget by much, waited {elapsed:?}",
+        assert_eq!(polls, [budget]);
+        assert!(now <= deadline + Duration::from_millis(1));
+    }
+
+    /// `EINTR` retries the same Instant; it does not extend the budget.
+    #[test]
+    fn interrupted_wait_retries_the_same_deadline() {
+        let start = Instant::now();
+        let deadline = start + Duration::from_millis(20);
+        let mut now = start;
+        let mut polls = Vec::new();
+        let waited = wait_with(
+            deadline,
+            || now,
+            |timeout| {
+                polls.push(timeout);
+                if polls.len() == 1 {
+                    now += Duration::from_millis(5);
+                    Err(Errno::INTR)
+                } else {
+                    now += timeout;
+                    Ok(false)
+                }
+            },
+        );
+        assert_eq!(waited, Some(false));
+        assert_eq!(
+            polls,
+            [Duration::from_millis(20), Duration::from_millis(15)]
+        );
+    }
+
+    /// The rustix wrapper times out on a real silent pipe. No host-wall
+    /// ceiling: that was the phux-tur1 flake. Hang detection is nextest's.
+    #[test]
+    fn silent_pipe_times_out_through_poll() {
+        let (reader, _writer) = std::io::pipe().expect("pipe");
+        assert_eq!(
+            wait_readable(&reader, Instant::now() + Duration::from_millis(20)),
+            Some(false)
         );
     }
 
     /// A terminal that answers is not made to wait out the budget.
     #[test]
     fn readable_source_returns_before_the_deadline() {
-        let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "printf answer; sleep 30"])
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn answering source");
-        let stdout = child.stdout.take().expect("piped stdout");
-        let started = Instant::now();
-        let waited = wait_readable(&stdout, started + Duration::from_secs(5));
-        let elapsed = started.elapsed();
-        let _ = child.kill();
-        let _ = child.wait();
+        let (reader, mut writer) = std::io::pipe().expect("pipe");
+        writer.write_all(b"answer").expect("write answer");
+        drop(writer);
+        let waited = wait_readable(&reader, Instant::now() + Duration::from_secs(5));
         assert_eq!(waited, Some(true));
-        assert!(
-            elapsed < Duration::from_secs(4),
-            "an answering source must return as soon as it writes, waited {elapsed:?}",
-        );
     }
 
     /// An expired deadline never enters `poll`.
     #[test]
     fn spent_budget_does_not_wait() {
-        let mut child = std::process::Command::new("/bin/sh")
-            .args(["-c", "sleep 30"])
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn silent source");
-        let stdout = child.stdout.take().expect("piped stdout");
-        let started = Instant::now();
-        let expired = started
-            .checked_sub(Duration::from_millis(1))
-            .expect("monotonic clock is past process start");
-        let waited = wait_readable(&stdout, expired);
-        let elapsed = started.elapsed();
-        let _ = child.kill();
-        let _ = child.wait();
+        let start = Instant::now();
+        let mut polls = 0_u8;
+        let waited = wait_with(
+            start,
+            || start,
+            |_| {
+                polls += 1;
+                Ok(true)
+            },
+        );
         assert_eq!(waited, Some(false));
-        assert!(elapsed < Duration::from_millis(50), "waited {elapsed:?}");
+        assert_eq!(polls, 0);
     }
 }
