@@ -27,9 +27,11 @@
 //!   server's dedupe retention (`DEDUPE_RETENTION`,
 //!   `phux-server/src/runtime/input_lane/acknowledged.rs`). Past it the
 //!   server may have evicted the record, so a resend could write twice.
-//! - **At most one operation in flight**, submission order preserved. The
-//!   server admits one unresolved operation per Terminal; a serialized queue
-//!   means the journal never manufactures its own `RESOURCE_EXHAUSTED`.
+//! - **At most one operation per Terminal in flight**, submission order
+//!   preserved independently for each Terminal. Unrelated Terminals may make
+//!   progress while one waits, matching server admission scope.
+//! - **Bounded retention.** Event and byte budgets turn overflow into an
+//!   explicit refusal report rather than silently dropping input.
 //! - **An attempted operation strands as *unknown*; a never-sent one as
 //!   *refused*.** The distinction is the whole vocabulary: refused means
 //!   nothing was written and retyping is safe, unknown means the pane must be
@@ -43,7 +45,7 @@
 //! attempts exactly like the `--rec` recorder, which is what lets an
 //! operation outlive the socket that first carried it.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::{InputOperationId, ResourceId};
@@ -65,9 +67,15 @@ pub const INPUT_RETRY_HORIZON: Duration = Duration::from_mins(10);
 /// this journal must not trust with idempotency (mirrors the mobile bridge's
 /// same check).
 const SERVER_ID_LEN: usize = 16;
+const MAX_DEFERRED_REPORTS: usize = 64;
+
+/// Maximum number of input atoms retained across acknowledged operations.
+pub const INPUT_JOURNAL_MAX_EVENTS: usize = 4096;
+/// Maximum estimated in-memory bytes retained across acknowledged operations.
+pub const INPUT_JOURNAL_MAX_BYTES: usize = 1024 * 1024;
 
 /// One journaled acknowledged operation. The operation id and payload never
-/// change; only connection-local bookkeeping (`attempted`, the in-flight
+/// change; only connection-local bookkeeping (`attempts`, the in-flight
 /// request id held by [`ConnectionContext`]) does.
 #[derive(Debug)]
 struct PendingOp {
@@ -80,16 +88,23 @@ struct PendingOp {
     created_at: Instant,
     /// Whether any attempt reached a socket. Decides the stranding verdict:
     /// attempted strands *unknown*, never-sent strands *refused*.
-    attempted: bool,
+    attempts: u32,
+    retained_bytes: usize,
+}
+
+#[derive(Debug)]
+struct InFlightAttempt {
+    operation_id: InputOperationId,
+    terminal_id: ResourceId,
 }
 
 /// Per-connection state, reset by [`InputReplayJournal::begin_connection`].
 #[derive(Debug)]
 struct ConnectionContext {
     server_id: Vec<u8>,
-    /// Request id of the front operation's outstanding attempt, if any. Dies
-    /// with the connection — the operation itself does not.
-    in_flight: Option<u32>,
+    /// Outstanding attempts by request id. Dies with the connection — the
+    /// operations themselves do not.
+    in_flight: HashMap<u32, InFlightAttempt>,
 }
 
 /// How a journaled operation ended.
@@ -144,13 +159,18 @@ impl ReplayReport {
 /// select loop without adding an arm.
 #[derive(Debug)]
 pub struct InputReplayJournal {
-    /// Front = oldest = the only operation eligible for an attempt.
+    /// Global submission order; the earliest due operation for each Terminal
+    /// is independently eligible for an attempt.
     ops: VecDeque<PendingOp>,
     /// `Some` between [`Self::begin_connection`] and
     /// [`Self::connection_lost`] — i.e. while there is a live, negotiated
     /// socket whose incarnation is known and which advertised
     /// `ACKNOWLEDGED_INPUT`.
     connection: Option<ConnectionContext>,
+    retained_events: usize,
+    retained_bytes: usize,
+    deferred_reports: VecDeque<ReplayReport>,
+    suppressed_reports: [usize; 3],
 }
 
 impl Default for InputReplayJournal {
@@ -166,6 +186,10 @@ impl InputReplayJournal {
         Self {
             ops: VecDeque::new(),
             connection: None,
+            retained_events: 0,
+            retained_bytes: 0,
+            deferred_reports: VecDeque::new(),
+            suppressed_reports: [0; 3],
         }
     }
 
@@ -208,7 +232,7 @@ impl InputReplayJournal {
         };
         self.connection = Some(ConnectionContext {
             server_id: server_id.to_vec(),
-            in_flight: None,
+            in_flight: HashMap::new(),
         });
         self.sweep(now)
     }
@@ -228,15 +252,95 @@ impl InputReplayJournal {
 
     /// Journal one acknowledged batch. The operation id is minted here, once,
     /// and never again for this batch.
-    pub fn submit(&mut self, terminal_id: ResourceId, events: Vec<InputEvent>) {
+    pub fn submit(
+        &mut self,
+        terminal_id: ResourceId,
+        events: Vec<InputEvent>,
+    ) -> Result<(), ReplayReport> {
+        let operation_id = mint_operation_id();
+        if let Err(refusal) = crate::agent_prompt::validate_batch(&events) {
+            let report = ReplayReport {
+                disposition: ReplayDisposition::Refused,
+                operation_id: operation_id_hex(&operation_id),
+                message: refusal.to_string(),
+            };
+            self.defer_report(report.clone());
+            return Err(report);
+        }
+        let retained_bytes = retained_event_bytes(&events, events.capacity());
+        if events.is_empty()
+            || self.retained_events.saturating_add(events.len()) > INPUT_JOURNAL_MAX_EVENTS
+            || self.retained_bytes.saturating_add(retained_bytes) > INPUT_JOURNAL_MAX_BYTES
+        {
+            let report = ReplayReport {
+                disposition: ReplayDisposition::Refused,
+                operation_id: operation_id_hex(&operation_id),
+                message: format!(
+                    "acknowledged-input queue full (max {INPUT_JOURNAL_MAX_EVENTS} events / {INPUT_JOURNAL_MAX_BYTES} bytes)"
+                ),
+            };
+            self.defer_report(report.clone());
+            return Err(report);
+        }
+        self.retained_events += events.len();
+        self.retained_bytes += retained_bytes;
         self.ops.push_back(PendingOp {
-            operation_id: mint_operation_id(),
+            operation_id,
             terminal_id,
             events,
             expected_server_id: None,
             created_at: Instant::now(),
-            attempted: false,
+            attempts: 0,
+            retained_bytes,
         });
+        Ok(())
+    }
+
+    /// Whether later input for `terminal_id` must join the journal to remain
+    /// behind an acknowledged operation already queued or in flight.
+    #[must_use]
+    pub fn must_order_after(&self, terminal_id: &ResourceId) -> bool {
+        self.ops.iter().any(|op| &op.terminal_id == terminal_id)
+    }
+
+    /// Drain locally generated outcomes such as bounded-queue overflow. The
+    /// attach driver calls this after input dispatch and maps each report to
+    /// the same visible notice path used for server replies.
+    pub fn take_reports(&mut self) -> Vec<ReplayReport> {
+        let mut reports: Vec<_> = self.deferred_reports.drain(..).collect();
+        for (disposition, message) in [
+            (
+                ReplayDisposition::Delivered,
+                "additional delivered input outcomes were coalesced",
+            ),
+            (
+                ReplayDisposition::Unknown,
+                "additional input outcomes with unknown delivery were coalesced",
+            ),
+            (
+                ReplayDisposition::Refused,
+                "additional local input refusals were coalesced",
+            ),
+        ] {
+            let count = self.suppressed_reports[disposition_index(disposition)];
+            if count > 0 {
+                reports.push(ReplayReport {
+                    disposition,
+                    operation_id: "multiple".to_owned(),
+                    message: format!("{count} {message}"),
+                });
+            }
+        }
+        self.suppressed_reports = [0; 3];
+        reports
+    }
+
+    /// Preserve reports a lower layer observed until the driver's visible
+    /// notice drain runs.
+    pub fn defer_reports(&mut self, reports: Vec<ReplayReport>) {
+        for report in reports {
+            self.defer_report(report);
+        }
     }
 
     /// Whether `request_id` correlates to this journal's outstanding attempt.
@@ -244,7 +348,7 @@ impl InputReplayJournal {
     pub fn owns(&self, request_id: u32) -> bool {
         self.connection
             .as_ref()
-            .is_some_and(|ctx| ctx.in_flight == Some(request_id))
+            .is_some_and(|ctx| ctx.in_flight.contains_key(&request_id))
     }
 
     /// Build the next `APPLY_INPUT` attempt, if one is due.
@@ -259,74 +363,90 @@ impl InputReplayJournal {
         &mut self,
         next_request_id: &mut u32,
     ) -> (Vec<ReplayReport>, Option<FrameKind>) {
-        let now = Instant::now();
-        let mut reports = Vec::new();
-        let Some(ctx) = self.connection.as_ref() else {
-            return (reports, None);
+        let (reports, mut frames) = self.build_frames(next_request_id, 1);
+        (reports, frames.pop())
+    }
+
+    /// Build one due attempt per Terminal. Independent terminals can therefore
+    /// progress while an earlier operation waits for its PTY outcome.
+    pub fn next_frames(
+        &mut self,
+        next_request_id: &mut u32,
+    ) -> (Vec<ReplayReport>, Vec<FrameKind>) {
+        self.build_frames(next_request_id, usize::MAX)
+    }
+
+    fn build_frames(
+        &mut self,
+        next_request_id: &mut u32,
+        limit: usize,
+    ) -> (Vec<ReplayReport>, Vec<FrameKind>) {
+        let mut reports = self.take_reports();
+        reports.extend(self.sweep_expired(Instant::now()));
+        let Some(ctx) = self.connection.as_mut() else {
+            return (reports, Vec::new());
         };
-        if ctx.in_flight.is_some() {
-            return (reports, None);
-        }
         let server_id = ctx.server_id.clone();
-        let frame = loop {
-            let Some(mut op) = self.ops.pop_front() else {
-                break None;
-            };
-            if now.duration_since(op.created_at) >= INPUT_RETRY_HORIZON {
-                reports.push(strand_report(
-                    &op,
-                    "the acknowledged-input retry horizon expired",
-                ));
+        let mut busy: HashSet<_> = ctx
+            .in_flight
+            .values()
+            .map(|attempt| attempt.terminal_id.clone())
+            .collect();
+        let mut frames = Vec::new();
+        for op in &mut self.ops {
+            if frames.len() == limit || !busy.insert(op.terminal_id.clone()) {
                 continue;
             }
             let request_id = *next_request_id;
             *next_request_id = next_request_id.wrapping_add(1);
-            op.attempted = true;
+            op.attempts = op.attempts.saturating_add(1);
             op.expected_server_id
                 .get_or_insert_with(|| server_id.clone());
-            let frame = FrameKind::Command {
+            frames.push(FrameKind::Command {
                 request_id,
                 command: Command::ApplyInput {
                     operation_id: op.operation_id,
                     terminal_id: op.terminal_id.clone(),
                     events: op.events.clone(),
                 },
-            };
-            self.ops.push_front(op);
-            if let Some(ctx) = self.connection.as_mut() {
-                ctx.in_flight = Some(request_id);
-            }
-            break Some(frame);
-        };
-        (reports, frame)
+            });
+            ctx.in_flight.insert(
+                request_id,
+                InFlightAttempt {
+                    operation_id: op.operation_id,
+                    terminal_id: op.terminal_id.clone(),
+                },
+            );
+        }
+        (reports, frames)
     }
 
     /// Fold one `COMMAND_RESULT` for the outstanding attempt into a verdict.
     ///
-    /// The classification mirrors the mobile reference exactly: `Ok` is the
-    /// receipt; `INPUT_DELIVERY_UNKNOWN` — and any reply shape this build
-    /// cannot read — is *unknown*, terminal, never retried; every other error
-    /// wrote nothing and is *refused*. `RESOURCE_EXHAUSTED` lands in the
-    /// refused arm deliberately: it can only mean another client holds the
-    /// pane's acknowledged slot, the journal's own lane is serialized, and a
-    /// TUI user retypes a refused paste far more naturally than they audit a
-    /// background backoff loop.
+    /// `Ok` is the receipt. On a first attempt, explicit server errors retain
+    /// their pre-handoff refusal meaning except `INPUT_DELIVERY_UNKNOWN`. On a
+    /// replay, every non-OK answer is unknown: an older compatible server can
+    /// refuse the retry before consulting dedupe even though the original may
+    /// have written, so the retry's refusal cannot establish operation-level
+    /// certainty.
     ///
     /// Returns `None` for a request id this journal does not own.
     pub fn resolve(&mut self, request_id: u32, result: &CommandResult) -> Option<ReplayReport> {
         if !self.owns(request_id) {
             return None;
         }
-        if let Some(ctx) = self.connection.as_mut() {
-            ctx.in_flight = None;
-        }
-        let op = self.ops.pop_front()?;
+        let attempt = self.connection.as_mut()?.in_flight.remove(&request_id)?;
+        let position = self
+            .ops
+            .iter()
+            .position(|op| op.operation_id == attempt.operation_id)?;
+        let op = self.remove_at(position)?;
         let (disposition, message) = match result {
             CommandResult::Ok | CommandResult::OkWith(_) => {
                 (ReplayDisposition::Delivered, String::new())
             }
             CommandResult::Error { code, message } => (
-                if *code == ErrorCode::InputDeliveryUnknown {
+                if *code == ErrorCode::InputDeliveryUnknown || op.attempts > 1 {
                     ReplayDisposition::Unknown
                 } else {
                     ReplayDisposition::Refused
@@ -364,7 +484,7 @@ impl InputReplayJournal {
             .unwrap_or_default();
         let mut reports = Vec::new();
         let mut kept = VecDeque::with_capacity(self.ops.len());
-        for op in self.ops.drain(..) {
+        while let Some(op) = self.ops.pop_front() {
             if now.duration_since(op.created_at) >= INPUT_RETRY_HORIZON {
                 reports.push(strand_report(
                     &op,
@@ -378,17 +498,73 @@ impl InputReplayJournal {
                 reports.push(strand_report(&op, "the server restarted in between"));
             } else {
                 kept.push_back(op);
+                continue;
             }
+            self.release_accounting(&op);
         }
         self.ops = kept;
         reports
     }
 
     fn strand_all(&mut self, why: &str) -> Vec<ReplayReport> {
-        self.ops
-            .drain(..)
-            .map(|op| strand_report(&op, why))
-            .collect()
+        let mut reports = Vec::with_capacity(self.ops.len());
+        reports.extend(self.take_reports());
+        while let Some(op) = self.ops.pop_front() {
+            reports.push(strand_report(&op, why));
+            self.release_accounting(&op);
+        }
+        reports
+    }
+
+    fn sweep_expired(&mut self, now: Instant) -> Vec<ReplayReport> {
+        let mut reports = Vec::new();
+        let mut index = 0;
+        while index < self.ops.len() {
+            if now.duration_since(self.ops[index].created_at) < INPUT_RETRY_HORIZON {
+                index += 1;
+                continue;
+            }
+            let Some(op) = self.remove_at(index) else {
+                break;
+            };
+            reports.push(strand_report(
+                &op,
+                "the acknowledged-input retry horizon expired",
+            ));
+        }
+        reports
+    }
+
+    fn remove_at(&mut self, index: usize) -> Option<PendingOp> {
+        let op = self.ops.remove(index)?;
+        if let Some(ctx) = self.connection.as_mut() {
+            ctx.in_flight
+                .retain(|_, attempt| attempt.operation_id != op.operation_id);
+        }
+        self.release_accounting(&op);
+        Some(op)
+    }
+
+    const fn release_accounting(&mut self, op: &PendingOp) {
+        self.retained_events = self.retained_events.saturating_sub(op.events.len());
+        self.retained_bytes = self.retained_bytes.saturating_sub(op.retained_bytes);
+    }
+
+    fn defer_report(&mut self, report: ReplayReport) {
+        if self.deferred_reports.len() < MAX_DEFERRED_REPORTS {
+            self.deferred_reports.push_back(report);
+        } else {
+            let count = &mut self.suppressed_reports[disposition_index(report.disposition)];
+            *count = count.saturating_add(1);
+        }
+    }
+}
+
+const fn disposition_index(disposition: ReplayDisposition) -> usize {
+    match disposition {
+        ReplayDisposition::Delivered => 0,
+        ReplayDisposition::Unknown => 1,
+        ReplayDisposition::Refused => 2,
     }
 }
 
@@ -396,7 +572,7 @@ impl InputReplayJournal {
 /// be in the pane), a never-sent one is a deterministic *refusal*.
 fn strand_report(op: &PendingOp, message: &str) -> ReplayReport {
     ReplayReport {
-        disposition: if op.attempted {
+        disposition: if op.attempts > 0 {
             ReplayDisposition::Unknown
         } else {
             ReplayDisposition::Refused
@@ -404,6 +580,20 @@ fn strand_report(op: &PendingOp, message: &str) -> ReplayReport {
         operation_id: operation_id_hex(&op.operation_id),
         message: message.to_owned(),
     }
+}
+
+fn retained_event_bytes(events: &[InputEvent], allocation_slots: usize) -> usize {
+    events.iter().fold(
+        allocation_slots.saturating_mul(std::mem::size_of::<InputEvent>()),
+        |total, event| {
+            let payload = match event {
+                InputEvent::Key(key) => key.text.as_ref().map_or(0, String::capacity),
+                InputEvent::Paste(paste) => paste.data.capacity(),
+                _ => 0,
+            };
+            total.saturating_add(payload)
+        },
+    )
 }
 
 /// A fresh non-zero 128-bit operation id (ADR-0053 point 2). UUID v4 supplies
@@ -435,6 +625,19 @@ mod tests {
         vec![InputEvent::Paste(PasteEvent {
             trust: PasteTrust::Untrusted,
             data: text.as_bytes().to_vec(),
+        })]
+    }
+
+    fn enter() -> Vec<InputEvent> {
+        use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
+        vec![InputEvent::Key(KeyEvent {
+            action: KeyAction::Press,
+            key: PhysicalKey::Enter,
+            mods: ModSet::empty(),
+            consumed_mods: ModSet::empty(),
+            composing: false,
+            text: None,
+            unshifted_codepoint: None,
         })]
     }
 
@@ -470,7 +673,7 @@ mod tests {
     #[test]
     fn a_replay_reuses_the_operation_id_and_not_the_request_id() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("ship it"));
+        journal.submit(tid(1), paste("ship it")).expect("queue");
         let mut next = 1_u32;
         let (first_request, first_op) = send_one(&mut journal, &mut next);
 
@@ -491,8 +694,8 @@ mod tests {
     #[test]
     fn attempts_are_serialized_in_submission_order() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("first"));
-        journal.submit(tid(1), paste("second"));
+        journal.submit(tid(1), paste("first")).expect("queue");
+        journal.submit(tid(1), paste("second")).expect("queue");
         let mut next = 1_u32;
         let (request, _) = send_one(&mut journal, &mut next);
         let (reports, frame) = journal.next_frame(&mut next);
@@ -507,6 +710,151 @@ mod tests {
         assert!(journal.owns(second_request));
     }
 
+    #[test]
+    fn delayed_paste_keeps_later_paste_and_enter_in_terminal_order() {
+        let mut journal = armed_journal();
+        journal.submit(tid(1), paste("A")).expect("queue A");
+        let mut next = 1;
+        let (a_request, _) = send_one(&mut journal, &mut next);
+        journal.submit(tid(1), paste("B")).expect("queue B");
+        journal.submit(tid(1), enter()).expect("queue Enter");
+        let (_, blocked) = journal.next_frames(&mut next);
+        assert!(blocked.is_empty(), "one Terminal has one active operation");
+
+        journal
+            .resolve(a_request, &CommandResult::Ok)
+            .expect("resolve A");
+        let (_, b_frames) = journal.next_frames(&mut next);
+        assert_eq!(b_frames.len(), 1);
+        let b_request = command_parts(&b_frames[0]).0;
+        assert!(matches!(
+            command_parts(&b_frames[0]).1[0],
+            InputEvent::Paste(_)
+        ));
+
+        journal
+            .resolve(b_request, &CommandResult::Ok)
+            .expect("resolve B");
+        let (_, enter_frames) = journal.next_frames(&mut next);
+        assert_eq!(enter_frames.len(), 1);
+        assert!(matches!(
+            command_parts(&enter_frames[0]).1[0],
+            InputEvent::Key(_)
+        ));
+    }
+
+    #[test]
+    fn an_unrelated_terminal_progresses_while_first_terminal_waits() {
+        let mut journal = armed_journal();
+        journal.submit(tid(1), paste("held")).expect("queue held");
+        let mut next = 1;
+        let _ = send_one(&mut journal, &mut next);
+        journal.submit(tid(2), paste("other")).expect("queue other");
+        let (_, frames) = journal.next_frames(&mut next);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(command_parts(&frames[0]).2, &tid(2));
+    }
+
+    #[test]
+    fn queue_overflow_is_explicit_and_does_not_consume_capacity() {
+        let mut journal = armed_journal();
+        let mut refused = None;
+        while refused.is_none() {
+            let batch = vec![InputEvent::Paste(phux_protocol::input::paste::PasteEvent {
+                trust: phux_protocol::input::paste::PasteTrust::Trusted,
+                data: vec![b'x'; 60 * 1024],
+            })];
+            refused = journal.submit(tid(1), batch).err();
+        }
+        let report = refused.expect("journal byte cap must refuse");
+        assert_eq!(report.disposition, ReplayDisposition::Refused);
+        assert!(report.notice_line().contains("queue full"));
+        let (reports, frames) = journal.next_frames(&mut 1);
+        assert_eq!(reports, vec![report]);
+        assert_eq!(frames.len(), 1);
+        let _ = journal.drain_unresolved("test cleanup");
+        assert_eq!(journal.retained_events, 0);
+        assert_eq!(journal.retained_bytes, 0);
+        journal
+            .submit(tid(1), paste("fits"))
+            .expect("capacity remains");
+    }
+
+    #[test]
+    fn queue_event_count_is_bounded_independently_of_payload_bytes() {
+        let mut journal = armed_journal();
+        for _ in 0..(INPUT_JOURNAL_MAX_EVENTS / phux_protocol::MAX_APPLY_INPUT_EVENTS) {
+            journal
+                .submit(
+                    tid(1),
+                    vec![
+                        InputEvent::Focus(phux_protocol::input::focus::FocusEvent::Gained);
+                        phux_protocol::MAX_APPLY_INPUT_EVENTS
+                    ],
+                )
+                .expect("within aggregate event cap");
+        }
+        let report = journal
+            .submit(
+                tid(1),
+                vec![InputEvent::Focus(
+                    phux_protocol::input::focus::FocusEvent::Gained,
+                )],
+            )
+            .expect_err("aggregate event cap");
+        assert_eq!(report.disposition, ReplayDisposition::Refused);
+        assert_eq!(journal.retained_events, INPUT_JOURNAL_MAX_EVENTS);
+    }
+
+    #[test]
+    fn coalesced_mixed_reports_preserve_delivery_certainty() {
+        let mut journal = InputReplayJournal::new();
+        for index in 0..MAX_DEFERRED_REPORTS {
+            journal.defer_report(ReplayReport {
+                disposition: ReplayDisposition::Refused,
+                operation_id: index.to_string(),
+                message: "bounded refusal".to_owned(),
+            });
+        }
+        journal.defer_reports(vec![
+            ReplayReport {
+                disposition: ReplayDisposition::Unknown,
+                operation_id: "unknown".to_owned(),
+                message: "socket closed after send".to_owned(),
+            },
+            ReplayReport {
+                disposition: ReplayDisposition::Refused,
+                operation_id: "refused".to_owned(),
+                message: "queue full".to_owned(),
+            },
+        ]);
+
+        let reports = journal.take_reports();
+        let summaries = &reports[MAX_DEFERRED_REPORTS..];
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].disposition, ReplayDisposition::Unknown);
+        assert!(!summaries[0].notice_line().contains("safe to retype"));
+        assert_eq!(summaries[1].disposition, ReplayDisposition::Refused);
+        assert!(summaries[1].notice_line().contains("safe to retype"));
+        assert!(journal.take_reports().is_empty());
+    }
+
+    fn command_parts(frame: &FrameKind) -> (u32, &[InputEvent], &ResourceId) {
+        let FrameKind::Command {
+            request_id,
+            command:
+                Command::ApplyInput {
+                    terminal_id,
+                    events,
+                    ..
+                },
+        } = frame
+        else {
+            panic!("not APPLY_INPUT: {frame:?}");
+        };
+        (*request_id, events, terminal_id)
+    }
+
     // ---- point 5: incarnation binding --------------------------------
 
     /// An attempted operation must not be replayed against a different
@@ -515,7 +863,7 @@ mod tests {
     #[test]
     fn an_attempted_op_strands_unknown_when_the_incarnation_changes() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("ship it"));
+        journal.submit(tid(1), paste("ship it")).expect("queue");
         let mut next = 1_u32;
         let _ = send_one(&mut journal, &mut next);
 
@@ -533,7 +881,9 @@ mod tests {
     #[test]
     fn a_never_sent_op_survives_an_incarnation_change() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("queued while offline"));
+        journal
+            .submit(tid(1), paste("queued while offline"))
+            .expect("queue");
         journal.connection_lost();
         let reports = journal.begin_connection(Some(&SERVER_B), true);
         assert!(reports.is_empty(), "{reports:?}");
@@ -548,10 +898,10 @@ mod tests {
     #[test]
     fn a_server_without_the_feature_strands_everything() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("attempted"));
+        journal.submit(tid(1), paste("attempted")).expect("queue");
         let mut next = 1_u32;
         let _ = send_one(&mut journal, &mut next);
-        journal.submit(tid(1), paste("never sent"));
+        journal.submit(tid(1), paste("never sent")).expect("queue");
 
         journal.connection_lost();
         let reports = journal.begin_connection(Some(&SERVER_A), false);
@@ -566,7 +916,7 @@ mod tests {
     #[test]
     fn a_short_server_id_is_not_a_usable_incarnation() {
         let mut journal = InputReplayJournal::new();
-        journal.submit(tid(1), paste("queued"));
+        journal.submit(tid(1), paste("queued")).expect("queue");
         let reports = journal.begin_connection(Some(&[0xAA; 4]), true);
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].disposition, ReplayDisposition::Refused);
@@ -581,7 +931,7 @@ mod tests {
     #[test]
     fn the_horizon_strands_instead_of_resending() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("stale"));
+        journal.submit(tid(1), paste("stale")).expect("queue");
         journal.ops.front_mut().expect("just submitted").created_at = Instant::now()
             .checked_sub(INPUT_RETRY_HORIZON)
             .expect("the clock supports ten minutes ago");
@@ -597,10 +947,10 @@ mod tests {
     #[test]
     fn reconnect_expires_the_stale_and_replays_the_fresh() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("stale"));
+        journal.submit(tid(1), paste("stale")).expect("queue");
         let mut next = 1_u32;
         let _ = send_one(&mut journal, &mut next);
-        journal.submit(tid(1), paste("fresh"));
+        journal.submit(tid(1), paste("fresh")).expect("queue");
         journal.ops.front_mut().expect("two queued").created_at = Instant::now()
             .checked_sub(INPUT_RETRY_HORIZON)
             .expect("the clock supports ten minutes ago");
@@ -646,11 +996,35 @@ mod tests {
             ),
         ] {
             let mut journal = armed_journal();
-            journal.submit(tid(1), paste("x"));
+            journal.submit(tid(1), paste("x")).expect("queue");
             let mut next = 1_u32;
             let (request, _) = send_one(&mut journal, &mut next);
             let report = journal.resolve(request, &result).expect("owned");
             assert_eq!(report.disposition, expected, "{result:?}");
+        }
+    }
+
+    #[test]
+    fn ordinary_error_on_a_retry_never_claims_safe_to_retype() {
+        for code in [ErrorCode::ResourceExhausted, ErrorCode::InputNotWritten] {
+            let mut journal = armed_journal();
+            journal.submit(tid(1), paste("x")).expect("queue");
+            let mut next = 1;
+            let _ = send_one(&mut journal, &mut next);
+            journal.connection_lost();
+            assert!(journal.begin_connection(Some(&SERVER_A), true).is_empty());
+            let (retry_request, _) = send_one(&mut journal, &mut next);
+            let report = journal
+                .resolve(
+                    retry_request,
+                    &CommandResult::Error {
+                        code,
+                        message: "retry refusal".to_owned(),
+                    },
+                )
+                .expect("retry result");
+            assert_eq!(report.disposition, ReplayDisposition::Unknown, "{code:?}");
+            assert!(!report.notice_line().contains("safe to retype"));
         }
     }
 
@@ -660,7 +1034,7 @@ mod tests {
     #[test]
     fn foreign_request_ids_are_not_consumed() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("x"));
+        journal.submit(tid(1), paste("x")).expect("queue");
         let mut next = 1_u32;
         let (request, _) = send_one(&mut journal, &mut next);
         assert!(journal.resolve(request + 7, &CommandResult::Ok).is_none());
@@ -672,10 +1046,10 @@ mod tests {
     #[test]
     fn drain_unresolved_reports_every_op_once() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("attempted"));
+        journal.submit(tid(1), paste("attempted")).expect("queue");
         let mut next = 1_u32;
         let _ = send_one(&mut journal, &mut next);
-        journal.submit(tid(2), paste("never sent"));
+        journal.submit(tid(2), paste("never sent")).expect("queue");
         let reports = journal.drain_unresolved("the reconnect window closed");
         let dispositions: Vec<_> = reports.iter().map(|r| r.disposition).collect();
         assert_eq!(
@@ -693,7 +1067,7 @@ mod tests {
     #[test]
     fn a_same_incarnation_reentry_replays_an_outstanding_attempt() {
         let mut journal = armed_journal();
-        journal.submit(tid(1), paste("mid-switch"));
+        journal.submit(tid(1), paste("mid-switch")).expect("queue");
         let mut next = 1_u32;
         let (_, first_op) = send_one(&mut journal, &mut next);
 

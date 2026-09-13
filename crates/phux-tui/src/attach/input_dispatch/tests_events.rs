@@ -1306,10 +1306,36 @@ async fn dispatch_mouse_two_pane_with(
 )]
 async fn dispatch_mouse_two_pane_into(
     overlays: &mut OverlayState,
+    events: Vec<InputEvent>,
+    seed_optout: &[ResourceId],
+    seed_vt: &[(ResourceId, &[u8])],
+    cell_px: (u16, u16),
+) -> (
+    Vec<FrameKind>,
+    Option<DragGrab>,
+    Option<ResourceId>,
+    std::collections::HashSet<ResourceId>,
+    bool,
+) {
+    dispatch_mouse_two_pane_into_with_journal(overlays, events, seed_optout, seed_vt, cell_px, None)
+        .await
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "client-side libghostty Terminal and the replay journal are current-thread state"
+)]
+#[allow(
+    clippy::too_many_lines,
+    reason = "composed DispatchCtx fixture includes the confirmed initial-read state"
+)]
+async fn dispatch_mouse_two_pane_into_with_journal(
+    overlays: &mut OverlayState,
     mut events: Vec<InputEvent>,
     seed_optout: &[ResourceId],
     seed_vt: &[(ResourceId, &[u8])],
     cell_px: (u16, u16),
+    input_replay: Option<&std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
 ) -> (
     Vec<FrameKind>,
     Option<DragGrab>,
@@ -1362,7 +1388,7 @@ async fn dispatch_mouse_two_pane_into(
             viewport: (80, 24),
             cell_px,
             next_request_id: &mut next_request_id,
-            input_replay: None,
+            input_replay,
             spawn_initial_size_supported: true,
             pending_splits: &mut pending_splits,
             pending_windows: &mut pending_windows,
@@ -1429,6 +1455,85 @@ async fn dispatch_mouse_two_pane_into(
         }
     }
     (received, drag, focused_resource, mouse_optout, repainted)
+}
+
+#[tokio::test]
+async fn dispatch_queues_paste_then_paste_then_enter_in_terminal_order() {
+    use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+
+    let journal = std::cell::RefCell::new(crate::attach::input_replay::InputReplayJournal::new());
+    assert!(
+        journal
+            .borrow_mut()
+            .begin_connection(Some(&[0xAB; 16]), true)
+            .is_empty()
+    );
+    let paste = |data: &[u8]| {
+        InputEvent::Paste(PasteEvent {
+            trust: PasteTrust::Trusted,
+            data: data.to_vec(),
+        })
+    };
+    let mut overlays = OverlayState::new();
+    let (sent, _, _, _, _) = dispatch_mouse_two_pane_into_with_journal(
+        &mut overlays,
+        vec![
+            paste(b"A"),
+            paste(b"B"),
+            paste(&vec![b'x'; 70 * 1024]),
+            press(PhysicalKey::Enter, None),
+        ],
+        &[],
+        &[],
+        (8, 16),
+        Some(&journal),
+    )
+    .await;
+    assert_eq!(sent.len(), 1, "only A is sent before its reply");
+    let overflow = journal.borrow_mut().take_reports();
+    assert_eq!(overflow.len(), 1, "oversized C has one visible refusal");
+    assert_eq!(
+        overflow[0].disposition,
+        crate::attach::input_replay::ReplayDisposition::Refused
+    );
+    let FrameKind::Command {
+        request_id: a_request,
+        command: phux_protocol::wire::frame::Command::ApplyInput { events, .. },
+    } = &sent[0]
+    else {
+        panic!("first dispatch frame is not APPLY_INPUT: {:?}", sent[0]);
+    };
+    assert!(matches!(events[0], InputEvent::Paste(_)));
+
+    journal
+        .borrow_mut()
+        .resolve(*a_request, &phux_protocol::wire::frame::CommandResult::Ok)
+        .expect("resolve A");
+    let (_, b_frames) = journal.borrow_mut().next_frames(&mut 50);
+    assert_eq!(b_frames.len(), 1, "B follows A");
+    let FrameKind::Command {
+        request_id: b_request,
+        command: phux_protocol::wire::frame::Command::ApplyInput { events, .. },
+    } = &b_frames[0]
+    else {
+        panic!("B is not APPLY_INPUT");
+    };
+    assert!(matches!(events[0], InputEvent::Paste(_)));
+
+    journal
+        .borrow_mut()
+        .resolve(*b_request, &phux_protocol::wire::frame::CommandResult::Ok)
+        .expect("resolve B");
+    let (_, enter_frames) = journal.borrow_mut().next_frames(&mut 60);
+    assert_eq!(enter_frames.len(), 1, "Enter follows B");
+    let FrameKind::Command {
+        command: phux_protocol::wire::frame::Command::ApplyInput { events, .. },
+        ..
+    } = &enter_frames[0]
+    else {
+        panic!("Enter is not APPLY_INPUT");
+    };
+    assert!(matches!(events[0], InputEvent::Key(_)));
 }
 
 #[tokio::test]

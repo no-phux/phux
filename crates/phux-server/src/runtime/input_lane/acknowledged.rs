@@ -48,6 +48,7 @@ use crate::terminal_actor::{WriteCompletion, WriteCompletionSink};
 pub(super) const DEDUPE_MAX_ENTRIES: usize = 65_536;
 pub(super) const DEDUPE_RETENTION: Duration = Duration::from_mins(10);
 pub(super) const ACKNOWLEDGED_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
+const MAX_PENDING_RETRY_WAITERS: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Admission
@@ -89,7 +90,6 @@ impl AcknowledgedAdmission {
 pub(crate) struct AcknowledgedReservation {
     admission: Arc<AcknowledgedAdmission>,
     terminal_id: phux_protocol::ids::ResourceId,
-    admitted_at: Instant,
 }
 
 impl AcknowledgedReservation {
@@ -103,15 +103,7 @@ impl AcknowledgedReservation {
         Some(Self {
             admission: Arc::clone(admission),
             terminal_id: terminal_id.clone(),
-            admitted_at: Instant::now(),
         })
-    }
-
-    /// The dedupe record's retention clock starts here, not at completion, so
-    /// a client's ten-minute horizon is measured from the moment the server
-    /// took the operation.
-    pub(super) const fn admitted_at(&self) -> Instant {
-        self.admitted_at
     }
 }
 
@@ -128,14 +120,22 @@ impl Drop for AcknowledgedReservation {
 #[derive(Debug)]
 struct CachedOperation {
     digest: [u8; 32],
-    result: Option<CommandResult>,
+    state: CachedOperationState,
     inserted_at: Instant,
 }
 
-#[derive(Debug, PartialEq)]
-pub(super) enum CacheBinding {
-    New,
-    Pending,
+#[derive(Debug)]
+enum CachedOperationState {
+    Pending(Vec<oneshot::Sender<CommandResult>>),
+    Retryable,
+    Final(CommandResult),
+}
+
+#[derive(Debug)]
+pub(super) enum CacheClaim {
+    Owner,
+    Pending(oneshot::Receiver<CommandResult>),
+    PendingUncertain,
     Final(CommandResult),
     Conflict,
     Full,
@@ -169,42 +169,72 @@ impl OperationCache {
         self.entries.len() >= DEDUPE_MAX_ENTRIES
     }
 
-    fn bind_at(
+    fn claim_at(
         &mut self,
         operation_id: InputOperationId,
         digest: [u8; 32],
         admitted_at: Instant,
-    ) -> CacheBinding {
+    ) -> CacheClaim {
         self.prune_expired(admitted_at);
-        if let Some(cached) = self.entries.get(&operation_id) {
+        if let Some(cached) = self.entries.get_mut(&operation_id) {
             if cached.digest != digest {
-                return CacheBinding::Conflict;
+                return CacheClaim::Conflict;
             }
-            return cached
-                .result
-                .as_ref()
-                .map_or(CacheBinding::Pending, |result| {
-                    CacheBinding::Final(result.clone())
-                });
+            return match &mut cached.state {
+                CachedOperationState::Pending(waiters) => {
+                    if waiters.len() >= MAX_PENDING_RETRY_WAITERS {
+                        return CacheClaim::PendingUncertain;
+                    }
+                    let (reply, result) = oneshot::channel();
+                    waiters.push(reply);
+                    CacheClaim::Pending(result)
+                }
+                CachedOperationState::Retryable => {
+                    cached.state = CachedOperationState::Pending(Vec::new());
+                    CacheClaim::Owner
+                }
+                CachedOperationState::Final(result) => CacheClaim::Final(result.clone()),
+            };
         }
         if self.is_full() {
-            return CacheBinding::Full;
+            return CacheClaim::Full;
         }
         self.entries.insert(
             operation_id,
             CachedOperation {
                 digest,
-                result: None,
+                state: CachedOperationState::Pending(Vec::new()),
                 inserted_at: admitted_at,
             },
         );
         self.expiry.push_back((admitted_at, operation_id));
-        CacheBinding::New
+        CacheClaim::Owner
     }
 
-    fn set_final(&mut self, operation_id: InputOperationId, result: CommandResult) {
-        if let Some(cached) = self.entries.get_mut(&operation_id) {
-            cached.result = Some(result);
+    fn set_final(
+        &mut self,
+        operation_id: InputOperationId,
+        result: CommandResult,
+    ) -> Vec<oneshot::Sender<CommandResult>> {
+        let Some(cached) = self.entries.get_mut(&operation_id) else {
+            return Vec::new();
+        };
+        match std::mem::replace(&mut cached.state, CachedOperationState::Final(result)) {
+            CachedOperationState::Pending(waiters) => waiters,
+            CachedOperationState::Retryable | CachedOperationState::Final(_) => Vec::new(),
+        }
+    }
+
+    fn set_retryable(
+        &mut self,
+        operation_id: InputOperationId,
+    ) -> Vec<oneshot::Sender<CommandResult>> {
+        let Some(cached) = self.entries.get_mut(&operation_id) else {
+            return Vec::new();
+        };
+        match std::mem::replace(&mut cached.state, CachedOperationState::Retryable) {
+            CachedOperationState::Pending(waiters) => waiters,
+            CachedOperationState::Retryable | CachedOperationState::Final(_) => Vec::new(),
         }
     }
 }
@@ -221,17 +251,27 @@ impl SharedOperationCache {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    pub(super) fn bind_at(
+    pub(super) fn claim_at(
         &self,
         operation_id: InputOperationId,
         digest: [u8; 32],
         admitted_at: Instant,
-    ) -> CacheBinding {
-        self.lock().bind_at(operation_id, digest, admitted_at)
+    ) -> CacheClaim {
+        self.lock().claim_at(operation_id, digest, admitted_at)
     }
 
-    fn set_final(&self, operation_id: InputOperationId, result: CommandResult) {
-        self.lock().set_final(operation_id, result);
+    pub(super) fn set_final(&self, operation_id: InputOperationId, result: &CommandResult) {
+        let waiters = self.lock().set_final(operation_id, result.clone());
+        for waiter in waiters {
+            let _ = waiter.send(result.clone());
+        }
+    }
+
+    pub(super) fn set_retryable(&self, operation_id: InputOperationId, result: &CommandResult) {
+        let waiters = self.lock().set_retryable(operation_id);
+        for waiter in waiters {
+            let _ = waiter.send(result.clone());
+        }
     }
 }
 
@@ -239,7 +279,7 @@ pub(super) fn operation_digest(
     operation_id: InputOperationId,
     terminal_id: &phux_protocol::ids::ResourceId,
     events: Vec<InputEvent>,
-) -> [u8; 32] {
+) -> ([u8; 32], Vec<InputEvent>) {
     let frame = FrameKind::Command {
         request_id: 0,
         command: Command::ApplyInput {
@@ -250,7 +290,15 @@ pub(super) fn operation_digest(
     };
     let mut encoded = BytesMut::new();
     frame.encode(&mut encoded);
-    Sha256::digest(&encoded).into()
+    let digest = Sha256::digest(&encoded).into();
+    let FrameKind::Command {
+        command: Command::ApplyInput { events, .. },
+        ..
+    } = frame
+    else {
+        unreachable!("constructed APPLY_INPUT frame changed variant")
+    };
+    (digest, events)
 }
 
 // ---------------------------------------------------------------------------
@@ -306,11 +354,16 @@ impl PendingCompletion {
 
     /// Resolve without consulting the writer: the lane refused the operation
     /// after registering it but before (or instead of) handing it off.
-    pub(super) fn resolve_without_writer(self, result: CommandResult) {
+    pub(super) fn resolve_without_writer(
+        self,
+        cache: &SharedOperationCache,
+        result: CommandResult,
+    ) {
         // No `set_final`: a pre-handoff refusal keeps the id-to-digest binding
         // but not the refusal result, so the unchanged operation may be
         // evaluated again once its cause is repaired (SPEC L1 §6.2.1).
         drop(self.reservation);
+        cache.set_retryable(self.operation_id, &result);
         let _ = self.reply.send(result);
     }
 
@@ -318,7 +371,7 @@ impl PendingCompletion {
         // Order matters: the dedupe record must carry the final result before
         // the reservation is released, or a retry admitted in the gap would
         // read `Pending` and write the same batch a second time.
-        cache.set_final(self.operation_id, result.clone());
+        cache.set_final(self.operation_id, &result);
         drop(self.reservation);
         let _ = self.reply.send(result);
     }
@@ -548,7 +601,7 @@ fn run_waiter(rx: &std::sync::mpsc::Receiver<WaiterMessage>, cache: &SharedOpera
             }
             Some(WaiterMessage::Abandoned { ticket, result }) => {
                 if let Some(operation) = pending.take(ticket) {
-                    operation.resolve_without_writer(result);
+                    operation.resolve_without_writer(cache, result);
                 }
             }
         }
@@ -576,6 +629,44 @@ mod tests {
         let mut bytes = [0; 16];
         bytes[8..].copy_from_slice(&value.to_be_bytes());
         InputOperationId::new(bytes).expect("non-zero operation id")
+    }
+
+    #[test]
+    fn operation_digest_is_canonical_without_cloning_event_payloads() {
+        use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+
+        let operation_id = operation_id(19);
+        let terminal_id = phux_protocol::ResourceId::local(7);
+        let events = vec![InputEvent::Paste(PasteEvent {
+            trust: PasteTrust::Trusted,
+            data: vec![b'x'; 4096],
+        })];
+        let InputEvent::Paste(paste) = &events[0] else {
+            unreachable!()
+        };
+        let payload_ptr = paste.data.as_ptr();
+        let reference = FrameKind::Command {
+            request_id: 0,
+            command: Command::ApplyInput {
+                operation_id,
+                terminal_id: terminal_id.clone(),
+                events: events.clone(),
+            },
+        };
+        let mut encoded = BytesMut::new();
+        reference.encode(&mut encoded);
+        let expected: [u8; 32] = Sha256::digest(&encoded).into();
+
+        let (actual, recovered) = operation_digest(operation_id, &terminal_id, events);
+        assert_eq!(actual, expected, "digest remains the canonical frame hash");
+        let InputEvent::Paste(recovered_paste) = &recovered[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            recovered_paste.data.as_ptr(),
+            payload_ptr,
+            "digesting transfers and recovers the event allocation instead of cloning it"
+        );
     }
 
     /// phux-w7z2.60: `NotWritten` and `Failed` both mean the batch did not
@@ -647,38 +738,41 @@ mod tests {
         let first = operation_id_from_u64(1);
         let second = operation_id_from_u64(2);
         let mut cache = OperationCache::default();
-        assert_eq!(cache.bind_at(first, [1; 32], start), CacheBinding::New);
-        cache.set_final(first, CommandResult::Ok);
-        assert_eq!(
-            cache.bind_at(second, [2; 32], start + Duration::from_secs(1)),
-            CacheBinding::New
-        );
-        cache.set_final(second, CommandResult::Ok);
+        assert!(matches!(
+            cache.claim_at(first, [1; 32], start),
+            CacheClaim::Owner
+        ));
+        drop(cache.set_final(first, CommandResult::Ok));
+        assert!(matches!(
+            cache.claim_at(second, [2; 32], start + Duration::from_secs(1)),
+            CacheClaim::Owner
+        ));
+        drop(cache.set_final(second, CommandResult::Ok));
         cache.prune_expired(start + DEDUPE_RETENTION);
         assert!(!cache.entries.contains_key(&first));
         assert!(cache.entries.contains_key(&second));
         assert_eq!(cache.expiry.len(), 1);
 
         for value in 3..=u64::try_from(DEDUPE_MAX_ENTRIES + 1).unwrap() {
-            assert_eq!(
-                cache.bind_at(
+            assert!(matches!(
+                cache.claim_at(
                     operation_id_from_u64(value),
                     [0; 32],
                     start + Duration::from_secs(1),
                 ),
-                CacheBinding::New
-            );
+                CacheClaim::Owner
+            ));
         }
         assert_eq!(cache.entries.len(), DEDUPE_MAX_ENTRIES);
         assert!(cache.is_full(), "capacity check must use >=");
-        assert_eq!(
-            cache.bind_at(
+        assert!(matches!(
+            cache.claim_at(
                 operation_id_from_u64(u64::try_from(DEDUPE_MAX_ENTRIES + 2).unwrap()),
                 [0; 32],
                 start + Duration::from_secs(1),
             ),
-            CacheBinding::Full
-        );
+            CacheClaim::Full
+        ));
         assert_eq!(cache.entries.len(), DEDUPE_MAX_ENTRIES);
     }
 
@@ -688,8 +782,11 @@ mod tests {
         let id = operation_id(18);
         let digest = [0x18; 32];
         let mut cache = OperationCache::default();
-        assert_eq!(cache.bind_at(id, digest, start), CacheBinding::New);
-        cache.set_final(id, CommandResult::Ok);
+        assert!(matches!(
+            cache.claim_at(id, digest, start),
+            CacheClaim::Owner
+        ));
+        drop(cache.set_final(id, CommandResult::Ok));
 
         let admitted_before_expiry = start
             + DEDUPE_RETENTION
@@ -697,14 +794,33 @@ mod tests {
                 .expect("retention exceeds one nanosecond");
         let processed_after_expiry = start + DEDUPE_RETENTION + Duration::from_secs(1);
         assert!(processed_after_expiry > start + DEDUPE_RETENTION);
-        let binding = cache.bind_at(id, digest, admitted_before_expiry);
+        let binding = cache.claim_at(id, digest, admitted_before_expiry);
         cache.prune_expired(processed_after_expiry);
-        assert_eq!(
-            binding,
-            CacheBinding::Final(CommandResult::Ok),
-            "a retry valid at admission must use the cached result without rebinding"
-        );
+        assert!(matches!(binding, CacheClaim::Final(CommandResult::Ok)));
         assert!(cache.expiry.is_empty());
+    }
+
+    #[test]
+    fn pending_retry_waiters_are_bounded_with_an_uncertain_outcome() {
+        let id = operation_id(20);
+        let digest = [0x20; 32];
+        let mut cache = OperationCache::default();
+        assert!(matches!(
+            cache.claim_at(id, digest, Instant::now()),
+            CacheClaim::Owner
+        ));
+        let mut waiters = Vec::new();
+        for _ in 0..MAX_PENDING_RETRY_WAITERS {
+            let CacheClaim::Pending(waiter) = cache.claim_at(id, digest, Instant::now()) else {
+                panic!("pending retry should join within the bound");
+            };
+            waiters.push(waiter);
+        }
+        assert!(matches!(
+            cache.claim_at(id, digest, Instant::now()),
+            CacheClaim::PendingUncertain
+        ));
+        assert_eq!(waiters.len(), MAX_PENDING_RETRY_WAITERS);
     }
 
     /// Deadlines are assigned in registration order, so the waiter's ordered

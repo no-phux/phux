@@ -70,7 +70,7 @@ use tokio::sync::{mpsc, oneshot};
 
 pub(crate) use self::acknowledged::AcknowledgedReservation;
 use self::acknowledged::{
-    ACKNOWLEDGED_COMPLETION_TIMEOUT, AcknowledgedAdmission, CacheBinding, CompletionTicket,
+    ACKNOWLEDGED_COMPLETION_TIMEOUT, AcknowledgedAdmission, CacheClaim, CompletionTicket,
     CompletionWaiter, CompletionWaiterHandle, PendingCompletion, SharedOperationCache,
     TicketSource, deadline_from, operation_digest,
 };
@@ -147,6 +147,7 @@ impl RoutedInput {
 pub(crate) struct InputLaneHandle {
     tx: mpsc::Sender<RoutedInput>,
     admission: Arc<AcknowledgedAdmission>,
+    cache: SharedOperationCache,
 }
 
 impl InputLaneHandle {
@@ -216,11 +217,31 @@ impl InputLaneHandle {
         terminal_id: phux_protocol::ids::ResourceId,
         events: Vec<InputEvent>,
     ) -> CommandResult {
+        let (digest, events) = operation_digest(operation_id, &terminal_id, events);
+        match self
+            .cache
+            .claim_at(operation_id, digest, std::time::Instant::now())
+        {
+            CacheClaim::Final(result) => return result,
+            CacheClaim::Conflict => {
+                return invalid_command("APPLY_INPUT operation id reused with a different payload");
+            }
+            CacheClaim::Full => {
+                return acknowledged_resource_exhausted("acknowledged-input dedupe cache is full");
+            }
+            CacheClaim::Pending(result) => {
+                return result.await.unwrap_or_else(|_| delivery_unknown_result());
+            }
+            CacheClaim::PendingUncertain => return delivery_unknown_result(),
+            CacheClaim::Owner => {}
+        }
         let Some(reservation) = AcknowledgedReservation::try_acquire(&self.admission, &terminal_id)
         else {
-            return acknowledged_resource_exhausted(
+            let result = acknowledged_resource_exhausted(
                 "another APPLY_INPUT operation is in flight for this terminal",
             );
+            self.cache.set_retryable(operation_id, &result);
+            return result;
         };
         let (reply, result) = oneshot::channel();
         let routed = RoutedInput {
@@ -235,19 +256,26 @@ impl InputLaneHandle {
         };
         match self.tx.try_send(routed) {
             Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                return acknowledged_resource_exhausted("input lane queue is full");
+            Err(mpsc::error::TrySendError::Full(routed)) => {
+                drop(routed);
+                let result = acknowledged_resource_exhausted("input lane queue is full");
+                self.cache.set_retryable(operation_id, &result);
+                return result;
             }
             // The lane thread itself is gone: this operation was never even
             // enqueued, let alone handed to a pane actor or a PTY writer.
             // Provably nothing was written (phux-w7z2.60).
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                return acknowledged_not_written("input lane unavailable for APPLY_INPUT");
+            Err(mpsc::error::TrySendError::Closed(routed)) => {
+                drop(routed);
+                let result = acknowledged_not_written("input lane unavailable for APPLY_INPUT");
+                self.cache.set_retryable(operation_id, &result);
+                return result;
             }
         }
-        result.await.unwrap_or_else(|_| CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "input lane stopped before APPLY_INPUT completed".to_owned(),
+        result.await.unwrap_or_else(|_| {
+            let result = delivery_unknown_result();
+            self.cache.set_final(operation_id, &result);
+            result
         })
     }
 
@@ -275,8 +303,33 @@ impl InputLaneHandle {
         terminal_id: phux_protocol::ids::ResourceId,
         events: Vec<InputEvent>,
     ) -> Result<oneshot::Receiver<CommandResult>, CommandResult> {
-        let reservation = AcknowledgedReservation::try_acquire(&self.admission, &terminal_id)
-            .ok_or_else(|| acknowledged_resource_exhausted("APPLY_INPUT already admitted"))?;
+        let (digest, events) = operation_digest(operation_id, &terminal_id, events);
+        match self
+            .cache
+            .claim_at(operation_id, digest, std::time::Instant::now())
+        {
+            CacheClaim::Owner => {}
+            CacheClaim::Final(result) => return Err(result),
+            CacheClaim::Conflict => {
+                return Err(invalid_command(
+                    "APPLY_INPUT operation id reused with a different payload",
+                ));
+            }
+            CacheClaim::Full => {
+                return Err(acknowledged_resource_exhausted(
+                    "acknowledged-input dedupe cache is full",
+                ));
+            }
+            CacheClaim::Pending(_) | CacheClaim::PendingUncertain => {
+                return Err(delivery_unknown_result());
+            }
+        }
+        let Some(reservation) = AcknowledgedReservation::try_acquire(&self.admission, &terminal_id)
+        else {
+            let result = acknowledged_resource_exhausted("APPLY_INPUT already admitted");
+            self.cache.set_retryable(operation_id, &result);
+            return Err(result);
+        };
         let (reply, result) = oneshot::channel();
         let routed = RoutedInput {
             client_id,
@@ -288,14 +341,20 @@ impl InputLaneHandle {
                 reply,
             },
         };
-        self.tx.try_send(routed).map_err(|err| match err {
-            mpsc::error::TrySendError::Full(_) => {
-                acknowledged_resource_exhausted("input lane queue is full")
-            }
-            mpsc::error::TrySendError::Closed(_) => {
-                acknowledged_not_written("input lane unavailable for APPLY_INPUT")
-            }
-        })?;
+        if let Err(err) = self.tx.try_send(routed) {
+            let result = match err {
+                mpsc::error::TrySendError::Full(routed) => {
+                    drop(routed);
+                    acknowledged_resource_exhausted("input lane queue is full")
+                }
+                mpsc::error::TrySendError::Closed(routed) => {
+                    drop(routed);
+                    acknowledged_not_written("input lane unavailable for APPLY_INPUT")
+                }
+            };
+            self.cache.set_retryable(operation_id, &result);
+            return Err(result);
+        }
         Ok(result)
     }
 }
@@ -621,6 +680,13 @@ fn acknowledged_not_written(message: &str) -> CommandResult {
     }
 }
 
+fn delivery_unknown_result() -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::InputDeliveryUnknown,
+        message: "PTY input delivery could not be confirmed".to_owned(),
+    }
+}
+
 /// An acknowledged batch that passed every pre-handoff gate: authority, dedupe
 /// binding, paste safety, and encoding.
 struct PreparedBatch {
@@ -635,40 +701,18 @@ struct PreparedBatch {
 fn prepare_acknowledged_batch(
     state: &SharedState,
     encoders: &mut std::collections::HashMap<phux_core::ids::ResourceId, LaneEncoderSet>,
-    cache: &SharedOperationCache,
     client_id: ClientId,
-    operation_id: InputOperationId,
     terminal_id: &phux_protocol::ids::ResourceId,
     events: Vec<InputEvent>,
-    admitted_at: std::time::Instant,
 ) -> Result<PreparedBatch, CommandResult> {
     if events.is_empty() || events.len() > MAX_APPLY_INPUT_EVENTS {
         return Err(invalid_command("APPLY_INPUT requires 1..=256 events"));
     }
 
-    let digest = operation_digest(operation_id, terminal_id, events.clone());
     let mut inputs = Vec::with_capacity(events.len());
     for event in events {
         inputs.push(terminal_input_from_event(event)?);
     }
-    match cache.bind_at(operation_id, digest, admitted_at) {
-        CacheBinding::Final(result) => return Err(result),
-        CacheBinding::Conflict => {
-            return Err(invalid_command(
-                "APPLY_INPUT operation id reused with a different payload",
-            ));
-        }
-        CacheBinding::Full => {
-            return Err(acknowledged_resource_exhausted(
-                "acknowledged-input dedupe cache is full",
-            ));
-        }
-        // `Pending` is reachable only after a pre-handoff refusal released the
-        // reservation without a result: per-Terminal admission keeps a second
-        // operation off a Terminal whose write is still unresolved.
-        CacheBinding::New | CacheBinding::Pending => {}
-    }
-
     let destination =
         with_route_input_destination(state, client_id, terminal_id, std::convert::identity)?;
     let encoder = match encoder_for(encoders, destination.pane, &destination.handle) {
@@ -735,23 +779,15 @@ fn process_apply_input(
     reservation: AcknowledgedReservation,
     reply: oneshot::Sender<CommandResult>,
 ) {
-    let admitted_at = reservation.admitted_at();
-    let prepared = match prepare_acknowledged_batch(
-        state,
-        encoders,
-        cache,
-        client_id,
-        operation_id,
-        terminal_id,
-        events,
-        admitted_at,
-    ) {
+    let prepared = match prepare_acknowledged_batch(state, encoders, client_id, terminal_id, events)
+    {
         Ok(prepared) => prepared,
         Err(result) => {
             // Refused before registration: answer directly and release the
             // Terminal. A pre-handoff refusal deliberately leaves the dedupe
             // record unresolved (SPEC L1 6.2.1).
             drop(reservation);
+            cache.set_retryable(operation_id, &result);
             let _ = reply.send(result);
             return;
         }
@@ -767,9 +803,10 @@ fn process_apply_input(
     )) {
         // Registration itself is pre-handoff: the batch was never `try_send`d
         // onto the pane actor's mailbox, so nothing was written (phux-w7z2.60).
-        pending.resolve_without_writer(acknowledged_not_written(
-            "acknowledged completion waiter unavailable for APPLY_INPUT",
-        ));
+        pending.resolve_without_writer(
+            cache,
+            acknowledged_not_written("acknowledged completion waiter unavailable for APPLY_INPUT"),
+        );
         return;
     }
 
@@ -829,6 +866,7 @@ fn spawn_input_lane_with_completion_timeout(
     let (tx, mut rx) = mpsc::channel::<RoutedInput>(INPUT_LANE_CAPACITY);
     let admission = Arc::new(AcknowledgedAdmission::default());
     let cache = SharedOperationCache::default();
+    let lane_cache = cache.clone();
     let waiter = CompletionWaiter::spawn(cache.clone())?;
     let waiter_handle = waiter.handle();
     let join = std::thread::Builder::new()
@@ -870,7 +908,7 @@ fn spawn_input_lane_with_completion_timeout(
                     } => process_apply_input(
                         &state,
                         &mut encoders,
-                        &cache,
+                        &lane_cache,
                         &waiter_handle,
                         tickets.next_ticket(),
                         completion_timeout,
@@ -889,6 +927,7 @@ fn spawn_input_lane_with_completion_timeout(
         handle: InputLaneHandle {
             tx,
             admission: Arc::clone(&admission),
+            cache,
         },
         admission,
         join: Some(join),
@@ -1349,6 +1388,162 @@ mod tests {
                         .await
                         .is_err(),
                     "same operation must not write twice"
+                );
+                fx.token.cancel();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn same_id_retry_joins_the_unresolved_operation() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut fx = spawn_fixture();
+                let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
+                let handle = lane.handle();
+                let id = operation_id(24);
+                let events = vec![InputEvent::Paste(paste_event(b"once"))];
+
+                let first_handle = handle.clone();
+                let first_wire = fx.wire.clone();
+                let first_events = events.clone();
+                let first = tokio::task::spawn_local(async move {
+                    first_handle
+                        .apply_input(fx.client_a, id, first_wire, first_events)
+                        .await
+                });
+                let request = fx.writer_rx.recv().await.expect("writer request");
+                let retry_handle = handle.clone();
+                let retry_wire = fx.wire.clone();
+                let retry = tokio::task::spawn_local(async move {
+                    retry_handle
+                        .apply_input(fx.client_a, id, retry_wire, events)
+                        .await
+                });
+                tokio::task::yield_now().await;
+                assert!(
+                    !retry.is_finished(),
+                    "retry waits for the operation outcome"
+                );
+
+                request
+                    .completion
+                    .expect("completion")
+                    .complete(WriteCompletion::Delivered);
+                assert_eq!(first.await.expect("first task"), CommandResult::Ok);
+                assert_eq!(retry.await.expect("retry task"), CommandResult::Ok);
+                assert!(
+                    tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
+                        .await
+                        .is_err(),
+                    "joined retry must not write a second copy"
+                );
+                fx.token.cancel();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cached_operation_is_readable_while_another_id_holds_admission() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut fx = spawn_fixture();
+                let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
+                let handle = lane.handle();
+                let cached_id = operation_id(25);
+                let cached_events = vec![InputEvent::Paste(paste_event(b"cached"))];
+                let first_handle = handle.clone();
+                let first_wire = fx.wire.clone();
+                let first_events = cached_events.clone();
+                let first = tokio::task::spawn_local(async move {
+                    first_handle
+                        .apply_input(fx.client_a, cached_id, first_wire, first_events)
+                        .await
+                });
+                let cached_write = fx.writer_rx.recv().await.expect("cached write");
+                cached_write
+                    .completion
+                    .expect("completion")
+                    .complete(WriteCompletion::Delivered);
+                assert_eq!(first.await.expect("first task"), CommandResult::Ok);
+
+                let active_handle = handle.clone();
+                let active_wire = fx.wire.clone();
+                let active = tokio::task::spawn_local(async move {
+                    active_handle
+                        .apply_input(
+                            fx.client_a,
+                            operation_id(26),
+                            active_wire,
+                            vec![InputEvent::Paste(paste_event(b"active"))],
+                        )
+                        .await
+                });
+                let active_write = fx.writer_rx.recv().await.expect("active write");
+                assert_eq!(
+                    handle
+                        .apply_input(fx.client_a, cached_id, fx.wire.clone(), cached_events)
+                        .await,
+                    CommandResult::Ok,
+                    "dedupe lookup precedes per-terminal admission"
+                );
+                active_write
+                    .completion
+                    .expect("completion")
+                    .complete(WriteCompletion::Delivered);
+                assert_eq!(active.await.expect("active task"), CommandResult::Ok);
+                assert!(
+                    tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
+                        .await
+                        .is_err(),
+                    "cached lookup must not produce another write"
+                );
+                fx.token.cancel();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn writer_disconnect_after_handoff_is_unknown_and_deduplicated() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut fx = spawn_fixture();
+                let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
+                let handle = lane.handle();
+                let id = operation_id(27);
+                let events = vec![InputEvent::Paste(paste_event(b"uncertain"))];
+                let first_handle = handle.clone();
+                let first_wire = fx.wire.clone();
+                let first_events = events.clone();
+                let first = tokio::task::spawn_local(async move {
+                    first_handle
+                        .apply_input(fx.client_a, id, first_wire, first_events)
+                        .await
+                });
+                let request = fx.writer_rx.recv().await.expect("handoff reached writer");
+                drop(request);
+                let result = first.await.expect("first task");
+                assert!(matches!(
+                    result,
+                    CommandResult::Error {
+                        code: ErrorCode::InputDeliveryUnknown,
+                        ..
+                    }
+                ));
+                assert_eq!(
+                    handle
+                        .apply_input(fx.client_a, id, fx.wire.clone(), events)
+                        .await,
+                    result
+                );
+                assert!(
+                    tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
+                        .await
+                        .is_err(),
+                    "unknown operation remains at-most-once"
                 );
                 fx.token.cancel();
             })
@@ -2215,6 +2410,7 @@ mod tests {
         let handle = InputLaneHandle {
             tx,
             admission: Arc::clone(&admission),
+            cache: SharedOperationCache::default(),
         };
         handle.route(RoutedInput::attached(
             ClientId(1),

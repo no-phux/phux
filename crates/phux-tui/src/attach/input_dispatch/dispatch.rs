@@ -854,12 +854,12 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if self.begin_drag_to_copy(&routed, &target) {
             return Ok(StageOutcome::consumed(layout_changed));
         }
-        self.conn
-            .send(&FrameKind::InputMouse {
-                terminal_id: target,
-                event: scale_to_surface_pixels(routed, self.ctx.cell_px),
-            })
-            .await?;
+        self.send_terminal_input(
+            target,
+            InputEvent::Mouse(scale_to_surface_pixels(routed, self.ctx.cell_px)),
+            false,
+        )
+        .await?;
         Ok(StageOutcome::consumed(layout_changed))
     }
 
@@ -930,11 +930,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             ModSet::empty(),
         );
         for _ in 0..delta.unsigned_abs() {
-            self.conn
-                .send(&FrameKind::InputKey {
-                    terminal_id: target.clone(),
-                    event: arrow.clone(),
-                })
+            self.send_terminal_input(target.clone(), InputEvent::Key(arrow.clone()), false)
                 .await?;
         }
         Ok(())
@@ -1145,41 +1141,43 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         // chrome repaint via the returned flag.
         let layout_changed = matches!(ev, InputEvent::Key(_) | InputEvent::Paste(_))
             && clear_attention_on_input(self.panes, &pane);
-        // ADR-0053: on a remote reconnect lane, a bracketed paste — the one
-        // composed, non-latency-sensitive batch this surface produces — goes
-        // through the acknowledged `APPLY_INPUT` journal so it survives a
-        // mid-flight reconnect under one idempotent operation id. Keystrokes
-        // and mouse stay fire-and-forget by design (ADR-0053 point 8), and
-        // the server's input-lane FIFO keeps a same-connection key from
-        // overtaking the acknowledged batch. Everything the journal cannot
-        // honestly carry — a satellite-routed pane (APPLY_INPUT is
-        // local-only), a batch over the wire caps, an inactive journal — falls
-        // back to today's fire-and-forget `INPUT_PASTE`, byte-identical.
-        if matches!(ev, InputEvent::Paste(_))
-            && pane.host().is_none()
-            && let Some(journal) = self.ctx.input_replay
-            && journal.borrow().active()
-            && phux_client::agent_prompt::validate_batch(std::slice::from_ref(&ev)).is_ok()
-        {
-            // Scoped so the RefCell borrow provably ends before any await.
-            let (reports, frame) = {
-                let mut journal = journal.borrow_mut();
-                journal.submit(pane.clone(), vec![ev]);
-                journal.next_frame(&mut *self.ctx.next_request_id)
-            };
-            // A strand at submit time can only be an OLDER queued operation
-            // crossing the retry horizon. Dispatch has no notice channel;
-            // the trace line keeps the outcome from vanishing entirely.
-            for report in reports {
-                tracing::warn!(line = %report.notice_line(), "acknowledged paste stranded");
-            }
-            if let Some(frame) = frame {
-                self.conn.send(&frame).await?;
-            }
-            return Ok(layout_changed);
-        }
-        self.conn.send(&ev.into_frame(pane)).await?;
+        let acknowledged = matches!(ev, InputEvent::Paste(_));
+        self.send_terminal_input(pane, ev, acknowledged).await?;
         Ok(layout_changed)
+    }
+
+    /// Keep later input behind an acknowledged operation for this Terminal.
+    /// Outside that short ordering window, latency-sensitive atoms retain the
+    /// ordinary fire-and-forget path.
+    async fn send_terminal_input(
+        &mut self,
+        pane: ResourceId,
+        event: InputEvent,
+        acknowledged: bool,
+    ) -> Result<(), AttachError> {
+        let Some(journal) = self.ctx.input_replay else {
+            return self.conn.send(&event.into_frame(pane)).await;
+        };
+        let should_queue = pane.host().is_none()
+            && journal.borrow().active()
+            && (acknowledged || journal.borrow().must_order_after(&pane));
+        if !should_queue {
+            return self.conn.send(&event.into_frame(pane)).await;
+        }
+
+        let (reports, frames) = {
+            let mut journal = journal.borrow_mut();
+            if let Err(report) = journal.submit(pane, vec![event]) {
+                tracing::warn!(line = %report.notice_line(), "acknowledged input refused locally");
+                return Ok(());
+            }
+            journal.next_frames(&mut *self.ctx.next_request_id)
+        };
+        journal.borrow_mut().defer_reports(reports);
+        for frame in frames {
+            self.conn.send(&frame).await?;
+        }
+        Ok(())
     }
 
     /// Paint the queued predictions. Predictions are pane-local; shift
