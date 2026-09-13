@@ -551,7 +551,134 @@ const Bridge = struct {
             self.requestSession(key, payload);
             return true;
         }
+        return self.requestCreationWorkflow(name, key, payload);
+    }
+
+    fn requestCreationWorkflow(self: *Bridge, name: []const u8, key: u64, payload: []const u8) bool {
+        if (std.mem.eql(u8, name, cockpit.machines.request_name)) {
+            self.requestMachines(key, payload);
+            return true;
+        }
+        if (std.mem.eql(u8, name, cockpit.local_tools.request_name)) {
+            self.requestLocalTool(key, payload);
+            return true;
+        }
+        if (std.mem.eql(u8, name, cockpit.new_session.request_name)) {
+            self.requestNewSession(key, payload);
+            return true;
+        }
         return false;
+    }
+
+    fn requestMachines(self: *Bridge, key: u64, payload: []const u8) void {
+        self.machine_reply.begin(key);
+        const engine = self.engine orelse return self.machine_reply.fail("engine unavailable");
+        var adapter: cockpit.machine_runtime.Adapter = .{
+            .model = engine.model,
+            .gpa = engine.model.provider.gpa,
+            .io = engine.model.provider.io,
+            .origin = .{ .window = @intCast(engine.model.active_window), .epoch = engine.model.window_epochs[engine.model.active_window] },
+            .hooks = self.machineHooks(),
+        };
+        self.machine_action_token = cockpit.machine_browse.actionToken(payload);
+        defer self.machine_action_token = null;
+        const reply = cockpit.machines.handle(&self.machines, adapter.context(), payload, &self.machine_reply.buffer) catch |err| {
+            self.machine_reply.fail(@errorName(err));
+            return;
+        };
+        self.machine_reply.finish(reply);
+    }
+
+    fn machineHooks(self: *Bridge) cockpit.machine_runtime.Hooks {
+        return .{
+            .userdata = self,
+            .connectLocal = machineConnectLocal,
+            .adoptCaptured = machineAdoptCaptured,
+            .retryCaptured = machineRetryCaptured,
+            .disconnectCaptured = machineDisconnectCaptured,
+            .browse = machineBrowse,
+        };
+    }
+
+    fn machineConnectLocal(raw: ?*anyopaque, origin: cockpit.window_navigation.Target) anyerror!void {
+        const self: *Bridge = @ptrCast(@alignCast(raw orelse return error.EngineUnavailable));
+        const engine = self.engine orelse return error.EngineUnavailable;
+        const fx = engineFx() orelse return error.RuntimeUnavailable;
+        try engine.connectConfiguredLocal(origin, fx, phuxChannel);
+    }
+
+    fn machineAdoptCaptured(raw: ?*anyopaque, remote: *cockpit.PhuxProvider) anyerror!void {
+        const self: *Bridge = @ptrCast(@alignCast(raw orelse {
+            remote.destroy();
+            return error.EngineUnavailable;
+        }));
+        const engine = self.engine orelse {
+            remote.destroy();
+            return error.EngineUnavailable;
+        };
+        const fx = engineFx() orelse {
+            remote.destroy();
+            return error.RuntimeUnavailable;
+        };
+        try engine.adoptCapturedPeer(remote, fx);
+    }
+
+    fn machineRetryCaptured(raw: ?*anyopaque, target: cockpit.machine_runtime.Target, tunnel: cockpit.machines.Tunnel, identity: cockpit.machine_runtime.RegistryIdentity) anyerror!void {
+        const self: *Bridge = @ptrCast(@alignCast(raw orelse {
+            releaseMachineTunnel(tunnel);
+            return error.EngineUnavailable;
+        }));
+        const engine = self.engine orelse {
+            releaseMachineTunnel(tunnel);
+            return error.EngineUnavailable;
+        };
+        const fx = engineFx() orelse {
+            releaseMachineTunnel(tunnel);
+            return error.RuntimeUnavailable;
+        };
+        try engine.retryCapturedPeer(target, tunnel, identity, fx);
+    }
+
+    fn releaseMachineTunnel(tunnel: cockpit.machines.Tunnel) void {
+        if (comptime cockpit.phux_enabled) tunnel.close();
+    }
+
+    fn machineDisconnectCaptured(raw: ?*anyopaque, targets: []const cockpit.machine_runtime.Target) anyerror!void {
+        const self: *Bridge = @ptrCast(@alignCast(raw orelse return error.EngineUnavailable));
+        const engine = self.engine orelse return error.EngineUnavailable;
+        const fx = engineFx() orelse return error.RuntimeUnavailable;
+        try engine.disconnectCapturedPeers(targets, fx);
+    }
+
+    fn machineBrowse(raw: ?*anyopaque, selection: cockpit.machine_runtime.Browse) anyerror!void {
+        const self: *Bridge = @ptrCast(@alignCast(raw orelse return error.EngineUnavailable));
+        const token = self.machine_action_token orelse return error.InvalidBrowseToken;
+        try self.machine_browse.replace(std.heap.page_allocator, token, selection);
+    }
+
+    fn requestLocalTool(self: *Bridge, key: u64, payload: []const u8) void {
+        self.local_tool_reply.begin(key);
+        const engine = self.engine orelse return self.local_tool_reply.fail("engine unavailable");
+        const fx = engineFx() orelse return self.local_tool_reply.fail("runtime unavailable");
+        const path = engine.model.config_file.path();
+        const cwd = std.fs.path.dirname(path) orelse "/";
+        var service = self.local_tool_launch.service(engine, fx, cwd);
+        const reply = cockpit.local_tools.handle(&self.local_tools, &service, {}, self.appearance.hasPendingChanges(engine.model), payload, &self.local_tool_reply.buffer) catch |err| {
+            self.local_tool_reply.fail(@errorName(err));
+            return;
+        };
+        self.local_tool_reply.finish(reply);
+    }
+
+    fn requestNewSession(self: *Bridge, key: u64, payload: []const u8) void {
+        self.new_session_reply.begin(key);
+        const engine = self.engine orelse return self.new_session_reply.fail("engine unavailable");
+        const fx = engineFx() orelse return self.new_session_reply.fail("runtime unavailable");
+        const reply = self.new_session.handle(engine, fx, payload, &self.new_session_reply.buffer) catch |err| {
+            self.new_session_reply.fail(@errorName(err));
+            return;
+        };
+        self.new_session_reply.finish(reply);
     }
 
     fn requestWindow(self: *Bridge, key: u64, payload: []const u8) void {
@@ -665,6 +792,8 @@ const Bridge = struct {
         };
         const snapshot = if (isWindowNavigation(payload))
             cockpit.window_labels.encode(engine.model, engine.revision, payload, &self.navigation_buffer)
+        else if (cockpit.machine_browse.navigationToken(payload)) |token|
+            engine.navigationSnapshotForAttachments(payload, &self.navigation_buffer, self.machine_browse.resolve(engine.model, token) orelse &.{})
         else
             engine.navigationSnapshot(payload, &self.navigation_buffer);
         const bytes = snapshot catch |err| {
@@ -974,8 +1103,15 @@ const Bridge = struct {
         self.local_tools.deinit();
         self.local_tool_launch.deinit();
         self.machine_browse.deinit();
-        self.new_session.deinit(std.heap.page_allocator);
+        self.new_session.deinit(if (self.engine) |engine| engine.allocator else std.heap.page_allocator);
         self.machines.deinit();
+    }
+
+    fn advanceWorkflows(self: *Bridge) void {
+        const engine = self.engine orelse return;
+        const fx = engineFx() orelse return;
+        self.local_tool_launch.advance(engine, fx);
+        self.new_session.poll(engine, fx);
     }
 
     fn retireWorkflows(self: *Bridge) void {
@@ -1527,14 +1663,20 @@ fn paintChromeWindow(model: *const core.Model, builder: *canvas.Builder, context
 fn installEngine(options: *Adapter.CoreOptions, gpa: std.mem.Allocator, io: std.Io) void {
     bridge = .{};
     bridge.engine = Engine.create(gpa, io) catch null;
-    if (bridge.engine) |engine| engine.external_keybindings = true;
+    if (bridge.engine) |engine| {
+        engine.external_keybindings = true;
+        engine.local_tool_sink = bridge.local_tool_launch.sink();
+    }
     options.host_calls = bridge.binding();
 }
 
 pub fn configureCoreOptions(options: *Adapter.CoreOptions, init: std.process.Init) void {
     bridge = .{};
     bridge.engine = Engine.createConfigured(std.heap.page_allocator, init) catch null;
-    if (bridge.engine) |engine| engine.external_keybindings = true;
+    if (bridge.engine) |engine| {
+        engine.external_keybindings = true;
+        engine.local_tool_sink = bridge.local_tool_launch.sink();
+    }
     options.host_calls = bridge.binding();
 }
 
@@ -1635,6 +1777,7 @@ const PointerHost = struct {
         defer if (engine) |current| {
             if (current.finishPublication(before.?)) bridge.announce(current);
         };
+        defer bridge.advanceWorkflows();
         prepareInputAdmission(runtime, value);
         const admitted = (try canonicalShortcut(value)) orelse return;
         refreshNativeState(runtime, value);
@@ -2086,13 +2229,17 @@ const Rig = struct {
     frame_index: u64 = 1,
 
     fn attachFixture(self: *Rig) !cockpit.TerminalRef {
+        return self.attachFixtureWithHello(@embedFile("tests/fixtures/hello.bin"));
+    }
+
+    fn attachFixtureWithHello(self: *Rig, hello: []const u8) !cockpit.TerminalRef {
         if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
         const engine = bridge.engine.?;
         var config = cockpit.startup.resolvePhuxConfig(.{}, .{ .socket = "/unused-fixture.sock", .session = "fixture" });
         const remote = (try cockpit.startup.createPhuxProviderFromConfig(std.testing.allocator, std.testing.io, &config)).?;
         cockpit.attachPhuxProvider(engine.model, remote);
         try remote.host.start("shipping-fixture");
-        try std.testing.expect(remote.bridge.incoming.stage(@embedFile("tests/fixtures/hello.bin")));
+        try std.testing.expect(remote.bridge.incoming.stage(hello));
         _ = phuxChannel(.{ .key = cockpit.phux_channel_key, .kind = .data, .bytes = &.{1} });
         remote.bridge.outgoing.reset();
         const attached = @embedFile("tests/fixtures/attached.bin");
@@ -2900,6 +3047,125 @@ test "tab command receipt survives snapshot and navigation requests and rejects 
     try std.testing.expectEqual(id, refused.id);
     try std.testing.expectEqual(@as(usize, 0), engine.model.active_window);
     try std.testing.expect(before.eql(engine.model.focusedTerminalRef().?));
+}
+
+fn pollBoundReply(host: native_sdk.HostCallBinding, key: u64) !native_sdk.HostCallCompletion {
+    for (0..16) |_| {
+        const reply = host.poll_fn.?(host.context) orelse break;
+        if (reply.key == key) return reply;
+    }
+    return error.TestExpectedHostCallReply;
+}
+
+test "Machines paging traverses the shipping host-call binding" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "config.toml", .data = "# empty machine registry\n" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "config.toml", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    bridge.machines.config_path = path;
+
+    var request: [16]u8 = @splat(0);
+    request[0] = 1;
+    std.mem.writeInt(u32, request[2..6], 41, .little);
+    std.mem.writeInt(u16, request[14..16], 8, .little);
+    const host = bridge.binding();
+    host.request_fn(host.context, cockpit.machines.request_name, 9101, &request);
+    const reply = try pollBoundReply(host, 9101);
+    try std.testing.expect(reply.ok);
+    try std.testing.expectEqual(@as(u64, 9101), reply.key);
+    try std.testing.expectEqual(@as(u32, 41), std.mem.readInt(u32, reply.bytes[2..6], .little));
+    try std.testing.expect(std.mem.indexOf(u8, reply.bytes, "This Mac") != null);
+}
+
+test "local configuration editor launch traverses the shipping host-call binding" {
+    if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    _ = try rig.attachFixtureWithHello(@embedFile("tests/fixtures/hello_conditional_kill.bin"));
+    try rig.settleCurrent();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(std.testing.io, .{ .sub_path = "config.toml", .data = "# local config\n" });
+    const path = try tmp.dir.realPathFileAlloc(std.testing.io, "config.toml", std.testing.allocator);
+    defer std.testing.allocator.free(path);
+    const engine = bridge.engine.?;
+    engine.model.config_file.setPath(path);
+    try engine.model.config.editor.set("/usr/bin/true --wait");
+    try engine.model.config.phux_socket.set("/unused-fixture.sock");
+
+    var request = [_]u8{ 1, @intFromEnum(cockpit.local_tools.Kind.describe), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    const host = bridge.binding();
+    host.request_fn(host.context, cockpit.local_tools.request_name, 9102, &request);
+    const reply = try pollBoundReply(host, 9102);
+    try std.testing.expect(reply.ok);
+    try std.testing.expectEqual(@as(u64, 9102), reply.key);
+    try std.testing.expectEqual(@intFromEnum(cockpit.local_tools.Phase.ready), reply.bytes[1]);
+    try std.testing.expect(std.mem.indexOf(u8, reply.bytes, "/usr/bin/true") != null);
+    const token = std.mem.readInt(u64, reply.bytes[6..14], .little);
+    request[1] = @intFromEnum(cockpit.local_tools.Kind.edit_config);
+    std.mem.writeInt(u64, request[2..10], token, .little);
+    host.request_fn(host.context, cockpit.local_tools.request_name, 9104, &request);
+    const launched = try pollBoundReply(host, 9104);
+    try std.testing.expect(launched.ok);
+    try std.testing.expectEqual(@intFromEnum(cockpit.local_tools.Phase.queued), launched.bytes[1]);
+    try std.testing.expect(std.mem.readInt(u32, launched.bytes[2..6], .little) != 0);
+    const remote = engine.model.phux().?;
+    var observed_argv = false;
+    while (remote.bridge.outgoing.take()) |frame| {
+        defer remote.bridge.outgoing.release(frame);
+        if (std.mem.indexOf(u8, frame, "/usr/bin/true") != null and
+            std.mem.indexOf(u8, frame, "--wait") != null and
+            std.mem.indexOf(u8, frame, path) != null) observed_argv = true;
+    }
+    try std.testing.expect(observed_argv);
+}
+
+test "New Session create traverses the shipping host-call binding" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    if (comptime !cockpit.phux_enabled) {
+        const request = [_]u8{ 1, @intFromEnum(cockpit.new_session.Kind.describe), 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+        const host = bridge.binding();
+        host.request_fn(host.context, cockpit.new_session.request_name, 9103, &request);
+        const reply = try pollBoundReply(host, 9103);
+        try std.testing.expect(reply.ok);
+        try std.testing.expectEqual(@intFromEnum(cockpit.new_session.Phase.unavailable), reply.bytes[1]);
+        return;
+    }
+    _ = try rig.attachFixtureWithHello(@embedFile("tests/fixtures/hello_keep_empty.bin"));
+    try rig.settleCurrent();
+    const engine = bridge.engine.?;
+    var request: [32]u8 = @splat(0);
+    request[0] = 1;
+    request[1] = @intFromEnum(cockpit.new_session.Kind.describe);
+    const host = bridge.binding();
+    host.request_fn(host.context, cockpit.new_session.request_name, 9103, request[0..11]);
+    const reply = try pollBoundReply(host, 9103);
+    try std.testing.expect(reply.ok);
+    try std.testing.expectEqual(@as(u64, 9103), reply.key);
+    try std.testing.expectEqual(@intFromEnum(cockpit.new_session.Phase.ready), reply.bytes[1]);
+    const token = std.mem.readInt(u64, reply.bytes[2..10], .little);
+    request[1] = @intFromEnum(cockpit.new_session.Kind.create);
+    std.mem.writeInt(u64, request[2..10], token, .little);
+    request[10] = 5;
+    @memcpy(request[11..16], "Build");
+    host.request_fn(host.context, cockpit.new_session.request_name, 9105, request[0..16]);
+    const created = try pollBoundReply(host, 9105);
+    try std.testing.expect(created.ok);
+    try std.testing.expectEqual(@intFromEnum(cockpit.new_session.Phase.pending), created.bytes[1]);
+    const remote = engine.model.phux().?;
+    var observed_name = false;
+    while (remote.bridge.outgoing.take()) |frame| {
+        defer remote.bridge.outgoing.release(frame);
+        if (std.mem.indexOf(u8, frame, "Build") != null) observed_name = true;
+    }
+    try std.testing.expect(observed_name);
 }
 
 test "retired tab targets cannot alias reused IDs after allocation rollover" {

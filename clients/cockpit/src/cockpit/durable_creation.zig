@@ -613,6 +613,15 @@ pub const Creation = struct {
         return null;
     }
 
+    pub fn completionFor(self: *const Creation, command_id: u64) ?results.Result {
+        for (self.pending) |slot| {
+            const entry = slot orelse continue;
+            const completion = entry.completion orelse continue;
+            if (completion.command_id == command_id) return completion;
+        }
+        return null;
+    }
+
     pub fn ackCompletion(self: *Creation, command_id: u64) bool {
         for (&self.pending) |*slot| {
             const entry = slot.* orelse continue;
