@@ -16,7 +16,7 @@
 //!   terminal consumers enable it; decoding wire messages does not require it.
 //!
 //! [`docs/spec/`]: https://github.com/no-phux/phux/tree/main/docs/spec
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

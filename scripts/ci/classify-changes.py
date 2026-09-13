@@ -66,7 +66,7 @@ def is_doc(path):
     # Skills are executable product inputs, including shipped agent prompts.
     if matches(path, ("skills/*", "integrations/*/skills/*")):
         return False
-    return matches(path, ("docs/*", "ADR/*", "*.md"))
+    return matches(path, ("docs/*", "docs/adr/*", "*.md"))
 
 
 def surfaces_for(path):

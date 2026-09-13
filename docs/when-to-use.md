@@ -31,8 +31,9 @@ tmux. Find your row below.
 
 ## Go deeper
 
+- Coming from tmux, herdr, or screen: [`docs/coming-from.md`](./coming-from.md)
 - The mental model: [`docs/CONCEPTS.md`](./CONCEPTS.md)
 - Driving phux from an agent: [`docs/consumers/agents.md`](./consumers/agents.md) · [`docs/consumers/mcp.md`](./consumers/mcp.md)
-- Why it's built on a shared engine: [ADR-0030](../ADR/0030-engine-delegated-wire-and-projection-consumers.md)
-- How it sits next to tmux: [ADR-0009](../ADR/0009-phux-vs-mux-positioning.md)
+- Why it's built on a shared engine: [ADR-0030](adr/0030-engine-delegated-wire-and-projection-consumers.md)
+- How it sits next to tmux: [ADR-0009](adr/0009-phux-vs-mux-positioning.md)
 - Where it's going: [`docs/vision.md`](./vision.md)

@@ -39,15 +39,15 @@ expect_fail() {
 # A docs contributor has only shell/Git utilities; no compiler or Node probes.
 expect_pass "$repo/scripts/doctor.sh" docs
 cp "$root/scripts/check-docs.sh" "$repo/scripts/"
-mkdir -p "$repo/ADR"
-touch "$repo/ADR/0008-first.md" "$repo/ADR/0009-second.md"
-printf '| [0008](./0008-first.md) | First |\n| [0009](./0009-second.md) | Second |\n' >"$repo/ADR/README.md"
+mkdir -p "$repo/docs/adr"
+touch "$repo/docs/adr/0008-first.md" "$repo/docs/adr/0009-second.md"
+printf '| [0008](./0008-first.md) | First |\n| [0009](./0009-second.md) | Second |\n' >"$repo/docs/adr/README.md"
 expect_pass "$repo/scripts/check-docs.sh" --only=adr-index-sync
 expect_pass "$repo/scripts/check-docs.sh" --only=adr-number-unique
-touch "$repo/ADR/0008-duplicate.md"
+touch "$repo/docs/adr/0008-duplicate.md"
 expect_fail 'ADR number 0008 is also used' "$repo/scripts/check-docs.sh" --only=adr-number-unique
-rm -f "$repo/ADR/0008-duplicate.md"
-printf '| [0008](./0008-first.md) | Duplicate |\n' >>"$repo/ADR/README.md"
+rm -f "$repo/docs/adr/0008-duplicate.md"
+printf '| [0008](./0008-first.md) | Duplicate |\n' >>"$repo/docs/adr/README.md"
 expect_fail 'more than one row' "$repo/scripts/check-docs.sh" --only=adr-index-sync
 
 # spec-id-unique: the spec allocation tables are registries on the wire ID

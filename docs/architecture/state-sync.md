@@ -34,7 +34,7 @@ profiles, selected once per connection at HELLO and repeated per stream in
 both ends advertise a compatible engine codec; otherwise a synthesized
 profile is selected only if both advertised that exact combination, and no
 shared profile is a fatal `CODEC_UNAVAILABLE` at HELLO
-([ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md)).
+([ADR-0070](../adr/0070-native-engine-state-bootstrap.md)).
 
 An AgentSession stream uses `AgentEventsJsonlV1` only: bootstrap is the
 retained JSONL ring, live `RESOURCE_OUTPUT.bytes` are complete records,
@@ -43,7 +43,7 @@ raw-only, no `FRAME_ACK`. Profile negotiation does not constrain it.
 ## Native bootstrap (built, preferred)
 
 Both ends run libghostty and the wire carries engine bytes rather than a
-re-encoded grid ([ADR-0013](../../ADR/0013-libghostty-bytes-on-wire.md)).
+re-encoded grid ([ADR-0013](../adr/0013-libghostty-bytes-on-wire.md)).
 Under `NativeState` the attach path is:
 
 1. The runtime drains the subscription receiver and asks the Terminal
@@ -89,7 +89,7 @@ compatible engine codec:
    accounting. The reference is a rendered-row copy, not libghostty's dirty
    bits, because `RenderState::update` consumes the shared dirty state and
    would starve every consumer but the first
-   ([ADR-0018](../../ADR/0018-lazy-state-synchronization.md) addenda).
+   ([ADR-0018](../adr/0018-lazy-state-synchronization.md) addenda).
 
 Replaying a synthesized snapshot through the same engine that produced it
 yields the server's grid up to the documented downsampling rewrites; that
@@ -100,4 +100,4 @@ equivalence is a property test, not an assumption
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Loss-tolerant re-diff against an older reference on a lossy transport | Every shipped transport is reliable and ordered; the reference advances on emit and no re-diff path is wired. | [ADR-0018](../../ADR/0018-lazy-state-synchronization.md) | not scheduled; revisit with a datagram lane |
+| Loss-tolerant re-diff against an older reference on a lossy transport | Every shipped transport is reliable and ordered; the reference advances on emit and no re-diff path is wired. | [ADR-0018](../adr/0018-lazy-state-synchronization.md) | not scheduled; revisit with a datagram lane |

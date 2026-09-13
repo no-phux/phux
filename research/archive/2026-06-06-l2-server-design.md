@@ -4,13 +4,13 @@ stability: scratch
 last-reviewed: 2026-06-06
 ---
 
-> **Archived 2026-09-09.** Superseded by [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md):
+> **Archived 2026-09-09.** Superseded by [ADR-0030](../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md):
 > there is no L2 collection tier. Preserved for the design record; not the
 > authoritative source. For current behavior see the ADR and `docs/spec/`.
 
 # L2 Server-Side Architecture
 
-**TL;DR.** Superseded scratch. This file designs how phux-server would have implemented a server-side Collection lifecycle tier (state in the `Registry` alongside Terminals; events via `CollectionEventEmitter` channels to per-Collection subscriber lists; a handler routing create/kill/rename commands). [ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md) dissolves that tier — grouping becomes L3 metadata plus client logic, and the one atomic need (multi-terminal teardown) becomes a single L1 op, `KILL_TERMINALS { ids }`. Kept for design history, not as a build target.
+**TL;DR.** Superseded scratch. This file designs how phux-server would have implemented a server-side Collection lifecycle tier (state in the `Registry` alongside Terminals; events via `CollectionEventEmitter` channels to per-Collection subscriber lists; a handler routing create/kill/rename commands). [ADR-0030](../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md) dissolves that tier — grouping becomes L3 metadata plus client logic, and the one atomic need (multi-terminal teardown) becomes a single L1 op, `KILL_TERMINALS { ids }`. Kept for design history, not as a build target.
 
 ---
 
@@ -665,7 +665,7 @@ A Terminal currently belongs to at most one Collection. Future designs might all
 
 ## 11. Deployment Notes
 
-- L2 is optional per [ADR-0015](../../ADR/0015-protocol-layering.md). A v0.1 server that does not yet implement L2 never allocates `collection_events` or `l2_subscribers` and returns `LayerNotSupported` to any L2 command.
+- L2 is optional per [ADR-0015](../../docs/adr/0015-protocol-layering.md). A v0.1 server that does not yet implement L2 never allocates `collection_events` or `l2_subscribers` and returns `LayerNotSupported` to any L2 command.
 - When L2 lands, `ServerState` initialization should create a default Collection at `CollectionId::Local(1)` to match the wire assumption in `docs/spec/L1.md` §1.1 (spawned Terminals without an explicit `collection_id` go to the default).
 - The `CommandResult` enum grows new arms (`CollectionCreated`, `CollectionList`) when L2 messages are wired; existing arms are unaffected.
 

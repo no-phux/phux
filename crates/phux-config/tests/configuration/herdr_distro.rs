@@ -1,6 +1,6 @@
 //! The bundled herdr plugin-bundle layer (phux-r82.9).
 //!
-//! Pins the checked-in `distros/herdr/herdr.toml` package end-to-end: it
+//! Pins the checked-in `distros/starter/starter.toml` package end-to-end: it
 //! resolves through `extends`, its `[[plugins-append]]` manifests
 //! absolutize against the layer directory and point at real files, and a
 //! user config layered on top overrides it per key while still composing
@@ -24,9 +24,9 @@ use phux_config::{Action, Config, parse_with_defaults};
 fn herdr_layer() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
-        .join("distros/herdr/herdr.toml")
+        .join("distros/starter/starter.toml")
         .canonicalize()
-        .expect("distros/herdr/herdr.toml exists in the repo")
+        .expect("distros/starter/starter.toml exists in the repo")
 }
 
 /// Parse a user config body that extends the bundled herdr layer.

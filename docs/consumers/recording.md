@@ -68,7 +68,7 @@ Worth knowing before you record something long, rather than after.
   face: Latin, Greek, Cyrillic, Braille, box drawing, and Powerline. CJK and
   other wide glyphs and color emoji render as tofu boxes. This is a deliberate
   and permanent consequence of the encoder design
-  ([ADR-0060](../../ADR/0060-self-contained-session-recording.md)) — it is
+  ([ADR-0060](../adr/0060-self-contained-session-recording.md)) — it is
   what keeps GIF quantization lossless — not a gap waiting to be filled. A
   `.cast` has no such limit; only the rendered animation does.
 
@@ -223,7 +223,7 @@ replaying input would type a recording's keystrokes into a live PTY, which is
 not what anyone means by "play".
 
 There is no pause, no seek, and no scrubbing. Adding them would make this the
-shell-level player [ADR-0064](../../ADR/0064-playback-as-a-pane.md)
+shell-level player [ADR-0064](../adr/0064-playback-as-a-pane.md)
 deliberately does not build.
 
 ## 7. Where this fits
@@ -233,11 +233,11 @@ subscription that [`../spec/L1.md`](../spec/L1.md) §5.1 already specifies —
 snapshot, then deltas, no session attach, no resize — and the GIF and APNG
 encoders are in-process, so `phux rec` works on a machine with no `agg`, no
 `vhs`, and no `ffmpeg`. The reasoning, and the design spaces it closes, are in
-[ADR-0060](../../ADR/0060-self-contained-session-recording.md).
+[ADR-0060](../adr/0060-self-contained-session-recording.md).
 
 Playback adds nothing to the wire either. `SPAWN_RESOURCE` already carries a
 command, the server already tells a spawned pane its own id and socket, and
 `RESIZE_TERMINAL` already exists — so the pane's "process" is simply the phux
 binary re-invoked in a mode that writes a cast to its own stdout.
-[ADR-0064](../../ADR/0064-playback-as-a-pane.md) has the reasoning, including
+[ADR-0064](../adr/0064-playback-as-a-pane.md) has the reasoning, including
 why the shell-level player stays unbuilt.

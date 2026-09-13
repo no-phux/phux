@@ -6,7 +6,7 @@
 //! full-screen TUI — keeps its transcript in its *own* buffer. Rows that
 //! scroll off the alternate screen never enter the emulator's history, so no
 //! value of `--scrollback` recovers them
-//! ([ADR-0078](../../../ADR/0078-alternate-screen-history.md)). The only
+//! ([ADR-0078](../../../docs/adr/0078-alternate-screen-history.md)). The only
 //! mechanism that reaches those rows is the application's own scrollback,
 //! driven by synthesized wheel events — a read that writes.
 //!

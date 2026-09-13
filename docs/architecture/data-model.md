@@ -41,7 +41,7 @@ descriptor carries: a Terminal carries `TerminalFacet { dims, cwd, title }`
 and a window slot; an AgentSession carries `AgentFacet { provider,
 native_id, state }` and a parent. Exactly the facet named by `kind` is
 populated, and the `Registry` is the only constructor
-([ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md)).
+([ADR-0102](../adr/0102-resources-the-server-serves-kinds.md)).
 
 ## Grouping is metadata, not a collection tier
 
@@ -57,7 +57,7 @@ removal (bead phux-0bmc closed as resolved-by-rename).
 
 The `Registry`'s `Session` and `Window` types are the in-process carriers of
 that grouping metadata. They are domain bookkeeping, not a wire tier: under
-[ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md) the session,
+[ADR-0017](../adr/0017-tui-not-protocol-privileged.md) the session,
 window, pane-focus, and layout vocabulary is a TUI-consumer convention stored
 as L3 metadata, never a protocol-privileged concept.
 
@@ -108,7 +108,7 @@ Removal cascades downward and never upward. `Registry::remove_resource(id)`
 removes the resource, then every resource whose `parent` is `id`, then
 vacates the Terminal's window slot; `remove_window` and `remove_session`
 run the same cascade for every slot they hold. Removing a child never
-touches the parent ([ADR-0104](../../ADR/0104-parent-bindings-are-l1-lifecycle.md)).
+touches the parent ([ADR-0104](../adr/0104-parent-bindings-are-l1-lifecycle.md)).
 
 ## Server-side state
 

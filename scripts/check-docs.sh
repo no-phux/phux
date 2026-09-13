@@ -15,17 +15,17 @@
 #                           resolves to a real file
 #   - adr-status          : every ADR's `Status:` line is one of the
 #                           four blessed forms
-#   - adr-number-unique   : no two files under ADR/ share the same
+#   - adr-number-unique   : no two files under docs/adr/ share the same
 #                           leading NNNN number
-#   - adr-index-sync      : every ADR/NNNN-*.md has exactly one row in
-#                           ADR/README.md's index, every row resolves to
+#   - adr-index-sync      : every docs/adr/NNNN-*.md has exactly one row in
+#                           docs/adr/README.md's index, every row resolves to
 #                           its file, and rows ascend numerically
-#   - adr-length          : every ADR/NNNN-*.md is at most 150 lines
-#                           unless listed in ADR/.length-baseline, and a
+#   - adr-length          : every docs/adr/NNNN-*.md is at most 150 lines
+#                           unless listed in docs/adr/.length-baseline, and a
 #                           listed ADR that fits the cap is removed from
 #                           the baseline (entries may only be removed)
 #   - adr-in-force-sync   : every Proposed/Accepted ADR is linked exactly
-#                           once in ADR/IN-FORCE.md, no Superseded or
+#                           once in docs/adr/IN-FORCE.md, no Superseded or
 #                           Deprecated ADR is linked, and every link
 #                           resolves to its file
 #   - spec-version-sync   : docs/spec/CHANGELOG.md head version agrees
@@ -157,9 +157,8 @@ should_run() {
 #     doc-system contract below governs the hand-maintained docs tree, not
 #     site content or site infra notes)
 # Inclusions:
-#   - everything under docs/ and ADR/
-#   - top-level .md (README, AGENTS, CLAUDE, CONTRIBUTING, ARCHITECTURE,
-#     SPEC, DESIGN, VISION)
+#   - everything under docs/ (including docs/adr/)
+#   - top-level .md (README, AGENTS, CLAUDE, CONTRIBUTING)
 #   - research/ (excluding research/archive/) — `stability: scratch`
 #     lives here and CONVENTIONS.md says frontmatter is still required.
 
@@ -176,16 +175,13 @@ collect_files() {
     find "$ROOT" -maxdepth 1 -type f -name '*.md' \
         ! -iname 'LICENSE*' \
         ! -name 'CHANGELOG.md' \
+        ! -name 'THIRD-PARTY-NOTICES.md' \
         -print
-    # docs/ tree.
+    # docs/ tree (includes docs/adr/).
     if [[ -d "$ROOT/docs" ]]; then
         find "$ROOT/docs" -type f -name '*.md' \
             -not -path "$ROOT/docs/site/*" \
             -print
-    fi
-    # ADR/ tree.
-    if [[ -d "$ROOT/ADR" ]]; then
-        find "$ROOT/ADR" -type f -name '*.md' -print
     fi
     # research/, minus archive/.
     if [[ -d "$ROOT/research" ]]; then
@@ -200,21 +196,21 @@ while IFS= read -r f; do
     [[ -n "$f" ]] && FILES+=("$f")
 done < <(collect_files | LC_ALL=C sort -u)
 
-# The ADR corpus proper, sorted: every file under ADR/ whose basename opens
+# The ADR corpus proper, sorted: every file under docs/adr/ whose basename opens
 # with a four-digit number (`NNNN-slug.md`).
 #
 # One definition, because three gates need it and each used to carry its own
 # basename test — so "what counts as an ADR file" had three answers that only
-# happened to agree. Everything else under ADR/ (the README index, companion
+# happened to agree. Everything else under docs/adr/ (the README index, companion
 # documents such as a ratification brief) carries no decision and no ADR
 # number: it must not be given a `Status:` line, cannot claim a number, and
 # has no index row. Those files still keep every gate in `collect_files`,
-# which sweeps ADR/ whole.
+# which sweeps docs/adr/ whole.
 adr_files() {
-    if [[ ! -d "$ROOT/ADR" ]]; then
+    if [[ ! -d "$ROOT/docs/adr" ]]; then
         return
     fi
-    find "$ROOT/ADR" -type f -name '[0-9][0-9][0-9][0-9]-*.md' | LC_ALL=C sort
+    find "$ROOT/docs/adr" -type f -name '[0-9][0-9][0-9][0-9]-*.md' | LC_ALL=C sort
 }
 
 # ---------------------------------------------------------------------------
@@ -526,7 +522,7 @@ gate_dead_link() {
 
 gate_adr_status() {
     local file
-    if [[ ! -d "$ROOT/ADR" ]]; then
+    if [[ ! -d "$ROOT/docs/adr" ]]; then
         return
     fi
     # `adr_files` is what "an ADR" means here: the README index and companion
@@ -574,11 +570,11 @@ gate_adr_status() {
 # is the identity readers and cross-references use ("ADR-NNNN") — two files
 # sharing one make every such reference ambiguous, with no signal to the
 # reader that they might have landed on the wrong decision. This gate fails
-# if any number prefix under ADR/ is claimed by more than one file.
+# if any number prefix under docs/adr/ is claimed by more than one file.
 
 gate_adr_number_unique() {
     local file
-    if [[ ! -d "$ROOT/ADR" ]]; then
+    if [[ ! -d "$ROOT/docs/adr" ]]; then
         return
     fi
 
@@ -605,7 +601,7 @@ gate_adr_number_unique() {
 # ---------------------------------------------------------------------------
 
 # A *shared registry* is a tracked file carrying one row per hand-allocated
-# identifier: ADR/README.md's index (one row per ADR number) and
+# identifier: docs/adr/README.md's index (one row per ADR number) and
 # docs/spec/CHANGELOG.md (one row per wire version). Parallel branches collide
 # in them without git noticing — each branch reads the same "next free"
 # identifier, claims it, and if the rows land in different places the merge is
@@ -771,7 +767,7 @@ registry_rank_spec_version() {
 # Gate 5c: adr-index-sync
 # ---------------------------------------------------------------------------
 
-# Every ADR has exactly one row in ADR/README.md's index, inserted at its
+# Every ADR has exactly one row in docs/adr/README.md's index, inserted at its
 # numeric position. The row is deliberately a collision point for parallel
 # branches: two branches that each claim the same ADR number either conflict
 # textually on the index row at rebase, or — if the merge somehow slides
@@ -779,19 +775,19 @@ registry_rank_spec_version() {
 # reports zero conflicts (it happened: wave 3 produced two different
 # ADR-0086 files, silently). Three checks, bidirectional:
 #
-#   1. every ADR/NNNN-*.md file has exactly one index row for its number
+#   1. every docs/adr/NNNN-*.md file has exactly one index row for its number
 #   2. every index row's link resolves to a real file whose name starts
 #      with the row's number
 #   3. row numbers are strictly ascending down the table
 
 gate_adr_index_sync() {
-    if [[ ! -d "$ROOT/ADR" ]]; then
+    if [[ ! -d "$ROOT/docs/adr" ]]; then
         return
     fi
-    local readme="$ROOT/ADR/README.md"
+    local readme="$ROOT/docs/adr/README.md"
     if [[ ! -f "$readme" ]]; then
         violate adr-index-sync "$readme" \
-            "ADR/README.md not found — the ADR index is required"
+            "docs/adr/README.md not found — the ADR index is required"
         return
     fi
 
@@ -805,7 +801,7 @@ gate_adr_index_sync() {
         '^\|[[:space:]]*\[([0-9]{4})\]\(\./([^)]+)\)' \
         registry_rank_adr \
         ascending \
-        "$ROOT/ADR" \
+        "$ROOT/docs/adr" \
         "insert each new ADR's row at its numeric position, and renumber if a sibling branch took the number first"
 
     # Check 1, the reverse direction, is specific to this registry because
@@ -822,7 +818,7 @@ gate_adr_index_sync() {
         index=$((10#$num))
         if [[ -z "${REGISTRY_ROW_TARGET[$index]:-}" ]]; then
             violate adr-index-sync "$file" \
-                "no index row in ADR/README.md for ADR number $num — every ADR adds exactly one row at its numeric position (see the comment above the index)"
+                "no index row in docs/adr/README.md for ADR number $num — every ADR adds exactly one row at its numeric position (see the comment above the index)"
         elif [[ "${REGISTRY_ROW_TARGET[$index]}" != "$base" ]]; then
             violate adr-index-sync "$file" \
                 "index row $num links to ./${REGISTRY_ROW_TARGET[$index]}, not to this file — two files are claiming the same ADR number, or the row was not updated with a rename"
@@ -837,7 +833,7 @@ gate_adr_index_sync() {
 # docs/CONVENTIONS.md caps an ADR at 150 lines: past that, the file has grown
 # a design document, and that body belongs in docs/architecture/ with the
 # ADR pointing at it. The cap applies to every ADR except those listed in
-# ADR/.length-baseline — the violators that predate the gate, one NNNN per
+# docs/adr/.length-baseline — the violators that predate the gate, one NNNN per
 # line, `#` comments allowed. The baseline only shrinks: a listed ADR that
 # fits the cap fails until its entry is removed, so the allowlist cannot
 # quietly become a permanent exemption, and an entry naming an ADR that no
@@ -847,10 +843,10 @@ gate_adr_index_sync() {
 ADR_LENGTH_CAP=150
 
 gate_adr_length() {
-    if [[ ! -d "$ROOT/ADR" ]]; then
+    if [[ ! -d "$ROOT/docs/adr" ]]; then
         return
     fi
-    local baseline="$ROOT/ADR/.length-baseline"
+    local baseline="$ROOT/docs/adr/.length-baseline"
 
     # Baseline entries, indexed by ADR number (Bash 3.2: no associative
     # arrays; `10#` so 0008 is not read as octal).
@@ -884,7 +880,7 @@ gate_adr_length() {
         if [[ -n "${baselined[$index]:-}" ]]; then
             if (( lines <= ADR_LENGTH_CAP )); then
                 violate adr-length "$file" \
-                    "$lines lines fits the $ADR_LENGTH_CAP-line cap; remove $num from ADR/.length-baseline in the same commit (entries may only be removed)"
+                    "$lines lines fits the $ADR_LENGTH_CAP-line cap; remove $num from docs/adr/.length-baseline in the same commit (entries may only be removed)"
             fi
         elif (( lines > ADR_LENGTH_CAP )); then
             violate adr-length "$file" \
@@ -896,7 +892,7 @@ gate_adr_length() {
         for index in "${!baselined[@]}"; do
             if [[ -z "${seen[$index]:-}" ]]; then
                 violate adr-length "$baseline" \
-                    "entry ${baselined[$index]} names no ADR/${baselined[$index]}-*.md — remove it"
+                    "entry ${baselined[$index]} names no docs/adr/${baselined[$index]}-*.md — remove it"
             fi
         done
     fi
@@ -906,7 +902,7 @@ gate_adr_length() {
 # Gate 5e: adr-in-force-sync
 # ---------------------------------------------------------------------------
 
-# ADR/IN-FORCE.md is the topic-ordered view of the decisions currently in
+# docs/adr/IN-FORCE.md is the topic-ordered view of the decisions currently in
 # force: one `[NNNN](./NNNN-slug.md)` line per live ADR under the topic it
 # governs, with Proposed ADRs in a trailing block. The view is hand-curated,
 # so it drifts unless it is checked against the corpus. Three checks,
@@ -941,13 +937,13 @@ adr_status_value() {
 }
 
 gate_adr_in_force_sync() {
-    if [[ ! -d "$ROOT/ADR" ]]; then
+    if [[ ! -d "$ROOT/docs/adr" ]]; then
         return
     fi
-    local view="$ROOT/ADR/IN-FORCE.md"
+    local view="$ROOT/docs/adr/IN-FORCE.md"
     if [[ ! -f "$view" ]]; then
         violate adr-in-force-sync "$view" \
-            "ADR/IN-FORCE.md not found — the decisions-in-force view is required"
+            "docs/adr/IN-FORCE.md not found — the decisions-in-force view is required"
         return
     fi
 
@@ -965,7 +961,7 @@ gate_adr_in_force_sync() {
         link_count[$index]=$(( ${link_count[$index]:-0} + 1 ))
         link_target[$index]="$target"
 
-        if [[ ! -f "$ROOT/ADR/$target" ]]; then
+        if [[ ! -f "$ROOT/docs/adr/$target" ]]; then
             violate adr-in-force-sync "$view" \
                 "link $num points at ./$target, which does not exist"
         elif [[ "$target" != "$num-"* ]]; then
@@ -989,13 +985,13 @@ gate_adr_in_force_sync() {
             Proposed|Accepted|"Accepted (forward-compat)")
                 if (( count == 0 )); then
                     violate adr-in-force-sync "$file" \
-                        "no link in ADR/IN-FORCE.md for ADR $num (Status: $status) — add one line under the topic it governs, or under Proposed"
+                        "no link in docs/adr/IN-FORCE.md for ADR $num (Status: $status) — add one line under the topic it governs, or under Proposed"
                 elif (( count > 1 )); then
                     violate adr-in-force-sync "$view" \
                         "ADR $num is linked $count times — every in-force ADR appears exactly once"
                 elif [[ "${link_target[$index]}" != "$base" ]]; then
                     violate adr-in-force-sync "$file" \
-                        "ADR/IN-FORCE.md links $num to ./${link_target[$index]}, not to this file — two files are claiming the same ADR number, or the link was not updated with a rename"
+                        "docs/adr/IN-FORCE.md links $num to ./${link_target[$index]}, not to this file — two files are claiming the same ADR number, or the link was not updated with a rename"
                 fi
                 ;;
             "Superseded by ADR-"*|Deprecated)

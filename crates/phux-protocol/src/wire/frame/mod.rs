@@ -21,7 +21,7 @@
 //! drafts carried `PaneDiff` at type byte `0x40`; that slot is retired
 //! and `RESOURCE_OUTPUT` (type `0x90` per SPEC §7.2) takes its place.
 //!
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
 
 /// Maximum permitted value of the wire-frame `length` field, per `docs/spec/proto.md` §5
 /// ("at most `16_777_216` (16 MiB)").
@@ -321,7 +321,7 @@ pub fn decode_session_keep_empty(value: &[u8]) -> Option<(&str, bool)> {
 /// array or an absent key both mean "no tags". The server stores the bytes
 /// without interpreting them ([`docs/spec/L3.md`](../../../docs/spec/L3.md)
 /// §3.6); tag *meaning* is the normative client convention this key names, so
-/// the `#tag` selector ([ADR-0027](../../../ADR/0027-terminal-references-and-l3-links.md)
+/// the `#tag` selector ([ADR-0027](../../../../../docs/adr/0027-terminal-references-and-l3-links.md)
 /// decision point 5) resolves identically across consumers. Set via
 /// `SET_METADATA`, read via `GET_METADATA`/`LIST_METADATA`.
 pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
@@ -336,7 +336,7 @@ pub const RESOURCE_TAGS_KEY: &str = "phux.tags/v1";
 /// rejected, so the vocabulary grows additively. The server stores the bytes
 /// opaquely; link *meaning* is the normative client convention this key
 /// names. A link is a metadata value, never a second wire identity
-/// ([ADR-0027](../../../ADR/0027-terminal-references-and-l3-links.md)).
+/// ([ADR-0027](../../../../../docs/adr/0027-terminal-references-and-l3-links.md)).
 pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 
 /// Conventional L3 metadata key holding a Terminal's declared agent

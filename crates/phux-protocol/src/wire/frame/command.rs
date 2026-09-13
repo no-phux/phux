@@ -60,7 +60,7 @@ impl ResourceEventType {
 /// `#[non_exhaustive]`: v0.1 exposes only `Server` (the whole-server
 /// snapshot, which is what `phux ls` and client-side selector resolution
 /// need). Narrower scopes (a single Group, a single Terminal) are
-/// additive minor changes when L2 lands — see [ADR-0021](../../../ADR/0021-control-plane-commands.md).
+/// additive minor changes when L2 lands — see [ADR-0021](../../../../../docs/adr/0021-control-plane-commands.md).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StateScope {

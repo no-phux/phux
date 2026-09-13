@@ -31,7 +31,7 @@
 //! config, never a role — the relay still admits by ALPN, so a consumer that
 //! copies the tag only shrinks its own receive window.
 //!
-//! [ADR-0007]: ../../../ADR/0007-mosh-class-transport-and-satellites.md
+//! [ADR-0007]: ../../../docs/adr/0007-mosh-class-transport-and-satellites.md
 
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::Arc;

@@ -50,7 +50,7 @@ use super::{
 /// explicit bootstrap/profile/history frames from ADR-0070. `ResourceOutput`
 /// remains VT bytes, now bound to a non-zero stream and bootstrap generation.
 ///
-/// [ADR-0013]: https://github.com/no-phux/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+/// [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum FrameKind {

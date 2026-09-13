@@ -10,8 +10,8 @@
 //! how a federation hub addresses (and re-tags) satellite-owned terminals
 //! per [ADR-0007].
 //!
-//! [ADR-0007]: https://github.com/no-phux/phux/blob/main/ADR/0007-mosh-class-transport-and-satellites.md
-//! [ADR-0016]: https://github.com/no-phux/phux/blob/main/ADR/0016-terminal-id-as-wire-primary.md
+//! [ADR-0007]: https://github.com/no-phux/phux/blob/main/docs/adr/0007-mosh-class-transport-and-satellites.md
+//! [ADR-0016]: https://github.com/no-phux/phux/blob/main/docs/adr/0016-terminal-id-as-wire-primary.md
 
 macro_rules! id_type {
     ($(#[$meta:meta])* $name:ident) => {
@@ -249,7 +249,7 @@ impl ServerInstance {
 /// UTF-8 string. Concrete host syntax (hostnames, ULIDs, mosh-keys) is the
 /// federation layer's concern; the wire treats it as bytes.
 ///
-/// [ADR-0007]: https://github.com/no-phux/phux/blob/main/ADR/0007-mosh-class-transport-and-satellites.md
+/// [ADR-0007]: https://github.com/no-phux/phux/blob/main/docs/adr/0007-mosh-class-transport-and-satellites.md
 ///
 /// Stored as a `Box<str>` rather than a `String`: the token is immutable
 /// once built, and the two-word representation keeps [`ResourceId`] at 24
@@ -315,7 +315,7 @@ pub const RESOURCE_ID_TAG_SATELLITE: u8 = 1;
 /// The numeric `id` inside each variant is stable for the life of the
 /// owning server and is not reused after the terminal closes.
 ///
-/// [ADR-0016]: https://github.com/no-phux/phux/blob/main/ADR/0016-terminal-id-as-wire-primary.md
+/// [ADR-0016]: https://github.com/no-phux/phux/blob/main/docs/adr/0016-terminal-id-as-wire-primary.md
 /// [`UnsupportedSatelliteRoute`]: crate::wire::frame::ErrorCode::UnsupportedSatelliteRoute
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,

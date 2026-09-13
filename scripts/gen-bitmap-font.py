@@ -123,7 +123,7 @@ def emit(glyphs: dict[int, list[int]], source: Path) -> str:
     out.append("//! Copyright (c) 2018-2024, Frederic Cambus. Licensed BSD-2-Clause, whose")
     out.append("//! redistribution clause requires the copyright notice and disclaimer to travel")
     out.append("//! with both source and binary forms of phux; that notice lives verbatim at")
-    out.append("//! `/LICENSE-SPLEEN` in the repository root. Do not delete that file, and do not")
+    out.append("//! `/THIRD-PARTY-NOTICES.md` in the repository root. Do not delete that file, and do not")
     out.append("//! swap this face for an OFL-1.1 one -- OFL-1.1 is not on deny.toml's allow list.")
     out.append("//!")
     out.append("//! Regenerate with `scripts/gen-bitmap-font.py` after upgrading the .bdf. The")

@@ -134,7 +134,7 @@ require_fixed scripts/install.sh '--channel'
 require_fixed scripts/install.sh 'PHUX_CHANNEL'
 require_fixed scripts/install.sh '.phux-channel'
 require_fixed docs/RELEASING.md 'next channel'
-require_fixed ADR/0113-next-release-channel.md '`phux update'
+require_fixed docs/adr/0113-next-release-channel.md '`phux update'
 require_fixed scripts/install.sh 'PATH remedy: export PATH=%s:"$PATH"'
 require_fixed scripts/install.sh 'found_command="$(command -v phux 2>/dev/null || true)"'
 # Both standalone scripts embed the same bounded structural JSON resolver.

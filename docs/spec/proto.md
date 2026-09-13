@@ -103,7 +103,7 @@ oriented byte stream. This version defines these concrete transports:
 Additional transports MUST satisfy the reliable/ordered/bidirectional
 property; if they do not, they require a new major protocol version.
 
-[ADR-0007]: ../../ADR/0007-mosh-class-transport-and-satellites.md
+[ADR-0007]: ../../docs/adr/0007-mosh-class-transport-and-satellites.md
 
 ### 4.1 Relay tunnel (QUIC)
 
@@ -140,13 +140,13 @@ A relay refuses with these QUIC application close codes:
 The relay is a transport concern per the responsibility rule above: it
 adds no frame, field, tag, or error code to the protocol.
 
-[ADR-0051]: ../../ADR/0051-outbound-dial-out-connector-transport.md
-[ADR-0057]: ../../ADR/0057-minimal-reference-relay.md
+[ADR-0051]: ../../docs/adr/0051-outbound-dial-out-connector-transport.md
+[ADR-0057]: ../../docs/adr/0057-minimal-reference-relay.md
 
 ### 4.2 QUIC multi-stream (`QUIC_STREAMS`)
 
 When `HELLO_OK` advertises `QUIC_STREAMS` ([§6.2](#62-capability-and-synchronization-profile-negotiation),
-[ADR-0115](../../ADR/0115-quic-stream-per-terminal.md)), a QUIC
+[ADR-0115](../adr/0115-quic-stream-per-terminal.md)), a QUIC
 connection is one **control stream** plus one **bidi stream per attached
 Terminal**, replacing the single-stream shape of §4 for that connection.
 UDS, ssh-stdio, WebSocket, and WebTransport never negotiate this;
@@ -334,7 +334,7 @@ semantics, and live revocation are normative in
 [workload-auth.md](./workload-auth.md). Workload authentication
 authorizes an endpoint connection; it does not merge the terminal
 protocol with the separate durable coordinator endpoint
-([ADR-0092](../../ADR/0092-durable-work-coordinator-authority.md)).
+([ADR-0092](../adr/0092-durable-work-coordinator-authority.md)).
 
 The `layers` intersection retains ADR-0015 semantics: L1 is mandatory, L2 is
 reserved/unmounted, and L3 is optional. Neither peer sends out-of-intersection
@@ -560,8 +560,8 @@ command tag and a new feature bit, and was rejected in favor of a
 consumer-side projection over the existing `ATTACH_RESOURCE` observer
 contract, precisely because the durability it bought did not justify a
 fleet-wide break. See
-[ADR-0061](../../ADR/0061-capabilities-add-versions-break.md) for the
-decision and [ADR-0060](../../ADR/0060-self-contained-session-recording.md)
+[ADR-0061](../adr/0061-capabilities-add-versions-break.md) for the
+decision and [ADR-0060](../adr/0060-self-contained-session-recording.md)
 for that cost analysis.
 
 ### 6.4 Frame compression
@@ -727,7 +727,7 @@ have no catalog row; the mechanism is defined in
 | 0xFF  | S → C     | `PONG`            | §7.4               | shipped   |
 
 The `COMMAND` / `COMMAND_RESULT` envelope (§5, per
-[ADR-0021](../../ADR/0021-control-plane-commands.md)) round-trips
+[ADR-0021](../adr/0021-control-plane-commands.md)) round-trips
 through the codec. The wire carries `KILL_RESOURCE` (tag 0x03),
 `GET_STATE` (tag 0x05), `KILL_RESOURCES` (tag 0x09),
 `DETACH_CLIENTS` (tag 0x13), `APPLY_INPUT` (tag 0x14), and `PUT_FILE`
@@ -757,7 +757,7 @@ before the command handler runs
 
 `KILL_RESOURCES { ids: Vec<ResourceId> }` is the one atomic
 multi-terminal teardown operation
-([ADR-0030](../../ADR/0030-engine-delegated-wire-and-projection-consumers.md)):
+([ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md)):
 its body is a `u16` count followed by that many tagged `ResourceId`s,
 applied all-or-nothing under the server's single `Mutex<ServerState>`
 lock. The session-vocabulary verbs `CREATE_SESSION` and
@@ -836,7 +836,7 @@ common case is byte-identical to what every `0.7.0` peer already emits.
 
 `DetachReason` values are allocated sequentially from `0`, with `255`
 reserved for `INTERNAL_ERROR`; a new value is additive and needs no
-version bump ([ADR-0061](../../ADR/0061-capabilities-add-versions-break.md)).
+version bump ([ADR-0061](../adr/0061-capabilities-add-versions-break.md)).
 
 <!-- impl-status: partial; probe: DetachReason -->
 > **Status: partial.** The frame, both fields, and the consumer surface
@@ -1100,11 +1100,11 @@ integrity, and baseline peer/server evidence:
   verified against the phux CA, and scopes the workload from the registry
   ([workload-auth.md](./workload-auth.md)).
 
-[ADR-0031](../../ADR/0031-remote-consumer-auth-and-encryption.md) put a
+[ADR-0031](../adr/0031-remote-consumer-auth-and-encryption.md) put a
 bearer token in the transport handshake and banned in-band auth; the token
-remains outer admission. [ADR-0098](../../ADR/0098-workload-proof-and-closed-scope-authority.md)
+remains outer admission. [ADR-0098](../adr/0098-workload-proof-and-closed-scope-authority.md)
 added the closed-scope authorization half this document enforces, and
-[ADR-0116](../../ADR/0116-workload-auth-is-mtls.md) retired 0098's bespoke
+[ADR-0116](../adr/0116-workload-auth-is-mtls.md) retired 0098's bespoke
 proof handshake unshipped: the protocol defines no challenge/response
 exchange because per-operation authority is bound to the mTLS client
 identity at the TLS layer. Transport admission alone never satisfies

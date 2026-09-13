@@ -171,7 +171,7 @@ hooks (`working`, `blocked`, `done`, and `phux ask` notifications).
 ### Launch through `phux launch` (recommended)
 
 phux **does** ship a launch executor: `phux launch <integration>`
-(phux-ark7, [ADR-0042](../../../ADR/0042-launch-executor.md)) resolves a
+(phux-ark7, [ADR-0042](../../../docs/adr/0042-launch-executor.md)) resolves a
 template's `[launch]` command from an enabled plugin, expands
 `${PHUX_PLUGIN_ROOT}` to the absolute plugin root, and spawns a pane
 running it via `SPAWN_RESOURCE`. Because the server injects

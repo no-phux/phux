@@ -3,7 +3,7 @@
 //!
 //! ## Why this is release-candidate scope and not a convenience
 //!
-//! [ADR-0071](../../../../../ADR/0071-what-phux-1-0-commits-to.md) freezes the
+//! [ADR-0071](../../../../../docs/adr/0071-what-phux-1-0-commits-to.md) freezes the
 //! consumer surface at 1.0 and deliberately does **not** freeze the wire,
 //! which keeps its own `0.x` line under ADR-0061 — where a minor bump is a
 //! fleet-wide break with no grace window and mismatched peers refuse each
@@ -1153,8 +1153,9 @@ mod tests {
         fs::write(build.join("phux-mcp"), format!("phux-mcp {label}")).unwrap();
         fs::set_permissions(build.join("phux-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(build.join("README.md"), b"readme").unwrap();
-        fs::write(build.join("LICENSE-MIT"), b"mit").unwrap();
-        fs::write(build.join("LICENSE-APACHE"), b"apache").unwrap();
+        fs::write(build.join("LICENSE"), b"apache").unwrap();
+        fs::write(build.join("NOTICE"), b"notice").unwrap();
+        fs::write(build.join("THIRD-PARTY-NOTICES.md"), b"notices").unwrap();
 
         let archive = workdir.join(&artifact.archive);
         let status = std::process::Command::new("tar")

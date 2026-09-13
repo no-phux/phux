@@ -57,7 +57,7 @@
 //! full-viewport content rect this is the pre-sidebar behaviour.
 //! See [ADR-0019] decision 4 for the cell-budget rationale.
 //!
-//! [ADR-0019]: ../../../ADR/0019-tui-multi-pane-rendering.md
+//! [ADR-0019]: ../../../docs/adr/0019-tui-multi-pane-rendering.md
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;

@@ -7,7 +7,7 @@
 //! feature this module provides the `From` conversions the server's encoders
 //! use at the libghostty boundary.
 //!
-//! [ADR-0024]: https://github.com/no-phux/phux/blob/main/ADR/0024-wire-owns-input-atoms.md
+//! [ADR-0024]: https://github.com/no-phux/phux/blob/main/docs/adr/0024-wire-owns-input-atoms.md
 
 /// Press, release, or repeat. Wire `u32`; values match libghostty's
 /// `key::Action`.
@@ -82,7 +82,7 @@ bitflags::bitflags! {
 /// Kept in lockstep with libghostty via the `server`-gated conversions + a
 /// round-trip test. Browser consumers map `KeyboardEvent.code` to these.
 ///
-/// [ADR-0024]: https://github.com/no-phux/phux/blob/main/ADR/0024-wire-owns-input-atoms.md
+/// [ADR-0024]: https://github.com/no-phux/phux/blob/main/docs/adr/0024-wire-owns-input-atoms.md
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, int_enum::IntEnum)]
 #[non_exhaustive]

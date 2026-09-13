@@ -70,7 +70,7 @@ All site workflows live at the phux repo root (`.github/workflows/site-*.yml`);
 paths are scoped to `docs/site/**`.
 
 - **`site-deploy.yml`** → site (Workers static assets on phux.sh) on every push
-  touching `docs/**` or `ADR/**` (docs and site share one repo, so doc edits
+  touching `docs/**` (docs and site share one repo, so doc edits
   rebuild the site directly); manual dispatch is available.
 - **`site-deploy-worker.yml`** → validates, records the prior version, deploys, then
   exercises native and same-IP edge fallback.

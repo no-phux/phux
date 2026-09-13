@@ -7,7 +7,7 @@
 //! binary already references throughout `lib.rs`.
 
 //! One parser-reserved form does **not** come through this door. `%name`
-//! ([ADR-0075](../../../ADR/0075-agent-name-addressing.md)) parses to
+//! ([ADR-0075](../../../docs/adr/0075-agent-name-addressing.md)) parses to
 //! [`Selector::Agent`], but its proposed contract resolves to exactly one
 //! Terminal *or refuses* — so it must not travel the set-valued [`resolve`] /
 //! [`pick_target_pane`] path the rest of this module re-exports.

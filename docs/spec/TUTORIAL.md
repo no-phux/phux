@@ -380,7 +380,7 @@ This walkthrough covers the happy path. For details:
 - **Encoding primitives (varints, strings, tagged unions):** [appendix-encoding.md](./appendix-encoding.md)
 
 For the conceptual picture, read [CONCEPTS.md](../CONCEPTS.md).
-[ADR-0013](../../ADR/0013-libghostty-bytes-on-wire.md) is the bytes-on-wire
+[ADR-0013](../adr/0013-libghostty-bytes-on-wire.md) is the bytes-on-wire
 decision this walkthrough assumes.
 
 A second resource kind — a producer-fed event log bound to a terminal —

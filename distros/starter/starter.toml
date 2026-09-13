@@ -1,0 +1,40 @@
+# starter — the phux plugin-bundle layer.
+#
+# This file used to carry phux's opinions: the which-key delay, the
+# split/palette/tab chords, the status lineup, the theme. All of that is
+# now the SHIPPED DEFAULT — `crates/phux-config/src/default.toml` plus
+# `crates/phux-client/src/render/theme.rs` — so naked `phux` already
+# looks and behaves the way this distro used to make it behave. Nothing
+# was dropped; it moved one layer down, where everyone gets it.
+#
+# What is left here is the one thing an embedded default genuinely
+# cannot express: plugin wiring. `default.toml` ships inside the binary
+# via `include_str!`, so it has no directory of its own for a relative
+# `manifest` path to resolve against. A layer file on disk does, which is
+# why the demo plugin set stays a distro concern.
+#
+# Get it:
+#   phux config init --distro starter
+# or point an existing config at it:
+#   extends = ["/path/to/distros/starter/starter.toml"]
+#
+# Your config extends this file (ADR-0039), so every key here is a plain
+# override: your own config.toml still wins per key, and an update to
+# this layer reaches you without re-scaffolding.
+
+# The demo plugin set: workspace autosave/restore (continuum) and the
+# agent bench helpers (agent-tools). `-append` contributes entries to
+# [[plugins]] without erasing what your config or another layer declares;
+# assign a plain `plugins = [...]` in your own config to opt out entirely.
+#
+# Relative manifest paths in a layer resolve against the layer file's own
+# directory, so this wiring works no matter where your config.toml lives —
+# provided the distro stays inside a phux checkout (the manifests live
+# under the sibling examples/plugins/ tree). If you copy starter elsewhere,
+# copy those plugin directories too and update these two paths.
+
+[[plugins-append]]
+manifest = "../../examples/plugins/continuum/phux-plugin.toml"
+
+[[plugins-append]]
+manifest = "../../examples/plugins/agent-tools/phux-plugin.toml"

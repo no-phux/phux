@@ -11,7 +11,7 @@ pub(crate) enum ConfigAction {
     ///
     /// With `--distro`, the scaffold additionally carries one active
     /// `extends` line layering the named starter distribution (a bundled
-    /// name like `herdr`, or a path to a distro layer `.toml`) between
+    /// name like `starter`, or a path to a distro layer `.toml`) between
     /// the shipped defaults and your file.
     Init {
         /// Overwrite an existing config file instead of refusing.

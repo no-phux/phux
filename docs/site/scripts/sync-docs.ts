@@ -43,7 +43,7 @@
  *
  *   Site and docs share one repository, so `.github/workflows/deploy-site.yml`
  *   at the repo root rebuilds and deploys on every push that touches `docs/**`
- *   or `ADR/**`. No cross-repo dispatch, no scheduled drift polling.
+ *   or `../../adr/**`. No cross-repo dispatch, no scheduled drift polling.
  *
  *   For local dev, PHUX_DOCS_DIR defaults to `../` and Just Works.
  * ---------------------------------------------------------------------------
@@ -55,8 +55,8 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dir, "..");
 const DOCS_DIR = resolve(ROOT, process.env.PHUX_DOCS_DIR ?? "..");
-// ADR lives a level up from docs/ in the phux repo.
-const ADR_DIR = resolve(DOCS_DIR, "../ADR");
+// ADRs live under docs/adr/.
+const ADR_DIR = resolve(DOCS_DIR, "adr");
 const PHUX_ROOT = resolve(DOCS_DIR, "..");
 const OUT_DIR = join(ROOT, "src/content/docs/_synced");
 const MANIFEST_PATH = join(ROOT, "public/docs-manifest.json");
@@ -173,6 +173,7 @@ const ORIENTATION: { file: string; slug: string; group: Group; order: number }[]
   { file: "INSTALL.md", slug: "quickstart/install", group: "start", order: 2 },
   { file: "CONCEPTS.md", slug: "concepts", group: "start", order: 3 },
   { file: "when-to-use.md", slug: "concepts/when-to-use", group: "start", order: 4 },
+  { file: "coming-from.md", slug: "concepts/coming-from", group: "start", order: 5 },
   { file: "CONFIG.md", slug: "quickstart/config", group: "use", order: 0 },
   { file: "remote-access.md", slug: "remote-access", group: "use", order: 4 },
   { file: "operations.md", slug: "architecture/operations", group: "internals", order: 0 },
@@ -334,7 +335,7 @@ async function discover(): Promise<{ entries: Entry[]; excluded: string[] }> {
   const adrFiles = (await walkMd(ADR_DIR)).sort((a, b) => a.localeCompare(b));
   for (const abs of adrFiles) {
     const file = basename(abs);
-    const repoPath = `ADR/${relative(ADR_DIR, abs).split(/[\\/]/).join("/")}`;
+    const repoPath = `docs/adr/${relative(ADR_DIR, abs).split(/[\\/]/).join("/")}`;
     const raw = await readFile(abs, "utf8");
     const { meta } = parseFrontmatter(raw);
     if (EXCLUDED_STABILITY.has((meta.stability ?? "").toLowerCase())) {
@@ -400,11 +401,12 @@ function buildRouteTables(entries: Entry[]) {
     const repoPath = normalizeRepoPath(e.repoPath);
     if (!ROUTE_BY_REPO_PATH.has(repoPath)) ROUTE_BY_REPO_PATH.set(repoPath, siteRoute(e.slug));
   }
-  // Directory targets — links like `../../ADR/` or `./spec/` resolve to the
+  // Directory targets — links like `../adr/` or `./spec/` resolve to the
   // matching index route on the site rather than a raw GitHub tree. Derived
   // from each section's index slug.
   ROUTE_BY_DIR = new Map<string, string>([
-    ["ADR", "/decisions"],
+    ["docs/adr", "/decisions"],
+    ["adr", "/decisions"],
     ["docs/spec", "/wire"],
     ["docs/consumers", "/consumers"],
     ["docs/reference", "/reference"],

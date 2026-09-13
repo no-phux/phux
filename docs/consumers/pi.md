@@ -149,7 +149,7 @@ recovery produces a new checkpoint. The refresh is best effort and locally
 bounded to one second. It updates awareness at new user-turn boundaries, not
 continuously during one uninterrupted model/tool loop. The cache and
 compaction rationale is recorded in
-[ADR-0067](../../ADR/0067-cache-preserving-agent-fleet-context.md).
+[ADR-0067](../adr/0067-cache-preserving-agent-fleet-context.md).
 
 ## Selecting and preserving targets
 
@@ -217,7 +217,7 @@ When a target is ownership-validated as available, the extension reports a
 `session` field — **identity only, never a `state`**. A declared `state`
 outranks the server's own derivation for the record's whole lifetime
 ([`../spec/L3.md`](../spec/L3.md) §3.7,
-[ADR-0046](../../ADR/0046-server-side-agent-state-detection.md) point 8), so
+[ADR-0046](../adr/0046-server-side-agent-state-detection.md) point 8), so
 reporting one would stand the shipped `rules/pi.toml` detector down on every
 pane running this extension. Pi's per-turn `agent_start` / `agent_settled`
 events are therefore not subscribed at all: the server derives `working` and

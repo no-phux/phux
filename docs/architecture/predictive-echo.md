@@ -12,7 +12,7 @@ keeps the libghostty mirror authoritative, and reconciles each prediction when
 real `RESOURCE_OUTPUT` arrives. Contradictions discard the suspect suffix and
 repeated misses temporarily hide the overlay. On the alternate screen the
 display is confirmation-gated: nothing paints until the app proves it echoes
-([ADR-0090](../../ADR/0090-confirmation-gated-predictive-echo.md)).
+([ADR-0090](../adr/0090-confirmation-gated-predictive-echo.md)).
 
 ---
 

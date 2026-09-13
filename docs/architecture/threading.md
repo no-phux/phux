@@ -46,7 +46,7 @@ fn main() -> std::io::Result<()> {
 
 Each served resource is one `spawn_local` task: its engine, with the
 generic `ResourceCore` embedded in it (ADR-0014, scoped by
-[ADR-0102](../../ADR/0102-resources-the-server-serves-kinds.md)). The core
+[ADR-0102](../adr/0102-resources-the-server-serves-kinds.md)). The core
 owns the output sequence, the output broadcast sender, the event-subscriber
 list, the cancel token, and the control mailbox, and it adds no shared cells
 across tasks — its one `RefCell` (the subscriber list) is borrowed only by

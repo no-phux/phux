@@ -63,7 +63,7 @@ costs attach latency. See [`CONFIG.md`](./CONFIG.md#scrollback).
 ## Logging and observability
 
 Logs are both an operator surface and a leak surface;
-[ADR-0028](../ADR/0028-runtime-log-control.md) owns that decision, and
+[ADR-0028](adr/0028-runtime-log-control.md) owns that decision, and
 this section is the home for the facts.
 
 `tracing` is the structured logging substrate, bootstrapped in
@@ -246,7 +246,7 @@ lines rather than bare addresses.
 ### Blast radius of a panic
 
 There is **one server process per user**
-([ADR-0003](../ADR/0003-server-process-model.md)) on one current-thread
+([ADR-0003](adr/0003-server-process-model.md)) on one current-thread
 runtime, and the release profile aborts on panic. A panic anywhere in the
 daemon ends every session, window, and pane for that user at once; it is
 not contained to the pane actor that raised it. Planned restart (`phux
@@ -363,7 +363,7 @@ phux server --session ci --socket /tmp/phux-ci-$$.sock --exit-after-idle 120 &
 phux is developed on the same machines it is used on, so a development
 build must not be able to touch the installed build's sessions. Every
 phux process resolves a **profile** that scopes where it looks
-([ADR-0080](../ADR/0080-socket-lifecycle-and-instance-isolation.md)):
+([ADR-0080](adr/0080-socket-lifecycle-and-instance-isolation.md)):
 
 | profile | when | socket | state |
 |---|---|---|---|
@@ -671,7 +671,7 @@ remote sessions and windows are not merged. Enrollment is
 
 A remote consumer can attach over the network without an SSH tunnel,
 behind TLS plus a bearer pairing token
-([ADR-0031](../ADR/0031-remote-consumer-auth-and-encryption.md)). The bind
+([ADR-0031](adr/0031-remote-consumer-auth-and-encryption.md)). The bind
 address is the toggle:
 
 - **Loopback address → plaintext, unauthenticated.** The historical

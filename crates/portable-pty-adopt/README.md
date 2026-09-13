@@ -53,4 +53,4 @@ let child: Box<dyn portable_pty::Child + Send + Sync> =
 > is meant to be split into its own repository and published to crates.io.
 > Until then it tracks the `portable-pty` version pinned by that workspace.
 
-License: MIT OR Apache-2.0
+License: Apache-2.0

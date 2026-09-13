@@ -252,7 +252,7 @@ pub struct DefaultsCfg {
     /// mirrors tmux's `window-size` option.
     ///
     /// Default: [`WindowSize::Smallest`] — nothing is ever cropped. See
-    /// [ADR-0027](../../ADR/0027-terminal-references-and-l3-links.md) and
+    /// [ADR-0027](../../../docs/adr/0027-terminal-references-and-l3-links.md) and
     /// [`WindowSize`].
     ///
     /// Consumed at the size-decision point: the server resolves a

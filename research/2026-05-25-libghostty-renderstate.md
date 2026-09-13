@@ -260,9 +260,9 @@ style snapshot synthesis."
 
 - libghostty-rs source: `crates/libghostty-vt/src/render.rs` at
   rev `31d1f70` in this workspace.
-- [ADR-0013](../ADR/0013-libghostty-bytes-on-wire.md) — the pivot
+- [ADR-0013](../docs/adr/0013-libghostty-bytes-on-wire.md) — the pivot
   decision; this note is the renderer-side companion.
-- [ADR-0008](../ADR/0008-use-libghostty-types-directly.md) — input
+- [ADR-0008](../docs/adr/0008-use-libghostty-types-directly.md) — input
   and style atoms; still in force on the input direction.
 - SPEC §8 (post-ADR-0013 rewrite) — `PANE_OUTPUT` and
   `PANE_SNAPSHOT` wire shape.

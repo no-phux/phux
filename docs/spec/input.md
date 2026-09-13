@@ -36,9 +36,9 @@ mouse protocol, etc.), and writes the resulting bytes to the PTY.
 Encoder configuration never traverses the wire — the server is the one
 with the `Terminal` and the encoder. See [ADR-0006] and [ADR-0008].
 
-[ADR-0006]: ../../ADR/0006-input-mirrors-libghostty.md
-[ADR-0008]: ../../ADR/0008-use-libghostty-types-directly.md
-[ADR-0024]: ../../ADR/0024-wire-owns-input-atoms.md
+[ADR-0006]: ../../docs/adr/0006-input-mirrors-libghostty.md
+[ADR-0008]: ../../docs/adr/0008-use-libghostty-types-directly.md
+[ADR-0024]: ../../docs/adr/0024-wire-owns-input-atoms.md
 
 ---
 
@@ -394,8 +394,8 @@ be split across multiple `INPUT_PASTE` events. Use `APPLY_INPUT`
 its result by operation id, and is safe to retry after a reconnect — or
 `PUT_FILE` ([ADR-0059]) for binary or file-shaped payloads.
 
-[ADR-0053]: ../../ADR/0053-acknowledged-idempotent-input.md
-[ADR-0059]: ../../ADR/0059-sandboxed-chunked-file-upload.md
+[ADR-0053]: ../../docs/adr/0053-acknowledged-idempotent-input.md
+[ADR-0059]: ../../docs/adr/0059-sandboxed-chunked-file-upload.md
 
 ---
 
@@ -502,4 +502,4 @@ reaches an encoder. An `AGENT_SESSION` resource's input channel is
 `APPEND_RESOURCE_OUTPUT` ([L1.md §5.5](./L1.md)), which is producer-fed and
 carries records, not keystrokes.
 
-[ADR-0033]: ../../ADR/0033-input-authority-and-process-signals.md
+[ADR-0033]: ../../docs/adr/0033-input-authority-and-process-signals.md

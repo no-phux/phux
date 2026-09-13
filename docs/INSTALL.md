@@ -204,9 +204,9 @@ phux update --channel next   # follow green main instead of the latest vX.Y.Z
 
 `phux update` exists because a deployment is a lockstep set: mismatched peers
 refuse each other at HELLO. See
-[ADR-0071](../ADR/0071-what-phux-1-0-commits-to.md). Default is the latest
+[ADR-0071](adr/0071-what-phux-1-0-commits-to.md). Default is the latest
 numbered GitHub release. `--channel next` is the opt-in rail that tracks
-green `main` ([ADR-0113](../ADR/0113-next-release-channel.md)); the choice is
+green `main` ([ADR-0113](adr/0113-next-release-channel.md)); the choice is
 remembered in `<bindir>/.phux-channel` so later `phux update` stays on that
 rail. Homebrew stays on stable.
 
@@ -226,7 +226,7 @@ rail. Homebrew stays on stable.
    panes survive the swap. Pass `--no-restart` to skip that.
 
 The full trust boundary — including what the checksum does and does not prove
-— is [ADR-0074](../ADR/0074-self-update-trust-boundary.md).
+— is [ADR-0074](adr/0074-self-update-trust-boundary.md).
 
 ### Install sources it recognizes
 

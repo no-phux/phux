@@ -65,7 +65,7 @@ pub(crate) enum PairAction {
 /// Changing the shape is a change to ADR-0031 and a coordinated consumer
 /// update, never a silent edit here.
 ///
-/// [ADR-0031]: ../../../../ADR/0031-remote-consumer-auth-and-encryption.md
+/// [ADR-0031]: ../../../../docs/adr/0031-remote-consumer-auth-and-encryption.md
 const CONNECT_URI_PREFIX: &str = "https://phux.phall.io/connect";
 
 /// The custom-scheme spelling of the same link. The query is identical;

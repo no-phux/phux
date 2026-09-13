@@ -37,7 +37,7 @@ There is no L2 collection tier; see [`../spec/L2.md`](../spec/L2.md).
 
 - Wire bytes — that's [`../spec/`](../spec/).
 - TUI surfaces — that's [`../consumers/tui.md`](../consumers/tui.md).
-- Decisions — that's [`../../ADR/`](../../ADR/). Architecture docs
+- Decisions — that's [`../adr/`](../adr/). Architecture docs
   describe what the code is; ADRs explain why it's that shape.
 - What phux is — that's [`../CONCEPTS.md`](../CONCEPTS.md).
 

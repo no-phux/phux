@@ -4,7 +4,7 @@ stability: scratch
 last-reviewed: 2026-05-28
 ---
 
-> **Archived 2026-05-28.** Ratified by [ADR-0018](../../ADR/0018-lazy-state-synchronization.md).
+> **Archived 2026-05-28.** Ratified by [ADR-0018](../../docs/adr/0018-lazy-state-synchronization.md).
 > Preserved here for the research record; not the authoritative source.
 > For current behavior see the ADR.
 

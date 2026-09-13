@@ -2,8 +2,8 @@
 //!
 //! Copy-mode is a *client-local projection* over the focused pane's own
 //! libghostty engine — never a wire tier
-//! ([ADR-0030](../../../../../ADR/0030-engine-delegated-wire-and-projection-consumers.md),
-//! [ADR-0045](../../../../../ADR/0045-client-side-copy-mode.md)). Two consumers
+//! ([ADR-0030](../../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md),
+//! [ADR-0045](../../../../../docs/adr/0045-client-side-copy-mode.md)). Two consumers
 //! of that projection — the selection UX (`copy_mode`) and the pane renderer
 //! (`attach::render`) — must agree, byte for byte, on what a selection is and
 //! which cells it covers. This module is the single leaf where that agreement
@@ -23,8 +23,8 @@
 /// `Char` is the default linear selection; `Line` selects whole lines; `Rect`
 /// is Mosh-style rectangular (block/columnar) selection.
 ///
-/// [ADR-0030]: ../../../../../ADR/0030-engine-delegated-wire-and-projection-consumers.md
-/// [ADR-0045]: ../../../../../ADR/0045-client-side-copy-mode.md
+/// [ADR-0030]: ../../../../../docs/adr/0030-engine-delegated-wire-and-projection-consumers.md
+/// [ADR-0045]: ../../../../../docs/adr/0045-client-side-copy-mode.md
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionMode {
     /// Character-wise (linear) selection — the default.
@@ -136,7 +136,7 @@ impl SelectionRect {
 /// `render/overlay/` never imports the engine; the bridge in `attach/copy.rs`
 /// does the resolution.
 ///
-/// [ADR-0045]: ../../../../../ADR/0045-client-side-copy-mode.md
+/// [ADR-0045]: ../../../../../docs/adr/0045-client-side-copy-mode.md
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SelectionGrab {
     /// Two-corner rectangle: `start`/`end` corners, block when
@@ -183,7 +183,7 @@ pub struct ScreenSelectionPoint {
 /// two-corner `Selection`; the engine-derived grabs instead resolve at the
 /// overlay cursor (`cursor_row`/`cursor_col`).
 ///
-/// [ADR-0045]: ../../../../../ADR/0045-client-side-copy-mode.md
+/// [ADR-0045]: ../../../../../docs/adr/0045-client-side-copy-mode.md
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CopyRequest {
     /// Top row of the selection (inclusive).

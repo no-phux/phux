@@ -30,7 +30,7 @@ the [generated CLI reference](../reference/cli.md) and
 [concepts](../CONCEPTS.md).
 
 The TUI has no protocol-level standing
-([ADR-0017](../../ADR/0017-tui-not-protocol-privileged.md)). Sessions,
+([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)). Sessions,
 windows, splits, the status bar, and keybindings are this client's
 vocabulary, not the wire's.
 
@@ -410,7 +410,7 @@ surface = "#171b23"
 Nothing about a selection touches the wire. The client extracts the
 selected text from its own `Terminal` and writes it to the host clipboard
 via OSC 52
-([ADR-0045](../../ADR/0045-client-side-copy-mode.md)).
+([ADR-0045](../adr/0045-client-side-copy-mode.md)).
 
 - Arrow keys move the cursor; hold Shift to extend from the anchor.
 - An arrow past the edge, and PageUp / PageDown, scroll the client-local

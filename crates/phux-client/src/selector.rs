@@ -2,7 +2,7 @@
 //!
 //! The CLI's `TARGET` grammar (`docs/consumers/tui.md` §3) names sessions,
 //! windows, and panes — none of which are wire concepts (ADR-0017). Per
-//! [ADR-0021](../../../ADR/0021-control-plane-commands.md) selectors are
+//! [ADR-0021](../../../docs/adr/0021-control-plane-commands.md) selectors are
 //! therefore resolved **client-side** against a `GET_STATE` snapshot: a
 //! selector resolves to a concrete set of [`ResourceId`]s, and only those
 //! Terminal-scoped ids are sent back to the server (e.g. one
@@ -28,13 +28,13 @@
 //! including `/@` or be empty. Parsing uses the final `/@` delimiter so the
 //! canonical formatter round-trips every registry-accepted host token.
 //!
-//! The `#tag` form ([ADR-0027](../../../ADR/0027-terminal-references-and-l3-links.md)
+//! The `#tag` form ([ADR-0027](../../../docs/adr/0027-terminal-references-and-l3-links.md)
 //! decision point 5) resolves to a *set*, like a session name, against L3
 //! tag metadata the caller fetches alongside the snapshot — see
 //! [`resolve_with_tags`]. The server stays selector-agnostic
-//! ([ADR-0017](../../../ADR/0017-tui-not-protocol-privileged.md)).
+//! ([ADR-0017](../../../docs/adr/0017-tui-not-protocol-privileged.md)).
 //!
-//! The `%name` form is [ADR-0075](../../../ADR/0075-agent-name-addressing.md)'s
+//! The `%name` form is [ADR-0075](../../../docs/adr/0075-agent-name-addressing.md)'s
 //! agent-name sigil. Its resolver yields **exactly one** agent or refuses, so
 //! it does **not** go through [`resolve_with_tags`] — see [`resolve_agent`]
 //! and [`resolve_agent_for_input`], which the CLI's shared target resolver and

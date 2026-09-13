@@ -25,7 +25,7 @@
 //! frame, so the `FrameKind` codec is untouched. On a loopback (unauthenticated)
 //! listener no preamble is expected and frames start immediately.
 //!
-//! [ADR-0007]: ../../../ADR/0007-mosh-class-transport-and-satellites.md
+//! [ADR-0007]: ../../../docs/adr/0007-mosh-class-transport-and-satellites.md
 
 use std::io;
 use std::net::SocketAddr;

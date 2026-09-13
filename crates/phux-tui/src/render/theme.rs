@@ -184,7 +184,7 @@ pub struct Theme {
 impl Default for Theme {
     fn default() -> Self {
         Self {
-            // DESIGN.md: one lime focus signal, mint key chords, and neutral
+            // docs/experience.md: one lime focus signal, mint key chords, and neutral
             // slate structure. Panels always supply both foreground and fill.
             accent: Color::Rgb(0xbe, 0xf2, 0x64),
             chord: Color::Rgb(0x86, 0xef, 0xac),

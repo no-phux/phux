@@ -23,7 +23,7 @@ phux --remote me@mini
 
 The first time, `mini` is not a registered host, so phux pairs it before
 attaching. It walks four rungs, cheapest first
-([ADR-0093](../ADR/0093-remote-target-as-a-resolution-ladder.md)):
+([ADR-0093](adr/0093-remote-target-as-a-resolution-ladder.md)):
 
 1. **A registered host** — a `[[remote]]` entry supplies the endpoint, the
    certificate pin, and the token, and the dial is a direct QUIC connection.
@@ -36,7 +36,7 @@ attaching. It walks four rungs, cheapest first
 4. **A refusal** naming both remedies, when ssh cannot help.
 
 `PORT` defaults to `8788`, the port a server auto-binds on its overlay
-address ([ADR-0081](../ADR/0081-overlay-auto-listen-and-one-command-pairing.md)).
+address ([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
 Pass `[USER@]HOST:PORT` to say otherwise; the port applies to that dial and
 does not rewrite the registry.
 
@@ -117,7 +117,7 @@ phux host enroll mini
 ```
 
 (Before the `phux host` namespace this verb was spelled `phux enroll`. See
-[ADR-0066](../ADR/0066-host-namespace.md).)
+[ADR-0066](adr/0066-host-namespace.md).)
 
 It confirms phux is installed on `mini`, installs the host's service unit so
 the server survives reboot, mints a pairing token there, reads back the
@@ -132,7 +132,7 @@ phux --remote mini
 
 No token, no fingerprint, no address typed by hand. This grants nothing ssh
 did not already grant — whoever can `ssh mini` can run `phux pair` there and
-read the token themselves ([ADR-0055](../ADR/0055-always-on-server-and-ssh-bootstrapped-enrollment.md)).
+read the token themselves ([ADR-0055](adr/0055-always-on-server-and-ssh-bootstrapped-enrollment.md)).
 
 A host with no overlay address, or one whose certificate could not be read,
 has nothing dialable; enrollment says so and registers an `ssh://` entry
@@ -150,10 +150,10 @@ phux already ships everything a remote attach needs except reachability: wss://
 (TLS 1.3) and QUIC transports, `phux pair` to mint a bearer token plus a
 certificate fingerprint, and a non-loopback bind that engages TLS and token
 auth automatically
-([ADR-0031](../ADR/0031-remote-consumer-auth-and-encryption.md)). What remains
+([ADR-0031](adr/0031-remote-consumer-auth-and-encryption.md)). What remains
 is purely packet reachability — a self-hosted server behind NAT or CGNAT has no
 inbound-reachable address. The sanctioned answer is a WireGuard-class overlay
-network ([ADR-0037](../ADR/0037-overlay-network-reachability.md)): an L3
+network ([ADR-0037](adr/0037-overlay-network-reachability.md)): an L3
 substrate that hands the client a routable address (a `100.x` IP or a MagicDNS
 `*.ts.net` name) which phux dials exactly like a LAN address, with zero new
 code. Cert pinning is on the fingerprint, not the hostname, so overlay DNS
@@ -391,8 +391,8 @@ the tunnel and other consumers remain live. Full relay state-file,
 revocation, and trust-boundary details are in
 [operations.md](./operations.md#running-the-reference-relay); the design is
 ADR-0057, building on
-[ADR-0051](../ADR/0051-outbound-dial-out-connector-transport.md) and
-[ADR-0052](../ADR/0052-connector-route-identity-and-config.md).
+[ADR-0051](adr/0051-outbound-dial-out-connector-transport.md) and
+[ADR-0052](adr/0052-connector-route-identity-and-config.md).
 
 ## Troubleshooting
 
@@ -427,7 +427,7 @@ Failures fall into a few classes, and the symptom tells you which one you have.
   — `curl --cacert`, a browser with the certificate trusted, `openssl s_client
   -verify_ip`. `phux attach` and the mobile app never hit this: they pin the
   fingerprint and ignore the name. The certificate's subjectAltName is fixed
-  when it is generated ([ADR-0091](../ADR/0091-certificate-names-the-advertised-address.md)),
+  when it is generated ([ADR-0091](adr/0091-certificate-names-the-advertised-address.md)),
   so one minted before phux learned to name the overlay address claims only
   loopback and always will. `phux doctor` reports it as `remote-cert` and prints
   the remedy. Widening it means a **new certificate and a new fingerprint**,
@@ -455,5 +455,5 @@ the trust boundary — no token or pin is involved on that transport. Hosted
 relay infrastructure, rendezvous servers, STUN/TURN, and reverse tunnels
 remain deliberately out of scope for the self-host repo; the self-hosted
 reference relay (Path D above) is the one carve-out, per ADR-0057. See
-[ADR-0037](../ADR/0037-overlay-network-reachability.md). For the full attach
+[ADR-0037](adr/0037-overlay-network-reachability.md). For the full attach
 and pair CLI surface, see [the reference TUI](./consumers/tui.md).

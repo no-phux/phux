@@ -19,8 +19,8 @@
   Fumadocs markdown component kit (callouts, tabs, generated anchors, Shiki
   code via `rehypeCode`).
 - The content pipeline stays ours. `scripts/sync-docs.ts` remains the single
-  source of truth that pulls from the enclosing phux repository (`../docs` +
-  `../../ADR`) into
+  source of truth that pulls from the enclosing phux repository (`../docs`,
+  including `../docs/adr`) into
   `src/content/docs/_synced/`; Fumadocs consumes that as an Astro content
   collection through a small `src/lib/source.ts` adapter.
 - The deploy stays **fully static** (Cloudflare Pages, `bun run build`, no

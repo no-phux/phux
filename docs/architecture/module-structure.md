@@ -45,7 +45,7 @@ so the no-feature shell compiles without `libghostty-vt`; see `lib.rs` for
 the docs.rs / crates.io rationale. Attach content is `BOOTSTRAP_BEGIN` /
 bounded opaque `BOOTSTRAP_CHUNK`s / `BOOTSTRAP_READY`, with retained
 history pulled afterward
-([ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md)).
+([ADR-0070](../adr/0070-native-engine-state-bootstrap.md)).
 Native checkpoint, history, cursor, and raw PTY payloads are engine-owned
 bytes and are never scanned or rewritten by phux; synthesized VT remains an
 explicit compatibility profile. The substrate names are `ResourceId`,
@@ -280,7 +280,7 @@ src/
 The reference TUI (ADR-0100): the interactive front end over `phux-client`.
 Under ADR-0013 it owns a `libghostty_vt::Terminal` per attached pane and
 uses `RenderState` to drive redraw; under
-[ADR-0070](../../ADR/0070-native-engine-state-bootstrap.md) it can instead
+[ADR-0070](../adr/0070-native-engine-state-bootstrap.md) it can instead
 bootstrap from an exact native checkpoint. `ratatui` is fenced to this
 crate; pane-interior substrate lives in `phux-client-core` (below) and the
 headless control plane in `phux-client` (above). `phux_tui::attach`
@@ -519,4 +519,4 @@ rather than a layer with its own internal architecture worth diagramming:
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Alternate-screen history harvest driver | `history_merge.rs` is a tested pure function; nothing calls it. ADR-0078 is Proposed. | [ADR-0078](../../ADR/0078-alternate-screen-history.md) | not scheduled |
+| Alternate-screen history harvest driver | `history_merge.rs` is a tested pure function; nothing calls it. ADR-0078 is Proposed. | [ADR-0078](../adr/0078-alternate-screen-history.md) | not scheduled |

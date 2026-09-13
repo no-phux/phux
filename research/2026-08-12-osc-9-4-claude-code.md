@@ -36,7 +36,7 @@ whether codex, opencode, and pi emit 9;4.
 Real raw-byte capture, not a screen fixture. `crates/phux-server/src/agent_detect/fixtures/claude/*.txt`
 stores libghostty-vt's *rendered grid text*, which is the wrong shape for
 this question — OSC 9;4 never paints a visible glyph, so a screen dump
-cannot show it (and `ADR/0035-agent-asked-event.md` already records that
+cannot show it (and `../docs/adr/0035-agent-asked-event.md` already records that
 libghostty-vt does not surface OSC 9 / OSC 777 through its Rust API at
 all, which is a separate, larger finding — see "Also found" below).
 
@@ -245,7 +245,7 @@ already flags as missing a working-state backstop.
 - Any claim about codex, opencode, or pi (see below — attempted,
   inconclusive).
 - Whether phux's own runtime can currently *observe* OSC 9;4 at all: per
-  `ADR/0035-agent-asked-event.md` (already in-tree, unrelated to this
+  `../docs/adr/0035-agent-asked-event.md` (already in-tree, unrelated to this
   bead), libghostty-vt does not surface OSC 9 / OSC 777 through its Rust
   API today — only title, cwd, and bell. This capture proves the bytes
   exist on the wire; it says nothing about whether `phux-server`'s current

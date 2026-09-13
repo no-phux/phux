@@ -9,7 +9,8 @@
 //! `<spec>` is either a **path** (contains a separator or ends in
 //! `.toml`; a directory means `<dir>/<dirname>.toml`) or a **bundled
 //! name** looked up as `<dir>/<name>/<name>.toml` across the search
-//! directories returned by [`search_dirs`]:
+//! directories returned by [`search_dirs`]. `herdr` is kept as an alias
+//! of `starter` so existing `--distro herdr` invocations still resolve:
 //!
 //! 1. `$PHUX_DISTROS_DIR` — explicit override (also the test hook).
 //! 2. `$XDG_DATA_HOME/phux/distros` (or `~/.local/share/phux/distros`)
@@ -108,18 +109,38 @@ pub fn resolve_distro_in(spec: &str, dirs: &[PathBuf]) -> Result<PathBuf, Distro
         return canonicalize(&file);
     }
 
-    let mut candidates = Vec::with_capacity(dirs.len());
-    for dir in dirs {
-        let candidate = dir.join(spec).join(format!("{spec}.toml"));
-        if candidate.is_file() {
-            return canonicalize(&candidate);
+    let mut candidates = Vec::new();
+    for name in bundled_lookup_names(spec) {
+        for dir in dirs {
+            let candidate = dir.join(name).join(format!("{name}.toml"));
+            if candidate.is_file() {
+                return canonicalize(&candidate);
+            }
+            candidates.push(candidate);
         }
-        candidates.push(candidate);
     }
     Err(DistroError::UnknownName {
         name: spec.to_owned(),
         candidates,
     })
+}
+
+/// Bundled names that still resolve after a distro was renamed.
+///
+/// The requested name is tried first so a user-supplied package of that
+/// name in `$PHUX_DISTROS_DIR` keeps winning; the alias is the fallback
+/// used by the repo checkout (`herdr` → `starter`).
+const DISTRO_NAME_ALIASES: &[(&str, &str)] = &[("herdr", "starter")];
+
+fn bundled_lookup_names(spec: &str) -> Vec<&str> {
+    match DISTRO_NAME_ALIASES
+        .iter()
+        .copied()
+        .find(|(from, _)| *from == spec)
+    {
+        Some((_, to)) if to != spec => vec![spec, to],
+        _ => vec![spec],
+    }
 }
 
 /// The bundled-name search directories, in precedence order. See the

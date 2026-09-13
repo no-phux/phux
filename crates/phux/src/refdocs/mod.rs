@@ -20,7 +20,7 @@
 //!    `just docs-check` with no carve-outs, plus a GENERATED FILE marker so
 //!    a human reader knows not to edit it.
 //!
-//! See `ADR/0069-generated-reference-docs.md` for why the generator is a
+//! See `../../../../docs/adr/0069-generated-reference-docs.md` for why the generator is a
 //! hidden subcommand rather than an xtask or a build script.
 
 pub(crate) mod actions;

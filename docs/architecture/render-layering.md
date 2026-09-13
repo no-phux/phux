@@ -15,7 +15,7 @@ compiler-enforced: ratatui lives only in phux-tui.
 
 ---
 
-Per [ADR-0020](../../ADR/0020-layered-render.md), the TUI uses two
+Per [ADR-0020](../adr/0020-layered-render.md), the TUI uses two
 renderers for disjoint screen regions. libghostty paints pane interiors
 on the hot path — kitty graphics, sixel, OSC 8 hyperlinks, and the
 Kitty key protocol all pass through unchanged. `ratatui` paints the
@@ -30,7 +30,7 @@ multi-pane composition — lives in a separate crate, `phux-client-core`,
 which carries **no `ratatui` dependency**; the headless control-plane
 client — connection, transports, the agent verbs — lives in
 `phux-client`, which carries none either
-([ADR-0100](../../ADR/0100-the-tui-is-its-own-crate.md)). Both
+([ADR-0100](../adr/0100-the-tui-is-its-own-crate.md)). Both
 boundaries are therefore enforced by the compiler: a `use ratatui` in
 the substrate or in the headless library fails to build because the
 crate cannot name it. This replaced the original

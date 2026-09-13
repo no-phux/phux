@@ -25,7 +25,7 @@
 //! deferred — they need their own re-emission strategy and don't appear
 //! in `RenderState` directly.
 //!
-//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/ADR/0013-libghostty-bytes-on-wire.md
+//! [ADR-0013]: https://github.com/no-phux/phux/blob/main/docs/adr/0013-libghostty-bytes-on-wire.md
 
 use std::io::Write as _;
 
