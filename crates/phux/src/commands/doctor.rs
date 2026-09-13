@@ -1055,7 +1055,7 @@ fn check_remote_reachable(socket_path: &std::path::Path) -> Check {
     remote_reachable_check(&url, probe_remote_listener(&url), None)
 }
 
-/// What this instance's GET_STATE says about its wss listener.
+/// What this instance's `GET_STATE` says about its wss listener.
 #[derive(Debug, Clone, Copy)]
 enum WssOffer {
     /// A bound, healthy wss slot — the only case where an overlay dial
