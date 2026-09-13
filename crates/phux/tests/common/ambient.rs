@@ -1,10 +1,7 @@
 //! Shared `PHUX_*` scrub for binaries that spawn `CARGO_BIN_EXE_phux`
 //! without the full server-process harness (phux-lru0).
 
-#![allow(
-    unreachable_pub,
-    reason = "shared by sibling integration-test crates"
-)]
+#![allow(unreachable_pub, reason = "shared by sibling integration-test crates")]
 
 use std::ffi::OsStr;
 use std::process::Command;
