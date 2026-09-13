@@ -362,6 +362,10 @@ enum UniqueToken<'a> {
 /// The `Bearer` value of an `Authorization` header, matched
 /// case-insensitively on the field name (HTTP/3 encodes field names
 /// lowercase on the wire, but a hand-built native client may not).
+///
+/// This checks the headers exposed by `wtransport`, whose map has already
+/// collapsed repeated identical field names. Rejecting those raw duplicates
+/// requires validation before that dependency builds its header map.
 fn unique_bearer(headers: &std::collections::HashMap<String, String>) -> UniqueToken<'_> {
     let mut values = headers
         .iter()
