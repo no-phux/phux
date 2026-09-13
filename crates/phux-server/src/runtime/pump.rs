@@ -82,7 +82,7 @@ const GAP_RESYNC_MAX_BACKOFF: Duration = Duration::from_secs(4);
 /// A fenced pump forwards nothing, so an actor that accepts the request and
 /// never answers it would otherwise hold the consumer on a frozen screen
 /// forever while logging a warning twice a second. The budget turns that into
-/// a bounded wait — ~7.5s across the doubling steps below — ending in a
+/// a bounded wait — ~11.5s including the final response window — ending in a
 /// terminal `ERROR` the consumer can reconnect from. Generous enough that a
 /// merely busy actor is never mistaken for a dead one.
 const GAP_RESYNC_MAX_ATTEMPTS: u32 = 5;
@@ -142,6 +142,9 @@ pub(super) struct PumpGeneration {
     /// Resync requests already spent on the current gap; reset when a
     /// replacement generation lands. Bounded by [`GAP_RESYNC_MAX_ATTEMPTS`].
     gap_attempts: u32,
+    /// Absolute response deadline. Unrelated broadcast traffic must not restart
+    /// the retry clock and keep a fenced consumer frozen indefinitely.
+    gap_deadline: Option<tokio::time::Instant>,
     /// When the current generation was published (opened or republished):
     /// the earliest instant [`Self::chunk_age`] measures from.
     published_at: std::time::Instant,
@@ -157,6 +160,7 @@ impl PumpGeneration {
             generation_active: true,
             gap_pending: false,
             gap_attempts: 0,
+            gap_deadline: None,
             published_at: std::time::Instant::now(),
         }
     }
@@ -223,31 +227,47 @@ impl PumpGeneration {
     /// Returns whether a resync was *already* in flight, which distinguishes a
     /// fresh gap (worth a `WARN`) from a repeat while fenced (a `DEBUG`, so a
     /// pane that keeps lagging cannot flood the log).
-    pub(super) const fn fence_for_gap(&mut self) -> bool {
+    pub(super) fn fence_for_gap(&mut self) -> bool {
         let already_pending = self.gap_pending;
         self.gap_pending = true;
+        if !already_pending {
+            self.gap_deadline = Some(tokio::time::Instant::now() + GAP_RESYNC_RETRY);
+        }
         already_pending
     }
 
     /// Record that a resync request went out for the current gap.
-    pub(super) const fn note_resync_requested(&mut self) {
+    pub(super) fn note_resync_requested(&mut self) {
+        if self.gap_attempts >= GAP_RESYNC_MAX_ATTEMPTS {
+            return;
+        }
+        if self.gap_attempts != 0
+            && self
+                .gap_deadline
+                .is_some_and(|deadline| tokio::time::Instant::now() < deadline)
+        {
+            return;
+        }
         self.gap_attempts = self.gap_attempts.saturating_add(1);
+        self.gap_deadline = Some(tokio::time::Instant::now() + self.gap_retry_delay());
     }
 
-    /// How long to wait for the replacement generation before asking again,
-    /// or `None` once this gap has spent its budget.
+    /// How long to wait for a response, including after the final request.
     ///
     /// Doubles from [`GAP_RESYNC_RETRY`] to [`GAP_RESYNC_MAX_BACKOFF`].
-    fn gap_retry_delay(&self) -> Option<Duration> {
-        if self.gap_attempts >= GAP_RESYNC_MAX_ATTEMPTS {
-            return None;
-        }
+    fn gap_retry_delay(&self) -> Duration {
         let step = self.gap_attempts.saturating_sub(1).min(u32::BITS - 1);
-        Some(
-            GAP_RESYNC_RETRY
-                .saturating_mul(1_u32 << step)
-                .min(GAP_RESYNC_MAX_BACKOFF),
-        )
+        GAP_RESYNC_RETRY
+            .saturating_mul(1_u32 << step)
+            .min(GAP_RESYNC_MAX_BACKOFF)
+    }
+
+    const fn gap_deadline_elapsed(&self) -> PumpWait {
+        if self.gap_attempts >= GAP_RESYNC_MAX_ATTEMPTS {
+            PumpWait::GapUnrecoverable
+        } else {
+            PumpWait::RetryResync
+        }
     }
 
     /// How many resync requests this gap has already cost, for the log line
@@ -305,6 +325,7 @@ impl PumpGeneration {
         self.generation_active = true;
         self.gap_pending = false;
         self.gap_attempts = 0;
+        self.gap_deadline = None;
         self.published_at = std::time::Instant::now();
     }
 }
@@ -341,11 +362,16 @@ pub(super) async fn next_event(
     if !generation.is_fenced() {
         return PumpWait::Event(output_rx.recv().await);
     }
-    let Some(delay) = generation.gap_retry_delay() else {
-        return PumpWait::GapUnrecoverable;
+    let Some(deadline) = generation.gap_deadline else {
+        return PumpWait::Event(output_rx.recv().await);
     };
-    let Ok(received) = tokio::time::timeout(delay, output_rx.recv()).await else {
-        return PumpWait::RetryResync;
+    // timeout_at polls its inner future first; a perpetually ready broadcast
+    // could otherwise win even after the absolute deadline has expired.
+    if tokio::time::Instant::now() >= deadline {
+        return generation.gap_deadline_elapsed();
+    }
+    let Ok(received) = tokio::time::timeout_at(deadline, output_rx.recv()).await else {
+        return generation.gap_deadline_elapsed();
     };
     PumpWait::Event(received)
 }
@@ -608,22 +634,16 @@ mod tests {
     /// runs out — an actor that accepts a resync and never broadcasts one must
     /// end in a terminal error the consumer can reconnect from, not a frozen
     /// screen and two warnings a second forever.
-    #[test]
-    fn a_gap_retries_with_backoff_and_then_gives_up() {
+    #[tokio::test(start_paused = true)]
+    async fn a_gap_retries_with_backoff_and_then_gives_up() {
         let mut generation = opened();
         generation.fence_for_gap();
 
         let mut delays = Vec::new();
-        loop {
+        for _ in 0..GAP_RESYNC_MAX_ATTEMPTS {
             generation.note_resync_requested();
-            match generation.gap_retry_delay() {
-                Some(delay) => delays.push(delay),
-                None => break,
-            }
-            assert!(
-                delays.len() < 32,
-                "the fence budget must be finite; got {delays:?}",
-            );
+            delays.push(generation.gap_retry_delay());
+            tokio::time::advance(generation.gap_retry_delay()).await;
         }
 
         assert_eq!(
@@ -632,6 +652,7 @@ mod tests {
                 Duration::from_millis(500),
                 Duration::from_secs(1),
                 Duration::from_secs(2),
+                Duration::from_secs(4),
                 Duration::from_secs(4),
             ],
             "doubling backoff, capped at GAP_RESYNC_MAX_BACKOFF",
@@ -736,14 +757,15 @@ mod tests {
 
     /// A replacement generation returns the full budget, so a later, unrelated
     /// gap is not punished for an earlier one.
-    #[test]
-    fn republishing_restores_the_gap_budget() {
+    #[tokio::test(start_paused = true)]
+    async fn republishing_restores_the_gap_budget() {
         let mut generation = opened();
         generation.fence_for_gap();
         for _ in 0..GAP_RESYNC_MAX_ATTEMPTS {
             generation.note_resync_requested();
+            tokio::time::advance(generation.gap_retry_delay()).await;
         }
-        assert!(generation.gap_retry_delay().is_none(), "budget spent");
+        assert_eq!(generation.gap_attempts(), GAP_RESYNC_MAX_ATTEMPTS);
 
         generation.republished_at(9_000);
         assert_eq!(generation.gap_attempts(), 0);
@@ -751,8 +773,72 @@ mod tests {
         generation.note_resync_requested();
         assert_eq!(
             generation.gap_retry_delay(),
-            Some(Duration::from_millis(500)),
+            Duration::from_millis(500),
             "a fresh gap starts from the first backoff step",
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unrelated_ready_events_do_not_postpone_the_retry_deadline() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<PaneOutput>(8);
+        let mut generation = opened();
+        generation.fence_for_gap();
+        generation.note_resync_requested();
+        for _ in 0..4 {
+            tokio::time::advance(Duration::from_millis(100)).await;
+            tx.send(unrelated_resync()).unwrap();
+            assert!(matches!(
+                next_event(&generation, &mut rx).await,
+                PumpWait::Event(_)
+            ));
+            assert!(generation.fence_for_gap());
+            // A repeated Lagged handler must not spend another attempt or
+            // move the deadline even if it redundantly notes a request.
+            generation.note_resync_requested();
+            assert_eq!(generation.gap_attempts(), 1);
+        }
+        tokio::time::advance(Duration::from_millis(100)).await;
+        tx.send(unrelated_resync()).unwrap();
+        assert!(matches!(
+            next_event(&generation, &mut rx).await,
+            PumpWait::RetryResync
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn final_request_has_a_response_window_before_failure() {
+        let (tx, mut rx) = tokio::sync::broadcast::channel::<PaneOutput>(8);
+        let mut generation = opened();
+        generation.fence_for_gap();
+        for attempt in 0..GAP_RESYNC_MAX_ATTEMPTS {
+            generation.note_resync_requested();
+            if attempt + 1 < GAP_RESYNC_MAX_ATTEMPTS {
+                tokio::time::advance(generation.gap_retry_delay()).await;
+            }
+        }
+        tokio::time::advance(Duration::from_secs(3)).await;
+        generation.note_resync_requested();
+        assert_eq!(generation.gap_attempts(), GAP_RESYNC_MAX_ATTEMPTS);
+        tx.send(unrelated_resync()).unwrap();
+        assert!(matches!(
+            next_event(&generation, &mut rx).await,
+            PumpWait::Event(Ok(_))
+        ));
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert!(matches!(
+            next_event(&generation, &mut rx).await,
+            PumpWait::GapUnrecoverable
+        ));
+    }
+
+    fn unrelated_resync() -> PaneOutput {
+        PaneOutput::Resync {
+            cols: 80,
+            rows: 24,
+            reason: crate::terminal_actor::ResyncReason::OutboundGap,
+            audience: ResyncAudience::Only(vec![pump_on(99, 99)].into()),
+            base_seq: 9_000,
+            bytes: bytes::Bytes::new(),
+        }
     }
 }
