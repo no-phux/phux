@@ -84,7 +84,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use phux_server_testkit::{
-    encode_frame, free_port, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket,
+    encode_frame, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::{TcpStream, UnixStream};
@@ -172,29 +172,54 @@ fn satellite_entry(name: &str, port: u16) -> SatelliteConfigEntry {
     }
 }
 
-/// Spawn the satellite: a plain server with one seeded (no-PTY) session,
-/// listening on loopback WebSocket in addition to its own UDS.
-fn spawn_satellite(
+/// Bind the satellite WebSocket and hold the listener until `listen_ws`.
+///
+/// [`phux_server_testkit::free_port`] reads the number and drops the
+/// listener, so a neighbour (or this test's next draw) can take it before
+/// the spawned task binds. That is the "satellite WebSocket never became
+/// connectable" flake (phux-d9f1 / phux-ahg6). The hold moves into the
+/// task and is dropped only immediately before `listen_ws`.
+fn spawn_satellite_runtime(
     socket_path: PathBuf,
-    ws_port: u16,
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
+    seed_with_pty: bool,
+    seed_command: Option<portable_pty::CommandBuilder>,
+) -> (
+    u16,
+    oneshot::Sender<()>,
+    JoinHandle<Result<(), ServerError>>,
+) {
+    let hold = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let ws_addr = hold.local_addr().unwrap();
     let (tx, rx) = oneshot::channel::<()>();
     let cfg = ServerConfig {
         socket_path,
         pre_seeded_session: Some("sat-session".to_owned()),
-        seed_with_pty: false,
-        seed_command: None,
+        seed_with_pty,
+        seed_command,
         ..ServerConfig::with_default_socket()
     };
     let handle = tokio::task::spawn_local(async move {
+        drop(hold);
         ServerRuntime::new(cfg)
-            .listen_ws(format!("127.0.0.1:{ws_port}").parse().unwrap())
+            .listen_ws(ws_addr)
             .run_async(async move {
                 let _ = rx.await;
             })
             .await
     });
-    (tx, handle)
+    (ws_addr.port(), tx, handle)
+}
+
+/// Spawn the satellite: a plain server with one seeded (no-PTY) session,
+/// listening on loopback WebSocket in addition to its own UDS.
+fn spawn_satellite(
+    socket_path: PathBuf,
+) -> (
+    u16,
+    oneshot::Sender<()>,
+    JoinHandle<Result<(), ServerError>>,
+) {
+    spawn_satellite_runtime(socket_path, false, None)
 }
 
 /// Spawn a satellite whose seeded pane is backed by a real PTY running
@@ -202,25 +227,16 @@ fn spawn_satellite(
 /// drives input through (mirrors `input_dispatch.rs`).
 fn spawn_satellite_with_cat(
     socket_path: PathBuf,
-    ws_port: u16,
-) -> (oneshot::Sender<()>, JoinHandle<Result<(), ServerError>>) {
-    let (tx, rx) = oneshot::channel::<()>();
-    let cfg = ServerConfig {
+) -> (
+    u16,
+    oneshot::Sender<()>,
+    JoinHandle<Result<(), ServerError>>,
+) {
+    spawn_satellite_runtime(
         socket_path,
-        pre_seeded_session: Some("sat-session".to_owned()),
-        seed_with_pty: true,
-        seed_command: Some(portable_pty::CommandBuilder::new("/bin/cat")),
-        ..ServerConfig::with_default_socket()
-    };
-    let handle = tokio::task::spawn_local(async move {
-        ServerRuntime::new(cfg)
-            .listen_ws(format!("127.0.0.1:{ws_port}").parse().unwrap())
-            .run_async(async move {
-                let _ = rx.await;
-            })
-            .await
-    });
-    (tx, handle)
+        true,
+        Some(portable_pty::CommandBuilder::new("/bin/cat")),
+    )
 }
 
 /// Spawn the hub: UDS-only, no seeded session, dialing `satellites`.
@@ -378,8 +394,7 @@ async fn get_screen_until_ok(hub: &mut UnixStream, sat_pane: u32) -> CommandResu
 fn command_round_trip_and_stream_retagging() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],
@@ -608,8 +623,7 @@ async fn spawn_via_stream(
 fn satellite_targeted_spawn_round_trips_and_routes() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],
@@ -747,8 +761,7 @@ fn aggregated_list_merges_local_and_satellite_terminals_and_degrades() {
         // one is reserved *first* so the live draw below cannot collide with
         // it (phux-vbnr).
         let down = DeadEndpoint::reserve().await;
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
         let (hub_shutdown, hub_task) = spawn_hub_with_session(
             tmp.path().join("hub.sock"),
             vec![
@@ -944,9 +957,8 @@ fn ssh_stub_link_relays_commands_end_to_end() {
     unsafe { std::env::set_var("PHUX_SSH", &stub) };
 
     phux_server_testkit::run_local(async move {
-        let ws_port = free_port();
         let sat_sock = tmp.path().join("sat.sock");
-        let (sat_shutdown, sat_task) = spawn_satellite(sat_sock.clone(), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(sat_sock.clone());
         let bridge = tokio::task::spawn_local(run_stub_bridge(c2s, s2c, sat_sock));
 
         let (hub_shutdown, hub_task) = spawn_hub(
@@ -1206,9 +1218,8 @@ async fn await_satellite_echo(
 fn two_hop_attach_snapshot_output_input_ack_and_detach() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) =
-            spawn_satellite_with_cat(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) =
+            spawn_satellite_with_cat(tmp.path().join("sat.sock"));
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],
@@ -1300,8 +1311,7 @@ fn two_hop_attach_snapshot_output_input_ack_and_detach() {
 fn satellite_input_lease_excludes_other_hub_consumers() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],
@@ -1416,8 +1426,7 @@ fn satellite_seize_takeover_notifies_evicted_hub_consumer() {
     // as a same-identity re-acquire. Mirrors the local takeover broadcast.
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(tmp.path().join("sat.sock"));
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],
@@ -1573,9 +1582,11 @@ fn unknown_satellite_host_is_unsupported_route() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
         // Hub with a registry for "sat" only: host "nowhere" has no route.
+        // Hold the unused "sat" port so a neighbour cannot bind it.
+        let unused_sat = DeadEndpoint::reserve().await;
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
-            vec![satellite_entry("sat", free_port())],
+            vec![satellite_entry("sat", unused_sat.port())],
         );
         let mut hub = wait_for_socket(&tmp.path().join("hub.sock"), STEP_DEADLINE).await;
         let result = get_screen_via_hub(&mut hub, 1, ResourceId::satellite("nowhere", 1)).await;
@@ -1591,6 +1602,7 @@ fn unknown_satellite_host_is_unsupported_route() {
         );
         drop(hub_shutdown);
         hub_task.await.unwrap().unwrap();
+        drop(unused_sat);
 
         // And a plain non-hub server refuses every satellite id the same
         // way — the pre-relay contract is unchanged off-hub.
@@ -1673,9 +1685,8 @@ async fn spawn_agent_session(
 fn hub_inventory_lists_a_satellites_agent_session_with_a_retagged_parent() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
         let sat_sock = tmp.path().join("sat.sock");
-        let (sat_shutdown, sat_task) = spawn_satellite(sat_sock.clone(), ws_port);
+        let (ws_port, sat_shutdown, sat_task) = spawn_satellite(sat_sock.clone());
         let (hub_shutdown, hub_task) = spawn_hub_with_session(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],

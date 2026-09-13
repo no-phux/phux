@@ -9,9 +9,8 @@ use tokio::time::timeout;
 fn event_only_subscription_before_spawn_content_attach_keeps_link_and_events_live() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) =
-            spawn_satellite_with_cat(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) =
+            spawn_satellite_with_cat(tmp.path().join("sat.sock"));
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],
@@ -276,9 +275,8 @@ async fn cycle(a: &mut UnixStream, b: &mut UnixStream, round: u32) -> ResourceId
 fn satellite_detach_fences_twenty_live_spawns_and_preserves_shared_consumers() {
     phux_server_testkit::run_local(async {
         let tmp = TempDir::new().unwrap();
-        let ws_port = free_port();
-        let (sat_shutdown, sat_task) =
-            spawn_satellite_with_cat(tmp.path().join("sat.sock"), ws_port);
+        let (ws_port, sat_shutdown, sat_task) =
+            spawn_satellite_with_cat(tmp.path().join("sat.sock"));
         let (hub_shutdown, hub_task) = spawn_hub(
             tmp.path().join("hub.sock"),
             vec![satellite_entry("sat", ws_port)],
