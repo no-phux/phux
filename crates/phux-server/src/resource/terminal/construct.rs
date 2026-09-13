@@ -9,10 +9,11 @@ use super::{
     DEFAULT_INPUT_MAILBOX, DEFAULT_OUTPUT_BROADCAST, DEFAULT_SCROLLBACK, EncodedInputRequest,
     GhosttyTerminal, HashMap, InputEncoderSnapshot, NativeRequestReceivers,
     PerTerminalFocusEncoder, PerTerminalKeyEncoder, PerTerminalMouseEncoder,
-    PerTerminalPasteEncoder, PtySource, Rc, RefCell, ResourceCore, ResourceFacetHandle,
-    ResourceHandle, ResourceKind, ResourceLifecycle, SizeReportSize, SnapshotSynthesizer,
-    TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle, VecDeque, adopt_pty,
-    color_query_reply, default_shell_command, mpsc, osc133, resolve_shell, spawn_pty, watch,
+    PerTerminalPasteEncoder, PtyEvent, PtyOwned, PtySource, Rc, RefCell, ResourceCore,
+    ResourceFacetHandle, ResourceHandle, ResourceKind, ResourceLifecycle, SizeReportSize,
+    SnapshotSynthesizer, TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle,
+    VecDeque, adopt_pty, color_query_reply, default_shell_command, mpsc, osc133, resolve_shell,
+    spawn_pty, watch,
 };
 use phux_config::ScrollbackLimits;
 
@@ -233,20 +234,7 @@ impl TerminalActor {
             DEFAULT_OUTPUT_BROADCAST,
         );
 
-        let (pty_rx, pty_tx, pty) = match pty_source {
-            PtySource::None => (None, None, None),
-            PtySource::Spawn(cmd) => {
-                let (rx, tx, owned) = spawn_pty(cmd, cols, rows)?;
-                (Some(rx), Some(tx), Some(owned))
-            }
-            PtySource::Adopt {
-                master_fd,
-                child_pid,
-            } => {
-                let (rx, tx, owned) = adopt_pty(master_fd, child_pid)?;
-                (Some(rx), Some(tx), Some(owned))
-            }
-        };
+        let (pty_rx, pty_tx, pty) = initialize_pty(pty_source, cols, rows)?;
         Self::install_effects(&mut terminal, &size_report, pty_tx.as_ref())?;
 
         let actor = Self {
@@ -479,4 +467,26 @@ impl TerminalActor {
         bundle.actor.publish_input_snapshot();
         Ok(bundle)
     }
+}
+
+type OptionalPty = (
+    Option<mpsc::Receiver<PtyEvent>>,
+    Option<mpsc::Sender<EncodedInputRequest>>,
+    Option<PtyOwned>,
+);
+
+fn initialize_pty(
+    source: PtySource,
+    cols: u16,
+    rows: u16,
+) -> Result<OptionalPty, TerminalActorError> {
+    let opened = match source {
+        PtySource::None => return Ok((None, None, None)),
+        PtySource::Spawn(command) => spawn_pty(command, cols, rows)?,
+        PtySource::Adopt {
+            master_fd,
+            child_pid,
+        } => adopt_pty(master_fd, child_pid)?,
+    };
+    Ok((Some(opened.0), Some(opened.1), Some(opened.2)))
 }

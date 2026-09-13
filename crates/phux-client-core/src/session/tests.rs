@@ -171,8 +171,13 @@ impl EngineAdapter for FakeAdapter {
                 "history-imported".to_owned(),
             )));
         }
+        let finished = payload == b"history-finish";
         Ok(HistoryApplyOutcome {
-            progress: BootstrapProgress::Ready,
+            progress: if finished {
+                BootstrapProgress::Finished
+            } else {
+                BootstrapProgress::Ready
+            },
             retained_rows: if payload == b"history-not-retained" {
                 0
             } else {
@@ -1794,6 +1799,138 @@ fn busy_history_retries_are_automatic_and_bounded() {
     assert_eq!(
         kernel.history_cache(&terminal_id).unwrap().status().state,
         HistoryLoadState::Tombstoned
+    );
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the regression keeps the TooSmall, Busy, PAGE, and authenticated FINISH sequence visible"
+)]
+fn grown_history_limits_survive_busy_then_reach_authenticated_finish() {
+    let terminal_id = terminal(38);
+    let stream_id = stream(138);
+    let bootstrap_id = bootstrap(238);
+    let profile = BootstrapProfile::NativeState {
+        codec: EngineCodec::LibghosttySnapshotV1,
+        features: EngineFeatureSet::required_native(),
+    };
+    let mut kernel = SessionKernel::with_history_config(
+        FakeAdapter {
+            ready_mode: ReadyMode::ChunkFirst,
+        },
+        profile,
+        crate::history::HistoryCacheConfig {
+            prefetch_rows: 4_096,
+            ..crate::history::HistoryCacheConfig::default()
+        },
+    );
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::BootstrapBegin {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::NativeState {
+                    codec: EngineCodec::LibghosttySnapshotV1,
+                },
+                geometry: geometry(),
+                base_seq: 50,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    push_ready_transcript(
+        &mut kernel,
+        &terminal_id,
+        stream_id,
+        bootstrap_id,
+        &mut effects,
+    );
+    kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: Some(b"grown-cursor"),
+            },
+            &mut effects,
+        )
+        .unwrap();
+
+    let grown_bytes = 2 * 1024 * 1024;
+    let grown_rows = 2_048;
+    for reason in [
+        HistoryRejectionReason::TooSmall,
+        HistoryRejectionReason::Busy,
+    ] {
+        kernel
+            .update(
+                KernelInput::HistoryRejected {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    cursor: b"grown-cursor",
+                    reason,
+                    required_bytes: grown_bytes,
+                    required_rows: grown_rows,
+                },
+                &mut effects,
+            )
+            .unwrap();
+        assert!(effects.as_slice().iter().any(|effect| matches!(
+            effect,
+            KernelEffect::Send(KernelSend::HistoryRequest {
+                max_bytes,
+                max_rows,
+                ..
+            }) if *max_bytes == grown_bytes && *max_rows == grown_rows
+        )));
+    }
+
+    kernel
+        .update(
+            KernelInput::HistoryPage {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor: b"grown-cursor",
+                next_cursor: Some(b"grown-cursor"),
+                payload: b"history-page",
+                page_seq: 1,
+                rows: grown_rows,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(effects.as_slice().iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Send(KernelSend::HistoryRequest {
+            max_bytes,
+            max_rows,
+            ..
+        }) if *max_bytes == 1024 * 1024 && *max_rows == 1024
+    )));
+    kernel
+        .update(
+            KernelInput::HistoryPage {
+                terminal_id: &terminal_id,
+                stream_id,
+                bootstrap_id,
+                cursor: b"grown-cursor",
+                next_cursor: None,
+                payload: b"history-finish",
+                page_seq: 2,
+                rows: 0,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    assert_eq!(
+        kernel.history_cache(&terminal_id).unwrap().status().state,
+        HistoryLoadState::Complete
     );
 }
 

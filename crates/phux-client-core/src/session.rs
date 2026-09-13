@@ -3075,15 +3075,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
             .filter(|replica| generation_of(&replica.key) == generation)
             .ok_or_else(|| mismatch_error(terminal_id, generation))?;
         let cursor = HistoryCursor::new(cursor);
-        let next_request = Self::retry_rejected_history(
-            replica,
-            &cursor,
-            reason,
-            required_bytes,
-            required_rows,
-            self.history_config,
-        )
-        .map_err(KernelError::HistoryCache)?;
+        let next_request =
+            Self::retry_rejected_history(replica, &cursor, reason, required_bytes, required_rows)
+                .map_err(KernelError::HistoryCache)?;
         if matches!(
             reason,
             HistoryRejectionReason::TooSmall | HistoryRejectionReason::Busy
@@ -3117,13 +3111,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
         reason: HistoryRejectionReason,
         required_bytes: u32,
         required_rows: u32,
-        config: HistoryCacheConfig,
     ) -> Result<Option<(HistoryCursor, u32, u32)>, HistoryCacheError> {
         let retry_limits = (reason == HistoryRejectionReason::TooSmall)
             .then(|| replica.history.retry_limits(required_bytes, required_rows))
             .flatten();
-        let retry_busy =
-            reason == HistoryRejectionReason::Busy && replica.history.allow_busy_retry();
+        let retry_busy = (reason == HistoryRejectionReason::Busy
+            && replica.history.allow_busy_retry())
+        .then(|| replica.history.request_limits());
         if !replica.history.cancel_fetch(cursor) {
             return Err(HistoryCacheError::Gap);
         }
@@ -3133,13 +3127,13 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 .begin_fetch_with_limits(max_bytes, max_rows)
                 .map(|cursor| (cursor, max_bytes, max_rows)));
         }
-        if !retry_busy {
+        let Some((max_bytes, max_rows)) = retry_busy else {
             return Ok(None);
-        }
+        };
         Ok(replica
             .history
-            .begin_fetch()
-            .map(|cursor| (cursor, config.request_max_bytes, config.request_max_rows)))
+            .begin_fetch_with_limits(max_bytes, max_rows)
+            .map(|cursor| (cursor, max_bytes, max_rows)))
     }
 
     fn buffer_bootstrap_effects(&mut self, terminal_id: &ResourceId, generation: GenerationId) {

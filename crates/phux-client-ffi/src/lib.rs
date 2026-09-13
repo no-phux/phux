@@ -306,16 +306,13 @@ const fn history_page_rows_out_of_range(rows: u32) -> bool {
     rows == 0 || rows > phux_client_core::history::MAX_HISTORY_PAGE_ROWS
 }
 
-/// True when the requested cache bounds cannot retain one page of the
-/// requested size.
+/// True when the requested cache bounds cannot retain one opaque page.
 fn history_cache_cannot_retain_page(options: &PhuxClientOptions) -> bool {
     options.max_history_cache_bytes == 0
         || options.max_history_materialized_rows == 0
         || usize::try_from(options.max_history_page_bytes).is_err()
         || usize::try_from(options.max_history_page_bytes)
             .is_ok_and(|bytes| bytes > options.max_history_cache_bytes)
-        || usize::try_from(options.max_history_page_rows)
-            .is_ok_and(|rows| rows > options.max_history_materialized_rows)
 }
 
 /// Resolves the bootstrap and history bounds a new client will enforce.
@@ -2392,6 +2389,22 @@ mod tests {
             }),
             _not_send_sync: std::marker::PhantomData,
         }))
+    }
+
+    #[test]
+    fn local_projection_budget_may_be_smaller_than_authenticated_page_rows() {
+        let options = PhuxClientOptions {
+            size: mem::size_of::<PhuxClientOptions>(),
+            version: ABI_VERSION,
+            max_bootstrap_chunk_bytes: 1024,
+            max_history_page_bytes: 1024,
+            max_history_page_rows: 1024,
+            max_history_cache_bytes: 4096,
+            max_history_materialized_rows: 1,
+            history_prefetch_rows: 2,
+        };
+        assert!(!history_cache_cannot_retain_page(&options));
+        assert!(client_limits(&options).is_ok());
     }
 
     #[test]

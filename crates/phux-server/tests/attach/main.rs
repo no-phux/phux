@@ -15,6 +15,7 @@ mod eof_detach;
 mod hello_survives_detach;
 mod lagged_attach_terminal_resync;
 mod multi_client_scenario;
+mod native_progressive_kernel;
 mod phux_eb0_in_process_reattach;
 mod reattach_multipane_input;
 mod reconnect_scenario;

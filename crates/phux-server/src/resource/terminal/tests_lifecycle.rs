@@ -1812,6 +1812,53 @@ async fn saturated_history_busy_hint_clamps_rows_on_the_public_wire() {
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
+async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
+    let bundle = TerminalActor::new(20, 5).expect("actor");
+    let mut actor = bundle.actor;
+    let (outbound, _outbound_rx) = mpsc::channel(2);
+    let mut replies = Vec::new();
+    for owner in [7, 8] {
+        let permit = outbound
+            .clone()
+            .reserve_owned()
+            .await
+            .expect("history permit");
+        let (reply, response) = oneshot::channel();
+        actor.handle_native_history(NativeHistoryRequest {
+            permit,
+            owner,
+            terminal_id: phux_protocol::ids::ResourceId::local(1),
+            stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+            bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+            cursor: Bytes::from_static(b"pending-cursor"),
+            max_bytes: 1024,
+            max_rows: 64,
+            limits: phux_protocol::caps::BootstrapLimits::default(),
+            reply,
+        });
+        replies.push(response);
+    }
+
+    actor.release_native_owner(7);
+    let released = replies.remove(0).await.expect("released reply").result;
+    assert!(matches!(
+        released,
+        Ok(FrameKind::HistoryTombstone {
+            reason: phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+            ..
+        })
+    ));
+    assert_eq!(
+        actor
+            .pending_native_history
+            .as_ref()
+            .map(|pending| pending.request.owner),
+        Some(8)
+    );
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
 async fn native_request_runs_after_one_bounded_pty_turn_and_preserves_raw_bytes() {
     const CHUNKS: usize = 200;
     const CHUNK_BYTES: usize = 1024;

@@ -1064,6 +1064,7 @@ impl TerminalActor {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn release_native_owner(&mut self, owner: u64) {
+        self.cancel_native_history_requests(owner);
         if let Some(pending) = self.pending_native_bootstrap.as_mut() {
             pending.waiters.retain(|waiter| waiter.owner != owner);
         }
@@ -1080,6 +1081,30 @@ impl TerminalActor {
         }
         if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
             let _ = manager.release_generation(&binding.cursor);
+        }
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn cancel_native_history_requests(&mut self, owner: u64) {
+        if self
+            .pending_native_history
+            .as_ref()
+            .is_some_and(|pending| pending.request.owner == owner)
+            && let Some(pending) = self.pending_native_history.take()
+        {
+            answer_released_history(pending.request);
+        }
+        let mut retained = VecDeque::with_capacity(self.native_history_backlog.len());
+        while let Some(pending) = self.native_history_backlog.pop_front() {
+            if pending.request.owner == owner {
+                answer_released_history(pending.request);
+            } else {
+                retained.push_back(pending);
+            }
+        }
+        self.native_history_backlog = retained;
+        if self.pending_native_history.is_none() {
+            self.start_next_native_history();
         }
     }
 
@@ -1249,6 +1274,13 @@ fn answer_history(
     result: Result<FrameKind, crate::native_state::NativeStateError>,
 ) {
     let _ = reply.send(NativeHistoryReply { permit, result });
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn answer_released_history(request: NativeHistoryRequest) {
+    let frame = history_request_id(&request)
+        .tombstone(phux_protocol::wire::frame::HistoryTombstoneReason::Released);
+    answer_history(request.reply, request.permit, Ok(frame));
 }
 
 /// Map a native-state failure onto the tombstone reason the wire carries.

@@ -435,6 +435,10 @@ impl HistoryCache {
         true
     }
 
+    pub(crate) const fn request_limits(&self) -> (u32, u32) {
+        (self.request_max_bytes, self.request_max_rows)
+    }
+
     /// Validate ordering and duplicate identity without mutating the cache.
     pub(crate) fn check_page(
         &self,
@@ -949,14 +953,14 @@ mod tests {
     }
 
     #[test]
-    fn declared_page_rows_are_bounded_before_import() {
+    fn declared_page_rows_are_bounded_by_requested_authentication_limit() {
         let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         assert_eq!(
             cache.check_page(&cursor(1), 1, None, 65, b"opaque"),
             Err(HistoryCacheError::ProjectionTooLarge {
                 required: 65,
-                budget: 8,
+                budget: 64,
             })
         );
         assert_eq!(cache.status().next_cursor, Some(cursor(1)));
@@ -1045,9 +1049,10 @@ mod tests {
         let mut cache = HistoryCache::new(config(128, 8), Some(cursor(1)), 80);
         assert_eq!(cache.begin_fetch(), Some(cursor(1)));
         assert_eq!(cache.retry_limits(64, 8), None);
-        assert_eq!(cache.retry_limits(80, 8), Some((80, 8)));
+        assert_eq!(cache.retry_limits(80, 8), Some((80, 64)));
         assert_eq!(cache.retry_limits(129, 8), None);
-        assert_eq!(cache.retry_limits(80, 9), None);
+        assert_eq!(cache.retry_limits(80, 9), Some((80, 64)));
+        assert_eq!(cache.retry_limits(80, MAX_HISTORY_PAGE_ROWS + 1), None);
     }
 
     #[test]
