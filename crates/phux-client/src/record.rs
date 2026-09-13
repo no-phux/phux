@@ -107,6 +107,10 @@ pub struct HeadlessRecording {
 /// subscription fails, when the server pushes an `ERROR` frame mid-stream
 /// ([`AttachError::Refused`]), or on a transport failure that is not a clean
 /// EOF.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "Connection::shutdown consumes the connection at its final use; an explicit drop afterward is impossible"
+)]
 pub async fn record_terminal(
     socket: &Path,
     terminal_id: ResourceId,

@@ -199,6 +199,7 @@ pub async fn send(
     let mut conn = Connection::connect(socket).await?;
     let pane = focused_pane(&mut conn, &target).await?;
     route_keys(&mut conn, &pane, keys).await?;
+    drop(conn);
     Ok(pane)
 }
 

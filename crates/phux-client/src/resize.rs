@@ -113,6 +113,7 @@ pub async fn resize_to(
     // docs for why the registry read is the sound one and the actor's
     // screen projection is not.
     let (snapshot, degradation) = get_state_on(&mut conn).await?.into_parts();
+    drop(conn);
     let applied = snapshot
         .resources
         .iter()

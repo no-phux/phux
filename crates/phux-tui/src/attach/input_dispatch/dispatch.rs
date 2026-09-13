@@ -155,30 +155,33 @@ pub(in crate::attach) async fn dispatch_input_events<W: crate::attach::RenderSin
     panes: &mut HashMap<ResourceId, PaneSlot>,
     ctx: &mut DispatchCtx<'_>,
 ) -> Result<bool, AttachError> {
-    let mut env = EventEnv {
-        out,
-        conn,
-        focused_resource,
-        detach_pending,
-        predict,
-        panes,
-        ctx,
+    let layout_changed = {
+        let mut env = EventEnv {
+            out,
+            conn,
+            focused_resource,
+            detach_pending,
+            predict,
+            panes,
+            ctx,
+        };
+        let mut predicted_any = false;
+        let mut layout_changed = false;
+        // Drained rather than consumed: the driver owns `events` for the life of
+        // the attach and reuses its allocation for every batch (phux-l96p.4).
+        for ev in events.drain(..) {
+            let change = env.dispatch_event(ev).await?;
+            layout_changed |= change.layout_changed;
+            predicted_any |= change.predicted;
+        }
+        // Paint the prediction overlay once per dispatch batch so a burst of
+        // keystrokes produces a single positioned write run, not one per
+        // event. The overlay is a no-op on an empty queue.
+        if predicted_any {
+            env.paint_predictions(overlay);
+        }
+        layout_changed
     };
-    let mut predicted_any = false;
-    let mut layout_changed = false;
-    // Drained rather than consumed: the driver owns `events` for the life of
-    // the attach and reuses its allocation for every batch (phux-l96p.4).
-    for ev in events.drain(..) {
-        let change = env.dispatch_event(ev).await?;
-        layout_changed |= change.layout_changed;
-        predicted_any |= change.predicted;
-    }
-    // Paint the prediction overlay once per dispatch batch so a burst of
-    // keystrokes produces a single positioned write run, not one per
-    // event. The overlay is a no-op on an empty queue.
-    if predicted_any {
-        env.paint_predictions(overlay);
-    }
     // Hand the layout-mutation signal back to `main_loop`, which holds
     // the status-bar painter and session name needed for a proper full
     // frame. We never paint from here.

@@ -1025,6 +1025,7 @@ pub async fn deliver_acknowledged(
     let level = confirm_occupant(&submitted.interleaved, terminal, &record, &hex, delivery)?;
 
     let Some(wait) = wait else {
+        drop(conn);
         return Ok(PromptOutcome {
             delivery,
             operation_id: hex,
@@ -1058,6 +1059,7 @@ pub async fn deliver_acknowledged(
             },
             other => other,
         })?;
+    drop(conn);
     Ok(PromptOutcome {
         delivery,
         operation_id: hex,

@@ -728,6 +728,7 @@ pub async fn wait_for_agent_state(
         decided = poll_floor(socket, terminal, poll_interval, &shared) => Some(decided?),
         () = deadline(timeout) => None,
     };
+    drop(conn);
 
     finish(decision, shared)
 }

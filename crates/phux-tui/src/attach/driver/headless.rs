@@ -567,6 +567,7 @@ pub async fn run_headless_rendered(
         ),
     )
     .await;
+    drop(conn);
     settled.map_err(|_| {
         AttachError::Protocol(format!(
             "headless attach {attach_id} timed out before ATTACH_READY, history, and metadata completed"
