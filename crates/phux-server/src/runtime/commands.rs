@@ -829,6 +829,7 @@ pub(crate) async fn handle_command(
                     out_tx,
                     bootstrap_profile,
                     bootstrap_limits,
+                    connection_token,
                 )
                 .await;
                 return;
@@ -863,6 +864,7 @@ pub(crate) async fn handle_command(
             out_tx,
             bootstrap_profile,
             bootstrap_limits,
+            connection_token,
         )
         .await;
         return;
@@ -2603,6 +2605,7 @@ async fn handle_satellite_command(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
+    connection_token: &CancellationToken,
 ) {
     note_satellite_use(state, host, client_id, &command);
     let result = match state.with(|s| s.hub_relay(host)) {
@@ -2669,7 +2672,17 @@ async fn handle_satellite_command(
             _ => relay.command(command.clone()).await,
         },
     };
-    reply_satellite_command(state, client_id, request_id, host, &command, out_tx, result).await;
+    reply_satellite_command(
+        state,
+        client_id,
+        request_id,
+        host,
+        &command,
+        out_tx,
+        result,
+        connection_token,
+    )
+    .await;
 }
 
 /// ADR-0109 (L1 §5.2.1): the resource `command` attaches, drives, or reads,
@@ -2773,6 +2786,10 @@ fn hub_vouches_for_kill(
 /// Record the hub-side proxy attach a successful `ATTACH_RESOURCE` just
 /// established, then correlate the relayed reply back to the caller
 /// (phux-v45.4, ADR-0007 §4).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the correlated relay reply needs the consumer cancellation token alongside its existing routing and command context"
+)]
 async fn reply_satellite_command(
     state: &SharedState,
     client_id: ClientId,
@@ -2781,6 +2798,7 @@ async fn reply_satellite_command(
     command: &Command,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     result: CommandResult,
+    connection_token: &CancellationToken,
 ) {
     if !matches!(result, CommandResult::Error { .. })
         && let Command::AttachResource { terminal_id } = command
@@ -2796,12 +2814,11 @@ async fn reply_satellite_command(
         satellite = %host,
         "satellite-routed COMMAND relayed; sending COMMAND_RESULT"
     );
-    let _ = out_tx
-        .send(Outbound::Frame(FrameKind::CommandResult {
-            request_id,
-            result,
-        }))
-        .await;
+    tokio::select! {
+        biased;
+        () = connection_token.cancelled() => {}
+        _ = out_tx.send(Outbound::Frame(FrameKind::CommandResult { request_id, result })) => {}
+    }
 }
 
 /// Relay a stream-establishing command and register the caller's outbound
@@ -5213,6 +5230,50 @@ mod hub_detach_fence_tests {
     use super::*;
     use crate::hub::relay::{HubRelays, RelayHandle, RelaySession};
 
+    #[tokio::test]
+    async fn cancellation_interrupts_a_blocked_satellite_reply() {
+        let state = SharedState::new();
+        let host = phux_protocol::ids::SatelliteHost::from("sat");
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
+        out_tx
+            .send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
+            .await
+            .expect("fill consumer mailbox");
+        let retained_sender = out_tx.clone();
+        let token = CancellationToken::new();
+        let command = Command::DetachResource {
+            terminal_id: phux_protocol::ids::ResourceId::local(7),
+        };
+        let reply = reply_satellite_command(
+            &state,
+            ClientId(17),
+            9,
+            &host,
+            &command,
+            &out_tx,
+            CommandResult::Error {
+                code: ErrorCode::SatelliteUnreachable,
+                message: "offline".to_owned(),
+            },
+            &token,
+        );
+        tokio::pin!(reply);
+        assert!(futures_util::poll!(&mut reply).is_pending());
+
+        token.cancel();
+        tokio::time::timeout(std::time::Duration::from_secs(1), reply)
+            .await
+            .expect("cancellation interrupts the full-mailbox reply");
+        assert!(
+            !retained_sender.is_closed(),
+            "extra production-equivalent sender remains owned"
+        );
+        assert!(matches!(
+            out_rx.try_recv(),
+            Ok(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
+        ));
+    }
+
     #[tokio::test(start_paused = true)]
     async fn timed_out_hub_detach_preserves_resumed_generation_with_shared_observer() {
         use crate::hub::relay::{ProxySubscription, RELAY_COMMAND_TIMEOUT, RelayRequest};
@@ -5248,6 +5309,7 @@ mod hub_detach_fence_tests {
                 })
                 .unwrap();
         }
+        let connection_token = CancellationToken::new();
         let detach = handle_satellite_command(
             &state,
             ClientId(1),
@@ -5259,6 +5321,7 @@ mod hub_detach_fence_tests {
             &out_tx,
             BootstrapProfile::SynthesizedVtRaw,
             BootstrapLimits::default(),
+            &connection_token,
         );
         tokio::pin!(detach);
         assert!(futures_util::poll!(&mut detach).is_pending());
@@ -5314,6 +5377,7 @@ mod hub_detach_fence_tests {
         relays.insert(handle);
         state.with_mut(|s| s.set_hub_relays(relays));
         let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+        let connection_token = CancellationToken::new();
         let detach = handle_satellite_command(
             &state,
             ClientId(1),
@@ -5325,6 +5389,7 @@ mod hub_detach_fence_tests {
             &out_tx,
             BootstrapProfile::SynthesizedVtRaw,
             BootstrapLimits::default(),
+            &connection_token,
         );
         tokio::pin!(detach);
         assert!(

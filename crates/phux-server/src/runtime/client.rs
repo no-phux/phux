@@ -19,7 +19,8 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{ResourceId as WireResourceId, StreamId};
 use phux_protocol::policy::TransportType;
 use phux_protocol::wire::frame::{
-    AgentEvent, CloseReason, DetachReason, ErrorCode, FrameKind, RESOURCE_AGENT_KEY,
+    AgentEvent, CloseReason, Command, CommandResult, DetachReason, ErrorCode, FrameKind,
+    RESOURCE_AGENT_KEY,
 };
 use phux_protocol::wire::framing::FramingError;
 use tokio::net::UnixStream;
@@ -77,6 +78,219 @@ const fn requires_terminal_stream(frame: &FrameKind) -> bool {
             | FrameKind::FrameAck { .. }
             | FrameKind::HistoryRequest { .. }
     )
+}
+
+fn validate_dispatch_frame(
+    framed: &BytesMut,
+    negotiated: Option<&NegotiatedConnection>,
+    origin: FrameOrigin,
+    client_id: ClientId,
+) -> Result<FrameKind, ConnectionClose> {
+    let frame = decode_client_frame(framed, negotiated)?;
+    if negotiated.is_some_and(|selection| {
+        selection
+            .server_features
+            .contains(ServerFeature::QuicStreams)
+    }) && origin == FrameOrigin::Control
+        && requires_terminal_stream(&frame)
+    {
+        return Err(ConnectionClose {
+            attached_reason: Some("Terminal frame sent on QUIC control stream"),
+            code: ErrorCode::MalformedMessage,
+            message: "Terminal-scoped frame requires a bound QUIC stream".to_owned(),
+        });
+    }
+    if let Some(close) = reject_frame_before_hello(&frame, negotiated.is_some(), client_id) {
+        return Err(close);
+    }
+    Ok(frame)
+}
+
+struct CommandDispatch<'a> {
+    state: &'a SharedState,
+    client_id: ClientId,
+    out_tx: &'a tokio::sync::mpsc::Sender<Outbound>,
+    input_lane: Option<&'a InputLaneHandle>,
+    token: &'a CancellationToken,
+    root_token: &'a CancellationToken,
+    selection: NegotiatedConnection,
+    command_tasks: &'a mut super::command_tasks::CommandTasks,
+    input_receipts: &'a mut JoinSet<()>,
+    input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+enum CommandDispatchOutcome {
+    Completed(Option<WireResourceId>),
+    Cancelled,
+}
+
+impl CommandDispatch<'_> {
+    async fn run(self, request_id: u32, command: Command) -> CommandDispatchOutcome {
+        let token = self.token.clone();
+        tokio::select! {
+            biased;
+            () = token.cancelled() => CommandDispatchOutcome::Cancelled,
+            detached = self.run_inner(request_id, command) => {
+                CommandDispatchOutcome::Completed(detached)
+            }
+        }
+    }
+
+    async fn run_inner(mut self, request_id: u32, command: Command) -> Option<WireResourceId> {
+        let command_started = std::time::Instant::now();
+        let defer_subscription = self
+            .selection
+            .server_features
+            .contains(ServerFeature::QuicStreams);
+        let detached_stream = defer_subscription
+            .then(|| match &command {
+                Command::DetachResource { terminal_id } => Some(terminal_id.clone()),
+                _ => None,
+            })
+            .flatten();
+
+        if let Some(lane) = self.input_lane
+            && matches!(
+                &command,
+                Command::ApplyInput { .. } | Command::RouteInput { .. }
+            )
+        {
+            self.submit_input(lane, request_id, command).await;
+            return None;
+        }
+        if let Some(retained) = super::command_tasks::CommandTasks::retained_bytes(&command) {
+            self.submit_bulk(
+                request_id,
+                command,
+                retained,
+                command_started,
+                defer_subscription,
+            )
+            .await;
+            return None;
+        }
+        handle_command(
+            self.state,
+            self.client_id,
+            request_id,
+            command,
+            self.out_tx,
+            self.selection.client_caps,
+            self.selection.profile,
+            self.selection.limits,
+            self.input_lane,
+            self.token,
+            self.root_token,
+            defer_subscription,
+        )
+        .await;
+        crate::perf::CMD_HANDLE.record_elapsed(command_started);
+        detached_stream
+    }
+
+    async fn submit_input(&mut self, lane: &InputLaneHandle, request_id: u32, command: Command) {
+        let Ok(slot) = self.input_receipt_slots.clone().try_acquire_owned() else {
+            let _ = self
+                .out_tx
+                .send(Outbound::Frame(FrameKind::CommandResult {
+                    request_id,
+                    result: CommandResult::Error {
+                        code: ErrorCode::ResourceExhausted,
+                        message: "input completion capacity exhausted".to_owned(),
+                    },
+                }))
+                .await;
+            return;
+        };
+        let receipt = match command {
+            Command::ApplyInput {
+                operation_id,
+                terminal_id,
+                events,
+            } => lane.begin_apply(self.client_id, operation_id, terminal_id, events),
+            Command::RouteInput { terminal_id, event } => {
+                lane.begin_route(self.client_id, terminal_id, event)
+            }
+            _ => unreachable!("guarded input command"),
+        };
+        spawn_input_receipt(
+            self.input_receipts,
+            slot,
+            self.out_tx.clone(),
+            request_id,
+            receipt,
+        );
+    }
+
+    async fn submit_bulk(
+        &self,
+        request_id: u32,
+        command: Command,
+        retained: usize,
+        command_started: std::time::Instant,
+        defer_subscription: bool,
+    ) {
+        let task_state = self.state.clone();
+        let task_out = self.out_tx.clone();
+        let task_input_lane = self.input_lane.cloned();
+        let task_token = self.token.clone();
+        let task_root_token = self.root_token.clone();
+        let selection = self.selection;
+        let client_id = self.client_id;
+        let task = async move {
+            handle_command(
+                &task_state,
+                client_id,
+                request_id,
+                command,
+                &task_out,
+                selection.client_caps,
+                selection.profile,
+                selection.limits,
+                task_input_lane.as_ref(),
+                &task_token,
+                &task_root_token,
+                defer_subscription,
+            )
+            .await;
+            crate::perf::CMD_HANDLE.record_elapsed(command_started);
+        };
+        if let Err(result) = self.command_tasks.try_submit(retained, task) {
+            let _ = self
+                .out_tx
+                .send(Outbound::Frame(FrameKind::CommandResult {
+                    request_id,
+                    result,
+                }))
+                .await;
+        }
+    }
+}
+
+async fn dispatch_stream_event(
+    event: Option<QuicStreamEvent>,
+    stream_events: &mut Option<tokio::sync::mpsc::Receiver<QuicStreamEvent>>,
+    state: &SharedState,
+    client_id: ClientId,
+    plumbing: &mut ClientPlumbing,
+    negotiated: Option<&NegotiatedConnection>,
+    token: &CancellationToken,
+) {
+    let Some(event) = event else {
+        // Disable the select arm permanently. Polling a closed receiver is
+        // immediately ready and would starve control EOF.
+        *stream_events = None;
+        return;
+    };
+    handle_stream_event(state, client_id, event, plumbing, negotiated, token).await;
+}
+
+async fn wait_initial_hello(deadline: std::pin::Pin<&mut tokio::time::Sleep>, waiting: bool) {
+    if waiting {
+        deadline.await;
+    } else {
+        core::future::pending::<()>().await;
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2423,7 +2637,7 @@ where
                     .await;
                 return Ok(());
             }
-            () = &mut hello_deadline, if negotiated.is_none() => {
+            () = wait_initial_hello(hello_deadline.as_mut(), negotiated.is_none()) => {
                 warn!(?client_id, "client did not complete HELLO before deadline; closing");
                 input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
@@ -2473,69 +2687,29 @@ where
                     None => core::future::pending().await,
                 }
             } => {
-                match event {
-                    Some(event) => {
-                        handle_stream_event(
-                            &state,
-                            client_id,
-                            event,
-                            &mut plumbing,
-                            negotiated.as_ref(),
-                            &token,
-                        )
-                        .await;
-                        continue;
-                    }
-                    // Disable this select arm permanently. Polling a closed
-                    // receiver is immediately ready and would otherwise
-                    // starve the control reader from observing EOF.
-                    None => {
-                        stream_events = None;
-                        continue;
-                    }
-                }
-            }
-        };
-
-        let frame = match decode_client_frame(&framed, negotiated.as_ref()) {
-            Ok(frame) => frame,
-            Err(close) => {
-                input_receipts.shutdown().await;
-                command_tasks.shutdown().await;
-                plumbing.close(close, &state, client_id).await;
-                return Ok(());
-            }
-        };
-
-        if negotiated.is_some_and(|selection| {
-            selection
-                .server_features
-                .contains(ServerFeature::QuicStreams)
-        }) && frame_origin == FrameOrigin::Control
-            && requires_terminal_stream(&frame)
-        {
-            input_receipts.shutdown().await;
-            command_tasks.shutdown().await;
-            plumbing
-                .close(
-                    ConnectionClose {
-                        attached_reason: Some("Terminal frame sent on QUIC control stream"),
-                        code: ErrorCode::MalformedMessage,
-                        message: "Terminal-scoped frame requires a bound QUIC stream".to_owned(),
-                    },
+                dispatch_stream_event(
+                    event,
+                    &mut stream_events,
                     &state,
                     client_id,
-                )
-                .await;
-            return Ok(());
-        }
+                    &mut plumbing,
+                    negotiated.as_ref(),
+                    &token,
+                ).await;
+                continue;
+            }
+        };
 
-        if let Some(close) = reject_frame_before_hello(&frame, negotiated.is_some(), client_id) {
-            input_receipts.shutdown().await;
-            command_tasks.shutdown().await;
-            plumbing.close(close, &state, client_id).await;
-            return Ok(());
-        }
+        let frame =
+            match validate_dispatch_frame(&framed, negotiated.as_ref(), frame_origin, client_id) {
+                Ok(frame) => frame,
+                Err(close) => {
+                    input_receipts.shutdown().await;
+                    command_tasks.shutdown().await;
+                    plumbing.close(close, &state, client_id).await;
+                    return Ok(());
+                }
+            };
 
         match frame {
             FrameKind::Hello {
@@ -2946,126 +3120,40 @@ where
                 request_id,
                 command,
             } => {
-                let Some(selection) = negotiated.as_ref() else {
+                let Some(selection) = negotiated else {
                     continue;
                 };
-                let command_started = std::time::Instant::now();
-                // QUIC multi-stream defers ATTACH_RESOURCE subscription to
-                // STREAM_BIND (proto.md §4.2): register now, bootstrap at
-                // bind with the stream's mailbox.
-                let defer_subscription = selection
-                    .server_features
-                    .contains(ServerFeature::QuicStreams);
-                // An explicit DETACH_RESOURCE also drops the stream binding
-                // on a multi-stream connection (the writer drains and
-                // finishes once the pump's sender clone is gone).
-                let detached_stream = defer_subscription.then(|| match &command {
-                    phux_protocol::wire::frame::Command::DetachResource { terminal_id } => {
-                        Some(terminal_id.clone())
-                    }
-                    _ => None,
-                });
-                if let Some(lane) = input_lane.as_ref()
-                    && matches!(
-                        &command,
-                        phux_protocol::wire::frame::Command::ApplyInput { .. }
-                            | phux_protocol::wire::frame::Command::RouteInput { .. }
-                    )
-                {
-                    let Ok(receipt_slot) = input_receipt_slots.clone().try_acquire_owned() else {
-                        let _ = plumbing
-                            .out_tx
-                            .send(Outbound::Frame(FrameKind::CommandResult {
-                                request_id,
-                                result: phux_protocol::wire::frame::CommandResult::Error {
-                                    code: ErrorCode::ResourceExhausted,
-                                    message: "input completion capacity exhausted".to_owned(),
-                                },
-                            }))
-                            .await;
-                        continue;
-                    };
-                    let receipt = match command {
-                        phux_protocol::wire::frame::Command::ApplyInput {
-                            operation_id,
-                            terminal_id,
-                            events,
-                        } => lane.begin_apply(client_id, operation_id, terminal_id, events),
-                        phux_protocol::wire::frame::Command::RouteInput { terminal_id, event } => {
-                            lane.begin_route(client_id, terminal_id, event)
-                        }
-                        _ => unreachable!("guarded input command"),
-                    };
-                    spawn_input_receipt(
-                        &mut input_receipts,
-                        receipt_slot,
-                        plumbing.out_tx.clone(),
-                        request_id,
-                        receipt,
-                    );
-                    continue;
-                }
-                let retained = super::command_tasks::CommandTasks::retained_bytes(&command);
-                if let Some(retained) = retained {
-                    let task_state = state.clone();
-                    let task_out = plumbing.out_tx.clone();
-                    let task_input_lane = input_lane.clone();
-                    let task_token = token.clone();
-                    let task_root_token = root_token.clone();
-                    let client_caps = selection.client_caps;
-                    let profile = selection.profile;
-                    let limits = selection.limits;
-                    let task = async move {
-                        handle_command(
-                            &task_state,
-                            client_id,
-                            request_id,
-                            command,
-                            &task_out,
-                            client_caps,
-                            profile,
-                            limits,
-                            task_input_lane.as_ref(),
-                            &task_token,
-                            &task_root_token,
-                            defer_subscription,
-                        )
-                        .await;
-                        crate::perf::CMD_HANDLE.record_elapsed(command_started);
-                    };
-                    if let Err(result) = command_tasks.try_submit(retained, task) {
-                        let _ = plumbing
-                            .out_tx
-                            .send(Outbound::Frame(FrameKind::CommandResult {
-                                request_id,
-                                result,
-                            }))
-                            .await;
-                    }
-                    continue;
-                }
-                handle_command(
-                    &state,
+                let command_outcome = (CommandDispatch {
+                    state: &state,
                     client_id,
-                    request_id,
-                    command,
-                    &plumbing.out_tx,
-                    selection.client_caps,
-                    selection.profile,
-                    selection.limits,
-                    input_lane.as_ref(),
-                    &token,
-                    &root_token,
-                    defer_subscription,
-                )
+                    out_tx: &plumbing.out_tx,
+                    input_lane: input_lane.as_ref(),
+                    token: &token,
+                    root_token: &root_token,
+                    selection,
+                    command_tasks: &mut command_tasks,
+                    input_receipts: &mut input_receipts,
+                    input_receipt_slots: &input_receipt_slots,
+                })
+                .run(request_id, command)
                 .await;
-                if let Some(Some(terminal_id)) = detached_stream {
-                    // The command above already unsubscribed, stopped the
-                    // pump, and detached the actor consumer; dropping the
-                    // binding lets its writer drain and finish the stream.
-                    plumbing.drop_stream_binding(&terminal_id);
+                match command_outcome {
+                    CommandDispatchOutcome::Completed(Some(terminal_id)) => {
+                        // The command above already unsubscribed, stopped the
+                        // pump, and detached the actor consumer; dropping the
+                        // binding lets its writer drain and finish the stream.
+                        plumbing.drop_stream_binding(&terminal_id);
+                    }
+                    CommandDispatchOutcome::Completed(None) => {}
+                    CommandDispatchOutcome::Cancelled => {
+                        input_receipts.shutdown().await;
+                        command_tasks.shutdown().await;
+                        plumbing
+                            .close_for_cancellation(&state, client_id, &root_token)
+                            .await;
+                        return Ok(());
+                    }
                 }
-                crate::perf::CMD_HANDLE.record_elapsed(command_started);
             }
             other => {
                 warn!(?client_id, kind = ?other, "direction-invalid client frame; closing");
