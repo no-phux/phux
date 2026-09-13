@@ -21,6 +21,10 @@ use phux_server_testkit::fault::{
 
 const FIRST_POST_FENCE: u64 = 7;
 const FINAL_RECORD: u64 = 15;
+// One tombstone, one BEGIN, records 0..=11, and one READY. This is
+// intentionally independent of `checkpoint()` so an accidental extra
+// recovery frame cannot move both sides of the assertion together.
+const LIVE_RECOVERY_FRAME_BOUND: usize = 15;
 
 const fn terminal() -> ResourceId {
     ResourceId::local(1)
@@ -121,7 +125,7 @@ fn delivered(outcome: FaultOutcome, transcript: &WireTranscript, context: &str) 
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Pending {
     id: BootstrapId,
     base_seq: u64,
@@ -132,7 +136,7 @@ struct Pending {
     bytes: Vec<u8>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Replica {
     pending: Option<Pending>,
     active: Option<BootstrapId>,
@@ -202,7 +206,7 @@ impl Replica {
             FrameKind::BootstrapReady { bootstrap_id, .. } => {
                 let pending = self
                     .pending
-                    .take()
+                    .as_ref()
                     .ok_or_else(|| "READY without BEGIN".to_owned())?;
                 if pending.id != bootstrap_id || self.tombstoned.contains(&bootstrap_id) {
                     Err(format!("stale READY for generation {bootstrap_id}"))
@@ -213,6 +217,7 @@ impl Replica {
                         pending.checkpoint.len()
                     ))
                 } else {
+                    let pending = self.pending.take().expect("validated pending bootstrap");
                     self.records = pending.checkpoint;
                     self.bytes = pending.bytes;
                     self.active = Some(bootstrap_id);
@@ -483,6 +488,155 @@ fn chunk_faults_converge_by_tombstone_and_full_resync() {
             "stale generation changed the published replica",
         );
         script.assert_drained(&transcript);
+        assert_exact_partition(&replica, &transcript, FINAL_RECORD);
+    }
+}
+
+#[test]
+fn stale_generation_frames_cannot_disturb_a_replacement_in_progress() {
+    let mut transcript = WireTranscript::new();
+    let stale = generation(12);
+    let active = generation(13);
+    let replacement = generation(14);
+    let mut replica = Replica::default();
+    let mut clean = FaultScript::clean();
+
+    for frame in checkpoint(active, FIRST_POST_FENCE - 1, 80, 24) {
+        apply_clean(&mut replica, &mut clean, frame, &mut transcript);
+    }
+    apply_clean(
+        &mut replica,
+        &mut clean,
+        tombstone(stale, TombstoneReason::OutboundGap, 0),
+        &mut transcript,
+    );
+    replica
+        .apply(
+            begin(replacement, FIRST_POST_FENCE - 1, 132, 43),
+            &mut transcript,
+        )
+        .unwrap_or_else(|error| transcript.fail(error));
+    replica
+        .apply(chunk(replacement, 0, 0), &mut transcript)
+        .unwrap_or_else(|error| transcript.fail(error));
+
+    for frame in [
+        begin(stale, 0, 1, 1),
+        chunk(stale, 0, 99),
+        ready(stale, true),
+        output(stale, FIRST_POST_FENCE),
+        history_page(stale, 1, b"stale-cursor"),
+    ] {
+        let before = replica.clone();
+        let _ = replica.apply(frame, &mut transcript);
+        transcript.assert_eq(
+            &replica,
+            &before,
+            "stale frame mutated active or pending generation state",
+        );
+    }
+
+    for number in 1..FIRST_POST_FENCE {
+        replica
+            .apply(
+                chunk(
+                    replacement,
+                    u32::try_from(number).expect("bounded checkpoint sequence"),
+                    number,
+                ),
+                &mut transcript,
+            )
+            .unwrap_or_else(|error| transcript.fail(error));
+    }
+    replica
+        .apply(ready(replacement, true), &mut transcript)
+        .unwrap_or_else(|error| transcript.fail(error));
+    for seq in FIRST_POST_FENCE..=FINAL_RECORD {
+        apply_clean(
+            &mut replica,
+            &mut clean,
+            output(replacement, seq),
+            &mut transcript,
+        );
+    }
+
+    clean.assert_drained(&transcript);
+    transcript.assert_eq(&replica.geometry, &Some((132, 43)), "replacement geometry");
+    assert_exact_partition(&replica, &transcript, FINAL_RECORD);
+}
+
+#[test]
+fn live_output_faults_converge_within_one_rebootstrap() {
+    for fault in [Fault::Drop, Fault::Duplicate, Fault::CorruptPayload] {
+        let mut transcript = WireTranscript::new();
+        transcript.note(format!("case live fault={fault:?}"));
+        let bad = generation(15);
+        let recovered = generation(16);
+        let mut replica = Replica::default();
+        let mut clean = FaultScript::clean();
+        for frame in checkpoint(bad, FIRST_POST_FENCE - 1, 80, 24) {
+            apply_clean(&mut replica, &mut clean, frame, &mut transcript);
+        }
+        for seq in FIRST_POST_FENCE..=9 {
+            apply_clean(&mut replica, &mut clean, output(bad, seq), &mut transcript);
+        }
+
+        let mut script = FaultScript::new([FaultStep::new(Milestone::LiveOutput(10), fault)]);
+        let mut diagnosed = false;
+        match script.transmit(Milestone::LiveOutput(10), output(bad, 10), &mut transcript) {
+            FaultOutcome::Delivered(frames) => {
+                for frame in frames {
+                    if let Err(error) = replica.apply(frame, &mut transcript) {
+                        transcript.note(format!("explicit diagnostic: {error}"));
+                        diagnosed = true;
+                    }
+                }
+            }
+            FaultOutcome::Dropped => transcript.note("live output intentionally dropped"),
+            other => transcript.fail(format!("unexpected live fault outcome {other:?}")),
+        }
+        if fault == Fault::Drop
+            && let Err(error) = replica.apply(output(bad, 11), &mut transcript)
+        {
+            transcript.note(format!("explicit diagnostic: {error}"));
+            diagnosed = true;
+        }
+        transcript.assert(
+            diagnosed,
+            format_args!("fault produced no explicit diagnostic"),
+        );
+
+        let last_valid_seq = replica.last_seq;
+        let recovery = checkpoint(recovered, 11, 80, 24);
+        let mut recovery_frames = 0;
+        apply_clean(
+            &mut replica,
+            &mut clean,
+            tombstone(bad, TombstoneReason::CodecFailure, last_valid_seq),
+            &mut transcript,
+        );
+        recovery_frames += 1;
+        for frame in recovery {
+            apply_clean(&mut replica, &mut clean, frame, &mut transcript);
+            recovery_frames += 1;
+        }
+        transcript.assert(
+            recovery_frames <= LIVE_RECOVERY_FRAME_BOUND,
+            format_args!(
+                "recovery exceeded one tombstone plus one full bootstrap: actual={recovery_frames} bound={LIVE_RECOVERY_FRAME_BOUND}"
+            ),
+        );
+        for seq in 12..=FINAL_RECORD {
+            apply_clean(
+                &mut replica,
+                &mut clean,
+                output(recovered, seq),
+                &mut transcript,
+            );
+        }
+
+        script.assert_drained(&transcript);
+        clean.assert_drained(&transcript);
         assert_exact_partition(&replica, &transcript, FINAL_RECORD);
     }
 }

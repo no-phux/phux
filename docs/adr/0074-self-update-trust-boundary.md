@@ -1,17 +1,17 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-07
+last-reviewed: 2026-09-13
 ---
 
 # 0074 — The self-update trust boundary
 
 **TL;DR.** `phux update` downloads a release, verifies it against the
-published `.sha256` **before** unpacking, and replaces the binary by an atomic
-`rename` within the destination directory, preserving the existing file's
-mode. It never executes downloaded content to decide whether to install it,
-never mutates an install another tool owns (Homebrew, Cargo, Nix), and refuses
-an unrecognized location rather than overwriting it.
+published `.sha256` **before** unpacking, and publishes the binary pair through
+a locked, fsynced recovery journal, preserving the existing files' modes. It
+never executes downloaded content to decide whether to install it, never
+mutates an install another tool owns (Homebrew, Cargo, Nix), and refuses an
+unrecognized location rather than overwriting it.
 
 Status: Accepted
 Date: 2026-08-07
@@ -55,19 +55,20 @@ allowed to trust, and what are we allowed to touch".
    the server side, where a failure is harmless because nothing has been closed
    yet.
 
-3. **Replacement is atomic and permission-preserving.** Staging happens in a
-   directory created *beside* the target — same directory, therefore same
-   filesystem, therefore `rename(2)` is atomic — and the staged file is given
-   the mode of the file it replaces before it moves. A partially written binary
-   is never reachable at the destination path, a restrictive mode survives, and
-   a setuid bit smuggled into a tarball does not.
+3. **Replacement is crash-durable and permission-preserving.** An advisory lock
+   serializes updates and rollbacks. Before either target changes, the old pair
+   and manifest are fsynced in a sibling journal; every replacement rename gets
+   a parent-directory fsync. Renaming the journal into the rollback directory
+   and fsyncing it is the commit point. A later updater restores an interrupted
+   pre-commit pair, while a committed pair stays new. Staged files receive the
+   targets' modes, so restrictive modes survive and archive setuid bits do not.
 
-4. **Rollback is a file the user can reach.** The previous binaries are hard-
-   linked into `<bindir>/.phux-update-backup/` with a JSON manifest naming the
-   version. `phux update --rollback` renames them back. Because they are
-   ordinary files in an ordinary directory, `mv .phux-update-backup/phux ./phux`
-   is a complete manual recovery when the installed binary is too old to have
-   the verb.
+4. **Rollback is restart-safe and remains a file the user can reach.** The
+   committed journal becomes `<bindir>/.phux-update-backup/`. `phux update
+   --rollback` uses the same journal and fsync discipline in reverse, so an
+   interruption restores the pre-rollback pair until its durable commit. The
+   backup remains ordinary files plus a JSON manifest, and manual `mv` recovery
+   still works when the installed binary is too old to have the verb.
 
 5. **Only an install phux maintains is mutated.** The install source is decided
    from the *symlink-resolved* path of the running executable. Nix store paths,

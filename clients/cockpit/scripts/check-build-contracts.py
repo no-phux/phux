@@ -97,7 +97,8 @@ class BuildContracts(unittest.TestCase):
             for goal in ([], ["package"]):
                 result = subprocess.check_output(["bash", str(helper), *goal, "--summary", "all"], text=True)
                 self.assertEqual(result.splitlines(), [*goal, "--summary", "all",
-                    "-Dtarget=aarch64-macos", "-Doptimize=ReleaseSafe", "-Dphux-enabled=true"])
+                    "-Dtarget=aarch64-macos", "-Dcpu=baseline",
+                    "-Doptimize=ReleaseSafe", "-Dphux-enabled=true"])
 
     def test_main_has_one_shipping_compile_owner_and_debug_tests(self):
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
@@ -225,8 +226,11 @@ printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/aarch64-apple-darwin/ffi-dev
             cargo.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys
 with open(os.environ["CAPTURE"], "a") as log:
-    log.write(json.dumps([os.environ["CARGO_TARGET_DIR"], *sys.argv[1:]]) + "\\n")
-output = pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / "aarch64-apple-darwin" / "ffi-release"
+    log.write(json.dumps({"args": [os.environ["CARGO_TARGET_DIR"], *sys.argv[1:]],
+                          "rustflags": os.environ.get("RUSTFLAGS"),
+                          "libghostty_cpu": os.environ.get("LIBGHOSTTY_VT_SYS_CPU")}) + "\\n")
+profile = sys.argv[sys.argv.index("--profile") + 1]
+output = pathlib.Path(os.environ["CARGO_TARGET_DIR"]) / "aarch64-apple-darwin" / profile
 output.mkdir(parents=True, exist_ok=True)
 (output / "libphux_client_ffi.a").write_text("archive")
 cli = output / "phux"
@@ -238,13 +242,23 @@ cli.chmod(0o755)
             env = dict(os.environ, PATH=f"{tools}:{os.environ['PATH']}", CAPTURE=str(capture),
                        RUSTC=str(tools / "rustc"),
                        CARGO_TARGET_DIR="/unrelated/target")
+            env.pop("RUSTFLAGS", None)
+            env.pop("LIBGHOSTTY_VT_SYS_CPU", None)
             subprocess.run(["bash", str(helper)], env=env, check=True, capture_output=True)
             actual = [json.loads(line) for line in capture.read_text().splitlines()]
             common = ["--locked", "--manifest-path", str(repo / "Cargo.toml"), "--profile", "ffi-release", "--target", "aarch64-apple-darwin"]
-            self.assertEqual(actual, [
+            self.assertEqual([call["args"] for call in actual], [
                 [str(repo / "target"), "rustc", *common, "-p", "phux-client-ffi", "--lib", "--crate-type", "staticlib"],
                 [str(repo / "target"), "build", *common, "-p", "phux"],
             ])
+            self.assertTrue(all(call["rustflags"] == "-C target-cpu=apple-m1" for call in actual))
+            self.assertTrue(all(call["libghostty_cpu"] == "baseline" for call in actual))
+
+            capture.unlink()
+            subprocess.run(["bash", str(helper), "ffi-dev"], env=env, check=True, capture_output=True)
+            development = [json.loads(line) for line in capture.read_text().splitlines()]
+            self.assertTrue(all(call["rustflags"] is None for call in development))
+            self.assertTrue(all(call["libghostty_cpu"] is None for call in development))
 
     def test_candidate_cli_stage_requires_fresh_verification(self):
         with tempfile.TemporaryDirectory(prefix="cockpit-candidate-contract-") as directory:

@@ -7,7 +7,7 @@
     "build": "bun run sync-docs && bun run fetch-release && astro build",
     "preview": "astro preview",
     "check": "bun run fetch-release && astro check",
-    "test": "bun test worker/src host src/components/terminal scripts/*.test.ts",
+    "test": "bun test worker/src host src/components/terminal src/components/attention-demo scripts/*.test.ts",
     "check:links": "bun run scripts/check-links.ts",
     "verify:demo": "bun run scripts/verify-demo.ts",
     "sync-docs": "bun run scripts/sync-docs.ts",

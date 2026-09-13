@@ -544,6 +544,13 @@ proptest! {
         prop_assert_eq!(checkpoint.generation, 1);
         prop_assert_eq!(checkpoint.next_seq, base_seq.saturating_add(1));
 
+        prop_assert!(rig.apply(&RigEvent::Disconnect));
+        prop_assert_eq!(
+            rig.resume_checkpoint(),
+            Some(checkpoint),
+            "disconnect must preserve the exact checkpoint used to fence reconnect",
+        );
+
         let stale_stream = RigEvent::Resume {
             stream: checkpoint.stream.saturating_add(1),
             generation: checkpoint.generation,

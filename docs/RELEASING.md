@@ -443,7 +443,7 @@ do not point installers or the tap at it.
 For an emergency host-only artifact, use the same dist layout locally:
 
 ```sh
-cargo build --locked --release --bin phux --bin phux-mcp
+bash scripts/build-release-binaries.sh "$(rustc -vV | sed -n 's/^host: //p')"
 just dist vX.Y.Z                       # -> dist/phux-vX.Y.Z-<host>.tar.gz (+ .sha256)
 gh release upload vX.Y.Z dist/*        # attach the tarball + checksum
 ```
@@ -496,13 +496,22 @@ current GitHub release. Keep the explicit `v0.0.1` refusal as a historical
 safety guard. User-facing docs should point at the latest GitHub release rather
 than naming a version, which goes stale the moment the next one ships.
 
-### CPU baseline caveat
+### CPU baselines
 
-`libghostty-vt`'s `build.rs` lets zig auto-detect the host CPU for
-native builds, so Linux artifacts may carry instructions specific to the
-runner generation and can `SIGILL` on older hardware. `aarch64-apple-darwin`
-has a uniform baseline and is unaffected. Pinning Linux CPU baselines through
-`libghostty-vt`'s build is future work.
+Public native artifacts never inherit the build host's CPU features.
+`scripts/build-release-binaries.sh` is the stable and `next` CLI build entry
+point: Rust targets `x86-64` on Linux x86_64, `generic` on Linux arm64, and
+`apple-m1` on macOS arm64; libghostty's Zig build uses `baseline` on every
+target. Cockpit uses `apple-m1` for its Rust coordinator/FFI and `baseline` for
+both libghostty and the Zig application. The site worker container uses
+`x86-64` for Rust and `baseline` for libghostty. These conservative settings
+apply only to shipping profiles; ordinary local Cargo and Cockpit development
+builds retain their normal host/toolchain optimization choices.
+
+`bash scripts/check-release-cpu-baselines.sh` rejects an unrecognized target or
+any release surface that bypasses those pins. The release matrix additionally
+runs `scripts/check-binary-portability.sh` on the resulting executables; on
+Linux it rejects ELF notes that declare an x86-64-v2-or-newer ISA requirement.
 
 ## Cutting a Cockpit release
 

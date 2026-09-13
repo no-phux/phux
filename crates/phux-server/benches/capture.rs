@@ -27,8 +27,8 @@ use phux_protocol::caps::{
     LayerSet,
 };
 use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK,
-    TYPE_BOOTSTRAP_READY, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
+    AttachTarget, FrameKind, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN,
+    TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
 use portable_pty::CommandBuilder;
 use server_measure::{
@@ -42,6 +42,12 @@ use support::{
 
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
+
+fn record_threshold(failures: &mut Vec<String>, threshold: Threshold) {
+    if let Err(error) = threshold.check() {
+        failures.push(error.to_string());
+    }
+}
 
 fn criterion_capture(c: &mut Criterion) {
     let mut group = c.benchmark_group("server-capture");
@@ -89,7 +95,7 @@ fn criterion_fanout(c: &mut Criterion) {
     group.finish();
 }
 
-fn checked_capture_gates() {
+fn checked_capture_gates(failures: &mut Vec<String>) {
     let optimize_mode = build_info::optimize_mode().expect("libghostty build mode");
     assert_eq!(
         optimize_mode,
@@ -105,6 +111,8 @@ fn checked_capture_gates() {
             black_box(native_ready_measurement(&mut terminal));
         }
         let mut native_ready = Vec::with_capacity(MEASURED_SAMPLES);
+        let mut native_capture_blocking = Vec::with_capacity(MEASURED_SAMPLES);
+        let mut native_decode_ready = Vec::with_capacity(MEASURED_SAMPLES);
         let mut synthesized_ready = Vec::with_capacity(MEASURED_SAMPLES);
         let mut synthesized_full = Vec::with_capacity(MEASURED_SAMPLES);
         let mut ready_bytes = 0_usize;
@@ -114,6 +122,8 @@ fn checked_capture_gates() {
             let native = native_ready_measurement(&mut terminal);
             let synthesized = synthesized_measurement(&terminal);
             native_ready.push(native.ready);
+            native_capture_blocking.push(native.capture_blocking);
+            native_decode_ready.push(native.decode_ready);
             synthesized_ready.push(synthesized.ready);
             synthesized_full.push(synthesized.full_history);
             ready_bytes = native.ready_bytes;
@@ -125,29 +135,34 @@ fn checked_capture_gates() {
             );
         }
         let native_p95 = percentile(&mut native_ready, 95);
+        let native_capture_p95 = percentile(&mut native_capture_blocking, 95);
+        let native_decode_p95 = percentile(&mut native_decode_ready, 95);
         let synth_p95 = percentile(&mut synthesized_ready, 95);
         let synth_full_p95 = percentile(&mut synthesized_full, 95);
         println!(
-            "metric=codec-ready-p95 corpus={} clients=1 native_us={} synthesized_us={} native_bytes={ready_bytes} synthesized_ready_bytes={} synthesized_full_history_p95_us={} synthesized_full_history_bytes={}",
+            "metric=codec-ready-p95 corpus={} clients=1 ready_us={} capture_blocking_us={} decode_ready_us={} synthesized_us={} native_prefix_bytes={ready_bytes} synthesized_ready_bytes={} synthesized_full_history_p95_us={} synthesized_full_history_bytes={}",
             corpus.label(),
             native_p95.as_micros(),
+            native_capture_p95.as_micros(),
+            native_decode_p95.as_micros(),
             synth_p95.as_micros(),
             synthesized_ready_bytes,
             synth_full_p95.as_micros(),
             synthesized_full_bytes,
         );
         if corpus == Corpus::Tui200x60 {
-            Threshold {
-                metric: "codec-ready-p95",
-                corpus,
-                clients: 1,
-                comparison: Comparison::AtMost,
-                observed: native_p95.as_secs_f64() * 1_000.0,
-                limit: 25.0,
-                unit: "ms",
-            }
-            .check()
-            .unwrap_or_else(|error| panic!("{error}"));
+            record_threshold(
+                failures,
+                Threshold {
+                    metric: "codec-ready-p95",
+                    corpus,
+                    clients: 1,
+                    comparison: Comparison::AtMost,
+                    observed: native_p95.as_secs_f64() * 1_000.0,
+                    limit: 25.0,
+                    unit: "ms",
+                },
+            );
         }
         if corpus == Corpus::Unicode50k {
             history_ready_p95 = Some(native_p95);
@@ -185,28 +200,30 @@ fn checked_capture_gates() {
                 full_growths,
                 full_copies,
             );
-            Threshold {
-                metric: "history-slice-p95",
-                corpus,
-                clients: 1,
-                comparison: Comparison::AtMost,
-                observed: slice_p95.as_secs_f64() * 1_000.0,
-                limit: 4.0,
-                unit: "ms",
-            }
-            .check()
-            .unwrap_or_else(|error| panic!("{error}"));
-            Threshold {
-                metric: "history-slice-bytes",
-                corpus,
-                clients: 1,
-                comparison: Comparison::AtMost,
-                observed: max_slice_bytes as f64,
-                limit: HISTORY_PAGE_LIMIT as f64,
-                unit: "bytes",
-            }
-            .check()
-            .unwrap_or_else(|error| panic!("{error}"));
+            record_threshold(
+                failures,
+                Threshold {
+                    metric: "history-slice-p95",
+                    corpus,
+                    clients: 1,
+                    comparison: Comparison::AtMost,
+                    observed: slice_p95.as_secs_f64() * 1_000.0,
+                    limit: 4.0,
+                    unit: "ms",
+                },
+            );
+            record_threshold(
+                failures,
+                Threshold {
+                    metric: "history-slice-bytes",
+                    corpus,
+                    clients: 1,
+                    comparison: Comparison::AtMost,
+                    observed: max_slice_bytes as f64,
+                    limit: HISTORY_PAGE_LIMIT as f64,
+                    unit: "bytes",
+                },
+            );
         }
     }
     if ready_only {
@@ -230,20 +247,21 @@ fn checked_capture_gates() {
         control.as_micros(),
         history.as_micros(),
     );
-    Threshold {
-        metric: "50k-ready-slowdown",
-        corpus: Corpus::Unicode50k,
-        clients: 1,
-        comparison: Comparison::LessThan,
-        observed: history_ratio,
-        limit: 1.10,
-        unit: "ratio",
-    }
-    .check()
-    .unwrap_or_else(|error| panic!("{error}"));
+    record_threshold(
+        failures,
+        Threshold {
+            metric: "50k-ready-slowdown",
+            corpus: Corpus::Unicode50k,
+            clients: 1,
+            comparison: Comparison::LessThan,
+            observed: history_ratio,
+            limit: 1.10,
+            unit: "ratio",
+        },
+    );
 }
 
-fn checked_fanout_gates() {
+fn checked_fanout_gates(failures: &mut Vec<String>) {
     let payload = Bytes::from(deterministic_page(1, 64 * 1024));
     let mut throughput = Vec::new();
     for clients in [1_usize, 2, 8] {
@@ -269,17 +287,18 @@ fn checked_fanout_gates() {
             bytes_per_second,
             copies,
         );
-        Threshold {
-            metric: "payload-copies-per-extra-native-subscriber",
-            corpus: Corpus::Tui200x60,
-            clients,
-            comparison: Comparison::AtMost,
-            observed: copies as f64,
-            limit: 0.0,
-            unit: "copies",
-        }
-        .check()
-        .unwrap_or_else(|error| panic!("{error}"));
+        record_threshold(
+            failures,
+            Threshold {
+                metric: "payload-copies-per-extra-native-subscriber",
+                corpus: Corpus::Tui200x60,
+                clients,
+                comparison: Comparison::AtMost,
+                observed: copies as f64,
+                limit: 0.0,
+                unit: "copies",
+            },
+        );
         assert!(
             retained_budget_holds(payload.len(), 16 * 1024 * 1024, HISTORY_PAGE_LIMIT, peak,),
             "retained-memory budget failed: metric=peak-retained-memory corpus={} clients={} observed={} active={} cache={} two_chunks={}",
@@ -294,20 +313,68 @@ fn checked_fanout_gates() {
     }
     let baseline = throughput[0].1;
     let eight = throughput[2].1;
-    Threshold {
-        metric: "eight-client-raw-throughput-ratio",
-        corpus: Corpus::Tui200x60,
-        clients: 8,
-        comparison: Comparison::AtLeast,
-        observed: eight / baseline,
-        limit: 0.90,
-        unit: "ratio",
-    }
-    .check()
-    .unwrap_or_else(|error| panic!("{error}"));
+    record_threshold(
+        failures,
+        Threshold {
+            metric: "eight-client-raw-throughput-ratio",
+            corpus: Corpus::Tui200x60,
+            clients: 8,
+            comparison: Comparison::AtLeast,
+            observed: eight / baseline,
+            limit: 0.90,
+            unit: "ratio",
+        },
+    );
 }
 
-async fn native_warm_attach(socket: &std::path::Path) -> Duration {
+async fn send_native_attach(stream: &mut tokio::net::UnixStream, attach_id: u32) -> Duration {
+    let started = Instant::now();
+    common::send_frame(
+        stream,
+        &FrameKind::Attach {
+            attach_id,
+            target: AttachTarget::ByName("benchmark".to_owned()),
+            viewport: ViewportInfo::new(200, 60),
+            request_scrollback: false,
+            scrollback_limit_lines: 0,
+        },
+    )
+    .await;
+    loop {
+        let (kind, frame) = common::recv_typed(stream).await;
+        match frame {
+            FrameKind::Attached { .. } => {
+                assert_eq!(kind, TYPE_ATTACHED);
+                break;
+            }
+            FrameKind::BootstrapTombstone { .. } => {}
+            other => panic!("unexpected pre-attach frame: {other:?}"),
+        }
+    }
+    let (kind, begin) = common::recv_typed(stream).await;
+    assert_eq!(kind, TYPE_BOOTSTRAP_BEGIN);
+    assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
+    let mut bootstrap_ready = false;
+    loop {
+        let (kind, frame) = common::recv_typed(stream).await;
+        match frame {
+            FrameKind::BootstrapChunk { .. } => assert_eq!(kind, TYPE_BOOTSTRAP_CHUNK),
+            FrameKind::BootstrapReady { .. } => {
+                assert_eq!(kind, TYPE_BOOTSTRAP_READY);
+                bootstrap_ready = true;
+            }
+            FrameKind::AttachReady { .. } => {
+                assert_eq!(kind, TYPE_ATTACH_READY);
+                assert!(bootstrap_ready, "ATTACH_READY preceded native READY");
+                break;
+            }
+            other => panic!("unexpected warm native attach frame: {other:?}"),
+        }
+    }
+    started.elapsed()
+}
+
+async fn native_warm_attach(socket: &std::path::Path) -> (Duration, Duration) {
     let started = Instant::now();
     let mut stream = common::wait_for_raw_socket(socket, common::SOCKET_CONNECT_DEADLINE).await;
     let native = BootstrapCapabilities::new().with_native(
@@ -336,42 +403,17 @@ async fn native_warm_attach(socket: &std::path::Path) -> Duration {
             ..
         }
     ));
-    common::send_frame(
-        &mut stream,
-        &FrameKind::Attach {
-            attach_id: 1,
-            target: AttachTarget::ByName("benchmark".to_owned()),
-            viewport: ViewportInfo::new(200, 60),
-            request_scrollback: false,
-            scrollback_limit_lines: 0,
-        },
-    )
-    .await;
-    let (kind, _) = common::recv_typed(&mut stream).await;
-    assert_eq!(kind, TYPE_ATTACHED);
-    let (kind, begin) = common::recv_typed(&mut stream).await;
-    assert_eq!(kind, TYPE_BOOTSTRAP_BEGIN);
-    assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
-    loop {
-        let (kind, frame) = common::recv_typed(&mut stream).await;
-        match frame {
-            FrameKind::BootstrapChunk { .. } => assert_eq!(kind, TYPE_BOOTSTRAP_CHUNK),
-            FrameKind::BootstrapReady { .. } => {
-                assert_eq!(kind, TYPE_BOOTSTRAP_READY);
-                break;
-            }
-            other => panic!("unexpected warm native attach frame: {other:?}"),
-        }
-    }
+    let _ = send_native_attach(&mut stream, 1).await;
     let ready = started.elapsed();
+    let resync = send_native_attach(&mut stream, 2).await;
     common::send_frame(&mut stream, &FrameKind::Detach).await;
     let (kind, detached) = common::recv_typed(&mut stream).await;
     assert_eq!(kind, TYPE_DETACHED);
     assert!(matches!(detached, FrameKind::Detached { .. }));
-    ready
+    (ready, resync)
 }
 
-fn checked_warm_uds_and_resync_gate() {
+fn checked_warm_uds_and_resync_gate(failures: &mut Vec<String>) {
     common::run_local(async {
         let mut command = CommandBuilder::new("/bin/cat");
         command.arg("-");
@@ -385,32 +427,39 @@ fn checked_warm_uds_and_resync_gate() {
             black_box(native_warm_attach(&harness.socket_path).await);
         }
         let mut samples = Vec::with_capacity(MEASURED_SAMPLES);
+        let mut resync_samples = Vec::with_capacity(MEASURED_SAMPLES);
         for _ in 0..MEASURED_SAMPLES {
-            samples.push(native_warm_attach(&harness.socket_path).await);
+            let (ready, resync) = native_warm_attach(&harness.socket_path).await;
+            samples.push(ready);
+            resync_samples.push(resync);
         }
         let p95 = percentile(&mut samples.clone(), 95);
         let p99 = percentile(&mut samples, 99);
+        let resync_p99 = percentile(&mut resync_samples, 99);
         println!(
-            "metric=warm-uds-ready corpus={} clients=1 p95_us={} p99_us={}",
+            "metric=warm-uds-ready corpus={} clients=1 p95_us={} p99_us={} explicit_reattach_p99_us={}",
             Corpus::Tui200x60.label(),
             p95.as_micros(),
             p99.as_micros(),
+            resync_p99.as_micros(),
         );
         for (metric, observed, limit) in [
             ("warm-uds-ready-p95", p95, 100.0),
             ("warm-uds-ready-p99", p99, 250.0),
+            ("local-explicit-reattach-p99", resync_p99, 250.0),
         ] {
-            Threshold {
-                metric,
-                corpus: Corpus::Tui200x60,
-                clients: 1,
-                comparison: Comparison::AtMost,
-                observed: observed.as_secs_f64() * 1_000.0,
-                limit,
-                unit: "ms",
-            }
-            .check()
-            .unwrap_or_else(|error| panic!("{error}"));
+            record_threshold(
+                failures,
+                Threshold {
+                    metric,
+                    corpus: Corpus::Tui200x60,
+                    clients: 1,
+                    comparison: Comparison::AtMost,
+                    observed: observed.as_secs_f64() * 1_000.0,
+                    limit,
+                    unit: "ms",
+                },
+            );
         }
         harness.shutdown().await;
     });
@@ -439,13 +488,17 @@ fn main() {
         return;
     }
     if std::env::var_os("PHUX_CAPTURE_READY_ONLY").is_some() {
-        checked_capture_gates();
+        let mut failures = Vec::new();
+        checked_capture_gates(&mut failures);
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
         return;
     }
     if std::env::var_os("PHUX_CAPTURE_CHECK_ONLY").is_some() {
-        checked_capture_gates();
-        checked_fanout_gates();
-        checked_warm_uds_and_resync_gate();
+        let mut failures = Vec::new();
+        checked_capture_gates(&mut failures);
+        checked_fanout_gates(&mut failures);
+        checked_warm_uds_and_resync_gate(&mut failures);
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
         return;
     }
     let mut criterion = Criterion::default()
@@ -457,7 +510,9 @@ fn main() {
     criterion_fanout(&mut criterion);
     criterion.final_summary();
     drop(criterion);
-    checked_capture_gates();
-    checked_fanout_gates();
-    checked_warm_uds_and_resync_gate();
+    let mut failures = Vec::new();
+    checked_capture_gates(&mut failures);
+    checked_fanout_gates(&mut failures);
+    checked_warm_uds_and_resync_gate(&mut failures);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

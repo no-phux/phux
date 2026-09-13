@@ -35,6 +35,8 @@ RUN test "$PHUX_REVISION" = "1f2501f979be972886a1adb805bb598b9189e2f9" \
     && sed -i 's/const j: MinInt = @intCast(r.intRangeLessThan(Index, i, max));/const j: MinInt = @min(@as(MinInt, @intCast(r.intRangeLessThan(Index, i, max))), max - 1);/' \
       /opt/zig/lib/std/Random.zig \
     && sed -i 's/if target != host {/if target != host || target == "x86_64-unknown-linux-gnu" {/' \
+      /libghostty/crates/libghostty-vt-sys/build.rs \
+    && sed -i 's/\.arg(format!("-Dtarget={zig_target}"))/&.arg("-Dcpu=baseline")/' \
       /libghostty/crates/libghostty-vt-sys/build.rs
 WORKDIR /src
 ENV PATH=/opt/zig:$PATH

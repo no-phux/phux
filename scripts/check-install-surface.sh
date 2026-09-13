@@ -270,11 +270,12 @@ forbid_fixed scripts/gen-formula.sh 'x86_64-apple-darwin'
 # version: a bump that edits only the toml must move every release lane with
 # it, and a hardcoded channel in a workflow rots exactly like a version in a
 # README (it did: the toml and two workflows carried separate pins).
-require_fixed .github/workflows/release.yml 'cargo build --locked --release --bin phux --bin phux-mcp'
+require_fixed .github/workflows/release.yml 'bash scripts/build-release-binaries.sh "${{ matrix.target }}"'
 forbid_regex .github/workflows/release.yml 'cargo \+1\.[0-9]+\.[0-9]+'
 forbid_fixed .github/workflows/release.yml 'toolchain install 1.'
 require_fixed .github/workflows/release.yml 'rust-toolchain.toml'
-require_fixed docs/RELEASING.md 'cargo build --locked --release --bin phux --bin phux-mcp'
+require_fixed scripts/build-release-binaries.sh 'cargo build --locked --release --bin phux --bin phux-mcp'
+require_fixed scripts/dist.sh '.phux-cpu-baseline'
 require_fixed .github/workflows/release.yml 'cp -f target/release/phux target/release/phux-mcp'
 require_fixed .github/workflows/release.yml 'target: aarch64-apple-darwin'
 require_fixed .github/workflows/release.yml 'target: x86_64-unknown-linux-gnu'
@@ -296,6 +297,7 @@ require_fixed .github/workflows/release.yml 'bash scripts/check-binary-portabili
 require_fixed .github/workflows/release.yml 'refusing to downgrade it to'
 require_fixed scripts/check-binary-portability.sh 'check_elf'
 require_fixed scripts/check-binary-portability.sh 'check_macho'
+require_fixed scripts/check-binary-portability.sh 'x86-64-v[234]'
 require_regex .github/workflows/release.yml 'test -x .*phux-mcp|command -v .*phux-mcp|./phux-mcp --'
 
 forbid_fixed .github/workflows/release.yml 'mlugg/setup-zig'

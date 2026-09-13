@@ -115,10 +115,13 @@ Docs / Apps / Agents / GitHub.
 
 1. **Hero** — headline, short lede, Install + Docs, then the live terminal
    as the product. No SYS badge, no install wall above the fold.
-2. **Features** — four rows, phux's own ladder: panes are a view, same
+2. **Fleet inbox demo** — one short, replayable sequence: an agent works,
+   asks for approval, and its exact terminal rises into the inbox. The blocked
+   state remains legible without motion.
+3. **Features** — four rows, phux's own ladder: panes are a view, same
    objects / many consumers, co-presence, bytes stay bytes. Each row
    links into docs.
-3. **Install** — the closer. CLI and Cockpit copy-paste commands, then
+4. **Install** — the closer. CLI and Cockpit copy-paste commands, then
    Homebrew and the full install guide. Checksums and platform notes stay
    here, not in the hero.
 
