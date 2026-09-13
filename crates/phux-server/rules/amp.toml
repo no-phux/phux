@@ -1,8 +1,8 @@
 # Agent-state detection manifest for Amp CLI (ADR-0046).
 #
-# Predicates were verified against Amp 0.0.1789315238-g490ac9 running in a
-# phux pane. Fixtures under agent_detect/fixtures/amp are unedited
-# `phux snapshot --json` viewports captured from that binary.
+# The rules below are structural excerpts from Amp 0.0.1789315238-g490ac9
+# observed in a phux pane. Tests use compact samples for the rule contracts,
+# so incidental viewport chrome does not become a drift surface.
 #
 # The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
 # `blocked` is not. No permission dialog was captured: this install ran
@@ -16,12 +16,8 @@ binaries = ["amp"]
 
 # --- Title rules -------------------------------------------------------------
 #
-# While a turn runs, Amp writes an animated braille spinner into the OSC
-# title ahead of the conversation title. Captured frames from
-# 0.0.1789315238-g490ac9:
-#
-#     '⠊ Terminal haiku - amp - /private/tmp/phux-agent-capture/ws-amp'
-#     '⠭ Terminal haiku - amp - /private/tmp/phux-agent-capture/ws-amp'
+# While a turn runs, Amp writes an animated braille spinner into the OSC title
+# ahead of the conversation title. Observed frames from 0.0.1789315238-g490ac9:
 #
 # When no turn is running the title is the conversation title with no
 # prefix (`Terminal haiku - amp - /path`), or absent on the startup splash.

@@ -1,8 +1,8 @@
 # Agent-state detection manifest for Grok Build TUI (ADR-0046).
 #
-# Predicates were verified against Grok 1.0.30 running in a phux pane.
-# Fixtures under agent_detect/fixtures/grok are unedited `phux snapshot
-# --json` viewports captured from that binary.
+# The rules below are structural excerpts from Grok 1.0.30 observed in a
+# phux pane. Tests use compact samples for the rule contracts, so incidental
+# viewport chrome does not become a drift surface.
 #
 # The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
 # `blocked` is not. No permission dialog was captured here: this environment's
@@ -49,18 +49,13 @@ match = { line-regex = "^[⠀-⣿] - " }
 # --- Screen rules ------------------------------------------------------------
 #
 # A screen-side `working` backstop for a terminal that suppresses the OSC
-# title. VERIFIED against Grok 1.0.30 (`fixtures/grok/working.txt` line 11):
+# title. Grok paints a braille spinner, status text, and elapsed seconds while
+# a turn runs. The rule matches that stable structure.
 #
-#     ⠋ Waiting for response… 1.1s                            1.1s ⇣1.48k [stop]
-#
-# A live mid-session pane also painted `⠼ Thinking… 18s`. The rule matches
+# An observed mid-session pane painted `⠼ Thinking… 18s`. The rule matches
 # by structure: a braille spinner, a status token with an ellipsis, and an
-# elapsed-seconds figure. The captured 80x24 viewport puts a five-line
-# "Help improve Grok" opt-in banner between that status row and the prompt
-# box, so the default `bottom-lines` window of 6 misses it; `bottom-lines(14)`
-# reaches the status row and still stops above the transcript. The banner
-# itself is present on idle AND working captures, so it is not a state
-# signal.
+# elapsed-seconds figure. The `bottom-lines(14)` window reaches that status
+# row without depending on unrelated transcript content or banner placement.
 
 [[rules]]
 id = "screen-status-elapsed-backstop"

@@ -116,9 +116,8 @@ const ICON_COLUMNS: usize = 2;
 /// One agent-running pane, as the sidebar's `agents` section renders it
 /// (phux-foz.9).
 ///
-/// Built by the driver from the ADR-0040 `phux.agent/v1` record when the
-/// pane declares one, else from the OSC-title identity heuristic
-/// ([`phux_client::agent_meta::agent_name_from_title`]).
+/// Built by the driver from the server-owned ADR-0040
+/// `phux.agent/v1` record or an `AgentSession` resource stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentEntry {
     /// The session holding the agent's pane, or `None` for the session this

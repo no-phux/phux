@@ -1,14 +1,14 @@
 # Agent-state detection manifest for Cursor Agent CLI (ADR-0046).
 #
 # Identity is verified: `cursor-agent` is a bash wrapper that `exec -a "$0"`s
-# the bundled Node entry, so argv[0] is `cursor-agent`. The login splash
-# under agent_detect/fixtures/cursor-agent is an unedited `phux snapshot
-# --json` viewport captured from Cursor Agent 2026.09.10-fd3934a.
+# the bundled Node entry, so argv[0] is `cursor-agent`. The login splash was
+# observed from Cursor Agent 2026.09.10-fd3934; tests use compact text samples
+# for the rule contract rather than pinning incidental viewport chrome.
 #
-# No working or blocked screen was captured. This environment's CLI stopped
-# at "Press any key to log in..." / a browser sign-in URL, so those states
-# are not guessed. Identity still publishes: an identified pane whose
-# manifest matches nothing is idle, never blocked (ADR-0046 §D).
+# No working or blocked screen was observed. This environment's CLI stopped
+# at "Press any key to log in..." / a browser sign-in URL, so those states are
+# not guessed. Identity still publishes: an identified pane whose manifest
+# matches nothing is idle, never blocked (ADR-0046 §D).
 
 kind = "cursor-agent"
 name = "cursor-agent"

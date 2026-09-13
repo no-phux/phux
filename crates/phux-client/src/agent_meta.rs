@@ -188,53 +188,6 @@ impl AgentRecord {
     }
 }
 
-/// Compatibility identity heuristic (phux-foz.9): infer an agent name
-/// from a pane's OSC 0/2 title when no `phux.agent/v1` record is
-/// declared.
-///
-/// Plain CLI sessions do not write the ADR-0040 record (nothing calls
-/// `phux agent set` for them), so a consumer that only trusted records
-/// would show no agent at all. This is the same built-in token matching
-/// `phux agent`'s detector uses for identity
-/// (`crates/phux/src/commands/agent/detect.rs`), kept deliberately
-/// narrow — case-insensitive tokens on shipped CLI names, nothing
-/// screen-scraped. A declared record MUST still win wherever both exist
-/// (L3.md §3.7).
-#[must_use]
-pub fn agent_name_from_title(title: &str) -> Option<&'static str> {
-    let lower = title.to_lowercase();
-    if lower.contains("codex") {
-        return Some("codex");
-    }
-    if lower.contains("claude") {
-        return Some("claude");
-    }
-    if lower.contains("opencode") {
-        return Some("opencode");
-    }
-    if lower.contains("cursor-agent") {
-        return Some("cursor-agent");
-    }
-    if title_token(&lower, "grok") {
-        return Some("grok");
-    }
-    if title_token(&lower, "amp") {
-        return Some("amp");
-    }
-    if title_token(&lower, "omp") {
-        return Some("omp");
-    }
-    None
-}
-
-/// Whole-token match so short slugs (`amp`, `grok`) do not fire inside
-/// ordinary words (`campaign`, `grokking`).
-fn title_token(lower_title: &str, token: &str) -> bool {
-    lower_title
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|part| part == token)
-}
-
 /// Decode a `phux.agent/v1` metadata value.
 ///
 /// Returns `None` for bytes that are not a JSON object with a non-empty
@@ -316,30 +269,6 @@ mod tests {
         assert_eq!(parse_agent_record(br#"{"name":"  "}"#), None);
         assert_eq!(parse_agent_record(b"not json"), None);
         assert_eq!(parse_agent_record(br#"["name"]"#), None);
-    }
-
-    /// phux-foz.9: the OSC-title compatibility heuristic recognizes shipped
-    /// CLI names and nothing else. Short slugs are whole-token so `campaign`
-    /// is not Amp and `grokking.md` is not Grok.
-    #[test]
-    fn title_heuristic_matches_known_cli_names_only() {
-        assert_eq!(agent_name_from_title("claude"), Some("claude"));
-        assert_eq!(agent_name_from_title("Claude Code - ~/src"), Some("claude"));
-        assert_eq!(agent_name_from_title("codex resume"), Some("codex"));
-        assert_eq!(agent_name_from_title("CODEX"), Some("codex"));
-        assert_eq!(
-            agent_name_from_title("⠙ - Waiting for response… - grok"),
-            Some("grok")
-        );
-        assert_eq!(
-            agent_name_from_title("Terminal haiku - amp - /tmp/ws"),
-            Some("amp")
-        );
-        assert_eq!(agent_name_from_title("OpenCode"), Some("opencode"));
-        assert_eq!(agent_name_from_title("vim src/main.rs"), None);
-        assert_eq!(agent_name_from_title("campaign notes"), None);
-        assert_eq!(agent_name_from_title("grokking.md"), None);
-        assert_eq!(agent_name_from_title(""), None);
     }
 
     #[test]

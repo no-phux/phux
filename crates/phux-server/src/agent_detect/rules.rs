@@ -2353,12 +2353,15 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         })
     }
 
+    const GROK_IDLE_CAPTURE: &str = "grok prompt";
+    const GROK_WORKING_CAPTURE: &str = "⠋ Waiting for response… 1.1s";
+
     fn grok_idle_screen() -> Vec<String> {
-        captured(include_str!("fixtures/grok/idle_prompt.txt"))
+        captured(GROK_IDLE_CAPTURE)
     }
 
     fn grok_working_screen() -> Vec<String> {
-        captured(include_str!("fixtures/grok/working.txt"))
+        captured(GROK_WORKING_CAPTURE)
     }
 
     #[test]
@@ -2410,12 +2413,15 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         })
     }
 
+    const AMP_IDLE_CAPTURE: &str = "╰──────────────── /tmp/ws ─╯";
+    const AMP_WORKING_CAPTURE: &str = "╰ ≈ Waiting ───── /tmp/ws ─╯";
+
     fn amp_idle_screen() -> Vec<String> {
-        captured(include_str!("fixtures/amp/idle_prompt.txt"))
+        captured(AMP_IDLE_CAPTURE)
     }
 
     fn amp_working_screen() -> Vec<String> {
-        captured(include_str!("fixtures/amp/working.txt"))
+        captured(AMP_WORKING_CAPTURE)
     }
 
     #[test]
@@ -2441,11 +2447,13 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
 
     // --- Cursor Agent CLI ---------------------------------------------------
 
+    const CURSOR_AGENT_LOGIN_CAPTURE: &str = "Press any key to log in\nSigning in with the browser";
+
     #[test]
     fn cursor_agent_login_splash_is_identity_only_idle() {
         let set = compile(builtin("cursor-agent"));
         let manifest = set.manifest("cursor-agent").expect("cursor-agent manifest");
-        let screen = captured(include_str!("fixtures/cursor-agent/idle_prompt.txt"));
+        let screen = captured(CURSOR_AGENT_LOGIN_CAPTURE);
         let got = manifest.evaluate(&Screen {
             title: "",
             progress: "",
@@ -2507,28 +2515,13 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
                     include_str!("fixtures/omp/blocked_tool_approval.txt"),
                 ],
             ),
-            (
-                "grok",
-                &[
-                    include_str!("fixtures/grok/idle_prompt.txt"),
-                    include_str!("fixtures/grok/working.txt"),
-                ],
-            ),
-            (
-                "amp",
-                &[
-                    include_str!("fixtures/amp/idle_prompt.txt"),
-                    include_str!("fixtures/amp/working.txt"),
-                ],
-            ),
-            (
-                "cursor-agent",
-                &[include_str!("fixtures/cursor-agent/idle_prompt.txt")],
-            ),
+            ("grok", &[GROK_IDLE_CAPTURE, GROK_WORKING_CAPTURE]),
+            ("amp", &[AMP_IDLE_CAPTURE, AMP_WORKING_CAPTURE]),
+            ("cursor-agent", &[CURSOR_AGENT_LOGIN_CAPTURE]),
         ];
 
-        // Titles that exercise both the spinner and the quiet arms, plus the
-        // empty title a capture file supplies by default.
+        // Titles exercise both spinner and quiet arms; screen captures are
+        // compact rule-focused samples rather than full viewport snapshots.
         let titles = ["", CLAUDE_TITLE_BUSY_A, CLAUDE_TITLE_QUIET, "\u{280b} tmp"];
 
         for (kind, screens) in goldens {
