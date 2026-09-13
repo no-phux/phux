@@ -2180,6 +2180,7 @@ dependencies = [
  "phux-perf",
  "phux-protocol",
  "phux-record",
+ "phux-relay",
  "phux-server",
  "quinn",
  "regex",
