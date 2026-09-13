@@ -1083,12 +1083,19 @@ async fn read_pane_occupant(
             .ok()?;
         let (answer, _) = reply.into_parts();
         match answer {
-            Answer::Ok(Some(bytes)) => return parse_pane_occupant(&bytes),
+            Answer::Ok(Some(bytes)) => {
+                drop(conn);
+                return parse_pane_occupant(&bytes);
+            }
             Answer::Ok(None) => {}
-            Answer::Err(_) => return None,
+            Answer::Err(_) => {
+                drop(conn);
+                return None;
+            }
         }
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
+            drop(conn);
             return None;
         }
         tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;

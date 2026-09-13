@@ -509,7 +509,9 @@ pub(super) fn run_agent_answer(
         // re-checking would mean a second GET_STATE the ask may have moved
         // past. Reporting the busy lane and letting the caller re-run the
         // command re-establishes the check it depends on.
-        match deliver_answer(&mut conn, &pane, operation_id, 1, &answer).await {
+        let verdict = deliver_answer(&mut conn, &pane, operation_id, 1, &answer).await;
+        drop(conn);
+        match verdict {
             Ok(ApplyVerdict::Acked) => {
                 report_answered(json, &label, &marker, &answer, source, &uuid)
             }

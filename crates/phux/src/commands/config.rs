@@ -421,6 +421,7 @@ fn run_config_reload(socket: Option<PathBuf>) -> ExitCode {
             Ok(reply) => reply,
             Err(err) => return super::report_no_server(&err, &socket_path, "config reload"),
         };
+        drop(conn);
         // `handle_get_metadata` (`crates/phux-server/src/runtime/client.rs`)
         // answers with METADATA_VALUE and pushes nothing of its own, and this
         // connection is a fresh one-shot that never attached or subscribed —

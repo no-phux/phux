@@ -92,6 +92,7 @@ pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
         };
 
         let result = command_on(&mut conn, 1, WireCommand::Shutdown).await;
+        drop(conn);
         match result {
             // The server acks then tears down, so losing the connection at
             // any point after the request is the expected shape, not a fault.
@@ -232,7 +233,9 @@ async fn kill_selected(
     // A hit under degradation is still narrower than the user asked for:
     // `#tag` would have matched more panes with the fleet whole.
     partial::warn_partial_view("kill", &degradation);
-    kill_each_terminal(&mut conn, terminals).await
+    let code = kill_each_terminal(&mut conn, terminals).await;
+    drop(conn);
+    code
 }
 
 /// The Terminals a non-session selector names. A `#tag` selector resolves

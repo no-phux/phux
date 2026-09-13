@@ -45,6 +45,10 @@ pub(crate) fn run_perf(opts: PerfOptions, socket: Option<PathBuf>) -> ExitCode {
     }
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "watch mode intentionally reuses one connection for every sample"
+)]
 async fn run(opts: PerfOptions, socket_path: &Path) -> Result<(), AttachError> {
     let mut conn = Connection::connect(socket_path).await?;
     // L1.md §5.1: a client MUST observe the GET_PERF feature bit before

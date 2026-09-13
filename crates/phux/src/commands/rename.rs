@@ -25,6 +25,10 @@ use crate::commands::server_target::ServerSpec;
 /// no server, 2 on a refusal (unknown session or a name already taken).
 ///
 /// `server` is the local socket or a `--remote` host (see `server_target`).
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "shutdown consumes the connection after the final ordering barrier"
+)]
 pub(crate) fn run_rename(session: &str, new_name: &str, server: ServerSpec) -> ExitCode {
     let (rt, target) = match server.prepare("rename", false) {
         Ok(prepared) => prepared,

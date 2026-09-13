@@ -75,7 +75,7 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
         // per the contract's warnings rule.
         partial::warn_partial_view("tag", &degradation);
 
-        match action {
+        let code = match action {
             TagAction::Ls { .. } => {
                 let rows: Vec<(ResourceId, Vec<String>)> = targets
                     .iter()
@@ -101,7 +101,9 @@ pub(crate) fn run_tag(action: &TagAction, socket: Option<std::path::PathBuf>) ->
                 })
                 .await
             }
-        }
+        };
+        drop(conn);
+        code
     })
 }
 

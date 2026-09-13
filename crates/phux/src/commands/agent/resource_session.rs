@@ -123,7 +123,9 @@ pub(super) fn run_session_open(
             Ok(parent) => parent,
             Err(code) => return code,
         };
-        match agent_session::open(&mut scope.conn, &parent, provider, native_id).await {
+        let outcome = agent_session::open(&mut scope.conn, &parent, provider, native_id).await;
+        drop(scope);
+        match outcome {
             Ok(opened) => {
                 let resource = crate::selector::format_terminal_id(&opened.resource);
                 if json {
@@ -176,7 +178,9 @@ pub(super) fn run_session_close(target: &str, socket: Option<PathBuf>) -> ExitCo
             Ok(session) => session,
             Err(code) => return code,
         };
-        match agent_session::close(&mut scope.conn, &session).await {
+        let outcome = agent_session::close(&mut scope.conn, &session).await;
+        drop(scope);
+        match outcome {
             Ok(()) => {
                 outln!("{}\tclosed", crate::selector::format_terminal_id(&session));
                 ExitCode::SUCCESS
@@ -227,7 +231,10 @@ pub(super) fn run_emit(
             Ok(session) => session,
             Err(code) => return code,
         };
-        match agent_session::emit(&mut scope.conn, &session, std::slice::from_ref(&record)).await {
+        let outcome =
+            agent_session::emit(&mut scope.conn, &session, std::slice::from_ref(&record)).await;
+        drop(scope);
+        match outcome {
             Ok(emitted) => {
                 if json {
                     let document = serde_json::json!({
@@ -321,6 +328,7 @@ pub(super) fn run_log(
             Ok(outcome) => outcome,
             Err(err) => return report_session_error(json, &err, &socket_path, verb),
         };
+        drop(scope);
         if json && !follow {
             let facet = info.as_ref().and_then(|info| info.agent.as_ref());
             let document = serde_json::json!({

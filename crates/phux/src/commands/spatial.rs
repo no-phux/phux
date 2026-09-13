@@ -196,7 +196,7 @@ fn run(operation: RequestedOperation, json: bool, socket: Option<PathBuf>) -> Ex
             Ok(plan) => plan,
             Err(err) => return json_err::emit(json, &err, 2),
         };
-        match plan {
+        let code = match plan {
             PlanKind::Local(plan) => {
                 let mut layout = LayoutOps::new(&mut conn, plan.session, 100);
                 match layout.mutate(plan.mutation.clone()).await {
@@ -207,7 +207,9 @@ fn run(operation: RequestedOperation, json: bool, socket: Option<PathBuf>) -> Ex
             PlanKind::CrossMove(plan) => {
                 execute_cross_move(&mut conn, &plan, json, &socket_path).await
             }
-        }
+        };
+        drop(conn);
+        code
     })
 }
 

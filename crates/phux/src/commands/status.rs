@@ -110,6 +110,7 @@ async fn collect(socket_path: &Path) -> Result<StatusReport, AttachError> {
         .await?
         .unwrap_or_default();
     let view = phux_client::state::get_state_on(&mut conn).await?;
+    drop(conn);
     let (snapshot, degradation) = view.into_parts();
     Ok(build_report(
         socket_path,

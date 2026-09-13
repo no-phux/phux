@@ -252,6 +252,7 @@ async fn confirm_restored_agent(
                 },
             )
             .await;
+        drop(conn);
         let cleanup_note = match cleanup {
             Ok(reply) => match reply.into_parts().0 {
                 CommandResult::Ok => "restored terminal removed".to_owned(),
@@ -263,6 +264,7 @@ async fn confirm_restored_agent(
             "restored agent session record could not be confirmed: {err}; {cleanup_note}"
         ));
     }
+    drop(conn);
     Ok(())
 }
 

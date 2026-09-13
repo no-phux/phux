@@ -179,6 +179,7 @@ async fn dispatch_spawn_async(
             )));
         }
     }
+    drop(conn);
     Ok(result)
 }
 

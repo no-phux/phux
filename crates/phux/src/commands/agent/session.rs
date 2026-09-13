@@ -255,6 +255,7 @@ pub(crate) async fn fetch_record_index(
             }
         }
     }
+    drop(conn);
     Ok(index)
 }
 
