@@ -30,7 +30,7 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = std::process::Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         .args(args)
         .output()
         .expect("run phux binary");

@@ -1,7 +1,6 @@
 #![allow(clippy::expect_used, reason = "tests")]
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const PLUGIN_ID: &str = "com.phux.demo.agent-tools";
@@ -28,7 +27,7 @@ fn run_demo(args: &[&str]) -> (i32, String, String) {
 }
 
 fn run_demo_with_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
-    let out = Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         .env("XDG_CONFIG_HOME", demo_xdg())
         .env("PHUX_BIN", PHUX)
         .envs(envs.iter().copied())

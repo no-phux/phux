@@ -9,11 +9,23 @@ use std::process::{Command, Stdio};
 
 use serde_json::Value;
 
+fn mcp() -> Command {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_phux-mcp"));
+    // Same service-manager exports a live pane inherits (phux-lru0).
+    for key in [
+        "PHUX_SOCKET",
+        "PHUX_WS_TOKENS",
+        "PHUX_WS_TLS_CERT",
+        "PHUX_WS_TLS_KEY",
+        "PHUX_SERVICE_MANAGED",
+    ] {
+        cmd.env_remove(key);
+    }
+    cmd
+}
+
 fn run(args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_phux-mcp"))
-        .args(args)
-        .output()
-        .expect("run phux-mcp")
+    mcp().args(args).output().expect("run phux-mcp")
 }
 
 #[test]
@@ -40,7 +52,7 @@ fn schema_is_exactly_the_live_tools_list_catalog() {
     assert!(schema.stderr.is_empty());
     let schema: Value = serde_json::from_slice(&schema.stdout).unwrap();
 
-    let mut child = Command::new(env!("CARGO_BIN_EXE_phux-mcp"))
+    let mut child = mcp()
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

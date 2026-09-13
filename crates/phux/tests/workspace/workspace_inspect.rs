@@ -8,7 +8,7 @@ use tempfile::TempDir;
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(PHUX)
+    let out = crate::common::phux_cmd(PHUX)
         .args(args)
         .output()
         .expect("run phux binary");

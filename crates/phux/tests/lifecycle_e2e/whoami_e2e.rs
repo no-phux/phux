@@ -11,8 +11,11 @@
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
 
+#[path = "../common/mod.rs"]
+mod common;
+
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
@@ -53,7 +56,7 @@ fn prepare_dirs(dir: &Path) {
 }
 
 fn phux(dir: &Path, args: &[&str]) -> Output {
-    Command::new(PHUX)
+    common::phux_cmd(PHUX)
         .envs(hermetic_env(dir))
         .args(args)
         .stdin(Stdio::null())
@@ -63,7 +66,7 @@ fn phux(dir: &Path, args: &[&str]) -> Output {
 
 /// Start `phux server --socket DIR/s.sock EXTRA...` under the hermetic env.
 fn start_server(dir: &Path, extra: &[&str], env: &[(&str, &str)]) -> Server {
-    let child = Command::new(PHUX)
+    let child = common::phux_cmd(PHUX)
         .envs(hermetic_env(dir))
         .envs(env.iter().copied())
         .arg("server")

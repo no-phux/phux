@@ -114,12 +114,23 @@ impl RemoteHome {
 
         let mut cmd = CommandBuilder::new(PHUX);
         cmd.args(args);
+        // Drop inherited `PHUX_SOCKET` / `PHUX_WS_*` from a live pane
+        // (phux-lru0). CommandBuilder has no env_remove; rebuild the table.
+        cmd.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        }
+        if let Some(tmp) = std::env::var_os("TMPDIR") {
+            cmd.env("TMPDIR", tmp);
+        }
+        cmd.env("HOME", self.dir.path());
         cmd.env("XDG_CONFIG_HOME", self.dir.path().join("config"));
         cmd.env("XDG_STATE_HOME", self.dir.path().join("state"));
         // Pin the RELEASED on-disk layout (`state/phux`, not `state/phux-dev`)
         // so the path assertions describe what a user actually sees (ADR-0080).
         cmd.env("PHUX_PROFILE", "default");
         cmd.env("PHUX_SSH", ssh);
+        cmd.env("PHUX_TAILSCALE", self.dir.path().join("no-such-tailscale"));
         cmd.env("PHUX_TEST_SSH_CALLS", self.dir.path().join("ssh-calls"));
         cmd.env("TERM", "xterm-256color");
 

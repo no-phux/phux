@@ -1,5 +1,8 @@
 //! Plugin installation, launch, lifecycle, and update integration tests.
 
+#[path = "../common/mod.rs"]
+mod common;
+
 mod plugin_demo_package;
 mod plugin_install;
 mod plugin_launch;

@@ -1,5 +1,8 @@
 //! Host enrollment, remote targets, credentials, and fleet transport tests.
 
+#[path = "../common/mod.rs"]
+mod common;
+
 mod host_enroll;
 mod host_lifecycle;
 mod pair_credentials;

@@ -3,7 +3,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, reason = "tests")]
 
 use std::os::unix::fs::PermissionsExt;
-use std::process::{Command, Output};
+use std::process::Output;
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 
@@ -21,7 +21,7 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// credential file. The env is scrubbed rather than cleared wholesale
 /// because `PATH` and friends still have to reach the child.
 fn phux(state: &std::path::Path, tokens: Option<&std::path::Path>, args: &[&str]) -> Output {
-    let mut command = Command::new(PHUX);
+    let mut command = crate::common::phux_cmd(PHUX);
     command
         .env("XDG_STATE_HOME", state)
         .env("PHUX_TAILSCALE", "phux-test-no-such-overlay-command")
