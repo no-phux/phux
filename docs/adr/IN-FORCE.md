@@ -67,6 +67,7 @@ by a newer one, the newer line is the operative reading.
 
 ## State sync and bootstrap
 
+- [0119](./0119-attach-leases-retained-history.md) Attach leases retained history; `history-bytes` is a memory bound. Default stays 2 MiB.
 - [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md) Scrollback is bounded in bytes by `defaults.history-bytes`, 2 MiB by default.
 - [0090](./0090-confirmation-gated-predictive-echo.md) Predictive echo shows on the alternate screen only after a confirmed non-blank echo.
 - [0070](./0070-native-engine-state-bootstrap.md) Native clients bootstrap from versioned libghostty state; history replicas are client-owned.

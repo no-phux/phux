@@ -163,6 +163,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0116](./0116-workload-auth-is-mtls.md) | Workload authentication is mTLS; the bespoke proof protocol is retired unshipped | Accepted (supersedes in part [0098](./0098-workload-proof-and-closed-scope-authority.md)) |
 | [0117](./0117-wire-codec-stays-tlv.md) | The wire codec stays hand-rolled TLV; protobuf considered and rejected | Accepted |
 | [0118](./0118-agent-integrations-share-a-neutral-runtime.md) | Agent integrations share a neutral Node runtime | Accepted |
+| [0119](./0119-attach-leases-retained-history.md) | Attach leases retained history instead of encoding it | Accepted (supersedes in part [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md)) |
 
 ## When to write an ADR
 

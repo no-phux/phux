@@ -35,20 +35,20 @@ term = "xterm-256color"
 # Per-pane scrollback, bounded twice: libghostty prunes on whichever of the
 # line limit and the byte limit is reached first (ADR-0094). On anything but a
 # narrow grid the BYTE limit is what binds, so raising history-limit alone
-# buys no depth. history-bytes is the one that costs, and what it costs is
-# attach latency, not just memory: the native bootstrap re-encodes every
-# retained page for each pane when a client attaches, on the single server
-# thread. Measured at 200x50, per pane, per attach:
+# buys no depth. history-bytes is the one that decides how deep a pane is:
 #
-#   history-bytes   rows kept @80 cols   @200 cols   added attach cost
-#   2 MiB (default) ~2669                ~943        ~8 ms
-#   4 MiB           ~5600                ~2133       ~22 ms
-#   10 MiB          ~14400               ~5703       ~65 ms
-#   32 MiB          ~47500               ~19031      ~222 ms
+#   history-bytes   rows kept @80 cols   @200 cols
+#   2 MiB (default) ~2669                ~943
+#   10 MiB          ~14400               ~5703
+#   32 MiB          ~47500               ~19031
 #
-# Raise history-bytes if you want deep scrollback and can pay for it at
-# attach; 67108864 (64 MiB) is the accepted maximum. Pruning is page-granular,
-# so the engine keeps at least one standard page of history whatever you set.
+# Attach does not scale with this number: the native bootstrap takes a lease
+# on the retained history and encodes nothing up front; each page is encoded
+# from the live scrollback only when a client asks for it. What it costs is
+# resident memory, per pane, for the life of the session -- so multiply by
+# your pane count before raising it. 67108864 (64 MiB) is the accepted
+# maximum. Pruning is page-granular, so the engine keeps at least one
+# standard page of history whatever you set.
 history-limit = 50000
 history-bytes = 2097152
 # Bytes of AgentEventsJsonlV1 records an agent session retains (ADR-0103).

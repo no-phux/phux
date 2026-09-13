@@ -159,20 +159,22 @@ pub struct DefaultsCfg {
     /// page (a few hundred KiB) of this number, and the engine will not
     /// prune below one standard page of history however small this is set.
     ///
-    /// Raising it buys depth and costs attach latency, because the native
-    /// bootstrap materialises every retained page when a client attaches
-    /// (ADR-0094). Measured at 200x50, per pane, per attach:
+    /// Raising it buys depth and costs resident memory, roughly this number
+    /// per pane for the life of the session. It costs nothing at attach: the
+    /// native bootstrap takes a lease on the retained history instead of
+    /// encoding it, and each page is encoded from the live scrollback only
+    /// when a client asks for it, one per actor turn (ADR-0119). Measured at
+    /// 200x50:
     ///
-    /// | `history-bytes` | rows kept @200 cols | added attach cost |
+    /// | `history-bytes` | rows kept @80 cols | @200 cols |
     /// |---|---|---|
-    /// | 2 MiB (default) | ~943 | ~8 ms |
-    /// | 4 MiB | ~2133 | ~22 ms |
-    /// | 10 MiB | ~5703 | ~65 ms |
-    /// | 32 MiB | ~19031 | ~222 ms |
+    /// | 2 MiB (default) | ~2669 | ~943 |
+    /// | 10 MiB | ~14403 | ~5703 |
+    /// | 32 MiB | ~47500 | ~19031 |
     ///
-    /// That cost is paid on the single server thread for every pane in the
-    /// session, so a deep default is a slow attach for every client. The
-    /// accepted ceiling is [`MAX_HISTORY_BYTES`].
+    /// What a client that scrolls back pays afterwards is off the attach
+    /// path and interleaved with live output. The accepted ceiling is
+    /// [`MAX_HISTORY_BYTES`].
     #[serde(default = "default_history_bytes", rename = "history-bytes")]
     pub history_bytes: u32,
 
@@ -334,16 +336,18 @@ impl DefaultsCfg {
 
 /// Largest accepted `defaults.history-bytes`, in bytes (64 MiB).
 ///
-/// Not a memory-safety bound — it is a latency bound. Retained history is
-/// re-encoded per pane on every attach (ADR-0094), so 64 MiB of history is
-/// already most of a second of blocked server thread per pane. A value above
-/// this is rejected by `phux config check` rather than silently accepted.
+/// A resident-memory bound, not a safety or latency one. Attach does not
+/// scale with retained history, because the bootstrap leases it rather than
+/// encoding it (ADR-0119), so what a very deep pane costs is memory the
+/// server holds for the life of the session: 64 MiB per pane over a dozen
+/// panes is most of a gigabyte. A value above this is rejected by
+/// `phux config check` rather than silently accepted.
 pub const MAX_HISTORY_BYTES: u32 = 64 * 1024 * 1024;
 
 /// Shipped `defaults.history-bytes`: 2 MiB per pane.
 ///
-/// See [`DefaultsCfg::history_bytes`] for the depth-versus-attach-latency
-/// curve this value sits on.
+/// See [`DefaultsCfg::history_bytes`] for the depth-versus-memory curve this
+/// value sits on.
 pub const DEFAULT_HISTORY_BYTES: u32 = 2 * 1024 * 1024;
 
 const fn default_history_bytes() -> u32 {
@@ -352,7 +356,7 @@ const fn default_history_bytes() -> u32 {
 
 /// Largest accepted `defaults.agent-log-bytes`, in bytes (64 MiB).
 ///
-/// The same latency bound [`MAX_HISTORY_BYTES`] is: the retained ring is
+/// A latency bound, unlike [`MAX_HISTORY_BYTES`]: the retained ring is
 /// replayed in full on every attach to the session's stream, so a value
 /// above this trades a longer transcript for an attach nobody waits out.
 /// Rejected by `phux config check` rather than silently accepted.

@@ -58,7 +58,8 @@ for it.
 
 Per-pane scrollback is a config knob, not an ops table: raising
 `history-limit` on a wide grid does nothing, and raising `history-bytes`
-costs attach latency. See [`CONFIG.md`](./CONFIG.md#scrollback).
+costs resident memory per pane, not attach latency. See
+[`CONFIG.md`](./CONFIG.md#scrollback).
 
 ## Logging and observability
 

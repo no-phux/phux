@@ -251,11 +251,12 @@ fn semantic_pass(
 /// Semantic validation for `[defaults]` values whose *range* matters.
 ///
 /// `defaults.history-bytes` and `defaults.agent-log-bytes` are the two so
-/// far. Both parse as any `u32`, but a value above their ceiling is not a
-/// memory question — retained scrollback is re-encoded per pane on every
-/// attach (ADR-0094) and a retained agent-session ring is replayed in full
-/// on every attach to its stream (ADR-0103), so a large value buys depth at
-/// a cost measured in blocked server thread. Flag them here rather than
+/// far. Both parse as any `u32`, but a value above their ceiling costs the
+/// server more than it can reasonably give: retained scrollback is held
+/// resident per pane for the life of the session (ADR-0094, ADR-0119), and
+/// a retained agent-session ring is replayed in full on every attach to
+/// its stream (ADR-0103), so a large value buys depth at a cost in memory
+/// or in blocked server thread respectively. Flag them here rather than
 /// clamping silently, so the operator learns what they asked for instead of
 /// wondering why their setting did nothing.
 fn defaults_findings(
@@ -271,8 +272,8 @@ fn defaults_findings(
             Fault::BadValue,
             format!(
                 "{} exceeds the accepted maximum of {} bytes (64 MiB); retained history is \
-                 re-encoded per pane on every attach, so a larger value blocks the server \
-                 thread for most of a second per pane",
+                 held resident per pane for the life of the session, so a larger value is \
+                 memory the server will not spend",
                 defaults.history_bytes,
                 crate::MAX_HISTORY_BYTES,
             ),
@@ -735,7 +736,7 @@ mod tests {
 
     /// `history-bytes` above the accepted maximum is a located finding, not a
     /// silent clamp: the operator asked for scrollback depth that would cost
-    /// most of a second of blocked server thread per pane at every attach.
+    /// more resident memory per pane than the server will hold.
     #[test]
     fn an_oversized_history_bytes_is_flagged_with_the_maximum() {
         let report = run("[defaults]\nhistory-bytes = 134217728\n");
