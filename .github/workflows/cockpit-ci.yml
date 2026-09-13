@@ -92,6 +92,13 @@ jobs:
           restore-keys: |
             mini-v2-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
 
+      # mini-v2 is a new path list, so the first runs miss and Zig has to
+      # fetch nested tarballs. zig-build.sh retries --fetch on
+      # HttpConnectionClosing.
+      - name: Fetch Zig packages
+        working-directory: clients/cockpit
+        run: ./scripts/zig-build.sh --fetch=all -Dplatform=null
+
       - name: Check release, SDK, and measurement contracts
         working-directory: clients/cockpit
         run: |

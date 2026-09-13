@@ -103,6 +103,10 @@ jobs:
           defaults -currentHost read -g AppleFontSmoothing 2>/dev/null \
             || echo 'AppleFontSmoothing: unset (the state the floor was derived on)'
           ./scripts/host-raster-check.sh --min-solid 4000
+      - name: Fetch Zig packages
+        working-directory: clients/cockpit
+        run: ./scripts/zig-build.sh --fetch=all -Dplatform=null
+
       - name: Build the same-checkout Phux FFI and coordinator CLI
         run: bash clients/cockpit/scripts/build-phux-artifacts.sh
       - name: Test with the null platform

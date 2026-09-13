@@ -106,6 +106,7 @@ class BuildContracts(unittest.TestCase):
             self.assertIn("./scripts/zig-build.sh", workflow)
             self.assertIn("PHUX_ZIG_CACHE_MODE: shared", workflow)
             self.assertIn('PHUX_ZIG_BUILD_TIMEOUT: "0"', workflow)
+            self.assertIn("./scripts/zig-build.sh --fetch=all", workflow)
             self.assertNotRegex(workflow, r"(?m)^\s*(?:run:\s*)?zig\s+build\b")
         package = (ROOT / "scripts/package-macos.sh").read_text()
         self.assertIn("bash ./scripts/build-shipping-app.sh package", package)
