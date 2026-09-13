@@ -1002,7 +1002,7 @@ fn a_write_to_a_departed_peer_is_not_a_loop_ending_error() {
 
 /// phux-501l: last-pane death can close the UDS after ATTACH is acknowledged
 /// and before the client's bootstrap / post-paint sweeps finish. Those
-/// Subscribe*/GetMetadata writes must not become `Io(BrokenPipe)` — the
+/// `Subscribe*` / `GetMetadata` writes must not become `Io(BrokenPipe)` — the
 /// `RESOURCE_CLOSED` that names the ending is already sitting in the
 /// decode buffer.
 #[tokio::test]

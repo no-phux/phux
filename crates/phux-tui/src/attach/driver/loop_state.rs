@@ -1440,7 +1440,7 @@ impl SessionLoop {
         //
         // phux-501l: these bootstrap writes race last-pane death. The e2e
         // waits only until the server has processed ATTACH; `exit 7` can
-        // reap the session while we are still sending Subscribe*/GetMetadata.
+        // reap the session while we are still sending Subscribe* / GetMetadata.
         // A write into that closed UDS must not become `Io(BrokenPipe)` —
         // RESOURCE_CLOSED is already in the decode buffer for the recv loop.
         send_unless_peer_gone(conn, &FrameKind::SubscribeEvents { terminal: None }).await?;
