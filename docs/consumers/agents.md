@@ -667,6 +667,8 @@ JSON error object on stderr:
 Branch on `error.code`, never on `message`. `remedy` is always present.
 Transport: `no_server`, `server_disconnected`, `transport`,
 `remote_unresolved`. Resolution: `no_such_target`, `partial_view`.
+Local I/O: `io` (a bug-report bundle could not be written under the
+state directory), `json_serialize`.
 Agent lifecycle: `no_agent_record`, `satellite_target`,
 `agent_departed`, `agent_mismatch`, `invalid_key_spec`. Acknowledged
 input: `input_busy` (retry safe), `input_not_written` (proven not

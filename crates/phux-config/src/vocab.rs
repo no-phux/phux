@@ -74,6 +74,7 @@ pub const ACTION_NAMES: &[&str] = &[
     "plugin-pane",
     "reload-config",
     "settings",
+    "report-bug",
 ];
 
 /// Hook point: pane creation (`docs/consumers/tui.md` §9).

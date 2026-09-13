@@ -323,6 +323,11 @@ which-key-delay-ms = 400
 "A" = "agent-fleet"
 "S" = "settings"
 
+# Bug report: write a local bundle (session, pane, log tails, screen) an
+# agent can open with `phux report show`. B for Bug; lowercase b is the
+# sidebar.
+"B" = "report-bug"
+
 # Attention navigation (phux-oih5.16, ADR-0049). q jumps to the next pane
 # with a pending AgentEvent::Asked, cycling by window order then DFS leaf
 # order; Q returns to the pane where that excursion began. These unoccupied

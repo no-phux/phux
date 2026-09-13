@@ -79,7 +79,8 @@ pub(crate) fn page() -> Page {
          ├── onboarding.lock     # serializes first-use moment delivery\n\
          ├── remote-cert.pem     # auto-provisioned remote-consumer certificate\n\
          ├── remote-key.pem      # its private key (owner-only, 0600)\n\
-         └── remote-tokens       # structured credential store (owner-only, 0600)\n\
+         ├── remote-tokens       # structured credential store (owner-only, 0600)\n\
+         └── reports/            # local bug-report bundles (TUI C-a B, phux report)\n\
          ```\n\n\
          - `server.log` is the canonical server log regardless of how \
            the server was started: the auto-spawn path redirects the \
@@ -129,7 +130,13 @@ pub(crate) fn page() -> Page {
            group/world permissions; an integrity failure denies \
            authentication. `PHUX_WS_TOKENS` moves it without weakening those \
            checks. Legacy anonymous token lines \
-           require the idempotent `phux pair --migrate-legacy` conversion.\n\n\
+           require the idempotent `phux pair --migrate-legacy` conversion.\n\
+         - `reports/` holds local bug-report bundles written by the TUI \
+           `report-bug` action (`C-a B`) and by `phux report new`. Each \
+           subdirectory is one report (session, pane, version, log tails, \
+           optional screen dump, and a `report.md` an agent can open). \
+           `latest` points at the newest; `phux report` lists them and \
+           `phux report show` prints one.\n\n\
          ## Design intent (not yet implemented)\n\n\
          A `server.pid` file and a `journal/` directory of per-pane PTY \
          output for crash recovery remain design intent; neither path \
@@ -141,15 +148,16 @@ pub(crate) fn page() -> Page {
         file: "files.md",
         title: "phux file locations reference",
         summary: "The symbolic path rule for every file phux reads or \
-                  writes: socket, config, logs, TLS material, tokens.",
+                  writes: socket, config, logs, TLS material, tokens, \
+                  bug reports.",
         tldr: "Where phux keeps its files: the socket under \
                `$XDG_RUNTIME_DIR` (or `/tmp`), config under \
-               `$XDG_CONFIG_HOME`, and logs, TLS material, and pairing \
-               tokens under `$XDG_STATE_HOME`. Runtime and state paths \
-               carry the active profile, so a development build never \
-               shares them with an installed one. Each rule is pinned to \
-               the resolving function by a unit test, so the page moves \
-               when the code does.",
+               `$XDG_CONFIG_HOME`, and logs, TLS material, pairing \
+               tokens, and bug reports under `$XDG_STATE_HOME`. Runtime \
+               and state paths carry the active profile, so a development \
+               build never shares them with an installed one. Each rule \
+               is pinned to the resolving function by a unit test, so \
+               the page moves when the code does.",
         body,
     }
 }
@@ -217,6 +225,10 @@ mod tests {
             &phux_server::auth::default_token_store_path(),
             &format!("{state_leaf}/remote-tokens"),
         );
+        ends_with(
+            &phux_config::instance::reports_dir(),
+            &format!("{state_leaf}/reports"),
+        );
         // `$PHUX_SOCKET` overrides the whole path, so the shape holds
         // only when the variable is unset (as it is in the test runner;
         // guarded so an operator's environment cannot fail the suite).
@@ -238,6 +250,7 @@ mod tests {
             "remote-cert.pem",
             "remote-key.pem",
             "remote-tokens",
+            "reports/",
             "server.pid",
             "journal/",
         ] {

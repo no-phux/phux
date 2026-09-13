@@ -136,6 +136,7 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
           completion Print a shell completion script for phux\n  \
           doctor     Diagnose the install: config, socket, server, plugins\n  \
           logs       Show where phux's logs live, or tail one of them\n  \
+          report     List local bug-report bundles, print one, or capture logs\n  \
           config     Inspect config and run configured plugin actions\n  \
           plugin     Manage local plugin manifests in config\n  \
           workspace  Inspect worktrees and save/restore session archives\n  \
@@ -1190,6 +1191,7 @@ fn dispatch(
             lines,
             json,
         }) => commands::logs::run_logs(server, client, pid, follow, lines, json),
+        Some(Command::Report { action, json }) => commands::report::run_report(action, json.json),
         Some(Command::Host { action }) => commands::host::run_host(&action),
         Some(Command::Service { action }) => run_service(action, socket),
         Some(Command::GenReferenceDocs { out }) => {

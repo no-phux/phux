@@ -215,6 +215,7 @@ pub(crate) mod relay;
 pub(crate) mod remote;
 pub(crate) mod remote_target;
 pub(crate) mod rename;
+pub(crate) mod report;
 pub(crate) mod resize;
 pub(crate) mod run;
 pub(crate) mod runtime_info;
@@ -309,6 +310,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Skill { .. } => Some("skill"),
         Command::Logs { .. } => Some("logs"),
         Command::RuntimeInfo { .. } => Some("runtime-info"),
+        Command::Report { .. } => Some("report"),
         Command::GenReferenceDocs { .. } => Some("gen-reference-docs"),
         _ => None,
     }
@@ -1872,6 +1874,23 @@ pub(crate) enum Command {
         /// human text. Inventory only — it cannot combine with a tail.
         #[arg(long, conflicts_with_all = ["server", "client", "pid", "follow", "lines"])]
         json: bool,
+    },
+
+    /// Capture or list local bug reports.
+    ///
+    /// Bare `phux report` lists bundles under the profile state directory
+    /// (newest first; `latest` is printed first). `phux report show [ID]`
+    /// prints one `report.md` (omit ID for the newest). `phux report new`
+    /// writes a logs-and-version bundle from a shell; prefer the TUI action
+    /// `report-bug` (`C-a B`) while attached so the live session, pane, and
+    /// screen are included. An agent given a report path can `cat` it or
+    /// run `phux report show`.
+    #[command(visible_alias = "bug")]
+    Report {
+        #[command(subcommand)]
+        action: Option<report::ReportAction>,
+        #[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Regenerate the repository's generated reference pages (internal).

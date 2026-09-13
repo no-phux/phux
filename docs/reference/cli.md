@@ -76,6 +76,7 @@ ORGANIZE
   completion Print a shell completion script for phux
   doctor     Diagnose the install: config, socket, server, plugins
   logs       Show where phux's logs live, or tail one of them
+  report     List local bug-report bundles, print one, or capture logs
   config     Inspect config and run configured plugin actions
   plugin     Manage local plugin manifests in config
   workspace  Inspect worktrees and save/restore session archives
@@ -2303,6 +2304,75 @@ Options:
 
   -h, --help
           Print help (see a summary with '-h')
+```
+
+## `phux report`
+
+```text
+Capture or list local bug reports.
+
+Bare `phux report` lists bundles under the profile state directory (newest first; `latest` is printed first). `phux report show [ID]` prints one `report.md` (omit ID for the newest). `phux report new` writes a logs-and-version bundle from a shell; prefer the TUI action `report-bug` (`C-a B`) while attached so the live session, pane, and screen are included. An agent given a report path can `cat` it or run `phux report show`.
+
+Usage: phux report [OPTIONS] [COMMAND]
+
+Commands:
+  new   Write a logs-and-version bundle (no live screen). Prefer the TUI action (`C-a B`) while attached so the session and pane are included
+  show  Print one report. Omit ID to show the latest
+  help  Print this message or the help of the given subcommand(s)
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux report new`
+
+```text
+Write a logs-and-version bundle (no live screen). Prefer the TUI action (`C-a B`) while attached so the session and pane are included
+
+Usage: phux report new [OPTIONS] [NOTE]...
+
+Arguments:
+  [NOTE]...
+          Optional free-text description of what went wrong
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help
+```
+
+## `phux report show`
+
+```text
+Print one report. Omit ID to show the latest
+
+Usage: phux report show [OPTIONS] [ID]
+
+Arguments:
+  [ID]
+          Report id (`r-…`), or `latest`
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help
 ```
 
 ## `phux resize`

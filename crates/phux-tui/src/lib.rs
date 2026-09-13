@@ -39,6 +39,8 @@
 
 pub mod attach;
 pub mod render;
+/// Local bug-report bundles: session, logs, and a screen dump an agent can open.
+pub mod report;
 // phux-u1tq.2: the config-derived TUI state, built once per attach and
 // swapped whole on reload.
 pub mod settings;

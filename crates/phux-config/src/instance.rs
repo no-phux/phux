@@ -151,6 +151,16 @@ pub fn state_dir() -> PathBuf {
     base.join(suffixed("phux", &profile()))
 }
 
+/// Directory of local bug-report bundles: `$XDG_STATE_HOME/<profile-dir>/reports`.
+///
+/// Written by the TUI `report-bug` action and `phux report new`; listed by
+/// `phux report`. Each subdirectory is one report; `latest` is a pointer at
+/// the newest.
+#[must_use]
+pub fn reports_dir() -> PathBuf {
+    state_dir().join("reports")
+}
+
 /// Append `-<profile>` unless the profile is the default one.
 fn suffixed(stem: &str, profile: &str) -> String {
     if profile == DEFAULT_PROFILE {

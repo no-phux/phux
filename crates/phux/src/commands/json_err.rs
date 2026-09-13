@@ -279,6 +279,8 @@ pub(crate) mod codes {
     pub(crate) const AGENT_SESSION_REFUSED: &str = "agent_session_refused";
     /// A result document could not be serialized as JSON.
     pub(crate) const JSON_SERIALIZE: &str = "json_serialize";
+    /// A local state-directory write failed (a bug-report bundle).
+    pub(crate) const IO: &str = "io";
     /// A client-side invariant this binary should never break.
     pub(crate) const INTERNAL_ERROR: &str = "internal_error";
 }

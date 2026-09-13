@@ -77,6 +77,14 @@ this section is the home for the facts.
   attach loop owns the alt screen, so a stray log line corrupts the
   display.
 
+### Local bug reports
+
+A TUI `report-bug` (`C-a B`) or `phux report new` writes one directory under
+`$XDG_STATE_HOME/<profile-dir>/reports/`. Each bundle is owner-only (`0600`)
+and holds `report.md` (the file to hand an agent), `meta.json`, log tails, and
+an optional screen dump. `latest` points at the newest. `phux report` lists
+them; `phux report show` prints one. Nothing leaves the machine.
+
 Both fmt layers emit span-close timing (`FmtSpan::CLOSE`), so any
 `#[instrument]` span reports elapsed duration at close.
 
