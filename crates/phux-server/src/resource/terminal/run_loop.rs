@@ -336,7 +336,7 @@ impl TerminalActor {
                 // dropped ack just means the next tick re-emits a larger
                 // diff against the same older reference — no
                 // retransmit machinery here.
-                Some(req) = self.consumer_ack_rx.recv() =>
+                Some(req) = self.consumer_ack_rx.recv(), if !bootstrap_pending =>
                     self.service_frame_ack(&req, &mut tick, &mut tick_interval),
 
                 // Semantic event subscription request. Register the subscriber

@@ -5,10 +5,10 @@
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 use super::{
     Bytes, CanonicalTerminal, FrameKind, HashSet, MAX_NATIVE_HISTORY_CLIENTS,
-    MAX_NATIVE_REPLAY_BYTES, NATIVE_HISTORY_TTL, NativeBootstrapReply, NativeBootstrapRequest,
-    NativeCursorOwner, NativeHistoryReply, NativeHistoryRequest, NativePublicationGeneration,
-    NativePublicationReply, NativePublicationRequest, PaneOutput, PendingNativeBootstrap, VecDeque,
-    native_step_bytes, reserve_native_bytes, warn,
+    MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeBootstrapReply,
+    NativeBootstrapRequest, NativeCursorOwner, NativeHistoryReply, NativeHistoryRequest,
+    NativePublicationGeneration, NativePublicationReply, NativePublicationRequest, PaneOutput,
+    PendingNativeBootstrap, VecDeque, native_step_bytes, reserve_native_bytes, warn,
 };
 use super::{NativeActorRequest, TerminalActor};
 
@@ -130,8 +130,8 @@ impl TerminalActor {
         // committed (and zeroed) 64 MiB per pane per attach — two orders of
         // magnitude above the ~760 KiB a real active-area record needs. Start
         // at one page-sized window and let `step_native_bootstrap` grow it to
-        // the exact `required_bytes` libghostty reports; the ceiling still
-        // bounds it.
+        // the configured record window libghostty reports as `required_bytes`;
+        // the negotiated ceiling still bounds it.
         let scratch_ceiling = match native_step_bytes(capture_bytes, 0, capture.max_record_bytes())
         {
             Ok(bytes) => bytes,
@@ -169,6 +169,7 @@ impl TerminalActor {
             limits,
             replay: VecDeque::new(),
             replay_bytes: 0,
+            started_at: tokio::time::Instant::now(),
         });
     }
 
@@ -181,6 +182,13 @@ impl TerminalActor {
         let Some(mut pending) = self.pending_native_bootstrap.take() else {
             return;
         };
+        if pending.started_at.elapsed() > NATIVE_CAPTURE_LIFETIME {
+            self.fail_native_bootstrap(
+                pending,
+                crate::native_state::NativeStateError::LimitExceeded,
+            );
+            return;
+        }
         let step_ceiling = match native_step_bytes(
             pending.capture_bytes,
             pending.retained_bytes,
@@ -321,7 +329,7 @@ impl TerminalActor {
             stream_id: req.stream_id,
             bootstrap_id: req.bootstrap_id,
             profile: phux_protocol::caps::BootstrapStreamProfile::NativeState {
-                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
             },
             cols: self.cols,
             rows: self.rows,

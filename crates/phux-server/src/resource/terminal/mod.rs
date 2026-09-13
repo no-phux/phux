@@ -415,6 +415,8 @@ const PANE_KILL_REAP_BUDGET: std::time::Duration = std::time::Duration::from_mil
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const NATIVE_HISTORY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+const NATIVE_CAPTURE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 struct NativeCursorOwner {
     cursor: crate::native_state::OpaqueHistoryCursor,
@@ -442,6 +444,7 @@ struct PendingNativeBootstrap {
     limits: phux_protocol::caps::BootstrapLimits,
     replay: VecDeque<(u64, Bytes)>,
     replay_bytes: usize,
+    started_at: tokio::time::Instant,
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -507,7 +510,7 @@ impl CanonicalTerminal {
         clippy::expect_used,
         reason = "Plain is temporarily None only while native_manager holds the actor-local mutable borrow"
     )]
-    const fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
+    fn terminal(&self) -> &GhosttyTerminal<'static, 'static> {
         match self {
             Self::Plain(terminal) => terminal
                 .as_ref()
