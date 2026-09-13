@@ -1021,9 +1021,7 @@ struct QueuedLinkWrite {
 }
 
 impl QueuedLinkWrite {
-    fn into_write(mut self) -> Option<LinkWrite> {
-        self.total.set(self.total.get().saturating_sub(self.bytes));
-        self.bytes = 0;
+    const fn take_write(&mut self) -> Option<LinkWrite> {
         self.write.take()
     }
 }
@@ -1084,8 +1082,11 @@ async fn drive_link_writer<W: LinkWriter>(
     mut rx: tokio::sync::mpsc::Receiver<QueuedLinkWrite>,
     errors: tokio::sync::mpsc::Sender<String>,
 ) {
-    while let Some(queued) = rx.recv().await {
-        let Some(write) = queued.into_write() else {
+    while let Some(mut queued) = rx.recv().await {
+        // Keep `queued` alive until the active transport write completes so
+        // its bytes remain charged against the same aggregate bound as the
+        // channel backlog.
+        let Some(write) = queued.take_write() else {
             continue;
         };
         let result = match write {
@@ -2561,6 +2562,26 @@ mod tests {
         async fn keepalive(&mut self) -> Result<(), String> {
             self.keepalive_error.clone().map_or(Ok(()), Err)
         }
+    }
+
+    #[test]
+    fn active_write_bytes_remain_charged_against_the_aggregate_bound() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let total = Rc::new(Cell::new(0));
+        let active_bytes = LINK_WRITE_QUEUE_BYTES / 2 + 1;
+        queue_link_write(&tx, &total, LinkWrite::Frames(vec![vec![0; active_bytes]]))
+            .expect("first write fits");
+        let mut active = rx.try_recv().expect("queued write");
+        let active_write = active.take_write().expect("active write");
+        assert_eq!(total.get(), active_bytes, "active bytes stay reserved");
+
+        let error = queue_link_write(&tx, &total, LinkWrite::Frames(vec![vec![0; active_bytes]]))
+            .expect_err("active plus queued bytes exceed the aggregate bound");
+        assert!(error.contains("exceeded"));
+
+        drop(active_write);
+        drop(active);
+        assert_eq!(total.get(), 0);
     }
 
     #[tokio::test]
