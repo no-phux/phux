@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -19,12 +20,31 @@ spec.loader.exec_module(browser)
 
 
 class BrowserRunnerTests(unittest.TestCase):
+    def test_udp_blackhole_receives_and_cleans_up_owned_socket(self):
+        with browser.UdpBlackhole() as blackhole:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                sender.sendto(b"quic", ("127.0.0.1", blackhole.port))
+            for _ in range(100):
+                if blackhole.packets:
+                    break
+                time.sleep(0.01)
+            self.assertGreater(blackhole.packets, 0)
+        self.assertFalse(blackhole.thread.is_alive())
+
     def test_chrome_binary_is_in_runner_capabilities(self):
         with tempfile.TemporaryDirectory() as scratch:
             directory = Path(scratch)
             env = browser.webdriver_environment({"CHROME": "/selected/chromium"}, directory, directory)
             capabilities = json.loads(Path(env["WASM_BINDGEN_TEST_WEBDRIVER_JSON"]).read_text())
             self.assertEqual(capabilities["goog:chromeOptions"]["binary"], "/selected/chromium")
+
+    def test_fixture_only_accepts_insecure_certificates_in_temporary_capabilities(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            directory = Path(scratch)
+            env = browser.webdriver_environment(
+                {"PHUX_TEST_ACCEPT_INSECURE_CERTS": "1"}, directory, directory)
+            capabilities = json.loads(Path(env["WASM_BINDGEN_TEST_WEBDRIVER_JSON"]).read_text())
+            self.assertTrue(capabilities["acceptInsecureCerts"])
 
     def test_user_capabilities_survive_binary_selection(self):
         with tempfile.TemporaryDirectory() as scratch:
