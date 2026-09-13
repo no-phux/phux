@@ -33,6 +33,7 @@ use std::time::Duration;
 use bytes::BytesMut;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{UnixListener, UnixStream};
+use tokio::task::{JoinHandle, JoinSet};
 
 use phux_client::agent_meta::{AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY};
 use phux_client::agent_prompt::{
@@ -122,21 +123,36 @@ impl Script {
 /// Every operation id the server saw, in submit order.
 type SeenIds = Arc<Mutex<Vec<InputOperationId>>>;
 
+/// Owns the listener directory and the accept task. Aborting the accept
+/// task drops its [`JoinSet`], which aborts every session — otherwise the
+/// unjoined `tokio::spawn`s leak past nextest's grace window under load.
+struct Server {
+    _dir: tempfile::TempDir,
+    accept: JoinHandle<()>,
+}
+
+impl Drop for Server {
+    fn drop(&mut self) {
+        self.accept.abort();
+    }
+}
+
 /// Bind a socket and serve `script` to every client that dials it.
-fn serve(script: Script) -> (tempfile::TempDir, PathBuf, SeenIds) {
+fn serve(script: Script) -> (Server, PathBuf, SeenIds) {
     let dir = tempfile::tempdir().expect("temp dir");
     let socket = dir.path().join("phux.sock");
     let listener = UnixListener::bind(&socket).expect("bind");
     let seen: SeenIds = Arc::new(Mutex::new(Vec::new()));
     let recorded = Arc::clone(&seen);
-    tokio::spawn(async move {
+    let accept = tokio::spawn(async move {
+        let mut sessions = JoinSet::new();
         while let Ok((stream, _)) = listener.accept().await {
             let script = script.clone();
             let recorded = Arc::clone(&recorded);
-            tokio::spawn(async move { session(stream, script, recorded).await });
+            sessions.spawn(async move { session(stream, script, recorded).await });
         }
     });
-    (dir, socket, seen)
+    (Server { _dir: dir, accept }, socket, seen)
 }
 
 #[allow(
@@ -257,7 +273,7 @@ const fn always_ok(_record: &AgentRecord) -> Option<String> {
 /// report the receipt with the operation id the caller can correlate on.
 #[tokio::test]
 async fn a_verified_pane_takes_one_batch_and_reports_the_receipt() {
-    let (_dir, socket, seen) = serve(Script::new(Some(record("working"))));
+    let (_server, socket, seen) = serve(Script::new(Some(record("working"))));
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -291,7 +307,7 @@ async fn a_resource_exhausted_retry_reuses_the_same_operation_id() {
         refused(ErrorCode::ResourceExhausted),
         CommandResult::Ok,
     ]);
-    let (_dir, socket, seen) = serve(script);
+    let (_server, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -320,7 +336,7 @@ async fn a_resource_exhausted_retry_reuses_the_same_operation_id() {
 async fn a_lane_that_never_frees_fails_without_writing_anything() {
     let script =
         Script::new(Some(record("idle"))).apply(vec![refused(ErrorCode::ResourceExhausted)]);
-    let (_dir, socket, seen) = serve(script);
+    let (_server, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -350,7 +366,7 @@ async fn a_lane_that_never_frees_fails_without_writing_anything() {
 async fn input_delivery_unknown_is_reported_once_and_never_retried() {
     let script =
         Script::new(Some(record("working"))).apply(vec![refused(ErrorCode::InputDeliveryUnknown)]);
-    let (_dir, socket, seen) = serve(script);
+    let (_server, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -383,7 +399,7 @@ async fn input_delivery_unknown_is_reported_once_and_never_retried() {
 async fn input_not_written_is_reported_distinctly_and_not_auto_retried() {
     let script =
         Script::new(Some(record("working"))).apply(vec![refused(ErrorCode::InputNotWritten)]);
-    let (_dir, socket, seen) = serve(script);
+    let (_server, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -414,7 +430,7 @@ async fn input_not_written_is_reported_distinctly_and_not_auto_retried() {
 async fn a_canonical_limit_refusal_is_not_retried() {
     let script =
         Script::new(Some(record("idle"))).apply(vec![refused(ErrorCode::CanonicalLimitExceeded)]);
-    let (_dir, socket, seen) = serve(script);
+    let (_server, socket, seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -442,7 +458,7 @@ async fn a_canonical_limit_refusal_is_not_retried() {
 /// bracketed paste and our Enter then runs it.
 #[tokio::test]
 async fn a_mismatched_occupant_refuses_before_any_byte_is_written() {
-    let (_dir, socket, seen) = serve(Script::new(Some(record("idle"))));
+    let (_server, socket, seen) = serve(Script::new(Some(record("idle"))));
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -468,7 +484,7 @@ async fn a_mismatched_occupant_refuses_before_any_byte_is_written() {
 /// A pane with no `phux.agent/v1` record has no identity the gate could pass.
 #[tokio::test]
 async fn a_pane_with_no_record_is_refused_before_the_submit() {
-    let (_dir, socket, seen) = serve(Script::new(None));
+    let (_server, socket, seen) = serve(Script::new(None));
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -491,7 +507,7 @@ async fn a_pane_with_no_record_is_refused_before_the_submit() {
 /// `docs/spec/input.md` forbids) and never quietly truncated.
 #[tokio::test]
 async fn an_oversized_prompt_never_reaches_the_wire() {
-    let (_dir, socket, seen) = serve(Script::new(Some(record("idle"))));
+    let (_server, socket, seen) = serve(Script::new(Some(record("idle"))));
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -526,7 +542,7 @@ async fn an_oversized_prompt_never_reaches_the_wire() {
 async fn a_post_result_transition_satisfies_prompt_wait() {
     let script = Script::new(Some(record("idle")))
         .post_result(vec![Some(record("working")), Some(record("idle"))]);
-    let (_dir, socket, _seen) = serve(script);
+    let (_server, socket, _seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -557,7 +573,7 @@ async fn a_post_result_transition_satisfies_prompt_wait() {
 /// "the turn finished" are separate answers, and only the first is a receipt.
 #[tokio::test]
 async fn a_resting_level_never_satisfies_prompt_wait() {
-    let (_dir, socket, _seen) = serve(Script::new(Some(record("idle"))));
+    let (_server, socket, _seen) = serve(Script::new(Some(record("idle"))));
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
@@ -599,7 +615,7 @@ async fn a_multi_event_key_batch_is_one_operation_and_retries_under_one_id() {
         refused(ErrorCode::ResourceExhausted),
         CommandResult::Ok,
     ]);
-    let (_dir, socket, seen) = serve(script);
+    let (_server, socket, seen) = serve(script);
     // The shape `phux agent send-keys @7 "yes please" Enter` builds: a
     // submission-safe paste plus the real Enter key.
     let events = phux_client::send_keys::events_for(&["yes please".to_owned(), "Enter".to_owned()]);
@@ -631,7 +647,7 @@ async fn a_multi_event_key_batch_is_one_operation_and_retries_under_one_id() {
 #[tokio::test]
 async fn a_tombstone_after_the_write_is_a_departure_not_a_completion() {
     let script = Script::new(Some(record("working"))).post_result(vec![None]);
-    let (_dir, socket, _seen) = serve(script);
+    let (_server, socket, _seen) = serve(script);
     let outcome = prompt_agent(
         &socket,
         &ResourceId::local(7),
