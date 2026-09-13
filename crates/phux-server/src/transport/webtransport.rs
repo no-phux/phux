@@ -337,30 +337,62 @@ fn authorize_request(
     request: &SessionRequest,
     store: &crate::auth::ReloadingTokenStore,
 ) -> Option<crate::auth::AuthenticatedCredential> {
-    let token_hex =
-        bearer_from_headers(request.headers()).or_else(|| token_from_path(request.path()))?;
+    let token_hex = request_token(request)?;
     let token = hex::decode(token_hex.trim()).ok()?;
     store.authenticate(&token)
+}
+
+fn request_token(request: &SessionRequest) -> Option<&str> {
+    match (
+        unique_bearer(request.headers()),
+        unique_query_token(request.path()),
+    ) {
+        (UniqueToken::Valid(token), UniqueToken::Missing)
+        | (UniqueToken::Missing, UniqueToken::Valid(token)) => Some(token),
+        _ => None,
+    }
+}
+
+enum UniqueToken<'a> {
+    Missing,
+    Valid(&'a str),
+    Invalid,
 }
 
 /// The `Bearer` value of an `Authorization` header, matched
 /// case-insensitively on the field name (HTTP/3 encodes field names
 /// lowercase on the wire, but a hand-built native client may not).
-fn bearer_from_headers(headers: &std::collections::HashMap<String, String>) -> Option<&str> {
-    headers
+fn unique_bearer(headers: &std::collections::HashMap<String, String>) -> UniqueToken<'_> {
+    let mut values = headers
         .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("authorization"))
-        .and_then(|(_, value)| {
-            value
-                .strip_prefix("Bearer ")
-                .or_else(|| value.strip_prefix("bearer "))
-        })
+        .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .map(|(_, value)| value.as_str());
+    let Some(value) = values.next() else {
+        return UniqueToken::Missing;
+    };
+    if values.next().is_some() {
+        return UniqueToken::Invalid;
+    }
+    value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .filter(|token| !token.is_empty())
+        .map_or(UniqueToken::Invalid, UniqueToken::Valid)
 }
 
 /// The `token` query parameter of a `:path`, e.g. `/session?token=<hex>`.
-fn token_from_path(path: &str) -> Option<&str> {
-    let (_, query) = path.split_once('?')?;
-    query.split('&').find_map(|kv| kv.strip_prefix("token="))
+fn unique_query_token(path: &str) -> UniqueToken<'_> {
+    let Some((_, query)) = path.split_once('?') else {
+        return UniqueToken::Missing;
+    };
+    let mut values = query.split('&').filter_map(|kv| kv.strip_prefix("token="));
+    let Some(value) = values.next() else {
+        return UniqueToken::Missing;
+    };
+    if value.is_empty() || values.next().is_some() {
+        return UniqueToken::Invalid;
+    }
+    UniqueToken::Valid(value)
 }
 
 /// Fill `buf` from the WebTransport stream. Returns `Ok(true)` when `buf` is
@@ -634,6 +666,50 @@ mod tests {
                 let _ = accepted;
                 panic!("server must not accept a session without a token");
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn mixed_and_duplicate_token_carriers_are_refused() {
+        let (_tok_file, store) = token_store();
+        let (_dir, listener) = listener(Some(store));
+        let addr = listener.local_addr().unwrap();
+        let token = hex::encode(TEST_TOKEN);
+
+        let mixed_url = format!("https://127.0.0.1:{}/session?token={token}", addr.port());
+        let mixed = ConnectOptions::builder(&mixed_url)
+            .add_header("authorization", format!("Bearer {token}"))
+            .build();
+        let mixed_client = async {
+            assert!(client_endpoint().connect(mixed).await.is_err());
+        };
+        tokio::select! {
+            () = mixed_client => {}
+            _ = listener.accept() => panic!("mixed carriers were accepted"),
+        }
+
+        let duplicate_url = format!(
+            "https://127.0.0.1:{}/session?token={token}&token={token}",
+            addr.port()
+        );
+        let duplicate_client = async {
+            assert!(client_endpoint().connect(duplicate_url).await.is_err());
+        };
+        tokio::select! {
+            () = duplicate_client => {}
+            _ = listener.accept() => panic!("duplicate query tokens were accepted"),
+        }
+
+        let malformed_url = format!("https://127.0.0.1:{}/session", addr.port());
+        let malformed = ConnectOptions::builder(&malformed_url)
+            .add_header("authorization", "Basic not-a-bearer")
+            .build();
+        let malformed_client = async {
+            assert!(client_endpoint().connect(malformed).await.is_err());
+        };
+        tokio::select! {
+            () = malformed_client => {}
+            _ = listener.accept() => panic!("malformed bearer was accepted"),
         }
     }
 
