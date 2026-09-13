@@ -125,7 +125,22 @@ fn repo_checkout_fallback_finds_the_bundled_starter() {
 #[test]
 fn herdr_still_resolves_as_an_alias_of_starter() {
     let dirs = phux_config::distro::search_dirs();
-    let via_alias = resolve_distro_in("herdr", &dirs).expect("herdr aliases starter");
+    let via_alias = resolve_distro_in("herdr", &dirs).expect("herdr resolves");
+    assert!(
+        via_alias.ends_with("distros/herdr/herdr.toml"),
+        "in-tree herdr name hits the compatibility stub: {via_alias:?}"
+    );
     let via_name = resolve_distro_in("starter", &dirs).expect("starter resolves");
-    assert_eq!(via_alias, via_name);
+    assert!(
+        via_name.ends_with("distros/starter/starter.toml"),
+        "{via_name:?}"
+    );
+}
+
+#[test]
+fn herdr_name_falls_through_to_starter_when_the_stub_is_absent() {
+    let tmp = TempDir::new().expect("tempdir");
+    let starter = plant_distro(tmp.path(), "starter");
+    let resolved = resolve_distro_in("herdr", &[tmp.path().to_path_buf()]).expect("alias fallback");
+    assert_eq!(resolved, starter.canonicalize().expect("canonicalize"));
 }

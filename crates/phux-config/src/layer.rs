@@ -408,18 +408,58 @@ fn extends_entries(value: toml::Value, path: &Path) -> Result<Vec<String>, Confi
 /// `layers/n.toml` beside the declaring file.
 fn resolve_entry(entry: &str, declaring: &Path) -> PathBuf {
     let candidate = Path::new(entry);
-    if candidate.is_absolute() {
-        return candidate.to_path_buf();
-    }
-    let base = declaring.parent().unwrap_or_else(|| Path::new(""));
-    let has_toml_suffix = candidate
-        .extension()
-        .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"));
-    if entry.contains(std::path::MAIN_SEPARATOR) || entry.contains('/') || has_toml_suffix {
-        base.join(candidate)
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
     } else {
-        base.join("layers").join(format!("{entry}.toml"))
+        let base = declaring.parent().unwrap_or_else(|| Path::new(""));
+        let has_toml_suffix = candidate
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("toml"));
+        if entry.contains(std::path::MAIN_SEPARATOR) || entry.contains('/') || has_toml_suffix {
+            base.join(candidate)
+        } else {
+            base.join("layers").join(format!("{entry}.toml"))
+        }
+    };
+    rewrite_retired_distro_layer(&resolved)
+}
+
+/// `distros/herdr/herdr.toml` was renamed to `distros/starter/starter.toml`.
+///
+/// `phux config init --distro herdr` already aliases the bundled *name*.
+/// Existing configs baked the old absolute path, so a checkout that
+/// dropped the file made `phux update`'s re-exec refuse to start. If the
+/// named herdr layer is gone and `distros/starter/starter.toml` sits next
+/// to where it used to be, load that instead. A still-present herdr file
+/// (the compatibility stub) wins unchanged.
+fn rewrite_retired_distro_layer(path: &Path) -> PathBuf {
+    if path.is_file() {
+        return path.to_path_buf();
     }
+    let Some(starter) = herdr_layer_to_starter(path) else {
+        return path.to_path_buf();
+    };
+    if starter.is_file() {
+        starter
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// Map `.../distros/herdr/herdr.toml` to `.../distros/starter/starter.toml`.
+fn herdr_layer_to_starter(path: &Path) -> Option<PathBuf> {
+    if path.file_name()? != "herdr.toml" {
+        return None;
+    }
+    let herdr_dir = path.parent()?;
+    if herdr_dir.file_name()? != "herdr" {
+        return None;
+    }
+    let distros = herdr_dir.parent()?;
+    if distros.file_name()? != "distros" {
+        return None;
+    }
+    Some(distros.join("starter").join("starter.toml"))
 }
 
 /// Canonical identity for cycle / diamond detection. Falls back to the
@@ -676,5 +716,60 @@ mod budget_tests {
                 .remote,
             ordinary.remote
         );
+    }
+}
+
+#[cfg(test)]
+mod retired_distro_tests {
+    use super::{herdr_layer_to_starter, rewrite_retired_distro_layer};
+    use std::path::Path;
+
+    #[test]
+    fn herdr_toml_maps_onto_starter_toml_in_the_same_distros_tree() {
+        let old = Path::new("/Users/me/src/phux/distros/herdr/herdr.toml");
+        assert_eq!(
+            herdr_layer_to_starter(old).as_deref(),
+            Some(Path::new("/Users/me/src/phux/distros/starter/starter.toml"))
+        );
+        assert_eq!(
+            herdr_layer_to_starter(Path::new("/tmp/not-a-distro/herdr.toml")),
+            None
+        );
+        assert_eq!(
+            herdr_layer_to_starter(Path::new("/tmp/distros/other/other.toml")),
+            None
+        );
+    }
+
+    #[test]
+    fn missing_herdr_layer_loads_starter_when_it_sits_beside_the_old_path() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let distros = dir.path().join("distros");
+        std::fs::create_dir_all(distros.join("starter")).expect("starter dir");
+        std::fs::create_dir_all(distros.join("herdr")).expect("herdr dir");
+        std::fs::write(
+            distros.join("starter").join("starter.toml"),
+            "defaults.history-limit = 12345\n",
+        )
+        .expect("starter.toml");
+        let missing = distros.join("herdr").join("herdr.toml");
+        assert!(!missing.is_file());
+        let rewritten = rewrite_retired_distro_layer(&missing);
+        assert_eq!(rewritten, distros.join("starter").join("starter.toml"));
+
+        let user = dir.path().join("config.toml");
+        let input = format!("extends = [\"{}\"]\n", missing.display());
+        let cfg = crate::parse_with_defaults(&input, &user).expect("retired path still loads");
+        assert_eq!(cfg.defaults.history_limit, 12345);
+    }
+
+    #[test]
+    fn a_present_herdr_stub_is_not_rewritten() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let distros = dir.path().join("distros");
+        std::fs::create_dir_all(distros.join("herdr")).expect("herdr dir");
+        let stub = distros.join("herdr").join("herdr.toml");
+        std::fs::write(&stub, "defaults.history-limit = 7\n").expect("stub");
+        assert_eq!(rewrite_retired_distro_layer(&stub), stub);
     }
 }

@@ -20,13 +20,22 @@ use std::path::{Path, PathBuf};
 
 use phux_config::{Action, Config, parse_with_defaults};
 
-/// Absolute path to the checked-in herdr layer.
+/// Absolute path to the checked-in starter layer (the herdr rename target).
 fn herdr_layer() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
         .join("distros/starter/starter.toml")
         .canonicalize()
         .expect("distros/starter/starter.toml exists in the repo")
+}
+
+/// Absolute path to the compatibility stub that keeps pre-rename configs loading.
+fn herdr_compat_layer() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("distros/herdr/herdr.toml")
+        .canonicalize()
+        .expect("distros/herdr/herdr.toml remains as a compatibility alias")
 }
 
 /// Parse a user config body that extends the bundled herdr layer.
@@ -74,6 +83,28 @@ fn herdr_opinions_are_shipped_defaults_now() {
     assert_eq!(cfg.status.left.len(), 1);
     assert_eq!(cfg.status.center.len(), 1);
     assert_eq!(cfg.status.right.len(), 3);
+}
+
+/// Configs that still extend the pre-rename path must keep loading.
+#[test]
+fn herdr_compat_stub_loads_the_same_plugins_as_starter() {
+    let user = format!("extends = [\"{}\"]\n", herdr_compat_layer().display());
+    let via_stub = parse_with_defaults(&user, Path::new("/nonexistent-config-dir/config.toml"))
+        .expect("herdr.toml stub parses");
+    let via_starter = parse_with_herdr("");
+    assert_eq!(via_stub.plugins.len(), via_starter.plugins.len());
+    assert_eq!(
+        via_stub
+            .plugins
+            .iter()
+            .map(|p| p.manifest.clone())
+            .collect::<Vec<_>>(),
+        via_starter
+            .plugins
+            .iter()
+            .map(|p| p.manifest.clone())
+            .collect::<Vec<_>>()
+    );
 }
 
 /// The layer itself is now plugin wiring and nothing else. Extending it

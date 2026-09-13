@@ -65,7 +65,9 @@ phux config init --distro starter
 ```
 
 `--distro herdr` still resolves, as an alias, so existing notes keep
-working. The file is `distros/starter/starter.toml`.
+working. The file is `distros/starter/starter.toml`. Configs that still
+extend `distros/herdr/herdr.toml` keep loading through a compatibility
+stub at that path.
 
 ## screen
 

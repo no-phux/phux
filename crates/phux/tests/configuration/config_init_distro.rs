@@ -219,7 +219,7 @@ fn init_distro_herdr_alias_still_scaffolds_starter() {
     assert_eq!(code, 0, "herdr alias must succeed; stderr={stderr}");
     let written = std::fs::read_to_string(xdg.join("phux").join("config.toml")).expect("written");
     assert!(
-        written.contains("starter.toml"),
-        "herdr alias must extend starter: {written}"
+        written.contains("herdr.toml"),
+        "herdr name scaffolds the compatibility stub: {written}"
     );
 }
