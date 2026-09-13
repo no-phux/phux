@@ -61,34 +61,98 @@ pub const MAX_RESOURCE_NATIVE_ID_BYTES: usize = 1024;
 // sibling tasks can wire them up without re-deriving the catalog.
 // -----------------------------------------------------------------------------
 
+/// Wire type byte for one SPEC §7 message-catalog entry.
+///
+/// The public surface stays the `TYPE_*` consts below, each of which takes
+/// its value from a variant here. Declaring the catalog as a field-less
+/// `#[repr(u8)]` enum — the same protection [`ErrorCode`](super::ErrorCode)
+/// already has — makes a duplicated type byte compile error E0081, so two
+/// branches can no longer allocate the same discriminant and ship a silent
+/// protocol break (phux-ke0c). Retired slots stay out of the enum; their
+/// comments below keep the allocation history. A new allocation picks an
+/// open value from `docs/spec/appendix-reserved.md` §1 and adds the variant
+/// and its const in the same edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+enum FrameType {
+    Hello = 0x01,
+    Attach = 0x02,
+    Detach = 0x03,
+    InputKey = 0x10,
+    InputPaste = 0x11,
+    InputMouse = 0x12,
+    InputFocus = 0x14,
+    HistoryRequest = 0x16,
+    InputTerminalReply = 0x17,
+    FrameAck = 0x21,
+    ViewportResize = 0x20,
+    Ping = 0x7F,
+    HelloOk = 0x80,
+    Attached = 0x81,
+    Detached = 0x82,
+    AttachReady = 0x83,
+    Bell = 0xB0,
+    Error = 0xC1,
+    Pong = 0xFF,
+    ResourceOutput = 0x90,
+    BootstrapBegin = 0x93,
+    BootstrapChunk = 0x94,
+    BootstrapReady = 0x95,
+    HistoryPage = 0x96,
+    BootstrapTombstone = 0x97,
+    HistoryTombstone = 0x98,
+    HistoryRejected = 0x99,
+    FrameCompressed = 0x9A,
+    GetMetadata = 0x50,
+    SetMetadata = 0x51,
+    DeleteMetadata = 0x52,
+    ListMetadata = 0x53,
+    SubscribeMetadata = 0x54,
+    MetadataChanged = 0xD0,
+    MetadataValue = 0xD1,
+    MetadataKeys = 0xD2,
+    ListDirectory = 0x55,
+    DirectoryListing = 0xD3,
+    SpawnResource = 0x22,
+    ResizeTerminal = 0x23,
+    MoveResource = 0x2A,
+    ResourceMoved = 0xA8,
+    ResourceClosed = 0xA1,
+    ResourceSpawned = 0xA2,
+    Command = 0x31,
+    CommandResult = 0xC2,
+    SubscribeEvents = 0x41,
+    Event = 0xB3,
+}
+
 /// Discriminant for `HELLO` (client to server, `docs/spec/proto.md` §6.1).
-pub const TYPE_HELLO: u8 = 0x01;
+pub const TYPE_HELLO: u8 = FrameType::Hello as u8;
 /// Discriminant for `ATTACH` (client to server, `docs/spec/proto.md` §7.1 / §13).
-pub const TYPE_ATTACH: u8 = 0x02;
+pub const TYPE_ATTACH: u8 = FrameType::Attach as u8;
 /// Discriminant for `DETACH` (client to server, `docs/spec/proto.md` §7.1 / §7.3).
-pub const TYPE_DETACH: u8 = 0x03;
+pub const TYPE_DETACH: u8 = FrameType::Detach as u8;
 /// Discriminant for `INPUT_KEY` (client to server, `docs/spec/input.md` §2).
-pub const TYPE_INPUT_KEY: u8 = 0x10;
+pub const TYPE_INPUT_KEY: u8 = FrameType::InputKey as u8;
 /// Discriminant for `INPUT_PASTE` (client to server, `docs/spec/input.md` §5).
-pub const TYPE_INPUT_PASTE: u8 = 0x11;
+pub const TYPE_INPUT_PASTE: u8 = FrameType::InputPaste as u8;
 /// Discriminant for `INPUT_MOUSE` (client to server, `docs/spec/input.md` §3).
-pub const TYPE_INPUT_MOUSE: u8 = 0x12;
+pub const TYPE_INPUT_MOUSE: u8 = FrameType::InputMouse as u8;
 /// Discriminant for `INPUT_FOCUS` (client to server, `docs/spec/input.md` §4).
-pub const TYPE_INPUT_FOCUS: u8 = 0x14;
+pub const TYPE_INPUT_FOCUS: u8 = FrameType::InputFocus as u8;
 // 0x15 was `INPUT_SELECTION`, removed in v0.5.0 (phux-q1ni, ADR-0030):
 // selection is a client-side projection over the consumer's own engine, not a
 // wire frame. The discriminant is left unassigned.
 /// Discriminant for `HISTORY_REQUEST` (client to server, `docs/spec/L1.md` §4.5).
-pub const TYPE_HISTORY_REQUEST: u8 = 0x16;
+pub const TYPE_HISTORY_REQUEST: u8 = FrameType::HistoryRequest as u8;
 /// Discriminant for `INPUT_TERMINAL_REPLY` (client to server,
 /// `docs/spec/input.md` §6).
-pub const TYPE_INPUT_TERMINAL_REPLY: u8 = 0x17;
+pub const TYPE_INPUT_TERMINAL_REPLY: u8 = FrameType::InputTerminalReply as u8;
 /// Discriminant for StateSync-only `FRAME_ACK` (client to server,
 /// `docs/spec/proto.md` §8.2).
 ///
 /// Cumulative within one `(ResourceId, StreamId, BootstrapId)` after the
 /// client applies the acknowledged transition. Raw profiles never send it.
-pub const TYPE_FRAME_ACK: u8 = 0x21;
+pub const TYPE_FRAME_ACK: u8 = FrameType::FrameAck as u8;
 /// Discriminant for `VIEWPORT_RESIZE` (client to server, `docs/spec/proto.md` §7.1 / §10.5).
 ///
 /// The client emits this when its outer terminal changes size (SIGWINCH on
@@ -96,57 +160,57 @@ pub const TYPE_FRAME_ACK: u8 = 0x21;
 /// [`ViewportInfo`] shape carried by `ATTACH` (§13) — phux-4hp keeps the wire
 /// shape minimal and lets future tickets grow the per-cell pixel + padding
 /// metrics from SPEC §10.5 when the mouse-encoder needs them.
-pub const TYPE_VIEWPORT_RESIZE: u8 = 0x20;
+pub const TYPE_VIEWPORT_RESIZE: u8 = FrameType::ViewportResize as u8;
 /// Discriminant for `PING` (client to server, `docs/spec/proto.md` §7.4).
-pub const TYPE_PING: u8 = 0x7F;
+pub const TYPE_PING: u8 = FrameType::Ping as u8;
 /// Discriminant for `HELLO_OK` (server to client, `docs/spec/proto.md` §6.1).
-pub const TYPE_HELLO_OK: u8 = 0x80;
+pub const TYPE_HELLO_OK: u8 = FrameType::HelloOk as u8;
 /// Discriminant for `ATTACHED` (server to client, `docs/spec/L1.md` §8).
-pub const TYPE_ATTACHED: u8 = 0x81;
+pub const TYPE_ATTACHED: u8 = FrameType::Attached as u8;
 /// Discriminant for `DETACHED` (server to client, `docs/spec/L1.md` §1 / §7.3).
-pub const TYPE_DETACHED: u8 = 0x82;
+pub const TYPE_DETACHED: u8 = FrameType::Detached as u8;
 /// Discriminant for `ATTACH_READY` (server to client, `docs/spec/L1.md` §8).
-pub const TYPE_ATTACH_READY: u8 = 0x83;
+pub const TYPE_ATTACH_READY: u8 = FrameType::AttachReady as u8;
 /// Discriminant for `BELL` (server to client, `docs/spec/L1.md` §1.2).
-pub const TYPE_BELL: u8 = 0xB0;
+pub const TYPE_BELL: u8 = FrameType::Bell as u8;
 /// Discriminant for `ERROR` (server to client, `docs/spec/proto.md` §9).
 ///
 /// Carries a structured [`ErrorCode`] plus a human-readable UTF-8 message
 /// and an optional `request_id` correlating the error with a prior
 /// `COMMAND` (per SPEC §14). Fatal errors MUST be followed by `DETACHED
 /// { reason: PROTOCOL_ERROR }` and transport close.
-pub const TYPE_ERROR: u8 = 0xC1;
+pub const TYPE_ERROR: u8 = FrameType::Error as u8;
 /// Discriminant for `PONG` (server to client, `docs/spec/proto.md` §7.4).
-pub const TYPE_PONG: u8 = 0xFF;
+pub const TYPE_PONG: u8 = FrameType::Pong as u8;
 /// Discriminant for generation-bound `RESOURCE_OUTPUT` (server to client,
 /// `docs/spec/L1.md` §4.1). Native-profile payloads are byte-identical raw PTY
 /// bytes and are never capability-rewritten.
-pub const TYPE_RESOURCE_OUTPUT: u8 = 0x90;
+pub const TYPE_RESOURCE_OUTPUT: u8 = FrameType::ResourceOutput as u8;
 // 0x91 was `TERMINAL_SNAPSHOT` through protocol 0.6. It is permanently
 // retired by ADR-0070 and MUST NOT be decoded or reassigned.
 /// Discriminant for `BOOTSTRAP_BEGIN` (server to client, `docs/spec/L1.md` §4.3).
-pub const TYPE_BOOTSTRAP_BEGIN: u8 = 0x93;
+pub const TYPE_BOOTSTRAP_BEGIN: u8 = FrameType::BootstrapBegin as u8;
 /// Discriminant for `BOOTSTRAP_CHUNK` (server to client, `docs/spec/L1.md` §4.3).
-pub const TYPE_BOOTSTRAP_CHUNK: u8 = 0x94;
+pub const TYPE_BOOTSTRAP_CHUNK: u8 = FrameType::BootstrapChunk as u8;
 /// Discriminant for `BOOTSTRAP_READY` (server to client, `docs/spec/L1.md` §4.3).
-pub const TYPE_BOOTSTRAP_READY: u8 = 0x95;
+pub const TYPE_BOOTSTRAP_READY: u8 = FrameType::BootstrapReady as u8;
 /// Discriminant for `HISTORY_PAGE` (server to client, `docs/spec/L1.md` §4.5).
-pub const TYPE_HISTORY_PAGE: u8 = 0x96;
+pub const TYPE_HISTORY_PAGE: u8 = FrameType::HistoryPage as u8;
 /// Discriminant for `BOOTSTRAP_TOMBSTONE` (server to client, `docs/spec/L1.md` §4.6).
-pub const TYPE_BOOTSTRAP_TOMBSTONE: u8 = 0x97;
+pub const TYPE_BOOTSTRAP_TOMBSTONE: u8 = FrameType::BootstrapTombstone as u8;
 /// Discriminant for cursor-scoped `HISTORY_TOMBSTONE` (server to client,
 /// `docs/spec/L1.md` §4.5).
-pub const TYPE_HISTORY_TOMBSTONE: u8 = 0x98;
+pub const TYPE_HISTORY_TOMBSTONE: u8 = FrameType::HistoryTombstone as u8;
 /// Discriminant for retryable cursor-scoped `HISTORY_REJECTED` (server to
 /// client, `docs/spec/L1.md` §4.5).
-pub const TYPE_HISTORY_REJECTED: u8 = 0x99;
+pub const TYPE_HISTORY_REJECTED: u8 = FrameType::HistoryRejected as u8;
 /// Discriminant for `FRAME_COMPRESSED` (server to client).
 ///
 /// A negotiated envelope carrying one deflated inner frame
 /// (`docs/spec/proto.md` §6.4). Allocated from the `0x9A..=0x9F` hot-path
 /// reserve (`docs/spec/appendix-reserved.md` §1) because it wraps the hot
 /// path's largest frames.
-pub const TYPE_FRAME_COMPRESSED: u8 = 0x9A;
+pub const TYPE_FRAME_COMPRESSED: u8 = FrameType::FrameCompressed as u8;
 
 // -----------------------------------------------------------------------------
 // L3 metadata frame discriminants — SPEC §7.4 (phux-4li.2).
@@ -161,18 +225,18 @@ pub const TYPE_FRAME_COMPRESSED: u8 = 0x9A;
 // -----------------------------------------------------------------------------
 
 /// Discriminant for `GET_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
-pub const TYPE_GET_METADATA: u8 = 0x50;
+pub const TYPE_GET_METADATA: u8 = FrameType::GetMetadata as u8;
 /// Discriminant for `SET_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
-pub const TYPE_SET_METADATA: u8 = 0x51;
+pub const TYPE_SET_METADATA: u8 = FrameType::SetMetadata as u8;
 /// Discriminant for `DELETE_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
-pub const TYPE_DELETE_METADATA: u8 = 0x52;
+pub const TYPE_DELETE_METADATA: u8 = FrameType::DeleteMetadata as u8;
 /// Discriminant for `LIST_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
-pub const TYPE_LIST_METADATA: u8 = 0x53;
+pub const TYPE_LIST_METADATA: u8 = FrameType::ListMetadata as u8;
 /// Discriminant for `SUBSCRIBE_METADATA` (client to server, `docs/spec/L3.md` §1).
-pub const TYPE_SUBSCRIBE_METADATA: u8 = 0x54;
+pub const TYPE_SUBSCRIBE_METADATA: u8 = FrameType::SubscribeMetadata as u8;
 
 /// Discriminant for `METADATA_CHANGED` (server to client, `docs/spec/L3.md` §1).
-pub const TYPE_METADATA_CHANGED: u8 = 0xD0;
+pub const TYPE_METADATA_CHANGED: u8 = FrameType::MetadataChanged as u8;
 
 /// Conventional L3 metadata key holding a session's human-readable name.
 ///
@@ -330,7 +394,7 @@ pub const CONFIG_RELOAD_KEY: &str = "phux.config.reload/v1";
 /// Reply frame for `GET_METADATA`; correlated by `request_id`. Carries
 /// `Option<bytes>` — `Some(bytes)` when the key holds a value,
 /// `None` when the key is absent. Allocated by phux-4li.8.
-pub const TYPE_METADATA_VALUE: u8 = 0xD1;
+pub const TYPE_METADATA_VALUE: u8 = FrameType::MetadataValue as u8;
 
 /// Discriminant for `METADATA_KEYS` (server to client, `docs/spec/L3.md` §1).
 ///
@@ -338,20 +402,20 @@ pub const TYPE_METADATA_VALUE: u8 = 0xD1;
 /// the lexicographically sorted list of key names present in the
 /// requested scope (values are not included; LIST is by-key-name only).
 /// Allocated by phux-4li.8.
-pub const TYPE_METADATA_KEYS: u8 = 0xD2;
+pub const TYPE_METADATA_KEYS: u8 = FrameType::MetadataKeys as u8;
 
 /// Discriminant for `LIST_DIRECTORY` (client to server, `docs/spec/L3.md` §4).
 ///
 /// A host query: list the child directories of a path on the serving host.
 /// Allocated from the open `0x55..=0x5F` tail of the L3 C→S block; gated on
 /// [`ServerFeature::ListDirectory`](crate::caps::ServerFeature::ListDirectory).
-pub const TYPE_LIST_DIRECTORY: u8 = 0x55;
+pub const TYPE_LIST_DIRECTORY: u8 = FrameType::ListDirectory as u8;
 
 /// Discriminant for `DIRECTORY_LISTING` (server to client, `docs/spec/L3.md` §4).
 ///
 /// Reply frame for `LIST_DIRECTORY`; correlated by `request_id`. Carries
 /// either the listing or a typed refusal.
-pub const TYPE_DIRECTORY_LISTING: u8 = 0xD3;
+pub const TYPE_DIRECTORY_LISTING: u8 = FrameType::DirectoryListing as u8;
 
 // -----------------------------------------------------------------------------
 // L1 Terminal lifecycle frame discriminants — SPEC §7.2 / §10.1 (phux-4li.10).
@@ -375,14 +439,14 @@ pub const TYPE_DIRECTORY_LISTING: u8 = 0xD3;
 /// Carries `{ request_id, group, command: Option<list<str>>,
 /// cwd: Option<str>, env: Option<list<(str, str)>> }`. The reply rides on
 /// [`TYPE_RESOURCE_SPAWNED`] correlated by `request_id`.
-pub const TYPE_SPAWN_RESOURCE: u8 = 0x22;
+pub const TYPE_SPAWN_RESOURCE: u8 = FrameType::SpawnResource as u8;
 /// Discriminant for `RESIZE_TERMINAL` (client to server, `docs/spec/L1.md` §1 / §10.2).
 ///
 /// Per-Terminal PTY resize. Drives `ioctl(TIOCSWINSZ)` server-side; the
 /// outer-viewport `VIEWPORT_RESIZE` (`0x20`) remains the
 /// minimum-bounding-box signal. Both flow from a single SIGWINCH on the
 /// client (phux-4li.9).
-pub const TYPE_RESIZE_TERMINAL: u8 = 0x23;
+pub const TYPE_RESIZE_TERMINAL: u8 = FrameType::ResizeTerminal as u8;
 
 // ---------------------------------------------------------------------------
 // `0x24..=0x29` C→S and `0xA3..=0xA7` S→C stay unallocated. The PTY-less
@@ -403,25 +467,25 @@ pub const TYPE_RESIZE_TERMINAL: u8 = 0x23;
 /// `request_id`. Gated on the `MOVE_RESOURCE` server feature bit
 /// (`crate::caps::MOVE_RESOURCE`); allocated at `0x2A`, past the
 /// unallocated `0x24..=0x29` block.
-pub const TYPE_MOVE_RESOURCE: u8 = 0x2A;
+pub const TYPE_MOVE_RESOURCE: u8 = FrameType::MoveResource as u8;
 /// Discriminant for `RESOURCE_MOVED` (server to client, `docs/spec/L1.md`
 /// §1 / §10.1; ADR-0056).
 ///
 /// Reply frame for `MOVE_RESOURCE`; correlated by `request_id`. Carries a
 /// `Result<ResourceId, MoveError>` tagged union — see [`MoveResult`].
 /// Allocated at `0xA8`, past the unallocated `0xA3..=0xA7` block.
-pub const TYPE_RESOURCE_MOVED: u8 = 0xA8;
+pub const TYPE_RESOURCE_MOVED: u8 = FrameType::ResourceMoved as u8;
 
 /// Discriminant for `RESOURCE_CLOSED` (server to client, `docs/spec/L1.md` §1 / §10.1).
 ///
 /// Push notification when a Terminal's PTY exits, naturally or via
 /// `KILL_RESOURCE`. Honours the spec-only reservation at `0xA1`.
-pub const TYPE_RESOURCE_CLOSED: u8 = 0xA1;
+pub const TYPE_RESOURCE_CLOSED: u8 = FrameType::ResourceClosed as u8;
 /// Discriminant for `RESOURCE_SPAWNED` (server to client, `docs/spec/L1.md` §1 / §10.1).
 ///
 /// Reply frame for `SPAWN_RESOURCE`; correlated by `request_id`. Carries a
 /// `Result<ResourceId, SpawnError>` tagged union — see [`SpawnResult`].
-pub const TYPE_RESOURCE_SPAWNED: u8 = 0xA2;
+pub const TYPE_RESOURCE_SPAWNED: u8 = FrameType::ResourceSpawned as u8;
 
 // Wire tags for the `SpawnResult` tagged union (SPEC §7.2 / §10.1).
 //
@@ -482,9 +546,9 @@ pub(crate) const SCOPE_TAG_GLOBAL: u8 = 2;
 // -----------------------------------------------------------------------------
 
 /// Discriminant for `COMMAND` (client to server, `docs/spec/L1.md` §5).
-pub const TYPE_COMMAND: u8 = 0x31;
+pub const TYPE_COMMAND: u8 = FrameType::Command as u8;
 /// Discriminant for `COMMAND_RESULT` (server to client, `docs/spec/L1.md` §5).
-pub const TYPE_COMMAND_RESULT: u8 = 0xC2;
+pub const TYPE_COMMAND_RESULT: u8 = FrameType::CommandResult as u8;
 
 // -----------------------------------------------------------------------------
 // Agent-event frame discriminants — SPEC §7.5 (phux-y2t / ADR-0022 'events').
@@ -501,9 +565,9 @@ pub const TYPE_COMMAND_RESULT: u8 = 0xC2;
 // -----------------------------------------------------------------------------
 
 /// Discriminant for `SUBSCRIBE_EVENTS` (client to server, `docs/spec/L1.md` §7.5).
-pub const TYPE_SUBSCRIBE_EVENTS: u8 = 0x41;
+pub const TYPE_SUBSCRIBE_EVENTS: u8 = FrameType::SubscribeEvents as u8;
 /// Discriminant for `EVENT` (server to client, `docs/spec/L1.md` §7.5).
-pub const TYPE_EVENT: u8 = 0xB3;
+pub const TYPE_EVENT: u8 = FrameType::Event as u8;
 
 // Wire tags for the `AgentEvent` tagged union (SPEC §7.5 / §10.3).
 //
@@ -550,6 +614,40 @@ pub(crate) const EVENT_TAG_ASKED: u8 = 0x09;
 /// output-idle and coalesced on change. Backs the `cwd` status widget.
 pub(crate) const EVENT_TAG_CWD_CHANGED: u8 = 0x0a;
 
+/// Wire tag for one [`Command`] variant inside the `COMMAND` envelope
+/// (SPEC §5.1), the same compile-time-unique discipline as [`FrameType`]:
+/// `docs/spec/appendix-reserved.md` §2 is this enum's allocation registry,
+/// and a duplicate tag is compile error E0081 rather than a silent protocol
+/// break (phux-ke0c). The freed `0x0a` / `0x0b` slots stay out of the enum;
+/// the const docs below keep their history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+enum CommandTag {
+    AttachResource = 0x01,
+    DetachResource = 0x02,
+    KillResource = 0x03,
+    GetState = 0x05,
+    GetScreen = 0x07,
+    RouteInput = 0x08,
+    KillResources = 0x09,
+    GetTerminalState = 0x0c,
+    SubscribeResourceEvents = 0x0d,
+    Upgrade = 0x0e,
+    AcquireInput = 0x0f,
+    ReleaseInput = 0x10,
+    SignalTerminal = 0x11,
+    ReportAsked = 0x12,
+    DetachClients = 0x13,
+    ApplyInput = 0x14,
+    PutFile = 0x15,
+    Shutdown = 0x16,
+    ReportAgentState = 0x17,
+    GetPerf = 0x18,
+    Transcribe = 0x19,
+    AppendResourceOutput = 0x1a,
+    KillResourceIf = 0x1b,
+}
+
 // Wire tags for the `Command` tagged union (SPEC §5.1). Tags follow the
 // spec catalog order so the allocation is stable as later verbs land:
 // SPAWN=0x00, ATTACH_RESOURCE=0x01, DETACH_RESOURCE=0x02, KILL_RESOURCE=0x03,
@@ -565,27 +663,27 @@ pub(crate) const EVENT_TAG_CWD_CHANGED: u8 = 0x0a;
 /// `RolePolicy { requested_role: PRIMARY, takeover: NEVER }` per SPEC §8.1,
 /// which is exactly what this body-less-policy encoding means; the field
 /// lands additively behind its own wire bump.
-pub(crate) const COMMAND_TAG_ATTACH_RESOURCE: u8 = 0x01;
+pub(crate) const COMMAND_TAG_ATTACH_RESOURCE: u8 = CommandTag::AttachResource as u8;
 /// Wire tag for [`Command::DetachResource`], taking the `0x02` slot the
 /// SPEC §5.1 catalog reserved for `DETACH_RESOURCE` (phux-v45.7). Drops the
 /// caller's per-Terminal output subscription (the `ATTACH_RESOURCE`
 /// counterpart) and its per-Terminal event-stream subscription; the
 /// Terminal itself is unaffected.
-pub(crate) const COMMAND_TAG_DETACH_RESOURCE: u8 = 0x02;
+pub(crate) const COMMAND_TAG_DETACH_RESOURCE: u8 = CommandTag::DetachResource as u8;
 /// Wire tag for [`Command::KillResource`].
-pub(crate) const COMMAND_TAG_KILL_RESOURCE: u8 = 0x03;
+pub(crate) const COMMAND_TAG_KILL_RESOURCE: u8 = CommandTag::KillResource as u8;
 /// Wire tag for [`Command::GetState`].
-pub(crate) const COMMAND_TAG_GET_STATE: u8 = 0x05;
+pub(crate) const COMMAND_TAG_GET_STATE: u8 = CommandTag::GetState as u8;
 /// Wire tag for [`Command::GetScreen`]. Appended after `RUN_HOOK`'s
 /// reserved `0x06` (SPEC §5.1 catalog order); `GET_SCREEN` is an additive
 /// agent-surface command (ADR-0022 §5), not part of the original catalog.
-pub(crate) const COMMAND_TAG_GET_SCREEN: u8 = 0x07;
+pub(crate) const COMMAND_TAG_GET_SCREEN: u8 = CommandTag::GetScreen as u8;
 /// Wire tag for [`Command::RouteInput`]. Appended after `GET_SCREEN`'s
 /// `0x07`; `ROUTE_INPUT` is an additive agent-surface command (ADR-0022)
 /// that delivers an already-built input event to a Terminal without an
 /// attach, subscription, or resize — the write counterpart to the
 /// side-effect-free `GET_SCREEN` read.
-pub(crate) const COMMAND_TAG_ROUTE_INPUT: u8 = 0x08;
+pub(crate) const COMMAND_TAG_ROUTE_INPUT: u8 = CommandTag::RouteInput as u8;
 /// Wire tag for [`Command::KillResources`]. Reuses the `0x09` slot freed
 /// when the L2 lifecycle verbs (`CREATE_SESSION` / `KILL_COLLECTION` /
 /// `RENAME_SESSION`) were dissolved in the v0.3.0 "Option B" re-tier
@@ -599,7 +697,7 @@ pub(crate) const COMMAND_TAG_ROUTE_INPUT: u8 = 0x08;
 /// rides `COMMAND_RESULT { Ok }` (the async `RESOURCE_CLOSED` frames
 /// confirm teardown), the same ack shape `KILL_RESOURCE` uses. Backs
 /// `phux kill SESSION`.
-pub(crate) const COMMAND_TAG_KILL_RESOURCES: u8 = 0x09;
+pub(crate) const COMMAND_TAG_KILL_RESOURCES: u8 = CommandTag::KillResources as u8;
 /// Wire tag for [`Command::GetTerminalState`]. Appended after
 /// `RENAME_SESSION`'s `0x0b`; `GET_TERMINAL_STATE` is an additive
 /// L2 Collection-aware query (ADR-0015 L2) that returns a comprehensive
@@ -609,65 +707,66 @@ pub(crate) const COMMAND_TAG_KILL_RESOURCES: u8 = 0x09;
 /// phux-server). Unlike `GET_SCREEN` (L1 raw
 /// grid), this returns structured state suitable for agent polling and
 /// change detection. The reply rides `COMMAND_RESULT { Ok_With(Json(..)) }`.
-pub(crate) const COMMAND_TAG_GET_TERMINAL_STATE: u8 = 0x0c;
-pub(crate) const COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS: u8 = 0x0d;
+pub(crate) const COMMAND_TAG_GET_TERMINAL_STATE: u8 = CommandTag::GetTerminalState as u8;
+pub(crate) const COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS: u8 =
+    CommandTag::SubscribeResourceEvents as u8;
 /// Wire tag for [`Command::Upgrade`]. Appended after
 /// `SUBSCRIBE_RESOURCE_EVENTS`'s `0x0d`; `UPGRADE` is an additive control
 /// command (ADR-0032) that triggers a graceful in-place re-exec. It carries no
 /// payload — the handoff state blob is built and passed server-side.
-pub(crate) const COMMAND_TAG_UPGRADE: u8 = 0x0e;
+pub(crate) const COMMAND_TAG_UPGRADE: u8 = CommandTag::Upgrade as u8;
 /// Wire tag for [`Command::AcquireInput`]. The first of the three
 /// supervisory verbs (ADR-0033, "take the wheel + kill"): asserts an
 /// exclusive input lease over a Terminal so a human/operator can seize the
 /// stdin write path from whatever is driving the pane.
-pub(crate) const COMMAND_TAG_ACQUIRE_INPUT: u8 = 0x0f;
+pub(crate) const COMMAND_TAG_ACQUIRE_INPUT: u8 = CommandTag::AcquireInput as u8;
 /// Wire tag for [`Command::ReleaseInput`]. Drops the input lease held over a
 /// Terminal, returning it to `Open` (any subscriber's input passes). ADR-0033.
-pub(crate) const COMMAND_TAG_RELEASE_INPUT: u8 = 0x10;
+pub(crate) const COMMAND_TAG_RELEASE_INPUT: u8 = CommandTag::ReleaseInput as u8;
 /// Wire tag for [`Command::SignalTerminal`]. Delivers an explicit POSIX
 /// signal (interrupt / freeze / resume / terminate / kill) to the process
 /// group inside a Terminal — distinct from `KILL_RESOURCE`, which removes the
 /// pane. The reversible `Freeze`/`Resume` brake lives here. ADR-0033.
-pub(crate) const COMMAND_TAG_SIGNAL_TERMINAL: u8 = 0x11;
+pub(crate) const COMMAND_TAG_SIGNAL_TERMINAL: u8 = CommandTag::SignalTerminal as u8;
 /// Wire tag for [`Command::ReportAsked`]. This is the opt-in agent hook
 /// ingress for ADR-0036: configured integrations can report the same payload
 /// as `AgentEvent::Asked` without writing terminal-title escape sequences.
 /// The server validates and emits the normal `EVENT` frame; no new event kind
 /// or consumer surface is introduced.
-pub(crate) const COMMAND_TAG_REPORT_ASKED: u8 = 0x12;
+pub(crate) const COMMAND_TAG_REPORT_ASKED: u8 = CommandTag::ReportAsked as u8;
 /// Wire tag for [`Command::DetachClients`]. Force-detaches the clients
 /// attached to a session (or every attached client when the target session
 /// is absent) from *outside* the attach UI — the `phux detach` verb. Unlike
 /// `FrameKind::Detach`, which detaches the sending connection, this targets
 /// other clients by session name.
-pub(crate) const COMMAND_TAG_DETACH_CLIENTS: u8 = 0x13;
+pub(crate) const COMMAND_TAG_DETACH_CLIENTS: u8 = CommandTag::DetachClients as u8;
 /// Wire tag for [`Command::ApplyInput`].
-pub(crate) const COMMAND_TAG_APPLY_INPUT: u8 = 0x14;
+pub(crate) const COMMAND_TAG_APPLY_INPUT: u8 = CommandTag::ApplyInput as u8;
 /// Maximum number of events in one [`Command::ApplyInput`] batch.
 pub const MAX_APPLY_INPUT_EVENTS: usize = 256;
 /// Maximum encoded bytes in the nested [`Command::ApplyInput`] command body.
 pub const MAX_APPLY_INPUT_COMMAND_BODY: usize = 64 * 1024;
 /// Wire tag for [`Command::PutFile`].
-pub(crate) const COMMAND_TAG_PUT_FILE: u8 = 0x15;
+pub(crate) const COMMAND_TAG_PUT_FILE: u8 = CommandTag::PutFile as u8;
 /// Wire tag for [`Command::Shutdown`]. Appended after `PUT_FILE`'s `0x15`;
 /// `0x0a` and `0x0b` are freed-and-reserved and MUST NOT be reallocated
 /// without a `minor` bump (`appendix-reserved.md`).
-pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = 0x16;
+pub(crate) const COMMAND_TAG_SHUTDOWN: u8 = CommandTag::Shutdown as u8;
 /// Wire tag for [`Command::ReportAgentState`].
-pub(crate) const COMMAND_TAG_REPORT_AGENT_STATE: u8 = 0x17;
+pub(crate) const COMMAND_TAG_REPORT_AGENT_STATE: u8 = CommandTag::ReportAgentState as u8;
 /// Wire tag for [`Command::GetPerf`]. Appended after `REPORT_AGENT_STATE`.
-pub(crate) const COMMAND_TAG_GET_PERF: u8 = 0x18;
+pub(crate) const COMMAND_TAG_GET_PERF: u8 = CommandTag::GetPerf as u8;
 /// Wire tag for [`Command::Transcribe`]. Appended after `GET_PERF`.
-pub(crate) const COMMAND_TAG_TRANSCRIBE: u8 = 0x19;
+pub(crate) const COMMAND_TAG_TRANSCRIBE: u8 = CommandTag::Transcribe as u8;
 /// Wire tag for [`Command::AppendResourceOutput`]. Appended after
 /// `TRANSCRIBE`; the producer verb of a producer-fed resource, gated on
 /// `ServerFeature::ResourceKinds`.
-pub(crate) const COMMAND_TAG_APPEND_RESOURCE_OUTPUT: u8 = 0x1a;
+pub(crate) const COMMAND_TAG_APPEND_RESOURCE_OUTPUT: u8 = CommandTag::AppendResourceOutput as u8;
 /// Wire tag for [`Command::KillResourceIf`]. Appended after
 /// `APPEND_RESOURCE_OUTPUT`; gated on `ServerFeature::ConditionalKill`
 /// (ADR-0109). A new tag rather than a field on `KILL_RESOURCE`, so a peer
 /// without the feature fails to decode it instead of killing unconditionally.
-pub(crate) const COMMAND_TAG_KILL_RESOURCE_IF: u8 = 0x1b;
+pub(crate) const COMMAND_TAG_KILL_RESOURCE_IF: u8 = CommandTag::KillResourceIf as u8;
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
 // mirror the four `INPUT_*` frame atoms (`docs/spec/input.md`).
@@ -716,6 +815,113 @@ pub(crate) const ATTACH_TARGET_BY_NAME: u8 = 1;
 pub(crate) const ATTACH_TARGET_BY_ID: u8 = 2;
 /// Wire tag for [`AttachTarget::CreateIfMissing`].
 pub(crate) const ATTACH_TARGET_CREATE_IF_MISSING: u8 = 3;
+
+// -----------------------------------------------------------------------------
+// Compile-time uniqueness for the hand-allocated wire tags (phux-ke0c).
+//
+// The SPEC §7 message catalog and the §5.1 command tags take their values
+// from the [`FrameType`] / [`CommandTag`] enums above, so rustc rejects a
+// duplicate discriminant outright. The remaining `u8` tags mirror
+// data-carrying tagged unions, which cannot be `#[repr(u8)]` casts; their
+// consts keep literal values and are checked here instead. A duplicate
+// inside any one of these families is the same protocol break as a
+// duplicated frame type byte, and no decode match arm would catch it for a
+// tag with no consumer yet. The `wire_tag_consts_are_uniqueness_checked`
+// test below keeps every literal tag const in one of these lists.
+// -----------------------------------------------------------------------------
+
+/// Compile-time assertion that one family of wire tags has no duplicates.
+const fn assert_unique_tags(tags: &[u8]) {
+    let mut i = 0;
+    while i < tags.len() {
+        let mut j = i + 1;
+        while j < tags.len() {
+            assert!(
+                tags[i] != tags[j],
+                "duplicate wire tag in one tagged-union family"
+            );
+            j += 1;
+        }
+        i += 1;
+    }
+}
+
+// `SpawnResult` result tags (SPEC §10.1).
+const _: () = assert_unique_tags(&[SPAWN_RESULT_OK, SPAWN_RESULT_ERR]);
+
+// `SpawnError` tags (SPEC §10.1).
+const _: () = assert_unique_tags(&[
+    SPAWN_ERROR_TAG_GROUP_NOT_FOUND,
+    SPAWN_ERROR_TAG_SPAWN_FAILED,
+    SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE,
+    SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE,
+    SPAWN_ERROR_TAG_UNSUPPORTED_KIND,
+    SPAWN_ERROR_TAG_PARENT_NOT_FOUND,
+    SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH,
+]);
+
+// `MoveResult` result tags (ADR-0056).
+const _: () = assert_unique_tags(&[MOVE_RESULT_OK, MOVE_RESULT_ERR]);
+
+// `MoveError` tags (ADR-0056).
+const _: () = assert_unique_tags(&[
+    MOVE_ERROR_TAG_MOVE_FAILED,
+    MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE,
+]);
+
+// `Scope` tags (SPEC §7.4 / §11.L3).
+const _: () = assert_unique_tags(&[SCOPE_TAG_RESOURCE, SCOPE_TAG_GROUP, SCOPE_TAG_GLOBAL]);
+
+// `AgentEvent` event-kind tags (SPEC §7.5 / §10.3).
+const _: () = assert_unique_tags(&[
+    EVENT_TAG_COMMAND_STARTED,
+    EVENT_TAG_COMMAND_FINISHED,
+    EVENT_TAG_TITLE_CHANGED,
+    EVENT_TAG_BELL,
+    EVENT_TAG_RESOURCE_SPAWNED,
+    EVENT_TAG_RESOURCE_CLOSED,
+    EVENT_TAG_DIRTY,
+    EVENT_TAG_IDLE,
+    EVENT_TAG_TERMINAL_CONTROL,
+    EVENT_TAG_ASKED,
+    EVENT_TAG_CWD_CHANGED,
+]);
+
+// `InputEvent` tags (the `ROUTE_INPUT` argument, `docs/spec/input.md`).
+const _: () = assert_unique_tags(&[
+    INPUT_EVENT_TAG_KEY,
+    INPUT_EVENT_TAG_MOUSE,
+    INPUT_EVENT_TAG_FOCUS,
+    INPUT_EVENT_TAG_PASTE,
+]);
+
+// `StateScope` tags (SPEC §5.1, `GET_STATE` argument).
+const _: () = assert_unique_tags(&[STATE_SCOPE_TAG_SERVER]);
+
+// `CommandResult` tags (SPEC §5).
+const _: () = assert_unique_tags(&[
+    COMMAND_RESULT_TAG_OK,
+    COMMAND_RESULT_TAG_OK_WITH,
+    COMMAND_RESULT_TAG_ERROR,
+]);
+
+// `CommandValue` tags (SPEC §5).
+const _: () = assert_unique_tags(&[
+    COMMAND_VALUE_TAG_RESOURCE_ID,
+    COMMAND_VALUE_TAG_GROUP_ID,
+    COMMAND_VALUE_TAG_STATE,
+    COMMAND_VALUE_TAG_JSON,
+    COMMAND_VALUE_TAG_BYTES,
+    COMMAND_VALUE_TAG_FILE_UPLOAD,
+]);
+
+// `AttachTarget` tags (SPEC §13).
+const _: () = assert_unique_tags(&[
+    ATTACH_TARGET_LAST,
+    ATTACH_TARGET_BY_NAME,
+    ATTACH_TARGET_BY_ID,
+    ATTACH_TARGET_CREATE_IF_MISSING,
+]);
 
 mod codec;
 mod command;
@@ -767,3 +973,79 @@ pub(in crate::wire) use command_codec::{
     encode_command_result,
 };
 pub(in crate::wire) use directory::{decode_directory_listing, decode_list_directory};
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    /// Every `u8` wire-tag const in this file is duplicate-proof at compile
+    /// time. `TYPE_` and `COMMAND_TAG_` consts must take their value from
+    /// the [`FrameType`] / [`CommandTag`] enums (a repeated enum
+    /// discriminant is compile error E0081); every other tag const must
+    /// keep a literal value only inside an [`assert_unique_tags`] family
+    /// list. A tag added the old way, as a bare literal const, fails here
+    /// instead of shipping a silent duplicate (phux-ke0c).
+    #[test]
+    fn wire_tag_consts_are_uniqueness_checked() {
+        // Only the const-declaration half of the file is scanned; the test
+        // module itself would otherwise match its own patterns.
+        let src = include_str!("mod.rs");
+        let src = src.split("#[cfg(test)]").next().unwrap_or(src);
+
+        // First pass: collect the const names inside the assertion lists.
+        // Lists may be single-line or multi-line after rustfmt, so scan
+        // regions rather than lines.
+        let mut asserted: BTreeSet<&str> = BTreeSet::new();
+        let mut rest = src;
+        while let Some(start) = rest.find("assert_unique_tags(&[") {
+            let after = &rest[start + "assert_unique_tags(&[".len()..];
+            let Some(end) = after.find("])") else {
+                panic!("unterminated assert_unique_tags list");
+            };
+            for name in after[..end]
+                .split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+            {
+                if name.chars().any(|c| c.is_ascii_uppercase()) {
+                    asserted.insert(name);
+                }
+            }
+            rest = &after[end + 2..];
+        }
+        assert!(
+            !asserted.is_empty(),
+            "no assert_unique_tags lists found - the compile-time checks are gone"
+        );
+
+        // Second pass: check every `u8` const declaration.
+        for line in src.lines() {
+            let line = line.trim();
+            let decl = line
+                .strip_prefix("pub const ")
+                .or_else(|| line.strip_prefix("pub(crate) const "));
+            let Some(decl) = decl else { continue };
+            let Some((name, expr)) = decl.split_once(": u8 = ") else {
+                continue;
+            };
+            let expr = expr.trim_end_matches(';').trim();
+            if name.starts_with("TYPE_") {
+                assert!(
+                    expr.starts_with("FrameType::"),
+                    "{name} must take its value from the FrameType enum so a duplicate \
+                     discriminant is a compile error, found `{expr}`"
+                );
+            } else if name.starts_with("COMMAND_TAG_") {
+                assert!(
+                    expr.starts_with("CommandTag::"),
+                    "{name} must take its value from the CommandTag enum so a duplicate \
+                     discriminant is a compile error, found `{expr}`"
+                );
+            } else if expr.starts_with("0x") || expr.starts_with(|c: char| c.is_ascii_digit()) {
+                assert!(
+                    asserted.contains(name),
+                    "{name} is a hand-allocated literal wire tag missing from an \
+                     assert_unique_tags family list"
+                );
+            }
+        }
+    }
+}
