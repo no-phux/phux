@@ -152,6 +152,8 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
             .unwrap();
             assert_eq!(written.windows[0].name, "renamed");
         }
+        drop(client);
+        drop(server);
     }
 }
 

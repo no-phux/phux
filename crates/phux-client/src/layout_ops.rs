@@ -823,8 +823,7 @@ mod tests {
             );
         let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
 
-        let mut ops = LayoutOps::new(&mut client, SessionId::new(7), 10);
-        let confirmed = ops
+        let confirmed = LayoutOps::new(&mut client, SessionId::new(7), 10)
             .mutate(LayoutMutation::Swap {
                 first: tid(1),
                 second: tid(2),
@@ -879,9 +878,11 @@ mod tests {
         let mut client = Connection::from_stream(client_stream);
         let spec = ScriptSpec::new().refuse_metadata(ErrorCode::InvalidCommand, "foreign group");
         let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
-        let mut ops = LayoutOps::in_group(&mut client, SessionId::new(1), GroupId::new(77), 5);
+        let result = LayoutOps::in_group(&mut client, SessionId::new(1), GroupId::new(77), 5)
+            .read()
+            .await;
         assert!(
-            matches!(ops.read().await, Err(LayoutOpsError::Refused(message)) if message == "foreign group")
+            matches!(result, Err(LayoutOpsError::Refused(message)) if message == "foreign group")
         );
         drop(client);
         server_task.await.unwrap();

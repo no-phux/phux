@@ -517,6 +517,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     .await
     .expect("dispatch");
 
+    drop(conn);
     let after = visible_prefix(&engine_kernel, &mut panes, &tid(1), 0);
     assert!(changed, "scrolling copy-mode should trigger a repaint");
     assert_ne!(
@@ -1049,6 +1050,7 @@ async fn dispatch_bar_click(
             Err(_) => break,
         }
     }
+    drop(peer);
     (workspace.active, received, overlays.is_active())
 }
 
@@ -1460,6 +1462,7 @@ async fn dispatch_mouse_two_pane_into_with_journal(
             Err(_) => break, // EOF after the writer dropped
         }
     }
+    drop(peer);
     (received, drag, focused_resource, mouse_optout, repainted)
 }
 

@@ -94,6 +94,10 @@ async fn run_from_start(
 /// Test-visible dial wrapper preserving the original unrecorded/recorded sink
 /// seam while production connection reuse enters through [`run_from_start`].
 #[cfg(test)]
+#[allow(
+    clippy::future_not_send,
+    reason = "test wrapper drives the same thread-local terminal engine"
+)]
 pub(super) async fn run_buffered(
     dial: &Dial,
     target: AttachTarget,

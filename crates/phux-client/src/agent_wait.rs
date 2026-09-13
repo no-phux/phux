@@ -931,6 +931,10 @@ fn local_terminals(view: &crate::state::StateView) -> HashSet<ResourceId> {
 /// Returns [`AgentWaitError::Transport`] when initial setup fails, or when the
 /// push stream has ended and three consecutive poll sweeps cannot reach the
 /// server.
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "fleet push subscription remains live across every select-loop iteration"
+)]
 pub async fn wait_for_any_agent_state(
     socket: &Path,
     targets: &[AgentMetaState],

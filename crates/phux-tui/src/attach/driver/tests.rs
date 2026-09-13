@@ -1256,6 +1256,7 @@ async fn attach_negotiation_rejects_non_hello_ok_reply() {
     let negotiation =
         client.negotiate(attach_client_name(), attach_client_caps(None, &test_dial()));
     let (res, ()) = tokio::join!(negotiation, server_side);
+    drop(client);
     match res {
         Err(AttachError::Protocol(msg)) => {
             // phux-i0e8.7.3: a frame with no arm is explained as version

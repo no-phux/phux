@@ -650,6 +650,7 @@ mod tests {
             .await
             .expect("recorder HELLO");
         let recorded = record_on_connection(&mut client, terminal(), max_duration, |_, _| {}).await;
+        drop(client);
         let seen = server_side.await.expect("server task");
         (recorded, seen)
     }
@@ -1020,6 +1021,7 @@ mod tests {
             })
             .await;
             recorded.expect("recording");
+            drop(client);
             server_side.await.expect("server task");
             calls
         });

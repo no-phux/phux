@@ -391,6 +391,10 @@ async fn prove_put_file_transcribe_fifo(connection: &mut Connection, terminal_id
     assert_eq!(transcript(transcribe_result), "quic fifo");
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "shutdown consumes the connection at its last use"
+)]
 async fn prove_quic_isolation() {
     let tmp = TempDir::new().unwrap();
     let cert = tmp.path().join("cert.pem");

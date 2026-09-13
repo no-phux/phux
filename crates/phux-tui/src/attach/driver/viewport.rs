@@ -210,6 +210,8 @@ mod tests {
             },
         );
 
+        drop(client);
+        drop(server);
         sent.expect("bootstrap reflow sends");
         let resized: std::collections::HashSet<_> = received
             .into_iter()

@@ -187,6 +187,7 @@ mod tests {
                 release_tx.send(()).unwrap();
                 second_rx.await.unwrap();
                 tasks.shutdown().await;
+                drop(tasks);
             })
             .await;
     }
@@ -202,8 +203,8 @@ mod tests {
                     let retained = payload.clone();
                     tasks
                         .try_submit(25, async move {
-                            let _retained = retained;
                             std::future::pending::<()>().await;
+                            drop(retained);
                         })
                         .unwrap();
                 }
@@ -216,6 +217,7 @@ mod tests {
                         .is_err()
                 );
                 tasks.shutdown().await;
+                drop(tasks);
                 assert_eq!(Rc::strong_count(&payload), 1);
                 assert_eq!(budget.jobs.available_permits(), 4);
                 assert_eq!(budget.bytes.available_permits(), 100);
@@ -238,6 +240,7 @@ mod tests {
                 assert_eq!(tasks.connection.jobs.available_permits(), CONNECTION_JOBS);
                 tasks.try_submit(100, async {}).unwrap();
                 tasks.shutdown().await;
+                drop(tasks);
                 assert_eq!(budget.bytes.available_permits(), 100);
             })
             .await;

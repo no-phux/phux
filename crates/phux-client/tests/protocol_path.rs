@@ -1774,6 +1774,10 @@ async fn verify_direct_listener(case: Case, route: &RouteFixture) {
     .await;
 }
 
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "shutdown consumes the connection at its last use"
+)]
 async fn run_case(case: Case) -> CaseResult {
     validate_case(case);
     let temp = TempDir::new().expect("case tempdir");
@@ -1945,6 +1949,10 @@ fn put_file_chunk_matrix() {
 
 #[test]
 #[ignore = "real in-flight PUT_FILE disconnect over thin shaped QUIC; run explicitly and serially"]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "shutdown consumes the probe at its last use"
+)]
 fn inflight_upload_disconnect_releases_server_connection() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

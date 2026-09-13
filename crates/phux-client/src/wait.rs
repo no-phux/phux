@@ -476,6 +476,10 @@ pub const FIRST_READ_FLOOR: Duration = Duration::from_secs(2);
 /// # Errors
 ///
 /// See [`poll_until`].
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "screen polling deliberately reuses one connection across loop iterations"
+)]
 pub async fn poll_until_scoped_with_deadline(
     socket: &Path,
     terminal_id: ResourceId,

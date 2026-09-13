@@ -381,7 +381,7 @@ async fn attach_default_with_connection_fallback(
     initial_notice: Option<Notice>,
     input_replay: Option<&ReplayHandle>,
 ) -> Result<AttachEnd, AttachError> {
-    match run_attach_connection_rec(
+    match Box::pin(run_attach_connection_rec(
         connection,
         dial,
         AttachTarget::Last,
@@ -389,7 +389,7 @@ async fn attach_default_with_connection_fallback(
         rec.map(Rc::clone),
         initial_notice.clone(),
         input_replay.map(Rc::clone),
-    )
+    ))
     .await
     {
         Ok(end) => Ok(end),
@@ -444,7 +444,7 @@ impl AttachAttempt<'_> {
                 .await
             }
             (Some(connection), None) => {
-                run_attach_connection_rec(
+                Box::pin(run_attach_connection_rec(
                     *connection,
                     self.dial,
                     self.target.clone(),
@@ -452,7 +452,7 @@ impl AttachAttempt<'_> {
                     self.recorder.map(Rc::clone),
                     initial_notice,
                     self.input_replay.map(Rc::clone),
-                )
+                ))
                 .await
             }
             (None, Some(name)) => {

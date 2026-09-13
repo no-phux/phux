@@ -2544,6 +2544,7 @@ mod tests {
                 client.request_spawn(&ack(1)).await,
                 Err(AttachError::Protocol(_))
             ));
+            drop(client);
         });
     }
 
@@ -2596,6 +2597,7 @@ mod tests {
             .await
             .expect("the listing must resolve; a timeout here is the wedge itself")
             .expect("directory reply");
+            drop(client);
             (received.await.expect("server task"), reply)
         })
     }
@@ -2662,6 +2664,7 @@ mod tests {
                     matches!(server.recv().await, Err(AttachError::Disconnected)),
                     "no frame may reach the server"
                 );
+                drop(server);
             });
         }
     }
