@@ -859,6 +859,17 @@ Options:
       --no-enroll
           Never shell out to ssh for `--remote`. An unregistered host is refused with its remedies named instead of paired
 
+      --ssh <[USER@]HOST>
+          Attach mosh-style over ssh: run `phux bootstrap` on the host through ssh, which starts the server there if needed and opens a QUIC listener for this attach alone, then dial it directly. ssh authenticates you (password and 2FA prompts work) and exits once the session is up; the session itself rides QUIC, so it roams and renders locally. Needs no pairing, service, or overlay network on the host. Falls back to `ssh -t HOST phux attach` when UDP cannot reach it. The host is anything ssh accepts, including `ssh://user@host:port` and aliases from `~/.ssh/config`
+
+      --remote-phux <PATH>
+          The `phux` to run on the `--ssh` host, for when a non-interactive ssh shell's `PATH` does not find it (a Homebrew or Nix install)
+
+          [default: phux]
+
+      --udp-ports <MIN-MAX>
+          Bind the `--ssh` host's listener to a UDP port in this inclusive range, e.g. `60000-61000`, so one firewall rule covers every attach. Any free port by default
+
       --rec <PATH>
           Record this session while it runs and write the result to PATH.
 

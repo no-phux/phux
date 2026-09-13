@@ -115,6 +115,7 @@ phux agent uninstall-claude
 phux agent wait
 phux ask
 phux attach
+phux bootstrap
 phux channel
 phux cockpit
 phux completion

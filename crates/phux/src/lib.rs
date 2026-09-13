@@ -701,6 +701,9 @@ struct AttachInvocation {
     remote: Option<String>,
     code: Option<String>,
     no_enroll: bool,
+    ssh: Option<String>,
+    remote_phux: String,
+    udp_ports: Option<String>,
     rec: commands::RecOpts,
     socket: Option<std::path::PathBuf>,
 }
@@ -718,6 +721,9 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         remote,
         code,
         no_enroll,
+        ssh,
+        remote_phux,
+        udp_ports,
         rec,
         socket,
     } = invocation;
@@ -736,9 +742,20 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
     // refusal is explicit here and covers both flag positions.
     // The `--remote` half of this rule is enforced post-parse (see
     // `socket_and_remote_collide`), ahead of the TTY preflight.
-    if socket.is_some() && (quic.is_some() || ws.is_some()) {
-        eprintln!("phux: --socket dials a local UDS and cannot combine with --quic/--ws; drop one");
+    if socket.is_some() && (quic.is_some() || ws.is_some() || ssh.is_some()) {
+        eprintln!(
+            "phux: --socket dials a local UDS and cannot combine with --quic/--ws/--ssh; drop one"
+        );
         return ExitCode::from(2);
+    }
+    if let Some(destination) = ssh {
+        return commands::ssh_bootstrap::run(commands::ssh_bootstrap::SshAttach {
+            destination,
+            session,
+            remote_phux,
+            udp_ports,
+            rec: rec_spec,
+        });
     }
     if let Some(target) = remote {
         return attach_remote_target(&target, session, code.as_deref(), no_enroll, rec_spec);
@@ -849,6 +866,9 @@ fn dispatch(
             remote,
             code,
             no_enroll,
+            ssh,
+            remote_phux,
+            udp_ports,
             rec,
         }) => run_attach(AttachInvocation {
             session,
@@ -860,6 +880,9 @@ fn dispatch(
             remote,
             code,
             no_enroll,
+            ssh,
+            remote_phux,
+            udp_ports,
             rec,
             socket,
         }),
@@ -1166,6 +1189,16 @@ fn dispatch(
         Some(Command::Workspace { action }) => commands::workspace::run_workspace(&action, socket),
         Some(Command::Tag { action }) => commands::tag::run_tag(&action, socket),
         Some(Command::StdioBridge {}) => commands::stdio_bridge::run_stdio_bridge(socket),
+        Some(Command::Bootstrap {
+            client_version,
+            port_range,
+            linger,
+        }) => commands::bootstrap::run(&commands::bootstrap::BootstrapArgs {
+            socket,
+            client_version,
+            port_range,
+            linger,
+        }),
         Some(Command::Relay { action }) => commands::relay::run_relay(action),
         Some(Command::Pair {
             action,

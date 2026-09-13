@@ -87,8 +87,22 @@ const ADMISSION_DEADLINE: Duration = Duration::from_secs(10);
 /// socket, optionally token-authenticated for routable consumers.
 pub(crate) struct QuicListener {
     endpoint: quinn::Endpoint,
-    tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
+    admission: QuicAdmission,
     workload_registry: Option<Arc<crate::workload::WorkloadRegistry>>,
+}
+
+/// Whom a [`QuicListener`] admits.
+pub(crate) enum QuicAdmission {
+    /// Anyone who completes the TLS handshake; no preamble is read. The
+    /// loopback/dev listener.
+    Open,
+    /// A bearer token from the pairing store (ADR-0031), read as the stream's
+    /// opening preamble.
+    Store(Arc<crate::auth::ReloadingTokenStore>),
+    /// Only the token this listener was opened with (`OPEN_LISTENER`,
+    /// ADR-0120). A pairing-store token is refused here: the door was opened
+    /// for one attach, not for every paired device.
+    Listener(Arc<crate::auth::ListenerToken>),
 }
 
 impl QuicListener {
@@ -142,8 +156,23 @@ impl QuicListener {
             super::tls::quic_server_config_with_client_ca(cert_path, key_path, client_ca_path)?;
         Ok(Self {
             endpoint: build_endpoint(addr, tls)?,
-            tokens,
+            admission: tokens.map_or(QuicAdmission::Open, QuicAdmission::Store),
             workload_registry,
+        })
+    }
+
+    /// Bind a QUIC listener that admits whoever `admission` names.
+    pub(crate) fn with_admission(
+        addr: SocketAddr,
+        cert_path: &std::path::Path,
+        key_path: &std::path::Path,
+        admission: QuicAdmission,
+    ) -> Result<Self, QuicBindError> {
+        let tls = super::tls::quic_server_config_with_client_ca(cert_path, key_path, None)?;
+        Ok(Self {
+            endpoint: build_endpoint(addr, tls)?,
+            admission,
+            workload_registry: None,
         })
     }
 
@@ -381,13 +410,11 @@ impl Incoming for QuicListener {
                     }
                 };
 
-            let credential = match &self.tokens {
-                Some(store) => {
-                    let preamble = tokio::time::timeout(
-                        ADMISSION_DEADLINE,
-                        authorize_preamble(&mut recv, store),
-                    )
-                    .await;
+            let credential = match &self.admission {
+                QuicAdmission::Open => None,
+                admission => {
+                    let preamble =
+                        tokio::time::timeout(ADMISSION_DEADLINE, admit(&mut recv, admission)).await;
                     let Ok(Some(credential)) = preamble else {
                         if preamble.is_err() {
                             debug!(%remote, "quic auth preamble timed out");
@@ -399,7 +426,6 @@ impl Incoming for QuicListener {
                     };
                     Some(credential)
                 }
-                None => None,
             };
 
             let workload_credential = match &self.workload_registry {
@@ -480,6 +506,27 @@ pub(crate) async fn authorize_preamble(
     recv: &mut quinn::RecvStream,
     store: &crate::auth::ReloadingTokenStore,
 ) -> Option<crate::auth::AuthenticatedCredential> {
+    let token = read_preamble(recv).await?;
+    store.authenticate(&token)
+}
+
+/// Read the token preamble and verify it against whoever `admission` names.
+/// [`QuicAdmission::Open`] reads no preamble and so admits nobody here; the
+/// accept loop never asks it.
+async fn admit(
+    recv: &mut quinn::RecvStream,
+    admission: &QuicAdmission,
+) -> Option<crate::auth::AuthenticatedCredential> {
+    match admission {
+        QuicAdmission::Open => None,
+        QuicAdmission::Store(store) => authorize_preamble(recv, store).await,
+        QuicAdmission::Listener(token) => token.authenticate(&read_preamble(recv).await?),
+    }
+}
+
+/// Read the token preamble (`len: u32 BE` + `len` token bytes), or `None`
+/// when it is missing, empty, oversized, or truncated.
+async fn read_preamble(recv: &mut quinn::RecvStream) -> Option<Vec<u8>> {
     let mut len_buf = [0u8; LENGTH_PREFIX];
     if !read_exact_quic(recv, &mut len_buf).await.ok()? {
         return None;
@@ -492,7 +539,7 @@ pub(crate) async fn authorize_preamble(
     if !read_exact_quic(recv, &mut token).await.ok()? {
         return None;
     }
-    store.authenticate(&token)
+    Some(token)
 }
 
 /// Depth of the mux's merged frame channel: control plus every bound

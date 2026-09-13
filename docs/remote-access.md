@@ -144,10 +144,39 @@ read the token themselves ([ADR-0055](adr/0055-always-on-server-and-ssh-bootstra
 
 A host with no overlay address, or one whose certificate could not be read,
 has nothing dialable; enrollment says so and registers an `ssh://` entry
-instead. That still gives you `phux attach mini` against a server whose
-sessions outlive the connection — it just tunnels through ssh rather than
-dialing QUIC. Re-run `phux host enroll` once the overlay is up to upgrade
-the transport.
+instead. `phux attach mini` then bootstraps a one-attach QUIC listener over
+ssh ([ADR-0120](adr/0120-ssh-bootstrap-opens-a-listener-per-attach.md)) and
+falls back to `ssh -t` only when UDP cannot reach it. Re-run `phux host enroll`
+once the overlay is up to upgrade to a persistent direct endpoint.
+
+### The mosh-style way: `phux attach --ssh`
+
+When you can ssh to a host that has no overlay and no phux service, attach
+through ssh the way mosh does:
+
+```sh
+phux attach --ssh me@box
+phux attach work --ssh me@box
+```
+
+ssh authenticates you, with its host-key check and any password or 2FA prompt
+on your terminal as usual, and runs `phux bootstrap` on the host. That starts
+your server there if none is running, and has it open a QUIC listener for this
+one attach that admits only a token minted for it. The port, the certificate
+fingerprint, and the token come back over the ssh channel. phux pins the
+fingerprint, dials the listener, and ssh exits. From then on the session rides
+QUIC, so it survives a network change, renders locally with predictive echo,
+and stays on the server when you detach.
+
+Nothing is registered on either side. The listener closes about two minutes
+after its last connection, and each cold attach bootstraps again. The host
+needs phux installed; a non-interactive ssh shell may not have Homebrew or Nix
+on its `PATH`, so name the binary with `--remote-phux /opt/homebrew/bin/phux`.
+`--udp-ports 60000-61000` keeps the listener inside one firewall rule.
+
+If the QUIC dial does not connect within a few seconds, or the host's phux
+predates `phux bootstrap`, the attach falls back to `ssh -t me@box phux attach`
+and says why. A registered `ssh://` host takes the same path.
 
 The rest of this page is the manual path: what `enroll` automates, and what
 to do when it cannot reach the host.

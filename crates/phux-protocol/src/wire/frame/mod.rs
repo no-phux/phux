@@ -704,6 +704,7 @@ enum CommandTag {
     Transcribe = 0x19,
     AppendResourceOutput = 0x1a,
     KillResourceIf = 0x1b,
+    OpenListener = 0x1c,
 }
 
 // Wire tags for the `Command` tagged union (SPEC §5.1). Tags follow the
@@ -828,6 +829,10 @@ pub(crate) const COMMAND_TAG_APPEND_RESOURCE_OUTPUT: u8 = CommandTag::AppendReso
 /// (ADR-0109). A new tag rather than a field on `KILL_RESOURCE`, so a peer
 /// without the feature fails to decode it instead of killing unconditionally.
 pub(crate) const COMMAND_TAG_KILL_RESOURCE_IF: u8 = CommandTag::KillResourceIf as u8;
+/// Wire tag for [`Command::OpenListener`]. Appended after
+/// `KILL_RESOURCE_IF`; gated on `ServerFeature::OpenListener` (ADR-0120).
+/// Accepted on the Unix socket only: it opens a new door into the server.
+pub(crate) const COMMAND_TAG_OPEN_LISTENER: u8 = CommandTag::OpenListener as u8;
 }
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
@@ -899,8 +904,8 @@ mod whoami;
 
 pub use command::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, FileUploadAck, InputMode,
-    KillConditions, KillPrecondition, ReportedAgentState, ResourceEventType, ResourceLifecycle,
-    StateScope, TerminalSignal,
+    KillConditions, KillPrecondition, ListenerTransport, ReportedAgentState, ResourceEventType,
+    ResourceLifecycle, StateScope, TerminalSignal,
 };
 pub use directory::{
     DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,

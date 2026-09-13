@@ -49,6 +49,7 @@ pub mod client;
 mod command_tasks;
 pub mod commands;
 mod directory;
+mod ephemeral_listener;
 pub mod input_lane;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
@@ -1872,16 +1873,16 @@ fn env_socket_addr(var: &str) -> Option<SocketAddr> {
 /// * **Routable address (or `PHUX_WS_SECURE=1`) → TLS + bearer-token preamble.**
 ///   Off-loopback is treated as exposing the server, so a paired token is
 ///   required exactly as for a remote WebSocket consumer (ADR-0031).
-fn build_quic_listener(
-    addr: SocketAddr,
-) -> (
-    Option<crate::transport::quic::QuicListener>,
-    RemoteListenerSlot,
-) {
-    let force_secure = std::env::var_os("PHUX_WS_SECURE").is_some_and(|v| !v.is_empty());
-    let secure = !addr.ip().is_loopback() || force_secure;
-    let addr_s = addr.to_string();
-
+/// The certificate and key a QUIC listener bound to `addr` presents: the
+/// operator's (`PHUX_WS_TLS_CERT` / `PHUX_WS_TLS_KEY`) when set, otherwise
+/// the shared self-signed pair, provisioned on first use (ADR-0031). An
+/// existing pair is never regenerated (ADR-0091), so the fingerprint paired
+/// devices pin survives every listener that opens later. `None`, after
+/// logging, when the pair cannot be provisioned.
+///
+/// Shared by the configured listener and the on-demand one (ADR-0120) so
+/// both present the one certificate `phux pair` prints.
+fn quic_certificate(addr: SocketAddr) -> Option<(PathBuf, PathBuf)> {
     let cert_env = std::env::var_os("PHUX_WS_TLS_CERT").map(PathBuf::from);
     let key_env = std::env::var_os("PHUX_WS_TLS_KEY").map(PathBuf::from);
     let operator_cert = cert_env.is_some() || key_env.is_some();
@@ -1893,6 +1894,23 @@ fn build_quic_listener(
             crate::transport::tls::ensure_self_signed_for(&cert_path, &key_path, &advertised)
     {
         error!(error = %err, "failed to provision self-signed certificate; QUIC disabled");
+        return None;
+    }
+    warn_if_cert_omits_bind(&cert_path, &advertised, "quic");
+    Some((cert_path, key_path))
+}
+
+fn build_quic_listener(
+    addr: SocketAddr,
+) -> (
+    Option<crate::transport::quic::QuicListener>,
+    RemoteListenerSlot,
+) {
+    let force_secure = std::env::var_os("PHUX_WS_SECURE").is_some_and(|v| !v.is_empty());
+    let secure = !addr.ip().is_loopback() || force_secure;
+    let addr_s = addr.to_string();
+
+    let Some((cert_path, key_path)) = quic_certificate(addr) else {
         return (
             None,
             RemoteListenerSlot::disabled(
@@ -1901,8 +1919,7 @@ fn build_quic_listener(
                 ListenerDisabledReason::CertProvisionFailed,
             ),
         );
-    }
-    warn_if_cert_omits_bind(&cert_path, &advertised, "quic");
+    };
 
     let Ok(tokens) = quic_tokens(secure) else {
         return (

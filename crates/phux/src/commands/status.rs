@@ -148,6 +148,7 @@ fn feature_names(features: ServerFeatureSet) -> Vec<&'static str> {
         (ServerFeature::ListDirectoryHost, "list_directory_host"),
         (ServerFeature::SshOrigin, "ssh_origin"),
         (ServerFeature::ConditionalKill, "conditional_kill"),
+        (ServerFeature::OpenListener, "open_listener"),
     ];
     NAMED
         .iter()

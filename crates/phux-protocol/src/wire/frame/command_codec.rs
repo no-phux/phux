@@ -20,18 +20,19 @@ use super::{
     COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE,
     COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE,
     COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF,
-    COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT,
-    COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT,
-    COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS,
-    COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES,
-    COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON,
-    COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue,
-    ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED,
-    EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY, EVENT_TAG_IDLE,
-    EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL,
-    EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
-    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition,
-    MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PUT_FILE,
+    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
+    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
+    COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE,
+    COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID,
+    COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command,
+    CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL,
+    EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY,
+    EVENT_TAG_IDLE, EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED,
+    EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck,
+    INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE,
+    InputMode, KillConditions, KillPrecondition, ListenerTransport, MAX_APPEND_BYTES,
+    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
     MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType, ResourceLifecycle,
     STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event, decode_key_event,
     decode_mouse_event, decode_optional_u32, decode_paste_event, decode_terminal_id,
@@ -163,6 +164,18 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         }
         Command::Shutdown => {
             enc.write_u8(COMMAND_TAG_SHUTDOWN);
+        }
+        Command::OpenListener {
+            transport,
+            port_range,
+            linger_secs,
+        } => {
+            enc.write_u8(COMMAND_TAG_OPEN_LISTENER);
+            enc.write_u8(transport.to_u8());
+            let (min, max) = port_range.unwrap_or((0, 0));
+            enc.write_u16_be(min);
+            enc.write_u16_be(max);
+            enc.write_u32_be(*linger_secs);
         }
         Command::GetPerf { reset } => {
             enc.write_u8(COMMAND_TAG_GET_PERF);
@@ -478,7 +491,7 @@ fn decode_agent_report_command(
 
 /// Decode the commands whose subject is the session or the server rather than
 /// one Terminal: `GET_STATE`, `KILL_RESOURCES` (§5.2), `DETACH_CLIENTS`,
-/// `UPGRADE`, `SHUTDOWN`, `GET_PERF`.
+/// `UPGRADE`, `SHUTDOWN`, `GET_PERF`, `OPEN_LISTENER`.
 ///
 /// Returns `Ok(None)` — without reading from `dec` — when `tag` belongs to
 /// another family.
@@ -491,12 +504,31 @@ fn decode_session_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Comma
         COMMAND_TAG_DETACH_CLIENTS => decode_detach_clients_command(dec)?,
         COMMAND_TAG_UPGRADE => Command::Upgrade,
         COMMAND_TAG_SHUTDOWN => Command::Shutdown,
+        COMMAND_TAG_OPEN_LISTENER => decode_open_listener_command(dec)?,
         COMMAND_TAG_GET_PERF => Command::GetPerf {
             reset: dec.read_u8()? != 0,
         },
         _ => return Ok(None),
     };
     Ok(Some(command))
+}
+
+/// Decode an `OPEN_LISTENER` body: `transport: u8`, `port_min: u16`,
+/// `port_max: u16`, `linger_secs: u32`, all big-endian.
+///
+/// Total by design: an unknown transport and a malformed range both decode,
+/// so the server can refuse them with a message instead of the frame failing.
+/// `0, 0` is the only spelling of "any port".
+fn decode_open_listener_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+    let transport = ListenerTransport::from_u8(dec.read_u8()?);
+    let min = dec.read_u16_be()?;
+    let max = dec.read_u16_be()?;
+    let linger_secs = dec.read_u32_be()?;
+    Ok(Command::OpenListener {
+        transport,
+        port_range: (min != 0 || max != 0).then_some((min, max)),
+        linger_secs,
+    })
 }
 
 fn decode_get_screen_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {

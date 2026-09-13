@@ -17,6 +17,76 @@ use subtle::ConstantTimeEq;
 
 use phux_protocol::policy::PeerIdentity;
 
+/// The one bearer secret an on-demand listener admits (`OPEN_LISTENER`,
+/// ADR-0120).
+///
+/// Held in memory and never written to the store: it lives exactly as long
+/// as the listener that minted it, so closing the listener is its
+/// revocation, and nothing accumulates on disk however many attaches
+/// bootstrap over ssh. Like the store it keeps only a SHA-256 verifier and
+/// compares in constant time.
+pub struct ListenerToken {
+    verifier: [u8; 32],
+    id: String,
+    issued_at: DateTime<Utc>,
+}
+
+impl std::fmt::Debug for ListenerToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ListenerToken")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ListenerToken {
+    /// The principal a listener token authenticates as, which is what
+    /// `phux whoami` reports for such a connection.
+    pub const PRINCIPAL: &'static str = "ssh-bootstrap";
+
+    /// Mint a token, returning it with the secret the client must present.
+    /// The secret is handed out once and not kept.
+    ///
+    /// # Errors
+    ///
+    /// Fails only when the OS CSPRNG cannot be read.
+    pub fn mint() -> Result<(Self, [u8; TOKEN_LEN]), AuthError> {
+        let (id, secret) = random_identity_and_secret()?;
+        let mut verifier = [0u8; 32];
+        verifier.copy_from_slice(&Sha256::digest(secret));
+        let token = Self {
+            verifier,
+            id: format!("listener:{id}"),
+            issued_at: Utc::now(),
+        };
+        Ok((token, secret))
+    }
+
+    /// The credential id, stable for the listener's life.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Authenticate a presented secret. Grants what a pairing-store
+    /// credential grants, so a bootstrapped attach can drive its panes.
+    #[must_use]
+    pub fn authenticate(&self, presented: &[u8]) -> Option<AuthenticatedCredential> {
+        if presented.len() != TOKEN_LEN {
+            return None;
+        }
+        let candidate = Sha256::digest(presented);
+        bool::from(self.verifier.ct_eq(candidate.as_slice())).then(|| AuthenticatedCredential {
+            id: self.id.clone(),
+            principal: Self::PRINCIPAL.to_owned(),
+            scopes: vec![TERMINAL_CONTROL_SCOPE.to_owned()],
+            issued_at: self.issued_at,
+            expires_at: None,
+            generation: 1,
+        })
+    }
+}
+
 /// Default persisted path for the remote-consumer credential store.
 #[must_use]
 pub fn default_token_store_path() -> PathBuf {
