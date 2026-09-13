@@ -2334,6 +2334,9 @@ where
     W: FrameWriter + 'static,
 {
     debug!(?client_id, "client task started");
+    state.with_mut(|server| {
+        server.set_client_connection_cancellation(client_id, token.clone());
+    });
 
     // Held in this scope so it drops with `handle_client`: the writer aborts
     // if it hasn't already exited via its own close-on-EOF path, and the
@@ -4087,6 +4090,15 @@ pub(crate) fn handle_subscribe_events(
         && let Some((host, id)) = crate::hub::relay::satellite_route(wire_id)
     {
         if let Some(relay) = state.with(|s| s.hub_relay(&host)) {
+            let Some(consumer_cancel) = state.with(|s| s.client_connection_cancellation(client_id))
+            else {
+                let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
+                    request_id: None,
+                    code: ErrorCode::InternalError,
+                    message: "client connection cancellation is unavailable".to_owned(),
+                }));
+                return;
+            };
             // Atomic register-and-forward (phux-v45.11 finding 2): the
             // hub-side registration and the satellite-side SUBSCRIBE_EVENTS
             // either both happen or the consumer gets a typed error push.
@@ -4095,6 +4107,7 @@ pub(crate) fn handle_subscribe_events(
                     terminal: id,
                     client: client_id,
                     out_tx: out_tx.clone(),
+                    consumer_cancel,
                     // Stamped with the issue-order token by `subscribe`
                     // at enqueue.
                     seq: 0,

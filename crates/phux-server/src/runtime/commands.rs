@@ -2624,6 +2624,7 @@ async fn handle_satellite_command(
                     out_tx,
                     bootstrap_profile,
                     bootstrap_limits,
+                    state.with(|server| server.client_connection_cancellation(client_id)),
                 )
                 .await
             }
@@ -2817,9 +2818,16 @@ async fn relay_stream_establishing(
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
+    consumer_cancel: Option<CancellationToken>,
 ) -> CommandResult {
     let Some(terminal) = terminal_id.local_id() else {
         return relay.command(command.clone()).await;
+    };
+    let Some(consumer_cancel) = consumer_cancel else {
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "client connection cancellation is unavailable".to_owned(),
+        };
     };
     relay
         .command_subscribing(
@@ -2828,6 +2836,7 @@ async fn relay_stream_establishing(
                 terminal,
                 client: client_id,
                 out_tx: out_tx.clone(),
+                consumer_cancel,
                 // Stamped with the issue-order token by
                 // `command_subscribing` at enqueue.
                 seq: 0,
