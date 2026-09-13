@@ -26,6 +26,29 @@ or live deployment inspection was performed. Arithmetic bounds are labeled
 as such; historical measurements are not treated as current baselines.
 Task status and implementation sequencing live in Beads, not this document.
 
+### Remediation evidence (2026-09-13)
+
+The [integration validation report](2026-09-13-protocol-integration-validation.md)
+records the implemented correctness fixes, actual gates, review findings and
+measurement limits. Original source references below remain the audit snapshot.
+
+| Audit area | Implemented acceptance |
+|---|---|
+| QUIC identity and lifecycle | Explicit bilateral opt-in; bounded ingress and provenance; generation-fenced bind/rebind/FIN; cancellation-safe mux events; bounded writer drain/reset; actual stream-credit isolation |
+| Relay and federation | Relay owns tunnel acceptance with explicit single-stream fallback; generation/connection-fenced proxy retirement; retained authoritative close; local input fast path preserves satellite routing |
+| Input and control | Ordered synchronous input admission, owned bounded receipts, uncertain failed-frame replay; bounded PUT_FILE/Transcribe FIFO; same-connection real QUIC control/input progress during a held transcriber |
+| Native snapshots | Official V1 codec, detached progressive READY/history, aggregate staging budgets, authenticated FINISH with discarded rows, Busy retry limits, resize/reattach/expiry cleanup and real socket-to-C-ABI acceptance |
+| Browser and authentication | Bounded framing/queues, absolute recovery deadlines, authenticated WS subprotocol, WT failure fallback to WSS, explicit mTLS fail-closed initialization |
+| Measured hot paths | Reused ACK render cache and encoder scratch, in-place ACK pruning, persistent polling, shared congestion tracker and mux-aware draining |
+| Observability | Bounded per-stream ingress/write/lifecycle diagnostics retained by GET_PERF and CLI JSON/watch; overflow and suppressed registration accounting |
+
+Compression policy, 0-RTT, broader WebTransport multi-stream support and wire
+format replacement remain measurement/design candidates, as scoped below. The
+legal-ceiling upload experiment does not change shipping-client chunk policy.
+Lowercase duplicate Authorization headers collapsed before application
+inspection remain separately tracked as `phux-50wm`; live mTLS registry
+revocation remains `phux-pjc5.5`.
+
 ## Priority summary
 
 | Priority | Finding | Evidence confidence |
