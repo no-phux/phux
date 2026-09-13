@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { PhuxCli } from "../src/adapter.js";
+import {
+  AgentSessionEmitter,
+  isAgentSessionUnsupported,
+  PhuxCli,
+} from "../src/adapter.js";
 import { PhuxError } from "../src/errors.js";
 import type { ProcessResult, ProcessRunner, RunRequest } from "../src/runner.js";
 
@@ -87,6 +91,123 @@ test("agentList inventories canonical panes and preserves owning sessions", asyn
   assert.equal(result.agents[0]?.terminal, "@3");
   assert.equal(result.agents[0]?.session, "work");
   assert.deepEqual(fake.requests[0]?.args, ["agent", "list", "--json", "--socket", "/tmp/p.sock"]);
+});
+
+test("agent session open/emit/close use documented argv and parse confirmations", async () => {
+  const requests: RunRequest[] = [];
+  const outputs = [
+    completed(JSON.stringify({
+      schema_version: 1, resource: "@9", parent: "@3", provider: "pi", native_id: "s-1",
+    })),
+    completed(JSON.stringify({
+      schema_version: 1, resource: "@9", seq: 1, ts_ms: 10, type: "ask",
+    })),
+    completed("@9\tclosed\n"),
+  ];
+  const runner: ProcessRunner = async (request) => {
+    requests.push(request);
+    const result = outputs.shift();
+    if (result === undefined) throw new Error("unexpected request");
+    return result;
+  };
+  const cli = new PhuxCli({ runner, socket: "/tmp/p.sock" });
+
+  assert.deepEqual(await cli.agentSessionOpen("@3", { provider: "pi", nativeId: "s-1" }), {
+    schema_version: 1, resource: "@9", parent: "@3", provider: "pi", native_id: "s-1",
+  });
+  assert.equal((await cli.agentEmit("@3", "ask", { data: { kind: "trust" } })).type, "ask");
+  assert.deepEqual(await cli.agentSessionClose("@3"), { resource: "@9", closed: true });
+
+  assert.deepEqual(requests.map((request) => request.args), [
+    ["agent", "session", "open", "@3", "--provider", "pi", "--native-id", "s-1", "--json", "--socket", "/tmp/p.sock"],
+    ["agent", "emit", "@3", "--type", "ask", "--data", "{\"kind\":\"trust\"}", "--json", "--socket", "/tmp/p.sock"],
+    ["agent", "session", "close", "@3", "--socket", "/tmp/p.sock"],
+  ]);
+});
+
+test("AgentSessionEmitter opens once per pane, emits ask as blocked, and fails closed without identity writes", async () => {
+  const requests: RunRequest[] = [];
+  const cli = new PhuxCli({
+    runner: async (request) => {
+      requests.push(request);
+      if (request.args[1] === "session" && request.args[2] === "open") {
+        return completed(JSON.stringify({
+          schema_version: 1, resource: "@9", parent: "@3", provider: "pi", native_id: "s-1",
+        }));
+      }
+      if (request.args[1] === "emit") {
+        return completed(JSON.stringify({
+          schema_version: 1, resource: "@9", seq: requests.length, ts_ms: 1, type: request.args[4],
+        }));
+      }
+      if (request.args[1] === "session" && request.args[2] === "close") return completed("@9\tclosed\n");
+      throw new Error(`unexpected: ${request.args.join(" ")}`);
+    },
+  });
+  const emitter = new AgentSessionEmitter(cli, { provider: "pi" });
+
+  await emitter.bind("@3", "s-1");
+  await emitter.bind("@3", "s-1");
+  await emitter.emit("ask", { kind: "trust" });
+  await emitter.finish();
+
+  assert.equal(requests.length, 5, "open once, session_start, ask, session_end, close; the second bind is a no-op");
+  assert.deepEqual(requests[0]?.args.slice(0, 5), ["agent", "session", "open", "@3", "--provider"]);
+  assert.equal(option(requests[0]!.args, "--provider"), "pi");
+  assert.equal(option(requests[1]!.args, "--type"), "session_start");
+  assert.equal(option(requests[2]!.args, "--type"), "ask");
+  assert.match(option(requests[2]!.args, "--data") ?? "", /"kind":"trust"/);
+  assert.equal(option(requests[3]!.args, "--type"), "session_end");
+  assert.deepEqual(requests[4]?.args.slice(0, 4), ["agent", "session", "close", "@3"]);
+  assert.equal(requests.some((request) => request.args.includes("--state")), false);
+});
+
+function option(args: readonly string[], name: string): string | undefined {
+  const at = args.indexOf(name);
+  return at === -1 ? undefined : args[at + 1];
+}
+
+test("AgentSessionEmitter fails closed when session open is unsupported and never emits", async () => {
+  const requests: RunRequest[] = [];
+  const cli = new PhuxCli({
+    runner: async (request) => {
+      requests.push(request);
+      return {
+        termination: "completed",
+        exitCode: 2,
+        stdout: "",
+        stderr: JSON.stringify({
+          schema_version: 1,
+          error: { code: "unsupported_server", message: "no resource kinds" },
+        }),
+      };
+    },
+  });
+  const errors: unknown[] = [];
+  const emitter = new AgentSessionEmitter(cli, { provider: "pi", onError: (error) => errors.push(error) });
+
+  await emitter.bind("@3", "s-1");
+  await emitter.emit("ask", { kind: "permission" });
+  await emitter.finish();
+
+  assert.equal(emitter.isUnavailable, true);
+  assert.equal(emitter.isOpen, false);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0]?.args[2], "open");
+  assert.equal(errors.length, 0);
+  assert.equal(isAgentSessionUnsupported(new PhuxError("command_failed", "x", {
+    stderr: "unsupported_server",
+  })), true);
+});
+
+test("agent session open and emit reject unconfirmed responses", async () => {
+  const open = new PhuxCli({ runner: fakeRunner(completed("not json")).runner });
+  await assert.rejects(
+    open.agentSessionOpen("@3", { provider: "pi" }),
+    expectCode("malformed_json"),
+  );
+  const closed = new PhuxCli({ runner: fakeRunner(completed("@3\t-")).runner });
+  await assert.rejects(closed.agentSessionClose("@3"), expectCode("invalid_response"));
 });
 
 test("agent show/set/clear use documented commands and validate confirmations", async () => {
