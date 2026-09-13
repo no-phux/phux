@@ -751,6 +751,11 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
 
             // `cat`, not a shell loop: this has to move megabytes inside a
             // 500ms product budget, and a `printf` loop cannot.
+            //
+            // A builtin `read` lets HUP run the trap directly. `sleep 30`
+            // spent the product grace waiting for another process to exit
+            // and be scheduled, so the flush never started (phux-rfw7);
+            // serial runs then saw an empty marker at ~523 ms shutdown.
             let script = dir.path().join("foreground.sh");
             let holder = dir.path().join("holder");
             let holder_cleanup = DetachedHolderCleanup(holder.clone());
@@ -761,7 +766,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
                      printf %s \"$s\" > \"$PHUX_TEST_STATUS\"; \
                      [ \"$s\" -eq 0 ] && printf flushed > \"$PHUX_TEST_MARKER\"; exit 0' HUP\n\
                      printf armed > \"$PHUX_TEST_ARMED\"\n\
-                     while :; do sleep 30; done\n",
+                     while :; do read _; done\n",
             )
             .expect("write foreground script");
 
