@@ -22,6 +22,16 @@ use crate::engine::{
 };
 use crate::history::HistoryLoadState;
 
+#[cfg(feature = "native-engine")]
+use crate::engine::ghostty::GhosttyAdapter;
+#[cfg(feature = "native-engine")]
+use libghostty_vt::{
+    Terminal as GhosttyTerminal,
+    snapshot::{CaptureEvent, CaptureOptions},
+};
+#[cfg(feature = "native-engine")]
+use phux_protocol::wire::frame::FrameKind;
+
 const READY_MARKER: &[u8] = b"<SYNTHESIZED_VT_V1_READY>";
 
 #[derive(Debug, Clone, Copy)]
@@ -62,6 +72,9 @@ impl EngineAdapter for FakeAdapter {
             profile,
             BootstrapStreamProfile::SynthesizedVtRaw
                 | BootstrapStreamProfile::SynthesizedVtStateSync
+                | BootstrapStreamProfile::NativeState {
+                    codec: EngineCodec::LibghosttySnapshotV1,
+                }
         ) {
             return Err(FakeError::UnsupportedProfile);
         }
@@ -145,6 +158,7 @@ impl EngineAdapter for FakeAdapter {
         &mut self,
         replica: &mut Self::Replica,
         payload: &[u8],
+        declared_rows: u32,
         effects: &mut EngineEffectBuffer,
     ) -> Result<HistoryApplyOutcome, Self::Error> {
         if payload == b"history-error" {
@@ -160,6 +174,7 @@ impl EngineAdapter for FakeAdapter {
         Ok(HistoryApplyOutcome {
             progress: BootstrapProgress::Ready,
             retained: payload != b"history-not-retained",
+            authenticated_rows: declared_rows as usize,
         })
     }
 
@@ -257,6 +272,7 @@ impl EngineAdapter for RecordingNativeAdapter {
         &mut self,
         replica: &mut Self::Replica,
         payload: &[u8],
+        declared_rows: u32,
         _effects: &mut EngineEffectBuffer,
     ) -> Result<HistoryApplyOutcome, Self::Error> {
         replica
@@ -269,6 +285,7 @@ impl EngineAdapter for RecordingNativeAdapter {
                 BootstrapProgress::Ready
             },
             retained: true,
+            authenticated_rows: declared_rows as usize,
         })
     }
 
@@ -631,6 +648,349 @@ fn bootstrap_staging_lifetime_is_checked_at_protocol_ready() {
             reason: TombstoneReason::CodecFailure,
             last_valid_seq: 11,
         })
+    );
+}
+
+#[test]
+fn progressive_native_ready_requires_cursor_until_finish_is_authenticated() {
+    let profile = BootstrapProfile::NativeState {
+        codec: EngineCodec::LibghosttySnapshotV1,
+        features: EngineFeatureSet::required_native(),
+    };
+    let mut kernel = kernel_with_profile(ReadyMode::ProtocolFirst, profile);
+    let id = terminal(1);
+    let stream_id = stream(1);
+    let bootstrap_id = bootstrap(1);
+    let mut effects = EffectBuffer::new();
+    kernel
+        .update(
+            KernelInput::BootstrapBegin {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                profile: BootstrapStreamProfile::NativeState {
+                    codec: EngineCodec::LibghosttySnapshotV1,
+                },
+                geometry: geometry(),
+                base_seq: 13,
+            },
+            &mut effects,
+        )
+        .expect("begin progressive native bootstrap");
+    kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: READY_MARKER,
+            },
+            &mut effects,
+        )
+        .expect("engine READY");
+    let error = kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            &mut effects,
+        )
+        .expect_err("v1 must receive and authenticate FINISH through history");
+    assert!(matches!(
+        error,
+        KernelError::HistoryCompletionMismatch {
+            progress: BootstrapProgress::Ready,
+            has_more: false,
+        }
+    ));
+    assert!(kernel.staging(&id).is_none());
+    assert_eq!(
+        kernel.tombstone(&id, stream_id, bootstrap_id),
+        Some(TombstoneRecord {
+            reason: TombstoneReason::CodecFailure,
+            last_valid_seq: 13,
+        })
+    );
+}
+
+#[cfg(feature = "native-engine")]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the exhaustive wire-frame adapter keeps every native frame mapping visible in one test helper"
+)]
+fn apply_decoded_native_frame(
+    kernel: &mut SessionKernel<GhosttyAdapter>,
+    frame: &FrameKind,
+    effects: &mut EffectBuffer,
+) {
+    let mut encoded = (&[][..]).into();
+    frame.encode(&mut encoded);
+    let (decoded, tail) = FrameKind::decode(&encoded).expect("wire decode");
+    assert!(tail.is_empty());
+    match decoded {
+        FrameKind::BootstrapBegin {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            profile,
+            cols,
+            rows,
+            base_seq,
+        } => kernel
+            .update(
+                KernelInput::BootstrapBegin {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    profile,
+                    geometry: CanonicalGeometry::new(cols, rows).expect("wire geometry"),
+                    base_seq,
+                },
+                effects,
+            )
+            .expect("wire bootstrap begin"),
+        FrameKind::BootstrapChunk {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            chunk_seq,
+            payload,
+        } => kernel
+            .update(
+                KernelInput::BootstrapChunk {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq,
+                    payload: &payload,
+                },
+                effects,
+            )
+            .expect("wire bootstrap chunk"),
+        FrameKind::BootstrapReady {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            history_cursor,
+        } => kernel
+            .update(
+                KernelInput::BootstrapReady {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    history_cursor: history_cursor.as_deref(),
+                },
+                effects,
+            )
+            .expect("wire bootstrap READY"),
+        FrameKind::ResourceOutput {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            seq,
+            bytes,
+        } => kernel
+            .update(
+                KernelInput::ResourceOutput {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    seq,
+                    payload: &bytes,
+                },
+                effects,
+            )
+            .expect("wire live output"),
+        FrameKind::HistoryPage {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            page_seq,
+            cursor,
+            next_cursor,
+            payload,
+            rows,
+        } => kernel
+            .update(
+                KernelInput::HistoryPage {
+                    terminal_id: &terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    page_seq,
+                    rows,
+                    payload: &payload,
+                    cursor: &cursor,
+                    next_cursor: next_cursor.as_deref(),
+                },
+                effects,
+            )
+            .expect("wire history unit"),
+        other => panic!("unexpected native test frame: {other:?}"),
+    }
+}
+
+#[cfg(feature = "native-engine")]
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "the acceptance test keeps real capture, wire framing, publication, interleaving, and projection in one end-to-end proof"
+)]
+fn real_native_wire_kernel_path_publishes_then_imports_multiple_pages() {
+    let mut source = GhosttyTerminal::new(200, 3).expect("source terminal");
+    source
+        .set_scrollback_max_lines(Some(5_000))
+        .expect("history rows");
+    source
+        .set_scrollback_max_bytes(None)
+        .expect("history bytes");
+    for row in 0..3_000 {
+        source.vt_write(format!("wire-history-{row:04}\r\n").as_bytes());
+    }
+    let mut capture = source
+        .capture_snapshot(CaptureOptions {
+            max_record_bytes: 64 * 1024,
+            max_pages: 1_000,
+        })
+        .expect("native capture");
+    let mut scratch = vec![0; 64 * 1024];
+    let mut ready = Vec::new();
+    loop {
+        let event = capture.next(&mut scratch).expect("prefix record");
+        ready.extend_from_slice(&scratch[..event.written()]);
+        if matches!(event, CaptureEvent::Ready { .. }) {
+            break;
+        }
+    }
+    let mut capture = capture.detach().expect("detached history");
+    let mut pending = Vec::new();
+    let mut units = Vec::new();
+    loop {
+        let event = capture
+            .next(&mut source, &mut scratch)
+            .expect("history record");
+        pending.extend_from_slice(&scratch[..event.written()]);
+        match event {
+            CaptureEvent::HistoryPage { rows, .. } => units.push((
+                std::mem::take(&mut pending),
+                u32::try_from(rows).expect("rows"),
+                false,
+            )),
+            CaptureEvent::Finish { .. } => {
+                units.push((std::mem::take(&mut pending), 0, true));
+                break;
+            }
+            CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
+            CaptureEvent::Invalidated(reason) => panic!("capture invalidated: {reason:?}"),
+            CaptureEvent::Ready { .. } => unreachable!(),
+        }
+    }
+    assert!(units.len() >= 3, "two pages plus FINISH are required");
+
+    let terminal_id = terminal(91);
+    let stream_id = stream(92);
+    let bootstrap_id = bootstrap(93);
+    let limits = phux_protocol::BootstrapLimits::default();
+    let profile = BootstrapProfile::NativeState {
+        codec: EngineCodec::LibghosttySnapshotV1,
+        features: EngineFeatureSet::required_native(),
+    };
+    let mut kernel = SessionKernel::new(GhosttyAdapter::new(limits), profile);
+    let mut effects = EffectBuffer::new();
+    apply_decoded_native_frame(
+        &mut kernel,
+        &FrameKind::BootstrapBegin {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: BootstrapStreamProfile::NativeState {
+                codec: EngineCodec::LibghosttySnapshotV1,
+            },
+            cols: 200,
+            rows: 3,
+            base_seq: 0,
+        },
+        &mut effects,
+    );
+    for (chunk_seq, payload) in ready.chunks(64 * 1024).enumerate() {
+        apply_decoded_native_frame(
+            &mut kernel,
+            &FrameKind::BootstrapChunk {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                chunk_seq: u32::try_from(chunk_seq).expect("chunk sequence"),
+                payload: payload.to_vec().into(),
+            },
+            &mut effects,
+        );
+    }
+    let cursor = b"real-native-cursor".to_vec();
+    apply_decoded_native_frame(
+        &mut kernel,
+        &FrameKind::BootstrapReady {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: Some(cursor.clone().into()),
+        },
+        &mut effects,
+    );
+    assert!(
+        kernel.published(&terminal_id).is_some(),
+        "READY publishes before history"
+    );
+
+    for (index, (payload, rows, finish)) in units.iter().enumerate() {
+        let _ = kernel.prefetch_history(&terminal_id, 0, &mut effects);
+        if index == 1 {
+            apply_decoded_native_frame(
+                &mut kernel,
+                &FrameKind::ResourceOutput {
+                    terminal_id: terminal_id.clone(),
+                    stream_id,
+                    bootstrap_id,
+                    seq: 1,
+                    bytes: b"live-between-pages\r\n".to_vec().into(),
+                },
+                &mut effects,
+            );
+        }
+        apply_decoded_native_frame(
+            &mut kernel,
+            &FrameKind::HistoryPage {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                page_seq: u64::try_from(index + 1).expect("page sequence"),
+                cursor: cursor.clone().into(),
+                next_cursor: (!finish).then(|| cursor.clone().into()),
+                payload: payload.clone().into(),
+                rows: *rows,
+            },
+            &mut effects,
+        );
+    }
+    assert_eq!(
+        kernel
+            .history_cache(&terminal_id)
+            .expect("history cache")
+            .status()
+            .state,
+        HistoryLoadState::Complete
+    );
+    let projection = kernel
+        .project_history(&terminal_id, 200, 3_100)
+        .expect("project imported native history");
+    assert!(
+        projection
+            .rows
+            .iter()
+            .any(|row| row.text.contains("wire-history-0010")),
+        "older engine-owned row must survive real wire import"
     );
 }
 

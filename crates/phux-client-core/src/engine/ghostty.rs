@@ -631,6 +631,7 @@ impl EngineAdapter for GhosttyAdapter {
         &mut self,
         replica: &mut Self::Replica,
         payload: &[u8],
+        declared_rows: u32,
         effects: &mut EngineEffectBuffer,
     ) -> Result<HistoryApplyOutcome, Self::Error> {
         let limit = self.limits.max_history_page_bytes() as usize;
@@ -646,7 +647,7 @@ impl EngineAdapter for GhosttyAdapter {
                 return Err(GhosttyEngineError::HistoryUnsupported(profile));
             }
             ReplicaState::Native(native) => {
-                let outcome = push_history(native, payload)?;
+                let outcome = push_history(native, payload, declared_rows)?;
                 (outcome, &native.pty_responses)
             }
         };
@@ -1308,6 +1309,7 @@ fn finish_native(native: &mut NativeReplica) -> Result<BootstrapProgress, Ghostt
 fn push_history(
     native: &mut NativeReplica,
     input: &[u8],
+    declared_rows: u32,
 ) -> Result<HistoryApplyOutcome, GhosttyEngineError> {
     if !native.protocol_finished {
         return Err(GhosttyEngineError::HistoryBeforePublication);
@@ -1326,8 +1328,10 @@ fn push_history(
         .feed(input)
         .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
     let staged = decoder.staged_bytes();
+    let expected_rows =
+        usize::try_from(declared_rows).map_err(|_| GhosttyEngineError::DecoderFailed)?;
     let Some(progress) = decoder
-        .next()
+        .next_checked(expected_rows)
         .map_err(|error| GhosttyEngineError::checkpoint(error, staged))?
     else {
         return Ok(finish_history_decoder(native));
@@ -1335,6 +1339,7 @@ fn push_history(
     Ok(HistoryApplyOutcome {
         progress: BootstrapProgress::Ready,
         retained: progress.rows != 0,
+        authenticated_rows: progress.authenticated_rows,
     })
 }
 
@@ -1347,6 +1352,7 @@ fn finish_history_decoder(native: &mut NativeReplica) -> HistoryApplyOutcome {
     HistoryApplyOutcome {
         progress: BootstrapProgress::Finished,
         retained: true,
+        authenticated_rows: 0,
     }
 }
 
@@ -1389,7 +1395,7 @@ mod tests {
 
     struct CapturedSnapshot {
         ready: Vec<u8>,
-        history: Vec<Vec<u8>>,
+        history: Vec<(Vec<u8>, u32)>,
         finish: Vec<u8>,
     }
 
@@ -1427,10 +1433,15 @@ mod tests {
         let mut pending = Vec::new();
         let mut history = Vec::new();
         let finish = loop {
-            let event = capture.next(&mut buffer).expect("history record");
+            let event = capture
+                .next(&mut source, &mut buffer)
+                .expect("history record");
             pending.extend_from_slice(&buffer[..event.written()]);
             match event {
-                CaptureEvent::HistoryPage { .. } => history.push(std::mem::take(&mut pending)),
+                CaptureEvent::HistoryPage { rows, .. } => history.push((
+                    std::mem::take(&mut pending),
+                    u32::try_from(rows).expect("page rows"),
+                )),
                 CaptureEvent::Finish { .. } => break std::mem::take(&mut pending),
                 CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
                 CaptureEvent::Invalidated(reason) => panic!("capture invalidated: {reason:?}"),
@@ -1454,9 +1465,9 @@ mod tests {
         captured: &CapturedSnapshot,
         effects: &mut EngineEffectBuffer,
     ) {
-        for page in &captured.history {
+        for (page, rows) in &captured.history {
             let outcome = adapter
-                .apply_history_page(replica, page, effects)
+                .apply_history_page(replica, page, *rows, effects)
                 .expect("history page");
             assert_eq!(outcome.progress, BootstrapProgress::Ready);
             assert_eq!(
@@ -1467,7 +1478,7 @@ mod tests {
         }
         assert_eq!(
             adapter
-                .apply_history_page(replica, &captured.finish, effects)
+                .apply_history_page(replica, &captured.finish, 0, effects)
                 .expect("authenticated FINISH")
                 .progress,
             BootstrapProgress::Finished
@@ -1532,7 +1543,7 @@ mod tests {
                 "synth-title"
             );
             assert!(matches!(
-                adapter.apply_history_page(&mut replica, b"history", &mut effects),
+                adapter.apply_history_page(&mut replica, b"history", 1, &mut effects),
                 Err(GhosttyEngineError::HistoryUnsupported(actual)) if actual == profile
             ));
             assert!(matches!(
@@ -1679,7 +1690,7 @@ mod tests {
     fn legacy_v2_decode_remains_finish_before_publication() {
         let captured = capture_snapshot();
         let mut eager = captured.ready.clone();
-        for page in &captured.history {
+        for (page, _) in &captured.history {
             eager.extend_from_slice(page);
         }
         eager.extend_from_slice(&captured.finish);
@@ -1782,9 +1793,9 @@ mod tests {
                 &mut effects,
             )
             .expect("live output after READY");
-        for page in &captured.history {
+        for (page, rows) in &captured.history {
             adapter
-                .apply_history_page(&mut replica, page, &mut effects)
+                .apply_history_page(&mut replica, page, *rows, &mut effects)
                 .expect("history page");
             adapter
                 .apply_output(&mut replica, b"interleaved-live", &mut effects)
@@ -1893,13 +1904,13 @@ mod tests {
         adapter
             .finish_bootstrap(&mut replica, &mut effects)
             .expect("protocol READY");
-        for page in &captured.history {
+        for (page, rows) in &captured.history {
             adapter
-                .apply_history_page(&mut replica, page, &mut effects)
+                .apply_history_page(&mut replica, page, *rows, &mut effects)
                 .expect("complete history page");
         }
         adapter
-            .apply_history_page(&mut replica, &finish, &mut effects)
+            .apply_history_page(&mut replica, &finish, 0, &mut effects)
             .expect_err("trailing bytes after FINISH are rejected");
         assert!(replica.terminal().is_some());
     }
@@ -1907,9 +1918,12 @@ mod tests {
     #[test]
     fn native_history_rejects_truncated_page_and_finish_and_releases_feed() {
         let captured = capture_snapshot();
-        for truncated in [
-            &captured.history[0][..captured.history[0].len() - 1],
-            &captured.finish[..captured.finish.len() - 1],
+        for (truncated, rows) in [
+            (
+                &captured.history[0].0[..captured.history[0].0.len() - 1],
+                captured.history[0].1,
+            ),
+            (&captured.finish[..captured.finish.len() - 1], 0),
         ] {
             let mut adapter = native_adapter();
             let mut replica = adapter
@@ -1923,11 +1937,47 @@ mod tests {
                 .finish_bootstrap(&mut replica, &mut effects)
                 .expect("protocol READY");
             assert!(matches!(
-                adapter.apply_history_page(&mut replica, truncated, &mut effects),
+                adapter.apply_history_page(&mut replica, truncated, rows, &mut effects),
                 Err(GhosttyEngineError::Checkpoint { .. })
             ));
             assert_eq!(adapter.bootstrap_staging_bytes(&replica), 0);
         }
+    }
+
+    #[test]
+    fn native_history_row_mismatch_is_rejected_before_terminal_mutation() {
+        let captured = capture_snapshot();
+        let (page, rows) = &captured.history[0];
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(native_profile(), geometry())
+            .expect("native replica");
+        let mut effects = EngineEffectBuffer::new();
+        adapter
+            .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
+            .expect("READY bytes");
+        adapter
+            .finish_bootstrap(&mut replica, &mut effects)
+            .expect("protocol READY");
+        let before = replica
+            .terminal()
+            .expect("published terminal")
+            .scrollback_rows()
+            .expect("scrollback rows");
+
+        assert!(matches!(
+            adapter.apply_history_page(&mut replica, page, rows.saturating_add(1), &mut effects,),
+            Err(GhosttyEngineError::Checkpoint { .. })
+        ));
+        assert_eq!(
+            replica
+                .terminal()
+                .expect("last good terminal remains live")
+                .scrollback_rows()
+                .expect("scrollback rows"),
+            before
+        );
+        assert_eq!(adapter.bootstrap_staging_bytes(&replica), 0);
     }
 
     #[test]
@@ -1983,9 +2033,9 @@ mod tests {
             .configure_history_budget(&mut replica, 64 * 1024, 2)
             .expect("engine history limits");
         let mut physical_high_water = 0;
-        for page in &captured.history {
+        for (page, rows) in &captured.history {
             adapter
-                .apply_history_page(&mut replica, page, &mut effects)
+                .apply_history_page(&mut replica, page, *rows, &mut effects)
                 .expect("bounded history unit");
             physical_high_water = physical_high_water.max(
                 replica

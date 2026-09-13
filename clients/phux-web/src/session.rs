@@ -418,6 +418,7 @@ impl EngineAdapter for WebEngine {
         &mut self,
         replica: &mut Self::Replica,
         payload: &[u8],
+        declared_rows: u32,
         _effects: &mut EngineEffectBuffer,
     ) -> Result<HistoryApplyOutcome, Self::Error> {
         let limit = self.limits.max_history_page_bytes() as usize;
@@ -437,6 +438,7 @@ impl EngineAdapter for WebEngine {
             return Ok(HistoryApplyOutcome {
                 progress: BootstrapProgress::Finished,
                 retained: true,
+                authenticated_rows: declared_rows as usize,
             });
         };
         if !*protocol_finished {
@@ -456,6 +458,7 @@ impl EngineAdapter for WebEngine {
                 return Ok(HistoryApplyOutcome {
                     progress: BootstrapProgress::Ready,
                     retained,
+                    authenticated_rows: declared_rows as usize,
                 });
             }
             let event = decoder.push(remaining)?;
@@ -479,6 +482,7 @@ impl EngineAdapter for WebEngine {
                     return Ok(HistoryApplyOutcome {
                         progress: BootstrapProgress::Finished,
                         retained,
+                        authenticated_rows: declared_rows as usize,
                     });
                 }
                 NativeDecodeKind::Ready => {

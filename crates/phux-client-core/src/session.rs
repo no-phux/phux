@@ -2452,6 +2452,30 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 return Err(KernelError::Engine(error));
             }
         };
+        let requires_finish =
+            progressive_finish_missing(staging.key.profile, progress, history_cursor.is_some());
+        if requires_finish {
+            let last_valid_seq = staging.base_seq;
+            self.engine_effects.clear();
+            state.staging = None;
+            state.retired.insert(
+                generation,
+                TombstoneRecord {
+                    reason: TombstoneReason::CodecFailure,
+                    last_valid_seq,
+                },
+            );
+            effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+                terminal_id: terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                reason: TombstoneReason::CodecFailure,
+            }));
+            return Err(KernelError::HistoryCompletionMismatch {
+                progress,
+                has_more: false,
+            });
+        }
         staging.history_cursor = history_cursor.map(HistoryCursor::new);
         staging.protocol_ready = true;
         staging.engine_ready |= progress.is_ready();
@@ -2821,7 +2845,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     ) -> Result<(), HistoryPageRejection<E::Error>> {
         engine_effects.clear();
         let outcome = adapter
-            .apply_history_page(&mut replica.engine, page.payload, engine_effects)
+            .apply_history_page(&mut replica.engine, page.payload, page.rows, engine_effects)
             .map_err(|error| HistoryPageRejection::codec_failure(KernelError::Engine(error)))?;
 
         let has_more = next_cursor.is_some();
@@ -2845,14 +2869,20 @@ impl<E: EngineAdapter> SessionKernel<E> {
             });
         }
 
+        let authenticated_rows = u32::try_from(outcome.authenticated_rows).map_err(|_| {
+            HistoryPageRejection::codec_failure(KernelError::HistoryCompletionMismatch {
+                progress: outcome.progress,
+                has_more,
+            })
+        })?;
         replica
             .history
             .accept_page(
                 cursor,
                 page.page_seq,
                 next_cursor,
-                page.rows,
-                page.rows as usize,
+                authenticated_rows,
+                outcome.authenticated_rows,
                 page.payload,
             )
             .map_err(|error| {
@@ -3290,6 +3320,20 @@ impl<E: EngineAdapter> SessionKernel<E> {
             participant.pending_removal |= pending_removal;
         }
     }
+}
+
+const fn progressive_finish_missing(
+    profile: BootstrapStreamProfile,
+    progress: BootstrapProgress,
+    has_history_cursor: bool,
+) -> bool {
+    matches!(
+        profile,
+        BootstrapStreamProfile::NativeState {
+            codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
+        }
+    ) && matches!(progress, BootstrapProgress::Ready)
+        && !has_history_cursor
 }
 
 impl<E: EngineDocumentAdapter> SessionKernel<E> {

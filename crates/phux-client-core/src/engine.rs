@@ -54,6 +54,8 @@ pub struct HistoryApplyOutcome {
     pub progress: BootstrapProgress,
     /// Whether the engine retained the imported page under its local limits.
     pub retained: bool,
+    /// Engine-authenticated rows represented by this unit.
+    pub authenticated_rows: usize,
 }
 
 /// A terminal-engine request to write bytes back to its PTY.
@@ -232,6 +234,7 @@ pub trait EngineAdapter {
         &mut self,
         replica: &mut Self::Replica,
         payload: &[u8],
+        declared_rows: u32,
         effects: &mut EngineEffectBuffer,
     ) -> Result<HistoryApplyOutcome, Self::Error>;
 

@@ -278,6 +278,7 @@ impl EngineAdapter for RigAdapter {
         &mut self,
         replica: &mut Self::Replica,
         payload: &[u8],
+        declared_rows: u32,
         _effects: &mut EngineEffectBuffer,
     ) -> Result<HistoryApplyOutcome, Self::Error> {
         replica.history.push_back(payload.to_vec());
@@ -291,6 +292,7 @@ impl EngineAdapter for RigAdapter {
         Ok(HistoryApplyOutcome {
             progress: BootstrapProgress::Ready,
             retained: true,
+            authenticated_rows: declared_rows as usize,
         })
     }
 
