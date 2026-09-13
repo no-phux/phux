@@ -5232,6 +5232,7 @@ mod hub_detach_fence_tests {
                         terminal: 7,
                         client,
                         out_tx,
+                        consumer_cancel: CancellationToken::new(),
                         seq: 0,
                         awaits_snapshot: false,
                         bootstrap_profile: None,
