@@ -3,8 +3,8 @@ import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
 export const PUBLIC_AUTH_ORIGIN = "https://shell.phux.sh";
 export const PUBLIC_APP_ORIGIN = "https://phux.sh";
 
-const SESSION_COOKIE = "__Host-phux_session";
-const TRANSACTION_COOKIE_PREFIX = "__Host-phux_oauth_";
+const SESSION_COOKIE = "__Secure-phux_session";
+const TRANSACTION_COOKIE_PREFIX = "__Secure-phux_oauth_";
 const SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 const TRANSACTION_MAX_AGE_SECONDS = 10 * 60;
 const GITHUB_MIN_ACCOUNT_AGE_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -133,7 +133,11 @@ function cookies(request: Request): Map<string, string> {
 }
 
 function cookie(name: string, value: string, maxAge: number): string {
-  return `${name}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
+  return `${name}=${value}; Domain=phux.sh; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Lax`;
+}
+
+function isAllowedAuthHost(origin: string): boolean {
+  return origin === PUBLIC_APP_ORIGIN || origin === PUBLIC_AUTH_ORIGIN;
 }
 
 function clearCookie(name: string): string {
@@ -155,7 +159,8 @@ function safeText(value: unknown, maxLength = 200): string | null {
 }
 
 function returnPath(url: URL): "/" | "/embed" | null {
-  const value = url.searchParams.get("return_to") ?? "/";
+  const value =
+    url.searchParams.get("return_to") ?? url.searchParams.get("returnTo") ?? "/";
   return value === "/" || value === "/embed" ? value : null;
 }
 
@@ -178,9 +183,13 @@ function json(value: unknown, status = 200, cors = false): Response {
   });
 }
 
-function formResponse(response: Response): Promise<Record<string, unknown>> {
-  if (!response.ok) throw new Error(`OAuth endpoint returned ${response.status}`);
-  return response.json() as Promise<Record<string, unknown>>;
+async function formResponse(response: Response): Promise<Record<string, unknown>> {
+  const value = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  if (!response.ok) {
+    const error = safeText(value.error, 80) ?? `http_${response.status}`;
+    throw new Error(error);
+  }
+  return value;
 }
 
 function validTransaction(value: TransactionClaims, provider: "github" | "google"): boolean {
@@ -226,12 +235,12 @@ export function createAuthRequestHandler(
   return async function authRequestHandler(request: Request, env: AuthEnv): Promise<Response | null> {
     const url = new URL(request.url);
     if (!url.pathname.startsWith("/auth/")) return null;
-    if (url.origin !== PUBLIC_AUTH_ORIGIN) return json({ error: "invalid auth origin" }, 400);
+    if (!isAllowedAuthHost(url.origin)) return json({ error: "invalid auth origin" }, 400);
     if (!env.AUTH_COOKIE_SECRET) return json({ error: "authentication is not configured" }, 500);
 
     if (url.pathname === "/auth/session" && request.method === "GET") {
       const origin = request.headers.get("Origin");
-      if (origin && origin !== PUBLIC_APP_ORIGIN && origin !== PUBLIC_AUTH_ORIGIN) {
+      if (origin && !isAllowedAuthHost(origin)) {
         return json({ error: "origin not allowed" }, 403);
       }
       const identity = await verifySessionCookie(request, env.AUTH_COOKIE_SECRET, now());
@@ -251,7 +260,7 @@ export function createAuthRequestHandler(
 
     if (url.pathname === "/auth/logout" && request.method === "POST") {
       const origin = request.headers.get("Origin");
-      if (origin !== PUBLIC_APP_ORIGIN && origin !== PUBLIC_AUTH_ORIGIN) {
+      if (!isAllowedAuthHost(origin ?? "")) {
         return json({ error: "origin not allowed" }, 403);
       }
       const headers = new Headers({
@@ -362,8 +371,9 @@ export function createAuthRequestHandler(
             code_verifier: transaction.verifier,
           }),
         });
-        const token = safeText((await formResponse(tokenResponse)).access_token, 2_000);
-        if (!token) throw new Error("GitHub access token missing");
+        const tokenBody = await formResponse(tokenResponse);
+        const token = safeText(tokenBody.access_token, 2_000);
+        if (!token) throw new Error(safeText(tokenBody.error, 80) ?? "GitHub access token missing");
         const userResponse = await fetcher("https://api.github.com/user", {
           headers: {
             Accept: "application/vnd.github+json",
@@ -414,7 +424,9 @@ export function createAuthRequestHandler(
         }
         identity = { principal: `google:${sub}`, provider, display, email };
       }
-    } catch {
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "unknown";
+      console.log(`oauth_callback_failed provider=${provider} reason=${reason}`);
       const response = redirectAfterAuth(transaction.returnPath, "error");
       response.headers.append("Set-Cookie", clearCookie(transactionCookie));
       response.headers.set("Cache-Control", "no-store");

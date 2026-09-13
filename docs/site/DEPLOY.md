@@ -129,8 +129,22 @@ paths are scoped to `docs/site/**`.
    unset monitor_secret
    ```
 5. **OAuth clients:** register exact callbacks, with no wildcard redirects:
-   - GitHub OAuth App: `https://shell.phux.sh/auth/github/callback`
-   - Google Web OAuth client: `https://shell.phux.sh/auth/google/callback`
+   - GitHub OAuth App: homepage `https://phux.sh`, Authorization callback URL
+     exactly `https://phux.sh/auth/github/callback` (no trailing slash). The
+     browser never navigates to `shell.phux.sh` for OAuth; Cloudflare 403s
+     some document requests to that hostname. A mismatch is GitHub's
+     "Invalid Redirect URI" page.
+     Request no scopes. An unverified-app caution on first authorize is not a
+     failure; publisher verification is the only way to remove it.
+   - Google Web OAuth client in the `phux-shell-*` project: authorized
+     JavaScript origins `https://phux.sh` and `https://shell.phux.sh`;
+     authorized redirect URI exactly `https://phux.sh/auth/google/callback`
+     (keep `https://shell.phux.sh/auth/google/callback` if it is already
+     registered). The sign-in page itself is `https://phux.sh/auth/google`.
+     A missing URI is Google's Error 400 `redirect_uri_mismatch` ("this app
+     sent an invalid request"). The consent screen app name and support email
+     must be real; a leftover placeholder brand means the client was never
+     finished.
 
    Install all four provider values atomically from a temporary local file so a
    deployment cannot see a half-configured provider:
