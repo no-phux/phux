@@ -12,7 +12,8 @@ use super::agent_stream::AgentSessionStatus;
 use super::{
     EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason, InputBlockReason,
     InputEligibility, KernelAction, KernelDamage, KernelDamageKind, KernelEffect, KernelError,
-    KernelInput, KernelJob, KernelSend, KernelStatus, SessionKernel, TombstoneRecord,
+    KernelInput, KernelJob, KernelSend, KernelStatus, MAX_BOOTSTRAP_STAGING_BYTES,
+    MAX_BOOTSTRAP_STAGING_CHUNKS, MAX_BOOTSTRAP_STAGING_LIFETIME, SessionKernel, TombstoneRecord,
 };
 use crate::engine::{
     BootstrapProgress, CanonicalGeometry, EngineAdapter, EngineDamage, EngineEffect,
@@ -432,6 +433,179 @@ fn begin(
             effects,
         )
         .unwrap();
+}
+
+#[test]
+fn bootstrap_staging_rejects_many_legal_chunks_before_excess_allocation() {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let id = terminal(1);
+    let stream_id = stream(1);
+    let bootstrap_id = bootstrap(1);
+    let mut effects = EffectBuffer::new();
+    begin(&mut kernel, &id, stream_id, bootstrap_id, 7, &mut effects);
+
+    for chunk_seq in 0..u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap() {
+        kernel
+            .update(
+                KernelInput::BootstrapChunk {
+                    terminal_id: &id,
+                    stream_id,
+                    bootstrap_id,
+                    chunk_seq,
+                    payload: &[],
+                },
+                &mut effects,
+            )
+            .expect("individually legal bounded chunk");
+    }
+    let error = kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: u32::try_from(MAX_BOOTSTRAP_STAGING_CHUNKS).unwrap(),
+                payload: &[],
+            },
+            &mut effects,
+        )
+        .expect_err("aggregate chunk ceiling must terminate staging");
+    assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
+    assert!(kernel.staging(&id).is_none());
+    assert_eq!(
+        kernel.tombstone(&id, stream_id, bootstrap_id),
+        Some(TombstoneRecord {
+            reason: TombstoneReason::CodecFailure,
+            last_valid_seq: 7,
+        })
+    );
+}
+
+#[test]
+fn bootstrap_staging_byte_ceiling_is_connection_wide() {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let first = terminal(1);
+    let second = terminal(2);
+    let stream_id = stream(1);
+    let bootstrap_id = bootstrap(1);
+    let mut effects = EffectBuffer::new();
+    begin(
+        &mut kernel,
+        &first,
+        stream_id,
+        bootstrap_id,
+        7,
+        &mut effects,
+    );
+    begin(
+        &mut kernel,
+        &second,
+        stream_id,
+        bootstrap_id,
+        9,
+        &mut effects,
+    );
+    kernel
+        .terminals
+        .get_mut(&first)
+        .and_then(|state| state.staging.as_mut())
+        .expect("first staging")
+        .accepted_bytes = MAX_BOOTSTRAP_STAGING_BYTES;
+
+    let error = kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &second,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: b"x",
+            },
+            &mut effects,
+        )
+        .expect_err("another generation may not exceed the connection budget");
+    assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
+    assert!(kernel.staging(&first).is_some());
+    assert!(kernel.staging(&second).is_none());
+    assert_eq!(
+        kernel.tombstone(&second, stream_id, bootstrap_id),
+        Some(TombstoneRecord {
+            reason: TombstoneReason::CodecFailure,
+            last_valid_seq: 9,
+        })
+    );
+}
+
+#[test]
+fn bootstrap_staging_lifetime_is_checked_before_adapter_input() {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let id = terminal(1);
+    let stream_id = stream(1);
+    let bootstrap_id = bootstrap(1);
+    let mut effects = EffectBuffer::new();
+    begin(&mut kernel, &id, stream_id, bootstrap_id, 9, &mut effects);
+    kernel
+        .terminals
+        .get_mut(&id)
+        .and_then(|state| state.staging.as_mut())
+        .expect("staging")
+        .started_at = std::time::Instant::now()
+        .checked_sub(MAX_BOOTSTRAP_STAGING_LIFETIME)
+        .expect("test instant supports thirty-second subtraction");
+
+    let error = kernel
+        .update(
+            KernelInput::BootstrapChunk {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                chunk_seq: 0,
+                payload: b"not-applied",
+            },
+            &mut effects,
+        )
+        .expect_err("expired staging must fail");
+    assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
+    assert!(kernel.staging(&id).is_none());
+}
+
+#[test]
+fn bootstrap_staging_lifetime_is_checked_at_protocol_ready() {
+    let mut kernel = kernel(ReadyMode::ProtocolFirst);
+    let id = terminal(1);
+    let stream_id = stream(1);
+    let bootstrap_id = bootstrap(1);
+    let mut effects = EffectBuffer::new();
+    begin(&mut kernel, &id, stream_id, bootstrap_id, 11, &mut effects);
+    kernel
+        .terminals
+        .get_mut(&id)
+        .and_then(|state| state.staging.as_mut())
+        .expect("staging")
+        .started_at = std::time::Instant::now()
+        .checked_sub(MAX_BOOTSTRAP_STAGING_LIFETIME)
+        .expect("test instant supports thirty-second subtraction");
+
+    let error = kernel
+        .update(
+            KernelInput::BootstrapReady {
+                terminal_id: &id,
+                stream_id,
+                bootstrap_id,
+                history_cursor: None,
+            },
+            &mut effects,
+        )
+        .expect_err("expired staging must fail at READY too");
+    assert!(matches!(error, KernelError::BootstrapStagingLimitExceeded));
+    assert!(kernel.staging(&id).is_none());
+    assert_eq!(
+        kernel.tombstone(&id, stream_id, bootstrap_id),
+        Some(TombstoneRecord {
+            reason: TombstoneReason::CodecFailure,
+            last_valid_seq: 11,
+        })
+    );
 }
 
 fn push_ready_transcript(

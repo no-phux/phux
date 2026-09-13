@@ -1,6 +1,9 @@
 //! Synchronous, transport-neutral session state machine.
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::{Duration, Instant},
+};
 
 use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::TombstoneReason;
@@ -23,6 +26,13 @@ use crate::history::{
     DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryCacheError, HistoryCursor,
     HistoryLoadState, HistoryPageCheck, HistoryStatus, ViewportAnchor,
 };
+
+/// Hard connection-wide ceiling for bootstrap bytes accepted before READY.
+const MAX_BOOTSTRAP_STAGING_BYTES: usize = 64 * 1024 * 1024;
+/// Hard connection-wide ceiling for bootstrap chunks accepted before READY.
+const MAX_BOOTSTRAP_STAGING_CHUNKS: usize = 4_096;
+/// A peer must complete one bootstrap generation within this interval.
+const MAX_BOOTSTRAP_STAGING_LIFETIME: Duration = Duration::from_secs(30);
 
 /// Why one history cursor became unavailable without retiring live state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -746,6 +756,9 @@ pub enum KernelError<E> {
     /// Protocol READY arrived but the engine decoder did not become READY.
     #[error("protocol BOOTSTRAP_READY did not reach engine READY")]
     EngineNotReady,
+    /// Aggregate pre-READY staging exceeded its byte, chunk, or lifetime cap.
+    #[error("bootstrap staging limit exceeded")]
+    BootstrapStagingLimitExceeded,
     /// A live sequence repeated or moved backward.
     #[error("duplicate live sequence {actual}; expected {expected}")]
     DuplicateSequence {
@@ -827,6 +840,9 @@ struct Staging<R> {
     history_cursor: Option<HistoryCursor>,
     engine: R,
     pending_effects: Vec<EngineEffect>,
+    accepted_bytes: usize,
+    accepted_chunks: usize,
+    started_at: Instant,
 }
 
 struct TerminalState<R> {
@@ -2073,6 +2089,9 @@ impl<E: EngineAdapter> SessionKernel<E> {
             history_cursor: None,
             engine,
             pending_effects: Vec::new(),
+            accepted_bytes: 0,
+            accepted_chunks: 0,
+            started_at: Instant::now(),
         }) {
             state.retired.insert(
                 generation_of(&old_staging.key),
@@ -2083,6 +2102,121 @@ impl<E: EngineAdapter> SessionKernel<E> {
             );
         }
         Ok(())
+    }
+
+    fn next_bootstrap_staging_usage(&self, payload_len: usize) -> Option<(usize, usize)> {
+        let mut bytes = payload_len;
+        let mut chunks = 1_usize;
+        for staging in self
+            .terminals
+            .values()
+            .filter_map(|state| state.staging.as_ref())
+        {
+            bytes = bytes.checked_add(staging.accepted_bytes)?;
+            chunks = chunks.checked_add(staging.accepted_chunks)?;
+        }
+        (bytes <= MAX_BOOTSTRAP_STAGING_BYTES && chunks <= MAX_BOOTSTRAP_STAGING_CHUNKS)
+            .then_some((bytes, chunks))
+    }
+
+    fn validate_bootstrap_chunk(
+        &self,
+        terminal_id: &ResourceId,
+        generation: GenerationId,
+        chunk_seq: u32,
+    ) -> Result<(), KernelError<E::Error>> {
+        let state = self
+            .terminals
+            .get(terminal_id)
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        if state.retired.contains_key(&generation) {
+            return Err(retired_error(terminal_id, generation));
+        }
+        let staging = state
+            .staging
+            .as_ref()
+            .filter(|staging| generation_of(&staging.key) == generation)
+            .ok_or_else(|| mismatch_error(terminal_id, generation))?;
+        if staging.engine_ready {
+            return Err(KernelError::ChunkAfterEngineReady);
+        }
+        let Some(expected) = staging.next_chunk_seq else {
+            return Err(KernelError::ChunkSequenceExhausted);
+        };
+        match chunk_seq.cmp(&expected) {
+            std::cmp::Ordering::Less => Err(KernelError::DuplicateChunk {
+                expected,
+                actual: chunk_seq,
+            }),
+            std::cmp::Ordering::Greater => Err(KernelError::ChunkGap {
+                expected,
+                actual: chunk_seq,
+            }),
+            std::cmp::Ordering::Equal => Ok(()),
+        }
+    }
+
+    fn bootstrap_staging_limit_exceeded(
+        &self,
+        terminal_id: &ResourceId,
+        generation: GenerationId,
+        payload_len: usize,
+    ) -> bool {
+        let expired = self
+            .terminals
+            .get(terminal_id)
+            .and_then(|state| state.staging.as_ref())
+            .filter(|staging| generation_of(&staging.key) == generation)
+            .is_some_and(|staging| staging.started_at.elapsed() > MAX_BOOTSTRAP_STAGING_LIFETIME);
+        expired || self.next_bootstrap_staging_usage(payload_len).is_none()
+    }
+
+    fn validate_bootstrap_ready(
+        &self,
+        terminal_id: &ResourceId,
+        generation: GenerationId,
+    ) -> Result<bool, KernelError<E::Error>> {
+        let state = self
+            .terminals
+            .get(terminal_id)
+            .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
+        if state.retired.contains_key(&generation) {
+            return Err(retired_error(terminal_id, generation));
+        }
+        let staging = state
+            .staging
+            .as_ref()
+            .filter(|staging| generation_of(&staging.key) == generation)
+            .ok_or_else(|| mismatch_error(terminal_id, generation))?;
+        if staging.protocol_ready {
+            return Err(KernelError::DuplicateProtocolReady);
+        }
+        Ok(staging.started_at.elapsed() > MAX_BOOTSTRAP_STAGING_LIFETIME)
+    }
+
+    fn retire_staging_limit(
+        &mut self,
+        terminal_id: &ResourceId,
+        generation: GenerationId,
+        effects: &mut EffectBuffer,
+    ) {
+        let Some(state) = self.terminals.get_mut(terminal_id) else {
+            return;
+        };
+        let last_valid_seq = state.staging.take().map_or(0, |staging| staging.base_seq);
+        state.retired.insert(
+            generation,
+            TombstoneRecord {
+                reason: TombstoneReason::CodecFailure,
+                last_valid_seq,
+            },
+        );
+        effects.push(KernelEffect::Status(KernelStatus::ResyncRequired {
+            terminal_id: terminal_id.clone(),
+            stream_id: generation.stream_id,
+            bootstrap_id: generation.bootstrap_id,
+            reason: TombstoneReason::CodecFailure,
+        }));
     }
 
     fn bootstrap_chunk(
@@ -2099,36 +2233,20 @@ impl<E: EngineAdapter> SessionKernel<E> {
             stream_id,
             bootstrap_id,
         };
+        self.validate_bootstrap_chunk(terminal_id, generation, chunk_seq)?;
+        if self.bootstrap_staging_limit_exceeded(terminal_id, generation, payload.len()) {
+            self.retire_staging_limit(terminal_id, generation, effects);
+            return Err(KernelError::BootstrapStagingLimitExceeded);
+        }
         let state = self
             .terminals
             .get_mut(terminal_id)
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-        if state.retired.contains_key(&generation) {
-            return Err(retired_error(terminal_id, generation));
-        }
         let staging = state
             .staging
             .as_mut()
             .filter(|staging| generation_of(&staging.key) == generation)
             .ok_or_else(|| mismatch_error(terminal_id, generation))?;
-        if staging.engine_ready {
-            return Err(KernelError::ChunkAfterEngineReady);
-        }
-        let Some(expected) = staging.next_chunk_seq else {
-            return Err(KernelError::ChunkSequenceExhausted);
-        };
-        if chunk_seq < expected {
-            return Err(KernelError::DuplicateChunk {
-                expected,
-                actual: chunk_seq,
-            });
-        }
-        if chunk_seq > expected {
-            return Err(KernelError::ChunkGap {
-                expected,
-                actual: chunk_seq,
-            });
-        }
 
         self.engine_effects.clear();
         let progress = match self.adapter.apply_bootstrap_chunk(
@@ -2158,6 +2276,14 @@ impl<E: EngineAdapter> SessionKernel<E> {
             }
         };
         staging.next_chunk_seq = chunk_seq.checked_add(1);
+        staging.accepted_bytes = staging
+            .accepted_bytes
+            .checked_add(payload.len())
+            .ok_or(KernelError::BootstrapStagingLimitExceeded)?;
+        staging.accepted_chunks = staging
+            .accepted_chunks
+            .checked_add(1)
+            .ok_or(KernelError::BootstrapStagingLimitExceeded)?;
         staging.engine_ready |= progress.is_ready();
         self.buffer_bootstrap_effects(terminal_id, generation);
         Ok(())
@@ -2176,21 +2302,19 @@ impl<E: EngineAdapter> SessionKernel<E> {
             stream_id,
             bootstrap_id,
         };
+        if self.validate_bootstrap_ready(terminal_id, generation)? {
+            self.retire_staging_limit(terminal_id, generation, effects);
+            return Err(KernelError::BootstrapStagingLimitExceeded);
+        }
         let state = self
             .terminals
             .get_mut(terminal_id)
             .ok_or_else(|| KernelError::UnknownTerminal(terminal_id.clone()))?;
-        if state.retired.contains_key(&generation) {
-            return Err(retired_error(terminal_id, generation));
-        }
         let staging = state
             .staging
             .as_mut()
             .filter(|staging| generation_of(&staging.key) == generation)
             .ok_or_else(|| mismatch_error(terminal_id, generation))?;
-        if staging.protocol_ready {
-            return Err(KernelError::DuplicateProtocolReady);
-        }
         self.engine_effects.clear();
         let progress = match self
             .adapter
