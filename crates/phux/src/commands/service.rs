@@ -1918,7 +1918,7 @@ fn unit_supervises(manager: Manager, body: &str, socket_path: &Path) -> bool {
 /// `unit_running` is the init system's answer for the unit the marker
 /// names. A vanished unit can never complete, so it is spent even when
 /// that probe was not run (`false`).
-fn adoption_marker_is_spent(state: SupervisionState, unit_running: bool) -> bool {
+const fn adoption_marker_is_spent(state: &SupervisionState, unit_running: bool) -> bool {
     match state {
         SupervisionState::MarkerWithoutUnit => true,
         SupervisionState::Armed { .. } => unit_running,
@@ -1928,9 +1928,7 @@ fn adoption_marker_is_spent(state: SupervisionState, unit_running: bool) -> bool
 
 /// Ask the init system whether it is running this profile's unit.
 fn unit_is_running(manager: Manager) -> bool {
-    probe_unit(manager)
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+    probe_unit(manager).is_ok_and(|output| output.status.success())
 }
 
 /// The captured init-system probe `phux service status` already ran.
@@ -1957,7 +1955,7 @@ pub(crate) fn sweep_stale_adoption_marker(socket_path: &Path) {
         SupervisionState::Armed { manager, .. } => unit_is_running(manager),
         SupervisionState::MarkerWithoutUnit | SupervisionState::NotArmed => false,
     };
-    if adoption_marker_is_spent(state, running) {
+    if adoption_marker_is_spent(&state, running) {
         clear_adoption_pending();
     }
 }
@@ -2898,19 +2896,19 @@ mod tests {
             unit: PathBuf::from("/tmp/phux-test.service"),
         };
         assert!(
-            adoption_marker_is_spent(SupervisionState::MarkerWithoutUnit, false),
+            adoption_marker_is_spent(&SupervisionState::MarkerWithoutUnit, false),
             "a marker whose unit has vanished can never complete"
         );
         assert!(
-            adoption_marker_is_spent(armed(), true),
+            adoption_marker_is_spent(&armed(), true),
             "armed + running is the completed login hand-over"
         );
         assert!(
-            !adoption_marker_is_spent(armed(), false),
+            !adoption_marker_is_spent(&armed(), false),
             "armed + not-running is still waiting for the incumbent"
         );
         assert!(
-            !adoption_marker_is_spent(SupervisionState::NotArmed, true),
+            !adoption_marker_is_spent(&SupervisionState::NotArmed, true),
             "no marker means there is nothing to sweep, even if a unit is running"
         );
     }
