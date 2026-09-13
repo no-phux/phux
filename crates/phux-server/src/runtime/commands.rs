@@ -2810,6 +2810,10 @@ async fn reply_satellite_command(
 ///
 /// A command that names no satellite-local terminal has nothing to subscribe
 /// and relays plainly.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "connection cancellation is part of the same atomic relay subscription context as the consumer identity, mailbox, and negotiated bootstrap"
+)]
 async fn relay_stream_establishing(
     relay: &crate::hub::relay::RelayHandle,
     command: &Command,
