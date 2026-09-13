@@ -220,6 +220,7 @@ fn normalize_component(component: &str) -> Option<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
 
     #[test]
     fn parses_fragment_ready_x11_and_hash_responses() {
@@ -258,24 +259,24 @@ mod tests {
         let start = Instant::now();
         let budget = Duration::from_millis(20);
         let deadline = start + budget;
-        let mut now = start;
+        let now = Cell::new(start);
         let mut polls = Vec::new();
         let waited = wait_with(
             deadline,
-            || now,
+            || now.get(),
             |timeout| {
                 assert!(
                     polls.len() < 2,
                     "a timed-out poll must not restart the deadline"
                 );
                 polls.push(timeout);
-                now += timeout;
+                now.set(now.get() + timeout);
                 Ok(false)
             },
         );
         assert_eq!(waited, Some(false));
         assert_eq!(polls, [budget]);
-        assert!(now <= deadline + Duration::from_millis(1));
+        assert!(now.get() <= deadline + Duration::from_millis(1));
     }
 
     /// `EINTR` retries the same Instant; it does not extend the budget.
@@ -283,18 +284,18 @@ mod tests {
     fn interrupted_wait_retries_the_same_deadline() {
         let start = Instant::now();
         let deadline = start + Duration::from_millis(20);
-        let mut now = start;
+        let now = Cell::new(start);
         let mut polls = Vec::new();
         let waited = wait_with(
             deadline,
-            || now,
+            || now.get(),
             |timeout| {
                 polls.push(timeout);
                 if polls.len() == 1 {
-                    now += Duration::from_millis(5);
+                    now.set(now.get() + Duration::from_millis(5));
                     Err(Errno::INTR)
                 } else {
-                    now += timeout;
+                    now.set(now.get() + timeout);
                     Ok(false)
                 }
             },
