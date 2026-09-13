@@ -8,10 +8,11 @@ import { fileURLToPath } from "node:url";
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const read = (path) => readFile(join(root, path), "utf8");
 
-const [configText, manifestText, workflow, cockpitVersionText] = await Promise.all([
+const [configText, manifestText, workflow, linearWorkflow, cockpitVersionText] = await Promise.all([
   read("release-please-config.json"),
   read(".release-please-manifest.json"),
   read(".github/workflows/release-please.yml"),
+  read(".github/workflows/linear-release.yml"),
   read("clients/cockpit/version.txt"),
 ]);
 const config = JSON.parse(configText);
@@ -40,5 +41,15 @@ assert.match(
 );
 assert.doesNotMatch(workflow, /clients--cockpit--/, "slash-normalized release-please outputs do not exist");
 assert.doesNotMatch(workflow, /\bgit tag\b/, "release-please is the sole tag owner");
+
+assert.ok(
+  linearWorkflow.includes("name: ${{ inputs.tag }}"),
+  "Linear continuous pipelines name the SHA unless name is the tag",
+);
+assert.match(linearWorkflow, /extract_changelog_section\.py/, "Linear notes come from the tagged changelog");
+assert.match(workflow, /cockpit-linear-release-sync:/, "Cockpit tags must be reported to Linear");
+assert.match(workflow, /cockpit-linear-release-promote:/, "Cockpit Linear releases must be promoted after artifacts");
+assert.match(linearWorkflow, /LINEAR_COCKPIT_RELEASE_ACCESS_KEY/, "Cockpit uses its own Linear pipeline key");
+assert.match(linearWorkflow, /include_paths: clients\/cockpit\/\*\*/, "Cockpit Linear scans only clients/cockpit");
 
 process.stdout.write("release orchestration passed\n");

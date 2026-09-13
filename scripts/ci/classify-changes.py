@@ -55,6 +55,8 @@ WORKFLOWS = (
     "scripts/ci/detect-changes.py",
     "scripts/ci/validation_receipt.py", "scripts/ci/test_validation_receipt.py",
     "scripts/ci/wait_validation.py", "scripts/ci/test_wait_validation.py",
+    "scripts/ci/extract_changelog_section.py", "scripts/ci/test_extract_changelog_section.py",
+    "scripts/check-release-orchestration.mjs",
 )
 
 

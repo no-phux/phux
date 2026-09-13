@@ -1,14 +1,24 @@
-# linear-release — report a release to the Linear `phux` pipeline.
+# linear-release — report a tagged release to the matching Linear pipeline.
 #
 # Linear resolves the issues a release carried from the Linear identifiers and
 # PR references in its commit range, so it needs the full history at the tag,
 # not a shallow clone.
 #
+# Tag -> pipeline:
+#   vX.Y.Z         -> Linear `phux`           (secret LINEAR_RELEASE_ACCESS_KEY)
+#   cockpit-vX.Y.Z -> Linear `phux-cockpit`   (secret LINEAR_COCKPIT_RELEASE_ACCESS_KEY)
+#
+# Continuous Linear pipelines name a release after the short SHA unless `name`
+# is set. We always pass the tag as both name and version so Linear shows
+# `v0.36.0`, not `7d0c433`. Notes come from the tagged changelog section, not
+# `gh release view`: at tag time the GitHub release is still a private draft
+# and a failed view used to upload an empty notes file.
+#
 # Two stages, because a release is not one moment:
 #   building  — the tag exists and the release is being built. Linear shows it
 #               in Building. Called by release-please.yml at tag time.
 #   released  — binaries, tap, and the public GitHub release are all complete.
-#               Called by release-please.yml after release-artifacts succeeds.
+#               Called by release-please.yml after the artifact workflow succeeds.
 #
 # A failed artifact build therefore leaves the Linear release in Building next
 # to a private draft on GitHub, which is the honest state.
@@ -30,7 +40,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "Existing release tag to report (e.g. v0.1.0)."
+        description: "Existing release tag to report (vX.Y.Z or cockpit-vX.Y.Z)."
         required: true
         type: string
       stage:
@@ -40,7 +50,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to report (e.g. v0.1.0). Must already exist."
+        description: "Existing release tag to report (vX.Y.Z or cockpit-vX.Y.Z). Must already exist."
         required: true
         type: string
       stage:
@@ -76,6 +86,44 @@ jobs:
             building|released) ;;
             *) echo "::error::stage must be 'building' or 'released', got '${STAGE}'"; exit 1 ;;
           esac
+
+      - name: Resolve Linear pipeline from the tag
+        id: meta
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            cockpit-v[0-9]*)
+              echo "component=cockpit" >> "$GITHUB_OUTPUT"
+              echo "changelog=clients/cockpit/CHANGELOG.md" >> "$GITHUB_OUTPUT"
+              ;;
+            v[0-9]*)
+              echo "component=phux" >> "$GITHUB_OUTPUT"
+              echo "changelog=CHANGELOG.md" >> "$GITHUB_OUTPUT"
+              ;;
+            *)
+              echo "::error::unsupported Linear tag '${TAG}'; expected vX.Y.Z or cockpit-vX.Y.Z"
+              exit 1
+              ;;
+          esac
+
+      - name: Require the Linear pipeline access key
+        env:
+          COMPONENT: ${{ steps.meta.outputs.component }}
+          PHUX_KEY: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
+          COCKPIT_KEY: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
+        run: |
+          set -euo pipefail
+          if [ "$COMPONENT" = cockpit ]; then
+            if [ -z "$COCKPIT_KEY" ]; then
+              echo "::error::LINEAR_COCKPIT_RELEASE_ACCESS_KEY is unset. Create an access key on the Linear phux-cockpit pipeline and add it as a repository secret."
+              exit 1
+            fi
+          elif [ -z "$PHUX_KEY" ]; then
+            echo "::error::LINEAR_RELEASE_ACCESS_KEY is unset."
+            exit 1
+          fi
 
       # Full history of the default branch, NOT `ref: <tag>`. On the former
       # Blacksmith runners, fetches used a transparent git mirror; a tag that
@@ -114,30 +162,51 @@ jobs:
           git checkout --quiet "refs/tags/${TAG}"
           echo "checked out ${TAG} at $(git rev-parse HEAD)"
 
-      - name: Capture the GitHub release body as the Linear release notes
+      - name: Write Linear release notes from the tagged changelog
         if: inputs.stage == 'building'
         env:
-          GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
+          CHANGELOG: ${{ steps.meta.outputs.changelog }}
         run: |
           set -euo pipefail
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body \
-            > release-notes.md || : > release-notes.md
+          python3 scripts/ci/extract_changelog_section.py \
+            --tag "$TAG" --changelog "$CHANGELOG" --output release-notes.md
 
       - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
-        if: inputs.stage == 'building'
+        if: inputs.stage == 'building' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
           command: sync
+          name: ${{ inputs.tag }}
           version: ${{ inputs.tag }}
           release_notes: release-notes.md
           links: |
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
       - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
-        if: inputs.stage == 'released'
+        if: inputs.stage == 'building' && steps.meta.outputs.component == 'cockpit'
+        with:
+          access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
+          command: sync
+          name: ${{ inputs.tag }}
+          version: ${{ inputs.tag }}
+          include_paths: clients/cockpit/**
+          release_notes: release-notes.md
+          links: |
+            GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
+
+      - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
+        if: inputs.stage == 'released' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
+          command: update
+          stage: Released
+          version: ${{ inputs.tag }}
+
+      - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
+        if: inputs.stage == 'released' && steps.meta.outputs.component == 'cockpit'
+        with:
+          access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
           command: update
           stage: Released
           version: ${{ inputs.tag }}

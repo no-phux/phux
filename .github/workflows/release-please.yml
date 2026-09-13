@@ -328,16 +328,15 @@ jobs:
     with:
       tag: ${{ needs.release-please.outputs.cockpit_tag_name }}
 
-  # Report the release to the Linear `phux` pipeline, which resolves the issues
-  # a release carried from the Linear identifiers and PR references in its
-  # commit range. Syncing at tag time puts it in Building; the promote below
-  # moves it to Released only after the binaries, public GitHub release, and tap
-  # are complete. A failed artifact build leaves a private draft for repair.
+  # Report each tagged component to its Linear pipeline. Syncing at tag time
+  # puts it in Building; the matching promote moves it to Released only after
+  # binaries, the public GitHub release, and tap/cask updates are complete. A
+  # failed artifact build leaves a private draft for repair.
   #
   # Both stages live in linear-release.yml rather than inline here, because
-  # these two jobs are gated on `release_created` and this workflow only runs on
-  # push. A hand-recovered release — v0.19.0 was one — has that output false, so
-  # inline jobs could never report it and there was no way to do it after the
+  # these jobs are gated on release-please outputs and this workflow only runs
+  # on push. A hand-recovered release — v0.19.0 was one — has that output false,
+  # so inline jobs could never report it and there was no way to do it after the
   # fact. linear-release.yml is `workflow_dispatch`able for exactly that case.
   linear-release-sync:
     name: report release to Linear
@@ -357,4 +356,24 @@ jobs:
     secrets: inherit
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+      stage: released
+
+  cockpit-linear-release-sync:
+    name: report Cockpit release to Linear
+    needs: release-please
+    if: needs.release-please.outputs.cockpit_release_created == 'true'
+    uses: ./.github/workflows/linear-release.yml
+    secrets: inherit
+    with:
+      tag: ${{ needs.release-please.outputs.cockpit_tag_name }}
+      stage: building
+
+  cockpit-linear-release-promote:
+    name: mark the Linear Cockpit release released
+    needs: [release-please, cockpit-release-artifacts]
+    if: needs.release-please.outputs.cockpit_release_created == 'true'
+    uses: ./.github/workflows/linear-release.yml
+    secrets: inherit
+    with:
+      tag: ${{ needs.release-please.outputs.cockpit_tag_name }}
       stage: released
