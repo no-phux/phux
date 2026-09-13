@@ -47,7 +47,13 @@ use super::UpdateError;
 pub(crate) const RELEASE_BINARIES: &[&str] = &["phux-mcp", "phux"];
 
 /// Non-executable members every release tarball also carries.
-const RELEASE_DOCS: &[&str] = &["README.md", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md"];
+const RELEASE_DOCS: &[&str] = &[
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "NOTICE",
+    "THIRD-PARTY-NOTICES.md",
+];
 
 /// The directory, inside the install's bin directory, that holds the previous
 /// binaries after a successful update. Same directory means same filesystem,
@@ -1078,7 +1084,8 @@ mod tests {
         fs::write(staging.join("phux-mcp"), b"#!/bin/sh\nnew mcp\n").unwrap();
         fs::set_permissions(staging.join("phux-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(staging.join("README.md"), b"readme").unwrap();
-        fs::write(staging.join("LICENSE"), b"apache").unwrap();
+        fs::write(staging.join("LICENSE-MIT"), b"mit").unwrap();
+        fs::write(staging.join("LICENSE-APACHE"), b"apache").unwrap();
         fs::write(staging.join("NOTICE"), b"notice").unwrap();
         fs::write(staging.join("THIRD-PARTY-NOTICES.md"), b"notices").unwrap();
         if let Some((name, bytes)) = extra {

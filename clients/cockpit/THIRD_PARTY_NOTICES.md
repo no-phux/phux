@@ -42,7 +42,7 @@ Source: https://github.com/ghostty-org/ghostty
 Production builds statically link `phux-client-ffi` from the same source
 checkout as Cockpit, through its stable C ABI. The package records the exact
 Phux commit, workspace version, ABI version, and Cargo profile in
-`Phux-FFI-Provenance.json`. Phux is available under Apache-2.0.
+`Phux-FFI-Provenance.json`. Phux is available under MIT OR Apache-2.0.
 
 The complete generated license inventory and license texts for the Rust
 dependency graph are distributed beside this file as

@@ -75,4 +75,4 @@ wasm-pack test --node     # drives the real engine; reads a truecolor cell + cur
 
 ## License
 
-Apache-2.0.
+MIT OR Apache-2.0.

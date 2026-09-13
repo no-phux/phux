@@ -59,4 +59,4 @@ before you upgrade.
 
 ## License
 
-Apache-2.0.
+MIT OR Apache-2.0.

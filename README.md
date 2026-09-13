@@ -10,7 +10,7 @@ part of [no-phux](https://github.com/orgs/no-phux/repositories)
 
 [Docs](https://docs.phux.sh/overview) · [Discord](https://discord.gg/dUv5rzdHp)
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache-2.0-blue.svg)](#license)
 
 A terminal multiplexer. Your shells live in a background server. Split,
 detach, they keep running. The TUI, Cockpit, a script, and an agent all
@@ -53,6 +53,7 @@ Keys, remote, agents, Cockpit, the wire: [docs.phux.sh](https://docs.phux.sh/ove
 
 ## License
 
-[Apache-2.0](./LICENSE). Copyright 2026 phall.
+Dual-licensed under [MIT](./LICENSE-MIT) or
+[Apache-2.0](./LICENSE-APACHE), at your option. Copyright 2026 phall.
 
 [NOTICE](./NOTICE) · [Third-party notices](./THIRD-PARTY-NOTICES.md)

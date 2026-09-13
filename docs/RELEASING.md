@@ -303,7 +303,8 @@ phux-<tag>-<target>/
   phux
   phux-mcp
   README.md
-  LICENSE
+  LICENSE-MIT
+  LICENSE-APACHE
   NOTICE
   THIRD-PARTY-NOTICES.md
 ```
@@ -312,9 +313,9 @@ The workflow smoke-checks both binaries in the staging directory before it
 creates `phux-<tag>-<target>.tar.gz` and the matching `.sha256` sidecar.
 Homebrew installs both binaries from the same tarball.
 
-`phux update` from a build that still expected `LICENSE-MIT` and
-`LICENSE-APACHE` will refuse this tarball. Reinstall once through
-Homebrew or the curl installer; later updates use the new member list.
+`phux update` from a build that expects an earlier archive member list will
+refuse this tarball. Reinstall once through Homebrew or the curl installer;
+later updates use the current member list.
 
 **This layout is a consumed contract, not just a convention.** `phux update`
 (the in-binary self-update path, [ADR-0074](adr/0074-self-update-trust-boundary.md))
@@ -328,7 +329,7 @@ together with `crates/phux/src/commands/update/release.rs` and
 `crates/phux/src/commands/update/apply.rs`, or not at all.
 
 The opt-in `next` channel ([ADR-0113](adr/0113-next-release-channel.md))
-reuses the same six members. GitHub's tag is the moving prerelease `next`;
+reuses the same seven members. GitHub's tag is the moving prerelease `next`;
 assets are `phux-next.<sha>-<target>.tar.gz` plus sidecar, and `channel.json`
 is the pointer `phux update --channel next` reads. Homebrew stays on stable.
 

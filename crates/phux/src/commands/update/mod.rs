@@ -1153,7 +1153,8 @@ mod tests {
         fs::write(build.join("phux-mcp"), format!("phux-mcp {label}")).unwrap();
         fs::set_permissions(build.join("phux-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(build.join("README.md"), b"readme").unwrap();
-        fs::write(build.join("LICENSE"), b"apache").unwrap();
+        fs::write(build.join("LICENSE-MIT"), b"mit").unwrap();
+        fs::write(build.join("LICENSE-APACHE"), b"apache").unwrap();
         fs::write(build.join("NOTICE"), b"notice").unwrap();
         fs::write(build.join("THIRD-PARTY-NOTICES.md"), b"notices").unwrap();
 

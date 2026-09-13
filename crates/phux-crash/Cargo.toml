@@ -1,10 +1,9 @@
 # VENDORED — see NOTICE. This crate is a copy of `xai-crash-handler` from
-# xAI's `grok-build` repository, licensed Apache-2.0. The `license` field
-# below is deliberately not `license.workspace = true`, so `cargo deny` and
-# any downstream license audit see the upstream grant on exactly the code
-# it covers. The rest of the workspace is also Apache-2.0; this crate still
-# ships its own LICENSE and NOTICE because that is how the vendor copy
-# records provenance.
+# xAI's `grok-build` repository, licensed Apache-2.0. It is the only crate in
+# this workspace that is not `MIT OR Apache-2.0`; the `license` field below is
+# deliberately not `license.workspace = true`, so `cargo deny` and any
+# downstream license audit see the narrower grant on exactly the code it
+# covers. Every other phux crate keeps the dual license.
 #
 # Why vendor rather than depend: `xai-crash-handler` is not published to
 # crates.io, and grok-build is a monorepo we do not want as a git dependency.

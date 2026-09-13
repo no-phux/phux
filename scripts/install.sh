@@ -536,7 +536,8 @@ validate_archive() {
         | "${stage_name}/phux" \
         | "${stage_name}/phux-mcp" \
         | "${stage_name}/README.md" \
-        | "${stage_name}/LICENSE" \
+        | "${stage_name}/LICENSE-MIT" \
+        | "${stage_name}/LICENSE-APACHE" \
         | "${stage_name}/NOTICE" \
         | "${stage_name}/THIRD-PARTY-NOTICES.md")
         ;;
@@ -566,7 +567,8 @@ validate_extracted_tree() {
         | "${stage_name}/phux" \
         | "${stage_name}/phux-mcp" \
         | "${stage_name}/README.md" \
-        | "${stage_name}/LICENSE" \
+        | "${stage_name}/LICENSE-MIT" \
+        | "${stage_name}/LICENSE-APACHE" \
         | "${stage_name}/NOTICE" \
         | "${stage_name}/THIRD-PARTY-NOTICES.md")
         ;;

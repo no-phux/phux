@@ -12,7 +12,7 @@ exclude = ["clients"]
 version = "0.35.0"
 edition = "2024"
 rust-version = "1.98"
-license = "Apache-2.0"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/no-phux/phux"
 authors = ["phall <phallsignup@gmail.com>"]
 homepage = "https://github.com/no-phux/phux"
@@ -55,7 +55,8 @@ phux-relay = { path = "crates/phux-relay" }
 phux-plugin = { path = "crates/phux-plugin" }
 phux-mcp = { path = "crates/phux-mcp" }
 # Fatal-signal (SIGSEGV/SIGBUS/SIGABRT) terminal restore. Apache-2.0 ONLY —
-# vendored, unlike every other crate here; see crates/phux-crash/NOTICE.
+# vendored and therefore narrower than every other crate here; see
+# crates/phux-crash/NOTICE.
 phux-crash = { path = "crates/phux-crash" }
 # Dev-only: phux-server's integration-test scaffolding, extracted from
 # `tests/common/` so it compiles once instead of once per test binary.

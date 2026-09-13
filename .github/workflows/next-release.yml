@@ -181,7 +181,7 @@ jobs:
           stage="phux-${id}-${target}"
           mkdir -p "${stage}"
           cp -f target/release/phux target/release/phux-mcp "${stage}/"
-          cp -f README.md LICENSE-MIT LICENSE-APACHE "${stage}/"
+          cp -f README.md LICENSE-MIT LICENSE-APACHE NOTICE THIRD-PARTY-NOTICES.md "${stage}/"
           test -x "${stage}/phux"
           test -x "${stage}/phux-mcp"
           "${stage}/phux" --version
