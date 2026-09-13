@@ -42,7 +42,7 @@ use phux_protocol::caps::{
     BootstrapCapabilities, BootstrapProfileKind, BootstrapProfileSet, ClientCapabilities,
     ColorSupport, LayerSet, OutputMode, ServerFeature,
 };
-use phux_protocol::ids::{FileUploadId, ResourceId};
+use phux_protocol::ids::{BootstrapId, FileUploadId, ResourceId, StreamId};
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
@@ -73,6 +73,7 @@ const UPLOAD_MBIT: &[f64] = &[10.0];
 const ROUTE_NAME: &str = "protocol-measure";
 const TUNNEL_TOKEN: [u8; 32] = [0x11; 32];
 const CONSUMER_TOKEN: [u8; 32] = [0x22; 32];
+const STALL_LINE_BYTES: usize = b"STALL-00000000-abcdefghijklmnopqrstuvwxyz-0123456789\n".len();
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Route {
@@ -142,6 +143,8 @@ struct CaseResult {
     ready_us: LatencySummary,
     echo_us: LatencySummary,
     control_us: LatencySummary,
+    flood_terminals: usize,
+    flood_requested_bytes: u64,
     traffic: Traffic,
     cancellation_us: u64,
     shaper_metrics: String,
@@ -180,6 +183,21 @@ struct UploadResult {
     cancellation_us: u64,
     shaper_metrics: String,
     server_perf: String,
+}
+
+struct Attachment {
+    ids: Vec<ResourceId>,
+    bound_streams: HashMap<ResourceId, StreamId>,
+}
+
+struct RouteFixture {
+    relay: Option<Relay>,
+    target_addr: SocketAddr,
+    server_name: String,
+    token: Option<Vec<u8>>,
+    trust: CertTrust,
+    connectors: Vec<ConnectorConfigEntry>,
+    consumer_tokens: Option<PathBuf>,
 }
 
 struct Server {
@@ -234,7 +252,9 @@ impl Shaper {
             status.success(),
             "UDP shaper invalidated the experiment: {status}"
         );
-        std::fs::read_to_string(&self.metrics).expect("read UDP shaper metrics")
+        let metrics = std::fs::read_to_string(&self.metrics).expect("read UDP shaper metrics");
+        validate_shaper_metrics(&metrics);
+        metrics
     }
 }
 
@@ -307,10 +327,31 @@ fn micros(duration: Duration) -> u64 {
     u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
 }
 
+fn validate_shaper_metrics(raw: &str) {
+    let metrics: serde_json::Value = serde_json::from_str(raw).expect("parse UDP shaper metrics");
+    for direction in ["upstream", "downstream"] {
+        let values = metrics
+            .get(direction)
+            .unwrap_or_else(|| panic!("shaper metrics missing {direction}"));
+        for counter in ["queue_drops", "shutdown_drops"] {
+            assert_eq!(
+                values.get(counter).and_then(serde_json::Value::as_u64),
+                Some(0),
+                "UDP shaper {direction} {counter} invalidated the experiment"
+            );
+        }
+    }
+}
+
 fn summarize(mut samples: Vec<u64>) -> LatencySummary {
     assert!(!samples.is_empty(), "cannot summarize zero samples");
     samples.sort_unstable();
-    let percentile = |value: usize| samples[(samples.len() - 1) * value / 100];
+    // Nearest-rank: rank=ceil(p*N), clamped to the non-empty sample. In
+    // particular, p95/p99 of two observations is the maximum, not the minimum.
+    let percentile = |value: usize| {
+        let rank = samples.len().saturating_mul(value).div_ceil(100).max(1);
+        samples[rank - 1]
+    };
     LatencySummary {
         samples: samples.len(),
         p50: percentile(50),
@@ -351,6 +392,10 @@ fn emit_result(result: &CaseResult) {
         result.traffic.output_bytes,
         result.traffic.acks_sent,
         result.traffic.tombstones,
+    );
+    eprintln!(
+        "protocol_path_flood={{terminals:{},requested_bytes:{}}}",
+        result.flood_terminals, result.flood_requested_bytes
     );
     eprintln!("protocol_path_cancellation_us={}", result.cancellation_us);
     eprintln!("protocol_path_shaper={}", result.shaper_metrics);
@@ -744,7 +789,11 @@ async fn dial_shaped(
     }
 }
 
-async fn begin_attach(connection: &mut Connection, traffic: &mut Traffic) -> Vec<ResourceId> {
+async fn begin_attach(
+    connection: &mut Connection,
+    traffic: &mut Traffic,
+    mode: WireMode,
+) -> Attachment {
     let attach_id = connection.next_attach_id();
     connection
         .send(&FrameKind::Attach {
@@ -758,7 +807,7 @@ async fn begin_attach(connection: &mut Connection, traffic: &mut Traffic) -> Vec
         .expect("send ATTACH");
     let snapshot = loop {
         let frame = recv_step(connection).await;
-        traffic.frames += 1;
+        record_received(connection, traffic, mode, &frame).await;
         if let FrameKind::Attached { snapshot, .. } = frame {
             break snapshot;
         }
@@ -769,13 +818,18 @@ async fn begin_attach(connection: &mut Connection, traffic: &mut Traffic) -> Vec
         .into_iter()
         .map(|resource| resource.id)
         .collect();
-    for id in &ids {
+    let mut bound_streams = HashMap::new();
+    for (index, id) in ids.iter().enumerate() {
         connection
             .bind_terminal(id)
             .await
             .expect("bind Terminal stream");
+        if connection.multistream_enabled() {
+            let number = u64::try_from(index + 1).expect("Terminal stream index fits u64");
+            bound_streams.insert(id.clone(), StreamId::new(number).unwrap());
+        }
     }
-    ids
+    Attachment { ids, bound_streams }
 }
 
 async fn acknowledge_output(
@@ -809,27 +863,56 @@ async fn acknowledge_output(
     traffic.acks_sent += 1;
 }
 
+async fn record_received(
+    connection: &mut Connection,
+    traffic: &mut Traffic,
+    mode: WireMode,
+    frame: &FrameKind,
+) {
+    traffic.frames += 1;
+    acknowledge_output(connection, traffic, mode, frame).await;
+}
+
 async fn await_ready(
     connection: &mut Connection,
     traffic: &mut Traffic,
-    ids: &[ResourceId],
+    attachment: &Attachment,
     started: Instant,
+    mode: WireMode,
 ) -> Vec<u64> {
-    let expected: HashSet<_> = ids.iter().cloned().collect();
+    let expected: HashSet<_> = attachment.ids.iter().cloned().collect();
+    let mut generations: HashMap<ResourceId, (StreamId, BootstrapId)> = HashMap::new();
     let mut ready = HashMap::new();
     while ready.len() < expected.len() {
         let frame = recv_step(connection).await;
-        traffic.frames += 1;
-        if let FrameKind::BootstrapReady { terminal_id, .. } = &frame
-            && expected.contains(terminal_id)
-        {
-            ready
-                .entry(terminal_id.clone())
-                .or_insert_with(|| micros(started.elapsed()));
+        record_received(connection, traffic, mode, &frame).await;
+        match &frame {
+            FrameKind::BootstrapBegin {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            } if expected.contains(terminal_id) => {
+                if let Some(bound) = attachment.bound_streams.get(terminal_id) {
+                    assert_eq!(stream_id, bound, "READY generation uses actual binding");
+                }
+                generations.insert(terminal_id.clone(), (*stream_id, *bootstrap_id));
+            }
+            FrameKind::BootstrapReady {
+                terminal_id,
+                stream_id,
+                bootstrap_id,
+                ..
+            } if generations.get(terminal_id) == Some(&(*stream_id, *bootstrap_id)) => {
+                ready
+                    .entry(terminal_id.clone())
+                    .or_insert_with(|| micros(started.elapsed()));
+            }
+            _ => {}
         }
         observe(frame, traffic, None, None);
     }
-    ids.iter().map(|id| ready[id]).collect()
+    attachment.ids.iter().map(|id| ready[id]).collect()
 }
 
 async fn recv_step(connection: &mut Connection) -> FrameKind {
@@ -893,8 +976,7 @@ async fn wait_for_bytes(
                 )
             })
             .expect("protocol receive failed while waiting for PTY bytes");
-        traffic.frames += 1;
-        acknowledge_output(connection, traffic, mode, &frame).await;
+        record_received(connection, traffic, mode, &frame).await;
         if observe(frame, traffic, Some(terminal), Some(needle)) {
             return;
         }
@@ -985,14 +1067,29 @@ async fn prepare_quiet_probe(
     traffic.tails.entry(terminal.clone()).or_default().clear();
 }
 
-async fn start_floods(connection: &mut Connection, ids: &[ResourceId], flood_bytes: usize) {
-    let lines = flood_bytes.div_ceil(64);
-    let command = format!(
-        "stty -echo; i=0; while [ \"$i\" -lt {lines} ]; do printf 'FLOOD-%08d-abcdefghijklmnopqrstuvwxyz-0123456789\\n' \"$i\"; i=$((i+1)); done\n"
-    );
-    for terminal in &ids[1..] {
-        send_line(connection, terminal, command.trim_end().as_bytes()).await;
+async fn start_floods(
+    connection: &mut Connection,
+    traffic: &mut Traffic,
+    ids: &[ResourceId],
+    flood_bytes: usize,
+    mode: WireMode,
+) -> u64 {
+    const FLOOD_LINE_BYTES: usize = b"FLOOD-00000000-abcdefghijklmnopqrstuvwxyz-0123456789\n".len();
+    let lines = flood_bytes.div_ceil(FLOOD_LINE_BYTES);
+    let generated_bytes = u64::try_from(lines.saturating_mul(FLOOD_LINE_BYTES)).unwrap();
+    for (index, terminal) in ids[1..].iter().enumerate() {
+        let started_marker = format!("PHUX_FLOOD_STARTED_{index}").into_bytes();
+        let command = format!(
+            "stty -echo; printf '{}\\n'; IFS= read -r go; i=0; while [ \"$i\" -lt {lines} ]; do printf 'FLOOD-%08d-abcdefghijklmnopqrstuvwxyz-0123456789\\n' \"$i\"; i=$((i+1)); done",
+            String::from_utf8_lossy(&started_marker),
+        );
+        send_line(connection, terminal, command.as_bytes()).await;
+        wait_for_bytes(connection, traffic, terminal, &started_marker, mode).await;
     }
+    for terminal in &ids[1..] {
+        send_line(connection, terminal, b"go").await;
+    }
+    generated_bytes.saturating_mul(u64::try_from(ids.len().saturating_sub(1)).unwrap())
 }
 
 async fn echo_samples(
@@ -1030,8 +1127,7 @@ async fn control_samples(
             .expect("send PING");
         loop {
             let frame = recv_step(connection).await;
-            traffic.frames += 1;
-            acknowledge_output(connection, traffic, mode, &frame).await;
+            record_received(connection, traffic, mode, &frame).await;
             if matches!(frame, FrameKind::Pong { nonce: got } if got == nonce) {
                 latencies.push(micros(started.elapsed()));
                 break;
@@ -1049,8 +1145,7 @@ async fn server_perf(connection: &mut Connection, traffic: &mut Traffic, mode: W
         .expect("GET_PERF transport")
         .into_parts();
     for frame in interleaved {
-        traffic.frames += 1;
-        acknowledge_output(connection, traffic, mode, &frame).await;
+        record_received(connection, traffic, mode, &frame).await;
         observe(frame, traffic, None, None);
     }
     let CommandResult::OkWith(CommandValue::Json(json)) = result else {
@@ -1134,7 +1229,7 @@ async fn upload_chunk_probe(
             .await
             .expect("PUT_FILE observation timed out")
             .expect("PUT_FILE observation receive failed");
-        traffic.frames += 1;
+        record_received(connection, traffic, WireMode::Raw, &frame).await;
         match &frame {
             FrameKind::CommandResult { request_id, result } if *request_id == chunk.request_id => {
                 let CommandResult::OkWith(CommandValue::FileUpload(upload_ack)) = result else {
@@ -1155,7 +1250,6 @@ async fn upload_chunk_probe(
                 control_us = Some(micros(control_started.elapsed()));
             }
             _ => {
-                acknowledge_output(connection, traffic, WireMode::Raw, &frame).await;
                 if echo_us.is_none()
                     && observe(
                         frame,
@@ -1229,15 +1323,28 @@ async fn connect_upload_case(
     )
     .await;
     let mut traffic = Traffic::default();
-    let ids = begin_attach(&mut connection, &mut traffic).await;
+    let attachment = begin_attach(&mut connection, &mut traffic, WireMode::Raw).await;
     assert_eq!(
-        ids.len(),
+        attachment.ids.len(),
         2,
         "upload experiment needs a second quiet Terminal"
     );
-    await_ready(&mut connection, &mut traffic, &ids, Instant::now()).await;
-    prepare_quiet_probe(&mut connection, &mut traffic, &ids[1], WireMode::Raw).await;
-    (server, shaper, connection, traffic, ids)
+    await_ready(
+        &mut connection,
+        &mut traffic,
+        &attachment,
+        Instant::now(),
+        WireMode::Raw,
+    )
+    .await;
+    prepare_quiet_probe(
+        &mut connection,
+        &mut traffic,
+        &attachment.ids[1],
+        WireMode::Raw,
+    )
+    .await;
+    (server, shaper, connection, traffic, attachment.ids)
 }
 
 async fn upload_payload_chunks(
@@ -1425,7 +1532,7 @@ async fn raw_negotiate(send: &mut quinn::SendStream, recv: &mut quinn::RecvStrea
             protocol_major: phux_protocol::PROTOCOL_VERSION.major,
             protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
             protocol_patch: phux_protocol::PROTOCOL_VERSION.patch,
-            client_caps: client_caps(WireMode::Raw),
+            client_caps: client_caps(WireMode::Raw).with_quic_streams(true),
         },
     )
     .await;
@@ -1485,12 +1592,22 @@ async fn raw_bind(
 }
 
 async fn raw_wait_ready(recv: &mut quinn::RecvStream, terminal_id: &ResourceId) {
+    let mut generation = None;
     loop {
-        if matches!(
-            read_quic_frame(recv).await,
-            FrameKind::BootstrapReady { terminal_id: ready, .. } if ready == *terminal_id
-        ) {
-            return;
+        match read_quic_frame(recv).await {
+            FrameKind::BootstrapBegin {
+                terminal_id: begin,
+                stream_id,
+                bootstrap_id,
+                ..
+            } if begin == *terminal_id => generation = Some((stream_id, bootstrap_id)),
+            FrameKind::BootstrapReady {
+                terminal_id: ready,
+                stream_id,
+                bootstrap_id,
+                ..
+            } if ready == *terminal_id && generation == Some((stream_id, bootstrap_id)) => return,
+            _ => {}
         }
     }
 }
@@ -1528,6 +1645,54 @@ async fn raw_wait_pong(recv: &mut quinn::RecvStream, nonce: u64) {
     }
 }
 
+fn route_fixture(route: Route, temp: &Path) -> RouteFixture {
+    match route {
+        Route::Direct => RouteFixture {
+            relay: None,
+            target_addr: free_udp_addr(),
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+            connectors: Vec::new(),
+            consumer_tokens: None,
+        },
+        Route::Relay => {
+            let (relay, target_addr, fingerprint, connector, consumer_tokens) = spawn_relay(temp);
+            RouteFixture {
+                relay: Some(relay),
+                target_addr,
+                server_name: ROUTE_NAME.to_owned(),
+                token: Some(CONSUMER_TOKEN.to_vec()),
+                trust: CertTrust::Pinned(fingerprint),
+                connectors: vec![connector],
+                consumer_tokens: Some(consumer_tokens),
+            }
+        }
+    }
+}
+
+async fn verify_direct_listener(case: Case, route: &RouteFixture) {
+    if case.route != Route::Direct {
+        return;
+    }
+    assert!(
+        UdpSocket::bind(route.target_addr).is_err(),
+        "server reported UDS ready but did not bind requested QUIC address {}",
+        route.target_addr
+    );
+    // UDS readiness does not prove the independently built QUIC listener.
+    dial_shaped(
+        route.target_addr,
+        &route.server_name,
+        route.token.clone(),
+        route.trust.clone(),
+        case.mode,
+    )
+    .await
+    .shutdown()
+    .await;
+}
+
 async fn run_case(case: Case) -> CaseResult {
     validate_case(case);
     let temp = TempDir::new().expect("case tempdir");
@@ -1535,71 +1700,64 @@ async fn run_case(case: Case) -> CaseResult {
     let key = temp.path().join("key.pem");
     let socket = temp.path().join("phux.sock");
     let shaper_addr = free_udp_addr();
-    let (relay, target_addr, server_name, token, trust, connectors, consumer_tokens) =
-        match case.route {
-            Route::Direct => (
-                None,
-                free_udp_addr(),
-                "localhost".to_owned(),
-                None,
-                CertTrust::SkipVerify,
-                Vec::new(),
-                None,
-            ),
-            Route::Relay => {
-                let (relay, addr, fingerprint, connector, tokens) = spawn_relay(temp.path());
-                (
-                    Some(relay),
-                    addr,
-                    ROUTE_NAME.to_owned(),
-                    Some(CONSUMER_TOKEN.to_vec()),
-                    CertTrust::Pinned(fingerprint),
-                    vec![connector],
-                    Some(tokens),
-                )
-            }
-        };
-    let _env = EnvGuard::tls(&cert, &key, consumer_tokens.as_deref());
-    let direct_addr = (case.route == Route::Direct).then_some(target_addr);
-    let server = spawn_server(socket.clone(), direct_addr, connectors);
+    let mut route = route_fixture(case.route, temp.path());
+    let _env = EnvGuard::tls(&cert, &key, route.consumer_tokens.as_deref());
+    let direct_addr = (case.route == Route::Direct).then_some(route.target_addr);
+    let server = spawn_server(
+        socket.clone(),
+        direct_addr,
+        std::mem::take(&mut route.connectors),
+    );
 
     let mut setup = wait_for_uds(&socket).await;
     spawn_flood_panes(&mut setup, case.terminals).await;
     drop(setup);
 
-    if case.route == Route::Direct {
-        assert!(
-            UdpSocket::bind(target_addr).is_err(),
-            "server reported UDS ready but did not bind requested QUIC address {target_addr}"
-        );
-        // UDS readiness does not itself prove the independently built QUIC
-        // listener succeeded. Complete one production negotiation before
-        // inserting the shaper, then close it; measured samples use only the
-        // following shaped connection.
-        dial_shaped(
-            target_addr,
-            &server_name,
-            token.clone(),
-            trust.clone(),
-            case.mode,
-        )
-        .await
-        .shutdown()
-        .await;
-    }
+    verify_direct_listener(case, &route).await;
 
-    let shaper = start_shaper(temp.path(), case, shaper_addr, target_addr).await;
-    let mut connection = dial_shaped(shaper_addr, &server_name, token, trust, case.mode).await;
+    let shaper = start_shaper(temp.path(), case, shaper_addr, route.target_addr).await;
+    let mut connection = dial_shaped(
+        shaper_addr,
+        &route.server_name,
+        route.token,
+        route.trust,
+        case.mode,
+    )
+    .await;
     let profile = format!("{:?}", connection.negotiated_bootstrap().unwrap().profile);
     let multistream = connection.multistream_enabled();
+    assert_eq!(
+        multistream,
+        case.route == Route::Direct,
+        "direct QUIC must bind Terminal streams while relay fallback stays single-stream"
+    );
     let mut traffic = Traffic::default();
     let attach_started = Instant::now();
-    let ids = begin_attach(&mut connection, &mut traffic).await;
-    assert_eq!(ids.len(), case.terminals, "ATTACHED resource count");
-    let ready_us = await_ready(&mut connection, &mut traffic, &ids, attach_started).await;
+    let attachment = begin_attach(&mut connection, &mut traffic, case.mode).await;
+    assert_eq!(
+        attachment.ids.len(),
+        case.terminals,
+        "ATTACHED resource count"
+    );
+    let ready_us = await_ready(
+        &mut connection,
+        &mut traffic,
+        &attachment,
+        attach_started,
+        case.mode,
+    )
+    .await;
+    let ids = attachment.ids;
 
     prepare_quiet_probe(&mut connection, &mut traffic, &ids[0], case.mode).await;
-    start_floods(&mut connection, &ids, case.flood_bytes).await;
+    let flood_requested_bytes = start_floods(
+        &mut connection,
+        &mut traffic,
+        &ids,
+        case.flood_bytes,
+        case.mode,
+    )
+    .await;
     let echo_us = echo_samples(
         &mut connection,
         &mut traffic,
@@ -1617,7 +1775,7 @@ async fn run_case(case: Case) -> CaseResult {
     connection.shutdown().await;
     let shaper_metrics = shaper.stop();
     let cancellation_us = server.stop().await;
-    if let Some(relay) = relay {
+    if let Some(relay) = route.relay {
         relay.stop().await;
     }
 
@@ -1628,11 +1786,44 @@ async fn run_case(case: Case) -> CaseResult {
         ready_us: summarize(ready_us),
         echo_us: summarize(echo_us),
         control_us: summarize(control_us),
+        flood_terminals: ids.len().saturating_sub(1),
+        flood_requested_bytes,
         traffic,
         cancellation_us,
         shaper_metrics,
         server_perf,
     }
+}
+
+#[test]
+fn nearest_rank_keeps_small_sample_tails() {
+    let summary = summarize(vec![10, 20]);
+    assert_eq!(summary.p50, 10);
+    assert_eq!(summary.p95, 20);
+    assert_eq!(summary.p99, 20);
+    assert_eq!(summary.max, 20);
+}
+
+#[test]
+#[should_panic(expected = "UDP shaper upstream queue_drops invalidated the experiment")]
+fn shaper_queue_drop_invalidates_sample() {
+    validate_shaper_metrics(
+        r#"{
+            "upstream":{"queue_drops":1,"shutdown_drops":0},
+            "downstream":{"queue_drops":0,"shutdown_drops":0}
+        }"#,
+    );
+}
+
+#[test]
+#[should_panic(expected = "UDP shaper downstream shutdown_drops invalidated the experiment")]
+fn shaper_shutdown_drop_invalidates_sample() {
+    validate_shaper_metrics(
+        r#"{
+            "upstream":{"queue_drops":0,"shutdown_drops":0},
+            "downstream":{"queue_drops":0,"shutdown_drops":2}
+        }"#,
+    );
 }
 
 #[test]
@@ -1721,7 +1912,7 @@ fn stalled_terminal_reader_preserves_quiet_echo_and_control() {
             assert_eq!(ids.len(), 8, "stall topology resource count");
 
             let (mut quiet_send, mut quiet_recv) = raw_bind(&connection, &ids[0], 1).await;
-            let (mut stalled_send, _stalled_recv) = raw_bind(&connection, &ids[1], 2).await;
+            let (mut stalled_send, mut stalled_recv) = raw_bind(&connection, &ids[1], 2).await;
             raw_wait_ready(&mut quiet_recv, &ids[0]).await;
 
             let quiet_setup = b"stty -echo; printf 'PHUX_PROBE_READY\\n'; while IFS= read -r line; do printf 'PHUX_RESPONSE_%s\\n' \"$line\"; done\n";
@@ -1733,11 +1924,15 @@ fn stalled_terminal_reader_preserves_quiet_echo_and_control() {
             .await;
             raw_wait_for_output(&mut quiet_recv, &ids[0], b"PHUX_PROBE_READY").await;
 
-            let lines = case.flood_bytes.div_ceil(64);
+            let lines = case.flood_bytes.div_ceil(STALL_LINE_BYTES);
             let flood = format!(
-                "stty -echo; i=0; while [ \"$i\" -lt {lines} ]; do printf 'STALL-%08d-abcdefghijklmnopqrstuvwxyz-0123456789\\n' \"$i\"; i=$((i+1)); done\n"
+                "stty -echo; printf 'PHUX_STALL_STARTED\\n'; IFS= read -r go; i=0; while [ \"$i\" -lt {lines} ]; do printf 'STALL-%08d-abcdefghijklmnopqrstuvwxyz-0123456789\\n' \"$i\"; i=$((i+1)); done\n"
             );
             raw_send_line(&mut stalled_send, &ids[1], flood.trim_end().as_bytes()).await;
+            raw_wait_for_output(&mut stalled_recv, &ids[1], b"PHUX_STALL_STARTED").await;
+            raw_send_line(&mut stalled_send, &ids[1], b"go").await;
+            // Keep this stream alive but deliberately stop polling it here.
+            let _stalled_recv = stalled_recv;
             sleep(Duration::from_millis(250)).await;
 
             let control_started = Instant::now();
@@ -1756,8 +1951,10 @@ fn stalled_terminal_reader_preserves_quiet_echo_and_control() {
             .await;
             let echo_us = micros(echo_started.elapsed());
             eprintln!(
-                "protocol_path_stall_result={{control_us:{control_us},echo_us:{echo_us},stalled_terminal:{:?},quiet_terminal:{:?}}}",
-                ids[1], ids[0]
+                "protocol_path_stall_result={{control_us:{control_us},echo_us:{echo_us},requested_bytes:{},flood_started:true,stalled_terminal:{:?},quiet_terminal:{:?}}}",
+                lines * STALL_LINE_BYTES,
+                ids[1],
+                ids[0]
             );
 
             connection.close(0_u32.into(), b"measurement complete");

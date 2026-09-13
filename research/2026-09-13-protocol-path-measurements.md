@@ -20,19 +20,24 @@ Terminal on that single connection; it never creates one connection or relay
 per Terminal. Raw and StateSync modes are separate matrix dimensions.
 The QUIC UDP socket is reached through `scripts/bench/udp-delay.py`, which adds
 the selected full-duplex delay, seeded loss, and UDP-payload serialization
-rate. Shaper overflow and nonzero exit invalidate the test.
+rate. Any queue drop, shutdown drop, malformed metrics file, or nonzero shaper
+exit invalidates the test.
 
 The quiet PTY first runs `stty -echo` and then transforms each input nonce into
 `PHUX_RESPONSE_<nonce>`. Echo latency ends only when that exact transformed
 byte sequence returns in that Terminal's production `RESOURCE_OUTPUT`. Nonces
 are typed as key events and submitted with Enter, avoiding bracketed-paste
 markers in the probe program; shell echo and arbitrary flood output cannot
-satisfy the sample. Other PTYs emit a bounded flood while quiet-pane echo and
-control `PING`/`PONG` samples run.
+satisfy the sample. Each other PTY reports a correlated start marker, waits at
+a barrier, and is then told to generate a bounded requested flood while
+quiet-pane echo and control `PING`/`PONG` samples run. `requested_bytes` is the
+exact formatted line volume requested from the PTYs; it is not a claim that all
+bytes reached the client before the timed samples ended.
 
 Reported fields mean:
 
-- `ready_us`: ATTACH send to each Terminal's first `BOOTSTRAP_READY`.
+- `ready_us`: ATTACH send to each Terminal's `BOOTSTRAP_READY` for the
+  `BOOTSTRAP_BEGIN` generation observed after the actual stream bindings.
 - `echo_us`: first quiet-pane key send to its correlated transformed response.
 - `control_us`: control-stream PING send to matching PONG.
 - `bootstrap_*` and `output_*`: frames and useful payload bytes observed by the
@@ -43,6 +48,10 @@ Reported fields mean:
   process-wide where the runtime has no bounded per-stream labels.
 - `cancellation_us`: shutdown signal to joined `ServerRuntime` task. The
   shaper is independently stopped with `SIGTERM` and waited before teardown.
+
+Latency summaries use documented nearest-rank percentiles
+(`rank = ceil(p * N)`). READY observations within one row are Terminals from a
+single attach, not independent benchmark runs; p95/p99 are descriptive only.
 
 Raw/native output sends no `FRAME_ACK`. StateSync cases explicitly negotiate
 `SynthesizedVtStateSync`, cumulatively ACK each observed output sequence, and
@@ -88,12 +97,14 @@ CARGO_BUILD_JOBS=1 cargo test --locked -p phux-client \
 ```
 
 That case creates eight real Terminals and binds a quiet and a flood Terminal
-stream with the production QUIC dialer and server. It deliberately retains the
-flood `RecvStream` without polling it while continuing to drain the quiet
-Terminal stream and control stream. A bounded 16 MiB PTY flood drives the
-unread stream into flow control; the test then
-requires a correlated quiet response and matching PONG before their explicit
-deadlines. This low-level read-control case does not claim to exercise the
+stream with the production QUIC dialer and server. It waits for a correlated
+flood-start marker, releases a bounded 16 MiB requested flood, and then retains
+that flood `RecvStream` without polling it while continuing to drain the quiet
+Terminal stream and control stream. The test requires a correlated quiet
+response and matching PONG before their explicit deadlines. It proves useful
+work continues while one real Terminal receive stream is unpolled; without
+stream-credit instrumentation it does **not** claim the receive window became
+blocked. This low-level read-control case does not claim to exercise the
 production `Connection` receive merger; the ordinary matrix does.
 
 Run the production `PUT_FILE` chunk experiment at 50 ms RTT separately. The
@@ -130,6 +141,11 @@ alive. Cancellation is measured after the completed upload, not mid-command.
 
 ## Results actually run
 
+The original rows below are retained as **provisional historical diagnostics**:
+they predate generation-qualified READY matching, nearest-rank percentiles,
+correlated flood-start barriers, and hard rejection of nonzero shaper queue or
+shutdown drops. They must not be used as accepted timing evidence.
+
 These are bounded correctness-smoke results from the active development host,
 not quiet-host performance evidence and not WAN measurements. They demonstrate
 that the cases complete without converting a timeout, protocol refusal, shaper
@@ -150,13 +166,36 @@ a sample.
 
 All runs also returned parseable production `GET_PERF` and zero shaper queue,
 shutdown, and random drops except that the seeded 1% smoke happened to draw no
-drop in its 65 packets. The selective-stall shaper forwarded 1.332 MiB before
-shutdown, enough to engage the unread stream's receive-window backpressure.
+drop in its 65 packets. The old selective-stall shaper forwarded 1.332 MiB
+before shutdown. That aggregate UDP count does not establish which stream
+consumed the bytes or that its receive window blocked.
+
+### Refreshed post-review representatives
+
+These bounded representatives include all six review corrections. The two
+samples in echo/control rows use nearest-rank tails; READY samples are the eight
+Terminals in one attach. Each matrix case requested 1,835,337 flood bytes from
+seven PTYs after all seven start markers arrived.
+
+| Route/mode | Terminal streams | READY p50/max | Echo p50/max | Control p50/max | ACKs | Result |
+|---|---|---:|---:|---:|---:|---|
+| direct/raw | negotiated | 8.239/8.940 ms | 7.469/25.677 ms | 12.554/14.261 ms | 0 | pass |
+| direct/StateSync | negotiated | 9.251/9.932 ms | 2.615/21.264 ms | 1.677/1.827 ms | 18 | pass |
+| relay/raw | explicit single-stream fallback | 9.943/12.748 ms | 3.131/14.058 ms | 46.010/87.934 ms | 0 | pass |
+| direct/raw selective unpolled stream | negotiated | n/a | 1.227 ms | 98.843 ms | 0 | pass |
+
+All four runs hard-rejected queue/shutdown drops and completed with zero of
+either. The selective case recorded its flood-start marker before leaving the
+stream unpolled and requested 16,777,256 bytes; it does not claim that volume
+was delivered or that stream flow control was exhausted.
 
 ### PUT_FILE diagnostic matrix
 
-These measurements came from the same active development host and carry the
-same loaded-host-only qualification. Latency cells are p50/p95/p99/max in ms.
+These original measurements are **provisional historical diagnostics** because
+their p95/p99 calculation predates nearest-rank selection and their shaper
+validation did not hard-reject nonzero queue/shutdown counters. They came from
+the same active development host and carry the same loaded-host-only
+qualification. Latency cells are p50/p95/p99/max in ms.
 The 16, 64, and 256 KiB rows are harness proposals only; no chunk selection is
 recommended here. The 8 MiB/10 Mbit/s row is the actual current maximum-chunk
 behavior. Every row completed file verification, parseable `GET_PERF`, clean
@@ -191,14 +230,19 @@ for 16 KiB, 64 KiB, 256 KiB, and 8 MiB respectively. The 8 MiB case held
 that send returned, the second-Terminal echo took 896.983 ms and the control
 PING took 985.084 ms.
 
+The required refreshed shipping-policy representative passed after the review
+fixes: 8 MiB at 10 Mbit/s completed in 7.048 s at 9.522 Mbit/s goodput;
+`Connection::send` occupied 6.054 s, then quiet echo took 892.237 ms and PING
+took 993.333 ms. RSS delta was +35.13 MiB and cancellation was 0.490 ms. The
+shaper reported zero random, queue, and shutdown drops in both directions.
+
 ## Deliberate limits
 
 The relay case runs the production `RelayRuntime`, production server connector,
 and production client `Connection` with disposable route, tunnel, and consumer
-credentials. The current baseline negotiates QUIC Terminal streams through
-that tunnel, as the emitted `multistream:true` records. It is routed-relay
-coverage, **not** the required forced single-stream fallback: that case needs
-the still-pending bilateral QUIC opt-out/lifecycle API and is not claimed here.
+credentials. Bilateral QUIC negotiation now enables Terminal streams only on
+the direct route; the relay advertises explicit single-stream fallback and the
+harness requires `multistream:false`. Direct cases require `multistream:true`.
 Federation, WebSocket, and WebTransport are separate route cases rather than
 aliases for loopback QUIC.
 
