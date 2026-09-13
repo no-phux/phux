@@ -89,8 +89,8 @@ pub use phux_client::attach::{
 };
 
 pub use driver::{
-    run_headless_rendered, run_recorded_dial, run_with_predict_dial, run_with_stdout,
-    write_terminal_reset,
+    run_headless_rendered, run_recorded_connection, run_recorded_dial, run_with_predict_connection,
+    run_with_predict_dial, run_with_stdout, write_terminal_reset,
 };
 
 // Multi-pane composition lives in `phux-client-core` (phux-0fv, ADR-0020):
