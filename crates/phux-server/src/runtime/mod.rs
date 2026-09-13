@@ -3450,7 +3450,7 @@ mod tests {
                         &out_for_task,
                         ClientCapabilities::default(),
                         BootstrapProfile::NativeState {
-                            codec: EngineCodec::LibghosttyCheckpointV2,
+                            codec: EngineCodec::LibghosttySnapshotV1,
                             features: EngineFeatureSet::required_native(),
                         },
                         BootstrapLimits::default(),
@@ -3493,7 +3493,7 @@ mod tests {
                                 stream_id,
                                 bootstrap_id,
                                 profile: BootstrapStreamProfile::NativeState {
-                                    codec: EngineCodec::LibghosttyCheckpointV2,
+                                    codec: EngineCodec::LibghosttySnapshotV1,
                                 },
                                 cols: 80,
                                 rows: 24,

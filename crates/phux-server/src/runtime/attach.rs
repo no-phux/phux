@@ -566,7 +566,7 @@ impl OutputPumpContext {
         matches!(
             self.profile,
             BootstrapStreamProfile::NativeState {
-                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+                codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1
             }
         )
     }
@@ -2515,7 +2515,7 @@ impl SpawnPublication<'_> {
         matches!(
             self.profile,
             BootstrapStreamProfile::NativeState {
-                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+                codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1
             }
         )
     }
@@ -3002,7 +3002,7 @@ impl PaneCaptureContext<'_> {
         matches!(
             self.profile,
             BootstrapStreamProfile::NativeState {
-                codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2
+                codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1
             }
         )
     }
@@ -4040,7 +4040,7 @@ mod tests {
                 stream_id,
                 bootstrap_id,
                 profile: BootstrapStreamProfile::NativeState {
-                    codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                    codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
                 },
                 cols: 80,
                 rows: 24,
@@ -4872,7 +4872,7 @@ mod tests {
                         stream_id: native.stream_id,
                         bootstrap_id: native.bootstrap_id,
                         profile: BootstrapStreamProfile::NativeState {
-                            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+                            codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
                         },
                         cols: 80,
                         rows: 24,
@@ -4914,7 +4914,7 @@ mod tests {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn native_profile() -> BootstrapProfile {
         BootstrapProfile::NativeState {
-            codec: phux_protocol::caps::EngineCodec::LibghosttyCheckpointV2,
+            codec: phux_protocol::caps::EngineCodec::LibghosttySnapshotV1,
             features: phux_protocol::caps::EngineFeatureSet::required_native(),
         }
     }
