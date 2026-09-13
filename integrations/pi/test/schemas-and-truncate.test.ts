@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  parseAgentEmitResult,
+  parseAgentSessionOpenResult,
   parseInsertPaneResult,
   parseLaunchResult,
   parseMovePaneResult,
@@ -46,6 +48,23 @@ test("screen parser validates dimensions and normalizes additive fields", () => 
   });
   assert.deepEqual(screen.scrollback, []);
   assert.throws(() => parseScreenState({ ...screen, rows: 2 }), SchemaValidationError);
+});
+
+test("agent session open and emit parsers accept the documented documents", () => {
+  assert.deepEqual(parseAgentSessionOpenResult({
+    schema_version: 1, resource: "@9", parent: "@3", provider: "pi", native_id: "s-1",
+  }), {
+    schema_version: 1, resource: "@9", parent: "@3", provider: "pi", native_id: "s-1",
+  });
+  assert.equal(parseAgentSessionOpenResult({
+    schema_version: 1, resource: "@9", parent: "@3", provider: "pi", native_id: null,
+  }).native_id, null);
+  assert.equal(parseAgentEmitResult({
+    schema_version: 1, resource: "@9", seq: 2, ts_ms: 10, type: "ask",
+  }).type, "ask");
+  assert.throws(() => parseAgentEmitResult({
+    schema_version: 1, resource: "@9", seq: 1, ts_ms: 0, type: "not-a-type",
+  }), SchemaValidationError);
 });
 
 test("new machine parsers reject incompatible versions and malformed event payloads", () => {

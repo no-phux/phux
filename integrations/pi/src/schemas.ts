@@ -200,6 +200,46 @@ export interface AgentRecord {
   readonly session: string;
 }
 
+/** Closed `AgentEventsJsonlV1` record types (`docs/spec/L1.md`). */
+export const AGENT_EVENT_TYPES = [
+  "session_start",
+  "prompt",
+  "tool_start",
+  "tool_end",
+  "notification",
+  "ask",
+  "stop",
+  "session_end",
+  "state",
+  "provider_raw",
+] as const;
+
+export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number];
+
+/** `phux agent session open --json` document. */
+export interface AgentSessionOpenResult {
+  readonly schema_version: 1;
+  readonly resource: string;
+  readonly parent: string;
+  readonly provider: string;
+  readonly native_id: string | null;
+}
+
+/** `phux agent emit --json` stamped header. */
+export interface AgentEmitResult {
+  readonly schema_version: 1;
+  readonly resource: string;
+  readonly seq: number;
+  readonly ts_ms: number;
+  readonly type: AgentEventType;
+}
+
+/** Projection of `phux agent session close`'s `@N\\tclosed` line. */
+export interface AgentSessionCloseResult {
+  readonly resource: string;
+  readonly closed: true;
+}
+
 export class SchemaValidationError extends Error {
   constructor(readonly path: string, expectation: string) {
     super(`${path} must be ${expectation}`);
@@ -637,4 +677,50 @@ export function parseAgentStateList(value: unknown): AgentStateList {
     };
   });
   return { schema_version: 1, agents };
+}
+
+export function isAgentEventType(value: string): value is AgentEventType {
+  return (AGENT_EVENT_TYPES as readonly string[]).includes(value);
+}
+
+export function parseAgentSessionOpenResult(value: unknown): AgentSessionOpenResult {
+  const root = record(value, "$ (phux agent session open --json CLI shape)");
+  if (root.schema_version !== 1) {
+    throw new SchemaValidationError("$.schema_version", "the supported value 1");
+  }
+  const resource = string(root.resource, "$.resource");
+  const parent = string(root.parent, "$.parent");
+  const provider = string(root.provider, "$.provider");
+  if (resource.trim().length === 0) throw new SchemaValidationError("$.resource", "non-empty");
+  if (parent.trim().length === 0) throw new SchemaValidationError("$.parent", "non-empty");
+  if (provider.trim().length === 0) throw new SchemaValidationError("$.provider", "non-empty");
+  return {
+    schema_version: 1,
+    resource,
+    parent,
+    provider,
+    native_id: root.native_id === null || root.native_id === undefined
+      ? null
+      : string(root.native_id, "$.native_id"),
+  };
+}
+
+export function parseAgentEmitResult(value: unknown): AgentEmitResult {
+  const root = record(value, "$ (phux agent emit --json CLI shape)");
+  if (root.schema_version !== 1) {
+    throw new SchemaValidationError("$.schema_version", "the supported value 1");
+  }
+  const resource = string(root.resource, "$.resource");
+  if (resource.trim().length === 0) throw new SchemaValidationError("$.resource", "non-empty");
+  const type = string(root.type, "$.type");
+  if (!isAgentEventType(type)) {
+    throw new SchemaValidationError("$.type", AGENT_EVENT_TYPES.map((item) => JSON.stringify(item)).join(", "));
+  }
+  return {
+    schema_version: 1,
+    resource,
+    seq: integer(root.seq, "$.seq", 1),
+    ts_ms: integer(root.ts_ms, "$.ts_ms", 0),
+    type,
+  };
 }

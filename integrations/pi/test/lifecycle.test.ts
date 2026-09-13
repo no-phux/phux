@@ -3,6 +3,8 @@ import test from "node:test";
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
+import type { AgentEmitOptions, AgentSessionOpenOptions, ExecutionOptions } from "../src/adapter.js";
+import { PhuxError } from "../src/errors.js";
 import {
   PhuxLifecycle,
   registerPhuxLifecycle,
@@ -11,7 +13,15 @@ import {
   type LifecycleTimers,
   type PhuxLifecycleAdapter,
 } from "../src/lifecycle.js";
-import type { AgentPane, AgentRecord, AgentStateList } from "../src/schemas.js";
+import type {
+  AgentEmitResult,
+  AgentEventType,
+  AgentPane,
+  AgentRecord,
+  AgentSessionCloseResult,
+  AgentSessionOpenResult,
+  AgentStateList,
+} from "../src/schemas.js";
 import { PhuxTargetStore, type PhuxTargetSelection } from "../src/target-store.js";
 
 const target: PhuxTargetSelection = {
@@ -55,9 +65,14 @@ class FakeAdapter implements PhuxLifecycleAdapter {
   readonly sets: Array<{ target: string; record: AgentRecord }> = [];
   readonly shows: string[] = [];
   readonly clears: string[] = [];
-  readonly commandOptions: LifecycleCommandOptions[] = [];
+  readonly opens: Array<{ target: string; provider: string; nativeId?: string }> = [];
+  readonly emits: Array<{ target: string; type: AgentEventType; data?: Readonly<Record<string, unknown>> }> = [];
+  readonly sessionCloses: string[] = [];
+  readonly commandOptions: Array<{ timeoutMs?: number; signal?: AbortSignal }> = [];
   record: AgentRecord | null = null;
   failSet = false;
+  failOpen: Error | null = null;
+  seq = 0;
 
   async agentSet(
     selector: string,
@@ -83,6 +98,50 @@ class FakeAdapter implements PhuxLifecycleAdapter {
     this.commandOptions.push(options);
     this.clears.push(selector);
     this.record = null;
+  }
+
+  async agentSessionOpen(
+    selector: string,
+    options: AgentSessionOpenOptions,
+  ): Promise<AgentSessionOpenResult> {
+    this.commandOptions.push(options);
+    this.opens.push({
+      target: selector,
+      provider: options.provider,
+      ...(options.nativeId === undefined ? {} : { nativeId: options.nativeId }),
+    });
+    if (this.failOpen !== null) throw this.failOpen;
+    return {
+      schema_version: 1,
+      resource: "@99",
+      parent: selector,
+      provider: options.provider,
+      native_id: options.nativeId ?? null,
+    };
+  }
+
+  async agentEmit(
+    selector: string,
+    type: AgentEventType,
+    options: AgentEmitOptions = {},
+  ): Promise<AgentEmitResult> {
+    this.commandOptions.push(options);
+    this.emits.push({
+      target: selector,
+      type,
+      ...(options.data === undefined ? {} : { data: options.data }),
+    });
+    this.seq += 1;
+    return { schema_version: 1, resource: "@99", seq: this.seq, ts_ms: this.seq, type };
+  }
+
+  async agentSessionClose(
+    selector: string,
+    options: ExecutionOptions = {},
+  ): Promise<AgentSessionCloseResult> {
+    this.commandOptions.push(options);
+    this.sessionCloses.push(selector);
+    return { resource: selector, closed: true };
   }
 }
 
@@ -172,6 +231,7 @@ test("the record is identity only, and only owner or target changes write it", a
   timers.runAll();
   await lifecycle.settled();
   assert.equal(adapter.sets.length, 1, "one write for the session");
+  assert.equal(adapter.opens.length, 1, "one AgentSession open for the pane");
 
   for (const record of adapter.sets.map((entry) => entry.record)) {
     assert.equal(record.state, undefined, "a declared state stands the detector down");
@@ -222,7 +282,7 @@ test("every lifecycle CLI command receives the configured local timeout and sign
   await lifecycle.settled();
   await lifecycle.shutdown();
 
-  assert.equal(adapter.commandOptions.length, 3);
+  assert.ok(adapter.commandOptions.length >= 3);
   assert.ok(adapter.commandOptions.every((options) => options.timeoutMs === 321));
   assert.ok(adapter.commandOptions.every((options) => options.signal instanceof AbortSignal));
 });
@@ -353,13 +413,7 @@ test("true target departure and quit clear only the owned declaration", async ()
   assert.deepEqual(adapter.clears, ["@3"]);
 });
 
-/**
- * Previously "maps agent_start to working and agent_settled to idle". It no
- * longer subscribes to either: the server derives state from `rules/pi.toml`,
- * and a per-turn write would clobber that derivation (phux-w7z2.38, .37).
- * `agent_end` was never subscribed and still is not.
- */
-test("registration subscribes to no per-turn lifecycle event", async () => {
+test("per-turn events emit on the AgentSession stream and never rewrite identity", async () => {
   const timers = new FakeTimers();
   const adapter = new FakeAdapter();
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
@@ -376,22 +430,26 @@ test("registration subscribes to no per-turn lifecycle event", async () => {
 
   handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
   timers.runAll();
-  await flush();
+  await registered.lifecycle.settled();
   const afterStart = adapter.sets.length;
   assert.equal(afterStart, 1, "session start declares identity once");
   assert.equal(adapter.sets.at(-1)?.record.state, undefined);
+  assert.equal(adapter.opens.length, 1);
 
-  for (const event of ["agent_start", "agent_settled", "agent_end"]) {
-    assert.equal(
-      handlers.has(event),
-      false,
-      `${event} must not be subscribed: a per-turn write clobbers the derived state`,
-    );
-  }
+  handlers.get("agent_start")?.({ type: "agent_start" }, ctx);
+  handlers.get("project_trust")?.({ type: "project_trust", cwd: "/repo" }, ctx);
+  handlers.get("agent_settled")?.({ type: "agent_settled" }, ctx);
+  await registered.lifecycle.settled();
 
-  timers.runAll();
-  await flush();
-  assert.equal(adapter.sets.length, afterStart, "no turn produced another write");
+  assert.equal(adapter.sets.length, afterStart, "a turn must not rewrite the identity record");
+  assert.deepEqual(adapter.emits.map((entry) => entry.type), [
+    "session_start",
+    "prompt",
+    "ask",
+    "stop",
+  ]);
+  assert.equal(adapter.emits.find((entry) => entry.type === "ask")?.data?.kind, "trust");
+  assert.equal(adapter.sets.at(-1)?.record.state, undefined);
 
   const shutdown = handlers.get("session_shutdown")?.(
     { type: "session_shutdown", reason: "reload" },
@@ -403,4 +461,42 @@ test("registration subscribes to no per-turn lifecycle event", async () => {
   timers.runAll();
   await registered.lifecycle.settled();
   assert.equal(adapter.sets.length, writesAtShutdown, "shutdown unsubscribes from target changes");
+});
+
+test("a trust prompt becomes blocked on the AgentSession stream", async () => {
+  const timers = new FakeTimers();
+  const adapter = new FakeAdapter();
+  const lifecycle = new PhuxLifecycle({ cli: adapter, timers });
+
+  lifecycle.start("session-1", target);
+  timers.runAll();
+  await lifecycle.settled();
+  lifecycle.emit("ask", { kind: "trust", question: "/repo" });
+  await lifecycle.settled();
+
+  const ask = adapter.emits.find((entry) => entry.type === "ask");
+  assert.ok(ask, "trust maps to ask");
+  assert.equal(ask.data?.kind, "trust");
+  assert.equal(adapter.sets.every((entry) => entry.record.state === undefined), true);
+});
+
+test("unsupported session open fails closed and identity-only still writes no state", async () => {
+  const timers = new FakeTimers();
+  const adapter = new FakeAdapter();
+  adapter.failOpen = new PhuxError("command_failed", "phux agent session open failed", {
+    stderr: '{"error":{"code":"unsupported_server"}}',
+  });
+  const lifecycle = new PhuxLifecycle({ cli: adapter, timers });
+
+  lifecycle.start("session-1", target);
+  timers.runAll();
+  await lifecycle.settled();
+  lifecycle.emit("ask", { kind: "permission" });
+  lifecycle.emit("prompt");
+  await lifecycle.settled();
+
+  assert.equal(adapter.opens.length, 1);
+  assert.equal(adapter.emits.length, 0, "detector remains the fallback when emit is absent");
+  assert.equal(adapter.sets.length, 1);
+  assert.equal(adapter.sets[0]?.record.state, undefined);
 });

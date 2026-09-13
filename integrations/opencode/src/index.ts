@@ -127,6 +127,17 @@ export function createPhuxPlugin(defaults: PhuxOpenCodeOptions = {}): Plugin {
         if (text === undefined) return;
         output.system.push(text);
       },
+      "tool.execute.before": async (input) => {
+        await lifecycle.toolStart(input.sessionID, input.tool, input.callID);
+      },
+      "tool.execute.after": async (input) => {
+        await lifecycle.toolEnd(input.sessionID, input.tool, input.callID);
+      },
+      "permission.ask": async (input) => {
+        const sessionID = (input as { readonly sessionID?: unknown }).sessionID;
+        if (typeof sessionID !== "string") return;
+        await lifecycle.ask(sessionID, { kind: "permission" });
+      },
       event: async ({ event }) => {
         if (!isLifecycleEvent(event)) return;
         await handleLifecycleEvent(lifecycle, event);
