@@ -273,7 +273,16 @@ precommit: fmt lint docs-gen test e2e
 [group('test')]
 [doc('Run the workspace unit test pool via nextest.')]
 test:
-    {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Build selection stays --workspace (see the e2e note). CI PRs may set
+    # PHUX_NEXTEST_FILTERSET to an rdeps() expression (phux-14r7); unset/empty
+    # keeps the full pool, matching pushes to main.
+    extra=()
+    if [[ -n "${PHUX_NEXTEST_FILTERSET:-}" ]]; then
+      extra+=(-E "${PHUX_NEXTEST_FILTERSET}")
+    fi
+    {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace "${extra[@]}"
 
 # Fast e2e lane — gates every PR (the `e2e` step in ci.yml). Covers the
 # headless agent-surface contract (`run_wait_e2e`), the ADR-0040 agent

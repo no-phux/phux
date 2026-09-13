@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # Contributing to phux
@@ -126,7 +126,7 @@ promise is back; prefer adding the recipe.
 | e2e lane coverage | `just e2e-lane-check` | same recipe |
 | Homebrew formula | `just formula-check` | same recipe |
 | toolchain pins | `just toolchain-check` | same recipe; `just toolchain-parity` additionally compares the resolved Nix and Mise environments |
-| unit tests | `NEXTEST_PROFILE=ci just test` (default features) | `just test`; `just test-cargo` if nextest is unavailable |
+| unit tests | `NEXTEST_PROFILE=ci just test` (default features; PRs may pass `PHUX_NEXTEST_FILTERSET`) | `just test`; `just test-cargo` if nextest is unavailable |
 | workflow/setup contracts | `just workflow-check` | same (includes `just setup-check`'s helper tests) |
 | agent integration packages | `just agent-integrations-check` | same; `just integration-check <package>` for a scoped loop |
 | Zig archive pins | `scripts/check-zig-pins.sh` | `just zig-pin-check` |

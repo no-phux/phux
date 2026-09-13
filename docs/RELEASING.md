@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-13
 ---
 
 # Releasing
@@ -157,8 +157,11 @@ new execution environments proven.
 `scripts/ci/detect-changes.py` resolves PR merge-base, push and merge-group
 events. All four consumers use `.github/actions/classify-changes` without
 duplicated outer path filters. Unknown paths, unavailable history and empty
-diffs request every surface. The required `ci` aggregate rejects failed or
-cancelled lanes and retains the visible `check`/`test` job names.
+diffs request every surface. On pull requests the same classifier also emits
+`test_filterset` (`rdeps(=crate)` union, or empty) so the unit lane can skip
+unrelated crates after the `--workspace` build; pushes to `main` keep the
+full pool. The required `ci` aggregate rejects failed or cancelled lanes and
+retains the visible `check`/`test` job names.
 
 | Change | Product validation |
 |---|---|

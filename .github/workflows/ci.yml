@@ -38,6 +38,7 @@ jobs:
       web_engine_needed: ${{ steps.detect.outputs.web_engine_needed }}
       integrations_needed: ${{ steps.detect.outputs.integrations_needed }}
       native_needed: ${{ steps.detect.outputs.native_needed }}
+      test_filterset: ${{ steps.detect.outputs.test_filterset }}
       validated: ${{ steps.receipt.outputs.validated }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -152,6 +153,10 @@ jobs:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
           rust-cache-shared-key: test
       - name: tests (unit + e2e)
+        env:
+          # Pushes to main keep the full unit pool. PRs and merge groups use
+          # the classifier's rdeps filterset; empty means run everything.
+          PHUX_NEXTEST_FILTERSET: ${{ github.event_name != 'push' && needs.changes.outputs.test_filterset || '' }}
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
           source scripts/ci/timed.sh
