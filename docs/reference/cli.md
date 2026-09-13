@@ -1249,7 +1249,7 @@ Options:
 ```text
 Set up a machine over ssh, end to end, and register it.
 
-Confirms phux is installed on HOST, installs its service unit so the server survives reboot, mints a pairing token there, and registers the result in the role-correct registry — `--role remote` (the default) yields an entry `phux attach <name>` dials with no flags and no hex strings typed by hand; `--role satellite` a peer this hub dials for its users. Uses the ssh trust you already have; it grants nothing ssh did not already grant.
+Confirms phux is installed on HOST, installs its service unit so the server survives reboot, mints a pairing token there, and registers the result in the role-correct registry — `--role remote` (the default) yields an entry `phux attach <name>` dials with no flags and no hex strings typed by hand; `--role satellite` a peer this hub dials for its users, and this machine's per-user service is made a hub (`--hub`) without dropping listeners already baked into the unit. Uses the ssh trust you already have; it grants nothing ssh did not already grant.
 
 A host with no reachable listener falls back to an ssh:// entry, which still gives you sessions that outlive the connection.
 

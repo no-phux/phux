@@ -796,6 +796,279 @@ fn unit_socket_override(manager: Manager, body: &str) -> Option<PathBuf> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// In-place --hub (phux-lpn7)
+// ---------------------------------------------------------------------------
+//
+// `phux host enroll --role satellite` has to leave this machine running as a
+// federation hub. A blind `phux service install --hub` cannot do that job:
+// `--quic`, `--listen`, `--restore`, `--socket` (and an already-present
+// `--hub`) survive only inside the rendered unit, and a re-render from a
+// fresh ServicePlan silently drops every flag the operator does not retype
+// (ADR-0083). So this path never re-renders. It patches `--hub` into the
+// installed argv, or writes a new hub unit and arms it (ADR-0088) when none
+// exists. Nothing is stopped.
+
+/// What ensuring `--hub` on this machine's per-user service did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LocalHub {
+    /// The installed unit (or restore wrapper) already ran with `--hub`.
+    Already,
+    /// `--hub` was inserted; every other byte of the unit was left alone.
+    Patched,
+    /// No unit existed; a hub unit was written and armed, not loaded.
+    Installed,
+    /// The unit could not be made a hub. The satellite is still registered.
+    Skipped(String),
+}
+
+impl LocalHub {
+    /// Stable token for the satellite-enroll JSON document.
+    pub(crate) const fn as_json_str(&self) -> &'static str {
+        match self {
+            Self::Already => "already",
+            Self::Patched => "patched",
+            Self::Installed => "installed",
+            Self::Skipped(_) => "skipped",
+        }
+    }
+}
+
+/// Outcome of a pure `--hub` patch against a unit body or restore wrapper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum HubEnsure {
+    Current,
+    Patched(String),
+    /// `--hub` lives in the restore wrapper this unit execs, not in argv.
+    Wrapper(PathBuf),
+    Unrecognized(&'static str),
+}
+
+/// Make this machine's per-user service a federation hub, without dropping
+/// listeners already baked into the unit and without stopping a live server.
+///
+/// Called from `phux host enroll --role satellite` after the satellite is
+/// registered. Failures are skipped rather than fatal: the registry write
+/// already succeeded, and a missing local `--hub` is recoverable with
+/// `phux service install --hub` (at the cost ADR-0083 documents).
+pub(crate) fn ensure_local_hub() -> LocalHub {
+    let Some(manager) = Manager::host() else {
+        return LocalHub::Skipped("no unit generator for this platform".to_owned());
+    };
+    let unit_path = match manager.unit_path(profile_suffix().as_deref()) {
+        Ok(path) => path,
+        Err(err) => return LocalHub::Skipped(err),
+    };
+    if !unit_path.exists() {
+        return install_hub_unit(manager, &unit_path);
+    }
+    let Ok(body) = std::fs::read_to_string(&unit_path) else {
+        return LocalHub::Skipped(format!("could not read {}", unit_path.display()));
+    };
+    match ensure_hub_in_unit(manager, &body) {
+        HubEnsure::Current => LocalHub::Already,
+        HubEnsure::Patched(patched) => write_hub_patch(&unit_path, patched, manager),
+        HubEnsure::Wrapper(path) => patch_wrapper_file(&path),
+        HubEnsure::Unrecognized(reason) => LocalHub::Skipped(reason.to_owned()),
+    }
+}
+
+/// Write a new hub unit and arm it. Never loaded here: loading would either
+/// collide with a live server (ADR-0088) or `launchctl bootstrap` a unit from
+/// a test HOME into the operator's GUI domain. The adoption marker is what
+/// makes the next cold `phux` start this unit instead of forking unsupervised.
+fn install_hub_unit(manager: Manager, unit_path: &Path) -> LocalHub {
+    let plan = match resolve_plan(None, None, false, None, true) {
+        Ok(plan) => plan,
+        Err(err) => return LocalHub::Skipped(err),
+    };
+    if let Err(err) = write_unit_files(manager, &plan, unit_path) {
+        return LocalHub::Skipped(err);
+    }
+    if let Err(err) = arm_unit(manager) {
+        return LocalHub::Skipped(err);
+    }
+    if let Err(err) = mark_adoption_pending(unit_path) {
+        // Unit is written and armed; only the automatic hand-over is lost.
+        eprintln!("phux service: note: {err}");
+    }
+    LocalHub::Installed
+}
+
+fn write_hub_patch(unit_path: &Path, patched: String, manager: Manager) -> LocalHub {
+    if let Err(err) = std::fs::write(unit_path, patched) {
+        return LocalHub::Skipped(format!("could not write {}: {err}", unit_path.display()));
+    }
+    // systemd re-reads ExecStart on daemon-reload without touching the
+    // running service. launchd cannot; the loaded job keeps its argv until
+    // bootout, which we will not do (ADR-0083).
+    if manager == Manager::Systemd {
+        let _ = run_tool(
+            "systemctl",
+            &["--user".to_owned(), "daemon-reload".to_owned()],
+        );
+    }
+    LocalHub::Patched
+}
+
+fn patch_wrapper_file(path: &Path) -> LocalHub {
+    let Ok(body) = std::fs::read_to_string(path) else {
+        return LocalHub::Skipped(format!("could not read restore wrapper {}", path.display()));
+    };
+    match ensure_hub_in_wrapper(&body) {
+        HubEnsure::Current => LocalHub::Already,
+        HubEnsure::Patched(patched) => {
+            if let Err(err) = std::fs::write(path, patched) {
+                return LocalHub::Skipped(format!("could not write {}: {err}", path.display()));
+            }
+            LocalHub::Patched
+        }
+        HubEnsure::Wrapper(_) => LocalHub::Skipped(
+            "restore wrapper does not start the server via \"$phux\" server".to_owned(),
+        ),
+        HubEnsure::Unrecognized(reason) => LocalHub::Skipped(reason.to_owned()),
+    }
+}
+
+fn ensure_hub_in_unit(manager: Manager, body: &str) -> HubEnsure {
+    match manager {
+        Manager::Launchd => ensure_hub_in_launchd(body),
+        Manager::Systemd => ensure_hub_in_systemd(body),
+    }
+}
+
+/// Insert `--hub` after the `server` argv in a launchd `ProgramArguments`
+/// array, or name the restore wrapper when the unit execs `/bin/sh`.
+fn ensure_hub_in_launchd(body: &str) -> HubEnsure {
+    let lines: Vec<&str> = body.split('\n').collect();
+    let Some((array_start, array_end)) = program_arguments_range(&lines) else {
+        return HubEnsure::Unrecognized("it has no ProgramArguments array");
+    };
+    let args = plist_array_strings(&lines, array_start, array_end);
+    if args.iter().any(|(_, value)| value == "--hub") {
+        return HubEnsure::Current;
+    }
+    if args.first().is_some_and(|(_, value)| value == "/bin/sh") {
+        return args.get(1).map_or(
+            HubEnsure::Unrecognized("ProgramArguments runs /bin/sh with no script"),
+            |(_, path)| HubEnsure::Wrapper(PathBuf::from(path)),
+        );
+    }
+    let Some(&(server_at, _)) = args.iter().find(|(_, value)| value == "server") else {
+        return HubEnsure::Unrecognized("ProgramArguments does not run `phux server`");
+    };
+    let indent = line_indent(lines[server_at]);
+    let mut kept: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
+    kept.insert(server_at + 1, format!("{indent}<string>--hub</string>"));
+    HubEnsure::Patched(kept.join("\n"))
+}
+
+/// Byte range of the `ProgramArguments` `<array>…</array>`, or `None` when
+/// the key is missing or its value is not a balanced array.
+fn program_arguments_range(lines: &[&str]) -> Option<(usize, usize)> {
+    let key_at = lines
+        .iter()
+        .position(|line| line.trim() == "<key>ProgramArguments</key>")?;
+    let array_start = lines[key_at + 1..]
+        .iter()
+        .position(|line| line.trim() == "<array>")
+        .map(|offset| key_at + 1 + offset)?;
+    let array_end = plist_container_end(lines, array_start)?;
+    Some((array_start, array_end))
+}
+
+/// `(line_index, unescaped value)` for each `<string>` in `[start, end)`.
+fn plist_array_strings(lines: &[&str], start: usize, end: usize) -> Vec<(usize, String)> {
+    (start + 1..end.saturating_sub(1))
+        .filter_map(|index| {
+            let inner = lines[index]
+                .trim()
+                .strip_prefix("<string>")?
+                .strip_suffix("</string>")?;
+            Some((index, xml_unescape(inner)))
+        })
+        .collect()
+}
+
+/// Insert `--hub` after the `server` token on `ExecStart=`, or name the
+/// restore wrapper when the unit execs `/bin/sh`.
+fn ensure_hub_in_systemd(body: &str) -> HubEnsure {
+    let lines: Vec<&str> = body.split('\n').collect();
+    let Some(idx) = lines
+        .iter()
+        .position(|line| line.trim().starts_with("ExecStart="))
+    else {
+        return HubEnsure::Unrecognized("it has no ExecStart");
+    };
+    let value = lines[idx]
+        .trim()
+        .strip_prefix("ExecStart=")
+        .unwrap_or(lines[idx]);
+    let tokens: Vec<&str> = value.split_whitespace().collect();
+    if tokens.contains(&"--hub") {
+        return HubEnsure::Current;
+    }
+    if tokens.first().copied() == Some("/bin/sh") {
+        return tokens.get(1).map_or(
+            HubEnsure::Unrecognized("ExecStart runs /bin/sh with no script"),
+            |path| HubEnsure::Wrapper(PathBuf::from(*path)),
+        );
+    }
+    if !tokens.contains(&"server") {
+        return HubEnsure::Unrecognized("ExecStart does not run `phux server`");
+    }
+    let indent = line_indent(lines[idx]);
+    let mut kept: Vec<String> = lines.iter().map(|line| (*line).to_owned()).collect();
+    kept[idx] = format!(
+        "{indent}ExecStart={}",
+        insert_after_word(value, "server", "--hub")
+    );
+    HubEnsure::Patched(kept.join("\n"))
+}
+
+/// Insert `--hub` immediately after `"$phux" server` in a restore wrapper.
+fn ensure_hub_in_wrapper(body: &str) -> HubEnsure {
+    const NEEDLE: &str = "\"$phux\" server";
+    const WITH_HUB: &str = "\"$phux\" server --hub";
+    if body.contains(WITH_HUB) {
+        return HubEnsure::Current;
+    }
+    let Some(at) = body.find(NEEDLE) else {
+        return HubEnsure::Unrecognized(
+            "restore wrapper does not start the server via \"$phux\" server",
+        );
+    };
+    let mut patched = String::with_capacity(body.len() + 6);
+    patched.push_str(&body[..at]);
+    patched.push_str(WITH_HUB);
+    patched.push_str(&body[at + NEEDLE.len()..]);
+    HubEnsure::Patched(patched)
+}
+
+fn line_indent(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    &line[..line.len() - trimmed.len()]
+}
+
+/// Insert `insert` after the first whole-word `word` in `value`, keeping the
+/// original spacing around every other token.
+fn insert_after_word(value: &str, word: &str, insert: &str) -> String {
+    let mut out = String::with_capacity(value.len() + insert.len() + 1);
+    let mut placed = false;
+    for (index, part) in value.split(' ').enumerate() {
+        if index > 0 {
+            out.push(' ');
+        }
+        out.push_str(part);
+        if !placed && part == word {
+            out.push(' ');
+            out.push_str(insert);
+            placed = true;
+        }
+    }
+    out
+}
+
 /// `phux service reconcile` — bring an installed unit's restart policy up to
 /// date without stopping the server it supervises.
 ///
@@ -2260,8 +2533,9 @@ fn config_home_from(
 #[cfg(test)]
 mod tests {
     use super::{
-        Manager, RESTART_THROTTLE_SECS, Reconcile, SERVICE_MANAGED_ENV, START_LIMIT_BURST,
-        ServicePlan, arm_unit, config_home_from, dry_run_text, home_dir_from, launchd_label_for,
+        HubEnsure, Manager, RESTART_THROTTLE_SECS, Reconcile, SERVICE_MANAGED_ENV,
+        START_LIMIT_BURST, ServicePlan, arm_unit, config_home_from, dry_run_text,
+        ensure_hub_in_unit, ensure_hub_in_wrapper, home_dir_from, launchd_label_for,
         launchd_policy_lines, reconcile_unit, render_launchd_plist, render_systemd_unit,
         render_unit, render_wrapper_script, report_policy_reach_with, resolve_plan, sh_quote,
         status_report, systemd_escape, systemd_policy_lines, systemd_quote, systemd_unit_for,
@@ -3019,6 +3293,76 @@ WantedBy=default.target
                 );
             }
         }
+    }
+
+    /// phux-lpn7: adding `--hub` to an installed unit must not re-render from
+    /// a fresh plan. The patch of a hub=false generated unit is byte-identical
+    /// to generating with hub=true, so listeners, socket, env and log path
+    /// cannot have been re-derived.
+    #[test]
+    fn ensuring_hub_matches_generating_with_hub() {
+        for manager in [Manager::Launchd, Manager::Systemd] {
+            let without = render_unit(manager, &plan());
+            let mut with_hub = plan();
+            with_hub.hub = true;
+            let expected = render_unit(manager, &with_hub);
+            match ensure_hub_in_unit(manager, &without) {
+                HubEnsure::Patched(patched) => assert_eq!(
+                    patched, expected,
+                    "{manager:?} --hub patch drifted from the hub=true renderer"
+                ),
+                other => panic!("{manager:?} expected a patch, got {other:?}\n{without}"),
+            }
+            assert!(
+                matches!(ensure_hub_in_unit(manager, &expected), HubEnsure::Current),
+                "{manager:?} a hub unit must be a no-op to patch"
+            );
+        }
+    }
+
+    /// The restore wrapper is where `--hub` lives when `--restore` is on;
+    /// the unit itself execs `/bin/sh`. Patching argv would produce
+    /// `sh --hub`, which is nonsense.
+    #[test]
+    fn ensuring_hub_on_a_restore_unit_names_the_wrapper() {
+        let mut plan = plan();
+        plan.restore = Some(PathBuf::from("/home/u/.local/state/phux/workspace.json"));
+        for manager in [Manager::Launchd, Manager::Systemd] {
+            match ensure_hub_in_unit(manager, &render_unit(manager, &plan)) {
+                HubEnsure::Wrapper(path) => assert_eq!(path, plan.wrapper),
+                other => panic!("{manager:?} expected Wrapper, got {other:?}"),
+            }
+        }
+
+        let without = render_wrapper_script(&plan);
+        plan.hub = true;
+        let expected = render_wrapper_script(&plan);
+        match ensure_hub_in_wrapper(&without) {
+            HubEnsure::Patched(patched) => assert_eq!(patched, expected),
+            other => panic!("expected a wrapper patch, got {other:?}\n{without}"),
+        }
+        assert!(matches!(
+            ensure_hub_in_wrapper(&expected),
+            HubEnsure::Current
+        ));
+        // workspace save/restore lines must not gain --hub.
+        assert!(
+            !expected.contains("workspace save --hub")
+                && !expected.contains("workspace restore --hub"),
+            "only the server start line takes --hub:\n{expected}"
+        );
+    }
+
+    #[test]
+    fn ensuring_hub_refuses_an_unparseable_unit() {
+        assert!(matches!(
+            ensure_hub_in_unit(Manager::Launchd, "not a plist"),
+            HubEnsure::Unrecognized(_)
+        ));
+        assert!(matches!(
+            ensure_hub_in_unit(Manager::Systemd, "[Unit]\nDescription=no exec\n"),
+            HubEnsure::Unrecognized(_)
+        ));
     }
 
     /// A legacy plist gains the policy and loses nothing else.

@@ -55,6 +55,7 @@ use super::enroll;
 use super::json_err::{self, CliError, codes};
 use super::remote;
 use super::satellite::registry as satellite_registry;
+use super::service;
 
 /// Which machine registry a `phux host` operation applies to.
 ///
@@ -141,8 +142,10 @@ pub(crate) enum HostAction {
     /// the result in the role-correct registry — `--role remote` (the
     /// default) yields an entry `phux attach <name>` dials with no flags
     /// and no hex strings typed by hand; `--role satellite` a peer this hub
-    /// dials for its users. Uses the ssh trust you already have; it grants
-    /// nothing ssh did not already grant.
+    /// dials for its users, and this machine's per-user service is made a
+    /// hub (`--hub`) without dropping listeners already baked into the unit.
+    /// Uses the ssh trust you already have; it grants nothing ssh did not
+    /// already grant.
     ///
     /// A host with no reachable listener falls back to an ssh:// entry,
     /// which still gives you sessions that outlive the connection.
@@ -526,7 +529,7 @@ fn run_enroll(args: &EnrollArgs<'_>) -> ExitCode {
     if args.ssh_only {
         let endpoint = format!("ssh://{}", args.ssh_host);
         return match finish_enroll(args.role, &name, &endpoint, None, args.session) {
-            Ok(row) => report_enrolled(&row, args.json),
+            Ok(row) => report_enrolled(&row, args.json, local_hub_for(args.role).as_ref()),
             Err(err) => json_err::emit(args.json, &err, 1),
         };
     }
@@ -572,9 +575,16 @@ fn run_enroll(args: &EnrollArgs<'_>) -> ExitCode {
         Some(&outcome.report),
         args.session,
     ) {
-        Ok(row) => report_enrolled(&row, json),
+        Ok(row) => report_enrolled(&row, json, local_hub_for(args.role).as_ref()),
         Err(err) => json_err::emit(json, &err, 1),
     }
+}
+
+/// `--role satellite` has to leave this machine able to dial the new peer.
+/// `--role remote` is the opposite trust direction and must not touch the
+/// local unit.
+fn local_hub_for(role: HostRole) -> Option<service::LocalHub> {
+    (role == HostRole::Satellite).then(service::ensure_local_hub)
 }
 
 /// The role-specific tail of `host enroll`: validate the entry, write the
@@ -681,12 +691,19 @@ fn write_pairing_token(
 
 /// Report a completed enrollment: the `"host"` document under `--json`
 /// (the same shape `host add --json` wraps), the human summary otherwise.
-fn report_enrolled(row: &HostRow, json: bool) -> ExitCode {
+///
+/// `hub` is `Some` only for `--role satellite`, where the local unit was
+/// made a hub (or skipped, with the reason on stderr).
+fn report_enrolled(row: &HostRow, json: bool, hub: Option<&service::LocalHub>) -> ExitCode {
     if json {
-        return print_doc(&serde_json::json!({
+        let mut doc = serde_json::json!({
             "schema_version": 1,
             "host": row_json(row),
-        }));
+        });
+        if let Some(hub) = hub {
+            doc["hub_service"] = serde_json::Value::String(hub.as_json_str().to_owned());
+        }
+        return print_doc(&doc);
     }
     outln!();
     outln!(
@@ -709,11 +726,30 @@ fn report_enrolled(row: &HostRow, json: bool) -> ExitCode {
             outln!();
             outln!("  phux attach {}", row.name);
         }
-        HostRole::Satellite => {
+        HostRole::Satellite => report_local_hub(hub),
+    }
+    ExitCode::SUCCESS
+}
+
+fn report_local_hub(hub: Option<&service::LocalHub>) {
+    match hub {
+        Some(service::LocalHub::Already) => {
+            outln!("  local hub service already runs with --hub");
+        }
+        Some(service::LocalHub::Patched) => {
+            outln!("  local hub service: --hub added; existing listeners kept");
+        }
+        Some(service::LocalHub::Installed) => {
+            outln!("  local hub service installed with --hub");
+        }
+        Some(service::LocalHub::Skipped(reason)) => {
+            eprintln!("phux host enroll: warning: could not enable local --hub: {reason}");
+            outln!("  Hub route ready once this host runs `phux service install --hub`.");
+        }
+        None => {
             outln!("  Hub route ready once this host runs `phux service install --hub`.");
         }
     }
-    ExitCode::SUCCESS
 }
 
 /// `phux host ls`.
