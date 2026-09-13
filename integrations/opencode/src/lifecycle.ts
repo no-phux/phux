@@ -1,9 +1,13 @@
-import type { AgentEmitOptions, AgentSessionOpenOptions, ExecutionOptions } from "../../pi/src/adapter.js";
+import type {
+  AgentEmitOptions,
+  AgentSessionOpenOptions,
+  ExecutionOptions,
+} from "../../runtime/src/adapter.js";
 import {
   AgentSessionEmitter,
   hasAgentSessionCli,
   PhuxCli,
-} from "../../pi/src/adapter.js";
+} from "../../runtime/src/adapter.js";
 import type {
   AgentEmitResult,
   AgentEventType,
@@ -11,7 +15,7 @@ import type {
   AgentSessionCloseResult,
   AgentSessionOpenResult,
   AgentStateList,
-} from "../../pi/src/schemas.js";
+} from "../../runtime/src/schemas.js";
 
 export type OpenCodeLifecycleState = "idle" | "working";
 

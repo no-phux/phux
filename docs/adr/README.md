@@ -153,6 +153,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0115](./0115-quic-stream-per-terminal.md) | QUIC carries one control stream plus one bidi stream per attached Terminal | Accepted (builds on [0007](./0007-mosh-class-transport-and-satellites.md) and [0070](./0070-native-engine-state-bootstrap.md)) |
 | [0116](./0116-workload-auth-is-mtls.md) | Workload authentication is mTLS; the bespoke proof protocol is retired unshipped | Accepted (supersedes in part [0098](./0098-workload-proof-and-closed-scope-authority.md)) |
 | [0117](./0117-wire-codec-stays-tlv.md) | The wire codec stays hand-rolled TLV; protobuf considered and rejected | Accepted |
+| [0118](./0118-agent-integrations-share-a-neutral-runtime.md) | Agent integrations share a neutral Node runtime | Accepted |
 
 ## When to write an ADR
 

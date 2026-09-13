@@ -290,6 +290,10 @@ Linux x86_64, and Linux arm64.
 | Claude Code plugin | repository marketplace + GitHub release | `claude-plugin-vX.Y.Z`, [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) |
 | Phux Cockpit | Homebrew cask + GitHub release | `cockpit-vX.Y.Z`, ZIP + DMG + `SHA256SUMS`, [`cockpit-release.yml`](../.github/workflows/cockpit-release.yml) |
 
+`@phux/integration-runtime` is a private implementation module bundled into
+the public Pi artifact and inlined into OpenCode. It has no tag or independent
+publication lane.
+
 Every other crate (`phux`, `phux-core`, `phux-server`, `phux-client`,
 `phux-tui`, `phux-config`, `phux-mcp`) is `publish = false`: binary or internal-only.
 The installable CLI ships through release artifacts and Homebrew instead of

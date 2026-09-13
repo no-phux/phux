@@ -19,8 +19,8 @@ export interface PhuxToolDefinition<Input = never> {
   readonly execute: (input: Input, context: ToolContext) => Promise<ToolResult>;
 }
 
-import { PhuxCli } from "../../pi/src/adapter.js";
-import type { ScreenState } from "../../pi/src/schemas.js";
+import { PhuxCli } from "../../runtime/src/adapter.js";
+import type { ScreenState } from "../../runtime/src/schemas.js";
 
 const TARGET = stringSchema(1, 512, "Explicit phux target selector; otherwise use this plugin instance's selected target, then PHUX_TARGET");
 const LOCAL_TIMEOUT = integerSchema(1, 3_600_000, "Local subprocess timeout in milliseconds");
