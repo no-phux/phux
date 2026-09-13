@@ -35,7 +35,9 @@
 #   - spec-id-unique      : every wire-ID row in the spec allocation tables
 #                           (message IDs, command tags, agent event kinds)
 #                           is unique and strictly ascending, so two
-#                           branches cannot claim the same wire ID
+#                           branches cannot claim the same wire ID; also
+#                           scripts/check-spec-ids.awk rejects duplicate IDs
+#                           across catalogs and capability bitsets
 #   - impl-status         : every shipped/partial/spec-only claim in
 #                           docs/spec/ and docs/consumers/ agrees with
 #                           the code it names
@@ -1207,6 +1209,27 @@ gate_spec_id_unique() {
                 "no event-kind rows matched - the table's shape changed and the registry check is now inert; fix the row pattern in scripts/check-docs.sh"
         fi
     fi
+
+    # Cross-file message namespace, coordinator's own connection, and
+    # capability bitsets: the bash table checks above keep each file's rows
+    # unique and ascending; the awk pass is the second list-free registry.
+    spec_id_violations \
+        "$spec/appendix-reserved.md" \
+        "$spec/input.md" \
+        "$spec/L1.md" "$spec/L3.md" \
+        "$spec/proto.md"
+    spec_id_violations "$spec/coordinator.md"
+}
+
+# Each awk invocation is one wire-ID namespace. The phux protocol's frame
+# catalogs share one message-ID space across files; the coordinator protocol
+# (docs/spec/coordinator.md) runs over its own connection and reuses bytes by
+# design, so it is checked on its own.
+spec_id_violations() {
+    local violation
+    while IFS= read -r violation; do
+        violate spec-id-unique "$ROOT/docs/spec" "${violation//"$ROOT/"/}"
+    done < <(awk -f "$ROOT/scripts/check-spec-ids.awk" "$@")
 }
 
 # ---------------------------------------------------------------------------

@@ -61,6 +61,40 @@ pub const MAX_RESOURCE_NATIVE_ID_BYTES: usize = 1024;
 // sibling tasks can wire them up without re-deriving the catalog.
 // -----------------------------------------------------------------------------
 
+// Each declaration reserves its byte through a trait implementation. Reusing a
+// byte in the same namespace is a conflicting impl (E0119), even for a reserved
+// tag with no decoder arm. Keep declarations inside wire_tags!: the constants
+// and reservations are emitted together, with no secondary list to maintain.
+// `tests/wire_tag_registry.rs` compiles duplicate declarations to prove it.
+// FrameType / CommandTag remain the E0081 gate for those two catalogs.
+#[allow(dead_code)]
+mod tag_registry {
+    pub(super) trait Allocated<const TAG: u8> {}
+    pub(super) struct Message;
+    pub(super) struct SpawnResult;
+    pub(super) struct SpawnError;
+    pub(super) struct MoveResult;
+    pub(super) struct MoveError;
+    pub(super) struct Scope;
+    pub(super) struct Event;
+    pub(super) struct Command;
+    pub(super) struct InputEvent;
+    pub(super) struct StateScope;
+    pub(super) struct CommandResult;
+    pub(super) struct CommandValue;
+    pub(super) struct AttachTarget;
+}
+
+macro_rules! wire_tags {
+    ($namespace:ident; $( $(#[$attr:meta])* $vis:vis const $name:ident: u8 = $tag:expr; )*) => {
+        $(
+            $(#[$attr])*
+            $vis const $name: u8 = $tag;
+            impl tag_registry::Allocated<{ $tag }> for tag_registry::$namespace {}
+        )*
+    };
+}
+
 /// Wire type byte for one SPEC §7 message-catalog entry.
 ///
 /// The public surface stays the `TYPE_*` consts below, each of which takes
@@ -125,6 +159,7 @@ enum FrameType {
     Event = 0xB3,
 }
 
+wire_tags! { Message;
 /// Discriminant for `HELLO` (client to server, `docs/spec/proto.md` §6.1).
 pub const TYPE_HELLO: u8 = FrameType::Hello as u8;
 /// Discriminant for `ATTACH` (client to server, `docs/spec/proto.md` §7.1 / §13).
@@ -211,6 +246,7 @@ pub const TYPE_HISTORY_REJECTED: u8 = FrameType::HistoryRejected as u8;
 /// reserve (`docs/spec/appendix-reserved.md` §1) because it wraps the hot
 /// path's largest frames.
 pub const TYPE_FRAME_COMPRESSED: u8 = FrameType::FrameCompressed as u8;
+}
 
 // -----------------------------------------------------------------------------
 // L3 metadata frame discriminants — SPEC §7.4 (phux-4li.2).
@@ -224,6 +260,7 @@ pub const TYPE_FRAME_COMPRESSED: u8 = FrameType::FrameCompressed as u8;
 // `ERROR` (0xC1) already on lower discriminants.
 // -----------------------------------------------------------------------------
 
+wire_tags! { Message;
 /// Discriminant for `GET_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
 pub const TYPE_GET_METADATA: u8 = FrameType::GetMetadata as u8;
 /// Discriminant for `SET_METADATA` (client to server, `docs/spec/L3.md` §1 / §11.L3).
@@ -237,6 +274,7 @@ pub const TYPE_SUBSCRIBE_METADATA: u8 = FrameType::SubscribeMetadata as u8;
 
 /// Discriminant for `METADATA_CHANGED` (server to client, `docs/spec/L3.md` §1).
 pub const TYPE_METADATA_CHANGED: u8 = FrameType::MetadataChanged as u8;
+}
 
 /// Conventional L3 metadata key holding a session's human-readable name.
 ///
@@ -389,6 +427,7 @@ pub const MAX_AGENT_SESSION_RECORD_BYTES: usize = 4 * 1024;
 /// `phux config reload` and the TUI `reload-config` action.
 pub const CONFIG_RELOAD_KEY: &str = "phux.config.reload/v1";
 
+wire_tags! { Message;
 /// Discriminant for `METADATA_VALUE` (server to client, `docs/spec/L3.md` §1).
 ///
 /// Reply frame for `GET_METADATA`; correlated by `request_id`. Carries
@@ -416,6 +455,7 @@ pub const TYPE_LIST_DIRECTORY: u8 = FrameType::ListDirectory as u8;
 /// Reply frame for `LIST_DIRECTORY`; correlated by `request_id`. Carries
 /// either the listing or a typed refusal.
 pub const TYPE_DIRECTORY_LISTING: u8 = FrameType::DirectoryListing as u8;
+}
 
 // -----------------------------------------------------------------------------
 // L1 Terminal lifecycle frame discriminants — SPEC §7.2 / §10.1 (phux-4li.10).
@@ -434,6 +474,7 @@ pub const TYPE_DIRECTORY_LISTING: u8 = FrameType::DirectoryListing as u8;
 // 0.2.0-draft.2 entry.
 // -----------------------------------------------------------------------------
 
+wire_tags! { Message;
 /// Discriminant for `SPAWN_RESOURCE` (client to server, `docs/spec/L1.md` §1 / §10.1).
 ///
 /// Carries `{ request_id, group, command: Option<list<str>>,
@@ -486,6 +527,7 @@ pub const TYPE_RESOURCE_CLOSED: u8 = FrameType::ResourceClosed as u8;
 /// Reply frame for `SPAWN_RESOURCE`; correlated by `request_id`. Carries a
 /// `Result<ResourceId, SpawnError>` tagged union — see [`SpawnResult`].
 pub const TYPE_RESOURCE_SPAWNED: u8 = FrameType::ResourceSpawned as u8;
+}
 
 // Wire tags for the `SpawnResult` tagged union (SPEC §7.2 / §10.1).
 //
@@ -494,12 +536,15 @@ pub const TYPE_RESOURCE_SPAWNED: u8 = FrameType::ResourceSpawned as u8;
 // `COMMAND_RESULT` lands per SPEC §11). The convention deliberately
 // matches the `Option` tag convention (`None = 0x00`, `Some = 0x01`) so
 // hex-dump readers do not have to remember a second per-shape table.
+wire_tags! { SpawnResult;
 /// Wire tag for [`SpawnResult::Ok`].
 pub(crate) const SPAWN_RESULT_OK: u8 = 0;
 /// Wire tag for [`SpawnResult::Err`].
 pub(crate) const SPAWN_RESULT_ERR: u8 = 1;
+}
 
 // Wire tags for the `SpawnError` tagged union (SPEC §7.2 / §10.1).
+wire_tags! { SpawnError;
 /// Wire tag for [`SpawnError::GroupNotFound`].
 pub(crate) const SPAWN_ERROR_TAG_GROUP_NOT_FOUND: u8 = 0;
 /// Wire tag for [`SpawnError::SpawnFailed`].
@@ -514,25 +559,32 @@ pub(crate) const SPAWN_ERROR_TAG_UNSUPPORTED_KIND: u8 = 4;
 pub(crate) const SPAWN_ERROR_TAG_PARENT_NOT_FOUND: u8 = 5;
 /// Wire tag for [`SpawnError::ParentKindMismatch`].
 pub(crate) const SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH: u8 = 6;
+}
 
 // Wire tags for the `MoveResult` / `MoveError` tagged unions (ADR-0056),
 // following the `SpawnResult` convention above (`Ok = 0x00`, `Err = 0x01`).
+wire_tags! { MoveResult;
 /// Wire tag for [`MoveResult::Ok`].
 pub(crate) const MOVE_RESULT_OK: u8 = 0;
 /// Wire tag for [`MoveResult::Err`].
 pub(crate) const MOVE_RESULT_ERR: u8 = 1;
+}
+wire_tags! { MoveError;
 /// Wire tag for [`MoveError::MoveFailed`].
 pub(crate) const MOVE_ERROR_TAG_MOVE_FAILED: u8 = 0;
 /// Wire tag for [`MoveError::UnsupportedSatelliteRoute`].
 pub(crate) const MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE: u8 = 1;
+}
 
 // Wire tags for the `Scope` tagged union (SPEC §7.4 / §11.L3).
+wire_tags! { Scope;
 /// Wire tag for [`Scope::Resource`].
 pub(crate) const SCOPE_TAG_RESOURCE: u8 = 0;
 /// Wire tag for [`Scope::Group`].
 pub(crate) const SCOPE_TAG_GROUP: u8 = 1;
 /// Wire tag for [`Scope::Global`].
 pub(crate) const SCOPE_TAG_GLOBAL: u8 = 2;
+}
 
 // -----------------------------------------------------------------------------
 // Control-plane frame discriminants — SPEC §5 (phux-k61 / ADR-0021).
@@ -545,10 +597,12 @@ pub(crate) const SCOPE_TAG_GLOBAL: u8 = 2;
 // than minting per-verb frames.
 // -----------------------------------------------------------------------------
 
+wire_tags! { Message;
 /// Discriminant for `COMMAND` (client to server, `docs/spec/L1.md` §5).
 pub const TYPE_COMMAND: u8 = FrameType::Command as u8;
 /// Discriminant for `COMMAND_RESULT` (server to client, `docs/spec/L1.md` §5).
 pub const TYPE_COMMAND_RESULT: u8 = FrameType::CommandResult as u8;
+}
 
 // -----------------------------------------------------------------------------
 // Agent-event frame discriminants — SPEC §7.5 (phux-y2t / ADR-0022 'events').
@@ -564,10 +618,12 @@ pub const TYPE_COMMAND_RESULT: u8 = FrameType::CommandResult as u8;
 // slot; `EVENT` takes the first S→C slot.
 // -----------------------------------------------------------------------------
 
+wire_tags! { Message;
 /// Discriminant for `SUBSCRIBE_EVENTS` (client to server, `docs/spec/L1.md` §7.5).
 pub const TYPE_SUBSCRIBE_EVENTS: u8 = FrameType::SubscribeEvents as u8;
 /// Discriminant for `EVENT` (server to client, `docs/spec/L1.md` §7.5).
 pub const TYPE_EVENT: u8 = FrameType::Event as u8;
+}
 
 // Wire tags for the `AgentEvent` tagged union (SPEC §7.5 / §10.3).
 //
@@ -577,6 +633,7 @@ pub const TYPE_EVENT: u8 = FrameType::Event as u8;
 // reads (and skips) the declared body length and yields
 // [`AgentEvent::Unknown`], so a v0.2.x server may add event kinds without
 // breaking an older client's frame parse. Tags are allocated sequentially.
+wire_tags! { Event;
 /// Wire tag for [`AgentEvent::CommandStarted`].
 pub(crate) const EVENT_TAG_COMMAND_STARTED: u8 = 0x00;
 /// Wire tag for [`AgentEvent::CommandFinished`].
@@ -613,6 +670,7 @@ pub(crate) const EVENT_TAG_ASKED: u8 = 0x09;
 /// spawn-inheritance path uses), polled at OSC-133 prompt boundaries and
 /// output-idle and coalesced on change. Backs the `cwd` status widget.
 pub(crate) const EVENT_TAG_CWD_CHANGED: u8 = 0x0a;
+}
 
 /// Wire tag for one [`Command`] variant inside the `COMMAND` envelope
 /// (SPEC §5.1), the same compile-time-unique discipline as [`FrameType`]:
@@ -654,6 +712,7 @@ enum CommandTag {
 // RESIZE_TERMINAL=0x04, GET_STATE=0x05, RUN_HOOK=0x06. v0.1 implements only
 // KILL_RESOURCE and GET_STATE (ADR-0021 §3); the rest are reserved and
 // decode as `UnknownEnumValue` until wired.
+wire_tags! { Command;
 /// Wire tag for [`Command::AttachResource`], taking the `0x01` slot the
 /// SPEC §5.1 catalog reserved for `ATTACH_RESOURCE` (phux-v45.7). The
 /// per-Terminal output-subscription verb: it wires the caller to receive a
@@ -742,10 +801,12 @@ pub(crate) const COMMAND_TAG_REPORT_ASKED: u8 = CommandTag::ReportAsked as u8;
 pub(crate) const COMMAND_TAG_DETACH_CLIENTS: u8 = CommandTag::DetachClients as u8;
 /// Wire tag for [`Command::ApplyInput`].
 pub(crate) const COMMAND_TAG_APPLY_INPUT: u8 = CommandTag::ApplyInput as u8;
+}
 /// Maximum number of events in one [`Command::ApplyInput`] batch.
 pub const MAX_APPLY_INPUT_EVENTS: usize = 256;
 /// Maximum encoded bytes in the nested [`Command::ApplyInput`] command body.
 pub const MAX_APPLY_INPUT_COMMAND_BODY: usize = 64 * 1024;
+wire_tags! { Command;
 /// Wire tag for [`Command::PutFile`].
 pub(crate) const COMMAND_TAG_PUT_FILE: u8 = CommandTag::PutFile as u8;
 /// Wire tag for [`Command::Shutdown`]. Appended after `PUT_FILE`'s `0x15`;
@@ -767,9 +828,11 @@ pub(crate) const COMMAND_TAG_APPEND_RESOURCE_OUTPUT: u8 = CommandTag::AppendReso
 /// (ADR-0109). A new tag rather than a field on `KILL_RESOURCE`, so a peer
 /// without the feature fails to decode it instead of killing unconditionally.
 pub(crate) const COMMAND_TAG_KILL_RESOURCE_IF: u8 = CommandTag::KillResourceIf as u8;
+}
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
 // mirror the four `INPUT_*` frame atoms (`docs/spec/input.md`).
+wire_tags! { InputEvent;
 /// Wire tag for [`InputEvent::Key`].
 pub(crate) const INPUT_EVENT_TAG_KEY: u8 = 0x00;
 /// Wire tag for [`InputEvent::Mouse`].
@@ -778,21 +841,27 @@ pub(crate) const INPUT_EVENT_TAG_MOUSE: u8 = 0x01;
 pub(crate) const INPUT_EVENT_TAG_FOCUS: u8 = 0x02;
 /// Wire tag for [`InputEvent::Paste`].
 pub(crate) const INPUT_EVENT_TAG_PASTE: u8 = 0x03;
+}
 // 0x04 was the `Selection` input-event tag, removed in v0.5.0 (phux-q1ni).
 
 // Wire tags for the `StateScope` tagged union (SPEC §5.1, GET_STATE arg).
+wire_tags! { StateScope;
 /// Wire tag for [`StateScope::Server`].
 pub(crate) const STATE_SCOPE_TAG_SERVER: u8 = 0x00;
+}
 
 // Wire tags for the `CommandResult` tagged union (SPEC §5).
+wire_tags! { CommandResult;
 /// Wire tag for [`CommandResult::Ok`].
 pub(crate) const COMMAND_RESULT_TAG_OK: u8 = 0x00;
 /// Wire tag for [`CommandResult::OkWith`].
 pub(crate) const COMMAND_RESULT_TAG_OK_WITH: u8 = 0x01;
 /// Wire tag for [`CommandResult::Error`].
 pub(crate) const COMMAND_RESULT_TAG_ERROR: u8 = 0x02;
+}
 
 // Wire tags for the `CommandValue` tagged union (SPEC §5).
+wire_tags! { CommandValue;
 /// Wire tag for [`CommandValue::ResourceId`].
 pub(crate) const COMMAND_VALUE_TAG_RESOURCE_ID: u8 = 0x00;
 /// Wire tag for [`CommandValue::GroupId`].
@@ -805,8 +874,10 @@ pub(crate) const COMMAND_VALUE_TAG_JSON: u8 = 0x03;
 pub(crate) const COMMAND_VALUE_TAG_BYTES: u8 = 0x04;
 /// Wire tag for [`CommandValue::FileUpload`].
 pub(crate) const COMMAND_VALUE_TAG_FILE_UPLOAD: u8 = 0x05;
+}
 
 // Wire tags for the `AttachTarget` tagged union (SPEC §13).
+wire_tags! { AttachTarget;
 /// Wire tag for [`AttachTarget::Last`].
 pub(crate) const ATTACH_TARGET_LAST: u8 = 0;
 /// Wire tag for [`AttachTarget::ByName`].
@@ -815,113 +886,7 @@ pub(crate) const ATTACH_TARGET_BY_NAME: u8 = 1;
 pub(crate) const ATTACH_TARGET_BY_ID: u8 = 2;
 /// Wire tag for [`AttachTarget::CreateIfMissing`].
 pub(crate) const ATTACH_TARGET_CREATE_IF_MISSING: u8 = 3;
-
-// -----------------------------------------------------------------------------
-// Compile-time uniqueness for the hand-allocated wire tags (phux-ke0c).
-//
-// The SPEC §7 message catalog and the §5.1 command tags take their values
-// from the [`FrameType`] / [`CommandTag`] enums above, so rustc rejects a
-// duplicate discriminant outright. The remaining `u8` tags mirror
-// data-carrying tagged unions, which cannot be `#[repr(u8)]` casts; their
-// consts keep literal values and are checked here instead. A duplicate
-// inside any one of these families is the same protocol break as a
-// duplicated frame type byte, and no decode match arm would catch it for a
-// tag with no consumer yet. The `wire_tag_consts_are_uniqueness_checked`
-// test below keeps every literal tag const in one of these lists.
-// -----------------------------------------------------------------------------
-
-/// Compile-time assertion that one family of wire tags has no duplicates.
-const fn assert_unique_tags(tags: &[u8]) {
-    let mut i = 0;
-    while i < tags.len() {
-        let mut j = i + 1;
-        while j < tags.len() {
-            assert!(
-                tags[i] != tags[j],
-                "duplicate wire tag in one tagged-union family"
-            );
-            j += 1;
-        }
-        i += 1;
-    }
 }
-
-// `SpawnResult` result tags (SPEC §10.1).
-const _: () = assert_unique_tags(&[SPAWN_RESULT_OK, SPAWN_RESULT_ERR]);
-
-// `SpawnError` tags (SPEC §10.1).
-const _: () = assert_unique_tags(&[
-    SPAWN_ERROR_TAG_GROUP_NOT_FOUND,
-    SPAWN_ERROR_TAG_SPAWN_FAILED,
-    SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE,
-    SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE,
-    SPAWN_ERROR_TAG_UNSUPPORTED_KIND,
-    SPAWN_ERROR_TAG_PARENT_NOT_FOUND,
-    SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH,
-]);
-
-// `MoveResult` result tags (ADR-0056).
-const _: () = assert_unique_tags(&[MOVE_RESULT_OK, MOVE_RESULT_ERR]);
-
-// `MoveError` tags (ADR-0056).
-const _: () = assert_unique_tags(&[
-    MOVE_ERROR_TAG_MOVE_FAILED,
-    MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE,
-]);
-
-// `Scope` tags (SPEC §7.4 / §11.L3).
-const _: () = assert_unique_tags(&[SCOPE_TAG_RESOURCE, SCOPE_TAG_GROUP, SCOPE_TAG_GLOBAL]);
-
-// `AgentEvent` event-kind tags (SPEC §7.5 / §10.3).
-const _: () = assert_unique_tags(&[
-    EVENT_TAG_COMMAND_STARTED,
-    EVENT_TAG_COMMAND_FINISHED,
-    EVENT_TAG_TITLE_CHANGED,
-    EVENT_TAG_BELL,
-    EVENT_TAG_RESOURCE_SPAWNED,
-    EVENT_TAG_RESOURCE_CLOSED,
-    EVENT_TAG_DIRTY,
-    EVENT_TAG_IDLE,
-    EVENT_TAG_TERMINAL_CONTROL,
-    EVENT_TAG_ASKED,
-    EVENT_TAG_CWD_CHANGED,
-]);
-
-// `InputEvent` tags (the `ROUTE_INPUT` argument, `docs/spec/input.md`).
-const _: () = assert_unique_tags(&[
-    INPUT_EVENT_TAG_KEY,
-    INPUT_EVENT_TAG_MOUSE,
-    INPUT_EVENT_TAG_FOCUS,
-    INPUT_EVENT_TAG_PASTE,
-]);
-
-// `StateScope` tags (SPEC §5.1, `GET_STATE` argument).
-const _: () = assert_unique_tags(&[STATE_SCOPE_TAG_SERVER]);
-
-// `CommandResult` tags (SPEC §5).
-const _: () = assert_unique_tags(&[
-    COMMAND_RESULT_TAG_OK,
-    COMMAND_RESULT_TAG_OK_WITH,
-    COMMAND_RESULT_TAG_ERROR,
-]);
-
-// `CommandValue` tags (SPEC §5).
-const _: () = assert_unique_tags(&[
-    COMMAND_VALUE_TAG_RESOURCE_ID,
-    COMMAND_VALUE_TAG_GROUP_ID,
-    COMMAND_VALUE_TAG_STATE,
-    COMMAND_VALUE_TAG_JSON,
-    COMMAND_VALUE_TAG_BYTES,
-    COMMAND_VALUE_TAG_FILE_UPLOAD,
-]);
-
-// `AttachTarget` tags (SPEC §13).
-const _: () = assert_unique_tags(&[
-    ATTACH_TARGET_LAST,
-    ATTACH_TARGET_BY_NAME,
-    ATTACH_TARGET_BY_ID,
-    ATTACH_TARGET_CREATE_IF_MISSING,
-]);
 
 mod codec;
 mod command;
@@ -981,10 +946,11 @@ mod tests {
     /// Every `u8` wire-tag const in this file is duplicate-proof at compile
     /// time. `TYPE_` and `COMMAND_TAG_` consts must take their value from
     /// the [`FrameType`] / [`CommandTag`] enums (a repeated enum
-    /// discriminant is compile error E0081); every other tag const must
-    /// keep a literal value only inside an [`assert_unique_tags`] family
-    /// list. A tag added the old way, as a bare literal const, fails here
-    /// instead of shipping a silent duplicate (phux-ke0c).
+    /// discriminant is compile error E0081) *and* be declared through
+    /// `wire_tags!` (a reused byte is E0119). Every other tag const must
+    /// keep a literal value only inside a `wire_tags!` family. A tag added
+    /// the old way, as a bare literal const, fails here instead of shipping
+    /// a silent duplicate (phux-ke0c).
     #[test]
     fn wire_tag_consts_are_uniqueness_checked() {
         // Only the const-declaration half of the file is scanned; the test
@@ -992,31 +958,43 @@ mod tests {
         let src = include_str!("mod.rs");
         let src = src.split("#[cfg(test)]").next().unwrap_or(src);
 
-        // First pass: collect the const names inside the assertion lists.
-        // Lists may be single-line or multi-line after rustfmt, so scan
-        // regions rather than lines.
-        let mut asserted: BTreeSet<&str> = BTreeSet::new();
+        let mut reserved: BTreeSet<&str> = BTreeSet::new();
         let mut rest = src;
-        while let Some(start) = rest.find("assert_unique_tags(&[") {
-            let after = &rest[start + "assert_unique_tags(&[".len()..];
-            let Some(end) = after.find("])") else {
-                panic!("unterminated assert_unique_tags list");
+        while let Some(start) = rest.find("wire_tags!") {
+            let after = &rest[start..];
+            let Some(brace) = after.find('{') else {
+                panic!("wire_tags! without a body");
             };
-            for name in after[..end]
-                .split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
-            {
-                if name.chars().any(|c| c.is_ascii_uppercase()) {
-                    asserted.insert(name);
+            let mut depth = 0_i32;
+            let mut end = None;
+            for (i, ch) in after[brace..].char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = Some(brace + i);
+                            break;
+                        }
+                    }
+                    _ => {}
                 }
             }
-            rest = &after[end + 2..];
+            let end = end.expect("unterminated wire_tags! body");
+            for name in after[brace..=end]
+                .split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+            {
+                if name.contains('_') && name.chars().any(|c| c.is_ascii_uppercase()) {
+                    reserved.insert(name);
+                }
+            }
+            rest = &after[end + 1..];
         }
         assert!(
-            !asserted.is_empty(),
-            "no assert_unique_tags lists found - the compile-time checks are gone"
+            !reserved.is_empty(),
+            "no wire_tags! families found - the compile-time checks are gone"
         );
 
-        // Second pass: check every `u8` const declaration.
         for line in src.lines() {
             let line = line.trim();
             let decl = line
@@ -1033,17 +1011,25 @@ mod tests {
                     "{name} must take its value from the FrameType enum so a duplicate \
                      discriminant is a compile error, found `{expr}`"
                 );
+                assert!(
+                    reserved.contains(name),
+                    "{name} must be declared through wire_tags! so a reused byte is E0119"
+                );
             } else if name.starts_with("COMMAND_TAG_") {
                 assert!(
                     expr.starts_with("CommandTag::"),
                     "{name} must take its value from the CommandTag enum so a duplicate \
                      discriminant is a compile error, found `{expr}`"
                 );
+                assert!(
+                    reserved.contains(name),
+                    "{name} must be declared through wire_tags! so a reused byte is E0119"
+                );
             } else if expr.starts_with("0x") || expr.starts_with(|c: char| c.is_ascii_digit()) {
                 assert!(
-                    asserted.contains(name),
-                    "{name} is a hand-allocated literal wire tag missing from an \
-                     assert_unique_tags family list"
+                    reserved.contains(name),
+                    "{name} is a hand-allocated literal wire tag missing from a \
+                     wire_tags! family"
                 );
             }
         }
