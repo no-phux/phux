@@ -109,6 +109,28 @@ stream-credit instrumentation it does **not** claim the receive window became
 blocked. This low-level read-control case does not claim to exercise the
 production `Connection` receive merger; the ordinary matrix does.
 
+The complementary transport regression
+`window::tests::exhausted_stream_credit_preserves_other_stream_progress` in
+`phux-dial` proves actual stream-credit exhaustion with production
+`TrackedSend`/`SendWindow`. Its peer advertises exactly 32 KiB per stream and
+512 KiB connection credit. After filling the first stream's 32 KiB, its next
+one-byte write remains pending for 100 ms. A second stream sharing the same
+connection window delivers `quiet`, while the original write remains pending
+for another 100 ms. Draining the first receiver then releases that exact
+pending write and delivers its final byte. The whole test has a five-second
+deadline and owns all endpoint/stream handles. This isolates flow-control
+credit from aggregate UDP traffic; it is a transport-level complement to the
+production Terminal experiment, not a claim about that experiment's queue.
+
+```sh
+CARGO_BUILD_JOBS=1 cargo test --locked -p phux-dial --lib \
+  window::tests::exhausted_stream_credit_preserves_other_stream_progress \
+  -- --exact --nocapture
+```
+
+Parent validation: passed in 0.21 seconds; strict all-target/all-feature
+`phux-dial` Clippy passed.
+
 Run the production `PUT_FILE` chunk experiment at 50 ms RTT separately. The
 10 Mbit/s cases send an 8 MiB file, so the 8 MiB case emits the largest legal
 production wire command. Repository search found no shipping upload producer

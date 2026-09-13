@@ -216,12 +216,18 @@ mod tests {
 
     /// A quinn client endpoint that trusts the throwaway certificate.
     fn client_endpoint() -> quinn::Endpoint {
+        client_endpoint_with_transport(quinn::TransportConfig::default())
+    }
+
+    fn client_endpoint_with_transport(transport: quinn::TransportConfig) -> quinn::Endpoint {
         let crypto = client_config(&CertTrust::SkipVerify, Some(ALPN)).expect("client tls");
         let mut endpoint =
             quinn::Endpoint::client("127.0.0.1:0".parse().expect("addr")).expect("bind client");
-        endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+        let mut config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(crypto).expect("quic crypto"),
-        )));
+        ));
+        config.transport_config(Arc::new(transport));
+        endpoint.set_default_client_config(config);
         endpoint
     }
 
@@ -318,5 +324,76 @@ mod tests {
         *second.applied.lock().expect("lock") = 1;
         first.track();
         assert_eq!(*first.applied.lock().expect("lock"), expected);
+    }
+
+    /// Exhaust a known peer stream window, keep the next write pending, and
+    /// prove another stream progresses through the same production window.
+    /// Reading the stalled stream must release that exact pending write.
+    #[tokio::test]
+    async fn exhausted_stream_credit_preserves_other_stream_progress() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            const CREDIT: u32 = 32 * 1024;
+            let (_dir, server) = server_endpoint();
+            let mut transport = quinn::TransportConfig::default();
+            transport.stream_receive_window(CREDIT.into());
+            transport.receive_window((16 * CREDIT).into());
+            let client = client_endpoint_with_transport(transport);
+            let dialed = client
+                .connect(server.local_addr().expect("server addr"), "localhost")
+                .expect("connect");
+            let accepted = async { server.accept().await.expect("incoming").await };
+            let (client_conn, server_conn) = tokio::join!(dialed, accepted);
+            let client_conn = client_conn.expect("client handshake");
+            let server_conn = server_conn.expect("server handshake");
+            let window = SendWindow::new(server_conn.clone());
+            let stream = server_conn.open_uni().await.expect("flood stream");
+            let mut flood = TrackedSend::new(stream, window.clone());
+            let payload = vec![0x5a; CREDIT as usize];
+            flood.write_all(&payload).await.expect("fill peer credit");
+            let mut flood_recv = client_conn.accept_uni().await.expect("accept flood");
+            let blocked = flood.write_all(b"x");
+            tokio::pin!(blocked);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), &mut blocked)
+                    .await
+                    .is_err(),
+                "the unread stream must consume all of its advertised credit"
+            );
+
+            let quiet_stream = server_conn.open_uni().await.expect("quiet stream");
+            let mut quiet = TrackedSend::new(quiet_stream, window);
+            quiet.write_all(b"quiet").await.expect("quiet write");
+            let mut quiet_recv = client_conn.accept_uni().await.expect("accept quiet");
+            let mut message = [0; 5];
+            quiet_recv
+                .read_exact(&mut message)
+                .await
+                .expect("quiet read");
+            assert_eq!(&message, b"quiet");
+            assert!(
+                tokio::time::timeout(Duration::from_millis(100), &mut blocked)
+                    .await
+                    .is_err(),
+                "quiet progress must not replenish the stalled stream's credit"
+            );
+
+            let mut drained = vec![0; CREDIT as usize];
+            flood_recv
+                .read_exact(&mut drained)
+                .await
+                .expect("drain flood");
+            assert_eq!(drained, payload);
+            blocked.await.expect("reading replenishes stream credit");
+            let mut tail = [0];
+            flood_recv
+                .read_exact(&mut tail)
+                .await
+                .expect("read final byte");
+            assert_eq!(&tail, b"x");
+            server_conn.close(0u32.into(), b"test complete");
+            client_conn.close(0u32.into(), b"test complete");
+        })
+        .await
+        .expect("stream-credit isolation test completed before deadline");
     }
 }
