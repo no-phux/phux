@@ -1,5 +1,6 @@
 ---
 import BaseLayout from "../layouts/BaseLayout.astro";
+import AgentInboxDemo from "../components/AgentInboxDemo";
 import PhuxTerminal from "../components/PhuxTerminal.tsx";
 import { SITE, docsHref } from "../lib/site";
 import release from "../lib/release.json";
@@ -37,6 +38,19 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
         tool, or agent consumes.
       </p>
     </div>
+  </section>
+
+  <section class="wrap attention" aria-labelledby="attention-title">
+    <div class="attention-copy">
+      <p class="attention-kicker">THE FLEET INBOX</p>
+      <h2 id="attention-title">Never hunt for the stuck one.</h2>
+      <p>
+        Agents publish their own work state beside the terminal where it
+        happened. When one needs you, that terminal rises to the inbox with
+        the exact question attached.
+      </p>
+    </div>
+    <AgentInboxDemo client:visible />
   </section>
 
   <section class="wrap features-list">
@@ -170,6 +184,36 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
     line-height: 1.5;
   }
 
+  .attention {
+    display: grid;
+    grid-template-columns: minmax(220px, 0.52fr) minmax(0, 1.48fr);
+    gap: clamp(28px, 5vw, 64px);
+    align-items: start;
+    padding-block: clamp(56px, 8vw, 96px);
+    border-top: 1px solid var(--color-rule);
+  }
+  .attention-kicker {
+    margin: 0 0 14px;
+    color: var(--color-attention);
+    font-family: var(--font-code);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+  }
+  .attention h2 {
+    margin: 0 0 16px;
+    max-width: 11ch;
+    font-size: clamp(30px, 3.8vw, 48px);
+    letter-spacing: -0.045em;
+    line-height: 1.03;
+  }
+  .attention-copy > p:last-child {
+    margin: 0;
+    max-width: 38ch;
+    color: var(--color-muted);
+    font-size: 15px;
+    line-height: 1.65;
+  }
+
   .features-list {
     border-top: 1px solid var(--color-rule);
   }
@@ -280,6 +324,12 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
       padding-block: 40px 48px;
     }
     .hero h1 {
+      max-width: 14ch;
+    }
+    .attention {
+      grid-template-columns: 1fr;
+    }
+    .attention h2 {
       max-width: 14ch;
     }
     .install-row {
