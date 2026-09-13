@@ -9,6 +9,26 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.36.0](https://github.com/no-phux/phux/compare/v0.35.0...v0.36.0) (2026-09-13)
+
+
+### Features
+
+* **site:** show blocked agent inbox handoff ([34533ce](https://github.com/no-phux/phux/commit/34533ce429af0697f6b3563bd7b840d9faafdf1f))
+* **tui:** expose daily-driver management views ([c564a55](https://github.com/no-phux/phux/commit/c564a55dd6d9971591376060fcfa7f9dc80894d4))
+
+
+### Bug Fixes
+
+* **release:** pin portable CPU baselines ([5344cdc](https://github.com/no-phux/phux/commit/5344cdc732b723b94114aad311caa5b96cedeea4))
+* **server:** keep WebSocket accept causes at debug ([c817cd3](https://github.com/no-phux/phux/commit/c817cd3ff56828f9bc98fea2b7b4da4c1e33662f))
+* **update:** make install transaction crash-durable ([1779122](https://github.com/no-phux/phux/commit/17791220c2e10c971a7bff9a9448638ad297199e))
+
+
+### Documentation
+
+* **skills:** treat agent sessions as RESOURCE_KINDS, not a branch ([3a68971](https://github.com/no-phux/phux/commit/3a68971ac36187ce95bf862f370b8c6ebf0947da))
+
 ## [0.35.0](https://github.com/no-phux/phux/compare/v0.34.0...v0.35.0) (2026-09-13)
 
 
