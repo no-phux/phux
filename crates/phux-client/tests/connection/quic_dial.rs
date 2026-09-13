@@ -315,6 +315,103 @@ async fn malformed_terminal_stream_length_fails_promptly() {
 }
 
 #[tokio::test]
+async fn incomplete_terminal_body_does_not_block_control_and_expires() {
+    let (_dir, cert, key) = cert_pair();
+    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let terminal_id = ResourceId::local(9);
+    let server = async move {
+        let conn = endpoint.accept().await.unwrap().await.unwrap();
+        let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
+        accept_hello_with_caps(
+            &mut control_send,
+            &mut control_recv,
+            ServerCapabilities::new()
+                .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
+        )
+        .await;
+        let (mut terminal_send, mut terminal_recv) = conn.accept_bi().await.unwrap();
+        let _ = read_stream_bind(&mut terminal_recv).await;
+        terminal_send
+            .write_all(&phux_protocol::wire::frame::MAX_FRAME_LEN.to_be_bytes())
+            .await
+            .unwrap();
+        write_frame(&mut control_send, &FrameKind::Pong { nonce: 77 }).await;
+        tokio::time::sleep(std::time::Duration::from_secs(11)).await;
+    };
+    let client = async move {
+        let dial = QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+        };
+        let mut conn = Connection::connect_quic(&dial).await.expect("dial");
+        conn.bind_terminal(&terminal_id).await.expect("bind");
+        assert_eq!(
+            conn.recv().await.expect("control remains live"),
+            FrameKind::Pong { nonce: 77 }
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(12), conn.recv())
+            .await
+            .expect("incomplete frame has an absolute deadline")
+            .expect_err("incomplete Terminal frame must fail")
+            .to_string()
+    };
+    let ((), error) = tokio::join!(server, client);
+    assert!(error.contains("incomplete-frame deadline"), "{error}");
+}
+
+#[tokio::test]
+async fn queued_old_generation_is_discarded_after_rebind() {
+    let (_dir, cert, key) = cert_pair();
+    let (endpoint, addr) = server_endpoint(&cert, &key);
+    let terminal_id = ResourceId::local(9);
+    let old = ack(22);
+    let current = ack(33);
+    let server = {
+        let old = old.clone();
+        let current = current.clone();
+        async move {
+            let conn = endpoint.accept().await.unwrap().await.unwrap();
+            let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
+            accept_hello_with_caps(
+                &mut control_send,
+                &mut control_recv,
+                ServerCapabilities::new()
+                    .with_features(ServerFeatureSet::with(&[ServerFeature::QuicStreams])),
+            )
+            .await;
+            let (mut first_send, mut first_recv) = conn.accept_bi().await.unwrap();
+            assert_eq!(read_stream_bind(&mut first_recv).await.stream_id.get(), 1);
+            write_frame(&mut first_send, &old).await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let (mut second_send, mut second_recv) = conn.accept_bi().await.unwrap();
+            assert_eq!(read_stream_bind(&mut second_recv).await.stream_id.get(), 2);
+            write_frame(&mut second_send, &current).await;
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        }
+    };
+    let client = async move {
+        let dial = QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: None,
+            trust: CertTrust::SkipVerify,
+        };
+        let mut conn = Connection::connect_quic(&dial).await.expect("dial");
+        conn.bind_terminal(&terminal_id).await.expect("first bind");
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        conn.unbind_terminal(&terminal_id);
+        conn.bind_terminal(&terminal_id)
+            .await
+            .expect("replacement bind");
+        conn.recv().await.expect("current generation frame")
+    };
+    let ((), got) = tokio::join!(server, client);
+    assert_eq!(got, current, "queued old generation never reaches dispatch");
+}
+
+#[tokio::test]
 async fn client_terminal_stream_cap_accounts_for_the_control_stream() {
     let (_dir, cert, key) = cert_pair();
     let (endpoint, addr) = server_endpoint(&cert, &key);

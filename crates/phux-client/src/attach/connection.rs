@@ -144,9 +144,9 @@ struct Multistream {
     /// value (a new generation, per L1 §4.6).
     next_stream_id: u64,
     /// Merged frames from every bound Terminal stream's pump task.
-    frames_rx: tokio::sync::mpsc::Receiver<Result<MuxFrame, String>>,
+    frames_rx: tokio::sync::mpsc::Receiver<MuxFrame>,
     /// Sender half the pump tasks hold.
-    frames_tx: tokio::sync::mpsc::Sender<Result<MuxFrame, String>>,
+    frames_tx: tokio::sync::mpsc::Sender<MuxFrame>,
     /// Connection-wide queued/incomplete Terminal-stream frame byte budget.
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     /// `Ended` notifications from pump tasks (stream finish/reset).
@@ -164,12 +164,25 @@ struct MuxBinding {
     send: quinn::SendStream,
     /// Receive pump for this generation; aborted on every local teardown.
     receive_task: tokio::task::AbortHandle,
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl MuxBinding {
+    fn retire(&mut self) {
+        self.active
+            .store(false, std::sync::atomic::Ordering::Release);
+        self.receive_task.abort();
+        let _ = self.send.finish();
+    }
 }
 
 #[derive(Debug)]
 struct MuxFrame {
-    bytes: BytesMut,
-    _bytes: tokio::sync::OwnedSemaphorePermit,
+    terminal_id: ResourceId,
+    stream_id: StreamId,
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    bytes: Result<BytesMut, String>,
+    _bytes: Option<tokio::sync::OwnedSemaphorePermit>,
 }
 
 /// Depth of the mux's merged frame channel. Small: a stalled reader stalls
@@ -179,6 +192,7 @@ const MUX_FRAME_CHANNEL: usize = 64;
 const MUX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 const MAX_CLIENT_TERMINAL_STREAMS: usize = 127;
 const TERMINAL_STREAM_OPEN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+const TERMINAL_FRAME_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Multistream {
     fn new(conn: quinn::Connection) -> Self {
@@ -214,73 +228,86 @@ async fn pump_terminal_stream(
     mut recv: quinn::RecvStream,
     terminal_id: ResourceId,
     stream_id: StreamId,
-    frames_tx: tokio::sync::mpsc::Sender<Result<MuxFrame, String>>,
+    frames_tx: tokio::sync::mpsc::Sender<MuxFrame>,
     ended_tx: tokio::sync::mpsc::Sender<(ResourceId, StreamId)>,
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
     loop {
         let mut header = [0_u8; framing::LENGTH_PREFIX_LEN];
-        match recv.read_exact(&mut header).await {
+        match recv.read_exact(&mut header[..1]).await {
             Ok(()) => {}
             Err(quinn::ReadExactError::FinishedEarly(0)) => break,
             Err(error) => {
-                let _ = frames_tx
-                    .send(Err(format!(
-                        "Terminal stream truncated before frame header: {error}"
-                    )))
-                    .await;
+                send_mux_error(
+                    &frames_tx,
+                    &terminal_id,
+                    stream_id,
+                    &active,
+                    format!("Terminal stream truncated before frame header: {error}"),
+                )
+                .await;
                 break;
             }
         }
-        let body_len = match framing::decode_length(header) {
-            Ok(body_len) => body_len,
-            Err(error) => {
-                let _ = frames_tx.send(Err(error.to_string())).await;
-                break;
-            }
-        };
-        let total = framing::LENGTH_PREFIX_LEN + body_len;
-        let bytes = match frame_bytes
-            .clone()
-            .acquire_many_owned(u32::try_from(total).expect("frame cap fits u32"))
-            .await
-        {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                let _ = frames_tx
-                    .send(Err(format!("Terminal stream byte budget closed: {error}")))
-                    .await;
-                break;
-            }
-        };
-        let mut frame = match framing::frame_buffer(header) {
+        let read = tokio::time::timeout(TERMINAL_FRAME_DEADLINE, async {
+            recv.read_exact(&mut header[1..])
+                .await
+                .map_err(|error| error.to_string())?;
+            let body_len = framing::decode_length(header).map_err(|error| error.to_string())?;
+            let total = framing::LENGTH_PREFIX_LEN + body_len;
+            let permits = u32::try_from(total).map_err(|error| error.to_string())?;
+            let bytes = frame_bytes
+                .clone()
+                .acquire_many_owned(permits)
+                .await
+                .map_err(|error| format!("Terminal stream byte budget closed: {error}"))?;
+            let mut frame = framing::frame_buffer(header).map_err(|error| error.to_string())?;
+            recv.read_exact(&mut frame[framing::LENGTH_PREFIX_LEN..])
+                .await
+                .map_err(|error| format!("Terminal stream finished mid-frame: {error}"))?;
+            Ok::<_, String>((frame, bytes))
+        })
+        .await
+        .map_err(|_| "Terminal stream incomplete-frame deadline elapsed".to_owned())
+        .and_then(|result| result);
+        let (frame, bytes) = match read {
             Ok(frame) => frame,
             Err(error) => {
-                let _ = frames_tx.send(Err(error.to_string())).await;
+                send_mux_error(&frames_tx, &terminal_id, stream_id, &active, error).await;
                 break;
             }
         };
-        if let Err(error) = recv
-            .read_exact(&mut frame[framing::LENGTH_PREFIX_LEN..])
-            .await
-        {
-            let _ = frames_tx
-                .send(Err(format!("Terminal stream finished mid-frame: {error}")))
-                .await;
-            break;
-        }
-        if frames_tx
-            .send(Ok(MuxFrame {
-                bytes: frame,
-                _bytes: bytes,
-            }))
-            .await
-            .is_err()
-        {
+        let item = MuxFrame {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            active: std::sync::Arc::clone(&active),
+            bytes: Ok(frame),
+            _bytes: Some(bytes),
+        };
+        if frames_tx.send(item).await.is_err() {
             return;
         }
     }
     let _ = ended_tx.send((terminal_id, stream_id)).await;
+}
+
+async fn send_mux_error(
+    frames_tx: &tokio::sync::mpsc::Sender<MuxFrame>,
+    terminal_id: &ResourceId,
+    stream_id: StreamId,
+    active: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    error: String,
+) {
+    let _ = frames_tx
+        .send(MuxFrame {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            active: std::sync::Arc::clone(active),
+            bytes: Err(error),
+            _bytes: None,
+        })
+        .await;
 }
 
 /// Frames whose payload belongs to one Terminal and therefore routes over
@@ -297,6 +324,14 @@ const fn terminal_target(frame: &FrameKind) -> Option<&ResourceId> {
         | FrameKind::ResizeTerminal { terminal_id, .. } => Some(terminal_id),
         _ => None,
     }
+}
+
+fn mux_frame_is_current(mux: &Multistream, frame: &MuxFrame) -> bool {
+    frame.active.load(std::sync::atomic::Ordering::Acquire)
+        && mux.bindings.get(&frame.terminal_id).is_some_and(|binding| {
+            binding.stream_id == frame.stream_id
+                && std::sync::Arc::ptr_eq(&binding.active, &frame.active)
+        })
 }
 
 async fn send_quic_frame(
@@ -550,7 +585,7 @@ impl Connection {
             negotiated_bootstrap: None,
             server_id: None,
             next_attach_id: 1,
-            multistream: Some(Multistream::new(connection.clone())),
+            multistream: Some(Multistream::new(connection)),
         })
     }
 
@@ -871,26 +906,30 @@ impl Connection {
             .map_err(|_| AttachError::Connect("writing STREAM_BIND timed out".to_owned()))?
             .map_err(|err| AttachError::Io(io::Error::other(err)))?;
 
-        let frames_tx = mux.frames_tx.clone();
         let ended_tx = mux.ended_tx.clone();
         let frame_bytes = mux.frame_bytes.clone();
         let ended_terminal = terminal_id.clone();
+        let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let receive_task = tokio::spawn(pump_terminal_stream(
             recv,
             ended_terminal,
             stream_id,
-            frames_tx,
+            mux.frames_tx.clone(),
             ended_tx,
             frame_bytes,
+            std::sync::Arc::clone(&active),
         ));
-        mux.bindings.insert(
+        if let Some(mut replaced) = mux.bindings.insert(
             terminal_id.clone(),
             MuxBinding {
                 stream_id,
                 send,
                 receive_task: receive_task.abort_handle(),
+                active,
             },
-        );
+        ) {
+            replaced.retire();
+        }
         Ok(())
     }
 
@@ -899,8 +938,7 @@ impl Connection {
         if let Some(mux) = self.multistream.as_mut()
             && let Some(mut binding) = mux.bindings.remove(terminal_id)
         {
-            binding.receive_task.abort();
-            let _ = binding.send.finish();
+            binding.retire();
         }
     }
 
@@ -908,8 +946,7 @@ impl Connection {
     pub fn unbind_all_terminals(&mut self) {
         if let Some(mux) = self.multistream.as_mut() {
             for (_, mut binding) in mux.bindings.drain() {
-                binding.receive_task.abort();
-                let _ = binding.send.finish();
+                binding.retire();
             }
         }
     }
@@ -965,14 +1002,18 @@ impl Connection {
             tokio::select! {
                 result = reader.recv() => return result,
                 Some(received) = mux.frames_rx.recv() => {
-                    let mut bytes = received.map_err(AttachError::Protocol)?.bytes;
+                    if !mux_frame_is_current(mux, &received) {
+                        continue;
+                    }
+                    let mut bytes = received.bytes.map_err(AttachError::Protocol)?;
                     return decode_buffered(&mut bytes, limits)?.ok_or_else(||
                         AttachError::Protocol("Terminal stream ended with a partial frame".to_owned())
                     );
                 }
                 Some((terminal_id, stream_id)) = mux.ended_rx.recv() => {
-                    if mux.bindings.get(&terminal_id).is_some_and(|binding| binding.stream_id == stream_id) {
-                        mux.bindings.remove(&terminal_id);
+                    if mux.bindings.get(&terminal_id).is_some_and(|binding| binding.stream_id == stream_id)
+                        && let Some(mut binding) = mux.bindings.remove(&terminal_id) {
+                        binding.retire();
                     }
                 }
             }
@@ -996,15 +1037,17 @@ impl Connection {
                     .bindings
                     .get(&terminal_id)
                     .is_some_and(|binding| binding.stream_id == stream_id)
+                    && let Some(mut binding) = mux.bindings.remove(&terminal_id)
                 {
-                    mux.bindings.remove(&terminal_id);
+                    binding.retire();
                 }
             }
-            match mux.frames_rx.try_recv() {
-                Ok(Ok(mut frame)) => return decode_buffered(&mut frame.bytes, limits),
-                Ok(Err(error)) => return Err(AttachError::Protocol(error)),
-                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
-                | Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {}
+            while let Ok(frame) = mux.frames_rx.try_recv() {
+                if !mux_frame_is_current(mux, &frame) {
+                    continue;
+                }
+                let mut bytes = frame.bytes.map_err(AttachError::Protocol)?;
+                return decode_buffered(&mut bytes, limits);
             }
         }
         self.reader.try_recv()
