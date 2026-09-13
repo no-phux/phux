@@ -315,6 +315,7 @@ fn run_in(
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut host_refresh = false;
     let mut ctx = DispatchCtx {
+        control_dial: None,
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
@@ -1174,6 +1175,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut host_refresh = false;
     let mut ctx = DispatchCtx {
+        control_dial: None,
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
@@ -1256,6 +1258,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut host_refresh = false;
     let mut ctx = DispatchCtx {
+        control_dial: None,
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
@@ -1375,6 +1378,7 @@ fn run_capturing_with_sessions(
         // hit-testable window rows must declare them.
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut ctx = DispatchCtx {
+            control_dial: None,
             layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
             resolver: None,
@@ -1556,6 +1560,7 @@ fn run_with_panes(
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut host_refresh = false;
     let mut ctx = DispatchCtx {
+        control_dial: None,
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
@@ -2034,6 +2039,7 @@ fn run_attention(
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut host_refresh = false;
     let mut ctx = DispatchCtx {
+        control_dial: None,
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
@@ -2465,6 +2471,96 @@ fn session_picker_commit_routes_switch_session_through_run_action() {
 }
 
 #[test]
+fn move_pane_picker_offers_only_exact_cached_local_destinations() {
+    use crate::layout::{LayoutNode, LayoutState, WindowState};
+    use phux_protocol::ids::SessionId;
+    use phux_protocol::wire::info::SessionInfo;
+
+    let source = tid(1);
+    let current = Workspace {
+        windows: vec![WindowState::new(
+            "editor".to_owned(),
+            LayoutState {
+                tree: Some(LayoutNode::Split {
+                    dir: SplitDir::Horizontal,
+                    ratio: 0.5,
+                    left: Box::new(LayoutNode::Leaf(source.clone())),
+                    right: Box::new(LayoutNode::Split {
+                        dir: SplitDir::Vertical,
+                        ratio: 0.5,
+                        left: Box::new(LayoutNode::Leaf(tid(2))),
+                        right: Box::new(LayoutNode::Leaf(satellite_id("edge", 9))),
+                    }),
+                }),
+                focus: Some(source.clone()),
+            },
+        )],
+        active: 0,
+    };
+    let cached = Workspace {
+        windows: vec![WindowState::new(
+            "tests".to_owned(),
+            LayoutState {
+                tree: Some(LayoutNode::Leaf(tid(3))),
+                focus: Some(tid(3)),
+            },
+        )],
+        active: 0,
+    };
+    let sessions = [
+        SessionInfo::new(SessionId::new(1), "work"),
+        SessionInfo::new(SessionId::new(2), "build"),
+        SessionInfo::new(SessionId::new(3), "uncached"),
+    ];
+    let foreign = HashMap::from([(SessionId::new(2), cached)]);
+
+    let rows = move_pane_picker_items(
+        &source,
+        &current,
+        "work",
+        Some(SessionId::new(1)),
+        &sessions,
+        &foreign,
+    );
+
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["@2", "@3"],
+        "source, satellite, and uncached-session panes must not be offered"
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.secondary.as_deref().unwrap_or_default())
+            .collect::<Vec<_>>(),
+        vec!["work · 0:editor · pane 2", "build · 0:tests · pane 1"]
+    );
+    assert_eq!(rows[1].action.action, "move-pane");
+    assert_eq!(rows[1].action.args["target"].as_integer(), Some(3));
+    assert_eq!(rows[1].action.args.len(), 1);
+
+    let mut dispatch_workspace = current;
+    let effects = run(&rows[1].action, &mut dispatch_workspace);
+    let intent = effects.move_pane.expect("picker row commits a move");
+    assert_eq!(intent.source, tid(1));
+    assert_eq!(intent.target, tid(3));
+    assert_eq!(intent.dir, SplitDir::Horizontal);
+    assert_eq!(intent.ratio.to_bits(), 0.5_f32.to_bits());
+}
+
+#[test]
+fn move_pane_without_an_exact_destination_bells_without_mutating_layout() {
+    let mut workspace = Workspace::single(tid(1));
+    let before = workspace.clone();
+    let effects = run(&bare_action("move-pane"), &mut workspace);
+
+    assert!(effects.bell);
+    assert!(effects.move_pane.is_none());
+    assert_eq!(workspace, before);
+}
+
+#[test]
 fn switch_session_missing_name_bells() {
     let mut workspace = Workspace::single(tid(1));
     let effects = run(&bare_action("switch-session"), &mut workspace);
@@ -2766,6 +2862,7 @@ fn detach_action_requests_detach_effect() {
     let sidebar_targets = targets(0, workspace.windows.len(), 0);
     let mut host_refresh = false;
     let mut ctx = DispatchCtx {
+        control_dial: None,
         layout_read_complete: true,
         engine_kernel: &mut engine_kernel,
         resolver: None,
@@ -2869,6 +2966,7 @@ fn rename_session_without_name_opens_prompt_prefilled() {
         let sidebar_targets = targets(0, workspace.windows.len(), 0);
         let mut host_refresh = false;
         let mut ctx = DispatchCtx {
+            control_dial: None,
             layout_read_complete: true,
             engine_kernel: &mut engine_kernel,
             resolver: None,

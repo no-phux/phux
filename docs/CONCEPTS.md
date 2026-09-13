@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents, consumers
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # How phux works
@@ -49,7 +49,7 @@ A resource is a server-owned, addressable thing. Every resource has:
 
 Terminal is the first kind: a PTY child and a libghostty engine, with columns, rows, a title, and a working directory. Operations that only make sense there — typed input, resize, screen reads — are refused on any other kind.
 
-AgentSession is the second kind, and this checkout serves it. The server advertises `RESOURCE_KINDS`; the runtime creates the resource; `phux agent session open|close`, `phux agent emit`, and `phux agent log` are the producer and reader verbs; `%name` resolves one. It is the structured event stream of an agent harness, bound to the Terminal the agent runs in. Closing the parent closes the child; closing the child never touches the parent.
+AgentSession is the second kind, and this checkout serves it. The server advertises `RESOURCE_KINDS`; the runtime creates the resource; `phux agent session open|close`, `phux agent emit`, and `phux agent log` are the producer and reader verbs; `%name` resolves one. It is the structured event stream of an agent harness, bound to the Terminal the agent runs in. Closing the parent closes the child; closing the child never touches the parent. While that stream is live it is the source of agent lifecycle; the pane detector is compatibility for a harness that does not emit. Harness authors: [`consumers/harness.md`](./consumers/harness.md).
 
 `phux agent show` is a different surface: it reads agent state from a pane, not from an AgentSession resource.
 

@@ -35,6 +35,7 @@ use crate::Action;
 /// here (and to the registry) fails CI.
 pub const ACTION_NAMES: &[&str] = &[
     "split-pane",
+    "move-pane",
     "kill-pane",
     "new-window",
     "go-to-directory",

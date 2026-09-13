@@ -17,10 +17,10 @@
 //! 2. **A pasted connect code.** `--code 'https://phux.phall.io/connect?...'`
 //!    — the same artifact `phux pair --qr` renders for a phone. Registers the host from
 //!    the link and dials. No ssh, no shell on the far end.
-//! 3. **A one-time ssh bootstrap.** No entry and no code: run `phux pair`
-//!    on the far end over the operator's existing ssh trust, register what
-//!    it mints, and dial. This happens once per host; rung 1 catches every
-//!    later invocation.
+//! 3. **A one-time ssh bootstrap.** No entry and no code: install and start
+//!    the far end's per-user service, run `phux pair` over the operator's
+//!    existing ssh trust, register what it mints, and dial. This happens once
+//!    per host; rung 1 catches every later invocation.
 //! 4. **An honest refusal** naming both remedies, when ssh cannot help.
 //!
 //! ## What `user@` means here
@@ -34,15 +34,14 @@
 //! explicit about this is what keeps `--remote` from reading as a promise
 //! the protocol does not make.
 //!
-//! ## Why the ssh rung does not install a service
+//! ## Why the ssh rung installs a service
 //!
-//! `phux host enroll` installs a launchd/systemd unit on the far end,
-//! because the operator typed a verb whose whole subject is that host.
-//! `phux --remote` is an attach; silently installing a supervised service on
-//! someone's machine is a side effect well past what the request implies. So
-//! rung 3 runs `phux pair --json` and nothing else — a credential the
-//! operator could have minted by hand over the same ssh — and points at
-//! `phux host enroll` for the always-on setup.
+//! A remote attach is a request for work on that machine, not merely a request
+//! to mint credentials. Leaving the host paired but unable to answer until the
+//! operator discovers a second setup verb violates that intent. Rung 3
+//! therefore reuses the idempotent, per-user `phux service install` path before
+//! pairing. `--no-enroll` remains the explicit no-ssh/no-provisioning boundary,
+//! and a pasted connect code never shells into or changes the remote host.
 
 use std::process::ExitCode;
 
@@ -280,7 +279,8 @@ pub(crate) struct RemoteAttach<'a> {
 
 /// Resolve a `--remote` target to a registered host and attach to it.
 pub(crate) fn run(args: RemoteAttach<'_>) -> ExitCode {
-    let entry = match resolve(&args.target, args.code, args.bootstrap) {
+    let was_registered = args.code.is_none() && find_entry(&args.target).is_some();
+    let mut entry = match resolve(&args.target, args.code, args.bootstrap) {
         Ok(entry) => entry,
         Err(err) => {
             for line in err.lines() {
@@ -289,7 +289,25 @@ pub(crate) fn run(args: RemoteAttach<'_>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    attach::run_attach_remote(&entry, args.session, args.rec)
+
+    let outcome = attach::run_attach_remote_outcome(&entry, args.session.clone(), args.rec);
+    if was_registered && args.bootstrap == Bootstrap::Auto && outcome.bootstrap_recommended {
+        eprintln!(
+            "phux: registered host {} could not establish a direct attach; repairing it over ssh…",
+            args.target.host
+        );
+        entry = match register_over_ssh(&args.target) {
+            Ok(entry) => entry,
+            Err(err) => {
+                for line in err.lines() {
+                    eprintln!("{line}");
+                }
+                return ExitCode::FAILURE;
+            }
+        };
+        return attach::run_attach_remote(&entry, args.session, args.rec);
+    }
+    outcome.code
 }
 
 /// Walk the ladder: registered, then pasted code, then ssh, then refuse.
@@ -373,31 +391,47 @@ fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEnt
     })
 }
 
-/// Mint credentials on the far end over ssh, register them, and return the
-/// entry to dial.
-///
-/// Deliberately does NOT install a service on the remote — see this module's
-/// header. The one command it runs there is `phux pair --json`.
+/// Start a per-user server and mint credentials on the far end over ssh,
+/// register them, and return the entry to dial.
 fn register_over_ssh(target: &RemoteTarget) -> Result<RemoteEntry, String> {
     let destination = target.ssh_destination();
+    eprintln!("phux: pairing {} over ssh…", target.host);
+
     eprintln!(
-        "phux: {} is not registered — pairing over ssh…",
+        "phux: installing and starting the remote Phux service for {}…",
         target.host
     );
-
-    let outcome = enroll::enroll_over_ssh(
+    let mut service_installed = false;
+    let mut outcome = enroll::enroll_over_ssh(
         &destination,
         // The target's own authority when a port was given, so an operator
         // who knows their listener is not on 8788 does not have to enroll
         // separately to say so.
         target.port.map(|_| target.authority()).as_deref(),
         DEFAULT_QUIC_PORT,
-        // No service install: an attach must not leave a supervised unit
-        // behind on someone else's machine.
-        false,
-        &mut |_| {},
+        true,
+        &mut |event| match event {
+            enroll::EnrollEvent::ServiceInstalled { quic_bind } => {
+                service_installed = true;
+                eprintln!("phux: remote service is ready (QUIC {quic_bind})");
+            }
+            enroll::EnrollEvent::ServiceInstallFailed { error } => {
+                eprintln!(
+                    "phux: remote service install failed ({error}); starting an unsupervised server over ssh instead"
+                );
+            }
+        },
     )
     .map_err(|failure| ssh_failure_message(target, &failure))?;
+
+    // Pairing can still succeed when the platform has no supported service
+    // manager or an existing unmanaged server prevents adoption. In that case
+    // an advertised QUIC address is not proof anything is listening there.
+    // Register the ssh route so the attach below reaches the remote UDS path,
+    // whose ordinary attach flow auto-starts an unsupervised server if needed.
+    if !service_installed {
+        outcome.endpoint = format!("ssh://{destination}");
+    }
 
     let name = target.registry_name();
     let token_file = (!outcome.endpoint.starts_with("ssh://"))
@@ -420,14 +454,17 @@ fn register_over_ssh(target: &RemoteTarget) -> Result<RemoteEntry, String> {
 
     eprintln!("phux: paired {name} -> {}", new.endpoint);
     if new.endpoint.starts_with("ssh://") {
-        eprintln!(
-            "phux: {} advertised no dialable listener, so this attach rides ssh.",
-            target.host
-        );
-        eprintln!(
-            "phux:   `phux host enroll {destination}` installs a service there and \
-             gives you a direct QUIC dial."
-        );
+        if service_installed {
+            eprintln!(
+                "phux: {} advertised no directly reachable listener, so this attach rides ssh; the installed service still keeps its work alive.",
+                target.host
+            );
+        } else {
+            eprintln!(
+                "phux: this attach rides ssh and auto-starts an unsupervised server on {}; run `phux service install` there after fixing the service-manager error to keep it available across reboot.",
+                target.host
+            );
+        }
     } else {
         eprintln!("phux: later attaches dial it directly — ssh is out of the path");
     }

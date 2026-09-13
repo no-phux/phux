@@ -2,14 +2,14 @@
 //! (SPEC §7.5, ADR-0022 'events', `phux-y2t`) plus the derived agent-state
 //! record (ADR-0040 / ADR-0046).
 //!
-//! Sends `SUBSCRIBE_EVENTS` and, when the watch is scoped to a single
-//! Terminal, `SUBSCRIBE_METADATA` for the `phux.agent/v1` key on that
-//! Terminal. It then streams the `EVENT` and `METADATA_CHANGED` frames the
-//! server pushes back on that one connection, invoking a caller-supplied
-//! sink per item until the transport closes (server gone, or the caller
-//! drops the future). The subscription neither attaches nor resizes the
-//! pane — an agent can `watch` a Terminal without disturbing the live
-//! session.
+//! Sends `SUBSCRIBE_EVENTS` and `SUBSCRIBE_METADATA` for the
+//! `phux.agent/v1` key. A scoped watch installs one metadata subscription; a
+//! server-wide watch enumerates local Terminals after subscribing to lifecycle
+//! events and follows resource creation/closure to maintain the set. It then
+//! streams the `EVENT` and `METADATA_CHANGED` frames the server pushes back on
+//! that one connection, invoking a caller-supplied sink per item until the
+//! transport closes (server gone, or the caller drops the future). The
+//! subscription neither attaches nor resizes a pane.
 //!
 //! The metadata half is what makes ADR-0046 observable headlessly. The
 //! server's detector re-reads each Terminal on a timer and publishes a
@@ -22,16 +22,17 @@
 //! next poll tick. A consumer that only polls still converges; the event
 //! stream just cuts latency.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{ResourceId, ResourceKind};
 use phux_protocol::wire::frame::{AgentEvent, FrameKind, Scope};
 
 use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
+use crate::state::get_state_on_with_interleaved;
 
 /// One streamed agent event plus the Terminal it concerns.
 ///
@@ -97,13 +98,11 @@ pub enum WatchItem {
 /// success rather than an error. Any other transport/protocol failure
 /// surfaces as [`AttachError`].
 ///
-/// **A server-wide watch (`terminal: None`) carries no agent-state
-/// items.** `SUBSCRIBE_METADATA` names one `(scope, key)` pair and L3 has
-/// no wildcard-Terminal scope, so there is no way to ask for "every
-/// Terminal's agent record" without either enumerating the Terminals that
-/// exist right now (which silently misses every pane spawned afterwards)
-/// or changing the wire. The CLI's `phux watch` always resolves a target,
-/// so it always gets the metadata half.
+/// A server-wide watch (`terminal: None`) uses [`subscribe_fleet`] to carry
+/// agent-state items for every local Terminal. L3 still has no wildcard
+/// scope: the client enumerates existing Terminals only after registering a
+/// server-wide lifecycle subscription, then follows resource spawn/close
+/// events to keep the per-Terminal metadata set current.
 ///
 /// `sink` returning `false` stops the stream early (the caller asked to
 /// stop, e.g. on a Ctrl-C handler racing the recv); returning `true`
@@ -121,8 +120,193 @@ pub async fn watch_events<F>(
 where
     F: FnMut(WatchItem) -> bool,
 {
+    if terminal.is_none() {
+        let mut subscription = subscribe_fleet(socket).await?;
+        return stream_fleet_items(&mut subscription, sink).await;
+    }
     let mut conn = subscribe(socket, terminal).await?;
     stream_items(&mut conn, sink).await
+}
+
+/// A server-wide event subscription plus one agent-record subscription for
+/// every local Terminal currently known to the server.
+///
+/// The event subscription is registered before the server is enumerated.
+/// Lifecycle events interleaved with that enumeration are retained and
+/// replayed, closing the usual enumerate/follow race without a wildcard L3
+/// scope or any wire change.
+#[derive(Debug)]
+pub struct FleetSubscription {
+    pub(crate) conn: Connection,
+    pub(crate) terminals: HashSet<ResourceId>,
+    pending: VecDeque<FrameKind>,
+}
+
+impl FleetSubscription {
+    /// Local Terminals currently covered by this subscription.
+    #[must_use]
+    pub const fn terminals(&self) -> &HashSet<ResourceId> {
+        &self.terminals
+    }
+
+    pub(crate) async fn subscribe_terminal(
+        &mut self,
+        terminal: ResourceId,
+    ) -> Result<bool, AttachError> {
+        if !terminal.is_local() || !self.terminals.insert(terminal.clone()) {
+            return Ok(false);
+        }
+        self.conn
+            .send(&FrameKind::SubscribeMetadata {
+                scope: Scope::Resource(terminal),
+                key: RESOURCE_AGENT_KEY.to_owned(),
+            })
+            .await?;
+        Ok(true)
+    }
+
+    pub(crate) fn remove_terminal(&mut self, terminal: &ResourceId) {
+        self.terminals.remove(terminal);
+    }
+
+    pub(crate) fn take_pending(&mut self) -> VecDeque<FrameKind> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+const fn lifecycle_change(frame: &FrameKind) -> Option<(&ResourceId, bool)> {
+    let FrameKind::Event {
+        terminal: Some(terminal),
+        event,
+    } = frame
+    else {
+        return None;
+    };
+    match event {
+        AgentEvent::ResourceSpawned {
+            kind: ResourceKind::Terminal,
+            ..
+        } => Some((terminal, true)),
+        AgentEvent::ResourceClosed { .. } => Some((terminal, false)),
+        _ => None,
+    }
+}
+
+/// Establish a race-free fleet-wide agent-state subscription.
+///
+/// This is enumerate-and-follow on one ordered connection:
+/// `SUBSCRIBE_EVENTS(Server)` first, then `GET_STATE(Server)`, then one
+/// existing `SUBSCRIBE_METADATA(Terminal, phux.agent/v1)` per local Terminal.
+/// Events captured ahead of the state reply are applied before subscriptions
+/// are installed and retained for the stream consumer.
+///
+/// # Errors
+///
+/// Returns [`AttachError`] on connect, enumeration, or subscription failure.
+pub async fn subscribe_fleet(socket: &Path) -> Result<FleetSubscription, AttachError> {
+    let mut conn = Connection::connect(socket).await?;
+    conn.send(&FrameKind::SubscribeEvents { terminal: None })
+        .await?;
+    let (view, interleaved) = get_state_on_with_interleaved(&mut conn).await?;
+    let mut terminals: HashSet<ResourceId> = view
+        .snapshot()
+        .resources
+        .iter()
+        .filter(|resource| resource.kind == ResourceKind::Terminal && resource.id.is_local())
+        .map(|resource| resource.id.clone())
+        .collect();
+    for frame in &interleaved {
+        if let Some((terminal, spawned)) = lifecycle_change(frame) {
+            if spawned && terminal.is_local() {
+                terminals.insert(terminal.clone());
+            } else if !spawned {
+                terminals.remove(terminal);
+            }
+        }
+    }
+    let mut ordered: Vec<ResourceId> = terminals.iter().cloned().collect();
+    ordered.sort();
+    for terminal in ordered {
+        conn.send(&FrameKind::SubscribeMetadata {
+            scope: Scope::Resource(terminal),
+            key: RESOURCE_AGENT_KEY.to_owned(),
+        })
+        .await?;
+    }
+    Ok(FleetSubscription {
+        conn,
+        terminals,
+        pending: interleaved.into(),
+    })
+}
+
+/// Stream a fleet subscription, extending it as local Terminals spawn and
+/// pruning closed Terminals.
+///
+/// # Errors
+///
+/// Returns [`AttachError`] on transport/protocol failure. A clean EOF is not
+/// an error, matching [`stream_items`].
+pub async fn stream_fleet_items<F>(
+    subscription: &mut FleetSubscription,
+    mut sink: F,
+) -> Result<(), AttachError>
+where
+    F: FnMut(WatchItem) -> bool,
+{
+    let mut last_seen: HashMap<ResourceId, AgentRecord> = HashMap::new();
+    let mut pending = subscription.take_pending();
+    loop {
+        let frame = match pending.pop_front() {
+            Some(frame) => Ok(frame),
+            None => subscription.conn.recv().await,
+        };
+        match frame {
+            Ok(frame @ FrameKind::Event { .. }) => {
+                if let Some((terminal, spawned)) = lifecycle_change(&frame) {
+                    let terminal = terminal.clone();
+                    if spawned {
+                        subscription.subscribe_terminal(terminal).await?;
+                    } else {
+                        subscription.remove_terminal(&terminal);
+                        last_seen.remove(&terminal);
+                    }
+                }
+                let FrameKind::Event { terminal, event } = frame else {
+                    unreachable!();
+                };
+                if !sink(WatchItem::Event(WatchEvent { terminal, event })) {
+                    return Ok(());
+                }
+            }
+            Ok(FrameKind::MetadataChanged { scope, key, value }) => {
+                if key != RESOURCE_AGENT_KEY {
+                    continue;
+                }
+                let Scope::Resource(id) = scope else {
+                    continue;
+                };
+                if !subscription.terminals.contains(&id) {
+                    continue;
+                }
+                let record = value.as_deref().and_then(parse_agent_record);
+                let previous = match &record {
+                    Some(new) => last_seen.insert(id.clone(), new.clone()),
+                    None => last_seen.remove(&id),
+                };
+                if !sink(WatchItem::AgentState(AgentStateUpdate {
+                    terminal: Some(id),
+                    record,
+                    previous,
+                })) {
+                    return Ok(());
+                }
+            }
+            Ok(_) => {}
+            Err(AttachError::Disconnected) => return Ok(()),
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 /// Open a connection and register the watch subscriptions on it, returning
@@ -370,6 +554,8 @@ mod tests {
 
     use crate::agent_meta::AgentMetaState;
     use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer};
+    use phux_protocol::ids::{SessionId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 
     use super::*;
 
@@ -841,19 +1027,144 @@ mod tests {
         assert_eq!(outcome, WatchOutcome::Ended);
     }
 
-    /// A server-wide watch has no `(scope, key)` to name, so it subscribes
-    /// to events only. Asserted so the limitation is visible in the suite
-    /// rather than discovered by a consumer.
+    fn snapshot(resources: Vec<ResourceInfo>) -> SessionSnapshot {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_resources(resources)
+    }
+
+    /// The former limitation: a server-wide watch now enumerates every local
+    /// Terminal and installs the exact L3 subscription for each, while
+    /// excluding both satellite Terminals and non-Terminal resources.
     #[tokio::test]
-    async fn a_server_wide_watch_subscribes_to_events_only() {
-        let (_items, seen) = drive(
-            None,
-            vec![FrameKind::Event {
-                terminal: None,
-                event: AgentEvent::Bell,
-            }],
-        )
-        .await;
+    async fn a_server_wide_watch_streams_multiple_local_agents_and_filters_resources() {
+        let first = ResourceId::local(7);
+        let second = ResourceId::local(8);
+        let child = ResourceId::local(9);
+        let satellite = ResourceId::satellite("edge", 10);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = UnixListener::bind(&socket).expect("bind scripted server");
+        let spec = ScriptSpec::new()
+            .state(snapshot(vec![
+                ResourceInfo::new(first.clone(), WindowId::new(1), 80, 24),
+                ResourceInfo::new(second.clone(), WindowId::new(1), 80, 24),
+                ResourceInfo::resource(child.clone(), ResourceKind::AgentSession),
+                ResourceInfo::new(satellite.clone(), WindowId::new(1), 80, 24),
+            ]))
+            .push(FrameKind::MetadataChanged {
+                scope: Scope::Resource(first.clone()),
+                key: "phux.other/v1".to_owned(),
+                value: Some(b"not an agent record".to_vec()),
+            })
+            .push_after_subscribe(
+                Scope::Resource(first.clone()),
+                RESOURCE_AGENT_KEY,
+                vec![agent_record(
+                    &first,
+                    r#"{"name":"first","state":"working"}"#,
+                )],
+            )
+            .push_after_subscribe(
+                Scope::Resource(second.clone()),
+                RESOURCE_AGENT_KEY,
+                vec![agent_record(
+                    &second,
+                    r#"{"name":"second","state":"blocked"}"#,
+                )],
+            )
+            .end(EndOfScript::ServeUntilDetach);
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let mut items = Vec::new();
+        watch_events(&socket, None, |item| {
+            items.push(item);
+            items
+                .iter()
+                .filter(|item| matches!(item, WatchItem::AgentState(_)))
+                .count()
+                < 2
+        })
+        .await
+        .expect("fleet stream");
+        let seen = server.await.expect("scripted server task");
+
+        let updates: Vec<&AgentStateUpdate> = items
+            .iter()
+            .filter_map(|item| match item {
+                WatchItem::AgentState(update) => Some(update),
+                WatchItem::Event(_) => None,
+            })
+            .collect();
+        assert_eq!(updates.len(), 2, "the foreign key is filtered: {items:?}");
+        assert!(
+            updates
+                .iter()
+                .any(|update| update.terminal.as_ref() == Some(&first))
+        );
+        assert!(
+            updates
+                .iter()
+                .any(|update| update.terminal.as_ref() == Some(&second))
+        );
+        for excluded in [child, satellite] {
+            assert!(
+                !seen.iter().any(|frame| matches!(
+                    frame,
+                    FrameKind::SubscribeMetadata { scope: Scope::Resource(id), .. }
+                        if *id == excluded
+                )),
+                "only local Terminal resources are subscribed; sent {seen:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_wide_watch_follows_a_new_terminal_without_a_wire_wildcard() {
+        let first = ResourceId::local(7);
+        let spawned = ResourceId::local(8);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = UnixListener::bind(&socket).expect("bind scripted server");
+        let update = agent_record(&spawned, r#"{"name":"new-agent","state":"working"}"#);
+        let spawned_event = FrameKind::Event {
+            terminal: Some(spawned.clone()),
+            event: AgentEvent::ResourceSpawned {
+                kind: ResourceKind::Terminal,
+                parent: None,
+            },
+        };
+        let server = tokio::spawn(async move {
+            ScriptedServer::accept(
+                &listener,
+                ScriptSpec::new()
+                    .state(snapshot(vec![ResourceInfo::new(
+                        first,
+                        WindowId::new(1),
+                        80,
+                        24,
+                    )]))
+                    .push(spawned_event)
+                    .push_after_subscribe(
+                        Scope::Resource(spawned.clone()),
+                        RESOURCE_AGENT_KEY,
+                        vec![update],
+                    )
+                    .end(EndOfScript::ServeUntilDetach),
+            )
+            .await
+        });
+        let mut items = Vec::new();
+        watch_events(&socket, None, |item| {
+            let stop = matches!(
+                &item,
+                WatchItem::AgentState(update)
+                    if update.terminal.as_ref() == Some(&ResourceId::local(8))
+            );
+            items.push(item);
+            !stop
+        })
+        .await
+        .expect("fleet stream");
+        let seen = server.await.expect("scripted server task");
 
         assert!(
             seen.iter()
@@ -861,10 +1172,17 @@ mod tests {
             "sent {seen:?}"
         );
         assert!(
-            !seen
-                .iter()
-                .any(|f| matches!(f, FrameKind::SubscribeMetadata { .. })),
-            "L3 has no wildcard-Terminal scope to subscribe to; sent {seen:?}"
+            seen.iter().any(|f| matches!(
+                f,
+                FrameKind::SubscribeMetadata { scope: Scope::Resource(id), key }
+                    if *id == ResourceId::local(8) && key == RESOURCE_AGENT_KEY
+            )),
+            "the spawn event must extend the L3 subscription set; sent {seen:?}"
         );
+        assert!(items.iter().any(|item| matches!(
+            item,
+            WatchItem::AgentState(update)
+                if update.terminal.as_ref() == Some(&ResourceId::local(8))
+        )));
     }
 }

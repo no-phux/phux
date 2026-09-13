@@ -17,7 +17,8 @@ use std::time::Duration;
 
 use phux_client::agent_meta::{AgentMetaState, AgentRecord};
 use phux_client::agent_wait::{
-    AgentWaitError, AgentWaitResult, DEFAULT_UNTIL, parse_until, wait_for_agent_state,
+    AgentWaitError, AgentWaitResult, DEFAULT_UNTIL, FleetAgentWaitResult, parse_until,
+    wait_for_agent_state, wait_for_any_agent_state,
 };
 use phux_client::attach::AttachError;
 use phux_protocol::ids::ResourceId;
@@ -103,6 +104,7 @@ fn satellite_refusal(terminal: &ResourceId) -> Option<json_err::CliError> {
 /// `phux agent wait [TARGET] [--until STATE]... [--timeout SECS] [--json]`.
 pub(super) fn run_agent_wait(
     target: Option<&str>,
+    any: bool,
     until: &[String],
     timeout: Option<u64>,
     json: bool,
@@ -125,6 +127,14 @@ pub(super) fn run_agent_wait(
     };
 
     rt.block_on(async move {
+        if any {
+            let outcome =
+                wait_for_any_agent_state(&socket_path, &targets, timeout, POLL_INTERVAL).await;
+            return match outcome {
+                Ok(result) => report_any(&socket_path, &result, json).await,
+                Err(err) => report_wait_error(err, &socket_path, json),
+            };
+        }
         let terminal = match resolve_target(&socket_path, &selector, "agent wait", json).await {
             Ok(id) => id,
             Err(code) => return code,
@@ -177,20 +187,7 @@ pub(super) fn run_agent_wait(
                     crate::exit_codes::EXIT_FAILURE,
                 );
             }
-            Err(AgentWaitError::Transport(err @ AttachError::Io(_))) => {
-                return json_err::report_no_server(json, &err, &socket_path, "agent wait");
-            }
-            Err(AgentWaitError::Transport(err)) => {
-                return json_err::emit(
-                    json,
-                    &json_err::CliError::new(
-                        json_err::codes::TRANSPORT,
-                        format!("agent wait failed: {err}"),
-                        "run `phux doctor` for a health check",
-                    ),
-                    crate::exit_codes::EXIT_FAILURE,
-                );
-            }
+            Err(err) => return report_wait_error(err, &socket_path, json),
         };
 
         // Detection provenance: which sources agreed, and how strongly. A
@@ -200,6 +197,113 @@ pub(super) fn run_agent_wait(
         let provenance = provenance(&socket_path, &terminal, result.record.clone()).await;
         report(&terminal, &result, provenance.as_ref(), json)
     })
+}
+
+fn report_wait_error(err: AgentWaitError, socket_path: &Path, json: bool) -> ExitCode {
+    match err {
+        AgentWaitError::Transport(err @ AttachError::Io(_)) => {
+            json_err::report_no_server(json, &err, socket_path, "agent wait")
+        }
+        AgentWaitError::Transport(err) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::TRANSPORT,
+                format!("agent wait failed: {err}"),
+                "run `phux doctor` for a health check",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
+        AgentWaitError::NoRecord => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::NO_AGENT_RECORD,
+                "the selected pane declares no phux.agent/v1 record",
+                "declare an agent record before waiting",
+            ),
+            crate::exit_codes::EXIT_USAGE,
+        ),
+        AgentWaitError::Departed { from, reason, .. } => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                json_err::codes::AGENT_DEPARTED,
+                format!(
+                    "agent departed from '{}' while waiting: {}",
+                    from.as_str(),
+                    reason.as_str()
+                ),
+                "a departure is not a completion",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
+    }
+}
+
+async fn report_any(socket_path: &Path, result: &FleetAgentWaitResult, json: bool) -> ExitCode {
+    let matched = result.matched.as_ref();
+    let provenance = match matched {
+        Some(matched) => {
+            provenance(socket_path, &matched.terminal, Some(matched.record.clone())).await
+        }
+        None => None,
+    };
+    if json {
+        let document = serde_json::json!({
+            "schema_version": RESULT_SCHEMA_VERSION,
+            "terminal": matched.map(|matched| crate::selector::format_terminal_id(&matched.terminal)),
+            "satisfied": result.satisfied(),
+            "edge": matched.map(|matched| serde_json::json!({
+                "from": matched.edge.from.as_str(),
+                "to": matched.edge.to.as_str(),
+                "via": matched.edge.via.as_str(),
+            })),
+            "baseline": matched.map(|matched| matched.baseline.as_str()),
+            "state": matched.map(|matched| matched.edge.to.as_str()),
+            "agent": matched.map(|matched| serde_json::json!({
+                "name": matched.record.name,
+                "kind": matched.record.kind,
+                "session": matched.record.session,
+            })),
+            "observations": {
+                "agents": result.agents,
+                "edges": result.edges,
+                "pushes": result.pushes,
+                "polls": result.polls,
+            },
+            "detection": provenance,
+        });
+        match serde_json::to_string_pretty(&document) {
+            Ok(rendered) => outln!("{rendered}"),
+            Err(err) => {
+                return json_err::emit(
+                    true,
+                    &json_err::CliError::new(
+                        json_err::codes::JSON_SERIALIZE,
+                        format!("could not render fleet agent wait JSON: {err}"),
+                        "report this serialization failure",
+                    ),
+                    crate::exit_codes::EXIT_FAILURE,
+                );
+            }
+        }
+    } else if let Some(matched) = matched {
+        outln!(
+            "{}\t{}\t{} -> {}\tvia {}",
+            crate::selector::format_terminal_id(&matched.terminal),
+            matched.record.name,
+            matched.edge.from.as_str(),
+            matched.edge.to.as_str(),
+            matched.edge.via.as_str(),
+        );
+    }
+    if result.satisfied() {
+        ExitCode::SUCCESS
+    } else {
+        eprintln!(
+            "phux: agent wait --any timed out; {} agent(s) were tracked and no matching transition was observed",
+            result.agents,
+        );
+        ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
+    }
 }
 
 /// Render the outcome and pick the exit code.
@@ -322,6 +426,8 @@ async fn provenance(
 mod tests {
     #![allow(clippy::expect_used, reason = "tests")]
 
+    use clap::Parser;
+
     use super::*;
 
     /// The `--until` vocabulary the CLI accepts is exactly the client-side
@@ -370,6 +476,15 @@ mod tests {
 
         let err = resolve_until(&["finished".to_owned()]).expect_err("unknown word is refused");
         assert_eq!(err.code, json_err::codes::INVALID_SELECTOR);
+    }
+
+    #[test]
+    fn any_is_accepted_without_a_target_and_conflicts_with_one() {
+        assert!(crate::Cli::try_parse_from(["phux", "agent", "wait", "--any"]).is_ok());
+        assert!(
+            crate::Cli::try_parse_from(["phux", "agent", "wait", "@7", "--any"]).is_err(),
+            "a fleet wait and one resolved target are different ownership scopes"
+        );
     }
 
     /// phux-w7z2.57: a satellite target is refused up front rather than

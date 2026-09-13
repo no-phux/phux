@@ -54,6 +54,7 @@ pub mod conditional_kill;
 pub mod deadline;
 pub mod explain;
 pub mod layout_ops;
+pub mod pane_move;
 pub mod perf;
 pub mod record;
 // Resource kinds as a snapshot carries them: which entries are panes, which

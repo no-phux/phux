@@ -31,6 +31,9 @@ use super::effects::ReattachTarget;
 /// that would otherwise inflate `dispatch_input_events`'s argument
 /// list past clippy's threshold.
 pub(in crate::attach) struct DispatchCtx<'a> {
+    /// Dial used to open a dedicated request/response connection for actions
+    /// that cannot safely consume interleaved frames from the attach stream.
+    pub control_dial: Option<&'a crate::attach::Dial>,
     /// Connection-owned engine replicas used for terminal queries and local scrolling.
     pub engine_kernel: &'a mut crate::attach::pane_state::AttachKernel,
     /// Keybind resolver state. `None` when the on-disk config failed

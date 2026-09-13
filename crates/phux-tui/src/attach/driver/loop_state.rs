@@ -482,6 +482,8 @@ async fn send_replay_batch(
     reason = "parallel driver-local view/lifecycle flags; a bitset would obscure every read site"
 )]
 pub(super) struct SessionLoop {
+    /// Original attach dial, reused for dedicated control-plane requests.
+    control_dial: Option<Box<crate::attach::Dial>>,
     /// Does this server answer `TERMINAL_REPLY`? Fixed for the connection.
     terminal_reply_supported: bool,
     /// phux-a5xj: does this server build a spawned pane at the geometry we
@@ -743,12 +745,20 @@ pub(super) struct SessionLoop {
 }
 
 impl SessionLoop {
+    pub(super) fn set_control_dial(&mut self, dial: crate::attach::Dial) {
+        self.control_dial = Some(Box::new(dial));
+    }
+
     /// Build every session-scoped local for one attach entry.
     ///
     /// `carried_sidebar_enabled` is the window sidebar's on/off state carried
     /// in from the previous entry when a `switch-session` drove this one;
     /// `None` on the first attach — `[sidebar] enabled` seeds it, and a
     /// carried runtime value wins after that (see `seed_sidebar_enabled`).
+    #[allow(
+        clippy::too_many_lines,
+        reason = "single constructor keeps all session-loop ownership visible"
+    )]
     pub(super) fn new(
         negotiated: NegotiatedBootstrap,
         predict_cfg: PredictiveConfig,
@@ -777,6 +787,7 @@ impl SessionLoop {
         let mut orphan_kills = super::orphans::OrphanKills::default();
         orphan_kills.set_conditional_kill(conditional_kill_supported);
         Ok(Self {
+            control_dial: None,
             acknowledged_input_supported: negotiated
                 .server_features
                 .contains(ServerFeature::AcknowledgedInput),
@@ -1602,7 +1613,10 @@ impl SessionLoop {
         }
         self.overlays.push(Box::new(ToastOverlay::passthrough(
             crate::attach::onboarding::ONBOARDING_TITLE,
-            crate::attach::onboarding::hint_lines(self.settings.keybindings.as_ref()),
+            crate::attach::onboarding::hint_lines(
+                self.settings.keybindings.as_ref(),
+                self.sidebar_enabled,
+            ),
             &self.settings.theme,
         )));
         paint_active_overlay(
@@ -2092,6 +2106,7 @@ impl SessionLoop {
             crate::render::chrome::sidebar::SidebarTargets::default()
         };
         let mut ctx = DispatchCtx {
+            control_dial: self.control_dial.as_deref(),
             engine_kernel: &mut self.engine_kernel,
             resolver: self.settings.resolver.as_mut(),
             focus_history: self.focus_history.clone(),

@@ -86,6 +86,7 @@ pub(super) const fn frame_defers_paint(deferred_by_coalesce: bool, _frame: &Fram
 )]
 pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     conn: &mut Connection,
+    control_dial: &crate::attach::Dial,
     initial_attached: FrameKind,
     predict_cfg: PredictiveConfig,
     out: &mut W,
@@ -154,6 +155,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
         initial_pane,
         carried_sidebar_enabled,
     )?;
+    session.set_control_dial(control_dial.clone());
     // phux-r82.6: spawn one bounded interval runner per `exec` widget. The
     // runners execute off-loop and write into the widgets' shared caches;
     // the bar's normal repaint tick picks changed cells up, so the render

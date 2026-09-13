@@ -21,6 +21,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | Action | Palette | Parameters | Description |
 |---|---|---|---|
 | `split-pane` | Pane | `direction` = `horizontal` \| `vertical` | Split the focused pane side-by-side (vertical divider) |
+| `move-pane` | Pane | `target` (local Terminal id; picker-supplied) | Move the focused pane beside another pane… |
 | `kill-pane` | Pane |  | Close the focused pane |
 | `new-window` | Window | `cwd?` (working directory on the attached server's host) | Open a new window |
 | `go-to-directory` | Window | `path?` (absolute, `~`, or `~/...`; bare starts at the focused pane's directory) | Browse directories on the attached server's host and open a new window in one |
@@ -33,7 +34,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `focus-direction` | Pane | `direction` = `left` \| `right` \| `up` \| `down` | Move focus to the pane on the left |
 | `resize-pane` | Pane | `direction` = `left` \| `right` \| `up` \| `down`; `amount` (cells) | Grow the focused pane to the left |
 | `show-help` | — |  | Open the fuzzy commands and help finder |
-| `getting-started` | View |  | Getting started: detach, return, and command discovery |
+| `getting-started` | View |  | Getting started: detach, return, the Agents list, and command discovery |
 | `copy-mode` | — |  | Enter copy-mode on the focused pane (scrollback navigation, selection, yank) |
 | `detach` | View |  | Detach this client from the session |
 | `next-pane` | Pane |  | Cycle focus to the next pane |

@@ -22,7 +22,7 @@ use crate::attach::focus::FocusHistory;
 use crate::attach::outcome::AttachError;
 use crate::attach::pane_state::{PaneSlot, reanchor_predict_to_pane};
 use crate::attach::plugin_actions::PluginRunResult;
-use crate::layout::Workspace;
+use crate::layout::{SplitDir, Workspace};
 use crate::predict::PredictionState;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
@@ -59,7 +59,7 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     predict: &mut PredictionState,
     panes: &HashMap<ResourceId, PaneSlot>,
 ) -> Result<bool, AttachError> {
-    let layout_changed = effects.layout_mutated;
+    let mut layout_changed = effects.layout_mutated;
     apply_zoom_toggle(effects.toggle_zoom, ctx.zoomed, focused_resource.as_ref());
     apply_sidebar_toggle(effects.toggle_sidebar, ctx.sidebar_enabled);
     apply_focus_effect(
@@ -101,6 +101,14 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     .await?;
     send_command_frames(effects.command_frames, conn).await?;
     spawn_plugin_run(effects.run_plugin, ctx.plugin_tx);
+    layout_changed |= Box::pin(apply_pane_move(
+        effects.move_pane,
+        ctx,
+        focused_resource,
+        predict,
+        panes,
+    ))
+    .await;
     // phux-foz.5: hand a `reload-config` up to the driver, which owns the
     // config-derived state (resolver, theme, keybindings snapshot, status
     // bar) this batch is still borrowing.
@@ -119,6 +127,105 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     // same way a layout mutation does; fold it into the caller's repaint
     // signal so the new name shows immediately.
     Ok(layout_changed || renamed)
+}
+
+/// Execute a picker-committed pane move on a dedicated control connection.
+///
+/// The live attach connection must remain owned by the full-duplex driver: a
+/// correlated metadata helper would otherwise consume pane output or events
+/// interleaved before its reply. A fresh connection also lets operation
+/// failures remain a visible toast rather than tearing down the attach.
+#[allow(
+    clippy::future_not_send,
+    reason = "ADR-0003 binds TUI state and its async dispatcher to the current thread"
+)]
+async fn apply_pane_move(
+    intent: Option<PaneMoveIntent>,
+    ctx: &mut DispatchCtx<'_>,
+    focused_resource: &mut Option<ResourceId>,
+    predict: &mut PredictionState,
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> bool {
+    let Some(intent) = intent else {
+        return false;
+    };
+    let result = async {
+        let dial = ctx.control_dial.ok_or_else(|| {
+            AttachError::Protocol("pane move has no dedicated control dial".to_owned())
+        })?;
+        let mut conn = Connection::connect_dial(dial).await?;
+        phux_client::pane_move::move_pane(
+            &mut conn,
+            intent.source.clone(),
+            intent.target,
+            intent.dir,
+            intent.ratio,
+        )
+        .await
+        .map_err(|error| AttachError::Protocol(error.to_string()))
+    }
+    .await;
+
+    match result {
+        Ok(outcome) if outcome.cross_session => {
+            let Some((window, pane)) =
+                pane_coordinates(&outcome.destination_workspace, &intent.source)
+            else {
+                push_move_failure(
+                    ctx,
+                    "the move committed, but the destination layout no longer contains the pane",
+                );
+                return false;
+            };
+            *ctx.switch_request = Some(ReattachTarget::Existing {
+                name: outcome.destination_session_name,
+                window: Some(window),
+                pane: Some(pane),
+            });
+            true
+        }
+        Ok(outcome) => {
+            *ctx.workspace = outcome.destination_workspace;
+            *ctx.zoomed = None;
+            apply_focus_effect(
+                Some(intent.source),
+                true,
+                &mut ctx.focus_history,
+                focused_resource,
+                predict,
+                panes,
+            );
+            true
+        }
+        Err(error) => {
+            tracing::warn!(error = %error, "move-pane failed");
+            push_move_failure(ctx, &error.to_string());
+            false
+        }
+    }
+}
+
+fn pane_coordinates(workspace: &Workspace, target: &ResourceId) -> Option<(usize, usize)> {
+    workspace
+        .windows
+        .iter()
+        .enumerate()
+        .find_map(|(window, item)| {
+            let tree = item.state.tree.as_ref()?;
+            crate::layout::leaves(tree)
+                .iter()
+                .position(|pane| pane == target)
+                .map(|pane| (window, pane))
+        })
+}
+
+fn push_move_failure(ctx: &mut DispatchCtx<'_>, message: &str) {
+    ctx.overlays
+        .push(Box::new(crate::render::overlay::ToastOverlay::new(
+            "Pane move failed",
+            vec![message.to_owned()],
+            ctx.theme,
+        )));
 }
 
 /// phux-x2hm: flip pane-zoom. Un-zoom if zoomed; otherwise zoom the
@@ -480,6 +587,9 @@ pub(super) struct ActionEffects {
     /// `pending_windows` map; the reply opens a new window on the
     /// spawned pane.
     pub(super) spawn_window: Option<(u32, PendingWindow, FrameKind)>,
+    /// A picker-confirmed existing-pane move. The async effect applier opens a
+    /// dedicated control connection and runs the canonical headless operation.
+    pub(super) move_pane: Option<PaneMoveIntent>,
     /// A `go-to-directory` action built a `LIST_DIRECTORY` request. The
     /// async caller records it (id and listed host) as the pending listing,
     /// then sends it; the reply opens the directory picker.
@@ -535,6 +645,15 @@ pub(super) struct ActionEffects {
     /// layered loader after this batch and swaps its config-derived
     /// state atomically (old config kept on any failure).
     pub(super) reload_config: bool,
+}
+
+/// Exact move selected by the fuzzy destination picker.
+#[derive(Debug)]
+pub(super) struct PaneMoveIntent {
+    pub(super) source: ResourceId,
+    pub(super) target: ResourceId,
+    pub(super) dir: SplitDir,
+    pub(super) ratio: f32,
 }
 
 /// An in-process re-attach request raised by a dispatched action.

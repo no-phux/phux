@@ -40,7 +40,9 @@ phux
 
 With no arguments, phux starts a per-user server if needed, creates a
 shell-backed session, and attaches the interactive client. Work in it like a
-normal terminal.
+normal terminal. The sidebar's **Agents** list is the fleet inbox: a filled
+dot means an agent is waiting on you; a half-filled ring means it is still
+working.
 
 The default prefix is `Ctrl-A`. Four continuations are enough for a first run:
 

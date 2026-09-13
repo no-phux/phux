@@ -81,6 +81,8 @@ jobs:
         uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
+          # Default setup-zig cache keys are single-use (phux-6khi).
+          use-cache: false
       - name: Contributor Rust setup
         if: hashFiles('scripts/setup-rust.sh') != ''
         run: bash scripts/setup-rust.sh cockpit
@@ -96,7 +98,7 @@ jobs:
             ~/.cache/zig
             clients/cockpit/.zig-cache
             clients/cockpit/.zig-global-cache
-          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
+          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
           restore-keys: |
             mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
 

@@ -145,7 +145,12 @@ pub(crate) enum AgentAction {
     Wait {
         /// Target selector (resolves to one pane). Omit for the focused
         /// pane.
+        #[arg(conflicts_with = "any")]
         target: Option<String>,
+        /// Wait for the first matching transition from any local agent in
+        /// the fleet instead of resolving one pane.
+        #[arg(long)]
+        any: bool,
         /// Lifecycle state to wait for; repeat to OR several. Defaults to
         /// `idle`, `blocked`, `done` — the three ways a turn ends.
         /// `unknown` is not spellable: it is departure, not a state.
@@ -529,10 +534,11 @@ pub(crate) fn run_agent(action: &AgentAction, socket: Option<PathBuf>) -> ExitCo
         } => resource_session::run_log(target, *follow, *tail, *json, socket),
         AgentAction::Wait {
             target,
+            any,
             until,
             timeout,
             json,
-        } => wait::run_agent_wait(target.as_deref(), until, *timeout, *json, socket),
+        } => wait::run_agent_wait(target.as_deref(), *any, until, *timeout, *json, socket),
         AgentAction::Prompt {
             target,
             text,

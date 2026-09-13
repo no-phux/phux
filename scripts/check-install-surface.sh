@@ -301,6 +301,15 @@ require_fixed scripts/check-binary-portability.sh 'x86-64-v[234]'
 require_regex .github/workflows/release.yml 'test -x .*phux-mcp|command -v .*phux-mcp|./phux-mcp --'
 
 forbid_fixed .github/workflows/release.yml 'mlugg/setup-zig'
+# Remaining setup-zig callers must disable the action's Zig-cache post
+# step: it keys each save on run_id, so restores never hit and every job
+# writes up to 2 GiB (phux-6khi). Our actions/cache keys must stay
+# reusable too — a commit-SHA suffix is the same single-use pattern.
+require_fixed .github/workflows/cockpit-sdk-head.yml 'use-cache: false'
+require_fixed .github/workflows/cockpit-release.yml 'use-cache: false'
+forbid_regex .github/workflows/cockpit-ci.yml 'cockpit-zig-.*github\.sha'
+forbid_regex .github/workflows/cockpit-sdk-head.yml 'cockpit-zig-.*github\.sha'
+forbid_regex .github/workflows/cockpit-release.yml 'cockpit-zig-.*github\.sha'
 forbid_fixed .github/workflows/release.yml 'actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5'
 forbid_fixed .github/workflows/release.yml 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02'
 forbid_fixed .github/workflows/release.yml 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'

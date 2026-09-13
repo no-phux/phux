@@ -16,7 +16,8 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
       <p class="lede">
         phux is a terminal multiplexer whose panes are a view. Underneath,
         each terminal is an object on a wire: you, Cockpit, a script, or an
-        agent attach to the same live emulator.
+        agent attach to the same live emulator. When the harness emits,
+        blocked is a fact. Join another machine with no account.
       </p>
       <div class="hero-ctas">
         <a class="cta" href="#install">Install</a>
@@ -80,7 +81,8 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
         <h2>Co-presence.</h2>
         <p>
           An agent reads, acts, and waits against the terminal you are
-          looking at. OpenCode, Pi, and Claude plug into that loop.
+          looking at. When it emits, blocked is a fact on the wire, not a
+          scrape of its UI. OpenCode, Pi, and Claude plug into that loop.
         </p>
       </div>
     </a>
@@ -91,6 +93,17 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
         <p>
           The same libghostty engine runs on both ends. Server sends VT;
           client sends structured input. Nothing in the middle re-parses.
+        </p>
+      </div>
+    </a>
+    <a class="feature" href={docsHref("/remote-access")}>
+      <span>05</span>
+      <div>
+        <h2>Your machines. No account.</h2>
+        <p>
+          Pair once with <code>phux --remote me@mini</code>. After that the
+          dial is encrypted QUIC with no ssh in the path and no phux
+          account in the middle.
         </p>
       </div>
     </a>

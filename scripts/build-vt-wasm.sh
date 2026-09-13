@@ -10,8 +10,10 @@
 # Requires the release-pinned Zig and Node. Byte-for-byte reproduction assumes
 # the official Zig release binary (scripts/install-zig.sh): nixpkgs' zig_0_16 on
 # x86_64 Linux links a different LLVM build and compiles one function
-# differently, so the Nix shell's Zig fails --check there. By default fetches
-# verified immutable source; GHOSTTY_SRC is an explicit local development override.
+# differently, so the Nix shell's Zig fails --check there. The recipe pins
+# --seed 0, -j1, and isolated caches so a random dependency-walk seed or a
+# shared Zig cache cannot change the artifact. By default fetches verified
+# immutable source; GHOSTTY_SRC is an explicit local development override.
 # --check rebuilds and compares without changing the committed artifact.
 set -euo pipefail
 
@@ -47,6 +49,8 @@ echo "building ghostty-vt.wasm from $GHOSTTY_SRC (zig $(zig version)) ..."
 # metadata sections explicitly after compilation.
 ( cd "$GHOSTTY_SRC" && zig build -Demit-lib-vt -Dtarget=wasm32-freestanding \
     -Doptimize=ReleaseSafe -Dstrip=true -Dversion-string=1.3.2-dev \
+    --seed 0 -j1 \
+    --cache-dir "$scratch/zig-cache" --global-cache-dir "$scratch/zig-global" \
     --prefix "$scratch/out" )
 artifact="$scratch/out/bin/ghostty-vt.wasm"
 node "$repo/scripts/prepare-vt-wasm.mjs" "$artifact"

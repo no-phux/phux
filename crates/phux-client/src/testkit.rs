@@ -91,7 +91,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, Scope, SpawnResult,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, MoveResult, Scope, SpawnResult,
 };
 use phux_protocol::wire::info::SessionSnapshot;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -135,6 +135,8 @@ pub struct ScriptSpec {
     priming: Vec<FrameKind>,
     /// The snapshot a `GET_STATE` ack carries.
     state: Option<SessionSnapshot>,
+    /// Successive snapshots returned by successive `GET_STATE` commands.
+    states: std::collections::VecDeque<SessionSnapshot>,
     /// Frames pushed ahead of the *next* command ack — the hub degradation
     /// notices and any foreign-correlation acks the test wants interleaved.
     pre_ack: Vec<FrameKind>,
@@ -154,6 +156,8 @@ pub struct ScriptSpec {
     /// When set, every `SPAWN_RESOURCE` is refused with a *correlated*
     /// `ERROR` instead of a `RESOURCE_SPAWNED`.
     spawn_error: Option<(ErrorCode, String)>,
+    /// The `RESOURCE_MOVED` payload a `MOVE_RESOURCE` is answered with.
+    move_result: Option<MoveResult>,
     /// The client count a `DetachClients` command acks with. `None` defaults
     /// to `0` (nobody was attached) — `handle_detach_clients`
     /// (`crates/phux-server/src/runtime/commands.rs`) always answers
@@ -192,12 +196,14 @@ impl fmt::Debug for ScriptSpec {
             .field("priming", &self.priming)
             .field("keyed_script", &self.keyed_script.len())
             .field("state", &self.state)
+            .field("states", &self.states)
             .field("pre_ack", &self.pre_ack)
             .field("metadata", &self.metadata.is_some())
             .field("metadata_store", &self.metadata_store)
             .field("metadata_error", &self.metadata_error)
             .field("spawn", &self.spawn)
             .field("spawn_error", &self.spawn_error)
+            .field("move_result", &self.move_result)
             .field("detach_result", &self.detach_result)
             .field("append_result", &self.append_result)
             .field("server_features", &self.server_features)
@@ -324,6 +330,13 @@ impl ScriptSpec {
         self
     }
 
+    /// Snapshots returned in order by successive `GET_STATE` commands.
+    #[must_use]
+    pub fn states(mut self, snapshots: impl IntoIterator<Item = SessionSnapshot>) -> Self {
+        self.states = snapshots.into_iter().collect();
+        self
+    }
+
     /// A hub's per-satellite degradation notice: an *uncorrelated* `ERROR`
     /// pushed ahead of the next command ack.
     ///
@@ -409,6 +422,13 @@ impl ScriptSpec {
     #[must_use]
     pub fn spawn_result(mut self, result: SpawnResult) -> Self {
         self.spawn = Some(result);
+        self
+    }
+
+    /// The result returned for every `MOVE_RESOURCE` request.
+    #[must_use]
+    pub fn move_result(mut self, result: MoveResult) -> Self {
+        self.move_result = Some(result);
         self
     }
 
@@ -788,6 +808,11 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
                 .push((scope.clone(), key.clone(), value.clone()));
             Vec::new()
         }
+        FrameKind::DeleteMetadata { scope, key, .. } => {
+            spec.metadata_store
+                .retain(|(stored_scope, stored_key, _)| stored_scope != scope || stored_key != key);
+            Vec::new()
+        }
         // `handle_spawn_terminal` (`crates/phux-server/src/runtime/client.rs`)
         // answers with `RESOURCE_SPAWNED` on the caller's `request_id`, after
         // whatever this connection already had queued. A hub relaying to a
@@ -815,6 +840,12 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
             });
             out
         }
+        FrameKind::MoveResource { request_id, .. } => vec![FrameKind::ResourceMoved {
+            request_id: *request_id,
+            result: spec.move_result.clone().expect(
+                "a scripted server whose client sends MOVE_RESOURCE must declare an outcome",
+            ),
+        }],
         // Request-shaped frames the reference server *does* answer but this
         // harness has not modelled yet. Refusing loudly beats replying with
         // nothing: a silent no-reply wedges the client until its transport
@@ -851,7 +882,8 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
             });
         }
         Command::GetState { .. } => {
-            let result = spec.state.clone().map_or(CommandResult::Ok, |snapshot| {
+            let snapshot = spec.states.pop_front().or_else(|| spec.state.clone());
+            let result = snapshot.map_or(CommandResult::Ok, |snapshot| {
                 CommandResult::OkWith(CommandValue::State(snapshot))
             });
             out.push(FrameKind::CommandResult { request_id, result });

@@ -33,10 +33,10 @@ use super::dispatch::{
     focused_pane_rect, open_context_menu, predicted_split_size, set_spawn_initial_size,
     spawn_initial_size,
 };
-use super::effects::{ActionEffects, ReattachTarget};
+use super::effects::{ActionEffects, PaneMoveIntent, ReattachTarget};
 use super::pickers::{
-    SESSION_PICKER_LIVE_KEY, session_picker_rows, switch_window, window_holding,
-    window_picker_items,
+    SESSION_PICKER_LIVE_KEY, move_pane_picker_items, session_picker_rows, switch_window,
+    window_holding, window_picker_items,
 };
 
 /// Open the single fuzzy discovery surface. `show-help` and
@@ -93,6 +93,7 @@ pub(super) fn run_action(
     let e = &mut effects;
     match resolved.action.as_str() {
         "split-pane" => split_pane(resolved, ctx, focused, panes, e),
+        "move-pane" => move_pane(resolved, ctx, focused, e),
         "kill-pane" => kill_focused_pane(focused, e),
         "take-input" => take_input(ctx, focused, e),
         "give-input" => give_input(ctx, focused, e),
@@ -135,6 +136,57 @@ pub(super) fn run_action(
         }
     }
     effects
+}
+
+/// Open the all-session destination picker, or commit its exact selected row.
+/// Side-by-side at 0.5 is the single keyboard-fast placement policy.
+fn move_pane(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    focused: Option<&ResourceId>,
+    effects: &mut ActionEffects,
+) {
+    let Some(source) = focused.cloned() else {
+        effects.bell = true;
+        return;
+    };
+    if !matches!(source, ResourceId::Local { .. }) {
+        tracing::warn!("move-pane: satellite source panes are not supported");
+        effects.bell = true;
+        return;
+    }
+
+    let Some(target) = resolved.args.get("target") else {
+        let items = move_pane_picker_items(
+            &source,
+            ctx.workspace,
+            ctx.session_name,
+            ctx.focused_session,
+            ctx.sessions,
+            ctx.foreign_layouts,
+        );
+        if items.is_empty() {
+            effects.bell = true;
+            return;
+        }
+        ctx.overlays.push(Box::new(SelectList::new(
+            "Move pane beside…",
+            items,
+            ctx.theme,
+        )));
+        return;
+    };
+
+    let Some(id) = target.as_integer().and_then(|id| u32::try_from(id).ok()) else {
+        effects.bell = true;
+        return;
+    };
+    effects.move_pane = Some(PaneMoveIntent {
+        source,
+        target: ResourceId::Local { id },
+        dir: SplitDir::Horizontal,
+        ratio: 0.5,
+    });
 }
 
 /// phux-4li.12: `SPAWN_RESOURCE` → server allocates the new
@@ -702,7 +754,7 @@ fn push_getting_started(ctx: &mut DispatchCtx<'_>) {
     ctx.overlays
         .push(Box::new(crate::render::overlay::ToastOverlay::passthrough(
             crate::attach::onboarding::ONBOARDING_TITLE,
-            crate::attach::onboarding::hint_lines(ctx.keybindings),
+            crate::attach::onboarding::hint_lines(ctx.keybindings, *ctx.sidebar_enabled),
             ctx.theme,
         )));
 }

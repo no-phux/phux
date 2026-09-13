@@ -10,7 +10,9 @@
 //! `.toml`; a directory means `<dir>/<dirname>.toml`) or a **bundled
 //! name** looked up as `<dir>/<name>/<name>.toml` across the search
 //! directories returned by [`search_dirs`]. `herdr` is kept as an alias
-//! of `starter` so existing `--distro herdr` invocations still resolve:
+//! of `starter` so existing `--distro herdr` invocations still resolve
+//! (and `distros/herdr/herdr.toml` remains as a path-level stub for
+//! configs that baked the old absolute path):
 //!
 //! 1. `$PHUX_DISTROS_DIR` — explicit override (also the test hook).
 //! 2. `$XDG_DATA_HOME/phux/distros` (or `~/.local/share/phux/distros`)

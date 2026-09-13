@@ -55,16 +55,18 @@
 //! observation sequence rather than dropping.
 
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{ResourceId, ResourceKind};
 use phux_protocol::wire::frame::{FrameKind, Scope};
 
 use crate::agent_meta::{AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
-use crate::watch::{WatchItem, stream_items, subscribe};
+use crate::state::get_state;
+use crate::watch::{FleetSubscription, WatchItem, stream_items, subscribe, subscribe_fleet};
 
 /// The default `--until` set: the three states a turn can end in
 /// (ADR-0076 point 5). `working` is spellable but not a default — it is the
@@ -314,6 +316,42 @@ impl AgentWaitResult {
     #[must_use]
     pub const fn satisfied(&self) -> bool {
         self.edge.is_some()
+    }
+}
+
+/// The first fleet member observed transitioning into a requested state.
+#[derive(Debug, Clone)]
+pub struct FleetAgentMatch {
+    /// The local Terminal whose agent transitioned.
+    pub terminal: ResourceId,
+    /// The level held when this Terminal first entered the fleet wait.
+    pub baseline: AgentMetaState,
+    /// The transition that satisfied the wait.
+    pub edge: ObservedEdge,
+    /// The agent record observed on the far side of the transition.
+    pub record: AgentRecord,
+}
+
+/// The outcome of one [`wait_for_any_agent_state`] call.
+#[derive(Debug, Clone)]
+pub struct FleetAgentWaitResult {
+    /// The first matching transition, or `None` when the deadline elapsed.
+    pub matched: Option<FleetAgentMatch>,
+    /// Agent records still tracked when the wait ended.
+    pub agents: usize,
+    /// State transitions observed across all tracked agents.
+    pub edges: u32,
+    /// Poll-floor record reads performed.
+    pub polls: u32,
+    /// `METADATA_CHANGED` records received.
+    pub pushes: u32,
+}
+
+impl FleetAgentWaitResult {
+    /// Whether an agent transitioned into the requested state.
+    #[must_use]
+    pub const fn satisfied(&self) -> bool {
+        self.matched.is_some()
     }
 }
 
@@ -694,6 +732,311 @@ pub async fn wait_for_agent_state(
     finish(decision, shared)
 }
 
+#[derive(Debug, Default)]
+struct FleetStats {
+    edges: u32,
+    polls: u32,
+    pushes: u32,
+}
+
+#[derive(Debug)]
+struct FleetTrackers<'a> {
+    targets: &'a [AgentMetaState],
+    agents: HashMap<ResourceId, EdgeTracker>,
+    stats: FleetStats,
+}
+
+impl<'a> FleetTrackers<'a> {
+    fn new(targets: &'a [AgentMetaState]) -> Self {
+        Self {
+            targets,
+            agents: HashMap::new(),
+            stats: FleetStats::default(),
+        }
+    }
+
+    fn remove(&mut self, terminal: &ResourceId) {
+        self.agents.remove(terminal);
+    }
+
+    fn observe(
+        &mut self,
+        terminal: ResourceId,
+        record: Option<AgentRecord>,
+        via: Option<EdgeSource>,
+    ) -> Option<FleetAgentMatch> {
+        match via {
+            Some(EdgeSource::Push) => self.stats.pushes = self.stats.pushes.saturating_add(1),
+            Some(EdgeSource::Poll) => self.stats.polls = self.stats.polls.saturating_add(1),
+            None => {}
+        }
+        let Some(record) = record else {
+            self.agents.remove(&terminal);
+            return None;
+        };
+        let Some(tracked) = self.agents.get_mut(&terminal) else {
+            self.agents
+                .insert(terminal, EdgeTracker::new(record.state, self.targets));
+            return None;
+        };
+        let before = tracked.edges();
+        let verdict = tracked.observe(Some(&record));
+        self.stats.edges = self
+            .stats
+            .edges
+            .saturating_add(tracked.edges().saturating_sub(before));
+        match verdict {
+            Verdict::Satisfied { from, to } => Some(FleetAgentMatch {
+                terminal,
+                baseline: tracked.baseline(),
+                edge: ObservedEdge {
+                    from,
+                    to,
+                    via: via.unwrap_or(EdgeSource::Push),
+                },
+                record,
+            }),
+            Verdict::Departed { .. } => {
+                self.agents.remove(&terminal);
+                None
+            }
+            Verdict::Pending => None,
+        }
+    }
+
+    fn result(self, matched: Option<FleetAgentMatch>) -> FleetAgentWaitResult {
+        FleetAgentWaitResult {
+            matched,
+            agents: self.agents.len(),
+            edges: self.stats.edges,
+            polls: self.stats.polls,
+            pushes: self.stats.pushes,
+        }
+    }
+}
+
+const fn next_request_id(request_id: &mut u32) -> u32 {
+    let current = *request_id;
+    *request_id = request_id.wrapping_add(1);
+    if *request_id == 0 {
+        *request_id = 1;
+    }
+    current
+}
+
+async fn fold_fleet_frame(
+    frame: FrameKind,
+    subscription: &mut FleetSubscription,
+    trackers: &mut FleetTrackers<'_>,
+    needs_baseline: &mut Vec<ResourceId>,
+) -> Result<Option<FleetAgentMatch>, AttachError> {
+    match frame {
+        FrameKind::MetadataChanged { scope, key, value } if key == RESOURCE_AGENT_KEY => {
+            let Scope::Resource(terminal) = scope else {
+                return Ok(None);
+            };
+            if !subscription.terminals.contains(&terminal) {
+                return Ok(None);
+            }
+            Ok(trackers.observe(
+                terminal,
+                value.as_deref().and_then(parse_agent_record),
+                Some(EdgeSource::Push),
+            ))
+        }
+        FrameKind::Event {
+            terminal: Some(terminal),
+            event:
+                phux_protocol::wire::frame::AgentEvent::ResourceSpawned {
+                    kind: ResourceKind::Terminal,
+                    ..
+                },
+        } => {
+            if subscription.subscribe_terminal(terminal.clone()).await? {
+                needs_baseline.push(terminal);
+            }
+            Ok(None)
+        }
+        FrameKind::Event {
+            terminal: Some(terminal),
+            event: phux_protocol::wire::frame::AgentEvent::ResourceClosed { .. },
+        } => {
+            subscription.remove_terminal(&terminal);
+            trackers.remove(&terminal);
+            Ok(None)
+        }
+        _ => Ok(None),
+    }
+}
+
+async fn baseline_fleet_terminals(
+    subscription: &mut FleetSubscription,
+    trackers: &mut FleetTrackers<'_>,
+    terminals: Vec<ResourceId>,
+    request_id: &mut u32,
+) -> Result<Option<FleetAgentMatch>, AttachError> {
+    let mut pending = terminals;
+    while let Some(terminal) = pending.pop() {
+        if !subscription.terminals.contains(&terminal) {
+            continue;
+        }
+        let (record, interleaved) = read_record(
+            &mut subscription.conn,
+            &terminal,
+            next_request_id(request_id),
+        )
+        .await?;
+        for frame in interleaved {
+            if let Some(matched) =
+                fold_fleet_frame(frame, subscription, trackers, &mut pending).await?
+            {
+                return Ok(Some(matched));
+            }
+        }
+        if subscription.terminals.contains(&terminal)
+            && let Some(matched) = trackers.observe(terminal, record, None)
+        {
+            return Ok(Some(matched));
+        }
+    }
+    Ok(None)
+}
+
+fn local_terminals(view: &crate::state::StateView) -> HashSet<ResourceId> {
+    view.snapshot()
+        .resources
+        .iter()
+        .filter(|resource| resource.kind == ResourceKind::Terminal && resource.id.is_local())
+        .map(|resource| resource.id.clone())
+        .collect()
+}
+
+/// Wait until any local agent in the server's fleet transitions into one of
+/// `targets`, or `timeout` elapses.
+///
+/// Existing panes are enumerated only after the server-wide lifecycle stream
+/// is subscribed. Each local Terminal then gets its own L3 subscription and
+/// baseline tracker. A newly spawned Terminal is added by the same event
+/// stream; the periodic `GET_STATE` + `GET_METADATA` sweep is a convergence
+/// floor for dropped events, dropped metadata notifications, and stale closed
+/// panes. Initial levels — including an agent already in a target state — seed
+/// a tracker and never satisfy the wait.
+///
+/// Satellite resources are deliberately excluded because L3 metadata does
+/// not federate (L3 §1.3).
+///
+/// # Errors
+///
+/// Returns [`AgentWaitError::Transport`] when initial setup fails, or when the
+/// push stream has ended and three consecutive poll sweeps cannot reach the
+/// server.
+pub async fn wait_for_any_agent_state(
+    socket: &Path,
+    targets: &[AgentMetaState],
+    timeout: Option<Duration>,
+    poll_interval: Duration,
+) -> Result<FleetAgentWaitResult, AgentWaitError> {
+    let mut subscription = subscribe_fleet(socket).await?;
+    // `subscribe_fleet` already folded these lifecycle events into its set.
+    // No metadata could precede the subscriptions it installs afterwards.
+    let _ = subscription.take_pending();
+    let mut trackers = FleetTrackers::new(targets);
+    let mut request_id = 1;
+    let mut initial: Vec<ResourceId> = subscription.terminals.iter().cloned().collect();
+    initial.sort_by(|left, right| right.cmp(left));
+    if let Some(matched) =
+        baseline_fleet_terminals(&mut subscription, &mut trackers, initial, &mut request_id).await?
+    {
+        return Ok(trackers.result(Some(matched)));
+    }
+
+    let mut push_ended = false;
+    let mut poll_failures = 0_u32;
+    let mut interval =
+        tokio::time::interval_at(tokio::time::Instant::now() + poll_interval, poll_interval);
+    let deadline = deadline(timeout);
+    tokio::pin!(deadline);
+
+    loop {
+        tokio::select! {
+            frame = subscription.conn.recv(), if !push_ended => {
+                match frame {
+                    Ok(frame) => {
+                        let mut baselines = Vec::new();
+                        if let Some(matched) =
+                            fold_fleet_frame(frame, &mut subscription, &mut trackers, &mut baselines).await?
+                        {
+                            return Ok(trackers.result(Some(matched)));
+                        }
+                        if let Some(matched) = baseline_fleet_terminals(
+                            &mut subscription,
+                            &mut trackers,
+                            baselines,
+                            &mut request_id,
+                        ).await? {
+                            return Ok(trackers.result(Some(matched)));
+                        }
+                    }
+                    Err(_err) => push_ended = true,
+                }
+            }
+            _ = interval.tick() => {
+                let view = match get_state(socket).await {
+                    Ok(view) => view,
+                    Err(err) => {
+                        poll_failures = poll_failures.saturating_add(1);
+                        if push_ended && poll_failures >= POLL_FAILURE_LIMIT {
+                            return Err(AgentWaitError::Transport(err));
+                        }
+                        continue;
+                    }
+                };
+                poll_failures = 0;
+                let current = local_terminals(&view);
+                let stale: Vec<ResourceId> = subscription
+                    .terminals
+                    .difference(&current)
+                    .cloned()
+                    .collect();
+                for terminal in stale {
+                    subscription.remove_terminal(&terminal);
+                    trackers.remove(&terminal);
+                }
+                for terminal in &current {
+                    if !push_ended && !subscription.terminals.contains(terminal)
+                        && subscription.subscribe_terminal(terminal.clone()).await.is_err()
+                    {
+                        push_ended = true;
+                    }
+                    match fetch_agent_record(socket, terminal).await {
+                        Ok(record) => {
+                            poll_failures = 0;
+                            if let Some(matched) = trackers.observe(
+                                terminal.clone(),
+                                record,
+                                Some(EdgeSource::Poll),
+                            ) {
+                                return Ok(trackers.result(Some(matched)));
+                            }
+                        }
+                        Err(err) => {
+                            poll_failures = poll_failures.saturating_add(1);
+                            if push_ended && poll_failures >= POLL_FAILURE_LIMIT {
+                                return Err(AgentWaitError::Transport(err));
+                            }
+                        }
+                    }
+                }
+                // When the push connection is gone, these are poll-only
+                // members. Keep them in the coverage set so stale-state
+                // pruning and the public count remain honest.
+                subscription.terminals.extend(current);
+            }
+            () = &mut deadline => return Ok(trackers.result(None)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -710,7 +1053,10 @@ mod tests {
 
     use tokio::net::UnixListener;
 
-    use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer};
+    use phux_protocol::ids::{SessionId, WindowId};
+    use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
+
+    use crate::testkit::{EndOfScript, ScriptSpec, ScriptedServer, serve_every};
 
     use super::*;
 
@@ -732,6 +1078,21 @@ mod tests {
             state,
             ..AgentRecord::default()
         }
+    }
+
+    fn fleet_snapshot(terminals: &[ResourceId]) -> SessionSnapshot {
+        SessionSnapshot::new(
+            SessionId::new(1),
+            WindowId::new(1),
+            terminals.first().cloned().unwrap_or_default(),
+        )
+        .with_resources(
+            terminals
+                .iter()
+                .cloned()
+                .map(|terminal| ResourceInfo::new(terminal, WindowId::new(1), 80, 24))
+                .collect(),
+        )
     }
 
     /// Drive a real `wait_for_agent_state` against the shared scripted
@@ -1046,5 +1407,169 @@ mod tests {
             matches!(outcome, Err(AgentWaitError::NoRecord)),
             "got {outcome:?}"
         );
+    }
+
+    #[test]
+    fn fleet_tracking_is_per_agent_filters_states_and_ignores_stale_levels() {
+        let first = ResourceId::local(7);
+        let second = ResourceId::local(8);
+        let mut fleet = FleetTrackers::new(&[AgentMetaState::Blocked]);
+
+        assert!(
+            fleet
+                .observe(
+                    first.clone(),
+                    Some(state_record(AgentMetaState::Blocked)),
+                    None,
+                )
+                .is_none(),
+            "an already-blocked agent is a stale level, not a transition"
+        );
+        assert!(
+            fleet
+                .observe(
+                    second.clone(),
+                    Some(state_record(AgentMetaState::Working)),
+                    None,
+                )
+                .is_none()
+        );
+        assert!(
+            fleet
+                .observe(
+                    second.clone(),
+                    Some(state_record(AgentMetaState::Idle)),
+                    Some(EdgeSource::Push),
+                )
+                .is_none(),
+            "an untargeted transition advances only that agent's tracker"
+        );
+        let matched = fleet
+            .observe(
+                second.clone(),
+                Some(state_record(AgentMetaState::Blocked)),
+                Some(EdgeSource::Push),
+            )
+            .expect("the second agent's transition matches");
+        assert_eq!(matched.terminal, second);
+        assert_eq!(matched.edge.from, AgentMetaState::Idle);
+        assert_eq!(matched.edge.to, AgentMetaState::Blocked);
+        assert_eq!(fleet.agents.len(), 2);
+
+        assert!(
+            fleet
+                .observe(first.clone(), None, Some(EdgeSource::Push))
+                .is_none()
+        );
+        assert!(
+            fleet.agents.contains_key(&second),
+            "one departing agent must not terminate or erase its peers"
+        );
+        assert!(!fleet.agents.contains_key(&first));
+    }
+
+    #[tokio::test]
+    async fn fleet_wait_returns_the_agent_that_transitions_not_the_first_baseline() {
+        let first = ResourceId::local(7);
+        let second = ResourceId::local(8);
+        let snapshot = fleet_snapshot(&[first.clone(), second.clone()]);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = UnixListener::bind(&socket).expect("bind scripted server");
+        let pushed_second = second.clone();
+        let spec = ScriptSpec::new()
+            .state(snapshot)
+            .metadata(|_scope, key| (key == RESOURCE_AGENT_KEY).then(|| record("working")))
+            .push_after_subscribe(
+                Scope::Resource(second.clone()),
+                RESOURCE_AGENT_KEY,
+                vec![
+                    changed(&pushed_second, Some(record("working"))),
+                    changed(&pushed_second, Some(record("blocked"))),
+                ],
+            )
+            .end(EndOfScript::ServeUntilDetach);
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+
+        let result = wait_for_any_agent_state(
+            &socket,
+            &[AgentMetaState::Blocked],
+            Some(Duration::from_secs(2)),
+            Duration::from_millis(30),
+        )
+        .await
+        .expect("fleet transition");
+        let matched = result.matched.expect("wait was satisfied");
+        assert_eq!(matched.terminal, second);
+        assert_eq!(matched.edge.from, AgentMetaState::Working);
+        assert_eq!(matched.edge.to, AgentMetaState::Blocked);
+        assert_eq!(matched.edge.via, EdgeSource::Push);
+        server.await.expect("scripted server task");
+    }
+
+    #[tokio::test]
+    async fn fleet_wait_times_out_when_multiple_agents_hold_stale_target_levels() {
+        let terminals = vec![ResourceId::local(7), ResourceId::local(8)];
+        let snapshot = fleet_snapshot(&terminals);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = UnixListener::bind(&socket).expect("bind scripted server");
+        let server = tokio::spawn(async move {
+            serve_every(listener, move || {
+                ScriptSpec::new()
+                    .state(snapshot.clone())
+                    .metadata(|_scope, key| (key == RESOURCE_AGENT_KEY).then(|| record("blocked")))
+                    .end(EndOfScript::ServeUntilDetach)
+            })
+            .await;
+        });
+
+        let result = wait_for_any_agent_state(
+            &socket,
+            &[AgentMetaState::Blocked],
+            Some(Duration::from_millis(180)),
+            Duration::from_millis(30),
+        )
+        .await
+        .expect("stale levels time out cleanly");
+        assert!(!result.satisfied());
+        assert_eq!(result.agents, 2);
+        assert_eq!(result.edges, 0);
+        assert!(result.polls >= 2, "the convergence floor ran: {result:?}");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn fleet_wait_reports_disconnect_during_initial_enumeration() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = UnixListener::bind(&socket).expect("bind scripted server");
+        let server = tokio::spawn(async move {
+            ScriptedServer::accept(
+                &listener,
+                ScriptSpec::new()
+                    .push(FrameKind::Event {
+                        terminal: None,
+                        event: phux_protocol::wire::frame::AgentEvent::Bell,
+                    })
+                    .end(EndOfScript::HangUp),
+            )
+            .await
+        });
+        let outcome = wait_for_any_agent_state(
+            &socket,
+            DEFAULT_UNTIL,
+            Some(Duration::from_secs(1)),
+            Duration::from_millis(20),
+        )
+        .await;
+        assert!(
+            matches!(
+                outcome,
+                Err(AgentWaitError::Transport(AttachError::Disconnected))
+            ),
+            "got {outcome:?}"
+        );
+        server.await.expect("scripted server task");
     }
 }

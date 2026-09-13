@@ -1,15 +1,16 @@
 ---
 audience: humans, contributors
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # Remote access
 
-**TL;DR.** Attach to a phux server on another machine with one command. The
-first run pairs the host; every later run is a direct encrypted QUIC dial
-with no ssh in the path. Manual overlay, enroll, and relay paths are below
-for when that command cannot.
+**TL;DR.** Attach to another machine with one command. The first run attempts
+to install and start its per-user phux service, pairs the host, and attaches.
+Later runs use direct encrypted QUIC when the host advertises it, with an SSH
+route as the automatic fallback and no phux account. Manual overlay, enroll,
+and relay paths are below for when that command cannot.
 
 ---
 
@@ -30,10 +31,16 @@ attaching. It walks four rungs, cheapest first
    This is the steady state and the only rung that runs once a host is known.
 2. **A pasted connect code** — `--code`, below. No ssh, no shell on the far
    end.
-3. **A one-time ssh pairing** — runs `phux pair --json` over your existing
-   ssh trust, registers what it mints, and dials. Once per host; rung 1
+3. **A one-time ssh bootstrap** — installs and starts the remote per-user
+   service, runs `phux pair --json` over your existing ssh trust, registers
+   what it mints, and dials. Once per host in the normal direct case; rung 1
    catches everything after.
 4. **A refusal** naming both remedies, when ssh cannot help.
+
+If a saved direct route later stops answering or its credentials no longer
+establish a connection, the interactive `--remote` form re-enters the SSH
+bootstrap once, refreshes the registry, and retries the attach. `--no-enroll`
+disables both first-time bootstrap and this repair path.
 
 `PORT` defaults to `8788`, the port a server auto-binds on its overlay
 address ([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
@@ -78,8 +85,9 @@ phux kill --remote me@mini ci
 
 `ls`, `new`, `kill`, `rename`, and `detach` accept it. Each one resolves the
 target through the same ladder as `phux --remote` and dials the same QUIC or
-WSS endpoint, so a host paired once for attach needs nothing more here (and a
-cold host pairs over ssh the first time, exactly as attach would). With
+WSS endpoint, so a host bootstrapped once for attach needs nothing more here
+(and a cold host starts and pairs over ssh the first time, exactly as attach
+would). With
 `--json` a cold host is refused instead of paired, with the remedies in the
 error's `remedy` field: pairing narrates on stderr and ssh may prompt, and a
 machine-readable call must do neither. Three limits are deliberate:
@@ -106,11 +114,11 @@ is refused with the command that pairs it. Details, including the
 `phux-remote` setting and relaunch behavior, are in
 [Cockpit's remote hosts](../clients/cockpit/docs/REMOTE_HOSTS.md).
 
-### The related way: `phux host enroll`
+### Explicit setup without attaching: `phux host enroll`
 
-`--remote` pairs a host; it deliberately does **not** install anything there.
-When you want the far end to keep a server running across logout and reboot,
-use the verb whose subject is that host:
+`--remote` performs the ordinary per-user service setup automatically. Use the
+explicit host verb when you want to prepare or repair a machine without
+attaching, select a role, or supply enrollment options:
 
 ```sh
 phux host enroll mini
@@ -143,6 +151,41 @@ the transport.
 
 The rest of this page is the manual path: what `enroll` automates, and what
 to do when it cannot reach the host.
+
+### Joining a satellite to this hub
+
+`--remote` and `phux host enroll` (default `--role remote`) attach *to*
+another machine. To have this machine *dial* another as a federation
+satellite, pass `--role satellite`:
+
+```sh
+phux host enroll --role satellite mini
+```
+
+One command, typically under a minute if `mini` already has phux and you
+can `ssh mini`:
+
+1. Confirms phux is on `mini` and installs its per-user service (launchd
+   on macOS, systemd `--user` on Linux) with a QUIC listener, so the
+   satellite survives logout and reboot.
+2. Mints a pairing token there and pins the certificate fingerprint.
+3. Registers `mini` in this machine's `[[satellites]]` registry. The token
+   is stored owner-only (`0600`) under the state dir; it never lands in
+   argv, `config.toml`, or logs.
+4. Ensures this machine's per-user service runs with `--hub`. If a unit
+   already exists, `--hub` is patched into its argv and existing
+   `--quic` / `--listen` / `--restore` / `--socket` arguments stay. A
+   naive `phux service install --hub` would drop them
+   ([ADR-0083](adr/0083-in-place-supervisor-unit-reconcile.md)).
+
+Afterwards this machine is the hub: host-qualified operations reach
+`mini` over the hub-and-spoke link. Join stays accountless QUIC on your
+overlay; there is no phux-operated relay on this path.
+
+If the local server is already running without `--hub`, the unit is
+updated and hub mode starts the next time that server starts — the
+running process is not restarted, so panes stay up. `--no-service` skips
+installing the *remote* unit only; the local `--hub` ensure still runs.
 
 ## Why an overlay
 

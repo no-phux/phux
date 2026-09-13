@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # Transport abstraction
@@ -78,9 +78,26 @@ seam changes.
   lane gets from quinn and the hub link applies to its own WS satellites.
   Client-originated because every RFC 6455 peer must answer a ping, so it
   needs nothing of the server.
-- **QUIC** (via `quinn`, ADR-0007) — for remote clients. Each connection
-  opens one bidirectional QUIC stream and frames the identical codec over it.
-  TLS 1.3 is intrinsic; a routable listener authenticates each attachment
+- **QUIC** (via `quinn`, ADR-0007) — for remote clients. When both peers
+  negotiate `QUIC_STREAMS` (advertised on QUIC only, [ADR-0115](../adr/0115-quic-stream-per-terminal.md)),
+  the connection is one **control** stream plus one client-opened bidi
+  stream per attached Terminal. Control carries HELLO, COMMAND, attach,
+  lifecycle, keepalive, and the bearer preamble where required. The
+  client opens every Terminal stream. **Routing:** the
+  client writes `STREAM_BIND` as the first bytes of each Terminal stream;
+  the server never opens one. That stream then carries only that
+  Terminal's `RESOURCE_OUTPUT`, `BOOTSTRAP_*`, `HISTORY_*`, `FRAME_ACK`,
+  and `INPUT_*`. A relay splices each consumer-opened stream onto a
+  fresh tunnel stream without parsing frames (`docs/spec/proto.md`
+  §4.1–§4.2). Hub satellite links still speak one frame stream — the
+  hub never opens `STREAM_BIND`. **Ordering:** frames on one QUIC stream
+  stay ordered (a keystroke stays ahead of its echo); frames on different
+  streams have no order and cannot head-of-line block each other. There
+  is no connection-wide frame order. Without the bit — and on UDS,
+  WebSocket, WebTransport, and SSH-stdio — the single-stream shape is
+  the whole contract. Normative mapping: `docs/spec/proto.md` §4.2 and
+  `docs/spec/L1.md` §4.9. TLS 1.3 is
+  intrinsic; a routable listener authenticates each attachment
   with a bearer-token preamble (ADR-0031 parity with the `wss://` path),
   reusing the same persisted self-signed cert and token store. Opt-in via
   `phux server --quic <HOST:PORT>`; connection migration and 0-RTT

@@ -439,9 +439,14 @@ re-running `phux service install` replaces it.
 ### Upgrades and version skew
 
 `phux update` asks the running server to re-exec in place (the listening
-fd is passed to the new image, so panes and scrollback survive). Package
-managers bypass that: `brew upgrade phux` swaps the binary while the old
-server keeps running, indefinitely.
+fd is passed to the new image, so panes and scrollback survive). Before
+that re-exec, the new image must pass `config check`; a broken `extends`
+layer aborts the upgrade and the old server keeps serving. The same
+command rewrites an installed service unit's binary path to this
+install, so a leftover Homebrew `ProgramArguments` cannot leave launchd
+pointing at a file that no longer exists. Package managers bypass the
+re-exec: `brew upgrade phux` swaps the binary while the old server keeps
+running, indefinitely.
 
 phux detects this. Each server records its version in the start history,
 so a client can see a mismatch the wire handshake cannot show it (that
@@ -645,8 +650,9 @@ and SSH-stdio. Satellites are phux servers on other machines. A server
 started with `--hub` dials enabled `[[satellites]]` and routes
 host-qualified operations over the same wire. Routes are hub-and-spoke;
 remote sessions and windows are not merged. Enrollment is
-[Remote access](./remote-access.md) (`phux service install --hub`,
-`phux host enroll`).
+[Remote access](./remote-access.md): `phux host enroll --role satellite HOST`
+installs the satellite's per-user service, registers it here, and enables
+local `--hub` without dropping listeners already baked into the unit.
 
 - **WebSocket/TCP:** `phux server --listen HOST:PORT`; loopback can be
   plaintext for browser/dev use, while routable binds auto-provision TLS

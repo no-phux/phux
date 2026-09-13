@@ -220,6 +220,19 @@ pub async fn get_state(socket: &Path) -> Result<StateView, AttachError> {
 /// refusal when the server rejects `GET_STATE`, or a protocol error when the
 /// matching response has an unexpected value.
 pub async fn get_state_on(conn: &mut Connection) -> Result<StateView, AttachError> {
+    let (view, _interleaved) = get_state_on_with_interleaved(conn).await?;
+    Ok(view)
+}
+
+/// Fetch server state while preserving every frame interleaved ahead of the
+/// reply.
+///
+/// Most callers need only [`StateView`], but a subscriber that registered
+/// before enumerating must replay lifecycle events from the subscribe/read
+/// window or it can miss a resource created after the snapshot cut.
+pub(crate) async fn get_state_on_with_interleaved(
+    conn: &mut Connection,
+) -> Result<(StateView, Vec<FrameKind>), AttachError> {
     const REQUEST_ID: u32 = 0;
     let (result, interleaved) = conn
         .request(
@@ -241,10 +254,11 @@ pub async fn get_state_on(conn: &mut Connection) -> Result<StateView, AttachErro
             let view = StateView::new(snapshot, degradation);
             // The features tell a reader what an absent field means (an
             // empty `hosts` is complete only under HOST_SESSIONS).
-            Ok(match conn.negotiated_bootstrap() {
+            let view = match conn.negotiated_bootstrap() {
                 Some(negotiated) => view.with_server_features(negotiated.server_features),
                 None => view,
-            })
+            };
+            Ok((view, interleaved))
         }
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
         other => Err(AttachError::Protocol(crate::explain::explain_unexpected(

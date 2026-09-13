@@ -286,6 +286,7 @@ pub(crate) async fn run_attach_once_rec(
 )]
 async fn run_attach_connection_rec(
     connection: Connection,
+    dial: &Dial,
     target: AttachTarget,
     predict_cfg: PredictiveConfig,
     rec: Option<RecorderHandle>,
@@ -296,6 +297,7 @@ async fn run_attach_connection_rec(
         Some(rec) => {
             attach::run_recorded_connection(
                 connection,
+                dial,
                 target,
                 predict_cfg,
                 rec,
@@ -307,6 +309,7 @@ async fn run_attach_connection_rec(
         None => {
             attach::run_with_predict_connection(
                 connection,
+                dial,
                 target,
                 predict_cfg,
                 initial_notice,
@@ -380,6 +383,7 @@ async fn attach_default_with_connection_fallback(
 ) -> Result<AttachEnd, AttachError> {
     match run_attach_connection_rec(
         connection,
+        dial,
         AttachTarget::Last,
         predict_cfg,
         rec.map(Rc::clone),
@@ -442,6 +446,7 @@ impl AttachAttempt<'_> {
             (Some(connection), None) => {
                 run_attach_connection_rec(
                     *connection,
+                    self.dial,
                     self.target.clone(),
                     self.predict_cfg,
                     self.recorder.map(Rc::clone),
@@ -873,12 +878,29 @@ async fn probe_connectability(dial: &Dial) -> ProbeAttempt {
     }
 }
 
-/// Block on the tokio current-thread runtime, drive the attach loop,
-/// translate the result into a process exit code.
-///
-/// If the socket isn't there (or refuses connections), this also
-/// attempts a best-effort auto-spawn of `phux server` before
-/// connecting — see [`ensure_server`].
+/// Result of a registered remote attach, including whether its saved route
+/// failed early enough that re-running the SSH bootstrap can repair it.
+pub(crate) struct RemoteAttachOutcome {
+    pub(crate) code: ExitCode,
+    pub(crate) bootstrap_recommended: bool,
+}
+
+impl RemoteAttachOutcome {
+    const fn terminal(code: ExitCode) -> Self {
+        Self {
+            code,
+            bootstrap_recommended: false,
+        }
+    }
+
+    const fn repairable(code: ExitCode) -> Self {
+        Self {
+            code,
+            bootstrap_recommended: true,
+        }
+    }
+}
+
 /// Attach through a registered `[[remote]]` entry (ADR-0055).
 ///
 /// The registry supplies the endpoint, the pin, and the token, so the
@@ -894,11 +916,22 @@ pub(crate) fn run_attach_remote(
     session: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
+    run_attach_remote_outcome(entry, session, rec).code
+}
+
+/// [`run_attach_remote`] with the early direct-route failure classification
+/// used by `phux --remote` to repair a cold registered host over SSH. A named
+/// registry attach (`phux attach NAME`) keeps the historical one-shot behavior.
+pub(crate) fn run_attach_remote_outcome(
+    entry: &RemoteEntry,
+    session: Option<String>,
+    rec: Option<&RecordSpec>,
+) -> RemoteAttachOutcome {
     let endpoint = match Endpoint::parse(&entry.endpoint) {
         Ok(endpoint) => endpoint,
         Err(err) => {
             eprintln!("phux: remote {:?}: {err}", entry.name);
-            return ExitCode::FAILURE;
+            return RemoteAttachOutcome::repairable(ExitCode::FAILURE);
         }
     };
     let session = session.or_else(|| entry.session.clone());
@@ -907,12 +940,12 @@ pub(crate) fn run_attach_remote(
         Ok(token) => token,
         Err(err) => {
             eprintln!("phux: remote {:?}: {err}", entry.name);
-            return ExitCode::FAILURE;
+            return RemoteAttachOutcome::repairable(ExitCode::FAILURE);
         }
     };
 
     match endpoint {
-        Endpoint::Quic(target) => run_attach_quic(
+        Endpoint::Quic(target) => run_attach_quic_outcome(
             session,
             target,
             token,
@@ -920,7 +953,7 @@ pub(crate) fn run_attach_remote(
             None,
             rec,
         ),
-        Endpoint::Ws(url) => run_attach_ws(
+        Endpoint::Ws(url) => run_attach_ws_outcome(
             session,
             url,
             token,
@@ -931,7 +964,9 @@ pub(crate) fn run_attach_remote(
         // `exec`s into ssh, so this process — and any recorder it holds —
         // ceases to exist here. Recording a `ssh://` remote means running
         // `phux --rec` on the far side.
-        Endpoint::Ssh(host) => run_attach_over_ssh(&host, session.as_deref()),
+        Endpoint::Ssh(host) => {
+            RemoteAttachOutcome::terminal(run_attach_over_ssh(&host, session.as_deref()))
+        }
     }
 }
 
@@ -966,6 +1001,12 @@ pub(crate) fn run_attach(session: Option<String>, socket: Option<PathBuf>) -> Ex
     run_attach_rec(session, socket, None)
 }
 
+/// Block on the tokio current-thread runtime, drive the attach loop, and
+/// translate the result into a process exit code.
+///
+/// If the socket isn't there (or refuses connections), this also attempts a
+/// best-effort auto-spawn of `phux server` before connecting — see
+/// [`ensure_server`].
 pub(crate) fn run_attach_rec(
     session: Option<String>,
     socket: Option<PathBuf>,
@@ -1202,6 +1243,21 @@ pub(crate) fn run_attach_quic(
     server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
+    run_attach_quic_outcome(session, target, token, cert_fingerprint, server_name, rec).code
+}
+
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "the owned connection inputs move into the Dial on the successful path"
+)]
+fn run_attach_quic_outcome(
+    session: Option<String>,
+    target: String,
+    token: Option<String>,
+    cert_fingerprint: Option<String>,
+    server_name: Option<String>,
+    rec: Option<&RecordSpec>,
+) -> RemoteAttachOutcome {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1209,14 +1265,16 @@ pub(crate) fn run_attach_quic(
         Ok(rt) => rt,
         Err(err) => {
             eprintln!("failed to build runtime: {err}");
-            return ExitCode::FAILURE;
+            return RemoteAttachOutcome::terminal(ExitCode::FAILURE);
         }
     };
 
     let DialPlan { dial, loopback } =
         match plan_quic_dial(&rt, &target, token, cert_fingerprint, server_name) {
             Ok(plan) => plan,
-            Err(refusal) => return refusal.report_for_attach(),
+            Err(refusal) => {
+                return RemoteAttachOutcome::repairable(refusal.report_for_attach());
+            }
         };
 
     let predict_cfg = predictive_config_for(&dial);
@@ -1236,7 +1294,8 @@ pub(crate) fn run_attach_quic(
         rec,
     ));
     finalize_recording(rec);
-    match result {
+    let bootstrap_recommended = remote_bootstrap_recommended(&result);
+    let code = match result {
         Ok(end) => {
             report_attach_end(end);
             ExitCode::SUCCESS
@@ -1251,6 +1310,10 @@ pub(crate) fn run_attach_quic(
             }
             ExitCode::FAILURE
         }
+    };
+    RemoteAttachOutcome {
+        code,
+        bootstrap_recommended,
     }
 }
 
@@ -1434,10 +1497,23 @@ pub(crate) fn run_attach_ws(
     tls_server_name: Option<String>,
     rec: Option<&RecordSpec>,
 ) -> ExitCode {
+    run_attach_ws_outcome(session, url, token, cert_fingerprint, tls_server_name, rec).code
+}
+
+fn run_attach_ws_outcome(
+    session: Option<String>,
+    url: String,
+    token: Option<String>,
+    cert_fingerprint: Option<String>,
+    tls_server_name: Option<String>,
+    rec: Option<&RecordSpec>,
+) -> RemoteAttachOutcome {
     let DialPlan { dial, loopback } =
         match plan_ws_dial(url, token, cert_fingerprint, tls_server_name) {
             Ok(plan) => plan,
-            Err(refusal) => return refusal.report_for_attach(),
+            Err(refusal) => {
+                return RemoteAttachOutcome::repairable(refusal.report_for_attach());
+            }
         };
 
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -1447,7 +1523,7 @@ pub(crate) fn run_attach_ws(
         Ok(rt) => rt,
         Err(err) => {
             eprintln!("failed to build runtime: {err}");
-            return ExitCode::FAILURE;
+            return RemoteAttachOutcome::terminal(ExitCode::FAILURE);
         }
     };
 
@@ -1574,9 +1650,14 @@ fn dial_leaves_the_machine(dial: &Dial) -> bool {
     }
 }
 
-/// Turn a finished WebSocket attach into its exit code, reporting the ending.
-fn report_ws_attach_outcome(result: Result<AttachEnd, AttachError>, loopback: bool) -> ExitCode {
-    match result {
+/// Turn a finished WebSocket attach into its exit code and repair hint,
+/// reporting the ending.
+fn report_ws_attach_outcome(
+    result: Result<AttachEnd, AttachError>,
+    loopback: bool,
+) -> RemoteAttachOutcome {
+    let bootstrap_recommended = remote_bootstrap_recommended(&result);
+    let code = match result {
         Ok(end) => {
             report_attach_end(end);
             ExitCode::SUCCESS
@@ -1591,7 +1672,22 @@ fn report_ws_attach_outcome(result: Result<AttachEnd, AttachError>, loopback: bo
             }
             ExitCode::FAILURE
         }
+    };
+    RemoteAttachOutcome {
+        code,
+        bootstrap_recommended,
     }
+}
+
+/// Only failures establishing the saved transport authorize an SSH repair.
+/// Once an attach reaches server semantics—or succeeds and later disconnects—
+/// replacing credentials and service state would be both surprising and
+/// ineffective.
+const fn remote_bootstrap_recommended(result: &Result<AttachEnd, AttachError>) -> bool {
+    matches!(
+        result,
+        Err(AttachError::Connect(_) | AttachError::Unreachable(_))
+    )
 }
 
 #[cfg(test)]
@@ -2173,6 +2269,26 @@ mod tests {
 
         let io = AttachError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
         assert_eq!(reachability_hint(&io, false), None);
+    }
+
+    #[test]
+    fn remote_bootstrap_is_limited_to_early_transport_failures() {
+        assert!(remote_bootstrap_recommended(&Err(AttachError::Connect(
+            "bad credential".to_owned()
+        ))));
+        assert!(remote_bootstrap_recommended(&Err(
+            AttachError::Unreachable("no route".to_owned())
+        )));
+
+        assert!(!remote_bootstrap_recommended(&Err(AttachError::Refused(
+            "no such session".to_owned()
+        ))));
+        assert!(!remote_bootstrap_recommended(&Err(
+            AttachError::Disconnected
+        )));
+        assert!(!remote_bootstrap_recommended(&Ok(AttachEnd::Detached {
+            reason: None,
+        })));
     }
 
     /// `--quic` targets split on the last `:`, so IPv4 literals, bracketed

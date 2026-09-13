@@ -155,6 +155,13 @@ pub const REGISTRY: &[ActionSpec] = &[
         args: &[("direction", ArgValue::Str("vertical"))],
     },
     ActionSpec {
+        name: "move-pane",
+        category: Category::Pane,
+        description: "Move the focused pane beside another pane…",
+        params: "`target` (local Terminal id; picker-supplied)",
+        args: &[],
+    },
+    ActionSpec {
         name: "kill-pane",
         category: Category::Pane,
         description: "Close the focused pane",
@@ -321,7 +328,7 @@ pub const REGISTRY: &[ActionSpec] = &[
     ActionSpec {
         name: "getting-started",
         category: Category::View,
-        description: "Getting started: detach, return, and command discovery",
+        description: "Getting started: detach, return, the Agents list, and command discovery",
         params: "",
         args: &[],
     },

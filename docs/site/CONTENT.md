@@ -23,6 +23,14 @@ the one thing only phux offers is humans and agents reading and writing the
 *same* terminal objects at the same time, because a terminal is addressable on a
 wire instead of trapped behind a screen.
 
+Two facts that sit on that wedge, stated affirmatively, never as a comparison
+table:
+
+- **Blocked is a fact when the harness emits.** `AgentSession` is a producer-fed
+  stream. Screen detection is compatibility for harnesses that do not emit yet.
+- **Join a machine with no account.** `phux --remote` pairs once; later dials
+  are direct QUIC. The join is yours. There is no phux Cloud in the hero.
+
 - The **passthrough is the proof.** (Demoable, true today — the live island.)
 - The **wire is the product.** (Spawn / observe / drive a terminal as an object;
   the tui is the on-ramp, not the essence.)
@@ -100,6 +108,9 @@ This is why the project deserves to exist.
   as WASM in a Durable Object: no OS, no processes, nothing to break out of.)
 - ❌ Capitalize the wordmark. It is always `phux`. The macOS app bundle is
   `Phux Cockpit` because that is the filename; prose still says Cockpit.
+- ❌ A vs-herdr comparison table, a herdr.dev visual clone, or "21 agents
+  detected out of the box." Detection is compatibility. Emit is the product.
+- ❌ A phux account, waitlist, or hosted relay as the way machines join.
 
 ---
 
@@ -118,8 +129,9 @@ Docs / Apps / Agents / GitHub.
 2. **Fleet inbox demo** — one short, replayable sequence: an agent works,
    asks for approval, and its exact terminal rises into the inbox. The blocked
    state remains legible without motion.
-3. **Features** — four rows, phux's own ladder: panes are a view, same
-   objects / many consumers, co-presence, bytes stay bytes. Each row
+3. **Features** — five rows, phux's own ladder: panes are a view, same
+   objects / many consumers, co-presence (blocked is a fact when the
+   harness emits), bytes stay bytes, your machines / no account. Each row
    links into docs.
 4. **Install** — the closer. CLI and Cockpit copy-paste commands, then
    Homebrew and the full install guide. Checksums and platform notes stay

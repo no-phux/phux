@@ -29,7 +29,7 @@ use super::terminal::{RawModeGuard, exit_after_detach, install_panic_hook_once};
 
 enum AttachStart<'a> {
     Dial(&'a Dial),
-    Connection(Box<Connection>),
+    Connection(Box<Connection>, &'a Dial),
 }
 
 /// Production attach: wrap stdout in the off-loop [`StdoutSink`](crate::attach::stdout_writer)
@@ -173,19 +173,21 @@ pub async fn run_with_predict_dial(
 /// This transfers `connection` into the production driver, avoiding a second
 /// dial after a successful reconnect probe. The driver still sends ATTACH and
 /// waits for ATTACHED before entering raw mode.
+/// `dial` is its original route, retained for auxiliary control operations.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 pub async fn run_with_predict_connection(
     connection: Connection,
+    dial: &Dial,
     target: AttachTarget,
     predict: PredictiveConfig,
     initial_notice: Option<Notice>,
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
     run_from_start(
-        AttachStart::Connection(Box::new(connection)),
+        AttachStart::Connection(Box::new(connection), dial),
         target,
         predict,
         None,
@@ -229,12 +231,14 @@ pub async fn run_recorded_dial(
 ///
 /// The owned connection comes from a successful probe and is consumed by the
 /// same production driver as [`run_recorded_dial`].
+/// `dial` is its original route, retained for auxiliary control operations.
 #[allow(
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
 pub async fn run_recorded_connection(
     connection: Connection,
+    dial: &Dial,
     target: AttachTarget,
     predict: PredictiveConfig,
     rec: Rc<RefCell<SessionRecorder>>,
@@ -242,7 +246,7 @@ pub async fn run_recorded_connection(
     input_replay: Option<Rc<RefCell<crate::attach::input_replay::InputReplayJournal>>>,
 ) -> Result<AttachEnd, AttachError> {
     run_from_start(
-        AttachStart::Connection(Box::new(connection)),
+        AttachStart::Connection(Box::new(connection), dial),
         target,
         predict,
         Some(rec),
@@ -331,7 +335,7 @@ async fn handshake(
 ) -> Result<(Connection, FrameKind, OutputMode), AttachError> {
     let dial = match start {
         AttachStart::Dial(dial) => dial,
-        AttachStart::Connection(conn) => {
+        AttachStart::Connection(conn, _) => {
             let mut conn = *conn;
             let output_mode = negotiated_output_mode(&conn)?;
             let attach_id = send_attach(&mut conn, target).await?;
@@ -476,6 +480,11 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // wants for "why was the first paint slow." Lifecycle-rate, so info.
     phux_client::perf::mark_started();
     let handshake_span = tracing::info_span!("attach_handshake", ?target);
+    // Auxiliary control operations (such as pane moves) retain the original
+    // route even when the attach itself reuses a negotiated connection.
+    let dial = match &start {
+        AttachStart::Dial(dial) | AttachStart::Connection(_, dial) => *dial,
+    };
     let (mut conn, attached, output_mode) = handshake(start, target, probe_default_colors)
         .instrument(handshake_span)
         .await?;
@@ -561,6 +570,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
         let claim = onboarding_claim.take();
         let exit = match main_loop(
             &mut conn,
+            dial,
             attached,
             predict,
             out,

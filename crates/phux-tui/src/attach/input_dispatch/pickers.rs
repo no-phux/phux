@@ -11,11 +11,85 @@
 
 use std::collections::HashMap;
 
+use phux_protocol::ResourceId;
+use phux_protocol::ids::SessionId;
+
 use crate::layout::Workspace;
 use crate::render::overlay::SelectItem;
 
 use super::ctx::DispatchCtx;
 use super::effects::ActionEffects;
+
+/// Build exact local destinations for moving the focused pane.
+///
+/// Only topology the TUI actually has is offered: the attached workspace and
+/// foreign workspaces with a complete cached layout. The focused source,
+/// satellite leaves, and foreign sessions without a layout cache are omitted.
+/// Each row identifies session, window, pane ordinal, and stable local id.
+pub(super) fn move_pane_picker_items(
+    source: &ResourceId,
+    workspace: &Workspace,
+    session_name: &str,
+    focused_session: Option<SessionId>,
+    sessions: &[phux_protocol::wire::info::SessionInfo],
+    foreign_layouts: &HashMap<SessionId, Workspace>,
+) -> Vec<SelectItem> {
+    let mut rows = Vec::new();
+    append_move_destinations(&mut rows, source, session_name, workspace);
+
+    let mut foreign: Vec<_> = sessions
+        .iter()
+        .filter(|session| Some(session.id) != focused_session)
+        .filter_map(|session| {
+            foreign_layouts
+                .get(&session.id)
+                .map(|workspace| (session.name.as_str(), workspace))
+        })
+        .collect();
+    foreign.sort_by_key(|(name, _)| *name);
+    for (name, workspace) in foreign {
+        append_move_destinations(&mut rows, source, name, workspace);
+    }
+    rows
+}
+
+fn append_move_destinations(
+    rows: &mut Vec<SelectItem>,
+    source: &ResourceId,
+    session_name: &str,
+    workspace: &Workspace,
+) {
+    for (window_index, window) in workspace.windows.iter().enumerate() {
+        let Some(tree) = &window.state.tree else {
+            continue;
+        };
+        for (pane_index, pane) in crate::layout::leaves(tree).into_iter().enumerate() {
+            let ResourceId::Local { id } = pane else {
+                continue;
+            };
+            let pane = ResourceId::Local { id };
+            if &pane == source {
+                continue;
+            }
+            let mut args = std::collections::BTreeMap::new();
+            args.insert("target".to_owned(), toml::Value::Integer(i64::from(id)));
+            rows.push(
+                SelectItem::new(
+                    format!("@{id}"),
+                    phux_config::keybind::ResolvedAction {
+                        action: "move-pane".to_owned(),
+                        args,
+                    },
+                )
+                .secondary(format!(
+                    "{session_name} · {window_index}:{} · pane {}",
+                    window.name,
+                    pane_index + 1
+                )),
+            );
+        }
+    }
+}
 
 /// Build the `<leader> w` grouped window picker's rows (phux-4li.19 / nav).
 ///

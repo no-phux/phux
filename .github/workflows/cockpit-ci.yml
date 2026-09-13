@@ -73,9 +73,12 @@ jobs:
       # Zig compilation dominates the rest of the job (the materialized SDK
       # source plus two build graphs and a production build). Restore on every
       # run; save only from main, mirroring the rust-cache policy. Keyed on
-      # the build manifest and Zig version, rotating by revision so immutable
-      # cache entries can accumulate new compilation work after source changes.
-      # The stable prefix restores the most recent compatible base.
+      # the build manifest and Zig version — not the commit SHA. A SHA suffix
+      # made every main push a unique immutable entry that never exact-hit
+      # and accumulated gigabytes per day (phux-6khi). Zig's cache is
+      # content-addressed, so a stable key still hits unchanged units after
+      # source-only commits. The prefix restores the most recent compatible
+      # base when the manifest hash rotates.
       # Cache the shared Zig package directory and checkout-owned build caches.
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: zig-cache
@@ -84,7 +87,7 @@ jobs:
             ~/.cache/zig
             clients/cockpit/.zig-cache
             clients/cockpit/.zig-global-cache
-          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
+          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
           restore-keys: |
             mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
 
@@ -172,4 +175,4 @@ jobs:
             ~/.cache/zig
             clients/cockpit/.zig-cache
             clients/cockpit/.zig-global-cache
-          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
+          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}

@@ -487,18 +487,36 @@ fn resume_args(blob_fd: RawFd, socket_path: &Path, flags: RuntimeFlags) -> Vec<O
     args
 }
 
-/// Validate the on-disk binary runs by probing `--version`.
+/// Validate the replacement image can run *and* load this host's config.
+///
+/// `--version` only proves the file is executable. Config is loaded after
+/// `execve`, which is irreversible: a missing `extends` layer then takes
+/// the live server down (phux-69pq.12). `config check` uses the same
+/// loader `phux server` does, so a failure here leaves the old image
+/// serving.
 fn validate_binary(exe: &Path) -> Result<(), UpgradeError> {
-    let output = Command::new(exe).arg("--version").output()?;
+    probe_binary(exe, &["--version"])?;
+    probe_binary(exe, &["config", "check"])?;
+    Ok(())
+}
+
+fn probe_binary(exe: &Path, args: &[&str]) -> Result<(), UpgradeError> {
+    let output = Command::new(exe).args(args).output()?;
     if output.status.success() {
-        Ok(())
-    } else {
-        Err(UpgradeError::Validation(format!(
-            "`{} --version` exited with {}",
-            exe.display(),
-            output.status
-        )))
+        return Ok(());
     }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let detail = stderr.trim();
+    Err(UpgradeError::Validation(if detail.is_empty() {
+        format!(
+            "`{} {}` exited with {}",
+            exe.display(),
+            args.join(" "),
+            output.status
+        )
+    } else {
+        format!("`{} {}` failed: {detail}", exe.display(), args.join(" "))
+    }))
 }
 
 #[cfg(test)]
@@ -810,6 +828,54 @@ mod tests {
             validate_binary(&path).is_err(),
             "the replaced filesystem path now names a different image"
         );
+    }
+
+    fn write_stub_phux(dir: &Path, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let path = dir.join("phux");
+        std::fs::write(&path, body).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    #[test]
+    fn validate_binary_refuses_when_config_check_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_stub_phux(
+            dir.path(),
+            "#!/bin/sh\n\
+             case \"$1\" in\n\
+             --version) echo phux 0; exit 0 ;;\n\
+             config) echo 'extends layer missing' >&2; exit 1 ;;\n\
+             *) exit 0 ;;\n\
+             esac\n",
+        );
+        let err = validate_binary(&path).expect_err("a broken config must abort the upgrade");
+        assert!(matches!(err, UpgradeError::Validation(_)), "got {err:?}");
+        let message = err.to_string();
+        assert!(
+            message.contains("config check"),
+            "validation error must name the probe: {message}"
+        );
+        assert!(
+            message.contains("extends layer missing"),
+            "validation error must carry the loader diagnostic: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_binary_accepts_when_version_and_config_check_succeed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_stub_phux(
+            dir.path(),
+            "#!/bin/sh\n\
+             case \"$1\" in\n\
+             --version|config) exit 0 ;;\n\
+             *) exit 1 ;;\n\
+             esac\n",
+        );
+        validate_binary(&path).expect("a coherent replacement image must pass");
     }
 
     #[tokio::test]

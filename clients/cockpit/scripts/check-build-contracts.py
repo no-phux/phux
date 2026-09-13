@@ -50,10 +50,13 @@ class BuildContracts(unittest.TestCase):
             self.assertIn("            ~/.cache/zig\n", step)
             self.assertIn("            clients/cockpit/.zig-cache\n", step)
 
-    def test_cache_rotates_with_stable_fallback(self):
+    def test_cache_is_reusable_with_stable_fallback(self):
+        # A commit-SHA suffix makes every main push a unique immutable entry
+        # that never exact-hits (phux-6khi). Manifest hash rotates the key;
+        # the prefix restores the latest compatible base.
         restore, save = self.cache_steps()
         key = re.search(r"(?m)^          key: (.+)$", restore).group(1)
-        self.assertIn("${{ github.sha }}", key)
+        self.assertNotIn("${{ github.sha }}", key)
         self.assertIn("${{ runner.os }}", key)
         self.assertIn("${{ runner.arch }}", key)
         self.assertTrue(key.startswith("mini-v1-cockpit-zig-"))

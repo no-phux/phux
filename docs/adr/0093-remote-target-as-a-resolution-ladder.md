@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-22
+last-reviewed: 2026-09-12
 ---
 
 # 0093 — `--remote user@host` is a resolution ladder, not a new transport
@@ -10,8 +10,8 @@ last-reviewed: 2026-08-22
 spelling operators already know from ssh. It adds no transport, no wire
 change, and no trust model: it resolves a target to a `[[remote]]` entry —
 from the registry, from a pasted `phux://connect` code, or from a one-time
-ssh pairing — and hands it to the existing dial. `user@` is a label for
-pairing and lookup, never a wire identity.
+ssh service bootstrap and pairing — and hands it to the existing dial. `user@`
+is a label for pairing and lookup, never a wire identity.
 
 Status: Accepted
 Date: 2026-08-22
@@ -60,26 +60,36 @@ is the behavior a registered host already had.
 1. **Registered.** A matching `[[remote]]` entry — matched by the exact
    `user@host` spelling, then by bare host, then by endpoint host. The third
    and second matches are what make a host enrolled as `mini` answer to
-   `--remote me@mini`. This is the steady state and involves no ssh.
+   `--remote me@mini`. This is the steady state and involves no ssh when the
+   direct attach succeeds. An early transport or credential failure enters
+   rung 3 once to repair a cold or stale host; a semantic server refusal does
+   not.
 2. **A pasted connect code.** `--code 'phux://connect?…'` — byte-identical to
    what `phux pair --qr` renders for a phone. Registers the host from the
    link, then dials. The laptop equivalent of scanning the QR, and the
    fully ssh-free cold path.
-3. **A one-time ssh pairing.** No entry, no code: run `phux pair --json` on
-   the far end over the operator's existing ssh trust, register the result,
-   dial. Rung 1 catches every later invocation, so ssh appears exactly once
-   per host and never again.
+3. **A one-time ssh bootstrap.** No entry, no code: install and start the far
+   end's per-user service, run `phux pair --json` over the operator's existing
+   ssh trust, register the result, and dial. Rung 1 catches every later
+   invocation in the normal direct case, so ssh then leaves the path. A host
+   without a usable direct endpoint remains on the registered SSH fallback.
 4. **A refusal that names both remedies.** When ssh cannot help, print the
    `--code` form and the `phux host enroll` form rather than a bare failure.
 
-### 3. Rung 3 pairs; it does not provision
+### 3. Rung 3 provisions the per-user service before pairing
 
-`phux host enroll` installs a launchd/systemd unit on the far end.
-`--remote`'s ssh rung deliberately passes `install_service: false` and runs
-one command there: `phux pair --json`. An attach that silently leaves a
-supervised service behind on another machine is a side effect far past what
-the request implies, and it is not reversible by re-running the attach. The
-always-on setup keeps its own verb, and the success message names it.
+An attach to a cold remote machine must produce something that can answer the
+attach. The ssh rung therefore reuses `phux host enroll`'s idempotent per-user
+launchd/systemd setup before pairing. It announces the remote change before
+running it. If the host cannot install a supported service, the ladder records
+an `ssh://` route and the ordinary remote `phux attach` auto-spawns an
+unsupervised server instead of registering a direct endpoint with no listener.
+`--no-enroll` remains the explicit no-ssh/no-provisioning boundary; a pasted
+connect code likewise never changes the remote host.
+
+The successful direct connection is the attach itself, not a discarded health
+probe. This keeps the steady-state path at its existing handshake cost. Only an
+early direct-route failure invokes SSH and retries.
 
 ### 4. `user@` is a label, not a wire identity
 
@@ -119,17 +129,18 @@ where `--code` and `--no-enroll` live.
   pin, and token in one string, and phux-mobile already parses it. Making
   `--code` accept it costs one parser (pinned to its builder by a round-trip
   test) and gives laptops the flow phones have had since ADR-0031.
-- **Naming the ssh rung's blast radius is the difference between a
-  convenience and a surprise.** Pairing grants no authority ssh did not
-  already grant — ADR-0055's argument, unchanged. Installing a service does,
-  which is why that stays behind a verb whose subject is the host.
+- **The attach intent includes making the remote usable.** Pairing a host but
+  leaving no server to answer creates a broken one-command path and forces the
+  operator to discover a second setup verb. The service is per-user,
+  idempotently installed through the same reviewed path as `host enroll`, and
+  announced before it runs; `--no-enroll` preserves the narrower boundary.
 
 ## Tradeoffs
 
-- **A cold `--remote` shells out to ssh by default.** Mitigated by
-  `--no-enroll`, by printing what it is doing before it does it, and by the
-  rung doing strictly less than `phux host enroll`. An operator who wants
-  zero implicit ssh has one flag.
+- **A cold `--remote` shells out to ssh and installs a per-user service by
+  default.** Mitigated by `--no-enroll`, by printing what it is doing before
+  it does it, and by using the idempotent `phux service install` path. An
+  operator who wants zero implicit ssh or remote provisioning has one flag.
 - **`--remote` writes config as a side effect of an attach.** Deliberate —
   an unremembered pairing would make every attach cost an ssh round trip —
   but it does mean an attach can change `config.toml`. The write is the same
@@ -163,8 +174,10 @@ where `--code` and `--no-enroll` live.
 - **Make `--remote` a global flag.** Rejected for the reason ADR-0065 kept
   `--json` verb-scoped: it would advertise itself on ~40 verbs that cannot
   honor it. Only the attach paths take it.
-- **Auto-install the service on the ssh rung** (i.e. reuse `phux host
-  enroll` wholesale). Rejected on blast radius; see Decision 3.
+- **Pair without starting a service.** Rejected after product use showed that
+  it creates a registered host which still cannot answer the attach. The
+  explicit `--no-enroll` boundary is clearer than making the default path stop
+  halfway.
 
 ## Related
 

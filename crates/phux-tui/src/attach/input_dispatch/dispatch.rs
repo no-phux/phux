@@ -44,6 +44,7 @@ fn edits_workspace(action: &str) -> bool {
     matches!(
         action,
         "split-pane"
+            | "move-pane"
             | "new-window"
             | "kill-pane"
             | "kill-window"

@@ -192,11 +192,11 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_watch",
-            "description": "Collect server-pushed events (command_started/finished, title_changed, asked, bell, pane_spawned/closed, dirty, idle) plus agent_state changes for a pane, or events alone server-wide. Bounded one-shot: returns after max_events or timeout_secs. An agent_state item reports one change to a pane's phux.agent/v1 record — name, kind, session, the new state, effective attention, and `from` when this call already saw a prior record; a present-and-null `state` is the tombstone (the record went away). agent_state items appear ONLY when `target` names a pane: the metadata subscription addresses one Terminal and L3 has no wildcard scope, so a server-wide watch carries events only. Observing an agent reach a state here is not a completion gate — see phux_agent_wait.",
+            "description": "Collect server-pushed events (command_started/finished, title_changed, asked, bell, pane_spawned/closed, dirty, idle) plus agent_state changes. Omit target for every local Terminal in the fleet; the client enumerates and follows resource lifecycle events while installing one metadata subscription per Terminal. Bounded one-shot: returns after max_events or timeout_secs. An agent_state item reports one change to a pane's phux.agent/v1 record — name, kind, session, the new state, effective attention, and `from` when this call already saw a prior record; a present-and-null `state` is the tombstone (the record went away). Observing an agent reach a state here is not a completion gate — see phux_agent_wait.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "target": { "type": "string", "description": "Pane selector to watch. Omit to watch server-wide events (no agent_state items)." },
+                    "target": { "type": "string", "description": "Pane selector to watch. Omit to watch server-wide events and every local Terminal's agent_state changes." },
                     "max_events": { "type": "number", "description": "Return after collecting this many items, agent_state included. Omit for no count cap." },
                     "timeout_secs": { "type": "number", "description": "Return after this many seconds regardless of count. Strongly recommended — without it the call blocks until the server exits." },
                     "socket": { "type": "string" }
@@ -569,9 +569,8 @@ async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
 /// where it happened relative to the surrounding events.
 async fn phux_watch(args: &Value) -> Result<Value, ToolError> {
     let socket = socket::resolve(str_arg(args, "socket"));
-    // `target` is optional: absent ⇒ server-wide subscription, which carries
-    // no agent-state items (`SUBSCRIBE_METADATA` names one Terminal and L3
-    // has no wildcard scope).
+    // `target` is optional: absent means the fleet-wide enumerate-and-follow
+    // stream, including one metadata subscription per local Terminal.
     let terminal = match str_arg(args, "target") {
         None => None,
         Some(raw) => {
@@ -1245,8 +1244,8 @@ mod tests {
         let description = watch["description"].as_str().expect("a description");
         assert!(description.contains("agent_state"), "{description}");
         assert!(
-            description.contains("ONLY when `target` names a pane"),
-            "a server-wide watch carries no agent_state; that must be stated: {description}",
+            description.contains("every local Terminal in the fleet"),
+            "a server-wide watch carries fleet agent_state; that must be stated: {description}",
         );
     }
 

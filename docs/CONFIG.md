@@ -414,7 +414,11 @@ A bundled name `n` resolves to `<dir>/n/n.toml` across, in order:
 `$PHUX_DISTROS_DIR` (explicit override), `$XDG_DATA_HOME/phux/distros`
 (default `~/.local/share/phux/distros`), and — as a dev-build convenience
 — the repo checkout's `distros/` directory. An unknown name lists every
-path that was checked.
+path that was checked. `--distro herdr` still resolves as an alias of
+`starter`. Configs that already `extends` `distros/herdr/herdr.toml`
+keep loading: the path remains as a stub, and the loader rewrites a
+missing herdr file to `distros/starter/starter.toml` when that file
+exists.
 
 ---
 

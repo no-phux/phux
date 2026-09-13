@@ -9,7 +9,7 @@ export const SITE = {
   docsUrl: "https://docs.phux.sh",
   tagline: "you and your agents share the same terminals",
   description:
-    "phux is a terminal multiplexer whose panes are a view. Each terminal is an addressable object on a wire: you, Cockpit, a script, or an agent attach to the same live emulator.",
+    "phux is a terminal multiplexer whose panes are a view. You, Cockpit, a script, or an agent attach to the same live terminal. When a harness emits, blocked is a fact on that wire. Join another machine with no phux account.",
   github: "https://github.com/no-phux/phux",
   // One switch for the visual system. Mode tokens live in global.css.
   designMode: "terminal",

@@ -50,6 +50,7 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
             "split-pane",
             &[("direction", "horizontal")],
         ),
+        row(keybindings, "Move beside…", "move-pane", &[]),
         row(
             keybindings,
             if zoomed { "Unzoom" } else { "Zoom" },

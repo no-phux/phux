@@ -52,11 +52,15 @@ jobs:
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
         with:
           version: 0.16.0
+          # The action's default cache keys each save on run_id, so a
+          # restore never hits and every job writes up to 2 GiB
+          # (phux-6khi). The actions/cache step below is the reusable one.
+          use-cache: false
       # Same caches as cockpit-ci.yml: the FFI build shares cockpit-ci's
       # macOS `mini-v1-cockpit-ffi` rust-cache (same profile, same fleet), and the
       # Zig caches key on the CHECKED-OUT build manifest — the repoint below
-      # rewrites build.zig.zon after this restore. The revision suffix matches
-      # cockpit-ci; its stable prefix supplies the latest compatible cache.
+      # rewrites build.zig.zon after this restore. The stable prefix supplies
+      # the latest compatible cache when the manifest hash rotates.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: mini-v1-cockpit-ffi
@@ -67,7 +71,7 @@ jobs:
             ~/.cache/zig
             clients/cockpit/.zig-cache
             clients/cockpit/.zig-global-cache
-          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}-${{ github.sha }}
+          key: mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('clients/cockpit/build.zig', 'clients/cockpit/build.zig.zon') }}
           restore-keys: |
             mini-v1-cockpit-zig-0.16.0-${{ runner.os }}-${{ runner.arch }}-
       # Resolve and repoint before the FFI build, so a fork that renamed its
