@@ -62,6 +62,45 @@ not substituted for wire or CPU results.
 
 ## Commands
 
+### Integrated representative rerun
+
+The integrated runtime at `9dd16ec3`, using the public `d2fd87aa` libghostty
+pin subsequently committed as `f24bc246`, passed the following serial
+representatives. These are smoke observations with two echo/control samples,
+not statistically significant latency comparisons. The eight-terminal rows
+use the default unshaped-delay representative; upload rows use 50 ms RTT and
+10 Mbit/s full-duplex UDP-payload budgets.
+
+| Route/mode | READY p50/max | Echo p50/max | Control p50/max | Runtime shutdown |
+|---|---:|---:|---:|---:|
+| Direct/raw | 7.978/8.704 ms | 4.677/13.252 ms | 24.486/47.787 ms | 2.036 ms |
+| Direct/StateSync | 8.906/9.649 ms | 13.028/19.711 ms | 1.796/2.106 ms | 3.971 ms |
+| Relay/raw, single-stream fallback | 5.229/7.704 ms | 5.073/23.571 ms | 56.761/77.560 ms | 3.123 ms |
+
+StateSync sent 20 real ACKs for 28,337 output bytes. Direct/raw observed
+1,175,804 output bytes; relay/raw observed 1,213,412 and explicitly negotiated
+`multistream:false`. Each requested 1,835,337 flood bytes. The selective-unpolled
+representative requested 16,777,256 bytes after the marker barrier, received
+quiet echo in 0.973 ms and control in 99.729 ms, and shut down in 2.871 ms.
+Every case reported zero random, queue, and shutdown drops in both directions.
+
+The 8 MiB upload took 36.961753 s with 16 KiB chunks (1.815629 Mbit/s), versus
+7.048326 s for the one-frame legal wire-ceiling experiment (9.521248 Mbit/s).
+The wire-ceiling send itself blocked 5.997715 s; concurrent echo/control took
+897.257/1,024.179 ms. All upload shaper drop counts were zero. This repeats the
+earlier goodput/latency tradeoff; it does not change shipping producer policy.
+
+The final active-disconnect case recompiled after the checkout reached
+`96bee054` with pending integration repairs, so it is recorded separately:
+the 8 MiB send stayed pending after 500 ms at 0.3 Mbit/s, only 57,045 upstream
+bytes crossed, and server connection cleanup completed in 1.046443 s. The
+test's shaper validation passed. Complete logs are retained in the session
+artifact directory `protocol-path-9dd16ec3/` (direct-raw, direct-state-sync,
+relay-raw, selective-unpolled, put-file-16k-8m-10mbit-50ms, and
+active-upload-disconnect logs).
+
+### Reproduction
+
 Run the bounded default case serially, after other builds are quiet:
 
 ```sh
