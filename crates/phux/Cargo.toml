@@ -116,6 +116,10 @@ phux-tui = { workspace = true, features = ["testkit"] }
 # Command-level wire mocks encode framed replies with the protocol's native
 # BytesMut API; bytes is already a workspace/runtime dependency.
 bytes.workspace = true
+# Reconnect tests inspect the real WebSocket HELLO and reuse the negotiated
+# connection, rather than substituting a transport-only readiness probe.
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # Raw-PTY black-box harnesses (examples/) that spawn the real `phux attach`
 # binary in a pseudoterminal, drive it, resize the PTY, and inspect what the
 # client paints via a libghostty oracle. Used to reproduce/verify
