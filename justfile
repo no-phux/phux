@@ -30,7 +30,7 @@ crate-check PACKAGE FEATURES="":
 integration-check PACKAGE:
     #!/usr/bin/env bash
     set -euo pipefail
-    case "{{PACKAGE}}" in opencode|pi|claude) ;; *) echo 'choose opencode, pi, or claude' >&2; exit 2 ;; esac
+    case "{{PACKAGE}}" in runtime|opencode|pi|claude) ;; *) echo 'choose runtime, opencode, pi, or claude' >&2; exit 2 ;; esac
     bash scripts/doctor.sh integrations
     # Incidental install audits are off; the explicit audit in gates still runs.
     export npm_config_audit=false npm_config_fund=false
@@ -683,6 +683,8 @@ agent-integrations-check:
     #!/usr/bin/env bash
     set -euo pipefail
     node scripts/check-agent-integration-versions.mjs
+    just integration-check runtime
+    git diff --exit-code -- integrations/runtime/dist
     for package in opencode pi claude; do
       just integration-check "$package"
     done

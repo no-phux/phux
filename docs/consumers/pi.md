@@ -9,8 +9,9 @@ last-reviewed: 2026-09-12
 **TL;DR.** `@phux/pi` lets Pi select and operate panes in an external local
 phux server, preserves branch-local targets, and appends bounded fleet-state
 checkpoints and deltas without rewriting Pi's stable prompt prefix. It provides
-nineteen terminal tools, three human commands, and best-effort lifecycle
-metadata. It does not embed a terminal or own the server.
+nineteen terminal tools, three human commands, identity-only lifecycle
+metadata, and AgentSession emit when the server supports it. It does not embed
+a terminal or own the server.
 
 ---
 
@@ -219,14 +220,22 @@ outranks the server's own derivation for the record's whole lifetime
 ([`../spec/L3.md`](../spec/L3.md) §3.7,
 [ADR-0046](../adr/0046-server-side-agent-state-detection.md) point 8), so
 reporting one would stand the shipped `rules/pi.toml` detector down on every
-pane running this extension. Pi's per-turn `agent_start` / `agent_settled`
-events are therefore not subscribed at all: the server derives `working` and
-`blocked` from the manifest, and a per-turn identity rewrite would itself
-clobber that derivation, since a whole-record write carries `state: "unknown"`.
+pane running this extension. Identity is written once per owner and target.
+A per-turn identity rewrite would clobber derivation, because a whole-record
+write carries `state: "unknown"`.
 
-Only a change of owner or target writes. Writes are serialized, debounced,
-locally bounded, and best-effort, so a missing server does not break Pi startup
-or shutdown.
+On a server that advertises `RESOURCE_KINDS`, the extension also opens one
+AgentSession per pane and emits closed record types from Pi's lifecycle bus:
+`session_start` at bind, `prompt` on `agent_start`, `tool_start` /
+`tool_end` around tool execution, `ask` on a trust prompt or blocking UI
+prompt, `stop` on `agent_settled`, and `session_end` then `session close` on
+shutdown. Working, blocked, and done then come from the stream, not a regex.
+If `phux agent session open` is missing or refused with `unsupported_server`,
+emit fails closed; identity-only writes and the detector still run.
+
+Only a change of owner or target writes the identity record. Writes are
+serialized, debounced, locally bounded, and best-effort, so a missing server
+does not break Pi startup or shutdown.
 
 A target switch clears the old declaration only after reading it back and
 confirming that Pi still owns it. Normal shutdown applies the same ownership

@@ -30,6 +30,7 @@
       "changelog-path": "CHANGELOG.md",
       "exclude-paths": [
         "clients/cockpit",
+        "integrations/runtime",
         "integrations/opencode",
         "integrations/pi",
         "integrations/claude",

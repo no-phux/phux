@@ -9,8 +9,9 @@ last-reviewed: 2026-09-12
 **TL;DR.** `@phux/opencode` adds six bounded terminal tools and cache-preserving
 fleet awareness while an external local phux server owns the terminals. Targets
 resolve from an explicit argument, the latest created pane, then `PHUX_TARGET`.
-The plugin uses public OpenCode hooks; it does not embed a TUI, paste, or connect
-to remote phux transports.
+The plugin uses public OpenCode hooks, declares identity only, and emits
+AgentSession lifecycle when the server supports it. It does not embed a TUI,
+paste, or connect to remote phux transports.
 
 ---
 
@@ -208,14 +209,16 @@ lock. Coordinate writers and prefer discrete `phux_run` calls where possible.
 Lifecycle reporting is best effort and uses only the public OpenCode server
 plugin surface.
 
-| Public signal | Behavior |
-|---|---|
-| `session.status` with `busy` | Declares identity for the current target, if not already declared there. |
-| `session.status` with `idle` | Same; a turn boundary declares nothing new and writes nothing. |
-| `session.idle` | Same. |
-| successful `phux_create` | Declares identity for that tool's public OpenCode session. |
-| `session.deleted` | Ownership-checks and clears that session's declaration. |
-| plugin `dispose` | Best-effort ownership-checks and clears declarations known to this instance. |
+| Public signal | Identity record | AgentSession emit |
+|---|---|---|
+| `session.status` with `busy` | Declares identity for the current target, if not already declared there. | `prompt` (working) |
+| `session.status` with `idle` | Same; a turn boundary declares nothing new. | `stop` |
+| `session.idle` | Same. | `stop` |
+| `tool.execute.before` / `after` | Opens the session if needed; does not rewrite identity. | `tool_start` / `tool_end` |
+| `permission.asked` (and `permission.ask`) | Opens the session if needed; does not rewrite identity. | `ask` (blocked) |
+| successful `phux_create` | Declares identity for that tool's public OpenCode session. | Opens the session; no extra turn record. |
+| `session.deleted` | Ownership-checks and clears that session's declaration. | `session_end` then `session close` |
+| plugin `dispose` | Best-effort ownership-checks and clears declarations known to this instance. | Closes sessions this instance opened. |
 
 Records use `name=opencode`, `kind=opencode`, and owner
 `opencode:<public OpenCode session id>` — **identity only, never a `state`**. A
@@ -223,11 +226,17 @@ declared `state` outranks the server's own derivation for the record's whole
 lifetime ([`../spec/L3.md`](../spec/L3.md) §3.7,
 [ADR-0046](../adr/0046-server-side-agent-state-detection.md) point 8), so
 reporting one would stand the shipped `rules/opencode.toml` detector down on
-every pane running this plugin. The server derives `working` and `blocked` from
-that manifest instead.
+every pane running this plugin.
 
-The record is written once per session and target, not once per event. A
-whole-record write carries `state: "unknown"`, so rewriting identity at a turn
+On a server that advertises `RESOURCE_KINDS`, the plugin opens one AgentSession
+per pane (the first OpenCode session to bind that target is the opener) and
+emits the closed record types above. Working, blocked, and done then come from
+the stream. If `phux agent session open` is missing or refused with
+`unsupported_server`, emit fails closed; identity-only writes and the detector
+still run.
+
+The identity record is written once per session and target, not once per event.
+A whole-record write carries `state: "unknown"`, so rewriting identity at a turn
 boundary would clobber the server's derivation and publish a
 `working -> unknown` edge that `phux agent wait` reads as the agent departing.
 
@@ -241,16 +250,16 @@ a plugin reload from final disposal, so reload preservation is not claimed.
 A process crash, `SIGKILL`, or other forced termination cannot run disposal.
 Metadata failures and local deadlines do not fail terminal tools.
 
-## Shared CLI boundary and other adapters
+## Shared Node runtime and other adapters
 
-The source reuses the host-independent `PhuxCli` adapter maintained with the
-[Pi integration](./pi.md). The OpenCode build bundles that adapter, its schema
-validation, and the tool runtime into the artifact. The packed runtime has no
-dependency on `@phux/pi`; it retains an exact production dependency on the
-public OpenCode plugin API and still executes the external phux CLI. This
-shared implementation boundary does not
-make Pi target persistence, commands, or lifecycle behavior part of the
-OpenCode contract.
+The source reuses the host-independent `PhuxCli`, result schemas, lifecycle
+emitter, and fleet-awareness implementation from the private
+`@phux/integration-runtime` module. Pi and OpenCode are sibling adapters at
+that neutral seam; neither integration imports source owned by the other.
+The OpenCode build bundles the runtime into its artifact, so the packed plugin
+has no production package dependency beyond the exact public OpenCode plugin
+interface and still executes the external phux CLI. Pi target persistence,
+commands, and host lifecycle behavior remain outside the OpenCode contract.
 
 Use [Pi](./pi.md) when Pi-native target persistence and human commands are the
 needed host surface. Use [phux-mcp](./mcp.md) when a client speaks MCP over

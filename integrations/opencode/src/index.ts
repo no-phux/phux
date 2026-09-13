@@ -6,12 +6,12 @@ import {
   type ToolDefinition as OpenCodeToolDefinition,
 } from "@opencode-ai/plugin";
 
-import { PhuxCli, type PhuxCliOptions } from "../../pi/src/adapter.js";
+import { PhuxCli, type PhuxCliOptions } from "../../runtime/src/adapter.js";
 import {
   PhuxContextAwareness,
   contextAwarenessEnabled,
   normalizeTerminalIdentity,
-} from "../../pi/src/awareness.js";
+} from "../../runtime/src/awareness.js";
 import {
   handleLifecycleEvent,
   OpenCodeLifecycle,
@@ -19,17 +19,17 @@ import {
 } from "./lifecycle.js";
 import { createPhuxTools, type PhuxToolDefinition, type ToolContext } from "./tools.js";
 
-export { PhuxCli } from "../../pi/src/adapter.js";
+export { PhuxCli } from "../../runtime/src/adapter.js";
 export {
   PhuxContextAwareness,
   contextAwarenessEnabled,
   normalizeTerminalIdentity,
-} from "../../pi/src/awareness.js";
+} from "../../runtime/src/awareness.js";
 export type {
   PhuxContextAwarenessOptions,
   PhuxContextEmission,
   PhuxContextIdentity,
-} from "../../pi/src/awareness.js";
+} from "../../runtime/src/awareness.js";
 export type {
   AgentTargetOptions,
   CreateOptions,
@@ -40,7 +40,7 @@ export type {
   SnapshotOptions,
   WaitOptions,
   WaitOutcome,
-} from "../../pi/src/adapter.js";
+} from "../../runtime/src/adapter.js";
 export {
   boundedResult,
   createPhuxTools,
@@ -126,6 +126,17 @@ export function createPhuxPlugin(defaults: PhuxOpenCodeOptions = {}): Plugin {
         const text = latestContext.get(input.sessionID);
         if (text === undefined) return;
         output.system.push(text);
+      },
+      "tool.execute.before": async (input) => {
+        await lifecycle.toolStart(input.sessionID, input.tool, input.callID);
+      },
+      "tool.execute.after": async (input) => {
+        await lifecycle.toolEnd(input.sessionID, input.tool, input.callID);
+      },
+      "permission.ask": async (input) => {
+        const sessionID = (input as { readonly sessionID?: unknown }).sessionID;
+        if (typeof sessionID !== "string") return;
+        await lifecycle.ask(sessionID, { kind: "permission" });
       },
       event: async ({ event }) => {
         if (!isLifecycleEvent(event)) return;
