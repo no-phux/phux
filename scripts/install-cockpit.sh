@@ -11,9 +11,11 @@
 # What it does: downloads the `phux-cockpit-<semver>-macos-arm64.zip` asset
 # from the latest `cockpit-vX.Y.Z` GitHub release, verifies it against the
 # release SHA256SUMS, and places `Phux Cockpit.app` in /Applications (or
-# ~/Applications when /Applications is not writable). The quarantine attribute
-# is cleared, the same step the Homebrew cask performs for ad-hoc-signed
-# builds. An existing install is backed up and restored if placement fails.
+# ~/Applications when /Applications is not writable). It also writes a
+# `phux-cockpit` CLI launcher into ${PHUX_COCKPIT_BIN_DIR:-${PHUX_INSTALL_DIR:-$HOME/.local/bin}}.
+# The quarantine attribute is cleared, the same step the Homebrew cask
+# performs for ad-hoc-signed builds. An existing install is backed up and
+# restored if placement fails.
 set -eu
 
 usage() {
@@ -26,6 +28,9 @@ Options:
   --applications-dir <dir>
                          Directory for Phux Cockpit.app (default: /Applications
                          when writable, else $HOME/Applications).
+  --bin-dir <dir>        Directory for the phux-cockpit launcher (default:
+                         $PHUX_COCKPIT_BIN_DIR, else $PHUX_INSTALL_DIR, else
+                         $HOME/.local/bin).
   --os <darwin>          Override OS detection (Cockpit is macOS-only).
   --arch <arm64|aarch64> Override architecture detection.
   --dry-run              Print resolved tag, URLs, and destination only.
@@ -53,8 +58,41 @@ shell_quote() {
   esac
 }
 
+# Small PATH launcher that opens the installed bundle through Launch Services.
+# Extra argv is ignored: `open` would otherwise treat it as more files to open.
+write_cli_launcher() {
+  app_path="$1"
+  [ -n "$bin_dir" ] || return 1
+  mkdir -p "$bin_dir" || return 1
+  staged="$(mktemp "${bin_dir}/.phux-cockpit.XXXXXX")" || return 1
+  {
+    printf '%s\n' '#!/bin/sh'
+    printf '%s\n' '# Installed by the Phux Cockpit installer. Opens the app bundle'
+    printf '%s\n' '# through Launch Services so Dock identity stays this copy.'
+    printf 'APP=%s\n' "$(shell_quote "$app_path")"
+    printf '%s\n' 'if [ ! -d "$APP" ] || [ ! -f "$APP/Contents/Info.plist" ]; then'
+    printf '%s\n' '  echo "error: Phux Cockpit is not installed at $APP" >&2'
+    printf '%s\n' '  echo "remedy: curl -fsSL https://phux.sh/install-cockpit | sh" >&2'
+    printf '%s\n' '  exit 1'
+    printf '%s\n' 'fi'
+    printf '%s\n' 'exec open "$APP"'
+  } > "$staged" || {
+    rm -f "$staged"
+    return 1
+  }
+  chmod 755 "$staged" || {
+    rm -f "$staged"
+    return 1
+  }
+  mv -f "$staged" "${bin_dir}/phux-cockpit" || {
+    rm -f "$staged"
+    return 1
+  }
+}
+
 version=""
 applications_dir="${PHUX_COCKPIT_APPLICATIONS_DIR:-}"
+bin_dir="${PHUX_COCKPIT_BIN_DIR:-${PHUX_INSTALL_DIR:-}}"
 os=""
 arch=""
 dry_run=0
@@ -70,6 +108,11 @@ while [ "$#" -gt 0 ]; do
     --applications-dir)
       [ "$#" -ge 2 ] || die "--applications-dir requires a value"
       applications_dir="$2"
+      shift 2
+      ;;
+    --bin-dir)
+      [ "$#" -ge 2 ] || die "--bin-dir requires a value"
+      bin_dir="$2"
       shift 2
       ;;
     --os)
@@ -375,6 +418,10 @@ if [ -z "$applications_dir" ]; then
 fi
 [ -n "$applications_dir" ] || die "--applications-dir resolved to an empty path"
 
+if [ -z "$bin_dir" ] && [ -n "${HOME:-}" ]; then
+  bin_dir="${HOME}/.local/bin"
+fi
+
 base_url="https://github.com/no-phux/phux/releases/download/${version}"
 zip_name="phux-cockpit-${semver}-macos-arm64.zip"
 zip_url="${base_url}/${zip_name}"
@@ -385,6 +432,7 @@ if [ "$dry_run" -eq 1 ]; then
   echo "zip_url: ${zip_url}"
   echo "sha256_url: ${sums_url}"
   echo "applications_dir: ${applications_dir}"
+  echo "bin_dir: ${bin_dir}"
   exit 0
 fi
 
@@ -522,4 +570,8 @@ xattr -d com.apple.quarantine "$installed_path" 2>/dev/null || true
 
 echo "installed Phux Cockpit ${version} to ${applications_dir}"
 installed_app="$(CDPATH='' cd "$applications_dir" && pwd -P)/Phux Cockpit.app"
+if write_cli_launcher "$installed_app"; then
+  launcher_path="$(CDPATH='' cd "$bin_dir" && pwd -P)/phux-cockpit"
+  echo "launcher: ${launcher_path}"
+fi
 printf 'next: open %s\n' "$(shell_quote "$installed_app")"

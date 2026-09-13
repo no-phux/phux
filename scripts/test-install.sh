@@ -223,15 +223,21 @@ run_cockpit_install() {
   shift
   PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" XATTR_MARKER="$TMP/xattr-cleared" \
     "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_VERSION" \
-      --os darwin --arch arm64 --applications-dir "$apps_dir" "$@"
+      --os darwin --arch arm64 --applications-dir "$apps_dir" \
+      --bin-dir "$TMP/cockpit-bin" "$@"
 }
 
 COCKPIT_APPS="$TMP/cockpit-apps"
 output="$(run_cockpit_install "$COCKPIT_APPS")"
 grep -Fq "installed Phux Cockpit $COCKPIT_VERSION to $COCKPIT_APPS" <<<"$output"
 grep -Fq 'next: open ' <<<"$output"
+grep -Fq "launcher: " <<<"$output"
 cmp "$FIXTURE/Phux Cockpit.app/Contents/Info.plist" "$COCKPIT_APPS/Phux Cockpit.app/Contents/Info.plist"
 cmp "$FIXTURE/Phux Cockpit.app/Contents/MacOS/phux-cockpit" "$COCKPIT_APPS/Phux Cockpit.app/Contents/MacOS/phux-cockpit"
+[[ -x $TMP/cockpit-bin/phux-cockpit ]] || {
+  echo "cockpit installer did not write an executable phux-cockpit launcher" >&2
+  exit 1
+}
 [[ -e $TMP/xattr-cleared ]] || {
   echo "cockpit installer did not clear the quarantine attribute" >&2
   exit 1
@@ -258,6 +264,9 @@ PATH="$FAKE_BIN:/usr/bin:/bin" OPEN_ARGUMENTS="$TMP/open-arguments" \
   "$INSTALLER_SH" -c "$next_command"
 printf '%s/Phux Cockpit.app\n' "$(cd "$CUSTOM_APPS" && pwd -P)" > "$TMP/expected-open-arguments"
 cmp "$TMP/expected-open-arguments" "$TMP/open-arguments"
+PATH="$FAKE_BIN:/usr/bin:/bin" OPEN_ARGUMENTS="$TMP/launcher-open-arguments" \
+  "$TMP/cockpit-bin/phux-cockpit"
+cmp "$TMP/expected-open-arguments" "$TMP/launcher-open-arguments"
 
 # Relative destinations are resolved from the install working directory, never
 # from a competing CDPATH entry (whose cd also prints unsolicited stdout).
@@ -282,9 +291,11 @@ fi
 # A bare semver normalizes to the release tag.
 output="$(PATH="$FAKE_BIN:/usr/bin:/bin" \
   "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_SEMVER" \
-    --os darwin --arch arm64 --applications-dir "$TMP/unused" --dry-run)"
+    --os darwin --arch arm64 --applications-dir "$TMP/unused" \
+    --bin-dir "$TMP/cockpit-bin" --dry-run)"
 grep -Fq "tag: $COCKPIT_VERSION" <<<"$output"
 grep -Fq "zip_url: https://github.com/no-phux/phux/releases/download/${COCKPIT_VERSION}/${COCKPIT_ZIP}" <<<"$output"
+grep -Fq "bin_dir: $TMP/cockpit-bin" <<<"$output"
 
 # A failed placement restores the previous install and leaves no lock behind.
 COCKPIT_ROLLBACK="$TMP/cockpit-rollback"
@@ -417,5 +428,10 @@ if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$NEXT_FIXTURE" \
   exit 1
 fi
 grep -Fq -- '--version pins a stable tag' "$TMP/next-conflict.err"
+
+output="$(PATH="$FAKE_BIN:/usr/bin:/bin" \
+  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --channel latest --version "$VERSION" \
+    --os linux --arch x86_64 --install-dir "$NEXT_DIR" --dry-run)"
+grep -Fxq 'channel: stable' <<<"$output"
 
 echo "next-channel installer tests passed"

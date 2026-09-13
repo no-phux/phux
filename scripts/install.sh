@@ -15,8 +15,9 @@ Usage: scripts/install.sh [--version <vX.Y.Z>] [--channel stable|next] [options]
 
 Options:
   --version <vX.Y.Z>       Release tag to install (default: latest GitHub release).
-  --channel <stable|next>  Release channel (default: stable, or \$PHUX_CHANNEL).
-                           next tracks green main; omit --version with it.
+  --channel <stable|latest|next>
+                           Release channel (default: stable, or \$PHUX_CHANNEL).
+                           latest is stable; next tracks green main; omit --version with it.
   --install-dir <dir>      Directory for phux and phux-mcp (default: $HOME/.local/bin).
   --os <darwin|linux>      Override OS detection.
   --arch <arm64|aarch64|x86_64|amd64>
@@ -358,8 +359,9 @@ if [ -z "$channel" ]; then
   channel="${PHUX_CHANNEL:-stable}"
 fi
 case "$channel" in
+  latest) channel="stable" ;;
   stable|next) ;;
-  *) die "--channel must be stable or next" ;;
+  *) die "--channel must be stable, latest, or next" ;;
 esac
 
 if [ "$channel" = "next" ] && [ -n "$version" ]; then

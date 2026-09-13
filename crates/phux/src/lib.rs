@@ -95,6 +95,8 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
           mcp        Run the bundled MCP stdio adapter\n  \
           host       Register the machines phux talks to: remotes and satellites\n  \
           service    Keep a server running across logout and reboot\n  \
+          cockpit    Open the native macOS Cockpit app\n  \
+          channel    Show or switch the release channel (latest or next)\n  \
           update     Update phux to the latest stable or next release, keeping sessions alive\n  \
           upgrade    Hot-swap the running server binary, keeping sessions alive\n\n\
         INSPECT\n  \
@@ -997,6 +999,10 @@ fn dispatch(
             commands::supervise::run_signal(&target, signal, socket)
         }
         Some(Command::Update { opts }) => commands::update::run_update(&opts, socket),
+        Some(Command::Channel { channel, json }) => {
+            commands::channel::run(channel, json.json, socket)
+        }
+        Some(Command::Cockpit { json }) => commands::cockpit::run(json.json),
         Some(Command::Upgrade {}) => commands::upgrade::run_upgrade(socket),
         Some(Command::Rename {
             session,

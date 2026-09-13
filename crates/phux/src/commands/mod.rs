@@ -187,6 +187,8 @@ impl From<SignalArg> for TerminalSignal {
 pub(crate) mod agent;
 pub(crate) mod ask;
 pub(crate) mod attach;
+pub(crate) mod channel;
+pub(crate) mod cockpit;
 pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod config_action;
@@ -303,6 +305,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Pair { .. } => Some("pair"),
         Command::Completion { .. } => Some("completion"),
         Command::Mcp { .. } => Some("mcp"),
+        Command::Cockpit { .. } => Some("cockpit"),
         Command::Skill { .. } => Some("skill"),
         Command::Logs { .. } => Some("logs"),
         Command::RuntimeInfo { .. } => Some("runtime-info"),
@@ -957,7 +960,9 @@ pub(crate) enum Command {
             verifies it against the checksum published beside it, replaces the \
             binaries atomically, and asks a running server to re-exec so live panes \
             survive. `--channel next` follows green `main` instead of the latest \
-            `vX.Y.Z`. A server, its local clients, its satellites, and its relays must \
+            `vX.Y.Z`; `--channel latest` is the numbered releases. `phux channel` \
+            is the same switch without the flag. A server, its local clients, its \
+            satellites, and its relays must \
             all run the same release, so this is the command that moves a whole \
             deployment in one step.\n\n\
             phux updates only installs it maintains: a release archive unpacked into \
@@ -972,6 +977,7 @@ pub(crate) enum Command {
             phux update --check --json\n  \
             phux update\n  \
             phux update --channel next\n  \
+            phux update --channel latest\n  \
             phux update --dry-run --version v1.2.3\n  \
             phux update --rollback"
     )]
@@ -979,6 +985,47 @@ pub(crate) enum Command {
         /// Update options.
         #[command(flatten)]
         opts: update::UpdateOpts,
+    },
+
+    /// Show or switch the release channel.
+    // `long_about` spelled out so the examples keep real newlines.
+    #[command(
+        about = "Show or switch the release channel",
+        long_about = "Show or switch the release channel.\n\n\
+            Bare `phux channel` reports the rail this install follows and what \
+            is published there. `phux channel next` follows green `main`; \
+            `phux channel latest` (also `stable`) follows the numbered GitHub \
+            releases. Switching persists the choice and runs the same update \
+            path as `phux update --channel`, so live panes survive.\n\n\
+            Examples:\n  \
+            phux channel\n  \
+            phux channel next\n  \
+            phux channel latest"
+    )]
+    Channel {
+        /// Channel to follow. Omit to report the current rail without changing it.
+        #[arg(value_enum, value_name = "CHANNEL")]
+        channel: Option<update::channel::Channel>,
+
+        #[command(flatten)]
+        json: JsonOpt,
+    },
+
+    /// Open the native macOS Cockpit app.
+    #[command(
+        about = "Open the native macOS Cockpit app",
+        long_about = "Open the native macOS Cockpit app.\n\n\
+            Finds Phux Cockpit.app in /Applications or ~/Applications and opens \
+            it through Launch Services. Set PHUX_COCKPIT_APP to pin a specific \
+            bundle. macOS-only; if the app is missing the remedy is the curl \
+            installer.\n\n\
+            Examples:\n  \
+            phux cockpit\n  \
+            phux cockpit --json"
+    )]
+    Cockpit {
+        #[command(flatten)]
+        json: JsonOpt,
     },
 
     /// Graceful-upgrade the running server in place.

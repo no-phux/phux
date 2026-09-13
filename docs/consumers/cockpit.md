@@ -1,7 +1,7 @@
 ---
 audience: humans, consumers
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # Cockpit
@@ -31,6 +31,7 @@ curl installer and the cask both refuse there.
 
 ```sh
 curl -fsSL https://phux.sh/install-cockpit | sh
+phux cockpit
 ```
 
 or the Homebrew cask:

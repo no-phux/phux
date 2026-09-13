@@ -14,6 +14,7 @@ pub(crate) const CHANNEL_FILE: &str = ".phux-channel";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub(crate) enum Channel {
     /// `vX.Y.Z` GitHub releases and `releases/latest`.
+    #[value(alias = "latest")]
     Stable,
     /// Moving prerelease of green `main`.
     Next,
@@ -29,7 +30,7 @@ impl Channel {
 
     pub(crate) fn parse(text: &str) -> Option<Self> {
         match text {
-            "stable" => Some(Self::Stable),
+            "stable" | "latest" => Some(Self::Stable),
             "next" => Some(Self::Next),
             _ => None,
         }
@@ -105,9 +106,9 @@ mod tests {
     #[test]
     fn parse_accepts_only_the_closed_vocabulary() {
         assert_eq!(Channel::parse("stable"), Some(Channel::Stable));
+        assert_eq!(Channel::parse("latest"), Some(Channel::Stable));
         assert_eq!(Channel::parse("next"), Some(Channel::Next));
         assert_eq!(Channel::parse("nightly"), None);
-        assert_eq!(Channel::parse("latest"), None);
         assert_eq!(Channel::parse(""), None);
     }
 

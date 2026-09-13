@@ -128,6 +128,14 @@ pub(crate) mod codes {
     /// The install is in no recognized location, so it is refused rather
     /// than overwritten on a guess.
     pub(crate) const UPDATE_SOURCE_UNSUPPORTED: &str = "update_source_unsupported";
+    /// `phux cockpit` ran on a host that is not macOS.
+    pub(crate) const COCKPIT_UNSUPPORTED_PLATFORM: &str = "cockpit_unsupported_platform";
+    /// No Phux Cockpit.app was found in the well-known locations.
+    pub(crate) const COCKPIT_NOT_INSTALLED: &str = "cockpit_not_installed";
+    /// `PHUX_COCKPIT_APP` pointed at something that is not an app bundle.
+    pub(crate) const COCKPIT_INVALID_APP: &str = "cockpit_invalid_app";
+    /// Launch Services could not open the app bundle.
+    pub(crate) const COCKPIT_LAUNCH_FAILED: &str = "cockpit_launch_failed";
     /// `phux agent explain --file` could not read the capture at all
     /// (missing path, unreadable file, stdin closed).
     pub(crate) const CAPTURE_UNREADABLE: &str = "capture_unreadable";

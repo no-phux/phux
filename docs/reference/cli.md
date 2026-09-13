@@ -31,6 +31,8 @@ ATTACH / SERVE
   mcp        Run the bundled MCP stdio adapter
   host       Register the machines phux talks to: remotes and satellites
   service    Keep a server running across logout and reboot
+  cockpit    Open the native macOS Cockpit app
+  channel    Show or switch the release channel (latest or next)
   update     Update phux to the latest stable or next release, keeping sessions alive
   upgrade    Hot-swap the running server binary, keeping sessions alive
 
@@ -868,6 +870,63 @@ Options:
           - cast: asciinema cast — the archival, re-renderable artifact
           - gif:  Animated GIF — shareable and embeddable anywhere
           - apng: Animated PNG — truecolor, no quantization, larger files
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux channel`
+
+```text
+Show or switch the release channel.
+
+Bare `phux channel` reports the rail this install follows and what is published there. `phux channel next` follows green `main`; `phux channel latest` (also `stable`) follows the numbered GitHub releases. Switching persists the choice and runs the same update path as `phux update --channel`, so live panes survive.
+
+Examples:
+  phux channel
+  phux channel next
+  phux channel latest
+
+Usage: phux channel [OPTIONS] [CHANNEL]
+
+Arguments:
+  [CHANNEL]
+          Channel to follow. Omit to report the current rail without changing it
+
+          Possible values:
+          - stable: `vX.Y.Z` GitHub releases and `releases/latest`
+          - next:   Moving prerelease of green `main`
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
+
+  -h, --help
+          Print help (see a summary with '-h')
+```
+
+## `phux cockpit`
+
+```text
+Open the native macOS Cockpit app.
+
+Finds Phux Cockpit.app in /Applications or ~/Applications and opens it through Launch Services. Set PHUX_COCKPIT_APP to pin a specific bundle. macOS-only; if the app is missing the remedy is the curl installer.
+
+Examples:
+  phux cockpit
+  phux cockpit --json
+
+Usage: phux cockpit [OPTIONS]
+
+Options:
+      --json
+          Emit stable, versioned JSON on stdout instead of the human view. On failure, stdout stays empty and stderr carries one JSON error object
+
+      --socket <PATH>
+          Override the UDS path of the server to dial. Defaults to `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set)
 
   -h, --help
           Print help (see a summary with '-h')
@@ -2896,7 +2955,7 @@ Options:
 ```text
 Update phux to the latest stable or next release, keeping sessions alive.
 
-Checks the published release, downloads the archive for this platform, verifies it against the checksum published beside it, replaces the binaries atomically, and asks a running server to re-exec so live panes survive. `--channel next` follows green `main` instead of the latest `vX.Y.Z`. A server, its local clients, its satellites, and its relays must all run the same release, so this is the command that moves a whole deployment in one step.
+Checks the published release, downloads the archive for this platform, verifies it against the checksum published beside it, replaces the binaries atomically, and asks a running server to re-exec so live panes survive. `--channel next` follows green `main` instead of the latest `vX.Y.Z`; `--channel latest` is the numbered releases. `phux channel` is the same switch without the flag. A server, its local clients, its satellites, and its relays must all run the same release, so this is the command that moves a whole deployment in one step.
 
 phux updates only installs it maintains: a release archive unpacked into $PHUX_INSTALL_DIR, ~/.local/bin, ~/bin, /usr/local/bin, or /opt/phux/bin. A Homebrew, Cargo, or Nix install is never modified — the exact native command is printed instead — and an unrecognized location is refused rather than overwritten.
 
@@ -2907,6 +2966,7 @@ Examples:
   phux update --check --json
   phux update
   phux update --channel next
+  phux update --channel latest
   phux update --dry-run --version v1.2.3
   phux update --rollback
 
@@ -2926,7 +2986,7 @@ Options:
           Install this release tag instead of the latest one. Accepts any tag from the releases page, including an older one (a downgrade). Stable-only: omit this when following `--channel next`
 
       --channel <CHANNEL>
-          Release channel to follow. `stable` is the default (`vX.Y.Z`). `next` tracks green `main` via the moving prerelease
+          Release channel to follow. `stable` (also `latest`) is the default (`vX.Y.Z`). `next` tracks green `main` via the moving prerelease
 
           Possible values:
           - stable: `vX.Y.Z` GitHub releases and `releases/latest`
