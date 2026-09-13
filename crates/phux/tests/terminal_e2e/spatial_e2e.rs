@@ -36,6 +36,11 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
 const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
+/// Unattached no-TTY grid from `GET_SCREEN`. A tiled pane leaving this size
+/// (or any previously observed size) is how this file knows the attached
+/// client reconciled a layout broadcast — `RESIZE_TERMINAL` is the side
+/// effect of that reconcile, not of the CLI `SET_METADATA` itself.
+const NO_TTY_DEFAULT: (u64, u64) = (80, 24);
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 struct ServerGuard {
@@ -182,10 +187,43 @@ impl ServerGuard {
         panic!("attached client did not seed layout metadata");
     }
 
-    fn pane_contains(&self, pane: &ResourceId, marker: &str) -> bool {
+    fn pane_snapshot(&self, pane: &ResourceId) -> serde_json::Value {
         let selector = format!("@{}", pane.local_id().expect("local pane"));
-        let snapshot = self.json(&["snapshot", "--json", &selector]);
-        snapshot["lines"]
+        self.json(&["snapshot", "--json", &selector])
+    }
+
+    fn pane_size(&self, pane: &ResourceId) -> (u64, u64) {
+        let snapshot = self.pane_snapshot(pane);
+        (
+            snapshot["cols"].as_u64().expect("snapshot cols"),
+            snapshot["rows"].as_u64().expect("snapshot rows"),
+        )
+    }
+
+    /// Wait until `pane`'s live grid differs from `before`.
+    ///
+    /// The spatial CLI persists topology and returns; the attached client
+    /// adopts the tree on `METADATA_CHANGED` and only then resizes. A fixed
+    /// 300ms sleep after the CLI verb is a load-dependent bet (phux-5wxp.1):
+    /// under contention the broadcast loses to the next typed marker, so
+    /// focus probes land on the pre-reconcile tree (or the PTY write fails
+    /// because the client tore down mid-interleave). Snapshot cols/rows are
+    /// the pane actor's own grid, so a change is proof the client consumed
+    /// the update — the same "reply, not send" distinction the family uses.
+    fn wait_for_applied_grid(&self, pane: &ResourceId, before: (u64, u64)) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let seen = self.pane_size(pane);
+            if seen != before {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!("attached client did not apply a new grid for {pane:?} (still {before:?})");
+    }
+
+    fn pane_contains(&self, pane: &ResourceId, marker: &str) -> bool {
+        self.pane_snapshot(pane)["lines"]
             .as_array()
             .expect("snapshot lines")
             .iter()
@@ -267,9 +305,10 @@ impl AttachedClient {
     }
 
     fn next_pane(&mut self) {
+        // Applied in the same input turn as a following `type_marker` write.
+        // A settle sleep here is a load-dependent bet (phux-5wxp.1).
         self.writer.write_all(b"\x01o").expect("send C-a o");
         self.writer.flush().expect("flush focus chord");
-        std::thread::sleep(Duration::from_millis(300));
     }
 
     fn type_marker(&mut self, marker: &str) {
@@ -308,9 +347,14 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
     let mut attached = AttachedClient::start(&server);
     let initial = server.wait_for_layout();
     assert_eq!(initial.windows[0].state.tree, Some(leaf(&seed)));
+    // Metadata was seeded before attach, so `wait_for_layout` can return
+    // before this client has subscribed. Chrome resize is the attach barrier.
+    server.wait_for_applied_grid(&seed, NO_TTY_DEFAULT);
 
     let second = server.spawn_pane();
     let third = server.spawn_pane();
+    let second_unplaced = server.pane_size(&second);
+    let third_unplaced = server.pane_size(&third);
 
     // User-facing `vertical` means a vertical divider and side-by-side panes;
     // the persisted child axis is therefore internal Horizontal.
@@ -327,7 +371,7 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
         &server,
         split(SplitDir::Horizontal, leaf(&seed), leaf(&second)),
     );
-    std::thread::sleep(Duration::from_millis(300));
+    server.wait_for_applied_grid(&second, second_unplaced);
     attached.type_marker("FOCUS_AFTER_VERTICAL_INSERT");
     server.wait_for_marker(&seed, "FOCUS_AFTER_VERTICAL_INSERT");
     assert!(!server.pane_contains(&second, "FOCUS_AFTER_VERTICAL_INSERT"));
@@ -356,11 +400,12 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
             split(SplitDir::Vertical, leaf(&second), leaf(&third)),
         ),
     );
-    std::thread::sleep(Duration::from_millis(300));
+    server.wait_for_applied_grid(&third, third_unplaced);
     attached.type_marker("FOCUS_AFTER_HORIZONTAL_INSERT");
     server.wait_for_marker(&second, "FOCUS_AFTER_HORIZONTAL_INSERT");
     assert!(!server.pane_contains(&third, "FOCUS_AFTER_HORIZONTAL_INSERT"));
 
+    let seed_before_move = server.pane_size(&seed);
     server.success(&[
         "move-pane",
         &format!("@{}", seed.local_id().expect("seed id")),
@@ -376,10 +421,11 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
             split(SplitDir::Horizontal, leaf(&third), leaf(&seed)),
         ),
     );
-    std::thread::sleep(Duration::from_millis(300));
+    server.wait_for_applied_grid(&seed, seed_before_move);
     attached.type_marker("FOCUS_AFTER_MOVE");
     server.wait_for_marker(&second, "FOCUS_AFTER_MOVE");
 
+    let second_before_swap = server.pane_size(&second);
     server.success(&[
         "swap-pane",
         &format!("@{}", second.local_id().expect("second id")),
@@ -393,7 +439,7 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
             split(SplitDir::Horizontal, leaf(&second), leaf(&seed)),
         ),
     );
-    std::thread::sleep(Duration::from_millis(300));
+    server.wait_for_applied_grid(&second, second_before_swap);
     attached.type_marker("FOCUS_AFTER_SWAP");
     server.wait_for_marker(&second, "FOCUS_AFTER_SWAP");
 }
