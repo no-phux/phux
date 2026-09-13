@@ -2,8 +2,7 @@
 //!
 //! Native bootstrap is the official GHOSTSNP snapshot codec: the server sends
 //! the READY prefix, this adapter reconstructs a live terminal, then history
-//! suffix bytes are pulled and applied with
-//! [`libghostty_vt::snapshot::IncrementalDecoder::next`].
+//! units are pulled and authenticated by the engine-owned staged decoder.
 
 use std::{
     cell::{Cell, RefCell},
@@ -16,7 +15,7 @@ use libghostty_vt::{
     Error as SnapshotError, Terminal as GhosttyTerminal,
     screen::{CellContentTag, CellWide, TrackedGridRef},
     selection::{FormatOptions, Selection},
-    snapshot::Decoder,
+    snapshot::{Decoder, FeedDecoder, FeedIncrementalDecoder},
     terminal::{Point, PointCoordinate, PointSpace, ScrollViewport},
 };
 use phux_protocol::{
@@ -37,14 +36,14 @@ const CONTINUATION_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Return the client bootstrap capabilities supported by the linked engine.
 ///
-/// Native v2 is advertised when the official snapshot codec can encode a
+/// Official snapshot v1 is advertised when the linked codec can encode a
 /// terminal. Probe failure leaves both synthesized compatibility profiles.
 #[must_use]
 pub fn native_bootstrap_capabilities(limits: BootstrapLimits) -> BootstrapCapabilities {
     let capabilities = BootstrapCapabilities::new().with_limits(limits);
     if official_snapshot_available() {
         capabilities.with_native(
-            EngineCodec::LibghosttyCheckpointV2,
+            EngineCodec::LibghosttySnapshotV1,
             EngineFeatureSet::required_native(),
         )
     } else {
@@ -223,7 +222,12 @@ impl GhosttyReplica {
                 NativeDecoderState::Finished(terminal) => {
                     terminal.set_scrollback_max_bytes(max)?;
                 }
-                NativeDecoderState::Collecting => {}
+                NativeDecoderState::Ready(decoder) => {
+                    decoder.terminal_mut().set_scrollback_max_bytes(max)?;
+                }
+                NativeDecoderState::LegacyCollecting(_)
+                | NativeDecoderState::Collecting(_)
+                | NativeDecoderState::Failed => {}
             },
         }
         Ok(())
@@ -238,7 +242,12 @@ impl GhosttyReplica {
                 NativeDecoderState::Finished(terminal) => {
                     terminal.set_scrollback_max_lines(max)?;
                 }
-                NativeDecoderState::Collecting => {}
+                NativeDecoderState::Ready(decoder) => {
+                    decoder.terminal_mut().set_scrollback_max_lines(max)?;
+                }
+                NativeDecoderState::LegacyCollecting(_)
+                | NativeDecoderState::Collecting(_)
+                | NativeDecoderState::Failed => {}
             },
         }
         Ok(())
@@ -250,7 +259,12 @@ impl GhosttyReplica {
             ReplicaState::Synthesized { terminal, .. } => terminal.scroll_viewport(scroll),
             ReplicaState::Native(native) => match &mut native.decoder {
                 NativeDecoderState::Finished(terminal) => terminal.scroll_viewport(scroll),
-                NativeDecoderState::Collecting => {
+                NativeDecoderState::Ready(decoder) => {
+                    decoder.terminal_mut().scroll_viewport(scroll);
+                }
+                NativeDecoderState::LegacyCollecting(_)
+                | NativeDecoderState::Collecting(_)
+                | NativeDecoderState::Failed => {
                     return Err(GhosttyEngineError::LiveOutputBeforeReady);
                 }
             },
@@ -304,16 +318,9 @@ enum ReplicaState {
 }
 
 #[derive(Debug)]
-struct SnapshotFeed {
-    data: Vec<u8>,
-}
-
-#[derive(Debug)]
 struct NativeReplica {
     bell_pending: Rc<Cell<bool>>,
-    /// Decoder first so it drops before the heap `feed` its callbacks point at.
     decoder: NativeDecoderState,
-    feed: Box<SnapshotFeed>,
     protocol_finished: bool,
     pty_responses: PtyResponses,
 }
@@ -327,7 +334,12 @@ impl NativeReplica {
             NativeDecoderState::Finished(terminal) => {
                 clear_terminal_presentation(terminal);
             }
-            NativeDecoderState::Collecting => {
+            NativeDecoderState::Ready(decoder) => {
+                clear_terminal_presentation(decoder.terminal_mut());
+            }
+            NativeDecoderState::LegacyCollecting(_)
+            | NativeDecoderState::Collecting(_)
+            | NativeDecoderState::Failed => {
                 return Err(GhosttyEngineError::LiveOutputBeforeReady);
             }
         }
@@ -336,17 +348,22 @@ impl NativeReplica {
 
     const fn terminal(&self) -> Option<&GhosttyTerminal<'static, 'static>> {
         match &self.decoder {
-            NativeDecoderState::Collecting => None,
+            NativeDecoderState::Ready(decoder) => Some(decoder.terminal()),
             NativeDecoderState::Finished(terminal) => Some(terminal),
+            NativeDecoderState::LegacyCollecting(_)
+            | NativeDecoderState::Collecting(_)
+            | NativeDecoderState::Failed => None,
         }
     }
 }
 
-/// Decoder first so it drops before the heap `feed` it points at.
 #[derive(Debug)]
 enum NativeDecoderState {
-    Collecting,
+    LegacyCollecting(Vec<u8>),
+    Collecting(FeedDecoder<'static>),
+    Ready(FeedIncrementalDecoder<'static, 'static>),
     Finished(GhosttyTerminal<'static, 'static>),
+    Failed,
 }
 
 /// Typed failures from the concrete libghostty engine host.
@@ -460,11 +477,22 @@ impl EngineAdapter for GhosttyAdapter {
                 }
             }
             BootstrapStreamProfile::NativeState {
+                codec: EngineCodec::LibghosttySnapshotV1,
+            } if self.native_available => {
+                let mut decoder = FeedDecoder::new(CONTINUATION_LIMIT)?;
+                decoder.set_max_continuation_bytes(CONTINUATION_LIMIT)?;
+                ReplicaState::Native(NativeReplica {
+                    bell_pending: Rc::clone(&bell_pending),
+                    decoder: NativeDecoderState::Collecting(decoder),
+                    protocol_finished: false,
+                    pty_responses: Rc::new(RefCell::new(Vec::new())),
+                })
+            }
+            BootstrapStreamProfile::NativeState {
                 codec: EngineCodec::LibghosttyCheckpointV2,
             } if self.native_available => ReplicaState::Native(NativeReplica {
                 bell_pending: Rc::clone(&bell_pending),
-                feed: Box::new(SnapshotFeed { data: Vec::new() }),
-                decoder: NativeDecoderState::Collecting,
+                decoder: NativeDecoderState::LegacyCollecting(Vec::new()),
                 protocol_finished: false,
                 pty_responses: Rc::new(RefCell::new(Vec::new())),
             }),
@@ -560,7 +588,12 @@ impl EngineAdapter for GhosttyAdapter {
 
     fn bootstrap_staging_bytes(&self, replica: &Self::Replica) -> usize {
         match &replica.state {
-            ReplicaState::Native(native) => native.feed.data.capacity(),
+            ReplicaState::Native(native) => match &native.decoder {
+                NativeDecoderState::LegacyCollecting(bytes) => bytes.capacity(),
+                NativeDecoderState::Collecting(decoder) => decoder.staged_capacity_bytes(),
+                NativeDecoderState::Ready(decoder) => decoder.staged_capacity_bytes(),
+                NativeDecoderState::Finished(_) | NativeDecoderState::Failed => 0,
+            },
             ReplicaState::Synthesized { .. } => 0,
         }
     }
@@ -642,10 +675,13 @@ impl EngineAdapter for GhosttyAdapter {
             }
             ReplicaState::Native(native) => {
                 match &mut native.decoder {
-                    NativeDecoderState::Collecting => {
+                    NativeDecoderState::Ready(decoder) => decoder.terminal_mut().vt_write(payload),
+                    NativeDecoderState::Finished(terminal) => terminal.vt_write(payload),
+                    NativeDecoderState::LegacyCollecting(_)
+                    | NativeDecoderState::Collecting(_)
+                    | NativeDecoderState::Failed => {
                         return Err(GhosttyEngineError::LiveOutputBeforeReady);
                     }
-                    NativeDecoderState::Finished(terminal) => terminal.vt_write(payload),
                 }
                 &native.pty_responses
             }
@@ -1201,11 +1237,23 @@ fn push_native(
     if native.protocol_finished {
         return Err(GhosttyEngineError::InputAfterReady);
     }
-    match native.decoder {
-        NativeDecoderState::Collecting => {}
-        NativeDecoderState::Finished(_) => return Err(GhosttyEngineError::InputAfterFinish),
+    if let NativeDecoderState::LegacyCollecting(bytes) = &mut native.decoder {
+        bytes.extend_from_slice(input);
+        return Ok(BootstrapProgress::Pending);
     }
-    native.feed.data.extend_from_slice(input);
+    let NativeDecoderState::Collecting(decoder) = &mut native.decoder else {
+        return match native.decoder {
+            NativeDecoderState::Ready(_) => Err(GhosttyEngineError::InputAfterReady),
+            NativeDecoderState::Finished(_) => Err(GhosttyEngineError::InputAfterFinish),
+            NativeDecoderState::Failed => Err(GhosttyEngineError::DecoderFailed),
+            NativeDecoderState::LegacyCollecting(_) | NativeDecoderState::Collecting(_) => {
+                unreachable!()
+            }
+        };
+    };
+    decoder
+        .feed(input)
+        .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
     Ok(BootstrapProgress::Pending)
 }
 
@@ -1224,68 +1272,104 @@ fn attach_native_callbacks(
     Ok(())
 }
 
-fn decode_collected_snapshot(
-    native: &NativeReplica,
-) -> Result<GhosttyTerminal<'static, 'static>, GhosttyEngineError> {
-    let decoder = Decoder::new_buf(&native.feed.data)
-        .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
-    let mut inc = decoder
-        .ready()
-        .map_err(|error| GhosttyEngineError::checkpoint(error, native.feed.data.len()))?;
-    loop {
-        match inc.next() {
-            Ok(Some(_)) => {}
-            Ok(None) | Err(libghostty_vt::Error::InvalidValue) => break,
-            Err(error) => {
-                return Err(GhosttyEngineError::checkpoint(
-                    error,
-                    native.feed.data.len(),
-                ));
-            }
-        }
-    }
-    Ok(inc.into_terminal())
-}
-
 fn finish_native(native: &mut NativeReplica) -> Result<BootstrapProgress, GhosttyEngineError> {
     if native.protocol_finished {
         return Err(GhosttyEngineError::InputAfterFinish);
     }
-    match native.decoder {
-        NativeDecoderState::Collecting => {}
-        NativeDecoderState::Finished(_) => {
-            native.protocol_finished = true;
-            return Ok(BootstrapProgress::Finished);
-        }
+    let state = std::mem::replace(&mut native.decoder, NativeDecoderState::Failed);
+    if let NativeDecoderState::LegacyCollecting(bytes) = state {
+        let mut terminal = decode_legacy_snapshot(&bytes)?;
+        attach_native_callbacks(native, &mut terminal)?;
+        native.decoder = NativeDecoderState::Finished(terminal);
+        native.protocol_finished = true;
+        return Ok(BootstrapProgress::Finished);
     }
-    let mut terminal = decode_collected_snapshot(native)?;
-    let _ = terminal.set_continuation_max_bytes(CONTINUATION_LIMIT);
-    attach_native_callbacks(native, &mut terminal)?;
-    native.decoder = NativeDecoderState::Finished(terminal);
+    let NativeDecoderState::Collecting(decoder) = state else {
+        return Err(match state {
+            NativeDecoderState::Ready(_) | NativeDecoderState::Finished(_) => {
+                GhosttyEngineError::InputAfterFinish
+            }
+            NativeDecoderState::Failed => GhosttyEngineError::DecoderFailed,
+            NativeDecoderState::LegacyCollecting(_) | NativeDecoderState::Collecting(_) => {
+                unreachable!()
+            }
+        });
+    };
+    let staged = decoder.staged_bytes();
+    let mut decoder = decoder
+        .ready()
+        .map_err(|error| GhosttyEngineError::checkpoint(error, staged))?;
+    attach_native_callbacks(native, decoder.terminal_mut())?;
+    native.decoder = NativeDecoderState::Ready(decoder);
     native.protocol_finished = true;
-    Ok(BootstrapProgress::Finished)
+    Ok(BootstrapProgress::Ready)
 }
 
-const fn push_history(
-    native: &NativeReplica,
-    _input: &[u8],
+fn push_history(
+    native: &mut NativeReplica,
+    input: &[u8],
 ) -> Result<HistoryApplyOutcome, GhosttyEngineError> {
     if !native.protocol_finished {
         return Err(GhosttyEngineError::HistoryBeforePublication);
     }
-    if matches!(native.decoder, NativeDecoderState::Finished(_)) {
-        return Ok(HistoryApplyOutcome {
-            progress: BootstrapProgress::Finished,
-            retained: true,
+    let NativeDecoderState::Ready(decoder) = &mut native.decoder else {
+        return Err(match native.decoder {
+            NativeDecoderState::Finished(_) => GhosttyEngineError::InputAfterFinish,
+            NativeDecoderState::Failed => GhosttyEngineError::DecoderFailed,
+            NativeDecoderState::Collecting(_) | NativeDecoderState::Ready(_) => {
+                GhosttyEngineError::HistoryBeforePublication
+            }
+            NativeDecoderState::LegacyCollecting(_) => GhosttyEngineError::HistoryBeforePublication,
         });
+    };
+    decoder
+        .feed(input)
+        .map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
+    let staged = decoder.staged_bytes();
+    let Some(progress) = decoder
+        .next()
+        .map_err(|error| GhosttyEngineError::checkpoint(error, staged))?
+    else {
+        return Ok(finish_history_decoder(native));
+    };
+    Ok(HistoryApplyOutcome {
+        progress: BootstrapProgress::Ready,
+        retained: progress.rows != 0,
+    })
+}
+
+fn finish_history_decoder(native: &mut NativeReplica) -> HistoryApplyOutcome {
+    let state = std::mem::replace(&mut native.decoder, NativeDecoderState::Failed);
+    let NativeDecoderState::Ready(decoder) = state else {
+        unreachable!("FINISH was authenticated from the ready decoder")
+    };
+    native.decoder = NativeDecoderState::Finished(decoder.into_terminal());
+    HistoryApplyOutcome {
+        progress: BootstrapProgress::Finished,
+        retained: true,
     }
-    Err(GhosttyEngineError::HistoryBeforePublication)
+}
+
+fn decode_legacy_snapshot(
+    bytes: &[u8],
+) -> Result<GhosttyTerminal<'static, 'static>, GhosttyEngineError> {
+    let decoder =
+        Decoder::new_buf(bytes).map_err(|error| GhosttyEngineError::checkpoint(error, 0))?;
+    let mut decoder = decoder
+        .ready()
+        .map_err(|error| GhosttyEngineError::checkpoint(error, bytes.len()))?;
+    while decoder
+        .next()
+        .map_err(|error| GhosttyEngineError::checkpoint(error, bytes.len()))?
+        .is_some()
+    {}
+    Ok(decoder.into_terminal())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use libghostty_vt::snapshot::{CaptureEvent, CaptureOptions};
 
     fn geometry() -> CanonicalGeometry {
         CanonicalGeometry::new(80, 4).expect("valid geometry")
@@ -1293,31 +1377,101 @@ mod tests {
 
     fn native_profile() -> BootstrapStreamProfile {
         BootstrapStreamProfile::NativeState {
+            codec: EngineCodec::LibghosttySnapshotV1,
+        }
+    }
+
+    fn legacy_native_profile() -> BootstrapStreamProfile {
+        BootstrapStreamProfile::NativeState {
             codec: EngineCodec::LibghosttyCheckpointV2,
         }
     }
 
-    fn capture_snapshot() -> (Vec<u8>, Vec<u8>) {
-        let mut source = GhosttyTerminal::new(80, 4).expect("source terminal");
+    struct CapturedSnapshot {
+        ready: Vec<u8>,
+        history: Vec<Vec<u8>>,
+        finish: Vec<u8>,
+    }
+
+    fn capture_snapshot() -> CapturedSnapshot {
+        let mut source = GhosttyTerminal::new(200, 3).expect("source terminal");
         source
-            .set_scrollback_max_lines(Some(100))
+            .set_scrollback_max_lines(Some(5_000))
             .expect("scrollback");
+        source
+            .set_scrollback_max_bytes(None)
+            .expect("unlimited scrollback bytes");
         source
             .set_continuation_max_bytes(CONTINUATION_LIMIT)
             .expect("continuation");
-        for line in 0..40 {
+        for line in 0..3_000 {
             source.vt_write(format!("line {line}\r\n").as_bytes());
         }
         source.vt_write(b"\x1b]2;checkpoint-title\x07");
-        let mut encoded = Vec::new();
-        source.encode_snapshot(&mut encoded).expect("encode");
-        let mut reader = Cursor::new(encoded.as_slice());
-        let decoder = Decoder::new(&mut reader).expect("decoder");
-        drop(decoder.ready().expect("ready"));
-        let offset = usize::try_from(reader.position()).expect("offset");
-        let bootstrap = encoded[..offset].to_vec();
-        let history = encoded[offset..].to_vec();
-        (bootstrap, history)
+        let mut capture = source
+            .capture_snapshot(CaptureOptions {
+                max_record_bytes: 64 * 1024,
+                max_pages: 1_000,
+            })
+            .expect("capture");
+        let mut buffer = vec![0; 64 * 1024];
+        let mut ready = Vec::new();
+        loop {
+            let event = capture.next(&mut buffer).expect("READY record");
+            ready.extend_from_slice(&buffer[..event.written()]);
+            if matches!(event, CaptureEvent::Ready { .. }) {
+                break;
+            }
+        }
+        let mut capture = capture.detach().expect("detached history");
+        let mut pending = Vec::new();
+        let mut history = Vec::new();
+        let finish = loop {
+            let event = capture.next(&mut buffer).expect("history record");
+            pending.extend_from_slice(&buffer[..event.written()]);
+            match event {
+                CaptureEvent::HistoryPage { .. } => history.push(std::mem::take(&mut pending)),
+                CaptureEvent::Finish { .. } => break std::mem::take(&mut pending),
+                CaptureEvent::Scan | CaptureEvent::Record { .. } => {}
+                CaptureEvent::Invalidated(reason) => panic!("capture invalidated: {reason:?}"),
+                CaptureEvent::Ready { .. } => unreachable!(),
+            }
+        };
+        assert!(
+            history.len() >= 2,
+            "fixture must exercise progressive history"
+        );
+        CapturedSnapshot {
+            ready,
+            history,
+            finish,
+        }
+    }
+
+    fn apply_history(
+        adapter: &mut GhosttyAdapter,
+        replica: &mut GhosttyReplica,
+        captured: &CapturedSnapshot,
+        effects: &mut EngineEffectBuffer,
+    ) {
+        for page in &captured.history {
+            let outcome = adapter
+                .apply_history_page(replica, page, effects)
+                .expect("history page");
+            assert_eq!(outcome.progress, BootstrapProgress::Ready);
+            assert_eq!(
+                adapter.bootstrap_staging_bytes(replica),
+                0,
+                "decoder must release each complete history unit"
+            );
+        }
+        assert_eq!(
+            adapter
+                .apply_history_page(replica, &captured.finish, effects)
+                .expect("authenticated FINISH")
+                .progress,
+            BootstrapProgress::Finished
+        );
     }
 
     fn native_adapter() -> GhosttyAdapter {
@@ -1425,7 +1579,7 @@ mod tests {
 
     #[test]
     fn live_bells_reach_effects_in_synthesized_and_native_replicas() {
-        let (bootstrap, history) = capture_snapshot();
+        let captured = capture_snapshot();
         for profile in [BootstrapStreamProfile::SynthesizedVtRaw, native_profile()] {
             let mut adapter = native_adapter();
             let mut replica = adapter.start_replica(profile, geometry()).unwrap();
@@ -1433,7 +1587,7 @@ mod tests {
             let bytes = if profile == BootstrapStreamProfile::SynthesizedVtRaw {
                 b"historical bell\x07".as_slice()
             } else {
-                &bootstrap
+                &captured.ready
             };
             adapter
                 .apply_bootstrap_chunk(&mut replica, bytes, &mut effects)
@@ -1447,9 +1601,7 @@ mod tests {
             )));
             assert_live_bell(&mut adapter, &mut replica, &mut effects);
             if profile != BootstrapStreamProfile::SynthesizedVtRaw {
-                adapter
-                    .apply_history_page(&mut replica, &history, &mut effects)
-                    .unwrap();
+                apply_history(&mut adapter, &mut replica, &captured, &mut effects);
                 assert_live_bell(&mut adapter, &mut replica, &mut effects);
             }
         }
@@ -1491,15 +1643,15 @@ mod tests {
 
     #[test]
     fn native_decoder_accepts_arbitrary_fragment_cuts_and_multiple_records() {
-        let (bootstrap, history) = capture_snapshot();
-        for width in [1, 2, 3, 7, 31, bootstrap.len().max(history.len())] {
+        let captured = capture_snapshot();
+        for width in [1, 2, 3, 7, 31, captured.ready.len()] {
             let mut adapter = native_adapter();
             let mut replica = adapter
                 .start_replica(native_profile(), geometry())
                 .expect("native replica");
             let mut effects = EngineEffectBuffer::new();
             let mut bootstrap_progress = BootstrapProgress::Pending;
-            for fragment in bootstrap.chunks(width) {
+            for fragment in captured.ready.chunks(width) {
                 bootstrap_progress = adapter
                     .apply_bootstrap_chunk(&mut replica, fragment, &mut effects)
                     .expect("arbitrary bootstrap fragment");
@@ -1509,16 +1661,9 @@ mod tests {
                 adapter
                     .finish_bootstrap(&mut replica, &mut effects)
                     .expect("protocol READY"),
-                BootstrapProgress::Finished
+                BootstrapProgress::Ready
             );
-            let mut history_progress = BootstrapProgress::Ready;
-            for fragment in history.chunks(width) {
-                history_progress = adapter
-                    .apply_history_page(&mut replica, fragment, &mut effects)
-                    .expect("arbitrary history fragment")
-                    .progress;
-            }
-            assert_eq!(history_progress, BootstrapProgress::Finished);
+            apply_history(&mut adapter, &mut replica, &captured, &mut effects);
             assert_eq!(
                 replica
                     .terminal()
@@ -1531,8 +1676,41 @@ mod tests {
     }
 
     #[test]
+    fn legacy_v2_decode_remains_finish_before_publication() {
+        let captured = capture_snapshot();
+        let mut eager = captured.ready.clone();
+        for page in &captured.history {
+            eager.extend_from_slice(page);
+        }
+        eager.extend_from_slice(&captured.finish);
+        let mut adapter = native_adapter();
+        let mut replica = adapter
+            .start_replica(legacy_native_profile(), geometry())
+            .expect("legacy native replica");
+        let mut effects = EngineEffectBuffer::new();
+        adapter
+            .apply_bootstrap_chunk(&mut replica, &eager, &mut effects)
+            .expect("complete eager checkpoint");
+        assert!(replica.terminal().is_none());
+        assert_eq!(
+            adapter
+                .finish_bootstrap(&mut replica, &mut effects)
+                .expect("legacy FINISH before publication"),
+            BootstrapProgress::Finished
+        );
+        assert_eq!(
+            replica
+                .terminal()
+                .expect("published terminal")
+                .title()
+                .unwrap(),
+            "checkpoint-title"
+        );
+    }
+
+    #[test]
     fn publication_requires_authenticated_ready_and_one_shot_continuation_replay() {
-        let (bootstrap, _) = capture_snapshot();
+        let captured = capture_snapshot();
         let mut adapter = native_adapter();
         let mut replica = adapter
             .start_replica(native_profile(), geometry())
@@ -1544,7 +1722,7 @@ mod tests {
         ));
         assert_eq!(
             adapter
-                .apply_bootstrap_chunk(&mut replica, &bootstrap, &mut effects)
+                .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
                 .expect("prefix bytes"),
             BootstrapProgress::Pending
         );
@@ -1561,7 +1739,7 @@ mod tests {
             adapter
                 .finish_bootstrap(&mut replica, &mut effects)
                 .expect("protocol READY validates native READY"),
-            BootstrapProgress::Finished
+            BootstrapProgress::Ready
         );
         adapter
             .apply_output(&mut replica, b"\x1b]2;published-live\x07", &mut effects)
@@ -1585,14 +1763,14 @@ mod tests {
 
     #[test]
     fn live_output_is_applied_between_later_history_pages() {
-        let (bootstrap, history) = capture_snapshot();
+        let captured = capture_snapshot();
         let mut adapter = native_adapter();
         let mut replica = adapter
             .start_replica(native_profile(), geometry())
             .expect("native replica");
         let mut effects = EngineEffectBuffer::new();
         adapter
-            .apply_bootstrap_chunk(&mut replica, &bootstrap, &mut effects)
+            .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
             .expect("checkpoint bootstrap record");
         adapter
             .finish_bootstrap(&mut replica, &mut effects)
@@ -1604,10 +1782,13 @@ mod tests {
                 &mut effects,
             )
             .expect("live output after READY");
-        if !history.is_empty() {
+        for page in &captured.history {
             adapter
-                .apply_history_page(&mut replica, &history, &mut effects)
+                .apply_history_page(&mut replica, page, &mut effects)
                 .expect("history page");
+            adapter
+                .apply_output(&mut replica, b"interleaved-live", &mut effects)
+                .expect("live output between history pages");
         }
         assert_eq!(
             replica
@@ -1621,7 +1802,8 @@ mod tests {
 
     #[test]
     fn native_truncation_corruption_and_limits_are_typed() {
-        let (bootstrap, _) = capture_snapshot();
+        let captured = capture_snapshot();
+        let bootstrap = &captured.ready;
         let mut effects = EngineEffectBuffer::new();
 
         let mut adapter = native_adapter();
@@ -1669,7 +1851,7 @@ mod tests {
             .start_replica(native_profile(), geometry())
             .expect("native replica");
         assert!(matches!(
-            adapter.apply_bootstrap_chunk(&mut replica, &bootstrap, &mut effects),
+            adapter.apply_bootstrap_chunk(&mut replica, bootstrap, &mut effects),
             Err(GhosttyEngineError::PayloadLimitExceeded { limit: 1, .. })
         ));
 
@@ -1678,7 +1860,7 @@ mod tests {
             .start_replica(native_profile(), geometry())
             .expect("native replica");
         let mut limit_error = None;
-        for byte in &bootstrap {
+        for byte in bootstrap {
             if let Err(error) = adapter.apply_bootstrap_chunk(
                 &mut replica,
                 std::slice::from_ref(byte),
@@ -1691,34 +1873,61 @@ mod tests {
         assert!(limit_error.is_none());
         assert!(matches!(
             adapter.finish_bootstrap(&mut replica, &mut effects),
-            Ok(BootstrapProgress::Finished) | Err(GhosttyEngineError::Checkpoint { .. })
+            Ok(BootstrapProgress::Ready) | Err(GhosttyEngineError::Checkpoint { .. })
         ));
     }
 
     #[test]
     fn native_history_finish_rejects_trailing_and_post_finish_pages() {
-        let (bootstrap, mut history) = capture_snapshot();
-        history.extend_from_slice(b"trailing");
+        let captured = capture_snapshot();
+        let mut finish = captured.finish.clone();
+        finish.extend_from_slice(b"trailing");
         let mut adapter = native_adapter();
         let mut replica = adapter
             .start_replica(native_profile(), geometry())
             .expect("native replica");
         let mut effects = EngineEffectBuffer::new();
         adapter
-            .apply_bootstrap_chunk(&mut replica, &bootstrap, &mut effects)
+            .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
             .expect("checkpoint through READY");
         adapter
             .finish_bootstrap(&mut replica, &mut effects)
             .expect("protocol READY");
-        // Full GHOSTSNP is already reconstructed at READY; extra history is a
-        // no-op that must leave the live terminal renderable.
+        for page in &captured.history {
+            adapter
+                .apply_history_page(&mut replica, page, &mut effects)
+                .expect("complete history page");
+        }
         adapter
-            .apply_history_page(&mut replica, &history, &mut effects)
-            .expect("history after full snapshot decode is ignored");
+            .apply_history_page(&mut replica, &finish, &mut effects)
+            .expect_err("trailing bytes after FINISH are rejected");
         assert!(replica.terminal().is_some());
-        adapter
-            .apply_history_page(&mut replica, b"again", &mut effects)
-            .expect("repeat history after decode is ignored");
+    }
+
+    #[test]
+    fn native_history_rejects_truncated_page_and_finish_and_releases_feed() {
+        let captured = capture_snapshot();
+        for truncated in [
+            &captured.history[0][..captured.history[0].len() - 1],
+            &captured.finish[..captured.finish.len() - 1],
+        ] {
+            let mut adapter = native_adapter();
+            let mut replica = adapter
+                .start_replica(native_profile(), geometry())
+                .expect("native replica");
+            let mut effects = EngineEffectBuffer::new();
+            adapter
+                .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
+                .expect("READY bytes");
+            adapter
+                .finish_bootstrap(&mut replica, &mut effects)
+                .expect("protocol READY");
+            assert!(matches!(
+                adapter.apply_history_page(&mut replica, truncated, &mut effects),
+                Err(GhosttyEngineError::Checkpoint { .. })
+            ));
+            assert_eq!(adapter.bootstrap_staging_bytes(&replica), 0);
+        }
     }
 
     #[test]
@@ -1729,7 +1938,7 @@ mod tests {
             adapter.start_replica(native_profile(), geometry()),
             Err(GhosttyEngineError::UnsupportedProfile(
                 BootstrapStreamProfile::NativeState {
-                    codec: EngineCodec::LibghosttyCheckpointV2,
+                    codec: EngineCodec::LibghosttySnapshotV1,
                 }
             ))
         ));
@@ -1742,6 +1951,11 @@ mod tests {
         assert!(
             capabilities
                 .native_codecs
+                .contains(EngineCodec::LibghosttySnapshotV1)
+        );
+        assert!(
+            !capabilities
+                .native_codecs
                 .contains(EngineCodec::LibghosttyCheckpointV2)
         );
         assert_eq!(
@@ -1753,14 +1967,14 @@ mod tests {
 
     #[test]
     fn native_history_bounds_every_projection_under_page_granular_storage() {
-        let (bootstrap, history) = capture_snapshot();
+        let captured = capture_snapshot();
         let mut adapter = native_adapter();
         let mut replica = adapter
             .start_replica(native_profile(), geometry())
             .expect("native replica");
         let mut effects = EngineEffectBuffer::new();
         adapter
-            .apply_bootstrap_chunk(&mut replica, &bootstrap, &mut effects)
+            .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
             .expect("checkpoint through READY");
         adapter
             .finish_bootstrap(&mut replica, &mut effects)
@@ -1769,9 +1983,9 @@ mod tests {
             .configure_history_budget(&mut replica, 64 * 1024, 2)
             .expect("engine history limits");
         let mut physical_high_water = 0;
-        if !history.is_empty() {
+        for page in &captured.history {
             adapter
-                .apply_history_page(&mut replica, &history, &mut effects)
+                .apply_history_page(&mut replica, page, &mut effects)
                 .expect("bounded history unit");
             physical_high_water = physical_high_water.max(
                 replica
@@ -1809,25 +2023,19 @@ mod tests {
     #[test]
     #[allow(clippy::too_many_lines)]
     fn native_projection_search_and_anchors_remain_engine_owned() {
-        let (bootstrap, history) = capture_snapshot();
+        let captured = capture_snapshot();
         let mut adapter = native_adapter();
         let mut replica = adapter
             .start_replica(native_profile(), geometry())
             .expect("native replica");
         let mut effects = EngineEffectBuffer::new();
         adapter
-            .apply_bootstrap_chunk(&mut replica, &bootstrap, &mut effects)
+            .apply_bootstrap_chunk(&mut replica, &captured.ready, &mut effects)
             .expect("checkpoint through READY");
         adapter
             .finish_bootstrap(&mut replica, &mut effects)
             .expect("protocol READY");
-        assert_eq!(
-            adapter
-                .apply_history_page(&mut replica, &history, &mut effects)
-                .expect("complete history")
-                .progress,
-            BootstrapProgress::Finished
-        );
+        apply_history(&mut adapter, &mut replica, &captured, &mut effects);
 
         let projection = adapter
             .project_history(&mut replica, 12, EngineProjectionOrigin::Tail, 3)
@@ -1847,7 +2055,7 @@ mod tests {
         );
 
         let found = adapter
-            .search_loaded(&mut replica, "line 10", 1)
+            .search_loaded(&mut replica, "line 2990", 1)
             .expect("engine search");
         assert_eq!(found.len(), 1);
         let selection = EngineDocumentSelection {
@@ -1860,7 +2068,7 @@ mod tests {
                 .format_selection(&replica, selection)
                 .expect("engine formatting")
                 .as_deref(),
-            Some("line 10")
+            Some("line 2990")
         );
         let full_scrollback = replica
             .terminal()
