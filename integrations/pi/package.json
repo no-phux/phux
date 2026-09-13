@@ -1,6 +1,6 @@
 {
   "name": "@phux/pi",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "Pi integration for controlling shared phux terminals",
   "type": "module",
   "license": "Apache-2.0",

@@ -3,6 +3,17 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.3](https://github.com/no-phux/phux/compare/cockpit-v0.23.2...cockpit-v0.23.3) (2026-09-13)
+
+
+### Bug Fixes
+
+* **ci:** align cockpit cache contract with reusable Zig keys ([1561895](https://github.com/no-phux/phux/commit/1561895b191fa7d85dc3373950bb6c45335177b6))
+* **ci:** retry Cockpit Zig package fetches on a cold cache ([0a7ebca](https://github.com/no-phux/phux/commit/0a7ebcaa701aa3c14b9dad6bfb9a2ede5fbae945))
+* **ci:** stop isolated Zig cache and 10-minute watchdog in Cockpit jobs ([b213a66](https://github.com/no-phux/phux/commit/b213a6640cf097bbe54f157612fe1fe7f0bb6d1e))
+* **cockpit:** dispatch native host workflows ([be3e39e](https://github.com/no-phux/phux/commit/be3e39e4c58be4f81a59f4d1b0aff0f526600126))
+* **release:** pin portable CPU baselines ([5344cdc](https://github.com/no-phux/phux/commit/5344cdc732b723b94114aad311caa5b96cedeea4))
+
 ## [0.23.2](https://github.com/no-phux/phux/compare/cockpit-v0.23.1...cockpit-v0.23.2) (2026-09-13)
 
 
