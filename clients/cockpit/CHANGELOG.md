@@ -3,6 +3,13 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.2](https://github.com/no-phux/phux/compare/cockpit-v0.23.1...cockpit-v0.23.2) (2026-09-13)
+
+
+### Bug Fixes
+
+* **cockpit:** commit the settings departure on OS window close ([#589](https://github.com/no-phux/phux/issues/589)) ([8a63ce9](https://github.com/no-phux/phux/commit/8a63ce9d3c02861dadbd02b468afa0069ec67d8d))
+
 ## [0.23.1](https://github.com/no-phux/phux/compare/cockpit-v0.23.0...cockpit-v0.23.1) (2026-09-12)
 
 

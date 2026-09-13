@@ -9,6 +9,19 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.35.0](https://github.com/no-phux/phux/compare/v0.34.0...v0.35.0) (2026-09-13)
+
+
+### Features
+
+* add QUIC per-Terminal streams and mTLS workload identity ([#590](https://github.com/no-phux/phux/issues/590)) ([0b77c33](https://github.com/no-phux/phux/commit/0b77c33de1421822770afa1c3055924d072f3f88))
+* **vt:** pin libghostty-rs to official snapshot codec ([#588](https://github.com/no-phux/phux/issues/588)) ([e76997a](https://github.com/no-phux/phux/commit/e76997af6cd2adf419ae6d52ea57eb1ac29ce250))
+
+
+### Bug Fixes
+
+* **protocol:** make hand-allocated wire tags duplicate-proof at compile time ([#592](https://github.com/no-phux/phux/issues/592)) ([c0f2e5b](https://github.com/no-phux/phux/commit/c0f2e5bbb269faa1c07db847356ddce5386c31a1))
+
 ## [0.34.0](https://github.com/no-phux/phux/compare/v0.33.0...v0.34.0) (2026-09-12)
 
 
