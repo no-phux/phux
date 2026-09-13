@@ -366,6 +366,25 @@ upload. Require an observed protocol-ready outcome or explicit failure;
 measure queued bytes, outstanding promises, JS/WASM heap, and input delay.
 Tracked work: phux-42sg.
 
+**Remediation evidence (2026-09-13):** the integrated browser uses bounded
+outbound admission, supervised reader/writer lifetime, protocol-ready
+establishment, and authenticated WSS subprotocol fallback. The parent reran
+18 Chrome lifecycle/framing tests, two live-server compatibility tests, one
+render test, and 12 Node session tests. A separate real `run_with_fallback`
+experiment discarded six QUIC datagrams into an owned UDP blackhole, then
+reached READY and rendered `PHUX_WEB_OK` over token-authenticated WSS in
+4.15 seconds. Wrong/missing tokens were refused; the WSS URL carried no token
+and the negotiated subprotocol was only `phux.v1`. The reproducible fixture is
+[`scripts/ci/web-browser.py`](../scripts/ci/web-browser.py).
+
+The serial production WebTransport suite passed eight tests, including an
+authenticated consumer withholding its first stream while a second consumer
+connects. Raw duplicate header detection has a dependency boundary:
+`wtransport` collapses identical header names into a map before application
+inspection. Application rejection of visible ambiguous carriers does not
+prove rejection of every raw duplicate; that remaining dependency work is
+tracked as phux-50wm.
+
 ### Browser and Cockpit retain shared application scheduling
 
 WebTransport framing repeatedly copies its remaining tail with `Vec::split_off`
@@ -457,6 +476,18 @@ acknowledgments, replay verification, and whole-file hashing. A new stream
 does not remove the connection-wide congestion budget.
 
 Tracked work: phux-wgav.
+
+**Measurement evidence (2026-09-13):** a real `Connection`/`ServerRuntime`
+upload experiment confirms the wire-ceiling concern. At 10 Mbit/s with 50 ms
+shaped RTT, one 8 MiB frame occupied mutable `Connection::send` for 6.069 s.
+Smaller 16/64/256 KiB frames traded goodput for lower control delay. This is a
+wire-ceiling experiment, not evidence that a shipping upload producer selects
+8 MiB chunks. See the [production-path report](2026-09-13-protocol-path-measurements.md)
+for the loaded-host measurements, timing origins, and remaining harness review
+qualifications. No universal chunk policy or new bulk stream is inferred from
+those diagnostics. Server blocking uploads and queued command work have
+separate admission budgets; active cancellation and production dispatch
+isolation remain acceptance gates.
 
 **Acceptance experiment:** upload compressible and incompressible files at
 0.3/3/10 Mbit/s while issuing control requests and typing in another pane.
