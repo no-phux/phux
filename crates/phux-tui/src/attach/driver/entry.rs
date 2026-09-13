@@ -339,16 +339,35 @@ async fn handshake(
             return Ok((conn, attached, output_mode));
         }
     };
-    let default_colors = probe_default_colors
-        .then(crate::attach::terminal_probe::default_colors)
-        .flatten();
-    let client_caps = attach_client_caps(default_colors, dial);
-    let mut conn =
-        Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps).await?;
+    let mut conn = connect_attach_dial(dial, probe_default_colors).await?;
     let output_mode = negotiated_output_mode(&conn)?;
     let attach_id = send_attach(&mut conn, target).await?;
     let attached = wait_for_attached(&mut conn, attach_id).await?;
     Ok((conn, attached, output_mode))
+}
+
+/// Establish the exact production TUI HELLO contract without attaching yet.
+///
+/// Reconnect probes use this entry point so transferring their successful
+/// connection into [`run_with_predict_connection`] cannot silently downgrade
+/// native/L3/color/compression or QUIC-stream capabilities. Default colors are
+/// probed while the outer terminal is still cooked, exactly as for an initial
+/// production attach.
+pub async fn connect_for_attach(dial: &Dial) -> Result<Connection, AttachError> {
+    connect_attach_dial(dial, true).await
+}
+
+async fn connect_attach_dial(
+    dial: &Dial,
+    probe_default_colors: bool,
+) -> Result<Connection, AttachError> {
+    let default_colors = probe_default_colors
+        .then(crate::attach::terminal_probe::default_colors)
+        .flatten();
+    let client_caps = attach_client_caps(default_colors, dial);
+    Connection::connect_dial_with_hello(dial, attach_client_name(), client_caps)
+        .await
+        .map_err(AttachError::from)
 }
 
 fn negotiated_output_mode(conn: &Connection) -> Result<OutputMode, AttachError> {

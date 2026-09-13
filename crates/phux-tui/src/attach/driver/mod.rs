@@ -36,8 +36,8 @@ mod tests;
 mod viewport;
 
 pub use entry::{
-    run_recorded_connection, run_recorded_dial, run_with_predict_connection, run_with_predict_dial,
-    run_with_stdout, run_with_stdout_predict,
+    connect_for_attach, run_recorded_connection, run_recorded_dial, run_with_predict_connection,
+    run_with_predict_dial, run_with_stdout, run_with_stdout_predict,
 };
 pub use headless::run_headless_rendered;
 pub use terminal::{RawModeGuard, write_terminal_reset};
