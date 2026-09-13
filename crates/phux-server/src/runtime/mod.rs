@@ -46,6 +46,7 @@ use phux_protocol::wire::{ListenerDisabledReason, RemoteListenerSlot, RemoteList
 
 pub mod attach;
 pub mod client;
+mod command_tasks;
 pub mod commands;
 mod directory;
 pub mod input_lane;
