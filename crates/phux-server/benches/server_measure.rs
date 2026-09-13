@@ -22,7 +22,12 @@ use crate::support::{Corpus, deterministic_line};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CaptureMeasurement {
+    /// Time until the synchronous encoder releases the canonical terminal.
+    pub(crate) capture_blocking: Duration,
+    /// End-to-end codec time to capture, decode, and authenticate READY.
     pub(crate) ready: Duration,
+    /// Time to decode and authenticate the already-available prefix through READY.
+    pub(crate) decode_ready: Duration,
     pub(crate) full_history: Duration,
     pub(crate) ready_bytes: usize,
     pub(crate) full_history_bytes: usize,
@@ -111,7 +116,9 @@ pub(crate) fn synthesized_measurement(terminal: &GhosttyTerminal<'_, '_>) -> Cap
     let full_elapsed = full_start.elapsed();
     let history_slice_bytes = full.scrollback.len();
     CaptureMeasurement {
+        capture_blocking: ready_elapsed,
         ready: ready_elapsed,
+        decode_ready: Duration::ZERO,
         full_history: full_elapsed,
         ready_bytes: ready.bytes.len(),
         full_history_bytes: full.bytes.len().saturating_add(full.scrollback.len()),
@@ -137,12 +144,17 @@ pub(crate) fn native_ready_measurement(
     terminal
         .encode_snapshot(&mut encoded)
         .expect("encode snapshot");
+    let capture_elapsed = started.elapsed();
     let mut reader = Cursor::new(encoded.as_slice());
     let decoder = libghostty_vt::snapshot::Decoder::new(&mut reader).expect("decoder");
+    let decode_started = Instant::now();
     drop(decoder.ready().expect("ready"));
+    let decode_ready = decode_started.elapsed();
     let ready_bytes = usize::try_from(reader.position()).expect("offset");
     CaptureMeasurement {
-        ready: started.elapsed(),
+        capture_blocking: capture_elapsed,
+        ready: capture_elapsed.saturating_add(decode_ready),
+        decode_ready,
         ready_bytes,
         chunks: 1,
         caller_buffer_growths: 1,
@@ -160,18 +172,44 @@ pub(crate) fn native_full_measurement(
         .encode_snapshot(&mut encoded)
         .expect("encode snapshot");
     let encode_elapsed = started.elapsed();
+    let mut ready_reader = Cursor::new(encoded.as_slice());
+    let ready_decoder =
+        libghostty_vt::snapshot::Decoder::new(&mut ready_reader).expect("ready decoder");
+    drop(ready_decoder.ready().expect("ready"));
+    let ready_bytes = usize::try_from(ready_reader.position()).expect("offset");
     let mut reader = Cursor::new(encoded.as_slice());
     let decoder = libghostty_vt::snapshot::Decoder::new(&mut reader).expect("decoder");
-    drop(decoder.ready().expect("ready"));
-    let ready_bytes = usize::try_from(reader.position()).expect("offset");
-    let history_bytes = encoded.len().saturating_sub(ready_bytes);
+    let decode_started = Instant::now();
+    let mut decoder = decoder.ready().expect("ready");
+    let decode_ready = decode_started.elapsed();
+    let mut previous_offset = ready_bytes;
+    let mut history_slice_max = Duration::ZERO;
+    let mut history_slice_max_bytes = 0_usize;
+    let full_decode_started = Instant::now();
+    loop {
+        let page_started = Instant::now();
+        let Some(progress) = decoder.next().expect("decode history page") else {
+            break;
+        };
+        history_slice_max = history_slice_max.max(page_started.elapsed());
+        let offset = progress
+            .as_decoder()
+            .source_offset()
+            .expect("history source offset");
+        history_slice_max_bytes =
+            history_slice_max_bytes.max(offset.saturating_sub(previous_offset));
+        previous_offset = offset;
+    }
+    let full_decode_elapsed = full_decode_started.elapsed();
     CaptureMeasurement {
-        ready: encode_elapsed,
-        full_history: encode_elapsed,
+        capture_blocking: encode_elapsed,
+        ready: encode_elapsed.saturating_add(decode_ready),
+        decode_ready,
+        full_history: full_decode_elapsed,
         ready_bytes,
         full_history_bytes: encoded.len(),
-        history_slice_max: encode_elapsed,
-        history_slice_max_bytes: history_bytes,
+        history_slice_max,
+        history_slice_max_bytes,
         chunks: 1,
         caller_buffer_growths: 1,
         payload_copies: 0,
