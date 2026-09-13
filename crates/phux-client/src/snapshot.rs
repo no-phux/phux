@@ -29,7 +29,7 @@
 //! whether older rows were dropped (which is what
 //! [`ScreenState::truncated`] carries).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
@@ -84,23 +84,92 @@ pub async fn get_screen_scrollback(
     request_scrollback: Option<u32>,
     cells: bool,
 ) -> Result<ScreenState, AttachError> {
-    let mut conn = Connection::connect(socket).await?;
-    // Safe to ignore the interleave: this connection is freshly opened and
-    // never subscribes (no ATTACH, no ATTACH_RESOURCE, no SUBSCRIBE_EVENTS),
+    ScreenPollConnection::new(socket)
+        .read(terminal_id, request_scrollback, cells)
+        .await
+}
+
+/// One persistent control connection for a bounded screen-polling operation.
+///
+/// Kept crate-private so the public snapshot functions remain fresh one-shot
+/// reads. A wait loop owns one of these, reuses its negotiated UDS connection,
+/// and reconnects only after transport loss.
+pub(crate) struct ScreenPollConnection {
+    socket: PathBuf,
+    conn: Option<Connection>,
+    next_request_id: u32,
+}
+
+impl ScreenPollConnection {
+    pub(crate) fn new(socket: &Path) -> Self {
+        Self {
+            socket: socket.to_path_buf(),
+            conn: None,
+            next_request_id: 1,
+        }
+    }
+
+    pub(crate) async fn read(
+        &mut self,
+        terminal_id: ResourceId,
+        request_scrollback: Option<u32>,
+        cells: bool,
+    ) -> Result<ScreenState, AttachError> {
+        let mut recovered = false;
+        loop {
+            if self.conn.is_none() {
+                self.conn = Some(Connection::connect(&self.socket).await?);
+            }
+            let request_id = self.take_request_id();
+            let Some(conn) = self.conn.as_mut() else {
+                return Err(AttachError::Protocol(
+                    "screen poll connection was not established".to_owned(),
+                ));
+            };
+            let result = conn
+                .request(
+                    request_id,
+                    Command::GetScreen {
+                        terminal_id: terminal_id.clone(),
+                        request_scrollback,
+                        cells,
+                    },
+                )
+                .await;
+            match result {
+                Ok(reply) => return decode_screen_reply(reply.into_result_ignoring_interleaved()),
+                Err(error) if !recovered && is_transport_loss(&error) => {
+                    self.conn = None;
+                    recovered = true;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
+    fn take_request_id(&mut self) -> u32 {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        request_id
+    }
+}
+
+const fn is_transport_loss(error: &AttachError) -> bool {
+    matches!(
+        error,
+        AttachError::Io(_)
+            | AttachError::Connect(_)
+            | AttachError::Unreachable(_)
+            | AttachError::Disconnected
+    )
+}
+
+fn decode_screen_reply(result: CommandResult) -> Result<ScreenState, AttachError> {
+    // Safe to ignore the interleave: this control-only connection never
+    // subscribes (no ATTACH, no ATTACH_RESOURCE, no SUBSCRIBE_EVENTS),
     // so nothing fans out onto its mailbox, and the server's
     // `handle_get_screen` is a pure projection that emits no frame of its own
     // before the ack — it does not even take the client's `out_tx`.
-    let result = conn
-        .request(
-            1,
-            Command::GetScreen {
-                terminal_id,
-                request_scrollback,
-                cells,
-            },
-        )
-        .await?
-        .into_result_ignoring_interleaved();
     match result {
         CommandResult::OkWith(CommandValue::Json(json)) => serde_json::from_str(&json)
             .map_err(|err| AttachError::Protocol(format!("malformed GET_SCREEN JSON: {err}"))),

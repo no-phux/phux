@@ -35,7 +35,7 @@ use regex::Regex;
 use tokio::time::Instant;
 
 use crate::attach::AttachError;
-use crate::snapshot::get_screen_scrollback;
+use crate::snapshot::ScreenPollConnection;
 
 /// Default gap between polls. Below human settle perception, well above
 /// the per-poll round-trip cost on a local UDS.
@@ -489,10 +489,10 @@ pub async fn poll_until_scoped_with_deadline(
     let mut idle = IdleTracker::new(start);
     let interval = effective_interval(condition, interval);
     let mut screen = ScreenState::default();
+    let mut connection = ScreenPollConnection::new(socket);
 
     loop {
-        let read = get_screen_scrollback(
-            socket,
+        let read = connection.read(
             terminal_id.clone(),
             scope.history_request(),
             scope.wants_cells(),
@@ -1022,6 +1022,8 @@ mod tests {
 #[allow(clippy::expect_used, reason = "tests")]
 mod deadline_tests {
     use std::path::Path;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use phux_protocol::ResourceId;
@@ -1035,7 +1037,7 @@ mod deadline_tests {
         poll_until_scoped_with_deadline,
     };
     use crate::deadline::Deadline;
-    use crate::testkit::{self, ScriptSpec};
+    use crate::testkit::{self, ScriptSpec, ScriptedServer};
 
     const BUDGET: Duration = Duration::from_millis(300);
     /// Slack for a loaded machine; a regression overruns by far more.
@@ -1153,5 +1155,68 @@ mod deadline_tests {
             "no polling past the one read: {elapsed:?}"
         );
         peer.abort();
+    }
+
+    /// Acceptance for phux-69pq.8: the assertion observes only accepted UDS
+    /// connections, not how the polling loop is implemented. Every agent needs
+    /// multiple reads to satisfy `Idle`, yet opens exactly one connection.
+    async fn assert_polling_connection_count(agents: usize) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join(format!("poll-{agents}.sock"));
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let accepted = Arc::new(AtomicUsize::new(0));
+        let server_count = Arc::clone(&accepted);
+        let ready = showing("steady");
+        let peer = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.expect("accept polling client");
+                server_count.fetch_add(1, Ordering::Relaxed);
+                let spec = ScriptSpec::new().screen(&ready);
+                tokio::spawn(ScriptedServer::on_stream(stream, spec).run());
+            }
+        });
+
+        let mut waits = Vec::with_capacity(agents);
+        for _ in 0..agents {
+            let socket = socket.clone();
+            waits.push(tokio::spawn(async move {
+                poll_until_scoped_with_deadline(
+                    &socket,
+                    ResourceId::local(1),
+                    &Condition::Idle(Duration::ZERO),
+                    Deadline::new(Some(Duration::from_secs(2))),
+                    Duration::from_millis(1),
+                    &MatchScope::default(),
+                )
+                .await
+                .expect("poll wait")
+            }));
+        }
+        for wait in waits {
+            let result = wait.await.expect("poll task");
+            assert!(matches!(result.outcome, WaitOutcome::Met));
+            assert!(result.polls >= 2, "idle requires repeated reads");
+        }
+        assert_eq!(
+            accepted.load(Ordering::Relaxed),
+            agents,
+            "each wait owns one persistent control connection"
+        );
+        peer.abort();
+    }
+
+    #[tokio::test]
+    async fn polling_connection_count_is_pinned_for_1_agent() {
+        assert_polling_connection_count(1).await;
+    }
+
+    #[tokio::test]
+    async fn polling_connection_count_is_pinned_for_8_agents() {
+        assert_polling_connection_count(8).await;
+    }
+
+    #[tokio::test]
+    async fn polling_connection_count_is_pinned_for_32_agents() {
+        assert_polling_connection_count(32).await;
     }
 }
