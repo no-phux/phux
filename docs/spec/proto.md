@@ -187,11 +187,14 @@ single-stream is their permanent shape.
   deadline (§4, QUIC `ADMISSION_DEADLINE`) abandons the stream.
 - **Teardown.** Client `finish()` after `DETACH_RESOURCE`; server reset
   on Terminal death follows the `RESOURCE_CLOSED` already sent on
-  control. Stream close is a detach signal, never an error: the
+  control. A clean frame-boundary stream finish is a detach signal: the
   generation machinery ([L1.md §4.6](./L1.md)) owns continuity, and
   rebinding a `StreamId` to a fresh QUIC stream after migration or
   re-attach is the reconnect path it already specifies. The app-level
-  `StreamId` is never the QUIC stream id.
+  `StreamId` is never the QUIC stream id. A partial header/body, malformed
+  frame, or invalid stream origin is a protocol failure, not a clean detach.
+  Implementations MUST retain framing errors through the receive multiplexer
+  and reject queued frames from retired bindings at consumption time.
 - **Flow control.** Each Terminal stream has independent QUIC stream flow
   control. Congestion control, connection credit, transport CPU, and bounded
   application queues remain connection-shared, so implementations MUST fairly
@@ -424,7 +427,9 @@ only. Native is selected first when both peers advertise it, share an exact
 codec, and the feature intersection contains all four required native features,
 including `BOUNDED_HISTORY_CONTROL`. `LibghosttySnapshotV1 = 3` names the
 official `GHOSTSNPv1` feed contract: READY may publish a validated prefix and
-complete history manifest/page units continue afterward. The distinct legacy
+complete history manifest/page units continue afterward. Its history cursor
+remains present through the engine-authenticated FINISH, including when no
+history pages remain; absence of a cursor is not proof of FINISH. The distinct legacy
 `LibghosttyCheckpointV2 = 2` identity remains decodable, but its decoder requires
 FINISH before publication; implementations MUST NOT infer compatibility between
 the two. A current native producer/consumer advertises only snapshot-v1. A
