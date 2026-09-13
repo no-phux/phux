@@ -214,6 +214,33 @@ fi
 print_config >&2
 cd "$ROOT"
 
+run_zig() {
+    zig build --global-cache-dir "$(resolved_cache_dir)" "${ZIG_ARGS[@]}"
+}
+
+# `zig build --fetch` exits after the dependency tree is on disk. Nested
+# tarball fetches against github.com sometimes get HttpConnectionClosing
+# on Actions; retry those, never a compile or test.
+is_fetch_only=0
+for arg in "${ZIG_ARGS[@]}"; do
+    case "$arg" in
+        --fetch|--fetch=all|--fetch=needed) is_fetch_only=1 ;;
+    esac
+done
+if [ "$is_fetch_only" = 1 ]; then
+    n=0
+    until run_zig; do
+        n=$((n + 1))
+        if [ "$n" -ge 4 ]; then
+            printf 'zig-build.sh: package fetch failed after %s attempts\n' "$n" >&2
+            exit 1
+        fi
+        printf 'zig-build.sh: package fetch failed (attempt %s); retrying\n' "$n" >&2
+        sleep $((n * 8))
+    done
+    exit 0
+fi
+
 # Timeout 0: the caller (Actions job, an operator) owns the limit. Exec zig
 # directly so a shipping compile is not killed at 10 minutes and CI does not
 # pay for process-group / watchdog / orphan-reaper machinery it does not need.
