@@ -55,14 +55,15 @@ impl RemoteHome {
         }
     }
 
-    /// A fake `ssh` answering the two commands `--remote`'s pairing rung
+    /// A fake `ssh` answering the three commands `--remote`'s bootstrap rung
     /// issues. `overlay` empty means the host advertises nothing dialable,
-    /// which is what drives the `ssh://` fallback.
-    ///
-    /// Note what is deliberately absent: `phux service install`. `--remote`
-    /// must never install anything on the far end (ADR-0093 Decision 3), so
-    /// this script fails the run if it is ever asked to.
+    /// which is what drives the `ssh://` fallback. Every invocation is logged
+    /// so tests can prove the remote service starts before pairing.
     fn install_fake_ssh(&self, overlay: &str) -> PathBuf {
+        self.install_fake_ssh_with_service(overlay, "echo \"service installed\"")
+    }
+
+    fn install_fake_ssh_with_service(&self, overlay: &str, service: &str) -> PathBuf {
         let path = self.dir.path().join("fake-ssh");
         let overlay_json = if overlay.is_empty() {
             "[]".to_owned()
@@ -71,12 +72,12 @@ impl RemoteHome {
         };
         let script = format!(
             "#!/bin/sh\n\
+             printf '%s\\n' \"$*\" >> \"$PHUX_TEST_SSH_CALLS\"\n\
              case \"$*\" in\n\
                *\"phux --version\"*) echo \"phux 0.0.0-test\" ;;\n\
+               *\"phux service install\"*) {service} ;;\n\
                *\"phux pair --json\"*)\n\
                  printf '%s\\n' '{{\"token\":\"{TOKEN}\",\"cert_fingerprint\":\"{FINGERPRINT}\",\"overlay_addresses\":{overlay_json}}}' ;;\n\
-               *\"phux service install\"*)\n\
-                 echo \"fake ssh: --remote must not install a service\" >&2; exit 97 ;;\n\
                *) echo \"fake ssh: unexpected: $*\" >&2; exit 1 ;;\n\
              esac\n"
         );
@@ -119,6 +120,7 @@ impl RemoteHome {
         // so the path assertions describe what a user actually sees (ADR-0080).
         cmd.env("PHUX_PROFILE", "default");
         cmd.env("PHUX_SSH", ssh);
+        cmd.env("PHUX_TEST_SSH_CALLS", self.dir.path().join("ssh-calls"));
         cmd.env("TERM", "xterm-256color");
 
         let mut child = pty.slave.spawn_command(cmd).expect("spawn phux");
@@ -182,6 +184,28 @@ impl RemoteHome {
             .join("state/phux/remotes")
             .join(format!("{name}.token"))
     }
+
+    fn register_direct(&self, name: &str, endpoint: &str) {
+        let config = self.dir.path().join("config/phux/config.toml");
+        std::fs::create_dir_all(config.parent().expect("config parent"))
+            .expect("create config parent");
+        let token = self.token_path(name);
+        std::fs::create_dir_all(token.parent().expect("token parent"))
+            .expect("create token parent");
+        std::fs::write(&token, format!("{TOKEN}\n")).expect("write token");
+        std::fs::write(
+            config,
+            format!(
+                "[[remote]]\nname = {name:?}\nendpoint = {endpoint:?}\ntoken-file = {:?}\n",
+                token.display().to_string()
+            ),
+        )
+        .expect("write config");
+    }
+
+    fn ssh_calls(&self) -> String {
+        std::fs::read_to_string(self.dir.path().join("ssh-calls")).unwrap_or_default()
+    }
 }
 
 /// Assert a bearer token landed verbatim and owner-only.
@@ -237,34 +261,90 @@ fn ssh_rung_registers_a_pinned_quic_entry_under_the_typed_name() {
     assert_token(&home.token_path("me@mini"));
 }
 
-/// The ssh rung must not install a service on the far end: `phux host
-/// enroll` does that, `--remote` does not (ADR-0093 Decision 3). The fake
-/// ssh fails the whole run if it is ever asked to, so a clean pairing is
-/// the proof.
+/// A registry entry from the old pair-only behavior can name a server that is
+/// not running. The ordinary `--remote` spelling repairs that cold host over
+/// ssh, rewrites the entry with fresh credentials, and then attaches.
 #[test]
 #[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
-fn ssh_rung_never_installs_a_service_on_the_far_end() {
+fn registered_but_unreachable_host_is_started_and_repaired_over_ssh() {
     let home = RemoteHome::new();
+    home.register_direct("me@mini", "wss://127.0.0.1:9");
     let ssh = home.install_fake_ssh("100.64.0.7");
 
     let seen = home.run_until(&["--remote", "me@mini"], &ssh, "paired");
     assert!(
-        !seen.contains("must not install a service"),
-        "--remote asked the far end to install a service; got: {seen}"
+        seen.contains("registered host mini could not establish a direct attach")
+            && seen.contains("repairing it over ssh"),
+        "a cold registered host must enter the repair rung; got: {seen}"
     );
     assert!(
         home.config().contains("quic://100.64.0.7:8788"),
-        "pairing itself must still have succeeded; config={}",
+        "repair must replace the dead endpoint; config={}",
         home.config()
+    );
+    assert!(
+        home.ssh_calls().contains("phux service install"),
+        "repair must start the remote service"
     );
 }
 
-/// A host with nothing dialable degrades to an `ssh://` entry rather than
-/// registering an endpoint that would fail at dial — and says so, naming
-/// the verb that fixes it.
+/// `--no-enroll` is also the no-repair boundary for an existing dead entry:
+/// it may attempt the saved endpoint, but it must not shell into the host.
 #[test]
 #[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
-fn ssh_rung_degrades_to_an_ssh_entry_and_names_the_upgrade() {
+fn no_enroll_does_not_repair_an_unreachable_registered_host() {
+    let home = RemoteHome::new();
+    home.register_direct("me@mini", "wss://127.0.0.1:9");
+    let ssh = home.install_fake_ssh("100.64.0.7");
+
+    let seen = home.run_until(
+        &["attach", "--remote", "me@mini", "--no-enroll"],
+        &ssh,
+        "WebSocket attach",
+    );
+    assert!(
+        seen.contains("failed"),
+        "the saved dead endpoint should fail without repair; got: {seen}"
+    );
+    assert_eq!(
+        home.ssh_calls(),
+        "",
+        "--no-enroll must not invoke ssh for repair"
+    );
+}
+
+/// A first interactive remote attach provisions the same per-user service as
+/// `phux host enroll`, before it mints credentials. That order matters: the
+/// endpoint written locally must describe a server that is already starting.
+#[test]
+#[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
+fn ssh_rung_starts_the_remote_service_before_pairing() {
+    let home = RemoteHome::new();
+    let ssh = home.install_fake_ssh("100.64.0.7");
+
+    let seen = home.run_until(&["--remote", "me@mini"], &ssh, "paired");
+    let calls = home.ssh_calls();
+    let version = calls.find("phux --version").expect("version probe");
+    let service = calls
+        .find("phux service install --quic 0.0.0.0:8788")
+        .expect("service install");
+    let pair = calls.find("phux pair --json").expect("pairing");
+    assert!(
+        version < service && service < pair,
+        "expected version probe, service start, then pairing; calls={calls:?}"
+    );
+    assert!(
+        seen.contains("installing and starting the remote Phux service"),
+        "the side effect must be visible before it happens; got: {seen}"
+    );
+}
+
+/// A host with nothing directly dialable uses an `ssh://` entry rather than
+/// registering an endpoint that would fail at dial. The installed service
+/// still owns the remote work after the ssh transport disconnects.
+#[test]
+#[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
+fn ssh_rung_uses_ssh_when_the_installed_service_has_no_direct_endpoint() {
     let home = RemoteHome::new();
     let ssh = home.install_fake_ssh("");
 
@@ -281,8 +361,41 @@ fn ssh_rung_degrades_to_an_ssh_entry_and_names_the_upgrade() {
         "an ssh:// entry rides ssh trust and must leave no bearer token behind"
     );
     assert!(
-        seen.contains("phux host enroll"),
-        "the degraded path must name the verb that upgrades it; got: {seen}"
+        seen.contains("installed service still keeps its work alive"),
+        "the ssh route must explain that remote work remains durable; got: {seen}"
+    );
+}
+
+/// A service-manager refusal must not leave a direct registry entry pointing
+/// at a listener that was never started. Pairing still supplies credentials,
+/// but the resulting ssh route reaches the ordinary remote auto-spawn path.
+#[test]
+#[ignore = "spawns a PTY-backed binary; runs in the e2e lane"]
+fn service_install_failure_falls_back_to_remote_auto_spawn_over_ssh() {
+    let home = RemoteHome::new();
+    let ssh = home.install_fake_ssh_with_service(
+        "100.64.0.7",
+        "echo 'service manager unavailable' >&2; exit 97",
+    );
+
+    let seen = home.run_until(&["--remote", "me@mini"], &ssh, "ssh://");
+    let config = home.config();
+    assert!(
+        config.contains("endpoint = \"ssh://me@mini\""),
+        "an unstarted direct listener must not be registered; config={config}"
+    );
+    assert!(
+        !home.token_path("me@mini").exists(),
+        "the ssh route must not retain an unused bearer token"
+    );
+    assert!(
+        seen.contains("remote service install failed")
+            && seen.contains("auto-starts an unsupervised server"),
+        "the fallback and its durability limit must be explicit; got: {seen}"
+    );
+    assert!(
+        home.ssh_calls().contains("phux pair --json"),
+        "pairing should still complete before the ssh route is recorded"
     );
 }
 

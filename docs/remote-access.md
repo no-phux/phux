@@ -6,10 +6,11 @@ last-reviewed: 2026-09-12
 
 # Remote access
 
-**TL;DR.** Attach to a phux server on another machine with one command. The
-first run pairs the host; every later run is a direct encrypted QUIC dial
-with no ssh in the path. Manual overlay, enroll, and relay paths are below
-for when that command cannot.
+**TL;DR.** Attach to another machine with one command. The first run attempts
+to install and start its per-user phux service, pairs the host, and attaches.
+Later runs use direct encrypted QUIC when the host advertises it, with an SSH
+route as the automatic fallback. Manual overlay, enroll, and relay paths are
+below for when that command cannot.
 
 ---
 
@@ -30,10 +31,16 @@ attaching. It walks four rungs, cheapest first
    This is the steady state and the only rung that runs once a host is known.
 2. **A pasted connect code** — `--code`, below. No ssh, no shell on the far
    end.
-3. **A one-time ssh pairing** — runs `phux pair --json` over your existing
-   ssh trust, registers what it mints, and dials. Once per host; rung 1
+3. **A one-time ssh bootstrap** — installs and starts the remote per-user
+   service, runs `phux pair --json` over your existing ssh trust, registers
+   what it mints, and dials. Once per host in the normal direct case; rung 1
    catches everything after.
 4. **A refusal** naming both remedies, when ssh cannot help.
+
+If a saved direct route later stops answering or its credentials no longer
+establish a connection, the interactive `--remote` form re-enters the SSH
+bootstrap once, refreshes the registry, and retries the attach. `--no-enroll`
+disables both first-time bootstrap and this repair path.
 
 `PORT` defaults to `8788`, the port a server auto-binds on its overlay
 address ([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
@@ -78,8 +85,9 @@ phux kill --remote me@mini ci
 
 `ls`, `new`, `kill`, `rename`, and `detach` accept it. Each one resolves the
 target through the same ladder as `phux --remote` and dials the same QUIC or
-WSS endpoint, so a host paired once for attach needs nothing more here (and a
-cold host pairs over ssh the first time, exactly as attach would). With
+WSS endpoint, so a host bootstrapped once for attach needs nothing more here
+(and a cold host starts and pairs over ssh the first time, exactly as attach
+would). With
 `--json` a cold host is refused instead of paired, with the remedies in the
 error's `remedy` field: pairing narrates on stderr and ssh may prompt, and a
 machine-readable call must do neither. Three limits are deliberate:
@@ -106,11 +114,11 @@ is refused with the command that pairs it. Details, including the
 `phux-remote` setting and relaunch behavior, are in
 [Cockpit's remote hosts](../clients/cockpit/docs/REMOTE_HOSTS.md).
 
-### The related way: `phux host enroll`
+### Explicit setup without attaching: `phux host enroll`
 
-`--remote` pairs a host; it deliberately does **not** install anything there.
-When you want the far end to keep a server running across logout and reboot,
-use the verb whose subject is that host:
+`--remote` performs the ordinary per-user service setup automatically. Use the
+explicit host verb when you want to prepare or repair a machine without
+attaching, select a role, or supply enrollment options:
 
 ```sh
 phux host enroll mini
