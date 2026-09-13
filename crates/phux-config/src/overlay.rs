@@ -9,6 +9,16 @@
 //! the kernel-chosen source address only when it sits inside the Tailscale
 //! CGNAT range (`100.64.0.0/10`).
 //!
+//! The fallback is a *guess made in the absence of configuration*, so it is
+//! consulted only when `$PHUX_TAILSCALE` is unset. Once an operator names
+//! the overlay CLI, that CLI is the whole answer — including when it says
+//! nothing (phux-vlv1). Reading the routing table behind an explicit
+//! setting is how `$PHUX_TAILSCALE` came to be an override that could not
+//! actually override: pointing it at a command that reports no overlay left
+//! `detect` returning the host's real tailnet address anyway, which is what
+//! made every consumer of this module — `phux doctor` most sharply, since it
+//! *dials* what it detects — impossible to isolate in a test.
+//!
 //! Per ADR-0037 phux stays overlay-agnostic: nothing here is load-bearing,
 //! every failure (missing binary, tailscaled down, unparseable output)
 //! degrades to printing nothing, and no overlay is special-cased below the
@@ -22,8 +32,29 @@ use std::net::IpAddr;
 ///
 /// Returns an empty vec when nothing is detected — callers print nothing
 /// and detection can never affect an exit code.
+///
+/// `$PHUX_TAILSCALE` selects the CLI *and* suppresses the route-probe
+/// fallback: see the module doc for why an override that can be overruled
+/// is not an override.
+#[must_use]
 pub fn detect() -> Vec<IpAddr> {
-    detect_with(tailscale_ip_output, cgnat_route_probe)
+    detect_from_override(std::env::var_os("PHUX_TAILSCALE").as_deref())
+}
+
+/// [`detect`] with the `$PHUX_TAILSCALE` value passed in, so the
+/// override-suppresses-the-probe wiring is testable without mutating the
+/// environment (`env::set_var` is unsafe under edition 2024).
+fn detect_from_override(program: Option<&std::ffi::OsStr>) -> Vec<IpAddr> {
+    let Some(program) = program else {
+        // Unconfigured: the default CLI, then the guess.
+        return detect_with(
+            || run_tailscale_ip(std::ffi::OsStr::new("tailscale")),
+            cgnat_route_probe,
+        );
+    };
+    // Configured: the named CLI is the whole answer, and the `|| None`
+    // probe is the point — nothing may contradict it.
+    detect_with(|| run_tailscale_ip(program), || None)
 }
 
 /// [`detect`] with both sources injectable, so tests can drive the
@@ -44,29 +75,23 @@ fn detect_with(
         .collect()
 }
 
-/// Run `tailscale ip -4` (or the `$PHUX_TAILSCALE` override) and return its
-/// stdout, or `None` when the binary is missing, exits non-zero (tailscaled
-/// down, not logged in), or outlives the deadline (tailscaled wedged).
-fn tailscale_ip_output() -> Option<String> {
-    let program = std::env::var_os("PHUX_TAILSCALE").unwrap_or_else(|| "tailscale".into());
-    run_tailscale_ip(&program)
-}
-
 /// How long the tailscale shell-out may run before it is killed. `tailscale
 /// ip` answers in milliseconds when healthy; anything slower means a wedged
 /// tailscaled, and best-effort detection must never hang `phux pair`.
 const TAILSCALE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// The spawn half of [`tailscale_ip_output`], with the program injectable
-/// so tests can point it at a stub script without mutating the environment
-/// (`env::set_var` is unsafe under edition 2024 and this crate forbids
-/// unsafe code).
+/// Run `tailscale ip -4` (or the `$PHUX_TAILSCALE` override) and return its
+/// stdout, or `None` when the binary is missing, exits non-zero (tailscaled
+/// down, not logged in), or outlives the deadline (tailscaled wedged). The
+/// program is a parameter rather than an env read so tests can point it at a
+/// stub script without mutating the environment (`env::set_var` is unsafe
+/// under edition 2024 and this crate forbids unsafe code).
 ///
 /// The wait is bounded by [`TAILSCALE_DEADLINE`]: `tailscale ip` talks to
 /// tailscaled over its local API socket and can block indefinitely when the
 /// daemon is wedged (mid-upgrade, stuck state). A blocking `output()` call
 /// would hang `phux pair` with it, so the child is polled against the
-/// deadline and killed on expiry, degrading to the route probe.
+/// deadline and killed on expiry.
 fn run_tailscale_ip(program: &std::ffi::OsStr) -> Option<String> {
     run_tailscale_ip_with_deadline(program, TAILSCALE_DEADLINE)
 }
@@ -180,6 +205,28 @@ mod tests {
             || panic!("probe must not run when tailscale answered"),
         );
         assert_eq!(addrs, vec![ip("100.99.98.97")]);
+    }
+
+    /// phux-vlv1: an explicitly configured overlay CLI that reports nothing
+    /// means "no overlay", full stop. Before this, the route probe ran anyway
+    /// and reported the host's real tailnet address — so `$PHUX_TAILSCALE`
+    /// could not actually turn detection off, and no test could isolate the
+    /// consumers that dial what this returns (`phux doctor`'s
+    /// remote-reachable check).
+    ///
+    /// The assertion holds on a tailnet-attached developer box and on a CI
+    /// runner alike, which is exactly the point: it is the only branch here
+    /// whose answer does not depend on the host.
+    #[test]
+    fn a_configured_overlay_cli_suppresses_the_route_probe() {
+        assert!(
+            detect_from_override(Some(std::ffi::OsStr::new(
+                "/nonexistent/phux-no-such-binary"
+            )))
+            .is_empty(),
+            "a configured overlay CLI that cannot answer must not be \
+             second-guessed from the routing table",
+        );
     }
 
     #[test]

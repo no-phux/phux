@@ -228,8 +228,13 @@ const ENVIRONMENT_HELP: &str = "ENVIRONMENT\n  \
         \x20                 HOST:PORT. Equivalent to `phux server --webtransport`.\n  \
         PHUX_SSH           OpenSSH-compatible program a federation hub spawns to\n  \
         \x20                 dial ssh:// satellites (default: `ssh` on PATH).\n  \
-        PHUX_TAILSCALE     Tailscale-compatible CLI `phux pair` runs to detect the\n  \
-        \x20                 overlay address (default: `tailscale` on PATH).\n  \
+        PHUX_TAILSCALE     Tailscale-compatible CLI run to detect the overlay\n  \
+        \x20                 address (default: `tailscale` on PATH) for `phux pair`,\n  \
+        \x20                 `phux doctor`, and the server's auto-bound remote\n  \
+        \x20                 listener. When set it is the only source consulted:\n  \
+        \x20                 the CGNAT route-probe fallback is disabled, so naming\n  \
+        \x20                 a command that reports nothing turns detection off\n  \
+        \x20                 everywhere (no overlay auto-listen, no doctor dial).\n  \
         PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE\n  \
         \x20                 Give an auto-spawned server an idle limit in seconds\n  \
         \x20                 (1..=86400), as if it were started with\n  \

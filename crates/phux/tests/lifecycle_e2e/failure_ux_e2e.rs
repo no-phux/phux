@@ -161,6 +161,29 @@ impl Isolation {
             );
     }
 
+    /// [`Self::apply`] for the PTY spawn path, which builds its command with
+    /// `portable_pty` rather than `std::process`. The Command and PTY tables
+    /// must not drift: an attach client that skipped `PHUX_TAILSCALE` would
+    /// still dial the operator's overlay (phux-vlv1).
+    fn apply_pty(&self, cmd: &mut CommandBuilder) {
+        cmd.env_clear();
+        if let Some(path) = std::env::var_os("PATH") {
+            cmd.env("PATH", path);
+        }
+        if let Some(tmp) = std::env::var_os("TMPDIR") {
+            cmd.env("TMPDIR", tmp);
+        }
+        cmd.env("HOME", self.home.path());
+        cmd.env("XDG_CONFIG_HOME", self.config.path());
+        cmd.env("XDG_STATE_HOME", self.state.path());
+        cmd.env("XDG_CACHE_HOME", self.home.path());
+        cmd.env("XDG_DATA_HOME", self.home.path());
+        cmd.env("XDG_RUNTIME_DIR", self.home.path());
+        cmd.env("PHUX_PROFILE", "default");
+        cmd.env("PHUX_NO_AUTO_LISTEN", "1");
+        cmd.env("PHUX_TAILSCALE", self.home.path().join("no-such-tailscale"));
+    }
+
     /// The canonical server-log path `phux_server::telemetry` resolves
     /// under this environment — asserted against status/logs/doctor output.
     fn server_log(&self) -> PathBuf {
@@ -299,8 +322,7 @@ impl AttachedClient {
         command.env("SHELL", "/bin/sh");
         command.env("TERM", "xterm-256color");
         command.env("RUST_LOG", "off");
-        command.env("XDG_CONFIG_HOME", iso.config.path());
-        command.env("XDG_STATE_HOME", iso.state.path());
+        iso.apply_pty(&mut command);
         let child = pair
             .slave
             .spawn_command(command)
@@ -722,6 +744,13 @@ fn status_logs_doctor_name_real_paths() {
 
     // `phux doctor` composes the checks and names the same paths; warnings
     // (for example a log not created yet) are normal states, not failures.
+    //
+    // This is the assertion the file's environment scrub exists for: doctor
+    // is the one verb here that reads every ambient seam at once (credential
+    // store, TLS cert, overlay address) and the only one that leaves the
+    // machine. Unisolated it graded the operator's real install and dialed
+    // their live server, so its exit code answered a question about their
+    // network rather than about the code under test.
     let (code, stdout, stderr) = run_captured(&mut server.cmd(&iso, &["doctor"]));
     assert_eq!(
         code, 0,

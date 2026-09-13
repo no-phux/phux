@@ -163,8 +163,13 @@ ENVIRONMENT
                     HOST:PORT. Equivalent to `phux server --webtransport`.
   PHUX_SSH           OpenSSH-compatible program a federation hub spawns to
                     dial ssh:// satellites (default: `ssh` on PATH).
-  PHUX_TAILSCALE     Tailscale-compatible CLI `phux pair` runs to detect the
-                    overlay address (default: `tailscale` on PATH).
+  PHUX_TAILSCALE     Tailscale-compatible CLI run to detect the overlay
+                    address (default: `tailscale` on PATH) for `phux pair`,
+                    `phux doctor`, and the server's auto-bound remote
+                    listener. When set it is the only source consulted:
+                    the CGNAT route-probe fallback is disabled, so naming
+                    a command that reports nothing turns detection off
+                    everywhere (no overlay auto-listen, no doctor dial).
   PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE
                     Give an auto-spawned server an idle limit in seconds
                     (1..=86400), as if it were started with

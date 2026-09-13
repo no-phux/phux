@@ -15,6 +15,14 @@
 //! Every verb that contacts a server is pointed at a socket path that
 //! does not exist, so the server is never auto-spawned: `ls` does not
 //! auto-start one, and the selector verbs see a connect error first.
+//!
+//! "Needs no running server" is not the same as "needs no network", and
+//! `doctor` is the verb where the two came apart (phux-vlv1). Its
+//! remote-reachable check detects the host's overlay address and dials it
+//! with a 4s budget, so on a tailnet-attached developer box these
+//! default-pool tests opened a real TLS connection to that developer's own
+//! live server and hung on it under load. Every spawn here therefore goes
+//! through [`phux`], which turns overlay detection off.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -33,13 +41,34 @@ fn dead_socket() -> String {
     format!("/tmp/phux-no-such-server-{}.sock", std::process::id())
 }
 
+/// A program name that cannot exist, used to turn overlay detection off.
+///
+/// `$PHUX_TAILSCALE` names the CLI `phux_config::overlay::detect` runs, and
+/// setting it also suppresses the CGNAT route heuristic — so naming one that
+/// cannot answer means "this host has no overlay", whatever the host is. A
+/// nonexistent program rather than a stub script: a failed `execve` cannot
+/// be slow, where a `/bin/sh` stub has been seen to blow the 2s detection
+/// deadline on a loaded box and hand back the ambient answer.
+const NO_OVERLAY_CLI: &str = "/nonexistent/phux-output-hygiene-no-overlay";
+
+/// The binary under test, with overlay detection off.
+///
+/// Every spawn in this file goes through here. The module doc says why:
+/// these tests are in the default pool and must not touch the network, and
+/// `doctor` will dial whatever address detection hands it.
+fn phux() -> Command {
+    let mut cmd = Command::new(PHUX);
+    cmd.env("PHUX_TAILSCALE", NO_OVERLAY_CLI);
+    cmd
+}
+
 #[test]
 fn redirected_interactive_invocations_do_not_spawn_or_emit_terminal_bytes() {
     for args in [&[][..], &["attach"][..], &["new", "redirected"][..]] {
         let dir = tempfile::tempdir().expect("tempdir");
         let socket = dir.path().join("phux.sock");
         let state = dir.path().join("state");
-        let out = Command::new(PHUX)
+        let out = phux()
             .args(args)
             .args(["--socket"])
             .arg(&socket)
@@ -74,7 +103,7 @@ fn redirected_interactive_invocations_do_not_spawn_or_emit_terminal_bytes() {
 fn redirected_worktree_attach_refuses_before_git_mutation() {
     let dir = tempfile::tempdir().expect("tempdir");
     let worktree = dir.path().join("created-worktree");
-    let out = Command::new(PHUX)
+    let out = phux()
         .args(["worktree", "new", "review", "--repo"])
         .arg(dir.path())
         .args(["--path"])
@@ -100,7 +129,7 @@ fn redirected_remote_attaches_refuse_before_dialing() {
     ] {
         let dir = tempfile::tempdir().expect("tempdir");
         let state = dir.path().join("state");
-        let out = Command::new(PHUX)
+        let out = phux()
             .args(args)
             .env("XDG_STATE_HOME", &state)
             .stdin(Stdio::null())
@@ -119,7 +148,7 @@ fn redirected_remote_attaches_refuse_before_dialing() {
 #[test]
 fn telemetry_failure_does_not_contaminate_json_errors() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let out = Command::new(PHUX)
+    let out = phux()
         .args(["ls", "--json", "--socket", &dead_socket()])
         .env("PHUX_LOG", dir.path())
         .output()
@@ -132,10 +161,7 @@ fn telemetry_failure_does_not_contaminate_json_errors() {
 
 /// Run `phux <args...>` and return `(exit_code, stdout, stderr)`.
 fn run(args: &[&str]) -> (i32, String, String) {
-    let out = Command::new(PHUX)
-        .args(args)
-        .output()
-        .expect("run phux binary");
+    let out = phux().args(args).output().expect("run phux binary");
     (
         out.status.code().expect("phux exited via code, not signal"),
         String::from_utf8_lossy(&out.stdout).into_owned(),
@@ -144,7 +170,7 @@ fn run(args: &[&str]) -> (i32, String, String) {
 }
 
 fn run_with_xdg(args: &[&str], xdg_config_home: &std::path::Path) -> (i32, String, String) {
-    let out = Command::new(PHUX)
+    let out = phux()
         .env("XDG_CONFIG_HOME", xdg_config_home)
         .args(args)
         .output()
@@ -1009,7 +1035,7 @@ fn no_server_without_json_stays_prose() {
 /// a `phux` that started letting it through would die with 141 instead of
 /// reporting 0.
 fn run_with_closed_stdout(args: &[&str]) -> (Option<i32>, String) {
-    let mut child = Command::new(PHUX)
+    let mut child = phux()
         .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

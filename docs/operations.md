@@ -773,7 +773,21 @@ suppresses it; `--listen` / `--quic` (or `PHUX_WS_ADDR` /
 auto-binds — a port is global to the host, so a `dev`-profile server
 would otherwise race the installed one. Detection runs off-thread after
 the UDS accept loop is live, so a wedged overlay CLI costs a late remote
-listener, never a late server.
+listener (bounded at two seconds, after which detection falls back to
+the CGNAT route heuristic unless `PHUX_TAILSCALE` is set), never a late
+server.
+
+One detector feeds three consumers: `phux pair`, `phux doctor`'s
+remote-reachable check, and the auto-bound remote listener
+([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
+`PHUX_TAILSCALE` substitutes the CLI all three run (default: `tailscale`
+on PATH). Setting it also disables the CGNAT route-probe fallback,
+including after the CLI's two-second deadline: once you have named the
+overlay CLI, its answer is the whole answer. Pointing `PHUX_TAILSCALE`
+at a command that reports no address therefore turns detection off for
+all three: no overlay auto-listen, no advertised overlay address in
+`phux pair`, and no doctor dial (which is how test harnesses keep
+`phux doctor` off the network).
 
 ### Running the reference relay
 
