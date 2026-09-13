@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-07-21
+last-reviewed: 2026-09-13
 ---
 
 # Architecture Decision Records
@@ -19,6 +19,15 @@ Nygard's template][nygard].
 [nygard]: https://cognitect.com/blog/2011/11/15/documenting-architecture-decisions
 
 ## Index
+
+The filename and index number identify a decision. The accepted records
+[0115](./0115-quic-stream-per-terminal.md),
+[0116](./0116-workload-auth-is-mtls.md), and
+[0117](./0117-wire-codec-stays-tlv.md) retain historical heading numbers
+0113, 0114, and 0115 respectively. Those headings do not identify additional
+decisions or replace the distinct records at those earlier filenames. Cite
+the filename/index identity; accepted decision bodies remain immutable under
+the [documentation policy](../CONVENTIONS.md#supersede-dont-amend).
 
 <!--
 Every ADR has exactly one row here, inserted at its numeric position when
@@ -133,7 +142,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0095](./0095-the-blackbird-boundary.md) | Blackbird is a peer ledger, not a phux client | Accepted (builds on [0040](./0040-agent-identity-metadata.md)) |
 | [0096](./0096-always-on-performance-telemetry.md) | Performance telemetry is always on, in-process, and one command away | Accepted |
 | [0097](./0097-durable-coordinator-is-a-separate-bounded-endpoint.md) | Durable coordinator is a separate bounded endpoint | Accepted (forward-compat; builds on [0092](./0092-durable-work-coordinator-authority.md), still Proposed) |
-| [0098](./0098-workload-proof-and-closed-scope-authority.md) | Workload proof and closed-scope authority | Accepted (forward-compat; amends [0031](./0031-remote-consumer-auth-and-encryption.md); proof profile superseded in part by [0114](./0116-workload-auth-is-mtls.md)) |
+| [0098](./0098-workload-proof-and-closed-scope-authority.md) | Workload proof and closed-scope authority | Accepted (forward-compat; amends [0031](./0031-remote-consumer-auth-and-encryption.md); proof profile superseded in part by [0116](./0116-workload-auth-is-mtls.md)) |
 | [0099](./0099-ci-aggregate-gate-and-action-supply-chain.md) | CI: one aggregate merge gate, immutable action pins, and shared lane setup | Accepted |
 | [0100](./0100-the-tui-is-its-own-crate.md) | The TUI is its own crate | Accepted (builds on [0020](./0020-layered-render.md)) |
 | [0101](./0101-the-settings-page-edits-the-file.md) | The settings page edits the file | Accepted (builds on [0023](./0023-config-ux-philosophy.md)) |
