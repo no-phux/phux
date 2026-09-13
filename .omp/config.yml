@@ -1,0 +1,31 @@
+# Project-local Oh My Pi defaults for phux.
+# Keep credentials and personal model choices in the user profile.
+# These settings favor fast repository navigation without granting unrestricted
+# execution: repository instructions still govern worktree, Beads, and commits.
+tools:
+  approvalMode: write
+  intentTracing: false
+  abortOnFabricatedResult: true
+  xdev: true
+  xdevDocs: builtins
+includeWorkspaceTree: false
+read:
+  summarize:
+    enabled: true
+compaction:
+  enabled: true
+  midTurnEnabled: true
+  asyncEnabled: true
+  supersedeReads: true
+  dropUseless: true
+task:
+  batch: true
+  maxConcurrency: 4
+  agentModelOverrides:
+    task: "@default"
+    scout: "@smol"
+    sonic: "@smol"
+    reviewer: "@slow"
+    security-reviewer: "@slow"
+async:
+  enabled: true
