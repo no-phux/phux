@@ -38,6 +38,7 @@ pub mod resource;
 pub mod runtime;
 pub mod search;
 pub mod state;
+pub mod stream_diagnostics;
 pub mod telemetry;
 /// The Terminal engine, at the path it has always been reachable from.
 /// [`resource::terminal`] is the module; this alias keeps every

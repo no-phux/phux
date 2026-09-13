@@ -116,6 +116,25 @@ move. The columns are `count` / `rate/s` for counters and `p50` `p90`
 | `cmd.handle` / `attach.handle` | control-plane latency | attach p99 under 100 ms with a warm history |
 | `proc.*` | clients, panes, sessions (gauges) and, in the header, CPU split, peak RSS, context switches | idle CPU under 1 percent with agents running in panes |
 
+`GET_PERF` may also include an additive `stream_diagnostics` snapshot. It is a
+point-in-time attribution aid rather than another metric label space: at most
+128 registered streams are returned, each identified only by numeric
+`connection_id`, numeric `stream_id`, and a bounded `control` or `terminal`
+lane. Each stream reports whether its runtime binding is active, admitted queue
+bytes and oldest age, an in-progress blocked-write age plus last/maximum write
+duration, and optional bounded READY/resynchronization categories. Queue
+metadata is capped at 256 outstanding items per stream; registry, queue, and
+write overflows are counted explicitly instead of allocating more storage.
+Registration is removed by an RAII guard when its connection or stream drops,
+and a performance reset clears interval observations without invalidating live
+trackers or their outstanding cancellation guards.
+
+Queue tickets sample **ingress admission into the tracked transport queue**, not
+outbound payload production. A producer creating bytes does not itself increase
+the queue gauge; the gauge begins only where the transport accepts that work and
+ends when the exact ticket is dropped, including cancellation and out-of-order
+completion. No payload strings or caller-defined labels are retained.
+
 The client keeps its own table. When an attach ends it writes one
 `session perf:` line to its log (`phux logs --client`) with the echo
 round trip (keystroke out to first output frame back for that pane),
