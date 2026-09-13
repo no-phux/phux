@@ -59,6 +59,12 @@ pub enum ResyncReason {
     PeerRequested,
     /// Stream lifecycle or binding recovery required a fresh bootstrap.
     LifecycleRecovery,
+    /// Terminal geometry changed.
+    Resize,
+    /// Native or compatibility codec could not preserve the generation.
+    CodecFailure,
+    /// A bounded wire reason not covered by the named categories.
+    Other,
 }
 
 /// Latest READY observation for a stream.
@@ -131,13 +137,14 @@ struct RegistryEntry {
 }
 
 /// RAII registration whose drop removes the stream from its registry.
+#[derive(Debug)]
 pub struct StreamRegistration {
     registry: Weak<RegistryInner>,
     slot: Option<RegistrationSlot>,
     tracker: StreamTracker,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 struct RegistrationSlot {
     index: usize,
     generation: u64,
@@ -146,7 +153,22 @@ struct RegistrationSlot {
 /// Cloneable handle used by queue, writer, and lifecycle production paths.
 #[derive(Clone)]
 pub struct StreamTracker {
-    inner: Arc<TrackerInner>,
+    context: StreamContext,
+    inner: Option<Arc<TrackerInner>>,
+}
+
+impl std::fmt::Debug for StreamTracker {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamTracker")
+            .field("context", &self.context)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Debug for StreamDiagnostics {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamDiagnostics").finish_non_exhaustive()
+    }
 }
 
 struct TrackerInner {
@@ -183,6 +205,7 @@ struct WriteItem {
 }
 
 /// RAII metadata for one admitted ingress item.
+#[derive(Debug)]
 pub struct QueueTicket {
     tracker: Weak<TrackerInner>,
     slot: Option<usize>,
@@ -190,6 +213,7 @@ pub struct QueueTicket {
 }
 
 /// RAII measurement for one in-progress transport write.
+#[derive(Debug)]
 pub struct WriteGuard {
     tracker: Weak<TrackerInner>,
     slot: Option<usize>,
@@ -226,8 +250,7 @@ impl StreamDiagnostics {
     /// but is absent from snapshots and `suppressed_streams` is incremented.
     #[must_use]
     pub fn register(&self, context: StreamContext) -> StreamRegistration {
-        let tracker = StreamTracker::new(context);
-        let slot = self.insert(&tracker.inner);
+        let (tracker, slot) = self.insert(context);
         StreamRegistration {
             registry: Arc::downgrade(&self.inner),
             slot,
@@ -245,22 +268,35 @@ impl StreamDiagnostics {
     /// invalidating active queue tickets and write guards.
     pub fn reset(&self) {
         let mut registry = lock(&self.inner.state);
-        registry.retain_and_apply(|tracker| tracker.reset());
+        registry.retain_and_apply(TrackerInner::reset);
         registry.suppressed_streams = 0;
     }
 
-    fn insert(&self, tracker: &Arc<TrackerInner>) -> Option<RegistrationSlot> {
+    fn insert(&self, context: StreamContext) -> (StreamTracker, Option<RegistrationSlot>) {
         let mut registry = lock(&self.inner.state);
         registry.prune_dead();
-        let index = registry.vacant_slot()?;
+        let Some(index) = registry.vacant_slot() else {
+            return (
+                StreamTracker {
+                    context,
+                    inner: None,
+                },
+                None,
+            );
+        };
+        let tracker = StreamTracker::new(context);
         let generation = registry.next_generation;
         registry.next_generation = registry.next_generation.wrapping_add(1).max(1);
         registry.slots[index] = Some(RegistryEntry {
             generation,
-            tracker: Arc::downgrade(tracker),
+            tracker: tracker
+                .inner
+                .as_ref()
+                .map_or_else(Weak::new, Arc::downgrade),
         });
         registry.cursor = (index + 1) % MAX_STREAMS;
-        Some(RegistrationSlot { index, generation })
+        drop(registry);
+        (tracker, Some(RegistrationSlot { index, generation }))
     }
 
     fn snapshot_at(&self, now: Instant) -> StreamDiagnosticsSnapshot {
@@ -326,15 +362,37 @@ impl StreamRegistration {
 
     /// Whether this stream received one of the registry's bounded slots.
     #[must_use]
-    pub fn is_registered(&self) -> bool {
+    pub const fn is_registered(&self) -> bool {
         self.slot.is_some()
     }
 }
 
 impl StreamTracker {
+    /// Attribute an admitted bootstrap tombstone using a fixed wire vocabulary.
+    pub fn record_tombstone(&self, reason: phux_protocol::wire::frame::TombstoneReason) {
+        use phux_protocol::wire::frame::TombstoneReason;
+        let reason = match reason {
+            TombstoneReason::RawReplayOverflow => ResyncReason::Lagged,
+            TombstoneReason::OutboundGap => ResyncReason::SequenceGap,
+            TombstoneReason::Resize => ResyncReason::Resize,
+            TombstoneReason::RelayReconnect => ResyncReason::LifecycleRecovery,
+            TombstoneReason::ExplicitReattach => ResyncReason::PeerRequested,
+            TombstoneReason::CodecFailure => ResyncReason::CodecFailure,
+            _ => ResyncReason::Other,
+        };
+        self.record_resync(reason);
+    }
+
+    /// Fixed correlation identity assigned at registration.
+    #[must_use]
+    pub const fn context(&self) -> StreamContext {
+        self.context
+    }
+
     fn new(context: StreamContext) -> Self {
         Self {
-            inner: Arc::new(TrackerInner {
+            context,
+            inner: Some(Arc::new(TrackerInner {
                 context,
                 state: Mutex::new(TrackerState {
                     active: false,
@@ -350,13 +408,15 @@ impl StreamTracker {
                     ready: None,
                     resync_reason: None,
                 }),
-            }),
+            })),
         }
     }
 
     /// Bind or unbind this tracker from the runtime's active stream lifecycle.
     pub fn set_active(&self, active: bool) {
-        lock(&self.inner.state).active = active;
+        if let Some(inner) = &self.inner {
+            lock(&inner.state).active = active;
+        }
     }
 
     /// Track bytes admitted to the stream's ingress queue.
@@ -379,16 +439,27 @@ impl StreamTracker {
 
     /// Record the latest READY latency using a bounded lifecycle category.
     pub fn record_ready_latency(&self, kind: ReadyKind, latency: Duration) {
-        lock(&self.inner.state).ready = Some((kind, latency));
+        if let Some(inner) = &self.inner {
+            lock(&inner.state).ready = Some((kind, latency));
+        }
     }
 
     /// Record the latest resynchronization reason from a bounded vocabulary.
     pub fn record_resync(&self, reason: ResyncReason) {
-        lock(&self.inner.state).resync_reason = Some(reason);
+        if let Some(inner) = &self.inner {
+            lock(&inner.state).resync_reason = Some(reason);
+        }
     }
 
     fn enqueue_at(&self, bytes: u64, now: Instant) -> QueueTicket {
-        let mut state = lock(&self.inner.state);
+        let Some(inner) = &self.inner else {
+            return QueueTicket {
+                tracker: Weak::new(),
+                slot: None,
+                id: 0,
+            };
+        };
+        let mut state = lock(&inner.state);
         let id = state.next_queue_id;
         state.next_queue_id = state.next_queue_id.wrapping_add(1).max(1);
         let slot = state.queue.iter().position(Option::is_none);
@@ -402,15 +473,25 @@ impl StreamTracker {
         } else {
             state.queue_overflow = state.queue_overflow.saturating_add(1);
         }
+        drop(state);
         QueueTicket {
-            tracker: Arc::downgrade(&self.inner),
+            tracker: Arc::downgrade(inner),
             slot,
             id,
         }
     }
 
     fn begin_write_at(&self, now: Instant) -> WriteGuard {
-        let mut state = lock(&self.inner.state);
+        let Some(inner) = &self.inner else {
+            return WriteGuard {
+                tracker: Weak::new(),
+                slot: None,
+                id: 0,
+                started_at: now,
+                finished: false,
+            };
+        };
+        let mut state = lock(&inner.state);
         let id = state.next_write_id;
         state.next_write_id = state.next_write_id.wrapping_add(1).max(1);
         let slot = state.writes.iter().position(Option::is_none);
@@ -422,8 +503,9 @@ impl StreamTracker {
         } else {
             state.write_overflow = state.write_overflow.saturating_add(1);
         }
+        drop(state);
         WriteGuard {
-            tracker: Arc::downgrade(&self.inner),
+            tracker: Arc::downgrade(inner),
             slot,
             id,
             started_at: now,
@@ -657,8 +739,17 @@ mod tests {
         let mut registrations: Vec<_> = (0..MAX_STREAMS)
             .map(|id| diagnostics.register(context(id as u64)))
             .collect();
+        assert!(registrations.iter().all(StreamRegistration::is_registered));
         let suppressed = diagnostics.register(context(999));
         assert!(!suppressed.is_registered());
+        let no_op = suppressed.tracker();
+        assert_eq!(no_op.context(), context(999));
+        assert!(
+            no_op.inner.is_none(),
+            "suppressed streams allocate no tracker storage"
+        );
+        assert!(no_op.enqueue(123).tracker.upgrade().is_none());
+        assert!(no_op.begin_write().tracker.upgrade().is_none());
         let snapshot = diagnostics.snapshot();
         assert_eq!(snapshot.streams.len(), MAX_STREAMS);
         assert_eq!(snapshot.suppressed_streams, 1);

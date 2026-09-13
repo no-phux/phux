@@ -74,7 +74,20 @@ async fn get_perf(stream: &mut UnixStream, request_id: u32, reset: bool) -> Perf
         let CommandResult::OkWith(CommandValue::Json(json)) = result else {
             panic!("GET_PERF must answer OkWith(Json): {result:?}");
         };
-        return PerfReport::from_json(&json).expect("report JSON parses");
+        let report = PerfReport::from_json(&json).expect("report JSON parses");
+        let diagnostics = report
+            .stream_diagnostics
+            .as_ref()
+            .expect("stream diagnostics preserved");
+        assert!(
+            diagnostics["streams"]
+                .as_array()
+                .expect("stream samples")
+                .len()
+                <= 128
+        );
+        assert!(diagnostics["suppressed_streams"].as_u64().is_some());
+        return report;
     }
 }
 

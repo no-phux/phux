@@ -647,69 +647,68 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn rebuild_from_blob_round_trips_the_tree() {
         let local = tokio::task::LocalSet::new();
-        local
-            .run_until(async {
-                let mut state = ServerState::new();
-                let sid = state.registry_mut().new_session("main".to_owned());
-                let wid = state.registry_mut().new_window(sid).expect("new_window");
-                let tid = state
-                    .registry_mut()
-                    .new_terminal(wid)
-                    .expect("new_terminal");
-                state.idspace.intern_session(sid);
-                state.intern_window_wire(wid);
-                let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
-                tokio::task::spawn_local(bundle.actor.run());
-                state.register_resource_handle(tid, bundle.handle, bundle.token);
+        Box::pin(local.run_until(async {
+            let mut state = ServerState::new();
+            let sid = state.registry_mut().new_session("main".to_owned());
+            let wid = state.registry_mut().new_window(sid).expect("new_window");
+            let tid = state
+                .registry_mut()
+                .new_terminal(wid)
+                .expect("new_terminal");
+            state.idspace.intern_session(sid);
+            state.intern_window_wire(wid);
+            let bundle = TerminalActor::new_with_seed(20, 5, b"hello").expect("new_with_seed");
+            tokio::task::spawn_local(bundle.actor.run());
+            state.register_resource_handle(tid, bundle.handle, bundle.token);
 
-                // ADR-0105: a keep-empty mark, and a keep-empty session with
-                // no windows at all, must both survive the round trip.
-                state
-                    .registry_mut()
-                    .session_mut(sid)
-                    .expect("session")
-                    .keep_empty = true;
-                let parked = state.seed_empty_session("parked");
-                state.idspace.intern_session(parked);
+            // ADR-0105: a keep-empty mark, and a keep-empty session with
+            // no windows at all, must both survive the round trip.
+            state
+                .registry_mut()
+                .session_mut(sid)
+                .expect("session")
+                .keep_empty = true;
+            let parked = state.seed_empty_session("parked");
+            state.idspace.intern_session(parked);
 
-                let blob = state.build_upgrade_blob(7).await;
+            let blob = state.build_upgrade_blob(7).await;
 
-                // Rebuild into a brand-new state, then re-emit a blob from it.
-                let mut fresh = ServerState::new();
-                let exit_watchers = fresh.rebuild_from_blob(&blob).expect("rebuild");
-                assert_eq!(
-                    exit_watchers.len(),
-                    blob.panes.len(),
-                    "every rebuilt pane must return an exit receiver for the runtime watcher"
-                );
-                let blob2 = fresh.build_upgrade_blob(7).await;
+            // Rebuild into a brand-new state, then re-emit a blob from it.
+            let mut fresh = ServerState::new();
+            let exit_watchers = fresh.rebuild_from_blob(&blob).expect("rebuild");
+            assert_eq!(
+                exit_watchers.len(),
+                blob.panes.len(),
+                "every rebuilt pane must return an exit receiver for the runtime watcher"
+            );
+            let blob2 = fresh.build_upgrade_blob(7).await;
 
-                assert_eq!(blob.sessions, blob2.sessions, "sessions round-trip");
-                assert!(
-                    blob2.sessions.iter().all(|s| s.keep_empty),
-                    "keep-empty marks round-trip"
-                );
-                assert!(
-                    blob2
-                        .sessions
-                        .iter()
-                        .any(|s| s.name == "parked" && s.window_wire_ids.is_empty()),
-                    "an empty keep-empty session survives with zero windows"
-                );
-                assert_eq!(blob.windows, blob2.windows, "windows + layout round-trip");
-                assert_eq!(blob.counters, blob2.counters, "id allocators round-trip");
-                assert_eq!(blob.panes.len(), blob2.panes.len());
+            assert_eq!(blob.sessions, blob2.sessions, "sessions round-trip");
+            assert!(
+                blob2.sessions.iter().all(|s| s.keep_empty),
+                "keep-empty marks round-trip"
+            );
+            assert!(
+                blob2
+                    .sessions
+                    .iter()
+                    .any(|s| s.name == "parked" && s.window_wire_ids.is_empty()),
+                "an empty keep-empty session survives with zero windows"
+            );
+            assert_eq!(blob.windows, blob2.windows, "windows + layout round-trip");
+            assert_eq!(blob.counters, blob2.counters, "id allocators round-trip");
+            assert_eq!(blob.panes.len(), blob2.panes.len());
 
-                let (p1, p2) = (&blob.panes[0], &blob2.panes[0]);
-                assert_eq!(p1.wire_id, p2.wire_id);
-                assert_eq!(p1.window_wire_id, p2.window_wire_id);
-                assert_eq!((p1.cols, p1.rows), (p2.cols, p2.rows));
-                assert!(
-                    String::from_utf8_lossy(&p2.vt_replay_bytes).contains("hello"),
-                    "rebuilt pane should replay its seed snapshot"
-                );
-            })
-            .await;
+            let (p1, p2) = (&blob.panes[0], &blob2.panes[0]);
+            assert_eq!(p1.wire_id, p2.wire_id);
+            assert_eq!(p1.window_wire_id, p2.window_wire_id);
+            assert_eq!((p1.cols, p1.rows), (p2.cols, p2.rows));
+            assert!(
+                String::from_utf8_lossy(&p2.vt_replay_bytes).contains("hello"),
+                "rebuilt pane should replay its seed snapshot"
+            );
+        }))
+        .await;
     }
 
     /// ADR-0109: the instance token changes exactly when pane ids can

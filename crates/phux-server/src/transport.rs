@@ -95,6 +95,11 @@ pub(crate) enum FrameOrigin {
 
 /// Write side: writes one complete pre-encoded frame.
 pub(crate) trait FrameWriter {
+    /// Optional bounded telemetry for this transport stream.
+    fn stream_tracker(&self) -> Option<crate::stream_diagnostics::StreamTracker> {
+        None
+    }
+
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()>;
 
     /// Write several already-encoded frames that sit back-to-back in `batch`,

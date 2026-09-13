@@ -116,18 +116,31 @@ move. The columns are `count` / `rate/s` for counters and `p50` `p90`
 | `cmd.handle` / `attach.handle` | control-plane latency | attach p99 under 100 ms with a warm history |
 | `proc.*` | clients, panes, sessions (gauges) and, in the header, CPU split, peak RSS, context switches | idle CPU under 1 percent with agents running in panes |
 
-`GET_PERF` may also include an additive `stream_diagnostics` snapshot. It is a
+`GET_PERF` and `phux perf --json` include an additive `stream_diagnostics` snapshot.
+JSON watch mode preserves the latest sample as gauges. It is a
 point-in-time attribution aid rather than another metric label space: at most
 128 registered streams are returned, each identified only by numeric
-`connection_id`, numeric `stream_id`, and a bounded `control` or `terminal`
+`connection_id` (a process-keyed hash of the QUIC connection identity), numeric
+QUIC `stream_id`, and a bounded `control` or `terminal`
 lane. Each stream reports whether its runtime binding is active, admitted queue
-bytes and oldest age, an in-progress blocked-write age plus last/maximum write
-duration, and optional bounded READY/resynchronization categories. Queue
+bytes and oldest age, in-progress write age plus last/maximum write duration,
+and initial bind-to-staged-READY latency. A write duration includes the transport
+write call; a long in-progress sample identifies a stalled writer, without
+claiming to separate transport flow control from scheduler delay. Queue
 metadata is capped at 256 outstanding items per stream; registry, queue, and
 write overflows are counted explicitly instead of allocating more storage.
 Registration is removed by an RAII guard when its connection or stream drops,
 and a performance reset clears interval observations without invalidating live
 trackers or their outstanding cancellation guards.
+
+The queue gauges cover the upgraded QUIC mux: they start when byte-budget
+permits admit a frame, include an incomplete body or a blocked channel send,
+and end at shared dispatch delivery or cancellation. Single-stream fallback has
+writer measurements but no mux queue. Bind debug logs correlate this transport
+identity with the runtime client and application stream generation. The latest
+admitted bootstrap tombstone supplies the resynchronization category; it is
+absent until one is admitted. A shared fallback stream reports its latest reason
+across terminals.
 
 Queue tickets sample **ingress admission into the tracked transport queue**, not
 outbound payload production. A producer creating bytes does not itself increase

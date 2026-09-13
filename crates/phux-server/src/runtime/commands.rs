@@ -2708,7 +2708,7 @@ const fn used_resource(command: &Command) -> Option<&phux_protocol::ids::Resourc
 /// Note a local resource `command` uses (see [`used_resource`]) before the
 /// command runs, so a conditional kill checked after it sees it. A
 /// satellite-tagged id is the hub's to note, in [`note_satellite_use`].
-fn note_local_use(state: &SharedState, client_id: ClientId, command: &Command) {
+pub(super) fn note_local_use(state: &SharedState, client_id: ClientId, command: &Command) {
     if let Some(terminal_id) = used_resource(command) {
         state.with_mut(|s| s.note_resource_use(terminal_id, client_id));
     }
@@ -3417,9 +3417,11 @@ pub(crate) fn handle_get_perf(state: &SharedState, reset: bool) -> CommandResult
     crate::perf::SESSIONS.set(u64::try_from(sessions).unwrap_or(u64::MAX));
     crate::perf::PANES.set(u64::try_from(panes).unwrap_or(u64::MAX));
     crate::perf::CLIENTS.set(clients);
-    let report = crate::perf::report();
+    let mut report = crate::perf::report();
+    report.stream_diagnostics = serde_json::to_value(crate::stream_diagnostics::snapshot()).ok();
     if reset {
         crate::perf::reset();
+        crate::stream_diagnostics::reset();
     }
     CommandResult::OkWith(CommandValue::Json(report.to_json()))
 }

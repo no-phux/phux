@@ -145,6 +145,10 @@ pub struct PerfReport {
     pub process: Option<ProcessStats>,
     /// Every metric in the table, in table order.
     pub metrics: Vec<MetricSnapshot>,
+    /// Optional bounded transport diagnostics supplied by the reporting process.
+    /// Kept opaque here so clients can preserve server diagnostic additions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_diagnostics: Option<serde_json::Value>,
 }
 
 impl PerfReport {
@@ -205,6 +209,7 @@ impl PerfReport {
                 (cur, _) => *cur,
             },
             metrics,
+            stream_diagnostics: self.stream_diagnostics.clone(),
         }
     }
 }
@@ -273,6 +278,26 @@ mod tests {
             RG.get(),
             1,
             "a gauge is a reading, not a total; reset leaves it"
+        );
+    }
+
+    #[test]
+    fn transport_diagnostics_survive_json_and_watch_as_latest_gauges() {
+        let legacy = crate::snapshot("server", &[], std::time::Duration::ZERO);
+        assert!(!legacy.to_json().contains("stream_diagnostics"));
+        assert_eq!(
+            PerfReport::from_json(&legacy.to_json()).unwrap_or_else(|e| panic!("{e}")),
+            legacy
+        );
+        let mut current = legacy.clone();
+        current.stream_diagnostics = Some(serde_json::json!({
+            "streams": [{ "context": { "connection_id": 7, "stream_id": 4, "lane": "terminal" }, "queue_bytes": 123 }],
+            "suppressed_streams": 0,
+        }));
+        let parsed = PerfReport::from_json(&current.to_json()).unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            parsed.delta(&legacy).stream_diagnostics,
+            current.stream_diagnostics
         );
     }
 }

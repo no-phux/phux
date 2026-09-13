@@ -71,6 +71,7 @@ const fn requires_terminal_stream(frame: &FrameKind) -> bool {
     matches!(
         frame,
         FrameKind::InputKey { .. }
+            | FrameKind::ResizeTerminal { .. }
             | FrameKind::InputMouse { .. }
             | FrameKind::InputFocus { .. }
             | FrameKind::InputPaste { .. }
@@ -152,9 +153,11 @@ impl CommandDispatch<'_> {
         if let Some(lane) = self.input_lane
             && matches!(
                 &command,
-                Command::ApplyInput { .. } | Command::RouteInput { .. }
+                Command::ApplyInput { terminal_id, .. } | Command::RouteInput { terminal_id, .. }
+                    if matches!(terminal_id, WireResourceId::Local { .. })
             )
         {
+            super::commands::note_local_use(self.state, self.client_id, &command);
             self.submit_input(lane, request_id, command).await;
             return None;
         }
@@ -267,6 +270,145 @@ impl CommandDispatch<'_> {
     }
 }
 
+#[cfg(test)]
+mod input_receipt_capacity_tests {
+    use super::*;
+    use phux_protocol::ids::InputOperationId;
+    use phux_protocol::input::InputEvent;
+    use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+
+    fn paste(data: &[u8]) -> InputEvent {
+        InputEvent::Paste(PasteEvent {
+            trust: PasteTrust::Trusted,
+            data: data.to_vec(),
+        })
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn receipt_refusal_precedes_operation_cache_admission() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let state = SharedState::new();
+                let lane_owner = super::super::input_lane::spawn_input_lane(state.clone()).unwrap();
+                let lane = lane_owner.handle();
+                let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
+                let token = CancellationToken::new();
+                let mut command_tasks = super::super::command_tasks::CommandTasks::new();
+                let mut receipts = JoinSet::new();
+                let slots = Arc::new(tokio::sync::Semaphore::new(0));
+                let operation_id = InputOperationId::new([0x44; 16]).unwrap();
+                CommandDispatch {
+                    state: &state,
+                    client_id: ClientId(1),
+                    out_tx: &out_tx,
+                    input_lane: Some(&lane),
+                    token: &token,
+                    root_token: &token,
+                    selection: NegotiatedConnection {
+                        client_caps: ClientCapabilities::default(),
+                        profile: BootstrapProfile::SynthesizedVtRaw,
+                        limits: BootstrapLimits::default(),
+                        server_features: ServerFeatureSet::new(),
+                        compression: Compression::None,
+                    },
+                    command_tasks: &mut command_tasks,
+                    input_receipts: &mut receipts,
+                    input_receipt_slots: &slots,
+                }
+                .submit_input(
+                    &lane,
+                    41,
+                    Command::ApplyInput {
+                        operation_id,
+                        terminal_id: WireResourceId::local(1),
+                        events: vec![paste(b"original")],
+                    },
+                )
+                .await;
+                assert!(matches!(
+                    out_rx.recv().await,
+                    Some(Outbound::Frame(FrameKind::CommandResult {
+                        request_id: 41,
+                        result: CommandResult::Error {
+                            code: ErrorCode::ResourceExhausted,
+                            ..
+                        },
+                    }))
+                ));
+                assert!(receipts.is_empty());
+                // A different payload with the refused id must reach destination
+                // validation, rather than conflict with a prematurely claimed id.
+                let result = lane
+                    .begin_apply(
+                        ClientId(1),
+                        operation_id,
+                        WireResourceId::local(2),
+                        vec![paste(b"replacement")],
+                    )
+                    .await;
+                assert!(
+                    matches!(
+                        result,
+                        CommandResult::Error {
+                            code: ErrorCode::TerminalNotFound,
+                            ..
+                        }
+                    ),
+                    "{result:?}"
+                );
+                drop(lane);
+                drop(lane_owner);
+                command_tasks.shutdown().await;
+                drop(command_tasks);
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn aborted_blocked_receipt_releases_completion_capacity() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let lane_owner =
+                    super::super::input_lane::spawn_input_lane(SharedState::new()).unwrap();
+                let lane = lane_owner.handle();
+                let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
+                out_tx
+                    .try_send(Outbound::Frame(FrameKind::Pong { nonce: 7 }))
+                    .unwrap();
+                let slots = Arc::new(tokio::sync::Semaphore::new(1));
+                let receipt = lane.begin_apply(
+                    ClientId(1),
+                    InputOperationId::new([0x45; 16]).unwrap(),
+                    WireResourceId::local(1),
+                    vec![],
+                );
+                let mut receipts = JoinSet::new();
+                spawn_input_receipt(
+                    &mut receipts,
+                    slots.clone().try_acquire_owned().unwrap(),
+                    out_tx.clone(),
+                    42,
+                    receipt,
+                );
+                tokio::task::yield_now().await;
+                assert_eq!(slots.available_permits(), 0);
+                receipts.shutdown().await;
+                assert_eq!(slots.available_permits(), 1);
+                assert!(matches!(
+                    out_rx.try_recv(),
+                    Ok(Outbound::Frame(FrameKind::Pong { nonce: 7 }))
+                ));
+                assert!(
+                    out_rx.try_recv().is_err(),
+                    "aborted receipt must not publish later"
+                );
+                drop(lane);
+                drop(lane_owner);
+            })
+            .await;
+    }
+}
+
 async fn dispatch_stream_event(
     event: Option<QuicStreamEvent>,
     stream_events: &mut Option<tokio::sync::mpsc::Receiver<QuicStreamEvent>>,
@@ -344,6 +486,32 @@ mod negotiated_feature_tests {
             server_features,
             compression: Compression::None,
         }
+    }
+
+    #[test]
+    fn negotiated_resize_uses_the_terminal_stream() {
+        let state = SharedState::new();
+        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        let frame = FrameKind::ResizeTerminal {
+            terminal_id: WireResourceId::local(1),
+            cols: 80,
+            rows: 24,
+        };
+        let mut bytes = BytesMut::new();
+        frame.encode(&mut bytes);
+        let multistream = connection(ServerFeatureSet::with(&[ServerFeature::QuicStreams]));
+        assert!(
+            validate_dispatch_frame(&bytes, Some(&multistream), FrameOrigin::Control, client_id)
+                .is_err()
+        );
+        assert!(
+            validate_dispatch_frame(&bytes, Some(&multistream), FrameOrigin::Terminal, client_id)
+                .is_ok()
+        );
+        let legacy = connection(ServerFeatureSet::new());
+        assert!(
+            validate_dispatch_frame(&bytes, Some(&legacy), FrameOrigin::Control, client_id).is_ok()
+        );
     }
 
     #[test]
@@ -1911,21 +2079,38 @@ struct ConnectionClose {
 /// through; the writer task drains it into the stream's `QuicWriter` with
 /// the same [`writer_task`] all transports share, so per-stream batching,
 /// compression, and the generation fence are identical — only the
-/// destination differs. Dropping the binding's sender (teardown) lets the
-/// writer drain and `finish()` the QUIC stream.
+/// destination differs. Retirement closes admission, then drains with a bound;
+/// a stopped receiver cannot leave a superseded stream task alive indefinitely.
 struct StreamBinding {
     tx: tokio::sync::mpsc::Sender<Outbound>,
     stream_id: StreamId,
     writer: JoinSet<()>,
+    writer_close: tokio::sync::watch::Sender<bool>,
     ingress_active: Arc<std::sync::atomic::AtomicBool>,
     ingress_cancel: CancellationToken,
+    diagnostics: Option<crate::stream_diagnostics::StreamTracker>,
 }
 
 impl StreamBinding {
-    fn retire(&mut self) {
+    fn begin_retirement(&self) {
+        if let Some(tracker) = &self.diagnostics {
+            tracker.set_active(false);
+        }
         self.ingress_active.store(false, Ordering::Release);
         self.ingress_cancel.cancel();
-        self.writer.detach_all();
+        let _ = self.writer_close.send(true);
+    }
+
+    async fn retire(&mut self) {
+        self.begin_retirement();
+        if tokio::time::timeout(WRITER_DRAIN_TIMEOUT, async {
+            while self.writer.join_next().await.is_some() {}
+        })
+        .await
+        .is_err()
+        {
+            self.writer.shutdown().await;
+        }
     }
 }
 
@@ -1951,6 +2136,7 @@ struct ClientPlumbing {
     /// Bound Terminal streams (QUIC multi-stream only): terminal → binding.
     /// Empty on every other transport, where all frames share `out_tx`.
     stream_bindings: HashMap<WireResourceId, StreamBinding>,
+    retired_streams: JoinSet<()>,
     /// The frame compression the writer applies, published by HELLO.
     ///
     /// A shared cell rather than a constructor argument because the writer
@@ -1981,6 +2167,7 @@ impl ClientPlumbing {
             sibling_tasks,
             output_pumps: JoinSet::new(),
             stream_bindings: HashMap::new(),
+            retired_streams: JoinSet::new(),
             compression,
         }
     }
@@ -2013,9 +2200,8 @@ impl ClientPlumbing {
 
     /// Bind a Terminal stream: create its mailbox, spawn its writer task
     /// draining into the stream's send half, and register both. Replaces any
-    /// live binding for the Terminal (re-bind supersedes; the old writer
-    /// drains and finishes once its pump is replaced and its sender drops).
-    fn bind_stream(
+    /// live binding for the Terminal, reaping its superseded writer.
+    async fn bind_stream(
         &mut self,
         client_id: ClientId,
         terminal_id: WireResourceId,
@@ -2027,56 +2213,70 @@ impl ClientPlumbing {
         CancellationToken,
     ) {
         let (tx, rx) = tokio::sync::mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
+        let (writer_close, writer_close_rx) = tokio::sync::watch::channel(false);
         let mut writer_tasks: JoinSet<()> = JoinSet::new();
+        let diagnostics = Some(writer.diagnostic_tracker());
         writer_tasks.spawn_local(writer_task(
             writer,
             rx,
-            self.writer_close.subscribe(),
+            writer_close_rx,
             Arc::clone(&self.compression),
             client_id,
         ));
         let sender = tx.clone();
         let ingress_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let ingress_cancel = CancellationToken::new();
-        if let Some(mut replaced) = self.stream_bindings.insert(
+        if let Some(replaced) = self.stream_bindings.insert(
             terminal_id,
             StreamBinding {
                 tx,
                 stream_id,
                 writer: writer_tasks,
+                writer_close,
                 ingress_active: Arc::clone(&ingress_active),
                 ingress_cancel: ingress_cancel.clone(),
+                diagnostics,
             },
         ) {
-            replaced.retire();
+            self.retire_stream(replaced).await;
         }
         (sender, ingress_active, ingress_cancel)
     }
 
     /// Drop one stream binding, returning its generation for staleness
-    /// checks. The writer task exits and finishes the QUIC stream once the
-    /// pump's sender clone is gone; the caller aborts the pump first.
-    fn drop_stream_binding(&mut self, terminal_id: &WireResourceId) -> Option<StreamId> {
-        self.stream_bindings.remove(terminal_id).map(|mut binding| {
-            binding.retire();
-            binding.stream_id
-        })
+    /// checks. Retirement stays owned without blocking unrelated streams.
+    async fn drop_stream_binding(&mut self, terminal_id: &WireResourceId) -> Option<StreamId> {
+        let binding = self.stream_bindings.remove(terminal_id)?;
+        let stream_id = binding.stream_id;
+        self.retire_stream(binding).await;
+        Some(stream_id)
+    }
+
+    async fn retire_stream(&mut self, mut binding: StreamBinding) {
+        // Churn cannot retain an unbounded number of draining writers. At the
+        // connection stream cap, reset/reap the old retirements before admitting
+        // another. Normal retirement never parks the connection reader.
+        binding.begin_retirement();
+        while self.retired_streams.try_join_next().is_some() {}
+        if self.retired_streams.len() >= 127 {
+            self.retired_streams.shutdown().await;
+        }
+        self.retired_streams
+            .spawn_local(async move { binding.retire().await });
     }
 
     /// Drop every stream binding (session DETACH, disconnect). Pumps are
-    /// aborted by the caller first; writers drain and finish.
-    fn drop_all_stream_bindings(&mut self) -> Vec<(WireResourceId, StreamId)> {
-        self.stream_bindings
-            .drain()
-            .map(|(terminal_id, mut binding)| {
-                binding.retire();
-                (terminal_id, binding.stream_id)
-            })
-            .collect()
+    /// aborted by the caller first; draining writers remain connection-owned.
+    async fn drop_all_stream_bindings(&mut self) {
+        for (_, binding) in std::mem::take(&mut self.stream_bindings) {
+            self.retire_stream(binding).await;
+        }
     }
 
     /// End one connection for a protocol violation, in the order §9 requires.
     async fn close(mut self, close: ConnectionClose, state: &SharedState, client_id: ClientId) {
+        self.drop_all_stream_bindings().await;
+        while self.retired_streams.join_next().await.is_some() {}
         if let Some(reason) = close.attached_reason {
             abort_output_pumps(&mut self.output_pumps, client_id, reason).await;
             detach_and_release_consumer_state(state, client_id);
@@ -2101,6 +2301,8 @@ impl ClientPlumbing {
         root_token: &CancellationToken,
     ) {
         abort_output_pumps(&mut self.output_pumps, client_id, "connection cancellation").await;
+        self.drop_all_stream_bindings().await;
+        while self.retired_streams.join_next().await.is_some() {}
         if root_token.is_cancelled() {
             let _ = self
                 .out_tx
@@ -2429,6 +2631,7 @@ fn history_terminal(
     }
 }
 
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 async fn serve_history_request(
     state: &SharedState,
     client_id: ClientId,
@@ -2840,9 +3043,9 @@ where
                 .await;
                 // Session DETACH ends every Terminal stream too: pumps and
                 // subscriptions are already gone via the detach path above,
-                // so dropping the bindings lets each writer drain and finish
-                // its QUIC stream.
-                plumbing.drop_all_stream_bindings();
+                // so retirement closes admission and boundedly drains each
+                // QUIC stream in a connection-owned task.
+                plumbing.drop_all_stream_bindings().await;
             }
             FrameKind::ViewportResize { viewport } => {
                 debug!(
@@ -3141,8 +3344,8 @@ where
                     CommandDispatchOutcome::Completed(Some(terminal_id)) => {
                         // The command above already unsubscribed, stopped the
                         // pump, and detached the actor consumer; dropping the
-                        // binding lets its writer drain and finish the stream.
-                        plumbing.drop_stream_binding(&terminal_id);
+                        // binding starts its owned, bounded writer drain.
+                        plumbing.drop_stream_binding(&terminal_id).await;
                     }
                     CommandDispatchOutcome::Completed(None) => {}
                     CommandDispatchOutcome::Cancelled => {
@@ -3364,12 +3567,13 @@ async fn bind_terminal_stream(
             .await;
         return;
     }
-    let (stream_tx, ingress_active, ingress_cancel) = plumbing.bind_stream(
-        client_id,
-        terminal_id.clone(),
-        stream_id,
-        QuicWriter::from_stream(send, window),
-    );
+    let writer = QuicWriter::from_terminal_stream(send, window);
+    let diagnostics = writer.diagnostic_tracker();
+    debug!(?client_id, ?stream_id, context = ?diagnostics.context(), "bound QUIC diagnostic stream");
+    let bind_started = std::time::Instant::now();
+    let (stream_tx, ingress_active, ingress_cancel) = plumbing
+        .bind_stream(client_id, terminal_id.clone(), stream_id, writer)
+        .await;
     // Remember the subscription against control BEFORE bootstrapping with
     // the stream: lifecycle fanout must resolve to control even if the
     // Terminal dies mid-bootstrap.
@@ -3377,7 +3581,7 @@ async fn bind_terminal_stream(
     let Some((core, handle)) = subscription else {
         let mut recv = recv;
         let _ = recv.stop(0x10_u32.into());
-        plumbing.drop_stream_binding(&terminal_id);
+        plumbing.drop_stream_binding(&terminal_id).await;
         let _ = plumbing
             .out_tx
             .send(Outbound::Frame(FrameKind::Error {
@@ -3398,6 +3602,7 @@ async fn bind_terminal_stream(
         terminal_frame_bytes,
         ingress_active,
         ingress_cancel,
+        Some(diagnostics.clone()),
     ));
     if let Err(failure) = bootstrap_attach_terminal(
         state,
@@ -3414,10 +3619,9 @@ async fn bind_terminal_stream(
     )
     .await
     {
-        // Keep the subscription (retry re-binds); finish the stream. The
-        // writer drains whatever queued and `finish()`es once the pump's
-        // sender clone is gone — no partial generation stays live.
-        plumbing.drop_stream_binding(&terminal_id);
+        // Keep the subscription (retry re-binds); close writer admission and
+        // boundedly drain its queue, resetting if it cannot finish.
+        plumbing.drop_stream_binding(&terminal_id).await;
         let _ = plumbing
             .out_tx
             .send(Outbound::Frame(FrameKind::Error {
@@ -3426,6 +3630,11 @@ async fn bind_terminal_stream(
                 message: failure.message,
             }))
             .await;
+    } else {
+        diagnostics.record_ready_latency(
+            crate::stream_diagnostics::ReadyKind::Initial,
+            bind_started.elapsed(),
+        );
     }
 }
 
@@ -3440,7 +3649,7 @@ async fn teardown_terminal_stream(
     terminal_id: &WireResourceId,
 ) {
     handle_detach_terminal(state, client_id, terminal_id).await;
-    plumbing.drop_stream_binding(terminal_id);
+    plumbing.drop_stream_binding(terminal_id).await;
 }
 
 /// Route one decoded `INPUT_*` event, preferring the dedicated input lane
@@ -4536,6 +4745,7 @@ enum OutboundTerminalState {
 #[derive(Debug, Default)]
 struct OutboundGenerationFence {
     terminals: HashMap<phux_protocol::ids::ResourceId, OutboundTerminalState>,
+    diagnostics: Option<crate::stream_diagnostics::StreamTracker>,
 }
 
 impl OutboundGenerationFence {
@@ -4556,8 +4766,21 @@ impl OutboundGenerationFence {
                 terminal_id,
                 stream_id,
                 bootstrap_id,
+                reason,
                 ..
-            } => self.admit_tombstone(terminal_id, *stream_id, *bootstrap_id),
+            } => {
+                let already_retired = self
+                    .current(terminal_id)
+                    .is_some_and(|current| current.retired);
+                let admitted = self.admit_tombstone(terminal_id, *stream_id, *bootstrap_id);
+                if admitted
+                    && !already_retired
+                    && let Some(tracker) = &self.diagnostics
+                {
+                    tracker.record_tombstone(*reason);
+                }
+                admitted
+            }
             FrameKind::ResourceClosed { terminal_id, .. } => {
                 self.terminals
                     .insert(terminal_id.clone(), OutboundTerminalState::Closed);
@@ -4744,9 +4967,21 @@ mod outbound_generation_fence_tests {
 
     #[test]
     fn tombstone_fences_late_history_and_output_before_replacement() {
+        use crate::stream_diagnostics::{
+            ResyncReason, StreamContext, StreamDiagnostics, StreamLane,
+        };
+        let diagnostics = StreamDiagnostics::new();
+        let registration = diagnostics.register(StreamContext {
+            connection_id: 1,
+            stream_id: 4,
+            lane: StreamLane::Terminal,
+        });
         let initial = bootstrap(1);
         let replacement = bootstrap(2);
-        let mut fence = OutboundGenerationFence::default();
+        let mut fence = OutboundGenerationFence {
+            diagnostics: Some(registration.tracker()),
+            ..OutboundGenerationFence::default()
+        };
         assert!(fence.admits(&begin(initial)));
         assert!(fence.admits(&output(initial)));
         assert!(
@@ -4779,9 +5014,36 @@ mod outbound_generation_fence_tests {
         assert!(!fence.admits(&output(initial)));
         assert!(!fence.admits(&begin(initial)));
 
+        assert!(
+            fence.admits(&Outbound::Frame(FrameKind::BootstrapTombstone {
+                terminal_id: terminal(),
+                stream_id: stream(),
+                bootstrap_id: initial,
+                reason: TombstoneReason::OutboundGap,
+                last_valid_seq: 1,
+            }))
+        );
+        assert_eq!(
+            diagnostics.snapshot().streams[0].resync_reason,
+            Some(ResyncReason::Resize)
+        );
+
         assert!(fence.admits(&begin(replacement)));
         assert!(fence.admits(&output(replacement)));
         assert!(!fence.admits(&output(initial)));
+        assert!(
+            !fence.admits(&Outbound::Frame(FrameKind::BootstrapTombstone {
+                terminal_id: terminal(),
+                stream_id: stream(),
+                bootstrap_id: initial,
+                reason: TombstoneReason::OutboundGap,
+                last_valid_seq: 1,
+            }))
+        );
+        assert_eq!(
+            diagnostics.snapshot().streams[0].resync_reason,
+            Some(ResyncReason::Resize)
+        );
     }
 }
 
@@ -4944,7 +5206,10 @@ pub(crate) async fn writer_task<W: FrameWriter>(
     // message-oriented transport can still write them one message at a time.
     let mut ends: Vec<usize> = Vec::new();
     let mut close_control_open = true;
-    let mut generation_fence = OutboundGenerationFence::default();
+    let mut generation_fence = OutboundGenerationFence {
+        diagnostics: writer.stream_tracker(),
+        ..OutboundGenerationFence::default()
+    };
     'writer: loop {
         let message = loop {
             let Some(message) = next_outbound(&mut rx, &mut close, &mut close_control_open).await
@@ -5071,6 +5336,117 @@ mod writer_close_tests {
         std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
             phux_protocol::caps::Compression::None.as_u8(),
         ))
+    }
+
+    struct StalledStreamWriter {
+        entered: std::sync::Arc<tokio::sync::Notify>,
+        dropped: Rc<std::cell::Cell<bool>>,
+    }
+
+    impl Drop for StalledStreamWriter {
+        fn drop(&mut self) {
+            self.dropped.set(true);
+        }
+    }
+
+    impl FrameWriter for StalledStreamWriter {
+        async fn write_frame(&mut self, _frame: &[u8]) -> io::Result<()> {
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+
+        async fn close(&mut self) -> io::Result<()> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn retired_stream_reaps_stalled_writer_with_extra_sender() {
+        LocalSet::new()
+            .run_until(async {
+                let entered = std::sync::Arc::new(tokio::sync::Notify::new());
+                let dropped = Rc::new(std::cell::Cell::new(false));
+                let (tx, rx) = tokio::sync::mpsc::channel(1);
+                let extra_sender = tx.clone();
+                let (close_tx, close_rx) = tokio::sync::watch::channel(false);
+                let mut tasks = tokio::task::JoinSet::new();
+                tasks.spawn_local(writer_task(
+                    StalledStreamWriter {
+                        entered: entered.clone(),
+                        dropped: dropped.clone(),
+                    },
+                    rx,
+                    close_rx,
+                    uncompressed(),
+                    ClientId(1),
+                ));
+                tx.send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
+                    .await
+                    .unwrap();
+                tokio::time::timeout(std::time::Duration::from_secs(1), entered.notified())
+                    .await
+                    .unwrap();
+                let active = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+                let token = CancellationToken::new();
+                let mut binding = super::StreamBinding {
+                    tx,
+                    stream_id: StreamId::new(1).unwrap(),
+                    writer: tasks,
+                    writer_close: close_tx,
+                    diagnostics: None,
+                    ingress_active: active.clone(),
+                    ingress_cancel: token.clone(),
+                };
+                tokio::time::timeout(std::time::Duration::from_secs(2), binding.retire())
+                    .await
+                    .unwrap();
+                assert!(dropped.get(), "retirement must reap the transport writer");
+                assert!(binding.writer.is_empty());
+                assert!(!active.load(std::sync::atomic::Ordering::Acquire));
+                assert!(token.is_cancelled());
+                assert!(extra_sender.is_closed());
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn retired_stream_drains_queued_frames_before_close() {
+        LocalSet::new()
+            .run_until(async {
+                let events = Rc::new(RefCell::new(Vec::new()));
+                let (tx, rx) = tokio::sync::mpsc::channel(2);
+                let (writer_close, close_rx) = tokio::sync::watch::channel(false);
+                tx.try_send(Outbound::Frame(FrameKind::Pong { nonce: 1 }))
+                    .unwrap();
+                tx.try_send(Outbound::Frame(FrameKind::Pong { nonce: 2 }))
+                    .unwrap();
+                let extra_sender = tx.clone();
+                let mut writer = tokio::task::JoinSet::new();
+                writer.spawn_local(writer_task(
+                    RecordingWriter(events.clone()),
+                    rx,
+                    close_rx,
+                    uncompressed(),
+                    ClientId(1),
+                ));
+                let mut binding = super::StreamBinding {
+                    tx,
+                    stream_id: StreamId::new(1).unwrap(),
+                    writer,
+                    writer_close,
+                    diagnostics: None,
+                    ingress_active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+                    ingress_cancel: CancellationToken::new(),
+                };
+                binding.retire().await;
+                assert_eq!(
+                    *events.borrow(),
+                    vec![WriterEvent::Frame, WriterEvent::Frame, WriterEvent::Close]
+                );
+                assert!(extra_sender.is_closed());
+                assert!(binding.writer.is_empty());
+            })
+            .await;
     }
 
     /// A transport that records batches instead of frames, so a test can see

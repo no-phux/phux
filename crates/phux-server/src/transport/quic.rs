@@ -220,6 +220,8 @@ impl FrameReader for QuicReader {
 /// replaying a backlog it cannot drain.
 pub(crate) struct QuicWriter {
     send: TrackedSend<quinn::SendStream>,
+    finished: bool,
+    diagnostics: crate::stream_diagnostics::StreamRegistration,
 }
 impl QuicWriter {
     /// Wrap one already-authenticated QUIC send stream in phux framing.
@@ -228,15 +230,57 @@ impl QuicWriter {
     /// connection and clone it for each stream on that connection (a relay
     /// tunnel carries one stream per bridged consumer): the window belongs
     /// to the connection, not to the stream.
-    pub(crate) const fn from_stream(send: quinn::SendStream, window: SendWindow) -> Self {
+    pub(crate) fn from_stream(send: quinn::SendStream, window: SendWindow) -> Self {
+        Self::with_lane(send, window, crate::stream_diagnostics::StreamLane::Control)
+    }
+
+    pub(crate) fn from_terminal_stream(send: quinn::SendStream, window: SendWindow) -> Self {
+        Self::with_lane(
+            send,
+            window,
+            crate::stream_diagnostics::StreamLane::Terminal,
+        )
+    }
+
+    fn with_lane(
+        send: quinn::SendStream,
+        window: SendWindow,
+        lane: crate::stream_diagnostics::StreamLane,
+    ) -> Self {
+        use std::hash::BuildHasher;
+        // Quinn's stable id is address-derived. Hash it with a process-random
+        // key so snapshots correlate streams without exposing an address.
+        static IDS: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+            std::sync::OnceLock::new();
+        let connection_id = IDS
+            .get_or_init(std::collections::hash_map::RandomState::new)
+            .hash_one(window.connection().stable_id());
+        let diagnostics =
+            crate::stream_diagnostics::register(crate::stream_diagnostics::StreamContext {
+                connection_id,
+                stream_id: u64::from(send.id()),
+                lane,
+            });
+        diagnostics.tracker().set_active(true);
         Self {
             send: TrackedSend::new(send, window),
+            finished: false,
+            diagnostics,
         }
+    }
+
+    pub(crate) fn diagnostic_tracker(&self) -> crate::stream_diagnostics::StreamTracker {
+        self.diagnostics.tracker()
     }
 }
 
 impl FrameWriter for QuicWriter {
+    fn stream_tracker(&self) -> Option<crate::stream_diagnostics::StreamTracker> {
+        Some(self.diagnostic_tracker())
+    }
+
     async fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
+        let _write = self.diagnostics.tracker().begin_write();
         self.send.write_all(frame).await
     }
 
@@ -253,6 +297,7 @@ impl FrameWriter for QuicWriter {
     /// still re-tracked before every partial write inside that one
     /// `write_all` (see [`TrackedSend`]).
     async fn write_frames(&mut self, batch: &[u8], _ends: &[usize]) -> io::Result<()> {
+        let _write = self.diagnostics.tracker().begin_write();
         self.send.write_all(batch).await
     }
 
@@ -261,7 +306,19 @@ impl FrameWriter for QuicWriter {
         reason = "FrameWriter requires an async close operation, while Quinn's finish is synchronous"
     )]
     async fn close(&mut self) -> io::Result<()> {
-        self.send.get_mut().finish().map_err(io::Error::other)
+        self.send.get_mut().finish().map_err(io::Error::other)?;
+        self.finished = true;
+        Ok(())
+    }
+}
+
+impl Drop for QuicWriter {
+    fn drop(&mut self) {
+        if !self.finished {
+            // Cancellation may interrupt a length-prefixed frame. An explicit
+            // reset distinguishes that abandoned write from an orderly FIN.
+            let _ = self.send.get_mut().reset(0x10_u32.into());
+        }
     }
 }
 
@@ -396,9 +453,12 @@ impl Incoming for QuicListener {
             };
 
             let window = SendWindow::new(conn.clone());
+            let writer = QuicWriter::from_stream(send, window.clone());
+            let mut reader = QuicMuxReader::new(recv, conn, window);
+            reader.diagnostics = Some(writer.diagnostic_tracker());
             return Ok((
-                QuicMuxReader::new(recv, conn, window.clone()),
-                QuicWriter::from_stream(send, window),
+                reader,
+                writer,
                 crate::auth::ConnectionIdentity {
                     peer: peer_identity,
                     credential,
@@ -462,6 +522,7 @@ pub(crate) struct AdmittedFrame {
     _terminal_bytes: Option<tokio::sync::OwnedSemaphorePermit>,
     origin: Option<Arc<AtomicBool>>,
     event: Option<QuicStreamEvent>,
+    _queue_ticket: Option<crate::stream_diagnostics::QueueTicket>,
 }
 
 impl AdmittedFrame {
@@ -472,6 +533,7 @@ impl AdmittedFrame {
             _terminal_bytes: None,
             origin: None,
             event: Some(event),
+            _queue_ticket: None,
         }
     }
 }
@@ -567,6 +629,10 @@ pub(crate) struct QuicMuxReader {
     tasks: tokio::task::JoinSet<()>,
     last_origin: crate::transport::FrameOrigin,
     stream_events_tx: Option<tokio::sync::mpsc::Sender<QuicStreamEvent>>,
+    // `read_frame` is cancelled whenever runtime handles another select arm.
+    // Keep dequeued lifecycle events here until their destination is reserved.
+    pending_event: Option<QuicStreamEvent>,
+    diagnostics: Option<crate::stream_diagnostics::StreamTracker>,
 }
 
 impl QuicMuxReader {
@@ -587,6 +653,8 @@ impl QuicMuxReader {
             tasks: tokio::task::JoinSet::new(),
             last_origin: crate::transport::FrameOrigin::Control,
             stream_events_tx: None,
+            pending_event: None,
+            diagnostics: None,
         }
     }
 }
@@ -610,6 +678,20 @@ impl FrameReader for QuicMuxReader {
             if !self.control_open {
                 return Ok(None);
             }
+            if self.pending_event.is_some() {
+                let Some(events) = self.stream_events_tx.as_ref() else {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotConnected,
+                        "quic mux lost its stream event channel",
+                    ));
+                };
+                let Ok(permit) = events.reserve().await else {
+                    return Ok(None);
+                };
+                if let Some(event) = self.pending_event.take() {
+                    permit.send(event);
+                }
+            }
             tokio::select! {
                 biased;
                 done = async {
@@ -629,15 +711,7 @@ impl FrameReader for QuicMuxReader {
                         return Ok(None);
                     };
                     if let Some(event) = admitted.event {
-                        let Some(events) = self.stream_events_tx.as_ref() else {
-                            return Err(io::Error::new(
-                                io::ErrorKind::NotConnected,
-                                "quic mux lost its stream event channel",
-                            ));
-                        };
-                        if events.send(event).await.is_err() {
-                            return Ok(None);
-                        }
+                        self.pending_event = Some(event);
                         continue;
                     }
                     if admitted.origin.as_ref().is_some_and(|origin| {
@@ -679,10 +753,18 @@ impl FrameReader for QuicMuxReader {
         // connection's end (see `read_frame`).
         let control_frames_tx = frames_tx.clone();
         let control_frame_bytes = frame_bytes.clone();
+        let diagnostics = self.diagnostics.clone();
         self.tasks.spawn(async move {
             let mut control = control;
             loop {
-                match read_framed_bounded(&mut control.recv, &control_frame_bytes, None, None).await
+                match read_framed_bounded(
+                    &mut control.recv,
+                    &control_frame_bytes,
+                    None,
+                    None,
+                    diagnostics.as_ref(),
+                )
+                .await
                 {
                     Ok(Some(frame)) => {
                         if control_frames_tx.send(frame).await.is_err() {
@@ -802,6 +884,7 @@ pub(crate) async fn pump_terminal_stream(
     terminal_frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     active: Arc<AtomicBool>,
     cancelled: tokio_util::sync::CancellationToken,
+    diagnostics: Option<crate::stream_diagnostics::StreamTracker>,
 ) {
     loop {
         let read = tokio::select! {
@@ -811,6 +894,7 @@ pub(crate) async fn pump_terminal_stream(
                 &frame_bytes,
                 Some(&terminal_frame_bytes),
                 Some(active.clone()),
+                diagnostics.as_ref(),
             ) => read,
         };
         let frame = match read {
@@ -1003,6 +1087,7 @@ async fn read_framed_bounded(
     budget: &std::sync::Arc<tokio::sync::Semaphore>,
     terminal_budget: Option<&std::sync::Arc<tokio::sync::Semaphore>>,
     origin: Option<Arc<AtomicBool>>,
+    diagnostics: Option<&crate::stream_diagnostics::StreamTracker>,
 ) -> io::Result<Option<AdmittedFrame>> {
     let mut header = [0u8; LENGTH_PREFIX];
     if !read_exact_quic(recv, &mut header[..1]).await? {
@@ -1050,13 +1135,14 @@ async fn read_framed_bounded(
                 io::Error::new(io::ErrorKind::NotConnected, "QUIC mux byte budget closed")
             })?;
         let mut framed = framing::frame_buffer(header)?;
+        let ticket = diagnostics.map(|tracker| tracker.enqueue(u64::from(permit_count)));
         if !read_exact_quic(recv, &mut framed[LENGTH_PREFIX..]).await? {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
                 "stream finished mid-frame",
             ));
         }
-        Ok::<_, io::Error>((framed, connection_bytes, terminal_bytes))
+        Ok::<_, io::Error>((framed, connection_bytes, terminal_bytes, ticket))
     })
     .await
     .map_err(|_| {
@@ -1065,13 +1151,14 @@ async fn read_framed_bounded(
             "QUIC incomplete-frame deadline elapsed",
         )
     })??;
-    let (framed, connection_bytes, terminal_bytes) = admitted;
+    let (framed, connection_bytes, terminal_bytes, ticket) = admitted;
     Ok(Some(AdmittedFrame {
         bytes: framed,
         _connection_bytes: Some(connection_bytes),
         _terminal_bytes: terminal_bytes,
         origin,
         event: None,
+        _queue_ticket: ticket,
     }))
 }
 
@@ -1334,10 +1421,6 @@ mod tests {
             let mut events = reader.take_stream_events().expect("upgrade once");
             assert!(reader.take_stream_events().is_none(), "upgrade is one-shot");
             // The bind event names the terminal and generation.
-            let bound = tokio::time::timeout(Duration::from_secs(5), events.recv())
-                .await
-                .expect("bind event arrives")
-                .expect("event channel open");
             let QuicStreamEvent::Bound {
                 terminal_id,
                 stream_id,
@@ -1347,7 +1430,10 @@ mod tests {
                 frame_bytes,
                 terminal_frame_bytes,
                 ..
-            } = bound
+            } = tokio::time::timeout(Duration::from_secs(5), events.recv())
+                .await
+                .expect("bind event arrives")
+                .expect("event channel open")
             else {
                 panic!("expected Bound");
             };
@@ -1361,6 +1447,7 @@ mod tests {
                 terminal_frame_bytes,
                 Arc::new(AtomicBool::new(true)),
                 tokio_util::sync::CancellationToken::new(),
+                None,
             ));
             // Only an admitted pump can place a frame into shared dispatch.
             let merged = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())
@@ -1430,6 +1517,190 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mux_keeps_an_end_event_when_read_is_cancelled() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (_dir, cert, key) = cert_pair();
+            let listener =
+                QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
+            let endpoint = client_endpoint();
+            let client = async {
+                let conn = endpoint
+                    .connect(listener.local_addr().unwrap(), "localhost")
+                    .unwrap()
+                    .await
+                    .unwrap();
+                let (mut send, recv) = conn.open_bi().await.unwrap();
+                send.write_all(&FRAME).await.unwrap();
+                (conn, send, recv)
+            };
+            let (accepted, _client) = tokio::join!(listener.accept(), client);
+            let (mut reader, _writer, _) = accepted.unwrap();
+            let (frames_tx, frames_rx) = tokio::sync::mpsc::channel(2);
+            let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(1);
+            let ended = |id| QuicStreamEvent::Ended {
+                terminal_id: phux_protocol::ids::ResourceId::local(id),
+                stream_id: phux_protocol::ids::StreamId::new(1).unwrap(),
+            };
+            events_tx.try_send(ended(1)).unwrap();
+            frames_tx.try_send(AdmittedFrame::event(ended(2))).unwrap();
+            frames_tx
+                .try_send(AdmittedFrame {
+                    bytes: BytesMut::from(FRAME.as_slice()),
+                    _connection_bytes: None,
+                    _terminal_bytes: None,
+                    origin: None,
+                    event: None,
+                    _queue_ticket: None,
+                })
+                .unwrap();
+            reader.frames_rx = Some(frames_rx);
+            reader.stream_events_tx = Some(events_tx);
+            {
+                let read = reader.read_frame();
+                tokio::pin!(read);
+                std::future::poll_fn(|cx| {
+                    assert!(std::future::Future::poll(read.as_mut(), cx).is_pending());
+                    std::task::Poll::Ready(())
+                })
+                .await;
+            }
+            assert!(
+                matches!(events_rx.recv().await, Some(QuicStreamEvent::Ended {
+                terminal_id, ..
+            }) if terminal_id == phux_protocol::ids::ResourceId::local(1))
+            );
+            assert_eq!(reader.read_frame().await.unwrap().unwrap().as_ref(), &FRAME);
+            assert!(matches!(events_rx.try_recv(), Ok(QuicStreamEvent::Ended {
+                terminal_id, ..
+            }) if terminal_id == phux_protocol::ids::ResourceId::local(2)));
+        })
+        .await
+        .expect("mux event test deadline");
+    }
+
+    #[tokio::test]
+    async fn cancelled_partial_writer_resets_instead_of_finishing() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (_dir, cert, key) = cert_pair();
+            let listener =
+                QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
+            let crypto =
+                phux_dial::tls::client_config(&phux_dial::CertTrust::SkipVerify, Some(QUIC_ALPN))
+                    .unwrap();
+            let mut config = quinn::ClientConfig::new(Arc::new(
+                quinn::crypto::rustls::QuicClientConfig::try_from(crypto).unwrap(),
+            ));
+            let mut transport = quinn::TransportConfig::default();
+            transport.stream_receive_window(32_768_u32.into());
+            config.transport_config(Arc::new(transport));
+            let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+            endpoint.set_default_client_config(config);
+            let client = async {
+                let conn = endpoint
+                    .connect(listener.local_addr().unwrap(), "localhost")
+                    .unwrap()
+                    .await
+                    .unwrap();
+                let (mut send, recv) = conn.open_bi().await.unwrap();
+                send.write_all(&FRAME).await.unwrap();
+                (conn, send, recv)
+            };
+            let (accepted, (_connection, _send, mut recv)) =
+                tokio::join!(listener.accept(), client);
+            let (_reader, mut writer, _) = accepted.unwrap();
+            let context = writer.diagnostic_tracker().context();
+            let frame = vec![0_u8; 65_536];
+            {
+                let write = writer.write_frame(&frame);
+                tokio::pin!(write);
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), &mut write)
+                        .await
+                        .is_err(),
+                    "stream credit must hold the partial write"
+                );
+                let sample = crate::stream_diagnostics::snapshot()
+                    .streams
+                    .into_iter()
+                    .find(|sample| sample.context == context)
+                    .expect("registered writer");
+                assert!(sample.write_in_progress_age_us.unwrap() >= 90_000);
+            }
+            drop(writer);
+            assert!(
+                !crate::stream_diagnostics::snapshot()
+                    .streams
+                    .iter()
+                    .any(|sample| sample.context == context),
+                "cancelled writer registration removed"
+            );
+            let error = recv.read_to_end(65_536).await.unwrap_err();
+            assert!(
+                matches!(error, quinn::ReadToEndError::Read(quinn::ReadError::Reset(code))
+                if code == quinn::VarInt::from_u32(0x10)),
+                "{error:?}"
+            );
+        })
+        .await
+        .expect("partial writer test deadline");
+    }
+
+    #[tokio::test]
+    async fn mux_diagnostics_account_admitted_bytes_until_delivery() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let (_dir, cert, key) = cert_pair();
+            let listener =
+                QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
+            let endpoint = client_endpoint();
+            let client = async {
+                let conn = endpoint
+                    .connect(listener.local_addr().unwrap(), "localhost")
+                    .unwrap()
+                    .await
+                    .unwrap();
+                let (mut send, recv) = conn.open_bi().await.unwrap();
+                send.write_all(&FRAME).await.unwrap();
+                (conn, send, recv)
+            };
+            let (accepted, (_conn, mut send, _recv)) = tokio::join!(listener.accept(), client);
+            let (mut reader, writer, _) = accepted.unwrap();
+            let context = writer.diagnostic_tracker().context();
+            assert_eq!(
+                reader.read_frame().await.unwrap().unwrap(),
+                FRAME.as_slice()
+            );
+            let _events = reader.take_stream_events().unwrap();
+            send.write_all(&FRAME).await.unwrap();
+            while reader.frames_rx.as_ref().unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+            let sample = crate::stream_diagnostics::snapshot()
+                .streams
+                .into_iter()
+                .find(|sample| sample.context == context)
+                .unwrap();
+            assert!(sample.active);
+            assert_eq!(sample.queue_bytes, FRAME.len() as u64);
+            assert_eq!(sample.queue_items, 1);
+            assert!(sample.queue_oldest_age_us.is_some());
+            assert_eq!(
+                reader.read_frame().await.unwrap().unwrap(),
+                FRAME.as_slice()
+            );
+            let sample = crate::stream_diagnostics::snapshot()
+                .streams
+                .into_iter()
+                .find(|sample| sample.context == context)
+                .unwrap();
+            assert_eq!(sample.queue_bytes, 0);
+            assert_eq!(sample.queue_oldest_age_us, None);
+            drop(writer);
+        })
+        .await
+        .expect("mux diagnostics deadline");
+    }
+
+    #[tokio::test]
     async fn mux_resets_a_stream_with_no_well_formed_bind() {
         let (_dir, cert, key) = cert_pair();
         let listener =
@@ -1445,10 +1716,12 @@ mod tests {
             // loop stays alive for later well-formed binds (asserted by a
             // short quiet window, then the test ends).
             let quiet = tokio::time::timeout(Duration::from_millis(300), events.recv()).await;
+            drop(events);
             assert!(
                 quiet.is_err(),
                 "malformed bind emits no event, got {quiet:?}"
             );
+            drop(quiet);
         };
         let client = async {
             let endpoint = client_endpoint();
@@ -1492,6 +1765,7 @@ mod tests {
                 .await
                 .expect("bind worker ownership closes event channel");
             assert!(closed.is_none());
+            drop(closed);
         };
         let client = async {
             let endpoint = client_endpoint();
@@ -1541,6 +1815,7 @@ mod tests {
                 terminal_frame_bytes,
                 Arc::new(AtomicBool::new(true)),
                 tokio_util::sync::CancellationToken::new(),
+                None,
             ));
             let event = tokio::time::timeout(Duration::from_secs(5), async {
                 tokio::select! {
@@ -1560,6 +1835,7 @@ mod tests {
                     ..
                 }
             ));
+            drop(event);
         };
         let client = async {
             let endpoint = client_endpoint();
@@ -1611,6 +1887,7 @@ mod tests {
                 terminal_frame_bytes,
                 Arc::clone(&active),
                 tokio_util::sync::CancellationToken::new(),
+                None,
             ));
             tokio::time::sleep(Duration::from_millis(300)).await;
             active.store(false, Ordering::Release);
@@ -1683,6 +1960,7 @@ mod tests {
                     terminal_frame_bytes,
                     Arc::new(AtomicBool::new(true)),
                     tokio_util::sync::CancellationToken::new(),
+                    None,
                 ));
             }
             let control = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())

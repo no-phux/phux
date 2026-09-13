@@ -70,6 +70,7 @@ pub fn snapshot_since(
 ) -> PerfReport {
     let process = ProcessStats::capture().map(|now| baseline.map_or(now, |base| now.delta(base)));
     PerfReport {
+        stream_diagnostics: None,
         schema_version: SCHEMA_VERSION,
         role: role.to_owned(),
         pid: std::process::id(),
