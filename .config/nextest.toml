@@ -54,6 +54,15 @@ test-group = 'pty-serial'
 filter = 'package(phux-server) & test(pane_kill_lets_foreground_process_flush_before_death)'
 threads-required = 'num-cpus'
 
+# kip_roundtrip drives real host TUIs (vim/nvim) under a PTY. Under host
+# load `vim_insert_and_quit_under_term_ghostty` stretches from 0.5s to
+# ~17s and misses the wire deadline (phux-wdgo / phux-x0cj). `pty-serial`
+# only serialises members against each other; `threads-required` clears
+# the machine, matching the foreground-flush fixtures above.
+[[profile.default.overrides]]
+filter = 'package(phux-server) & binary(=terminal) & test(/^kip_roundtrip::/)'
+threads-required = 'num-cpus'
+
 # The two phux-l96p.12 pane-kill tests need the same clearance, for the same
 # reason. One of them needs it more than anything above: it moves megabytes
 # through a real PTY inside that same 500ms grace, so CPU contention starves
