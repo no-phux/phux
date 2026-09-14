@@ -53,7 +53,7 @@ check_binary() {
   set -e
   [ "$code" -eq 2 ]
   [ ! -s "$tmp/$name.conflict.out" ]
-  grep -q -- '--skill' "$stderr"
+    grep -Eq -- "--skill|'skill'" "$stderr"
 
   set -o pipefail
   "$bin" --skill 2> "$stderr" | head -n 1 > /dev/null

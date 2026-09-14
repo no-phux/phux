@@ -315,10 +315,14 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             notices: route.notices,
             ..FrameOutcome::default()
         }),
-        FrameKind::AttachReady { .. } => Ok(FrameOutcome {
-            layout_replaced: !route.damaged.is_empty(),
-            ..FrameOutcome::default()
-        }),
+        FrameKind::AttachReady { .. } => {
+            let authoritative_damage = route.damaged.iter().cloned().collect();
+            Ok(FrameOutcome {
+                layout_replaced: !route.damaged.is_empty(),
+                authoritative_damage,
+                ..FrameOutcome::default()
+            })
+        }
         FrameKind::ResourceOutput {
             terminal_id,
             stream_id: _,
@@ -613,6 +617,7 @@ fn handle_bootstrap_ready<W: crate::attach::RenderSink>(
     let damaged = route.damaged(terminal_id);
     Ok(FrameOutcome {
         layout_replaced: damaged,
+        authoritative_damage: damaged.then(|| terminal_id.clone()).into_iter().collect(),
         chrome_dirty: damaged && title_changed,
         history_request: route.history_request,
         pty_writes: route.pty_writes,
@@ -731,6 +736,7 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
         crate::attach::render_prof::note_skipped(1);
         return Ok(FrameOutcome {
             ack,
+            authoritative_damage: vec![terminal_id.clone()],
             chrome_dirty: title_changed,
             pty_writes,
             notices,
@@ -756,6 +762,9 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
     );
     Ok(FrameOutcome {
         ack,
+        authoritative_damage: vec![terminal_id.clone()],
+        painted_output: (ctx.focused_resource.as_ref() == Some(terminal_id))
+            .then(|| terminal_id.clone()),
         chrome_dirty: title_changed,
         pty_writes,
         notices,
