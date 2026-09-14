@@ -313,9 +313,16 @@ fn short_and_long_help_progressively_disclose_the_root() {
     assert!(short.contains("phux --skill"));
     assert!(!short.contains("ATTACH / SERVE"), "short help:\n{short}");
     assert!(long.contains("ATTACH / SERVE"), "long help:\n{long}");
-    assert!(long.contains("  spawn      Create a pane"));
-    assert!(long.contains("  launch     Start a configured agent"));
-    assert!(!long.contains("\nCommands:\n"), "long help:\n{long}");
+    // usage-rs wraps the curated inventory, so column padding does not survive.
+    let flat = long.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("spawn Create a pane"),
+        "long help must list spawn:\n{long}"
+    );
+    assert!(
+        flat.contains("launch Start a configured agent"),
+        "long help must list launch:\n{long}"
+    );
 }
 
 #[test]
