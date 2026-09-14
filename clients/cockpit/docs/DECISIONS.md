@@ -448,7 +448,10 @@ cell count.
   columns, three neighbours share ~682 cells each.
 - Glyphs: focused keeps `widget_glyph_budget` minus degraded holds
   (`glyph_budget * degraded_cells / full_cells`). Not `/ N`.
-- Single pane, active window: `cell_reserve=0`, whole store. Unchanged.
+- Single pane, active window: leftover after the full grid stays in
+  `cell_reserve` (`unused_cells` = `store - full_cells` = 2048). The pane
+  still paints the whole 320x96 grid; that leftover is unused slack, not
+  the SDK two-pane floor.
 
 Equal-cut at N=2 gave both panes 16384 cells (~51 rows at 320) and
 starved glyphs to 3840. Hybrid C gives the focused pane the full 96 rows

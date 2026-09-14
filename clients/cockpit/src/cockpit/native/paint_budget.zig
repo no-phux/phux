@@ -219,7 +219,10 @@ test "a lone active pane keeps the whole cell store" {
     try testing.expectEqual(@as(usize, 1), planned.n_full);
     try testing.expectEqual(Fidelity.full, planned.fidelities[0]);
     const alloc = planned.forPane(0, 0);
-    try testing.expectEqual(@as(usize, 0), alloc.cell_reserve);
+    // Leftover after one full 320x96 grid stays in unused_cells / cell_reserve
+    // (32768 - 30720 = 2048). That is slack, not the SDK two-pane floor.
+    try testing.expectEqual(cell_store - full_cells, alloc.cell_reserve);
+    try testing.expectEqual(planned.unused_cells, alloc.cell_reserve);
     try testing.expectEqual(command_envelope, alloc.command_budget);
     try testing.expectEqual(glyph_budget, alloc.glyph_budget);
     // The SDK two-pane leftover must not become a production floor: a
