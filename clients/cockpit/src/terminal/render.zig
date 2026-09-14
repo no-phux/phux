@@ -2,6 +2,7 @@
 
 const native_sdk = @import("native_sdk");
 const session_module = @import("session.zig");
+const last_n_crop = @import("last_n_crop.zig");
 const Palette = @import("palette.zig").Palette;
 
 const canvas = native_sdk.canvas;
@@ -12,6 +13,7 @@ const grid_id_base: u64 = 0x7e21;
 
 test {
     _ = @import("appearance_tests.zig");
+    _ = @import("last_n_crop.zig");
 }
 
 /// The caller id for pane `index`. The framework applies its own retained-ID
@@ -72,6 +74,10 @@ pub const PaintOptions = struct {
     /// the glass — the command envelope only prices box geometry and
     /// selection washes. Zero leaves it unbounded.
     cell_reserve: usize = 0,
+    /// When set, crop the snapshot to last-N (`allowance/cols` rows,
+    /// capped at `max_rows/4`) before the SDK painter. Null leaves the
+    /// snapshot uncropped, so a binding cell reserve is still SDK first-N.
+    last_n_cells: ?usize = null,
     /// The user's client-side `minimum-contrast`, for every provider. Resolve
     /// terminal defaults, application colors, inverse and faint first; apply
     /// the floor to those final colors without changing the source grid.
@@ -110,9 +116,13 @@ pub fn paint(session: *Session, builder: *canvas.Builder, options: PaintOptions)
 /// Paint an already-projected provider grid with the same budgets and retained
 /// identity behavior as a local session.
 pub fn paintTerminalGrid(terminal_grid: canvas.TerminalGrid, builder: *canvas.Builder, options: PaintOptions) !void {
+    const painted_grid = if (options.last_n_cells) |allowance|
+        last_n_crop.cropLastN(terminal_grid, allowance)
+    else
+        terminal_grid;
     const first_command = builder.len;
     const first_cell = builder.cell_len;
-    try canvas.terminal_grid.paint(terminal_grid, builder, .{
+    try canvas.terminal_grid.paint(painted_grid, builder, .{
         .frame = options.frame,
         .tokens = options.tokens,
         .focused = options.focused,
@@ -124,7 +134,7 @@ pub fn paintTerminalGrid(terminal_grid: canvas.TerminalGrid, builder: *canvas.Bu
         .glyph_budget = options.glyph_budget,
         .cell_reserve = options.cell_reserve,
     });
-    applyContrast(terminal_grid, builder, options.minimum_contrast, first_command, first_cell);
+    applyContrast(painted_grid, builder, options.minimum_contrast, first_command, first_cell);
 }
 
 /// The SDK stages contiguous, row-atomic cells in builder-owned storage. Apply

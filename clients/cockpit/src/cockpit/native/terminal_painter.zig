@@ -197,7 +197,7 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
 
     // Hybrid C (Cockpit pkg3b / Metal): focused pane of the active window
     // takes a full product grid; everything else shares leftover as a
-    // degraded thumbnail. Glyphs are not `widget_glyph_budget / N`.
+    // last-N crop (not SDK first-N). Glyphs are not `widget_glyph_budget / N`.
     // Commands/text/paths keep forward-slack inside a tier so a later
     // full pane cannot be stolen. `widget_cell_reserve` is not a floor.
     const tree = ws.selectedTreeConst() orelse return;
@@ -233,6 +233,10 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
             .glyph_budget = alloc.glyph_budget,
             .path_reserve = alloc.path_reserve,
             .cell_reserve = alloc.cell_reserve,
+            .last_n_cells = switch (alloc.fidelity) {
+                .full => null,
+                .degraded => alloc.cell_allowance,
+            },
             .minimum_contrast = model.config.minimum_contrast,
             .id_base = grid.paneIdBase(terminalPaintIndex(model, pane.terminal)),
         });

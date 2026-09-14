@@ -404,14 +404,16 @@ cell count.
 
 Equal-cut at N=2 gave both panes 16384 cells (~51 rows at 320) and
 starved glyphs to 3840. Hybrid C gives the focused pane the full 96 rows
-and an honest thumbnail to the rest.
+and an honest last-N crop to the rest.
 
 The SDK painter emits top-first and drops the bottom. Leftover-budget
-truncation is therefore **first-N**, which hides the prompt. **Last-N
-crop** (snapshot the last `allowance/cols` rows, adjust cursor) is the
-intended degraded meaning and does not need a pin bump; it is not in this
-change. Thumbnail / lower glyph density is the mechanical day-one
-degraded tier.
+truncation is therefore **first-N**, which hides the prompt. Product
+degraded paint now **crops last-N** before that painter: the snapshot
+keeps the last `allowance/cols` rows, capped at `max_rows/4`, and
+shifts the cursor (and select-head) into that window. First-N remains
+the SDK mechanical bind for adversarial and equal-cut measurement, not
+the Hybrid C product path. Thumbnail / lower glyph density is still the
+mechanical day-one degraded *size*; last-N is the degraded *window*.
 
 `scripts/drive-shell-ceiling.sh` is live macOS PTY evidence (~2.7 MiB rss
 per shell, `max_effect_ptys`). It is not a paint bind. Linux hosts cannot
@@ -460,7 +462,7 @@ Text 65536 → 131072 is +64 KiB x2 x views: +640 KiB across 5 windows.
 After a 4x cell bump, leftover after one full pane is 100352. Without the
 7680 cap, three unfocused panes would each get ~33k cells and paint full,
 which contradicts the tier. The cap is what keeps "degraded" meaning
-degraded once the store can hold 2–4 full grids. Last-N crop should use
+degraded once the store can hold 2–4 full grids. Last-N crop uses
 the same row cap (`max_rows/4`).
 
 ### What Metal must approve before `phall1/native` pin bump
@@ -469,8 +471,9 @@ the same row cap (`max_rows/4`).
    panes).
 2. Text ceiling 65536 → **131072**, or keep if unique-CJK is out of scope.
 3. Glyphs/commands/paths stay, unless measurement after (1) shows a new bind.
-4. Degraded meaning: leftover-budget first-N (shipped) vs **last-N crop**
-   vs a true thumbnail. Recommended: last-N at `max_rows/4`.
+4. Degraded meaning: leftover-budget first-N vs **last-N crop** (shipped,
+   no pin bump) vs a true thumbnail. Last-N at `max_rows/4` is the
+   product path; first-N must not return for product panes.
 5. Inactive windows stay all-degraded day one; multi-window full escape later.
 6. `atlas_variants_per_glyph=4` stays.
 7. Cockpit keeps deriving constants — no literals in the painter.

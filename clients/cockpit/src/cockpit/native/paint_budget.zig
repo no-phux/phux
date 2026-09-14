@@ -23,6 +23,7 @@
 
 const native_sdk = @import("native_sdk");
 const grid = @import("../../terminal/grid.zig");
+const last_n_crop = @import("../../terminal/last_n_crop.zig");
 const layout = @import("../layout.zig");
 const projection = @import("workspace_projection.zig");
 
@@ -48,7 +49,9 @@ pub fn maxFullPanesThatFit() usize {
 
 /// Last-N thumbnail height, derived from the product row ceiling. 96 / 4 = 24
 /// matches the box-drawing adversarial grid already used to bind commands.
-pub const degraded_rows: usize = grid.max_rows / 4;
+pub const degraded_rows: usize = last_n_crop.degraded_row_cap;
+pub const lastNRows = last_n_crop.lastNRows;
+pub const cropLastN = last_n_crop.cropLastN;
 
 /// Cell cap for one degraded pane at the product column ceiling.
 pub const degraded_cell_cap: usize = grid.max_cols * degraded_rows;
@@ -68,6 +71,9 @@ pub const Allocation = struct {
     path_reserve: usize,
     glyph_budget: usize,
     cell_reserve: usize,
+    /// Cells this pane may paint. Degraded product paint crops last-N to
+    /// this allowance before the SDK painter (which is first-N) runs.
+    cell_allowance: usize,
 };
 
 pub const Plan = struct {
@@ -99,6 +105,10 @@ pub const Plan = struct {
             .full => self.full_glyph_share,
             .degraded => self.degraded_glyph_share,
         };
+        const cell_allowance = switch (fidelity) {
+            .full => full_cells,
+            .degraded => self.degraded_cell_share,
+        };
         return .{
             .fidelity = fidelity,
             .command_budget = command_budget,
@@ -106,6 +116,7 @@ pub const Plan = struct {
             .path_reserve = path_reserve,
             .glyph_budget = this_glyphs,
             .cell_reserve = cell_reserve,
+            .cell_allowance = cell_allowance,
         };
     }
 
@@ -295,4 +306,23 @@ test "the current pin does not hold two full product grids, nor sixteen" {
     try testing.expectEqual(@as(usize, 1), maxFullPanesThatFit());
     try testing.expect(maxFullPanesThatFit() < layout.max_panes);
     try testing.expectEqual(grid.max_cols * grid.max_rows, grid.max_cells);
+    try testing.expectEqual(grid.max_rows / 4, degraded_rows);
+    try testing.expectEqual(grid.max_cols * degraded_rows, degraded_cell_cap);
+}
+
+test "degraded cell allowance last-N is not first-N" {
+    const testing = @import("std").testing;
+    const planned = plan(.{
+        .window_active = true,
+        .pane_count = 2,
+        .focused = &.{ true, false },
+    });
+    const neighbour = planned.forPane(1, 0);
+    try testing.expectEqual(Fidelity.degraded, neighbour.fidelity);
+    try testing.expectEqual(planned.degraded_cell_share, neighbour.cell_allowance);
+    const keep = lastNRows(grid.max_cols, neighbour.cell_allowance);
+    try testing.expect(keep > 0);
+    try testing.expect(keep < grid.max_rows);
+    try testing.expect(keep <= degraded_rows);
+    try testing.expectEqual(keep, neighbour.cell_allowance / grid.max_cols);
 }

@@ -278,6 +278,7 @@ fn paintFleet(
                 .path_reserve = paint_budget.widget_path_reserve + (paint_budget.path_store - paint_budget.widget_path_reserve) / count * remaining,
                 .glyph_budget = paint_budget.equalCutGlyphShare(count),
                 .cell_reserve = paint_budget.equalCutCellShare(count) * remaining,
+                .cell_allowance = paint_budget.equalCutCellShare(count),
             },
         };
         const before_cells = builder.cell_len;
@@ -293,6 +294,13 @@ fn paintFleet(
             .glyph_budget = alloc.glyph_budget,
             .path_reserve = alloc.path_reserve,
             .cell_reserve = alloc.cell_reserve,
+            .last_n_cells = switch (kind) {
+                .hybrid => switch (alloc.fidelity) {
+                    .full => null,
+                    .degraded => alloc.cell_allowance,
+                },
+                .equal_cut => null,
+            },
             .id_base = grid.paneIdBase(index),
         });
         const view = support.findPaneCellGrid(builder.displayList(), index);
@@ -390,6 +398,68 @@ test "Hybrid C painter gives the focused split more cells than equal-cut" {
     try testing.expect(neighbour_cells < paint_budget.equalCutCellShare(4));
     try testing.expect(neighbour_cells <= paint_budget.degraded_cell_cap);
     try testing.expect(focused.cellCount() > paint_budget.equalCutCellShare(4));
+}
+
+fn feedMarkedRows(session: *grid.Session, cols: usize, rows: usize) void {
+    var line: [512]u8 = undefined;
+    const width = @min(cols, line.len);
+    for (0..rows) |row| {
+        const mark: u8 = if (row == 0) 'F' else if (row + 1 == rows) 'L' else 'M';
+        const cup = std.fmt.bufPrint(line[0..], "\x1b[{d};1H", .{row + 1}) catch unreachable;
+        session.feed(cup);
+        @memset(line[0..width], mark);
+        session.feed(line[0..width]);
+    }
+}
+
+fn clusterAt(view: support.CellGridView, x: usize, y: usize) []const u8 {
+    return view.cluster(x, y);
+}
+
+test "Hybrid C degraded panes keep last-N rows, not SDK first-N" {
+    const gpa = testing.allocator;
+    const sessions = try gpa.alloc(*grid.Session, 2);
+    var created: usize = 0;
+    defer {
+        for (sessions[0..created]) |session| session.destroy();
+        testing.allocator.free(sessions);
+    }
+    while (created < 2) : (created += 1) {
+        const session = try createSession(product_cols, product_rows);
+        feedMarkedRows(session, grid.max_cols, grid.max_rows);
+        sessions[created] = session;
+    }
+
+    const builder = try heapBuilder(gpa);
+    defer destroyBuilder(gpa, builder);
+    try paintFleet(builder, sessions, .hybrid, 0);
+
+    const planned = paint_budget.plan(.{
+        .window_active = true,
+        .pane_count = 2,
+        .focused = &.{ true, false },
+    });
+    const keep = paint_budget.lastNRows(grid.max_cols, planned.degraded_cell_share);
+    try testing.expect(keep > 0);
+    try testing.expect(keep < grid.max_rows);
+    try testing.expect(keep <= paint_budget.degraded_rows);
+
+    const focused = support.findPaneCellGrid(builder.displayList(), 0) orelse return error.MissingFocusedPane;
+    try testing.expectEqual(grid.max_rows, focused.rows());
+    try testing.expectEqualStrings("F", clusterAt(focused, 0, 0));
+    try testing.expectEqualStrings("L", clusterAt(focused, 0, focused.rows() - 1));
+
+    const neighbour = support.findPaneCellGrid(builder.displayList(), 1) orelse return error.MissingNeighbourPane;
+    try testing.expectEqual(keep, neighbour.rows());
+    try testing.expectEqualStrings("M", clusterAt(neighbour, 0, 0));
+    try testing.expectEqualStrings("L", clusterAt(neighbour, 0, neighbour.rows() - 1));
+    try testing.expect(std.mem.eql(u8, clusterAt(neighbour, 0, 0), "F") == false);
+
+    builder.* = canvas.Builder.init(builder.commands);
+    try paintFleet(builder, sessions, .equal_cut, 0);
+    const first_n = support.findPaneCellGrid(builder.displayList(), 1) orelse return error.MissingEqualCutPane;
+    try testing.expectEqualStrings("F", clusterAt(first_n, 0, 0));
+    try testing.expect(first_n.rows() > keep);
 }
 
 fn splitUntil(state: *TerminalApp, harness: anytype, want: usize) !void {

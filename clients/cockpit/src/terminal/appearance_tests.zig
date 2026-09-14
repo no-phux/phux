@@ -234,3 +234,42 @@ test "contrast obeys row budgets and cannot recolor a preceding pane" {
     try testing.expectError(error.MissingPaintedRow, frame.row(3));
     try testing.expectEqual(@as(usize, 3), frame.builder.cell_len);
 }
+
+test "last_n_cells paints the bottom of the snapshot, not SDK first-N" {
+    const cells = [_]canvas.TerminalCell{
+        .{ .cp = 'A', .cluster = "A", .fg = low },
+        .{ .cp = 'B', .cluster = "B", .fg = low },
+        .{ .cp = 'C', .cluster = "C", .fg = low },
+        .{ .cp = 'D', .cluster = "D", .fg = low },
+    };
+    const rows = [_]canvas.TerminalRow{
+        .{ .cells = cells[0..1] },
+        .{ .cells = cells[1..2] },
+        .{ .cells = cells[2..3] },
+        .{ .cells = cells[3..4] },
+    };
+    const grid = gridOf(&rows);
+    const frame = try Frame.create();
+    defer testing.allocator.destroy(frame);
+
+    try frame.paint(grid, 1);
+    {
+        const top = try frame.row(0);
+        try testing.expectEqualStrings("A", top.cells[0].cluster(top.text));
+        try testing.expectEqual(@as(usize, 4), frame.builder.cell_len);
+    }
+
+    var opts = options(1);
+    opts.last_n_cells = 2;
+    frame.builder.reset();
+    try render.paintTerminalGrid(grid, &frame.builder, opts);
+    {
+        const top = try frame.row(0);
+        const bottom = try frame.row(1);
+        try testing.expectEqualStrings("C", top.cells[0].cluster(top.text));
+        try testing.expectEqualStrings("D", bottom.cells[0].cluster(bottom.text));
+    }
+    try testing.expectError(error.MissingPaintedRow, frame.row(2));
+    try testing.expectEqual(@as(usize, 2), frame.builder.cell_len);
+    try testing.expectEqual(@as(?canvas.DisplayListDegradation, null), frame.builder.degradation);
+}
