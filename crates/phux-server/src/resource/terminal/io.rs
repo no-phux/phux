@@ -648,7 +648,7 @@ async fn await_pane_group_exit(pty: &mut PtyOwned, groups: &[nix::unistd::Pid]) 
     use nix::errno::Errno;
     use nix::sys::signal::killpg;
 
-    let deadline = tokio::time::Instant::now() + PANE_KILL_GRACE;
+    let deadline = tokio::time::Instant::now() + super::pane_kill_grace();
     while tokio::time::Instant::now() < deadline {
         if let Err(err) = pty.child.try_wait() {
             debug!(?err, "try_wait during pane-kill grace failed");
