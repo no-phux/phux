@@ -21,15 +21,32 @@ const ChannelFx = struct {
 };
 
 pub fn start() !*engine_module.Engine {
+    return startOn(.{ .unix = "/fixture.sock" });
+}
+
+/// Connect to Host's resulting active coordinator: a `.remote` endpoint, not a
+/// local socket. Projection and New Window must work here the way they do on
+/// unix, or the app connects and then shows nothing.
+fn startOn(endpoint: support.PhuxEndpoint) !*engine_module.Engine {
     const engine = try engine_module.Engine.create(testing.allocator, testing.io);
     errdefer engine.destroy();
-    const remote = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/fixture.sock" }, null, "test");
+    const remote = try support.PhuxProvider.create(testing.allocator, testing.io, endpoint, null, "test");
     model_module.attachPhuxProvider(engine.model, remote);
     try fixture.attachHost(remote.host);
     remote.attach_queued = true;
     try drain(engine);
     remote.bridge.outgoing.reset();
     return engine;
+}
+
+test "a Connect-to-Host remote endpoint projects the attached session and admits New Window" {
+    if (comptime !support.phux_enabled) return error.SkipZigTest;
+    const engine = try startOn(.{ .remote = .{ .target = "mini" } });
+    defer engine.destroy();
+    try testing.expect(engine.model.focusedTerminalRef() != null);
+    try testing.expect(engine.model.ws().tab_count > 0);
+    try testing.expect(command(engine, .new_window, 0));
+    try testing.expectEqual(@as(usize, 1), engine.creation.count());
 }
 
 pub fn frozenPaintRecovery() !void {
