@@ -21,7 +21,8 @@ use crate::agent_asked::{AskedPayload, AskedSource};
 use crate::resource::{ResourceHandle, WrongResourceKind};
 use crate::runtime::pump::{self, PumpGeneration};
 use crate::state::{
-    ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, SharedState, TerminalInput,
+    ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
+    TerminalInput,
 };
 use crate::terminal_actor::{
     ConsumerAckRequest, ControlRequest, EncodedInputRequest, ResizeRequest, ScreenRequest,
@@ -3230,7 +3231,7 @@ pub(crate) fn handle_kill_terminals(
         for name in s.release_keep_empty_covered_by(&targets) {
             let _ = s.metadata_broadcast(
                 &phux_protocol::wire::frame::Scope::Global,
-                phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY,
+                ServerInterceptedKey::SessionKeepEmpty,
                 &phux_protocol::wire::frame::encode_session_keep_empty(&name, false),
             );
         }
