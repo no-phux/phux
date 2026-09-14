@@ -654,7 +654,7 @@ test "each selected terminal receives the full chrome command envelope" {
             .command_budget = app.chrome_command_envelope,
             .text_reserve = canvas.terminal_grid.widget_text_reserve,
             .glyph_budget = canvas.terminal_grid.widget_glyph_budget,
-            .cell_reserve = canvas.terminal_grid.widget_cell_reserve,
+            .cell_reserve = 0,
             .id_base = grid.paneIdBase(index),
         });
         const view = try expectCellGrid(builder.displayList());
@@ -665,10 +665,10 @@ test "each selected terminal receives the full chrome command envelope" {
         // 580pt of 18pt rows, so the screen ends at the viewport, not at
         // a budget. Nothing was dropped, and the painter says so.
         try testing.expectEqual(@as(?canvas.DisplayListDegradation, null), builder.degradation);
-        // The screen fits a PANE's share of the frame's cell store —
-        // the budget that actually binds a terminal now, and the one a
-        // split has to leave half of for the other pane.
-        try testing.expect(cells[index] <= canvas.terminal_grid.widget_cell_reserve);
+        // Selected-tab paints are one pane owning the content area, so they
+        // get the whole cell store. `widget_cell_reserve` is the SDK's
+        // two-pane leftover (`store / 2`), not a production floor, and the
+        // Hybrid C painter does not read it.
         try testing.expectEqual(view.rows() * view.cols(), cells[index]);
         // Every painted row is its OWN retained command — that is the
         // shape the whole envelope arithmetic now rests on, and the

@@ -236,34 +236,6 @@ moves. `local.max_live_shells` derives from `native_sdk.max_effect_ptys` with
 no literal in between, which is the part that must not be undone: a hardcoded
 duplicate is exactly how pg1 happened.
 
-Raising the table is not permission to adopt the framework terminal store.
-That split is the next decision.
-
----
-
-## Native SDK is the shell; libghostty-vt Session is the engine
-
-**Decided 2026-09-14.** Cockpit architecture package 2 from Metal/Foreman.
-
-The pinned Native SDK fork is **shell only**: windows, chrome (`.native` /
-TypeScript), the event loop, `gpu_surface`, and `canvas.terminal_grid.paint`.
-It does not own product-pane cell state.
-
-`src/terminal/` libghostty-vt `Session` is the **engine**: cell state, damage,
-scrollback, selection. Providers feed it VT bytes (local PTY or phux FFI). The
-engine projects a `canvas.TerminalGrid`; the shell paints it.
-
-**Refuse forever** for product panes: the framework store
-`runtime/terminal_session.zig` and the `<terminal pty=>` markup widget.
-Inbound feed is missing — phux bytes arrive from a socket, not an SDK pty
-effect — and the store's old four-pty ceiling is why the fork raised
-`native_sdk.max_effect_ptys` to 32 for Cockpit's own table, not a reason to
-take the store. Historical write-up: [FINDINGS.md](../FINDINGS.md) §7a.
-
-`local.max_live_shells` stays derived from `native_sdk.max_effect_ptys` with
-no literal in between. `scripts/check-shell-engine.py` fails if product source
-reintroduces the widget or the store.
-
 ---
 
 ## State is said with the accent, not with elevation: SETTLED
@@ -361,3 +333,148 @@ not a compatibility promise to an older producer.
 Reopen this when a packet can outlive the process or cross a separately
 versioned deployment boundary. That change requires a version bump and an
 explicit compatibility policy.
+
+---
+
+## Paint ceilings: Hybrid C (focused full, unfocused degraded)
+
+**Decided 2026-09-14, Cockpit pkg3b / Metal hybrid C. Measure + propose;
+the SDK pin is unchanged.**
+
+Metal's policy, closed here pending the pin-bump numbers below:
+
+1. Measure paint bind points at N=2/4/8 (and note N=1 / N=16), then propose
+   modest SDK paint-table bumps so **2–4 full-fidelity 320x96 panes** fit
+   without heroic partitioning. Cockpit derives every constant from the SDK
+   and the product grid. Do not chase 16 full grids in one envelope.
+2. Fidelity tiers: focused pane(s) of the **active** window paint full;
+   unfocused panes, and every pane in an inactive window, paint degraded.
+   A multi-window "this other window stays full" escape is allowed later,
+   not required day one.
+3. Kill equal-cut glyphs-with-no-slack. Commands/text/paths/cells may keep
+   forward-slack **inside a tier**, not as a fleet-wide equal split.
+   `widget_cell_reserve` (`store / 2`) is the SDK's two-pane leftover, not a
+   production floor, and Cockpit does not read it.
+4. Keep `atlas_variants_per_glyph = 4` alone.
+5. Record a regression against "N full panes share one envelope forever."
+
+### What the current pin holds
+
+Product grid: `session.max_cols=320`, `max_rows=96`, `max_cells=30720`.
+SDK pin `phall1/native` @ `c188459a09ba59989c405946554addd64f53b6c0`:
+
+| Table | Value | Notes |
+|---|---|---|
+| commands / view | 2048 | chrome envelope 1792 after `widget_command_reserve=256` |
+| path elements | 2048 | |
+| glyphs / view | 8192 | `widget_glyph_budget=7680`; 4 atlas variants/glyph |
+| cells / view | 32768 | 20-byte cells; 640 KiB builder + 640 KiB retained |
+| text bytes / view | 65536 | interned per row |
+| `widget_cell_reserve` | 16384 | `store/2`; **not used** |
+
+`maxFullPanesThatFit = store / max_cells = 1`. Two full product grids
+are 61440 cells. Sixteen are 491520. The regression in
+`paint_budget.zig` pins both facts. A cell-store bump flips the first
+assertion; it must never flip the second without an explicit decision to
+chase 16x.
+
+Packed `cell_grid` is one command per row, so a truecolor or ASCII 320x96
+screen costs ~96 row commands plus a small prologue — well inside 1792.
+Box-drawing (U+256C, 8 commands/cell) overflows the command envelope at
+40x24 already; a full 320x96 box screen cannot fit N=1. Do not bump
+commands to chase that.
+
+Unique 3-byte clusters at 320x96 want ~92160 interned bytes, above the
+64 KiB text store. Typical ASCII interned cost is the alphabet, not the
+cell count.
+
+### Hybrid C on this pin (shipped in Cockpit, no pin bump)
+
+`src/cockpit/native/paint_budget.zig` derives the split:
+
+- Focused, active window: `full_cells = min(max_cells, store)` = 30720,
+  `cell_reserve` holds leftover for later degraded panes (2048 at N=2).
+- Unfocused / inactive: share leftover, capped at
+  `max_cols * (max_rows / 4)` = 320x24 = 7680. On this pin leftover is
+  2048, so the cap does not bind; one neighbour gets ~6.4 rows at 320
+  columns, three neighbours share ~682 cells each.
+- Glyphs: focused keeps `widget_glyph_budget` minus degraded holds
+  (`glyph_budget * degraded_cells / full_cells`). Not `/ N`.
+- Single pane, active window: `cell_reserve=0`, whole store. Unchanged.
+
+Equal-cut at N=2 gave both panes 16384 cells (~51 rows at 320) and
+starved glyphs to 3840. Hybrid C gives the focused pane the full 96 rows
+and an honest thumbnail to the rest.
+
+The SDK painter emits top-first and drops the bottom. Leftover-budget
+truncation is therefore **first-N**, which hides the prompt. **Last-N
+crop** (snapshot the last `allowance/cols` rows, adjust cursor) is the
+intended degraded meaning and does not need a pin bump; it is not in this
+change. Thumbnail / lower glyph density is the mechanical day-one
+degraded tier.
+
+`scripts/drive-shell-ceiling.sh` is live macOS PTY evidence (~2.7 MiB rss
+per shell, `max_effect_ptys`). It is not a paint bind. Linux hosts cannot
+run Cockpit `zig build` (the graph is macOS-only). The paint tables above
+are the pinned SDK sources (`src/runtime/canvas_limits.zig`,
+`terminal_grid.zig`) at `c188459a`. Runnable measurement is
+`scripts/measure-paint-ceiling.sh` on macOS
+(`zig build test -Dplatform=null -Dmeasure=true`).
+
+### Proposed SDK bumps (Metal must approve before the pin moves)
+
+Do **not** change `clients/cockpit/build.zig.zon` or `docs/SDK_PIN.md`
+until Metal signs the numbers. Proposed modest bumps, derived from the
+bind points above:
+
+| Table | Now | Propose | Why |
+|---|---|---|---|
+| cells | 32768 | **131072** (4x) | 4 x 30720 = 122880, 8192 slack. Floor alternative **65536** (2x) if only two full panes are wanted. |
+| text | 65536 | **131072** (2x) | one unique-3-byte 320x96 pane is ~92160 bytes. Typical ASCII does not need this; unique-CJK does. Do not 4x unless two unique-CJK full panes are in scope. |
+| glyphs | 8192 | **keep** | bind was equal-cut, not the ceiling. Unique-per-cell CJK can still overflow 2048 distinct codepoints x 4 variants. |
+| commands | 2048 | **keep** | packed grids at 4x96 rows fit; box-drawing does not at N=1. |
+| paths | 2048 | **keep** | same as commands; box geometry. |
+| atlas variants | 4 | **keep** | |
+
+Cell memory at 20 B/cell, builder + retained per view:
+
+| Store | Builder | Builder+retained | x5 Cockpit windows | x32 SDK view slots |
+|---|---|---|---|---|
+| 32768 (now) | 640 KiB | 1280 KiB | 6.3 MiB | 40 MiB |
+| 65536 (2x) | 1280 KiB | 2560 KiB | 12.5 MiB | 80 MiB |
+| 131072 (4x) | 2560 KiB | 5120 KiB | 25 MiB | 160 MiB |
+
+Address space is reserved per view slot; pages are touched as used. 160 MiB
+for 32 slots is the conservative envelope, not resident RSS of a 5-window
+Cockpit.
+
+Text 65536 → 131072 is +64 KiB x2 x views: +640 KiB across 5 windows.
+
+### Proposed tier thresholds (grounded in the leftover)
+
+| Tier | Who | Cells | Rows at 320 cols | Glyphs (derived) | Commands (packed) |
+|---|---|---|---|---|---|
+| full | focused, active window | `min(max_cells, store)` | 96 | remainder after degraded holds | `max_rows` hold |
+| degraded | unfocused / inactive | `min(leftover/n, max_cols*(max_rows/4))` | 24 cap; **6** on this pin at N=2 | `glyph_budget * cells / full_cells` | `max_rows/4` hold |
+
+After a 4x cell bump, leftover after one full pane is 100352. Without the
+7680 cap, three unfocused panes would each get ~33k cells and paint full,
+which contradicts the tier. The cap is what keeps "degraded" meaning
+degraded once the store can hold 2–4 full grids. Last-N crop should use
+the same row cap (`max_rows/4`).
+
+### What Metal must approve before `phall1/native` pin bump
+
+1. Cell ceiling 32768 → **131072** (or 65536 if the target is only two full
+   panes).
+2. Text ceiling 65536 → **131072**, or keep if unique-CJK is out of scope.
+3. Glyphs/commands/paths stay, unless measurement after (1) shows a new bind.
+4. Degraded meaning: leftover-budget first-N (shipped) vs **last-N crop**
+   vs a true thumbnail. Recommended: last-N at `max_rows/4`.
+5. Inactive windows stay all-degraded day one; multi-window full escape later.
+6. `atlas_variants_per_glyph=4` stays.
+7. Cockpit keeps deriving constants — no literals in the painter.
+
+Reopen this if a measured bind after the bump disagrees, or if 16 full
+panes become a product requirement.
+

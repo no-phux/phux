@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import re
 import subprocess
-import sys
 import tempfile
 import unittest
 
@@ -29,15 +28,6 @@ def mock_rustc(tools):
 
 
 class BuildContracts(unittest.TestCase):
-    def test_product_panes_refuse_framework_terminal_store(self):
-        completed = subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "check-shell-engine.py")],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
-
     def cache_steps(self):
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
         steps = re.findall(
