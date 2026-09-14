@@ -882,8 +882,17 @@ pub(crate) fn adopt_pty(
 /// case that has no other bound: a child that outlives the actor and keeps
 /// writing forever (`yes`), which must not pin a thread for the life of the
 /// process.
-const ORPHAN_DRAIN_BUDGET: std::time::Duration =
-    super::PANE_KILL_GRACE.saturating_add(super::PANE_KILL_REAP_BUDGET);
+const ORPHAN_DRAIN_BUDGET: std::time::Duration = {
+    // Tests may stretch the hangup ceiling (phux-7n1g). The drain is a
+    // ceiling too — EOF still ends it — so a contended flush is not cut
+    // off by a 500ms reader budget while the actor is still waiting.
+    const GRACE: std::time::Duration = if cfg!(test) {
+        std::time::Duration::from_millis(2500)
+    } else {
+        super::PANE_KILL_GRACE
+    };
+    GRACE.saturating_add(super::PANE_KILL_REAP_BUDGET)
+};
 
 /// Keep draining the PTY master after the actor is gone, discarding what
 /// arrives, until EOF or the [`ORPHAN_DRAIN_BUDGET`] expires.
