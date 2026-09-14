@@ -29,6 +29,15 @@ def mock_rustc(tools):
 
 
 class BuildContracts(unittest.TestCase):
+    def test_product_panes_refuse_framework_terminal_store(self):
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "check-shell-engine.py")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def test_product_phux_keeps_vt_off_the_4096_channel(self):
         completed = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "check-vt-channel.py")],

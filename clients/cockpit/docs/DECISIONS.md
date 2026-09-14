@@ -236,6 +236,34 @@ moves. `local.max_live_shells` derives from `native_sdk.max_effect_ptys` with
 no literal in between, which is the part that must not be undone: a hardcoded
 duplicate is exactly how pg1 happened.
 
+Raising the table is not permission to adopt the framework terminal store.
+That split is the next decision.
+
+---
+
+## Native SDK is the shell; libghostty-vt Session is the engine
+
+**Decided 2026-09-14.** Cockpit architecture package 2 from Metal/Foreman.
+
+The pinned Native SDK fork is **shell only**: windows, chrome (`.native` /
+TypeScript), the event loop, `gpu_surface`, and `canvas.terminal_grid.paint`.
+It does not own product-pane cell state.
+
+`src/terminal/` libghostty-vt `Session` is the **engine**: cell state, damage,
+scrollback, selection. Providers feed it VT bytes (local PTY or phux FFI). The
+engine projects a `canvas.TerminalGrid`; the shell paints it.
+
+**Refuse forever** for product panes: the framework store
+`runtime/terminal_session.zig` and the `<terminal pty=>` markup widget.
+Inbound feed is missing — phux bytes arrive from a socket, not an SDK pty
+effect — and the store's old four-pty ceiling is why the fork raised
+`native_sdk.max_effect_ptys` to 32 for Cockpit's own table, not a reason to
+take the store. Historical write-up: [FINDINGS.md](../FINDINGS.md) §7a.
+
+`local.max_live_shells` stays derived from `native_sdk.max_effect_ptys` with
+no literal in between. `scripts/check-shell-engine.py` fails if product source
+reintroduces the widget or the store.
+
 ---
 
 ## VT bytes never ride the Native SDK 4096 effect channel
