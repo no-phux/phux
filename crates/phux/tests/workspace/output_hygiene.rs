@@ -296,9 +296,16 @@ fn capabilities_are_clean_machine_readable_and_socketless() {
 fn help_does_not_print_banner() {
     let (code, stdout, stderr) = run(&["--help"]);
     assert_eq!(code, 0, "--help should exit 0");
+    // usage-rs puts `phux <version>` on the first line of `--help` stdout,
+    // the same way `--version` does. The banner that used to pollute every
+    // invocation is a stderr line; that is where absence is checked.
     assert!(
-        !stdout.contains(BANNER_FRAGMENT) && !stderr.contains(BANNER_FRAGMENT),
-        "--help must not print the build banner; stdout={stdout:?} stderr={stderr:?}"
+        !stderr.contains(BANNER_FRAGMENT),
+        "--help must not print the banner to stderr; stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("ATTACH / SERVE"),
+        "--help stdout should be the long help, not a banner line; got {stdout:?}"
     );
 }
 
