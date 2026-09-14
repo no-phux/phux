@@ -378,6 +378,7 @@ a:hover {
 .pterm-mark {
   color: #eceef3;
   font-weight: 700;
+  text-transform: none;
 }
 .pterm-state::before {
   content: "";
@@ -513,7 +514,7 @@ a:hover {
   color: #b9ff65;
   font-weight: 600;
   letter-spacing: 0.08em;
-  text-transform: uppercase;
+  text-transform: none;
 }
 .pterm-shortcuts kbd {
   padding: 1px 4px;

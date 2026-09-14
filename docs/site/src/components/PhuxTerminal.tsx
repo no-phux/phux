@@ -290,7 +290,7 @@ export default function PhuxTerminal({
     <div className={`pterm${native ? " pterm-native" : ""}`} data-status={phase}>
       {native && (
         <header className="pterm-head">
-          <span className="pterm-mark">PHUX / HOSTED</span>
+          <span className="pterm-mark">phux / hosted</span>
           <span className="pterm-state">{phase}</span>
           <span className="pterm-head-spacer" />
           {session && <b>{session.backend.toUpperCase()}</b>}
@@ -378,7 +378,7 @@ export default function PhuxTerminal({
             {fallback && <p>{fallbackCopy[fallback]}</p>}
           </aside>
           {session?.backend === "native" && phase === "live" && (
-            <aside className="pterm-shortcuts" aria-label="Phux TUI shortcuts">
+            <aside className="pterm-shortcuts" aria-label="phux TUI shortcuts">
               <b>run phux, then</b>
               <span><kbd>C-a</kbd> <kbd>%</kbd> split left/right</span>
               <span><kbd>C-a</kbd> <kbd>&quot;</kbd> split top/bottom</span>
