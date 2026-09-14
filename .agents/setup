@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+nix_profile=/nix/var/nix/profiles/default
+cd "$repo_root"
+
+timed() {
+    local label="$1"
+    shift
+    printf 'orb setup: %s\n' "$label"
+    time "$@"
+}
+
+if [[ ! -x "$nix_profile/bin/nix" ]]; then
+    timed "installing Nix" \
+        bash -c 'curl --proto "=https" --tlsv1.2 --silent --show-error --fail --location https://install.determinate.systems/nix | sh -s -- install --no-confirm'
+fi
+
+# This is a single-user, passwordless-sudo orb. Trusting that user lets Nix
+# honor this repository's public Cachix URL and signing key from flake.nix.
+nix_trust="trusted-users = root $USER"
+if ! sudo grep -Fqx "$nix_trust" /etc/nix/nix.custom.conf 2>/dev/null; then
+    printf '%s\n' "$nix_trust" | sudo tee -a /etc/nix/nix.custom.conf >/dev/null
+    sudo systemctl restart nix-daemon.service
+fi
+
+# The installer cannot update this process's environment.
+# shellcheck disable=SC1091
+source "$nix_profile/etc/profile.d/nix-daemon.sh"
+
+nix_dev() {
+    nix --accept-flake-config develop "$repo_root" --command "$@"
+}
+
+timed "realizing the pinned development shell" nix_dev true
+
+# nixpkgs can lag the exact wasm-bindgen CLI required by the browser crate.
+wasm_bindgen_version="$(sed -n 's/^wasm-bindgen = "=\([^"]*\)"/\1/p' clients/phux-web/Cargo.toml)"
+if [[ "$("$HOME/.local/bin/wasm-bindgen" --version 2>/dev/null || true)" != "wasm-bindgen $wasm_bindgen_version" ]]; then
+    case "$(uname -m)" in
+        x86_64)
+            wasm_bindgen_target=x86_64-unknown-linux-musl
+            wasm_bindgen_sha256=b51f0208fdff83515a787bd8ab9ac5865ed84dabb66d0c709957bb59793c645f
+            ;;
+        aarch64)
+            wasm_bindgen_target=aarch64-unknown-linux-musl
+            wasm_bindgen_sha256=079731dd1bc7798c1efa4f08fcc45130827cbcc9ff60a0b4c6047d64fc6fd25c
+            ;;
+        *)
+            printf 'orb setup: unsupported wasm-bindgen architecture: %s\n' "$(uname -m)" >&2
+            exit 1
+            ;;
+    esac
+    wasm_bindgen_archive="wasm-bindgen-$wasm_bindgen_version-$wasm_bindgen_target.tar.gz"
+    wasm_bindgen_tmp="$(mktemp -d)"
+    trap 'rm -rf "$wasm_bindgen_tmp"' EXIT
+    timed "downloading wasm-bindgen $wasm_bindgen_version" curl --proto "=https" --tlsv1.2 \
+        --silent --show-error --fail --location \
+        "https://github.com/wasm-bindgen/wasm-bindgen/releases/download/$wasm_bindgen_version/$wasm_bindgen_archive" \
+        --output "$wasm_bindgen_tmp/$wasm_bindgen_archive"
+    printf '%s  %s\n' "$wasm_bindgen_sha256" "$wasm_bindgen_tmp/$wasm_bindgen_archive" | sha256sum --check --status
+    tar -xzf "$wasm_bindgen_tmp/$wasm_bindgen_archive" -C "$wasm_bindgen_tmp"
+    mkdir -p "$HOME/.local/bin"
+    install -m 0755 "$wasm_bindgen_tmp/${wasm_bindgen_archive%.tar.gz}"/{wasm-bindgen,wasm-bindgen-test-runner,wasm2es6js} "$HOME/.local/bin/"
+    rm -rf "$wasm_bindgen_tmp"
+    trap - EXIT
+fi
+
+# Agent work in this repository is tracked with Beads, which is intentionally
+# not part of the contributor toolchain in flake.nix.
+beads_version=1.2.2
+if [[ "$("$HOME/.local/bin/bd" version 2>/dev/null || true)" != *"$beads_version"* ]]; then
+    case "$(uname -m)" in
+        x86_64)
+            beads_target=linux_amd64
+            beads_sha256=8140098a51d3b81d5548d1c5e6db1a2d9930e5d141efe2a4bff7d079c4d321e8
+            ;;
+        aarch64)
+            beads_target=linux_arm64
+            beads_sha256=501f38a1070d4b9b3b6261a86a3c92c4a52366869021560430a4bb0036afd83a
+            ;;
+        *)
+            printf 'orb setup: unsupported Beads architecture: %s\n' "$(uname -m)" >&2
+            exit 1
+            ;;
+    esac
+    beads_archive="beads_${beads_version}_${beads_target}.tar.gz"
+    beads_tmp="$(mktemp -d)"
+    trap 'rm -rf "$beads_tmp"' EXIT
+    timed "downloading Beads $beads_version" curl --proto "=https" --tlsv1.2 \
+        --silent --show-error --fail --location \
+        "https://github.com/gastownhall/beads/releases/download/v$beads_version/$beads_archive" \
+        --output "$beads_tmp/$beads_archive"
+    printf '%s  %s\n' "$beads_sha256" "$beads_tmp/$beads_archive" | sha256sum --check --status
+    tar -xzf "$beads_tmp/$beads_archive" -C "$beads_tmp" bd
+    mkdir -p "$HOME/.local/bin"
+    install -m 0755 "$beads_tmp/bd" "$HOME/.local/bin/bd"
+    rm -rf "$beads_tmp"
+    trap - EXIT
+fi
+[[ ! -d .beads ]] || chmod 700 .beads
+
+# Amp and supervised services start in fresh login shells after setup exits.
+# Activate the complete Nix environment only inside this orb checkout; ordinary
+# contributor machines never run this setup script.
+profile_marker="# phux Amp orb development shell"
+if ! grep -Fqx "$profile_marker" "$HOME/.bash_profile" 2>/dev/null; then
+    cat >>"$HOME/.bash_profile" <<EOF
+
+$profile_marker
+if [[ -z "\${PHUX_AMP_DEV_ENV:-}" && ("\${PWD}" == "$repo_root" || "\${PWD}" == "$repo_root/"*) ]]; then
+    export PHUX_AMP_DEV_ENV=1
+    eval "\$("$nix_profile/bin/nix" --accept-flake-config print-dev-env "$repo_root")"
+    export PATH="\$HOME/.local/bin:\$PATH"
+fi
+EOF
+fi
+
+timed "fetching Rust dependencies" nix_dev bash -euo pipefail -c '
+    cargo fetch --locked
+    cargo fetch --locked --manifest-path clients/phux-web/Cargo.toml
+    cargo fetch --locked --manifest-path clients/phux-vt-web/Cargo.toml
+    cargo fetch --locked --manifest-path docs/site/edge/Cargo.toml
+'
+
+timed "installing npm dependencies" nix_dev bash -euo pipefail -s <<'EOF'
+    export npm_config_audit=false npm_config_fund=false
+    npm_ci_if_needed() {
+        local package_dir="$1" stamp fingerprint
+        stamp="$package_dir/node_modules/.amp-orb-dependencies"
+        fingerprint="$(cat "$package_dir/package-lock.json" <(node --version) <(npm --version) | sha256sum | cut -d " " -f 1)"
+        if [[ "$(cat "$stamp" 2>/dev/null || true)" != "$fingerprint" ]]; then
+            npm --prefix "$package_dir" ci
+            printf "%s\n" "$fingerprint" >"$stamp"
+        else
+            printf "orb setup: %s dependencies unchanged\n" "$package_dir"
+        fi
+    }
+    for package in integrations/{runtime,opencode,pi,claude} clients/cockpit; do
+        npm_ci_if_needed "$package"
+    done
+EOF
+
+timed "installing documentation site dependencies" \
+    nix_dev bun install --cwd docs/site --frozen-lockfile
+
+printf 'orb setup: ready\n'
