@@ -254,7 +254,10 @@ test "MEASURED: unbounded bind points for one 320x96 grid" {
     feedBox(box, 40, 24);
     // Packed grids fit N=1. U+256C is 8 commands/cell and overflows the
     // command envelope even at 40x24; see docs/DECISIONS.md Hybrid C.
-    try testing.expectError(error.DisplayListFull, paintUnbounded(builder, box, grid.paneIdBase(0)));
+    // `paintUnbounded` absorbs DisplayListFull, so the bind is a full store.
+    const box_use = try paintUnbounded(builder, box, grid.paneIdBase(0));
+    printUse("unbounded-box-40x24", box_use);
+    try testing.expectEqual(builder.commands.len, box_use.commands);
 }
 
 const FleetKind = enum { hybrid, equal_cut };
