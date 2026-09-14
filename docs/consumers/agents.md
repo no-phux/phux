@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-14
 ---
 
 # The phux agent CLI
@@ -685,7 +685,102 @@ delivered; retry safe), `delivery_unknown` (never resend),
 `capture_unreadable`, `capture_invalid`, `unknown_agent_kind`. Watch:
 `unknown_event_name`.
 
-## 9. MCP and SDK
+## 9. Projection scoping
+
+A session has exactly one *named shared* projection: its
+`phux.tui.layout/v1/<session-id>` L3 envelope (schema v3), holding window
+order, split trees, and pane placement
+([`../spec/L3.md`](../spec/L3.md) §3.2). `insert-pane`, `move-pane`, and
+`swap-pane` mutate that envelope; a cross-session move additionally issues
+one `MOVE_RESOURCE` (L1). Layout is a consumer projection of the shared
+engine, not wire state, generalized from Terminal to every resource kind
+by [ADR-0102](../adr/0102-resources-the-server-serves-kinds.md)
+(superseding [ADR-0030](../adr/0030-engine-delegated-wire-and-projection-consumers.md)).
+
+**Focus never rides the shared envelope.** The envelope's
+`focused_window_index` and per-window `focused_terminal` fields stay in
+the schema for compatibility, but a reader ignores them on
+reconciliation and repairs local focus deterministically instead
+([ADR-0049](../adr/0049-client-local-focus-and-advisory-attention.md)).
+Separately, `phux.tui.focus/v1` is per-client metadata — namespaced by
+client UUID — and is never synchronized across clients
+([`../spec/L3.md`](../spec/L3.md) §3.3). No script moves another client's
+viewport by writing layout.
+
+**When the anchor pane vanished concurrently,** phux does not invent
+placement: a spatial edit against a missing or already-placed pane
+refuses with a typed code (`pane_not_in_layout`, `pane_already_in_layout`,
+`layout_rejected`, `destination_changed`; the full table is above, in §7's
+`spawn` / `launch` / spatial JSON index). A write that does land is
+whole-value last-write-wins, so concurrent writers converge on one value
+rather than merging (`../spec/L3.md` §3.2).
+
+**A script wanting its own arrangement uses its own key prefix** —
+`app.foo.layout/v1` rather than the TUI's schema — per
+[`../spec/L3.md`](../spec/L3.md) §3.5. Sharing the TUI's layout schema is
+opt-in, not the default.
+
+## 10. Fallback hierarchy
+
+Rank affordances by how much of the answer is typed fact versus inferred
+from raw bytes, and prefer the higher rung:
+
+1. **Typed command.** `run`, `resize`, `agent emit`/`log`, the
+   spatial verbs, `tag`, `whoami` — a versioned JSON document or a typed
+   refusal code, checked by the server before anything is inferred.
+2. **Semantic stream.** The AgentSession stream (`emit`/`log`, one JSON
+   record per producer-stamped event) and the `EVENT` / `AgentEvent` push
+   stream behind `watch` and `agent wait`. Lower latency than polling, but
+   today's `EVENT` stream is "an additive accelerator ... not a normative
+   structured contract" (`../spec/L1.md` §7): delivery is best-effort per
+   connection, and a slow subscriber's mailbox drops silently rather than
+   gapping. A consumer that depends on it still needs the poll floor
+   underneath, the way `agent wait` already runs one.
+3. **Text/JSON capture.** `GET_SCREEN` / `snapshot`, and the `wait` poll
+   built on it. This is a rendered projection of the shared engine's grid
+   — lines, optional per-cell `semantic` tags (`Input` / `Prompt`), a
+   viewport or scrollback window — not a typed fact about the process
+   behind it. Matching text is fuzzier than checking a typed field, and a
+   truncated or soft-wrapped read can misrepresent a line the process
+   never emitted that way.
+4. **Synthetic input.** `send-keys`, `paste`, and their wire form
+   (`ROUTE_INPUT` fire-and-forget, `APPLY_INPUT` acknowledged). This is
+   the fallback of last resort: acknowledgment proves kernel tty-queue
+   receipt, not that the target program consumed or acted on the input
+   (§4); an untrusted paste can be silently dropped by the pane's safety
+   gate; and unlike every rung above, this one changes program state by
+   emulating a human's keystrokes rather than reading or calling a typed
+   surface — the least observable rung and the one carrying the most risk.
+
+No rung below typed commands is authoritative on its own: read the
+highest rung the target kind actually exposes.
+
+## 11. Authority: phux is live-state truth
+
+phux is the sole authority for live resource state: the current
+lifecycle, screen content, and process facts of every Terminal and
+AgentSession it runs. Its own push stream says as much of itself —
+`EVENT` is a convenience accelerator, not a normative structured
+contract, and a consumer that ignores it still converges by polling
+(`../spec/L1.md` §7). The AgentSession stream is retained as a bounded
+ring: "live and bounded, not durable evidence"
+([ADR-0103](../adr/0103-agent-session-resource-and-producer-fed-streams.md)).
+A durable *work* record — objectives, runs, artifacts — belongs to a
+separate, independently versioned coordinator endpoint that references
+phux resources without carrying their bytes
+([ADR-0097](../adr/0097-durable-coordinator-is-a-separate-bounded-endpoint.md)).
+
+Today phux and Blackbird do not connect at all: Blackbird holds no phux
+workload key, and phux writes nothing to Blackbird beyond one optional
+field inside `phux.agent/v1` that lets the two ledgers be joined after
+the fact ([ADR-0095](../adr/0095-the-blackbird-boundary.md)). The rule
+that follows applies to any external durable-work journal, present or
+future: it may hold and journal work intent, but any signal it receives —
+a phux event included — is a cue to re-read phux's current state, never a
+substitute for it. Treat an event as wake-then-read: it tells an agent to
+look, not what it will find.
+
+## 12. MCP and SDK
 
 - [`mcp.md`](./mcp.md) — JSON-RPC stdio adapter over the same verbs.
   `phux mcp --schema` is the tool catalog; `phux mcp --skill` is the
