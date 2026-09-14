@@ -318,6 +318,27 @@ fn socket_and_remote_collide(cli: &Cli) -> bool {
     cli.socket.is_some() && invocation_remote(cli).is_some()
 }
 
+/// usage-rs `requires(a, b)` is all-of, so `--token` / `--cert-fingerprint` /
+/// `--tls-server-name` cannot declare "needs `--quic` or `--ws`" at parse
+/// time. The any-of rule lives here (same reason `phux logs -f` moved off
+/// the parser).
+fn dial_auth_without_transport(
+    quic: Option<&str>,
+    ws: Option<&str>,
+    token: Option<&str>,
+    cert_fingerprint: Option<&str>,
+    tls_server_name: Option<&str>,
+) -> Option<&'static str> {
+    if (token.is_some() || cert_fingerprint.is_some() || tls_server_name.is_some())
+        && quic.is_none()
+        && ws.is_none()
+    {
+        Some("phux: --token, --cert-fingerprint, and --tls-server-name need --quic or --ws")
+    } else {
+        None
+    }
+}
+
 /// Resolve a `--remote` target and attach to it.
 ///
 /// One helper for both the root and the verb-scoped spelling, so the two
@@ -833,6 +854,19 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
             "phux: --socket dials a local UDS and cannot combine with --quic/--ws/--ssh; drop one"
         );
         return ExitCode::from(2);
+    }
+    // The parser cannot say "one of --quic/--ws" (`requires` is every listed
+    // flag), so a lone `--token` would otherwise fall through to a local
+    // attach and silently drop the credentials.
+    if let Some(message) = dial_auth_without_transport(
+        quic.as_deref(),
+        ws.as_deref(),
+        token.as_deref(),
+        cert_fingerprint.as_deref(),
+        tls_server_name.as_deref(),
+    ) {
+        eprintln!("{message}");
+        return ExitCode::from(exit_codes::EXIT_USAGE);
     }
     if let Some(destination) = ssh {
         return commands::ssh_bootstrap::run(commands::ssh_bootstrap::SshAttach {
@@ -1918,6 +1952,106 @@ mod tests {
         assert!(super::root_rec_before_verb(&cli).is_none());
         let cli = crate::parse_cli(["phux", "attach", "--rec", "demo.gif"]).expect("attach");
         assert!(super::root_rec_before_verb(&cli).is_none());
+    }
+
+    /// usage-rs `requires("--quic", "--ws")` is all-of, so a single-transport
+    /// dial with `--token` (the documented `phux attach --quic HOST --token HEX`
+    /// form) used to fail at parse time. The any-of rule is post-parse.
+    #[test]
+    fn attach_dial_auth_flags_need_one_transport() {
+        for argv in [
+            [
+                "phux",
+                "attach",
+                "--quic",
+                "127.0.0.1:8788",
+                "--token",
+                "ab",
+            ]
+            .as_slice(),
+            [
+                "phux",
+                "attach",
+                "--ws",
+                "ws://127.0.0.1:8787",
+                "--token",
+                "ab",
+            ]
+            .as_slice(),
+            [
+                "phux",
+                "attach",
+                "--quic",
+                "127.0.0.1:8788",
+                "--cert-fingerprint",
+                "cd",
+            ]
+            .as_slice(),
+            [
+                "phux",
+                "attach",
+                "--ws",
+                "wss://host:8787",
+                "--tls-server-name",
+                "host",
+            ]
+            .as_slice(),
+        ] {
+            let cli = crate::parse_cli(argv)
+                .unwrap_or_else(|err| panic!("{argv:?} must parse (single transport): {err}"));
+            let Some(Command::Attach {
+                quic,
+                ws,
+                token,
+                cert_fingerprint,
+                tls_server_name,
+                ..
+            }) = cli.command
+            else {
+                panic!("expected Attach for {argv:?}");
+            };
+            assert!(
+                super::dial_auth_without_transport(
+                    quic.as_deref(),
+                    ws.as_deref(),
+                    token.as_deref(),
+                    cert_fingerprint.as_deref(),
+                    tls_server_name.as_deref(),
+                )
+                .is_none(),
+                "{argv:?} names a transport"
+            );
+        }
+
+        for flag in ["--token", "--cert-fingerprint", "--tls-server-name"] {
+            let argv = ["phux", "attach", flag, "x"];
+            let cli = crate::parse_cli(argv).unwrap_or_else(|err| {
+                panic!("{argv:?} must parse; the refusal is post-parse: {err}")
+            });
+            let Some(Command::Attach {
+                quic,
+                ws,
+                token,
+                cert_fingerprint,
+                tls_server_name,
+                ..
+            }) = cli.command
+            else {
+                panic!("expected Attach for {argv:?}");
+            };
+            let message = super::dial_auth_without_transport(
+                quic.as_deref(),
+                ws.as_deref(),
+                token.as_deref(),
+                cert_fingerprint.as_deref(),
+                tls_server_name.as_deref(),
+            )
+            .unwrap_or_else(|| panic!("{argv:?} must be refused without a transport"));
+            assert!(
+                message.contains("--quic") && message.contains("--ws"),
+                "{argv:?} refusal must name both transports; got {message:?}"
+            );
+        }
     }
 
     /// The global `--socket` parses in both positions and lands on the same
