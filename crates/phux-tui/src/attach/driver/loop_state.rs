@@ -1291,6 +1291,10 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         defer_paint: bool,
     ) -> Result<FrameOutcome, AttachError> {
+        let authoritative_output = match &frame {
+            FrameKind::ResourceOutput { terminal_id, .. } => Some(terminal_id.clone()),
+            _ => None,
+        };
         let outcome = handle_server_frame(
             &mut self.engine_kernel,
             &mut self.kernel_effects,
@@ -1316,6 +1320,11 @@ impl SessionLoop {
             self.overlays.is_active(),
             defer_paint,
         )?;
+        if let (Some(terminal_id), Some(journal)) =
+            (authoritative_output, self.input_replay.as_ref())
+        {
+            journal.borrow_mut().clear_delivery_fence(&terminal_id);
+        }
         if outcome.layout_get_answered {
             self.layout_read_complete = true;
             self.layout_get_request_id = None;

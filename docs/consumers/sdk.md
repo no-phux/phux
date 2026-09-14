@@ -56,12 +56,21 @@ journal enforces per-Terminal ordering, bounded retention, same-incarnation
 replay, and the ten-minute dedupe horizon; its `Unknown` versus `Refused`
 report is the UI's safe-to-retype boundary.
 
-For a mobile WSS dial, construct `WsDial` with `CertTrust::Pinned` and call
-`phux_dial::ws::dial_with_identity(..., &TlsClientIdentity::None)`. That path
-never reads `PHUX_WORKLOAD_CERT` or `PHUX_WORKLOAD_KEY`; a host that really
-owns an mTLS identity can instead pass explicit `PemFiles` paths. The returned
-WebSocket is still only transport. The adapter owns HELLO negotiation, frame
-flow, reconnect timing, and delivery into `SessionKernel`.
+For a mobile dial, construct `WsDial` or `QuicDial` with `CertTrust::Pinned`
+and call the transport's `dial_with_identity(..., &TlsClientIdentity::None)`.
+Those explicit paths never read `PHUX_WORKLOAD_CERT` or `PHUX_WORKLOAD_KEY`; a
+host that really owns an mTLS identity can instead pass explicit `PemFiles`
+paths. The returned WebSocket or QUIC stream is still only transport. The
+adapter owns HELLO negotiation, frame flow, reconnect timing, and delivery
+into `SessionKernel`.
+
+For finished-pane history, opt a projected terminal into
+`set_retain_replica_on_close` before close, then transfer its final engine
+generation with `take_closed_replica`. Retention is off by default. This avoids
+a parallel raw-byte archive without growing clients that do not use it. Bounded frontends may detach
+an attached terminal after the aggregate ready barrier with `detach_terminal`,
+then explicitly subscribe again when it becomes resident; the server, not a
+second client buffer, remains authoritative while it is detached.
 
 Cockpit remains the first-class C consumer of the same seams. Its Zig provider
 calls `phux-client-ffi`, which is a thin native-engine adapter over
