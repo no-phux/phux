@@ -38,11 +38,16 @@
 #[path = "../common/mod.rs"]
 mod common;
 
+use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
+
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::ClientCapabilities;
+use phux_protocol::wire::frame::FrameKind;
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -233,16 +238,30 @@ impl ServerGuard {
         );
     }
 
-    /// Open a bare connection to the server's socket and hand it back.
+    /// Open and negotiate a connection to the server's socket, then hand it
+    /// back without attaching.
     ///
-    /// No handshake, no frames — the server counts the accepted connection
-    /// and that is all this needs. Retried against a deadline because the
-    /// socket file existing is not the same as it being connectable.
+    /// The server enforces an absolute HELLO deadline, so a bare socket does
+    /// not remain a live client for this test's full observation window.
+    /// Retried against a deadline because the socket file existing is not the
+    /// same as it being connectable.
     fn connect_raw(&self) -> UnixStream {
         let deadline = Instant::now() + SOCKET_DEADLINE;
         loop {
             match UnixStream::connect(&self.socket) {
-                Ok(stream) => return stream,
+                Ok(mut stream) => {
+                    let mut hello = bytes::BytesMut::new();
+                    FrameKind::Hello {
+                        client_name: "idle-exit-e2e".to_owned(),
+                        protocol_major: PROTOCOL_VERSION.major,
+                        protocol_minor: PROTOCOL_VERSION.minor,
+                        protocol_patch: PROTOCOL_VERSION.patch,
+                        client_caps: ClientCapabilities::new(),
+                    }
+                    .encode(&mut hello);
+                    stream.write_all(&hello).expect("send HELLO");
+                    return stream;
+                }
                 Err(err) if Instant::now() >= deadline => {
                     panic!("could not connect to {}: {err}", self.socket.display())
                 }
