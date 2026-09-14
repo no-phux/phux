@@ -486,7 +486,7 @@ fn run_journey(harness: &mut Harness) {
     let mistake_err = String::from_utf8(mistake.stderr).expect("usage stderr is UTF-8");
     assert_eq!(
         mistake_err,
-        "error: unexpected argument '--json' found\n\n  tip: 'ls --json' exists\n\nUsage: phux [OPTIONS] [COMMAND]\n\nFor more information, try '--help'.\nhint: `--json` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> --json ...`\n"
+        "error: unexpected argument '--json' found\n\nUsage: phux [FLAGS] [SUBCOMMAND]\n\nFor more information, try '--help'.\nhint: `--json` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> --json ...`\n"
     );
 
     let redirected_socket = harness.runtime.join("redirected.sock");
