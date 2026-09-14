@@ -44,6 +44,14 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 # run concurrently while it still sees keepalive pongs; `Message` is not
 # re-exported by phux-dial. Same spec phux-dial locks.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+# `phux_client_log_init` gives an embedder the tunnel's lifecycle on its own
+# stderr, and the dial stacks (quinn, rustls, phux-dial) already speak
+# `tracing`, so without a subscriber their spans are dropped. Both crates are
+# workspace deps already locked through phux-server at these exact features
+# (env-filter + fmt); nothing new enters Cargo.lock. tracing's `log` feature
+# stays off: feature unification would switch it on workspace-wide.
+tracing.workspace = true
+tracing-subscriber.workspace = true
 
 [dev-dependencies]
 # A registry fixture file for the resolution and relay tests.

@@ -9,6 +9,7 @@ mod client;
 mod directory;
 mod error;
 mod grid_metadata;
+mod log;
 mod operations;
 mod pointer;
 mod remote;
@@ -40,6 +41,7 @@ use phux_protocol::{PROTOCOL_VERSION, SessionId};
 
 pub use directory::*;
 pub use grid_metadata::*;
+pub use log::*;
 pub use operations::*;
 pub use pointer::{
     PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,

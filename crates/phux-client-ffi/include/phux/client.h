@@ -774,6 +774,23 @@ typedef struct PhuxSearchResult {
 } PhuxSearchResult;
 
 /**
+ * Process-wide diagnostics. Installs the bridge's tracing subscriber once per
+ * process; every later call with a parsable filter is a no-op that returns
+ * PHUX_CLIENT_OK, and a process that already has a Rust tracing subscriber
+ * keeps it. Log lines are written to the process's standard error, so an
+ * embedder that wants a file redirects descriptor 2 before calling. `filter`
+ * is a RUST_LOG-style directive list (for example "phux=debug,quinn=info"),
+ * UTF-8 without NUL, at most 4096 bytes; an empty span means the RUST_LOG
+ * environment variable, else the bridge default
+ * "phux=info,phux_client_ffi=info,phux_dial=info,quinn=warn,rustls=warn,warn",
+ * which records the remote tunnel's lifecycle at info and everything else at
+ * warn. An unparsable filter returns PHUX_CLIENT_INVALID_ARGUMENT and installs
+ * nothing, on every call. Safe from any thread, but call it before
+ * phux_client_new so the first bridge line is the log's first line.
+ */
+PhuxClientResult phux_client_log_init(PhuxBytes filter);
+
+/**
  * Production artifacts that guarantee panic containment MUST be built with
  * `cargo build --profile ffi-release -p phux-client-ffi`; the workspace's
  * ordinary release profile aborts and is not a supported host-library build.
