@@ -238,6 +238,26 @@ duplicate is exactly how pg1 happened.
 
 ---
 
+## VT bytes never ride the Native SDK 4096 effect channel
+
+**Decided 2026-09-14.** Cockpit architecture package 4 from Metal/Foreman.
+
+The channel post path has a hard 4096-byte bound with no override
+([FINDINGS.md](../FINDINGS.md) §7). phux `PANE_OUTPUT` frames exceed it.
+Chunking those bytes through the channel is forbidden — that is the thing
+the queues exist to avoid.
+
+Production `providers/phux` stays: the extension module owns the socket;
+complete frames cross bounded reusable queues; only a one-byte wake is
+posted; the UI thread drains and feeds the engine (`phux_client_feed_frame`
+on this thread, `Session.feed` for local panes). Channel `event.bytes` is
+the wake, never VT.
+
+`scripts/check-vt-channel.py` fails if product phux source posts anything
+but that wake, or if a phux channel handler feeds `event.bytes` as VT.
+
+---
+
 ## State is said with the accent, not with elevation: SETTLED
 
 **Decided 2026-08-14.** `phux-cockpit-2q8`.
