@@ -392,29 +392,22 @@ pub(crate) enum Command {
         /// minted by `phux pair`. QUIC sends it as the stream's opening
         /// preamble; WebSocket sends it as `Authorization: Bearer`.
         /// Requires `--quic` or `--ws`.
-        #[usage(long, requires("--quic", "--ws"), help_heading = "Direct dial")]
+        // No parser-level `requires("--quic", "--ws")`: usage-rs treats that
+        // as all-of, which rejected a single transport. The any-of rule is
+        // enforced in `run_attach` (exit 2), matching `phux logs -f`.
+        #[usage(long, help_heading = "Direct dial")]
         token: Option<String>,
 
         /// Pin the QUIC server's certificate by its SHA-256 fingerprint (the
         /// value `phux pair` prints). Required to dial any non-loopback
         /// `--quic`/`--ws wss://` address. Requires `--quic` or `--ws`.
-        #[usage(
-            long,
-            value_name = "FP",
-            requires("--quic", "--ws"),
-            help_heading = "Direct dial"
-        )]
+        #[usage(long, value_name = "FP", help_heading = "Direct dial")]
         cert_fingerprint: Option<String>,
 
         /// TLS server name (SNI) to offer the remote listener. QUIC defaults
         /// to `localhost`; WebSocket defaults to the URL host. Requires
         /// `--quic` or `--ws`.
-        #[usage(
-            long,
-            value_name = "NAME",
-            requires("--quic", "--ws"),
-            help_heading = "Direct dial"
-        )]
+        #[usage(long, value_name = "NAME", help_heading = "Direct dial")]
         tls_server_name: Option<String>,
 
         /// Attach to a phux server on another machine, ssh-style:

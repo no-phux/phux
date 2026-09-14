@@ -3,6 +3,20 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0](https://github.com/no-phux/phux/compare/cockpit-v0.23.3...cockpit-v0.24.0) (2026-09-14)
+
+
+### Features
+
+* **cli:** phux logs --cockpit and the Cockpit log in the inventory ([5651790](https://github.com/no-phux/phux/commit/5651790f5348d9899529c22303f8df20c7ac1aee))
+* **cli:** ship phux cockpit launcher and one-word channel switch ([#622](https://github.com/no-phux/phux/issues/622)) ([ab6d9ba](https://github.com/no-phux/phux/commit/ab6d9ba447ae933072cc01d1d3b4331a68a7e5b1))
+* **cockpit:** route stderr into ~/Library/Logs/Phux Cockpit/cockpit.log ([9647559](https://github.com/no-phux/phux/commit/964755925729dda505695f03266ea4869ba552dd))
+
+
+### Bug Fixes
+
+* **cockpit:** keep ring P-256 helpers through dead_strip ([#627](https://github.com/no-phux/phux/issues/627)) ([bd9a95c](https://github.com/no-phux/phux/commit/bd9a95c7ede5fe6dba6f955e38a91ca67cd6a0b2))
+
 ## [0.23.3](https://github.com/no-phux/phux/compare/cockpit-v0.23.2...cockpit-v0.23.3) (2026-09-13)
 
 
