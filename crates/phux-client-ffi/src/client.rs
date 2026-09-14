@@ -286,6 +286,8 @@ pub(crate) struct Client {
     pub limits: Limits,
     pub protocol_ready: bool,
     pub hello_queued: bool,
+    /// Capabilities last advertised in `HELLO`, used to accept `HELLO_OK`.
+    pub offered_caps: Option<phux_protocol::ClientCapabilities>,
     pub callbacks: PhuxClientCallbacks,
     pub in_callback: bool,
     pub attached_notified: bool,
@@ -358,6 +360,7 @@ impl Client {
             viewport_anchors: HashMap::new(),
             protocol_ready: false,
             hello_queued: false,
+            offered_caps: None,
             callbacks: PhuxClientCallbacks::default(),
             in_callback: false,
             attached_notified: false,
