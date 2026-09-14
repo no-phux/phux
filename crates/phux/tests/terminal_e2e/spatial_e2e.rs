@@ -60,6 +60,11 @@ impl ServerGuard {
             .args(["server", "--session", SESSION, "--socket"])
             .arg(&socket)
             .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
+            // Panes run the server's `$SHELL`. Inherited, that is the CI
+            // devshell's minimal bash sourcing the runner's `~/.bashrc`, whose
+            // startup noise buries the typed markers; pin the `/bin/sh` the
+            // marker barriers assume.
+            .env("SHELL", "/bin/sh")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
