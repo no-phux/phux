@@ -176,30 +176,12 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          id="next.${SHA}"
-          target="${TARGET}"
-          stage="phux-${id}-${target}"
-          mkdir -p "${stage}"
-          cp -f target/release/phux target/release/phux-mcp "${stage}/"
-          cp -f README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md "${stage}/"
-          test -x "${stage}/phux"
-          test -x "${stage}/phux-mcp"
-          "${stage}/phux" --version
-          "${stage}/phux" --skill=quick > /dev/null
-          "${stage}/phux" --capabilities --json | jq -e '.schema_version == 1' > /dev/null
-          "${stage}/phux" mcp --skill > /dev/null
-          "${stage}/phux" mcp --schema | jq -e 'length > 0' > /dev/null
-          "${stage}/phux-mcp" --skill > /dev/null
-          "${stage}/phux-mcp" --schema | jq -e 'length > 0' > /dev/null
-          "${stage}/phux-mcp" < /dev/null
-          tar -czf "${stage}.tar.gz" "${stage}"
-          if command -v sha256sum >/dev/null; then
-            sha=$(sha256sum "${stage}.tar.gz" | cut -d' ' -f1)
-          else
-            sha=$(shasum -a 256 "${stage}.tar.gz" | cut -d' ' -f1)
-          fi
-          echo "${sha}  ${stage}.tar.gz" > "${stage}.tar.gz.sha256"
-          echo "artifact=${stage}.tar.gz" >> "$GITHUB_OUTPUT"
+          bash scripts/pack-release.sh \
+            --id "next.${SHA}" \
+            --target "${TARGET}" \
+            --bin-dir target/release \
+            --out-dir . \
+            --smoke
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:

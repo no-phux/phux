@@ -315,9 +315,10 @@ phux-<tag>-<target>/
   THIRD-PARTY-NOTICES.md
 ```
 
-The workflow smoke-checks both binaries in the staging directory before it
-creates `phux-<tag>-<target>.tar.gz` and the matching `.sha256` sidecar.
-Homebrew installs both binaries from the same tarball.
+`scripts/pack-release.sh` is the only writer of that member list.
+`release.yml`, `next-release.yml`, and `scripts/dist.sh` call it; `--smoke`
+runs the binary checks before the tarball is sealed. Homebrew installs both
+binaries from the same tarball.
 
 `phux update` from a build that still expected `LICENSE-MIT` and
 `LICENSE-APACHE` will refuse this tarball. Reinstall once through
@@ -335,8 +336,8 @@ refuses any archive whose members are not precisely the members listed above. Re
 artifact, dropping the sidecar, changing the `"<64 hex>  <archive>"` sidecar
 format, or adding a member to the tarball breaks every installed phux's ability
 to update itself — silently for the naming, loudly for the members. Change them
-together with `crates/phux/src/commands/update/release.rs` and
-`crates/phux/src/commands/update/apply.rs`, or not at all.
+together with `scripts/pack-release.sh`, `crates/phux/src/commands/update/release.rs`,
+and `crates/phux/src/commands/update/apply.rs`, or not at all.
 
 The opt-in `next` channel ([ADR-0113](adr/0113-next-release-channel.md))
 reuses the same member set (either license layout accepted). GitHub's tag is the moving prerelease `next`;
