@@ -28,8 +28,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResourceCore, ResourceCoreChannels,
-    ResourceFacetHandle, ResourceHandle, ResourceId, ResourceKind,
+    ControlRequest, PaneOutput, ResourceCore, ResourceCoreChannels, ResourceFacetHandle,
+    ResourceHandle, ResourceId, ResourceKind,
 };
 
 pub mod record;
@@ -179,7 +179,7 @@ impl AgentSessionActor {
             ResourceKind::AgentSession,
             Some(parent),
             token,
-            DEFAULT_OUTPUT_BROADCAST,
+            crate::resource::output_broadcast_capacity(),
         );
         let ResourceCoreChannels {
             output,
