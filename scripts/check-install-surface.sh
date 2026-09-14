@@ -126,6 +126,20 @@ require_fixed scripts/install.sh 'download "$sha_url" "$sha_path"'
 require_fixed scripts/install.sh 'sha256sum -c "$(basename "$sha_path")"'
 require_fixed scripts/install.sh 'shasum -a 256 -c "$(basename "$sha_path")"'
 require_fixed scripts/install.sh '"${stage_name}/phux-mcp"'
+# Packaging must copy files that exist on main. The relicense deleted
+# LICENSE-MIT/LICENSE-APACHE; leaving those names in release.yml made the
+# next cut fail and left curl | sh resolving a v0.35.0 tarball the live
+# installer then refused. Accept both layouts at install time.
+require_fixed scripts/install.sh '"${stage_name}/LICENSE-APACHE"'
+require_fixed scripts/install.sh '"${stage_name}/LICENSE"'
+require_fixed scripts/install.sh '"${stage_name}/NOTICE"'
+require_fixed scripts/install.sh '"${stage_name}/THIRD-PARTY-NOTICES.md"'
+require_fixed .github/workflows/release.yml 'cp -f README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md "${stage}/"'
+require_fixed .github/workflows/next-release.yml 'cp -f README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md "${stage}/"'
+require_fixed scripts/dist.sh 'cp README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md'
+forbid_fixed .github/workflows/release.yml 'LICENSE-MIT LICENSE-APACHE'
+forbid_fixed .github/workflows/next-release.yml 'LICENSE-MIT LICENSE-APACHE'
+require_fixed scripts/test-install.sh 'installer license-layout tests passed'
 require_fixed scripts/install.sh 'publish_dir="$(mktemp -d "${install_dir}/.phux-install.XXXXXX")"'
 require_fixed scripts/install.sh 'rollback_publish'
 require_fixed scripts/install.sh 'mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"'

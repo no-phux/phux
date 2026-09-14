@@ -435,3 +435,57 @@ output="$(PATH="$FAKE_BIN:/usr/bin:/bin" \
 grep -Fxq 'channel: stable' <<<"$output"
 
 echo "next-channel installer tests passed"
+
+# The live failure: installer served from main refused LICENSE-APACHE from the
+# v0.35.0 tarball. Feed install.sh the two real member lists; it must land
+# binaries for both and still refuse a stranger file.
+cat > "$FAKE_BIN/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+url=$2
+out=$4
+case "$url" in
+  *.sha256) cp "$INSTALL_FIXTURE/phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz.sha256" "$out" ;;
+  *) cp "$INSTALL_FIXTURE/phux-v9.8.7-x86_64-unknown-linux-gnu.tar.gz" "$out" ;;
+esac
+EOF
+chmod 755 "$FAKE_BIN/curl"
+
+run_install_from_docs() {
+  local dir=$1
+  shift
+  rm -rf "$dir"
+  mkdir -p "$dir/$STAGE" "$dir/bin"
+  printf 'ok\n' > "$dir/$STAGE/phux"
+  printf 'ok\n' > "$dir/$STAGE/phux-mcp"
+  chmod 755 "$dir/$STAGE/phux" "$dir/$STAGE/phux-mcp"
+  printf 'readme\n' > "$dir/$STAGE/README.md"
+  local name
+  for name in "$@"; do
+    printf 'x\n' > "$dir/$STAGE/$name"
+  done
+  tar -czf "$dir/$STAGE.tar.gz" -C "$dir" "$STAGE"
+  (
+    cd "$dir"
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
+    else
+      shasum -a 256 "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
+    fi
+  )
+  PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$dir" \
+    "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
+      --install-dir "$dir/bin" >/dev/null
+  grep -Fxq ok "$dir/bin/phux"
+}
+
+run_install_from_docs "$TMP/layout-old" LICENSE-MIT LICENSE-APACHE
+run_install_from_docs "$TMP/layout-new" LICENSE NOTICE THIRD-PARTY-NOTICES.md
+
+if run_install_from_docs "$TMP/layout-hostile" LICENSE payload.sh 2>"$TMP/hostile.err"; then
+  echo "installer accepted an unexpected archive member" >&2
+  exit 1
+fi
+grep -Fq 'unexpected archive member' "$TMP/hostile.err"
+
+echo "installer license-layout tests passed"

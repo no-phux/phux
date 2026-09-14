@@ -46,8 +46,21 @@ use super::UpdateError;
 /// rolled back and the install is left entirely on the old pair.
 pub(crate) const RELEASE_BINARIES: &[&str] = &["phux-mcp", "phux"];
 
-/// Non-executable members every release tarball also carries.
-const RELEASE_DOCS: &[&str] = &["README.md", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md"];
+/// Non-executable members a release tarball may carry.
+///
+/// Both license layouts are accepted: tarballs cut before the Apache-2.0-only
+/// relicense (<=v0.35.0) carry `LICENSE-MIT` + `LICENSE-APACHE`, later ones
+/// carry `LICENSE` + `NOTICE` + `THIRD-PARTY-NOTICES.md`. The curl installer
+/// (`scripts/install.sh`) accepts the same union, so either side of the
+/// cutover installs cleanly.
+const RELEASE_DOCS: &[&str] = &[
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+    "LICENSE",
+    "NOTICE",
+    "THIRD-PARTY-NOTICES.md",
+];
 
 /// The directory, inside the install's bin directory, that holds the previous
 /// binaries after a successful update. Same directory means same filesystem,
@@ -1069,18 +1082,30 @@ mod tests {
         }
     }
 
+    const CURRENT_RELEASE_DOCS: &[&str] =
+        &["README.md", "LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md"];
+    const PRE_RELICENSE_DOCS: &[&str] = &["README.md", "LICENSE-MIT", "LICENSE-APACHE"];
+
     /// Build a release-shaped tarball in `dir`, returning its path.
     fn build_archive(dir: &Path, stage: &str, extra: Option<(&str, &[u8])>) -> PathBuf {
+        build_archive_with_docs(dir, stage, CURRENT_RELEASE_DOCS, extra)
+    }
+
+    fn build_archive_with_docs(
+        dir: &Path,
+        stage: &str,
+        docs: &[&str],
+        extra: Option<(&str, &[u8])>,
+    ) -> PathBuf {
         let staging = dir.join("build").join(stage);
         fs::create_dir_all(&staging).unwrap();
         fs::write(staging.join("phux"), b"#!/bin/sh\nnew phux\n").unwrap();
         fs::set_permissions(staging.join("phux"), fs::Permissions::from_mode(0o755)).unwrap();
         fs::write(staging.join("phux-mcp"), b"#!/bin/sh\nnew mcp\n").unwrap();
         fs::set_permissions(staging.join("phux-mcp"), fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(staging.join("README.md"), b"readme").unwrap();
-        fs::write(staging.join("LICENSE"), b"apache").unwrap();
-        fs::write(staging.join("NOTICE"), b"notice").unwrap();
-        fs::write(staging.join("THIRD-PARTY-NOTICES.md"), b"notices").unwrap();
+        for name in docs {
+            fs::write(staging.join(name), name.as_bytes()).unwrap();
+        }
         if let Some((name, bytes)) = extra {
             fs::write(staging.join(name), bytes).unwrap();
         }
@@ -1122,6 +1147,18 @@ mod tests {
             !into.join(stage).exists(),
             "nothing may be extracted when the listing is refused"
         );
+    }
+
+    #[test]
+    fn a_pre_relicense_archive_still_unpacks() {
+        let scratch = Scratch::new("unpack-pre-relicense");
+        let stage = "phux-v0.35.0-aarch64-apple-darwin";
+        let archive = build_archive_with_docs(scratch.path(), stage, PRE_RELICENSE_DOCS, None);
+        let into = scratch.path().join("into");
+        fs::create_dir(&into).unwrap();
+        let staged = unpack_verified(&archive, stage, &into).unwrap();
+        assert!(staged.join("phux").is_file());
+        assert!(staged.join("LICENSE-APACHE").is_file());
     }
 
     /// Seed a bin directory with a "current" install at a chosen mode.

@@ -533,11 +533,16 @@ validate_archive() {
         die "unsafe archive member path: $member"
         ;;
     esac
+    # Accept both license layouts: pre-relicense tarballs (<=v0.35.0) carry
+    # LICENSE-MIT + LICENSE-APACHE, later ones carry LICENSE + NOTICE +
+    # THIRD-PARTY-NOTICES.md. Refusing either strands one side of the cutover.
     case "$member" in
       "${stage_name}/" \
         | "${stage_name}/phux" \
         | "${stage_name}/phux-mcp" \
         | "${stage_name}/README.md" \
+        | "${stage_name}/LICENSE-MIT" \
+        | "${stage_name}/LICENSE-APACHE" \
         | "${stage_name}/LICENSE" \
         | "${stage_name}/NOTICE" \
         | "${stage_name}/THIRD-PARTY-NOTICES.md")
@@ -563,11 +568,14 @@ validate_extracted_tree() {
 
   while IFS= read -r path; do
     rel="${path#"$extract_dir"/}"
+    # Same dual-layout acceptance as validate_archive above.
     case "$rel" in
       "${stage_name}" \
         | "${stage_name}/phux" \
         | "${stage_name}/phux-mcp" \
         | "${stage_name}/README.md" \
+        | "${stage_name}/LICENSE-MIT" \
+        | "${stage_name}/LICENSE-APACHE" \
         | "${stage_name}/LICENSE" \
         | "${stage_name}/NOTICE" \
         | "${stage_name}/THIRD-PARTY-NOTICES.md")
