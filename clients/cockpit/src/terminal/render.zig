@@ -261,6 +261,15 @@ test "cropLastN keeps the trailing rows and moves the cursor with them" {
     const unchanged = cropLastN(source, source.rows.len);
     try testing.expectEqual(source.rows.len, unchanged.rows.len);
     try testing.expectEqual(@as(u16, 7), unchanged.cursor.?.y);
+
+    // A select-head inside the crop shifts with it; a cursor above the crop
+    // is dropped rather than left floating on a kept row.
+    var inverted = source;
+    inverted.cursor = .{ .x = 0, .y = 0 };
+    inverted.select_head = .{ .x = 0, .y = 6 };
+    const moved = cropLastN(inverted, 3);
+    try testing.expect(moved.cursor == null);
+    try testing.expectEqual(@as(u16, 1), moved.select_head.?.y);
 }
 
 test "last_n paint keeps the prompt row that from_top drops" {
