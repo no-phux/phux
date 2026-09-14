@@ -39,11 +39,11 @@ const Use = struct {
 };
 
 fn textLen(builder: *const canvas.Builder) usize {
-    return if (@hasField(canvas.Builder, "text_len")) builder.text_len else 0;
+    return builder.text_byte_len;
 }
 
 fn pathLen(builder: *const canvas.Builder) usize {
-    return if (@hasField(canvas.Builder, "path_len")) builder.path_len else 0;
+    return builder.path_element_len;
 }
 
 fn capture(builder: *canvas.Builder) Use {
@@ -151,7 +151,7 @@ fn printUse(label: []const u8, used: Use) void {
 }
 
 test "MEASURED: SDK paint tables and Hybrid C constants" {
-    const cell_size = @sizeOf(canvas.TerminalCell);
+    const cell_size = @sizeOf(canvas.Cell);
     const command_size = @sizeOf(canvas.CanvasCommand);
     measured.print(
         "MEASURED-BASIS paint-ceiling host=linux pin=c188459a derive=zig-build-test-Dmeasure\n",
@@ -174,14 +174,14 @@ test "MEASURED: SDK paint tables and Hybrid C constants" {
         },
     );
     measured.print(
-        "MEASURED product: max_cols={d} max_rows={d} max_cells={d} max_panes={d} cockpit_windows={d} platform_windows={d} full_cells={d} max_full_panes={d} degraded_rows={d} degraded_cell_cap={d}\n",
+        "MEASURED product: max_cols={d} max_rows={d} max_cells={d} max_panes={d} cockpit_windows={d} platform_views={d} full_cells={d} max_full_panes={d} degraded_rows={d} degraded_cell_cap={d}\n",
         .{
             grid.max_cols,
             grid.max_rows,
             grid.max_cells,
             layout.max_panes,
             app.max_windows,
-            native_sdk.platform.max_windows,
+            native_sdk.platform.max_views,
             paint_budget.full_cells,
             paint_budget.maxFullPanesThatFit(),
             paint_budget.degraded_rows,
@@ -189,7 +189,7 @@ test "MEASURED: SDK paint tables and Hybrid C constants" {
         },
     );
     measured.print(
-        "MEASURED sizeof: TerminalCell={d} CanvasCommand={d} builder_cell_store_bytes={d}\n",
+        "MEASURED sizeof: Cell={d} CanvasCommand={d} builder_cell_store_bytes={d}\n",
         .{ cell_size, command_size, cell_size * paint_budget.cell_store },
     );
     const proposed_4x = paint_budget.cell_store * 4;
@@ -202,18 +202,19 @@ test "MEASURED: SDK paint tables and Hybrid C constants" {
             proposed_2x * cell_size * 2 / 1024,
             app.max_windows,
             proposed_2x * cell_size * 2 * app.max_windows / 1024,
-            native_sdk.platform.max_windows,
-            proposed_2x * cell_size * 2 * native_sdk.platform.max_windows / 1024,
+            native_sdk.platform.max_views,
+            proposed_2x * cell_size * 2 * native_sdk.platform.max_views / 1024,
             proposed_4x,
             proposed_4x * cell_size / 1024,
             proposed_4x * cell_size * 2 / 1024,
             app.max_windows,
             proposed_4x * cell_size * 2 * app.max_windows / 1024,
-            native_sdk.platform.max_windows,
-            proposed_4x * cell_size * 2 * native_sdk.platform.max_windows / 1024,
+            native_sdk.platform.max_views,
+            proposed_4x * cell_size * 2 * native_sdk.platform.max_views / 1024,
         },
     );
     try testing.expectEqual(grid.max_cells, grid.max_cols * grid.max_rows);
+    try testing.expectEqual(@as(usize, 20), cell_size);
     try testing.expect(paint_budget.cell_store < grid.max_cells * 2);
     try testing.expectEqual(native_sdk.runtime.max_canvas_commands_per_view - canvas.terminal_grid.widget_command_reserve, paint_budget.command_envelope);
 }
@@ -268,17 +269,15 @@ fn paintFleet(
     const prologue: usize = 0;
     for (sessions, 0..) |session, index| {
         const remaining = count - 1 - index;
-        const command_budget, const text_reserve, const path_reserve, const glyph_budget, const cell_reserve = switch (kind) {
-            .hybrid => blk: {
-                const alloc = planned.forPane(index, prologue);
-                break :blk .{ alloc.command_budget, alloc.text_reserve, alloc.path_reserve, alloc.glyph_budget, alloc.cell_reserve };
-            },
+        const alloc: paint_budget.Allocation = switch (kind) {
+            .hybrid => planned.forPane(index, prologue),
             .equal_cut => .{
-                prologue + paint_budget.command_envelope * (index + 1) / count,
-                paint_budget.widget_text_reserve + (paint_budget.text_store - paint_budget.widget_text_reserve) / count * remaining,
-                paint_budget.widget_path_reserve + (paint_budget.path_store - paint_budget.widget_path_reserve) / count * remaining,
-                paint_budget.equalCutGlyphShare(count),
-                paint_budget.equalCutCellShare(count) * remaining,
+                .fidelity = .degraded,
+                .command_budget = prologue + paint_budget.command_envelope * (index + 1) / count,
+                .text_reserve = paint_budget.widget_text_reserve + (paint_budget.text_store - paint_budget.widget_text_reserve) / count * remaining,
+                .path_reserve = paint_budget.widget_path_reserve + (paint_budget.path_store - paint_budget.widget_path_reserve) / count * remaining,
+                .glyph_budget = paint_budget.equalCutGlyphShare(count),
+                .cell_reserve = paint_budget.equalCutCellShare(count) * remaining,
             },
         };
         const before_cells = builder.cell_len;
@@ -289,11 +288,11 @@ fn paintFleet(
             .running = true,
             .focused = index == focused_index,
             .selecting = false,
-            .command_budget = command_budget,
-            .text_reserve = text_reserve,
-            .glyph_budget = glyph_budget,
-            .path_reserve = path_reserve,
-            .cell_reserve = cell_reserve,
+            .command_budget = alloc.command_budget,
+            .text_reserve = alloc.text_reserve,
+            .glyph_budget = alloc.glyph_budget,
+            .path_reserve = alloc.path_reserve,
+            .cell_reserve = alloc.cell_reserve,
             .id_base = grid.paneIdBase(index),
         });
         const view = support.findPaneCellGrid(builder.displayList(), index);
@@ -309,8 +308,8 @@ fn paintFleet(
                 builder.cell_len - before_cells,
                 if (view) |grid_view| grid_view.rows() else 0,
                 if (view) |grid_view| grid_view.cellCount() else 0,
-                glyph_budget,
-                cell_reserve,
+                alloc.glyph_budget,
+                alloc.cell_reserve,
                 if (builder.degradation) |loss| @tagName(loss.store) else "none",
             },
         );

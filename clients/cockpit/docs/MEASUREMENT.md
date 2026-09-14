@@ -81,7 +81,10 @@ the same basis instead.
 runs the headless native suite with `-Dmeasure=true` and prints the SDK paint
 tables, unbounded 320x96 bind points, and Hybrid C vs equal-cut fleets at
 N=1/2/4/8. It does not bump the Native SDK pin. Live PTY rss is
-`scripts/drive-shell-ceiling.sh` and is macOS-only.
+`scripts/drive-shell-ceiling.sh` and is macOS-only. Cockpit `zig build`
+itself is macOS-only (`build.zig` panics on other hosts); Linux agents
+derive the same tables from the pinned SDK sources under `zig-pkg/native_sdk-*`
+and leave the runnable measurement to macOS CI.
 
 The policy those numbers feed is [DECISIONS.md](DECISIONS.md) §"Paint ceilings:
 Hybrid C". The regression that N full product grids do not share one envelope

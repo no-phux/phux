@@ -414,8 +414,11 @@ change. Thumbnail / lower glyph density is the mechanical day-one
 degraded tier.
 
 `scripts/drive-shell-ceiling.sh` is live macOS PTY evidence (~2.7 MiB rss
-per shell, `max_effect_ptys`). It is not a paint bind. Linux CI measures
-the paint tables through `scripts/measure-paint-ceiling.sh`
+per shell, `max_effect_ptys`). It is not a paint bind. Linux hosts cannot
+run Cockpit `zig build` (the graph is macOS-only). The paint tables above
+are the pinned SDK sources (`src/runtime/canvas_limits.zig`,
+`terminal_grid.zig`) at `c188459a`. Runnable measurement is
+`scripts/measure-paint-ceiling.sh` on macOS
 (`zig build test -Dplatform=null -Dmeasure=true`).
 
 ### Proposed SDK bumps (Metal must approve before the pin moves)
