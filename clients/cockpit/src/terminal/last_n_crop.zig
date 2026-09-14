@@ -105,8 +105,14 @@ test "cropLastN keeps the bottom rows and shifts the cursor" {
     const hidden = cropLastN(grid, 1);
     try testing.expectEqual(@as(usize, 1), hidden.rows.len);
     try testing.expectEqual(@as(u21, 'D'), hidden.rows[0].cells[0].cp);
-    try testing.expectEqual(@as(?canvas.TerminalCursor, null), hidden.cursor);
+    // The live cursor sits on the kept last row, so it stays and shifts to 0.
+    try testing.expectEqual(@as(u16, 0), hidden.cursor.?.y);
     try testing.expectEqual(@as(?canvas.TerminalCellPos, null), hidden.select_head);
+
+    var above = grid;
+    above.cursor = .{ .x = 0, .y = 0 };
+    const dropped_cursor = cropLastN(above, 1);
+    try testing.expectEqual(@as(?canvas.TerminalCursor, null), dropped_cursor.cursor);
 
     const intact = cropLastN(grid, 8);
     try testing.expectEqual(@as(usize, 4), intact.rows.len);
@@ -126,7 +132,7 @@ test "cropLastN does not invent first-N when the allowance covers the grid" {
         .selection_color = dark,
         .cursor = .{ .x = 0, .y = 0 },
     };
-    const cropped = cropLastN(grid, 320);
+    const cropped = cropLastN(grid, session.max_cols);
     try testing.expectEqual(@as(usize, 1), cropped.rows.len);
     try testing.expectEqual(@as(u21, 'Z'), cropped.rows[0].cells[0].cp);
     try testing.expectEqual(@as(u16, 0), cropped.cursor.?.y);
