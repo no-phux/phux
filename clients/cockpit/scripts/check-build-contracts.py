@@ -125,7 +125,7 @@ class BuildContracts(unittest.TestCase):
                 result = subprocess.check_output(["bash", str(helper), *goal, "--summary", "all"], text=True)
                 self.assertEqual(result.splitlines(), [*goal, "--summary", "all",
                     "-Dtarget=aarch64-macos", "-Dcpu=baseline",
-                    "-Doptimize=ReleaseSafe", "-Dphux-enabled=true"])
+                    "-Doptimize=ReleaseSafe", "-Dphux-enabled=true", "-Dtrace=off"])
 
     def test_main_has_one_shipping_compile_owner_and_debug_tests(self):
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()

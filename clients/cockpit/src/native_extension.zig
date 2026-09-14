@@ -1671,6 +1671,9 @@ fn installEngine(options: *Adapter.CoreOptions, gpa: std.mem.Allocator, io: std.
 }
 
 pub fn configureCoreOptions(options: *Adapter.CoreOptions, init: std.process.Init) void {
+    // Before the engine, so everything it logs while starting — including a
+    // Phux bridge that refuses to come up — lands in the file.
+    cockpit.diagnostics.install(init);
     bridge = .{};
     bridge.engine = Engine.createConfigured(std.heap.page_allocator, init) catch null;
     if (bridge.engine) |engine| {
