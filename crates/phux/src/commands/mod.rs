@@ -1976,9 +1976,10 @@ pub(crate) enum Command {
     /// (every spawn path writes it), the per-pid client logs, and the state
     /// dir that holds them — with existence, size, and age, so a fresh
     /// machine reads "not created yet" instead of an error. `--server`
-    /// tails the server log and `--client` the newest client log (`--pid`
-    /// picks a specific one); `-f` follows and `-n` sets the tail length.
-    /// `--json` emits the inventory as a stable document.
+    /// tails the server log, `--client` the newest client log (`--pid`
+    /// picks a specific one), and `--cockpit` the native macOS app's log;
+    /// `-f` follows and `-n` sets the tail length. `--json` emits the
+    /// inventory as a stable document.
     Logs {
         /// Tail the canonical server log.
         #[usage(long, group = "which")]
@@ -1988,30 +1989,31 @@ pub(crate) enum Command {
         #[usage(long, group = "which")]
         client: bool,
 
+        /// Tail the Phux Cockpit app's log (macOS; `PHUX_COCKPIT_LOG` overrides
+        /// the path).
+        #[usage(long, group = "which")]
+        cockpit: bool,
+
         /// With --client: the client pid whose log to tail, instead of the
         /// newest.
         #[usage(long, value_name = "PID", requires("--client"))]
         pid: Option<u32>,
 
-        /// Follow the tailed log as it grows (needs --server or --client).
-        #[usage(short, long, requires("--server"))]
+        /// Follow the tailed log as it grows (needs --server, --client, or
+        /// --cockpit).
+        #[usage(short, long)]
         follow: bool,
 
-        /// How many trailing lines to show (needs --server or --client).
-        #[usage(
-            short = 'n',
-            long,
-            default = "200",
-            default_value_t = 200,
-            requires("--server")
-        )]
-        lines: u32,
+        /// How many trailing lines to show; 200 when omitted (needs
+        /// --server, --client, or --cockpit).
+        #[usage(short = 'n', long, value_name = "NUM")]
+        lines: Option<u32>,
 
         /// Emit the path inventory as a stable JSON document instead of
         /// human text. Inventory only — it cannot combine with a tail.
         #[usage(
             long,
-            conflicts("--server", "--client", "--pid", "--follow", "--lines")
+            conflicts("--server", "--client", "--cockpit", "--pid", "--follow", "--lines")
         )]
         json: bool,
     },
