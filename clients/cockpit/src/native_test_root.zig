@@ -579,6 +579,7 @@ test {
     _ = @import("tests/pointer_selection_tests.zig");
     _ = @import("tests/mouse_protocol_tests.zig");
     _ = @import("tests/adversarial_isolation_tests.zig");
+    _ = @import("tests/paint_ceiling_tests.zig");
     _ = @import("tests/layout_tree_tests.zig");
     _ = @import("tests/config_tests.zig");
     _ = @import("tests/shell_identity_tests.zig");
