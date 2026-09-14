@@ -829,10 +829,13 @@ pub const Host = struct {
             delta.removed_count += host.pruneRemoved(false);
             try host.publishDirty(&delta);
         }
-        // A bounded drain leaves its suffix for the next wake, including
-        // already-received final frames when EOF races this turn. Do not
-        // consume that disconnect (which clears the queue) ahead of them.
-        if (!host.bridge.incoming.hasPending()) try host.stageOutgoing();
+        // Always flush FFI outgoing. ATTACH_READY queues the workspace
+        // GET_METADATA/GET_STATE pair here; a live remote still delivering
+        // history bootstrap would otherwise keep incoming nonempty and starve
+        // that read, so the chrome never projects and New Window stays refused.
+        // Consume EOF only once the queue is idle, so already-received frames
+        // still drain before disconnect.
+        try host.stageOutgoing();
         delta.workspace_changed = host.workspace_changed;
         delta.metadata_changed = host.metadata_changed or host.workspace_changed;
         host.metadata_changed = false;
@@ -1872,9 +1875,11 @@ pub const Host = struct {
         // fails. Retiring this connection clears both queues and prevents any
         // caller from replaying the retained FFI prefix after allocator recovery.
         errdefer host.disconnect();
-        if (host.bridge.incoming.takeDisconnect() != null) {
-            host.disconnect();
-            return error.Protocol;
+        if (!host.bridge.incoming.hasPending()) {
+            if (host.bridge.incoming.takeDisconnect() != null) {
+                host.disconnect();
+                return error.Protocol;
+            }
         }
         if (host.disconnected) return error.InvalidState;
         const count = c.phux_client_outgoing_count(host.client);
@@ -2680,6 +2685,28 @@ test "replacement session admits one terminal after sixteen old replicas" {
     try std.testing.expect(delta.ready_published);
     try std.testing.expectEqual(@as(usize, 1), host.terminals.items.len);
     try std.testing.expect(host.terminalKnown(phuxRef(replacement)));
+}
+
+test "attach flushes workspace initial read while later incoming frames remain" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try host.start("workspace-flush");
+    try test_support.stageFixture(&bridge, "hello.bin");
+    _ = try host.drainReadiness();
+    try host.attachSessionId(1, .{ .cols = 80, .rows = 24 });
+    try test_support.stageFixture(&bridge, "attached.bin");
+    const attached_frames = bridge.incoming.pendingCount();
+    // Leftover bootstrap, as a live remote still delivering history.
+    try std.testing.expect(bridge.incoming.stage(&[_]u8{ 0, 0, 0, 1, 0 }));
+    const delta = try host.drainReadinessBudget(attached_frames);
+    try std.testing.expect(delta.ready_published);
+    try std.testing.expect(bridge.incoming.hasPending());
+    try std.testing.expect(bridge.outgoing.hasPending());
+    try std.testing.expectEqual(.unavailable, host.workspaceSnapshot().state);
+    const leftover = bridge.incoming.take().?;
+    bridge.incoming.release(leftover);
 }
 
 test "same-session reconnect replaces one of sixteen replicas before admitting new effects" {
