@@ -104,7 +104,13 @@ pub const Plan = struct {
         const command_budget = prologue + command_envelope - @min(command_envelope, held_commands);
         const text_reserve = widget_text_reserve + remaining.full * self.full_text_share + remaining.degraded * self.degraded_text_share + self.unused_text;
         const path_reserve = widget_path_reserve + remaining.full * self.full_path_share + remaining.degraded * self.degraded_path_share + self.unused_paths;
-        const cell_reserve = remaining.full * full_cells + remaining.degraded * self.degraded_cell_share + self.unused_cells;
+        // Unused leftover is held so a later thumbnail cannot spend the
+        // rest of the store. A last (or only) full pane is not a
+        // thumbnail: it keeps that slack. A last degraded pane still holds
+        // it, or leftover after the 24-row cap would paint nearly full.
+        const hold_unused = remaining.full + remaining.degraded > 0 or fidelity == .degraded;
+        const cell_reserve = remaining.full * full_cells + remaining.degraded * self.degraded_cell_share +
+            if (hold_unused) self.unused_cells else 0;
         const this_glyphs = switch (fidelity) {
             .full => self.full_glyph_share,
             .degraded => self.degraded_glyph_share,

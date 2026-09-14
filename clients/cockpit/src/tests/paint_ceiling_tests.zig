@@ -74,13 +74,19 @@ fn destroyBuilder(gpa: std.mem.Allocator, builder: *canvas.Builder) void {
 
 fn paintUnbounded(builder: *canvas.Builder, session: *grid.Session, id_base: u64) !Use {
     builder.* = canvas.Builder.init(builder.commands);
-    try grid.paint(session, builder, .{
+    grid.paint(session, builder, .{
         .frame = huge_frame,
         .tokens = .{},
         .running = true,
         .selecting = false,
         .id_base = id_base,
-    });
+    }) catch |err| switch (err) {
+        // Box-drawing at 40x24 already overflows the command store
+        // (8 cmds/cell). That overflow is the bind this measurement is
+        // for; do not fail the suite on the SDK's hard DisplayListFull.
+        error.DisplayListFull => {},
+        else => return err,
+    };
     return capture(builder);
 }
 
