@@ -402,16 +402,11 @@ fn apply_swap(
 
 /// Remove `target`, refusing to close the workspace's final pane.
 fn apply_close(workspace: &mut Workspace, target: &ResourceId) -> Result<(), LayoutOpsError> {
-    if pane_count(workspace) == 1 {
-        return Err(LayoutOpsError::LastPane);
-    }
-    let index = require_window(workspace, target)?;
-    let tree = window_tree(workspace, index, target)?;
-    workspace.windows[index].state.tree = kill_pane(tree, target)?;
-    repair_focus(&mut workspace.windows[index].state);
-    workspace.active = index;
-    workspace.prune_empty_windows();
-    Ok(())
+    workspace.close_pane(target).map_err(|err| match err {
+        LayoutError::LastPane => LayoutOpsError::LastPane,
+        LayoutError::PaneNotInLayout(id) => LayoutOpsError::ForeignTarget(id),
+        err @ LayoutError::InvalidRatio(_) => LayoutOpsError::Layout(err),
+    })
 }
 
 fn apply_move(
@@ -509,15 +504,6 @@ fn find_window(workspace: &Workspace, target: &ResourceId) -> Option<usize> {
             .as_ref()
             .is_some_and(|tree| leaves(tree).contains(target))
     })
-}
-
-fn pane_count(workspace: &Workspace) -> usize {
-    workspace
-        .windows
-        .iter()
-        .filter_map(|window| window.state.tree.as_ref())
-        .map(|tree| leaves(tree).len())
-        .sum()
 }
 
 fn repair_focus(state: &mut crate::layout::LayoutState) {

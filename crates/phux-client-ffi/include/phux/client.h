@@ -881,7 +881,8 @@ typedef struct PhuxWorkspaceMutation {
     uint64_t expected_revision;
     uint32_t session_id;
     /* add=1, split=2, remove presentation=3, reorder=4, resize=5, rename=6,
-     * remove entire window presentation=7. Neither removal kills terminals. */
+     * remove entire window presentation=7. Neither removal kills terminals.
+     * Kind 3 refuses the last pane, repairs focus, and prunes empty windows. */
     uint32_t kind;
     uint8_t window_id[16];
     /* add: terminal_id seeds a Rust-minted ID (window_id ignored).

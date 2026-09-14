@@ -148,12 +148,12 @@ pub enum LayoutError {
     /// The requested split ratio is outside `(0.0, 1.0)`, or is NaN.
     #[error("invalid split ratio: {0}")]
     InvalidRatio(f32),
-    /// The tree has only one leaf — [`kill_pane`] would empty it.
+    /// Closing this pane would leave the workspace with no panes.
     ///
-    /// The function returns `Ok(None)` in this case (the empty tree).
-    /// This variant exists so the proptest port can keep parity with
-    /// the core surface but is not emitted by the implementation.
-    #[error("cannot kill the last pane in the layout")]
+    /// [`Workspace::close_pane`] returns this instead of producing an
+    /// unencodable empty layout. Tree-level [`kill_pane`] still returns
+    /// `Ok(None)` when a window's last leaf is removed.
+    #[error("cannot close the final pane in a persisted layout")]
     LastPane,
 }
 
@@ -392,6 +392,43 @@ impl Workspace {
         true
     }
 
+    /// Remove `target`, refusing to close the workspace's final pane.
+    ///
+    /// A one-pane window is pruned after the leaf is removed. Focus stays
+    /// on a surviving leaf of the affected window when it is still live,
+    /// otherwise it moves to the first remaining leaf. `active` follows
+    /// that window, or its post-prune successor.
+    ///
+    /// # Errors
+    /// * [`LayoutError::LastPane`] if `target` is the only remaining pane.
+    /// * [`LayoutError::PaneNotInLayout`] if `target` is not in any window.
+    pub fn close_pane(&mut self, target: &ResourceId) -> Result<(), LayoutError> {
+        if pane_count(self) == 1 {
+            return Err(LayoutError::LastPane);
+        }
+        let index = self
+            .windows
+            .iter()
+            .position(|window| {
+                window
+                    .state
+                    .tree
+                    .as_ref()
+                    .is_some_and(|tree| leaves(tree).contains(target))
+            })
+            .ok_or_else(|| LayoutError::PaneNotInLayout(target.clone()))?;
+        let tree = self.windows[index]
+            .state
+            .tree
+            .as_ref()
+            .ok_or_else(|| LayoutError::PaneNotInLayout(target.clone()))?;
+        self.windows[index].state.tree = kill_pane(tree, target)?;
+        repair_focus(&mut self.windows[index].state);
+        self.active = index;
+        self.prune_empty_windows();
+        Ok(())
+    }
+
     /// Switch focus to the next window (wraps).
     pub const fn next(&mut self) {
         if !self.windows.is_empty() {
@@ -553,6 +590,27 @@ impl Workspace {
             Err(LayoutDecodeError::NonTerminalLeaf(leaf))
         })
     }
+}
+
+fn pane_count(workspace: &Workspace) -> usize {
+    workspace
+        .windows
+        .iter()
+        .filter_map(|window| window.state.tree.as_ref())
+        .map(|tree| leaves(tree).len())
+        .sum()
+}
+
+fn repair_focus(state: &mut LayoutState) {
+    state.focus = state.tree.as_ref().and_then(|tree| {
+        let panes = leaves(tree);
+        state
+            .focus
+            .as_ref()
+            .filter(|focus| panes.contains(focus))
+            .cloned()
+            .or_else(|| panes.into_iter().next())
+    });
 }
 
 // -----------------------------------------------------------------------------
@@ -1344,6 +1402,55 @@ mod tests {
         assert_eq!(ws.windows.len(), 2);
         // "2" died; the survivor that took its slot is "3".
         assert_eq!(ws.windows[ws.active].name, "3");
+    }
+
+    #[test]
+    fn close_pane_refuses_the_last_pane_without_mutation() {
+        let mut ws = Workspace::single(t(1));
+        let original = ws.clone();
+        assert!(matches!(ws.close_pane(&t(1)), Err(LayoutError::LastPane)));
+        assert_eq!(ws, original);
+    }
+
+    #[test]
+    fn close_pane_refuses_a_foreign_target_without_mutation() {
+        let mut ws = ws3();
+        let original = ws.clone();
+        assert!(matches!(
+            ws.close_pane(&t(99)),
+            Err(LayoutError::PaneNotInLayout(id)) if id == t(99)
+        ));
+        assert_eq!(ws, original);
+    }
+
+    #[test]
+    fn close_pane_repairs_focus_onto_the_first_surviving_leaf() {
+        let mut ws = ws_split(1, 2, 2);
+        ws.close_pane(&t(2)).unwrap();
+        assert_eq!(ws.windows.len(), 1);
+        assert_eq!(
+            leaves(ws.windows[0].state.tree.as_ref().unwrap()),
+            vec![t(1)]
+        );
+        assert_eq!(ws.windows[0].state.focus, Some(t(1)));
+        assert_eq!(ws.active, 0);
+    }
+
+    #[test]
+    fn close_pane_prunes_an_emptied_window_and_keeps_a_survivor() {
+        let mut ws = ws3();
+        ws.select(0);
+        ws.close_pane(&t(2)).unwrap();
+        assert_eq!(ws.windows.len(), 2);
+        assert_eq!(ws.windows[0].name, "1");
+        assert_eq!(ws.windows[1].name, "3");
+        assert_eq!(ws.windows[0].state.focus, Some(t(1)));
+        assert_eq!(ws.windows[1].state.focus, Some(t(3)));
+        assert_eq!(ws.active, 1);
+        assert_eq!(
+            leaves(ws.windows[1].state.tree.as_ref().unwrap()),
+            vec![t(3)]
+        );
     }
 
     // -------------------------------------------------------------------------

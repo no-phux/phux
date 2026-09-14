@@ -720,7 +720,7 @@ fn abi_null_version_size_and_disconnect() {
 }
 
 #[test]
-fn add_reorder_remove_last_and_fallback_split_roundtrip() {
+fn add_reorder_remove_and_last_pane_is_refused() {
     let mut client = harness();
     let mut split = edit(&client, 1, 2);
     split.terminal_id = terminal_id_out(&ResourceId::local(1));
@@ -739,13 +739,23 @@ fn add_reorder_remove_last_and_fallback_split_roundtrip() {
     mutate(&mut client, &reorder);
     assert_eq!(client.inner.workspace.topology.windows[1].id, original);
     assert_eq!(client.inner.workspace.topology.active, 1);
-    for (request, id) in [(4, 3), (5, 1), (6, 2)] {
+    for (request, id) in [(4, 3), (5, 1)] {
         let mut remove = edit(&client, request, 3);
         remove.terminal_id = terminal_id_out(&ResourceId::local(id));
         mutate(&mut client, &remove);
     }
-    assert!(client.inner.workspace.topology.windows.is_empty());
-    assert_eq!(client.inner.workspace.state, 2);
+    assert_eq!(client.inner.workspace.topology.windows.len(), 1);
+    let queued = client.inner.outgoing.len();
+    let before = client.inner.workspace.topology.clone();
+    let mut last = edit(&client, 6, 3);
+    last.terminal_id = terminal_id_out(&ResourceId::local(2));
+    // SAFETY: live disjoint client and input; last pane must refuse.
+    assert_eq!(
+        unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const last) },
+        PhuxClientResult::InvalidArgument
+    );
+    assert_eq!(client.inner.outgoing.len(), queued);
+    assert_eq!(client.inner.workspace.topology, before);
     refresh(
         &mut client,
         7,
@@ -754,6 +764,78 @@ fn add_reorder_remove_last_and_fallback_split_roundtrip() {
     );
     assert!(client.inner.workspace.topology.windows.is_empty());
     assert_eq!(client.inner.workspace.catalog.terminals.len(), 4);
+}
+
+#[test]
+fn last_pane_close_is_refused_without_queueing() {
+    let mut client = harness();
+    refresh(
+        &mut client,
+        1,
+        registry(1, false),
+        Some(
+            Workspace::single(ResourceId::local(1))
+                .encode_cbor()
+                .unwrap(),
+        ),
+    );
+    let before = client.inner.workspace.topology.clone();
+    let queued = client.inner.outgoing.len();
+    let mut remove = edit(&client, 2, 3);
+    remove.terminal_id = terminal_id_out(&ResourceId::local(1));
+    // SAFETY: live disjoint client and input; last pane must refuse.
+    assert_eq!(
+        unsafe { phux_client_workspace_mutate(&raw mut *client, &raw const remove) },
+        PhuxClientResult::InvalidArgument
+    );
+    assert_eq!(client.inner.outgoing.len(), queued);
+    assert_eq!(client.inner.workspace.topology, before);
+}
+
+#[test]
+fn close_repairs_focus_onto_surviving_leaf() {
+    let mut client = harness();
+    refresh(
+        &mut client,
+        1,
+        registry(1, true),
+        Some(split_workspace().encode_cbor().unwrap()),
+    );
+    let mut remove = edit(&client, 2, 3);
+    remove.terminal_id = terminal_id_out(&ResourceId::local(2));
+    mutate(&mut client, &remove);
+    assert_eq!(client.inner.workspace.topology.windows.len(), 1);
+    assert_eq!(
+        client.inner.workspace.topology.windows[0].state.focus,
+        Some(ResourceId::local(1))
+    );
+    assert_eq!(
+        layout::leaves(
+            client.inner.workspace.topology.windows[0]
+                .state
+                .tree
+                .as_ref()
+                .unwrap()
+        ),
+        vec![ResourceId::local(1)]
+    );
+}
+
+#[test]
+fn close_prunes_empty_window_and_keeps_survivor_focus() {
+    let mut client = harness();
+    assert_eq!(client.inner.workspace.topology.windows.len(), 2);
+    let survivor = client.inner.workspace.topology.windows[1].id;
+    let mut remove = edit(&client, 1, 3);
+    remove.terminal_id = terminal_id_out(&ResourceId::local(1));
+    mutate(&mut client, &remove);
+    assert_eq!(client.inner.workspace.topology.windows.len(), 1);
+    assert_eq!(client.inner.workspace.topology.windows[0].id, survivor);
+    assert_eq!(
+        client.inner.workspace.topology.windows[0].state.focus,
+        Some(ResourceId::local(2))
+    );
+    assert_eq!(client.inner.workspace.topology.active, 0);
 }
 
 #[test]
