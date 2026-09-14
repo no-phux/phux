@@ -40,13 +40,13 @@ pub(crate) use self::session::{
     prepare_for_launch,
 };
 
-#[derive(Debug, clap::Subcommand)]
+#[derive(Debug, usage::Subcommands)]
 pub(crate) enum AgentAction {
     /// List every pane's detected or declared agent and current state.
-    #[command(visible_alias = "ls")]
+    #[usage(alias = "ls")]
     List {
         /// Emit machine-readable JSON instead of the table.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
     /// Show inferred state for one pane.
@@ -55,7 +55,7 @@ pub(crate) enum AgentAction {
         /// pane.
         target: Option<String>,
         /// Emit machine-readable JSON instead of the table.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
     /// Explain the evidence behind one pane's state.
@@ -75,24 +75,24 @@ pub(crate) enum AgentAction {
         /// pane. Not used in offline (`--file`) mode.
         target: Option<String>,
         /// Emit machine-readable JSON instead of the table.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
         /// Evaluate a captured screen offline instead of querying the
         /// server. `-` reads stdin.
-        #[arg(long, value_name = "PATH", conflicts_with = "target")]
+        #[usage(long, value_name = "PATH", conflicts("target"))]
         file: Option<PathBuf>,
         /// Agent kind whose manifest to evaluate, or one of its binary
         /// aliases. Required with `--file`: offline there is no foreground
         /// process group to identify the agent from.
-        #[arg(long, value_name = "KIND", requires = "file")]
+        #[usage(long, value_name = "KIND", requires("--file"))]
         kind: Option<String>,
         /// OSC 0/2 title to evaluate `title`-scoped rules against. Captures
         /// do not carry one, so it defaults to empty.
-        #[arg(long, value_name = "TEXT", requires = "file")]
+        #[usage(long, value_name = "TEXT", requires("--file"))]
         title: Option<String>,
         /// How to read `--file`. `auto` picks JSON when the first
         /// non-whitespace byte is `{`.
-        #[arg(long, value_parser = ["auto", "json", "text"], requires = "file")]
+        #[usage(long, choices("auto", "json", "text"), requires("--file"))]
         format: Option<String>,
     },
     /// Declare the agent identity and state associated with a pane.
@@ -101,19 +101,19 @@ pub(crate) enum AgentAction {
         /// pane.
         target: Option<String>,
         /// Human-facing agent name (required, non-empty).
-        #[arg(long)]
+        #[usage(long)]
         name: String,
         /// Open-vocabulary kind slug, e.g. "claude" or "codex".
-        #[arg(long)]
+        #[usage(long)]
         kind: Option<String>,
         /// Declared lifecycle state.
-        #[arg(long, value_parser = ["unknown", "idle", "working", "blocked", "done"])]
+        #[usage(long, choices("unknown", "idle", "working", "blocked", "done"))]
         state: Option<String>,
         /// Declared attention priority (defaults derive from state).
-        #[arg(long, value_parser = ["none", "low", "normal", "high"])]
+        #[usage(long, choices("none", "low", "normal", "high"))]
         attention: Option<String>,
         /// Free-form association label (fleet/job name).
-        #[arg(long)]
+        #[usage(long)]
         session: Option<String>,
     },
     /// Report hook-sourced lifecycle evidence to the pane's detector.
@@ -121,7 +121,7 @@ pub(crate) enum AgentAction {
         /// Target selector (resolves to one pane).
         target: String,
         /// Lifecycle evidence from the integration hook.
-        #[arg(value_parser = ["working", "blocked", "done"])]
+        #[usage(choices("working", "blocked", "done"))]
         state: String,
     },
     /// Block until a pane's agent TRANSITIONS into a lifecycle state.
@@ -145,23 +145,27 @@ pub(crate) enum AgentAction {
     Wait {
         /// Target selector (resolves to one pane). Omit for the focused
         /// pane.
-        #[arg(conflicts_with = "any")]
+        #[usage(conflicts("--any"))]
         target: Option<String>,
         /// Wait for the first matching transition from any local agent in
         /// the fleet instead of resolving one pane.
-        #[arg(long)]
+        #[usage(long)]
         any: bool,
         /// Lifecycle state to wait for; repeat to OR several. Defaults to
         /// `idle`, `blocked`, `done` — the three ways a turn ends.
         /// `unknown` is not spellable: it is departure, not a state.
-        #[arg(long, value_name = "STATE", value_parser = ["idle", "working", "blocked", "done"])]
+        #[usage(
+            long,
+            value_name = "STATE",
+            choices("idle", "working", "blocked", "done")
+        )]
         until: Vec<String>,
         /// Give up after this many seconds and exit 124. Unbounded when
         /// omitted, matching `phux wait` — always pass one in a script.
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
         /// Emit the machine-readable result document instead of a line.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
     /// Hand an agent a turn's worth of work, with a delivery receipt.
@@ -197,26 +201,30 @@ pub(crate) enum AgentAction {
         /// separate submission and no client can observe that mode.
         text: String,
         /// Require the pane's declared agent name to be this one.
-        #[arg(long, value_name = "NAME")]
+        #[usage(long, value_name = "NAME")]
         expect_agent: Option<String>,
         /// Require the pane's declared agent kind slug to be this one.
-        #[arg(long, value_name = "KIND")]
+        #[usage(long, value_name = "KIND")]
         expect_kind: Option<String>,
         /// After delivering, block until the agent transitions into a
         /// lifecycle state.
-        #[arg(long)]
+        #[usage(long)]
         wait: bool,
         /// Lifecycle state to wait for; repeat to OR several. Defaults to
         /// `idle`, `blocked`, `done`. Requires `--wait`.
-        #[arg(long, value_name = "STATE", value_parser = ["idle", "working", "blocked", "done"])]
+        #[usage(
+            long,
+            value_name = "STATE",
+            choices("idle", "working", "blocked", "done")
+        )]
         until: Vec<String>,
         /// Give up waiting after this many seconds and exit 124. The prompt
         /// was still delivered. Requires `--wait`.
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
         /// Emit the machine-readable result document instead of staying
         /// quiet on success.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
     /// Send keys to a pane, but only if it still hosts the expected agent.
@@ -240,16 +248,16 @@ pub(crate) enum AgentAction {
         /// Key specs: named keys (`Enter`, `C-c`, `M-x`, `Up`) or literal
         /// text. A literal run immediately before `Enter` is sent as one
         /// submission-safe paste.
-        #[arg(required = true)]
+        #[usage(required)]
         keys: Vec<String>,
         /// Require the pane's declared agent name to be this one.
-        #[arg(long, value_name = "NAME")]
+        #[usage(long, value_name = "NAME")]
         expect_agent: Option<String>,
         /// Require the pane's declared agent kind slug to be this one.
-        #[arg(long, value_name = "KIND")]
+        #[usage(long, value_name = "KIND")]
         expect_kind: Option<String>,
         /// Emit machine-readable JSON instead of staying quiet on success.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
     /// Answer a pane's pending agent question by validated choice.
@@ -275,20 +283,20 @@ pub(crate) enum AgentAction {
         /// event. Required: answering "whatever is being asked right now" is
         /// a level read, and a level read cannot tell one question from the
         /// next.
-        #[arg(long, value_name = "ID")]
+        #[usage(long, value_name = "ID")]
         id: String,
         /// Send the Nth published suggestion, 1-based, verbatim.
-        #[arg(long, value_name = "N", conflicts_with = "text")]
+        #[usage(long, value_name = "N", conflicts("--text"))]
         choice: Option<usize>,
         /// Send exactly this text. Refused when the ask published a
         /// suggestion set and this is not in it (see `--allow-unlisted`).
-        #[arg(long, value_name = "TEXT")]
+        #[usage(long, value_name = "TEXT")]
         text: Option<String>,
         /// Permit a `--text` answer outside the ask's published suggestions.
-        #[arg(long, requires = "text")]
+        #[usage(long, requires("--text"))]
         allow_unlisted: bool,
         /// Emit machine-readable JSON instead of the one-line confirmation.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
     /// Start an agent INSIDE an existing shell pane, and return when it is
@@ -323,34 +331,34 @@ pub(crate) enum AgentAction {
         /// Detection-manifest kind the started agent must identify as
         /// (`claude`, `codex`, ...). `phux agent explain --file` lists the
         /// loaded roster.
-        #[arg(long, value_name = "KIND")]
+        #[usage(long, value_name = "KIND")]
         kind: String,
         /// Existing pane to start into. Never created, split, or moved.
-        #[arg(long, value_name = "TARGET")]
+        #[usage(long, value_name = "TARGET")]
         target: String,
         /// Launch integration id. Defaults to the unique enabled
         /// integration whose `[agent_identity] kind` matches `--kind`
         /// (so `--kind claude` resolves `claude-code`), else the kind
         /// slug itself; two claimants are refused by name.
-        #[arg(long, value_name = "ID")]
+        #[usage(long, value_name = "ID")]
         integration: Option<String>,
         /// Give up waiting for readiness after this many seconds and exit
         /// 124. The command was still typed.
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
         /// Submit and return without claiming readiness (exit 0,
         /// `ready: false`).
-        #[arg(long)]
+        #[usage(long)]
         no_wait: bool,
         /// Skip the available-shell precondition. Types the launch command
         /// into the pane whatever is running there.
-        #[arg(long)]
+        #[usage(long)]
         force: bool,
         /// Emit the machine-readable result document instead of a line.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
         /// Extra arguments appended to the integration's launch command.
-        #[arg(last = true, value_name = "ARGS")]
+        #[usage(trailing_var_arg, value_name = "ARGS")]
         args: Vec<String>,
     },
     /// Clear a pane's declared agent identity.
@@ -367,7 +375,7 @@ pub(crate) enum AgentAction {
     /// the pane closes it, closing it never touches the pane. Needs a server
     /// that advertises `RESOURCE_KINDS` (`phux status --json`).
     Session {
-        #[command(subcommand)]
+        #[usage(subcommand)]
         action: resource_session::SessionAction,
     },
     /// Append one record to a pane's agent session.
@@ -393,14 +401,14 @@ pub(crate) enum AgentAction {
         // clap `value_parser` here beat it to the answer with a usage error
         // on stderr, which is the one shape an agent harness cannot parse
         // alongside the other four refusals of the same verb.
-        #[arg(long = "type", value_name = "T")]
+        #[usage(long = "type", value_name = "T")]
         event_type: String,
         /// Record payload: a JSON object inline, or `-` to read it from
         /// stdin. `{}` when omitted.
-        #[arg(long, value_name = "JSON")]
+        #[usage(long, value_name = "JSON")]
         data: Option<String>,
         /// Emit the stamped record header as JSON instead of staying quiet.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
     /// Read a pane's agent session stream.
@@ -414,23 +422,23 @@ pub(crate) enum AgentAction {
         /// The session: its resource id, the pane hosting it, or `%name`.
         target: String,
         /// Keep streaming live records after the retained ones.
-        #[arg(long)]
+        #[usage(long)]
         follow: bool,
         /// Return only the last N retained records.
-        #[arg(long, value_name = "N")]
+        #[usage(long, value_name = "N")]
         tail: Option<usize>,
         /// Emit JSON: one envelope document, or under `--follow` one record
         /// per line with no envelope (the `watch --json` rule).
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
     /// Make plain `claude` launch inside phux and declare its identity.
     InstallClaude {
         /// Shell rc file to activate (auto-detected from SHELL).
-        #[arg(long, value_parser = ["zsh", "bash", "fish"])]
+        #[usage(long, choices("zsh", "bash", "fish"))]
         shell: Option<String>,
         /// Absolute path to the real Claude executable (auto-detected from PATH).
-        #[arg(long, value_name = "PATH")]
+        #[usage(long, value_name = "PATH")]
         real: Option<PathBuf>,
     },
     /// Remove the claude-in-phux shim and shell activation.
@@ -439,7 +447,7 @@ pub(crate) enum AgentAction {
     /// fields the generated shim splices into its `phux` calls, as one line
     /// of shell-safe tokens. Hidden because it is the wrapper's JSON reader,
     /// not a promise that phux ships a JSON tool.
-    #[command(name = "hook-payload", hide = true)]
+    #[usage(name = "hook-payload", hide)]
     HookPayload,
 }
 

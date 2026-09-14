@@ -11,10 +11,10 @@ use super::source::Install;
 pub(crate) const CHANNEL_FILE: &str = ".phux-channel";
 
 /// The two rails `phux update` follows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, usage::ValueEnum)]
 pub(crate) enum Channel {
     /// `vX.Y.Z` GitHub releases and `releases/latest`.
-    #[value(alias = "latest")]
+    #[usage(alias = "latest")]
     Stable,
     /// Moving prerelease of green `main`.
     Next,

@@ -57,10 +57,9 @@ phux-relay.workspace = true
 # no agg/vhs/ffmpeg at runtime). Workspace crate; the only third-party rows it
 # adds to the lockfile are `gif` and its single dependency `weezl`.
 phux-record.workspace = true
-clap.workspace = true
-# `phux completion <shell>` generates the completion script from the same
-# clap tree the binary already parses with, so the two can never drift.
-clap_complete.workspace = true
+# Same declaration drives parse, help, completions, and the generated
+# CLI reference. Aliased as `usage` per the crate's own docs.
+usage.workspace = true
 # `phux pair --qr` renders the pairing connect-link as a scannable terminal QR.
 qrcode.workspace = true
 dhat = { workspace = true, optional = true }

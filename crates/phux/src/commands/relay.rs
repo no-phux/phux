@@ -10,10 +10,10 @@
 use std::net::SocketAddr;
 use std::process::ExitCode;
 
-use clap::Subcommand;
+use usage::Subcommands;
 
 /// `phux relay <action>` — serve the relay or enroll a route.
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum RelayAction {
     /// Run the relay in the foreground.
     ///
@@ -29,17 +29,17 @@ pub(crate) enum RelayAction {
         /// Address the relay's QUIC endpoint binds (e.g. `0.0.0.0:4433`).
         /// Always explicit — there is no default listen address, so
         /// exposing the relay requires typing where.
-        #[arg(long, value_name = "HOST:PORT")]
+        #[usage(long, value_name = "HOST:PORT")]
         listen: SocketAddr,
 
         /// Maximum concurrent connections, tunnels and consumers
         /// combined. An over-cap connection is refused after its
         /// handshake completes; existing connections are unaffected.
-        #[arg(
+        #[usage(
             long,
             value_name = "N",
-            default_value_t = phux_relay::DEFAULT_MAX_CONNS,
-            value_parser = parse_max_conns
+            default = "64", default_value_t = phux_relay::DEFAULT_MAX_CONNS,
+            validate = "int(value) >= 1", validate_error = "must be at least 1"
         )]
         max_conns: usize,
     },
@@ -62,7 +62,7 @@ pub(crate) enum RelayAction {
         /// label: `[a-z0-9-]`, at most 63 characters, no leading or
         /// trailing hyphen. Anything else is rejected, never
         /// normalized.
-        #[arg(long, value_name = "NAME")]
+        #[usage(long, value_name = "NAME")]
         route: String,
     },
 }
@@ -76,6 +76,7 @@ pub(crate) fn run_relay(action: RelayAction) -> ExitCode {
 }
 
 /// Validate `--max-conns` as a positive connection cap.
+#[cfg(test)]
 fn parse_max_conns(value: &str) -> Result<usize, String> {
     let conns: usize = value
         .parse()

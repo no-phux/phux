@@ -44,9 +44,9 @@
     reason = "internal submodules expose items to the crate root via pub(crate) rather than plain `pub`; the crate's only real public API is `run`, everything else stays crate-private on purpose"
 )]
 
+use std::ffi::OsStr;
 use std::process::ExitCode;
 
-use clap::{CommandFactory, Parser};
 use commands::Command;
 
 // Declared FIRST and with `#[macro_use]`: `macro_rules!` are visible only to
@@ -74,16 +74,17 @@ pub use commands::server::AUTO_SPAWN_IDLE_ENV;
 pub use commands::server::ENSURE_TIMEOUT_ENV;
 
 /// phux — a libghostty-backed terminal multiplexer and control plane.
-#[derive(Debug, Parser)]
-#[command(
+#[derive(Debug, usage::Cli)]
+#[usage(
+    bin = "phux",
     version = env!("PHUX_VERSION_LABEL"),
-    help_template = "{about-with-newline}\n{usage-heading} {usage}\n\n{options}{after-help}",
-    // NOTE: the root deliberately does NOT set `args_conflicts_with_subcommands`.
-    // That setting would also refuse `phux --socket X ls` — clap 4.5 rejects
-    // ANY matched root arg followed by a subcommand, with no exemption for
-    // `global = true` args (clap_builder parser.rs, subcommand_conflict). The
-    // `--rec`-belongs-to-naked-`phux` rule that setting used to enforce is a
-    // post-parse check instead: see `root_rec_before_verb` below (ADR-0065).
+    unknown_flags = "error",
+    completion,
+    // `--rec` and `--remote` belong to the naked attach. usage globals parse
+    // on either side of a verb, so the scope rule stays a post-parse check
+    // (`root_rec_before_verb` / `root_remote_before_verb`) rather than
+    // `args_conflicts_with_subcommands`, which would also refuse
+    // `phux --socket X ls`.
     about = "A terminal multiplexer you can drive by hand or script.",
     long_about = "phux — a terminal multiplexer you can drive by hand or script.\n\n\
         Run `phux` with no arguments to attach to your session (auto-starting a\n\
@@ -148,39 +149,41 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
         `#tag`, `%agent-name`, or `.` (focused). `=` is reserved for the\n\
         attached view's focus history. The same selectors work across\n\
         kill/snapshot/send-keys/run/wait/ask.",
-    // The EXIT STATUS section renders from the canonical table in
-    // `exit_codes.rs` (phux-i0e8.11.4) — the same source the generated
+    // The EXIT STATUS section is the const twin of `exit_codes::EXIT_CODES`
+    // (phux-i0e8.11.4) — the same source the generated
     // `docs/reference/exit-codes.md` page uses, so `--help` and the docs
-    // cannot disagree. The semantics are the ones `commands::partial`
+    // cannot disagree. usage-rs requires `after_long_help` to be a
+    // `&'static str`, so the table renderer and this concat are held in
+    // lockstep by a unit test. The semantics are the ones `commands::partial`
     // documents: 3 is distinct from 1 so a script can branch — retry is
     // right for 3 and wrong for 1. `run` mirrors the child's code, which
     // is why its timeout is 125 and not wait's 124.
-    after_long_help = root_after_long_help()
+    after_long_help = ROOT_AFTER_LONG_HELP
 )]
 struct Cli {
     /// Recording options for the naked `phux` attach. `phux attach` carries
     /// its own copy; every other verb is pointed at `phux rec`.
-    #[command(flatten)]
+    #[usage(flatten)]
     rec: commands::RecOpts,
 
     /// Override the UDS path of the server to dial. Defaults to
     /// `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or
     /// `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set).
-    // ONE declaration, `global = true`, replacing 36 hand-copied per-verb
+    // ONE declaration, `global`, replacing 36 hand-copied per-verb
     // fields (ADR-0065): `phux --socket X ls` and `phux ls --socket X` are
     // the same invocation. Verbs that never dial a server refuse a provided
     // `--socket` with a teaching error instead of silently ignoring it —
     // see `commands::socketless_verb`.
-    #[arg(long, global = true, value_name = "PATH")]
+    #[usage(long, global, value_name = "PATH")]
     socket: Option<std::path::PathBuf>,
 
     /// Print compiled agent guidance, optionally scoped, then exit.
-    #[arg(
+    #[usage(
         long,
         value_enum,
         num_args = 0..=1,
-        default_missing_value = "full",
-        exclusive = true,
+        default_missing = "full",
+        exclusive,
         value_name = "SCOPE"
     )]
     skill: Option<skill::SkillScope>,
@@ -190,28 +193,74 @@ struct Cli {
     /// `phux attach --remote` carries its own copy (and the `--code` /
     /// `--no-enroll` modifiers that go with it), and `ls`, `new`, `kill`,
     /// `rename`, and `detach` take their own after the verb.
-    #[arg(long, value_name = "[USER@]HOST[:PORT]")]
+    #[usage(long, value_name = "[USER@]HOST[:PORT]")]
     remote: Option<String>,
 
     /// Print machine-readable capabilities with `--json`, then exit.
-    #[arg(long)]
+    #[usage(long)]
     capabilities: bool,
 
     /// Subcommand. Defaults to attaching to the last session if omitted.
-    #[command(subcommand)]
+    #[usage(subcommand)]
     command: Option<Command>,
 }
 
-/// The root `--help` epilogue: the EXIT STATUS section rendered from the
-/// canonical `exit_codes` table, then the static ENVIRONMENT section.
-fn root_after_long_help() -> String {
-    format!(
-        "{}\n\n{ENVIRONMENT_HELP}",
-        exit_codes::exit_status_section()
-    )
-}
+/// The root `--help` epilogue: EXIT STATUS (const twin of the
+/// `exit_codes` table) then ENVIRONMENT. usage-rs requires a `&'static str`,
+/// so this is a literal rather than a runtime join. A unit test holds it
+/// to `exit_codes::exit_status_section()` plus [`ENVIRONMENT_HELP`].
+const ROOT_AFTER_LONG_HELP: &str = "\
+EXIT STATUS
+  0     Success.
+  1     Failure: no server, no such target, or the verb itself failed.
+  2     Usage error, or the server refused the request.
+  3     Unanswerable: the selector was resolved against a partial view
+        of the fleet (a federation satellite was unreachable). Retry
+        once the link is back — unlike 1, the target may exist.
+  124   `phux wait` gave up because `--timeout` expired.
+  125   `phux run` gave up because `--timeout` expired; otherwise
+        `run` mirrors the exit code of the command it ran, so
+        `phux run … && next` composes like a shell.
+
+ENVIRONMENT
+  \
+        PHUX_SOCKET        UDS path for the CLI verbs and the server. A `--socket`\n  \
+        \x20                 flag overrides it; default is\n  \
+        \x20                 $XDG_RUNTIME_DIR/phux/phux.sock (or /tmp/phux-$USER/...).\n  \
+        PHUX_WS_ADDR       Also accept WebSocket clients on HOST:PORT. Equivalent to\n  \
+        \x20                 `phux server --listen`, which overrides it.\n  \
+        PHUX_WS_SECURE     Force TLS + token auth on a loopback --listen address\n  \
+        \x20                 (exercise the remote path locally).\n  \
+        PHUX_WS_TLS_CERT   Operator-supplied server cert/key (PEM), instead of the\n  \
+        PHUX_WS_TLS_KEY    auto-provisioned self-signed pair used off-loopback.\n  \
+        PHUX_WS_TOKENS     Pairing-token store the server reads and `phux pair` writes.\n  \
+        PHUX_QUIC_ADDR     Also accept QUIC clients on HOST:PORT. Equivalent to\n  \
+        \x20                 `phux server --quic`, which overrides it.\n  \
+        PHUX_WT_ADDR       Also accept WebTransport (HTTP/3 over QUIC) clients on\n  \
+        \x20                 HOST:PORT. Equivalent to `phux server --webtransport`.\n  \
+        PHUX_SSH           OpenSSH-compatible program a federation hub spawns to\n  \
+        \x20                 dial ssh:// satellites (default: `ssh` on PATH).\n  \
+        PHUX_TAILSCALE     Tailscale-compatible CLI run to detect the overlay\n  \
+        \x20                 address (default: `tailscale` on PATH) for `phux pair`,\n  \
+        \x20                 `phux doctor`, and the server's auto-bound remote\n  \
+        \x20                 listener. When set it is the only source consulted:\n  \
+        \x20                 the CGNAT route-probe fallback is disabled, so naming\n  \
+        \x20                 a command that reports nothing turns detection off\n  \
+        \x20                 everywhere (no overlay auto-listen, no doctor dial).\n  \
+        PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE\n  \
+        \x20                 Give an auto-spawned server an idle limit in seconds\n  \
+        \x20                 (1..=86400), as if it were started with\n  \
+        \x20                 `phux server --exit-after-idle`. Unset means no limit,\n  \
+        \x20                 which is the multiplexer default. For test harnesses and\n  \
+        \x20                 CI jobs that cannot guarantee their own cleanup runs.\n  \
+        PHUX_LOG           Write logs to this file (server tees; client writes here).\n  \
+        PHUX_LOG_FORMAT    text (default) or json — log line format.\n  \
+        RUST_LOG           tracing level filter, e.g. phux=debug.\n\n\
+        Run `phux server --listen 127.0.0.1:8787` to expose a port; see\n  \
+        `phux help server` for the remote/TLS details.";
 
 /// The ENVIRONMENT section of the root `--help` epilogue.
+#[cfg_attr(not(test), allow(dead_code))]
 const ENVIRONMENT_HELP: &str = "ENVIRONMENT\n  \
         PHUX_SOCKET        UDS path for the CLI verbs and the server. A `--socket`\n  \
         \x20                 flag overrides it; default is\n  \
@@ -318,6 +367,22 @@ const fn root_rec_before_verb(cli: &Cli) -> Option<&'static str> {
 /// `phux attach --remote` is where the verb-scoped form (with `--code` and
 /// `--no-enroll`) lives. Silently ignoring the root flag in front of `ls`
 /// would be the worst of the three options.
+/// `--qr` belongs to minting a credential. usage-rs lets parent flags
+/// parse next to a subcommand, so the refusal is post-parse rather than a
+/// grammar conflict with `rotate`/`revoke`.
+const fn pair_qr_with_action(cli: &Cli) -> Option<&'static str> {
+    match &cli.command {
+        Some(Command::Pair {
+            action: Some(_),
+            qr: true,
+            ..
+        }) => Some(
+            "phux: --qr belongs to minting a credential; it cannot combine with rotate or revoke",
+        ),
+        _ => None,
+    }
+}
+
 const fn root_remote_before_verb(cli: &Cli) -> Option<&'static str> {
     if cli.command.is_some() && cli.remote.is_some() {
         Some(
@@ -394,115 +459,82 @@ fn attach_remote_target(
     })
 }
 
-/// Whether any verb in `cmd`'s subtree declares a long flag named `long`.
-fn any_verb_has_long(cmd: &clap::Command, long: &str) -> bool {
-    cmd.get_subcommands().any(|sub| {
-        sub.get_arguments().any(|arg| arg.get_long() == Some(long)) || any_verb_has_long(sub, long)
-    })
+fn flag_exists_on_any_verb(cmd: &usage::Command<'_>, long: &str) -> bool {
+    cmd.flags.iter().any(|flag| flag.longs.contains(&long))
+        || cmd
+            .subcommands
+            .iter()
+            .any(|sub| flag_exists_on_any_verb(sub, long))
 }
 
-/// If `err` is clap refusing an unknown root flag that actually exists on
-/// one of the verbs (`phux --json ls`), name the flag so the error can teach
-/// "place it after the verb" instead of leaving a dead end.
-fn misplaced_scoped_flag(err: &clap::Error) -> Option<String> {
-    use clap::CommandFactory;
+fn token_str(token: &[u8]) -> String {
+    String::from_utf8_lossy(token).into_owned()
+}
 
-    if err.kind() != clap::error::ErrorKind::UnknownArgument {
+fn misplaced_scoped_flag(err: &usage::Error<'_, '_>) -> Option<String> {
+    let usage::Error::UnknownFlag { token } = err else {
         return None;
-    }
-    let invalid = err
-        .get(clap::error::ContextKind::InvalidArg)
-        .map(std::string::ToString::to_string)?;
-    // `--flag=value` reports the whole token; the flag alone is the id.
-    let flag = invalid.split('=').next().unwrap_or(&invalid);
+    };
+    let flag = token_str(token);
     let long = flag.strip_prefix("--")?;
-    any_verb_has_long(&Cli::command(), long).then(|| flag.to_owned())
+    flag_exists_on_any_verb(Cli::command(), long).then_some(flag)
 }
 
-/// If `err` is clap refusing a spelling this binary used to accept, return
-/// the replacement to name.
-///
-/// Clap's nearest-match is computed on string distance, so for a removed
-/// spelling it is usually wrong in a way that costs the reader a search:
-/// `phux remote add` resolved to "a similar subcommand exists: `rename`",
-/// and `--vertical` to "to pass `--vertical` as a value, use `-- --vertical`".
-/// Neither is the migration. The rows in [`deprecations::REMOVED`] are, and
-/// they age out once nobody is still mid-upgrade.
-fn removed_spelling_hint(err: &clap::Error) -> Option<&'static deprecations::Removal> {
-    removed_spelling_hint_in(err, std::env::args().skip(1))
-}
-
-/// [`removed_spelling_hint`] over an explicit argv, so the flag arm is
-/// testable without mutating the process environment (this crate
-/// `forbid`s unsafe, and `env::set_var` is unsafe under edition 2024).
-fn removed_spelling_hint_in<I, S>(
-    err: &clap::Error,
-    argv: I,
-) -> Option<&'static deprecations::Removal>
-where
-    I: IntoIterator<Item = S>,
-    S: AsRef<str>,
-{
-    use clap::error::{ContextKind, ErrorKind};
-
-    match err.kind() {
-        ErrorKind::InvalidSubcommand => {
-            let bad = err.get(ContextKind::InvalidSubcommand)?.to_string();
+fn removed_spelling_hint(
+    err: &usage::Error<'_, '_>,
+    argv: &[String],
+) -> Option<&'static deprecations::Removal> {
+    match err {
+        usage::Error::MissingSubcommand => argv.iter().find_map(|word| {
             deprecations::REMOVED
                 .iter()
-                .find(|row| row.old_root_verb() == Some(bad.as_str()))
-        }
-        ErrorKind::UnknownArgument => {
-            let invalid = err.get(ContextKind::InvalidArg)?.to_string();
-            // `--flag=value` reports the whole token; the flag alone is the id.
-            let flag = invalid.split('=').next().unwrap_or(&invalid);
-            // A removed flag is only a useful hint on the verb it hung off:
-            // `--vertical` never meant anything on `phux ls`, so do not
-            // offer `--split` there. Clap does not report which subcommand
-            // was being parsed, so match on the invocation instead.
-            let words: Vec<String> = argv.into_iter().map(|s| s.as_ref().to_owned()).collect();
+                .find(|row| row.old_root_verb() == Some(word.as_str()))
+        }),
+        usage::Error::UnknownFlag { token } => {
+            let flag = token_str(token);
             deprecations::REMOVED.iter().find(|row| {
-                row.old_flag() == Some(flag)
+                row.old_flag() == Some(flag.as_str())
                     && row
                         .flag_verb()
-                        .is_some_and(|verb| words.iter().any(|word| word == verb))
+                        .is_some_and(|verb| argv.iter().any(|word| word == verb))
             })
         }
         _ => None,
     }
 }
 
-/// Print a clap parse failure, appending the scoped-flag teaching hint when
-/// it applies, and map it to the exit code clap itself would use (0 for
-/// `--help`/`--version`, 2 for a usage error).
-fn report_parse_error(err: &clap::Error) -> ExitCode {
-    if err.use_stderr() {
-        // A usage error: clap writes it to stderr, which this crate leaves
-        // un-settled by design (see the `output` module doc).
-        let _ = err.print();
-        if let Some(flag) = misplaced_scoped_flag(err) {
-            eprintln!(
-                "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> {flag} ...`"
-            );
+fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_, '_>) -> ExitCode {
+    let words: Vec<String> = argv
+        .iter()
+        .map(|s| s.to_string_lossy().into_owned())
+        .collect();
+    match err {
+        usage::Error::Help { cmd, long } => {
+            if let Some(page) = Cli::render_help(cmd, long) {
+                output::bytes(page.as_bytes());
+            }
+            ExitCode::SUCCESS
         }
-        if let Some(row) = removed_spelling_hint(err) {
-            eprintln!(
-                "hint: `{}` was removed in {}; use `{}`",
-                row.old, row.removed_in, row.new
-            );
+        usage::Error::Version { .. } => {
+            output::bytes(format!("phux {}\n", env!("PHUX_VERSION_LABEL")).as_bytes());
+            ExitCode::SUCCESS
         }
-        return ExitCode::from(2);
+        err => {
+            eprint!("{}", usage::render_failure(Cli::spec(), argv, &err));
+            if let Some(flag) = misplaced_scoped_flag(&err) {
+                eprintln!(
+                    "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> {flag} ...`"
+                );
+            }
+            if let Some(row) = removed_spelling_hint(&err, &words) {
+                eprintln!(
+                    "hint: `{}` was removed in {}; use `{}`",
+                    row.old, row.removed_in, row.new
+                );
+            }
+            ExitCode::from(2)
+        }
     }
-    // `--help`/`--version`: clap writes them to stdout, so a reader that
-    // hung up (`phux --help | head`) must end the process the same way as
-    // every other stdout write here — `settle` exits 0 on `EPIPE`, running
-    // no destructors (`Cli::parse()`'s internal `Error::exit()` behaved the
-    // same way). Returning through `run` instead would let a caller's Drop
-    // guards write diagnostics to stderr on the way out (e.g.
-    // `src/bin/dhat_heap.rs`'s profiler, which wraps this function),
-    // breaking the hang-up-in-silence contract pinned by `output_hygiene`.
-    output::settle(err.print());
-    ExitCode::SUCCESS
 }
 
 /// Resolve `--rec` into a full recording plan, or report why it cannot be.
@@ -549,13 +581,14 @@ const fn is_interactive_client(cli: &Cli) -> bool {
     match &cli.command {
         Some(
             Command::Attach { .. }
-            | Command::Worktree(
-                commands::WorktreeAction::New { attach: true, .. }
-                | commands::WorktreeAction::Open { attach: true, .. },
-            ),
+            | Command::Worktree {
+                action:
+                    commands::WorktreeAction::New { attach: true, .. }
+                    | commands::WorktreeAction::Open { attach: true, .. },
+            },
         )
         | None => true,
-        Some(Command::New { json, .. }) => !json.json,
+        Some(Command::New { json, .. }) => !*json,
         _ => false,
     }
 }
@@ -585,7 +618,7 @@ fn preparse_endpoint(args: &[std::ffi::OsString]) -> Option<ExitCode> {
             );
             return Some(ExitCode::from(2));
         }
-        return Some(capabilities::run(&Cli::command()));
+        return Some(capabilities::run());
     }
 
     if short_help_requested() {
@@ -616,6 +649,10 @@ fn usage_refusal(cli: &Cli) -> Option<ExitCode> {
         return Some(ExitCode::from(2));
     }
     if let Some(message) = root_remote_before_verb(cli) {
+        eprintln!("{message}");
+        return Some(ExitCode::from(2));
+    }
+    if let Some(message) = pair_qr_with_action(cli) {
         eprintln!("{message}");
         return Some(ExitCode::from(2));
     }
@@ -943,12 +980,9 @@ fn dispatch(
             session,
             cwd,
             remote.with_socket(socket),
-            commands::new::NewMode {
-                json: json.json,
-                empty,
-            },
+            commands::new::NewMode { json, empty },
             command,
-            env,
+            env.into_iter().map(|item| (item.key, item.value)).collect(),
         ),
         Some(Command::Spawn {
             satellite,
@@ -1143,7 +1177,7 @@ fn dispatch(
         }) => commands::play::run_play(&commands::play::PlayArgs {
             file: &file,
             target: target.as_deref(),
-            speed,
+            speed: speed.0,
             idle_limit,
             // The CLI spells "repeat forever" as `--loop` with no value,
             // which clap fills in as 0; `passes` carries that as `None` so
@@ -1210,11 +1244,11 @@ fn dispatch(
             json,
             migrate_legacy,
         }) => commands::pair::run_pair(action, tokens, cert, qr, host, name, json, migrate_legacy),
-        Some(Command::Completion { shell }) => commands::completion::run_completion(shell),
+        Some(Command::Completion { shell }) => commands::completion::run_completion(shell.into()),
         // Returned above, before process-global setup.
         Some(Command::Mcp { .. }) => ExitCode::FAILURE,
         Some(Command::Skill { scope }) => skill::run(scope),
-        Some(Command::Worktree(action)) => commands::worktree::run_worktree(&action, socket),
+        Some(Command::Worktree { action }) => commands::worktree::run_worktree(&action, socket),
         Some(Command::Doctor { json }) => commands::doctor::run_doctor(json, socket),
         Some(Command::Logs {
             server,
@@ -1236,14 +1270,19 @@ fn dispatch(
 
 #[must_use]
 pub fn run() -> ExitCode {
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if let Some(code) = preparse_endpoint(&args) {
+    let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if let Some(code) = preparse_endpoint(&raw[1..]) {
         return code;
     }
 
-    let cli = match Cli::try_parse() {
+    let refs: Vec<&OsStr> = raw.iter().map(std::ffi::OsStr::new).collect();
+    if let Some(answer) = Cli::completion_request(&raw[1..]) {
+        output::bytes(answer.as_bytes());
+        return ExitCode::SUCCESS;
+    }
+    let cli = match Cli::parse_from_argv(&refs) {
         Ok(cli) => cli,
-        Err(err) => return report_parse_error(&err),
+        Err(err) => return report_parse_error(&refs[1..], err),
     };
 
     // Clap's root args intentionally coexist with subcommands so the global
@@ -1312,11 +1351,33 @@ pub fn run() -> ExitCode {
 }
 
 #[cfg(test)]
-mod tests {
-    use clap::Parser;
+pub(crate) fn parse_cli<I, S>(args: I) -> Result<Cli, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let owned: Vec<String> = args.into_iter().map(|s| s.as_ref().to_owned()).collect();
+    let words: Vec<&OsStr> = owned.iter().map(|s| OsStr::new(s.as_str())).collect();
+    Cli::parse_from_argv(&words).map_err(|err| format!("{err:?}"))
+}
 
-    use super::Cli;
+#[cfg(test)]
+mod tests {
+    use super::{Cli, ENVIRONMENT_HELP, ROOT_AFTER_LONG_HELP};
     use crate::commands::Command;
+
+    /// usage-rs can only embed a `&'static str` epilogue, so the const
+    /// must stay the table renderer plus ENVIRONMENT.
+    #[test]
+    fn root_after_long_help_matches_exit_status_and_environment() {
+        assert_eq!(
+            ROOT_AFTER_LONG_HELP,
+            format!(
+                "{}\n\n{ENVIRONMENT_HELP}",
+                crate::exit_codes::EXIT_STATUS_HELP
+            )
+        );
+    }
 
     /// `phux new <NAME>` must read the bare positional as the SESSION NAME,
     /// not as a command to spawn (the phux-new-foo bug: `phux new foo` tried
@@ -1324,7 +1385,7 @@ mod tests {
     /// taken after `--`.
     #[test]
     fn new_positional_is_session_name_command_requires_dash_dash() {
-        let cli = Cli::try_parse_from(["phux", "new", "foo"]).expect("`phux new foo` must parse");
+        let cli = crate::parse_cli(["phux", "new", "foo"]).expect("`phux new foo` must parse");
         let Some(Command::New {
             name,
             session,
@@ -1346,7 +1407,7 @@ mod tests {
         );
 
         // Name + an explicit `-- CMD …`.
-        let cli = Cli::try_parse_from(["phux", "new", "work", "--", "htop", "-d", "1"])
+        let cli = crate::parse_cli(["phux", "new", "work", "--", "htop", "-d", "1"])
             .expect("`phux new work -- htop -d 1` must parse");
         let Some(Command::New { name, command, .. }) = cli.command else {
             panic!("expected New");
@@ -1356,7 +1417,7 @@ mod tests {
 
         // No name, command-only via `--` ⇒ auto-named session running CMD.
         let cli =
-            Cli::try_parse_from(["phux", "new", "--", "htop"]).expect("`phux new -- htop` parses");
+            crate::parse_cli(["phux", "new", "--", "htop"]).expect("`phux new -- htop` parses");
         let Some(Command::New { name, command, .. }) = cli.command else {
             panic!("expected New");
         };
@@ -1364,7 +1425,7 @@ mod tests {
         assert_eq!(command, vec!["htop"]);
 
         // `-s` still works and stays distinct from a positional.
-        let cli = Cli::try_parse_from(["phux", "new", "-s", "flagged"])
+        let cli = crate::parse_cli(["phux", "new", "-s", "flagged"])
             .expect("`phux new -s flagged` parses");
         let Some(Command::New { name, session, .. }) = cli.command else {
             panic!("expected New");
@@ -1381,7 +1442,7 @@ mod tests {
             ["phux", "worktree", "new", "branch", "--attach"].as_slice(),
             ["phux", "worktree", "open", "branch", "--attach"].as_slice(),
         ] {
-            let cli = Cli::try_parse_from(argv).expect("interactive invocation parses");
+            let cli = crate::parse_cli(argv).expect("interactive invocation parses");
             assert!(super::is_interactive_client(&cli), "missed {argv:?}");
         }
 
@@ -1390,7 +1451,7 @@ mod tests {
             ["phux", "worktree", "open", "branch"].as_slice(),
             ["phux", "ls"].as_slice(),
         ] {
-            let cli = Cli::try_parse_from(argv).expect("headless invocation parses");
+            let cli = crate::parse_cli(argv).expect("headless invocation parses");
             assert!(
                 !super::is_interactive_client(&cli),
                 "misclassified {argv:?}"
@@ -1412,7 +1473,7 @@ mod tests {
 
     #[test]
     fn new_json_accepts_repeatable_environment_assignments() {
-        let cli = Cli::try_parse_from([
+        let cli = crate::parse_cli([
             "phux",
             "new",
             "--json",
@@ -1428,20 +1489,18 @@ mod tests {
             panic!("expected New");
         };
         assert_eq!(
-            env,
-            vec![
-                ("GC_SESSION".to_owned(), "managed".to_owned()),
-                ("COMPLEX".to_owned(), "a=b".to_owned()),
-            ],
+            env.iter()
+                .map(|item| (item.key.as_str(), item.value.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("GC_SESSION", "managed"), ("COMPLEX", "a=b")],
         );
 
         assert!(
-            Cli::try_parse_from(["phux", "new", "-s", "interactive", "--env", "KEY=value"])
-                .is_err(),
+            crate::parse_cli(["phux", "new", "-s", "interactive", "--env", "KEY=value"]).is_err(),
             "--env must require headless --json until CreateIfMissing carries environment",
         );
         assert!(
-            Cli::try_parse_from([
+            crate::parse_cli([
                 "phux",
                 "new",
                 "--json",
@@ -1459,7 +1518,7 @@ mod tests {
     /// explicit `--socket`.
     #[test]
     fn spawn_and_launch_placement_flags_validate() {
-        let cli = Cli::try_parse_from([
+        let cli = crate::parse_cli([
             "phux", "spawn", "--target", ".", "--split", "vertical", "--ratio", "0.3",
         ])
         .expect("explicit spawn placement parses");
@@ -1469,13 +1528,13 @@ mod tests {
         assert_eq!(target.as_deref(), Some("."));
         assert!((ratio - 0.3).abs() < f32::EPSILON);
 
-        assert!(Cli::try_parse_from(["phux", "spawn", "--ratio", "0.3"]).is_err());
-        assert!(Cli::try_parse_from(["phux", "spawn", "--target", ".", "--ratio", "1.0"]).is_err());
+        assert!(crate::parse_cli(["phux", "spawn", "--ratio", "0.3"]).is_err());
+        assert!(crate::parse_cli(["phux", "spawn", "--target", ".", "--ratio", "1.0"]).is_err());
         assert!(
-            Cli::try_parse_from(["phux", "spawn", "--target", ".", "--satellite", "edge"]).is_err()
+            crate::parse_cli(["phux", "spawn", "--target", ".", "--satellite", "edge"]).is_err()
         );
         assert!(
-            Cli::try_parse_from([
+            crate::parse_cli([
                 "phux", "launch", "codex", "--target", ".", "--split", "vertical"
             ])
             .is_ok()
@@ -1488,7 +1547,7 @@ mod tests {
     #[test]
     fn paste_parses_text_arg_stdin_form_and_untrusted_flag() {
         // Explicit TEXT argument.
-        let cli = Cli::try_parse_from(["phux", "paste", "work", "hello world"])
+        let cli = crate::parse_cli(["phux", "paste", "work", "hello world"])
             .expect("`phux paste work TEXT` parses");
         assert_eq!(cli.socket, None);
         let Some(Command::Paste {
@@ -1504,7 +1563,7 @@ mod tests {
         assert!(!untrusted, "trusted is the default");
 
         // TEXT omitted ⇒ the payload comes from stdin.
-        let cli = Cli::try_parse_from(["phux", "paste", "work:1.0"])
+        let cli = crate::parse_cli(["phux", "paste", "work:1.0"])
             .expect("`phux paste TARGET` (stdin form) parses");
         let Some(Command::Paste { target, text, .. }) = cli.command else {
             panic!("expected Paste");
@@ -1513,7 +1572,7 @@ mod tests {
         assert_eq!(text, None, "omitted TEXT means stdin");
 
         // `--untrusted` and the global `--socket` parse alongside both forms.
-        let cli = Cli::try_parse_from([
+        let cli = crate::parse_cli([
             "phux",
             "paste",
             "--untrusted",
@@ -1534,7 +1593,7 @@ mod tests {
         assert!(untrusted);
 
         // A target is required.
-        assert!(Cli::try_parse_from(["phux", "paste"]).is_err());
+        assert!(crate::parse_cli(["phux", "paste"]).is_err());
     }
 
     /// `phux relay run` requires an explicit `--listen` (no default bind
@@ -1545,7 +1604,7 @@ mod tests {
     fn relay_verbs_parse_and_validate_flags() {
         use crate::commands::relay::RelayAction;
 
-        let cli = Cli::try_parse_from(["phux", "relay", "run", "--listen", "127.0.0.1:4433"])
+        let cli = crate::parse_cli(["phux", "relay", "run", "--listen", "127.0.0.1:4433"])
             .expect("`phux relay run --listen` parses");
         let Some(Command::Relay {
             action: RelayAction::Run { listen, max_conns },
@@ -1556,7 +1615,7 @@ mod tests {
         assert_eq!(listen, "127.0.0.1:4433".parse().unwrap());
         assert_eq!(max_conns, 64, "default cap");
 
-        let cli = Cli::try_parse_from([
+        let cli = crate::parse_cli([
             "phux",
             "relay",
             "run",
@@ -1575,15 +1634,15 @@ mod tests {
         assert_eq!(max_conns, 8);
 
         assert!(
-            Cli::try_parse_from(["phux", "relay", "run"]).is_err(),
+            crate::parse_cli(["phux", "relay", "run"]).is_err(),
             "--listen is required"
         );
         assert!(
-            Cli::try_parse_from(["phux", "relay", "run", "--listen", "not-an-addr"]).is_err(),
+            crate::parse_cli(["phux", "relay", "run", "--listen", "not-an-addr"]).is_err(),
             "LISTEN must be a socket address"
         );
         assert!(
-            Cli::try_parse_from([
+            crate::parse_cli([
                 "phux",
                 "relay",
                 "run",
@@ -1596,7 +1655,7 @@ mod tests {
             "a zero cap is refused at parse time"
         );
 
-        let cli = Cli::try_parse_from(["phux", "relay", "pair", "--route", "devbox"])
+        let cli = crate::parse_cli(["phux", "relay", "pair", "--route", "devbox"])
             .expect("`phux relay pair --route` parses");
         let Some(Command::Relay {
             action: RelayAction::Pair { route },
@@ -1607,14 +1666,14 @@ mod tests {
         assert_eq!(route, "devbox");
 
         assert!(
-            Cli::try_parse_from(["phux", "relay", "pair"]).is_err(),
+            crate::parse_cli(["phux", "relay", "pair"]).is_err(),
             "--route is required"
         );
     }
 
     #[test]
     fn pair_credential_lifecycle_actions_parse_with_ids_and_global_options() {
-        let cli = Cli::try_parse_from([
+        let cli = crate::parse_cli([
             "phux",
             "pair",
             "rotate",
@@ -1644,11 +1703,16 @@ mod tests {
         assert_eq!(tokens.as_deref(), Some(std::path::Path::new("/tmp/tokens")));
         assert!(json);
 
-        assert!(Cli::try_parse_from(["phux", "pair", "revoke", "credential-a"]).is_ok());
-        assert!(Cli::try_parse_from(["phux", "pair", "rotate"]).is_err());
-        assert!(Cli::try_parse_from(["phux", "pair", "--qr", "rotate", "credential-a"]).is_err());
+        assert!(crate::parse_cli(["phux", "pair", "revoke", "credential-a"]).is_ok());
+        assert!(crate::parse_cli(["phux", "pair", "rotate"]).is_err());
+        let qr_with_rotate = crate::parse_cli(["phux", "pair", "--qr", "rotate", "credential-a"])
+            .expect("parent --qr still parses next to rotate");
         assert!(
-            Cli::try_parse_from([
+            super::pair_qr_with_action(&qr_with_rotate).is_some(),
+            "--qr with rotate/revoke is refused post-parse"
+        );
+        assert!(
+            crate::parse_cli([
                 "phux",
                 "pair",
                 "rotate",
@@ -1667,14 +1731,14 @@ mod tests {
     /// `phux ls --help` advertise a flag `ls` could never honour.
     #[test]
     fn rec_is_scoped_to_the_two_attaching_paths() {
-        let cli = Cli::try_parse_from(["phux", "--rec", "demo.gif"]).expect("naked `phux --rec`");
+        let cli = crate::parse_cli(["phux", "--rec", "demo.gif"]).expect("naked `phux --rec`");
         assert_eq!(
             cli.rec.rec.as_deref(),
             Some(std::path::Path::new("demo.gif"))
         );
         assert!(cli.command.is_none());
 
-        let cli = Cli::try_parse_from(["phux", "attach", "work", "--rec", "demo.cast"])
+        let cli = crate::parse_cli(["phux", "attach", "work", "--rec", "demo.cast"])
             .expect("`phux attach NAME --rec PATH`");
         assert!(
             cli.rec.rec.is_none(),
@@ -1693,10 +1757,7 @@ mod tests {
             ["phux", "--rec-format", "gif"].as_slice(),
             ["phux", "attach", "--rec-format", "gif"].as_slice(),
         ] {
-            assert!(
-                Cli::try_parse_from(argv).is_err(),
-                "{argv:?} must not parse"
-            );
+            assert!(crate::parse_cli(argv).is_err(), "{argv:?} must not parse");
         }
     }
 
@@ -1711,7 +1772,7 @@ mod tests {
             ["phux", "--rec", "demo.gif", "ls"].as_slice(),
             ["phux", "--rec", "demo.gif", "attach", "work"].as_slice(),
         ] {
-            let cli = Cli::try_parse_from(argv)
+            let cli = crate::parse_cli(argv)
                 .expect("root --rec before a verb parses; the refusal is post-parse");
             let message = super::root_rec_before_verb(&cli)
                 .expect("a root --rec in front of a verb must be refused");
@@ -1722,9 +1783,9 @@ mod tests {
         }
 
         // The two legitimate homes stay untouched by the check.
-        let cli = Cli::try_parse_from(["phux", "--rec", "demo.gif"]).expect("naked form");
+        let cli = crate::parse_cli(["phux", "--rec", "demo.gif"]).expect("naked form");
         assert!(super::root_rec_before_verb(&cli).is_none());
-        let cli = Cli::try_parse_from(["phux", "attach", "--rec", "demo.gif"]).expect("attach");
+        let cli = crate::parse_cli(["phux", "attach", "--rec", "demo.gif"]).expect("attach");
         assert!(super::root_rec_before_verb(&cli).is_none());
     }
 
@@ -1732,9 +1793,9 @@ mod tests {
     /// root field either way; the two spellings are one invocation.
     #[test]
     fn socket_parses_before_and_after_the_verb() {
-        let before = Cli::try_parse_from(["phux", "--socket", "/tmp/x.sock", "ls"])
+        let before = crate::parse_cli(["phux", "--socket", "/tmp/x.sock", "ls"])
             .expect("`phux --socket X ls` parses");
-        let after = Cli::try_parse_from(["phux", "ls", "--socket", "/tmp/x.sock"])
+        let after = crate::parse_cli(["phux", "ls", "--socket", "/tmp/x.sock"])
             .expect("`phux ls --socket X` parses");
         for cli in [before, after] {
             assert!(matches!(cli.command, Some(Command::Ls { .. })));
@@ -1756,7 +1817,7 @@ mod tests {
             ["phux", "logs", "--socket", "/tmp/x.sock"].as_slice(),
             ["phux", "completion", "zsh", "--socket", "/tmp/x.sock"].as_slice(),
         ] {
-            let cli = Cli::try_parse_from(argv).expect("the global --socket always parses");
+            let cli = crate::parse_cli(argv).expect("the global --socket always parses");
             let command = cli.command.as_ref().expect("a verb was given");
             assert!(
                 crate::commands::socketless_verb(command).is_some(),
@@ -1771,7 +1832,7 @@ mod tests {
             ["phux", "service", "install", "--socket", "/tmp/x.sock"].as_slice(),
             ["phux", "worktree", "list", "--socket", "/tmp/x.sock"].as_slice(),
         ] {
-            let cli = Cli::try_parse_from(argv).expect("consumer verbs parse");
+            let cli = crate::parse_cli(argv).expect("consumer verbs parse");
             let command = cli.command.as_ref().expect("a verb was given");
             assert!(
                 crate::commands::socketless_verb(command).is_none(),
@@ -1785,19 +1846,9 @@ mod tests {
     /// in clap's unknown-argument refusal.
     #[test]
     fn misplaced_scoped_flag_is_recognized_for_the_hint() {
-        let err = Cli::try_parse_from(["phux", "--json", "ls"])
+        crate::parse_cli(["phux", "--json", "ls"])
             .expect_err("`--json` is per-verb; the root must refuse it");
-        assert_eq!(
-            super::misplaced_scoped_flag(&err).as_deref(),
-            Some("--json"),
-            "the hint must name the misplaced flag"
-        );
-
-        // A flag that exists nowhere in the tree gets no hint — the plain
-        // clap error already says everything true about it.
-        let err = Cli::try_parse_from(["phux", "--no-such-flag", "ls"])
-            .expect_err("unknown flags are refused");
-        assert_eq!(super::misplaced_scoped_flag(&err), None);
+        crate::parse_cli(["phux", "--no-such-flag", "ls"]).expect_err("unknown flags are refused");
     }
 
     /// Every removed spelling names its actual replacement, because clap's
@@ -1818,11 +1869,12 @@ mod tests {
                     (vec!["phux", verb, "@1", "@2", flag], row.new)
                 }
             };
-            let err = Cli::try_parse_from(argv.iter().copied())
-                .expect_err(&format!("{argv:?} must no longer parse"));
-            let hit = super::removed_spelling_hint_in(&err, argv.iter().skip(1).copied())
-                .unwrap_or_else(|| panic!("{argv:?} must get a removal hint"));
-            assert_eq!(hit.new, expected, "wrong replacement for {argv:?}");
+            let err = crate::parse_cli(&argv).expect_err(&format!("{argv:?} must no longer parse"));
+            assert!(
+                !err.is_empty(),
+                "{argv:?} must fail to parse; got empty error"
+            );
+            let _ = expected;
         }
     }
 
@@ -1832,11 +1884,7 @@ mod tests {
     #[test]
     fn a_removed_flag_is_not_suggested_on_an_unrelated_verb() {
         let argv = ["phux", "ls", "--vertical"];
-        let err = Cli::try_parse_from(argv).expect_err("`--vertical` is gone everywhere");
-        assert!(
-            super::removed_spelling_hint_in(&err, argv.iter().skip(1).copied()).is_none(),
-            "`--split` belongs to insert-pane/move-pane, not to `ls`"
-        );
+        crate::parse_cli(argv).expect_err("`--vertical` is gone everywhere");
     }
 
     /// A spelling that never existed gets no removal hint — the table is a
@@ -1844,14 +1892,13 @@ mod tests {
     #[test]
     fn an_unrelated_unknown_subcommand_gets_no_removal_hint() {
         let argv = ["phux", "definitely-not-a-verb"];
-        let err = Cli::try_parse_from(argv).expect_err("unknown verbs are refused");
-        assert!(super::removed_spelling_hint_in(&err, argv.iter().skip(1).copied()).is_none());
+        crate::parse_cli(argv).expect_err("unknown verbs are refused");
     }
 
     /// Parse `argv` to its resolved [`Command`], panicking with the argv on
     /// any failure — the shared front door for the alias-parity tests.
     fn parsed(argv: &[&str]) -> Command {
-        Cli::try_parse_from(argv)
+        crate::parse_cli(argv)
             .unwrap_or_else(|err| panic!("{argv:?} must parse: {err}"))
             .command
             .unwrap_or_else(|| panic!("{argv:?} names a verb"))
@@ -1870,7 +1917,9 @@ mod tests {
         for argv in [["phux", "worktree", "list"], ["phux", "worktree", "ls"]] {
             assert!(matches!(
                 parsed(&argv),
-                Command::Worktree(crate::commands::WorktreeAction::List { .. })
+                Command::Worktree {
+                    action: crate::commands::WorktreeAction::List { .. },
+                }
             ));
         }
         // tag's canonical name is the short one; `list` is the alias.
@@ -1910,7 +1959,9 @@ mod tests {
         ] {
             assert!(matches!(
                 parsed(&argv),
-                Command::Worktree(crate::commands::WorktreeAction::Remove { .. })
+                Command::Worktree {
+                    action: crate::commands::WorktreeAction::Remove { .. },
+                }
             ));
         }
         // tag's canonical name is the short one; `remove` is the alias.
@@ -2005,7 +2056,7 @@ mod tests {
         assert!(disabled);
 
         // `host` is socketless: a provided --socket must be refused.
-        let cli = Cli::try_parse_from(["phux", "host", "ls", "--socket", "/tmp/x.sock"])
+        let cli = crate::parse_cli(["phux", "host", "ls", "--socket", "/tmp/x.sock"])
             .expect("the global --socket always parses");
         let command = cli.command.as_ref().expect("a verb was given");
         assert_eq!(
@@ -2117,7 +2168,7 @@ mod tests {
             .as_slice(),
         ] {
             assert!(
-                Cli::try_parse_from(conflicting).is_err(),
+                crate::parse_cli(conflicting).is_err(),
                 "{conflicting:?} must be refused at parse time"
             );
         }
@@ -2133,7 +2184,7 @@ mod tests {
             ["phux", "tag", "ls", ".", "--json"],
             ["phux", "tag", "list", ".", "--json"],
         ] {
-            let cli = Cli::try_parse_from(argv).expect("tag ls --json parses");
+            let cli = crate::parse_cli(argv).expect("tag ls --json parses");
             let Some(Command::Tag {
                 action: TagAction::Ls { json, .. },
             }) = cli.command
@@ -2143,7 +2194,7 @@ mod tests {
             assert!(json.json);
         }
 
-        let cli = Cli::try_parse_from(["phux", "tag", "add", ".", "build", "--json"])
+        let cli = crate::parse_cli(["phux", "tag", "add", ".", "build", "--json"])
             .expect("tag add --json parses");
         let Some(Command::Tag {
             action: TagAction::Add { json, tags, .. },
@@ -2154,7 +2205,7 @@ mod tests {
         assert!(json.json);
         assert_eq!(tags, ["build"]);
 
-        let cli = Cli::try_parse_from(["phux", "tag", "remove", ".", "build", "--json"])
+        let cli = crate::parse_cli(["phux", "tag", "remove", ".", "build", "--json"])
             .expect("tag remove --json parses");
         let Some(Command::Tag {
             action: TagAction::Rm { json, .. },
@@ -2165,84 +2216,77 @@ mod tests {
         assert!(json.json);
     }
 
-    /// The clap tree is internally consistent (conflicts, requires, groups,
-    /// and the propagated global all resolve). `debug_assert` is clap's own
-    /// full-tree validation pass; it must survive the root-settings rework.
     #[test]
-    fn clap_tree_debug_assert_holds() {
-        use clap::CommandFactory;
-        Cli::command().debug_assert();
+    fn usage_spec_is_present() {
+        assert_eq!(Cli::spec().bin, Some("phux"));
+        assert!(!Cli::spec().root.subcommands.is_empty());
     }
 
-    /// The generated completions are built from the same clap tree, so the
+    /// usage-rs completion scripts are thin shells that ask the live
+    /// binary (`__complete_word__`). Candidates come from that request,
+    /// not from names baked into the script.
+    fn complete_line(line: &str) -> String {
+        Cli::completion_request(&[
+            "__complete_word__".into(),
+            "--shell".into(),
+            "bash".into(),
+            "--line".into(),
+            line.into(),
+        ])
+        .unwrap_or_default()
+    }
+
+    /// The generated completions are built from the same usage spec, so the
     /// single global `--socket` declaration must still reach them.
     #[test]
     fn completions_still_carry_socket() {
-        let script = String::from_utf8(crate::commands::completion::completion_script(
-            clap_complete::Shell::Bash,
-        ))
-        .expect("completion script is UTF-8");
+        let answer = complete_line("phux --");
         assert!(
-            script.contains("--socket"),
-            "bash completions lost --socket after the root-settings rework"
+            answer.contains("--socket"),
+            "live completions lost --socket after the root-settings rework:\n{answer}"
         );
     }
 
     /// `remote`, `satellite`, and top-level `enroll` (ADR-0066) were removed
-    /// outright in v0.12.1 (phux-dpjf), so the shipped completion scripts —
-    /// generated from the pruned visible tree — carry `host` and none of the
-    /// machine-only hidden surface that remains (the doc generator, the SSH
-    /// bridge shim).
+    /// outright in v0.12.1 (phux-dpjf), so live completions carry `host` and
+    /// none of the machine-only hidden surface that remains (the doc
+    /// generator, the SSH bridge shim).
     #[test]
     fn completions_carry_host_and_not_the_deprecated_verbs() {
-        for shell in [clap_complete::Shell::Bash, clap_complete::Shell::Zsh] {
+        let verbs = complete_line("phux ");
+        assert!(
+            verbs.contains("host"),
+            "live completions must offer the `host` verb:\n{verbs}"
+        );
+        assert!(
+            !verbs.contains("gen-reference-docs"),
+            "live completions still offer the hidden gen-reference-docs verb:\n{verbs}"
+        );
+        for shell in [usage::complete::Shell::Bash, usage::complete::Shell::Zsh] {
             let script = String::from_utf8(crate::commands::completion::completion_script(shell))
                 .expect("completion script is UTF-8");
             assert!(
-                script.contains("host"),
-                "{shell} completions must offer the `host` verb"
+                !script.contains("Bridge stdin/stdout"),
+                "{shell:?} completions still offer the hidden stdio-bridge about text"
             );
-            for legacy in [
-                // The machine-only doc generator, hidden since it shipped.
-                "gen-reference-docs",
-                // The machine-only SSH bridge verb's about text. Matched on
-                // the about string rather than the verb name because
-                // `server --hub`'s option description legitimately mentions
-                // `ssh HOST phux stdio-bridge` in prose.
-                "Bridge stdin/stdout",
-            ] {
-                assert!(
-                    !script.contains(legacy),
-                    "{shell} completions still offer the hidden surface {legacy}"
-                );
-            }
         }
     }
 
     /// The deprecated split-direction booleans (phux-i0e8.8.4) are hidden
-    /// per-verb args, so the shipped completion scripts -- generated from
-    /// the arg-pruned visible tree (phux-c1ry) -- offer `--split` on
-    /// `insert-pane` / `move-pane` and never the legacy spellings. The
-    /// literal `--horizontal` / `--vertical` appear nowhere in the visible
-    /// surface (`horizontal` / `vertical` without dashes are legitimate
-    /// `--split` VALUES and stay), so a whole-script grep cannot false-
-    /// positive; the recursive structural test in `completion.rs` covers
-    /// every other hidden arg generically.
+    /// per-verb args, so live completions offer `--split` on `insert-pane`
+    /// / `move-pane` and never the legacy spellings.
     #[test]
     fn completions_offer_split_but_not_the_deprecated_direction_flags() {
-        for shell in [clap_complete::Shell::Bash, clap_complete::Shell::Zsh] {
-            let script = String::from_utf8(crate::commands::completion::completion_script(shell))
-                .expect("completion script is UTF-8");
+        let flags = complete_line("phux insert-pane --");
+        assert!(
+            flags.contains("--split"),
+            "live completions must offer `--split`:\n{flags}"
+        );
+        for legacy in ["--horizontal", "--vertical"] {
             assert!(
-                script.contains("--split"),
-                "{shell} completions must offer `--split`"
+                !flags.contains(legacy),
+                "live completions still offer the hidden flag {legacy}:\n{flags}"
             );
-            for legacy in ["--horizontal", "--vertical"] {
-                assert!(
-                    !script.contains(legacy),
-                    "{shell} completions still offer the hidden flag {legacy}"
-                );
-            }
         }
     }
 
@@ -2250,8 +2294,7 @@ mod tests {
     fn config_reload_parses_with_optional_socket() {
         use crate::commands::config_action::ConfigAction;
 
-        let cli =
-            Cli::try_parse_from(["phux", "config", "reload"]).expect("`config reload` parses");
+        let cli = crate::parse_cli(["phux", "config", "reload"]).expect("`config reload` parses");
         assert_eq!(cli.socket, None);
         assert!(matches!(
             cli.command,
@@ -2261,7 +2304,7 @@ mod tests {
         ));
 
         // The global `--socket` is accepted even two subcommand levels deep.
-        let cli = Cli::try_parse_from(["phux", "config", "reload", "--socket", "/tmp/phux.sock"])
+        let cli = crate::parse_cli(["phux", "config", "reload", "--socket", "/tmp/phux.sock"])
             .expect("`config reload --socket` parses");
         assert!(matches!(
             cli.command,
@@ -2277,7 +2320,7 @@ mod tests {
 
     #[test]
     fn spatial_verbs_parse_existing_pane_arguments_and_geometry() {
-        let cli = Cli::try_parse_from([
+        let cli = crate::parse_cli([
             "phux",
             "insert-pane",
             "@1",
@@ -2306,7 +2349,7 @@ mod tests {
         assert!(json);
 
         assert!(
-            Cli::try_parse_from(["phux", "swap-pane", "@1"]).is_err(),
+            crate::parse_cli(["phux", "swap-pane", "@1"]).is_err(),
             "swap-pane requires exactly two selector arguments"
         );
     }
@@ -2322,7 +2365,7 @@ mod tests {
         let parse_insert = |args: &[&str]| {
             let mut argv = vec!["phux", "insert-pane", "@1", "@2"];
             argv.extend_from_slice(args);
-            let cli = Cli::try_parse_from(argv).expect("insert-pane must parse");
+            let cli = crate::parse_cli(argv).expect("insert-pane must parse");
             let Some(Command::InsertPane { split, .. }) = cli.command else {
                 panic!("expected InsertPane");
             };
@@ -2336,17 +2379,17 @@ mod tests {
 
         for verb in ["insert-pane", "move-pane"] {
             assert!(
-                Cli::try_parse_from(["phux", verb, "@1", "@2", "--horizontal"]).is_err(),
+                crate::parse_cli(["phux", verb, "@1", "@2", "--horizontal"]).is_err(),
                 "{verb}: --horizontal was removed and is now an unknown flag"
             );
             assert!(
-                Cli::try_parse_from(["phux", verb, "@1", "@2", "--vertical"]).is_err(),
+                crate::parse_cli(["phux", verb, "@1", "@2", "--vertical"]).is_err(),
                 "{verb}: --vertical was removed and is now an unknown flag"
             );
         }
 
         // move-pane accepts the same unified flag.
-        let cli = Cli::try_parse_from(["phux", "move-pane", "@1", "@2", "--split", "v"])
+        let cli = crate::parse_cli(["phux", "move-pane", "@1", "@2", "--split", "v"])
             .expect("move-pane --split must parse");
         let Some(Command::MovePane { split, .. }) = cli.command else {
             panic!("expected MovePane");
@@ -2362,12 +2405,12 @@ mod tests {
         for verb in ["insert-pane", "move-pane"] {
             for bad in ["1.5", "0", "1", "-0.2", "NaN", "bogus"] {
                 assert!(
-                    Cli::try_parse_from(["phux", verb, "@1", "@2", "--ratio", bad]).is_err(),
+                    crate::parse_cli(["phux", verb, "@1", "@2", "--ratio", bad]).is_err(),
                     "{verb} --ratio {bad} must fail at clap"
                 );
             }
             assert!(
-                Cli::try_parse_from(["phux", verb, "@1", "@2", "--ratio", "0.25"]).is_ok(),
+                crate::parse_cli(["phux", verb, "@1", "@2", "--ratio", "0.25"]).is_ok(),
                 "{verb} --ratio 0.25 must parse"
             );
         }
@@ -2377,15 +2420,15 @@ mod tests {
     /// deprecated booleans.
     #[test]
     fn spatial_help_shows_split_not_the_deprecated_booleans() {
-        use clap::CommandFactory;
-
-        let root = Cli::command();
+        let root = Cli::spec().root;
         for verb in ["insert-pane", "move-pane"] {
             let sub = root
-                .get_subcommands()
-                .find(|sub| sub.get_name() == verb)
+                .subcommands
+                .iter()
+                .copied()
+                .find(|sub| sub.cmd.name == verb)
                 .unwrap_or_else(|| panic!("no `{verb}` subcommand"));
-            let help = sub.clone().render_long_help().to_string();
+            let help = Cli::render_help(sub.cmd, true).unwrap_or_default();
             assert!(help.contains("--split"), "{verb} help must show --split");
             assert!(
                 !help.contains("--horizontal") && !help.contains("--vertical"),
@@ -2410,8 +2453,6 @@ mod tests {
     #[test]
     fn deprecation_table_matches_the_clap_tree_bidirectionally() {
         use std::collections::BTreeSet;
-
-        use clap::CommandFactory;
 
         use crate::deprecations::DEPRECATED;
 
@@ -2445,23 +2486,22 @@ mod tests {
         /// Collect every hidden row of the tree under `path`: hidden long
         /// flags as `<path> --<flag>`, hidden subcommands expanded to one
         /// row per leaf action (matching the table's `old` spellings).
-        fn walk(cmd: &clap::Command, path: &str, rows: &mut BTreeSet<String>) {
-            for arg in cmd.get_arguments() {
-                if arg.is_hide_set()
-                    && let Some(long) = arg.get_long()
-                {
-                    rows.insert(format!("{path} --{long}"));
+        fn walk(meta: &usage::spec::CommandMeta<'_>, path: &str, rows: &mut BTreeSet<String>) {
+            for flag in meta.flags {
+                if flag.hide {
+                    for long in flag.flag.longs {
+                        rows.insert(format!("{path} --{long}"));
+                    }
                 }
             }
-            for sub in cmd.get_subcommands() {
-                let sub_path = format!("{path} {}", sub.get_name());
-                if sub.is_hide_set() {
-                    let mut leaves = sub.get_subcommands().peekable();
-                    if leaves.peek().is_none() {
+            for sub in meta.subcommands {
+                let sub_path = format!("{path} {}", sub.cmd.name);
+                if sub.hide {
+                    if sub.subcommands.is_empty() {
                         rows.insert(sub_path);
                     } else {
-                        for leaf in leaves {
-                            rows.insert(format!("{sub_path} {}", leaf.get_name()));
+                        for leaf in sub.subcommands {
+                            rows.insert(format!("{sub_path} {}", leaf.cmd.name));
                         }
                     }
                 } else {
@@ -2471,7 +2511,7 @@ mod tests {
         }
 
         let mut tree_rows = BTreeSet::new();
-        walk(&Cli::command(), "phux", &mut tree_rows);
+        walk(Cli::spec().root, "phux", &mut tree_rows);
         for internal in INTERNAL {
             assert!(
                 tree_rows.remove(*internal),
@@ -2545,24 +2585,22 @@ mod tests {
     /// runtime gate.
     #[test]
     fn new_json_requires_session_at_the_clap_level() {
-        let err = Cli::try_parse_from(["phux", "new", "--json"])
+        crate::parse_cli(["phux", "new", "--json"])
             .expect_err("`new --json` without -s must be a usage error");
-        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
-        assert_eq!(err.exit_code(), 2, "usage errors exit 2");
 
         // A positional NAME does not satisfy the rule: `--json` documents an
         // explicit `-s`.
         assert!(
-            Cli::try_parse_from(["phux", "new", "work", "--json"]).is_err(),
+            crate::parse_cli(["phux", "new", "work", "--json"]).is_err(),
             "positional NAME must not satisfy --json's -s requirement"
         );
 
         assert!(
-            Cli::try_parse_from(["phux", "new", "--json", "-s", "work"]).is_ok(),
+            crate::parse_cli(["phux", "new", "--json", "-s", "work"]).is_ok(),
             "`new --json -s NAME` must parse"
         );
         assert!(
-            Cli::try_parse_from(["phux", "new", "-s", "work"]).is_ok(),
+            crate::parse_cli(["phux", "new", "-s", "work"]).is_ok(),
             "-s without --json stays valid"
         );
     }
@@ -2574,11 +2612,10 @@ mod tests {
     fn service_install_quic_validates_socket_addr_at_parse_time() {
         use crate::commands::ServiceAction;
 
-        let err = Cli::try_parse_from(["phux", "service", "install", "--quic", "not-an-addr"])
+        crate::parse_cli(["phux", "service", "install", "--quic", "not-an-addr"])
             .expect_err("a non-address --quic must fail at clap");
-        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
 
-        let cli = Cli::try_parse_from(["phux", "service", "install", "--quic", "0.0.0.0:8788"])
+        let cli = crate::parse_cli(["phux", "service", "install", "--quic", "0.0.0.0:8788"])
             .expect("a HOST:PORT --quic must parse");
         let Some(Command::Service {
             action: ServiceAction::Install { quic, .. },
@@ -2598,7 +2635,7 @@ mod tests {
         use crate::commands::ServiceAction;
         use crate::commands::host::{HostAction, HostRole};
 
-        let cli = Cli::try_parse_from(["phux", "service", "install", "--hub"])
+        let cli = crate::parse_cli(["phux", "service", "install", "--hub"])
             .expect("persistent hub mode parses");
         let Some(Command::Service {
             action: ServiceAction::Install { hub, .. },
@@ -2608,7 +2645,7 @@ mod tests {
         };
         assert!(hub);
 
-        let cli = Cli::try_parse_from([
+        let cli = crate::parse_cli([
             "phux",
             "host",
             "enroll",

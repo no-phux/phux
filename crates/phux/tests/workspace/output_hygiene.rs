@@ -296,9 +296,16 @@ fn capabilities_are_clean_machine_readable_and_socketless() {
 fn help_does_not_print_banner() {
     let (code, stdout, stderr) = run(&["--help"]);
     assert_eq!(code, 0, "--help should exit 0");
+    // usage-rs puts `phux <version>` on the first line of `--help` stdout,
+    // the same way `--version` does. The banner that used to pollute every
+    // invocation is a stderr line; that is where absence is checked.
     assert!(
-        !stdout.contains(BANNER_FRAGMENT) && !stderr.contains(BANNER_FRAGMENT),
-        "--help must not print the build banner; stdout={stdout:?} stderr={stderr:?}"
+        !stderr.contains(BANNER_FRAGMENT),
+        "--help must not print the banner to stderr; stdout={stdout:?} stderr={stderr:?}"
+    );
+    assert!(
+        stdout.contains("ATTACH / SERVE"),
+        "--help stdout should be the long help, not a banner line; got {stdout:?}"
     );
 }
 
@@ -313,9 +320,16 @@ fn short_and_long_help_progressively_disclose_the_root() {
     assert!(short.contains("phux --skill"));
     assert!(!short.contains("ATTACH / SERVE"), "short help:\n{short}");
     assert!(long.contains("ATTACH / SERVE"), "long help:\n{long}");
-    assert!(long.contains("  spawn      Create a pane"));
-    assert!(long.contains("  launch     Start a configured agent"));
-    assert!(!long.contains("\nCommands:\n"), "long help:\n{long}");
+    // usage-rs wraps the curated inventory, so column padding does not survive.
+    let flat = long.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("spawn Create a pane"),
+        "long help must list spawn:\n{long}"
+    );
+    assert!(
+        flat.contains("launch Start a configured agent"),
+        "long help must list launch:\n{long}"
+    );
 }
 
 #[test]

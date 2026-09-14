@@ -426,8 +426,6 @@ async fn provenance(
 mod tests {
     #![allow(clippy::expect_used, reason = "tests")]
 
-    use clap::Parser;
-
     use super::*;
 
     /// The `--until` vocabulary the CLI accepts is exactly the client-side
@@ -480,9 +478,9 @@ mod tests {
 
     #[test]
     fn any_is_accepted_without_a_target_and_conflicts_with_one() {
-        assert!(crate::Cli::try_parse_from(["phux", "agent", "wait", "--any"]).is_ok());
+        assert!(crate::parse_cli(["phux", "agent", "wait", "--any"]).is_ok());
         assert!(
-            crate::Cli::try_parse_from(["phux", "agent", "wait", "@7", "--any"]).is_err(),
+            crate::parse_cli(["phux", "agent", "wait", "@7", "--any"]).is_err(),
             "a fleet wait and one resolved target are different ownership scopes"
         );
     }

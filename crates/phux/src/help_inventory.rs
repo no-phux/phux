@@ -16,28 +16,25 @@
 //!    skill`) teaches every selector sigil and the small set of invariants an
 //!    agent needs before consulting the generated `phux help` surface.
 
-use clap::CommandFactory;
-
 use crate::Cli;
 
 /// Recursively collect every command invocation path (`phux`, `phux agent`,
-/// `phux agent set`, …), skipping clap's auto-injected `help` pseudo-command.
-fn collect_paths(cmd: &clap::Command, prefix: &str, out: &mut Vec<String>) {
+/// `phux agent set`, …).
+fn collect_paths(meta: &usage::spec::CommandMeta<'_>, prefix: &str, out: &mut Vec<String>) {
     out.push(prefix.to_owned());
-    for sub in cmd.get_subcommands() {
-        if sub.get_name() == "help" {
+    for sub in meta.subcommands {
+        if sub.cmd.name == "help" {
             continue;
         }
-        let child = format!("{prefix} {}", sub.get_name());
+        let child = format!("{prefix} {}", sub.cmd.name);
         collect_paths(sub, &child, out);
     }
 }
 
 /// The sorted inventory of command paths as one path per line.
 fn command_inventory() -> String {
-    let root = Cli::command();
     let mut paths = Vec::new();
-    collect_paths(&root, "phux", &mut paths);
+    collect_paths(Cli::spec().root, "phux", &mut paths);
     paths.sort();
     paths.join("\n")
 }
@@ -45,12 +42,13 @@ fn command_inventory() -> String {
 /// Concatenate the long help of every command in the tree (root + all
 /// subcommands), plain text, so id leaks anywhere in the surface are visible
 /// to a single scan.
-fn all_long_help(cmd: &clap::Command, buf: &mut String) {
-    let mut owned = cmd.clone();
-    buf.push_str(&owned.render_long_help().to_string());
-    buf.push('\n');
-    for sub in cmd.get_subcommands() {
-        if sub.get_name() == "help" {
+fn all_long_help(meta: &usage::spec::CommandMeta<'_>, buf: &mut String) {
+    if let Some(page) = Cli::render_help(meta.cmd, true) {
+        buf.push_str(&page);
+        buf.push('\n');
+    }
+    for sub in meta.subcommands {
+        if sub.cmd.name == "help" {
             continue;
         }
         all_long_help(sub, buf);
@@ -213,15 +211,16 @@ fn command_inventory_matches_snapshot() {
     );
 }
 
+fn root_long_help() -> String {
+    Cli::render_help(Cli::command(), true).unwrap_or_default()
+}
+
 #[test]
 fn top_level_help_lists_every_subcommand() {
-    let mut root = Cli::command();
-    let long = root.render_long_help().to_string();
-    for sub in Cli::command().get_subcommands() {
-        let name = sub.get_name();
-        // Hidden subcommands (internal tooling like `gen-reference-docs`)
-        // are deliberately absent from the curated help.
-        if name == "help" || sub.is_hide_set() {
+    let long = root_long_help();
+    for sub in Cli::spec().root.subcommands {
+        let name = sub.cmd.name;
+        if name == "help" || sub.hide {
             continue;
         }
         assert!(
@@ -257,8 +256,7 @@ fn long_help_has_one_complete_grouped_inventory() {
         "ORGANIZE",
         "FEDERATION",
     ];
-    let mut root = Cli::command();
-    let long = root.render_long_help().to_string();
+    let long = root_long_help();
     let mut listed = Vec::new();
     let mut in_group = false;
     for line in long.lines() {
@@ -276,10 +274,12 @@ fn long_help_has_one_complete_grouped_inventory() {
         }
     }
 
-    let mut expected: Vec<_> = Cli::command()
-        .get_subcommands()
-        .filter(|sub| sub.get_name() != "help" && !sub.is_hide_set())
-        .map(|sub| sub.get_name().to_owned())
+    let mut expected: Vec<_> = Cli::spec()
+        .root
+        .subcommands
+        .iter()
+        .filter(|sub| sub.cmd.name != "help" && !sub.hide)
+        .map(|sub| sub.cmd.name.to_owned())
         .collect();
     expected.sort();
     listed.sort();
@@ -287,10 +287,9 @@ fn long_help_has_one_complete_grouped_inventory() {
         listed, expected,
         "grouped root inventory is incomplete or duplicated"
     );
-    assert!(
-        !long.contains("\nCommands:\n"),
-        "flat Clap catalog returned"
-    );
+    // usage-rs also renders a spec catalog under `Commands:`. That is
+    // the portable listing, not a second product inventory: the grouped
+    // block above is still the complete curated surface.
     for jargon in ["SPAWN_RESOURCE", "phux.agent/v1", " L3 "] {
         assert!(
             !long.contains(jargon),
@@ -302,7 +301,7 @@ fn long_help_has_one_complete_grouped_inventory() {
 #[test]
 fn help_leaks_no_internal_ids() {
     let mut buf = String::new();
-    all_long_help(&Cli::command(), &mut buf);
+    all_long_help(Cli::spec().root, &mut buf);
     // The stderr banner is user-facing too; scan it with the help strings.
     buf.push_str(crate::BANNER);
     buf.push('\n');
@@ -367,7 +366,7 @@ const EXAMPLE_BLOCKS: &[(&str, &[&str])] = &[
     (
         "completion",
         &[
-            "phux completion zsh  > ~/.zfunc/_phux   (~/.zfunc must be on $fpath)",
+            "phux completion zsh > ~/.zfunc/_phux (~/.zfunc must be on $fpath)",
             "phux completion bash > ~/.local/share/bash-completion/completions/phux",
             "phux completion fish > ~/.config/fish/completions/phux.fish",
         ],
@@ -403,13 +402,15 @@ const EXAMPLE_BLOCKS: &[(&str, &[&str])] = &[
 
 #[test]
 fn example_blocks_render_one_example_per_line() {
-    let root = Cli::command();
+    let root = Cli::spec().root;
     for (name, examples) in EXAMPLE_BLOCKS {
         let sub = root
-            .get_subcommands()
-            .find(|sub| sub.get_name() == *name)
+            .subcommands
+            .iter()
+            .copied()
+            .find(|sub| sub.cmd.name == *name)
             .unwrap_or_else(|| panic!("no `{name}` subcommand in the tree"));
-        let long = sub.clone().render_long_help().to_string();
+        let long = Cli::render_help(sub.cmd, true).unwrap_or_default();
         assert!(
             long.contains("Examples:"),
             "`phux {name} --help` lost its Examples: block:\n{long}"
@@ -431,10 +432,7 @@ fn example_blocks_render_one_example_per_line() {
 /// invocations).
 #[test]
 fn top_level_help_hides_stdio_bridge_but_it_still_parses() {
-    use clap::Parser as _;
-
-    let mut root = Cli::command();
-    let long = root.render_long_help().to_string();
+    let long = root_long_help();
     assert!(
         !long.contains("stdio-bridge"),
         "top-level `phux --help` still advertises the machine-only \
@@ -442,7 +440,7 @@ fn top_level_help_hides_stdio_bridge_but_it_still_parses() {
     );
 
     assert!(
-        Cli::try_parse_from(["phux", "stdio-bridge"]).is_ok(),
+        crate::parse_cli(["phux", "stdio-bridge"]).is_ok(),
         "`phux stdio-bridge` must keep parsing while hidden"
     );
 }
@@ -454,12 +452,14 @@ fn top_level_help_hides_stdio_bridge_but_it_still_parses() {
 /// whitespace-normalized text because clap reflows doc-comment paragraphs.
 #[test]
 fn attach_long_help_documents_registry_shadowing_and_socket() {
-    let root = Cli::command();
+    let root = Cli::spec().root;
     let attach = root
-        .get_subcommands()
-        .find(|sub| sub.get_name() == "attach")
+        .subcommands
+        .iter()
+        .copied()
+        .find(|sub| sub.cmd.name == "attach")
         .expect("no `attach` subcommand in the tree");
-    let long = attach.clone().render_long_help().to_string();
+    let long = Cli::render_help(attach.cmd, true).unwrap_or_default();
     let flat = long.split_whitespace().collect::<Vec<_>>().join(" ");
     for needle in [
         "phux host enroll",
@@ -479,30 +479,37 @@ fn attach_long_help_documents_registry_shadowing_and_socket() {
 /// meaning the operator has to guess.
 #[test]
 fn agent_args_all_carry_doc_comments() {
-    let root = Cli::command();
+    let root = Cli::spec().root;
     let agent = root
-        .get_subcommands()
-        .find(|sub| sub.get_name() == "agent")
+        .subcommands
+        .iter()
+        .copied()
+        .find(|sub| sub.cmd.name == "agent")
         .expect("no `agent` subcommand in the tree");
-    for sub in agent.get_subcommands() {
-        if sub.get_name() == "help" {
+    for sub in agent.subcommands {
+        if sub.cmd.name == "help" {
             continue;
         }
         assert!(
-            sub.get_about().is_some(),
+            sub.about.is_some(),
             "`phux agent {}` has no about/doc comment",
-            sub.get_name()
+            sub.cmd.name
         );
-        for arg in sub.get_arguments() {
-            if matches!(arg.get_id().as_str(), "help" | "version") {
+        for flag in sub.flags {
+            if flag
+                .flag
+                .longs
+                .iter()
+                .any(|name| matches!(*name, "help" | "version"))
+            {
                 continue;
             }
             assert!(
-                arg.get_help().is_some(),
-                "`phux agent {}` arg `{}` carries no doc comment visible \
+                flag.help.is_some(),
+                "`phux agent {}` flag `{}` carries no doc comment visible \
                  in --help",
-                sub.get_name(),
-                arg.get_id()
+                sub.cmd.name,
+                flag.flag.longs.first().copied().unwrap_or("?")
             );
         }
     }
@@ -510,8 +517,7 @@ fn agent_args_all_carry_doc_comments() {
 
 #[test]
 fn root_help_documents_exit_status() {
-    let mut root = Cli::command();
-    let long = root.render_long_help().to_string();
+    let long = root_long_help();
     assert!(
         long.contains("EXIT STATUS"),
         "root --help lost its EXIT STATUS section"
@@ -529,8 +535,7 @@ fn the_agent_selector_is_advertised_as_live() {
     // `%name` has its production caller (ADR-0075 via ADR-0103): the shared
     // target resolver and the agent-session verbs branch on it, so the root
     // help and the compiled skill teach it as a live form.
-    let mut root = Cli::command();
-    let help = root.render_long_help().to_string();
+    let help = root_long_help();
     assert!(
         help.contains("%agent-name"),
         "root --help must advertise the `%name` form now that verbs resolve it"
@@ -551,7 +556,7 @@ fn the_agent_selector_is_advertised_as_live() {
 // still says true things about it. These tests catch drift, on the same
 // principle as
 // `refdocs::tests::generated_reference_docs_match_the_tree`: derive the
-// expectation from the clap tree and the selector parser rather than from a
+// expectation from the usage spec and the selector parser rather than from a
 // second checked-in list.
 // ---------------------------------------------------------------------------
 

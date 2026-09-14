@@ -133,6 +133,7 @@ by a newer one, the newer line is the operative reading.
 - [0089](./0089-three-zone-attention-sidebar.md) The sidebar projects peer metadata client-side; layout and ordering are amended by 0112.
 - [0112](./0112-stable-split-sidebar-navigation.md) Fixed Agents and host-aware Sessions panels preserve navigation positions across state changes.
 - [0079](./0079-fatal-signal-terminal-restore.md) An async-signal-safe handler restores the outer terminal after a fatal client signal.
+- [0121](./0121-cli-parser-is-usage-rs.md) The `phux` CLI parses with usage-rs 6.9; one declaration drives parse, help, completions, and the generated CLI reference.
 - [0065](./0065-one-cli-grammar.md) `--socket` is one root-level global; alias parity, one `--split`, one JSON error shape.
 - [0058](./0058-right-click-context-menus.md) Right-click opens anchored pane, window, or session menus committed through `run_action`.
 - [0054](./0054-worktree-bound-sessions.md) `phux worktree` derives a session name from the worktree path; no stored state.

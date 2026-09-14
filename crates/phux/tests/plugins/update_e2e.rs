@@ -192,7 +192,13 @@ fn upgrade_remains_the_local_re_exec_primitive() {
 fn help_distinguishes_update_from_upgrade() {
     let (code, stdout, _) = run(&["update", "--help"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("verifies it against the checksum"));
+    // usage-rs wraps long help to the terminal width, so match on
+    // whitespace-normalized text rather than a single source line.
+    let flat = stdout.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(
+        flat.contains("verifies it against the checksum"),
+        "`update --help` must teach the checksum step:\n{stdout}"
+    );
     assert!(stdout.contains("--rollback"));
 
     let (code, stdout, _) = run(&["upgrade", "--help"]);

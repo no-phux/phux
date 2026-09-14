@@ -469,8 +469,8 @@ this file.
 
 `docs/reference/` is rendered from the compiled binary, not written by
 hand. The registry lives in `crates/phux/src/refdocs/`: each page is a
-renderer over one of the binary's own inventories (the clap command
-tree today; config schema, actions, widgets, and hooks as they
+renderer over one of the binary's own inventories (the usage spec
+today; config schema, actions, widgets, and hooks as they
 register), and the hidden `phux gen-reference-docs` subcommand writes
 the tree:
 
@@ -490,7 +490,7 @@ The rules:
   The same test fails on an unregistered file, so the directory holds
   no hand-authored exemptions.
 - **Change the surface, regenerate in the same PR.** Any change to the
-  clap tree (or a future registered inventory) reruns `just docs-gen`
+  usage spec (or a future registered inventory) reruns `just docs-gen`
   and commits the result alongside the code.
 - Generated pages carry the standard frontmatter and TL;DR, so
   `just docs-check` gates them with no carve-outs, plus a GENERATED

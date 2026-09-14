@@ -629,6 +629,17 @@ fn effective_idle_limit(header: &CastHeader, flag: Option<f64>) -> Option<f64> {
 ///
 /// The bounds live in [`Speed`], next to the arithmetic that needs them; the
 /// wording lives here, next to the user.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SpeedArg(pub Speed);
+
+impl std::str::FromStr for SpeedArg {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        parse_speed(value).map(Self)
+    }
+}
+
 pub(crate) fn parse_speed(value: &str) -> Result<Speed, String> {
     let raw: f64 = value
         .parse()
@@ -751,7 +762,6 @@ mod tests {
         // builds MUST parse in the other. Asserting it here is what keeps a
         // renamed flag from turning every playback pane into an instant
         // clap usage error that only an e2e would catch.
-        use clap::Parser as _;
 
         let file = Path::new("/tmp/demo.cast");
         let mut spec = args(file, Some(3), Some(1.5));
@@ -764,11 +774,11 @@ mod tests {
             &spec,
         );
 
-        let cli = crate::Cli::try_parse_from(&argv).expect("the writer argv must parse");
+        let cli = crate::parse_cli(&argv).expect("the writer argv must parse");
         // `--socket` is the root global now, so the writer's copy lands on
         // the top-level field rather than inside the Play variant.
         assert_eq!(cli.socket.as_deref(), Some(Path::new("/tmp/phux.sock")));
-        let Some(crate::Command::Play {
+        let Some(crate::commands::Command::Play {
             file: parsed_file,
             speed,
             idle_limit,
@@ -783,7 +793,7 @@ mod tests {
         };
         assert!(pty_writer, "the pane's process must be in writer mode");
         assert_eq!(parsed_file, file);
-        assert_eq!(speed, Speed::NORMAL);
+        assert_eq!(speed.0, Speed::NORMAL);
         assert_eq!(idle_limit, Some(1.5));
         assert_eq!(loops, Some(3));
         assert!(no_fit);
@@ -792,8 +802,6 @@ mod tests {
 
     #[test]
     fn writer_argv_spells_forever_as_the_bare_loop_flag() {
-        use clap::Parser as _;
-
         let file = Path::new("/tmp/demo.cast");
         // `None` passes = play until killed. It must survive the round trip
         // as `Some(0)`, the CLI's spelling of forever — an argv that dropped
@@ -804,7 +812,7 @@ mod tests {
             Path::new("/tmp/phux.sock"),
             &args(file, None, None),
         );
-        let cli = crate::Cli::try_parse_from(&argv).expect("the writer argv must parse");
+        let cli = crate::parse_cli(&argv).expect("the writer argv must parse");
         let Some(crate::Command::Play { loops, .. }) = cli.command else {
             panic!("expected the play subcommand");
         };

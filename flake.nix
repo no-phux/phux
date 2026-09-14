@@ -83,8 +83,7 @@
               digests =
                 bunDigests.${bunVersion}
                   or (throw "flake.nix: no bun digests pinned for ${bunVersion} (mise.toml). Add them to bunDigests.");
-              asset =
-                bunAssets.${system} or (throw "flake.nix: bun has no release asset for ${system}");
+              asset = bunAssets.${system} or (throw "flake.nix: bun has no release asset for ${system}");
             in
             pkgs.bun.overrideAttrs (_: {
               version = bunVersion;
@@ -93,6 +92,64 @@
                 hash = digests.${system};
               };
             });
+
+        # usage CLI: same contract as bun. The Mise pin is the source of
+        # truth; nixpkgs has lagged (6.4.1/6.6.1 while the crate and mise
+        # pin are 6.9.0). Fetch the upstream release tarball until
+        # `pkgs.usage.version` matches. Digests are hand-updated so a bump
+        # that forgets them fails here instead of silently resolving an
+        # older CLI. Get a new one with
+        #   nix store prefetch-file --hash-type sha256 <asset-url>
+        # Linux uses the musl builds so the pin does not need patchelf.
+        usageVersion = miseTools.usage;
+        usageAssets = {
+          aarch64-darwin = "usage-universal-apple-darwin.tar.gz";
+          x86_64-darwin = "usage-universal-apple-darwin.tar.gz";
+          x86_64-linux = "usage-x86_64-unknown-linux-musl.tar.gz";
+          aarch64-linux = "usage-aarch64-unknown-linux-musl.tar.gz";
+        };
+        usageDigests = {
+          "6.9.0" = {
+            aarch64-darwin = "sha256-nlMVFJ1aCNfRuGO06UcpqjYkA1PyhHUp0GrCH6x8bAE=";
+            x86_64-darwin = "sha256-nlMVFJ1aCNfRuGO06UcpqjYkA1PyhHUp0GrCH6x8bAE=";
+            x86_64-linux = "sha256-hpPIrev6w2IR6acGbTlMoLCKEK5XlECOh5G/MsEu7OA=";
+            aarch64-linux = "sha256-beGIs56Fy9tIcoGBLCuzsVjYUrxLEiYPGbWpJri3vfc=";
+          };
+        };
+        usagePinned =
+          if (pkgs.usage.version or "") == usageVersion then
+            pkgs.usage
+          else
+            let
+              digests =
+                usageDigests.${usageVersion}
+                  or (throw "flake.nix: no usage digests pinned for ${usageVersion} (mise.toml). Add them to usageDigests.");
+              asset = usageAssets.${system} or (throw "flake.nix: usage has no release asset for ${system}");
+            in
+            pkgs.stdenv.mkDerivation {
+              pname = "usage";
+              version = usageVersion;
+              src = pkgs.fetchurl {
+                url = "https://github.com/jdx/usage/releases/download/v${usageVersion}/${asset}";
+                hash = digests.${system};
+              };
+              sourceRoot = ".";
+              dontConfigure = true;
+              dontBuild = true;
+              installPhase = ''
+                runHook preInstall
+                mkdir -p $out/bin $out/share/man/man1
+                install -m755 usage $out/bin/usage
+                install -m644 usage.1 $out/share/man/man1/usage.1
+                runHook postInstall
+              '';
+              meta = {
+                homepage = "https://usage.jdx.dev";
+                description = "CLI specification tool";
+                license = pkgs.lib.licenses.mit;
+                mainProgram = "usage";
+              };
+            };
       in
       {
         devShells.default = pkgs.mkShell {
@@ -131,6 +188,10 @@
             # in mise.toml (see bunPinned above) so this shell, the Mise path
             # and the site's production builder all agree.
             bunPinned
+            # usage CLI at the exact release pinned in mise.toml, so this
+            # shell and the Mise path lint/render the same spec train as
+            # the `usage-rs` crate (nixpkgs has lagged behind 6.9.0).
+            usagePinned
             # Shell linting for scripts/ and examples/agents/ (just shellcheck).
             pkgs.shellcheck
             # GitHub workflow syntax plus expression validation (`just

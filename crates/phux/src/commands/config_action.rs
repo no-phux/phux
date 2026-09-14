@@ -1,7 +1,7 @@
-use clap::Subcommand;
+use usage::Subcommands;
 
 /// `phux config <action>` — local config inspection and scaffolding.
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum ConfigAction {
     /// Write a commented starter config to the canonical path.
     ///
@@ -15,13 +15,13 @@ pub(crate) enum ConfigAction {
     /// the shipped defaults and your file.
     Init {
         /// Overwrite an existing config file instead of refusing.
-        #[arg(long)]
+        #[usage(long)]
         force: bool,
 
         /// Starter distribution to extend: a bundled name (resolved
         /// under `$PHUX_DISTROS_DIR`, the XDG data dir, or the repo
         /// checkout) or a path to a distro layer `.toml` / directory.
-        #[arg(long, value_name = "NAME_OR_PATH")]
+        #[usage(long, value_name = "NAME_OR_PATH")]
         distro: Option<String>,
     },
 
@@ -41,11 +41,11 @@ pub(crate) enum ConfigAction {
     /// dotfiles CI run.
     Check {
         /// Config file to check. Defaults to the resolved config path.
-        #[arg(value_name = "PATH")]
+        #[usage(value_name = "PATH")]
         path: Option<std::path::PathBuf>,
 
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -56,24 +56,24 @@ pub(crate) enum ConfigAction {
     /// the values.
     Show {
         /// Show the shipped defaults verbatim, not the merged result.
-        #[arg(long, conflicts_with_all = ["layers", "json"])]
+        #[usage(long, conflicts("--layers", "--json"))]
         default: bool,
 
         /// Attribute each effective key to the layer that set it
         /// (embedded defaults / `extends` layers / your config file).
-        #[arg(long)]
+        #[usage(long)]
         layers: bool,
 
         /// With --layers: emit a stable JSON document instead of human
         /// text.
-        #[arg(long, requires = "layers")]
+        #[usage(long, requires = "layers")]
         json: bool,
     },
 
     /// List plugin manifests declared by `[[plugins]]`.
     Plugins {
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -81,7 +81,7 @@ pub(crate) enum ConfigAction {
     /// running.
     Agents {
         /// Emit a stable JSON document instead of human text.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 
@@ -106,15 +106,15 @@ pub(crate) enum ConfigAction {
         action: String,
 
         /// Give up after this many seconds. Omit to wait indefinitely.
-        #[arg(long, value_name = "SECS")]
+        #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
 
         /// Override the action cwd. Relative paths resolve under plugin root.
-        #[arg(long, value_name = "PATH")]
+        #[usage(long, value_name = "PATH")]
         cwd: Option<std::path::PathBuf>,
 
         /// Emit the structured action result as JSON.
-        #[arg(long)]
+        #[usage(long)]
         json: bool,
     },
 }

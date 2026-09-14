@@ -1,7 +1,7 @@
 //! Hidden `phux gen-reference-docs` — write the generated reference pages.
 //!
 //! Developer tooling behind `just docs-gen`, deliberately not part of the
-//! user-facing CLI surface (the subcommand is `hide = true`). It exists as
+//! user-facing CLI surface (the subcommand is `hide`). It exists as
 //! a subcommand rather than an xtask or build script because the pages are
 //! a pure function of this binary's own inventories: the clap tree is
 //! already compiled in, an xtask would compile the dependency graph a

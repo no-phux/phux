@@ -1152,13 +1152,11 @@ mod tests {
     /// Asserted through the parser, because that is where the refusal lives.
     #[test]
     fn json_and_attach_are_mutually_exclusive_on_new_and_open() {
-        use clap::Parser as _;
-
         for args in [
             vec!["phux", "worktree", "new", "b", "--json", "--attach"],
             vec!["phux", "worktree", "open", "b", "--json", "--attach"],
         ] {
-            let parsed = crate::Cli::try_parse_from(&args);
+            let parsed = crate::parse_cli(&args);
             assert!(
                 parsed.is_err(),
                 "`{}` must be refused at parse time",

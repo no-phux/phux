@@ -9,25 +9,25 @@ use std::net::IpAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::Subcommand;
+use usage::Subcommands;
 
 const DEFAULT_ROTATION_OVERLAP_SECONDS: i64 = 300;
 
-#[derive(Debug, Subcommand)]
+#[derive(Debug, Subcommands)]
 pub(crate) enum PairAction {
     /// Replace a credential's bearer secret with a bounded overlap.
     Rotate {
         /// Stable credential ID printed when the credential was minted.
-        #[arg(value_name = "CREDENTIAL_ID")]
+        #[usage(value_name = "CREDENTIAL_ID")]
         credential_id: String,
 
         /// Seconds the previous generation remains valid. Its existing
         /// absolute expiry still wins when it is sooner; an already-expired
         /// credential cannot be rotated.
-        #[arg(
+        #[usage(
             long,
-            default_value_t = DEFAULT_ROTATION_OVERLAP_SECONDS,
-            value_parser = clap::value_parser!(i64).range(0..=86_400),
+            default = "300", default_value_t = DEFAULT_ROTATION_OVERLAP_SECONDS,
+            validate = "int(value) >= 0 && int(value) <= 86400", validate_error = "must be between 0 and 86400 seconds",
             value_name = "SECONDS"
         )]
         overlap_seconds: i64,
@@ -35,7 +35,7 @@ pub(crate) enum PairAction {
     /// Revoke every generation of a credential for new connections.
     Revoke {
         /// Stable credential ID printed when the credential was minted.
-        #[arg(value_name = "CREDENTIAL_ID")]
+        #[usage(value_name = "CREDENTIAL_ID")]
         credential_id: String,
     },
 }

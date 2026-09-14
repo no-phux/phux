@@ -90,8 +90,27 @@ pub(crate) const EXIT_CODES: &[ExitCodeSpec] = &[
     },
 ];
 
+/// The EXIT STATUS help section as a `&'static str`. usage-rs requires
+/// `after_long_help` to be a const string, so this is the form the root
+/// `--help` epilogue uses. [`exit_status_section`] renders the same text
+/// from [`EXIT_CODES`]; a unit test holds the two in lockstep.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) const EXIT_STATUS_HELP: &str = "\
+EXIT STATUS
+  0     Success.
+  1     Failure: no server, no such target, or the verb itself failed.
+  2     Usage error, or the server refused the request.
+  3     Unanswerable: the selector was resolved against a partial view
+        of the fleet (a federation satellite was unreachable). Retry
+        once the link is back — unlike 1, the target may exist.
+  124   `phux wait` gave up because `--timeout` expired.
+  125   `phux run` gave up because `--timeout` expired; otherwise
+        `run` mirrors the exit code of the command it ran, so
+        `phux run … && next` composes like a shell.";
+
 /// Render the EXIT STATUS help section from [`EXIT_CODES`] — the exact
-/// block `phux --help` shows (via `root_after_long_help` in `lib.rs`).
+/// block `phux --help` shows (via `ROOT_AFTER_LONG_HELP` in `lib.rs`).
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn exit_status_section() -> String {
     use std::fmt::Write as _;
 
@@ -171,5 +190,12 @@ mod tests {
             !section.ends_with('\n'),
             "section must not carry a trailing newline (the caller joins)"
         );
+    }
+
+    /// The const epilogue usage-rs can embed must match the table renderer,
+    /// so `--help` and `docs/reference/exit-codes.md` cannot drift.
+    #[test]
+    fn exit_status_help_const_matches_the_table() {
+        assert_eq!(super::EXIT_STATUS_HELP, exit_status_section());
     }
 }

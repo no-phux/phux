@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(
             phux_client::snapshot::ROW_WINDOW_DEFAULT,
             80,
-            "clap spells this as default_missing_value = \"80\" in commands::mod",
+            "clap spells this as default_missing = \"80\" in commands::mod",
         );
         assert_eq!(
             phux_client::snapshot::ROW_WINDOW_MAX,

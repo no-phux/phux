@@ -416,7 +416,7 @@ src/
 
 ```
 src/
-  main.rs             — clap subcommand dispatch and entry point
+  main.rs             — usage-rs subcommand dispatch and entry point
   commands/           — one module (or submodule tree) per verb
     ls.rs, new.rs, attach.rs, detach.rs, kill.rs, rename.rs, resize.rs,
     spatial.rs (insert-pane/move-pane/swap-pane), spawn.rs, launch.rs,

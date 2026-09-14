@@ -165,6 +165,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0118](./0118-agent-integrations-share-a-neutral-runtime.md) | Agent integrations share a neutral Node runtime | Accepted |
 | [0119](./0119-attach-leases-retained-history.md) | Attach leases retained history instead of encoding it | Accepted (supersedes in part [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md)) |
 | [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md) | ssh bootstrap opens a listener for one attach | Accepted (amends [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
+| [0121](./0121-cli-parser-is-usage-rs.md) | The CLI parser is usage-rs | Accepted (amends [0065](./0065-one-cli-grammar.md), [0069](./0069-generated-reference-docs.md)) |
 
 ## When to write an ADR
 
