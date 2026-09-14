@@ -10,6 +10,7 @@ pub const projection = @import("cockpit/native/workspace_projection.zig");
 pub const layout = @import("cockpit/layout.zig");
 pub const scene = @import("cockpit/native/scene.zig");
 pub const startup = @import("cockpit/startup.zig");
+pub const diagnostics = @import("cockpit/diagnostics.zig");
 pub const attachPhuxProvider = @import("cockpit/model.zig").attachPhuxProvider;
 pub const phux_enabled = @import("cockpit/phux_support.zig").phux_enabled;
 pub const command_results = @import("cockpit/native/command_results.zig");

@@ -1976,6 +1976,13 @@ fn releaseTopAnchor(client: *c.PhuxClient, terminal_id: *const c.PhuxResourceId,
     if (anchor.opaque_id != 0) _ = c.phux_client_anchor_release(client, terminal_id, anchor);
 }
 
+/// Route the bridge's tracing to the process's standard error. Once per
+/// process; later calls are no-ops. `filter` is a RUST_LOG-style directive
+/// list, empty for the bridge default.
+pub fn logInit(filter: []const u8) Error!void {
+    try resultError(c.phux_client_log_init(bytes(filter)));
+}
+
 fn resultError(result: c.PhuxClientResult) Error!void {
     return switch (result) {
         c.PHUX_CLIENT_OK => {},
