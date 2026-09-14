@@ -22,10 +22,15 @@ Every deprecated spelling this build of the binary still accepts. Each one parse
 
 A deprecated spelling survives at least one full release cycle with the warning in place; the planned-removal release is the earliest it can disappear. Move scripts to the replacement before then.
 
-No spelling is currently deprecated. When one is added to `crate::deprecations::DEPRECATED`, it appears here as a row of this table:
-
 | Deprecated spelling | Use instead | Deprecated in | Planned removal |
 |---|---|---|---|
+| `phux host enroll` | `phux host add` | v0.37.0 | v0.39.0 |
+
+The warning is one greppable stderr line per invocation, of the form:
+
+```text
+phux: `phux host enroll` is deprecated and will be removed; use `phux host add`
+```
 
 ## Removed
 

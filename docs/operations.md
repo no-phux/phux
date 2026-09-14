@@ -715,7 +715,7 @@ and SSH-stdio. Satellites are phux servers on other machines. A server
 started with `--hub` dials enabled `[[satellites]]` and routes
 host-qualified operations over the same wire. Routes are hub-and-spoke;
 remote sessions and windows are not merged. Enrollment is
-[Remote access](./remote-access.md): `phux host enroll --role satellite HOST`
+[Remote access](./remote-access.md): `phux host add --role satellite HOST`
 installs the satellite's per-user service, registers it here, and enables
 local `--hub` without dropping listeners already baked into the unit.
 

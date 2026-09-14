@@ -117,7 +117,7 @@ fn an_unregistered_host_is_refused_with_the_ladder_remedies() {
     assert!(
         stderr.contains("not a registered host")
             && stderr.contains("--code")
-            && stderr.contains("phux host enroll"),
+            && stderr.contains("phux host add"),
         "the refusal must name both remedies; got: {stderr}"
     );
 
@@ -135,7 +135,7 @@ fn an_unregistered_host_is_refused_with_the_ladder_remedies() {
     let doc: serde_json::Value = serde_json::from_str(&stderr).expect("stderr is JSON");
     assert_eq!(doc["error"]["code"], "remote_unresolved");
     assert!(
-        !stderr.contains("pairing over ssh"),
+        !stderr.contains("setting it up over ssh failed"),
         "--json must not attempt the ssh rung: {stderr}"
     );
 }
@@ -148,7 +148,7 @@ fn an_ssh_entry_is_refused_for_session_verbs() {
     let (code, _stdout, stderr) = run_with_config(Some(config), &["ls", "--remote", "mini"]);
     assert_eq!(code, 1, "stderr={stderr}");
     assert!(
-        stderr.contains("ssh://") && stderr.contains("phux host enroll mini"),
+        stderr.contains("ssh://") && stderr.contains("phux host add mini"),
         "got: {stderr}"
     );
 }
@@ -181,7 +181,7 @@ fn an_unresolvable_entry_is_one_json_line_under_json() {
     assert_eq!(doc["error"]["code"], "transport", "{doc}");
     assert_eq!(doc["exit_code"], 1, "{doc}");
     let remedy = doc["remedy"].as_str().unwrap_or_default();
-    assert!(remedy.contains("phux host enroll ghost"), "{remedy}");
+    assert!(remedy.contains("phux host add ghost"), "{remedy}");
     assert!(
         !stderr.contains("phux attach") && !stderr.contains("QUIC attach"),
         "the refusal must not be worded for attach: {stderr}"
@@ -202,7 +202,7 @@ fn an_unpinned_routable_entry_is_one_json_line_under_json() {
     assert!(
         doc["remedy"]
             .as_str()
-            .is_some_and(|remedy| remedy.contains("phux host enroll bare")),
+            .is_some_and(|remedy| remedy.contains("phux host add bare")),
         "{doc}"
     );
 

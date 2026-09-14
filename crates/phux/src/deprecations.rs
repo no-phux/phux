@@ -22,9 +22,12 @@
 //! with.
 
 /// Which kind of hidden surface carries an old spelling.
-// No variant is constructed while `DEPRECATED` is empty; both stay live for
-// the next row (a hidden verb or a hidden flag) that needs one.
-#[allow(dead_code, reason = "constructed by the next row added to DEPRECATED")]
+// `Flag` has no row while every deprecated spelling is a verb; it stays
+// live for the next hidden flag that needs one.
+#[allow(
+    dead_code,
+    reason = "constructed by the next flag row added to DEPRECATED"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DeprecatedSurface {
     /// A hidden top-level verb (ADR-0066): the whole subcommand path is
@@ -101,15 +104,26 @@ impl Deprecation {
 
 /// Every deprecated spelling the binary currently accepts.
 ///
-/// Empty: the ADR-0066 machine-registry verbs (`remote`, `satellite`,
-/// top-level `enroll`) and the split booleans (`--horizontal`/`--vertical`,
+/// The ADR-0066 machine-registry verbs (`remote`, `satellite`, top-level
+/// `enroll`) and the split booleans (`--horizontal`/`--vertical`,
 /// phux-i0e8.8.4) that once lived here were removed in v0.12.1, once their
-/// `removed_in` release shipped. The table, and every consumer that reads
-/// it (the audit in `tests/deprecated_aliases.rs`, the generated
+/// `removed_in` release shipped. `phux host enroll` joined when `phux host
+/// add HOST` absorbed the ssh form (ADR-0122). Every consumer that reads
+/// the table (the audit in `tests/deprecated_aliases.rs`, the generated
 /// `docs/reference/deprecations.md`, and the clap-tree pin test in
-/// `lib.rs`), stay wired up for the next spelling that needs one release
-/// cycle of warning before it goes.
-pub(crate) const DEPRECATED: &[Deprecation] = &[];
+/// `lib.rs`) checks each row.
+pub(crate) const DEPRECATED: &[Deprecation] = &[Deprecation {
+    surface: DeprecatedSurface::Verb,
+    old: "phux host enroll",
+    new: "phux host add",
+    note: "phux: `phux host enroll` is deprecated and will be removed; use `phux host add`",
+    setup_argv: &[],
+    // `--ssh-only` registers without contacting the host, so the row runs
+    // to success with no ssh and no server.
+    example_argv: &["host", "enroll", "me@mini", "--ssh-only"],
+    deprecated_in: "v0.37.0",
+    removed_in: "v0.39.0",
+}];
 
 /// One spelling that is gone: what it was, what replaced it, and when it
 /// went.

@@ -212,7 +212,7 @@ fn command_inventory_matches_snapshot() {
 }
 
 fn root_long_help() -> String {
-    Cli::render_help(Cli::command(), true).unwrap_or_default()
+    crate::render_help_page(Cli::command(), true, usage::help::Style::PLAIN).unwrap_or_default()
 }
 
 #[test]
@@ -233,46 +233,76 @@ fn top_level_help_lists_every_subcommand() {
 #[test]
 fn short_help_is_a_small_start_here_view() {
     assert!(crate::SHORT_HELP.contains("phux                     Attach"));
+    assert!(crate::SHORT_HELP.contains("phux host add me@HOST"));
     assert!(crate::SHORT_HELP.contains("phux --help` for every command"));
     let daily = crate::SHORT_HELP
         .lines()
         .filter(|line| line.trim_start().starts_with("phux "))
         .count();
     assert!(
-        (6..=8).contains(&daily),
-        "short help should carry 6-8 daily commands, got {daily}:\n{}",
+        (6..=9).contains(&daily),
+        "short help should carry 6-9 daily commands, got {daily}:\n{}",
         crate::SHORT_HELP
     );
-    assert!(!crate::SHORT_HELP.contains("ATTACH / SERVE"));
+    assert!(!crate::SHORT_HELP.contains("Sessions:"));
+}
+
+/// The groups the root inventory is laid out in, in page order. Every
+/// visible verb declares exactly one of them; the renderer prints the
+/// groups in this order because the verbs' `display_order` values are
+/// numbered by group.
+const GROUPS: &[&str] = &[
+    "Sessions", "Panes", "Agents", "Machines", "Maintain", "More",
+];
+
+#[test]
+fn every_visible_verb_declares_one_of_the_root_groups() {
+    for sub in Cli::spec().root.subcommands {
+        if sub.hide {
+            continue;
+        }
+        let heading = sub
+            .help_heading
+            .unwrap_or_else(|| panic!("`phux {}` declares no help_heading", sub.cmd.name));
+        assert!(
+            GROUPS.contains(&heading),
+            "`phux {}` is filed under unknown group {heading:?}",
+            sub.cmd.name
+        );
+        assert!(
+            sub.display_order.is_some(),
+            "`phux {}` declares no display_order; the groups would interleave",
+            sub.cmd.name
+        );
+    }
 }
 
 #[test]
 fn long_help_has_one_complete_grouped_inventory() {
-    const HEADINGS: &[&str] = &[
-        "ATTACH / SERVE",
-        "INSPECT",
-        "DRIVE",
-        "SUPERVISE",
-        "ORGANIZE",
-        "FEDERATION",
-    ];
     let long = root_long_help();
     let mut listed = Vec::new();
+    let mut headings_seen = Vec::new();
     let mut in_group = false;
     for line in long.lines() {
-        let trimmed = line.trim();
-        if HEADINGS.contains(&trimmed) {
+        if let Some(title) = line.strip_suffix(':')
+            && GROUPS.contains(&title)
+        {
+            headings_seen.push(title.to_owned());
             in_group = true;
             continue;
         }
-        if in_group && trimmed.is_empty() {
+        if in_group && line.trim().is_empty() {
             in_group = false;
             continue;
         }
-        if in_group && let Some(name) = trimmed.split_whitespace().next() {
+        if in_group && let Some(name) = line.split_whitespace().next() {
             listed.push(name.to_owned());
         }
     }
+    assert_eq!(
+        headings_seen, GROUPS,
+        "root groups are missing, duplicated, or out of order"
+    );
 
     let mut expected: Vec<_> = Cli::spec()
         .root
@@ -282,18 +312,81 @@ fn long_help_has_one_complete_grouped_inventory() {
         .map(|sub| sub.cmd.name.to_owned())
         .collect();
     expected.sort();
-    listed.sort();
+    let mut sorted = listed.clone();
+    sorted.sort();
     assert_eq!(
-        listed, expected,
+        sorted, expected,
         "grouped root inventory is incomplete or duplicated"
     );
-    // usage-rs also renders a spec catalog under `Commands:`. That is
-    // the portable listing, not a second product inventory: the grouped
-    // block above is still the complete curated surface.
+    assert!(
+        !long.contains("\nCommands:\n"),
+        "an ungrouped `Commands:` section crept back into the root page"
+    );
     for jargon in ["SPAWN_RESOURCE", "phux.agent/v1", " L3 "] {
         assert!(
             !long.contains(jargon),
             "root help leaks protocol jargon {jargon}"
+        );
+    }
+}
+
+/// The root page is a single readable screenful at 80 columns: no line
+/// wider than the width it is laid out for, and the page as a whole stays
+/// under the bound. Forty-nine visible verbs on their own rows plus six
+/// group headings set the floor; the bound leaves no room for a
+/// reference-style epilogue to creep back in.
+#[test]
+fn root_long_help_fits_eighty_columns_and_stays_short() {
+    let long = root_long_help();
+    for line in long.lines() {
+        assert!(
+            line.chars().count() <= 80,
+            "root help line wider than 80 columns: {line:?}"
+        );
+    }
+    let lines = long.lines().count();
+    assert!(
+        lines <= 90,
+        "root help grew to {lines} lines; the page is meant to be one screen"
+    );
+    assert!(
+        !long.contains("ENVIRONMENT") && !long.contains("EXIT STATUS"),
+        "the reference epilogue belongs to `phux help environment` / `phux help exit-codes`"
+    );
+    let footer = long
+        .find("Learn more:")
+        .expect("root help ends with the Learn more footer");
+    let tail = &long[footer..];
+    for pointer in [
+        "phux help targets",
+        "phux help environment",
+        "phux help exit-codes",
+    ] {
+        assert!(tail.contains(pointer), "Learn more footer lost {pointer}");
+    }
+}
+
+/// Every verb's one-line summary fits its column: at most 58 characters
+/// so the widest verb name still leaves the row on one line at 80 columns,
+/// and no trailing period, so the inventory reads as one table.
+#[test]
+fn verb_summaries_are_short_and_unpunctuated() {
+    for sub in Cli::spec().root.subcommands {
+        if sub.hide {
+            continue;
+        }
+        let about = sub.about.unwrap_or_default();
+        let summary = about.split("\n\n").next().unwrap_or(about).trim();
+        assert!(
+            summary.chars().count() <= 58,
+            "`phux {}` summary is {} chars: {summary:?}",
+            sub.cmd.name,
+            summary.chars().count()
+        );
+        assert!(
+            !summary.ends_with('.'),
+            "`phux {}` summary ends with a period: {summary:?}",
+            sub.cmd.name
         );
     }
 }
@@ -462,7 +555,7 @@ fn attach_long_help_documents_registry_shadowing_and_socket() {
     let long = Cli::render_help(attach.cmd, true).unwrap_or_default();
     let flat = long.split_whitespace().collect::<Vec<_>>().join(" ");
     for needle in [
-        "phux host enroll",
+        "phux host add",
         "shadows a local session",
         "--socket` to force the local reading",
     ] {
@@ -515,19 +608,43 @@ fn agent_args_all_carry_doc_comments() {
     }
 }
 
+/// The exit-status table left the root page for a topic; the topic must
+/// render the canonical table, and the root page must point at it.
 #[test]
-fn root_help_documents_exit_status() {
-    let long = root_long_help();
-    assert!(
-        long.contains("EXIT STATUS"),
-        "root --help lost its EXIT STATUS section"
-    );
+fn help_topics_render_their_sources() {
+    let exit = crate::help_topic("exit-codes").expect("exit-codes topic");
+    assert_eq!(exit.trim_end(), crate::exit_codes::exit_status_section());
     for code in ["124", "125"] {
         assert!(
-            long.lines().any(|line| line.trim_start().starts_with(code)),
-            "root --help's EXIT STATUS no longer documents {code}"
+            exit.lines().any(|line| line.trim_start().starts_with(code)),
+            "`phux help exit-codes` no longer documents {code}"
         );
     }
+    for alias in ["exit-status", "exit"] {
+        assert_eq!(crate::help_topic(alias), Some(exit.clone()));
+    }
+
+    let env = crate::help_topic("environment").expect("environment topic");
+    assert_eq!(env, crate::environment::environment_section());
+    assert_eq!(crate::help_topic("env"), Some(env));
+
+    let targets = crate::help_topic("targets").expect("targets topic");
+    for sigil in [
+        "name:W.P",
+        "@N",
+        "#tag",
+        "%agent",
+        "host/@N",
+        "`=` is reserved",
+    ] {
+        assert!(targets.contains(sigil), "targets topic lost {sigil}");
+    }
+    assert_eq!(crate::help_topic("selectors"), Some(targets));
+
+    assert_eq!(crate::help_topic("attach"), None, "a verb is not a topic");
+    assert_eq!(crate::help_topic(""), None);
+
+    assert!(root_long_help().contains("phux help exit-codes"));
 }
 
 #[test]
@@ -535,10 +652,10 @@ fn the_agent_selector_is_advertised_as_live() {
     // `%name` has its production caller (ADR-0075 via ADR-0103): the shared
     // target resolver and the agent-session verbs branch on it, so the root
     // help and the compiled skill teach it as a live form.
-    let help = root_long_help();
+    let targets = crate::help_topic("targets").expect("targets topic");
     assert!(
-        help.contains("%agent-name"),
-        "root --help must advertise the `%name` form now that verbs resolve it"
+        targets.contains("%agent"),
+        "`phux help targets` must advertise the `%name` form now that verbs resolve it"
     );
 
     let skill = crate::skill::render(crate::skill::SkillScope::Full);

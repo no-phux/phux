@@ -41,7 +41,8 @@ pub(crate) fn page() -> Page {
          exactly as they are from `--help` itself.\n\n",
     );
     for (path, cmd) in &entries {
-        let help = Cli::render_help(cmd.cmd, true).unwrap_or_default();
+        let help =
+            crate::render_help_page(cmd.cmd, true, usage::help::Style::PLAIN).unwrap_or_default();
         // Preserve every visible byte of help while keeping generated
         // Markdown free of trailing whitespace.
         let help = help

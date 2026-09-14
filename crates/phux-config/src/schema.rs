@@ -65,7 +65,7 @@ pub struct Config {
     pub connector: Vec<ConnectorConfigEntry>,
 
     /// Remote phux servers this machine attaches to (ADR-0055). Written by
-    /// `phux host enroll` and `phux host add`; read by `phux attach <name>`.
+    /// `phux host add`; read by `phux attach <name>`.
     #[serde(default)]
     pub remote: Vec<RemoteConfigEntry>,
 

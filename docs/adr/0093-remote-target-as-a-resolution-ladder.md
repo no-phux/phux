@@ -15,6 +15,7 @@ is a label for pairing and lookup, never a wire identity.
 
 Status: Accepted
 Date: 2026-08-22
+See [ADR-0122](./0122-host-add-is-the-front-door.md) for the repair rungs a registered host walks when its saved route stops answering.
 
 ## Context
 
