@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: evolving
-last-reviewed: 2026-08-16
+last-reviewed: 2026-09-13
 ---
 
 # 0090 — Predictive echo returns to the alt screen via confirmation-gated display
@@ -180,3 +180,25 @@ clients as an additive `AgentEvent` variant, which the existing
 decoder fallback already tolerate. The client would gate prediction on it the
 way it gates on `set_alt_screen`. That is a wire change with its own spec and
 changelog entry, and it is the earmarked successor to this amendment.
+
+## Amendment — 2026-09-13: display TTL follows confirmed echo RTT
+
+**What changed.** The fixed one-second display lifetime is now the floor and
+no-sample fallback. Each timestamped reconcile that confirms a non-blank
+insert contributes its queue-to-confirm interval to an SRTT estimate with
+RFC 6298's alpha (`0.125`). The active lifetime is `2 × SRTT`, clamped to
+`1..=5` seconds. Clockless calls, blank inserts, backspace, cursor motion,
+newline, pending cells, and contradictions contribute no sample.
+
+**Ownership and resets.** SRTT is a link estimate, not screen state. It
+survives screen transitions, viewport changes, resync clears, and
+contradictions even though those events still clear prediction anchors and
+echo evidence. Hosts stamp prediction and reconciliation from the same
+monotonic origin; the legacy reconcile entry point remains clockless and
+therefore cannot alter the estimate.
+
+**Why.** The fixed timeout hid every later prediction before a confirmed
+1.5-second cellular echo could arrive, preventing the display policy from
+adapting to exactly the slow links it serves. Twice the smoothed interval
+leaves jitter headroom without allowing one outlier to keep a ghost alive
+unboundedly. This is client policy only and changes no protocol bytes.

@@ -38,7 +38,7 @@ pub mod window;
 pub mod ws;
 
 pub use quic::QuicDial;
-pub use tls::CertTrust;
+pub use tls::{CertTrust, TlsClientIdentity};
 pub use window::{SendWindow, TrackedSend};
 pub use ws::{WsDial, WsTarget};
 

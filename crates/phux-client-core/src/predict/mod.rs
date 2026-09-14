@@ -169,5 +169,7 @@ mod reconcile;
 mod state;
 
 pub use overlay::Overlay;
-pub use reconcile::{ReconcileStats, reconcile_terminal_output_per_cell};
+pub use reconcile::{
+    ReconcileStats, reconcile_terminal_output_per_cell, reconcile_terminal_output_per_cell_at,
+};
 pub use state::{Prediction, PredictionKind, PredictionOutcome, PredictionState, PredictiveConfig};

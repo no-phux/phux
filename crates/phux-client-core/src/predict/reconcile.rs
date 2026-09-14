@@ -72,6 +72,26 @@ pub fn reconcile_terminal_output_per_cell<F>(
     state: &mut PredictionState,
     cursor_row: u16,
     cursor_col: u16,
+    read_cell: F,
+) -> ReconcileStats
+where
+    F: FnMut(u16, u16) -> Option<String>,
+{
+    reconcile_terminal_output_per_cell_at(state, cursor_row, cursor_col, 0, read_cell)
+}
+
+/// Timestamped per-cell reconcile.
+///
+/// This is the production entry point for hosts with a monotonic clock. The
+/// same clock origin must be used for `now_ms` and the `*_at` prediction call
+/// that stamped each queued guess. Confirmed non-blank inserts feed the
+/// predictor's smoothed echo RTT; blank inserts, other prediction kinds,
+/// missing clocks, and contradictions never do.
+pub fn reconcile_terminal_output_per_cell_at<F>(
+    state: &mut PredictionState,
+    cursor_row: u16,
+    cursor_col: u16,
+    now_ms: u64,
     mut read_cell: F,
 ) -> ReconcileStats
 where
@@ -84,6 +104,7 @@ where
         let col;
         let kind;
         let predicted;
+        let queued_at_ms;
         {
             let Some(front) = state.front() else {
                 break;
@@ -94,21 +115,18 @@ where
             // Clone the predicted cluster so the `read_cell` closure (which
             // mutably borrows the grid) can run without holding `front`.
             predicted = front.text.clone();
+            queued_at_ms = front.queued_at_ms;
         }
 
-        let verdict = match kind {
-            PredictionKind::Insert => {
-                let actual = read_cell(row, col);
-                classify_insert(&predicted, actual.as_deref())
-            }
-            PredictionKind::BackspaceEol => {
-                let actual = read_cell(row, col);
-                classify_backspace(actual.as_deref())
-            }
-            PredictionKind::Newline => classify_newline(row, cursor_row),
-            PredictionKind::CursorLeft => classify_cursor_left(row, col, cursor_row, cursor_col),
-            PredictionKind::CursorRight => classify_cursor_right(row, col, cursor_row, cursor_col),
-        };
+        let verdict = classify_prediction(
+            kind,
+            row,
+            col,
+            &predicted,
+            cursor_row,
+            cursor_col,
+            &mut read_cell,
+        );
 
         match verdict {
             Verdict::Confirmed => {
@@ -119,7 +137,7 @@ where
                 // app (space is page-down in less, pause in htop), so it
                 // must not unlock alt-screen display.
                 if kind == PredictionKind::Insert && predicted != " " {
-                    state.confirm_echo();
+                    state.confirm_echo_at(queued_at_ms, now_ms);
                 }
                 let _ = state.pop_front();
             }
@@ -160,6 +178,33 @@ enum Verdict {
     Confirmed,
     Pending,
     Contradicted,
+}
+
+fn classify_prediction<F>(
+    kind: PredictionKind,
+    row: u16,
+    col: u16,
+    predicted: &str,
+    cursor_row: u16,
+    cursor_col: u16,
+    read_cell: &mut F,
+) -> Verdict
+where
+    F: FnMut(u16, u16) -> Option<String>,
+{
+    match kind {
+        PredictionKind::Insert => {
+            let actual = read_cell(row, col);
+            classify_insert(predicted, actual.as_deref())
+        }
+        PredictionKind::BackspaceEol => {
+            let actual = read_cell(row, col);
+            classify_backspace(actual.as_deref())
+        }
+        PredictionKind::Newline => classify_newline(row, cursor_row),
+        PredictionKind::CursorLeft => classify_cursor_left(row, col, cursor_row, cursor_col),
+        PredictionKind::CursorRight => classify_cursor_right(row, col, cursor_row, cursor_col),
+    }
 }
 
 fn classify_insert(predicted: &str, actual: Option<&str>) -> Verdict {
@@ -808,5 +853,88 @@ mod tests {
         reconcile_terminal_output_per_cell(&mut s, 0, 1, row_reader(&[((0, 0), "a")]));
         s.predict_key_at(&key_text("b"), 2_500);
         assert!(s.should_display(2_510), "fresh front displays again");
+    }
+
+    // -- SRTT-adaptive display TTL -------------------------------------
+
+    fn confirm_insert_at(
+        state: &mut PredictionState,
+        text: &str,
+        queued_at_ms: u64,
+        confirmed_at_ms: u64,
+    ) {
+        state.set_cursor(0, 0);
+        assert_eq!(
+            state.predict_key_at(&key_text(text), queued_at_ms),
+            PredictionOutcome::Predicted
+        );
+        let cells = [((0, 0), text)];
+        let result =
+            reconcile_terminal_output_per_cell_at(state, 0, 1, confirmed_at_ms, row_reader(&cells));
+        assert_eq!(result.confirmed, 1);
+    }
+
+    #[test]
+    fn slow_confirmed_echo_stretches_the_display_ttl() {
+        let mut state = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        confirm_insert_at(&mut state, "a", 100, 1_600);
+        assert_eq!(state.display_ttl_ms(), 3_000);
+        state.set_cursor(0, 1);
+        state.predict_key_at(&key_text("b"), 10_000);
+        assert!(state.should_display(13_000));
+        assert!(!state.should_display(13_001));
+    }
+
+    #[test]
+    fn ttl_has_floor_cap_and_one_eighth_ewma_gain() {
+        let mut fast = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        confirm_insert_at(&mut fast, "a", 100, 150);
+        assert_eq!(fast.display_ttl_ms(), 1_000, "fast sample stays floored");
+
+        let mut capped = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        confirm_insert_at(&mut capped, "a", 100, 60_100);
+        assert_eq!(
+            capped.display_ttl_ms(),
+            5_000,
+            "pathological sample is capped"
+        );
+
+        let mut smooth = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        confirm_insert_at(&mut smooth, "a", 100, 1_100);
+        confirm_insert_at(&mut smooth, "b", 2_000, 4_000);
+        assert_eq!(smooth.display_ttl_ms(), 2_250, "SRTT is 1125 ms");
+    }
+
+    #[test]
+    fn blank_clockless_and_backwards_confirms_do_not_sample() {
+        let mut state = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+
+        confirm_insert_at(&mut state, " ", 100, 9_000);
+        confirm_insert_at(&mut state, "a", 0, 9_500);
+        confirm_insert_at(&mut state, "b", 10_000, 9_999);
+
+        assert_eq!(state.display_ttl_ms(), 1_000);
+    }
+
+    #[test]
+    fn srtt_survives_screen_clear_resize_and_contradiction() {
+        let mut state = PredictionState::new(PredictiveConfig::enabled(), 80, 24);
+        confirm_insert_at(&mut state, "a", 100, 2_100);
+        assert_eq!(state.display_ttl_ms(), 4_000);
+
+        state.set_alt_screen(true);
+        state.clear();
+        state.set_viewport(100, 30);
+        state.set_cursor(0, 0);
+        state.predict_key_at(&key_text("x"), 3_000);
+        let _ = reconcile_terminal_output_per_cell_at(
+            &mut state,
+            0,
+            1,
+            3_100,
+            row_reader(&[((0, 0), "X")]),
+        );
+
+        assert_eq!(state.display_ttl_ms(), 4_000);
     }
 }

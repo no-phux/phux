@@ -29,6 +29,52 @@ out-of-tree host that wants a C ABI rather than a CLI subprocess — use
 native C ABI over the `phux-client-core` session kernel, not a crates.io
 SDK.
 
+Rust native adapters that provide their own ABI layer may depend directly on
+two narrower crates instead of importing `phux-client` or its C ABI:
+
+- `phux-client-core` owns synchronous stream state (`SessionKernel`),
+  predictive reconciliation, and `input_replay::InputReplayJournal`.
+- `phux-dial` owns native QUIC/WebSocket establishment and pinned TLS, ending
+  at an opaque byte stream.
+
+This is intentionally not a socket/session runtime. The host owns its async
+executor, reconnect loop, frame reader/writer, credentials, monotonic clock,
+operation-id CSPRNG, and UI delivery. It feeds decoded kernel inputs through
+`SessionKernel::update_at`, executes the returned effects without re-entering
+the update, and keeps the kernel's replica state alive across UI projections.
+Topology browsing is a normal state projection; no native server engine is
+imported into the browser-safe core.
+
+For acknowledged input, keep one `InputReplayJournal` across reconnects. Mint
+one non-zero 128-bit id per user action, call `submit_at` with the immutable
+event batch and host monotonic time, send each `next_frames_at` result in
+order, roll back only the suffix never handed to transport, and pass owned
+command results to `resolve`. Call `connection_lost`, then
+`begin_connection_at` with the negotiated server incarnation and
+`ACKNOWLEDGED_INPUT` capability. Never journal fire-and-forget raw input. The
+journal enforces per-Terminal ordering, bounded retention, same-incarnation
+replay, and the ten-minute dedupe horizon; its `Unknown` versus `Refused`
+report is the UI's safe-to-retype boundary.
+
+For a mobile WSS dial, construct `WsDial` with `CertTrust::Pinned` and call
+`phux_dial::ws::dial_with_identity(..., &TlsClientIdentity::None)`. That path
+never reads `PHUX_WORKLOAD_CERT` or `PHUX_WORKLOAD_KEY`; a host that really
+owns an mTLS identity can instead pass explicit `PemFiles` paths. The returned
+WebSocket is still only transport. The adapter owns HELLO negotiation, frame
+flow, reconnect timing, and delivery into `SessionKernel`.
+
+Cockpit remains the first-class C consumer of the same seams. Its Zig provider
+calls `phux-client-ffi`, which is a thin native-engine adapter over
+`SessionKernel`; its remote tunnel already delegates establishment to
+`phux-dial`. Do not route that C ABI through a mobile UniFFI wrapper. Cockpit's
+current key, mouse, focus, and paste calls intentionally use the kernel's raw
+`KernelAction::Input` path: they are latency-sensitive, fire-and-forget input
+and therefore must not enter the acknowledged replay journal. Cockpit does not
+currently paint predictive cells, so it has no second predictor policy. If
+either acknowledged reconnect replay or predictive paint is added to that UI,
+the C exports must adapt `phux-client-core::input_replay` or `predict` directly
+rather than reimplementing either state machine in Zig.
+
 Its transport operations speak **L1**, the terminal substrate
 ([`../spec/L1.md`](../spec/L1.md)): terminal lifecycle, input atoms,
 snapshots, and events. The crate also contains client-side L3 helpers

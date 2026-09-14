@@ -1547,7 +1547,9 @@ async fn dispatch_queues_paste_then_paste_then_enter_in_terminal_order() {
 
 #[tokio::test]
 async fn replay_send_failure_rolls_back_frames_not_handed_to_the_connection() {
-    use crate::attach::input_replay::{InputReplayJournal, ReplayDisposition};
+    use crate::attach::input_replay::{
+        InputReplayJournal, ReplayDisposition, mint_input_operation_id,
+    };
     use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 
     let journal = std::cell::RefCell::new(InputReplayJournal::new());
@@ -1561,6 +1563,7 @@ async fn replay_send_failure_rolls_back_frames_not_handed_to_the_connection() {
         journal
             .borrow_mut()
             .submit(
+                mint_input_operation_id(),
                 tid(terminal),
                 vec![InputEvent::Paste(PasteEvent {
                     trust: PasteTrust::Trusted,
