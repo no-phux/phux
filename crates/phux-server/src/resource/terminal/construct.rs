@@ -6,14 +6,13 @@
 use super::{
     CancellationToken, CanonicalTerminal, Cell, ColorQueryScanner, CommandBuilder,
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_CELL_PX,
-    DEFAULT_INPUT_MAILBOX, DEFAULT_OUTPUT_BROADCAST, DEFAULT_SCROLLBACK, EncodedInputRequest,
-    GhosttyTerminal, HashMap, InputEncoderSnapshot, NativeRequestReceivers,
-    PerTerminalFocusEncoder, PerTerminalKeyEncoder, PerTerminalMouseEncoder,
-    PerTerminalPasteEncoder, PtyEvent, PtyOwned, PtySource, Rc, RefCell, ResourceCore,
-    ResourceFacetHandle, ResourceHandle, ResourceKind, ResourceLifecycle, SizeReportSize,
-    SnapshotSynthesizer, TerminalActor, TerminalActorBundle, TerminalActorError, TerminalHandle,
-    VecDeque, adopt_pty, color_query_reply, default_shell_command, mpsc, osc133, resolve_shell,
-    spawn_pty, watch,
+    DEFAULT_INPUT_MAILBOX, DEFAULT_SCROLLBACK, EncodedInputRequest, GhosttyTerminal, HashMap,
+    InputEncoderSnapshot, NativeRequestReceivers, PerTerminalFocusEncoder, PerTerminalKeyEncoder,
+    PerTerminalMouseEncoder, PerTerminalPasteEncoder, PtyEvent, PtyOwned, PtySource, Rc, RefCell,
+    ResourceCore, ResourceFacetHandle, ResourceHandle, ResourceKind, ResourceLifecycle,
+    SizeReportSize, SnapshotSynthesizer, TerminalActor, TerminalActorBundle, TerminalActorError,
+    TerminalHandle, VecDeque, adopt_pty, color_query_reply, default_shell_command, mpsc, osc133,
+    resolve_shell, spawn_pty, watch,
 };
 use phux_config::ScrollbackLimits;
 
@@ -231,7 +230,7 @@ impl TerminalActor {
             ResourceKind::Terminal,
             None,
             token,
-            DEFAULT_OUTPUT_BROADCAST,
+            crate::resource::output_broadcast_capacity(),
         );
 
         let (pty_rx, pty_tx, pty) = initialize_pty(pty_source, cols, rows)?;
