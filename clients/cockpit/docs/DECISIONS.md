@@ -407,11 +407,12 @@ starved glyphs to 3840. Hybrid C gives the focused pane the full 96 rows
 and an honest thumbnail to the rest.
 
 The SDK painter emits top-first and drops the bottom. Leftover-budget
-truncation is therefore **first-N**, which hides the prompt. **Last-N
-crop** (snapshot the last `allowance/cols` rows, adjust cursor) is the
-intended degraded meaning and does not need a pin bump; it is not in this
-change. Thumbnail / lower glyph density is the mechanical day-one
-degraded tier.
+truncation without a crop is therefore **first-N**, which hides the
+prompt. **Last-N crop** is the shipped degraded meaning: snapshot the
+last `min(allowance/cols, max_rows/4)` rows, move cursor and select-head
+with the crop (drop them when they sit above it), then paint. No pin
+bump. Thumbnail / lower glyph density is still the mechanical budget;
+last-N is which rows those cells show.
 
 `scripts/drive-shell-ceiling.sh` is live macOS PTY evidence (~2.7 MiB rss
 per shell, `max_effect_ptys`). It is not a paint bind. Linux hosts cannot
@@ -460,8 +461,17 @@ Text 65536 → 131072 is +64 KiB x2 x views: +640 KiB across 5 windows.
 After a 4x cell bump, leftover after one full pane is 100352. Without the
 7680 cap, three unfocused panes would each get ~33k cells and paint full,
 which contradicts the tier. The cap is what keeps "degraded" meaning
-degraded once the store can hold 2–4 full grids. Last-N crop should use
-the same row cap (`max_rows/4`).
+degraded once the store can hold 2–4 full grids. Last-N crop uses the
+same row cap (`max_rows/4`) and, on this pin, the leftover cell share
+when that is smaller (6 rows at N=2).
+
+### Last-N crop (shipped)
+
+**Decided 2026-09-14, Metal follow-up to Hybrid C.** First-N that hides
+the prompt is not the lasting tier. `src/terminal/render.zig` crops the
+snapshot (`row_fit = .last_n`) before the SDK painter runs. Production
+Hybrid C always sets that fit; `grid.paint` callers keep the default
+`from_top` so existing tests still see SDK first-N. No pin bump.
 
 ### What Metal must approve before `phall1/native` pin bump
 
@@ -469,8 +479,8 @@ the same row cap (`max_rows/4`).
    panes).
 2. Text ceiling 65536 → **131072**, or keep if unique-CJK is out of scope.
 3. Glyphs/commands/paths stay, unless measurement after (1) shows a new bind.
-4. Degraded meaning: leftover-budget first-N (shipped) vs **last-N crop**
-   vs a true thumbnail. Recommended: last-N at `max_rows/4`.
+4. Degraded meaning is **last-N crop** at `max_rows/4` (shipped). A true
+   thumbnail / lower glyph density remains a later product choice.
 5. Inactive windows stay all-degraded day one; multi-window full escape later.
 6. `atlas_variants_per_glyph=4` stays.
 7. Cockpit keeps deriving constants — no literals in the painter.

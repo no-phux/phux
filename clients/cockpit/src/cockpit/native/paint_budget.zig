@@ -7,8 +7,9 @@
 //!   * focused pane of the active window: full product grid, if the store
 //!     still has one after holding degraded shares for later panes;
 //!   * every other pane, and every pane in an inactive window: degraded —
-//!     leftover after the full pane(s), capped at a last-N thumbnail of
-//!     `max_rows / 4` rows at `max_cols`;
+//!     leftover after the full pane(s), cropped last-N at
+//!     `max_rows / 4` rows at `max_cols` (SDK first-N that hides the
+//!     prompt is not the lasting tier);
 //!   * glyphs are not an equal cut with no slack. Focused takes what remains
 //!     after degraded holds. Commands/text/paths keep forward-slack inside
 //!     a tier so a later full pane cannot be stolen by an earlier thumbnail;
@@ -68,6 +69,15 @@ pub const Allocation = struct {
     path_reserve: usize,
     glyph_budget: usize,
     cell_reserve: usize,
+
+    /// Extra last-N row ceiling. Full panes take the cell store only;
+    /// degraded panes never keep more than `max_rows / 4`.
+    pub fn rowCap(self: Allocation) usize {
+        return switch (self.fidelity) {
+            .full => 0,
+            .degraded => degraded_rows,
+        };
+    }
 };
 
 pub const Plan = struct {
@@ -94,7 +104,13 @@ pub const Plan = struct {
         const command_budget = prologue + command_envelope - @min(command_envelope, held_commands);
         const text_reserve = widget_text_reserve + remaining.full * self.full_text_share + remaining.degraded * self.degraded_text_share + self.unused_text;
         const path_reserve = widget_path_reserve + remaining.full * self.full_path_share + remaining.degraded * self.degraded_path_share + self.unused_paths;
-        const cell_reserve = remaining.full * full_cells + remaining.degraded * self.degraded_cell_share + self.unused_cells;
+        // Unused leftover is held so a later thumbnail cannot spend the
+        // rest of the store. A last (or only) full pane is not a
+        // thumbnail: it keeps that slack. A last degraded pane still holds
+        // it, or leftover after the 24-row cap would paint nearly full.
+        const hold_unused = remaining.full + remaining.degraded > 0 or fidelity == .degraded;
+        const cell_reserve = remaining.full * full_cells + remaining.degraded * self.degraded_cell_share +
+            if (hold_unused) self.unused_cells else 0;
         const this_glyphs = switch (fidelity) {
             .full => self.full_glyph_share,
             .degraded => self.degraded_glyph_share,
@@ -209,6 +225,18 @@ pub fn equalCutGlyphShare(pane_count: usize) usize {
     return glyph_budget / @max(@as(usize, 1), pane_count);
 }
 
+/// Trailing rows a pane may keep under last-N crop. Full panes are bounded
+/// only by the cell store; degraded panes are also capped at `degraded_rows`.
+pub fn keepRows(fidelity: Fidelity, cols: usize, source_rows: usize, cell_reserve: usize, cells_used: usize) usize {
+    const cells_available = cell_store -| cell_reserve -| cells_used;
+    const by_cells = if (cols == 0) source_rows else cells_available / cols;
+    const cap = switch (fidelity) {
+        .full => source_rows,
+        .degraded => @min(source_rows, degraded_rows),
+    };
+    return @min(cap, by_cells);
+}
+
 test "a lone active pane keeps the whole cell store" {
     const testing = @import("std").testing;
     const planned = plan(.{
@@ -295,4 +323,32 @@ test "the current pin does not hold two full product grids, nor sixteen" {
     try testing.expectEqual(@as(usize, 1), maxFullPanesThatFit());
     try testing.expect(maxFullPanesThatFit() < layout.max_panes);
     try testing.expectEqual(grid.max_cols * grid.max_rows, grid.max_cells);
+}
+
+test "degraded last-n on this pin keeps six trailing rows at 320, not the top 24" {
+    const testing = @import("std").testing;
+    const leftover = cell_store - full_cells;
+    try testing.expectEqual(@as(usize, 6), leftover / grid.max_cols);
+    try testing.expectEqual(
+        @as(usize, 6),
+        keepRows(.degraded, grid.max_cols, grid.max_rows, 0, full_cells),
+    );
+    try testing.expect(keepRows(.degraded, grid.max_cols, grid.max_rows, 0, full_cells) < degraded_rows);
+
+    const inactive = plan(.{
+        .window_active = false,
+        .pane_count = 2,
+        .focused = &.{ true, false },
+    });
+    const first = inactive.forPane(0, 0);
+    try testing.expectEqual(degraded_rows, first.rowCap());
+    try testing.expectEqual(
+        degraded_rows,
+        keepRows(.degraded, grid.max_cols, grid.max_rows, first.cell_reserve, 0),
+    );
+    try testing.expectEqual(@as(usize, 0), plan(.{
+        .window_active = true,
+        .pane_count = 1,
+        .focused = &.{true},
+    }).forPane(0, 0).rowCap());
 }

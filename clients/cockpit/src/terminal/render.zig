@@ -54,6 +54,17 @@ pub fn idNamespaceOf(id: u64) u64 {
 
 pub const cursor_command_id: u64 = cursorCommandId(grid_id_base);
 
+/// How a grid that does not fit the cell budget is reduced before paint.
+/// The SDK painter itself is top-first: it emits rows 0..N and drops the
+/// rest, which hides the prompt. Hybrid C degraded panes must not keep
+/// that as the lasting tier.
+pub const RowFit = enum {
+    /// Leave the snapshot alone. Truncation is SDK first-N.
+    from_top,
+    /// Crop to the trailing rows that fit, then paint. The prompt stays.
+    last_n,
+};
+
 pub const PaintOptions = struct {
     frame: geometry.RectF,
     tokens: canvas.DesignTokens,
@@ -72,6 +83,14 @@ pub const PaintOptions = struct {
     /// the glass — the command envelope only prices box geometry and
     /// selection washes. Zero leaves it unbounded.
     cell_reserve: usize = 0,
+    /// Default `from_top` preserves existing `grid.paint` callers. The
+    /// Hybrid C window painter sets `last_n` so a truncated pane keeps
+    /// the trailing rows (the prompt), not the top of the scrollback.
+    row_fit: RowFit = .from_top,
+    /// Extra row ceiling applied when `row_fit == .last_n`. Zero means
+    /// only the cell store / `cell_reserve` bound the crop. Degraded
+    /// panes pass `max_rows / 4`.
+    row_cap: usize = 0,
     /// The user's client-side `minimum-contrast`, for every provider. Resolve
     /// terminal defaults, application colors, inverse and faint first; apply
     /// the floor to those final colors without changing the source grid.
@@ -110,9 +129,13 @@ pub fn paint(session: *Session, builder: *canvas.Builder, options: PaintOptions)
 /// Paint an already-projected provider grid with the same budgets and retained
 /// identity behavior as a local session.
 pub fn paintTerminalGrid(terminal_grid: canvas.TerminalGrid, builder: *canvas.Builder, options: PaintOptions) !void {
+    const fitted = switch (options.row_fit) {
+        .from_top => terminal_grid,
+        .last_n => cropToFit(terminal_grid, builder, options),
+    };
     const first_command = builder.len;
     const first_cell = builder.cell_len;
-    try canvas.terminal_grid.paint(terminal_grid, builder, .{
+    try canvas.terminal_grid.paint(fitted, builder, .{
         .frame = options.frame,
         .tokens = options.tokens,
         .focused = options.focused,
@@ -124,7 +147,58 @@ pub fn paintTerminalGrid(terminal_grid: canvas.TerminalGrid, builder: *canvas.Bu
         .glyph_budget = options.glyph_budget,
         .cell_reserve = options.cell_reserve,
     });
-    applyContrast(terminal_grid, builder, options.minimum_contrast, first_command, first_cell);
+    applyContrast(fitted, builder, options.minimum_contrast, first_command, first_cell);
+}
+
+fn gridCols(grid: canvas.TerminalGrid) usize {
+    var cols: usize = 0;
+    for (grid.rows) |row| cols = @max(cols, row.cells.len);
+    return cols;
+}
+
+fn shiftY(y: u16, skip: usize) ?u16 {
+    if (@as(usize, y) < skip) return null;
+    return @intCast(@as(usize, y) - skip);
+}
+
+/// Keep the trailing `keep_rows` of `grid`, moving cursor and select-head
+/// with the crop. Rows above the crop drop those overlays rather than
+/// leave them floating on the wrong line.
+pub fn cropLastN(grid: canvas.TerminalGrid, keep_rows: usize) canvas.TerminalGrid {
+    if (keep_rows >= grid.rows.len) return grid;
+    const skip = grid.rows.len - keep_rows;
+    var cropped = grid;
+    cropped.rows = grid.rows[skip..];
+    if (cropped.cursor) |cursor| {
+        cropped.cursor = if (shiftY(cursor.y, skip)) |y| blk: {
+            var moved = cursor;
+            moved.y = y;
+            break :blk moved;
+        } else null;
+    }
+    if (cropped.select_head) |head| {
+        cropped.select_head = if (shiftY(head.y, skip)) |y|
+            .{ .x = head.x, .y = y }
+        else
+            null;
+    }
+    if (cropped.scrollbar.total != 0 or cropped.scrollbar.len != 0) {
+        cropped.scrollbar.offset +|= @intCast(skip);
+        cropped.scrollbar.len = @intCast(keep_rows);
+    }
+    return cropped;
+}
+
+/// Last-N crop sized to the cells this paint can still take, then
+/// `options.row_cap` if set. Used by degraded Hybrid C panes.
+pub fn cropToFit(grid: canvas.TerminalGrid, builder: *const canvas.Builder, options: PaintOptions) canvas.TerminalGrid {
+    const cols = gridCols(grid);
+    const cell_ceiling = builder.cells.len -| options.cell_reserve;
+    const cells_available = cell_ceiling -| builder.cell_len;
+    const by_cells = if (cols == 0) grid.rows.len else cells_available / cols;
+    var keep = @min(grid.rows.len, by_cells);
+    if (options.row_cap > 0) keep = @min(keep, options.row_cap);
+    return cropLastN(grid, keep);
 }
 
 /// The SDK stages contiguous, row-atomic cells in builder-owned storage. Apply
@@ -153,4 +227,117 @@ fn contrastRow(row: canvas.TerminalRow, background: canvas.Color, cells: []canva
         // existing WCAG algorithm and its graphics exclusions.
         cell.fg = canvas.CellColor.fromColor(Palette.contrasted(floor, source.fg, source.bg orelse background, source.cp));
     }
+}
+
+test "cropLastN keeps the trailing rows and moves the cursor with them" {
+    const testing = @import("std").testing;
+    const marks = [_][]const u8{ "0", "1", "2", "3", "4", "5", "6", "7" };
+    var cells: [8]canvas.TerminalCell = undefined;
+    var rows: [8]canvas.TerminalRow = undefined;
+    for (marks, 0..) |mark, index| {
+        cells[index] = .{ .cp = mark[0], .cluster = mark };
+        rows[index] = .{ .cells = cells[index .. index + 1] };
+    }
+    const source: canvas.TerminalGrid = .{
+        .rows = &rows,
+        .background = canvas.Color.rgb8(0, 0, 0),
+        .foreground = canvas.Color.rgb8(255, 255, 255),
+        .cursor_color = canvas.Color.rgb8(255, 255, 255),
+        .selection_color = canvas.Color.rgb8(80, 80, 80),
+        .cursor = .{ .x = 0, .y = 7 },
+        .select_head = .{ .x = 0, .y = 1 },
+        .scrollbar = .{ .offset = 10, .len = 8, .total = 40 },
+    };
+
+    const cropped = cropLastN(source, 3);
+    try testing.expectEqual(@as(usize, 3), cropped.rows.len);
+    try testing.expectEqual(@as(u21, '5'), cropped.rows[0].cells[0].cp);
+    try testing.expectEqual(@as(u21, '7'), cropped.rows[2].cells[0].cp);
+    try testing.expectEqual(@as(u16, 2), cropped.cursor.?.y);
+    try testing.expect(cropped.select_head == null);
+    try testing.expectEqual(@as(u32, 15), cropped.scrollbar.offset);
+    try testing.expectEqual(@as(u32, 3), cropped.scrollbar.len);
+
+    const unchanged = cropLastN(source, source.rows.len);
+    try testing.expectEqual(source.rows.len, unchanged.rows.len);
+    try testing.expectEqual(@as(u16, 7), unchanged.cursor.?.y);
+}
+
+test "last_n paint keeps the prompt row that from_top drops" {
+    const testing = @import("std").testing;
+    const marks = [_][]const u8{ "T", "x", "x", "x", "x", "x", "x", "P" };
+    var cells: [8]canvas.TerminalCell = undefined;
+    var rows: [8]canvas.TerminalRow = undefined;
+    for (marks, 0..) |mark, index| {
+        cells[index] = .{ .cp = mark[0], .cluster = mark };
+        rows[index] = .{ .cells = cells[index .. index + 1] };
+    }
+    const source: canvas.TerminalGrid = .{
+        .rows = &rows,
+        .background = canvas.Color.rgb8(9, 11, 15),
+        .foreground = canvas.Color.rgb8(255, 255, 255),
+        .cursor_color = canvas.Color.rgb8(255, 255, 255),
+        .selection_color = canvas.Color.rgb8(80, 80, 80),
+    };
+
+    const builder = try testing.allocator.create(canvas.Builder);
+    defer testing.allocator.destroy(builder);
+    var commands: [64]canvas.CanvasCommand = undefined;
+    builder.initAt(&commands);
+    const keep_rows: usize = 3;
+    const cell_reserve = builder.cells.len - keep_rows;
+    const frame = geometry.RectF.init(0, 0, 8000, 4000);
+    const base = PaintOptions{
+        .frame = frame,
+        .tokens = .{},
+        .running = true,
+        .selecting = false,
+        .cell_reserve = cell_reserve,
+    };
+
+    var from_top = base;
+    from_top.row_fit = .from_top;
+    try paintTerminalGrid(source, builder, from_top);
+    try testing.expectEqual(@as(u21, 'T'), firstPaintedCp(builder));
+    try testing.expect(lastPaintedCp(builder) != 'P');
+
+    builder.reset();
+    var last_n = base;
+    last_n.row_fit = .last_n;
+    try paintTerminalGrid(source, builder, last_n);
+    try testing.expect(firstPaintedCp(builder) != 'T');
+    try testing.expectEqual(@as(u21, 'P'), lastPaintedCp(builder));
+}
+
+fn firstPaintedCp(builder: *const canvas.Builder) u21 {
+    for (builder.displayList().commands) |command| {
+        switch (command) {
+            .cell_grid => |grid_cmd| {
+                if (grid_cmd.cells.len == 0) continue;
+                return clusterCp(grid_cmd, grid_cmd.cells[0]);
+            },
+            else => {},
+        }
+    }
+    return 0;
+}
+
+fn lastPaintedCp(builder: *const canvas.Builder) u21 {
+    var last: u21 = 0;
+    for (builder.displayList().commands) |command| {
+        switch (command) {
+            .cell_grid => |grid_cmd| {
+                if (grid_cmd.cells.len == 0) continue;
+                last = clusterCp(grid_cmd, grid_cmd.cells[0]);
+            },
+            else => {},
+        }
+    }
+    return last;
+}
+
+fn clusterCp(grid_cmd: canvas.CellGrid, cell: canvas.Cell) u21 {
+    if (cell.text_len == 0) return 0;
+    const bytes = grid_cmd.text[cell.text_offset..][0..cell.text_len];
+    return bytes[0];
 }

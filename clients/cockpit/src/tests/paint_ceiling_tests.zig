@@ -74,13 +74,19 @@ fn destroyBuilder(gpa: std.mem.Allocator, builder: *canvas.Builder) void {
 
 fn paintUnbounded(builder: *canvas.Builder, session: *grid.Session, id_base: u64) !Use {
     builder.* = canvas.Builder.init(builder.commands);
-    try grid.paint(session, builder, .{
+    grid.paint(session, builder, .{
         .frame = huge_frame,
         .tokens = .{},
         .running = true,
         .selecting = false,
         .id_base = id_base,
-    });
+    }) catch |err| switch (err) {
+        // Box-drawing at 40x24 already overflows the command store
+        // (8 cmds/cell). That overflow is the bind this measurement is
+        // for; do not fail the suite on the SDK's hard DisplayListFull.
+        error.DisplayListFull => {},
+        else => return err,
+    };
     return capture(builder);
 }
 
@@ -293,6 +299,8 @@ fn paintFleet(
             .glyph_budget = alloc.glyph_budget,
             .path_reserve = alloc.path_reserve,
             .cell_reserve = alloc.cell_reserve,
+            .row_fit = if (kind == .hybrid) .last_n else .from_top,
+            .row_cap = if (kind == .hybrid) alloc.rowCap() else 0,
             .id_base = grid.paneIdBase(index),
         });
         const view = support.findPaneCellGrid(builder.displayList(), index);
@@ -390,6 +398,67 @@ test "Hybrid C painter gives the focused split more cells than equal-cut" {
     try testing.expect(neighbour_cells < paint_budget.equalCutCellShare(4));
     try testing.expect(neighbour_cells <= paint_budget.degraded_cell_cap);
     try testing.expect(focused.cellCount() > paint_budget.equalCutCellShare(4));
+}
+
+fn rowMark(row: usize) u8 {
+    return 'A' + @as(u8, @intCast(row % 26));
+}
+
+fn feedIndexedRows(session: *grid.Session, cols: usize, rows: usize) void {
+    var cup: [32]u8 = undefined;
+    var line: [512]u8 = undefined;
+    const width = @min(cols, line.len);
+    session.feed("\x1b[2J\x1b[H");
+    for (0..rows) |row| {
+        const seq = std.fmt.bufPrint(&cup, "\x1b[{d};1H", .{row + 1}) catch continue;
+        session.feed(seq);
+        @memset(line[0..width], rowMark(row));
+        session.feed(line[0..width]);
+    }
+}
+
+test "Hybrid C degraded pane keeps the last-N prompt, not the first-N top" {
+    const gpa = testing.allocator;
+    const sessions = try gpa.alloc(*grid.Session, 2);
+    var created: usize = 0;
+    errdefer {
+        for (sessions[0..created]) |session| session.destroy();
+        gpa.free(sessions);
+    }
+    while (created < sessions.len) : (created += 1) {
+        const session = try createSession(product_cols, product_rows);
+        feedIndexedRows(session, grid.max_cols, grid.max_rows);
+        sessions[created] = session;
+    }
+    defer destroySessions(sessions);
+
+    const builder = try heapBuilder(gpa);
+    defer destroyBuilder(gpa, builder);
+    try paintFleet(builder, sessions, .hybrid, 0);
+
+    const focused = support.findPaneCellGrid(builder.displayList(), 0) orelse return error.MissingFocusedPane;
+    try testing.expectEqual(grid.max_rows, focused.rows());
+    try testing.expectEqual(@as(usize, 1), focused.cluster(0, 0).len);
+    try testing.expectEqual(@as(u8, 'A'), focused.cluster(0, 0)[0]);
+    try testing.expectEqual(@as(usize, 1), focused.cluster(0, focused.rows() - 1).len);
+    try testing.expectEqual(rowMark(grid.max_rows - 1), focused.cluster(0, focused.rows() - 1)[0]);
+
+    const neighbour = support.findPaneCellGrid(builder.displayList(), 1) orelse return error.MissingDegradedPane;
+    const keep = paint_budget.keepRows(
+        .degraded,
+        grid.max_cols,
+        grid.max_rows,
+        0,
+        paint_budget.full_cells,
+    );
+    try testing.expectEqual(keep, neighbour.rows());
+    try testing.expect(keep < grid.max_rows);
+    try testing.expect(keep < paint_budget.degraded_rows);
+    try testing.expectEqual(@as(usize, 1), neighbour.cluster(0, 0).len);
+    try testing.expectEqual(@as(usize, 1), neighbour.cluster(0, neighbour.rows() - 1).len);
+    try testing.expectEqual(rowMark(grid.max_rows - keep), neighbour.cluster(0, 0)[0]);
+    try testing.expectEqual(rowMark(grid.max_rows - 1), neighbour.cluster(0, neighbour.rows() - 1)[0]);
+    try testing.expect(neighbour.cluster(0, 0)[0] != 'A');
 }
 
 fn splitUntil(state: *TerminalApp, harness: anytype, want: usize) !void {
