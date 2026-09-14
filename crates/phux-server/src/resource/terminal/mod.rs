@@ -390,12 +390,16 @@ const PANE_KILL_POLL: std::time::Duration = std::time::Duration::from_millis(20)
 /// sleep: a child that dies on the hangup returns on the first poll. Tests
 /// may stretch the ceiling so a starved SIGHUP trap can still flush
 /// (phux-7n1g).
-fn pane_kill_grace() -> std::time::Duration {
-    #[cfg(test)]
-    if let Some(over) = PANE_KILL_GRACE_OVERRIDE.with(Cell::get) {
-        return over;
-    }
+#[cfg(not(test))]
+const fn pane_kill_grace() -> std::time::Duration {
     PANE_KILL_GRACE
+}
+
+#[cfg(test)]
+fn pane_kill_grace() -> std::time::Duration {
+    PANE_KILL_GRACE_OVERRIDE
+        .with(Cell::get)
+        .unwrap_or(PANE_KILL_GRACE)
 }
 
 #[cfg(test)]
