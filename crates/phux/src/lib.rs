@@ -322,7 +322,7 @@ fn socket_and_remote_collide(cli: &Cli) -> bool {
 /// `--tls-server-name` cannot declare "needs `--quic` or `--ws`" at parse
 /// time. The any-of rule lives here (same reason `phux logs -f` moved off
 /// the parser).
-fn dial_auth_without_transport(
+const fn dial_auth_without_transport(
     quic: Option<&str>,
     ws: Option<&str>,
     token: Option<&str>,
