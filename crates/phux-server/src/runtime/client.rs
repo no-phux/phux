@@ -2278,6 +2278,20 @@ impl ClientPlumbing {
     async fn close(mut self, close: ConnectionClose, state: &SharedState, client_id: ClientId) {
         self.drop_all_stream_bindings().await;
         while self.retired_streams.join_next().await.is_some() {}
+        self.close_protocol_violation(state, client_id, close).await;
+    }
+
+    /// Abort pumps, release consumer state, then [`close_for_protocol_error`].
+    ///
+    /// Handshake-phase closes (`attached_reason` is `None`) skip abort/release:
+    /// nothing is attached yet. The accept-loop `release_connection_state` still
+    /// runs after return.
+    async fn close_protocol_violation(
+        mut self,
+        state: &SharedState,
+        client_id: ClientId,
+        close: ConnectionClose,
+    ) {
         if let Some(reason) = close.attached_reason {
             abort_output_pumps(&mut self.output_pumps, client_id, reason).await;
             detach_and_release_consumer_state(state, client_id);
