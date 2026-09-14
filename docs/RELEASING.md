@@ -322,6 +322,10 @@ Homebrew installs both binaries from the same tarball.
 `phux update` from a build that still expected `LICENSE-MIT` and
 `LICENSE-APACHE` will refuse this tarball. Reinstall once through
 Homebrew or the curl installer; later updates use the new member list.
+(The curl installer and current `phux update` both accept either license
+layout, so a reinstall lands regardless of which side of the cutover the
+running version is on; only an old binary updating itself to a new tarball
+hits the refusal above.)
 
 **This layout is a consumed contract, not just a convention.** `phux update`
 (the in-binary self-update path, [ADR-0074](adr/0074-self-update-trust-boundary.md))
@@ -335,7 +339,7 @@ together with `crates/phux/src/commands/update/release.rs` and
 `crates/phux/src/commands/update/apply.rs`, or not at all.
 
 The opt-in `next` channel ([ADR-0113](adr/0113-next-release-channel.md))
-reuses the same six members. GitHub's tag is the moving prerelease `next`;
+reuses the same member set (either license layout accepted). GitHub's tag is the moving prerelease `next`;
 assets are `phux-next.<sha>-<target>.tar.gz` plus sidecar, and `channel.json`
 is the pointer `phux update --channel next` reads. Homebrew stays on stable.
 
