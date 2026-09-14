@@ -36,7 +36,9 @@ use super::{
     handle_spawn_terminal, handle_terminal_input, handle_terminal_reply, handle_terminal_resize,
     handle_viewport_resize, subscribe_attach_terminal,
 };
-use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState, TerminalInput};
+use crate::state::{
+    ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, ServerInterceptedKey, SharedState, TerminalInput,
+};
 use crate::terminal_actor::ConsumerDetachRequest;
 use crate::transport::quic::{
     QuicStreamEvent, QuicStreamFailure, QuicWriter, pump_terminal_stream, refuse_terminal_stream,
@@ -3899,7 +3901,6 @@ fn apply_session_keep_empty(
     client_id: ClientId,
     request_id: u32,
     scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
     value: &[u8],
     root_token: &tokio_util::sync::CancellationToken,
 ) {
@@ -3920,7 +3921,7 @@ fn apply_session_keep_empty(
             outcome,
             KeepEmptyOutcome::Changed | KeepEmptyOutcome::Removed
         ) {
-            let _ = s.metadata_broadcast(scope, key, value);
+            let _ = s.metadata_broadcast(scope, ServerInterceptedKey::SessionKeepEmpty, value);
         }
         let removed = outcome == KeepEmptyOutcome::Removed;
         let clients = match session {
@@ -4199,7 +4200,6 @@ fn apply_session_rename(
     client_id: ClientId,
     request_id: u32,
     scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
     value: &[u8],
 ) {
     let parsed = std::str::from_utf8(value).ok().and_then(|s| {
@@ -4226,7 +4226,7 @@ fn apply_session_rename(
         // stored (see `metadata_broadcast`).
         let delivered =
             if matches!(outcome, crate::state::RenameOutcome::Renamed) && current != new_name {
-                s.metadata_broadcast(scope, key, value)
+                s.metadata_broadcast(scope, ServerInterceptedKey::SessionName, value)
             } else {
                 Vec::new()
             };
@@ -4314,13 +4314,13 @@ pub(crate) fn handle_set_metadata(
     // `SET_METADATA` write of the conventional `SESSION_NAME_KEY` under
     // `Scope::Global`, replacing the removed `RENAME_SESSION` verb.
     if key == phux_protocol::wire::frame::SESSION_NAME_KEY && matches!(scope, Scope::Global) {
-        apply_session_rename(state, client_id, request_id, scope, key, &value);
+        apply_session_rename(state, client_id, request_id, scope, &value);
         return;
     }
     // ADR-0105: the keep-empty mark is server-owned session state, applied
     // like a rename and never stored as an opaque blob.
     if key == phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY && matches!(scope, Scope::Global) {
-        apply_session_keep_empty(state, client_id, request_id, scope, key, &value, root_token);
+        apply_session_keep_empty(state, client_id, request_id, scope, &value, root_token);
         return;
     }
     store_metadata_value(state, client_id, request_id, scope, key, value);
