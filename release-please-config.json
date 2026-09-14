@@ -41,6 +41,14 @@
           "type": "toml",
           "path": "Cargo.toml",
           "jsonpath": "$.workspace.package.version"
+        },
+        {
+          "type": "generic",
+          "path": ".agents/skills/using-phux/SKILL.md"
+        },
+        {
+          "type": "generic",
+          "path": ".agents/skills/using-phux-mcp/SKILL.md"
         }
       ]
     },

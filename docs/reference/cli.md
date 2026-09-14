@@ -121,7 +121,7 @@ Usage: phux [OPTIONS] [COMMAND]
           - quick:    Essential read-act-wait-verify guidance and safety rules
           - agent:    Quick guidance plus agent identity and lifecycle supervision
           - terminal: Quick guidance plus terminal screen and input mechanics
-          - full:     The complete guide and command inventory
+          - full:     All workflow guidance and discovery commands
 
       --remote <[USER@]HOST[:PORT]>
           Attach to a phux server on another machine, ssh-style: `phux --remote me@mini`. Belongs to the naked `phux` attach alone; `phux attach --remote` carries its own copy (and the `--code` / `--no-enroll` modifiers that go with it), and `ls`, `new`, `kill`, `rename`, and `detach` take their own after the verb
@@ -2766,7 +2766,7 @@ Arguments:
           - quick:    Essential read-act-wait-verify guidance and safety rules
           - agent:    Quick guidance plus agent identity and lifecycle supervision
           - terminal: Quick guidance plus terminal screen and input mechanics
-          - full:     The complete guide and command inventory
+          - full:     All workflow guidance and discovery commands
 
           [default: full]
 

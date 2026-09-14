@@ -69,7 +69,7 @@ type Dispatcher = Arc<dyn Fn(String, Value) -> DispatchFuture + Send + Sync>;
 /// Newer MCP revisions are additive; bump when we adopt one.
 const MCP_PROTOCOL_VERSION: &str = "2024-11-05";
 
-const SKILL: &str = include_str!("../../../skills/phux-mcp/SKILL.md");
+const SKILL: &str = include_str!("../../../.agents/skills/using-phux-mcp/SKILL.md");
 const HELP: &str = "phux-mcp - MCP stdio adapter for phux\n\n\
 Usage: phux-mcp [OPTION]\n\n\
 Options:\n  \

@@ -13,12 +13,12 @@ pub(crate) enum SkillScope {
     Agent,
     /// Quick guidance plus terminal screen and input mechanics.
     Terminal,
-    /// The complete guide and command inventory.
+    /// All workflow guidance and discovery commands.
     #[default]
     Full,
 }
 
-pub(crate) const SOURCE: &str = include_str!("../../../skills/phux/SKILL.md");
+pub(crate) const SOURCE: &str = include_str!("../../../.agents/skills/using-phux/SKILL.md");
 const MARKER_PREFIX: &str = "<!-- phux-skill-region: ";
 
 impl SkillScope {
@@ -81,7 +81,12 @@ mod tests {
             SkillScope::Full,
         ] {
             let output = render(scope);
-            assert!(output.starts_with("---\nname: phux\n"));
+            assert!(output.starts_with("---\nname: using-phux\n"));
+            assert!(output.contains(concat!(
+                "  version: \"",
+                env!("CARGO_PKG_VERSION"),
+                "\" # x-release-please-version\n"
+            )));
             assert!(output.ends_with('\n'));
             assert!(!output.contains("phux-skill-region:"));
         }
@@ -94,14 +99,14 @@ mod tests {
         let terminal = render(SkillScope::Terminal);
         let full = render(SkillScope::Full);
 
-        assert!(quick.contains("Read, act, wait, verify"));
-        assert!(!quick.contains("### Giving an agent"));
+        assert!(quick.contains("## Workflow"));
+        assert!(!quick.contains("## Supervising agents"));
         assert!(!quick.contains("--cells"));
-        assert!(agent.contains("### Giving an agent"));
+        assert!(agent.contains("## Supervising agents"));
         assert!(!agent.contains("--cells"));
         assert!(terminal.contains("--cells"));
-        assert!(!terminal.contains("### Giving an agent"));
-        assert!(full.contains("The whole surface"));
+        assert!(!terminal.contains("## Supervising agents"));
+        assert!(full.contains("Discovering the rest of the surface"));
         assert!(full.len() > agent.len());
         assert!(full.len() > terminal.len());
     }

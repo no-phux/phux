@@ -35,8 +35,13 @@ fn skill_is_the_compiled_source_and_help_discovers_it() {
     assert!(output.stderr.is_empty());
     assert_eq!(
         output.stdout,
-        include_bytes!("../../../skills/phux-mcp/SKILL.md")
+        include_bytes!("../../../.agents/skills/using-phux-mcp/SKILL.md")
     );
+    assert!(String::from_utf8_lossy(&output.stdout).contains(concat!(
+        "  version: \"",
+        env!("CARGO_PKG_VERSION"),
+        "\" # x-release-please-version"
+    )));
 
     let help = run(&["--help"]);
     assert!(help.status.success());

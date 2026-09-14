@@ -1,0 +1,4 @@
+interface:
+  display_name: "Using phux"
+  short_description: "Drive persistent terminals with phux"
+  default_prompt: "Use $using-phux to operate this persistent terminal workflow safely."

@@ -997,12 +997,8 @@ mod tests {
     }
 
     #[test]
-    fn compiled_skill_names_every_tool_and_load_bearing_rule() {
+    fn compiled_skill_teaches_discovery_and_load_bearing_rules() {
         let skill = crate::SKILL;
-        for tool in catalog().as_array().unwrap() {
-            let name = tool["name"].as_str().unwrap();
-            assert!(skill.contains(name), "compiled MCP skill omits {name}");
-        }
         for rule in [
             "tools/list",
             "phux mcp --schema",

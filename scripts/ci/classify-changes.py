@@ -27,7 +27,7 @@ ZIG = SHARED | {"web_engine"}
 # Additive routes: a crate manifest matches its product and the native input
 # row. Keep these in one table rather than duplicating path filters in YAML.
 ROUTES = (
-    (("skills/*",), RUST),
+    ((".agents/skills/using-phux/*", ".agents/skills/using-phux-mcp/*"), RUST),
     (("clients/cockpit/*",), {"cockpit"}),
     (("scripts/ci/cockpit_artifacts.py", "scripts/ci/test_cockpit_artifacts.py"), {"cockpit"}),
     (("clients/phux-web/*", "clients/phux-vt-web/*", "scripts/ci/web-browser.py",
@@ -77,7 +77,9 @@ def matches(path, patterns):
 
 def is_doc(path):
     # Skills are executable product inputs, including shipped agent prompts.
-    if matches(path, ("skills/*", "integrations/*/skills/*")):
+    if matches(path, (".agents/skills/using-phux/*",
+                      ".agents/skills/using-phux-mcp/*",
+                      "integrations/*/skills/*")):
         return False
     return matches(path, ("docs/*", "docs/adr/*", "*.md"))
 
