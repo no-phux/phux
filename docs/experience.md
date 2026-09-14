@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-14
 ---
 # phux Experience and Visual Design System
 
@@ -303,6 +303,7 @@ frame repaints only changed rows, including clearing shortened labels.
 
 - **Structure**: mono wordmark plus one wire-object mark.
 - **Variants**: SVG source, PNG export for surfaces that do not render SVG.
+- **Companion mark**: `docs/assets/fox-mark.*` is the square mark and favicon source.
 - **Spacing**: clear space at least the height of the mark's inner node.
 - **Accessibility**: `alt="phux"` when used as a brand mark.
 
