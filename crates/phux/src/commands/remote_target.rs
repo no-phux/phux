@@ -23,6 +23,17 @@
 //!    per host; rung 1 catches every later invocation.
 //! 4. **An honest refusal** naming both remedies, when ssh cannot help.
 //!
+//! A registered host that stops answering is repaired here too, in the
+//! order an operator would try by hand ([`run`]): nobody answered, so
+//! start the server over ssh and dial again with the saved credentials;
+//! still refused, so re-pair; ssh itself failed, so say both. `phux attach
+//! NAME` reaches the same ladder through [`run_registered`], so the two
+//! spellings cannot differ. An `ssh://` entry that kept a paired `direct`
+//! route tries that route first and promotes it once it answers.
+//!
+//! `phux host add HOST` is the same setup without the attach (ADR-0122);
+//! both register through one tail (`host::enroll_remote_over_ssh`).
+//!
 //! ## What `user@` means here
 //!
 //! It is a *label*, not a wire identity. phux runs one server per user
@@ -47,6 +58,8 @@ use std::process::ExitCode;
 
 use super::attach;
 use super::enroll;
+use super::host;
+use super::json_err::CliError;
 use super::pair;
 use super::rec::RecordSpec;
 use super::remote::{self, Endpoint, RemoteEntry};
@@ -78,13 +91,19 @@ impl RemoteTarget {
     /// already expressible through `phux host add`, so the error names that
     /// instead of quietly accepting a second endpoint grammar.
     pub(crate) fn parse(raw: &str) -> Result<Self, String> {
+        Self::parse_labeled(raw, "--remote")
+    }
+
+    /// [`Self::parse`] with the errors worded for another spelling of the
+    /// same grammar (`phux host add HOST` shares it).
+    pub(crate) fn parse_labeled(raw: &str, label: &str) -> Result<Self, String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return Err("--remote needs a target, e.g. --remote me@mini".to_owned());
+            return Err(format!("{label} needs a target, e.g. {label} me@mini"));
         }
         if trimmed.contains("://") {
             return Err(format!(
-                "--remote takes [USER@]HOST[:PORT], not a URI (got {trimmed:?}); \
+                "{label} takes [USER@]HOST[:PORT], not a URI (got {trimmed:?}); \
                  register a full endpoint with `phux host add NAME {trimmed}`"
             ));
         }
@@ -94,23 +113,23 @@ impl RemoteTarget {
         let (user, rest) = match trimmed.rsplit_once('@') {
             Some((user, rest)) => {
                 if user.is_empty() {
-                    return Err(format!("--remote target {trimmed:?} has an empty user"));
+                    return Err(format!("{label} target {trimmed:?} has an empty user"));
                 }
                 (Some(user.to_owned()), rest)
             }
             None => (None, trimmed),
         };
 
-        let (host, port) = split_host_port(rest)?;
+        let (host, port) = split_host_port(rest, label)?;
         if host.is_empty() {
-            return Err(format!("--remote target {trimmed:?} has an empty host"));
+            return Err(format!("{label} target {trimmed:?} has an empty host"));
         }
         // A registry name may not contain `/` (it would escape the token
         // directory on join) or a selector sigil. Catch it here, where the
         // message can point at what the operator typed.
         if host.contains('/') || host.starts_with(['@', '#', '.', '=']) {
             return Err(format!(
-                "--remote host {host:?} must not contain '/' or start with a selector sigil (@ # . =)"
+                "{label} host {host:?} must not contain '/' or start with a selector sigil (@ # . =)"
             ));
         }
 
@@ -146,16 +165,19 @@ impl RemoteTarget {
 }
 
 /// Split `HOST[:PORT]`, honoring `[v6]:port` and a bare IPv6 literal.
-fn split_host_port(rest: &str) -> Result<(String, Option<u16>), String> {
+fn split_host_port(rest: &str, label: &str) -> Result<(String, Option<u16>), String> {
     if let Some(inner) = rest.strip_prefix('[') {
         let (host, tail) = inner
             .split_once(']')
-            .ok_or_else(|| format!("--remote target {rest:?} has an unclosed '['"))?;
+            .ok_or_else(|| format!("{label} target {rest:?} has an unclosed '['"))?;
         let port = match tail {
             "" => None,
-            tail => Some(parse_port(tail.strip_prefix(':').ok_or_else(|| {
-                format!("--remote target {rest:?} has trailing text after ']'")
-            })?)?),
+            tail => Some(parse_port(
+                tail.strip_prefix(':').ok_or_else(|| {
+                    format!("{label} target {rest:?} has trailing text after ']'")
+                })?,
+                label,
+            )?),
         };
         return Ok((host.to_owned(), port));
     }
@@ -166,22 +188,22 @@ fn split_host_port(rest: &str) -> Result<(String, Option<u16>), String> {
         return Ok((rest.to_owned(), None));
     }
     match rest.split_once(':') {
-        Some((host, port)) => Ok((host.to_owned(), Some(parse_port(port)?))),
+        Some((host, port)) => Ok((host.to_owned(), Some(parse_port(port, label)?))),
         None => Ok((rest.to_owned(), None)),
     }
 }
 
-fn parse_port(raw: &str) -> Result<u16, String> {
+fn parse_port(raw: &str, label: &str) -> Result<u16, String> {
     raw.parse::<u16>()
         .ok()
         .filter(|port| *port != 0)
-        .ok_or_else(|| format!("--remote port {raw:?} must be 1..=65535"))
+        .ok_or_else(|| format!("{label} port {raw:?} must be 1..=65535"))
 }
 
 /// Find the registry entry that already describes this target.
 ///
 /// Three matches, widest last, so an operator who enrolled `mini` with
-/// `phux host enroll` still gets a hit from `phux --remote me@mini`:
+/// `phux host add` still gets a hit from `phux --remote me@mini`:
 ///
 /// 1. the exact `user@host` spelling;
 /// 2. the bare host (what `enroll::default_name` registers);
@@ -277,10 +299,33 @@ pub(crate) struct RemoteAttach<'a> {
     pub(crate) rec: Option<&'a RecordSpec>,
 }
 
+/// `phux attach NAME` for a registered `NAME`: the same ladder as
+/// `phux --remote NAME`, entered from the entry the registry already
+/// resolved.
+pub(crate) fn run_registered(name: &str, entry: RemoteEntry, rec: Option<&RecordSpec>) -> ExitCode {
+    // A registry name is validated (no sigil, no `/`, no `:`), so it always
+    // parses as a bare host; the entry itself is what gets dialed.
+    let target = RemoteTarget::parse(name).unwrap_or_else(|_| RemoteTarget {
+        user: None,
+        host: name.to_owned(),
+        port: None,
+    });
+    attach_registered(
+        &RemoteAttach {
+            target,
+            session: None,
+            code: None,
+            bootstrap: Bootstrap::Auto,
+            rec,
+        },
+        entry,
+    )
+}
+
 /// Resolve a `--remote` target to a registered host and attach to it.
 pub(crate) fn run(args: RemoteAttach<'_>) -> ExitCode {
     let was_registered = args.code.is_none() && find_entry(&args.target).is_some();
-    let mut entry = match resolve(&args.target, args.code, args.bootstrap) {
+    let entry = match resolve(&args.target, args.code, args.bootstrap) {
         Ok(entry) => entry,
         Err(err) => {
             for line in err.lines() {
@@ -289,25 +334,156 @@ pub(crate) fn run(args: RemoteAttach<'_>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-
-    let outcome = attach::run_attach_remote_outcome(&entry, args.session.clone(), args.rec);
-    if was_registered && args.bootstrap == Bootstrap::Auto && outcome.bootstrap_recommended {
-        eprintln!(
-            "phux: registered host {} could not establish a direct attach; repairing it over ssh…",
-            args.target.host
-        );
-        entry = match register_over_ssh(&args.target) {
-            Ok(entry) => entry,
-            Err(err) => {
-                for line in err.lines() {
-                    eprintln!("{line}");
-                }
-                return ExitCode::FAILURE;
-            }
-        };
-        return attach::run_attach_remote(&entry, args.session, args.rec);
+    if was_registered {
+        attach_registered(&args, entry)
+    } else {
+        // Just paired: the dial is the proof, and a failure now is reported
+        // as itself rather than repaired against credentials seconds old.
+        attach::run_attach_remote(&entry, args.session, args.rec)
     }
-    outcome.code
+}
+
+/// Attach through a registered entry, repairing it over ssh when its saved
+/// route fails early enough that ssh can help.
+///
+/// The rungs, cheapest first, each one only after the previous failed:
+///
+/// 1. dial the saved route (promoting a kept `direct` route first);
+/// 2. nobody answered: start the server over ssh and dial again with the
+///    saved credentials — no re-pair, the host was enrolled before;
+/// 3. still refused: re-pair over ssh and dial once more;
+/// 4. ssh itself failed: report the dial error and the ssh error together,
+///    with both remedies.
+///
+/// `--no-enroll` stops after rung 1.
+fn attach_registered(args: &RemoteAttach<'_>, entry: RemoteEntry) -> ExitCode {
+    let entry = promote_direct_route(entry);
+    let outcome = attach::run_attach_remote_outcome(&entry, args.session.clone(), args.rec);
+    if args.bootstrap == Bootstrap::Never {
+        return outcome.code;
+    }
+    let name = entry.name.clone();
+    // The destination the entry was set up through; failing that, the
+    // `user@host` the operator typed (an ssh alias with a user survives),
+    // and only then the entry's own reading of itself.
+    let ssh_host = entry.ssh.clone().unwrap_or_else(|| {
+        if args.target.user.is_some() {
+            args.target.ssh_destination()
+        } else {
+            entry.ssh_destination()
+        }
+    });
+    let quic_port = endpoint_port(&entry.endpoint).unwrap_or(DEFAULT_QUIC_PORT);
+    match outcome.repair {
+        attach::Repair::None => return outcome.code,
+        attach::Repair::Start => {
+            eprintln!(
+                "phux: {name} is not answering at {}; starting its server over ssh ({ssh_host})...",
+                entry.endpoint
+            );
+            match enroll::ensure_remote_server(
+                &ssh_host,
+                "phux",
+                quic_port,
+                enroll::ServicePolicy::Install,
+            ) {
+                Ok(supervision) => {
+                    eprintln!("phux: {name}: {}", supervision.describe());
+                    let again =
+                        attach::run_attach_remote_outcome(&entry, args.session.clone(), args.rec);
+                    if again.repair == attach::Repair::None {
+                        return again.code;
+                    }
+                    eprintln!(
+                        "phux: {name} still does not answer with the saved credentials; re-pairing over ssh..."
+                    );
+                }
+                Err(failure) => {
+                    eprintln!(
+                        "phux: {name}: could not start it over ssh: {}",
+                        failure.detail()
+                    );
+                    eprintln!(
+                        "phux: check `ssh {ssh_host}` from this machine, then `phux attach {name}` again; \
+                         or, if the server should be up, run `phux doctor` on {name}"
+                    );
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        attach::Repair::RePair => {
+            eprintln!(
+                "phux: {name} refused the saved route ({}); re-pairing over ssh ({ssh_host})...",
+                entry.endpoint
+            );
+        }
+    }
+    let entry = match register_over_ssh(&args.target, &ssh_host, Some(&entry)) {
+        Ok(entry) => entry,
+        Err(err) => {
+            eprintln!("phux: {name}: {}", err.message);
+            eprintln!("phux:   {}", err.remedy);
+            return ExitCode::FAILURE;
+        }
+    };
+    attach::run_attach_remote(&entry, args.session.clone(), args.rec)
+}
+
+/// An `ssh://` entry that kept a paired `direct` route: dial it briefly and,
+/// when it answers, rewrite the entry so this and every later attach go
+/// direct. Anything short of an answer leaves the entry as it was.
+fn promote_direct_route(entry: RemoteEntry) -> RemoteEntry {
+    let Some(direct) = entry.direct.as_deref() else {
+        return entry;
+    };
+    if !entry.endpoint.starts_with("ssh://") {
+        return entry;
+    }
+    let Ok(Endpoint::Quic(target)) = Endpoint::parse(direct) else {
+        return entry;
+    };
+    let Ok(Some(token)) = remote::read_token(&entry) else {
+        return entry;
+    };
+    if enroll::probe(&target, &token, entry.cert_fingerprint.as_deref()).is_err() {
+        return entry;
+    }
+    let promoted = remote::NewRemote::new(
+        &entry.name,
+        direct,
+        entry.token_file.as_deref(),
+        entry.cert_fingerprint.as_deref(),
+        entry.session.as_deref(),
+    )
+    .map(|new| new.with_ssh(entry.ssh.as_deref()));
+    match promoted.and_then(|new| remote::add_or_update(&new).map(|()| new)) {
+        Ok(new) => {
+            eprintln!(
+                "phux: {}: the direct route answers now; upgraded the registry entry to {direct}",
+                entry.name
+            );
+            RemoteEntry {
+                endpoint: new.endpoint,
+                direct: None,
+                ..entry
+            }
+        }
+        Err(err) => {
+            eprintln!(
+                "phux: {}: the direct route answers but the entry could not be rewritten ({err}); attaching over ssh",
+                entry.name
+            );
+            entry
+        }
+    }
+}
+
+/// The port of a `quic://` or `wss://` registry endpoint.
+fn endpoint_port(endpoint: &str) -> Option<u16> {
+    let rest = endpoint.split_once("://").map(|(_, rest)| rest)?;
+    let authority = rest.split(['/', '?']).next().unwrap_or(rest);
+    let port = authority.rsplit_once(':').map(|(_, port)| port)?;
+    port.parse::<u16>().ok().filter(|port| *port != 0)
 }
 
 /// Walk the ladder: registered, then pasted code, then ssh, then refuse.
@@ -338,7 +514,12 @@ pub(crate) fn resolve(
     if bootstrap == Bootstrap::Never {
         return Err(unregistered_message(target, None));
     }
-    register_over_ssh(target)
+    register_over_ssh(target, &target.ssh_destination(), None).map_err(|err| {
+        unregistered_message(
+            target,
+            Some(&format!("{}\nphux:   {}", err.message, err.remedy)),
+        )
+    })
 }
 
 /// Register a host from a pasted connect link and return the entry to
@@ -351,7 +532,7 @@ fn register_from_code(target: &RemoteTarget, code: &str) -> Result<RemoteEntry, 
 
     // Validate before the token lands: a rejected name or an unpinned
     // routable endpoint must not leave an orphaned bearer token on disk.
-    // Same ordering `phux host enroll` uses, and for the same reason.
+    // Same ordering `phux host add` uses, and for the same reason.
     let new = remote::NewRemote::new(
         &name,
         &link.url,
@@ -388,96 +569,57 @@ fn registered_entry(target: &RemoteTarget, new: &remote::NewRemote) -> RemoteEnt
         token_file: new.token_file.clone(),
         cert_fingerprint: new.cert_fingerprint.clone(),
         session: None,
+        ssh: None,
+        direct: None,
     })
 }
 
-/// Start a per-user server and mint credentials on the far end over ssh,
-/// register them, and return the entry to dial.
-fn register_over_ssh(target: &RemoteTarget) -> Result<RemoteEntry, String> {
-    let destination = target.ssh_destination();
-    eprintln!("phux: pairing {} over ssh…", target.host);
+/// Set the far end up over ssh — server, pairing, direct-route probe —
+/// register the result, and return the entry to dial.
+///
+/// `existing` keeps a repaired entry's name (an operator who enrolled
+/// `mini` and typed `--remote me@mini` gets `mini` rewritten, not a second
+/// entry); a cold target registers under the spelling that was typed.
+fn register_over_ssh(
+    target: &RemoteTarget,
+    ssh_host: &str,
+    existing: Option<&RemoteEntry>,
+) -> Result<RemoteEntry, CliError> {
+    let name = existing.map_or_else(|| target.registry_name(), |entry| entry.name.clone());
+    eprintln!("phux: setting {} up over ssh ({ssh_host})...", target.host);
 
-    eprintln!(
-        "phux: installing and starting the remote Phux service for {}…",
-        target.host
-    );
-    let mut service_installed = false;
-    let mut outcome = enroll::enroll_over_ssh(
-        &destination,
-        // The target's own authority when a port was given, so an operator
-        // who knows their listener is not on 8788 does not have to enroll
-        // separately to say so.
-        target.port.map(|_| target.authority()).as_deref(),
-        DEFAULT_QUIC_PORT,
-        true,
-        &mut |event| match event {
-            enroll::EnrollEvent::ServiceInstalled { quic_bind } => {
-                service_installed = true;
-                eprintln!("phux: remote service is ready (QUIC {quic_bind})");
-            }
-            enroll::EnrollEvent::ServiceInstallFailed { error } => {
-                eprintln!(
-                    "phux: remote service install failed ({error}); starting an unsupervised server over ssh instead"
-                );
-            }
-        },
-    )
-    .map_err(|failure| ssh_failure_message(target, &failure))?;
-
-    // Pairing can still succeed when the platform has no supported service
-    // manager or an existing unmanaged server prevents adoption. In that case
-    // an advertised QUIC address is not proof anything is listening there.
-    // Register the ssh route so the attach below reaches the remote UDS path,
-    // whose ordinary attach flow auto-starts an unsupervised server if needed.
-    if !service_installed {
-        outcome.endpoint = format!("ssh://{destination}");
-    }
-
-    let name = target.registry_name();
-    let token_file = (!outcome.endpoint.starts_with("ssh://"))
-        .then(|| enroll::token_path(&phux_server::telemetry::state_dir(), &name));
-
-    let new = remote::NewRemote::new(
-        &name,
-        &outcome.endpoint,
-        token_file.as_deref(),
-        outcome.report.cert_fingerprint.as_deref(),
-        None,
-    )
-    .map_err(|err| format!("phux: pairing {destination}: {err}"))?;
-
-    if let Some(path) = token_file.as_deref() {
-        enroll::write_token(path, &outcome.report.token)
-            .map_err(|err| format!("phux: pairing {destination}: {err}"))?;
-    }
-    remote::add_or_update(&new).map_err(|err| format!("phux: pairing {destination}: {err}"))?;
-
-    eprintln!("phux: paired {name} -> {}", new.endpoint);
-    if new.endpoint.starts_with("ssh://") {
-        if service_installed {
-            eprintln!(
-                "phux: {} advertised no directly reachable listener, so this attach rides ssh; the installed service still keeps its work alive.",
-                target.host
-            );
-        } else {
-            eprintln!(
-                "phux: this attach rides ssh and auto-starts an unsupervised server on {}; run `phux service install` there after fixing the service-manager error to keep it available across reboot.",
-                target.host
-            );
-        }
-    } else {
-        eprintln!("phux: later attaches dial it directly — ssh is out of the path");
-    }
-
-    Ok(registered_entry(target, &new))
-}
-
-/// The report for an ssh bootstrap that could not run.
-fn ssh_failure_message(target: &RemoteTarget, failure: &enroll::EnrollFailure) -> String {
-    let detail = match failure {
-        enroll::EnrollFailure::MissingPhux(err) | enroll::EnrollFailure::Pair(err) => err,
+    // The target's own authority when a port was given, so an operator who
+    // knows their listener is not on 8788 does not have to enroll
+    // separately to say so.
+    let endpoint_override = target.port.map(|_| target.authority());
+    let req = enroll::EnrollRequest {
+        ssh_host,
+        remote_phux: "phux",
+        endpoint_override: endpoint_override.as_deref(),
+        quic_port: target.port.unwrap_or(DEFAULT_QUIC_PORT),
+        service: enroll::ServicePolicy::Install,
     };
-    unregistered_message(target, Some(detail))
+    let (entry, outcome) = host::enroll_remote_over_ssh(
+        &name,
+        &req,
+        existing.and_then(|entry| entry.session.as_deref()),
+        &mut |event| eprintln!("phux: {name}: {}", event.describe()),
+    )?;
+
+    eprintln!("phux: registered {name} -> {}", entry.endpoint);
+    if entry.endpoint.starts_with("ssh://") {
+        eprintln!(
+            "phux: no direct route answered{}; this attach rides ssh, and every attach tries the direct route first",
+            if outcome.tried.is_empty() {
+                String::new()
+            } else {
+                format!(" (tried {})", outcome.tried.join(", "))
+            }
+        );
+    } else {
+        eprintln!("phux: later attaches dial it directly; ssh is out of the path");
+    }
+    Ok(entry)
 }
 
 /// What to print when a target cannot be resolved: the two remedies, in the
@@ -490,16 +632,25 @@ fn unregistered_message(target: &RemoteTarget, ssh_error: Option<&str>) -> Strin
     if let Some(err) = ssh_error {
         // `write!` into a String is infallible; the Result is discarded
         // rather than unwrapped so no error path exists to mishandle.
-        let _ = write!(message, " and pairing over ssh failed:\nphux:   {err}");
+        let _ = write!(
+            message,
+            " and setting it up over ssh failed:\nphux:   {err}"
+        );
     }
-    let _ = write!(
-        message,
-        "\nphux: to pair without ssh, run `phux pair` on {} and paste the link:\
-         \nphux:   phux --remote {name} --code '<https://phux.phall.io/connect?...>'\
-         \nphux: or, with ssh access, `phux host enroll {name}` (also installs a service there)",
-        target.host
-    );
+    let _ = write!(message, "\n{}", unregistered_remedies(target));
     message
+}
+
+/// The two remedies for an unregistered host, in the order an operator can
+/// act on them.
+fn unregistered_remedies(target: &RemoteTarget) -> String {
+    let name = target.registry_name();
+    format!(
+        "phux: to pair without ssh, run `phux pair` on {} and paste the link:\
+         \nphux:   phux --remote {name} --code '<https://phux.phall.io/connect?...>'\
+         \nphux: or, with ssh access, `phux host add {name}` (starts and supervises the server there)",
+        target.host
+    )
 }
 
 #[cfg(test)]
@@ -515,7 +666,29 @@ mod tests {
             token_file: None,
             cert_fingerprint: None,
             session: None,
+            ssh: None,
+            direct: None,
         }
+    }
+
+    #[test]
+    fn endpoint_port_reads_direct_endpoints() {
+        assert_eq!(super::endpoint_port("quic://mini:8788"), Some(8788));
+        assert_eq!(super::endpoint_port("wss://[fd7a::1]:8787"), Some(8787));
+        assert_eq!(super::endpoint_port("ssh://mini"), None);
+    }
+
+    #[test]
+    fn parse_labeled_words_errors_for_the_spelling_in_use() {
+        let err = RemoteTarget::parse_labeled("", "host add").expect_err("empty");
+        assert!(err.starts_with("host add needs a target"), "{err}");
+        let err = RemoteTarget::parse_labeled("mini:0", "host add").expect_err("port 0");
+        assert!(err.starts_with("host add port"), "{err}");
+        assert!(
+            RemoteTarget::parse("mini:0")
+                .expect_err("port 0")
+                .starts_with("--remote port")
+        );
     }
 
     #[test]

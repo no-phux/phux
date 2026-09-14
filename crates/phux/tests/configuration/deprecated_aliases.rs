@@ -133,24 +133,29 @@ fn every_table_row_parses_and_warns_once() {
 }
 
 /// Row by row: the old spelling is absent from help. Verb rows must not be
-/// listed by `phux --help`; flag rows must not show their boolean in the
-/// carrying verb's own `--help`.
+/// listed by their parent's `--help` (`phux --help` for a top-level verb,
+/// `phux host --help` for `phux host enroll`); flag rows must not show
+/// their boolean in the carrying verb's own `--help`.
 #[test]
 fn no_table_row_surfaces_in_help() {
     let tmp = TempDir::new().expect("tempdir");
 
-    let (code, top_help, _) = run_with_xdg(&["--help"], tmp.path());
-    assert_eq!(code, 0);
-
     for row in DEPRECATED {
         match row.surface {
             DeprecatedSurface::Verb => {
-                let verb = row.old_verb_path()[0];
+                let path = row.old_verb_path();
+                let (parent, verb) = path.split_at(path.len() - 1);
+                let verb = verb[0];
+                let mut argv = parent.to_vec();
+                argv.push("--help");
+                let (code, help, _) = run_with_xdg(&argv, tmp.path());
+                assert_eq!(code, 0, "`phux {} --help` must answer", parent.join(" "));
                 assert!(
-                    !top_help
+                    !help
                         .lines()
                         .any(|line| line.trim_start().starts_with(&format!("{verb} "))),
-                    "`phux --help` still advertises the hidden alias `{verb}`:\n{top_help}"
+                    "`phux {} --help` still advertises the hidden alias `{verb}`:\n{help}",
+                    parent.join(" ")
                 );
             }
             DeprecatedSurface::Flag => {
@@ -168,11 +173,9 @@ fn no_table_row_surfaces_in_help() {
 }
 
 /// Row by row: the old spelling is absent from the generated bash and zsh
-/// completion scripts. Verb rows grep the joined path markers
-/// `clap_complete` 4.6.7 actually emits (`phux__subcmd__<verb>`, which
-/// cannot collide with the legitimate `host` subtree — see the completion
-/// unit test in `lib.rs` for the G3 history); flag rows grep the long
-/// flag itself, which no visible verb shares.
+/// completion scripts. Verb rows look for the hidden verb's own word as a
+/// completion token (`enroll`), which no visible verb or flag spells; flag
+/// rows grep the long flag itself, which no visible verb shares.
 #[test]
 fn no_table_row_surfaces_in_completions() {
     let tmp = TempDir::new().expect("tempdir");
@@ -180,18 +183,25 @@ fn no_table_row_surfaces_in_completions() {
     for shell in ["bash", "zsh"] {
         let (code, script, stderr) = run_with_xdg(&["completion", shell], tmp.path());
         assert_eq!(code, 0, "phux completion {shell}: stderr={stderr}");
+        let words: Vec<&str> = script
+            .split(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+            .collect();
         for row in DEPRECATED {
             let marker = match row.surface {
                 DeprecatedSurface::Verb => {
-                    format!("phux__subcmd__{}", row.old_verb_path()[0])
+                    (*row.old_verb_path().last().expect("a verb path")).to_owned()
                 }
                 DeprecatedSurface::Flag => row
                     .old_flag()
                     .expect("flag rows end in a long flag")
                     .to_owned(),
             };
+            let offered = match row.surface {
+                DeprecatedSurface::Verb => words.iter().any(|word| *word == marker),
+                DeprecatedSurface::Flag => script.contains(&marker),
+            };
             assert!(
-                !script.contains(&marker),
+                !offered,
                 "{shell} completions still offer `{}` (marker {marker:?})",
                 row.old
             );

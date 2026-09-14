@@ -306,6 +306,8 @@ mod tests {
             token_file: None,
             cert_fingerprint: None,
             session: None,
+            ssh: None,
+            direct: None,
         }
     }
 

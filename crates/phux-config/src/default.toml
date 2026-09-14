@@ -384,12 +384,15 @@ which-key-delay-ms = 400
 
 # Remote phux servers this machine attaches TO (ADR-0055): `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so
-# you never retype them. `phux host enroll` and `phux host add` write these
-# entries for you; edit by hand only to relabel or retarget one. As with
+# you never retype them. `phux host add me@mini` writes an entry for you
+# over ssh (ADR-0122); edit by hand only to relabel or retarget one. As with
 # satellites, the token itself never goes in this file — token-file points
 # at an owner-only file holding one hex token on one line. `session` picks
 # the session to attach on arrival; omit it and the remote server's own
-# last-attach memory decides, exactly as a local naked `phux` does.
+# last-attach memory decides, exactly as a local naked `phux` does. `ssh`
+# is the destination the entry was set up through, which an attach uses to
+# restart a stopped server there; `direct` is a paired `quic://` route kept
+# beside an `ssh://` endpoint until it answers, when the attach promotes it.
 #
 # [[remote]]
 # name = "mini"
@@ -397,6 +400,7 @@ which-key-delay-ms = 400
 # token-file = "/home/me/.local/state/phux/remotes/mini.token"
 # cert-fingerprint = "AB:CD:..."
 # session = "main"
+# ssh = "me@mini"
 
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per

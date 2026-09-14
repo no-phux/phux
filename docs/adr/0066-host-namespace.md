@@ -15,6 +15,7 @@ Refines ADR-0038 and ADR-0055 without superseding either.
 
 Status: Accepted
 Date: 2026-08-01
+Superseded in part by [ADR-0122](./0122-host-add-is-the-front-door.md): the separate `host enroll` verb; `host add HOST` is the ssh form.
 
 ## Context
 

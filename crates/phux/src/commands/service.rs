@@ -800,7 +800,7 @@ fn unit_socket_override(manager: Manager, body: &str) -> Option<PathBuf> {
 // In-place --hub (phux-lpn7)
 // ---------------------------------------------------------------------------
 //
-// `phux host enroll --role satellite` has to leave this machine running as a
+// `phux host add --role satellite` has to leave this machine running as a
 // federation hub. A blind `phux service install --hub` cannot do that job:
 // `--quic`, `--listen`, `--restore`, `--socket` (and an already-present
 // `--hub`) survive only inside the rendered unit, and a re-render from a
@@ -847,7 +847,7 @@ enum HubEnsure {
 /// Make this machine's per-user service a federation hub, without dropping
 /// listeners already baked into the unit and without stopping a live server.
 ///
-/// Called from `phux host enroll --role satellite` after the satellite is
+/// Called from `phux host add --role satellite` after the satellite is
 /// registered. Failures are skipped rather than fatal: the registry write
 /// already succeeded, and a missing local `--hub` is recoverable with
 /// `phux service install --hub` (at the cost ADR-0083 documents).

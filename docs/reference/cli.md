@@ -57,7 +57,7 @@ Agents:
   signal        Send a signal to a pane's process group
 
 Machines:
-  host          Add and manage the machines phux reaches
+  host          Add and manage the machines phux reaches [aliases: machine]
   server        Run a server in the foreground
   service       Keep a server running across logout and reboot
   pair          Mint, rotate, or revoke remote credentials
@@ -747,10 +747,9 @@ Attach to a session, here or on a registered host
 Interactive: requires a TTY. With no name, attaches to the most-recently-focused
 session, auto-spawning a server if none is running.
 
-A name enrolled in the host registry (`phux host enroll`, `phux host add`)
-shadows a local session of the same name: `phux attach NAME` dials the
-registered host instead of the local socket. Pass `--socket` to force the local
-reading of the name.
+A name registered as a host (`phux host add`) shadows a local session of the
+same name: `phux attach NAME` dials the registered host instead of the local
+socket. Pass `--socket` to force the local reading of the name.
 
 Usage: phux attach [FLAGS] [SESSION]
 
@@ -1231,12 +1230,11 @@ directions; this verb absorbs the split into a flag.
 Usage: phux host <SUBCOMMAND>
 
 Commands:
-  add     Register a machine, or replace an entry with the same name.
-  enroll  Set up a machine over ssh, end to end, and register it.
-  ls      List registered machines from both registries. [aliases: list]
-  rm      Remove a registered machine. Its token file is left in place.
-          [aliases: remove]
-  help    Print this message or the help of the given subcommand(s)
+  add   Add a machine so `phux attach NAME` reaches it.
+  ls    List registered machines from both registries. [aliases: list]
+  rm    Remove a registered machine. Its token file is left in place. [aliases:
+        remove]
+  help  Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
@@ -1248,30 +1246,57 @@ Global flags:
 ## `phux host add`
 
 ```text
-Register a machine, or replace an entry with the same name.
+Add a machine so `phux attach NAME` reaches it.
 
-`--role remote` (the default) registers a server `phux attach <name>` can dial;
-`--role satellite` registers a peer this hub dials for its users. Updating
-replaces the whole entry, so repeat `--token-file` / `--cert-fingerprint` when
-re-adding a name or the auth material is cleared.
+`phux host add me@mini` is all a new machine needs. Over the ssh trust you
+already have it confirms phux is installed there, starts the server and keeps it
+running across reboots, pairs, tries the direct routes, and registers the first
+one that answers. Nothing to type by hand: no port, no token, no fingerprint.
+Run it again on a registered machine to check it and repair it if it stopped
+answering.
 
-Usage: phux host add [FLAGS] <NAME> <ENDPOINT>
+The manual form registers an endpoint you already hold credentials for: `phux
+host add NAME quic://HOST:PORT --token-file PATH --cert-fingerprint FP`
+(`wss://` likewise; `ssh://HOST` needs no credentials). It replaces the whole
+entry, so repeat the credential flags when re-adding a name. `--role satellite`
+registers a peer this hub dials for its users instead of a server you attach to.
+
+Usage: phux host add [FLAGS] <TARGET> [ENDPOINT]
 
 Arguments:
-  <NAME>      Local label for the machine.
-  <ENDPOINT>  Endpoint URI: `quic://HOST:PORT`, `wss://HOST:PORT`, or
-              `ssh://HOST`. `ssh://` rides your existing ssh trust and needs no
-              pairing; the other two need a token and a certificate pin.
+  <TARGET>    `[USER@]HOST[:PORT]` to set up over ssh, or an endpoint URI
+              (`quic://`, `wss://`, `ssh://`) to register as is.
+  [ENDPOINT]  Manual form: the endpoint URI to register, with TARGET as the
+              entry's name.
 
 Flags:
-      --role <ROLE>            Which registry the entry lands in.
+      --role <ROLE>            Which registry the machine lands in: a server you
+                               attach to (`remote`, the default) or a peer this
+                               hub dials for its users.
                                [possible values: remote, satellite]
                                (default: remote)
-      --token-file <PATH>      Absolute path to a file holding the pairing token
-                               minted by `phux pair` on the other machine.
-      --cert-fingerprint <FP>  The other machine's TLS certificate SHA-256
-                               fingerprint, as printed by `phux pair`. Required
-                               for `quic://` and `wss://`.
+      --name <NAME>            Local label to register. Defaults to HOST without
+                               any `user@`, or to the host of an endpoint URI.
+      --endpoint <HOST:PORT>   Register this address instead of the routes
+                               detected on the host: `HOST:PORT` (dialed over
+                               QUIC) or a full `quic://`/`wss://` URI.
+      --quic-port <PORT>       QUIC port to configure on the host and dial.
+                               (default: 8788)
+      --no-service             Start the host's server but skip installing its
+                               service unit. The server will not come back on
+                               its own after a reboot.
+      --ssh-only               Register an `ssh://HOST` entry without contacting
+                               the host at all.
+      --remote-phux <PATH>     The `phux` to run on the host, for when a
+                               non-interactive ssh shell's `PATH` does not find
+                               it (a Homebrew or Nix install).
+                               (default: phux)
+      --token-file <PATH>      Manual form only: absolute path to a file holding
+                               the pairing token minted by `phux pair` on the
+                               other machine.
+      --cert-fingerprint <FP>  Manual form only: the other machine's TLS
+                               certificate SHA-256 fingerprint, as printed by
+                               `phux pair`. Required for `quic://` and `wss://`.
       --session <NAME>         Session to attach on arrival (`--role remote`
                                only). Omitted: the remote server's own
                                last-attach memory decides.
@@ -1284,57 +1309,6 @@ Flags:
 
 Global flags:
       --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
-```
-
-## `phux host enroll`
-
-```text
-Set up a machine over ssh, end to end, and register it.
-
-Confirms phux is installed on HOST, installs its service unit so the server
-survives reboot, mints a pairing token there, and registers the result in the
-role-correct registry — `--role remote` (the default) yields an entry `phux
-attach <name>` dials with no flags and no hex strings typed by hand; `--role
-satellite` a peer this hub dials for its users, and this machine's per-user
-service is made a hub (`--hub`) without dropping listeners already baked into
-the unit. Uses the ssh trust you already have; it grants nothing ssh did not
-already grant.
-
-A host with no reachable listener falls back to an ssh:// entry, which still
-gives you sessions that outlive the connection.
-
-Usage: phux host enroll [FLAGS] <HOST>
-
-Arguments:
-  <HOST>  ssh destination, exactly as you would type it after `ssh` (`mini`,
-          `me@mini`, or a `~/.ssh/config` alias).
-
-Flags:
-      --role <ROLE>           Which registry the enrolled machine lands in.
-                              [possible values: remote, satellite]
-                              (default: remote)
-      --name <NAME>           Local label to register. Defaults to HOST without
-                              any `user@`.
-      --endpoint <HOST:PORT>  Address to register instead of the remote's
-                              detected overlay address. Accepts `HOST:PORT`
-                              (dialed over QUIC) or a full `quic://`/`wss://`
-                              URI.
-      --quic-port <PORT>      QUIC port to configure on the remote and register.
-                              (default: 8788)
-      --no-service            Skip installing the remote's service unit. The
-                              server will not come back on its own after a
-                              reboot.
-      --ssh-only              Register an ssh:// entry without contacting the
-                              host at all.
-      --session <NAME>        Session to attach on arrival (`--role remote`
-                              only).
-      --json                  Emit stable, versioned JSON on stdout instead of
-                              the human view. On failure, stdout stays empty and
-                              stderr carries one JSON error object.
-  -h, --help                  Print help
-
-Global flags:
-      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host ls`
@@ -1734,8 +1708,8 @@ Flags:
                           link, shown by the device in its server list. Omitted:
                           the device picks a default.
       --json              Emit the mint, rotation, or revocation result as JSON
-                          on stdout. `phux host enroll` consumes the mint
-                          document over ssh.
+                          on stdout. `phux host add` consumes the mint document
+                          over ssh.
       --migrate-legacy    Explicitly convert legacy anonymous token lines before
                           pairing. Conversion preserves each bearer secret but
                           stores only its verifier.
@@ -1763,8 +1737,8 @@ Global flags:
       --tokens <PATH>  Versioned credential store to update. Defaults to
                        `PHUX_WS_TOKENS`.
       --json           Emit the mint, rotation, or revocation result as JSON on
-                       stdout. `phux host enroll` consumes the mint document
-                       over ssh.
+                       stdout. `phux host add` consumes the mint document over
+                       ssh.
 ```
 
 ## `phux pair rotate`
@@ -1791,7 +1765,7 @@ Global flags:
       --tokens <PATH>             Versioned credential store to update. Defaults
                                   to `PHUX_WS_TOKENS`.
       --json                      Emit the mint, rotation, or revocation result
-                                  as JSON on stdout. `phux host enroll` consumes
+                                  as JSON on stdout. `phux host add` consumes
                                   the mint document over ssh.
 ```
 

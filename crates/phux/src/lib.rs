@@ -2161,15 +2161,16 @@ mod tests {
         }
 
         let Command::Host {
-            action: HostAction::Add { role, .. },
+            action: HostAction::Add { opts, endpoint, .. },
         } = parsed(&["phux", "host", "add", "mini", "ssh://mini"])
         else {
             panic!("expected Host Add");
         };
-        assert_eq!(role, HostRole::Remote, "--role defaults to remote");
+        assert_eq!(opts.role, HostRole::Remote, "--role defaults to remote");
+        assert_eq!(endpoint.as_deref(), Some("ssh://mini"));
 
         let Command::Host {
-            action: HostAction::Add { role, disabled, .. },
+            action: HostAction::Add { opts, .. },
         } = parsed(&[
             "phux",
             "host",
@@ -2183,8 +2184,16 @@ mod tests {
         else {
             panic!("expected Host Add");
         };
-        assert_eq!(role, HostRole::Satellite);
-        assert!(disabled);
+        assert_eq!(opts.role, HostRole::Satellite);
+        assert!(opts.disabled);
+
+        // `machine` is the word people reach for; it is a visible alias.
+        assert!(matches!(
+            parsed(&["phux", "machine", "ls"]),
+            Command::Host {
+                action: HostAction::List { .. }
+            }
+        ));
 
         // `host` is socketless: a provided --socket must be refused.
         let cli = crate::parse_cli(["phux", "host", "ls", "--socket", "/tmp/x.sock"])
@@ -2197,73 +2206,79 @@ mod tests {
         );
     }
 
-    /// `phux host enroll` (ADR-0066 pt. 4, phux-i0e8.12.3): one role-aware
-    /// enrollment verb. `--role` defaults to remote, `--json` parses on both
+    /// `phux host add HOST` (ADR-0122) is the ssh form: one positional, no
+    /// endpoint. `--role` defaults to remote, `--json` parses on both
     /// roles, `--session` parses (its satellite-role refusal is post-parse,
     /// where the value of `--role` is known), and `--ssh-only` conflicts
-    /// with the flags whose work it skips.
+    /// with the flags whose work it skips. The hidden `enroll` spelling
+    /// parses the same flags.
     #[test]
-    fn host_enroll_parses_role_aware() {
+    fn host_add_ssh_form_parses_role_aware() {
         use crate::commands::host::{HostAction, HostRole};
 
         let Command::Host {
             action:
-                HostAction::Enroll {
-                    host,
-                    role,
-                    session,
-                    ..
+                HostAction::Add {
+                    target,
+                    endpoint,
+                    opts,
                 },
-        } = parsed(&["phux", "host", "enroll", "mini"])
+        } = parsed(&["phux", "host", "add", "mini"])
         else {
-            panic!("expected Host Enroll");
+            panic!("expected Host Add");
         };
-        assert_eq!(host, "mini");
-        assert_eq!(role, HostRole::Remote, "--role defaults to remote");
-        assert_eq!(session, None);
+        assert_eq!(target, "mini");
+        assert_eq!(endpoint, None);
+        assert_eq!(opts.role, HostRole::Remote, "--role defaults to remote");
+        assert_eq!(opts.session, None);
+        assert_eq!(opts.remote_phux, "phux");
+        assert_eq!(opts.quic_port, 8788);
 
         let Command::Host {
-            action: HostAction::Enroll { role, json, .. },
+            action: HostAction::Add { opts, .. },
         } = parsed(&[
             "phux",
             "host",
-            "enroll",
+            "add",
             "--role",
             "satellite",
             "--json",
             "edge",
         ])
         else {
-            panic!("expected Host Enroll");
+            panic!("expected Host Add");
         };
-        assert_eq!(role, HostRole::Satellite);
-        assert!(json.json, "--json parses on the satellite role");
+        assert_eq!(opts.role, HostRole::Satellite);
+        assert!(opts.json.json, "--json parses on the satellite role");
 
         let Command::Host {
-            action: HostAction::Enroll { session, json, .. },
+            action: HostAction::Add { opts, .. },
         } = parsed(&[
             "phux",
             "host",
-            "enroll",
+            "add",
             "--session",
             "work",
             "--json",
+            "--remote-phux",
+            "/opt/homebrew/bin/phux",
             "mini",
         ])
         else {
-            panic!("expected Host Enroll");
+            panic!("expected Host Add");
         };
-        assert_eq!(session.as_deref(), Some("work"));
-        assert!(json.json, "--json parses on the remote role");
+        assert_eq!(opts.session.as_deref(), Some("work"));
+        assert!(opts.json.json, "--json parses on the remote role");
+        assert_eq!(opts.remote_phux, "/opt/homebrew/bin/phux");
 
         // `--session --role satellite` still PARSES: the refusal is
-        // post-parse (exit 2, remedy-naming), because clap cannot condition
-        // one flag's validity on another flag's value.
+        // post-parse (exit 2, remedy-naming), because the parser cannot
+        // condition one flag's validity on another flag's value.
         assert!(matches!(
             parsed(&[
                 "phux",
                 "host",
-                "enroll",
+                "add",
                 "--role",
                 "satellite",
                 "--session",
@@ -2271,9 +2286,19 @@ mod tests {
                 "edge",
             ]),
             Command::Host {
-                action: HostAction::Enroll { .. }
+                action: HostAction::Add { .. }
             }
         ));
+
+        // The old spelling still parses, hidden, with the same flags.
+        let Command::Host {
+            action: HostAction::Enroll { host, opts },
+        } = parsed(&["phux", "host", "enroll", "me@mini", "--ssh-only"])
+        else {
+            panic!("expected Host Enroll");
+        };
+        assert_eq!(host, "me@mini");
+        assert!(opts.ssh_only);
 
         // `--ssh-only` contacts nothing, so the flags that only matter when
         // the host is contacted are refused at parse time.
@@ -2281,22 +2306,14 @@ mod tests {
             [
                 "phux",
                 "host",
-                "enroll",
+                "add",
                 "--ssh-only",
                 "--endpoint",
                 "x:1",
                 "mini",
             ]
             .as_slice(),
-            [
-                "phux",
-                "host",
-                "enroll",
-                "--ssh-only",
-                "--no-service",
-                "mini",
-            ]
-            .as_slice(),
+            ["phux", "host", "add", "--ssh-only", "--no-service", "mini"].as_slice(),
         ] {
             assert!(
                 crate::parse_cli(conflicting).is_err(),
@@ -2779,7 +2796,7 @@ mod tests {
         let cli = crate::parse_cli([
             "phux",
             "host",
-            "enroll",
+            "add",
             "user@devbox",
             "--role",
             "satellite",
@@ -2791,23 +2808,15 @@ mod tests {
         ])
         .expect("one-command satellite enrollment parses");
         let Some(Command::Host {
-            action:
-                HostAction::Enroll {
-                    host,
-                    role,
-                    name,
-                    quic_port,
-                    no_service,
-                    ..
-                },
+            action: HostAction::Add { target, opts, .. },
         }) = cli.command
         else {
-            panic!("expected Host Enroll");
+            panic!("expected Host Add");
         };
-        assert_eq!(host, "user@devbox");
-        assert_eq!(role, HostRole::Satellite);
-        assert_eq!(name.as_deref(), Some("edge"));
-        assert_eq!(quic_port, 9443);
-        assert!(no_service);
+        assert_eq!(target, "user@devbox");
+        assert_eq!(opts.role, HostRole::Satellite);
+        assert_eq!(opts.name.as_deref(), Some("edge"));
+        assert_eq!(opts.quic_port, 9443);
+        assert!(opts.no_service);
     }
 }

@@ -555,7 +555,7 @@ fn attach_long_help_documents_registry_shadowing_and_socket() {
     let long = Cli::render_help(attach.cmd, true).unwrap_or_default();
     let flat = long.split_whitespace().collect::<Vec<_>>().join(" ");
     for needle in [
-        "phux host enroll",
+        "phux host add",
         "shadows a local session",
         "--socket` to force the local reading",
     ] {

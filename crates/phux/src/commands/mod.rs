@@ -350,8 +350,7 @@ pub(crate) enum Command {
     /// most-recently-focused session, auto-spawning a server if none is
     /// running.
     ///
-    /// A name enrolled in the host registry (`phux host enroll`, `phux
-    /// host add`) shadows a local session of the same name: `phux attach
+    /// A name registered as a host (`phux host add`) shadows a local session of the same name: `phux attach
     /// NAME` dials the registered host instead of the local socket.
     /// Pass `--socket` to force the local reading of the name.
     #[usage(alias = "a")]
@@ -1910,7 +1909,7 @@ pub(crate) enum Command {
         name: Option<String>,
 
         /// Emit the mint, rotation, or revocation result as JSON on stdout.
-        /// `phux host enroll` consumes the mint document over ssh.
+        /// `phux host add` consumes the mint document over ssh.
         #[usage(long, global)]
         json: bool,
 
@@ -1931,7 +1930,7 @@ pub(crate) enum Command {
     // The successor to the former `remote`, `satellite`, and top-level
     // `enroll` verbs (ADR-0066), removed in v0.12.1 once their deprecation
     // window closed (phux-dpjf).
-    #[usage(help_heading = "Machines", display_order = 40)]
+    #[usage(alias = "machine", help_heading = "Machines", display_order = 40)]
     Host {
         #[usage(subcommand)]
         action: host::HostAction,

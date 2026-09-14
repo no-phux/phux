@@ -105,8 +105,8 @@ const SECTIONS: &[Section] = &[
         key: "remote",
         header: "[[remote]]",
         summary: "Remote phux servers this machine attaches to, written by \
-                  `phux host enroll` / `phux host add` and resolved by \
-                  `phux attach <name>` (ADR-0055).",
+                  `phux host add` and resolved by `phux attach <name>` \
+                  (ADR-0055, ADR-0122).",
     },
     Section {
         key: "theme",
@@ -355,6 +355,8 @@ mod tests {
             token_file: Some(PathBuf::from("/tokens/mini.token")),
             cert_fingerprint: Some("AB:CD".to_owned()),
             session: Some("main".to_owned()),
+            ssh: Some("me@mini".to_owned()),
+            direct: None,
         }];
         config
             .theme

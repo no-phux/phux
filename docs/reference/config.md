@@ -29,7 +29,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[plugins]]` | Declarative plugin manifests composed into this config; each entry names a `phux-plugin.toml` path and an enabled flag. |
 | `[[satellites]]` | Federation satellites a hub routes to: name, endpoint, token-file path, and certificate pin (ADR-0038). |
 | `[[connector]]` | Outbound relay links this server supervises: relay endpoint, token-file path, and certificate pin (ADR-0052). |
-| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host enroll` / `phux host add` and resolved by `phux attach <name>` (ADR-0055). |
+| `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>` (ADR-0055, ADR-0122). |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
 | `[voice]` | The server-side transcriber behind `TRANSCRIBE`: an argv that turns an uploaded clip into text for a paste. |
@@ -453,12 +453,15 @@ which-key-delay-ms = 400
 
 # Remote phux servers this machine attaches TO (ADR-0055): `phux attach
 # mini` resolves the endpoint, certificate pin, and token recorded here, so
-# you never retype them. `phux host enroll` and `phux host add` write these
-# entries for you; edit by hand only to relabel or retarget one. As with
+# you never retype them. `phux host add me@mini` writes an entry for you
+# over ssh (ADR-0122); edit by hand only to relabel or retarget one. As with
 # satellites, the token itself never goes in this file — token-file points
 # at an owner-only file holding one hex token on one line. `session` picks
 # the session to attach on arrival; omit it and the remote server's own
-# last-attach memory decides, exactly as a local naked `phux` does.
+# last-attach memory decides, exactly as a local naked `phux` does. `ssh`
+# is the destination the entry was set up through, which an attach uses to
+# restart a stopped server there; `direct` is a paired `quic://` route kept
+# beside an `ssh://` endpoint until it answers, when the attach promotes it.
 #
 # [[remote]]
 # name = "mini"
@@ -466,6 +469,7 @@ which-key-delay-ms = 400
 # token-file = "/home/me/.local/state/phux/remotes/mini.token"
 # cert-fingerprint = "AB:CD:..."
 # session = "main"
+# ssh = "me@mini"
 
 [status]
 # Left: the window/tab bar. The `windows` widget renders one tab per
