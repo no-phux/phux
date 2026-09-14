@@ -100,7 +100,12 @@ pub const Plan = struct {
         const command_budget = prologue + command_envelope - @min(command_envelope, held_commands);
         const text_reserve = widget_text_reserve + remaining.full * self.full_text_share + remaining.degraded * self.degraded_text_share + self.unused_text;
         const path_reserve = widget_path_reserve + remaining.full * self.full_path_share + remaining.degraded * self.degraded_path_share + self.unused_paths;
-        const cell_reserve = remaining.full * full_cells + remaining.degraded * self.degraded_cell_share + self.unused_cells;
+        // Hold later panes' shares plus unused leftover. The last pane
+        // (nothing remaining) is unbounded so a lone full grid — and a
+        // last-N crop on the last degraded pane — are not first-N cut by
+        // leftover slack sitting in `cell_reserve`.
+        const held_cells = remaining.full * full_cells + remaining.degraded * self.degraded_cell_share;
+        const cell_reserve = if (held_cells == 0) 0 else held_cells + self.unused_cells;
         const this_glyphs = switch (fidelity) {
             .full => self.full_glyph_share,
             .degraded => self.degraded_glyph_share,
@@ -231,6 +236,7 @@ test "a lone active pane keeps the whole cell store" {
     try testing.expectEqual(Fidelity.full, planned.fidelities[0]);
     const alloc = planned.forPane(0, 0);
     try testing.expectEqual(@as(usize, 0), alloc.cell_reserve);
+    try testing.expectEqual(full_cells, alloc.cell_allowance);
     try testing.expectEqual(command_envelope, alloc.command_budget);
     try testing.expectEqual(glyph_budget, alloc.glyph_budget);
     // The SDK two-pane leftover must not become a production floor: a
@@ -292,7 +298,8 @@ test "inactive windows degrade every pane" {
     const first = planned.forPane(0, 0);
     const last = planned.forPane(1, 0);
     try testing.expectEqual(cell_store - planned.degraded_cell_share, first.cell_reserve);
-    try testing.expectEqual(planned.unused_cells, last.cell_reserve);
+    try testing.expectEqual(@as(usize, 0), last.cell_reserve);
+    try testing.expectEqual(planned.degraded_cell_share, last.cell_allowance);
 }
 
 test "the current pin does not hold two full product grids, nor sixteen" {
