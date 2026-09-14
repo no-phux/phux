@@ -942,12 +942,19 @@ fn report_registered(
             } else {
                 "attach (direct, no ssh in the path)"
             };
-            outln!("  {:<28}{transport}", format!("phux attach {name}"));
-            outln!(
-                "  {:<28}list its sessions",
-                format!("phux ls --remote {name}")
-            );
-            outln!("  {:<28}every registered machine", "phux host ls");
+            let attach_cmd = format!("phux attach {name}");
+            let ls_cmd = format!("phux ls --remote {name}");
+            let host_ls_cmd = "phux host ls";
+            // One column for the three rows, sized to the longest command,
+            // so a long host name never runs into its description.
+            let col = [attach_cmd.len(), ls_cmd.len(), host_ls_cmd.len()]
+                .into_iter()
+                .max()
+                .unwrap_or(0)
+                + 2;
+            outln!("  {attach_cmd:<col$}{transport}");
+            outln!("  {ls_cmd:<col$}list its sessions");
+            outln!("  {host_ls_cmd:<col$}every registered machine");
         }
         HostRole::Satellite => report_local_hub(hub),
     }

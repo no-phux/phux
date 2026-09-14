@@ -98,15 +98,7 @@ impl PairReport {
     /// keys without breaking an older `phux host add`; strict about the
     /// two it cannot proceed without.
     pub(crate) fn parse(stdout: &str) -> Result<Self, String> {
-        // The last line that parses: a shell startup file that prints to
-        // stdout on a non-interactive login cannot hide the document.
-        let value = stdout
-            .lines()
-            .rev()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .find_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .or_else(|| serde_json::from_str(stdout.trim()).ok())
+        let value = pair_document_in(stdout)
             .ok_or_else(|| "remote `phux pair --json` emitted no JSON document".to_owned())?;
 
         let token = value
@@ -140,6 +132,43 @@ impl PairReport {
             overlay_addresses,
         })
     }
+}
+
+/// The JSON object `phux pair --json` printed, wherever it sits in stdout.
+///
+/// The document is pretty-printed over many lines, and a shell startup file
+/// that prints on a non-interactive login can put text in front of it. Only
+/// an object with a `token` key counts: a bare array element such as
+/// `"100.64.0.2"` is valid JSON on its own line and must not be mistaken
+/// for the document.
+fn pair_document_in(stdout: &str) -> Option<serde_json::Value> {
+    let is_document = |value: &serde_json::Value| value.get("token").is_some();
+    if let Some(value) = serde_json::from_str::<serde_json::Value>(stdout.trim())
+        .ok()
+        .filter(is_document)
+    {
+        return Some(value);
+    }
+    // One-line document after banner lines.
+    if let Some(value) = stdout
+        .lines()
+        .rev()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .find_map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .filter(is_document)
+        })
+    {
+        return Some(value);
+    }
+    // Pretty-printed document after banner lines: the outermost braces.
+    let start = stdout.find('{')?;
+    let end = stdout.rfind('}')?;
+    serde_json::from_str::<serde_json::Value>(stdout.get(start..=end)?)
+        .ok()
+        .filter(is_document)
 }
 
 /// The direct routes worth dialing for an enrolled host, most likely first.
@@ -838,6 +867,19 @@ mod tests {
         assert_eq!(parsed.token, "abc123");
         assert_eq!(parsed.cert_fingerprint.as_deref(), Some("AB:CD"));
         assert_eq!(parsed.overlay_addresses, vec!["100.64.0.2".to_owned()]);
+    }
+
+    #[test]
+    fn a_pretty_printed_document_with_a_multi_line_array_is_read_whole() {
+        // What the real `phux pair --json` prints: `serde_json` pretty
+        // output, where an overlay address sits alone on its own line as a
+        // bare JSON string. Scanning lines from the end for "anything that
+        // parses" picked that string up and reported no token.
+        let stdout = "Last login: never\n{\n  \"cert_fingerprint\": \"AB:CD\",\n  \"overlay_addresses\": [\n    \"100.79.155.27\"\n  ],\n  \"quic_addr\": null,\n  \"schema_version\": 1,\n  \"token\": \"863e\",\n  \"ws_addr\": \":8787\"\n}\n";
+        let parsed = PairReport::parse(stdout).expect("parse");
+        assert_eq!(parsed.token, "863e");
+        assert_eq!(parsed.cert_fingerprint.as_deref(), Some("AB:CD"));
+        assert_eq!(parsed.overlay_addresses, vec!["100.79.155.27".to_owned()]);
     }
 
     #[test]
