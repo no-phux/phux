@@ -88,6 +88,8 @@ This is why the project deserves to exist.
 - Terminal-aware, lowercase wordmark (`phux`) with tactical monospace for code,
   protocol symbols, versions, and terminal output. General interface and prose
   use proportional type so technical signals retain their emphasis.
+- Companion mark / favicon source: `docs/assets/fox-mark.*`. The wordmark stays
+  separate.
 - Precise, technical, dry. No hype, no superlatives, no "revolutionary."
 - **What's here, what isn't.** State the facts. Don't lead with a disclaimer
   and don't decorate every page with "pre-alpha."

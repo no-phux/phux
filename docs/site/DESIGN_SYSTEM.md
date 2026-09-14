@@ -17,6 +17,7 @@ it stays quiet.
 - IBM Plex Mono for commands, selectors, protocol symbols, and the
   live island.
 - Nav is sentence case. The wordmark stays lowercase `phux`.
+- Favicon and other mark-only icon surfaces use `docs/assets/fox-mark.*`.
 - Hierarchy comes from size, weight, rule, and position.
 
 ### Color roles
