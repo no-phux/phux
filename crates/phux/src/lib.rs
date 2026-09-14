@@ -59,6 +59,7 @@ mod capabilities;
 mod commands;
 mod companion;
 mod deprecations;
+mod environment;
 mod exit_codes;
 mod refdocs;
 mod selector;
@@ -86,79 +87,21 @@ pub use commands::server::ENSURE_TIMEOUT_ENV;
     // `args_conflicts_with_subcommands`, which would also refuse
     // `phux --socket X ls`.
     about = "A terminal multiplexer you can drive by hand or script.",
-    long_about = "phux — a terminal multiplexer you can drive by hand or script.\n\n\
-        Run `phux` with no arguments to attach to your session (auto-starting a\n\
-        server if needed). The control verbs below read and drive panes without a\n\
-        TTY, and most accept `--json` for clean, scriptable output.\n\n\
-        ATTACH / SERVE\n  \
-          attach     Attach to a session (interactive)\n  \
-          server     Run a server in the foreground\n  \
-          mcp        Run the bundled MCP stdio adapter\n  \
-          host       Register the machines phux talks to: remotes and satellites\n  \
-          service    Keep a server running across logout and reboot\n  \
-          cockpit    Open the native macOS Cockpit app\n  \
-          channel    Show or switch the release channel (latest or next)\n  \
-          update     Update phux to the latest stable or next release, keeping sessions alive\n  \
-          upgrade    Hot-swap the running server binary, keeping sessions alive\n\n\
-        INSPECT\n  \
-          ls         List sessions\n  \
-          status     Report the running server: pid, uptime, version, clients, logs\n  \
-          runtime-info Inspect this binary's protocol and runtime capabilities\n  \
-          whoami     Report who this connection is to the server, and whose server it is\n  \
-          perf       Show the server's performance telemetry, live or as a snapshot\n  \
-          snapshot   Capture a pane's screen as JSON or a boxed view\n  \
-          watch      Stream a pane's live events (bell, title, output, lifecycle)\n  \
-          rec        Record a pane to an asciinema cast, a GIF, or an APNG\n  \
-          play       Play a recording back as a live pane\n  \
-          agent      Observe agents, send prompts, answer questions, and wait for turns\n\n\
-        DRIVE\n  \
-          new        Create a session\n  \
-          spawn      Create a pane without attaching\n  \
-          launch     Start a configured agent integration in a new pane\n  \
-          kill       Kill a session, window, pane, or the server itself\n  \
-          detach     Detach clients from a session\n  \
-          insert-pane Insert an already-created pane into a layout\n  \
-          move-pane  Move an existing pane beside another, across sessions too\n  \
-          swap-pane  Swap two existing pane leaves\n  \
-          rename     Rename a session\n  \
-          resize     Set a pane's grid size, with no TTY\n  \
-          send-keys  Send keys to a pane\n  \
-          paste      Paste text into a pane (bracketed when the pane asks)\n  \
-          run        Run a command in a pane and capture its exit code\n  \
-          wait       Block until a pane meets a condition\n  \
-          ask        Report an agent ask event for a pane\n\n\
-        SUPERVISE\n  \
-          take       Seize exclusive input authority over a pane\n  \
-          give       Release the input authority taken with `take`\n  \
-          signal     Send a POSIX signal to a pane's process group\n\n\
-        ORGANIZE\n  \
-          tag        Read and write a pane's tags (address them with #tag)\n  \
-          skill      Print the agent skill this binary ships with\n  \
-          completion Print a shell completion script for phux\n  \
-          doctor     Diagnose the install: config, socket, server, plugins\n  \
-          logs       Show where phux's logs live, or tail one of them\n  \
-          report     List local bug-report bundles, print one, or capture logs\n  \
-          config     Inspect config and run configured plugin actions\n  \
-          plugin     Manage local plugin manifests in config\n  \
-          workspace  Inspect worktrees and save/restore session archives\n  \
-          worktree   Create, open, list, and remove worktree-bound sessions\n\n\
-        FEDERATION\n  \
-          pair       Mint, rotate, or revoke remote credentials\n  \
-          relay      Run a standalone relay, or enroll a route with it\n\n\
-        TARGET is a session name, `name:window`, `name:window.pane`, `@id`,\n\
-        `#tag`, `%agent-name`, or `.` (focused). `=` is reserved for the\n\
-        attached view's focus history. The same selectors work across\n\
-        kill/snapshot/send-keys/run/wait/ask.",
-    // The EXIT STATUS section is the const twin of `exit_codes::EXIT_CODES`
-    // (phux-i0e8.11.4) — the same source the generated
-    // `docs/reference/exit-codes.md` page uses, so `--help` and the docs
-    // cannot disagree. usage-rs requires `after_long_help` to be a
-    // `&'static str`, so the table renderer and this concat are held in
-    // lockstep by a unit test. The semantics are the ones `commands::partial`
-    // documents: 3 is distinct from 1 so a script can branch — retry is
-    // right for 3 and wrong for 1. `run` mirrors the child's code, which
-    // is why its timeout is 125 and not wait's 124.
-    after_long_help = ROOT_AFTER_LONG_HELP
+    long_about = "A terminal multiplexer you can drive by hand or script.\n\n\
+        Run `phux` alone to attach to your session; every other verb is headless.",
+    // The root page is laid out for 80 columns whatever the terminal is:
+    // the groups read as one table, and the width test on it is exact.
+    term_width = 80,
+    // `phux help ...` is answered before the parser runs (see `help_verb`):
+    // the bare word prints the root page, a topic name prints that topic,
+    // and a verb path is rewritten to `phux <verb> --help`. Leaving the
+    // synthesized subcommand in place would put a lone `help` row under a
+    // `Commands:` heading above the grouped inventory.
+    disable_help_subcommand,
+    // The renderer prints its default command group first, under this
+    // title, so the first group of the inventory is declared as the
+    // default rather than leaving an empty `Commands:` heading above it.
+    subcommand_help_heading = "Sessions"
 )]
 struct Cli {
     /// Recording options for the naked `phux` attach. `phux attach` carries
@@ -166,9 +109,7 @@ struct Cli {
     #[usage(flatten)]
     rec: commands::RecOpts,
 
-    /// Override the UDS path of the server to dial. Defaults to
-    /// `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-    /// `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't set).
+    /// Server socket to dial (default: `$PHUX_SOCKET`)
     // ONE declaration, `global`, replacing 36 hand-copied per-verb
     // fields (ADR-0065): `phux --socket X ls` and `phux ls --socket X` are
     // the same invocation. Verbs that never dial a server refuse a provided
@@ -177,7 +118,7 @@ struct Cli {
     #[usage(long, global, value_name = "PATH")]
     socket: Option<std::path::PathBuf>,
 
-    /// Print compiled agent guidance, optionally scoped, then exit.
+    /// Print agent guidance and exit
     #[usage(
         long,
         value_enum,
@@ -188,15 +129,15 @@ struct Cli {
     )]
     skill: Option<skill::SkillScope>,
 
-    /// Attach to a phux server on another machine, ssh-style:
-    /// `phux --remote me@mini`. Belongs to the naked `phux` attach alone;
-    /// `phux attach --remote` carries its own copy (and the `--code` /
-    /// `--no-enroll` modifiers that go with it), and `ls`, `new`, `kill`,
-    /// `rename`, and `detach` take their own after the verb.
-    #[usage(long, value_name = "[USER@]HOST[:PORT]")]
+    /// Attach to a phux server on another machine
+    // The naked attach's copy alone: `phux attach --remote` carries the
+    // full form with `--code` / `--no-enroll`, and `ls`, `new`, `kill`,
+    // `rename`, and `detach` take their own after the verb
+    // (`root_remote_before_verb` teaches that placement).
+    #[usage(long, value_name = "[USER@]HOST")]
     remote: Option<String>,
 
-    /// Print machine-readable capabilities with `--json`, then exit.
+    /// Print machine-readable capabilities (with --json)
     #[usage(long)]
     capabilities: bool,
 
@@ -205,97 +146,47 @@ struct Cli {
     command: Option<Command>,
 }
 
-/// The root `--help` epilogue: EXIT STATUS (const twin of the
-/// `exit_codes` table) then ENVIRONMENT. usage-rs requires a `&'static str`,
-/// so this is a literal rather than a runtime join. A unit test holds it
-/// to `exit_codes::exit_status_section()` plus [`ENVIRONMENT_HELP`].
-const ROOT_AFTER_LONG_HELP: &str = "\
-EXIT STATUS
-  0     Success.
-  1     Failure: no server, no such target, or the verb itself failed.
-  2     Usage error, or the server refused the request.
-  3     Unanswerable: the selector was resolved against a partial view
-        of the fleet (a federation satellite was unreachable). Retry
-        once the link is back — unlike 1, the target may exist.
-  124   `phux wait` gave up because `--timeout` expired.
-  125   `phux run` gave up because `--timeout` expired; otherwise
-        `run` mirrors the exit code of the command it ran, so
-        `phux run … && next` composes like a shell.
+/// The footer appended to the root long page, after usage-argv has laid
+/// out the grouped inventory and the flags.
+///
+/// Appended by [`render_help_page`] rather than declared as `after_help`:
+/// the renderer reflows any prose it is handed unless a line starts with
+/// four spaces, and this block is a two-column table that has to line up
+/// with the sections above it. The topics it names are answered by
+/// [`help_topic`], and the same function renders the generated reference
+/// pages, so the footer, the topics, and the docs cannot drift apart.
+const ROOT_LEARN_MORE: &str = "\
+Learn more:
+  phux <command> --help    Flags and examples for one command
+  phux help targets        How TARGET names sessions, windows, panes, agents
+  phux help environment    Environment variables phux reads
+  phux help exit-codes     Exit statuses, for scripts
+";
 
-ENVIRONMENT
-  \
-        PHUX_SOCKET        UDS path for the CLI verbs and the server. A `--socket`\n  \
-        \x20                 flag overrides it; default is\n  \
-        \x20                 $XDG_RUNTIME_DIR/phux/phux.sock (or /tmp/phux-$USER/...).\n  \
-        PHUX_WS_ADDR       Also accept WebSocket clients on HOST:PORT. Equivalent to\n  \
-        \x20                 `phux server --listen`, which overrides it.\n  \
-        PHUX_WS_SECURE     Force TLS + token auth on a loopback --listen address\n  \
-        \x20                 (exercise the remote path locally).\n  \
-        PHUX_WS_TLS_CERT   Operator-supplied server cert/key (PEM), instead of the\n  \
-        PHUX_WS_TLS_KEY    auto-provisioned self-signed pair used off-loopback.\n  \
-        PHUX_WS_TOKENS     Pairing-token store the server reads and `phux pair` writes.\n  \
-        PHUX_QUIC_ADDR     Also accept QUIC clients on HOST:PORT. Equivalent to\n  \
-        \x20                 `phux server --quic`, which overrides it.\n  \
-        PHUX_WT_ADDR       Also accept WebTransport (HTTP/3 over QUIC) clients on\n  \
-        \x20                 HOST:PORT. Equivalent to `phux server --webtransport`.\n  \
-        PHUX_SSH           OpenSSH-compatible program a federation hub spawns to\n  \
-        \x20                 dial ssh:// satellites (default: `ssh` on PATH).\n  \
-        PHUX_TAILSCALE     Tailscale-compatible CLI run to detect the overlay\n  \
-        \x20                 address (default: `tailscale` on PATH) for `phux pair`,\n  \
-        \x20                 `phux doctor`, and the server's auto-bound remote\n  \
-        \x20                 listener. When set it is the only source consulted:\n  \
-        \x20                 the CGNAT route-probe fallback is disabled, so naming\n  \
-        \x20                 a command that reports nothing turns detection off\n  \
-        \x20                 everywhere (no overlay auto-listen, no doctor dial).\n  \
-        PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE\n  \
-        \x20                 Give an auto-spawned server an idle limit in seconds\n  \
-        \x20                 (1..=86400), as if it were started with\n  \
-        \x20                 `phux server --exit-after-idle`. Unset means no limit,\n  \
-        \x20                 which is the multiplexer default. For test harnesses and\n  \
-        \x20                 CI jobs that cannot guarantee their own cleanup runs.\n  \
-        PHUX_LOG           Write logs to this file (server tees; client writes here).\n  \
-        PHUX_LOG_FORMAT    text (default) or json — log line format.\n  \
-        RUST_LOG           tracing level filter, e.g. phux=debug.\n\n\
-        Run `phux server --listen 127.0.0.1:8787` to expose a port; see\n  \
-        `phux help server` for the remote/TLS details.";
+/// The `phux help targets` topic: the selector grammar every TARGET-taking
+/// verb shares. The sigils are the ones `selector::Selector` parses; the
+/// help-inventory test that walks the parser keeps this list honest.
+const TARGETS_HELP: &str = "\
+TARGETS
+  A TARGET names what a verb acts on. Every verb that takes one
+  (kill, snapshot, send-keys, paste, run, wait, watch, resize, tag,
+  take, give, signal, ask) reads the same grammar:
 
-/// The ENVIRONMENT section of the root `--help` epilogue.
-#[cfg_attr(not(test), allow(dead_code))]
-const ENVIRONMENT_HELP: &str = "ENVIRONMENT\n  \
-        PHUX_SOCKET        UDS path for the CLI verbs and the server. A `--socket`\n  \
-        \x20                 flag overrides it; default is\n  \
-        \x20                 $XDG_RUNTIME_DIR/phux/phux.sock (or /tmp/phux-$USER/...).\n  \
-        PHUX_WS_ADDR       Also accept WebSocket clients on HOST:PORT. Equivalent to\n  \
-        \x20                 `phux server --listen`, which overrides it.\n  \
-        PHUX_WS_SECURE     Force TLS + token auth on a loopback --listen address\n  \
-        \x20                 (exercise the remote path locally).\n  \
-        PHUX_WS_TLS_CERT   Operator-supplied server cert/key (PEM), instead of the\n  \
-        PHUX_WS_TLS_KEY    auto-provisioned self-signed pair used off-loopback.\n  \
-        PHUX_WS_TOKENS     Pairing-token store the server reads and `phux pair` writes.\n  \
-        PHUX_QUIC_ADDR     Also accept QUIC clients on HOST:PORT. Equivalent to\n  \
-        \x20                 `phux server --quic`, which overrides it.\n  \
-        PHUX_WT_ADDR       Also accept WebTransport (HTTP/3 over QUIC) clients on\n  \
-        \x20                 HOST:PORT. Equivalent to `phux server --webtransport`.\n  \
-        PHUX_SSH           OpenSSH-compatible program a federation hub spawns to\n  \
-        \x20                 dial ssh:// satellites (default: `ssh` on PATH).\n  \
-        PHUX_TAILSCALE     Tailscale-compatible CLI run to detect the overlay\n  \
-        \x20                 address (default: `tailscale` on PATH) for `phux pair`,\n  \
-        \x20                 `phux doctor`, and the server's auto-bound remote\n  \
-        \x20                 listener. When set it is the only source consulted:\n  \
-        \x20                 the CGNAT route-probe fallback is disabled, so naming\n  \
-        \x20                 a command that reports nothing turns detection off\n  \
-        \x20                 everywhere (no overlay auto-listen, no doctor dial).\n  \
-        PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE\n  \
-        \x20                 Give an auto-spawned server an idle limit in seconds\n  \
-        \x20                 (1..=86400), as if it were started with\n  \
-        \x20                 `phux server --exit-after-idle`. Unset means no limit,\n  \
-        \x20                 which is the multiplexer default. For test harnesses and\n  \
-        \x20                 CI jobs that cannot guarantee their own cleanup runs.\n  \
-        PHUX_LOG           Write logs to this file (server tees; client writes here).\n  \
-        PHUX_LOG_FORMAT    text (default) or json — log line format.\n  \
-        RUST_LOG           tracing level filter, e.g. phux=debug.\n\n\
-        Run `phux server --listen 127.0.0.1:8787` to expose a port; see\n  \
-        `phux help server` for the remote/TLS details.";
+  name              A session by name             phux snapshot work
+  name:W            Window W of a session         phux kill work:1
+  name:W.P          Pane P of window W            phux send-keys work:1.0 C-c
+  @N                A pane by id (`phux ls`)      phux run @7 \"cargo test\"
+  host/@N           A pane on a federation peer   phux snapshot edge/@7
+  #tag              Every pane carrying a tag     phux kill #build
+  %agent            The pane an agent runs in     phux wait %reviewer
+  .                 The focused pane              phux signal . kill
+
+  `=` is reserved: it means the attached view's focus history, which a
+  headless caller does not have, so the verbs refuse it and say so.
+  Window and pane numbers count from zero. A name that is also a
+  registered host (`phux host ls`) dials that host from `phux attach`;
+  pass `--socket` to force the local reading.
+";
 
 /// Deliberately small `phux -h` start-here view. `phux --help` owns the full
 /// inventory; keeping the two surfaces distinct makes the first one useful.
@@ -308,6 +199,7 @@ Start here:\n  \
   phux spawn -- COMMAND    Create a pane without attaching\n  \
   phux snapshot TARGET     Read a pane\n  \
   phux send-keys TARGET K  Send input to a pane\n  \
+  phux host add me@HOST    Reach another machine over ssh\n  \
   phux agent list          See agents and their current state\n  \
   phux --skill             Teach an agent how to drive phux\n\n\
 Run `phux --help` for every command or `phux <command> --help` for details.\n";
@@ -510,7 +402,7 @@ fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_, '_>) -> E
         .collect();
     match err {
         usage::Error::Help { cmd, long } => {
-            if let Some(page) = Cli::render_help(cmd, long) {
+            if let Some(page) = render_help_page(cmd, long, help_style()) {
                 output::bytes(page.as_bytes());
             }
             ExitCode::SUCCESS
@@ -626,7 +518,164 @@ fn preparse_endpoint(args: &[std::ffi::OsString]) -> Option<ExitCode> {
         return Some(ExitCode::SUCCESS);
     }
 
+    help_request(args)
+}
+
+/// The names `phux help <topic>` answers, each with the page it prints.
+///
+/// A topic is a page that is not a command: the selector grammar, the
+/// environment, the exit codes. They used to be appended to the root
+/// `--help`, which put a screen of variable names between the reader and
+/// the command list; a topic is read when it is asked for.
+const HELP_TOPICS: &[(&str, &[&str])] = &[
+    ("targets", &["target", "selectors", "selector"]),
+    ("environment", &["env", "environment-variables"]),
+    ("exit-codes", &["exit-status", "exit-code", "exit"]),
+];
+
+/// Render one help topic by name or alias, or `None` for a word that is
+/// not a topic.
+pub(crate) fn help_topic(word: &str) -> Option<String> {
+    let (topic, _) = HELP_TOPICS
+        .iter()
+        .find(|(name, aliases)| *name == word || aliases.contains(&word))?;
+    Some(match *topic {
+        "targets" => TARGETS_HELP.to_owned(),
+        "environment" => environment::environment_section(),
+        "exit-codes" => {
+            let mut page = exit_codes::exit_status_section();
+            page.push('\n');
+            page
+        }
+        _ => return None,
+    })
+}
+
+/// Answer `phux help` and `phux help <topic>` from argv, before the parser
+/// runs. `phux help <verb>` is not answered here: `rewrite_help_verb`
+/// turns it into `phux <verb> --help` so the parser renders the verb's own
+/// page, and a word that is neither a topic nor a verb is refused with
+/// both lists named.
+fn help_request(args: &[std::ffi::OsString]) -> Option<ExitCode> {
+    let at = help_word_index(args)?;
+    let Some(word) = args.get(at + 1) else {
+        if let Some(page) = render_help_page(Cli::spec().root.cmd, true, help_style()) {
+            output::bytes(page.as_bytes());
+        }
+        return Some(ExitCode::SUCCESS);
+    };
+    let word = word.to_string_lossy();
+    if let Some(page) = help_topic(&word) {
+        output::bytes(page.as_bytes());
+        return Some(ExitCode::SUCCESS);
+    }
+    if is_top_level_verb(&word) || word.starts_with('-') {
+        return None;
+    }
+    let topics: Vec<&str> = HELP_TOPICS.iter().map(|(name, _)| *name).collect();
+    eprintln!(
+        "phux: no command or help topic named `{word}`\n\
+         topics: {}\n\
+         commands: see `phux --help`",
+        topics.join(", ")
+    );
+    Some(ExitCode::from(2))
+}
+
+/// Whether `word` names a top-level verb or one of its aliases, hidden or
+/// visible: `phux help stdio-bridge` should render that page even though
+/// the inventory does not advertise it.
+fn is_top_level_verb(word: &str) -> bool {
+    Cli::spec()
+        .root
+        .subcommands
+        .iter()
+        .any(|sub| sub.cmd.name == word || sub.cmd.aliases.contains(&word))
+}
+
+/// `phux help <verb> [<sub>...]` becomes `phux <verb> [<sub>...] --help`,
+/// so the parser answers it with the verb's own page. Only the exact
+/// leading `help` word is rewritten; a bare `phux help` and the topics
+/// were already answered by [`help_request`].
+fn rewrite_help_verb(mut raw: Vec<std::ffi::OsString>) -> Vec<std::ffi::OsString> {
+    if let Some(at) = help_word_index(&raw[1..])
+        && raw.len() > at + 2
+    {
+        raw.remove(at + 1);
+        raw.push("--help".into());
+    }
+    raw
+}
+
+/// Where the `help` word sits in argv (after the binary), looking past a
+/// leading global `--socket PATH` the way `-h` detection does, so
+/// `phux --socket X help ls` reads the same as `phux help ls`. `None` when
+/// the first verb-position word is anything else.
+fn help_word_index(args: &[std::ffi::OsString]) -> Option<usize> {
+    let mut at = 0;
+    while let Some(arg) = args.get(at) {
+        if arg == "help" {
+            return Some(at);
+        }
+        if arg == "--socket" {
+            at += 2;
+        } else if arg.to_string_lossy().starts_with("--socket=") {
+            at += 1;
+        } else {
+            return None;
+        }
+    }
     None
+}
+
+/// The colour policy for help printed to this process's stdout: coloured
+/// on a terminal (or under `CLICOLOR_FORCE`), plain in a pipe or under
+/// `NO_COLOR`. The palette is deliberately quiet — bold headings, cyan
+/// command and flag names — rather than the renderer's default yellow and
+/// green, so a page reads as one document rather than a traffic light.
+fn help_style() -> usage::help::Style {
+    use usage::help::{Palette, Style};
+    Style::auto().palette(
+        Palette::DEFAULT
+            .heading("bold")
+            .command("cyan+bold")
+            .option("cyan+bold")
+            .metavar("cyan"),
+    )
+}
+
+/// Render one command's help page with an explicit colour policy.
+///
+/// The one path every help surface goes through: the parser's `--help`
+/// answer, `phux help`, the help-inventory tests, and the generated
+/// reference pages, so they render byte-identical text. The root long
+/// page additionally carries [`ROOT_LEARN_MORE`], appended here rather
+/// than declared as `after_help` because the renderer would reflow its
+/// columns.
+pub(crate) fn render_help_page(
+    cmd: &usage::Command<'_>,
+    long: bool,
+    style: usage::help::Style,
+) -> Option<String> {
+    let mut page = usage::help::render_styled(Cli::spec(), cmd, long, style)?;
+    if long && std::ptr::eq(cmd, Cli::spec().root.cmd) {
+        page.push('\n');
+        // Colour is decided by the style, not the palette: a palette on a
+        // plain style still renders plain.
+        if style.palette(usage::help::Palette::DEFAULT) == usage::help::Style::PLAIN {
+            page.push_str(ROOT_LEARN_MORE);
+        } else {
+            // The same weight the palette gives every other heading.
+            let (heading, rest) = ROOT_LEARN_MORE
+                .split_once('\n')
+                .unwrap_or((ROOT_LEARN_MORE, ""));
+            page.push_str("\x1b[1m");
+            page.push_str(heading);
+            page.push_str("\x1b[0m\n");
+            page.push_str(rest);
+        }
+    }
+    Some(page)
 }
 
 /// The usage refusals clap's own grammar cannot express, reported once the
@@ -1275,6 +1324,7 @@ pub fn run() -> ExitCode {
     if let Some(code) = preparse_endpoint(&raw[1..]) {
         return code;
     }
+    let raw = rewrite_help_verb(raw);
 
     let refs: Vec<&OsStr> = raw.iter().map(std::ffi::OsStr::new).collect();
     if let Some(answer) = Cli::completion_request(&raw[1..]) {
@@ -1364,20 +1414,100 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{Cli, ENVIRONMENT_HELP, ROOT_AFTER_LONG_HELP};
+    use super::Cli;
     use crate::commands::Command;
 
-    /// usage-rs can only embed a `&'static str` epilogue, so the const
-    /// must stay the table renderer plus ENVIRONMENT.
+    fn argv(words: &[&str]) -> Vec<std::ffi::OsString> {
+        words.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    /// `phux help <verb...>` becomes `phux <verb...> --help`; a bare `help`
+    /// and anything else pass through untouched.
     #[test]
-    fn root_after_long_help_matches_exit_status_and_environment() {
+    fn help_verb_is_rewritten_to_the_verbs_own_help_flag() {
         assert_eq!(
-            ROOT_AFTER_LONG_HELP,
-            format!(
-                "{}\n\n{ENVIRONMENT_HELP}",
-                crate::exit_codes::EXIT_STATUS_HELP
-            )
+            super::rewrite_help_verb(argv(&["phux", "help", "host", "add"])),
+            argv(&["phux", "host", "add", "--help"])
         );
+        assert_eq!(
+            super::rewrite_help_verb(argv(&["phux", "help"])),
+            argv(&["phux", "help"])
+        );
+        assert_eq!(
+            super::rewrite_help_verb(argv(&["phux", "ls", "help"])),
+            argv(&["phux", "ls", "help"])
+        );
+        assert_eq!(
+            super::rewrite_help_verb(argv(&["phux", "--socket", "/s", "help", "ls"])),
+            argv(&["phux", "--socket", "/s", "ls", "--help"])
+        );
+        assert_eq!(
+            super::help_word_index(&argv(&["--socket=/s", "help"])),
+            Some(1)
+        );
+        assert_eq!(super::help_word_index(&argv(&["--socket", "/s"])), None);
+        assert_eq!(super::help_word_index(&argv(&["ls"])), None);
+    }
+
+    /// Hidden verbs and aliases count: `phux help stdio-bridge` and
+    /// `phux help a` render pages, while a topic name is not a verb.
+    #[test]
+    fn top_level_verbs_include_hidden_ones_and_aliases() {
+        for word in ["attach", "a", "stdio-bridge", "bootstrap", "list"] {
+            assert!(super::is_top_level_verb(word), "{word} is a verb");
+        }
+        for word in ["targets", "environment", "nonsense", ""] {
+            assert!(!super::is_top_level_verb(word), "{word} is not a verb");
+        }
+    }
+
+    /// The coloured page and the plain page carry the same text, and the
+    /// footer follows the style rather than the palette.
+    #[test]
+    fn styled_root_page_strips_to_the_plain_one() {
+        use usage::help::{Palette, Style};
+        let plain =
+            super::render_help_page(Cli::spec().root.cmd, true, Style::PLAIN).expect("root page");
+        let quiet_plain = super::render_help_page(
+            Cli::spec().root.cmd,
+            true,
+            Style::PLAIN.palette(Palette::DEFAULT.heading("bold")),
+        )
+        .expect("root page");
+        assert_eq!(
+            plain, quiet_plain,
+            "a palette on a plain style must stay plain"
+        );
+        assert!(!plain.contains('\x1b'));
+
+        let coloured = super::render_help_page(Cli::spec().root.cmd, true, Style::COLOURED)
+            .expect("root page");
+        assert!(coloured.contains("\x1b[1mLearn more:\x1b[0m"));
+        let stripped: String = {
+            let mut out = String::new();
+            let mut rest = coloured.as_str();
+            while let Some(at) = rest.find('\x1b') {
+                out.push_str(&rest[..at]);
+                let after = &rest[at..];
+                let end = after.find('m').map_or(after.len(), |m| m + 1);
+                rest = &after[end..];
+            }
+            out.push_str(rest);
+            out
+        };
+        // The colouring pass paints `code` spans and drops their backticks,
+        // so the comparison is on the text with backticks removed.
+        assert_eq!(stripped.replace('`', ""), plain.replace('`', ""));
+
+        // A subcommand page carries no footer.
+        let attach = Cli::spec()
+            .root
+            .subcommands
+            .iter()
+            .find(|sub| sub.cmd.name == "attach")
+            .expect("attach");
+        let page = super::render_help_page(attach.cmd, true, Style::PLAIN).expect("attach page");
+        assert!(!page.contains("Learn more:"));
     }
 
     /// `phux new <NAME>` must read the bare positional as the SESSION NAME,

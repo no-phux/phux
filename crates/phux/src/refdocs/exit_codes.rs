@@ -1,7 +1,7 @@
 //! The generated exit-codes reference, rendered from the canonical
-//! table in `crate::exit_codes` — the same table the root `--help`
-//! EXIT STATUS section renders from, so the page, the help text, and
-//! the non-clap exit sites (which consume the table's consts) cannot
+//! table in `crate::exit_codes` — the same table the `phux help
+//! exit-codes` topic renders from, so the page, the help text, and the
+//! non-clap exit sites (which consume the table's consts) cannot
 //! disagree.
 
 use crate::exit_codes::EXIT_CODES;
@@ -14,8 +14,7 @@ pub(crate) fn page() -> Page {
 
     let mut body = String::from(
         "Every exit code the `phux` binary uses, from the canonical \
-         in-code table that also renders the EXIT STATUS section of \
-         `phux --help`. The codes are chosen so a script can branch: \
+         in-code table that also renders `phux help exit-codes`. The codes are chosen so a script can branch: \
          `3` is distinct from `1` because retry is right for `3` and \
          wrong for `1`; `run`'s timeout is `125` rather than `124` \
          because `run` mirrors the exit code of the command it ran, and \
@@ -41,8 +40,8 @@ pub(crate) fn page() -> Page {
         tldr: "The canonical exit-code table: 0 success, 1 failure, 2 \
                usage error or server refusal, 3 partial-fleet \
                unanswerable, 124 `wait` timeout, 125 `run` timeout. \
-               Rendered from the same in-code table `phux --help`'s EXIT \
-               STATUS section uses, so the two cannot disagree.",
+               Rendered from the same in-code table `phux help exit-codes` \
+               uses, so the two cannot disagree.",
         body,
     }
 }
@@ -74,7 +73,7 @@ mod tests {
         );
     }
 
-    /// The page and the `--help` EXIT STATUS section describe the same
+    /// The page and the `phux help exit-codes` topic describe the same
     /// code set — the two-renderers-one-table contract of this task.
     #[test]
     fn page_and_help_section_agree_on_the_code_set() {
@@ -86,7 +85,7 @@ mod tests {
                         rest.split_whitespace().next() == Some(&spec.code.to_string())
                     })
                 }),
-                "--help EXIT STATUS section is missing code {}",
+                "`phux help exit-codes` is missing code {}",
                 spec.code
             );
         }

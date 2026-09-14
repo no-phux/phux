@@ -415,14 +415,18 @@ fn run_journey(harness: &mut Harness) {
         "short help must point to complete help:\n{short}"
     );
     assert!(
-        !short.contains("ATTACH / SERVE"),
+        !short.contains("Sessions:"),
         "short help grew full:\n{short}"
     );
 
     let full = harness.capture("full-help", &["--help"]);
     let full = assert_success("phux --help", &full);
-    assert!(full.contains("ATTACH / SERVE"), "full help:\n{full}");
-    assert!(full.contains("EXIT STATUS"), "full help:\n{full}");
+    assert!(full.contains("Sessions:"), "full help:\n{full}");
+    assert!(full.contains("Learn more:"), "full help:\n{full}");
+    assert!(
+        !full.contains("EXIT STATUS"),
+        "the exit-code table moved to `phux help exit-codes`:\n{full}"
+    );
     assert!(
         full.lines().count() > short.lines().count() * 3,
         "--help must remain materially more complete than -h"

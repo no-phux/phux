@@ -1,8 +1,8 @@
 //! The canonical exit-code table for the `phux` binary (phux-i0e8.11.4).
 //!
 //! This module is the single source both exit-status surfaces render
-//! from: the root `--help` EXIT STATUS section (`root_after_long_help` in
-//! `lib.rs` builds it via [`exit_status_section`]) and the generated
+//! from: the `phux help exit-codes` topic (`help_topic` in `lib.rs`
+//! prints [`exit_status_section`]) and the generated
 //! `docs/reference/exit-codes.md` page (`refdocs::exit_codes`). Adding or
 //! changing a code here updates both; using a code the table does not
 //! carry is what the audit below exists to prevent.
@@ -90,10 +90,10 @@ pub(crate) const EXIT_CODES: &[ExitCodeSpec] = &[
     },
 ];
 
-/// The EXIT STATUS help section as a `&'static str`. usage-rs requires
-/// `after_long_help` to be a const string, so this is the form the root
-/// `--help` epilogue uses. [`exit_status_section`] renders the same text
-/// from [`EXIT_CODES`]; a unit test holds the two in lockstep.
+/// The EXIT STATUS help section as a `&'static str`: the fixed-width
+/// layout the `phux help exit-codes` topic prints. [`exit_status_section`]
+/// renders the same text from [`EXIT_CODES`]; a unit test holds the two in
+/// lockstep.
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const EXIT_STATUS_HELP: &str = "\
 EXIT STATUS
@@ -109,8 +109,7 @@ EXIT STATUS
         `phux run … && next` composes like a shell.";
 
 /// Render the EXIT STATUS help section from [`EXIT_CODES`] — the exact
-/// block `phux --help` shows (via `ROOT_AFTER_LONG_HELP` in `lib.rs`).
-#[cfg_attr(not(test), allow(dead_code))]
+/// block `phux help exit-codes` prints.
 pub(crate) fn exit_status_section() -> String {
     use std::fmt::Write as _;
 

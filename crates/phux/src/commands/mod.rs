@@ -98,23 +98,13 @@ pub(crate) enum RecFormat {
 /// instead of by a runtime rejection. Headless capture is `phux rec`.
 #[derive(Debug, Args)]
 pub(crate) struct RecOpts {
-    /// Record this session while it runs and write the result to PATH.
-    // Written out as `long_help` because clap reflows doc-comment paragraphs
-    // into one run-on line; the example block only survives with real
-    // newlines.
-    #[usage(
-        long = "rec",
-        value_name = "PATH",
-        long_help = "Record this session while it runs and write the result to PATH.\n\n\
-            The format follows the extension (.cast, .gif, .png, .apng); pass\n\
-            --rec-format to override. A path with no extension gets `.gif`.\n\n\
-            Examples:\n  \
-            phux --rec demo.gif\n  \
-            phux attach work --rec demo.cast"
-    )]
+    /// Record this session to PATH (.cast, .gif, or .apng)
+    // Headless capture of one pane is `phux rec`, which is where the
+    // format prose lives; the naked attach and `phux attach` keep one line.
+    #[usage(long = "rec", value_name = "PATH")]
     pub(crate) rec: Option<std::path::PathBuf>,
 
-    /// Output format for --rec, overriding the extension.
+    /// Recording format, overriding PATH's extension
     #[usage(long = "rec-format", value_enum, value_name = "FMT", requires("--rec"))]
     pub(crate) rec_format: Option<RecFormat>,
 }
@@ -348,21 +338,24 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
 
 #[derive(Debug, Subcommands)]
 pub(crate) enum Command {
-    /// Inspect this binary's runtime protocol and capabilities without connecting.
+    /// Inspect this binary's protocol and capabilities
+    #[usage(help_heading = "More", display_order = 64)]
     RuntimeInfo {
         #[usage(flatten)]
         json: JsonOpt,
     },
-    /// Attach to a session (interactive).
+    /// Attach to a session, here or on a registered host
     ///
-    /// With no name, attaches to the most-recently-focused session,
-    /// auto-spawning a server if none is running. Requires a TTY.
+    /// Interactive: requires a TTY. With no name, attaches to the
+    /// most-recently-focused session, auto-spawning a server if none is
+    /// running.
     ///
     /// A name enrolled in the host registry (`phux host enroll`, `phux
     /// host add`) shadows a local session of the same name: `phux attach
     /// NAME` dials the registered host instead of the local socket.
     /// Pass `--socket` to force the local reading of the name.
     #[usage(alias = "a")]
+    #[usage(help_heading = "Sessions", display_order = 10)]
     Attach {
         /// Session name (matches the name used at creation time).
         ///
@@ -376,33 +369,53 @@ pub(crate) enum Command {
         /// resolving to loopback trusts the server's self-signed cert for
         /// local dev; any routable address requires `--cert-fingerprint`
         /// (the value `phux pair` prints on the server host).
-        #[usage(long, value_name = "HOST:PORT", group = "remote_transport")]
+        #[usage(
+            long,
+            value_name = "HOST:PORT",
+            group = "remote_transport",
+            help_heading = "Direct dial"
+        )]
         quic: Option<String>,
 
         /// Attach over WebSocket to a `phux server --listen` endpoint. Use
         /// `ws://HOST:PORT` for loopback dev, or `wss://HOST:PORT` with
         /// `--token` and `--cert-fingerprint` for routable remote attach. This
         /// is the TCP fallback when UDP/QUIC is blocked.
-        #[usage(long, value_name = "URL", group = "remote_transport")]
+        #[usage(
+            long,
+            value_name = "URL",
+            group = "remote_transport",
+            help_heading = "Direct dial"
+        )]
         ws: Option<String>,
 
         /// Bearer pairing token (hex) for an authenticated QUIC listener, as
         /// minted by `phux pair`. QUIC sends it as the stream's opening
         /// preamble; WebSocket sends it as `Authorization: Bearer`.
         /// Requires `--quic` or `--ws`.
-        #[usage(long, requires("--quic", "--ws"))]
+        #[usage(long, requires("--quic", "--ws"), help_heading = "Direct dial")]
         token: Option<String>,
 
         /// Pin the QUIC server's certificate by its SHA-256 fingerprint (the
         /// value `phux pair` prints). Required to dial any non-loopback
         /// `--quic`/`--ws wss://` address. Requires `--quic` or `--ws`.
-        #[usage(long, value_name = "FP", requires("--quic", "--ws"))]
+        #[usage(
+            long,
+            value_name = "FP",
+            requires("--quic", "--ws"),
+            help_heading = "Direct dial"
+        )]
         cert_fingerprint: Option<String>,
 
         /// TLS server name (SNI) to offer the remote listener. QUIC defaults
         /// to `localhost`; WebSocket defaults to the URL host. Requires
         /// `--quic` or `--ws`.
-        #[usage(long, value_name = "NAME", requires("--quic", "--ws"))]
+        #[usage(
+            long,
+            value_name = "NAME",
+            requires("--quic", "--ws"),
+            help_heading = "Direct dial"
+        )]
         tls_server_name: Option<String>,
 
         /// Attach to a phux server on another machine, ssh-style:
@@ -417,7 +430,8 @@ pub(crate) enum Command {
         #[usage(
             long,
             value_name = "[USER@]HOST[:PORT]",
-            conflicts("--quic", "--ws", "--ssh")
+            conflicts("--quic", "--ws", "--ssh"),
+            help_heading = "Remote host"
         )]
         remote: Option<String>,
 
@@ -425,12 +439,17 @@ pub(crate) enum Command {
         /// (or its `phux://connect?...` spelling) instead of over ssh — the
         /// same link `phux pair` prints and `phux pair --qr` renders. Quote
         /// it: it contains `&`.
-        #[usage(long, value_name = "LINK", requires("--remote"))]
+        #[usage(
+            long,
+            value_name = "LINK",
+            requires("--remote"),
+            help_heading = "Remote host"
+        )]
         code: Option<String>,
 
         /// Never shell out to ssh for `--remote`. An unregistered host is
         /// refused with its remedies named instead of paired.
-        #[usage(long, requires("--remote"))]
+        #[usage(long, requires("--remote"), help_heading = "Remote host")]
         no_enroll: bool,
 
         /// Attach mosh-style over ssh: run `phux bootstrap` on the host
@@ -445,33 +464,46 @@ pub(crate) enum Command {
         #[usage(
             long,
             value_name = "[USER@]HOST",
-            conflicts("--quic", "--ws", "--remote")
+            conflicts("--quic", "--ws", "--remote"),
+            help_heading = "Remote host"
         )]
         ssh: Option<String>,
 
         /// The `phux` to run on the `--ssh` host, for when a non-interactive
         /// ssh shell's `PATH` does not find it (a Homebrew or Nix install).
-        #[usage(long, value_name = "PATH", requires("--ssh"), default = "phux")]
+        #[usage(
+            long,
+            value_name = "PATH",
+            requires("--ssh"),
+            default = "phux",
+            help_heading = "Remote host"
+        )]
         remote_phux: String,
 
         /// Bind the `--ssh` host's listener to a UDP port in this inclusive
         /// range, e.g. `60000-61000`, so one firewall rule covers every
         /// attach. Any free port by default.
-        #[usage(long, value_name = "MIN-MAX", requires("--ssh"))]
+        #[usage(
+            long,
+            value_name = "MIN-MAX",
+            requires("--ssh"),
+            help_heading = "Remote host"
+        )]
         udp_ports: Option<String>,
 
         /// Tee this attach's composited output to a recording. Declared here
         /// (and on the root command) rather than globally so it only shows up
         /// on the verbs that raise a TUI.
-        #[usage(flatten)]
+        #[usage(flatten, next_help_heading = "Recording")]
         rec: RecOpts,
     },
 
-    /// Run a phux server, or ensure one is accepting without attaching.
+    /// Run a server in the foreground
     ///
     /// Binds a Unix domain socket, pre-seeds a session whose initial
     /// pane spawns the user's `$SHELL` inside a real PTY, and serves
     /// `ATTACH` requests until Ctrl-C.
+    #[usage(help_heading = "Machines", display_order = 41)]
     Server {
         /// Ensure the selected local socket accepts, then exit without a TUI.
         ///
@@ -593,13 +625,14 @@ pub(crate) enum Command {
         resume: Option<std::os::fd::RawFd>,
     },
 
-    /// List sessions on the running server.
+    /// List sessions
     ///
     /// Queries the running server and prints one line per session. Does not
     /// start a server: with no server running it reports as much and exits
     /// non-zero (like `tmux ls`). Pass `--json` for the stable, versioned
     /// machine shape instead of the human text.
     #[usage(alias = "list")]
+    #[usage(help_heading = "Sessions", display_order = 12)]
     Ls {
         #[usage(flatten)]
         json: JsonOpt,
@@ -608,7 +641,7 @@ pub(crate) enum Command {
         remote: RemoteOpt,
     },
 
-    /// Report who this connection is to the server it reaches.
+    /// Report who this connection is to the server
     ///
     /// Prints the principal and credential id (for a paired device), the
     /// auth route (the local socket, or a QUIC / WebSocket bearer
@@ -617,6 +650,7 @@ pub(crate) enum Command {
     /// only: a phux server never switches users, so the serving user is also
     /// the user every pane runs as. With `--remote HOST` it reports what
     /// that dial authenticated as there. Does not start a server.
+    #[usage(help_heading = "More", display_order = 63)]
     Whoami {
         #[usage(flatten)]
         json: JsonOpt,
@@ -625,7 +659,7 @@ pub(crate) enum Command {
         remote: RemoteOpt,
     },
 
-    /// Report the running server: pid, up since, protocol, clients, logs.
+    /// Report the running server: pid, uptime, clients
     ///
     /// One glance at the server behind the socket: whether it is running
     /// and as which pid, since when, the protocol version it speaks, how
@@ -640,12 +674,13 @@ pub(crate) enum Command {
     // it lands on stdout as `{"running": false, ...}`. The flattened struct
     // cannot carry per-verb help, so the arg's help is overridden here to
     // state the exception next to the flag (phux-i0e8.11.6 wave-8 nit).
+    #[usage(help_heading = "Maintain", display_order = 50)]
     Status {
         #[usage(flatten)]
         json: JsonOpt,
     },
 
-    /// Show the server's performance telemetry.
+    /// Show the server's performance telemetry
     ///
     /// Reads the always-on latency histograms, throughput counters, and
     /// process figures the server keeps about itself (`GET_PERF`) and
@@ -657,6 +692,7 @@ pub(crate) enum Command {
     /// server's lifetime; with `--watch SECS` the verb polls and prints
     /// each interval on its own, so counters become rates and a stall
     /// shows up in the second it happened. Does not start a server.
+    #[usage(help_heading = "More", display_order = 62)]
     Perf {
         #[usage(flatten)]
         json: JsonOpt,
@@ -668,7 +704,7 @@ pub(crate) enum Command {
         reset: bool,
     },
 
-    /// Create a new session and attach to it.
+    /// Create a session and attach to it
     ///
     /// Creates the named session if it does not already exist, then
     /// attaches. Auto-starts a server if none is running. A name already
@@ -686,6 +722,7 @@ pub(crate) enum Command {
     // a runtime gate, so the refusal is a usage error with usage text
     // (phux-i0e8.8.4). A group is used because `json` lives on the shared
     // flattened `JsonOpt` and cannot carry a per-verb `requires` itself.
+    #[usage(help_heading = "Sessions", display_order = 11)]
     New {
         /// Session name. `phux new work` creates a session named "work".
         /// Omitted ⇒ the `session-name-template` (default: the cwd
@@ -737,7 +774,7 @@ pub(crate) enum Command {
         command: Vec<String>,
     },
 
-    /// Create a pane without attaching.
+    /// Create a pane without attaching
     ///
     /// With `--target`, the pane is inserted beside an exact local owner;
     /// otherwise it joins the server's most recently active session. The new
@@ -746,6 +783,7 @@ pub(crate) enum Command {
     /// the hub's link to that satellite and the returned id is
     /// qualified with that host — addressable through the hub by every
     /// satellite-capable verb. Does not auto-start a server.
+    #[usage(help_heading = "Panes", display_order = 20)]
     Spawn {
         /// Route the spawn to a configured federation satellite (a name
         /// from `phux host ls --role satellite`, on a server running
@@ -785,7 +823,7 @@ pub(crate) enum Command {
         command: Vec<String>,
     },
 
-    /// Launch an agent integration in a new pane.
+    /// Start an agent integration in a new pane
     ///
     /// Resolves INTEGRATION (a `phux launch --list` id) to its `[launch]`
     /// command from an enabled plugin's integration template, then creates a
@@ -795,6 +833,7 @@ pub(crate) enum Command {
     /// `--print` resolves and prints the argv without spawning (a server-free
     /// dry run). Extra agent arguments follow `--`:
     /// `phux launch codex -- --model o3`.
+    #[usage(help_heading = "Agents", display_order = 31)]
     Launch {
         /// Integration id to launch (from `phux launch --list`).
         #[usage(value_name = "INTEGRATION", required_unless("--list"))]
@@ -841,7 +880,7 @@ pub(crate) enum Command {
         extra: Vec<String>,
     },
 
-    /// Kill a session, window, pane, or the server itself.
+    /// Kill a session, window, pane, or the server
     ///
     /// `TARGET` uses the selector grammar (see the top-level help):
     /// `name`, `name:N`, `name:N.M`, `name:tag`, `@N`, `.`. The selector
@@ -851,6 +890,7 @@ pub(crate) enum Command {
     /// `--server` stops the server process instead, ending every session on
     /// it. Local socket only: the server accepts that stop on its local
     /// socket alone, so `--server` cannot combine with `--remote`.
+    #[usage(help_heading = "Sessions", display_order = 13)]
     Kill {
         /// What to kill (selector).
         #[usage(group = "kill_what")]
@@ -868,12 +908,13 @@ pub(crate) enum Command {
         remote: RemoteOpt,
     },
 
-    /// Insert an already-created pane into a session layout.
+    /// Insert an existing pane into a layout
     ///
     /// Both selectors must each resolve to exactly one local pane in the same
     /// session. This command does not spawn: create `NEW_PANE` first with
     /// `phux spawn`, then insert it. Omitted direction defaults horizontal.
     #[usage(name = "insert-pane")]
+    #[usage(help_heading = "Panes", display_order = 29)]
     InsertPane {
         /// Existing layout leaf beside which `NEW_PANE` is inserted.
         target: String,
@@ -897,13 +938,14 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Move one existing pane beside another, even across sessions.
+    /// Move a pane beside another, across sessions too
     ///
     /// SOURCE is collapsed out of its current tree position and inserted
     /// beside TARGET. Both selectors must resolve to exactly one local pane.
     /// When TARGET lives in a different session the pane is re-parented on
     /// the server first — its process, scrollback, and id survive the move.
     #[usage(name = "move-pane")]
+    #[usage(help_heading = "Panes", display_order = 30)]
     MovePane {
         /// Pane to relocate.
         source: String,
@@ -927,11 +969,12 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Swap two existing pane leaves in the same session layout.
+    /// Swap two panes in a layout
     ///
     /// Both selectors must each resolve to exactly one local pane. Split
     /// geometry is preserved and attached clients retain their local focus.
     #[usage(name = "swap-pane")]
+    #[usage(help_heading = "Panes", display_order = 31)]
     SwapPane {
         /// First pane selector.
         first: String,
@@ -947,7 +990,7 @@ pub(crate) enum Command {
     // clap reflows doc-comment paragraphs: as a doc comment the examples
     // below collapse onto one run-on line.
     #[usage(
-        help = "Set a pane's grid size, with no TTY",
+        help = "Set a pane's grid size",
         long_help = "Set a pane's grid size, with no TTY.\n\n\
             The headless counterpart to resizing your terminal window: names one \
             pane and gives it an exact cell geometry. Nothing attaches and \
@@ -966,6 +1009,7 @@ pub(crate) enum Command {
             phux resize demo 120x40\n  \
             phux resize @7 200x50 --json"
     )]
+    #[usage(help_heading = "Panes", display_order = 27)]
     Resize {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -980,13 +1024,14 @@ pub(crate) enum Command {
         json: JsonOpt,
     },
 
-    /// Detach clients from a session, from outside the attach UI.
+    /// Detach clients from a session
     ///
     /// The CLI counterpart to the `C-a d` keybinding. With `SESSION`, detaches
     /// every client attached to that session; with no argument, detaches every
     /// attached client on the server. Each target client's TUI exits cleanly.
     /// Useful for scripting or reclaiming a session that's attached (or wedged)
     /// elsewhere.
+    #[usage(help_heading = "Sessions", display_order = 14)]
     Detach {
         /// Session to detach clients from. Omit to detach every attached
         /// client on the server.
@@ -996,22 +1041,24 @@ pub(crate) enum Command {
         remote: RemoteOpt,
     },
 
-    /// Take the input wheel of a pane.
+    /// Take exclusive input control of a pane
     ///
     /// Seizes exclusive input authority over the resolved pane: while held,
     /// only this connection's input reaches the PTY — every other client's
     /// keystrokes (and any agent's `send-keys`) are locked out. Use it to
     /// grab control of a pane an agent is driving. Release with `phux give`.
     /// TARGET is a selector (see the top-level help).
+    #[usage(help_heading = "Agents", display_order = 33)]
     Take {
         /// Target selector (resolves to one pane).
         target: String,
     },
 
-    /// Give back the input wheel of a pane.
+    /// Give back input control taken with `take`
     ///
     /// Releases the input lease taken with `phux take`, returning the pane to
     /// open input. A no-op if you do not hold the lease. TARGET is a selector.
+    #[usage(help_heading = "Agents", display_order = 34)]
     Give {
         /// Target selector (resolves to one pane).
         target: String,
@@ -1021,7 +1068,7 @@ pub(crate) enum Command {
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the examples need real newlines.
     #[usage(
-        help = "Signal a pane's process group",
+        help = "Send a signal to a pane's process group",
         long_help = "Signal a pane's process group.\n\n\
             Delivers a POSIX signal to the program running in the resolved pane and \
             every subprocess it spawned — distinct from `phux kill`, which destroys \
@@ -1032,6 +1079,7 @@ pub(crate) enum Command {
             phux signal build freeze\n  \
             phux signal . kill"
     )]
+    #[usage(help_heading = "Agents", display_order = 35)]
     Signal {
         /// Target selector (resolves to one pane).
         target: String,
@@ -1046,7 +1094,7 @@ pub(crate) enum Command {
     // clap reflows doc-comment paragraphs and the worked examples need real
     // newlines.
     #[usage(
-        help = "Update phux to the latest stable or next release, keeping sessions alive",
+        help = "Update phux, keeping sessions alive",
         long_help = "Update phux to the latest stable or next release, keeping sessions alive.\n\n\
             Checks the published release, downloads the archive for this platform, \
             verifies it against the checksum published beside it, replaces the \
@@ -1073,6 +1121,7 @@ pub(crate) enum Command {
             phux update --dry-run --version v1.2.3\n  \
             phux update --rollback"
     )]
+    #[usage(help_heading = "Maintain", display_order = 56)]
     Update {
         /// Update options.
         #[usage(flatten)]
@@ -1094,6 +1143,7 @@ pub(crate) enum Command {
             phux channel next\n  \
             phux channel latest"
     )]
+    #[usage(help_heading = "Maintain", display_order = 58)]
     Channel {
         /// Channel to follow. Omit to report the current rail without changing it.
         #[usage(value_enum, value_name = "CHANNEL")]
@@ -1115,12 +1165,13 @@ pub(crate) enum Command {
             phux cockpit\n  \
             phux cockpit --json"
     )]
+    #[usage(help_heading = "More", display_order = 67)]
     Cockpit {
         #[usage(flatten)]
         json: JsonOpt,
     },
 
-    /// Graceful-upgrade the running server in place.
+    /// Hot-swap the running server to the installed binary
     ///
     /// Asks the server to snapshot every pane, re-exec the on-disk binary, and
     /// re-adopt the live PTYs, so the shells / editors / agents in every
@@ -1129,14 +1180,16 @@ pub(crate) enum Command {
     /// low-level primitive: it re-execs whatever is already on disk and
     /// downloads nothing. `phux update` is the command that puts a new binary
     /// there first.
+    #[usage(help_heading = "Maintain", display_order = 57)]
     Upgrade {},
 
-    /// Rename a session.
+    /// Rename a session
     ///
     /// Reassigns `SESSION`'s human-readable name to `NEW_NAME` in one
     /// round-trip. The server is authoritative;
     /// attached clients pick up the new name on their next snapshot. An
     /// unknown `SESSION` or a `NEW_NAME` already in use is an error.
+    #[usage(help_heading = "Sessions", display_order = 15)]
     Rename {
         /// Current session name.
         session: String,
@@ -1148,7 +1201,7 @@ pub(crate) enum Command {
         remote: RemoteOpt,
     },
 
-    /// Capture a pane's screen as JSON or a boxed text view.
+    /// Read a pane's screen as text or JSON
     ///
     /// The agent "floor": read what's on screen as JSON (`--json`) or a
     /// boxed text view, without a TTY or tmux. The read is side-effect-free
@@ -1158,7 +1211,8 @@ pub(crate) enum Command {
     ///
     /// TARGET is a selector (see the top-level help); omit it for the
     /// most-recently-focused session.
-    #[usage(help = "Capture a pane's screen as JSON or a boxed text view")]
+    #[usage(help = "Read a pane's screen as text or JSON")]
+    #[usage(help_heading = "Panes", display_order = 21)]
     Snapshot {
         /// Target selector. Omit for the most-recently-focused session.
         #[usage(value_name = "TARGET")]
@@ -1235,6 +1289,7 @@ pub(crate) enum Command {
             phux send-keys demo \"echo hi\" Enter\n  \
             phux send-keys work:1.0 C-c"
     )]
+    #[usage(help_heading = "Panes", display_order = 22)]
     SendKeys {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -1249,7 +1304,7 @@ pub(crate) enum Command {
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the examples need real newlines.
     #[usage(
-        help = "Paste text into a pane (bracketed when the pane asks for it)",
+        help = "Paste text into a pane",
         long_help = "Paste text into a pane.\n\n\
             Delivers the payload as ONE paste event to the resolved pane \
             (`ROUTE_INPUT`), so the live pane is neither attached nor resized. \
@@ -1268,6 +1323,7 @@ pub(crate) enum Command {
             phux paste demo 'SELECT count(*) FROM users;'\n  \
             git diff | phux paste review"
     )]
+    #[usage(help_heading = "Panes", display_order = 23)]
     Paste {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -1310,6 +1366,7 @@ pub(crate) enum Command {
             phux wait --regex \"test result: (ok|FAILED)\" --output-only build\n  \
             phux wait --idle 750 repl"
     )]
+    #[usage(help_heading = "Panes", display_order = 25)]
     Wait {
         /// Target selector. Omit for the most-recently-focused session.
         #[usage(value_name = "TARGET")]
@@ -1394,7 +1451,7 @@ pub(crate) enum Command {
     // `long_about` because clap reflows doc-comment paragraphs and the exit
     // codes need to survive as their own lines.
     #[usage(
-        help = "Stream a pane's live events (bell, title, dirty/idle, lifecycle)",
+        help = "Stream a pane's events as they happen",
         long_help = "Stream a pane's live events (the push half of the agent surface).\n\n\
             Subscribes to the server's event stream and prints one event per line. The \
             subscription neither attaches nor resizes the pane — safe to watch a pane a human \
@@ -1412,6 +1469,7 @@ pub(crate) enum Command {
             phux watch --json work:1.0\n  \
             phux watch --until asked --timeout 120 reviewer"
     )]
+    #[usage(help_heading = "Panes", display_order = 26)]
     Watch {
         /// Target selector. Omit for the most-recently-focused session.
         #[usage(value_name = "TARGET")]
@@ -1442,7 +1500,7 @@ pub(crate) enum Command {
     // root command uses) because clap reflows doc-comment paragraphs: as a
     // doc comment the three examples below collapse onto one run-on line.
     #[usage(
-        help = "Record a pane and export it as a cast, GIF, or APNG",
+        help = "Record a pane to a cast, GIF, or APNG",
         long_help = "Record a pane and export it as an asciinema cast, an animated GIF, or an APNG.\n\n\
             TARGET is a selector (default: the focused pane). Recording is a pure observer: \
             it does not attach the session and never resizes the pane, so it is safe to run \
@@ -1455,6 +1513,7 @@ pub(crate) enum Command {
             phux rec work:1.0 -o demo.cast --duration 30\n  \
             phux rec --from demo.cast -o demo.gif --fps 20"
     )]
+    #[usage(help_heading = "More", display_order = 60)]
     Rec {
         /// Pane selector. Defaults to the focused pane.
         #[usage(value_name = "TARGET")]
@@ -1543,6 +1602,7 @@ pub(crate) enum Command {
             phux play demo.cast work:1.0 --speed 2\n  \
             phux play demo.cast --loop --idle-limit 0.5 --json"
     )]
+    #[usage(help_heading = "More", display_order = 61)]
     Play {
         /// The .cast file to play.
         #[usage(value_name = "FILE")]
@@ -1609,7 +1669,7 @@ pub(crate) enum Command {
     // `long_about` for the same reason `rec` spells one out: clap reflows
     // doc-comment paragraphs and the examples need real newlines.
     #[usage(
-        help = "Report an agent ask event for a pane",
+        help = "Report that an agent is waiting on a human",
         long_help = "Report that an agent in a pane is waiting on a human answer.\n\n\
             This is the opt-in hook contract for configured integrations: it emits \
             the same `asked` event as the `phux-ask` title sentinel without writing \
@@ -1619,6 +1679,7 @@ pub(crate) enum Command {
             phux ask work:1.0 --id deploy --suggest Yes --suggest No \"Deploy?\"\n  \
             phux ask @3 --json \"Need approval\""
     )]
+    #[usage(help_heading = "Agents", display_order = 32)]
     Ask {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -1643,11 +1704,12 @@ pub(crate) enum Command {
         question: String,
     },
 
-    /// List, show, explain, set, or clear per-pane agent state.
+    /// See and drive the agents running in panes
     ///
     /// Inference (`list`/`show`/`explain`) reports the agent phux infers is
     /// running in each pane. `set`/`clear` write and delete an explicit
     /// per-pane agent identity that overrides inference.
+    #[usage(help_heading = "Agents", display_order = 30)]
     Agent {
         #[usage(subcommand)]
         action: agent::AgentAction,
@@ -1680,6 +1742,7 @@ pub(crate) enum Command {
             phux run build \"cargo test\"\n  \
             phux run --timeout 30 work:1.0 \"cargo test\""
     )]
+    #[usage(help_heading = "Panes", display_order = 24)]
     Run {
         /// Target selector: session, session:window, session:window.pane,
         /// @id, or `.` (focused). `=` is unsupported by headless commands.
@@ -1701,42 +1764,46 @@ pub(crate) enum Command {
         json: JsonOpt,
     },
 
-    /// Inspect, scaffold, and reload the phux config file.
+    /// Inspect, scaffold, and reload the config file
     ///
     /// phux is config-driven: defaults ship in the binary and
     /// your `config.toml` is a sparse overlay merged on top. These
     /// subcommands never touch a running server, except `reload`,
     /// which signals attached clients to re-read their config in place.
+    #[usage(help_heading = "Maintain", display_order = 54)]
     Config {
         #[usage(subcommand)]
         action: config_action::ConfigAction,
     },
 
-    /// Manage local plugin manifests in the phux config registry.
+    /// Manage plugin manifests in the config
     ///
     /// This is a client-local config operation: it validates
     /// `phux-plugin.toml` manifests and edits `[[plugins]]` entries in the
     /// user's config without contacting a running server.
+    #[usage(help_heading = "Maintain", display_order = 55)]
     Plugin {
         #[usage(subcommand)]
         action: PluginAction,
     },
 
-    /// Inspect a git workspace and its worktrees for agent orchestration.
+    /// Inspect a git workspace and its worktrees
     ///
     /// This is a local repo operation: it never contacts a running phux server
     /// and never creates or deletes worktrees. Agents use it to map code
     /// checkouts to phux sessions/panes before spawning or attaching work.
+    #[usage(help_heading = "More", display_order = 65)]
     Workspace {
         #[usage(subcommand)]
         action: WorkspaceAction,
     },
 
-    /// Read and write pane tags.
+    /// Read and write pane tags (address them with #tag)
     ///
     /// Tags are freeform strings attached to panes. Once a pane is tagged,
     /// the `#tag` selector addresses every pane carrying that tag — e.g.
     /// `phux kill #build`, `phux snapshot #web`.
+    #[usage(help_heading = "Panes", display_order = 28)]
     Tag {
         #[usage(subcommand)]
         action: TagAction,
@@ -1781,7 +1848,7 @@ pub(crate) enum Command {
         linger: u32,
     },
 
-    /// Run a standalone relay, or enroll a route with it.
+    /// Run a standalone relay, or enroll a route with it
     ///
     /// The relay is a separate rendezvous process for reaching a phux
     /// server that cannot accept inbound connections: the server dials
@@ -1792,12 +1859,13 @@ pub(crate) enum Command {
     /// token the server's tunnel authenticates with. Relay state (the
     /// route-token store and a self-signed certificate) lives at fixed
     /// paths under the phux state directory.
+    #[usage(help_heading = "Machines", display_order = 44)]
     Relay {
         #[usage(subcommand)]
         action: relay::RelayAction,
     },
 
-    /// Mint, rotate, or revoke a remote-consumer credential.
+    /// Mint, rotate, or revoke remote credentials
     ///
     /// With no subcommand, mint one credential into the server's store and
     /// print its stable ID, one-time bearer secret, and certificate fingerprint.
@@ -1806,6 +1874,7 @@ pub(crate) enum Command {
     /// directly and take effect without restarting the server.
     ///
     /// This never contacts a running server — it only writes the token file.
+    #[usage(help_heading = "Machines", display_order = 43)]
     Pair {
         #[usage(subcommand)]
         action: Option<PairAction>,
@@ -1851,7 +1920,7 @@ pub(crate) enum Command {
         migrate_legacy: bool,
     },
 
-    /// Register the machines phux talks to: remotes and satellites.
+    /// Add and manage the machines phux reaches
     ///
     /// One namespace over both machine registries. `--role remote` (the
     /// default) manages the servers `phux attach <name>` dials; `--role
@@ -1862,12 +1931,13 @@ pub(crate) enum Command {
     // The successor to the former `remote`, `satellite`, and top-level
     // `enroll` verbs (ADR-0066), removed in v0.12.1 once their deprecation
     // window closed (phux-dpjf).
+    #[usage(help_heading = "Machines", display_order = 40)]
     Host {
         #[usage(subcommand)]
         action: host::HostAction,
     },
 
-    /// Keep a server running across logout and reboot.
+    /// Keep a server running across logout and reboot
     ///
     /// Generates this host's native per-user service unit — a `launchd`
     /// `LaunchAgent` on macOS, a systemd user unit on Linux — with the
@@ -1876,6 +1946,7 @@ pub(crate) enum Command {
     /// A restarted server has no terminals: every pane's process died with
     /// the host. `install --restore` brings back session names, layout, and
     /// cwd, not running processes.
+    #[usage(help_heading = "Machines", display_order = 42)]
     Service {
         #[usage(subcommand)]
         action: ServiceAction,
@@ -1885,7 +1956,7 @@ pub(crate) enum Command {
     // doc-comment paragraphs and the three install commands need real
     // newlines — run together on one line they do copy-paste damage.
     #[usage(
-        help = "Print a shell completion script on stdout",
+        help = "Print a shell completion script",
         long_help = "Print a shell completion script on stdout.\n\n\
             The script is generated from the binary's own argument parser, so it \
             always matches the verbs this build actually accepts. It contacts no \
@@ -1898,18 +1969,20 @@ pub(crate) enum Command {
             phux completion bash > ~/.local/share/bash-completion/completions/phux\n  \
             phux completion fish > ~/.config/fish/completions/phux.fish"
     )]
+    #[usage(help_heading = "More", display_order = 70)]
     Completion {
         /// Shell dialect to generate for.
         #[usage(value_enum, value_name = "SHELL")]
         shell: CompletionShell,
     },
 
-    /// Run the bundled MCP stdio adapter.
+    /// Run the bundled MCP stdio adapter
     ///
     /// This is a transparent launcher for the separate MCP companion
     /// binary. All arguments are forwarded unchanged. With no arguments it
     /// serves MCP over stdin/stdout; discovery modes include `--skill`,
     /// `--schema`, `--help`, and `--version`.
+    #[usage(help_heading = "More", display_order = 68)]
     Mcp {
         /// Arguments forwarded unchanged to the MCP companion.
         #[usage(value_name = "ARGS", trailing_var_arg, allow_hyphen_values)]
@@ -1921,7 +1994,7 @@ pub(crate) enum Command {
     // out: clap reflows doc-comment paragraphs, and the install one-liners
     // need real newlines or they run together and do copy-paste damage.
     #[usage(
-        help = "Print the agent skill this binary ships with, on stdout",
+        help = "Print the agent skill this binary ships with",
         long_help = "Print the agent skill this binary ships with, on stdout.\n\n\
             The text is compiled into the executable, so it describes the verbs \
             and flags THIS build actually has — it cannot drift from the binary \
@@ -1939,13 +2012,14 @@ pub(crate) enum Command {
             phux --skill=terminal\n  \
             phux --skill=quick | pbcopy"
     )]
+    #[usage(help_heading = "More", display_order = 69)]
     Skill {
         /// Amount and subject of guidance to print.
         #[usage(value_enum, default = "full", value_name = "SCOPE")]
         scope: crate::skill::SkillScope,
     },
 
-    /// Diagnose a phux install: config, socket, server, plugins.
+    /// Diagnose the install: config, socket, server
     ///
     /// Composes the checks that already exist as separate verbs and reports
     /// one verdict, because knowing which four commands to run and how to
@@ -1953,24 +2027,26 @@ pub(crate) enum Command {
     ///
     /// Read-only. Exits 1 if any check failed; warnings alone exit 0,
     /// since a stopped server is a normal state and not a broken install.
+    #[usage(help_heading = "Maintain", display_order = 51)]
     Doctor {
         /// Emit a stable JSON document instead of human text.
         #[usage(long)]
         json: bool,
     },
 
-    /// Manage git worktrees and the sessions bound to them.
+    /// Manage git worktrees and their bound sessions
     ///
     /// Each worktree binds to one session whose name is derived from the
     /// worktree's directory basename. The derivation is a pure function of
     /// the path, so the binding is computed on demand and can never go
     /// stale — phux stores no worktree state and the server knows no git.
+    #[usage(help_heading = "More", display_order = 66)]
     Worktree {
         #[usage(subcommand)]
         action: WorktreeAction,
     },
 
-    /// Show where phux's logs live, or tail one of them.
+    /// Show where the logs live, or tail one
     ///
     /// Bare `phux logs` prints the inventory: the canonical server log
     /// (every spawn path writes it), the per-pid client logs, and the state
@@ -1980,6 +2056,7 @@ pub(crate) enum Command {
     /// picks a specific one), and `--cockpit` the native macOS app's log;
     /// `-f` follows and `-n` sets the tail length. `--json` emits the
     /// inventory as a stable document.
+    #[usage(help_heading = "Maintain", display_order = 52)]
     Logs {
         /// Tail the canonical server log.
         #[usage(long, group = "which")]
@@ -2018,7 +2095,7 @@ pub(crate) enum Command {
         json: bool,
     },
 
-    /// Capture or list local bug reports.
+    /// Capture or list local bug reports
     ///
     /// Bare `phux report` lists bundles under the profile state directory
     /// (newest first; `latest` is printed first). `phux report show [ID]`
@@ -2028,6 +2105,7 @@ pub(crate) enum Command {
     /// screen are included. An agent given a report path can `cat` it or
     /// run `phux report show`.
     #[usage(alias = "bug")]
+    #[usage(help_heading = "Maintain", display_order = 53)]
     Report {
         #[usage(subcommand)]
         action: Option<ReportAction>,
