@@ -236,6 +236,54 @@ moves. `local.max_live_shells` derives from `native_sdk.max_effect_ptys` with
 no literal in between, which is the part that must not be undone: a hardcoded
 duplicate is exactly how pg1 happened.
 
+Raising the table is not permission to adopt the framework terminal store.
+That split is the next decision.
+
+---
+
+## Native SDK is the shell; libghostty-vt Session is the engine
+
+**Decided 2026-09-14.** Cockpit architecture package 2 from Metal/Foreman.
+
+The pinned Native SDK fork is **shell only**: windows, chrome (`.native` /
+TypeScript), the event loop, `gpu_surface`, and `canvas.terminal_grid.paint`.
+It does not own product-pane cell state.
+
+`src/terminal/` libghostty-vt `Session` is the **engine**: cell state, damage,
+scrollback, selection. Providers feed it VT bytes (local PTY or phux FFI). The
+engine projects a `canvas.TerminalGrid`; the shell paints it.
+
+**Refuse forever** for product panes: the framework store
+`runtime/terminal_session.zig` and the `<terminal pty=>` markup widget.
+Inbound feed is missing — phux bytes arrive from a socket, not an SDK pty
+effect — and the store's old four-pty ceiling is why the fork raised
+`native_sdk.max_effect_ptys` to 32 for Cockpit's own table, not a reason to
+take the store. Historical write-up: [FINDINGS.md](../FINDINGS.md) §7a.
+
+`local.max_live_shells` stays derived from `native_sdk.max_effect_ptys` with
+no literal in between. `scripts/check-shell-engine.py` fails if product source
+reintroduces the widget or the store.
+
+---
+
+## VT bytes never ride the Native SDK 4096 effect channel
+
+**Decided 2026-09-14.** Cockpit architecture package 4 from Metal/Foreman.
+
+The channel post path has a hard 4096-byte bound with no override
+([FINDINGS.md](../FINDINGS.md) §7). phux `PANE_OUTPUT` frames exceed it.
+Chunking those bytes through the channel is forbidden — that is the thing
+the queues exist to avoid.
+
+Production `providers/phux` stays: the extension module owns the socket;
+complete frames cross bounded reusable queues; only a one-byte wake is
+posted; the UI thread drains and feeds the engine (`phux_client_feed_frame`
+on this thread, `Session.feed` for local panes). Channel `event.bytes` is
+the wake, never VT.
+
+`scripts/check-vt-channel.py` fails if product phux source posts anything
+but that wake, or if a phux channel handler feeds `event.bytes` as VT.
+
 ---
 
 ## State is said with the accent, not with elevation: SETTLED
@@ -400,7 +448,10 @@ cell count.
   columns, three neighbours share ~682 cells each.
 - Glyphs: focused keeps `widget_glyph_budget` minus degraded holds
   (`glyph_budget * degraded_cells / full_cells`). Not `/ N`.
-- Single pane, active window: `cell_reserve=0`, whole store. Unchanged.
+- Single pane, active window: leftover after the full grid stays in
+  `cell_reserve` (`unused_cells` = `store - full_cells` = 2048). The pane
+  still paints the whole 320x96 grid; that leftover is unused slack, not
+  the SDK two-pane floor.
 
 Equal-cut at N=2 gave both panes 16384 cells (~51 rows at 320) and
 starved glyphs to 3840. Hybrid C gives the focused pane the full 96 rows

@@ -2,7 +2,7 @@
 //!
 //! This worker owns only the socket. Client state and client FFI remain on the
 //! deterministic UI thread. Complete frames cross `Bridge`; only a one-byte
-//! wake crosses `ChannelHandle`.
+//! wake crosses `ChannelHandle`. See docs/DECISIONS.md.
 
 const std = @import("std");
 const builtin = @import("builtin");

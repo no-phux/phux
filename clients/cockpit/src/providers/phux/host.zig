@@ -794,6 +794,7 @@ pub const Host = struct {
     }
 
     /// UI-thread wake handler. The worker never calls the C client.
+    /// The channel carries only the one-byte wake; frames are drained here.
     pub fn drainReadiness(host: *Host) !SyncDelta {
         return host.drainReadinessBudget(host.bridge.incoming.pendingCount());
     }

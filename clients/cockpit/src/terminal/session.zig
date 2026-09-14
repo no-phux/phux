@@ -13,8 +13,9 @@
 //! glyph and text accounting, box-drawing geometry, roughly 375 lines of
 //! it. All of that is the framework's now. What stays here is the local
 //! provider's libghostty session and its byte-injection path. The framework's
-//! own session store (`runtime/terminal_session.zig`) is capped at four ptys and
-//! has no inbound byte-injection path. Other providers project their
+//! own session store (`runtime/terminal_session.zig`) and `<terminal pty=>`
+//! widget are forbidden for product panes: no inbound byte feed, and the old
+//! four-pty ceiling. See docs/DECISIONS.md. Other providers project their
 //! authoritative model straight into the shared painter below.
 
 const std = @import("std");

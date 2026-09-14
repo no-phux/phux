@@ -3,12 +3,18 @@
 //! Complete protocol frames are allocator-owned queue entries. Only
 //! [`wake_payload`] is sent through the native-sdk external channel, keeping
 //! frames larger than that channel's 4096-byte effect payload out of it.
+//! See docs/DECISIONS.md (VT bytes never ride the 4096 effect channel).
 
 const std = @import("std");
 const posix = std.posix;
 
 /// Entire native-sdk external-channel payload; frames bypass that channel.
 pub const wake_payload = [_]u8{1};
+
+comptime {
+    std.debug.assert(wake_payload.len == 1);
+}
+
 /// Protocol hard bound for one complete frame, including its 4-byte prefix.
 pub const max_frame_bytes: usize = 16 * 1024 * 1024 + 4;
 
@@ -360,6 +366,7 @@ pub const Harness = struct {
 };
 
 test "explicit config and large-frame channel bypass" {
+    // Product panes: VT / PANE_OUTPUT never ride the 4096-byte effect channel.
     const testing = std.testing;
     const config = try Config.parse("127.0.0.1:8022/work");
     try testing.expectEqualStrings("127.0.0.1", config.host);
