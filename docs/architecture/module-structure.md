@@ -351,6 +351,9 @@ src/
   engine.rs, engine/ghostty.rs — the generic terminal adapter trait plus
                         its libghostty implementation (feature
                         `native-engine`)
+  handshake.rs        — shared HELLO_OK acceptance (exact protocol triple,
+                        advertised profile, native feature intersection,
+                        payload limits)
   session.rs, session/  — the synchronous session kernel
                         (agent_stream.rs, kernel_rig.rs, property_tests.rs,
                         tests.rs)

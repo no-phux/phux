@@ -5,6 +5,7 @@
 //!
 //! - [`engine`] and [`session`] — the generic terminal adapter and synchronous
 //!   protocol-0.7 session kernel.
+//! - [`handshake`] — `HELLO_OK` acceptance shared by every frontend.
 //! - [`layout`] — the pane-geometry layout tree, split math, and the CBOR
 //!   metadata envelope that persists it server-side.
 //! - [`multi_pane`] — layout tree → per-pane rectangles + the divider
@@ -26,6 +27,7 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod engine;
+pub mod handshake;
 pub mod history;
 pub mod input_replay;
 pub mod layout;
