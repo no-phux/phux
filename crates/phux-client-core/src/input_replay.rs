@@ -361,6 +361,18 @@ impl InputReplayJournal {
         self.poisoned_terminals.remove(terminal_id)
     }
 
+    /// Retire every queued operation and delivery fence for a terminal that
+    /// the host has authoritatively closed or permanently released.
+    ///
+    /// Attempted operations remain visible as unknown reports; never-sent
+    /// operations are refused. The terminal fence is then removed because the
+    /// host guarantees no further input can target this resource incarnation.
+    pub fn retire_terminal(&mut self, terminal_id: &ResourceId, why: &str) -> Vec<ReplayReport> {
+        let reports = self.strand_terminal(terminal_id, why);
+        self.poisoned_terminals.remove(terminal_id);
+        reports
+    }
+
     /// Drain locally generated outcomes such as bounded-queue overflow. The
     /// attach driver calls this after input dispatch and maps each report to
     /// the same visible notice path used for server replies.
@@ -1345,6 +1357,32 @@ mod tests {
         assert!(journal.clear_delivery_fence(&tid(1)));
         assert!(!journal.delivery_fenced(&tid(1)));
         submit(&mut journal, tid(1), enter()).expect("fresh input after authoritative read");
+    }
+
+    #[test]
+    fn terminal_retirement_reports_pending_work_and_reclaims_its_fence() {
+        let mut journal = armed_journal();
+        submit(&mut journal, tid(1), paste("attempted")).expect("queue");
+        submit(&mut journal, tid(2), paste("independent")).expect("queue");
+        let mut next = 1_u32;
+        let (_, frames) = journal.next_frames_at(&mut next, 100);
+        let first_request = request_id_for_terminal(&frames, &tid(1));
+        let _ = journal.resolve(
+            first_request,
+            &CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: "ambiguous".to_owned(),
+            },
+        );
+        assert!(journal.delivery_fenced(&tid(1)));
+
+        let reports = journal.retire_terminal(&tid(1), "the terminal closed");
+        assert!(
+            reports.is_empty(),
+            "the unknown result already stranded followers"
+        );
+        assert!(!journal.delivery_fenced(&tid(1)));
+        assert!(journal.must_order_after(&tid(2)));
     }
 
     // ---- verdicts -----------------------------------------------------

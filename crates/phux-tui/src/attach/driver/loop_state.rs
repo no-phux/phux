@@ -505,6 +505,9 @@ pub(super) struct SessionLoop {
     /// on UDS dials.
     input_replay:
         Option<std::rc::Rc<std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>>,
+    /// Authoritative output accepted while its pane was not actually painted.
+    /// A fence clears only when the focused pane becomes visible or retires.
+    delivery_fence_paint_pending: HashSet<ResourceId>,
     /// Whether this connection negotiated `OutputMode::StateSync`. Gates the
     /// per-frame `FRAME_ACK`: only a state-sync consumer's acks are tracked
     /// server-side, so a raw consumer skips them (see `should_emit_frame_ack`).
@@ -799,6 +802,7 @@ impl SessionLoop {
             acknowledged_input_supported: server_features
                 .contains(ServerFeature::AcknowledgedInput),
             input_replay: None,
+            delivery_fence_paint_pending: HashSet::new(),
             terminal_reply_supported: server_features.contains(ServerFeature::TerminalReply),
             spawn_initial_size_supported: server_features.contains(ServerFeature::SpawnInitialSize),
             directory_support: crate::attach::directory_picker::DirectorySupport::from_features(
@@ -957,6 +961,9 @@ impl SessionLoop {
         }
         if let Some(painted) = self.paint_view(out, sidebar, level) {
             self.finish_paint(painted);
+            if matches!(level, RepaintLevel::Full) {
+                self.clear_visible_delivery_fences_after_paint();
+            }
         }
     }
 
@@ -1291,11 +1298,11 @@ impl SessionLoop {
         sidebar: Option<SidebarReservation>,
         defer_paint: bool,
     ) -> Result<FrameOutcome, AttachError> {
-        let authoritative_output = match &frame {
-            FrameKind::ResourceOutput { terminal_id, .. } => Some(terminal_id.clone()),
+        let retired_terminal = match &frame {
+            FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id.clone()),
             _ => None,
         };
-        let outcome = handle_server_frame(
+        let mut outcome = handle_server_frame(
             &mut self.engine_kernel,
             &mut self.kernel_effects,
             out,
@@ -1320,10 +1327,40 @@ impl SessionLoop {
             self.overlays.is_active(),
             defer_paint,
         )?;
-        if let (Some(terminal_id), Some(journal)) =
-            (authoritative_output, self.input_replay.as_ref())
-        {
-            journal.borrow_mut().clear_delivery_fence(&terminal_id);
+        for terminal_id in &outcome.authoritative_damage {
+            let fenced = self
+                .input_replay
+                .as_ref()
+                .is_some_and(|journal| journal.borrow().delivery_fenced(terminal_id));
+            if fenced {
+                self.delivery_fence_paint_pending
+                    .insert(terminal_id.clone());
+                if outcome.painted_output.as_ref() != Some(terminal_id) {
+                    self.pacer.withhold(terminal_id);
+                }
+            }
+        }
+        if let Some(terminal_id) = outcome.painted_output.as_ref() {
+            self.clear_delivery_fence_after_paint(terminal_id);
+        }
+        if let Some(terminal_id) = retired_terminal {
+            self.delivery_fence_paint_pending.remove(&terminal_id);
+            if let Some(journal) = self.input_replay.as_ref() {
+                let reports = journal
+                    .borrow_mut()
+                    .retire_terminal(&terminal_id, "the terminal closed");
+                outcome.notices.extend(
+                    reports
+                        .into_iter()
+                        .filter(|report| {
+                            !matches!(
+                                report.disposition,
+                                crate::attach::input_replay::ReplayDisposition::Delivered
+                            )
+                        })
+                        .map(|report| Notice::warn(report.notice_line())),
+                );
+            }
         }
         if outcome.layout_get_answered {
             self.layout_read_complete = true;
@@ -3521,6 +3558,42 @@ impl SessionLoop {
             &live,
         );
         self.finish_paint(painted);
+        if self
+            .focused_resource
+            .as_ref()
+            .is_some_and(|focused| live.contains(focused))
+        {
+            self.clear_focused_delivery_fence_after_paint();
+        }
+    }
+
+    fn clear_focused_delivery_fence_after_paint(&mut self) {
+        let Some(terminal_id) = self.focused_resource.clone() else {
+            return;
+        };
+        self.clear_delivery_fence_after_paint(&terminal_id);
+    }
+
+    fn clear_visible_delivery_fences_after_paint(&mut self) {
+        let Some(layout) = self.workspace.render_window(self.zoomed.as_ref()) else {
+            return;
+        };
+        let visible = layout
+            .tree
+            .as_ref()
+            .map_or_else(Vec::new, crate::layout::leaves);
+        for terminal_id in visible {
+            self.clear_delivery_fence_after_paint(&terminal_id);
+        }
+    }
+
+    fn clear_delivery_fence_after_paint(&mut self, terminal_id: &ResourceId) {
+        if !self.delivery_fence_paint_pending.remove(terminal_id) {
+            return;
+        }
+        if let Some(journal) = self.input_replay.as_ref() {
+            journal.borrow_mut().clear_delivery_fence(terminal_id);
+        }
     }
 
     /// phux-c2td.3: rebuild and repaint the session picker, if it is open.
