@@ -74,3 +74,16 @@ transition.
 Stored machine-dependent baselines and a wrapper that normalizes every
 instrument's flags are deliberately omitted. Re-run derivations and compare
 the same basis instead.
+
+## Paint ceilings (Hybrid C)
+
+`scripts/measure-paint-ceiling.sh` (also `./scripts/measure.sh measure-paint-ceiling`)
+runs the headless native suite with `-Dmeasure=true` and prints the SDK paint
+tables, unbounded 320x96 bind points, and Hybrid C vs equal-cut fleets at
+N=1/2/4/8. It does not bump the Native SDK pin. Live PTY rss is
+`scripts/drive-shell-ceiling.sh` and is macOS-only.
+
+The policy those numbers feed is [DECISIONS.md](DECISIONS.md) §"Paint ceilings:
+Hybrid C". The regression that N full product grids do not share one envelope
+lives in `src/cockpit/native/paint_budget.zig`.
+
