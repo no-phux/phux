@@ -9,6 +9,50 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.37.0](https://github.com/no-phux/phux/compare/v0.36.0...v0.37.0) (2026-09-14)
+
+
+### Features
+
+* **agent-detect:** add grok, amp, and cursor-agent manifests ([f610890](https://github.com/no-phux/phux/commit/f6108909af8876190fae6d0ce41bd657d09b7994))
+* **client-ffi:** export phux_client_log_init and trace the remote tunnel ([9cc0743](https://github.com/no-phux/phux/commit/9cc0743ba97ad16c1b65341d1516a6fff83d13de))
+* **client:** share mobile session policies ([1fc314d](https://github.com/no-phux/phux/commit/1fc314d430d18cf09f4488c73432cc9d4b4b0125))
+* **cli:** parse with usage-rs instead of clap ([#632](https://github.com/no-phux/phux/issues/632)) ([5849969](https://github.com/no-phux/phux/commit/5849969312124f17b51df8a22204a00ae550f82a))
+* **cli:** phux logs --cockpit and the Cockpit log in the inventory ([5651790](https://github.com/no-phux/phux/commit/5651790f5348d9899529c22303f8df20c7ac1aee))
+* **cli:** readable help and a one-command remote host story (phux-9omy) ([#642](https://github.com/no-phux/phux/issues/642)) ([fe47a64](https://github.com/no-phux/phux/commit/fe47a6442a1c5bf1d4f756c086579bdb69509fd2))
+* **cli:** ship phux cockpit launcher and one-word channel switch ([#622](https://github.com/no-phux/phux/issues/622)) ([ab6d9ba](https://github.com/no-phux/phux/commit/ab6d9ba447ae933072cc01d1d3b4331a68a7e5b1))
+* land still-valid unique worktree patches ([#619](https://github.com/no-phux/phux/issues/619)) ([e11cb23](https://github.com/no-phux/phux/commit/e11cb23d0f7063539bc57a922100ca3b56d972da))
+
+
+### Bug Fixes
+
+* **cli:** accept --token with a single --quic or --ws transport ([bd11d65](https://github.com/no-phux/phux/commit/bd11d65d6a3c650ed1a3f41563e6447a82f062fe))
+* **client:** harden shared mobile policies ([6856ca9](https://github.com/no-phux/phux/commit/6856ca91d712d1e34b06a1eaa0914f9507d2c021))
+* **client:** release input fences safely ([2fb9188](https://github.com/no-phux/phux/commit/2fb918873bd1e7c3f2375ce6076b2b10cade524b))
+* **cockpit:** keep ring P-256 helpers through dead_strip ([#627](https://github.com/no-phux/phux/issues/627)) ([bd9a95c](https://github.com/no-phux/phux/commit/bd9a95c7ede5fe6dba6f955e38a91ca67cd6a0b2))
+* **ffi:** share HELLO_OK validator with TUI (phux-boh8) ([4e0a4eb](https://github.com/no-phux/phux/commit/4e0a4eb01f51985c943323a2c8b8925c7e2526d3))
+* **ffi:** share last-pane close with layout_ops (phux-ljcf) ([#637](https://github.com/no-phux/phux/issues/637)) ([ae80d8f](https://github.com/no-phux/phux/commit/ae80d8ff3d4204f72aeab5c28f2d68d54fc69f6d))
+* **install:** accept both tarball license layouts ([#634](https://github.com/no-phux/phux/issues/634)) ([30c48d4](https://github.com/no-phux/phux/commit/30c48d4b521f4e529131d7453389d09dba4a20d7))
+* **release:** name Linear releases after the tag, not the SHA ([#620](https://github.com/no-phux/phux/issues/620)) ([43a0235](https://github.com/no-phux/phux/commit/43a0235e50fa6df049d913b964d7c167366f6547))
+* **release:** write tarballs from one packer the tests actually run ([#636](https://github.com/no-phux/phux/issues/636)) ([53c88a5](https://github.com/no-phux/phux/commit/53c88a57a4053f4d79f79c21d5b964d80bd9ed39))
+* **site:** keep the hosted terminal wordmark lowercase ([59c209b](https://github.com/no-phux/phux/commit/59c209b75ae19c43cbeb108ef2caff7424e95d98))
+* **site:** point footer at license and add brew trust ([#647](https://github.com/no-phux/phux/issues/647)) ([f91dbc4](https://github.com/no-phux/phux/commit/f91dbc4edaaccb0af16c13ccf5328214e8e23afb))
+* **tui:** let last-pane close beat bootstrap EPIPE (phux-501l) ([#618](https://github.com/no-phux/phux/issues/618)) ([be3e903](https://github.com/no-phux/phux/commit/be3e9038df262320faa2cf3810ef47578b2af701))
+* **tui:** render pane exits as compact toasts ([790dc98](https://github.com/no-phux/phux/commit/790dc987ff78378025a8d0da118c90608803a3ee))
+
+
+### Refactors
+
+* **server:** narrow metadata_broadcast API (phux-wdar) ([#635](https://github.com/no-phux/phux/issues/635)) ([652ba34](https://github.com/no-phux/phux/commit/652ba3492eaee243f9e5525883fa3935b3de2913))
+* **server:** own protocol-violation close order in one helper (phux-mjol) ([#633](https://github.com/no-phux/phux/issues/633)) ([f6af508](https://github.com/no-phux/phux/commit/f6af5088f75fa09b18c8a716b0371e9288228a29))
+* **skills:** standardize phux agent guides ([#630](https://github.com/no-phux/phux/issues/630)) ([868b716](https://github.com/no-phux/phux/commit/868b716b5aceb979974eb36e678664ac072b2fae))
+
+
+### Documentation
+
+* **architecture:** contrast phux and herdr system shapes ([35817db](https://github.com/no-phux/phux/commit/35817dbc66ccdb556227a596ba6c12b5caa338ee))
+* **brand:** land fox-mark assets and the site favicon ([#648](https://github.com/no-phux/phux/issues/648)) ([ca2eed2](https://github.com/no-phux/phux/commit/ca2eed286f33d312a529398c12e6852b4a6172ad))
+
 ## [0.36.0](https://github.com/no-phux/phux/compare/v0.35.0...v0.36.0) (2026-09-13)
 
 
