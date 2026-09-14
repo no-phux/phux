@@ -35,5 +35,5 @@ pub mod quic;
 pub mod ws;
 
 pub use connection::{CertTrust, Dial, QuicDial, WsDial};
-pub use input_replay::InputReplayJournal;
+pub use input_replay::{InputReplayJournal, mint_input_operation_id};
 pub use outcome::{AttachEnd, AttachError};

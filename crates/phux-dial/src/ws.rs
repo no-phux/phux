@@ -29,7 +29,7 @@ use tokio_tungstenite::tungstenite::{Error as TungsteniteError, Message};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
 use crate::DialError;
-use crate::tls::CertTrust;
+use crate::tls::{CertTrust, TlsClientIdentity};
 
 /// How often an otherwise silent WebSocket sends a client-initiated RFC 6455
 /// ping, matched to `quic::KEEP_ALIVE` so both remote lanes behave the same.
@@ -214,6 +214,26 @@ impl tokio::io::AsyncWrite for ClientStream {
 /// [`DialError::Io`] on tungstenite-level socket I/O failures during the
 /// upgrade.
 pub async fn dial(d: &WsDial) -> Result<Ws, DialError> {
+    dial_inner(d, None).await
+}
+
+/// Connect using explicit TLS identity configuration.
+///
+/// This path never reads `PHUX_WORKLOAD_CERT` or `PHUX_WORKLOAD_KEY`. Native
+/// embedders that own their process environment should use it with
+/// [`TlsClientIdentity::None`] (pairing-token auth only) or explicit PEM paths.
+/// Certificate trust remains the explicit [`WsDial::trust`] value; routable
+/// mobile connections should use [`CertTrust::Pinned`].
+///
+/// # Errors
+///
+/// Returns the same establishment errors as [`dial`], plus explicit identity
+/// file parse/read failures.
+pub async fn dial_with_identity(d: &WsDial, identity: &TlsClientIdentity) -> Result<Ws, DialError> {
+    dial_inner(d, Some(identity)).await
+}
+
+async fn dial_inner(d: &WsDial, identity: Option<&TlsClientIdentity>) -> Result<Ws, DialError> {
     let target = WsTarget::parse(&d.url)?;
     // Resolve explicitly first: a name that does not resolve is a
     // reachability failure, not a generic connect failure — on an overlay
@@ -245,7 +265,7 @@ pub async fn dial(d: &WsDial) -> Result<Ws, DialError> {
     // than failing the dial (and this crate carries no logger of its own).
     let _ = tcp.set_nodelay(true);
     let stream = if target.secure {
-        ClientStream::Tls(Box::new(tls_connect(tcp, &target, d).await?))
+        ClientStream::Tls(Box::new(tls_connect(tcp, &target, d, identity).await?))
     } else {
         ClientStream::Plain(tcp)
     };
@@ -274,8 +294,13 @@ async fn tls_connect(
     tcp: TcpStream,
     target: &WsTarget,
     dial: &WsDial,
+    identity: Option<&TlsClientIdentity>,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, DialError> {
-    let config = Arc::new(crate::tls::client_config(&dial.trust, None)?);
+    let config = match identity {
+        Some(identity) => crate::tls::client_config_with_identity(&dial.trust, identity, None)?,
+        None => crate::tls::client_config(&dial.trust, None)?,
+    };
+    let config = Arc::new(config);
     let connector = tokio_rustls::TlsConnector::from(config);
     let server_name = dial
         .tls_server_name
@@ -553,6 +578,68 @@ pub async fn recv_message_alive(
 mod tests {
     use super::*;
 
+    async fn spawn_pinned_wss_server(
+        token: &'static str,
+    ) -> (String, String, impl std::future::Future<Output = ()>) {
+        let dir = tempfile::tempdir().expect("temporary certificate directory");
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        crate::cert::ensure_self_signed(&cert_path, &key_path).expect("self-signed certificate");
+        let fingerprint = crate::cert::cert_fingerprint(&cert_path).expect("certificate pin");
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("TLS 1.3 server config")
+            .with_no_client_auth()
+            .with_single_cert(
+                crate::cert::load_certs(&cert_path).expect("certificate chain"),
+                crate::cert::load_key(&key_path).expect("private key"),
+            )
+            .expect("TLS identity");
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind WSS fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+
+        let server = async move {
+            let _dir = dir;
+            let (tcp, _) = listener.accept().await.expect("accept TCP");
+            let tls = acceptor.accept(tcp).await.expect("accept TLS");
+            #[allow(
+                clippy::result_large_err,
+                reason = "tokio-tungstenite fixes the HTTP rejection response type for its handshake callback"
+            )]
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tls,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("authorization")
+                            .expect("bearer header")
+                            .to_str()
+                            .expect("ASCII bearer header"),
+                        format!("Bearer {token}")
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("upgrade WebSocket");
+            assert_eq!(
+                ws.next()
+                    .await
+                    .expect("binary message")
+                    .expect("read message"),
+                Message::Binary(b"pinned-wss".to_vec().into())
+            );
+        };
+
+        (format!("wss://127.0.0.1:{port}"), fingerprint, server)
+    }
+
     #[test]
     fn parses_ws_and_wss_targets() {
         let ws = WsTarget::parse("ws://127.0.0.1:8787/path").expect("ws");
@@ -614,6 +701,30 @@ mod tests {
             err.to_string().contains("name resolution failed"),
             "got {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_no_identity_dials_pinned_wss_with_bearer_auth() {
+        const TOKEN: &str = "11111111111111111111111111111111";
+        let (url, fingerprint, server) = spawn_pinned_wss_server(TOKEN).await;
+        let client = async {
+            let mut ws = dial_with_identity(
+                &WsDial {
+                    url,
+                    token: Some(TOKEN.to_owned()),
+                    trust: CertTrust::Pinned(fingerprint),
+                    tls_server_name: Some("localhost".to_owned()),
+                },
+                &TlsClientIdentity::None,
+            )
+            .await
+            .expect("explicit pinned WSS dial");
+            ws.send(Message::Binary(b"pinned-wss".to_vec().into()))
+                .await
+                .expect("send payload");
+        };
+
+        tokio::join!(server, client);
     }
 
     // ---- keepalive policy ------------------------------------------------

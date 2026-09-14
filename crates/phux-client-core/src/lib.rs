@@ -11,6 +11,7 @@
 //!   cells between them (pure compute; the chrome layer rasterizes the
 //!   `DividerCell`s to VT).
 //! - [`predict`] — Mosh-class predictive local echo over the pane mirror.
+//! - [`input_replay`] — acknowledged input ordering and reconnect policy.
 //!
 //! # Frontend boundary
 //!
@@ -26,6 +27,7 @@
 
 pub mod engine;
 pub mod history;
+pub mod input_replay;
 pub mod layout;
 pub mod multi_pane;
 pub mod perf;

@@ -23,7 +23,7 @@ use crate::attach::pane_state::{
 };
 use crate::attach::render::ReplicaWalk;
 use crate::layout::{self, LayoutState, Rect, Workspace};
-use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell};
+use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell_at};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use phux_client::agent_meta::RESOURCE_AGENT_KEY;
 use phux_client::conditional_kill::BoundResource;
@@ -964,8 +964,9 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     // confirmed predictions drop, contradictions drop their
     // suffix, predictions still ahead of confirmed state
     // stay alive. See [`crate::predict`] for the truth table.
+    let now_ms = crate::attach::input_dispatch::predict_now_ms();
     if let Some((row, col)) = focused_cursor_local {
-        let _stats = reconcile_terminal_output_per_cell(predict, row, col, |r, c| {
+        let _stats = reconcile_terminal_output_per_cell_at(predict, row, col, now_ms, |r, c| {
             panes.get_mut(fid).and_then(|s| {
                 // Read the full grapheme cluster, not just the
                 // base scalar, so multi-codepoint Insert
@@ -991,7 +992,7 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     // alt-screen echo latch is locked, the state is tentative,
     // or the front guess is past the TTL, the tail reconciles
     // silently instead of painting.
-    if predict.should_display(crate::attach::input_dispatch::predict_now_ms()) {
+    if predict.should_display(now_ms) {
         let _ = overlay.render(predict, pane_origin, out);
         // phux-esge: the guesses now sit over the pane's cells; the front
         // buffer must not keep claiming what was there before them.

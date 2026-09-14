@@ -23,7 +23,7 @@ use crate::attach::actions::{self, PendingSplit};
 use crate::attach::connection::Connection;
 use crate::attach::focus::FocusHistory;
 use crate::attach::input::make_named_key;
-use crate::attach::input_replay::InputReplayJournal;
+use crate::attach::input_replay::{InputReplayJournal, mint_input_operation_id};
 use crate::attach::outcome::AttachError;
 use crate::attach::paint::{SidebarReservation, content_rect};
 use crate::attach::pane_state::{
@@ -1172,7 +1172,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
 
         let (reports, frames) = {
             let mut journal = journal.borrow_mut();
-            if let Err(report) = journal.submit(pane, vec![event]) {
+            if let Err(report) = journal.submit(mint_input_operation_id(), pane, vec![event]) {
                 tracing::warn!(line = %report.notice_line(), "acknowledged input refused locally");
                 return Ok(());
             }
