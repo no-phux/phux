@@ -405,7 +405,7 @@ fn apply_close(workspace: &mut Workspace, target: &ResourceId) -> Result<(), Lay
     workspace.close_pane(target).map_err(|err| match err {
         LayoutError::LastPane => LayoutOpsError::LastPane,
         LayoutError::PaneNotInLayout(id) => LayoutOpsError::ForeignTarget(id),
-        other => LayoutOpsError::Layout(other),
+        err @ LayoutError::InvalidRatio(_) => LayoutOpsError::Layout(err),
     })
 }
 

@@ -1410,6 +1410,12 @@ mod tests {
         let original = ws.clone();
         assert!(matches!(ws.close_pane(&t(1)), Err(LayoutError::LastPane)));
         assert_eq!(ws, original);
+    }
+
+    #[test]
+    fn close_pane_refuses_a_foreign_target_without_mutation() {
+        let mut ws = ws3();
+        let original = ws.clone();
         assert!(matches!(
             ws.close_pane(&t(99)),
             Err(LayoutError::PaneNotInLayout(id)) if id == t(99)
