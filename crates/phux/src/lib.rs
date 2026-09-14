@@ -1253,11 +1253,12 @@ fn dispatch(
         Some(Command::Logs {
             server,
             client,
+            cockpit,
             pid,
             follow,
             lines,
             json,
-        }) => commands::logs::run_logs(server, client, pid, follow, lines, json),
+        }) => commands::logs::run_logs(server, client, cockpit, pid, follow, lines, json),
         Some(Command::Report { action, json }) => commands::report::run_report(action, json.json),
         Some(Command::Host { action }) => commands::host::run_host(&action),
         Some(Command::Service { action }) => run_service(action, socket),

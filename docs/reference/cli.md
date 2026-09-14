@@ -1790,9 +1790,10 @@ Show where phux's logs live, or tail one of them.
 Bare `phux logs` prints the inventory: the canonical server log (every spawn
 path writes it), the per-pid client logs, and the state dir that holds them —
 with existence, size, and age, so a fresh machine reads "not created yet"
-instead of an error. `--server` tails the server log and `--client` the newest
-client log (`--pid` picks a specific one); `-f` follows and `-n` sets the tail
-length. `--json` emits the inventory as a stable document.
+instead of an error. `--server` tails the server log, `--client` the newest
+client log (`--pid` picks a specific one), and `--cockpit` the native macOS
+app's log; `-f` follows and `-n` sets the tail length. `--json` emits the
+inventory as a stable document.
 
 Usage: phux logs [FLAGS]
 
@@ -1800,13 +1801,14 @@ Flags:
       --server         Tail the canonical server log.
       --client         Tail the newest per-pid client log (or the one `--pid`
                        names).
+      --cockpit        Tail the Phux Cockpit app's log (macOS;
+                       `PHUX_COCKPIT_LOG` overrides the path).
       --pid <PID>      With --client: the client pid whose log to tail, instead
                        of the newest.
-  -f, --follow         Follow the tailed log as it grows (needs --server or
-                       --client).
-  -n, --lines <LINES>  How many trailing lines to show (needs --server or
-                       --client).
-                       (default: 200)
+  -f, --follow         Follow the tailed log as it grows (needs --server,
+                       --client, or --cockpit).
+  -n, --lines <NUM>    How many trailing lines to show; 200 when omitted (needs
+                       --server, --client, or --cockpit).
       --json           Emit the path inventory as a stable JSON document instead
                        of human text. Inventory only — it cannot combine with a
                        tail.

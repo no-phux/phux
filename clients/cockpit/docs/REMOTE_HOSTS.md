@@ -1,7 +1,7 @@
 ---
 audience: agents, contributors
 stability: evolving
-last-reviewed: 2026-09-11
+last-reviewed: 2026-09-13
 ---
 
 # Remote hosts
@@ -131,6 +131,14 @@ posts the disconnect. The reason therefore survives the worker, and the
 status line reads "Could not connect to mini: ...". The host panel keeps
 the typed host after a failure, so retrying is one keystroke. It closes
 itself once the host it was waiting for connects.
+
+The status line carries the short form. The long form, with the resolve,
+dial, and handshake steps that led to it, is in Cockpit's log:
+`phux logs --cockpit` tails `~/Library/Logs/Phux Cockpit/cockpit.log`
+(`PHUX_COCKPIT_LOG` moves it). A crash of the tunnel thread ends that file
+with the fatal-signal report and leaves a macOS crash report under
+`~/Library/Logs/DiagnosticReports/`; the phux tree's `docs/operations.md`
+says what each holds.
 
 ## Persistence and relaunch
 
