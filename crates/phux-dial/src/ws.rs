@@ -464,17 +464,38 @@ impl WsReader {
     /// Propagates transport failures as [`DialError`].
     pub async fn recv_message(&mut self) -> Result<Option<Vec<u8>>, DialError> {
         loop {
-            match self.rx.next().await {
-                None | Some(Ok(Message::Close(_))) => return Ok(None),
-                Some(Ok(Message::Binary(data))) => {
-                    self.keepalive.note_inbound(Instant::now());
-                    return Ok(Some(data.to_vec()));
-                }
-                Some(Err(err)) => return Err(ws_error(err)),
-                // Text / ping / pong / raw: not a phux frame, but proof the
-                // path is still carrying bytes. tungstenite has already
-                // queued the automatic pong for a peer ping.
-                Some(Ok(_)) => self.keepalive.note_inbound(Instant::now()),
+            match self.recv_activity().await? {
+                WsActivity::Message(data) => return Ok(Some(data)),
+                WsActivity::Control => {}
+                WsActivity::Closed => return Ok(None),
+            }
+        }
+    }
+
+    /// Receive one inbound WebSocket activity without hiding control frames.
+    ///
+    /// A control frame carries no phux payload, but it is authoritative proof
+    /// that a foreground liveness probe reached the peer and received an
+    /// answer. Callers that only need protocol messages should use
+    /// [`Self::recv_message`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport failures as [`DialError`].
+    pub async fn recv_activity(&mut self) -> Result<WsActivity, DialError> {
+        match self.rx.next().await {
+            None | Some(Ok(Message::Close(_))) => Ok(WsActivity::Closed),
+            Some(Ok(Message::Binary(data))) => {
+                self.keepalive.note_inbound(Instant::now());
+                Ok(WsActivity::Message(data.to_vec()))
+            }
+            Some(Err(err)) => Err(ws_error(err)),
+            // Text / ping / pong / raw: not a phux frame, but proof the path
+            // is still carrying bytes. tungstenite has already queued the
+            // automatic pong for a peer ping.
+            Some(Ok(_)) => {
+                self.keepalive.note_inbound(Instant::now());
+                Ok(WsActivity::Control)
             }
         }
     }
@@ -519,6 +540,17 @@ impl WsReader {
     }
 }
 
+/// One observable inbound event from an established WebSocket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WsActivity {
+    /// One complete binary phux frame.
+    Message(Vec<u8>),
+    /// WebSocket-level activity with no phux payload.
+    Control,
+    /// A clean WebSocket close or end of stream.
+    Closed,
+}
+
 /// Receive the next phux frame, keeping the connection alive and reporting a
 /// stalled peer instead of waiting on it forever.
 ///
@@ -548,6 +580,33 @@ pub async fn recv_message_alive(
     writer: &mut WsWriter,
 ) -> Result<Option<Vec<u8>>, DialError> {
     loop {
+        match recv_activity_alive(reader, writer).await? {
+            WsActivity::Message(data) => return Ok(Some(data)),
+            WsActivity::Control => {}
+            WsActivity::Closed => return Ok(None),
+        }
+    }
+}
+
+/// Receive one inbound WebSocket activity with the shared liveness policy.
+///
+/// Unlike [`recv_message_alive`], this returns after a control frame. That is
+/// useful to callers with a shorter, explicitly armed probe deadline: a Pong
+/// is proof of life even though it is not a phux protocol message.
+///
+/// # Cancel safety
+///
+/// Safe to drop and re-enter for the same reasons as [`recv_message_alive`].
+///
+/// # Errors
+///
+/// [`DialError::Stalled`] when the peer stops answering; otherwise the
+/// transport failures [`WsReader::recv_activity`] surfaces.
+pub async fn recv_activity_alive(
+    reader: &mut WsReader,
+    writer: &mut WsWriter,
+) -> Result<WsActivity, DialError> {
+    loop {
         let nap = match reader.keepalive.poll(Instant::now()) {
             WsLiveness::Dead => {
                 return Err(DialError::Stalled(format!(
@@ -564,7 +623,7 @@ pub async fn recv_message_alive(
             }
             WsLiveness::Idle(nap) => nap,
         };
-        match tokio::time::timeout(nap, reader.recv_message()).await {
+        match tokio::time::timeout(nap, reader.recv_activity()).await {
             Ok(result) => return result,
             // The nap elapsed: loop back and let `poll` decide whether that
             // means "ping" or "dead".
@@ -971,5 +1030,27 @@ mod tests {
             outcome.is_err(),
             "a quiet healthy connection stays open; got {outcome:?}"
         );
+    }
+
+    /// A caller-owned foreground probe must see the Pong instead of waiting
+    /// for an unrelated binary protocol frame. The ordinary message API keeps
+    /// hiding controls; the activity-aware API exposes the proof of life.
+    #[tokio::test]
+    async fn activity_receive_surfaces_a_probe_pong() {
+        let url = spawn_responsive_ws_server().await;
+        let (mut reader, mut writer) = connect_halves(
+            &url,
+            WsKeepalive::with_timings(Instant::now(), TEST_PING, TEST_DEAD),
+        )
+        .await;
+
+        writer.send_ping().await.expect("probe ping");
+        let activity =
+            tokio::time::timeout(TEST_DEAD, recv_activity_alive(&mut reader, &mut writer))
+                .await
+                .expect("responsive peer answers before the probe deadline")
+                .expect("probe receive");
+
+        assert_eq!(activity, WsActivity::Control);
     }
 }
