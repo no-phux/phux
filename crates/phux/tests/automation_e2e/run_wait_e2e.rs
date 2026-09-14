@@ -34,7 +34,7 @@
 mod common;
 
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -93,16 +93,29 @@ impl Drop for WatchGuard {
 }
 
 impl WatchGuard {
-    /// Wait for one ordered dirty -> idle pair, ignoring unrelated events.
-    fn wait_for_dirty_idle(&self) {
+    /// Re-trigger output until the watcher observes one ordered dirty -> idle
+    /// pair. The bounded receive is both the readiness probe and the retry
+    /// cadence, so a slow subscription cannot lose the first trigger.
+    fn trigger_and_wait_for_dirty_idle(&self, mut trigger: impl FnMut()) {
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut saw_dirty = false;
+        trigger();
         while Instant::now() < deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
-            let line = self
-                .lines
-                .recv_timeout(remaining)
-                .unwrap_or_else(|err| panic!("watch did not produce dirty -> idle: {err}"));
+            let retry_after = if saw_dirty {
+                remaining
+            } else {
+                remaining.min(Duration::from_millis(100))
+            };
+            let line = match self.lines.recv_timeout(retry_after) {
+                Ok(line) => line,
+                Err(mpsc::RecvTimeoutError::Timeout) if !saw_dirty => {
+                    trigger();
+                    continue;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(err) => panic!("watch did not produce dirty -> idle: {err}"),
+            };
             let event: serde_json::Value = serde_json::from_str(&line)
                 .unwrap_or_else(|err| panic!("watch emitted invalid JSON {line:?}: {err}"));
             match event["event"].as_str() {
@@ -161,24 +174,8 @@ impl ServerGuard {
         );
     }
 
-    /// Build a `phux <verb> --socket <sock> <rest...>` command, where
-    /// `args[0]` is the verb. `--socket` is injected right after the verb,
-    /// NOT appended: `run`/`wait`/`send-keys` use `trailing_var_arg`, so a
-    /// `--socket` placed after the positional command would be swallowed
-    /// into that command (and the verb would fall back to the user's real
-    /// default socket — verified the hard way). Verb-specific flags
-    /// (`--json`, `--until`, `--timeout`) must therefore also precede the
-    /// trailing positional in `args`.
     fn cmd(&self, args: &[&str]) -> Command {
-        let (verb, rest) = args.split_first().expect("at least a verb");
-        let mut c = Command::new(PHUX);
-        c.arg(verb)
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(rest)
-            .stdin(Stdio::null())
-            .stderr(Stdio::null());
-        c
+        phux_command(&self.socket, args)
     }
 
     /// Start the real CLI watcher without attaching to the pane. Its only
@@ -201,6 +198,27 @@ impl ServerGuard {
         });
         WatchGuard { child, lines }
     }
+}
+
+/// Build a `phux <verb> --socket <sock> <rest...>` command, where
+/// `args[0]` is the verb. `--socket` is injected right after the verb,
+/// NOT appended: `run`/`wait`/`send-keys` use `trailing_var_arg`, so a
+/// `--socket` placed after the positional command would be swallowed
+/// into that command (and the verb would fall back to the user's real
+/// default socket — verified the hard way). Verb-specific flags
+/// (`--json`, `--until`, `--timeout`) must therefore also precede the
+/// trailing positional in `args`.
+fn phux_command(socket: &Path, args: &[&str]) -> Command {
+    let (verb, rest) = args.split_first().expect("at least a verb");
+    let mut command = Command::new(PHUX);
+    command
+        .arg(verb)
+        .arg("--socket")
+        .arg(socket)
+        .args(rest)
+        .stdin(Stdio::null())
+        .stderr(Stdio::null());
+    command
 }
 
 /// Run a verb to completion, returning its raw exit code (the value a
@@ -234,40 +252,25 @@ fn run_stdout(server: &ServerGuard, args: &[&str]) -> String {
 
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn run_mirrors_zero_exit_for_true() {
+fn run_mirrors_command_exit_codes() {
     let server = ServerGuard::start();
     assert_eq!(
         run_status(&server, &["run", SESSION, "true"]),
         0,
         "`phux run work true` should exit 0"
     );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn run_mirrors_one_exit_for_false() {
-    let server = ServerGuard::start();
     assert_eq!(
         run_status(&server, &["run", SESSION, "false"]),
         1,
         "`phux run work false` should mirror false's exit 1"
     );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn run_mirrors_arbitrary_nonzero_exit() {
-    // `(exit 7)` runs in a SUBSHELL, so the exit does not terminate the
-    // pane's interactive shell — verified empirically: `phux ls` still
-    // lists the session and a follow-up `run` succeeds. A bare `exit 7`
-    // would kill the shell and reap the session, breaking the test.
-    let server = ServerGuard::start();
+    // A subshell preserves the interactive shell while exercising an
+    // arbitrary nonzero status.
     assert_eq!(
         run_status(&server, &["run", SESSION, "(exit 7)"]),
         7,
         "`phux run work '(exit 7)'` should mirror the subshell's exit 7"
     );
-    // The session must have survived the subshell exit.
     assert_eq!(
         run_status(&server, &["run", SESSION, "true"]),
         0,
@@ -335,27 +338,25 @@ fn headless_watch_json_receives_repeatable_dirty_idle_cycles() {
     let server = ServerGuard::start();
     let watch = server.watch_json();
 
-    // SUBSCRIBE_EVENTS has no acknowledgement, so allow the real watcher to
-    // finish target resolution and install its subscription before output.
-    std::thread::sleep(Duration::from_millis(300));
+    watch.trigger_and_wait_for_dirty_idle(|| {
+        assert_eq!(
+            run_status(
+                &server,
+                &["send-keys", SESSION, "printf WATCH_CYCLE_ONE", "Enter"],
+            ),
+            0,
+        );
+    });
 
-    assert_eq!(
-        run_status(
-            &server,
-            &["send-keys", SESSION, "printf WATCH_CYCLE_ONE", "Enter"],
-        ),
-        0,
-    );
-    watch.wait_for_dirty_idle();
-
-    assert_eq!(
-        run_status(
-            &server,
-            &["send-keys", SESSION, "printf WATCH_CYCLE_TWO", "Enter"],
-        ),
-        0,
-    );
-    watch.wait_for_dirty_idle();
+    watch.trigger_and_wait_for_dirty_idle(|| {
+        assert_eq!(
+            run_status(
+                &server,
+                &["send-keys", SESSION, "printf WATCH_CYCLE_TWO", "Enter"],
+            ),
+            0,
+        );
+    });
 }
 
 #[test]
@@ -381,9 +382,8 @@ fn wait_until_times_out_when_marker_never_appears() {
 
 /// Run a verb capturing exit code and stderr together — for asserting the
 /// diagnostic on a selector that fails to parse or resolve.
-fn run_status_and_stderr(server: &ServerGuard, args: &[&str]) -> (i32, String) {
-    let out = server
-        .cmd(args)
+fn run_status_and_stderr(socket: &Path, args: &[&str]) -> (i32, String) {
+    let out = phux_command(socket, args)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()
@@ -405,45 +405,24 @@ fn run_status_and_stderr(server: &ServerGuard, args: &[&str]) -> (i32, String) {
 
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn run_accepts_window_selector() {
+fn run_accepts_successful_selector_forms() {
     let server = ServerGuard::start();
-    assert_eq!(
-        run_status(&server, &["run", "--timeout", "15", "work:0", "true"]),
-        0,
-        "`phux run work:0` should resolve the window selector and mirror exit 0",
-    );
+    for selector in ["work:0", "work:0.0", "@1"] {
+        assert_eq!(
+            run_status(&server, &["run", "--timeout", "15", selector, "true"]),
+            0,
+            "`phux run {selector}` should resolve the selector and mirror exit 0",
+        );
+    }
 }
 
 #[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn run_accepts_pane_selector() {
-    let server = ServerGuard::start();
-    assert_eq!(
-        run_status(&server, &["run", "--timeout", "15", "work:0.0", "true"]),
-        0,
-        "`phux run work:0.0` should resolve the pane selector and mirror exit 0",
-    );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn run_accepts_terminal_id_selector() {
-    let server = ServerGuard::start();
-    // The seed pane is local id 1 (the first Terminal the server creates).
-    assert_eq!(
-        run_status(&server, &["run", "--timeout", "15", "@1", "true"]),
-        0,
-        "`phux run @1` should resolve the opaque-id selector and mirror exit 0",
-    );
-}
-
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn run_rejects_malformed_selector_before_touching_server() {
-    let server = ServerGuard::start();
-    // A non-numeric pane index is a PARSE error: it fails up front with the
-    // CLI failure code, never reaching resolution.
-    let (code, stderr) = run_status_and_stderr(&server, &["run", "work:0.x", "true"]);
+    let dir = tempfile::tempdir().expect("create temp dir for absent socket");
+    let absent_socket = dir.path().join("absent.sock");
+    // A non-numeric pane index is a parse error, so the invalid-target
+    // diagnostic must win even though no server exists at this socket.
+    let (code, stderr) = run_status_and_stderr(&absent_socket, &["run", "work:0.x", "true"]);
     assert_eq!(code, 1, "a malformed selector should exit 1");
     assert!(
         stderr.contains("invalid target"),
@@ -457,7 +436,7 @@ fn run_reports_no_such_target_for_unknown_session() {
     let server = ServerGuard::start();
     // Well-formed but nonexistent: parses fine, then misses at resolution.
     let (code, stderr) = run_status_and_stderr(
-        &server,
+        &server.socket,
         &["run", "--timeout", "5", "no-such-session-qzx", "true"],
     );
     assert_eq!(code, 1, "an unresolvable target should exit 1");

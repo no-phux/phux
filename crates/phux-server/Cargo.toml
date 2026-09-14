@@ -30,9 +30,18 @@ tokio-console = ["dep:console-subscriber"]
 # Incremental native checkpoint capture/advertisement. The compatibility
 # synthesizers remain available independently of this feature.
 native-engine = []
+# Benchmark/example tooling stays opt-in so default workspace tests do not
+# compile Criterion or DHAT merely because these targets exist.
+capture-bench = ["dep:criterion", "dep:dhat"]
+ack-allocations-example = ["dep:dhat"]
 
 
 [dependencies]
+# These tools are normal optional dependencies because Cargo enables every
+# dev-dependency while compiling tests. The target-specific features below
+# keep them out of the default test graph.
+criterion = { workspace = true, optional = true }
+dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 # phux-config supplies the canonical scrollback bounds — `ScrollbackLimits`
@@ -260,8 +269,6 @@ libc = "0.2"
 
 [dev-dependencies]
 insta.workspace = true
-criterion.workspace = true
-dhat.workspace = true
 # `test-util` enables `tokio::time::pause`/`advance` and the
 # `#[tokio::test(start_paused = true)]` macro arg. Required by the
 # `phux-q0e.3` tick-scheduler tests, which advance virtual time
@@ -301,7 +308,11 @@ wtransport = { version = "0.7.2", default-features = false, features = ["ring", 
 libghostty-vt = { workspace = true, features = ["allocator_api"] }
 allocator-api2 = "0.4"
 
+[[example]]
+name = "ack_allocations"
+required-features = ["ack-allocations-example"]
+
 [[bench]]
 name = "capture"
 harness = false
-required-features = ["native-engine"]
+required-features = ["native-engine", "capture-bench"]

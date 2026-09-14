@@ -198,31 +198,38 @@ fn rec_records_a_live_pane_to_a_playable_cast() {
     let out = server.out("live.cast");
     let (cols, rows) = server.pane_size();
 
-    // Drive the pane from a second process WHILE the recorder observes, so
-    // the marker arrives as a streamed `RESOURCE_OUTPUT` delta rather than
-    // riding in on the priming snapshot. That is the path a recording
-    // actually exercises.
-    let socket = server.socket.clone();
-    let driver = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(500));
-        Command::new(PHUX)
-            .args(["send-keys", "--socket"])
-            .arg(&socket)
-            .args([SESSION, "echo REC_E2E_LIVE_MARKER", "Enter"])
-            .stdin(Stdio::null())
-            .status()
-            .expect("send-keys during recording");
-    });
-
-    server.success(&[
-        "rec",
-        SESSION,
-        "-o",
-        out.to_str().expect("UTF-8 out"),
-        "--duration",
-        "3",
-    ]);
-    driver.join().expect("driver thread");
+    // Start the recorder before producing output, then keep producing the
+    // marker for as long as the recorder is alive. Its one-second capture
+    // window starts only after ATTACH_RESOURCE establishes the subscription,
+    // so repeated writes guarantee a streamed delta without betting half the
+    // shortened window on an arbitrary scheduler delay.
+    let mut recorder = server
+        .cmd(&[
+            "rec",
+            SESSION,
+            "-o",
+            out.to_str().expect("UTF-8 out"),
+            "--duration",
+            "1",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn live recorder");
+    loop {
+        if recorder.try_wait().expect("poll live recorder").is_some() {
+            break;
+        }
+        server.success(&["send-keys", SESSION, "echo REC_E2E_LIVE_MARKER", "Enter"]);
+        std::thread::sleep(POLL);
+    }
+    let output = recorder.wait_with_output().expect("collect live recorder");
+    assert!(
+        output.status.success(),
+        "live recorder exited {:?}; stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let file = std::fs::File::open(&out).expect("open recorded cast");
     let (header, events) =
@@ -237,7 +244,7 @@ fn rec_records_a_live_pane_to_a_playable_cast() {
             .iter()
             .any(|event| event.code == EventCode::Output
                 && event.data.contains("REC_E2E_LIVE_MARKER")),
-        "the text typed during the take must appear in an output event; got {} events",
+        "text produced while the recorder was alive must appear in an output event; got {} events",
         events.len()
     );
     assert!(
@@ -281,7 +288,7 @@ fn rec_does_not_resize_the_recorded_pane() {
         "-o",
         out.to_str().expect("UTF-8 out"),
         "--duration",
-        "2",
+        "1",
     ]);
 
     let after = server.pane_size();
@@ -304,10 +311,60 @@ fn rec_does_not_resize_the_recorded_pane() {
 
 #[test]
 #[ignore = "renders the committed demo asset; grouped with the rest of the rec lane."]
-fn rec_from_cast_renders_a_gif() {
+fn rec_from_cast_renders_a_gif_and_emits_one_json_object() {
     let dir = tempfile::tempdir().expect("temp dir");
     let out = dir.path().join("demo.gif");
-    let result = render(&out, &["--fps", "10"]);
+    let output = Command::new(PHUX)
+        .arg("rec")
+        .arg("--from")
+        .arg(demo_cast())
+        .arg("-o")
+        .arg(&out)
+        .arg("--json")
+        .args(["--fps", "10"])
+        .stdin(Stdio::null())
+        .output()
+        .expect("run phux rec --from --json");
+    assert!(output.status.success());
+
+    // A consumer pipes this straight into `jq`, so a progress spinner or a
+    // second line would break the contract even though both would still be
+    // "valid JSON somewhere in there".
+    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
+    let values: Vec<serde_json::Value> = serde_json::Deserializer::from_str(&stdout)
+        .into_iter::<serde_json::Value>()
+        .collect::<Result<_, _>>()
+        .unwrap_or_else(|err| panic!("stdout is not a JSON stream: {err}: {stdout:?}"));
+    assert_eq!(
+        values.len(),
+        1,
+        "stdout must be exactly one object; got {}: {stdout:?}",
+        values.len()
+    );
+    let result = &values[0];
+    assert!(
+        result.is_object(),
+        "the result must be an object, not a bare scalar: {stdout:?}"
+    );
+    assert_eq!(
+        stdout.trim_end_matches('\n').lines().count(),
+        1,
+        "the object must be one line, so `read -r` and `jq -c` both work: {stdout:?}"
+    );
+    for key in [
+        "path",
+        "format",
+        "bytes",
+        "frames",
+        "cols",
+        "rows",
+        "truncated",
+    ] {
+        assert!(
+            result.get(key).is_some(),
+            "the result contract is missing `{key}`: {stdout:?}"
+        );
+    }
 
     assert_eq!(result["format"], "gif");
     assert_eq!(
@@ -363,62 +420,6 @@ fn rec_from_cast_renders_an_apng() {
 }
 
 #[test]
-#[ignore = "renders the committed demo asset; grouped with the rest of the rec lane."]
-fn rec_json_emits_exactly_one_object_on_stdout() {
-    let dir = tempfile::tempdir().expect("temp dir");
-    let out = dir.path().join("one.gif");
-    let output = Command::new(PHUX)
-        .arg("rec")
-        .arg("--from")
-        .arg(demo_cast())
-        .arg("-o")
-        .arg(&out)
-        .arg("--json")
-        .stdin(Stdio::null())
-        .output()
-        .expect("run phux rec --from --json");
-    assert!(output.status.success());
-
-    // A consumer pipes this straight into `jq`, so a progress spinner or a
-    // second line would break the contract even though both would still be
-    // "valid JSON somewhere in there".
-    let stdout = String::from_utf8(output.stdout).expect("UTF-8 stdout");
-    let values: Vec<serde_json::Value> = serde_json::Deserializer::from_str(&stdout)
-        .into_iter::<serde_json::Value>()
-        .collect::<Result<_, _>>()
-        .unwrap_or_else(|err| panic!("stdout is not a JSON stream: {err}: {stdout:?}"));
-    assert_eq!(
-        values.len(),
-        1,
-        "stdout must be exactly one object; got {}: {stdout:?}",
-        values.len()
-    );
-    assert!(
-        values[0].is_object(),
-        "the result must be an object, not a bare scalar: {stdout:?}"
-    );
-    assert_eq!(
-        stdout.trim_end_matches('\n').lines().count(),
-        1,
-        "the object must be one line, so `read -r` and `jq -c` both work: {stdout:?}"
-    );
-    for key in [
-        "path",
-        "format",
-        "bytes",
-        "frames",
-        "cols",
-        "rows",
-        "truncated",
-    ] {
-        assert!(
-            values[0].get(key).is_some(),
-            "the result contract is missing `{key}`: {stdout:?}"
-        );
-    }
-}
-
-#[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn rec_duration_flag_bounds_the_capture() {
     let server = ServerGuard::start();
@@ -430,7 +431,7 @@ fn rec_duration_flag_bounds_the_capture() {
         "-o",
         out.to_str().expect("UTF-8 out"),
         "--duration",
-        "2",
+        "1",
     ]);
     let elapsed = started.elapsed();
 
@@ -438,13 +439,13 @@ fn rec_duration_flag_bounds_the_capture() {
     // exits, so an off-by-one here is the difference between a demo script
     // and a process that runs until the disk fills.
     assert!(
-        elapsed >= Duration::from_millis(1_900),
-        "`--duration 2` returned after {elapsed:?}; it must actually record \
+        elapsed >= Duration::from_millis(900),
+        "`--duration 1` returned after {elapsed:?}; it must actually record \
          for the requested window, not return early"
     );
     assert!(
-        elapsed < Duration::from_secs(8),
-        "`--duration 2` took {elapsed:?}; the deadline is not being honoured"
+        elapsed < Duration::from_secs(4),
+        "`--duration 1` took {elapsed:?}; the deadline is not being honoured"
     );
     assert!(
         out.exists(),

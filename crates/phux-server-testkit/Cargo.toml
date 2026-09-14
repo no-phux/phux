@@ -9,6 +9,10 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[lib]
+# This crate only exports integration-test helpers; it has no unit-test harness.
+test = false
+
 [lints]
 workspace = true
 

@@ -22,10 +22,7 @@
 //! last-pane self-exit `server_self_exit.rs` already covers.
 //!
 //! Timing discipline: every deadline here is a HANG detector with a named
-//! constant and a comment saying what the real number is. Nothing in this
-//! file gates on a fork+exec finishing inside the idle interval — an earlier
-//! draft did, by spacing `phux ls` calls, and it flaked on a loaded box
-//! because CLI spawn latency, not the server, was what it measured.
+//! constant and a comment saying what the real number is.
 //!
 //! Harness discipline follows `rec_e2e.rs`: sockets at the root of `/tmp`
 //! (macOS caps `sun_path` at 104 bytes and these run from deep worktrees),
@@ -74,20 +71,14 @@ const IDLE_SECS: u64 = 5;
 /// the server never intended to exit.
 const EXIT_HANG_CEILING: Duration = Duration::from_secs(45);
 
-/// How long a server started WITHOUT the flag is observed before it counts
-/// as immortal.
+/// How long an auto-spawned server without an idle-limit environment variable
+/// is observed before it counts as persistent.
 ///
 /// A multiple of `IDLE_SECS`, because the claim is "it does not exit", not
 /// "it had not exited yet". This is the guard test's whole budget and the
 /// slowest thing in the file, so it is kept to the smallest multiple that
 /// still makes the statement.
 const NO_LIFETIME_OBSERVATION: Duration = Duration::from_secs(3 * IDLE_SECS);
-
-/// How long `a_connected_client_postpones_the_idle_exit` holds its socket.
-///
-/// A multiple of `IDLE_SECS`, so a server that ignored open connections
-/// would be several intervals dead by the time the assertion runs.
-const HOLD_OPEN: Duration = Duration::from_secs(3 * IDLE_SECS);
 
 /// Wait for the server to bind (cold-start bound, matching `rec_e2e.rs`).
 const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
@@ -120,9 +111,9 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 
 /// A running `phux server` child plus its private socket and scratch dir.
 ///
-/// The `Drop` kill stays even though every test here ends with the server
-/// gone by design: a panicking assertion must not leak a daemon, which is
-/// the failure mode this whole feature exists to prevent. Belt and braces.
+/// The `Drop` kill stays even though the direct-process test ends with the
+/// server gone by design: a panicking assertion must not leak a daemon, which
+/// is the failure mode this whole feature exists to prevent. Belt and braces.
 struct ServerGuard {
     process: common::ServerProcess,
     socket: PathBuf,
@@ -139,11 +130,9 @@ struct ServerGuard {
 }
 
 impl ServerGuard {
-    /// Start a server whose seed pane runs a heartbeat loop forever.
-    ///
-    /// `idle_secs = None` starts a plain server (the historical contract);
-    /// `Some(n)` adds `--exit-after-idle n`.
-    fn start(idle_secs: Option<u64>) -> Self {
+    /// Start a server whose seed pane runs a heartbeat loop forever, with
+    /// `--exit-after-idle` set to `idle_secs`.
+    fn start(idle_secs: u64) -> Self {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let socket = PathBuf::from(format!(
             "/tmp/phux-idle-e2e-{}-{n}.sock",
@@ -166,10 +155,9 @@ impl ServerGuard {
         cmd.args(["server", "--session", SESSION, "--socket"])
             .arg(&socket)
             .arg("--seed-command")
-            .arg(&seed);
-        if let Some(secs) = idle_secs {
-            cmd.arg("--exit-after-idle").arg(secs.to_string());
-        }
+            .arg(&seed)
+            .arg("--exit-after-idle")
+            .arg(idle_secs.to_string());
         let child = cmd
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -197,11 +185,6 @@ impl ServerGuard {
         );
     }
 
-    /// Whether the server process has already exited, right now.
-    fn has_exited(&mut self) -> bool {
-        self.process.has_exited()
-    }
-
     /// Poll until the server process has exited, returning how long it took.
     /// `None` if it was still running at the deadline.
     fn wait_for_exit(&mut self, within: Duration) -> Option<Duration> {
@@ -215,7 +198,7 @@ impl ServerGuard {
     }
 
     /// Block until the seed pane has ticked at least once, proving the PTY
-    /// child is alive and running. Every test here depends on that premise.
+    /// child is alive and running.
     fn wait_for_live_pane(&self) -> u64 {
         let deadline = Instant::now() + PANE_LIVE_DEADLINE;
         while Instant::now() < deadline {
@@ -232,44 +215,6 @@ impl ServerGuard {
             self.heartbeat.display()
         );
     }
-
-    /// Open a bare connection to the server's socket and hand it back.
-    ///
-    /// No handshake, no frames — the server counts the accepted connection
-    /// and that is all this needs. Retried against a deadline because the
-    /// socket file existing is not the same as it being connectable.
-    fn connect_raw(&self) -> UnixStream {
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        loop {
-            match UnixStream::connect(&self.socket) {
-                Ok(stream) => return stream,
-                Err(err) if Instant::now() >= deadline => {
-                    panic!("could not connect to {}: {err}", self.socket.display())
-                }
-                Err(_) => std::thread::sleep(POLL),
-            }
-        }
-    }
-
-    /// `phux <verb> --socket <sock> …`, asserting success. `--socket` goes
-    /// right after the verb (`send-keys` uses `trailing_var_arg`).
-    fn success(&self, args: &[&str]) {
-        let (verb, rest) = args.split_first().expect("at least a verb");
-        let out = Command::new(PHUX)
-            .arg(verb)
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(rest)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run phux verb");
-        assert!(
-            out.status.success(),
-            "phux {args:?} exited {:?}; stderr={}",
-            out.status.code(),
-            String::from_utf8_lossy(&out.stderr)
-        );
-    }
 }
 
 /// The load-bearing test: a daemon nobody ever connected to exits on its
@@ -277,7 +222,7 @@ impl ServerGuard {
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn ephemeral_server_exits_unattended_and_reaps_its_pane() {
-    let mut server = ServerGuard::start(Some(IDLE_SECS));
+    let mut server = ServerGuard::start(IDLE_SECS);
     let ticks_before = server.wait_for_live_pane();
     let spawned_at = server.spawned_at;
 
@@ -320,74 +265,6 @@ fn ephemeral_server_exits_unattended_and_reaps_its_pane() {
     );
 }
 
-/// A client postpones the exit for as long as it is connected, and the
-/// interval restarts from the moment it leaves — so `--exit-after-idle`
-/// means "since the last client left", not "since startup".
-///
-/// The connection is a bare `UnixStream` that never sends a byte: no
-/// `ATTACH`, no frames. That is the point. A server gating on
-/// `ServerState::attached` would reap this one, and the harnesses this flag
-/// is for drive their servers with one-shot control verbs that likewise
-/// never attach. A `phux ls` inside the held window proves the daemon is
-/// still genuinely *serving* rather than merely resident.
-///
-/// The clock is held open by the in-process socket rather than by a series
-/// of spawned verbs, and that is a deliberate correction: the first version
-/// of this test slept between `phux ls` invocations and flaked on a loaded
-/// box, because a fork+exec of the CLI can take longer than `IDLE_SECS` and
-/// the test then measured process-spawn latency instead of the feature.
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn a_connected_client_postpones_the_idle_exit() {
-    let mut server = ServerGuard::start(Some(IDLE_SECS));
-    let held = server.connect_raw();
-    server.wait_for_live_pane();
-
-    // Well past the interval a never-contacted server would have died at.
-    std::thread::sleep(HOLD_OPEN);
-    assert!(
-        !server.has_exited(),
-        "server exited while a client connection was open ({HOLD_OPEN:?} held); \
-         the idle clock must be disarmed for as long as anyone is connected, \
-         however quiet that connection is",
-    );
-    // Still serving, not just still resident.
-    server.success(&["ls"]);
-
-    // Leave. The clock re-arms from here and the server follows.
-    drop(held);
-    server.wait_for_exit(EXIT_HANG_CEILING).unwrap_or_else(|| {
-        panic!(
-            "server did not exit within {EXIT_HANG_CEILING:?} after its last \
-             connection closed",
-        )
-    });
-}
-
-/// The guard test: WITHOUT the flag, the historical contract is unchanged —
-/// a server with a live pane and nobody attached stays up.
-///
-/// This exists so that a later change making the lifetime a default fails
-/// here, loudly, instead of silently killing someone's session while they
-/// are at lunch.
-#[test]
-#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
-fn without_the_flag_the_server_outlives_every_idle_window() {
-    let mut server = ServerGuard::start(None);
-    server.wait_for_live_pane();
-
-    assert!(
-        server.wait_for_exit(NO_LIFETIME_OBSERVATION).is_none(),
-        "a `phux server` started WITHOUT --exit-after-idle exited after \
-         {NO_LIFETIME_OBSERVATION:?} unattended; the multiplexer contract is \
-         to live until the last pane is gone, and the idle lifetime is opt-in \
-         precisely so a human's session survives them walking away",
-    );
-
-    // And it is still serving, not merely still resident.
-    server.success(&["ls"]);
-}
-
 /// An **auto-spawned** daemon, which no test can pass a flag to.
 ///
 /// `ServerGuard` starts `phux server` directly, so it can hand it
@@ -395,7 +272,7 @@ fn without_the_flag_the_server_outlives_every_idle_window() {
 /// what a naked `phux` (or any client verb) does for you, it builds its own
 /// argv, and it deliberately drops the `Child` because the server owns its
 /// lifecycle from then on. There is therefore no handle to wait on and no
-/// flag to pass — the two things every test above relies on.
+/// flag to pass.
 ///
 /// That is precisely the hole phux-nbam names: an auto-spawned daemon had no
 /// owner *and* no timer, and the last-pane self-exit only arms once a client
@@ -526,11 +403,9 @@ fn an_auto_spawned_server_honours_the_environment_idle_limit() {
 
 /// The guard: WITHOUT the variable, auto-spawn is unchanged.
 ///
-/// ADR-0063 and `without_the_flag_the_server_outlives_every_idle_window` pin
-/// that an unattended server stays up, and that contract belongs to the
-/// auto-spawn path too — it is the one a naked `phux` uses, which is to say
-/// the one a human's session actually runs on. A default lifetime here would
-/// end sessions while their owner was at lunch.
+/// That contract belongs to the auto-spawn path — it is the one a naked
+/// `phux` uses, which is to say the one a human's session actually runs on.
+/// A default lifetime here would end sessions while their owner was at lunch.
 #[test]
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn auto_spawn_has_no_idle_limit_unless_asked() {

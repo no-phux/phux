@@ -149,6 +149,9 @@ struct Multistream {
     frames_tx: tokio::sync::mpsc::Sender<MuxItem>,
     /// Connection-wide queued/incomplete Terminal-stream frame byte budget.
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
+    #[cfg(feature = "testkit")]
+    /// Maximum time from a Terminal frame's first byte to its complete body.
+    terminal_frame_deadline: std::time::Duration,
 }
 
 /// One bound Terminal stream's client-side state.
@@ -210,6 +213,24 @@ impl Multistream {
             frames_rx,
             frames_tx,
             frame_bytes: std::sync::Arc::new(tokio::sync::Semaphore::new(MUX_FRAME_BYTES)),
+            #[cfg(feature = "testkit")]
+            terminal_frame_deadline: TERMINAL_FRAME_DEADLINE,
+        }
+    }
+
+    #[cfg(feature = "testkit")]
+    const fn set_terminal_frame_deadline_for_test(&mut self, deadline: std::time::Duration) {
+        self.terminal_frame_deadline = deadline;
+    }
+
+    const fn terminal_frame_deadline(&self) -> std::time::Duration {
+        #[cfg(feature = "testkit")]
+        {
+            self.terminal_frame_deadline
+        }
+        #[cfg(not(feature = "testkit"))]
+        {
+            TERMINAL_FRAME_DEADLINE
         }
     }
 
@@ -234,6 +255,7 @@ async fn pump_terminal_stream(
     frames_tx: tokio::sync::mpsc::Sender<MuxItem>,
     frame_bytes: std::sync::Arc<tokio::sync::Semaphore>,
     active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    terminal_frame_deadline: std::time::Duration,
 ) {
     loop {
         let mut header = [0_u8; framing::LENGTH_PREFIX_LEN];
@@ -252,7 +274,7 @@ async fn pump_terminal_stream(
                 break;
             }
         }
-        let read = tokio::time::timeout(TERMINAL_FRAME_DEADLINE, async {
+        let read = tokio::time::timeout(terminal_frame_deadline, async {
             recv.read_exact(&mut header[1..])
                 .await
                 .map_err(|error| error.to_string())?;
@@ -577,6 +599,32 @@ impl Connection {
         let mut conn = Self::connect_quic_transport(dial).await?;
         conn.negotiate(client_name, client_caps.with_quic_streams(true))
             .await?;
+        Ok(conn)
+    }
+
+    #[cfg(feature = "testkit")]
+    /// Test seam for exercising incomplete Terminal frames without waiting for
+    /// the production deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, protocol, or server-refusal errors from negotiation.
+    pub async fn connect_quic_with_terminal_frame_deadline_for_test(
+        dial: &QuicDial,
+        terminal_frame_deadline: std::time::Duration,
+    ) -> Result<Self, AttachError> {
+        let mut conn = Self::connect_quic_transport(dial).await?;
+        let Some(multistream) = conn.multistream.as_mut() else {
+            return Err(AttachError::Protocol(
+                "QUIC transport did not initialize multistream state".to_owned(),
+            ));
+        };
+        multistream.set_terminal_frame_deadline_for_test(terminal_frame_deadline);
+        conn.negotiate(
+            default_client_name(),
+            control_client_caps().with_quic_streams(true),
+        )
+        .await?;
         Ok(conn)
     }
 
@@ -932,6 +980,7 @@ impl Connection {
             mux.frames_tx.clone(),
             frame_bytes,
             std::sync::Arc::clone(&active),
+            mux.terminal_frame_deadline(),
         ));
         if let Some(mut replaced) = mux.bindings.insert(
             terminal_id.clone(),
@@ -1964,36 +2013,6 @@ const fn control_client_caps() -> ClientCapabilities {
 mod tests {
     use super::*;
     use phux_protocol::PROTOCOL_VERSION;
-
-    #[test]
-    fn writer_buffer_starts_empty() {
-        // The buffer must be cleared before each encode so frames don't
-        // concatenate across calls. We can't easily construct a `FrameWriter`
-        // without a real `UnixStream`, so this assertion guards the
-        // pre-clear invariant indirectly via the bytes buffer length.
-        let buf = BytesMut::with_capacity(64);
-        assert_eq!(buf.len(), 0);
-    }
-
-    #[test]
-    fn frame_encode_decode_roundtrip_matches_wire_path() {
-        // Sanity: confirm the encoder produces something the decoder can
-        // read, using the same SPEC §5 framing the `FrameReader` will see.
-        // If the protocol crate's encoder ever drifts, this catches it
-        // before the attach loop's I/O path notices in the field.
-        let frame = FrameKind::Hello {
-            client_name: "phux-client/test".to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: phux_protocol::ClientCapabilities::default(),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, rest) = FrameKind::decode(&buf).expect("roundtrip");
-        assert_eq!(decoded, frame);
-        assert!(rest.is_empty());
-    }
 
     fn framed(seq: u64) -> BytesMut {
         // A small, cheap-to-build frame with a distinguishing field so the

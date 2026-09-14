@@ -18,8 +18,12 @@ default = []
 # dependency below keeps wasm builds, including `--all-features`, off the
 # native C/Zig linkage graph.
 native-engine = ["dep:libghostty-vt"]
+# Criterion is only needed by the history benchmark. Keeping this feature off
+# by default prevents workspace tests from compiling the benchmark toolchain.
+history-bench = ["dep:criterion"]
 
 [dependencies]
+criterion = { workspace = true, optional = true }
 # Stable IDs, ungated wire/input atoms, bootstrap profiles, and layout records.
 # Engine-specific server conversions remain disabled so the default core stays
 # native/wasm portable.
@@ -56,8 +60,8 @@ libghostty-vt = { workspace = true, optional = true }
 [dev-dependencies]
 proptest.workspace = true
 insta.workspace = true
-criterion.workspace = true
 
 [[bench]]
 name = "history"
 harness = false
+required-features = ["history-bench"]
