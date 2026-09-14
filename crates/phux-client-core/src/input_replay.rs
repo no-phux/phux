@@ -43,8 +43,11 @@
 //! UI. Raw fire-and-forget input never enters this type.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+#[cfg(not(target_arch = "wasm32"))]
 use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant;
 
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
@@ -160,7 +163,7 @@ pub struct InputReplayJournal {
     /// Global submission order; the earliest due operation for each Terminal
     /// is independently eligible for an attempt.
     ops: VecDeque<PendingOp>,
-    /// `Some` between [`Self::begin_connection`] and
+    /// `Some` between [`Self::begin_connection_at`] and
     /// [`Self::connection_lost`] — i.e. while there is a live, negotiated
     /// socket whose incarnation is known and which advertised
     /// `ACKNOWLEDGED_INPUT`.
@@ -169,6 +172,9 @@ pub struct InputReplayJournal {
     retained_bytes: usize,
     deferred_reports: VecDeque<ReplayReport>,
     suppressed_reports: [usize; 3],
+    /// Terminals blocked after an operation's delivery became ambiguous.
+    /// Only explicit host evidence may clear this fence.
+    poisoned_terminals: HashSet<ResourceId>,
 }
 
 impl Default for InputReplayJournal {
@@ -180,7 +186,7 @@ impl Default for InputReplayJournal {
 impl InputReplayJournal {
     /// An empty journal with no live connection.
     #[must_use]
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             ops: VecDeque::new(),
             connection: None,
@@ -188,6 +194,7 @@ impl InputReplayJournal {
             retained_bytes: 0,
             deferred_reports: VecDeque::new(),
             suppressed_reports: [0; 3],
+            poisoned_terminals: HashSet::new(),
         }
     }
 
@@ -207,11 +214,12 @@ impl InputReplayJournal {
     /// - incarnation changed since an operation's first attempt — that
     ///   operation strands the same way (ADR-0053 point 5);
     /// - horizon expired — strands;
-    /// - otherwise the operation stays queued for [`Self::next_frame`],
+    /// - otherwise the operation stays queued for [`Self::next_frame_at`],
     ///   which will resend it under its original id. The server's dedupe
     ///   cache is what makes that resend idempotent — including the
     ///   session-switch case, where the first attempt's reply was already
     ///   emitted and dropped.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn begin_connection(
         &mut self,
         server_id: Option<&[u8]>,
@@ -220,7 +228,7 @@ impl InputReplayJournal {
         self.begin_connection_at(server_id, acknowledged_input, monotonic_now_ms())
     }
 
-    /// Deterministic form of [`Self::begin_connection`].
+    /// Caller-clock connection entry point, available on every target.
     ///
     /// `now_ms` is milliseconds from a host-chosen monotonic origin. A host
     /// that uses the explicit clock APIs must use the same origin for every
@@ -255,7 +263,7 @@ impl InputReplayJournal {
     }
 
     /// The live socket is gone. In-flight correlation dies; operations stay,
-    /// to be re-decided by the next [`Self::begin_connection`] (or drained by
+    /// to be re-decided by the next [`Self::begin_connection_at`] (or drained by
     /// [`Self::drain_unresolved`] if no reconnect succeeds).
     pub fn connection_lost(&mut self) {
         self.connection = None;
@@ -266,6 +274,7 @@ impl InputReplayJournal {
     /// The caller must mint the id once per user action and must not reuse it
     /// for a different payload. The journal stores both id and payload and
     /// reuses them verbatim on every replay.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn submit(
         &mut self,
         operation_id: InputOperationId,
@@ -275,7 +284,7 @@ impl InputReplayJournal {
         self.submit_at(operation_id, terminal_id, events, monotonic_now_ms())
     }
 
-    /// Deterministic form of [`Self::submit`].
+    /// Caller-clock submission entry point, available on every target.
     pub fn submit_at(
         &mut self,
         operation_id: InputOperationId,
@@ -283,6 +292,16 @@ impl InputReplayJournal {
         events: Vec<InputEvent>,
         now_ms: u64,
     ) -> Result<(), ReplayReport> {
+        if self.poisoned_terminals.contains(&terminal_id) {
+            let report = ReplayReport {
+                disposition: ReplayDisposition::Refused,
+                operation_id: operation_id_hex(&operation_id),
+                message: "an earlier acknowledged input has unknown delivery; read the pane before retrying"
+                    .to_owned(),
+            };
+            self.defer_report(report.clone());
+            return Err(report);
+        }
         if let Err(refusal) = validate_batch(&events) {
             let report = ReplayReport {
                 disposition: ReplayDisposition::Refused,
@@ -325,7 +344,21 @@ impl InputReplayJournal {
     /// behind an acknowledged operation already queued or in flight.
     #[must_use]
     pub fn must_order_after(&self, terminal_id: &ResourceId) -> bool {
-        self.ops.iter().any(|op| &op.terminal_id == terminal_id)
+        self.poisoned_terminals.contains(terminal_id)
+            || self.ops.iter().any(|op| &op.terminal_id == terminal_id)
+    }
+
+    /// Whether ambiguous delivery fences new input for this Terminal.
+    #[must_use]
+    pub fn delivery_fenced(&self, terminal_id: &ResourceId) -> bool {
+        self.poisoned_terminals.contains(terminal_id)
+    }
+
+    /// Clear a delivery fence after the host has presented fresh authoritative
+    /// pane output to the user. Reconnect alone is not evidence and does not
+    /// clear a fence.
+    pub fn clear_delivery_fence(&mut self, terminal_id: &ResourceId) -> bool {
+        self.poisoned_terminals.remove(terminal_id)
     }
 
     /// Drain locally generated outcomes such as bounded-queue overflow. The
@@ -384,6 +417,7 @@ impl InputReplayJournal {
     /// already been recorded as in flight under a request id drawn from
     /// `next_request_id` — the caller's only obligation is to put it on the
     /// wire (a send failure ends in [`Self::connection_lost`] anyway).
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn next_frame(
         &mut self,
         next_request_id: &mut u32,
@@ -391,7 +425,7 @@ impl InputReplayJournal {
         self.next_frame_at(next_request_id, monotonic_now_ms())
     }
 
-    /// Deterministic form of [`Self::next_frame`].
+    /// Caller-clock single-frame entry point, available on every target.
     pub fn next_frame_at(
         &mut self,
         next_request_id: &mut u32,
@@ -403,6 +437,7 @@ impl InputReplayJournal {
 
     /// Build one due attempt per Terminal. Independent terminals can therefore
     /// progress while an earlier operation waits for its PTY outcome.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn next_frames(
         &mut self,
         next_request_id: &mut u32,
@@ -410,7 +445,7 @@ impl InputReplayJournal {
         self.next_frames_at(next_request_id, monotonic_now_ms())
     }
 
-    /// Deterministic form of [`Self::next_frames`].
+    /// Caller-clock multi-frame entry point, available on every target.
     pub fn next_frames_at(
         &mut self,
         next_request_id: &mut u32,
@@ -419,7 +454,7 @@ impl InputReplayJournal {
         self.build_frames(next_request_id, usize::MAX, now_ms)
     }
 
-    /// Roll back a suffix returned by [`Self::next_frames`] that the caller
+    /// Roll back a suffix returned by [`Self::next_frames_at`] that the caller
     /// never handed to its connection.
     ///
     /// A sequential sender must exclude the frame whose `send` returned an
@@ -523,14 +558,9 @@ impl InputReplayJournal {
             CommandResult::Ok | CommandResult::OkWith(_) => {
                 (ReplayDisposition::Delivered, String::new())
             }
-            CommandResult::Error { code, message } => (
-                if *code == ErrorCode::InputDeliveryUnknown || op.attempts > 1 {
-                    ReplayDisposition::Unknown
-                } else {
-                    ReplayDisposition::Refused
-                },
-                message.clone(),
-            ),
+            CommandResult::Error { code, message } => {
+                (error_disposition(*code, op.attempts), message.clone())
+            }
             // `CommandResult` is `#[non_exhaustive]`: a reply this build
             // cannot read is not evidence that nothing was written.
             _ => (
@@ -538,11 +568,20 @@ impl InputReplayJournal {
                 "the server answered APPLY_INPUT with a result this build cannot read".to_owned(),
             ),
         };
-        Some(ReplayReport {
+        let report = ReplayReport {
             disposition,
             operation_id: operation_id_hex(&op.operation_id),
             message,
-        })
+        };
+        if disposition == ReplayDisposition::Unknown {
+            self.poisoned_terminals.insert(op.terminal_id.clone());
+            let blocked = self.strand_terminal(
+                &op.terminal_id,
+                "an earlier acknowledged input has unknown delivery; read the pane before retrying",
+            );
+            self.defer_reports(blocked);
+        }
+        Some(report)
     }
 
     /// Resolve everything still queued — the no-more-reconnects teardown.
@@ -561,19 +600,32 @@ impl InputReplayJournal {
             .map(|ctx| ctx.server_id.clone())
             .unwrap_or_default();
         let mut reports = Vec::new();
+        let mut poisoned_terminals = HashSet::new();
         let mut kept = VecDeque::with_capacity(self.ops.len());
         while let Some(op) = self.ops.pop_front() {
-            if operation_expired(&op, now_ms) {
-                reports.push(strand_report(
-                    &op,
-                    "the acknowledged-input retry horizon expired",
-                ));
+            let poison_message = poisoned_terminals.contains(&op.terminal_id).then_some(
+                "an earlier acknowledged input has unknown delivery; read the pane before retrying",
+            );
+            if let Some(message) = poison_message {
+                reports.push(strand_report(&op, message));
+            } else if operation_expired(&op, now_ms) {
+                let report = strand_report(&op, "the acknowledged-input retry horizon expired");
+                if report.disposition == ReplayDisposition::Unknown {
+                    poisoned_terminals.insert(op.terminal_id.clone());
+                    self.poisoned_terminals.insert(op.terminal_id.clone());
+                }
+                reports.push(report);
             } else if op
                 .expected_server_id
                 .as_ref()
                 .is_some_and(|expected| *expected != server_id)
             {
-                reports.push(strand_report(&op, "the server restarted in between"));
+                let report = strand_report(&op, "the server restarted in between");
+                if report.disposition == ReplayDisposition::Unknown {
+                    poisoned_terminals.insert(op.terminal_id.clone());
+                    self.poisoned_terminals.insert(op.terminal_id.clone());
+                }
+                reports.push(report);
             } else {
                 kept.push_back(op);
                 continue;
@@ -588,7 +640,11 @@ impl InputReplayJournal {
         let mut reports = Vec::with_capacity(self.ops.len());
         reports.extend(self.take_reports());
         while let Some(op) = self.ops.pop_front() {
-            reports.push(strand_report(&op, why));
+            let report = strand_report(&op, why);
+            if report.disposition == ReplayDisposition::Unknown {
+                self.poisoned_terminals.insert(op.terminal_id.clone());
+            }
+            reports.push(report);
             self.release_accounting(&op);
         }
         reports
@@ -609,6 +665,29 @@ impl InputReplayJournal {
                 &op,
                 "the acknowledged-input retry horizon expired",
             ));
+            if op.attempts > 0 {
+                self.poisoned_terminals.insert(op.terminal_id.clone());
+                reports.extend(self.strand_terminal(
+                    &op.terminal_id,
+                    "an earlier acknowledged input has unknown delivery; read the pane before retrying",
+                ));
+            }
+        }
+        reports
+    }
+
+    fn strand_terminal(&mut self, terminal_id: &ResourceId, why: &str) -> Vec<ReplayReport> {
+        let mut reports = Vec::new();
+        let mut index = 0;
+        while index < self.ops.len() {
+            if &self.ops[index].terminal_id != terminal_id {
+                index += 1;
+                continue;
+            }
+            let Some(op) = self.remove_at(index) else {
+                break;
+            };
+            reports.push(strand_report(&op, why));
         }
         reports
     }
@@ -660,6 +739,26 @@ fn strand_report(op: &PendingOp, message: &str) -> ReplayReport {
     }
 }
 
+const fn error_disposition(code: ErrorCode, attempts: u32) -> ReplayDisposition {
+    if attempts > 1 {
+        return ReplayDisposition::Unknown;
+    }
+    match code {
+        ErrorCode::NotAttached
+        | ErrorCode::TerminalNotFound
+        | ErrorCode::UnsupportedSatelliteRoute
+        | ErrorCode::InvalidCommand
+        | ErrorCode::PermissionDenied
+        | ErrorCode::ResourceExhausted
+        | ErrorCode::UnsafePaste
+        | ErrorCode::InputLeaseHeld
+        | ErrorCode::CanonicalLimitExceeded
+        | ErrorCode::InputNotWritten
+        | ErrorCode::WrongResourceKind => ReplayDisposition::Refused,
+        _ => ReplayDisposition::Unknown,
+    }
+}
+
 fn retained_event_bytes(events: &[InputEvent], allocation_slots: usize) -> usize {
     events.iter().fold(
         allocation_slots.saturating_mul(std::mem::size_of::<InputEvent>()),
@@ -701,6 +800,7 @@ fn validate_batch(events: &[InputEvent]) -> Result<(), String> {
     }
     let encoded_bytes = events.iter().fold(1_usize + 16 + 264 + 2, |total, event| {
         let payload = match event {
+            InputEvent::Key(key) => key.text.as_ref().map_or(0, String::len),
             InputEvent::Paste(paste) => paste.data.len(),
             _ => 0,
         };
@@ -714,6 +814,7 @@ fn validate_batch(events: &[InputEvent]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn monotonic_now_ms() -> u64 {
     static ORIGIN: OnceLock<Instant> = OnceLock::new();
     u64::try_from(ORIGIN.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
@@ -796,6 +897,19 @@ mod tests {
             } => (request_id, operation_id),
             other => panic!("not an APPLY_INPUT: {other:?}"),
         }
+    }
+
+    fn request_id_for_terminal(frames: &[FrameKind], expected: &ResourceId) -> u32 {
+        frames
+            .iter()
+            .find_map(|frame| match frame {
+                FrameKind::Command {
+                    request_id,
+                    command: Command::ApplyInput { terminal_id, .. },
+                } if terminal_id == expected => Some(*request_id),
+                _ => None,
+            })
+            .expect("terminal attempt")
     }
 
     // ---- the id is the contract -------------------------------------
@@ -1010,6 +1124,7 @@ mod tests {
         let _ = journal.drain_unresolved("test cleanup");
         assert_eq!(journal.retained_events, 0);
         assert_eq!(journal.retained_bytes, 0);
+        assert!(journal.clear_delivery_fence(&tid(1)));
         submit(&mut journal, tid(1), paste("fits")).expect("capacity remains");
     }
 
@@ -1176,9 +1291,10 @@ mod tests {
     }
 
     /// The same expiry applies at reconnect: a stale attempted op is
-    /// unknown, and the fresh one behind it still replays.
+    /// unknown, and the fresh one behind it is refused so it cannot execute
+    /// against ambiguous pane state.
     #[test]
-    fn reconnect_expires_the_stale_and_replays_the_fresh() {
+    fn reconnect_expiry_fences_later_input_on_that_terminal() {
         let mut journal = armed_journal();
         journal
             .submit_at(operation_id(1), tid(1), paste("stale"), 1_000)
@@ -1191,11 +1307,44 @@ mod tests {
 
         journal.connection_lost();
         let reports = journal.begin_connection_at(Some(&SERVER_A), true, 601_000);
-        assert_eq!(reports.len(), 1);
+        assert_eq!(reports.len(), 2);
         assert_eq!(reports[0].disposition, ReplayDisposition::Unknown);
+        assert_eq!(reports[1].disposition, ReplayDisposition::Refused);
         let (more, frame) = journal.next_frame_at(&mut next, 601_000);
         assert!(more.is_empty());
-        assert!(frame.is_some(), "the fresh op must still be attempted");
+        assert!(frame.is_none(), "later input must remain fenced");
+    }
+
+    #[test]
+    fn unknown_result_fences_same_terminal_but_not_another_terminal() {
+        let mut journal = armed_journal();
+        submit(&mut journal, tid(1), paste("ambiguous")).expect("queue");
+        submit(&mut journal, tid(1), paste("must not run")).expect("queue");
+        submit(&mut journal, tid(2), paste("independent")).expect("queue");
+        let mut next = 1_u32;
+        let (_, frames) = journal.next_frames_at(&mut next, 100);
+        let first_request = request_id_for_terminal(&frames, &tid(1));
+        let report = journal
+            .resolve(
+                first_request,
+                &CommandResult::Error {
+                    code: ErrorCode::InputDeliveryUnknown,
+                    message: "writer stalled".to_owned(),
+                },
+            )
+            .expect("owned result");
+        assert_eq!(report.disposition, ReplayDisposition::Unknown);
+        let deferred = journal.take_reports();
+        assert_eq!(deferred.len(), 1);
+        assert_eq!(deferred[0].disposition, ReplayDisposition::Refused);
+        assert!(journal.must_order_after(&tid(2)));
+        assert!(journal.delivery_fenced(&tid(1)));
+        assert!(journal.must_order_after(&tid(1)));
+        let rejection = submit(&mut journal, tid(1), enter()).expect_err("fenced input");
+        assert_eq!(rejection.disposition, ReplayDisposition::Refused);
+        assert!(journal.clear_delivery_fence(&tid(1)));
+        assert!(!journal.delivery_fenced(&tid(1)));
+        submit(&mut journal, tid(1), enter()).expect("fresh input after authoritative read");
     }
 
     // ---- verdicts -----------------------------------------------------
@@ -1227,6 +1376,13 @@ mod tests {
                     message: "policy".to_owned(),
                 },
                 ReplayDisposition::Refused,
+            ),
+            (
+                CommandResult::Error {
+                    code: ErrorCode::InternalError,
+                    message: "post-handoff failure".to_owned(),
+                },
+                ReplayDisposition::Unknown,
             ),
         ] {
             let mut journal = armed_journal();
@@ -1260,6 +1416,21 @@ mod tests {
             assert_eq!(report.disposition, ReplayDisposition::Unknown, "{code:?}");
             assert!(!report.notice_line().contains("safe to retype"));
         }
+    }
+
+    #[test]
+    fn oversized_key_text_is_refused_before_it_reaches_transport() {
+        use phux_protocol::wire::frame::MAX_APPLY_INPUT_COMMAND_BODY;
+
+        let InputEvent::Key(mut key) = enter().remove(0) else {
+            panic!("enter helper must return a key")
+        };
+        key.text = Some("x".repeat(MAX_APPLY_INPUT_COMMAND_BODY));
+        let mut journal = armed_journal();
+        let report = submit(&mut journal, tid(1), vec![InputEvent::Key(key)])
+            .expect_err("oversized key text");
+        assert_eq!(report.disposition, ReplayDisposition::Refused);
+        assert!(report.message.contains("protocol cap"));
     }
 
     /// A result for a request id the journal does not own is not consumed —

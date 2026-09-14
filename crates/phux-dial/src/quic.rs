@@ -40,7 +40,15 @@ use std::time::Duration;
 use phux_protocol::policy::{QUIC_ALPN, QUIC_RELAY_ALPN};
 
 use crate::DialError;
-use crate::tls::CertTrust;
+use crate::tls::{CertTrust, TlsClientIdentity};
+
+/// Established QUIC endpoint, connection, and one bidirectional stream.
+pub type QuicConnection = (
+    quinn::Endpoint,
+    quinn::Connection,
+    quinn::SendStream,
+    quinn::RecvStream,
+);
 
 /// QUIC idle timeout, matched to the server's `IDLE_TIMEOUT` so a quiet but
 /// attached consumer is not reaped before the keep-alive fires.
@@ -124,18 +132,19 @@ pub fn parse_token_hex(token: &str) -> Result<Vec<u8>, DialError> {
 /// Returns [`DialError::Unreachable`] when the handshake times out (nothing
 /// answered) and [`DialError::Connect`] on any other bind, handshake,
 /// certificate, or preamble failure.
-pub async fn dial(
-    d: &QuicDial,
-) -> Result<
-    (
-        quinn::Endpoint,
-        quinn::Connection,
-        quinn::SendStream,
-        quinn::RecvStream,
-    ),
-    DialError,
-> {
+pub async fn dial(d: &QuicDial) -> Result<QuicConnection, DialError> {
     dial_with_alpn(d, QUIC_ALPN).await
+}
+
+/// Connect with explicit TLS identity configuration and the production ALPN.
+///
+/// Unlike [`dial`], this path never reads `PHUX_WORKLOAD_CERT` or
+/// `PHUX_WORKLOAD_KEY` from the process environment.
+pub async fn dial_with_identity(
+    d: &QuicDial,
+    identity: &TlsClientIdentity,
+) -> Result<QuicConnection, DialError> {
+    dial_with_alpn_and_identity(d, QUIC_ALPN, identity).await
 }
 
 /// Connect to a QUIC listener offering an explicit ALPN, and return the
@@ -159,18 +168,26 @@ pub async fn dial(
 /// Returns [`DialError::Unreachable`] when the handshake times out (nothing
 /// answered) and [`DialError::Connect`] on any other bind, handshake,
 /// certificate, or preamble failure.
-pub async fn dial_with_alpn(
+pub async fn dial_with_alpn(d: &QuicDial, alpn: &[u8]) -> Result<QuicConnection, DialError> {
+    dial_with_alpn_inner(d, alpn, None).await
+}
+
+/// Connect with an explicit ALPN and explicit TLS client identity.
+///
+/// This is the environment-independent counterpart to [`dial_with_alpn`].
+pub async fn dial_with_alpn_and_identity(
     d: &QuicDial,
     alpn: &[u8],
-) -> Result<
-    (
-        quinn::Endpoint,
-        quinn::Connection,
-        quinn::SendStream,
-        quinn::RecvStream,
-    ),
-    DialError,
-> {
+    identity: &TlsClientIdentity,
+) -> Result<QuicConnection, DialError> {
+    dial_with_alpn_inner(d, alpn, Some(identity)).await
+}
+
+async fn dial_with_alpn_inner(
+    d: &QuicDial,
+    alpn: &[u8],
+    identity: Option<&TlsClientIdentity>,
+) -> Result<QuicConnection, DialError> {
     // Bind an ephemeral client UDP socket in the target's address family — a
     // v4 client socket cannot reach a v6 listener and vice versa.
     let bind = if d.addr.is_ipv6() {
@@ -180,7 +197,7 @@ pub async fn dial_with_alpn(
     };
     let mut endpoint = quinn::Endpoint::client(bind)
         .map_err(|err| DialError::Connect(format!("bind QUIC client socket: {err}")))?;
-    let mut config = client_config(&d.trust, alpn)?;
+    let mut config = client_config(&d.trust, identity, alpn)?;
     if alpn == QUIC_RELAY_ALPN {
         // One endpoint and config per dial, so one tagged ID serves the one
         // connection this endpoint makes.
@@ -235,8 +252,15 @@ async fn write_preamble(send: &mut quinn::SendStream, token: &[u8]) -> Result<()
 /// Build the quinn client config: rustls TLS 1.3 with the given ALPN, the
 /// chosen certificate verifier, and a transport config matching the server's
 /// idle / keep-alive timings.
-fn client_config(trust: &CertTrust, alpn: &[u8]) -> Result<quinn::ClientConfig, DialError> {
-    let crypto = crate::tls::client_config(trust, Some(alpn))?;
+fn client_config(
+    trust: &CertTrust,
+    identity: Option<&TlsClientIdentity>,
+    alpn: &[u8],
+) -> Result<quinn::ClientConfig, DialError> {
+    let crypto = match identity {
+        Some(identity) => crate::tls::client_config_with_identity(trust, identity, Some(alpn))?,
+        None => crate::tls::client_config(trust, Some(alpn))?,
+    };
     let quic_crypto = quinn::crypto::rustls::QuicClientConfig::try_from(crypto)
         .map_err(|err| DialError::Connect(format!("build QUIC crypto: {err}")))?;
     let mut config = quinn::ClientConfig::new(Arc::new(quic_crypto));
@@ -317,7 +341,17 @@ mod tests {
         // test that a non-default ALPN builds a config at all; real ALPN
         // negotiation on the relay leg is covered by the relay connector
         // integration test (crates/phux-server/tests/federation/relay_connector_spike.rs).
-        client_config(&CertTrust::SkipVerify, b"phux-relay/1")
+        client_config(&CertTrust::SkipVerify, None, b"phux-relay/1")
             .expect("a non-default ALPN builds a client config");
+    }
+
+    #[test]
+    fn client_config_accepts_explicit_no_identity() {
+        client_config(
+            &CertTrust::SkipVerify,
+            Some(&TlsClientIdentity::None),
+            QUIC_ALPN,
+        )
+        .expect("explicitly identity-free QUIC config");
     }
 }

@@ -1164,8 +1164,8 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             return self.conn.send(&event.into_frame(pane)).await;
         };
         let should_queue = pane.host().is_none()
-            && journal.borrow().active()
-            && (acknowledged || journal.borrow().must_order_after(&pane));
+            && ((journal.borrow().active() && acknowledged)
+                || journal.borrow().must_order_after(&pane));
         if !should_queue {
             return self.conn.send(&event.into_frame(pane)).await;
         }

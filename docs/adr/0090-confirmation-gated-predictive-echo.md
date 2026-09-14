@@ -9,8 +9,8 @@ last-reviewed: 2026-09-13
 **TL;DR.** Replace the binary alt-screen gate on predictive echo with mosh's
 tentative-display model, in `phux-client-core::predict`: predictions queue and
 reconcile on both screens, but on the alternate screen they render only after
-the app confirms a non-blank echo, re-lock on any contradiction, and hide on a
-one-second display timeout. The adaptive back-off becomes a display lock
+the app confirms a non-blank echo, re-lock on any contradiction, and hide on an
+SRTT-adaptive one-to-five-second display timeout. The adaptive back-off becomes a display lock
 instead of a predict suspend, which also fixes it never being able to re-arm.
 
 Status: Accepted
@@ -63,9 +63,9 @@ Adopt mosh's "tentative until validated" display model inside
    - Any contradiction clears the queue **and re-locks display**; evidence
      is re-earned on the next confirmed echo. Screen switches, resizes,
      resyncs, and pane re-anchors also drop the evidence.
-   - A front-of-queue prediction older than `DISPLAY_TTL_MS` (1 s, chosen
-     to clear worst observed cellular RTT; an SRTT-derived value is the
-     earmarked successor) hides the whole overlay. The queue still
+   - A front-of-queue prediction older than the active TTL hides the whole
+     overlay. The TTL is `2 × SRTT`, clamped to 1–5 seconds, with one second
+     used until a timestamped non-blank echo confirms. The queue still
      reconciles.
 2. **Alt-screen Enter is never predicted.** In a TUI, Enter submits (an
    agent prompt) or executes (vim); the primary-screen row+1/col-0 guess
@@ -97,8 +97,9 @@ warm-up per screen session, mosh's own trade). Echo is *measured*, not
 inferred from mode bits or app identity.
 
 The display timeout additionally bounds the two main-screen cases the gate
-commit called un-gatable: a readline vi-mode or no-echo-password mispaint now
-survives at most one second even before the tentative lock trips.
+commit called un-gatable: a readline vi-mode or no-echo-password mispaint is
+bounded to the learned one-to-five-second window even before the tentative
+lock trips.
 
 Landing this in `phux-client-core` (not the driver) keeps the policy in the
 frontend-neutral kernel that `phux-client-ffi` exposes, which is what unblocks
@@ -112,8 +113,9 @@ each porting it separately.
   mode change) still costs a full RTT. Accepted: evidence cannot precede echo.
 - A TUI that echoes in one field but not another can display a wrong guess
   for up to one contradiction + TTL. Bounded, self-healing.
-- `DISPLAY_TTL_MS` is a constant until SRTT plumbing exists; on links slower
-  than 1 s the overlay hides prematurely (the safe direction).
+- The adaptive TTL can preserve a wrong guess for up to five seconds after a
+  slow-link sample. This is longer than the one-second fallback and is the
+  accepted cost of keeping useful predictions visible on high-latency links.
 - The TUI paints the overlay on events, so a TTL-expired ghost is removed at
   the next paint rather than by a dedicated timer tick. A repaint tick while
   predictions are pending is a possible follow-up if this shows in practice.
@@ -157,7 +159,8 @@ nothing to hide, which is why loopback is excluded rather than lumped in with
 "un-gatable" and bounded it with `DISPLAY_TTL_MS`. That reasoning was written
 for an opt-in and is now load-bearing for a default, so it is restated with
 its precise scope: at a `sudo`/`ssh` password prompt the client paints the
-typed characters underlined for up to one second each. The exposure is
+typed characters underlined for one second before an RTT sample, or up to five
+seconds after the same predictor has learned a slow echo path. The exposure is
 **shoulder-surfing on the typing user's own display only** — the overlay is
 written to that client's stdout, never to the wire, the server, another
 client, or a recording (`phux-record` is a separate wire consumer of
@@ -165,8 +168,8 @@ client, or a recording (`phux-record` is a separate wire consumer of
 
 We accept it at that scope, and note that no client-side heuristic can close
 it: the only local signal is "no echo has arrived yet", which is
-indistinguishable from a slow link until roughly `DISPLAY_TTL_MS` has passed —
-far longer than a password takes to type.
+indistinguishable from a slow link until the active adaptive TTL has passed —
+potentially five seconds, far longer than a password takes to type.
 
 **The complete fix, deliberately not taken here.** termios `ECHO` is line
 discipline on the server's PTY and produces no bytes, so the client's
@@ -190,12 +193,14 @@ RFC 6298's alpha (`0.125`). The active lifetime is `2 × SRTT`, clamped to
 `1..=5` seconds. Clockless calls, blank inserts, backspace, cursor motion,
 newline, pending cells, and contradictions contribute no sample.
 
-**Ownership and resets.** SRTT is a link estimate, not screen state. It
-survives screen transitions, viewport changes, resync clears, and
-contradictions even though those events still clear prediction anchors and
-echo evidence. Hosts stamp prediction and reconciliation from the same
-monotonic origin; the legacy reconcile entry point remains clockless and
-therefore cannot alter the estimate.
+**Ownership and resets.** SRTT measures queue-to-authoritative-cell-confirmation,
+including host scheduling, network transit, server processing, and application
+echo delay; it is not a pure network RTT. A slow-echoing application can
+therefore train the lifetime toward the five-second cap. The estimate survives
+screen transitions, viewport changes, resync clears, and contradictions even
+though those events still clear prediction anchors and echo evidence. Hosts
+stamp prediction and reconciliation from the same monotonic origin; the legacy
+reconcile entry point remains clockless and therefore cannot alter the estimate.
 
 **Why.** The fixed timeout hid every later prediction before a confirmed
 1.5-second cellular echo could arrive, preventing the display policy from
