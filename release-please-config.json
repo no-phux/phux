@@ -49,6 +49,10 @@
         {
           "type": "generic",
           "path": ".agents/skills/using-phux-mcp/SKILL.md"
+        },
+        {
+          "type": "generic",
+          "path": "docs/site/worker/Dockerfile"
         }
       ]
     },

@@ -379,6 +379,10 @@ forbid_fixed .github/workflows/release-please.yml 'toolchain install .'
 require_fixed release-please-config.json '"release-type": "simple"'
 forbid_fixed release-please-config.json '"release-type": "rust"'
 require_fixed release-please-config.json '"jsonpath": "$.workspace.package.version"'
+# Site native pin. Without this extra-files entry, the release PR bumps
+# Cargo.toml and leaves docs/site/worker/Dockerfile stale, which fails
+# just toolchain-check on main (#700, #711).
+require_fixed release-please-config.json '"path": "docs/site/worker/Dockerfile"'
 # Without this, the first `feat!:` bumps 0.x straight to 1.0.0.
 require_fixed release-please-config.json '"bump-minor-pre-major": true'
 
