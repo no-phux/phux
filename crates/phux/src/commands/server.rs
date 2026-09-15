@@ -295,6 +295,17 @@ fn build_server_config(
             u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES)
                 .unwrap_or(u32::MAX),
         ),
+        // `phux config check` flags an out-of-range approval bound; a config
+        // that ships one anyway is clamped here (the runtime floors the TTL).
+        approval_ttl_secs: defaults
+            .approval_ttl_secs
+            .min(phux_config::MAX_APPROVAL_TTL_SECS),
+        approval_max_pending: defaults
+            .approval_max_pending
+            .min(phux_config::MAX_APPROVAL_MAX_PENDING),
+        approval_max_pending_total: defaults
+            .approval_max_pending_total
+            .min(phux_config::MAX_APPROVAL_MAX_PENDING_TOTAL),
         // The runtime picks the engine from `policy_mode` (workload-auth
         // §8); no override. `run_server` sets the mode from `[policy]`.
         policy_engine: None,

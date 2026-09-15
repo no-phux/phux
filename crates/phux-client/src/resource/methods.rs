@@ -76,6 +76,7 @@ impl MethodAvailability {
             "facet": self.facet.map_or("substrate", ResourceKind::as_str),
             "verb": verb_label(self.method.verbs()),
             "mutating": self.method.mutating(),
+            "dangerous": self.method.dangerous,
             "available": self.available(),
             "reason": self.unavailable.map(Unavailable::as_str),
         })

@@ -94,3 +94,19 @@ fn earliest_ignores_absent_deadlines() {
     assert_eq!(earliest(Some(later), None), Some(later));
     assert_eq!(earliest(Some(later), Some(now)), Some(now));
 }
+
+/// ADR-0128: adding a hold narrows the grant, so the live connection is
+/// revoked and its reconnect gets the hold; removing one widens.
+#[test]
+fn adding_a_hold_narrows_and_removing_one_does_not() {
+    assert!(!still_contained(
+        &["signal@terminal:3"],
+        &["?signal@terminal:3"]
+    ));
+    assert!(!still_contained(
+        &["observe,signal@global"],
+        &["observe,?signal@global"]
+    ));
+    assert!(still_contained(&["?signal@global"], &["signal@global"]));
+    assert!(still_contained(&["?signal@global"], &["?signal@global"]));
+}

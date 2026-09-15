@@ -219,8 +219,9 @@ Contract facts `--schema` descriptions do not collect:
 `annotations.destructiveHint`, derived from the kind catalog rather than
 set by hand. A tool is read-only only when every method it can send is
 read-only by the catalog's conservative rule (a denied or unclassified
-row counts as a write). It is destructive when any of those methods
-needs the `SIGNAL` verb (ends a process, ejects a client) or the `INPUT`
+row counts as a write). It is destructive when any of those methods is
+marked `dangerous` in the catalog (it can end a process, eject a client,
+stop the server, or release a held action; ADR-0128) or needs the `INPUT`
 verb (keystrokes in a live PTY can run anything); `CREATE` and `BIND`
 writes are marked as writes but not destructive. The hints are advice
 for a host's confirmation UI; authorization still happens at the server.
@@ -233,9 +234,19 @@ interactive/daemon/operator lifecycles; `pair` and satellite registry
 mutation handle credentials; plugin installation and config editing
 mutate local trust. Those stay outside the model-facing set.
 
-`phux_kill` and `phux_detach` require `confirm: true`. `phux_signal`
-requires it for interrupt/terminate/kill. Before `phux_kill`, a caller
-must display the resolved target and obtain explicit human confirmation.
+`confirm: true` is one check derived from the same catalog mark:
+`phux_kill` and `phux_detach` always require it, `phux_signal` requires it
+for interrupt/terminate/kill (`freeze` and `resume` are the reversible
+brake), and `phux_approve` requires it to approve (a denial releases
+nothing). Before `phux_kill`, a caller must display the resolved target and
+obtain explicit human confirmation.
+
+**Approvals (ADR-0128).** When this server holds an agent's kill, signal, or
+forced detach for approval (its workload grant spells `?signal`), the tool
+call waits for the decision. `phux_approvals` lists what is held (the
+document `phux approvals --json` prints), and `phux_approve` decides one by
+`id` with `decision: approve|deny`. Deciding needs un-held `signal` on the
+held subject, so the agent whose action is held cannot approve it.
 
 No tool in the orchestration sequence moves a human's local focus,
 stores remote credentials, grants a persistent input lease, or schedules

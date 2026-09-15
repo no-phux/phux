@@ -260,6 +260,57 @@ fn semantic_pass(
 /// or in blocked server thread respectively. Flag them here rather than
 /// clamping silently, so the operator learns what they asked for instead of
 /// wondering why their setting did nothing.
+/// `defaults.approval-ttl-secs` and `defaults.approval-max-pending`
+/// (ADR-0128). A zero TTL would expire every hold before anyone could see
+/// it; the server floors it at one second and clamps both to their maxima.
+fn approval_findings(
+    defaults: &DefaultsCfg,
+    provenance: &crate::ConfigProvenance,
+    findings: &mut Vec<Finding>,
+) {
+    let ttl = defaults.approval_ttl_secs;
+    if ttl == 0 || ttl > crate::MAX_APPROVAL_TTL_SECS {
+        push_semantic(
+            findings,
+            provenance,
+            "defaults.approval-ttl-secs".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{ttl} is outside 1..={}: a held action must stay visible long enough to be \
+                 decided, and an approval is never a standing grant",
+                crate::MAX_APPROVAL_TTL_SECS,
+            ),
+        );
+    }
+    if defaults.approval_max_pending > crate::MAX_APPROVAL_MAX_PENDING {
+        push_semantic(
+            findings,
+            provenance,
+            "defaults.approval-max-pending".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{} exceeds the accepted maximum of {}; each pending approval keeps its command \
+                 and a record in the server's metadata",
+                defaults.approval_max_pending,
+                crate::MAX_APPROVAL_MAX_PENDING,
+            ),
+        );
+    }
+    if defaults.approval_max_pending_total > crate::MAX_APPROVAL_MAX_PENDING_TOTAL {
+        push_semantic(
+            findings,
+            provenance,
+            "defaults.approval-max-pending-total".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{} exceeds the accepted maximum of {}",
+                defaults.approval_max_pending_total,
+                crate::MAX_APPROVAL_MAX_PENDING_TOTAL,
+            ),
+        );
+    }
+}
+
 fn defaults_findings(
     defaults: &DefaultsCfg,
     provenance: &crate::ConfigProvenance,
@@ -296,6 +347,7 @@ fn defaults_findings(
         );
     }
     event_journal_findings(defaults, provenance, findings);
+    approval_findings(defaults, provenance, findings);
     if defaults.retain_on_exit_max > crate::MAX_RETAIN_ON_EXIT_MAX {
         push_semantic(
             findings,

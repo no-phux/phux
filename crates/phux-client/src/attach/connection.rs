@@ -1267,6 +1267,34 @@ impl Connection {
         })
     }
 
+    /// Send one `LIST_METADATA` and wait for its `METADATA_KEYS`, keeping
+    /// every frame the peer interleaved ahead of it. A refusal is an
+    /// [`Answer`] `Err`, as for [`Self::request_metadata`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decode failures from [`Self::send`] /
+    /// [`Self::recv`].
+    pub async fn request_metadata_keys(
+        &mut self,
+        request_id: u32,
+        scope: Scope,
+    ) -> Result<Reply<Answer<Vec<String>>>, AttachError> {
+        self.send(&FrameKind::ListMetadata { request_id, scope })
+            .await?;
+        let mut interleaved = Vec::new();
+        let result = self
+            .await_answer(request_id, &mut interleaved, |frame| match frame {
+                FrameKind::MetadataKeys { request_id, keys } => Some((*request_id, keys.clone())),
+                _ => None,
+            })
+            .await?;
+        Ok(Reply {
+            result,
+            interleaved,
+        })
+    }
+
     /// Send one `LIST_DIRECTORY` and wait for its `DIRECTORY_LISTING`,
     /// keeping every frame the peer interleaved ahead of it
     /// (`docs/spec/L3.md` §4).

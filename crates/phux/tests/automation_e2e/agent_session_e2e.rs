@@ -640,7 +640,7 @@ fn killing_the_parent_pane_cascades_the_session_closed() {
     let watch = server.watch(&session, &[]);
     let follower = server.follow_session(&session, 1);
 
-    server.run(&["kill", &pane]);
+    server.run(&["kill", "--yes", &pane]);
 
     // The follower's own verdict on the close: a session that ends under a
     // `--follow` is a clean exit 0, not a broken pipe.
@@ -695,7 +695,7 @@ fn a_session_opens_again_on_a_fresh_pane_after_a_cascade_close() {
     let first_pane = format!("@{}", server.spawn_pane(&claude));
     let first = server.session_open(&first_pane, "claude", Some("first"));
     server.emit(&first, "prompt", r#"{"chars":1}"#);
-    server.run(&["kill", &first_pane]);
+    server.run(&["kill", "--yes", &first_pane]);
     server.await_resources("the first session gone", |resources| {
         resource_named(resources, &first).is_none()
     });

@@ -1157,6 +1157,17 @@ define_server_features! {
     /// bytes and runs the command again, so a client MUST see the bit before
     /// it retries a keyed command blind.
     KeyedSignal = KEYED_SIGNAL = 0x2000_0000,
+    /// The server holds a `SIGNAL` command from a `?signal` grant for a
+    /// decision instead of running it (ADR-0128): it writes a
+    /// `phux.approval/v1/<id>` record, defers the requester's
+    /// `COMMAND_RESULT`, and runs the command once, under the requester's
+    /// grant, when a connection holding un-held `SIGNAL` on the subject
+    /// approves it. The bit also covers the intercepted
+    /// `phux.approval.decide/v1/<id>` key and the `approval_requested` /
+    /// `approval_decided` events. A client MUST see the bit before writing a
+    /// decision, because an older server stores the decide key as an
+    /// ordinary value.
+    Approvals = APPROVALS = 0x4000_0000,
 }
 
 /// Bit-field of additive server-owned protocol features.

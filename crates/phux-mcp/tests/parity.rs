@@ -193,8 +193,8 @@ fn every_tool_names_its_verb_or_is_automation_only() {
 
 /// (c) Each tool's served annotations are the kind table's: `readOnlyHint`
 /// is "no method it can send is mutating" by `MethodSpec::mutating`, and
-/// `destructiveHint` is the table's verb rule, whose source is recorded
-/// until the kind table grows a `dangerous` flag (L17).
+/// `destructiveHint` is the kind table's `dangerous` flag or an `INPUT`
+/// method (ADR-0128).
 ///
 /// The hint comparison is mostly self-referential: the adapter annotates
 /// its catalog through `tool_table::hints_for`, which reads the same table
@@ -203,7 +203,7 @@ fn every_tool_names_its_verb_or_is_automation_only() {
 /// method a read-only tool names can change state.
 #[test]
 fn tool_annotations_equal_the_kind_table() {
-    assert!(DESTRUCTIVE_SOURCE.contains("L17"));
+    assert!(DESTRUCTIVE_SOURCE.contains("MethodSpec.dangerous"));
     for tool in catalog() {
         let name = tool["name"].as_str().expect("name");
         let row = tool_table::row(name).unwrap_or_else(|| panic!("{name} has no row"));

@@ -278,7 +278,10 @@ credential.
 The registry file and `phux workload add-key --scope` spell one grant as
 `<verb>[,<verb>...]@<selector>`. A verb is `inventory`, `observe`,
 `create`, `bind`, `input`, or `signal`, each at most once, or the single
-wildcard `*` (all six, never combined with a name). A selector is `global`,
+wildcard `*` (all six, never combined with a name). `signal` may instead be
+spelled `?signal`: the grant carries `SIGNAL`, but it is *held*, and every
+`SIGNAL` command it admits waits for a decision (§6.1, ADR-0128). `?` on any
+other verb is refused, and `signal,?signal` repeats a verb. A selector is `global`,
 `host` (the serving host), `host:<name>`, `group:<id>`, `terminal:<id>`, or
 `terminal:<host>/<id>`. An `<id>` is a canonical unsigned 32-bit decimal (no
 sign, no leading zero), a `<host>` obeys the rules above, and the last `/`
@@ -291,7 +294,11 @@ local host as a whole contains.
 
 One record's strings form one `TerminalScopeSet`: equal selectors merge, and
 one string that does not parse makes the record, and so the registry
-snapshot, malformed. No partial grant is minted. The grammar is a spelling
+snapshot, malformed. A verb one merged string holds and another grants
+un-held is un-held: a merge is a union of authority, and a hold only ever
+restricts. A hold is server-local policy bound to the grant; the canonical
+bytes above carry the verbs only, so a decoded image holds nothing, and the
+effective grant is never serialized. No partial grant is minted. The grammar is a spelling
 of the canonical bytes above, not a second authority.
 
 A persisted registry record SHALL NOT name a `group:` or `terminal:`
@@ -374,9 +381,11 @@ Terminal, current Group, owning Host, or Global selector according to §5.
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false` | `SIGNAL` | named session, resolved side-effect-free; an absent name resolves to no Group a narrower grant holds. Clearing the mark of a windowless session removes it, so this is `SIGNAL` on that session, like `DETACH_CLIENTS { session: Some }` |
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value | default-deny | malformed; the value is classified before the handler parses it |
 | `SET_METADATA { Global, "phux.config.reload/v1" }` | `SIGNAL` | Global |
+| `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value `approve` or `deny` | `SIGNAL` | the held action's subject, resolved side-effect-free from the pending approval `<id>` names; an absent or already-decided id resolves to no subject, and only an un-held `SIGNAL` grant satisfies it (§6.1) |
+| `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with a malformed id or any other value | default-deny | malformed; the key and value are classified before the handler parses them |
 | `SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results | default-deny | server-owned result namespace is non-writable |
 | `SUBSCRIBE_METADATA` targeting that result namespace | default-deny | server-owned connection-private results are non-subscribable |
-| `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1` or `phux.whoami/v1`, or `DELETE_METADATA` targeting `phux.config.reload/v1` or `phux.session.keep_empty/v1` | default-deny | server-owned keys are non-writable |
+| `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, `phux.whoami/v1`, or a `phux.approval/v1/<id>` record, or `DELETE_METADATA` targeting `phux.config.reload/v1`, `phux.session.keep_empty/v1`, or a `phux.approval.decide/v1/<id>` key | default-deny | server-owned keys are non-writable |
 | Other `SET_METADATA`, `DELETE_METADATA` | `BIND` | encoded metadata Scope |
 | `LIST_METADATA` | `INVENTORY` | encoded metadata Scope; server-owned result keys remain excluded |
 | `LIST_DIRECTORY` | `INVENTORY` | Global; the serving host's filesystem is server-global data, so no Terminal, Group, or Host grant reaches it |
@@ -453,6 +462,59 @@ The reference enforcement points are the terminal client frame loop immediately
 after decode/state validation, and `handle_command` immediately after nested-tag
 decode and before its satellite-relay branch. Per-handler checks may enforce
 additional domain invariants but SHALL not replace either common check.
+
+### 6.1 Held actions: the Hold outcome
+
+<!-- impl-status: shipped; probe: Admission,hold_command,APPROVAL_DECIDE_KEY_PREFIX -->
+> **Status: shipped.** ADR-0128. Advertised by `ServerFeature::APPROVALS =
+> 0x40000000` ([proto.md](./proto.md) §6.2).
+
+The guard has a third outcome beside admit and deny. A request the effective
+grant admits only through a clause that holds `SIGNAL` (§5.1 `?signal`) is
+*held*: every verb it needs on every subject must be covered, and at least
+one `SIGNAL` need is covered only by a held clause.
+
+- Only a nested `COMMAND` can be held. A held `SIGNAL` on any other frame (a
+  keep-empty clear, a config reload, a decision) is refused like any other
+  denial, because there is no result to defer.
+- A held command is not run. The server writes the server-owned record
+  `phux.approval/v1/<id>` ([L3.md](./L3.md) §3.10), journals
+  `approval_requested { id }` with the requester as actor
+  ([L1.md](./L1.md) §7.1), and defers the command's `COMMAND_RESULT`.
+  A connection may hold at most `defaults.approval-max-pending` (64)
+  commands, and the server at most `defaults.approval-max-pending-total`
+  (1024); one more is answered `RESOURCE_EXHAUSTED` at once. A batch
+  (`KILL_RESOURCES`, `CLOSE_TAB_RESOURCES`) names each of its Terminals.
+- A decision is `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }`
+  with value `approve` or `deny`, classified `SIGNAL` on the held command's
+  subjects under the current topology. It needs that `SIGNAL` un-held, so
+  the requester cannot approve itself, and a connection subscribed to a held
+  subject as a `VIEWER` ([L1.md](./L1.md) §8.1) cannot decide it. The server
+  stores nothing under the decide key.
+- Each approval is decided once. The first decision removes the record, so a
+  second finds no pending approval and is refused like an absent target.
+- On `approve` the held command is classified again under the requester's
+  current grant and topology. If that still admits it, the command runs once,
+  as the requester under the requester's original `request_id`; the approver's
+  grant is never used. Otherwise the requester gets `PERMISSION_DENIED`.
+  On `deny` the requester gets `PERMISSION_DENIED { "approval denied" }`.
+- Nobody deciding within `defaults.approval-ttl-secs` (120) expires the
+  approval: the record is removed and the requester gets
+  `PERMISSION_DENIED { "approval expired" }`.
+- A requester that disconnects or has its authority revoked withdraws its
+  holds. Nothing runs and no result is owed. A Terminal reaped while a hold
+  names it withdraws that hold before its `pane_closed` is journaled, and
+  the requester gets `PERMISSION_DENIED { "terminal gone" }`.
+- A hold only restricts, so for §7's containment a ceiling that holds a
+  verb a live grant minted un-held no longer contains it: adding `?signal`
+  to a live credential revokes its connections.
+- Every ending journals `approval_decided { id, outcome }`, with the
+  decider as actor for `approved` and `denied`, and no actor for `expired`
+  and `withdrawn`.
+
+The owner's grant never holds, so a `local` or transitional server never
+holds anything. No grant holds anything unless its registry record spells
+`?signal`.
 
 ## 7. Denial, expiry, and live revocation
 

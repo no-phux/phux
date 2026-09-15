@@ -14,6 +14,17 @@ use phux_protocol::wire::frame::{Command, CommandResult, InputMode, TerminalSign
 use crate::attach::connection::Connection;
 use crate::kill::KeyedError;
 use crate::state::Degradation;
+/// Whether delivering `signal` is dangerous (ADR-0128): the catalog's
+/// payload rule for `SIGNAL_TERMINAL`, so `freeze` and `resume`, the
+/// reversible brake, are not.
+#[must_use]
+pub fn is_dangerous(signal: TerminalSignal) -> bool {
+    phux_protocol::kinds::command_is_dangerous(&Command::SignalTerminal {
+        terminal_id: ResourceId::local(1),
+        signal,
+        operation_id: None,
+    })
+}
 
 /// What an `ACQUIRE_INPUT` / `RELEASE_INPUT` / `SIGNAL_TERMINAL` request
 /// answered.

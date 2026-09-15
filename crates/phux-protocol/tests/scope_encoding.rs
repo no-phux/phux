@@ -363,3 +363,64 @@ fn unattenuated_set_is_one_clause_per_grant_and_grants_the_same() {
         64
     );
 }
+
+/// `?signal` marks the grant's `SIGNAL` as held for approval (ADR-0128):
+/// it parses, prints back, merges as a union of authority, reaches the
+/// effective clauses, and never reaches the canonical image.
+#[test]
+fn held_signal_grammar_parses_merges_and_never_reaches_the_image() {
+    let held = grant("input,?signal@terminal:3");
+    assert_eq!(held.verbs, Verbs::of(&[Verb::Input, Verb::Signal]));
+    assert_eq!(held.held, Verbs::of(&[Verb::Signal]));
+    assert_eq!(held.to_string(), "input,?signal@terminal:3");
+    assert_eq!(ScopeGrant::parse(&held.to_string()).unwrap(), held);
+    assert_eq!(
+        grant("inventory,observe,create,bind,input,?signal@global").to_string(),
+        "inventory,observe,create,bind,input,?signal@global",
+        "a held verb is never folded into the wildcard"
+    );
+
+    for (text, expected) in [
+        ("?observe@global", ScopeGrammarError::UnholdableVerb),
+        ("?*@global", ScopeGrammarError::RedundantVerb),
+        ("signal,?signal@global", ScopeGrammarError::RedundantVerb),
+        ("??signal@global", ScopeGrammarError::UnknownVerb),
+        ("? signal@global", ScopeGrammarError::UnknownVerb),
+    ] {
+        assert_eq!(ScopeGrant::parse(text), Err(expected), "{text:?}");
+    }
+
+    // The same selector named held and un-held is un-held: a merge is a
+    // union of authority, and a hold only ever restricts.
+    let merged = set(&["?signal@global", "signal@global"]);
+    assert_eq!(merged.grants()[0].held, Verbs::EMPTY);
+    let still_held = set(&["?signal@global", "observe@global"]);
+    assert_eq!(still_held.grants()[0].to_string(), "observe,?signal@global");
+
+    // The image carries the verbs only; a decoded set holds nothing.
+    let image = still_held.encode();
+    assert_eq!(image, set(&["observe,signal@global"]).encode());
+    assert_eq!(
+        TerminalScopeSet::decode(&image).unwrap().grants()[0].held,
+        Verbs::EMPTY
+    );
+
+    let effective = EffectiveScopeSet::unattenuated(&set(&["input,?signal@global"])).unwrap();
+    assert!(effective.holds_any());
+    assert!(
+        effective.admits(Verb::Signal, |_| true),
+        "a held verb reaches"
+    );
+    assert!(
+        !effective.admits_unheld(Verb::Signal, |_| true),
+        "but not without a decision"
+    );
+    assert!(effective.admits_unheld(Verb::Input, |_| true));
+
+    // Held on either side of an intersection holds the clause.
+    let requested = set(&["signal@terminal:3"]);
+    let ceiling = set(&["?signal@global"]);
+    let clauses = EffectiveScopeSet::intersect(&requested, &ceiling).unwrap();
+    assert!(!clauses.admits_unheld(Verb::Signal, |_| true));
+    assert!(clauses.admits(Verb::Signal, |_| true));
+}

@@ -31,6 +31,7 @@ impl ServerState {
             retained: super::retained::RetainedTable::default(),
             remote_listeners: phux_protocol::wire::RemoteListenersReport::new(),
             operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe::default(),
+            approvals: super::approvals::ApprovalTable::default(),
         }
     }
 }

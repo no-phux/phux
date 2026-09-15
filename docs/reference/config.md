@@ -46,6 +46,9 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `chrome.compact-rows` | `18` |
 | `chrome.min-pane-cols` | `40` |
 | `defaults.agent-log-bytes` | `4194304` |
+| `defaults.approval-max-pending` | `64` |
+| `defaults.approval-max-pending-total` | `1024` |
+| `defaults.approval-ttl-secs` | `120` |
 | `defaults.cwd-inheritance` | `"inherit-focused"` |
 | `defaults.event-journal-bytes` | `1048576` |
 | `defaults.event-journal-entries` | `4096` |

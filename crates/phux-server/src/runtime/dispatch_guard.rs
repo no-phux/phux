@@ -57,21 +57,30 @@ pub(super) async fn refuse_frame(
     true
 }
 
+/// What the command guard decided.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Guarded {
+    /// Dispatch it now.
+    Admitted,
+    /// Hold it for a decision (ADR-0128); its result is deferred.
+    Held,
+    /// Refused; its `COMMAND_RESULT` has been sent.
+    Refused,
+}
+
 /// Guard a nested command above the input lane, the bulk worker, every
-/// handler, and every satellite relay. Returns `true` when the command was
-/// refused; its `COMMAND_RESULT` has been sent.
-pub(super) async fn refuse_command(
+/// handler, and every satellite relay.
+pub(super) async fn guard_command(
     state: &SharedState,
     client_id: ClientId,
     request_id: u32,
     command: &Command,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-) -> bool {
-    if state
-        .with(|s| crate::policy::authorize_command(s, client_id, command))
-        .is_ok()
-    {
-        return false;
+) -> Guarded {
+    match state.with(|s| crate::policy::authorize_command(s, client_id, command)) {
+        Ok(crate::policy::Admission::Run) => return Guarded::Admitted,
+        Ok(crate::policy::Admission::Hold) => return Guarded::Held,
+        Err(_) => {}
     }
     let _ = out_tx
         .send(Outbound::Frame(FrameKind::CommandResult {
@@ -82,7 +91,7 @@ pub(super) async fn refuse_command(
             },
         }))
         .await;
-    true
+    Guarded::Refused
 }
 
 /// Guard a QUIC Terminal-stream bind: `OBSERVE` on the bound Terminal.

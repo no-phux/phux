@@ -365,13 +365,8 @@ pub(crate) async fn signal(args: &Value) -> Result<Value, ToolError> {
         &["interrupt", "freeze", "resume", "terminate", "kill"],
         None,
     )?;
-    let confirm = optional_bool(args, "confirm")?.unwrap_or(false);
-    // L17 replaces this hand-written confirm with one table-driven check.
-    if matches!(signal.as_str(), "interrupt" | "terminate" | "kill") && !confirm {
-        return Err(ToolError::new(format!(
-            "signal {signal:?} is destructive; pass `confirm: true`"
-        )));
-    }
+    // `confirm` was checked by the shared table (ADR-0128) before dispatch.
+    let _ = optional_bool(args, "confirm")?;
     let key = bounded_string(args, "idempotency_key", false)?
         .as_deref()
         .map(idempotency_key)
@@ -691,8 +686,15 @@ mod tests {
     #[tokio::test]
     async fn malformed_or_dangerous_calls_are_refused_before_any_connection() {
         let socket = "/nonexistent/phux-mcp-pane-tools.sock";
+        assert!(
+            crate::annotations::require_confirmation(
+                "phux_signal",
+                &json!({ "target": "@1", "signal": "kill", "socket": socket })
+            )
+            .is_err(),
+            "an unconfirmed kill signal is refused before dispatch"
+        );
         let refused = [
-            signal(&json!({ "target": "@1", "signal": "kill", "socket": socket })).await,
             spawn(&json!({ "target": "@1", "satellite": "edge", "socket": socket })).await,
             spawn(&json!({ "split": "vertical", "socket": socket })).await,
             spawn(&json!({ "retain_secs": 86_401, "socket": socket })).await,

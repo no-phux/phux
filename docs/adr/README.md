@@ -172,6 +172,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0125](./0125-kind-catalog-is-generated-metadata.md) | The kind catalog is generated metadata, not wire | Accepted (builds on [0098](./0098-workload-proof-and-closed-scope-authority.md), [0102](./0102-resources-the-server-serves-kinds.md)) |
 | [0126](./0126-idempotent-create.md) | Creates are idempotent under a client key | Accepted (builds on [0053](./0053-acknowledged-idempotent-input.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0127](./0127-attach-roles-are-lease-intent.md) | Attach roles are intent on the input lease | Accepted (builds on [0033](./0033-input-authority-and-process-signals.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
+| [0128](./0128-approvals-are-held-actions.md) | Approvals are held actions | Accepted (builds on [0116](./0116-workload-auth-is-mtls.md); amends [0035](./0035-agent-asked-event.md), [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0129](./0129-projections-are-named-by-key.md) | Named projections are a metadata-key convention, not a resource | Accepted |
 
 ## When to write an ADR

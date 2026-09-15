@@ -66,6 +66,9 @@ mod upload;
 mod voice;
 mod whoami;
 
+#[cfg(test)]
+mod approval_matrix;
+mod approvals;
 mod dispatch_guard;
 #[cfg(test)]
 mod scope_matrix;
@@ -217,6 +220,15 @@ pub struct ServerConfig {
     /// `phux_config`; [`Self::with_default_socket`] uses the schema default
     /// (256 KiB).
     pub metadata_value_bytes: u32,
+    /// `defaults.approval-ttl-secs` (ADR-0128): how long a held `SIGNAL`
+    /// action waits for a decision before it expires.
+    pub approval_ttl_secs: u32,
+    /// `defaults.approval-max-pending` (ADR-0128): how many actions one
+    /// connection may hold at once; one more is `RESOURCE_EXHAUSTED`.
+    pub approval_max_pending: u32,
+    /// `defaults.approval-max-pending-total` (ADR-0128): how many actions
+    /// the whole server may hold at once.
+    pub approval_max_pending_total: u32,
     /// Optional HELLO authorization engine override (ADR-0072). `None` —
     /// what the `phux` binary passes — lets [`Self::policy_mode`] choose:
     /// [`crate::policy::PermissivePolicy`] for the transitional posture,
@@ -342,6 +354,9 @@ impl ServerConfig {
             window_size: phux_config::WindowSize::default(),
             voice: phux_config::VoiceCfg::default(),
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
+            approval_ttl_secs: phux_config::DEFAULT_APPROVAL_TTL_SECS,
+            approval_max_pending: phux_config::DEFAULT_APPROVAL_MAX_PENDING,
+            approval_max_pending_total: phux_config::DEFAULT_APPROVAL_MAX_PENDING_TOTAL,
             policy_engine: None,
             policy_mode: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
@@ -1194,6 +1209,16 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
     // Mirror `limits.metadata-value-bytes` (ADR-0129) so `SET_METADATA`
     // enforces the configured cap instead of the schema default.
     state.with_mut(|s| s.set_metadata_value_bytes(cfg.metadata_value_bytes));
+    // Mirror the approval bounds (ADR-0128). A zero TTL would expire every
+    // hold before anyone could see it, so the floor is one second.
+    let approval_ttl = Duration::from_secs(u64::from(cfg.approval_ttl_secs.max(1)));
+    state.with_mut(|s| {
+        s.set_approval_limits(
+            approval_ttl,
+            cfg.approval_max_pending,
+            cfg.approval_max_pending_total,
+        );
+    });
     // Wire the policy engine from config into shared state.
     if let Some(engine) = cfg.policy_engine.clone() {
         state.with_mut(|s| s.set_policy_engine(engine));

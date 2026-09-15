@@ -101,7 +101,9 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: Option<u32>) -> ExitCo
 }
 
 /// `phux signal TARGET SIGNAL` — deliver a POSIX signal to the resolved pane's
-/// process group (ADR-0033). `freeze`/`resume` is the reversible brake.
+/// process group (ADR-0033). `freeze`/`resume` is the reversible brake; the
+/// ending signals are dangerous (ADR-0128) and need `yes` or a typed "y",
+/// asked before anything is dialed.
 ///
 /// `key` is `--idempotency-key` (`docs/spec/L1.md` §5.1.1): a retry under the
 /// same key answers the first result and delivers nothing. A server that
@@ -111,18 +113,25 @@ pub(crate) fn run_signal(
     target: &str,
     signal: SignalArg,
     key: Option<IdempotencyKey>,
+    yes: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
     let selector = match parse_selector(Some(target)) {
         Ok(sel) => sel,
         Err(code) => return code,
     };
+    let wire_signal = TerminalSignal::from(signal);
+    if crate::commands::confirm::signal_is_dangerous(wire_signal)
+        && let Err(code) =
+            crate::commands::confirm::confirmed(yes, &format!("signal {target} ({signal:?})"))
+    {
+        return code;
+    }
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let rt = match crate::commands::cli_runtime() {
         Ok(rt) => rt,
         Err(code) => return code,
     };
-    let wire_signal = TerminalSignal::from(signal);
     rt.block_on(async move {
         let terminal_id =
             match resolve_target_for_input(&socket_path, &selector, "signal", false).await {

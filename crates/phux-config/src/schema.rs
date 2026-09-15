@@ -264,6 +264,30 @@ pub struct DefaultsCfg {
     #[serde(default = "default_retain_on_exit_max", rename = "retain-on-exit-max")]
     pub retain_on_exit_max: u32,
 
+    /// Seconds a held `SIGNAL` action waits for a decision before it
+    /// expires and its requester gets `PERMISSION_DENIED { "approval
+    /// expired" }` (ADR-0128). Only a workload grant spelled `?signal`
+    /// holds anything, so this is inert until one exists. Read at server
+    /// start.
+    #[serde(default = "default_approval_ttl_secs", rename = "approval-ttl-secs")]
+    pub approval_ttl_secs: u32,
+
+    /// How many actions one connection may hold for approval at once; one
+    /// more is refused `RESOURCE_EXHAUSTED` (ADR-0128). Read at server start.
+    #[serde(
+        default = "default_approval_max_pending",
+        rename = "approval-max-pending"
+    )]
+    pub approval_max_pending: u32,
+
+    /// How many actions the whole server may hold for approval at once; one
+    /// more is refused `RESOURCE_EXHAUSTED` (ADR-0128). Read at server start.
+    #[serde(
+        default = "default_approval_max_pending_total",
+        rename = "approval-max-pending-total"
+    )]
+    pub approval_max_pending_total: u32,
+
     /// Whether the client enables its own outer-terminal mouse tracking
     /// on attach (ADR-0048). `true` (default) emits DECSET
     /// `?1002h?1006h` so divider drag-to-resize and click-to-focus work
@@ -353,6 +377,9 @@ impl Default for DefaultsCfg {
             retain_on_exit_secs: default_retain_on_exit_secs(),
             retain_on_exit_max_secs: default_retain_on_exit_max_secs(),
             retain_on_exit_max: default_retain_on_exit_max(),
+            approval_ttl_secs: default_approval_ttl_secs(),
+            approval_max_pending: default_approval_max_pending(),
+            approval_max_pending_total: default_approval_max_pending_total(),
             mouse: true,
             cwd_inheritance: CwdInheritance::default(),
             spawn_on_attach: None,
@@ -532,6 +559,39 @@ const fn default_retain_on_exit_max() -> u32 {
 /// Largest accepted `defaults.retain-on-exit-max`. Each retained Terminal
 /// holds its grid and history, so the bound is a memory bound.
 pub const MAX_RETAIN_ON_EXIT_MAX: u32 = 4096;
+
+/// Shipped `defaults.approval-ttl-secs`: a held action waits two minutes
+/// for a decision (ADR-0128).
+pub const DEFAULT_APPROVAL_TTL_SECS: u32 = 120;
+
+/// Largest accepted `defaults.approval-ttl-secs`: one day. An approval is a
+/// decision about one action instance, never a standing grant.
+pub const MAX_APPROVAL_TTL_SECS: u32 = 86_400;
+
+/// Shipped `defaults.approval-max-pending`: 64 held actions per connection.
+pub const DEFAULT_APPROVAL_MAX_PENDING: u32 = 64;
+
+/// Largest accepted `defaults.approval-max-pending`. Each pending approval
+/// keeps its command and a record in the metadata store.
+pub const MAX_APPROVAL_MAX_PENDING: u32 = 1024;
+
+const fn default_approval_ttl_secs() -> u32 {
+    DEFAULT_APPROVAL_TTL_SECS
+}
+
+const fn default_approval_max_pending() -> u32 {
+    DEFAULT_APPROVAL_MAX_PENDING
+}
+
+/// Shipped `defaults.approval-max-pending-total`: 1024 held actions server-wide.
+pub const DEFAULT_APPROVAL_MAX_PENDING_TOTAL: u32 = 1024;
+
+/// Largest accepted `defaults.approval-max-pending-total`.
+pub const MAX_APPROVAL_MAX_PENDING_TOTAL: u32 = 65_536;
+
+const fn default_approval_max_pending_total() -> u32 {
+    DEFAULT_APPROVAL_MAX_PENDING_TOTAL
+}
 
 const fn default_true() -> bool {
     true

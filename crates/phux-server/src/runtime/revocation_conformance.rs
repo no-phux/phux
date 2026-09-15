@@ -613,6 +613,29 @@ async fn ceiling_reduction_that_no_longer_contains_a_minted_clause_revokes() {
     .await;
 }
 
+/// ADR-0128: adding a hold to a live credential is a narrowing. The open
+/// connection minted the verb un-held, so it is revoked, and its reconnect
+/// gets the hold; removing a hold is a widening and never revokes.
+#[tokio::test(flavor = "current_thread")]
+async fn adding_a_hold_to_a_live_credential_revokes_its_connections() {
+    local(async {
+        let fx = Fixture::paired(&["observe,bind,signal@global"]);
+        let agent = fx.workload().await;
+        fx.rewrite_ceiling(&["observe,bind,signal,input@global"]);
+        fx.sweep();
+        settle().await;
+        assert!(agent.is_open(), "a wider ceiling ended the connection");
+
+        fx.rewrite_ceiling(&["observe,bind,?signal,input@global"]);
+        fx.sweep();
+        agent
+            .assert_ended_with(DetachReason::AuthorizationRevoked)
+            .await;
+        agent.finish().await;
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn malformed_reload_revokes_every_workload_session_until_a_valid_generation_loads() {
     local(async {

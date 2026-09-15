@@ -59,8 +59,9 @@ pub use caps::{
     select_bootstrap_profile,
 };
 pub use ids::{
-    BootstrapId, ClientId, FileUploadId, FrameId, GroupId, IdempotencyKey, InputOperationId,
-    ResourceId, ResourceKind, SatelliteHost, ServerInstance, SessionId, StreamId, WindowId,
+    ApprovalId, BootstrapId, ClientId, FileUploadId, FrameId, GroupId, IdempotencyKey,
+    InputOperationId, ResourceId, ResourceKind, SatelliteHost, ServerInstance, SessionId, StreamId,
+    WindowId,
 };
 pub use wire::frame::{
     CloseReason, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,

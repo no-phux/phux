@@ -56,6 +56,9 @@ Agents:
   take          Take exclusive input control of a pane
   give          Give back input control taken with `take`
   signal        Send a signal to a pane's process group
+  approvals     List actions held for approval
+  approve       Approve a held action
+  deny          Deny a held action
 
 Machines:
   host          Add and manage the machines phux reaches [aliases: machine]
@@ -705,6 +708,50 @@ Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux approvals`
+
+```text
+List actions held for approval
+
+A workload whose grant holds `?signal` has its kills, signals, and forced
+detaches held by the server until someone holding un-held `signal` on the same
+subject approves or denies them. This lists what is waiting: the id, who asked,
+the held method, its subjects, and the time left before it expires.
+
+Usage: phux approvals [--json]
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux approve`
+
+```text
+Approve a held action
+
+Releases the held action ID once: the server runs it as the workload that asked,
+under that workload's own grant, and answers that workload. Asks on a terminal;
+pass `--yes` when stdin is not one.
+
+Usage: phux approve [--yes] <ID>
+
+Arguments:
+  <ID>  The approval id `phux approvals` lists.
+
+Flags:
+      --yes            Approve without asking.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux ask`
 
 ```text
@@ -1154,6 +1201,26 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux deny`
+
+```text
+Deny a held action
+
+Refuses the held action ID: the workload that asked gets a permission-denied
+answer and nothing runs.
+
+Usage: phux deny <ID>
+
+Arguments:
+  <ID>  The approval id `phux approvals` lists.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux detach`
 
 ```text
@@ -1164,13 +1231,18 @@ client attached to that session; with no argument, detaches every attached
 client on the server. Each target client's TUI exits cleanly. Useful for
 scripting or reclaiming a session that's attached (or wedged) elsewhere.
 
-Usage: phux detach [--remote <[USER@]HOST[:PORT]>] [SESSION]
+Usage: phux detach [--yes] [--remote <[USER@]HOST[:PORT]>] [SESSION]
 
 Arguments:
   [SESSION]  Session to detach clients from. Omit to detach every attached
              client on the server.
 
 Flags:
+      --yes                       Detach without asking.
+
+                                  Without it, `phux detach` asks on a terminal,
+                                  and when stdin is not one it refuses with exit
+                                  2 having sent nothing.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -1442,6 +1514,12 @@ Flags:
                                   target is sent as written, so a retry after
                                   the pane is gone still gets the first answer.
                                   The server must advertise `keyed_signal`.
+      --yes                       Kill without asking.
+
+                                  Without it, `phux kill TARGET` asks on a
+                                  terminal, and when stdin is not one it refuses
+                                  with exit 2 having sent nothing. `--server`
+                                  never asks.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -2890,7 +2968,7 @@ Examples:
 phux signal build freeze
 phux signal . kill
 
-Usage: phux signal [--idempotency-key <HEX32>] <TARGET> <SIGNAL>
+Usage: phux signal [--idempotency-key <HEX32>] [--yes] <TARGET> <SIGNAL>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
@@ -2902,6 +2980,13 @@ Flags:
                                  the same key (32 hex digits) answers the first
                                  signal's result and delivers nothing. The
                                  server must advertise `keyed_signal`.
+      --yes                      Deliver `interrupt`, `terminate`, or `kill`
+                                 without asking.
+
+                                 Without it those three ask on a terminal, and
+                                 when stdin is not one they refuse with exit 2
+                                 having sent nothing. `freeze` and `resume`, the
+                                 reversible brake, never ask.
   -h, --help                     Print help
 
 Global flags:

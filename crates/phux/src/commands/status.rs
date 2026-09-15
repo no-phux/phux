@@ -583,6 +583,7 @@ mod tests {
             names.len(),
             "each ServerFeature must have exactly one name: {names:?}"
         );
+        assert!(names.contains(&"approvals"));
         assert!(names.contains(&"attach_roles"));
         assert!(names.contains(&"keyed_signal"));
         assert!(names.contains(&"event_journal"));

@@ -51,7 +51,10 @@ timeout because it otherwise mirrors the child process exit code. With
 - Input changes a real PTY that a human may share. Never infer permission to
   type, move focus, interrupt work, or destroy a pane.
 - Before `kill` or a destructive signal, resolve and show the exact target,
-  snapshot it, explain the loss, obtain affirmative confirmation, then verify.
+  snapshot it, explain the loss, obtain affirmative confirmation, run it with
+  `--yes` (with no terminal to ask, phux refuses and exits 2), then verify.
+- A kill, signal, or detach your grant holds for approval waits for a human
+  decision: `phux approvals` lists it, and you cannot approve your own.
 - Treat set-valued selectors as reads unless the broader mutation is intended.
 - Do not model one-shot `take`/`give` calls as a durable lease.
 

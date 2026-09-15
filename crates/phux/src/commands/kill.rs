@@ -10,9 +10,9 @@ use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::partial;
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use crate::commands::{cli_runtime, report_no_server, warn_interleaved_degradation};
+use crate::commands::{confirm, partial};
 use crate::selector;
 
 /// Why `kill --server` refuses `--remote`, and what to do instead.
@@ -30,10 +30,15 @@ const REMOTE_SHUTDOWN_REFUSAL: &str = "phux: `kill --server` is local-socket onl
 ///
 /// `key` is `--idempotency-key` (`docs/spec/L1.md` §5.1.1); clap refuses it
 /// beside `--server`.
+///
+/// A selector is a dangerous kill (ADR-0128) and needs `yes` or a typed
+/// "y". `--server` never asks: it is the owner socket's own service stop,
+/// which no scoped grant can reach and supervisors run unattended.
 pub(crate) fn run(
     target: Option<String>,
     stop_server: bool,
     key: Option<IdempotencyKey>,
+    yes: bool,
     server: ServerSpec,
 ) -> ExitCode {
     if stop_server {
@@ -41,7 +46,11 @@ pub(crate) fn run(
     }
     // No target and no `--server` is unreachable: clap's `kill_what` group
     // is `required(true)`.
-    target.map_or(ExitCode::FAILURE, |target| run_kill(&target, key, server))
+    target.map_or(ExitCode::FAILURE, |target| {
+        run_kill(&target, key, server, |action| {
+            confirm::confirmed(yes, action)
+        })
+    })
 }
 
 /// `--server` against the local socket; a `--remote` is refused before any
@@ -173,7 +182,15 @@ const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 /// answers the first result instead of killing again (L1 §5.1.1). An `@N` or
 /// `host/@N` target is then sent as written, without a snapshot lookup, so a
 /// retry after the first attempt removed the pane still reaches the server.
-pub(crate) fn run_kill(target: &str, key: Option<IdempotencyKey>, server: ServerSpec) -> ExitCode {
+///
+/// `confirm` runs after the target is validated and before anything is
+/// dialed, so an unconfirmed kill sends nothing.
+pub(crate) fn run_kill(
+    target: &str,
+    key: Option<IdempotencyKey>,
+    server: ServerSpec,
+    confirm: impl FnOnce(&str) -> Result<(), ExitCode>,
+) -> ExitCode {
     let selector = match selector::parse(target) {
         Ok(sel) => sel,
         Err(err) => {
@@ -185,6 +202,9 @@ pub(crate) fn run_kill(target: &str, key: Option<IdempotencyKey>, server: Server
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
+    if let Err(code) = confirm(&format!("kill {target}")) {
+        return code;
+    }
     rt.block_on(kill_selected(target, &selector, key, &server))
 }
 
@@ -464,7 +484,8 @@ async fn kill_one(conn: &mut Connection, request_id: u32, terminal_id: ResourceI
 
 #[cfg(test)]
 mod tests {
-    use super::{REMOTE_SHUTDOWN_REFUSAL, run};
+    use super::{REMOTE_SHUTDOWN_REFUSAL, run, run_kill};
+    use crate::commands::confirm;
     use crate::commands::server_target::ServerSpec;
 
     /// `kill --server --remote` is refused before any dial, with exit 2 and
@@ -475,8 +496,34 @@ mod tests {
             socket: None,
             remote: Some("mini".to_owned()),
         };
-        assert_eq!(run(None, true, None, spec), std::process::ExitCode::from(2));
+        assert_eq!(
+            run(None, true, None, false, spec),
+            std::process::ExitCode::from(2)
+        );
         assert!(REMOTE_SHUTDOWN_REFUSAL.contains("local-socket only"));
         assert!(REMOTE_SHUTDOWN_REFUSAL.contains("phux kill --remote HOST NAME"));
+    }
+
+    /// ADR-0128: a kill needs `--yes` when nobody can be asked. Without it,
+    /// on a non-terminal stdin, the verb exits 2 before it dials: the
+    /// server's socket never sees a connection.
+    #[test]
+    fn kill_without_yes_on_a_non_tty_exits_2_and_sends_nothing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("phux.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let spec = ServerSpec {
+            socket: Some(socket),
+            remote: None,
+        };
+        let code = run_kill("@1", None, spec, |action| {
+            confirm::consent(false, false, action, || None)
+        });
+        assert_eq!(code, std::process::ExitCode::from(confirm::NOT_CONFIRMED));
+        assert!(
+            matches!(listener.accept(), Err(err) if err.kind() == std::io::ErrorKind::WouldBlock),
+            "nothing dialed the server"
+        );
     }
 }
