@@ -254,6 +254,11 @@ mod tests {
     /// The clock and `poll` are fakes so host descheduling cannot be judged
     /// as probe work (phux-tur1). A restarted deadline would poll again
     /// with a fresh 20 ms after the first timeout.
+    ///
+    /// Do not replace this with `/bin/sh -c sleep`. `Child::kill` reaps the
+    /// shell only; the `sleep` grandchild keeps the test's stderr, and
+    /// nextest classifies that open pipe as LEAK after leak-timeout
+    /// (phux-s7p7).
     #[test]
     fn silent_source_gives_up_at_the_deadline() {
         let start = Instant::now();
@@ -309,13 +314,16 @@ mod tests {
 
     /// The rustix wrapper times out on a real silent pipe. No host-wall
     /// ceiling: that was the phux-tur1 flake. Hang detection is nextest's.
+    ///
+    /// A pipe pair is the silent source: no child inherits this process's
+    /// stderr, which is how `/bin/sh -c sleep` was classified LEAK
+    /// (phux-s7p7). Hold the write end only for the wait, then drop both.
     #[test]
     fn silent_pipe_times_out_through_poll() {
-        let (reader, _writer) = std::io::pipe().expect("pipe");
-        assert_eq!(
-            wait_readable(&reader, Instant::now() + Duration::from_millis(20)),
-            Some(false)
-        );
+        let (reader, writer) = std::io::pipe().expect("pipe");
+        let waited = wait_readable(&reader, Instant::now() + Duration::from_millis(20));
+        drop((reader, writer));
+        assert_eq!(waited, Some(false));
     }
 
     /// A terminal that answers is not made to wait out the budget.
@@ -325,6 +333,7 @@ mod tests {
         writer.write_all(b"answer").expect("write answer");
         drop(writer);
         let waited = wait_readable(&reader, Instant::now() + Duration::from_secs(5));
+        drop(reader);
         assert_eq!(waited, Some(true));
     }
 
