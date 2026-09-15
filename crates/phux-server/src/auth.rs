@@ -9,6 +9,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicI64, Ordering};
 
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -172,9 +173,11 @@ struct CredentialRecord {
 
 /// Identity and policy metadata captured when a connection is established.
 ///
-/// This value is a snapshot. Revocation and expiry apply to the next
-/// authentication attempt; an established session is not re-authorized and
-/// keeps this attestation until its transport closes (ADR-0031).
+/// This value is a snapshot of what admitted the connection, not its live
+/// authority: revocation and expiry end an established connection too
+/// (`docs/spec/workload-auth.md` §7; ADR-0116 supersedes ADR-0031's
+/// survive-until-drop), through the retained [`BearerAdmission`] and the
+/// connection's grant.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AuthenticatedCredential {
     /// Stable credential identifier shared by its rotated generations.
@@ -215,6 +218,11 @@ pub struct ConnectionIdentity {
     /// for a Unix-socket peer running as the serving uid. It relabels the
     /// whoami route and nothing else: policy never reads it.
     pub ssh_origin: Option<phux_protocol::wire::ssh_origin::SshOrigin>,
+    /// The pairing-store credential that admitted the connection, when a
+    /// bearer token did. Retained so its revocation or expiry ends the
+    /// connection live. `None` for the owner socket, a loopback listener, and
+    /// an `OPEN_LISTENER` door, whose token dies with its listener.
+    pub bearer: Option<BearerAdmission>,
 }
 
 impl From<PeerIdentity> for ConnectionIdentity {
@@ -223,6 +231,7 @@ impl From<PeerIdentity> for ConnectionIdentity {
             peer,
             credential: None,
             ssh_origin: None,
+            bearer: None,
         }
     }
 }
@@ -233,6 +242,72 @@ impl std::ops::Deref for ConnectionIdentity {
     fn deref(&self) -> &Self::Target {
         &self.peer
     }
+}
+
+/// The pairing-store credential that admitted a connection, retained so the
+/// credential's revocation or expiry ends the connection while it is live
+/// (`docs/spec/workload-auth.md` §7).
+#[derive(Clone, Debug)]
+pub struct BearerAdmission {
+    store: std::sync::Arc<ReloadingTokenStore>,
+    /// The credential id.
+    pub id: String,
+    /// The credential generation that authenticated.
+    pub generation: u64,
+}
+
+impl BearerAdmission {
+    /// Record that `credential` was admitted from `store`.
+    #[must_use]
+    pub fn new(
+        store: std::sync::Arc<ReloadingTokenStore>,
+        credential: &AuthenticatedCredential,
+    ) -> Self {
+        Self {
+            store,
+            id: credential.id.clone(),
+            generation: credential.generation,
+        }
+    }
+
+    /// The token store that admitted the connection.
+    #[must_use]
+    pub(crate) const fn store(&self) -> &std::sync::Arc<ReloadingTokenStore> {
+        &self.store
+    }
+
+    /// The credential's standing in the store's current generation, or
+    /// `None` when the store gives no verdict (see
+    /// [`ReloadingTokenStore::watch_snapshot`]).
+    #[must_use]
+    pub fn standing(&self) -> Option<Standing> {
+        self.store.standing(&self.id, self.generation)
+    }
+}
+
+impl PartialEq for BearerAdmission {
+    fn eq(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.store, &other.store)
+            && self.id == other.id
+            && self.generation == other.generation
+    }
+}
+
+impl Eq for BearerAdmission {}
+
+/// A bearer credential generation's standing in one store snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    /// Admissible, until `expires_at` when set.
+    Active {
+        /// When the generation stops being admissible.
+        expires_at: Option<DateTime<Utc>>,
+    },
+    /// Revoked, or absent from a store that loaded cleanly and holds
+    /// credentials.
+    Revoked,
+    /// Past its expiry.
+    Expired,
 }
 
 /// A newly minted bearer secret and its non-secret identity.
@@ -360,6 +435,26 @@ impl TokenStore {
     #[must_use]
     pub fn verify(&self, presented: &[u8]) -> bool {
         self.authenticate(presented).is_some()
+    }
+
+    /// The standing of credential `id` at `generation`: absent or revoked
+    /// is [`Standing::Revoked`].
+    pub(crate) fn standing_at(&self, id: &str, generation: u64, now: DateTime<Utc>) -> Standing {
+        let Some(record) = self
+            .file
+            .credentials
+            .iter()
+            .find(|record| record.id == id && record.generation == generation)
+        else {
+            return Standing::Revoked;
+        };
+        if record.revoked_at.is_some() {
+            return Standing::Revoked;
+        }
+        match record.expires_at {
+            Some(expiry) if now >= expiry => Standing::Expired,
+            expires_at => Standing::Active { expires_at },
+        }
     }
 }
 
@@ -510,6 +605,83 @@ struct Cached {
     reloads: u64,
 }
 
+/// A token-store refresh that failed, and the stage it failed at.
+struct RefreshFailure {
+    stage: &'static str,
+    error: AuthError,
+}
+
+/// Fail closed: the cache holds the empty store, never the prior generation.
+fn fail_closed(cached: &mut Cached, stage: &'static str, error: AuthError) -> RefreshFailure {
+    cached.stamp = None;
+    cached.store = TokenStore::default();
+    RefreshFailure { stage, error }
+}
+
+/// Why a token store gives the live revocation watcher no verdict.
+#[derive(Debug, Clone, Copy)]
+enum StoreCondition {
+    /// Missing, or holding no credentials.
+    Empty,
+    /// Failed its ownership or mode check.
+    Insecure,
+    /// Does not parse (or is a legacy store awaiting migration).
+    Unparseable,
+    /// Could not be read, or kept changing while read.
+    Unreadable,
+}
+
+impl StoreCondition {
+    const fn of(error: &AuthError) -> Self {
+        match error {
+            AuthError::InsecureStore(_) => Self::Insecure,
+            AuthError::Io(_) | AuthError::UnstableStore => Self::Unreadable,
+            _ => Self::Unparseable,
+        }
+    }
+
+    const fn remedy(self) -> &'static str {
+        match self {
+            Self::Empty => {
+                "the credential store is missing or holds no credentials; pair devices again with `phux pair`"
+            }
+            Self::Insecure => {
+                "the credential store failed its integrity check; make it a regular file owned by this user with mode 0600"
+            }
+            Self::Unparseable => {
+                "the credential store does not parse; restore it, or run `phux pair --migrate-legacy` for a legacy store"
+            }
+            Self::Unreadable => "the credential store could not be read; retrying",
+        }
+    }
+
+    fn warn(self, path: &Path) {
+        if !no_verdict_warning_due() {
+            return;
+        }
+        let remedy = self.remedy();
+        tracing::warn!(
+            path = %path.display(),
+            condition = ?self,
+            "{remedy}: live paired sessions keep running, and new connections are refused until it is fixed"
+        );
+    }
+}
+
+/// Seconds between two no-verdict warnings, process-wide: the watcher polls
+/// every 250 ms, and one line a minute names the problem.
+const NO_VERDICT_WARN_INTERVAL_SECS: i64 = 60;
+static LAST_NO_VERDICT_WARNING: AtomicI64 = AtomicI64::new(i64::MIN);
+
+fn no_verdict_warning_due() -> bool {
+    let now = Utc::now().timestamp();
+    let last = LAST_NO_VERDICT_WARNING.load(Ordering::Relaxed);
+    now.saturating_sub(last) >= NO_VERDICT_WARN_INTERVAL_SECS
+        && LAST_NO_VERDICT_WARNING
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+}
+
 /// A last-known-good snapshot that re-reads after each atomic file generation.
 pub struct ReloadingTokenStore {
     path: PathBuf,
@@ -566,38 +738,85 @@ impl ReloadingTokenStore {
         after_load: impl FnMut(usize),
         f: impl FnOnce(&TokenStore) -> T,
     ) -> T {
-        let mut cached = self
-            .cached
+        let mut cached = self.lock();
+        // A failed refresh leaves the empty store: admission fails closed.
+        if let Err(failure) = self.refresh(&mut cached, after_load) {
+            let stage = failure.stage;
+            tracing::warn!(path = %self.path.display(), error = %failure.error, "{stage}; denying authentication");
+        }
+        f(&cached.store)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Cached> {
+        self.cached
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Bring `cached` up to the file's current generation. On failure the
+    /// cache holds the empty store, never the prior generation, and the
+    /// failure is returned for the caller to report.
+    fn refresh(
+        &self,
+        cached: &mut Cached,
+        after_load: impl FnMut(usize),
+    ) -> Result<(), RefreshFailure> {
         let stamp = match Stamp::probe(&self.path) {
             Ok(stamp) => stamp,
             Err(error) => {
-                tracing::warn!(path = %self.path.display(), %error, "credential store integrity check failed; denying authentication");
-                cached.stamp = None;
-                cached.store = TokenStore::default();
-                return f(&cached.store);
+                return Err(fail_closed(
+                    cached,
+                    "credential store integrity check failed",
+                    error,
+                ));
             }
         };
-        if stamp != cached.stamp {
-            match stable_load_observed(&self.path, after_load) {
-                Ok((stamp, store)) => {
-                    cached.stamp = stamp;
-                    cached.store = store;
-                    cached.reloads = cached.reloads.saturating_add(1);
-                }
-                Err(error) => {
-                    tracing::warn!(
-                        path = %self.path.display(), %error,
-                        "changed credential store could not be loaded; denying authentication"
-                    );
-                    cached.stamp = None;
-                    cached.store = TokenStore::default();
-                    return f(&cached.store);
-                }
-            }
+        if stamp == cached.stamp {
+            return Ok(());
         }
-        f(&cached.store)
+        match stable_load_observed(&self.path, after_load) {
+            Ok((stamp, store)) => {
+                cached.stamp = stamp;
+                cached.store = store;
+                cached.reloads = cached.reloads.saturating_add(1);
+                Ok(())
+            }
+            Err(error) => Err(fail_closed(
+                cached,
+                "changed credential store could not be loaded",
+                error,
+            )),
+        }
+    }
+
+    /// The store as the live revocation watcher may judge it: a copy of the
+    /// current generation, only when it loaded cleanly and holds at least
+    /// one credential (`docs/spec/workload-auth.md` §7). A missing, empty,
+    /// insecure, unparseable, or unreadable store is no verdict for
+    /// sessions already admitted, because it may be mid-write or mid-repair:
+    /// this returns `None` and warns at most once a minute, naming the
+    /// condition and its remedy. New admissions still fail closed against
+    /// it.
+    #[must_use]
+    pub fn watch_snapshot(&self) -> Option<TokenStore> {
+        let mut cached = self.lock();
+        let condition = match self.refresh(&mut cached, |_| {}) {
+            Ok(()) if !cached.store.is_empty() => return Some(cached.store.clone()),
+            Ok(()) => StoreCondition::Empty,
+            Err(failure) => StoreCondition::of(&failure.error),
+        };
+        drop(cached);
+        condition.warn(&self.path);
+        None
+    }
+
+    /// The standing of credential `id` at `generation` in the current
+    /// generation, or `None` when the store gives no verdict (see
+    /// [`Self::watch_snapshot`]).
+    #[must_use]
+    pub fn standing(&self, id: &str, generation: u64) -> Option<Standing> {
+        self.watch_snapshot()
+            .map(|store| store.standing_at(id, generation, Utc::now()))
     }
 
     /// Authenticate against the current readable generation.
@@ -1156,6 +1375,77 @@ mod tests {
 
     fn secret(minted: &MintedCredential) -> Vec<u8> {
         hex::decode(minted.secret()).unwrap()
+    }
+
+    /// The live revocation watcher's view of one credential generation
+    /// (`workload-auth.md` §7): active until revoked, removed, or expired,
+    /// and a store that stops parsing stands for nothing.
+    #[test]
+    fn standing_follows_the_stores_current_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials");
+        write_test_credential(&path, &[0x55; TOKEN_LEN]);
+        let store = ReloadingTokenStore::load(path.clone()).unwrap();
+        assert_eq!(
+            store.standing("test-credential", 1),
+            Some(Standing::Active { expires_at: None })
+        );
+        assert_eq!(
+            store.standing("test-credential", 2),
+            Some(Standing::Revoked)
+        );
+        assert_eq!(store.standing("someone-else", 1), Some(Standing::Revoked));
+
+        rotate_credential(&path, "test-credential", Duration::zero()).unwrap();
+        assert_eq!(
+            store.standing("test-credential", 1),
+            Some(Standing::Expired),
+            "a rotated-out generation expires with its overlap"
+        );
+        assert!(matches!(
+            store.standing("test-credential", 2),
+            Some(Standing::Active { .. })
+        ));
+
+        revoke_credential(&path, "test-credential").unwrap();
+        assert_eq!(
+            store.standing("test-credential", 2),
+            Some(Standing::Revoked)
+        );
+
+        write_test_credential(&path, &[0x55; TOKEN_LEN]);
+        assert!(matches!(
+            store.standing("test-credential", 1),
+            Some(Standing::Active { .. })
+        ));
+        // None of these is a verdict for sessions already admitted: the store
+        // may be mid-write or mid-repair. Each gives `None`, and new
+        // admissions still fail closed against it.
+        let replace = |contents: &str| {
+            let staged = dir.path().join("staged");
+            std::fs::write(&staged, contents).unwrap();
+            std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::fs::rename(&staged, &path).unwrap();
+        };
+        replace("{ not a store");
+        assert_eq!(store.standing("test-credential", 1), None, "malformed");
+        replace("");
+        assert_eq!(store.standing("test-credential", 1), None, "empty");
+        std::fs::write(&path, "{\"version\":1,\"credentials\":[{\"id\":").unwrap();
+        assert_eq!(
+            store.standing("test-credential", 1),
+            None,
+            "caught mid-write"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(store.standing("test-credential", 1), None, "missing");
+        write_test_credential(&path, &[0x55; TOKEN_LEN]);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert_eq!(store.standing("test-credential", 1), None, "insecure");
+        assert!(
+            !store.verify(&[0x55; TOKEN_LEN]),
+            "a new admission fails closed against an insecure store"
+        );
     }
 
     #[test]

@@ -272,6 +272,13 @@ impl Incoming for ConnectorIncoming {
                         transport: TransportType::Quic,
                         source_addr: Some(relay.ip()),
                     },
+                    // Kept so the consumer bearer's revocation ends the
+                    // bridged connection live; written before `credential`
+                    // moves.
+                    bearer: Some(crate::auth::BearerAdmission::new(
+                        Arc::clone(&self.consumer_tokens),
+                        &credential,
+                    )),
                     credential: Some(credential),
                     ssh_origin: None,
                 },

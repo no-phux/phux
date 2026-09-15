@@ -40,8 +40,8 @@ const BIND: Verbs = Verbs::of(&[Verb::Bind]);
 pub struct Denial {
     /// The verbs the refused operation needed; empty for a default-deny row.
     pub verbs: Verbs,
-    /// `terminal`, `group`, `host`, `global`, `unclassified`, `ungranted`, or
-    /// `expired`.
+    /// `terminal`, `group`, `host`, `global`, `unclassified`, `ungranted`,
+    /// `expired`, or `revoked`.
     pub subject: &'static str,
 }
 
@@ -63,6 +63,12 @@ impl Denial {
     const EXPIRED: Self = Self {
         verbs: Verbs::EMPTY,
         subject: "expired",
+    };
+
+    /// A connection whose authority was withdrawn while it was live.
+    const REVOKED: Self = Self {
+        verbs: Verbs::EMPTY,
+        subject: "revoked",
     };
 }
 
@@ -127,6 +133,13 @@ pub fn enforce(
     grant: &ConnectionGrant,
     request: Request<'_>,
 ) -> Result<(), Denial> {
+    // A revoked connection admits nothing, whatever shape its authority had
+    // (workload-auth §7 step 1). Checked before the owner's shortcut: a
+    // bearer-admitted connection holds the owner's grant in the transitional
+    // posture, and its revocation must still stop it.
+    if grant.revocation().is_some() {
+        return Err(Denial::REVOKED);
+    }
     let Authority::Scoped { effective, .. } = &grant.authority else {
         return Ok(());
     };

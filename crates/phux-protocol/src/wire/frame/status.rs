@@ -315,6 +315,15 @@ pub enum DetachReason {
     /// The peer violated the protocol; the sender is closing the transport.
     /// A fatal `ERROR` MUST be followed by `DETACHED` carrying this reason.
     ProtocolError = 4,
+    /// A post-HELLO authentication outcome failed (`workload-auth.md` §7).
+    /// A pre-HELLO TLS refusal carries no frame, so it never states this.
+    AuthenticationFailed = 5,
+    /// The credential behind the connection's authority was revoked, or its
+    /// ceiling no longer contains the minted grant (`workload-auth.md` §7).
+    AuthorizationRevoked = 6,
+    /// The credential behind the connection's authority reached its expiry
+    /// (`workload-auth.md` §7).
+    AuthorizationExpired = 7,
     /// The server hit an unrecoverable internal fault.
     InternalError = 255,
 }
@@ -343,6 +352,9 @@ impl DetachReason {
             2 => Self::SessionKilled,
             3 => Self::Replaced,
             4 => Self::ProtocolError,
+            5 => Self::AuthenticationFailed,
+            6 => Self::AuthorizationRevoked,
+            7 => Self::AuthorizationExpired,
             255 => Self::InternalError,
             _ => return None,
         })
@@ -358,6 +370,9 @@ impl DetachReason {
             Self::SessionKilled => "the session was killed",
             Self::Replaced => "another client took over this attach",
             Self::ProtocolError => "the connection violated the protocol",
+            Self::AuthenticationFailed => "authentication failed",
+            Self::AuthorizationRevoked => "this connection's authorization was revoked",
+            Self::AuthorizationExpired => "this connection's authorization expired",
             Self::InternalError => "the server hit an internal error",
         }
     }

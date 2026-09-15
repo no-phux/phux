@@ -438,6 +438,16 @@ impl WsListener {
         }
     }
 
+    /// A plaintext loopback listener that still demands a pairing token, for
+    /// tests that drive the bearer path without TLS.
+    #[cfg(test)]
+    pub(crate) async fn loopback_with_tokens(
+        tokens: std::sync::Arc<crate::auth::ReloadingTokenStore>,
+    ) -> io::Result<Self> {
+        let tcp = TcpListener::bind("127.0.0.1:0").await?;
+        Ok(Self::from_parts(tcp, None, Some(tokens), None))
+    }
+
     /// Bind a plaintext, unauthenticated listener (loopback browser client).
     pub(crate) async fn bind(addr: SocketAddr) -> io::Result<Self> {
         Ok(Self::from_parts(
@@ -580,13 +590,12 @@ impl Incoming for WsListener {
         // HTTP 401 before any phux frame is read; the matched device's
         // (non-reversible) id is captured for the peer identity. Without one,
         // this is the historical anonymous browser-client path.
-        let (ws, credential) = match &self.tokens {
+        let (ws, admitted) = match &self.tokens {
             Some(store) => {
                 let store = store.clone();
                 let workload = self.workload.clone();
-                let captured: std::rc::Rc<
-                    std::cell::RefCell<Option<crate::auth::AuthenticatedCredential>>,
-                > = std::rc::Rc::new(std::cell::RefCell::new(None));
+                let captured: std::rc::Rc<std::cell::RefCell<Option<Admitted>>> =
+                    std::rc::Rc::new(std::cell::RefCell::new(None));
                 let sink = captured.clone();
                 #[allow(
                     clippy::result_large_err,
@@ -600,8 +609,8 @@ impl Incoming for WsListener {
                             .map(|registry| (registry, peer_leaf.as_deref()));
                         admit_upgrade(req, &store, workload).map_or_else(
                             || Err(unauthorized_response()),
-                            |credential| {
-                                *sink.borrow_mut() = Some(credential);
+                            |admitted| {
+                                *sink.borrow_mut() = Some(admitted);
                                 Ok(select_ws_protocol(req, resp))
                             },
                         )
@@ -629,6 +638,18 @@ impl Incoming for WsListener {
                 .map_err(|error| classify_ws_upgrade_error(&error, source_ip))?,
                 None,
             ),
+        };
+        // The connection's credential (the workload's, under workload mTLS)
+        // and, apart from it, the pairing-store bearer that admitted the
+        // upgrade, kept so its revocation ends the connection live.
+        let (credential, bearer) = match admitted {
+            Some((credential, bearer)) => (
+                Some(credential),
+                self.tokens.as_ref().map(|store| {
+                    crate::auth::BearerAdmission::new(std::sync::Arc::clone(store), &bearer)
+                }),
+            ),
+            None => (None, None),
         };
 
         // An authenticated remote consumer is a first-class peer: its
@@ -661,6 +682,7 @@ impl Incoming for WsListener {
                 peer: peer_identity,
                 ssh_origin: None,
                 credential,
+                bearer,
             },
         ))
     }
@@ -830,16 +852,25 @@ fn authorize_request(
 /// credential becomes the connection's identity, exactly as on QUIC. Every
 /// refusal is the same 401, so a peer cannot tell which check failed
 /// (`workload-auth.md` §3, §7).
+/// What an admitted upgrade carries: the connection's credential (the
+/// workload's under workload mTLS, else the bearer's), then the bearer.
+type Admitted = (
+    crate::auth::AuthenticatedCredential,
+    crate::auth::AuthenticatedCredential,
+);
+
 fn admit_upgrade(
     req: &Request,
     store: &crate::auth::ReloadingTokenStore,
     workload: Option<(&crate::workload::ReloadingWorkloadRegistry, Option<&[u8]>)>,
-) -> Option<crate::auth::AuthenticatedCredential> {
+) -> Option<Admitted> {
     let bearer = authorize_request(req, store)?;
     let Some((registry, leaf)) = workload else {
-        return Some(bearer);
+        return Some((bearer.clone(), bearer));
     };
-    registry.lookup_certificate(leaf?)
+    registry
+        .lookup_certificate(leaf?)
+        .map(|workload| (workload, bearer))
 }
 
 /// Terminate TLS under [`HANDSHAKE_DEADLINE`], keeping the client's leaf
@@ -1485,7 +1516,7 @@ mod tests {
         reason = "one linear end-to-end connection lifecycle is clearer than stateful test helpers"
     )]
     #[tokio::test(flavor = "current_thread")]
-    async fn authenticated_attached_session_survives_revocation_then_cleans_up() {
+    async fn bearer_revoke_now_terminates_live_sessions() {
         LocalSet::new()
             .run_until(async {
                 let (listener, addr, token_hex, tokens) = token_listener().await;
@@ -1505,6 +1536,7 @@ mod tests {
                     crate::runtime::client::accept_loop(&listener, accept_state, accept_token, None)
                         .await
                 });
+                crate::runtime::revocation::spawn_revocation_watcher(&state, &root_token);
 
                 let tcp = TcpStream::connect(addr).await.unwrap();
                 let (mut client, _) =
@@ -1576,35 +1608,41 @@ mod tests {
 
                 crate::auth::revoke_credential(tokens.path(), "test-credential").unwrap();
 
-                // VIEWPORT_RESIZE is meaningful only to an attached client. Its
-                // state change proves the established runtime session remains
-                // operational without re-authorizing after revocation.
-                let resized = ViewportInfo::new(97, 31);
-                client
-                    .send(encode(FrameKind::ViewportResize { viewport: resized }))
-                    .await
-                    .unwrap();
-                tokio::time::timeout(Duration::from_secs(2), async {
-                    loop {
-                        let updated = state.with(|server| {
-                            server
-                                .attached()
-                                .get(&client_id)
-                                .and_then(|attached| attached.viewport.as_ref())
-                                == Some(&resized)
-                        });
-                        if updated {
-                            break;
+                // ADR-0116 supersedes ADR-0031's survive-until-drop: the
+                // watcher sees the revoked record and ends the established
+                // session with the workload-auth §7 goodbye, then closes it.
+                let mut ending = Vec::new();
+                tokio::time::timeout(Duration::from_secs(5), async {
+                    while let Some(message) = client.next().await {
+                        match message {
+                            Ok(Message::Binary(data)) => ending
+                                .push(FrameKind::decode(&data).expect("decode runtime frame").0),
+                            Ok(Message::Close(_)) | Err(_) => break,
+                            Ok(_) => {}
                         }
-                        tokio::task::yield_now().await;
                     }
                 })
                 .await
-                .expect("revoked established session processes attached operation");
-                assert_eq!(
-                    state.with(|server| server.authenticated_credential(client_id).cloned()),
-                    Some(credential),
-                    "revocation does not erase the established attestation"
+                .expect("a revoked bearer's live session is closed");
+                assert!(
+                    matches!(
+                        ending.as_slice(),
+                        [
+                            ..,
+                            FrameKind::Error {
+                                request_id: None,
+                                code: phux_protocol::wire::frame::ErrorCode::PermissionDenied,
+                                ..
+                            },
+                            FrameKind::Detached {
+                                reason: Some(
+                                    phux_protocol::wire::frame::DetachReason::AuthorizationRevoked
+                                ),
+                                ..
+                            },
+                        ]
+                    ),
+                    "the goodbye is ERROR then DETACHED, and nothing follows it: {ending:?}"
                 );
 
                 let reconnect_tcp = TcpStream::connect(addr).await.unwrap();
@@ -1616,7 +1654,6 @@ mod tests {
                 .expect_err("revoked credential cannot reconnect");
                 assert_generic_unauthorized(reconnect);
 
-                client.close(None).await.unwrap();
                 drop(client);
                 tokio::time::timeout(Duration::from_secs(2), async {
                     loop {

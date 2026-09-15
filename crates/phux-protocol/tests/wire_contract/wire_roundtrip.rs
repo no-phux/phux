@@ -390,6 +390,9 @@ fn arb_detach_reason() -> impl Strategy<Value = Option<DetachReason>> {
         Just(Some(DetachReason::SessionKilled)),
         Just(Some(DetachReason::Replaced)),
         Just(Some(DetachReason::ProtocolError)),
+        Just(Some(DetachReason::AuthenticationFailed)),
+        Just(Some(DetachReason::AuthorizationRevoked)),
+        Just(Some(DetachReason::AuthorizationExpired)),
         Just(Some(DetachReason::InternalError)),
     ]
 }
@@ -2426,6 +2429,9 @@ fn detached_reason_and_message_round_trip() {
         Some(DetachReason::SessionKilled),
         Some(DetachReason::Replaced),
         Some(DetachReason::ProtocolError),
+        Some(DetachReason::AuthenticationFailed),
+        Some(DetachReason::AuthorizationRevoked),
+        Some(DetachReason::AuthorizationExpired),
         Some(DetachReason::InternalError),
     ] {
         for message in [String::new(), "the server is stopping".to_owned()] {
@@ -2502,8 +2508,18 @@ fn detach_reason_wire_values_match_spec() {
     assert_eq!(DetachReason::SessionKilled.as_wire(), 2);
     assert_eq!(DetachReason::Replaced.as_wire(), 3);
     assert_eq!(DetachReason::ProtocolError.as_wire(), 4);
+    assert_eq!(DetachReason::AuthenticationFailed.as_wire(), 5);
+    assert_eq!(DetachReason::AuthorizationRevoked.as_wire(), 6);
+    assert_eq!(DetachReason::AuthorizationExpired.as_wire(), 7);
     assert_eq!(DetachReason::InternalError.as_wire(), 255);
-    for unallocated in [5u8, 6, 42, 254] {
+    for known in [5u8, 6, 7] {
+        assert_eq!(
+            DetachReason::from_wire(known).map(DetachReason::as_wire),
+            Some(known),
+            "workload-auth §7 reasons decode"
+        );
+    }
+    for unallocated in [8u8, 42, 254] {
         assert_eq!(DetachReason::from_wire(unallocated), None);
     }
 }

@@ -57,6 +57,9 @@ pub mod operation_dedupe;
 mod pump;
 pub mod resource_commands;
 mod resume;
+pub mod revocation;
+#[cfg(test)]
+mod revocation_conformance;
 mod upgrade;
 mod upload;
 mod voice;
@@ -897,6 +900,10 @@ impl ServerRuntime {
                 arm_idle_exit(&state, exit_after_idle, &root_token);
                 install_hook_dispatcher(&state, hook_catalog, hook_socket_path);
                 spawn_hub_links(&state, hub_table.as_ref(), &root_token);
+                // workload-auth §7: live revocation. Parks until a scoped or
+                // bearer-admitted connection exists; the owner socket's grant
+                // is never watched.
+                revocation::spawn_revocation_watcher(&state, &root_token);
                 spawn_connector_supervisors(
                     connector_specs,
                     connector_consumer_tokens.as_ref(),

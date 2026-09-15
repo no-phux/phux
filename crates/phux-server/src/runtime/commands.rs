@@ -4307,6 +4307,15 @@ pub(crate) fn with_route_input_destination<R>(
     action: impl FnOnce(InputDestination) -> R,
 ) -> Result<R, CommandResult> {
     state.with(|s| {
+        // Input queued on the lane before a revocation is still pending
+        // authority the revoked connection held: none of it is delivered
+        // (workload-auth §7 step 2).
+        if s.connection_revoked(client_id) {
+            return Err(CommandResult::Error {
+                code: ErrorCode::PermissionDenied,
+                message: "permission denied".to_owned(),
+            });
+        }
         let local = match s.resolve_resource(terminal_id) {
             Resolved::Remote(_) => {
                 return Err(CommandResult::Error {
@@ -4491,7 +4500,7 @@ pub(crate) async fn handle_acquire_input(
                 .send(ControlRequest::LeaseChanged {
                     input_holder: Some(wire_client_id(client_id)),
                     action,
-                    actor: wire_client_id(client_id),
+                    actor: Some(wire_client_id(client_id)),
                 })
                 .await;
             CommandResult::Ok
@@ -4540,7 +4549,7 @@ pub(crate) async fn handle_release_input(
                     .send(ControlRequest::LeaseChanged {
                         input_holder: None,
                         action: ControlAction::Released,
-                        actor: wire_client_id(client_id),
+                        actor: Some(wire_client_id(client_id)),
                     })
                     .await;
             }
@@ -5078,6 +5087,15 @@ pub(crate) fn with_attached_input_destination<R>(
     action: impl FnOnce(InputDestination) -> R,
 ) -> Option<R> {
     state.with_mut(|s| {
+        // Input queued on the lane before a revocation is not delivered
+        // after it (workload-auth §7 step 2).
+        if s.connection_revoked(client_id) {
+            trace!(
+                ?client_id,
+                frame_label, "input from a revoked connection dropped"
+            );
+            return None;
+        }
         let local = match s.resolve_resource(wire_terminal_id).into_owned() {
             ResolvedOwned::Local(local) => local,
             ResolvedOwned::Remote(_) | ResolvedOwned::Unknown => {

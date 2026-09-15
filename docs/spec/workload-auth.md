@@ -18,19 +18,15 @@ document previously specified; the authorization half stands.)
 
 ---
 
-<!-- impl-status: partial; probe: WorkloadRegistry,enroll_client,credential_id,ReloadingWorkloadRegistry,prepare_enrollment,WorkloadAction,ScopedPolicy,enforce -->
-> **Status: partial.** The persisted workload CA, client enrollment,
+<!-- impl-status: shipped; probe: WorkloadRegistry,enroll_client,credential_id,ReloadingWorkloadRegistry,prepare_enrollment,WorkloadAction,ScopedPolicy,enforce,revoke_connection -->
+> **Status: shipped.** The persisted workload CA, client enrollment,
 > credential-id derivation, and the scope registry are implemented in
 > `phux_server::workload`; the §5 scope types and registry grammar in
-> `phux_protocol::scope`; and the `paired` grant and the dispatch guard in
-> `phux_server::policy` (`ScopedPolicy`, `enforce`). The owner's socket is a
-> Unix-socket peer whose kernel uid is the serving uid. Live revocation (§7)
-> is follow-up work: a revoked credential is refused at its next HELLO, and
-> an expired grant admits nothing from the moment it expires, but neither
-> ends an established connection yet. Work admitted before a change keeps
-> running: a queued bulk `PUT_FILE` or `TRANSCRIBE` and an input-lane
-> receipt were authorized when queued, and an existing subscription keeps
-> streaming.
+> `phux_protocol::scope`; the `paired` grant and the dispatch guard in
+> `phux_server::policy` (`ScopedPolicy`, `enforce`); and live revocation
+> (§7) in the server runtime (`revoke_connection`). The owner's socket is a
+> Unix-socket peer whose kernel uid is the serving uid. §6's kind-bearing
+> rows and §8's transitional posture carry their own markers.
 
 ## 1. Profile boundary
 
@@ -458,6 +454,37 @@ decode and before its satellite-relay branch. Per-handler checks may enforce
 additional domain invariants but SHALL not replace either common check.
 
 ## 7. Denial, expiry, and live revocation
+
+<!-- impl-status: shipped; probe: revoke_connection,spawn_revocation_watcher,AuthorizationRevoked -->
+> **Status: shipped.** The reference server watches the workload registry,
+> each live grant's expiry, and the pairing-token store behind every
+> bearer-admitted connection: the bearer stays outer admission, but its
+> revocation, removal, or expiry ends the connection it admitted, because
+> ADR-0116 supersedes ADR-0031's survive-until-drop. While such a
+> connection is live it polls every 250 ms, each poll one `stat` per store,
+> and it wakes at the earliest expiry. One critical section of the state
+> lock performs steps 1 and 2, signals the connection's writer, and cancels
+> the connection token. The writer drops everything queued, writes the two
+> frames of step 3 (bounded, so a peer that stopped reading cannot hold it
+> open), and closes. The cancelled token aborts the connection's queued bulk
+> `PUT_FILE` and `TRANSCRIBE` and its pending input-lane receipts, and input
+> it queued on the input lane is not delivered after the revocation. A
+> connection revoked before its HELLO completed closes with no frame. A
+> ceiling change is judged clause by clause: a grant stays while the new
+> ceiling carries each minted clause's verbs on a selector containing either
+> of the clause's selectors, and it then adopts the new generation and
+> expiry. A registry read that fails for a reason that may clear (an I/O
+> error, a file that kept changing) is no verdict and is retried at the next
+> poll. A missing, insecure, or malformed registry applies the empty
+> snapshot only once the same broken state has persisted for five seconds,
+> so a write caught mid-way revokes nothing. The pairing-token store is
+> judged more narrowly: only a store that loaded cleanly and holds
+> credentials gives a verdict (the admitting generation revoked, expired, or
+> absent); a missing, empty, insecure, or unparseable one refuses new
+> connections but ends no live one. A bearer revoked since its upgrade is
+> refused at HELLO. A ceiling that splits one minted clause across several
+> grants is judged as not containing it, the safe direction. The owner
+> socket's grant is never watched.
 
 A TLS-layer refusal (no, unknown, or expired client certificate on a paired
 listener) closes before any phux frame; there is no `DETACHED` because no
