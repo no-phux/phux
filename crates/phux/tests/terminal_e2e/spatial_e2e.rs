@@ -46,12 +46,15 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 struct ServerGuard {
     _process: common::ServerProcess,
     socket: PathBuf,
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
 }
 
 impl ServerGuard {
     fn start() -> Self {
         let dir = tempfile::tempdir().expect("server tempdir");
+        for name in ["home", "config", "state", "runtime"] {
+            std::fs::create_dir(dir.path().join(name)).expect("create isolated server directory");
+        }
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let socket = dir
             .path()
@@ -65,6 +68,10 @@ impl ServerGuard {
             // startup noise buries the typed markers; pin the `/bin/sh` the
             // marker barriers assume.
             .env("SHELL", "/bin/sh")
+            .env("HOME", dir.path().join("home"))
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env("XDG_STATE_HOME", dir.path().join("state"))
+            .env("XDG_RUNTIME_DIR", dir.path().join("runtime"))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -73,7 +80,7 @@ impl ServerGuard {
         let guard = Self {
             _process: common::ServerProcess::from_child(child, socket.clone()),
             socket,
-            _dir: dir,
+            dir,
         };
         let deadline = Instant::now() + SOCKET_DEADLINE;
         while Instant::now() < deadline {
@@ -92,6 +99,10 @@ impl ServerGuard {
             .arg("--socket")
             .arg(&self.socket)
             .args(rest)
+            .env("HOME", self.dir.path().join("home"))
+            .env("XDG_CONFIG_HOME", self.dir.path().join("config"))
+            .env("XDG_STATE_HOME", self.dir.path().join("state"))
+            .env("XDG_RUNTIME_DIR", self.dir.path().join("runtime"))
             .stdin(Stdio::null())
             .output()
             .expect("run phux command")
@@ -170,14 +181,77 @@ impl ServerGuard {
     }
 
     fn read_layout(&self) -> Result<Workspace, LayoutOpsError> {
+        self.read_layout_for(SESSION)
+    }
+
+    fn read_layout_for(&self, session_name: &str) -> Result<Workspace, LayoutOpsError> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("tokio runtime");
         runtime.block_on(async {
             let mut conn = Connection::connect(&self.socket).await?;
-            LayoutOps::new(&mut conn, SessionId::new(1), 1).read().await
+            let snapshot = phux_client::state::get_state_on(&mut conn)
+                .await?
+                .into_parts()
+                .0;
+            let session = snapshot
+                .sessions
+                .iter()
+                .find(|session| session.name == session_name)
+                .unwrap_or_else(|| panic!("session {session_name:?} missing from snapshot"));
+            let result = LayoutOps::new(&mut conn, session.id, 1).read().await;
+            drop(conn);
+            result
         })
+    }
+
+    fn write_layout_bytes(&self, session_name: &str, value: Vec<u8>) {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        runtime.block_on(async {
+            let mut conn = Connection::connect(&self.socket)
+                .await
+                .expect("connect metadata writer");
+            let snapshot = phux_client::state::get_state_on(&mut conn)
+                .await
+                .expect("read state")
+                .into_parts()
+                .0;
+            let session = snapshot
+                .sessions
+                .iter()
+                .find(|session| session.name == session_name)
+                .expect("session to corrupt");
+            conn.send(&FrameKind::SetMetadata {
+                request_id: 30,
+                scope: Scope::Group(GroupId::new(1)),
+                key: layout_key(session.id),
+                value,
+            })
+            .await
+            .expect("write layout bytes");
+            conn.send(&FrameKind::GetMetadata {
+                request_id: 31,
+                scope: Scope::Group(GroupId::new(1)),
+                key: layout_key(session.id),
+            })
+            .await
+            .expect("request layout write barrier");
+            loop {
+                if matches!(
+                    conn.recv().await.expect("layout write barrier reply"),
+                    FrameKind::MetadataValue {
+                        request_id: 31,
+                        value: Some(_)
+                    }
+                ) {
+                    break;
+                }
+            }
+        });
     }
 
     fn wait_for_layout(&self) -> Workspace {
@@ -203,6 +277,42 @@ impl ServerGuard {
             snapshot["cols"].as_u64().expect("snapshot cols"),
             snapshot["rows"].as_u64().expect("snapshot rows"),
         )
+    }
+
+    fn wait_for_pane_size(&self, pane: &ResourceId, expected: (u64, u64)) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if self.pane_size(pane) == expected {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!(
+            "pane {pane:?} did not reach {expected:?}; last size {:?}",
+            self.pane_size(pane)
+        );
+    }
+
+    fn wait_for_attached(&self, session_name: &str, expected: bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            let output = self.command(&["ls", "--json"]);
+            let Ok(document) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
+                std::thread::sleep(POLL);
+                continue;
+            };
+            let attached = document["sessions"]
+                .as_array()
+                .expect("sessions array")
+                .iter()
+                .find(|session| session["name"] == session_name)
+                .and_then(|session| session["attached"].as_bool());
+            if attached == Some(expected) {
+                return;
+            }
+            std::thread::sleep(POLL);
+        }
+        panic!("session {session_name:?} did not reach attached={expected}");
     }
 
     /// Wait until `pane`'s live grid differs from `before`.
@@ -295,11 +405,15 @@ impl Drop for AttachedClient {
 
 impl AttachedClient {
     fn start(server: &ServerGuard) -> Self {
+        Self::start_named_at_size(server, SESSION, 100, 24)
+    }
+
+    fn start_named_at_size(server: &ServerGuard, session: &str, cols: u16, rows: u16) -> Self {
         let pty = native_pty_system();
         let pair = pty
             .openpty(PtySize {
-                rows: 24,
-                cols: 100,
+                rows,
+                cols,
                 pixel_width: 0,
                 pixel_height: 0,
             })
@@ -310,12 +424,15 @@ impl AttachedClient {
             "attach",
             "--socket",
             server.socket.to_str().expect("UTF-8 socket"),
-            SESSION,
+            session,
         ]);
         command.env("SHELL", "/bin/sh");
         command.env("TERM", "xterm-256color");
         command.env("RUST_LOG", "off");
+        command.env("HOME", server.dir.path().join("home"));
         command.env("XDG_CONFIG_HOME", config.path());
+        command.env("XDG_STATE_HOME", server.dir.path().join("state"));
+        command.env("XDG_RUNTIME_DIR", server.dir.path().join("runtime"));
         let child = pair
             .slave
             .spawn_command(command)
@@ -353,6 +470,11 @@ impl AttachedClient {
             .write_all(format!("echo {marker}\r").as_bytes())
             .expect("type marker through attached client");
         self.writer.flush().expect("flush marker");
+    }
+
+    fn detach(&mut self) {
+        self.writer.write_all(b"\x01d").expect("send C-a d");
+        self.writer.flush().expect("flush detach chord");
     }
 }
 
@@ -481,4 +603,145 @@ fn spatial_cli_persists_topology_and_preserves_attached_focus() {
     server.wait_for_applied_grid(&second, second_before_swap);
     attached.type_marker("FOCUS_AFTER_SWAP");
     server.wait_for_marker(&second, "FOCUS_AFTER_SWAP");
+}
+
+fn json_created_pane(server: &ServerGuard, session: &str) -> ResourceId {
+    let created = server.json(&["new", "--json", "-s", session]);
+    ResourceId::local(
+        u32::try_from(created["terminal_id"].as_u64().expect("created pane id"))
+            .expect("pane id fits u32"),
+    )
+}
+
+fn run_in_pane(server: &ServerGuard, pane: &ResourceId, command: &str) -> serde_json::Value {
+    server.json(&[
+        "run",
+        "--json",
+        &format!("@{}", pane.local_id().expect("local pane")),
+        command,
+    ])
+}
+
+#[test]
+#[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
+fn json_created_sessions_are_immediately_layout_ready_for_cross_session_move() {
+    let server = ServerGuard::start();
+    let source = json_created_pane(&server, "headless-source");
+    let destination = json_created_pane(&server, "headless-destination");
+
+    assert_eq!(
+        server
+            .read_layout_for("headless-source")
+            .expect("source layout seeded"),
+        Workspace::single(source.clone())
+    );
+    assert_eq!(
+        server
+            .read_layout_for("headless-destination")
+            .expect("destination layout seeded"),
+        Workspace::single(destination.clone())
+    );
+
+    let before = run_in_pane(&server, &source, "printf 'ALF7_BEFORE:%s\\n' \"$$\"");
+    let before_output = before["output"].as_str().expect("before output");
+    let shell_pid = before_output
+        .trim()
+        .strip_prefix("ALF7_BEFORE:")
+        .expect("before marker carries shell pid")
+        .to_owned();
+
+    let moved = server.json(&[
+        "move-pane",
+        &format!("@{}", source.local_id().expect("source id")),
+        &format!("@{}", destination.local_id().expect("destination id")),
+        "--split",
+        "vertical",
+        "--json",
+    ]);
+    assert_eq!(moved["cross_session"], true);
+    assert!(moved["source_session_id"].as_u64().is_some());
+    let destination_layout = server
+        .read_layout_for("headless-destination")
+        .expect("moved destination layout");
+    assert_eq!(
+        phux_client::layout::leaves(
+            destination_layout.windows[0]
+                .state
+                .tree
+                .as_ref()
+                .expect("destination tree")
+        ),
+        vec![destination, source.clone()]
+    );
+
+    let after = run_in_pane(&server, &source, "printf 'ALF7_AFTER:%s\\n' \"$$\"");
+    assert_eq!(
+        after["output"].as_str().expect("after output").trim(),
+        format!("ALF7_AFTER:{shell_pid}"),
+        "the same shell process must survive the ownership/layout move"
+    );
+    let screen = server.pane_snapshot(&source);
+    let retained = screen["lines"]
+        .as_array()
+        .expect("screen lines")
+        .iter()
+        .chain(screen["scrollback"].as_array().into_iter().flatten())
+        .filter_map(serde_json::Value::as_str)
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        retained.contains("ALF7_BEFORE:"),
+        "pre-move output was lost: {retained}"
+    );
+    assert!(
+        retained.contains("ALF7_AFTER:"),
+        "post-move output missing: {retained}"
+    );
+}
+
+#[test]
+#[ignore = "spawns a real server and PTY client; run in the e2e lane"]
+fn last_tiny_view_detach_restores_headless_geometry_and_keeps_the_shell() {
+    let server = ServerGuard::start();
+    let pane = json_created_pane(&server, "tiny-headless");
+    let mut attached = AttachedClient::start_named_at_size(&server, "tiny-headless", 1, 1);
+    server.wait_for_attached("tiny-headless", true);
+    server.wait_for_pane_size(&pane, (1, 1));
+
+    attached.detach();
+    server.wait_for_attached("tiny-headless", false);
+    server.wait_for_pane_size(&pane, NO_TTY_DEFAULT);
+    let result = run_in_pane(&server, &pane, "printf ALF7_STILL_ALIVE");
+    assert_eq!(result["output"], "ALF7_STILL_ALIVE");
+}
+
+#[test]
+#[ignore = "spawns a real server and PTY-backed shells; run in the e2e lane"]
+fn malformed_destination_layout_keeps_the_json_error_contract() {
+    let server = ServerGuard::start();
+    let source = json_created_pane(&server, "bad-layout-source");
+    let destination = json_created_pane(&server, "bad-layout-destination");
+    server.write_layout_bytes("bad-layout-destination", b"not-cbor".to_vec());
+
+    let output = server.command(&[
+        "move-pane",
+        &format!("@{}", source.local_id().expect("source id")),
+        &format!("@{}", destination.local_id().expect("destination id")),
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        output.stdout.is_empty(),
+        "JSON failure must keep stdout empty"
+    );
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr)
+        .unwrap_or_else(|err| panic!("structured stderr: {err}: {:?}", output.stderr));
+    assert_eq!(error["schema_version"], 1);
+    assert_eq!(error["error"]["code"], "destination_layout_failed");
+    assert_eq!(error["exit_code"], 1);
+    assert!(
+        error["remedy"]
+            .as_str()
+            .is_some_and(|remedy| !remedy.is_empty())
+    );
 }

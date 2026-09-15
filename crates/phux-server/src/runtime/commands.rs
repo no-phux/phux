@@ -64,7 +64,7 @@ pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
 /// from a caller that did not supply `SPAWN_RESOURCE.initial_size`. A
 /// layout-owning consumer that DOES know the tile should send it (phux-a5xj)
 /// rather than let the pane bootstrap here and be reflowed afterwards.
-pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = (80, 24);
+pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = crate::state::HEADLESS_TERMINAL_DIMS;
 
 /// Announce a freshly-seeded session's **first** pane on the event stream
 /// (phux-8uly, [SPEC](../../../../docs/spec/L1.md) §7.1).

@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-14
+last-reviewed: 2026-09-15
 ---
 
 # The phux agent CLI
@@ -406,7 +406,12 @@ that shape is MCP `phux_run`.
 ```
 
 Create-only: `--json` requires `-s NAME` (exit 2 if omitted) and fails
-if the name exists. `--empty --json` has `"terminal_id": null` plus
+if the name exists. Before reporting success it stores the session's initial
+single-pane layout, so spatial verbs can place or move that pane without a
+sacrificial interactive attach. A new live Terminal starts at the 80x24
+headless geometry; automatic window-size policies return to that geometry
+after the last view detaches, while `manual` holds an explicit `phux resize`.
+`--empty --json` has `"terminal_id": null` plus
 `empty` / `keep_empty`. Terminal-facet verbs against an empty session
 fail immediately with `no_such_target`.
 

@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-15
 ---
 
 # The phux reference TUI
@@ -248,8 +248,11 @@ letterbox or crop rather than reflowing a second grid.
 `defaults.window-size` picks the policy: `smallest` (default; nothing is
 cropped), `largest`, `latest`, or `manual`. An explicit `phux resize`
 applies immediately; under every policy but `manual`, the next view
-event recomputes and supersedes it. `manual` is the setting for a
-scripted geometry.
+event recomputes and supersedes it. When the last usable view detaches,
+those automatic policies return the live Terminal to the usable headless
+geometry, 80 columns by 24 rows; a tiny automation viewport therefore cannot
+strand a durable shell at 1x1. `manual` is the setting for a scripted geometry
+and holds an explicit size across detach.
 
 **Satellite splits.** With a satellite pane focused, `split-pane` opens
 the new pane on that same satellite, through the hub. The split appears
