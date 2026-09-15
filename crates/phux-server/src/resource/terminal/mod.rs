@@ -63,6 +63,7 @@ mod events;
 mod io;
 mod native;
 mod osc133;
+mod process_facet;
 pub mod requests;
 mod run_loop;
 pub mod spawn;
@@ -796,6 +797,7 @@ pub struct TerminalActor {
     screen_rx: mpsc::Receiver<ScreenRequest>,
     upgrade_rx: mpsc::Receiver<UpgradeHandleRequest>,
     pwd_rx: mpsc::Receiver<PwdRequest>,
+    process_rx: mpsc::Receiver<ProcessFacetRequest>,
     resize_rx: mpsc::Receiver<ResizeRequest>,
     consumer_attach_rx: mpsc::Receiver<ConsumerAttachRequest>,
     consumer_detach_rx: mpsc::Receiver<ConsumerDetachRequest>,
@@ -962,16 +964,34 @@ pub struct TerminalActor {
     /// flag (that emitter is deliberately gated off for raw consumers).
     output_since_idle_tick: bool,
     /// Last known working directory for this pane. Used to detect CWD
-    /// changes and emit `CwdChanged` events (phux-foz.4). Queried lazily at
-    /// OSC-133 prompt boundaries and on output-idle via `process_cwd`
-    /// (`proc_pidinfo` on macOS, `/proc/PID/cwd` on Linux).
+    /// changes and emit `CwdChanged` events (phux-foz.4). Seeded from the
+    /// child's kernel cwd at construction (empty when that query fails),
+    /// then re-queried lazily at OSC-133 prompt boundaries and on
+    /// output-idle via `process_cwd` (`proc_pidinfo` on macOS,
+    /// `/proc/PID/cwd` on Linux).
     last_known_cwd: RefCell<String>,
+    /// Whether this pane has announced its cwd yet. The first successful
+    /// observation always emits `cwd_changed`, even when it equals the
+    /// accurate spawn seed: a consumer that learns of a pane mid-session
+    /// (a TUI split) has no other source for its starting directory.
+    cwd_announced: Cell<bool>,
     /// Incremental OSC scanner over the raw PTY byte stream. Sources
     /// `command_started` / `command_finished` (with the
     /// `D`-mark exit code libghostty's grid projection does not retain) and
     /// triggers the prompt-boundary cwd re-query. Stateful so a mark split
     /// across two PTY read chunks is still recognised.
     osc133: osc133::Osc133Scanner,
+    /// OSC-133 prompt state machine behind the `process.prompt` facet
+    /// (PHA-406 D5). Fed every mark, listened-to or not.
+    prompt: osc133::PromptTracker,
+    /// Start time of the PTY child in Unix ms, captured once at
+    /// construction. Paired with the child pid it is the pid generation the
+    /// `process.child` facet reports; captured up front so it still names
+    /// the right process after the child is reaped and its pid recycled.
+    child_start_ms: Option<u64>,
+    /// The exit facet, recorded when PTY EOF reaps the child. `None` while
+    /// the child runs (or when this actor has no PTY).
+    exit: Option<phux_core::process::ProcessExit>,
     /// Whether we've already emitted a Dirty event in the current output
     /// burst. Coalesces multiple grid mutations into one event per burst
     /// (matching the `in_output_burst` coalescing for `AgentEvent`).
@@ -1051,11 +1071,11 @@ pub struct TerminalActorBundle {
     /// `Option` so callers can `take()` it out of the bundle;
     /// `None` after the first take.
     ///
-    /// The payload is the child's exit status: `Some(code)` on a normal
-    /// `_exit(n)` (or where the kernel reports a code at all), `None`
-    /// for signal-killed children or unknown-cause exits. Mirrors the
-    /// `RESOURCE_CLOSED.exit_status` wire field exactly (phux-4li.11).
-    pub exit_notify: Option<oneshot::Receiver<Option<i32>>>,
+    /// The payload is the child's [`ExitOutcome`](phux_core::process::ExitOutcome):
+    /// `status` for a normal `_exit(n)`, `signal` for a death by signal,
+    /// neither for an unknown cause. `status` is what the
+    /// `RESOURCE_CLOSED.exit_status` wire field carries (phux-4li.11).
+    pub exit_notify: Option<oneshot::Receiver<phux_core::process::ExitOutcome>>,
 }
 
 impl std::fmt::Debug for TerminalActor {

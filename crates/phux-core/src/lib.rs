@@ -10,6 +10,7 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod ids;
+pub mod process;
 pub mod registry;
 pub mod resource;
 pub mod screen;
@@ -19,6 +20,7 @@ pub mod terminal;
 pub mod window;
 
 pub use ids::{ResourceId, SessionId, WindowId};
+pub use process::{ExitOutcome, TerminalProcessState};
 pub use registry::{Registry, RegistryError};
 pub use resource::{AgentFacet, ResourceDescriptor, ResourceKind};
 pub use screen::{CursorState, SCHEMA_VERSION, ScreenState};

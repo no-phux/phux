@@ -1072,7 +1072,7 @@ fn invalidate_agent_detector(
 pub(crate) fn spawn_terminal_exit_watcher(
     state: SharedState,
     pane: phux_core::ids::ResourceId,
-    exit_notify: Option<oneshot::Receiver<Option<i32>>>,
+    exit_notify: Option<oneshot::Receiver<phux_core::process::ExitOutcome>>,
     root_token: CancellationToken,
 ) {
     let Some(rx) = exit_notify else {
@@ -1082,7 +1082,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
         // Recv error (sender dropped without firing) is treated the
         // same as a fired EOF with unknown exit status: in both cases
         // the pane is dead and every subscribed client must be told.
-        let exit_status = rx.await.unwrap_or(None);
+        let exit = rx.await.unwrap_or_default();
         // phux-emdv: gather the broadcast subscriber set AND reap the
         // dead pane in ONE critical section, BEFORE the awaited
         // RESOURCE_CLOSED sends. This closes the TOCTOU window that left
@@ -1196,7 +1196,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
         // `fire` itself is a non-blocking try_send.
         crate::hooks::fire_hook(
             &state,
-            crate::hooks::HookEvent::pane_exit(&wire_terminal_id, exit_status),
+            crate::hooks::HookEvent::pane_exit(&wire_terminal_id, exit.status),
         );
 
         // phux-4li.11 / phux-4r1: broadcast the L1 lifecycle event
@@ -1218,7 +1218,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
                 &child.wire_terminal_id,
                 Some(&child.parent),
                 &child.targets,
-                None,
+                phux_core::process::ExitOutcome::UNKNOWN,
                 child.reason,
             )
             .await;
@@ -1228,7 +1228,7 @@ pub(crate) fn spawn_terminal_exit_watcher(
             &wire_terminal_id,
             parent.as_ref(),
             &targets,
-            exit_status,
+            exit,
             reason,
         )
         .await;
@@ -1324,6 +1324,10 @@ struct CascadedClose {
 /// dropped the socket) is silently skipped — `reap_terminal` (already run
 /// by the caller) handled server-side state cleanup.
 ///
+/// `exit` is the child's full outcome: the frame's `exit_status` carries
+/// its code and the additive `signal` field (4) its terminating signal, so
+/// a signal death reads `exit_status: None, signal: Some(n)`.
+///
 /// `reason` is the one the closer recorded in the close ledger
 /// (ADR-0104 §4), claimed by the caller in that same lock: `Killed` for a
 /// `KILL_RESOURCE`, `ParentClosed` for a cascade, `ServerShutdown` for a
@@ -1335,7 +1339,7 @@ pub(crate) async fn broadcast_terminal_closed(
     wire_terminal_id: &phux_protocol::ids::ResourceId,
     parent: Option<&phux_protocol::ids::ResourceId>,
     targets: &[tokio::sync::mpsc::Sender<Outbound>],
-    exit_status: Option<i32>,
+    exit: phux_core::process::ExitOutcome,
     reason: phux_protocol::wire::frame::CloseReason,
 ) {
     if targets.is_empty() {
@@ -1343,16 +1347,16 @@ pub(crate) async fn broadcast_terminal_closed(
     } else {
         debug!(
             count = targets.len(),
-            ?exit_status,
+            ?exit,
             "RESOURCE_CLOSED: broadcasting to subscribed clients",
         );
         for tx in targets {
             let _ = tx
                 .send(Outbound::Frame(FrameKind::ResourceClosed {
                     terminal_id: wire_terminal_id.clone(),
-                    exit_status,
+                    exit_status: exit.status,
                     reason,
-                    signal: None,
+                    signal: exit.signal,
                 }))
                 .await;
         }
@@ -1369,7 +1373,9 @@ pub(crate) async fn broadcast_terminal_closed(
         state,
         wire_terminal_id,
         parent,
-        &AgentEvent::ResourceClosed { exit_status },
+        &AgentEvent::ResourceClosed {
+            exit_status: exit.status,
+        },
     );
 }
 
@@ -6011,6 +6017,7 @@ mod fatal_preflight_close_tests {
                         set_default_colors: mpsc::channel(8).0,
                         screen: mpsc::channel(8).0,
                         pwd: mpsc::channel(8).0,
+                        process: mpsc::channel(8).0,
                         resize: mpsc::channel(8).0,
                         cols: 80,
                         rows: 24,

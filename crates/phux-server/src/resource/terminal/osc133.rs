@@ -10,13 +10,21 @@
 //!
 //! Recognised marks (`FinalTerm` / iTerm2 shell-integration vocabulary):
 //!
+//! * `OSC 133 ; A …`  → [`OscMark::PromptStart`] — the shell began drawing
+//!   a prompt.
+//! * `OSC 133 ; B …`  → [`OscMark::InputStart`] — the prompt is drawn and
+//!   the shell is reading the command line.
 //! * `OSC 133 ; C …`  → [`OscMark::CommandStart`] — the shell is about
-//!   to execute the typed command (output begins). `A` (prompt start) and
-//!   `B` (input start) are accepted and ignored: emitting on `C` yields
-//!   exactly one `command_started` per command, where `B` would double-fire.
+//!   to execute the typed command (output begins). Only `C` sources a
+//!   `command_started` event: emitting on `B` too would double-fire. `A` and
+//!   `B` feed the [`PromptTracker`] alone.
 //! * `OSC 133 ; D`     → [`OscMark::CommandEnd { exit_code: None }`].
 //! * `OSC 133 ; D ; n` → [`OscMark::CommandEnd { exit_code: Some(n) }`].
 //! * `OSC 9 ; 4 ; …`   → [`OscMark::Progress`] with the leading `9;` removed.
+//!
+//! [`PromptTracker`] folds the prompt marks into the `process.prompt` facet
+//! of `GET_TERMINAL_STATE`: `A`/`B` → at prompt, `C` → running, `D` → at
+//! prompt with the reported exit code; unknown until the first mark.
 //!
 //! Terminators: BEL (`0x07`) or ST (`ESC \`). Any other escape sequence and
 //! every OSC except 133 and 9;4 passes through unrecognised. Payloads are
@@ -27,6 +35,10 @@
 /// A recognised OSC mark consumed by the terminal actor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum OscMark {
+    /// `OSC 133 ; A` — the shell began drawing a prompt.
+    PromptStart,
+    /// `OSC 133 ; B` — the prompt ended; the shell is reading input.
+    InputStart,
     /// `OSC 133 ; C` — command execution began.
     CommandStart,
     /// `OSC 133 ; D [; code]` — command finished, with the shell-reported
@@ -186,6 +198,37 @@ impl Osc133Scanner {
     }
 }
 
+/// The pane's prompt state machine, fed every recognised mark in stream
+/// order. Pure state: it never emits events, so it runs for every pane
+/// whether or not anyone is subscribed.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct PromptTracker {
+    facet: phux_core::process::PromptFacet,
+}
+
+impl PromptTracker {
+    /// Fold one mark into the state.
+    pub(super) const fn observe(&mut self, mark: &OscMark) {
+        use phux_core::process::PromptState;
+        match mark {
+            OscMark::PromptStart | OscMark::InputStart => {
+                self.facet.state = PromptState::AtPrompt;
+            }
+            OscMark::CommandStart => self.facet.state = PromptState::Running,
+            OscMark::CommandEnd { exit_code } => {
+                self.facet.state = PromptState::AtPrompt;
+                self.facet.last_exit_code = *exit_code;
+            }
+            OscMark::Progress(_) => {}
+        }
+    }
+
+    /// The current facet.
+    pub(super) const fn facet(&self) -> phux_core::process::PromptFacet {
+        self.facet
+    }
+}
+
 /// Parse a complete OSC payload; `None` for marks this actor does not consume.
 fn parse_osc(payload: &[u8]) -> Option<OscMark> {
     if let Some(progress) = payload.strip_prefix(b"9;") {
@@ -203,6 +246,8 @@ fn parse_osc(payload: &[u8]) -> Option<OscMark> {
         (kind, params) => (*kind, params.strip_prefix(b";")),
     };
     match kind {
+        b'A' => Some(OscMark::PromptStart),
+        b'B' => Some(OscMark::InputStart),
         b'C' => Some(OscMark::CommandStart),
         b'D' => {
             // `133;D` alone, or `133;D;<code>[;...]` — take the first
@@ -270,15 +315,80 @@ mod tests {
     }
 
     #[test]
-    fn c_mark_emits_command_start_but_a_and_b_do_not() {
+    fn a_full_cycle_yields_each_mark_once_and_only_c_starts_a_command() {
         // A full shell-integration cycle: prompt (A), input (B), execute
-        // (C), finish (D). Exactly one start and one end come out.
+        // (C), finish (D). Exactly one `CommandStart` and one `CommandEnd`
+        // come out; `A` and `B` are prompt marks, not command boundaries.
+        let marks =
+            scan(&[b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07"]);
         assert_eq!(
-            scan(&[b"\x1b]133;A\x07$ \x1b]133;B\x07ls\r\n\x1b]133;C\x07out\r\n\x1b]133;D;0\x07"]),
+            marks,
             vec![
+                OscMark::PromptStart,
+                OscMark::InputStart,
                 OscMark::CommandStart,
                 OscMark::CommandEnd { exit_code: Some(0) }
             ]
+        );
+        assert_eq!(
+            marks
+                .iter()
+                .filter(|m| matches!(m, OscMark::CommandStart))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_and_b_marks_tolerate_parameters() {
+        assert_eq!(
+            scan(&[b"\x1b]133;A;aid=7\x07\x1b]133;B;k=i\x1b\\"]),
+            vec![OscMark::PromptStart, OscMark::InputStart]
+        );
+    }
+
+    /// The prompt machine through a whole cycle, with every mark split
+    /// across chunk boundaries: unknown until the first mark, `A` → at
+    /// prompt, `C` → running, `D;3` → at prompt carrying 3, and a code-less
+    /// `D` clears the stale code rather than keeping it.
+    #[test]
+    fn prompt_state_tracks_a_c_d_and_survives_split_marks() {
+        use phux_core::process::PromptState;
+
+        let mut scanner = Osc133Scanner::new();
+        let mut tracker = PromptTracker::default();
+        let mut feed = |chunk: &[u8], tracker: &mut PromptTracker| {
+            for mark in scanner.feed(chunk) {
+                tracker.observe(&mark);
+            }
+        };
+        assert_eq!(tracker.facet().state, PromptState::Unknown);
+
+        feed(b"motd\x1b]13", &mut tracker);
+        assert_eq!(
+            tracker.facet().state,
+            PromptState::Unknown,
+            "mark incomplete"
+        );
+        feed(b"3;A\x07$ ", &mut tracker);
+        assert_eq!(tracker.facet().state, PromptState::AtPrompt);
+
+        feed(b"make\r\n\x1b]133", &mut tracker);
+        feed(b";C\x07building", &mut tracker);
+        assert_eq!(tracker.facet().state, PromptState::Running);
+
+        feed(b"\x1b]133;D;", &mut tracker);
+        assert_eq!(tracker.facet().state, PromptState::Running, "D incomplete");
+        feed(b"3\x07", &mut tracker);
+        assert_eq!(tracker.facet().state, PromptState::AtPrompt);
+        assert_eq!(tracker.facet().last_exit_code, Some(3));
+
+        feed(b"\x1b]133;C\x07\x1b]133;D\x07", &mut tracker);
+        assert_eq!(tracker.facet().state, PromptState::AtPrompt);
+        assert_eq!(
+            tracker.facet().last_exit_code,
+            None,
+            "a code-less D clears it"
         );
     }
 
