@@ -28,6 +28,23 @@ Rust/Zig is needed. Custom domains `phux.sh` (product) and `docs.phux.sh`
 worker runs first (`run_worker_first`) so a docs path on `phux.sh` 301s to
 the same path on `docs.phux.sh`, and `docs.phux.sh/` 301s to `/overview`.
 
+### Agent discovery surface
+
+The worker and `public/` together publish the machine-readable agent surface
+(maintained in-repo): markdown negotiation for every HTML page (`Accept:
+text/markdown`), a read-only MCP endpoint at `POST /mcp` (`host/mcp.ts`, card
+at `/.well-known/mcp/server-card.json`), RFC 9727 `/.well-known/api-catalog`,
+ARD `/.well-known/ai-catalog.json`, an agent-skills index rebuilt from
+`.agents/skills/` by `scripts/sync-agent-skills.ts` on every build, `llms.txt`,
+`auth.md`, Content Signals + `Agentmap` in `robots.txt`, and RFC 8288 `Link`
+headers on HTML responses.
+
+Two DNS facts live only in the Cloudflare zone (phux.sh) and are NOT managed
+by this repo: DNSSEC is enabled (registrar is Cloudflare, so the DS record is
+published automatically), and the DNS-AID records `_mcp._agents` (SVCB+HTTPS,
+pointing at the hosted MCP endpoint) and `_index._agents` (TXT, pointing at
+the ARD catalog). Recreate them if the zone is ever rebuilt.
+
 ### The curl installers at `/install` and `/install-cockpit`
 
 `https://phux.sh/install` and `https://phux.sh/install.sh` serve the repo's
