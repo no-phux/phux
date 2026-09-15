@@ -584,11 +584,14 @@ const fn command_terminal(command: &Command) -> Option<&WireResourceId> {
     }
 }
 
-/// `KILL_RESOURCES`: every named Terminal, all-or-nothing. Zero targets is a
-/// no-op, so it needs nothing.
+/// `KILL_RESOURCES` / `CLOSE_TAB_RESOURCES`: every named Terminal, all-or-nothing.
+/// Zero targets is a no-op, so it needs nothing.
 fn every_named(s: &ServerState, verbs: Verbs, request: Request<'_>) -> Vec<Need> {
-    let Request::Command(Command::KillResources { ids }) = request else {
-        return Vec::new();
+    let ids = match request {
+        Request::Command(Command::KillResources { ids } | Command::CloseTabResources { ids }) => {
+            ids
+        }
+        _ => return Vec::new(),
     };
     ids.iter()
         .map(|id| Need::new(verbs, terminal_subject(s, id)))

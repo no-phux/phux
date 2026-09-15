@@ -628,7 +628,8 @@ pub const Host = struct {
         return request_id;
     }
 
-    /// A tab's exact leaves, validated together and sent as one server command.
+    /// A tab's exact leaves, validated together and sent as one
+    /// CLOSE_TAB_RESOURCES so a keep-empty session survives its last tab.
     pub fn requestCloseResources(host: *Host, refs: []const provider.TerminalRef, expected_epoch: u64) !u32 {
         const request_id = try host.preflightOperation();
         if (expected_epoch != host.connectionEpoch()) return error.InvalidIdentity;
@@ -639,7 +640,7 @@ pub const Host = struct {
             if (!terminal.published or terminal.phase != .live) return error.InvalidState;
             raw.* = cId(&terminal.id);
         }
-        try resultError(c.phux_client_queue_close_resources(host.client, request_id, &ids, refs.len));
+        try resultError(c.phux_client_queue_close_tab_resources(host.client, request_id, &ids, refs.len));
         host.operation_ledger.accepted(request_id, host.client_generation, .close_resources, null);
         host.stageOutgoing() catch host.disconnect();
         return request_id;

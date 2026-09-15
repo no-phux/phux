@@ -1354,6 +1354,14 @@ PhuxClientResult phux_client_queue_close_resource(PhuxClient *client, uint32_t r
  * disconnect then produces UNKNOWN_OUTCOME, not success. The wire
  * batch has no instance precondition; never move it to another connection. */
 PhuxClientResult phux_client_queue_close_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
+
+/* Same validations, fence, and kind-6 completion as queue_close_resources, but
+ * the wire command is CLOSE_TAB_RESOURCES (L1 §5.2.2): a full-coverage batch
+ * leaves a keep-empty named session empty instead of reaping it. End Session
+ * and phux kill SESSION keep queue_close_resources / KILL_RESOURCES. */
+PhuxClientResult phux_client_queue_close_tab_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
+/** *out_supported: HELLO_OK advertised CLOSE_TAB_RESOURCES. */
+PhuxClientResult phux_client_close_tab_resources_supported(const PhuxClient *client, bool *out_supported);
 /** *out_supported: HELLO_OK advertised CONDITIONAL_KILL. */
 PhuxClientResult phux_client_conditional_kill_supported(const PhuxClient *client, bool *out_supported);
 

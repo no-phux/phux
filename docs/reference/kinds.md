@@ -60,6 +60,7 @@ Answered by every resource kind.
 | `KILL_RESOURCE` | command `0x03` | SIGNAL | yes | none | shipped |
 | `KILL_RESOURCE_IF` | command `0x1b` | SIGNAL | yes | `conditional_kill` | shipped |
 | `KILL_RESOURCES` | command `0x09` | SIGNAL | yes | none | shipped |
+| `CLOSE_TAB_RESOURCES` | command `0x1d` | SIGNAL | yes | `close_tab_resources` | shipped |
 | `SUBSCRIBE_RESOURCE_EVENTS` | command `0x0d` | OBSERVE | no | none | shipped |
 | `SUBSCRIBE_EVENTS` | frame `0x41` | OBSERVE | no | none | shipped |
 | `GET_STATE` | command `0x05` | INVENTORY | no | none | shipped |
@@ -209,6 +210,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `GET_SCREEN` | OBSERVE | `NamedTerminal` |
 | `ROUTE_INPUT`, `APPLY_INPUT` | INPUT | `NamedTerminal` |
 | `KILL_RESOURCES` | SIGNAL | `EveryNamedTerminal` |
+| `CLOSE_TAB_RESOURCES` | SIGNAL | `EveryNamedTerminal` |
 | `RESIZE_TERMINAL` (unallocated) | deny | `None` |
 | `GET_STATE { SERVER }` | INVENTORY | `InventoryMatches` |
 | `RUN_HOOK` (unallocated) | deny | `None` |

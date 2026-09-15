@@ -1018,6 +1018,10 @@ pub const SPAWN_IDEMPOTENCY: u32 = 0x0400_0000;
 /// `terminal_control { action: ROLE_CHANGED }`.
 pub const ATTACH_ROLES: u32 = 0x0800_0000;
 
+/// Wire bit advertising `CLOSE_TAB_RESOURCES` (`docs/spec/L1.md` §5.2.2):
+/// atomic close that does not release keep-empty on a fully covered session.
+pub const CLOSE_TAB_RESOURCES: u32 = 0x1000_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1161,6 +1165,12 @@ pub enum ServerFeature {
     /// the bit ignores the byte and grants an ordinary attach, so a client
     /// MUST see the bit before relying on either.
     AttachRoles = ATTACH_ROLES,
+    /// The server accepts `CLOSE_TAB_RESOURCES`: the same atomic local
+    /// close as `KILL_RESOURCES`, but a batch that names every pane of a
+    /// keep-empty session leaves that session empty instead of releasing
+    /// the mark (ADR-0105, ADR-0114). A client MUST see this bit before
+    /// sending the command: an older server cannot decode the tag.
+    CloseTabResources = CLOSE_TAB_RESOURCES,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1190,7 +1200,8 @@ impl ServerFeatureSet {
         | (ServerFeature::EventJournal as u32)
         | (ServerFeature::RetainOnExit as u32)
         | (ServerFeature::SpawnIdempotency as u32)
-        | (ServerFeature::AttachRoles as u32);
+        | (ServerFeature::AttachRoles as u32)
+        | (ServerFeature::CloseTabResources as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -2042,6 +2053,11 @@ mod tests {
             SPAWN_IDEMPOTENCY,
         ),
         (ServerFeature::AttachRoles, "ATTACH_ROLES", ATTACH_ROLES),
+        (
+            ServerFeature::CloseTabResources,
+            "CLOSE_TAB_RESOURCES",
+            CLOSE_TAB_RESOURCES,
+        ),
     ];
 
     /// Each feature is one distinct bit, the known mask is exactly their
@@ -2074,5 +2090,7 @@ mod tests {
         assert_eq!(EVENT_JOURNAL, 0x0100_0000);
         assert_eq!(RETAIN_ON_EXIT, 0x0200_0000);
         assert_eq!(SPAWN_IDEMPOTENCY, 0x0400_0000);
+        assert_eq!(ATTACH_ROLES, 0x0800_0000);
+        assert_eq!(CLOSE_TAB_RESOURCES, 0x1000_0000);
     }
 }

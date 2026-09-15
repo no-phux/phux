@@ -48,6 +48,7 @@ const fn command_variant(command: &Command) -> usize {
         Command::RouteInput { .. } => 5,
         Command::ApplyInput { .. } => 6,
         Command::KillResources { .. } => 7,
+        Command::CloseTabResources { .. } => 24,
         Command::DetachClients { .. } => 8,
         Command::GetTerminalState { .. } => 9,
         Command::SubscribeResourceEvents { .. } => 10,
@@ -67,7 +68,7 @@ const fn command_variant(command: &Command) -> usize {
     }
 }
 
-const COMMAND_VARIANTS: usize = 24;
+const COMMAND_VARIANTS: usize = 25;
 
 #[allow(
     clippy::too_many_lines,
@@ -238,6 +239,12 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 linger_secs: 0,
             },
             &C_OPEN_LISTENER,
+        ),
+        (
+            Command::CloseTabResources {
+                ids: vec![terminal()],
+            },
+            &C_CLOSE_TAB_RESOURCES,
         ),
     ]
 }

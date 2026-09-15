@@ -830,6 +830,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::KillResourceIf { .. } => "kill_resource_if",
         Command::OpenListener { .. } => "open_listener",
         Command::KillResources { .. } => "kill_terminals",
+        Command::CloseTabResources { .. } => "close_tab_resources",
         Command::DetachClients { .. } => "detach_clients",
         Command::GetState { .. } => "get_state",
         Command::GetScreen { .. } => "get_screen",
@@ -1050,6 +1051,7 @@ pub(crate) async fn handle_command(
             },
         },
         Command::KillResources { ids } => handle_kill_terminals(state, &ids),
+        Command::CloseTabResources { ids } => handle_close_tab_resources(state, &ids),
         Command::DetachClients { session } => handle_detach_clients(state, session.as_deref()),
         Command::KillResource { terminal_id } => handle_kill_terminal(state, &terminal_id),
         Command::KillResourceIf {
@@ -3716,7 +3718,7 @@ fn relay_satellite_frame(
 /// Idempotent: an `id` that is unknown or already-dead is skipped silently
 /// rather than failing the batch, so a caller racing a natural pane exit
 /// still succeeds. Satellite-routed ids (phux-v45.4) are partitioned by
-/// host and forwarded as per-satellite `KILL_RESOURCES` batches over the
+/// host and forwarded as per-satellite batches of the same command over the
 /// hub links, detached — the satellite applies the same idempotent
 /// semantics, and a down link degrades to the silent skip the contract
 /// already allows. The reply is `Ok` the moment the local actors are
@@ -3727,12 +3729,35 @@ pub(crate) fn handle_kill_terminals(
     state: &SharedState,
     ids: &[phux_protocol::ids::ResourceId],
 ) -> CommandResult {
+    close_named_resources(state, ids, false)
+}
+
+/// `CLOSE_TAB_RESOURCES`: the same atomic local close as
+/// [`handle_kill_terminals`], without releasing keep-empty on a fully
+/// covered session (L1 §5.2.2, ADR-0114).
+pub(crate) fn handle_close_tab_resources(
+    state: &SharedState,
+    ids: &[phux_protocol::ids::ResourceId],
+) -> CommandResult {
+    close_named_resources(state, ids, true)
+}
+
+fn close_named_resources(
+    state: &SharedState,
+    ids: &[phux_protocol::ids::ResourceId],
+    preserve_keep_empty: bool,
+) -> CommandResult {
+    let label = if preserve_keep_empty {
+        "CLOSE_TAB_RESOURCES"
+    } else {
+        "KILL_RESOURCES"
+    };
     // Satellite partition first (phux-v45.4): group `Satellite { host, id }`
     // entries per host and forward each group as one satellite-local
-    // KILL_RESOURCES over the hub link. Detached relay: the batch op is
-    // idempotent and tolerates skips, so the hub does not await or merge
-    // per-satellite results. Non-hub servers (no relay) keep the silent
-    // skip these ids always had here.
+    // batch of the same command over the hub link. Detached relay: the
+    // batch op is idempotent and tolerates skips, so the hub does not await
+    // or merge per-satellite results. Non-hub servers (no relay) keep the
+    // silent skip these ids always had here.
     let mut by_host: std::collections::BTreeMap<
         phux_protocol::ids::SatelliteHost,
         Vec<phux_protocol::ids::ResourceId>,
@@ -3751,14 +3776,19 @@ pub(crate) fn handle_kill_terminals(
                 debug!(
                     satellite = %host,
                     count = local_ids.len(),
-                    "KILL_RESOURCES: relaying satellite partition"
+                    "{label}: relaying satellite partition"
                 );
-                relay.command_detached(Command::KillResources { ids: local_ids });
+                let forwarded = if preserve_keep_empty {
+                    Command::CloseTabResources { ids: local_ids }
+                } else {
+                    Command::KillResources { ids: local_ids }
+                };
+                relay.command_detached(forwarded);
             }
             None => {
                 debug!(
                     satellite = %host,
-                    "KILL_RESOURCES: no route to satellite; skipping its ids"
+                    "{label}: no route to satellite; skipping its ids"
                 );
             }
         }
@@ -3777,21 +3807,21 @@ pub(crate) fn handle_kill_terminals(
             if let Some(core_id) = s.terminal_from_wire(wire_id) {
                 targets.push(core_id);
             } else {
-                debug!(?wire_id, "KILL_RESOURCES: unknown / dead id; skipping");
+                debug!(?wire_id, "{label}: unknown / dead id; skipping");
             }
         }
-        // ADR-0105: a batch naming every pane of a keep-empty session is a
-        // group teardown, so the session's mark is released and the ordinary
-        // cascade removes it as its panes are reaped. The release is
-        // broadcast in this same borrow, ahead of any RESOURCE_CLOSED, so an
-        // attached TUI stops treating the session as keep-empty before its
-        // last pane's close arrives.
-        for name in s.release_keep_empty_covered_by(&targets) {
-            let _ = s.metadata_broadcast(
-                &phux_protocol::wire::frame::Scope::Global,
-                ServerInterceptedKey::SessionKeepEmpty,
-                &phux_protocol::wire::frame::encode_session_keep_empty(&name, false),
-            );
+        // ADR-0105: a KILL_RESOURCES batch naming every pane of a
+        // keep-empty session is a group teardown, so the session's mark is
+        // released and the ordinary cascade removes it as its panes are
+        // reaped. CLOSE_TAB_RESOURCES skips that release (ADR-0114).
+        if !preserve_keep_empty {
+            for name in s.release_keep_empty_covered_by(&targets) {
+                let _ = s.metadata_broadcast(
+                    &phux_protocol::wire::frame::Scope::Global,
+                    ServerInterceptedKey::SessionKeepEmpty,
+                    &phux_protocol::wire::frame::encode_session_keep_empty(&name, false),
+                );
+            }
         }
         // The closure — targets plus everything bound to one of them — is
         // computed and closed in this one borrow (ADR-0104 §2). An id named
@@ -3800,7 +3830,7 @@ pub(crate) fn handle_kill_terminals(
     });
     debug!(
         requested = ids.len(),
-        killed, "KILL_RESOURCES: torn down group atomically"
+        killed, "{label}: torn down group atomically"
     );
     CommandResult::Ok
 }

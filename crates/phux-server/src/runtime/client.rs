@@ -495,6 +495,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::SpawnIdempotency,
         ServerFeature::RetainOnExit,
         ServerFeature::AttachRoles,
+        ServerFeature::CloseTabResources,
     ])
 }
 
