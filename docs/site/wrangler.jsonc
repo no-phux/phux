@@ -19,5 +19,16 @@
   "routes": [
     { "pattern": "phux.sh", "custom_domain": true },
     { "pattern": "docs.phux.sh", "custom_domain": true }
+  ],
+
+  // ── Durable Objects ─────────────────────────────────────────────────────────
+  // TelemetryDO: hourly aggregate counters (ua class, country, agent signals).
+  // No IPs, no raw URLs — aggregate-only so /api/telemetry can be public.
+  "durable_objects": {
+    "bindings": [{ "name": "TELEMETRY", "class_name": "TelemetryDO" }]
+  },
+
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["TelemetryDO"] }
   ]
 }

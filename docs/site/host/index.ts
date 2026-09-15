@@ -3,23 +3,36 @@
  *
  * Static assets stay in dist/; this worker only decides which host a path
  * belongs on. See host/routes.ts for the split. It also negotiates markdown
- * for agents: `Accept: text/markdown` gets a markdown rendering of the page
- * while browsers keep getting HTML. See host/markdown.ts.
+ * for agents (host/markdown.ts), hosts the read-only MCP endpoint
+ * (host/mcp.ts), records passive aggregate telemetry (host/telemetry.ts),
+ * and serves the public telemetry dashboard API at /api/telemetry.
  */
 import { routeRequest } from "./routes";
 import { handleMcpRequest } from "./mcp";
+import { estimateTokens, htmlToMarkdown, wantsMarkdown } from "./markdown";
 import {
-  estimateTokens,
-  htmlToMarkdown,
-  wantsMarkdown,
-} from "./markdown";
+  TelemetryDO,
+  classifyRequest,
+  recordEvents,
+  type TelemetryNamespace,
+  type WaitUntil,
+} from "./telemetry";
+
+export { TelemetryDO };
 
 export interface Env {
   ASSETS: { fetch(input: Request): Promise<Response> };
+  TELEMETRY?: TelemetryNamespace;
+  /** Shared secret for the demo worker's cross-worker telemetry ingest. */
+  TELEMETRY_INGEST_KEY?: string;
 }
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx?: WaitUntil,
+  ): Promise<Response> {
     const url = new URL(request.url);
     const routed = routeRequest(url.hostname, url);
     if (routed.kind === "redirect") {
@@ -27,12 +40,33 @@ export default {
     }
 
     // Hosted MCP endpoint (streamable HTTP, POST /mcp).
-    const mcp = await handleMcpRequest(request, env);
-    if (mcp) return mcp;
+    const mcp = await handleMcpRequest(request, env, (dim, key) =>
+      recordEvents(env.TELEMETRY, ctx, [{ dim, key }]),
+    );
+    if (mcp) {
+      recordEvents(
+        env.TELEMETRY,
+        ctx,
+        classifyRequest(request, mcp, [
+          { dim: "signal", key: "mcp" },
+        ]),
+      );
+      return mcp;
+    }
+
+    // Public telemetry aggregates (the /telemetry page reads this).
+    if (url.pathname === "/api/telemetry") {
+      return telemetryApi(request, env);
+    }
+    // Cross-worker ingest (the demo worker forwards its session events here).
+    if (url.pathname === "/api/telemetry/ingest") {
+      return telemetryIngest(request, env);
+    }
 
     const asset = await env.ASSETS.fetch(request);
     const contentType = asset.headers.get("content-type") ?? "";
     if (!asset.ok || !contentType.includes("text/html")) {
+      recordEvents(env.TELEMETRY, ctx, classifyRequest(request, asset));
       return asset;
     }
 
@@ -40,7 +74,9 @@ export default {
       (request.method === "GET" || request.method === "HEAD") &&
       wantsMarkdown(request.headers.get("accept"))
     ) {
-      return markdownResponse(asset);
+      const markdown = await markdownResponse(asset);
+      recordEvents(env.TELEMETRY, ctx, classifyRequest(request, markdown));
+      return markdown;
     }
 
     // HTML responses must declare Vary: Accept so the markdown variant cached
@@ -54,11 +90,13 @@ export default {
         '</llms.txt>; rel="alternate"; type="text/plain", ' +
         '</.well-known/ai-catalog.json>; rel="service-desc"',
     );
-    return new Response(asset.body, {
+    const html = new Response(asset.body, {
       status: asset.status,
       statusText: asset.statusText,
       headers,
     });
+    recordEvents(env.TELEMETRY, ctx, classifyRequest(request, html));
+    return html;
   },
 };
 
@@ -72,6 +110,48 @@ async function markdownResponse(asset: Response): Promise<Response> {
   if (cacheControl) headers.set("cache-control", cacheControl);
   appendVary(headers, "Accept");
   return new Response(markdown, { status: asset.status, headers });
+}
+
+async function telemetryApi(request: Request, env: Env): Promise<Response> {
+  if (!env.TELEMETRY) {
+    return Response.json({ rows: [], generatedAt: new Date().toISOString() });
+  }
+  const url = new URL(request.url);
+  const hours = Math.min(168, Math.max(1, Number.parseInt(url.searchParams.get("hours") ?? "48", 10) || 48));
+  const since = new Date(Date.now() - hours * 3_600_000).toISOString().slice(0, 13);
+  const upstream = await env.TELEMETRY.getByName("global").fetch(
+    new Request(new URL(`/?since=${since}`, url.origin).href),
+  );
+  const body = await upstream.text();
+  return new Response(body, {
+    status: upstream.status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+async function telemetryIngest(request: Request, env: Env): Promise<Response> {
+  if (request.method !== "POST") return new Response("post only", { status: 405 });
+  if (!env.TELEMETRY_INGEST_KEY || request.headers.get("x-telemetry-key") !== env.TELEMETRY_INGEST_KEY) {
+    return new Response("unauthorized", { status: 403 });
+  }
+  let body: { events?: unknown };
+  try {
+    body = await request.json();
+  } catch {
+    return new Response("bad json", { status: 400 });
+  }
+  const events = Array.isArray(body.events) ? body.events : [];
+  // Reuse the DO's own ingestion path by forwarding the raw batch.
+  const upstream = await env.TELEMETRY!.getByName("global").fetch(
+    new Request("https://telemetry.internal/ingest", {
+      method: "POST",
+      body: JSON.stringify({ events }),
+    }),
+  );
+  return new Response(null, { status: upstream.status });
 }
 
 function appendVary(headers: Headers, value: string): void {

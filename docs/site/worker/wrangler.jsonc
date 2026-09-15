@@ -100,6 +100,10 @@
     "GLOBAL_CONCURRENCY_CAP": "100", // live sessions allowed at once, globally
     "RATE_LIMIT_PER_MIN": "10",      // new sessions per IP per 60s window
     "SESSION_TTL_MS": "30000",       // session-token validity after minting
-    "ALLOWED_ORIGINS": "https://phux.sh"
+    "ALLOWED_ORIGINS": "https://phux.sh",
+    // Where demo session telemetry is forwarded (site worker ingest route).
+    // TELEMETRY_INGEST_KEY is a SECRET (wrangler secret put) shared with the
+    // site worker's TELEMETRY_INGEST_KEY; without it, no telemetry is sent.
+    "TELEMETRY_INGEST_URL": "https://phux.sh/api/telemetry/ingest"
   }
 }

@@ -158,8 +158,12 @@ async function loadIndex(env: McpEnv): Promise<{ pages: SearchPage[]; release: R
   if (!asset.ok) {
     return { pages: [], release: placeholderRelease() };
   }
-  indexCache = await asset.json();
-  return indexCache;
+  const parsed = (await asset.json()) as {
+    pages: SearchPage[];
+    release: ReleaseInfo;
+  };
+  indexCache = parsed;
+  return parsed;
 }
 
 function placeholderRelease(): ReleaseInfo {
@@ -198,6 +202,7 @@ function scorePage(page: SearchPage, terms: string[]): number {
 export async function handleMcpRequest(
   request: Request,
   env: McpEnv,
+  observe?: (dim: string, key: string) => void,
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname !== "/mcp") return null;
@@ -224,6 +229,7 @@ export async function handleMcpRequest(
 
   switch (method) {
     case "initialize":
+      observe?.("signal", "mcp:initialize");
       return jsonRpcResult(id, {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: { listChanged: false } },
@@ -241,6 +247,7 @@ export async function handleMcpRequest(
       });
     case "tools/call": {
       const name = String(params.name ?? "");
+      observe?.("signal", `mcp:tool:${name.slice(0, 40)}`);
       const tool = TOOLS.find((candidate) => candidate.name === name);
       if (!tool) {
         return jsonRpcResult(id, {

@@ -45,6 +45,22 @@ published automatically), and the DNS-AID records `_mcp._agents` (SVCB+HTTPS,
 pointing at the hosted MCP endpoint) and `_index._agents` (TXT, pointing at
 the ARD catalog). Recreate them if the zone is ever rebuilt.
 
+### Telemetry (`/telemetry`)
+
+`host/telemetry.ts` records passive aggregate counters (hourly buckets keyed
+by user-agent class, country, host, agent signal, status, demo session) into
+a `TelemetryDO` Durable Object. No IPs, no raw user agents, no cookies —
+edge-only, and it catches AI crawlers that JavaScript analytics is blind to.
+The public dashboard is `/telemetry`; its JSON API is `/api/telemetry`.
+Static assets and the dashboard's own polling are excluded.
+
+The demo worker has no Durable Object of its own for this: it forwards
+session events to `POST /api/telemetry/ingest` on the site worker
+(`TELEMETRY_INGEST_URL` var). Both workers share the `TELEMETRY_INGEST_KEY`
+secret (`wrangler secret put TELEMETRY_INGEST_KEY` in `docs/site` and
+`docs/site/worker`); without it on either side, telemetry silently stops —
+the demo door is never affected.
+
 ### The curl installers at `/install` and `/install-cockpit`
 
 `https://phux.sh/install` and `https://phux.sh/install.sh` serve the repo's
