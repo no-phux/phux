@@ -442,6 +442,7 @@ fn retained_pane_reports_exit_facet_in_get_state_and_stays_readable() {
                 terminal_id: pane.clone(),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             })
             .await;
         assert!(
@@ -453,6 +454,7 @@ fn retained_pane_reports_exit_facet_in_get_state_and_stays_readable() {
                 terminal_id: pane.clone(),
                 request_scrollback: Some(0),
                 cells: false,
+                format: 0,
             })
             .await;
         assert!(

@@ -307,6 +307,7 @@ fn spawn_retain_then_wait_exit_after_the_fact_reads_status() {
                 terminal_id: pane.clone(),
                 request_scrollback: Some(0),
                 cells: false,
+                format: 0,
             },
         )
         .await;
