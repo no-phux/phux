@@ -455,6 +455,7 @@ fi
 tmp_dir="$(mktemp -d)"
 publish_dir=""
 lock_dir=""
+lock_pending=""
 lock_acquired=0
 publish_started=0
 publish_complete=0
@@ -471,17 +472,34 @@ rollback_publish() {
   fi
 }
 
+release_install_lock() {
+  if [ -n "$lock_pending" ]; then
+    rm -rf "$lock_pending" 2>/dev/null || true
+    lock_pending=""
+  fi
+  [ -n "$lock_dir" ] && [ -d "$lock_dir" ] || return 0
+  lock_pid=""
+  if [ -f "${lock_dir}/pid" ]; then
+    lock_pid="$(cat "${lock_dir}/pid" 2>/dev/null || true)"
+  fi
+  # Drop a lock we created, including a signal between mkdir and lock_acquired=1.
+  # A lock with no pid, or another installer's pid, is left untouched.
+  if [ "$lock_acquired" -eq 1 ] || [ "$lock_pid" = "$$" ]; then
+    rm -f "${lock_dir}/pid"
+    rmdir "$lock_dir" 2>/dev/null || true
+  fi
+}
+
 cleanup() {
   rollback_publish
   if [ -n "$publish_dir" ]; then
     rm -rf "$publish_dir"
   fi
-  if [ "$lock_acquired" -eq 1 ]; then
-    rmdir "$lock_dir" 2>/dev/null || true
-  fi
+  release_install_lock
   rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -537,9 +555,18 @@ unzip -q -o "$zip_path" -d "$extract_dir"
 
 mkdir -p "$applications_dir"
 lock_dir="${applications_dir}/.phux-cockpit-install.lock"
-if ! mkdir "$lock_dir" 2>/dev/null; then
+# Rename a pid-tagged directory into place so ownership is recoverable if a
+# signal arrives before lock_acquired=1, without deleting a live foreign lock.
+lock_pending="${lock_dir}.$$"
+rm -rf "$lock_pending" 2>/dev/null || true
+mkdir "$lock_pending" || die "could not create install lock"
+printf '%s\n' "$$" > "${lock_pending}/pid"
+if ! mv "$lock_pending" "$lock_dir" 2>/dev/null; then
+  rm -rf "$lock_pending"
+  lock_pending=""
   die "another Cockpit install is already publishing to ${applications_dir}"
 fi
+lock_pending=""
 lock_acquired=1
 
 publish_dir="$(mktemp -d "${applications_dir}/.phux-cockpit-install.XXXXXX")"
