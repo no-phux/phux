@@ -294,6 +294,11 @@ pub(crate) mod codes {
     pub(crate) const IO: &str = "io";
     /// A client-side invariant this binary should never break.
     pub(crate) const INTERNAL_ERROR: &str = "internal_error";
+    /// `snapshot --format html|vt` got an `Ok` reply with no rendered
+    /// capture: either the server predates `--format` (its `GET_SCREEN`
+    /// decoder silently drops the trailing byte, D9) or a D9-or-later
+    /// server's render failed on its own engine. Exit 2.
+    pub(crate) const FORMAT_UNSUPPORTED: &str = "format_unsupported";
 }
 
 /// One CLI failure, carrying everything both output channels need: a stable

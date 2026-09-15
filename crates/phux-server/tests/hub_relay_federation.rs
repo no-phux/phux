@@ -365,6 +365,7 @@ async fn get_screen_via_hub(
                 terminal_id,
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
         },
     )

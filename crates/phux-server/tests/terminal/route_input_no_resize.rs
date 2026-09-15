@@ -120,6 +120,7 @@ async fn screen(
                 terminal_id: terminal_id.clone(),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
         },
     )

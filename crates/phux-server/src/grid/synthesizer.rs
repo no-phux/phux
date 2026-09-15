@@ -29,9 +29,11 @@
 
 use std::io::Write as _;
 
+use base64::Engine as _;
 use phux_core::screen::{
-    CellColor, CellInfo, CellStyle, CursorState, SCHEMA_VERSION, ScreenState, SemanticContent,
-    SoftWrap, TRUNCATED_ROW_WINDOW,
+    CellColor, CellInfo, CellStyle, CursorState, RENDERED_FORMAT_HTML, RENDERED_FORMAT_VT,
+    ROW_WINDOW_MAX, RenderedScreen, SCHEMA_VERSION, ScreenState, SemanticContent, SoftWrap,
+    TRUNCATED_ROW_WINDOW,
 };
 use phux_protocol::{
     kitty_replay,
@@ -41,10 +43,12 @@ use phux_protocol::{
 
 use libghostty_vt::{
     RenderState, Terminal as GhosttyTerminal,
+    fmt::{Format, Formatter, FormatterOptions},
     render::{
         CellIteration, CellIterator, CursorVisualStyle, Dirty, RowIteration, RowIterator, Snapshot,
     },
     screen::{CellSemanticContent, CellWide, GridRef},
+    selection::Selection,
     style::{RgbColor, Style, StyleColor},
     terminal::{Mode, Point, PointCoordinate},
 };
@@ -59,6 +63,16 @@ use super::reference::{ConsumerReference, ReferenceCursorMode};
 /// count (`phux-o1v`). A request of literally zero rows is meaningless, so
 /// this reuse is unambiguous.
 pub const SCROLLBACK_ALL: u32 = 0;
+
+/// Per-read byte budget for a `GET_SCREEN` rendered capture (D9, review
+/// item 2(b)): HTML/base64 inflate the source bytes, `GET_SCREEN` replies
+/// are uncompressed, and the render runs synchronously on the
+/// single-threaded runtime, so an unbounded capture is both a memory and
+/// a latency hazard. Measured via [`libghostty_vt::fmt::Formatter::format_len`]
+/// *before* allocating; exceeding it refuses the whole request with
+/// `RESOURCE_EXHAUSTED` rather than silently truncating a capture the
+/// caller would not know was cut.
+const RENDER_BUDGET_BYTES: usize = 8 * 1024 * 1024;
 
 /// One history read: the rows of the requested window, their soft-wrap
 /// bits, and whether older retained rows fell outside it (ADR-0077 §§2-3).
@@ -102,6 +116,21 @@ pub enum SynthesisError {
     /// Host allocation failed while reserving bounded synthesis storage.
     #[error("snapshot allocation failed")]
     OutOfMemory,
+    /// A requested `GET_SCREEN` rendered capture (`format != 0`) would
+    /// exceed the server's per-read byte budget, measured via the
+    /// engine Formatter's own `format_len` *before* any allocation (D9,
+    /// review item 2(b)). Distinguished from every other variant here:
+    /// callers must surface this as a typed command refusal
+    /// (`RESOURCE_EXHAUSTED`), not fall back to an empty/best-effort
+    /// reply the way an engine failure does.
+    #[error("rendered capture would be {required} bytes, over the {budget}-byte budget")]
+    RenderBudgetExceeded {
+        /// The Formatter's own measured byte count for the requested
+        /// selection/format.
+        required: usize,
+        /// The server's per-read budget the request exceeded.
+        budget: usize,
+    },
 }
 
 struct BoundedSnapshotBytes {
@@ -428,7 +457,159 @@ impl<'alloc> SnapshotSynthesizer<'alloc> {
             truncated: history.truncated,
             truncated_reason: history.truncated.then(|| TRUNCATED_ROW_WINDOW.to_owned()),
             title,
+            // Populated by the caller via `Self::render_screen` when the
+            // request's `format` byte asks for it (D9); this projection
+            // never renders on its own.
+            rendered: None,
+            rendered_error: None,
         })
+    }
+
+    /// Render the pane through libghostty-vt's own Formatter for
+    /// `GET_SCREEN`'s additive `rendered` field (D9, fallback rung three:
+    /// below typed commands and semantic streams, above synthetic input —
+    /// `docs/consumers/agents.md`). Never reimplemented: CONTRIBUTING
+    /// forbids a homegrown extraction path, so this calls the engine's
+    /// Formatter + Selection APIs only.
+    ///
+    /// `format` is `GET_SCREEN`'s wire byte, decomposed by
+    /// `phux_protocol::wire::frame::{GET_SCREEN_FORMAT_SELECTOR_MASK,
+    /// GET_SCREEN_FORMAT_UNWRAP}`: the low bits select the rendering (`0`
+    /// requests none, `Ok(None)`;
+    /// `1` HTML with inline styles; `2` VT escape sequences — the caller,
+    /// `handle_get_screen`, has already refused any other selector with
+    /// `INVALID_COMMAND` before this runs) and the high bit asks the
+    /// Formatter to join soft-wrapped rows (`--unwrap`).
+    ///
+    /// A [`Selection`] is always built explicitly — the Formatter emits
+    /// the *whole* screen, scrollback included, when no selection is
+    /// given, which would silently ignore `scrollback` and blow the
+    /// bounded budget this read promises. `scrollback` follows
+    /// [`Self::screen_state_with_scrollback`]'s convention, clamped to
+    /// [`ROW_WINDOW_MAX`] rows regardless of what was asked.
+    ///
+    /// The Formatter's own [`Formatter::format_len`] measures the reply
+    /// before any allocation; a capture over the per-read byte budget
+    /// (`RENDER_BUDGET_BYTES`) is refused with
+    /// [`SynthesisError::RenderBudgetExceeded`] rather than silently
+    /// truncated.
+    #[allow(
+        clippy::unused_self,
+        reason = "kept as a method on SnapshotSynthesizer for API symmetry \
+                  with screen_state_with_scrollback, matching its own \
+                  intentionally-stateless rationale"
+    )]
+    pub fn render_screen(
+        &self,
+        terminal: &GhosttyTerminal<'alloc, '_>,
+        scrollback: Option<u32>,
+        format: u8,
+    ) -> Result<Option<RenderedScreen>, SynthesisError> {
+        Self::render_screen_with_budget(terminal, scrollback, format, RENDER_BUDGET_BYTES)
+    }
+
+    /// [`Self::render_screen`]'s body, parameterized on the byte budget so
+    /// tests can trigger [`SynthesisError::RenderBudgetExceeded`]
+    /// deterministically with trivial content instead of constructing a
+    /// multi-megabyte capture (review item 5). The public method always
+    /// passes `RENDER_BUDGET_BYTES`.
+    fn render_screen_with_budget(
+        terminal: &GhosttyTerminal<'alloc, '_>,
+        scrollback: Option<u32>,
+        format: u8,
+        budget: usize,
+    ) -> Result<Option<RenderedScreen>, SynthesisError> {
+        let selector = format & phux_protocol::wire::frame::GET_SCREEN_FORMAT_SELECTOR_MASK;
+        let unwrap = format & phux_protocol::wire::frame::GET_SCREEN_FORMAT_UNWRAP != 0;
+        let target = match selector {
+            1 => Format::Html,
+            2 => Format::Vt,
+            _ => return Ok(None),
+        };
+        let selection = Self::render_selection(terminal, scrollback)?;
+        let mut formatter = Formatter::new(
+            terminal,
+            FormatterOptions::new()
+                .with_format(target)
+                .with_trim(true)
+                .with_unwrap(unwrap)
+                .with_selection(&selection),
+        )?;
+        let required = formatter.format_len()?;
+        if required > budget {
+            return Err(SynthesisError::RenderBudgetExceeded { required, budget });
+        }
+        let bytes = formatter.format_alloc(None)?;
+        let (tag, data) = if selector == 1 {
+            (
+                RENDERED_FORMAT_HTML,
+                String::from_utf8_lossy(&bytes).into_owned(),
+            )
+        } else {
+            (
+                RENDERED_FORMAT_VT,
+                base64::engine::general_purpose::STANDARD.encode(&bytes),
+            )
+        };
+        Ok(Some(RenderedScreen {
+            format: tag.to_owned(),
+            data,
+        }))
+    }
+
+    /// The explicit selection [`Self::render_screen`] always passes: the
+    /// viewport's bottom-right corner as the end, and a start that reaches
+    /// into history exactly as far as `scrollback` asks (same convention as
+    /// [`Self::screen_state_with_scrollback`]). Falls back to the
+    /// viewport's top-left corner when no history is requested or none is
+    /// retained.
+    fn render_selection<'t>(
+        terminal: &'t GhosttyTerminal<'alloc, '_>,
+        scrollback: Option<u32>,
+    ) -> Result<Selection<'t>, SynthesisError> {
+        let cols = terminal.cols()?;
+        let rows = terminal.rows()?;
+        let end = terminal.grid_ref(Point::Viewport(PointCoordinate {
+            x: cols.saturating_sub(1),
+            y: u32::from(rows.saturating_sub(1)),
+        }))?;
+        let start = Self::render_selection_start(terminal, scrollback)?;
+        Ok(Selection::new(start, end, false))
+    }
+
+    /// The start endpoint for [`Self::render_selection`].
+    ///
+    /// Bounds the history window to [`ROW_WINDOW_MAX`] rows regardless of
+    /// what `scrollback` asks for (D9, review item 2(a)): `Some(0)` — "all
+    /// retained history" — would otherwise hand the Formatter the entire
+    /// scrollback ring (bounded elsewhere at up to 64 MiB of history
+    /// bytes), synchronously, on the single-threaded runtime. This is the
+    /// same cap [`phux_core::screen::row_window`] applies to the plain
+    /// `lines`/`scrollback` projection client-side; a caller that wants
+    /// more of a capture than that retries narrower is out of luck either
+    /// way, since neither path was ever meant to hand back unbounded text.
+    fn render_selection_start<'t>(
+        terminal: &'t GhosttyTerminal<'alloc, '_>,
+        scrollback: Option<u32>,
+    ) -> Result<GridRef<'t>, SynthesisError> {
+        let viewport_origin = Point::Viewport(PointCoordinate { x: 0, y: 0 });
+        let Some(want) = scrollback else {
+            return Ok(terminal.grid_ref(viewport_origin)?);
+        };
+        let total = terminal.scrollback_rows()?;
+        if total == 0 {
+            return Ok(terminal.grid_ref(viewport_origin)?);
+        }
+        let bounded_want = if want == SCROLLBACK_ALL {
+            ROW_WINDOW_MAX
+        } else {
+            want.min(ROW_WINDOW_MAX)
+        };
+        let start_row = history_window_start(total, bounded_want);
+        Ok(terminal.grid_ref(Point::History(PointCoordinate {
+            x: 0,
+            y: u32::try_from(start_row).unwrap_or(u32::MAX),
+        }))?)
     }
 
     /// Walk the live viewport into the plain-text + cursor + optional
@@ -3131,5 +3312,119 @@ mod tests {
                 String::from_utf8_lossy(&diff.bytes),
             );
         }
+    }
+
+    /// `render_screen`'s `Some(n)` history window is an exact boundary,
+    /// same as the plain projection's: the row `n` back from the viewport
+    /// is included, the row `n + 1` back is not (review item 5).
+    #[test]
+    fn render_screen_some_n_boundary_includes_exactly_n_history_rows() {
+        // 5 lines, 20x2 viewport -> 3 rows of scrollback (line1..line3),
+        // matching `screen_state_with_scrollback_bounds_to_recent_rows`.
+        let mut t = fresh(20, 2);
+        t.vt_write(b"line1\r\nline2\r\nline3\r\nline4\r\nline5");
+        assert_eq!(t.scrollback_rows().expect("scrollback_rows"), 3);
+
+        let synth = SnapshotSynthesizer::new().expect("synth");
+        let rendered = synth
+            .render_screen(&t, Some(2), 2) // format 2 = vt
+            .expect("render_screen")
+            .expect("format 2 must render");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&rendered.data)
+            .expect("valid base64");
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("line2") && text.contains("line3"),
+            "the most-recent 2 rows (n=2) must be included, got: {text}",
+        );
+        assert!(
+            !text.contains("line1"),
+            "the 3rd-from-end row (n+1) must be excluded, got: {text}",
+        );
+    }
+
+    /// `render_screen`'s history window never exceeds `ROW_WINDOW_MAX`
+    /// rows, even for `Some(0)` ("all retained history") against a
+    /// terminal retaining more than that (review item 2(a)).
+    #[test]
+    fn render_screen_clamps_all_retained_history_to_row_window_max() {
+        let mut t = GhosttyTerminal::new(10, 2).expect("Terminal::new");
+        let over = usize::try_from(ROW_WINDOW_MAX).unwrap_or(usize::MAX) + 5;
+        t.set_scrollback_max_lines(Some(over + 10))
+            .expect("set_scrollback_max_lines");
+        // The line cap alone is not the only retention limit: a separate
+        // byte budget defaults low enough to cap retention well under
+        // `over` rows on its own, which would make this test pass for the
+        // wrong reason (the byte cap, not `render_screen`'s own clamp).
+        t.set_scrollback_max_bytes(None)
+            .expect("set_scrollback_max_bytes");
+        let mut input = Vec::with_capacity(over * 4);
+        for i in 0..over {
+            input.extend_from_slice(format!("r{i}\r\n").as_bytes());
+        }
+        input.extend_from_slice(b"last");
+        t.vt_write(&input);
+        assert!(
+            t.scrollback_rows().expect("scrollback_rows")
+                > usize::try_from(ROW_WINDOW_MAX).unwrap_or(0),
+            "the terminal must actually retain more than ROW_WINDOW_MAX for this test to mean anything",
+        );
+
+        let synth = SnapshotSynthesizer::new().expect("synth");
+        // format 1 = html: cheaper to search as plain text than base64-vt.
+        let rendered = synth
+            .render_screen(&t, Some(SCROLLBACK_ALL), 1)
+            .expect("render_screen")
+            .expect("format 1 must render");
+        assert!(
+            rendered.data.contains(&format!("r{}", over - 1)),
+            "the most-recent retained row must still be present",
+        );
+        // Row names have no leading zeros (`format!("r{i}")`), so "r0" as
+        // a bare substring can only ever be the literal row `r0` — never
+        // a prefix of `r10`/`r100`/etc.
+        assert!(
+            !rendered.data.contains("r0"),
+            "the oldest retained row must have been clamped away by ROW_WINDOW_MAX \
+             (data omitted from this message; it is large by construction)",
+        );
+    }
+
+    /// A rendered capture whose measured byte count exceeds the budget is
+    /// refused with `RenderBudgetExceeded`, not silently truncated or
+    /// allocated anyway (review item 2(b)). Uses the budget-parameterized
+    /// test seam rather than constructing megabytes of content: a
+    /// two-character render trivially exceeds a one-byte budget.
+    #[test]
+    fn render_screen_over_budget_is_refused_not_truncated() {
+        let mut t = fresh(20, 2);
+        t.vt_write(b"hi");
+
+        let err = SnapshotSynthesizer::render_screen_with_budget(&t, None, 1, 1)
+            .expect_err("a one-byte budget must refuse any non-trivial render");
+        match err {
+            SynthesisError::RenderBudgetExceeded { required, budget } => {
+                assert_eq!(budget, 1);
+                assert!(required > budget, "got required={required}");
+            }
+            other => panic!("expected RenderBudgetExceeded, got {other:?}"),
+        }
+    }
+
+    /// The happy path for the same budget seam: a generous budget renders
+    /// normally, proving the refusal above is about the byte count, not a
+    /// broken formatter call.
+    #[test]
+    fn render_screen_under_budget_renders_normally() {
+        let mut t = fresh(20, 2);
+        t.vt_write(b"hi");
+
+        let rendered =
+            SnapshotSynthesizer::render_screen_with_budget(&t, None, 1, RENDER_BUDGET_BYTES)
+                .expect("render_screen_with_budget")
+                .expect("format 1 must render");
+        assert_eq!(rendered.format, RENDERED_FORMAT_HTML);
+        assert!(rendered.data.contains("hi"));
     }
 }

@@ -78,6 +78,34 @@ impl std::str::FromStr for EnvAssignment {
     }
 }
 
+/// `phux snapshot --format`: which libghostty-vt Formatter rendering to
+/// request from the server (D9, fallback rung three — below typed
+/// commands and semantic streams, above synthetic input,
+/// `docs/consumers/agents.md`). The server never reimplements extraction
+/// (CONTRIBUTING); this only names the two renderings it forwards to the
+/// engine's own Formatter. Mutually exclusive with `--cells`
+/// (`ScreenState::cells` is a different, sparse per-cell projection) and
+/// `--rendered` (the CLIENT's composited multi-pane view — this instead
+/// asks the SERVER to render one pane through its own engine).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum SnapshotFormat {
+    /// HTML with inline styles.
+    Html,
+    /// VT escape sequences (colors, styles, hyperlinks).
+    Vt,
+}
+
+impl SnapshotFormat {
+    /// `GET_SCREEN`'s wire byte for this format (D9).
+    #[must_use]
+    pub(crate) const fn wire_byte(self) -> u8 {
+        match self {
+            Self::Html => phux_client::snapshot::SCREEN_FORMAT_HTML,
+            Self::Vt => phux_client::snapshot::SCREEN_FORMAT_VT,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum RecFormat {
     /// asciinema cast — the archival, re-renderable artifact.
@@ -1263,6 +1291,9 @@ pub(crate) enum Command {
         /// then the viewport). Bare `--tail` returns 80; `--tail 0` returns
         /// all, capped at 10000. The viewport is a floor — a grid is never
         /// returned in part — and `truncated` reports any dropped rows.
+        /// With `--format`, this instead bounds how far back the rendered
+        /// capture reaches (same wire request as `--scrollback N`); the
+        /// server applies the same 10000-row cap regardless.
         // The literals are `phux_core::screen::ROW_WINDOW_DEFAULT` and
         // `ROW_WINDOW_MAX`; clap needs a `&'static str` here, so
         // `commands::snapshot`'s tests pin the two spellings together.
@@ -1271,7 +1302,9 @@ pub(crate) enum Command {
 
         /// Join soft-wrapped rows into logical lines (rows as written, not
         /// as painted). Cannot be combined with `--cells`: cell coordinates
-        /// are grid coordinates and do not survive the join.
+        /// are grid coordinates and do not survive the join. With
+        /// `--format`, this instead asks the SERVER's Formatter to join
+        /// soft-wrapped rows in the rendered capture.
         #[usage(long, conflicts("--cells"))]
         unwrap: bool,
 
@@ -1284,6 +1317,21 @@ pub(crate) enum Command {
         /// `--cols` / `--rows`.
         #[usage(long, conflicts("--cells", "--scrollback", "--tail", "--unwrap"))]
         rendered: bool,
+
+        /// Render through the SERVER's libghostty-vt Formatter instead of
+        /// the lines/cells JSON: `html` for inline-styled markup, `vt` for
+        /// re-playable VT escape sequences. Text output writes the capture
+        /// verbatim to stdout (HTML as UTF-8, VT as its raw decoded byte
+        /// stream); `--json` instead emits the whole `ScreenState`
+        /// document with the `rendered` field populated. Mutually
+        /// exclusive with `--cells` and `--rendered`.
+        #[usage(
+            long,
+            value_enum,
+            value_name = "FMT",
+            conflicts("--cells", "--rendered")
+        )]
+        format: Option<SnapshotFormat>,
 
         /// Composited viewport width for `--rendered` (no TTY to measure).
         #[usage(long, value_name = "COLS", default = "80", default_value_t = 80)]

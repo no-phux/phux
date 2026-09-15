@@ -95,6 +95,21 @@ pub enum AttachError {
     /// refused the request. The CLI surfaces this as actionable text.
     #[error("server refused attach: {0}")]
     Refused(String),
+
+    /// `GET_SCREEN` asked for a rendered capture (`format != 0`,
+    /// `phux snapshot --format html|vt`, D9) and the reply carried no
+    /// `rendered` field despite an `Ok` result. No feature bit gates
+    /// `format`, since bits are scarce: a pre-D9 peer's decoder stops
+    /// reading the `GET_SCREEN` body after `cells` and never even sees
+    /// the trailing `format` byte, so it silently answers as if
+    /// `format: 0` were asked. The same signature also covers a render
+    /// that failed on a D9-or-later server's own engine, which is kept
+    /// non-fatal there rather than failing the whole read — see
+    /// `phux_client::snapshot::get_screen_scrollback_format`, which
+    /// builds this variant's message from `ScreenState::rendered_error`
+    /// when the server reported one.
+    #[error("{0}")]
+    FormatUnsupported(String),
 }
 
 impl From<io::Error> for AttachError {

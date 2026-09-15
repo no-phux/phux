@@ -93,6 +93,7 @@ async fn issue_get_terminal_state(
                 terminal_id: terminal_id.clone(),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
         },
     )

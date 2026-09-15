@@ -110,6 +110,7 @@ async fn get_screen(stream: &mut UnixStream, request_id: u32, pane: &ResourceId)
         terminal_id: pane.clone(),
         request_scrollback: None,
         cells: false,
+        format: 0,
     };
     command(stream, request_id, screen).await
 }

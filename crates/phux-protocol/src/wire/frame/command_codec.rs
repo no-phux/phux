@@ -88,11 +88,13 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             terminal_id,
             request_scrollback,
             cells,
+            format,
         } => {
             enc.write_u8(COMMAND_TAG_GET_SCREEN);
             encode_terminal_id(terminal_id, enc);
             encode_optional_u32(*request_scrollback, enc);
             enc.write_u8(u8::from(*cells));
+            enc.write_u8(*format);
         }
         Command::RouteInput { terminal_id, event } => {
             enc.write_u8(COMMAND_TAG_ROUTE_INPUT);
@@ -545,10 +547,15 @@ fn decode_get_screen_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeErr
     } else {
         dec.read_u8()? != 0
     };
+    // `format` is a second trailing additive byte, following the same
+    // `at_body_end` guard as `cells` immediately above it: a pre-D9 body
+    // ends after `cells`, so an absent byte means `0` (no rendering).
+    let format = if dec.at_body_end() { 0 } else { dec.read_u8()? };
     Ok(Command::GetScreen {
         terminal_id,
         request_scrollback,
         cells,
+        format,
     })
 }
 

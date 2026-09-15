@@ -32,6 +32,10 @@ required-features = ["dhat-heap"]
 [dependencies]
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
+# `snapshot --format vt` decodes the server's base64 rendered capture to
+# raw bytes for stdout (D9); already in the dep graph, see the workspace
+# justification.
+base64.workspace = true
 # Defaults are controlled by this executable's feature forwarding below.
 # Other workspace consumers can retain the server's own defaults.
 phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }

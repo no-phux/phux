@@ -2060,6 +2060,7 @@ dependencies = [
 name = "phux"
 version = "0.38.0"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "dhat",
@@ -2314,6 +2315,7 @@ name = "phux-server"
 version = "0.38.0"
 dependencies = [
  "allocator-api2 0.4.0",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "console-subscriber",

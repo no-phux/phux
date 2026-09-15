@@ -147,6 +147,7 @@ async fn screen_text(stream: &mut UnixStream, request_id: u32, pane: &ResourceId
                 terminal_id: pane.clone(),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
         },
     )

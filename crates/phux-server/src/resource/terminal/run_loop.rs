@@ -6,11 +6,12 @@ use super::{
     ConsumerSyncState, DEFAULT_TICK_INTERVAL, EncodedInputRequest, FrameKind, MAX_EMIT_INSTANTS,
     MAX_INPUT_COALESCE, MAX_PTY_COALESCE, MAX_PTY_COALESCE_BYTES, NativeOrPty, Outbound,
     PaneOutput, PaneUpgradeHandle, PtyEvent, PwdRequest, RESIZE_RESYNC_DEBOUNCE, ResizeRequest,
-    ResyncAudience, ResyncReason, ResyncTarget, ScreenRequest, SetDefaultColorsRequest,
-    SnapshotBytes, SnapshotRequest, TerminalActor, TerminalInput, UpgradeHandleRequest, debug,
-    error, mpsc, recv_native_or_pty, tick, trace, warn,
+    ResyncAudience, ResyncReason, ResyncTarget, ScreenReply, ScreenRequest,
+    SetDefaultColorsRequest, SnapshotBytes, SnapshotRequest, TerminalActor, TerminalInput,
+    UpgradeHandleRequest, debug, error, mpsc, recv_native_or_pty, tick, trace, warn,
 };
 use crate::grid::SnapshotSynthesizer;
+use crate::grid::SynthesisError;
 use crate::grid::reference::ReferenceCursorMode;
 
 /// What the `run` loop must do after one PTY-ingress turn.
@@ -829,11 +830,21 @@ impl TerminalActor {
     /// screen of the request's shape when projection fails.
     fn reply_screen_state(&self, req: ScreenRequest) {
         let want_cells = req.cells;
-        let screen = self
-            .screen_state(req.pane, req.scrollback, req.cells)
-            .unwrap_or_else(|err| {
+        let reply = match self.screen_state(req.pane, req.scrollback, req.cells, req.format) {
+            Ok(screen) => ScreenReply::Projection(Box::new(screen)),
+            // A budget refusal is not a projection failure: the actor
+            // never built a reply at all, and the caller must see a
+            // typed refusal, not a silently empty screen (D9, review
+            // item 2(b)).
+            Err(SynthesisError::RenderBudgetExceeded { required, budget }) => {
+                ScreenReply::TooLarge {
+                    required_bytes: required,
+                    budget_bytes: budget,
+                }
+            }
+            Err(err) => {
                 warn!(error = %err, "screen projection failed; replying with empty");
-                phux_core::screen::ScreenState {
+                ScreenReply::Projection(Box::new(phux_core::screen::ScreenState {
                     schema_version: phux_core::screen::SCHEMA_VERSION,
                     pane: req.pane,
                     cols: self.cols,
@@ -846,9 +857,10 @@ impl TerminalActor {
                     // `None`, when the caller asked for cells.
                     cells: want_cells.then(Vec::new),
                     ..phux_core::screen::ScreenState::default()
-                }
-            });
-        let _ = req.reply.send(screen);
+                }))
+            }
+        };
+        let _ = req.reply.send(reply);
     }
 
     /// ADR-0032: hand the upgrade producer this pane's PTY

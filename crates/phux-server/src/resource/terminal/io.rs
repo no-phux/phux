@@ -45,18 +45,63 @@ impl TerminalActor {
     /// Project the current `Terminal` grid into a structured
     /// [`phux_core::screen::ScreenState`], stamping `pane` as the
     /// wire-local id. Side-effect-free — the read path for `GET_SCREEN`.
+    ///
+    /// `format` additionally renders the same capture through
+    /// libghostty-vt's own Formatter into `ScreenState.rendered` (D9,
+    /// fallback rung three): `0` (low 7 bits) none, `1` HTML, `2` VT.
+    /// Bounded and side-effect-free like the rest of this read — one
+    /// Formatter call over an explicit
+    /// [`libghostty_vt::selection::Selection`], never a second extraction
+    /// implementation (CONTRIBUTING).
+    ///
+    /// A render failure is non-fatal (review item 3): the plain
+    /// projection still ships, `rendered` stays `None`, and
+    /// `rendered_error` names why, logged at `warn`. The one exception is
+    /// [`SynthesisError::RenderBudgetExceeded`], which this propagates as
+    /// a hard `Err` — the caller (`reply_screen_state`) turns that into a
+    /// typed `RESOURCE_EXHAUSTED` refusal instead of any reply, because a
+    /// caller who asked for a rendering and would blow the byte budget
+    /// needs to know to retry narrower, not receive nothing silently.
+    ///
+    /// When a rendering was requested, the reply omits the plain
+    /// `lines`/`scrollback`/`soft_wrap`/`truncated` text (review item
+    /// 2(c)): the capture already carries the same content, and shipping
+    /// both would double an already-inflated (HTML/base64) reply for no
+    /// reason.
     pub(super) fn screen_state(
         &self,
         pane: u32,
         scrollback: Option<u32>,
         cells: bool,
+        format: u8,
     ) -> Result<phux_core::screen::ScreenState, crate::grid::SynthesisError> {
         let terminal = self.terminal.borrow();
         // Shared borrow: the read goes through a fresh per-call
         // `RenderState` (see the synthesizer body), so it never contends
         // with the tick path's `&mut` use of the pooled state.
         let synth = self.synth.borrow();
-        synth.screen_state_with_scrollback(&terminal, pane, scrollback, cells)
+        let mut screen = synth.screen_state_with_scrollback(&terminal, pane, scrollback, cells)?;
+        match synth.render_screen(&terminal, scrollback, format) {
+            Ok(rendered) => screen.rendered = rendered,
+            Err(err @ crate::grid::SynthesisError::RenderBudgetExceeded { .. }) => return Err(err),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    format,
+                    "GET_SCREEN rendered-capture failed; keeping the plain projection"
+                );
+                screen.rendered_error = Some(err.to_string());
+            }
+        }
+        let selector = format & phux_protocol::wire::frame::GET_SCREEN_FORMAT_SELECTOR_MASK;
+        if selector != 0 {
+            screen.lines = Vec::new();
+            screen.scrollback = Vec::new();
+            screen.soft_wrap = None;
+            screen.truncated = false;
+            screen.truncated_reason = None;
+        }
+        Ok(screen)
     }
 
     /// Publish the complete terminal-derived encoder state after a terminal

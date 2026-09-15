@@ -85,7 +85,10 @@ pub enum RunOutcome {
         submission: Submission,
         /// The last completed screen read, or an empty default screen if
         /// the deadline expired during submission or the first read.
-        screen: ScreenState,
+        /// Boxed: `ScreenState` grew past `RunResult`'s size once the D9
+        /// `rendered` field landed, and this variant is the timeout path —
+        /// no reason to pay for it on the common `Completed` one.
+        screen: Box<ScreenState>,
     },
 }
 
@@ -352,7 +355,7 @@ fn timed_out(
         command: cmd.to_owned(),
         duration_ms: duration_ms(deadline.started_at()),
         submission,
-        screen,
+        screen: Box::new(screen),
     }
 }
 
@@ -487,7 +490,7 @@ mod deadline_tests {
         assert_eq!(submission, expected);
         assert!(elapsed >= min, "gave up early after {elapsed:?}");
         assert!(elapsed < min + TOLERANCE, "overran: {elapsed:?}");
-        screen
+        *screen
     }
 
     #[tokio::test]

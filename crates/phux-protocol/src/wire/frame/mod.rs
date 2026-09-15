@@ -912,9 +912,10 @@ mod status;
 mod whoami;
 
 pub use command::{
-    AgentEvent, Command, CommandResult, CommandValue, ControlAction, FileUploadAck, InputMode,
-    KillConditions, KillPrecondition, ListenerTransport, ReportedAgentState, ResourceEventType,
-    ResourceLifecycle, StateScope, TerminalSignal,
+    AgentEvent, Command, CommandResult, CommandValue, ControlAction, FileUploadAck,
+    GET_SCREEN_FORMAT_SELECTOR_MASK, GET_SCREEN_FORMAT_UNWRAP, InputMode, KillConditions,
+    KillPrecondition, ListenerTransport, ReportedAgentState, ResourceEventType, ResourceLifecycle,
+    StateScope, TerminalSignal,
 };
 pub use directory::{
     DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,

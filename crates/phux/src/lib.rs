@@ -1241,6 +1241,7 @@ fn dispatch(
             tail,
             unwrap,
             rendered,
+            format,
             cols,
             rows,
         }) => commands::snapshot::run_snapshot(
@@ -1251,6 +1252,7 @@ fn dispatch(
                 cells,
                 tail,
                 unwrap,
+                format,
             },
             &commands::snapshot::RenderedOpts {
                 rendered,
