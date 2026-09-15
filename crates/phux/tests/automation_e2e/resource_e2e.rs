@@ -413,3 +413,143 @@ fn resource_show_json_has_lifecycle_and_process() {
     assert_eq!(screen["available"], true);
     assert_eq!(screen["mutating"], false);
 }
+
+/// PHA-406 closeout: the whole resource-lifecycle journey through the CLI,
+/// one agent step at a time, the way it composes for a real caller: a keyed
+/// spawn with retain (a repeat under the same key is the replay, not a
+/// second task) -> `resource wait` from a second, later process observes
+/// the exit and its status race-free -> `resource show` reads the same
+/// exit facet off the retained pane -> `watch --after` resumes from a
+/// cursor anchored to the pane's own `pane_spawned` event and replays the
+/// close nobody watched live -> `kill` purges the retained pane, after
+/// which `resource show` answers a plain miss instead of a stale exit
+/// facet.
+#[test]
+#[ignore = "spawns a real phux server; run via `just e2e`."]
+fn scripted_task_lifecycle_pha406() {
+    const KEY: &str = "3c1a9e7f5d2b48c6a1f0e9d8c7b6a5f4";
+    let server = Server::start();
+
+    let spawn_args = [
+        "spawn",
+        "--json",
+        "--retain=600",
+        "--idempotency-key",
+        KEY,
+        "--",
+        "/bin/sh",
+        "-c",
+        "exit 7",
+    ];
+    let (first, out) = server.json(&spawn_args);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(first["replayed"], false);
+    let pane = format!("@{}", first["terminal_id"]);
+
+    // A second spawn under the same key addresses the same task instead of
+    // starting a duplicate.
+    let (second, out) = server.json(&spawn_args);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(second["terminal_id"], first["terminal_id"], "one pane");
+    assert_eq!(second["replayed"], true, "the retry is the replay path");
+    assert_eq!(
+        server.terminal_count(),
+        2,
+        "the seed pane plus the one spawned pane, not two"
+    );
+
+    // A second, later process — a fresh `phux resource wait` subprocess —
+    // sees the exit and its status: subscribe-then-read is race-free
+    // whether the exit already happened or is still coming. Its cursor's
+    // `server_id` prefix names this server incarnation's journal; the `seq`
+    // half is not used below (a fresh replay from 0 is taken instead, so
+    // the pre-exit cursor is anchored to a real event rather than a race
+    // against wall-clock time).
+    let (wait, out) = server.json(&["resource", "wait", "--json", "--timeout", "20", &pane]);
+    assert_eq!(out.status.code(), Some(0), "{wait}");
+    assert_eq!(wait["outcome"], "exited");
+    assert_eq!(wait["exit"]["status"], 7);
+    assert_eq!(wait["retained"], true);
+    let server_id = wait["cursor"]
+        .as_str()
+        .and_then(|cursor| cursor.split_once(':'))
+        .map(|(server_id, _seq)| server_id.to_owned())
+        .expect("resource wait prints a server_id:seq cursor");
+
+    // `resource show` reads the same exit facet off the retained pane.
+    let (show, out) = server.json(&["resource", "show", "--json", &pane]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(show["lifecycle"], "exited");
+    assert_eq!(show["exit"]["status"], 7);
+
+    // A full replay of this pane's journal (`--after server_id:0`), gated
+    // on its own `pane_spawned`, hands back a cursor anchored to that one
+    // event — proven (by journal order, not by timing) to predate the
+    // exit, since the server journals the spawn before it can journal the
+    // exit of the process it spawned.
+    let after_zero = format!("{server_id}:0");
+    let spawn_replay = watch_after_until(&server, &after_zero, "pane_spawned", &pane);
+    assert_eq!(spawn_replay.status.code(), Some(0), "{spawn_replay:?}");
+    let spawn_cursor = last_stderr_json(&spawn_replay)["cursor"]
+        .as_str()
+        .expect("a journaling server issues a cursor")
+        .to_owned();
+    let spawn_seq: u64 = spawn_cursor
+        .rsplit_once(':')
+        .and_then(|(_server_id, seq)| seq.parse().ok())
+        .expect("cursor has a numeric seq");
+
+    // `watch --after` resumes from that spawn-anchored cursor and replays
+    // the close nobody was watching for live.
+    let replay = watch_after_until(&server, &spawn_cursor, "terminal_control", &pane);
+    assert_eq!(replay.status.code(), Some(0), "{replay:?}");
+    let control = String::from_utf8_lossy(&replay.stdout)
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).expect("NDJSON line"))
+        .find(|line| line["event"] == "terminal_control")
+        .expect("the missed exit is replayed");
+    assert_eq!(control["action"], "exited");
+    assert_eq!(control["exit_status"], 7);
+    let control_seq = control["seq"]
+        .as_u64()
+        .expect("a journaling server stamps seq on terminal_control");
+    assert!(
+        control_seq > spawn_seq,
+        "the replayed exit (seq {control_seq}) should follow the spawn cursor (seq {spawn_seq})"
+    );
+
+    // Kill purges the retained pane; afterwards `resource show` answers a
+    // plain miss, not a stale exit facet.
+    assert!(server.phux(&["kill", &pane]).status.success());
+    let deadline = Instant::now() + SOCKET_DEADLINE;
+    loop {
+        let show = server.phux(&["resource", "show", "--json", &pane]);
+        if show.status.code() == Some(1) {
+            assert!(show.stdout.is_empty(), "a miss prints no document");
+            assert_eq!(last_stderr_json(&show)["error"]["code"], "no_such_target");
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the purge never landed: {}",
+            String::from_utf8_lossy(&show.stdout)
+        );
+        std::thread::sleep(POLL);
+    }
+}
+
+/// `phux watch --json --after CURSOR --until EVENT --timeout 10 PANE`: a
+/// bounded cursor replay that stops at the first `EVENT`.
+fn watch_after_until(server: &Server, cursor: &str, until: &str, pane: &str) -> Output {
+    server.phux(&[
+        "watch",
+        "--json",
+        "--after",
+        cursor,
+        "--until",
+        until,
+        "--timeout",
+        "10",
+        pane,
+    ])
+}
