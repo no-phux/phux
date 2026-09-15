@@ -21,6 +21,7 @@ keeps every gate.
 
 ### Bug Fixes
 
+* **install:** trap HUP and recover lock-acquisition races ([#692](https://github.com/no-phux/phux/issues/692)) ([9d96c3e](https://github.com/no-phux/phux/commit/9d96c3eefb6b65696053e87349bcad2e3645e447))
 * **site:** align hosted native smoke and wasm with protocol 0.9 ([#694](https://github.com/no-phux/phux/issues/694)) ([38cba9c](https://github.com/no-phux/phux/commit/38cba9c273a52cdb24fcf969ab8605cbb2a5b69a))
 * **site:** pin hosted native phux to workspace 0.38.0 ([#700](https://github.com/no-phux/phux/issues/700)) ([740c376](https://github.com/no-phux/phux/commit/740c3763b45eef2e1caeb854ef114d91780066b6))
 
