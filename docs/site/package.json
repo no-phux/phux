@@ -34,6 +34,7 @@
     "fumadocs-core": "^16.15.8",
     "fumadocs-ui": "^16.15.8",
     "jose": "^6.2.12",
+    "node-html-markdown": "^2.0.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },
