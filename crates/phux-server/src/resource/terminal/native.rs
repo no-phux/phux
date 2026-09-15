@@ -6,10 +6,10 @@
 use super::{
     Bytes, CanonicalTerminal, FrameKind, HashSet, MAX_NATIVE_HISTORY_CLIENTS,
     MAX_NATIVE_REPLAY_BYTES, NATIVE_CAPTURE_LIFETIME, NATIVE_HISTORY_TTL, NativeBootstrapReply,
-    NativeBootstrapRequest, NativeCursorOwner, NativeHistoryReply, NativeHistoryRequest,
-    NativePublicationGeneration, NativePublicationReply, NativePublicationRequest, PaneOutput,
-    PendingNativeBootstrap, PendingNativeHistory, VecDeque, native_step_bytes,
-    reserve_native_bytes, warn,
+    NativeBootstrapRequest, NativeCursorKey, NativeCursorOwner, NativeHistoryReply,
+    NativeHistoryRequest, NativePublicationGeneration, NativePublicationReply,
+    NativePublicationRequest, PaneOutput, PendingNativeBootstrap, PendingNativeHistory, VecDeque,
+    native_step_bytes, reserve_native_bytes, warn,
 };
 use super::{NativeActorRequest, TerminalActor};
 
@@ -55,8 +55,10 @@ impl TerminalActor {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn handle_native_bootstrap(&mut self, req: NativeBootstrapRequest) {
         let owner = req.owner;
+        let stream_id = req.stream_id;
         self.invalidate_native_owner(
             owner,
+            stream_id,
             phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
         );
         if let Some(pending) = self.pending_native_bootstrap.as_mut() {
@@ -68,12 +70,14 @@ impl TerminalActor {
                 && pending.max_chunks == req.max_frames.saturating_sub(2)
                 && pending.waiters.len() < MAX_NATIVE_HISTORY_CLIENTS
             {
-                pending.waiters.retain(|waiter| waiter.owner != owner);
+                pending
+                    .waiters
+                    .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, Some(stream_id)));
                 pending.waiters.push(req);
                 return;
             }
             self.native_bootstrap_backlog
-                .retain(|waiter| waiter.owner != owner);
+                .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, Some(stream_id)));
             self.native_bootstrap_backlog.push_back(req);
             return;
         }
@@ -507,7 +511,7 @@ impl TerminalActor {
         prepared: Vec<(NativeBootstrapRequest, NativeBootstrapReply)>,
         cursor: crate::native_state::OpaqueHistoryCursor,
         installed_new: bool,
-    ) -> HashSet<u64> {
+    ) -> HashSet<NativeCursorKey> {
         let mut waiting = HashSet::new();
         let mut installed = 0_usize;
         for (waiter, reply_value) in prepared {
@@ -518,8 +522,9 @@ impl TerminalActor {
                 continue;
             }
             installed += 1;
+            let key = NativeCursorKey::new(waiter.owner, waiter.stream_id);
             self.native_cursor_owners.insert(
-                waiter.owner,
+                key,
                 NativeCursorOwner {
                     cursor,
                     record_index: 0,
@@ -530,10 +535,10 @@ impl TerminalActor {
                     bootstrap_id: waiter.bootstrap_id,
                 },
             );
-            waiting.insert(waiter.owner);
+            waiting.insert(key);
             if waiter.reply.send(Ok(reply_value)).is_err() {
-                waiting.remove(&waiter.owner);
-                self.release_native_owner(waiter.owner);
+                waiting.remove(&key);
+                self.release_native_binding(key);
             }
         }
         waiting
@@ -566,7 +571,7 @@ impl TerminalActor {
         base_seq: u64,
         replay: VecDeque<(u64, Bytes)>,
         replay_bytes: usize,
-        waiting: HashSet<u64>,
+        waiting: HashSet<NativeCursorKey>,
     ) {
         use std::collections::hash_map::Entry;
         match self.native_publications.entry(cursor) {
@@ -676,8 +681,8 @@ impl TerminalActor {
         }
         for cursor in overflowed {
             if let Some(publication) = self.native_publications.remove(&cursor) {
-                for owner in publication.waiting {
-                    self.release_native_owner(owner);
+                for key in publication.waiting {
+                    self.release_native_binding(key);
                 }
             }
         }
@@ -686,15 +691,13 @@ impl TerminalActor {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn handle_native_publication(&mut self, req: NativePublicationRequest) {
-        let valid = self
-            .native_cursor_owners
-            .get(&req.owner)
-            .is_some_and(|binding| {
-                binding.cursor == req.cursor
-                    && binding.terminal_id == req.terminal_id
-                    && binding.stream_id == req.stream_id
-                    && binding.bootstrap_id == req.bootstrap_id
-            });
+        let key = NativeCursorKey::new(req.owner, req.stream_id);
+        let valid = self.native_cursor_owners.get(&key).is_some_and(|binding| {
+            binding.cursor == req.cursor
+                && binding.terminal_id == req.terminal_id
+                && binding.stream_id == req.stream_id
+                && binding.bootstrap_id == req.bootstrap_id
+        });
         if !valid {
             let _ = req
                 .reply
@@ -707,7 +710,7 @@ impl TerminalActor {
                 .send(Err(crate::native_state::NativeStateError::InvalidHandle));
             return;
         };
-        if !publication.waiting.remove(&req.owner) {
+        if !publication.waiting.remove(&key) {
             let _ = req
                 .reply
                 .send(Err(crate::native_state::NativeStateError::InvalidHandle));
@@ -768,10 +771,10 @@ impl TerminalActor {
         };
         if pending.started_at.elapsed() > NATIVE_CAPTURE_LIFETIME {
             let request = pending.request;
-            let owner = request.owner;
+            let key = NativeCursorKey::new(request.owner, request.stream_id);
             let frame = history_request_id(&request)
                 .tombstone(phux_protocol::wire::frame::HistoryTombstoneReason::Expired);
-            self.release_native_owner(owner);
+            self.release_native_binding(key);
             answer_history(request.reply, request.permit, Ok(frame));
             self.start_next_native_history();
             return;
@@ -779,8 +782,8 @@ impl TerminalActor {
         match self.native_history_frame(&pending.request) {
             Ok(Some(frame)) => {
                 let request = pending.request;
-                let owner = request.owner;
-                let keep = self.native_cursor_owners.contains_key(&owner);
+                let key = NativeCursorKey::new(request.owner, request.stream_id);
+                let keep = self.native_cursor_owners.contains_key(&key);
                 if request
                     .reply
                     .send(NativeHistoryReply {
@@ -790,7 +793,7 @@ impl TerminalActor {
                     .is_err()
                     && keep
                 {
-                    self.release_native_owner(owner);
+                    self.release_native_binding(key);
                 }
                 self.start_next_native_history();
             }
@@ -842,7 +845,9 @@ impl TerminalActor {
             );
             return Ok(Some(id.tombstone(stale)));
         };
-        let Some((page_seq, record_index)) = self.history_binding(req.owner, &id, cursor) else {
+        let Some((page_seq, record_index)) =
+            self.history_binding(NativeCursorKey::new(req.owner, req.stream_id), &id, cursor)
+        else {
             return Ok(Some(id.tombstone(stale)));
         };
         let bound = req.max_bytes.min(req.limits.max_history_page_bytes());
@@ -858,38 +863,48 @@ impl TerminalActor {
         let frame = match self.history_record_at(&cursor, record_index, bound, row_bound) {
             Ok(record) => {
                 let finish = record.finish;
-                let rows = self.advance_history_binding(req.owner, &record, page_seq)?;
+                let rows = self.advance_history_binding(
+                    NativeCursorKey::new(req.owner, req.stream_id),
+                    &record,
+                    page_seq,
+                )?;
                 id.page(page_seq, record.bytes, rows, finish)
             }
             Err(crate::native_state::NativeStateError::OutOfSpace {
                 required_bytes,
                 required_rows,
             }) => {
-                self.history_out_of_space(req.owner, id, req.limits, required_bytes, required_rows)
-                    .0
+                self.history_out_of_space(
+                    NativeCursorKey::new(req.owner, req.stream_id),
+                    id,
+                    req.limits,
+                    required_bytes,
+                    required_rows,
+                )
+                .0
             }
             Err(crate::native_state::NativeStateError::ImportBusy) => return Ok(None),
             Err(error) => {
                 let reason = history_tombstone_reason(error);
-                self.release_native_owner(req.owner);
+                self.release_native_binding(NativeCursorKey::new(req.owner, req.stream_id));
                 id.tombstone(reason)
             }
         };
         Ok(Some(frame))
     }
 
-    /// Resolve `owner`'s cursor binding, returning its next page sequence and
-    /// record index. `None` when the owner has no binding or the binding does
+    /// Resolve this pump's cursor binding, returning its next page sequence and
+    /// record index. `None` when the pump has no binding or the binding does
     /// not match this request's generation identity -- both routine races the
     /// caller answers with a stale tombstone.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn history_binding(
         &self,
-        owner: u64,
+        key: NativeCursorKey,
         id: &HistoryFrameId,
         cursor: crate::native_state::OpaqueHistoryCursor,
     ) -> Option<(u64, usize)> {
-        let binding = self.native_cursor_owners.get(&owner)?;
+        let binding = self.native_cursor_owners.get(&key)?;
         if binding.cursor != cursor
             || binding.terminal_id != id.terminal_id
             || binding.stream_id != id.stream_id
@@ -919,28 +934,28 @@ impl TerminalActor {
         }
     }
 
-    /// Advance `owner`'s binding past the record just served, returning the
+    /// Advance this pump's binding past the record just served, returning the
     /// page's row count. A binding that can no longer be advanced (sequence or
-    /// row count out of range) releases the owner and fails the request; a
-    /// finished record releases the owner too, since there is no next page.
+    /// row count out of range) releases the pump and fails the request; a
+    /// finished record releases the pump too, since there is no next page.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn advance_history_binding(
         &mut self,
-        owner: u64,
+        key: NativeCursorKey,
         record: &crate::native_state::CachedNativeHistoryRecord,
         page_seq: u64,
     ) -> Result<u32, crate::native_state::NativeStateError> {
         let Some(next_page_seq) = page_seq.checked_add(1) else {
-            self.release_native_owner(owner);
+            self.release_native_binding(key);
             return Err(crate::native_state::NativeStateError::LimitExceeded);
         };
         let Ok(rows) = u32::try_from(record.rows) else {
-            self.release_native_owner(owner);
+            self.release_native_binding(key);
             return Err(crate::native_state::NativeStateError::LimitExceeded);
         };
         if record.finish {
-            self.release_native_owner(owner);
-        } else if let Some(binding) = self.native_cursor_owners.get_mut(&owner) {
+            self.release_native_binding(key);
+        } else if let Some(binding) = self.native_cursor_owners.get_mut(&key) {
             binding.record_index += 1;
             binding.next_page_seq = next_page_seq;
             binding.touched = tokio::time::Instant::now();
@@ -950,12 +965,12 @@ impl TerminalActor {
 
     /// Answer a record the caller's buffer cannot hold: `HISTORY_REJECTED` with
     /// the exact requirement when the client can retry within the negotiated
-    /// bounds, else a `HISTORY_TOMBSTONE` that also releases the owner. Returns
-    /// the frame and whether the owner is still bound.
+    /// bounds, else a `HISTORY_TOMBSTONE` that also releases the pump. Returns
+    /// the frame and whether the pump is still bound.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn history_out_of_space(
         &mut self,
-        owner: u64,
+        key: NativeCursorKey,
         id: HistoryFrameId,
         limits: phux_protocol::caps::BootstrapLimits,
         required_bytes: usize,
@@ -977,11 +992,11 @@ impl TerminalActor {
                 )
             }
             _ => {
-                self.release_native_owner(owner);
+                self.release_native_binding(key);
                 id.tombstone(phux_protocol::wire::frame::HistoryTombstoneReason::Limit)
             }
         };
-        (frame, self.native_cursor_owners.contains_key(&owner))
+        (frame, self.native_cursor_owners.contains_key(&key))
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -1014,14 +1029,14 @@ impl TerminalActor {
         self.native_publications.clear();
         let last_valid_seq = self.core.seq();
         let mut tombstoned = Vec::with_capacity(bindings.len());
-        for (owner, binding) in bindings {
+        for (key, binding) in bindings {
             tombstoned.push(crate::resource::ResyncTarget {
-                owner,
+                owner: key.owner,
                 stream_id: binding.stream_id,
                 bootstrap_id: binding.bootstrap_id,
             });
             self.publish_native_control(
-                owner,
+                key.owner,
                 FrameKind::BootstrapTombstone {
                     terminal_id: binding.terminal_id,
                     stream_id: binding.stream_id,
@@ -1041,26 +1056,19 @@ impl TerminalActor {
     pub(super) fn invalidate_native_owner(
         &mut self,
         owner: u64,
+        stream_id: phux_protocol::ids::StreamId,
         reason: phux_protocol::wire::frame::TombstoneReason,
     ) {
+        let key = NativeCursorKey::new(owner, stream_id);
         self.cancel_native_history_requests(
             owner,
+            Some(stream_id),
             phux_protocol::wire::frame::HistoryTombstoneReason::Released,
         );
-        if let Some(pending) = self.pending_native_bootstrap.as_mut() {
-            pending.waiters.retain(|waiter| waiter.owner != owner);
-        }
-        self.native_bootstrap_backlog
-            .retain(|waiter| waiter.owner != owner);
-        let Some(binding) = self.native_cursor_owners.remove(&owner) else {
+        self.drop_native_bootstrap_waiters(owner, Some(stream_id));
+        let Some(binding) = self.unbind_native_cursor(key) else {
             return;
         };
-        if let Some(publication) = self.native_publications.get_mut(&binding.cursor) {
-            publication.waiting.remove(&owner);
-            if publication.waiting.is_empty() {
-                self.native_publications.remove(&binding.cursor);
-            }
-        }
         self.publish_native_control(
             owner,
             FrameKind::BootstrapTombstone {
@@ -1071,27 +1079,61 @@ impl TerminalActor {
                 last_valid_seq: self.core.seq(),
             },
         );
-        if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
-            let _ = manager.release_generation(&binding.cursor);
-        }
     }
 
+    /// Release every native binding owned by a detached client.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn release_native_owner(&mut self, owner: u64) {
         self.cancel_native_history_requests(
             owner,
+            None,
             phux_protocol::wire::frame::HistoryTombstoneReason::Released,
         );
+        self.drop_native_bootstrap_waiters(owner, None);
+        let keys: Vec<_> = self
+            .native_cursor_owners
+            .keys()
+            .filter(|key| key.owner == owner)
+            .copied()
+            .collect();
+        for key in keys {
+            let _ = self.unbind_native_cursor(key);
+        }
+    }
+
+    /// Release one pump's binding without touching sibling streams of the
+    /// same client.
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn release_native_binding(&mut self, key: NativeCursorKey) {
+        self.cancel_native_history_requests(
+            key.owner,
+            Some(key.stream_id),
+            phux_protocol::wire::frame::HistoryTombstoneReason::Released,
+        );
+        self.drop_native_bootstrap_waiters(key.owner, Some(key.stream_id));
+        let _ = self.unbind_native_cursor(key);
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn drop_native_bootstrap_waiters(
+        &mut self,
+        owner: u64,
+        stream_id: Option<phux_protocol::ids::StreamId>,
+    ) {
         if let Some(pending) = self.pending_native_bootstrap.as_mut() {
-            pending.waiters.retain(|waiter| waiter.owner != owner);
+            pending
+                .waiters
+                .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, stream_id));
         }
         self.native_bootstrap_backlog
-            .retain(|waiter| waiter.owner != owner);
-        let Some(binding) = self.native_cursor_owners.remove(&owner) else {
-            return;
-        };
+            .retain(|waiter| keeps_native_bootstrap_waiter(waiter, owner, stream_id));
+    }
+
+    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+    fn unbind_native_cursor(&mut self, key: NativeCursorKey) -> Option<NativeCursorOwner> {
+        let binding = self.native_cursor_owners.remove(&key)?;
         if let Some(publication) = self.native_publications.get_mut(&binding.cursor) {
-            publication.waiting.remove(&owner);
+            publication.waiting.remove(&key);
             if publication.waiting.is_empty() {
                 self.native_publications.remove(&binding.cursor);
             }
@@ -1099,25 +1141,27 @@ impl TerminalActor {
         if let CanonicalTerminal::Native(manager) = &mut *self.terminal.borrow_mut() {
             let _ = manager.release_generation(&binding.cursor);
         }
+        Some(binding)
     }
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn cancel_native_history_requests(
         &mut self,
         owner: u64,
+        stream_id: Option<phux_protocol::ids::StreamId>,
         reason: phux_protocol::wire::frame::HistoryTombstoneReason,
     ) {
         if self
             .pending_native_history
             .as_ref()
-            .is_some_and(|pending| pending.request.owner == owner)
+            .is_some_and(|pending| matches_native_history(&pending.request, owner, stream_id))
             && let Some(pending) = self.pending_native_history.take()
         {
             answer_tombstoned_history(pending.request, reason);
         }
         let mut retained = VecDeque::with_capacity(self.native_history_backlog.len());
         while let Some(pending) = self.native_history_backlog.pop_front() {
-            if pending.request.owner == owner {
+            if matches_native_history(&pending.request, owner, stream_id) {
                 answer_tombstoned_history(pending.request, reason);
             } else {
                 retained.push_back(pending);
@@ -1132,21 +1176,22 @@ impl TerminalActor {
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     pub(super) fn expire_native_cursors(&mut self) {
         let cutoff = tokio::time::Instant::now() - NATIVE_HISTORY_TTL;
-        let owners: Vec<_> = self
+        let keys: Vec<_> = self
             .native_cursor_owners
             .iter()
-            .filter_map(|(owner, binding)| (binding.touched <= cutoff).then_some(*owner))
+            .filter_map(|(key, binding)| (binding.touched <= cutoff).then_some(*key))
             .collect();
-        for owner in owners {
+        for key in keys {
             self.cancel_native_history_requests(
-                owner,
+                key.owner,
+                Some(key.stream_id),
                 phux_protocol::wire::frame::HistoryTombstoneReason::Expired,
             );
-            let Some(binding) = self.native_cursor_owners.get(&owner) else {
+            let Some(binding) = self.native_cursor_owners.get(&key) else {
                 continue;
             };
             self.publish_native_control(
-                owner,
+                key.owner,
                 FrameKind::HistoryTombstone {
                     terminal_id: binding.terminal_id.clone(),
                     stream_id: binding.stream_id,
@@ -1155,7 +1200,7 @@ impl TerminalActor {
                     reason: phux_protocol::wire::frame::HistoryTombstoneReason::Expired,
                 },
             );
-            self.release_native_owner(owner);
+            self.release_native_binding(key);
         }
     }
 
@@ -1218,6 +1263,26 @@ fn fail_native_waiters(
     for (waiter, _) in prepared {
         let _ = waiter.reply.send(Err(error));
     }
+}
+
+/// Keep waiters that are not the targeted pump. `stream_id = None` drops every
+/// waiter for `owner` (client detach); `Some` drops only that stream.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn keeps_native_bootstrap_waiter(
+    waiter: &NativeBootstrapRequest,
+    owner: u64,
+    stream_id: Option<phux_protocol::ids::StreamId>,
+) -> bool {
+    waiter.owner != owner || stream_id.is_some_and(|sid| waiter.stream_id != sid)
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn matches_native_history(
+    request: &NativeHistoryRequest,
+    owner: u64,
+    stream_id: Option<phux_protocol::ids::StreamId>,
+) -> bool {
+    request.owner == owner && stream_id.is_none_or(|sid| request.stream_id == sid)
 }
 
 /// The wire identity every HISTORY answer frame is stamped with.
