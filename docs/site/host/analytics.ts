@@ -63,16 +63,16 @@ export function forwardEnvelope(
   pending.push(envelope);
   const batch = pending;
   pending = [];
-  const next = (chain ?? Promise.resolve()).then(async () => {
-    await fetch(env.ANALYTICS_INGEST_URL!, {
+  const next = (chain ?? Promise.resolve()).then(() =>
+    fetch(env.ANALYTICS_INGEST_URL!, {
       method: "POST",
       headers: {
         "content-type": "application/json",
         "x-analytics-key": env.ANALYTICS_INGEST_KEY!,
       },
       body: JSON.stringify({ events: batch }),
-    });
-  });
+    }),
+  );
   chain = next.catch(() => {
     // analytics must never affect a request
   });
