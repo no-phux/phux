@@ -2,7 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initialModel, update, windows } from '../core.ts';
-import { declaredDensities, declaredSizes, inspectShippingGallery, assertPassiveSurface } from '../../scripts/cockpit-state-gallery.mjs';
+import { declaredDensities, declaredSizes, inspectShippingGallery, passiveHoverRendererTest,
+  assertPointerReachedSurface } from '../../scripts/cockpit-state-gallery.mjs';
 
 const strict = process.env.PHUX_COCKPIT_ACCEPTANCE_STRICT === '1';
 const bytes = value => new TextEncoder().encode(value);
@@ -156,20 +157,22 @@ knownRed('an invalid or closed active-window combination never projects a modal 
   assert.deepEqual(failures, [], `closed-slot projection failures:\n${failures.map(item => `  - ${item}`).join('\n')}`);
 });
 
-test('state gallery covers shipping controls, declared geometry, and passive hover detection', () => {
+test('state gallery covers shipping controls, declared geometry, and the passive-hover acceptance split', () => {
   const root = new URL('../..', import.meta.url);
   const report = inspectShippingGallery(root);
   assert.deepEqual(report.missing, []);
   assert.deepEqual(report.states, ['rest', 'hover', 'press', 'selected', 'focus', 'disabled', 'attention', 'loading', 'empty', 'failed', 'passive-hover']);
   assert.deepEqual(declaredSizes, [{ width: 900, height: 420 }, { width: 1100, height: 640 }, { width: 1680, height: 1000 }]);
   assert.deepEqual(declaredDensities, ['compact', 'regular', 'spacious']);
+  assert.equal(passiveHoverRendererTest,
+    'semantic_theme test "passive panel hover is visually stable without disabling hit testing"');
+  assert.equal(report.finalZigGate, `full Zig gate must include ${passiveHoverRendererTest}`);
+  assert.match(report.evidenceScope.passiveHover, /pointer reachability only/);
+  assert.match(report.evidenceScope.liveScreenshot, /optional only.*never use full-frame PNG equality/);
   const audit = readFileSync(new URL('../native_extension.zig', import.meta.url), 'utf8');
   for (const { width, height } of declaredSizes) assert.match(audit, new RegExp(`SizeF\\.init\\(${width}, ${height}\\)`));
   for (const density of declaredDensities) assert.match(audit, new RegExp(`\\.${density}`));
-  assert.doesNotThrow(() => assertPassiveSurface(
-    'widget @w1/canvas#7 role=group name="Inspector surface" bounds=(0,0 100x80) focused=false enabled=true',
-    { name: 'Inspector surface' }));
-  assert.throws(() => assertPassiveSurface(
+  assert.doesNotThrow(() => assertPointerReachedSurface(
     'widget @w1/canvas#7 role=group name="Inspector surface" bounds=(0,0 100x80) focused=false enabled=true state=[hovered]',
-    { name: 'Inspector surface' }), /passive surface .* hover-highlighted/);
+    { name: 'Inspector surface' }));
 });

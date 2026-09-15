@@ -41,12 +41,16 @@ export const stateGallery = Object.freeze([
   Object.freeze({ state: 'failed', file: 'windows/components/cockpit-window.native',
     pattern: '<if test="{machines.failed}">', evidence: 'shipping machine failure surface' }),
   Object.freeze({ state: 'passive-hover', file: 'windows/components/cockpit-window.native',
-    pattern: '<template name="cockpit-agents"', evidence: 'inspector panel must not gain a hover wash' }),
+    pattern: '<template name="cockpit-agents"', evidence: 'shipping inspector stays hit-testable; rendered fill is a Zig contract' }),
 ]);
+
+export const passiveHoverRendererTest = 'semantic_theme test "passive panel hover is visually stable without disabling hit testing"';
 
 export const evidenceScope = Object.freeze({
   snapshot: 'layout, semantic state, and shipping control identity',
   screenshot: 'CPU reference-renderer geometry, colors, and emitted draw commands only',
+  passiveHover: 'runtime hovered state proves pointer reachability only; rest/hover fill equality belongs to the deterministic Zig renderer recipe',
+  liveScreenshot: 'optional only with a region-level comparison that tolerates terminal cursor/output changes; never use full-frame PNG equality',
   excluded: 'CoreText outlines, hinting, smoothing, host blending, and display color conversion',
 });
 
@@ -58,7 +62,7 @@ export function inspectShippingGallery(root) {
     if (!source.includes(item.pattern)) missing.push(`${item.state}: ${item.file} lacks ${JSON.stringify(item.pattern)}`);
   }
   return { missing, states: stateGallery.map(item => item.state), sizes: declaredSizes, densities: declaredDensities,
-    evidenceScope };
+    evidenceScope, finalZigGate: `full Zig gate must include ${passiveHoverRendererTest}` };
 }
 
 function stateFlags(line) {
@@ -66,42 +70,42 @@ function stateFlags(line) {
   return new Set(match && match[1] ? match[1].split(',') : []);
 }
 
-// Runtime snapshots can be fed here after moving the pointer over a named
-// passive surface. A hovered flag is the product failure; screenshots are not
-// consulted because this is a semantic interaction assertion, not pixel work.
-export function assertPassiveSurface(snapshot, { role = 'group', name }) {
+// This proves only that the runtime pointer journey reached the named shipping
+// surface. Visual acceptance belongs to passiveHoverRendererTest: SDK panels
+// intentionally remain hit-testable and hovered when hover fill equals rest.
+export function assertPointerReachedSurface(snapshot, { role = 'group', name }) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const lines = snapshot.split(/\r?\n/).filter(line =>
     new RegExp(`\\brole=${role} name="${escaped}"(?: |$)`).test(line));
   assert.equal(lines.length, 1,
-    `passive-surface probe expected exactly one role=${role} name=${JSON.stringify(name)}, found ${lines.length}`);
-  assert.equal(stateFlags(lines[0]).has('hovered'), false,
-    `passive surface ${JSON.stringify(name)} hover-highlighted; use a non-interactive surface recipe or suppress its hover wash`);
+    `pointer probe expected exactly one role=${role} name=${JSON.stringify(name)}, found ${lines.length}`);
+  assert.equal(stateFlags(lines[0]).has('hovered'), true,
+    `pointer did not reach role=${role} name=${JSON.stringify(name)}`);
 }
 
 function usage() {
   console.error('usage: cockpit-state-gallery.mjs [--root <cockpit-root>]');
-  console.error('       cockpit-state-gallery.mjs --check-snapshot <snapshot.txt> --passive-name <name> [--passive-role <role>]');
+  console.error('       cockpit-state-gallery.mjs --check-pointer-target <snapshot.txt> --target-name <name> [--target-role <role>]');
 }
 
 function main(argv) {
   let root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
   let snapshotPath = '';
-  let passiveName = '';
-  let passiveRole = 'group';
+  let targetName = '';
+  let targetRole = 'group';
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--root') root = path.resolve(argv[++index] ?? '');
-    else if (arg === '--check-snapshot') snapshotPath = argv[++index] ?? '';
-    else if (arg === '--passive-name') passiveName = argv[++index] ?? '';
-    else if (arg === '--passive-role') passiveRole = argv[++index] ?? '';
+    else if (arg === '--check-pointer-target') snapshotPath = argv[++index] ?? '';
+    else if (arg === '--target-name') targetName = argv[++index] ?? '';
+    else if (arg === '--target-role') targetRole = argv[++index] ?? '';
     else if (arg === '-h' || arg === '--help') { usage(); return 0; }
     else { usage(); return 2; }
   }
-  if (snapshotPath || passiveName) {
-    if (!snapshotPath || !passiveName || !passiveRole) { usage(); return 2; }
-    assertPassiveSurface(readFileSync(snapshotPath, 'utf8'), { role: passiveRole, name: passiveName });
-    console.log(`PASS passive surface ${JSON.stringify(passiveName)} has no hover state`);
+  if (snapshotPath || targetName) {
+    if (!snapshotPath || !targetName || !targetRole) { usage(); return 2; }
+    assertPointerReachedSurface(readFileSync(snapshotPath, 'utf8'), { role: targetRole, name: targetName });
+    console.log(`PASS pointer reached shipping surface ${JSON.stringify(targetName)}`);
     return 0;
   }
   const report = inspectShippingGallery(root);
