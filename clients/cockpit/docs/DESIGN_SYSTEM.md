@@ -73,6 +73,8 @@ chrome_icon_extent   = 16   // see section 4
 chrome_gap           =  8   // spacing.sm
 ```
 
+Split-pane cards reuse `chrome_band_inset` as `pane_chrome_inset`: the grid sits 4pt inside `radius.md` so cells never enter the corner curve. Focus does not get its own inset.
+
 **A band is exactly one default-register control tall, and it hosts small-register
 controls with 4pt of shoulders.** 40 = 32 + 4 + 4. That single sentence is the
 whole band system: the search band, the config-notice band, and the tab strip's
@@ -266,9 +268,11 @@ grey — a "selected" tab that light stops being a tab and becomes a button.
 **Therefore: never encode state in elevation alone.** Elevation says *near or
 far*. State is said with the accent, and this app has exactly one accent verb —
 lime, reserved for "where you are". The selected tab carries the pack's own
-2pt indicator (`tabs_indicator_thickness`); the focused pane carries a 1pt
-accent edge. `accent` on `surface` measures **14.10:1**, four and a half times
-the floor.
+2pt indicator (`tabs_indicator_thickness`); a split pane is a rounded card
+(`radius.md`) with a hairline border, and the focused pane wears the SDK's
+ring-offset accent ring (`stroke.focus` / `stroke.focus_offset`) in the
+gutter — never on the grid, and never a different inset than its neighbours.
+`accent` on `surface` measures **14.10:1**, four and a half times the floor.
 
 Shadows are not an option and never were: a shadow works by darkening what is
 behind it, and on a `#090b0f` ground there is nothing left to take away. That is
