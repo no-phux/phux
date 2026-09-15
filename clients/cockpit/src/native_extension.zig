@@ -2903,6 +2903,16 @@ fn paintedSettingsSection(node: Adapter.Ui.Node, section: i64) ?core.Msg {
     return null;
 }
 
+fn paintedHasUpdateCheck(node: Adapter.Ui.Node) bool {
+    if (node.on_press) |msg| {
+        if (msg == .update_check) return true;
+    }
+    for (node.nodes) |child| {
+        if (paintedHasUpdateCheck(child)) return true;
+    }
+    return false;
+}
+
 test "navigation held painted catalog target follows metadata filtering and window movement" {
     var rig = try Rig.start();
     defer rig.stop();
@@ -5392,21 +5402,29 @@ test "the visible About settings tab reaches version and update content" {
     try rig.settle(0, "READY");
     try rig.dispatch(.settings_open);
     try rig.settleAppearance();
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "About"));
-    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Check for Updates"));
+
+    // Tab captions are child text, not semantics.label. The compiled About
+    // control is the settings_section:5 press; Check for Updates is absent
+    // until that press selects the group.
+    {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var ui = Adapter.Ui.init(arena.allocator());
+        const tree = mainView(&ui, &rig.app_state.model);
+        try std.testing.expect(!paintedHasUpdateCheck(tree));
+        const press = paintedSettingsSection(tree, 5) orelse return error.TestExpectedAboutButton;
+        try rig.dispatch(press);
+    }
+
+    try std.testing.expectEqual(@as(i64, 5), rig.app_state.model.settingsSection);
+    try std.testing.expect(!rig.app_state.model.updateBusy);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.settingRows.len);
+    try std.testing.expectEqual(@as(i64, 14), rig.app_state.model.settingRows[0].id);
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var ui = Adapter.Ui.init(arena.allocator());
-    const press = paintedSettingsSection(mainView(&ui, &rig.app_state.model), 5) orelse return error.TestExpectedAboutButton;
-    try rig.dispatch(press);
-
-    try std.testing.expectEqual(@as(i64, 5), rig.app_state.model.settingsSection);
-    try std.testing.expect(!rig.app_state.model.updateBusy);
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Check for Updates"));
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Installed"));
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Latest"));
-    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "App version"));
+    try std.testing.expect(paintedHasUpdateCheck(mainView(&ui, &rig.app_state.model)));
 }
 
 /// An effects recorder for the native-behaviour guards: counts what the
