@@ -107,7 +107,10 @@ src/
     (AgentSession spawn and `APPEND_RESOURCE_OUTPUT`), directory.rs (the
     LIST_DIRECTORY host query), pump.rs, resume.rs, upgrade.rs, upload.rs,
     voice.rs, whoami.rs (the read-only phux.whoami/v1 key),
-    ephemeral_listener.rs (OPEN_LISTENER: a QUIC listener for one attach)
+    ephemeral_listener.rs (OPEN_LISTENER: a QUIC listener for one attach),
+    operation_dedupe.rs (the one bounded dedupe record shared by
+    APPLY_INPUT ids, spawn keys, and session-create tokens; ADR-0126),
+    idempotent_create.rs (keyed SPAWN_RESOURCE and session create on it)
     input_lane/       — the dedicated input-encoding thread (ADR-0044) and
                         the acknowledged-input journal (ADR-0053)
   state/              — ServerState: sessions, windows, resources, leases,

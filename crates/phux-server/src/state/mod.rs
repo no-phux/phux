@@ -289,6 +289,11 @@ pub struct ServerState {
     /// attempt; read by [`Self::build_session_snapshot`]. Absent from the
     /// wire until at least one slot has been recorded.
     remote_listeners: phux_protocol::wire::RemoteListenersReport,
+    /// The shared operation dedupe record (ADR-0053, ADR-0126): input
+    /// operation ids, spawn keys, and session-create tokens, with one set of
+    /// bounds. It holds its own lock, so the input lane reaches it without
+    /// this one.
+    operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,
 }
 
 impl Default for ServerState {
@@ -302,6 +307,13 @@ impl ServerState {
     #[must_use]
     pub const fn server_incarnation(&self) -> ServerIncarnation {
         self.lifecycle.server_incarnation()
+    }
+
+    /// The shared operation dedupe record. Cloning the handle shares it.
+    pub(crate) const fn operation_dedupe(
+        &self,
+    ) -> &crate::runtime::operation_dedupe::OperationDedupe {
+        &self.operation_dedupe
     }
 }
 
