@@ -139,7 +139,91 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
       <a href={docsHref("/quickstart/install")}>All install methods</a>
     </p>
   </section>
+
+  <section class="wrap join" id="beta">
+    <div class="join-copy">
+      <h2>join the beta</h2>
+      <p>
+        Early-release invites and a short note when something big ships. No
+        spam, unsubscribe is one click, and your email is never sold or
+        shared.
+      </p>
+    </div>
+    <form class="join-form" id="join-form">
+      <input
+        type="email"
+        name="email"
+        required
+        autocomplete="email"
+        placeholder="you@example.com"
+        aria-label="Email address"
+      />
+      <button type="submit">notify me</button>
+      <p class="join-note" id="join-note">
+        Voluntary — and anonymous visitors are never tracked at all: usage
+        stats are aggregate, and device-level detail exists only for members
+        who explicitly claim their device via a personal link.{" "}
+        <a href="/telemetry">what we measure</a>
+      </p>
+    </form>
+  </section>
 </BaseLayout>
+
+<style>
+  .join {
+    display: grid;
+    grid-template-columns: minmax(240px, 1fr) minmax(280px, 1fr);
+    gap: clamp(20px, 4vw, 48px);
+    padding-block: clamp(32px, 6vw, 64px);
+    border-top: 1px solid var(--line, #232433);
+    align-items: start;
+  }
+  .join h2 {
+    margin: 0 0 8px;
+    letter-spacing: -0.01em;
+  }
+  .join-copy p {
+    color: var(--fg-muted, #565f89);
+    margin: 0;
+    max-width: 46ch;
+  }
+  .join-form {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 10px;
+  }
+  .join-form input {
+    background: var(--bg, #07080b);
+    border: 1px solid var(--line, #232433);
+    color: var(--fg, #c0caf5);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font: inherit;
+  }
+  .join-form button {
+    background: #7aa2f7;
+    color: #07080b;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 18px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .join-note {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    color: var(--fg-muted, #565f89);
+    margin: 0;
+  }
+  .join-note a {
+    color: inherit;
+  }
+  @media (max-width: 720px) {
+    .join {
+      grid-template-columns: 1fr;
+    }
+  }
+</style>
 
 <script is:inline define:vars={{ cliInstall, cockpitInstall, releaseTag: release.tag, releaseUrl: release.url }}>
   document.querySelectorAll("[data-copy]").forEach((btn) => {
@@ -158,6 +242,35 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
       }
     });
   });
+
+  // join-the-beta form → POST /api/join (voluntary email signup)
+  (() => {
+    const form = document.getElementById("join-form");
+    if (!form) return;
+    const note = document.getElementById("join-note");
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const email = form.email.value.trim();
+      const button = form.querySelector("button");
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/join", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ email, source: new URLSearchParams(location.search).get("utm_source") ?? location.pathname }),
+        });
+        const result = await response.json();
+        note.textContent = result.ok
+          ? "you're on the list — first invite goes out with the next release."
+          : "that didn't work: " + (result.error ?? "try again");
+        if (result.ok) form.reset();
+      } catch {
+        note.textContent = "network hiccup — try again in a moment.";
+      } finally {
+        button.disabled = false;
+      }
+    });
+  })();
 
   // WebMCP: expose the site's key actions to in-browser AI agents.
   // Experimental API — feature-detect and no-op where it doesn't exist.

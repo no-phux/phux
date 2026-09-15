@@ -118,6 +118,7 @@ pub(crate) fn run_doctor(json: bool, socket: Option<PathBuf>) -> ExitCode {
         check_agent_shim(),
         check_remote_cert(),
         check_token_store(),
+        check_workload_authority(),
         check_remote_listeners(&socket_path),
         check_remote_reachable(&socket_path),
         check_logs(),
@@ -870,6 +871,62 @@ fn token_store_check(path: &std::path::Path, error: Option<phux_server::auth::Au
     )
 }
 
+fn check_workload_authority() -> Check {
+    let paths = phux_server::workload::WorkloadPaths::from_env();
+    workload_authority_check(&paths.ca_cert, &paths.registry)
+}
+
+/// The pure half of [`check_workload_authority`]: the CA fingerprint and the
+/// registry generation (ADR-0116). It never reads or names the CA key.
+fn workload_authority_check(ca_cert: &std::path::Path, registry: &std::path::Path) -> Check {
+    use phux_server::workload::{WorkloadError, WorkloadRegistry, ca_fingerprint};
+    let fingerprint = match ca_fingerprint(ca_cert) {
+        Ok(fingerprint) => fingerprint,
+        Err(WorkloadError::AuthorityMissing) => {
+            return Check::pass(
+                "workload-authority",
+                "no workload CA; mTLS workload authority is not initialized",
+            );
+        }
+        Err(error) => {
+            return Check::fail(
+                "workload-authority",
+                format!(
+                    "workload CA at {} cannot be read ({error})",
+                    ca_cert.display()
+                ),
+                "a server with PHUX_WORKLOAD_MTLS set disables its remote listeners until the CA loads; fix the file's owner and mode, or remove the pair deliberately and re-enroll every client",
+            );
+        }
+    };
+    match WorkloadRegistry::load(registry) {
+        Ok(snapshot) => {
+            let now = chrono::Utc::now().timestamp();
+            let active = snapshot
+                .credentials()
+                .iter()
+                .filter(|credential| credential.is_active_at(now))
+                .count();
+            Check::pass(
+                "workload-authority",
+                format!(
+                    "workload CA {fingerprint}; registry generation {}, {active} of {} credential(s) active",
+                    snapshot.generation(),
+                    snapshot.len()
+                ),
+            )
+        }
+        Err(error) => Check::fail(
+            "workload-authority",
+            format!(
+                "workload CA {fingerprint}; registry at {} cannot be loaded ({error})",
+                registry.display()
+            ),
+            "a running server admits no workload credential until the registry loads; restore it (owner-only, mode 0600) or re-enroll with `phux workload add-key`",
+        ),
+    }
+}
+
 /// How long the reachability probe waits for the listener to say anything.
 ///
 /// Generous relative to a loopback-speed handshake, because the probe rides
@@ -1562,6 +1619,49 @@ mod tests {
             Status::Pass
         );
         assert_eq!(remote_listeners_check(None, true).status, Status::Pass);
+    }
+
+    /// `workload-authority` fingerprints the CA and reports the registry
+    /// generation, never naming the CA private key.
+    #[test]
+    fn workload_authority_reports_fingerprint_and_generation() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ca = dir.path().join("workload-ca.pem");
+        let key = dir.path().join("workload-ca.key");
+        let registry = dir.path().join("workload-keys");
+
+        let missing = workload_authority_check(&ca, &registry);
+        assert_eq!(missing.status, Status::Pass);
+        assert!(
+            missing.detail.contains("not initialized"),
+            "{}",
+            missing.detail
+        );
+
+        let status = phux_server::workload::init_authority(&ca, &key).expect("init");
+        let fresh = workload_authority_check(&ca, &registry);
+        assert_eq!(fresh.status, Status::Pass);
+        assert!(
+            fresh.detail.contains(&status.fingerprint),
+            "{}",
+            fresh.detail
+        );
+        assert!(fresh.detail.contains("generation 0"), "{}", fresh.detail);
+        assert!(
+            !fresh.detail.contains("workload-ca.key"),
+            "{}",
+            fresh.detail
+        );
+
+        // World-readable: refused, as the server would refuse it.
+        std::fs::write(&registry, "{}").expect("write registry");
+        let broken = workload_authority_check(&ca, &registry);
+        assert_eq!(broken.status, Status::Fail);
+        assert!(
+            !broken.detail.contains("workload-ca.key"),
+            "{}",
+            broken.detail
+        );
     }
 
     /// The `remote-cert` check is the durable surface for a certificate that

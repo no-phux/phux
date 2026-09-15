@@ -22,6 +22,8 @@
 //!     for an idle window (the "screen settled" signal).
 //!   * [`ClientHandle::converge_until`] — same, but ignore idle gaps until
 //!     a completion predicate holds.
+//!   * [`ClientHandle::converge_until_with_timeout`] — same, with a caller
+//!     deadline (the colored perf gate's ceiling exceeds the default).
 //!   * [`ClientHandle::resize`] — send `VIEWPORT_RESIZE`.
 //!   * [`ClientHandle::detach`] / [`ClientHandle::reattach`] — drop the
 //!     stream / open a fresh one against the same session.
@@ -41,7 +43,8 @@
 #![allow(clippy::assigning_clones, reason = "tests: clarity over micro-opt")]
 
 use std::future::Future;
-use std::path::PathBuf;
+use std::io::Write as _;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use phux_protocol::ResourceId;
@@ -598,17 +601,40 @@ impl ClientHandle {
     /// [`converge`](Self::converge), but a quiet gap is not settle until
     /// `pred` holds.
     ///
-    /// Colored-output seeds build each SGR row in a shell loop. Under
-    /// load that loop can go quiet for longer than [`DEFAULT_IDLE_MS`]
-    /// before `COLORDONE`. Treating that gap as completion makes the
-    /// latency gate race the emitter (phux-4s38). The idle window starts
-    /// only after the predicate is true; first-byte timing is unchanged.
-    pub async fn converge_until<P>(&mut self, idle_ms: u64, mut pred: P) -> Duration
+    /// A burst that can pause between rows (or a loaded host that
+    /// schedules the emitter in fits) can go quiet for longer than
+    /// [`DEFAULT_IDLE_MS`] before its completion marker. Treating that gap
+    /// as settle makes the latency gate race the emitter (phux-4s38). The
+    /// idle window starts only after the predicate is true; first-byte
+    /// timing is unchanged.
+    pub async fn converge_until<P>(&mut self, idle_ms: u64, pred: P) -> Duration
+    where
+        P: FnMut(&mut Screen) -> bool,
+    {
+        self.converge_until_with_timeout(idle_ms, WIRE_RECV_TIMEOUT, pred)
+            .await
+    }
+
+    /// [`converge_until`](Self::converge_until) with a caller-supplied hard
+    /// deadline instead of [`WIRE_RECV_TIMEOUT`].
+    ///
+    /// Use this when the legitimate drain can outlast the standard 15s
+    /// budget — the colored-output perf gate's settle ceiling is 30s, and
+    /// waiting only 15s reported "never completed" under host load
+    /// (phux-iuxr). Same rule as [`Self::wait_until_with_timeout`]: pick
+    /// the smallest budget that covers the real work; a stalled server
+    /// still fails at the ceiling.
+    pub async fn converge_until_with_timeout<P>(
+        &mut self,
+        idle_ms: u64,
+        budget: Duration,
+        mut pred: P,
+    ) -> Duration
     where
         P: FnMut(&mut Screen) -> bool,
     {
         let idle = Duration::from_millis(idle_ms);
-        let hard_deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+        let hard_deadline = tokio::time::Instant::now() + budget;
         let mut first_byte_at: Option<Instant> = None;
         let mut complete = pred(&mut self.screen);
         loop {
@@ -619,12 +645,12 @@ impl ClientHandle {
             // Before the first byte, or before the completion marker, wait
             // the remaining hard budget so a transient gap is not settle.
             // After both, only wait out the idle window.
-            let budget = if first_byte_at.is_some() && complete {
+            let wait = if first_byte_at.is_some() && complete {
                 (hard_deadline - now).min(idle)
             } else {
                 hard_deadline - now
             };
-            match timeout(budget, recv_typed(&mut self.stream)).await {
+            match timeout(wait, recv_typed(&mut self.stream)).await {
                 Ok((tb, FrameKind::ResourceOutput { bytes, .. })) if tb == TYPE_RESOURCE_OUTPUT => {
                     first_byte_at.get_or_insert_with(Instant::now);
                     self.screen.write(&bytes);
@@ -712,52 +738,49 @@ fn default_shell() -> String {
     "/bin/sh".to_owned()
 }
 
-/// A scripted, deterministic HEAVY-COLORED-output seed command — the
-/// repro for the user's actual lag symptom (zsh completion menu /
-/// syntax-highlighted scroll: many full-width SGR-laden rows rewritten
-/// every frame).
+/// Bytes for the heavy-colored burst the perf gate drives.
 ///
-/// Shape: `gens` repaints of a `rows`-tall screen, where every row is a
-/// full `cols`-wide line built from per-cell `\033[38;5;Nm` 256-color
-/// SGR runs — i.e. an SGR change roughly every other column, the
-/// worst-case churn for the per-consumer diff and the client's VT apply +
-/// per-cell render. Each repaint homes the cursor (`\033[H`) so the whole
-/// grid is rewritten in place (no scroll), matching a live completion
-/// menu redrawing on each keystroke. The shell sleeps briefly first so
-/// clients attach before the burst lands as a live delta, prints
-/// `COLORDONE` as a settle marker, then idles so the connection stays
-/// open for teardown.
-///
-/// Deterministic: no RNG, fixed iteration counts, color index a pure
-/// function of `(row, col, gen)`. Two runs emit identical bytes, so the
-/// gate's settle assertion is reproducible.
+/// `gens` full-grid repaints of `rows` × `cols`, each cell its own
+/// 256-color SGR (`\033[38;5;NmX`), homed with `\033[H` so the grid is
+/// rewritten in place. Color index is `16 + (col + row + gen) % 216`.
+/// Ends with `COLORDONE`. No RNG; two calls with the same geometry emit
+/// identical bytes.
 #[must_use]
-pub fn colored_burst_command(cols: u16, rows: u16, gens: u16) -> CommandBuilder {
-    // Each row: for each cell column, switch to a 256-color foreground
-    // then print one visible glyph. `printf` in a tight inner loop is too
-    // slow at this density, so build each row's bytes once per (row,gen)
-    // with a column loop that appends to a shell variable, then print the
-    // whole row in one `printf`. Color index cycles through the 216-color
-    // cube (16..=231) as a function of column+row+gen so adjacent cells
-    // differ (forcing an SGR delta per cell, the heavy case).
+pub fn colored_burst_bytes(cols: u16, rows: u16, gens: u16) -> Vec<u8> {
+    // Per-cell SGR is ~12 bytes; 80×40×24 is under a megabyte.
+    let mut out =
+        Vec::with_capacity(usize::from(cols) * usize::from(rows) * usize::from(gens) * 12);
+    for g in 1..=gens {
+        out.extend_from_slice(b"\x1b[H");
+        for r in 1..=rows {
+            for c in 1..=cols {
+                let n = 16 + (u32::from(c) + u32::from(r) + u32::from(g)) % 216;
+                write!(&mut out, "\x1b[38;5;{n}mX").expect("vec write");
+            }
+            out.extend_from_slice(b"\x1b[0m\r\n");
+        }
+    }
+    out.extend_from_slice(b"\x1b[0mCOLORDONE\r\n");
+    out
+}
+
+/// Seed command for the heavy-colored burst: wait until `gate` exists,
+/// `cat` precomputed `burst` bytes (from [`colored_burst_bytes`]), then
+/// idle so the pane stays up for teardown.
+///
+/// The burst used to be a nested `/bin/sh` concat loop. Under CPU load
+/// that loop took longer than the converge wait, so the gate failed
+/// "colored burst never completed" without ever checking the ceiling
+/// (phux-iuxr). `cat` of precomputed bytes is the same VT shape with an
+/// emit cost that does not track host load. The gate file (same pattern
+/// as the lagged-resync fixtures) starts the dump only after attach, so
+/// a fast `cat` cannot land in the opening snapshot.
+#[must_use]
+pub fn colored_burst_command(burst: &Path, gate: &Path) -> CommandBuilder {
     let script = format!(
-        "sleep 0.3; \
-         cols={cols}; rows={rows}; \
-         for g in $(seq 1 {gens}); do \
-           printf '\\033[H'; \
-           r=1; \
-           while [ \"$r\" -le \"$rows\" ]; do \
-             line=''; c=1; \
-             while [ \"$c\" -le \"$cols\" ]; do \
-               n=$(( 16 + (c + r + g) % 216 )); \
-               line=\"$line\\033[38;5;${{n}}mX\"; \
-               c=$(( c + 1 )); \
-             done; \
-             printf \"%b\\033[0m\\r\\n\" \"$line\"; \
-             r=$(( r + 1 )); \
-           done; \
-         done; \
-         printf '\\033[0mCOLORDONE\\r\\n'; sleep 30"
+        "while [ ! -e '{}' ]; do sleep 0.02; done; cat -- '{}'; sleep 30",
+        gate.display(),
+        burst.display(),
     );
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.args(["-c", &script]);
@@ -975,5 +998,21 @@ impl InputScript {
                 ScriptInput::Resize(c, r) => client.resize(*c, *r).await,
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod colored_burst_tests {
+    use super::colored_burst_bytes;
+
+    #[test]
+    fn colored_burst_bytes_follow_the_cell_formula() {
+        let bytes = colored_burst_bytes(3, 2, 2);
+        let text = String::from_utf8(bytes).expect("ascii VT");
+        assert!(text.contains("COLORDONE"));
+        assert_eq!(text.matches("\u{1b}[H").count(), 2);
+        // First cell of gen 1, row 1, col 1: n = 16 + (1+1+1)%216 = 19.
+        assert!(text.contains("\u{1b}[38;5;19mX"));
+        assert_eq!(colored_burst_bytes(3, 2, 2), colored_burst_bytes(3, 2, 2));
     }
 }

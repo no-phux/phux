@@ -61,6 +61,17 @@ secret (`wrangler secret put TELEMETRY_INGEST_KEY` in `docs/site` and
 `docs/site/worker`); without it on either side, telemetry silently stops —
 the demo door is never affected.
 
+### Privacy-respecting analytics (private ops repo)
+
+Beyond the public aggregates, both workers forward a minimal event envelope
+to the self-hosted pipeline in the private `no-phux/ops` repo
+(`ANALYTICS_INGEST_URL` + `ANALYTICS_INGEST_KEY` secrets; schema, storage,
+and dashboards live there). Anonymous visits are daily-rotated hashes with
+no cookies; the only identified dataset is the voluntary join-the-beta list
+(`POST /api/join`, `MEMBER_KEY` secret shared for claim-link verification),
+where members opt a device in via a personal link. All of this is disclosed
+on `/telemetry`.
+
 ### The curl installers at `/install` and `/install-cockpit`
 
 `https://phux.sh/install` and `https://phux.sh/install.sh` serve the repo's

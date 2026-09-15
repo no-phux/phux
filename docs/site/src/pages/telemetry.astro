@@ -18,6 +18,25 @@ const description =
       no IPs, no raw user agents, no cookies. Refreshes every 30s.
     </p>
 
+    <section class="card privacy">
+      <h2>what we measure (and what we don't)</h2>
+      <p>
+        Anonymous visits are counted as aggregates: rough user-agent class,
+        country, and page/signal counts, with visitor identity reduced to a
+        daily-rotated hash — nothing correlates across days, no cookies are
+        set, and IPs are never stored.
+      </p>
+      <p>
+        The one identified dataset is <strong>voluntary</strong>: the
+        <a href="/#beta">join-the-beta</a> email list. Members who want
+        device-level detail (e.g. "my installs, my demo sessions") opt in by
+        clicking a personal claim link from the beta emails, which sets a
+        first-party <code>phux_mid</code> cookie. Nothing else on this site
+        is individually tracked, and the raw event store is private with a
+        90-day retention.
+      </p>
+    </section>
+
     <div id="tiles" class="tiles" aria-live="polite"></div>
 
     <div class="grid">
@@ -111,6 +130,16 @@ const description =
     letter-spacing: 0.08em;
     color: var(--fg-muted, #565f89);
     margin: 0 0 12px;
+  }
+  .privacy p {
+    margin: 0 0 10px;
+    color: var(--fg-muted, #565f89);
+    font-size: 13px;
+    max-width: 80ch;
+  }
+  .privacy strong,
+  .privacy a {
+    color: var(--fg, #c0caf5);
   }
   .bars {
     display: flex;

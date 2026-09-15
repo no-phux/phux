@@ -14,9 +14,16 @@ import {
   TelemetryDO,
   classifyRequest,
   recordEvents,
+  shouldSkipPath,
   type TelemetryNamespace,
   type WaitUntil,
 } from "./telemetry";
+import {
+  buildEnvelope,
+  forwardEnvelope,
+  handleClaim,
+  handleJoin,
+} from "./analytics";
 
 export { TelemetryDO };
 
@@ -25,6 +32,10 @@ export interface Env {
   TELEMETRY?: TelemetryNamespace;
   /** Shared secret for the demo worker's cross-worker telemetry ingest. */
   TELEMETRY_INGEST_KEY?: string;
+  /** Private ops pipeline (no-phux/ops). URLs/keys are secrets. */
+  ANALYTICS_INGEST_URL?: string;
+  ANALYTICS_INGEST_KEY?: string;
+  MEMBER_KEY?: string;
 }
 
 export default {
@@ -47,10 +58,9 @@ export default {
       recordEvents(
         env.TELEMETRY,
         ctx,
-        classifyRequest(request, mcp, [
-          { dim: "signal", key: "mcp" },
-        ]),
+        classifyRequest(request, mcp, [{ dim: "signal", key: "mcp" }]),
       );
+      observe(env, ctx, request, mcp);
       return mcp;
     }
 
@@ -62,11 +72,19 @@ export default {
     if (url.pathname === "/api/telemetry/ingest") {
       return telemetryIngest(request, env);
     }
+    // Voluntary member signup (the join-the-beta form) and device claim.
+    if (url.pathname === "/api/join" && request.method === "POST") {
+      return handleJoin(request, env, ctx);
+    }
+    if (url.pathname === "/api/claim") {
+      return handleClaim(request, env);
+    }
 
     const asset = await env.ASSETS.fetch(request);
     const contentType = asset.headers.get("content-type") ?? "";
     if (!asset.ok || !contentType.includes("text/html")) {
       recordEvents(env.TELEMETRY, ctx, classifyRequest(request, asset));
+      observe(env, ctx, request, asset);
       return asset;
     }
 
@@ -76,6 +94,7 @@ export default {
     ) {
       const markdown = await markdownResponse(asset);
       recordEvents(env.TELEMETRY, ctx, classifyRequest(request, markdown));
+      observe(env, ctx, request, markdown);
       return markdown;
     }
 
@@ -96,9 +115,27 @@ export default {
       headers,
     });
     recordEvents(env.TELEMETRY, ctx, classifyRequest(request, html));
+    observe(env, ctx, request, html);
     return html;
   },
 };
+
+// Forward one exchange to the private ops pipeline. Skips static assets
+// (same rule as the public aggregate counters) and never throws.
+function observe(
+  env: Env,
+  ctx: WaitUntil | undefined,
+  request: Request,
+  response: Response,
+): void {
+  try {
+    if (!shouldSkipPath(new URL(request.url).pathname)) {
+      forwardEnvelope(env, ctx, buildEnvelope(request, response));
+    }
+  } catch {
+    // analytics must never affect the request
+  }
+}
 
 async function markdownResponse(asset: Response): Promise<Response> {
   const markdown = htmlToMarkdown(await asset.text());

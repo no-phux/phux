@@ -240,24 +240,25 @@ pub fn acceptor_from_pem(cert_path: &Path, key_path: &Path) -> Result<TlsAccepto
     acceptor_from_pem_with_client_ca(cert_path, key_path, None)
 }
 
-/// Build a WebSocket TLS acceptor that verifies client certificates against a
-/// workload CA. `None` retains the legacy server-only TLS mode for local and
-/// compatibility callers.
+/// Build a WebSocket TLS acceptor that verifies client certificates against
+/// the workload CA certificate `client_ca`. `None` retains the legacy
+/// server-only TLS mode for local and compatibility callers.
 pub(crate) fn acceptor_from_pem_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
-    client_ca_path: Option<&Path>,
+    client_ca: Option<&CertificateDer<'static>>,
 ) -> Result<TlsAcceptor, TlsError> {
     Ok(TlsAcceptor::from(Arc::new(
-        server_config_from_pem_with_client_ca(cert_path, key_path, client_ca_path)?,
+        server_config_from_pem_with_client_ca(cert_path, key_path, client_ca)?,
     )))
 }
 
-/// Build the QUIC server config with optional mTLS client verification.
+/// Build the QUIC server config with optional mTLS client verification
+/// against the workload CA certificate `client_ca`.
 pub(crate) fn quic_server_config_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
-    client_ca_path: Option<&Path>,
+    client_ca: Option<&CertificateDer<'static>>,
 ) -> Result<ServerConfig, TlsError> {
     let certs = load_certs(cert_path)?;
     let key = load_key(key_path)?;
@@ -266,9 +267,9 @@ pub(crate) fn quic_server_config_with_client_ca(
         ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_protocol_versions(&[&rustls::version::TLS13])
             .map_err(TlsError::Rustls)?;
-    let mut config = match client_ca_path {
-        Some(path) => builder
-            .with_client_cert_verifier(client_verifier(path)?)
+    let mut config = match client_ca {
+        Some(ca) => builder
+            .with_client_cert_verifier(client_verifier(ca)?)
             .with_single_cert(certs, key)?,
         None => builder.with_no_client_auth().with_single_cert(certs, key)?,
     };
@@ -279,7 +280,7 @@ pub(crate) fn quic_server_config_with_client_ca(
 fn server_config_from_pem_with_client_ca(
     cert_path: &Path,
     key_path: &Path,
-    client_ca_path: Option<&Path>,
+    client_ca: Option<&CertificateDer<'static>>,
 ) -> Result<ServerConfig, TlsError> {
     let certs = load_certs(cert_path)?;
     let key = load_key(key_path)?;
@@ -287,21 +288,25 @@ fn server_config_from_pem_with_client_ca(
         ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .with_safe_default_protocol_versions()
             .map_err(TlsError::Rustls)?;
-    Ok(match client_ca_path {
-        Some(path) => builder
-            .with_client_cert_verifier(client_verifier(path)?)
+    Ok(match client_ca {
+        Some(ca) => builder
+            .with_client_cert_verifier(client_verifier(ca)?)
             .with_single_cert(certs, key)?,
         None => builder.with_no_client_auth().with_single_cert(certs, key)?,
     })
 }
 
-fn client_verifier(
-    ca_path: &Path,
+/// The client-certificate verifier the mTLS acceptors install for a workload
+/// CA. `phux workload add-key` checks a supplied certificate with this same
+/// verifier, so enrollment accepts exactly what the handshake accepts.
+///
+/// It is built from the CA certificate's DER as the workload store read it
+/// (owner, mode, and no-follow checked), never by re-reading a path.
+pub(crate) fn client_verifier(
+    ca: &CertificateDer<'static>,
 ) -> Result<Arc<dyn rustls::server::danger::ClientCertVerifier>, TlsError> {
     let mut roots = rustls::RootCertStore::empty();
-    for cert in load_certs(ca_path)? {
-        roots.add(cert).map_err(TlsError::Rustls)?;
-    }
+    roots.add(ca.clone()).map_err(TlsError::Rustls)?;
     rustls::server::WebPkiClientVerifier::builder(Arc::new(roots))
         .build()
         .map_err(|error| TlsError::ClientVerifier(error.to_string()))
@@ -497,6 +502,7 @@ mod tests {
         let ca_key = dir.path().join("workload-ca.key");
         ensure_self_signed(&cert, &key).unwrap();
         crate::workload::ensure_ca(&ca, &ca_key).unwrap();
+        let ca = crate::workload::authority_certificate(&ca).unwrap();
         acceptor_from_pem_with_client_ca(&cert, &key, Some(&ca)).unwrap();
         quic_server_config_with_client_ca(&cert, &key, Some(&ca)).unwrap();
     }

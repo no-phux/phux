@@ -266,21 +266,38 @@ src/
   snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs,
   layout_ops.rs, ask.rs, agent_meta.rs, agent_prompt.rs, agent_wait.rs,
   agent_session.rs (`phux agent session` / `emit` / `log`),
-  vcs.rs, explain.rs, perf.rs, record.rs
+  vcs.rs, explain.rs, perf.rs, record.rs, upgrade.rs
                       — one module per agent-CLI verb's library half
                         (docs/consumers/agents.md); layout_ops, agent_meta,
-                        vcs, and perf are also read by the TUI chrome
+                        vcs, and perf are also read by the TUI chrome;
+                        upgrade.rs is UPGRADE (`phux upgrade`, ADR-0032)
+  agent_record.rs     — phux.agent/v1 read/write/index (`phux agent
+                        set`/`clear`/`ls`, ADR-0040); the record type and
+                        its encode/parse convention live in agent_meta.rs
+  agent_session_record.rs
+                      — phux.agent-session/v1 provider-native provenance:
+                        the AgentSessionRecord type, its persist/fetch-index
+                        round trips, and spawn_with_agent_session (SPAWN_RESOURCE
+                        plus the optional provenance write and its
+                        KILL_RESOURCE rollback), shared by `phux spawn` /
+                        `phux launch`. Distinct from both agent_record.rs
+                        (a different, human-declared record) and
+                        agent_session.rs below (a different, server-tracked
+                        resource kind) despite the similar names.
   detach.rs           — DETACH_CLIENTS classification (`phux detach`)
   kill.rs             — SHUTDOWN / KILL_RESOURCES / KILL_RESOURCE and the
                         keep-empty clear (`phux kill`); selector resolution
                         and the whole-session-vs-per-pane choice stay CLI-side
-  session.rs          — session-identity L3 writes; today just `rename`
-                        (`phux rename`), whose request id is now a caller
-                        parameter rather than hardcoded inside the write
-                        (the CLI still passes a fixed id today; this only
-                        matters once a caller composes more than one rename
-                        per connection); create-without-attach (`phux new`)
-                        is a pending follow-up into this module
+  session.rs          — session-identity L3 writes: `rename` (`phux
+                        rename`), whose request id is now a caller parameter
+                        rather than hardcoded inside the write (the CLI
+                        still passes a fixed id today; this only matters
+                        once a caller composes more than one rename per
+                        connection), and create-without-attach (`phux
+                        new`/`phux new --json`/`--empty`), including the
+                        atomic-agent-session-restore capability preflight;
+                        duplicate-name rejection and CLI wording stay in
+                        `crates/phux/src/commands/new.rs`
   signal.rs           — ACQUIRE_INPUT / RELEASE_INPUT / SIGNAL_TERMINAL
                         command builders and their shared outcome
                         (`phux take` / `phux give` / `phux signal`, ADR-0033)

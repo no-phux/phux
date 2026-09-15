@@ -1,12 +1,13 @@
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::connection::Connection;
-use phux_protocol::caps::ServerFeature;
-use phux_protocol::wire::frame::{
-    AttachTarget, FrameKind, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY,
-    SESSION_CREATE_RESULT_KEY_PREFIX, Scope,
+use phux_client::session::{
+    AtomicPreflightOutcome, CreateEmptyOutcome, CreateOutcome, CreateSessionError,
+    CreateSessionRequest,
 };
+use phux_protocol::wire::frame::AttachTarget;
 
 use crate::commands::server_target::{ServerSpec, ServerTarget};
 use crate::commands::{
@@ -322,9 +323,10 @@ fn choose_session_name(requested: Option<String>, existing: &[String]) -> Result
 /// Since the v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027) dissolved the
 /// L2 collection tier and removed the `CREATE_SESSION` verb, create-without-
 /// attach is expressed as an L3 `SET_METADATA` write of the conventional
-/// [`SESSION_CREATE_KEY`] (`Scope::Global`, value = JSON `{name, command?,
-/// cwd?}`). The server seeds the session + pane atomically; the client then
-/// reads the seed-pane id back from [`SESSION_CREATE_RESULT_KEY`] via
+/// `phux.session.create/v1` key (`Scope::Global`, value = JSON `{name,
+/// command?, cwd?}`), via [`phux_client::session::create_session`]. The
+/// server seeds the session + pane atomically; the client then reads the
+/// seed-pane id back from the nonce-correlated result key via
 /// `GET_METADATA` (`SET_METADATA` carries no reply frame).
 ///
 /// `--json` requires an explicit `-s NAME` (auto-naming is reserved for the
@@ -384,9 +386,8 @@ fn empty_session_json(session: &str) -> serde_json::Value {
     })
 }
 
-/// Create an empty, keep-empty session named `name` (ADR-0105) through the
-/// same `SESSION_CREATE_KEY` write and nonce-correlated read-back as
-/// [`create_session_via_metadata`].
+/// Create an empty, keep-empty session named `name` (ADR-0105) through
+/// [`phux_client::session::create_empty_session`].
 ///
 /// Refuses before writing when the server does not advertise
 /// `KeepEmptySessions`: an older server ignores the unknown `empty` field
@@ -396,112 +397,72 @@ pub(crate) async fn create_empty_session_via_metadata(
     name: &str,
     json: bool,
 ) -> Result<(), ExitCode> {
-    let request_token = uuid::Uuid::new_v4().to_string();
-    let result_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{request_token}");
-    let create_bytes =
-        serde_json::to_vec(&empty_create_request(name, &request_token)).map_err(|err| {
-            eprintln!("phux: failed to serialize create request: {err}");
-            ExitCode::FAILURE
-        })?;
     let mut conn = server
         .connect()
         .await
         .map_err(|err| server.report_unreachable(json, &err, "new"))?;
-    require_keep_empty_support(&conn)?;
+    // Checked before the duplicate-name `GET_STATE`, matching the
+    // pre-migration order: against a server that lacks the bit, this is the
+    // *only* round trip (no GET_STATE, and none of its partial-view
+    // wording), same as before create-without-attach existed as a
+    // `phux_client::session` extension. `create_empty_session`'s own check
+    // is a harmless second guard for a caller that reaches it directly.
+    if !phux_client::session::keep_empty_supported(&conn) {
+        eprintln!(
+            "phux: create-session failed: the server does not support empty sessions; upgrade it"
+        );
+        return Err(ExitCode::FAILURE);
+    }
     reject_duplicate_session_name(&mut conn, server, name, json).await?;
-    send_create_request(&mut conn, server, create_bytes, json).await?;
-    let (bytes, _) = read_create_result(&mut conn, server, name, json, result_key, false).await?;
-    if empty_session_result_matches(&bytes, name, &request_token) {
-        Ok(())
-    } else {
-        Err(report_session_not_registered(name))
+    let mut notices = Vec::new();
+    let result = phux_client::session::create_empty_session(&mut conn, name, &mut notices).await;
+    drop(conn);
+    // Printed before the error is reported, in encounter order: a notice
+    // collected before a later transport failure must not be dropped.
+    warn_partial_results(&notices);
+    let outcome = result.map_err(|err| report_create_session_error(server, json, err))?;
+    match outcome {
+        CreateEmptyOutcome::Created => Ok(()),
+        CreateEmptyOutcome::Unsupported => {
+            eprintln!(
+                "phux: create-session failed: the server does not support empty sessions; upgrade it"
+            );
+            Err(ExitCode::FAILURE)
+        }
+        CreateEmptyOutcome::ReadRefused(refusal) => {
+            eprintln!("phux: create-session failed: server refused the read-back: {refusal}");
+            Err(ExitCode::FAILURE)
+        }
+        CreateEmptyOutcome::NotRegistered => Err(report_session_not_registered(name)),
     }
 }
 
-/// The `SESSION_CREATE_KEY` document for an empty session.
-fn empty_create_request(name: &str, request_token: &str) -> serde_json::Value {
-    serde_json::json!({
-        "name": name,
-        "empty": true,
-        "keep_empty": true,
-        "request_token": request_token,
-    })
-}
-
-/// Refuse when the connected server does not advertise keep-empty sessions.
-fn require_keep_empty_support(conn: &Connection) -> Result<(), ExitCode> {
-    let supported = conn.negotiated_bootstrap().is_some_and(|bootstrap| {
-        bootstrap
-            .server_features
-            .contains(ServerFeature::KeepEmptySessions)
-    });
-    if supported {
-        return Ok(());
-    }
-    eprintln!(
-        "phux: create-session failed: the server does not support empty sessions; upgrade it"
-    );
-    Err(ExitCode::FAILURE)
-}
-
-/// Whether a create-result document answers this empty-session request: the
-/// name and nonce match, and the server confirms it created no terminal.
-fn empty_session_result_matches(bytes: &[u8], name: &str, request_token: &str) -> bool {
-    serde_json::from_slice::<serde_json::Value>(bytes).is_ok_and(|v| {
-        v.get("name").and_then(serde_json::Value::as_str) == Some(name)
-            && v.get("request_token").and_then(serde_json::Value::as_str) == Some(request_token)
-            && v.get("empty").and_then(serde_json::Value::as_bool) == Some(true)
-    })
-}
-
+/// Ask the connected server whether it supports atomic agent-session
+/// restore, via [`phux_client::session::atomic_agent_session_preflight`].
 async fn require_atomic_agent_session_create(
     conn: &mut Connection,
     server: &ServerTarget,
     json: bool,
 ) -> Result<(), ExitCode> {
+    let mut notices = Vec::new();
     // Native restore must be atomic with session creation. Older servers treat
     // the nonce-result namespace as ordinary metadata and cannot install
     // `agent_session` in the create transaction. Current servers reserve it
     // and reject the sentinel write. This consumes no protocol capability bit.
-    let probe_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{}", uuid::Uuid::new_v4());
-    conn.send(&FrameKind::SetMetadata {
-        request_id: 100,
-        scope: Scope::Global,
-        key: probe_key.clone(),
-        value: uuid::Uuid::new_v4().as_bytes().to_vec(),
-    })
-    .await
-    .map_err(|err| server.report_unreachable(json, &err, "new"))?;
-    let (probe, interleaved) = conn
-        .request_metadata(101, Scope::Global, probe_key.clone())
-        .await
-        .map_err(|err| server.report_unreachable(json, &err, "new"))?
-        .into_parts();
-    for message in phux_client::state::degradation_notices(&interleaved) {
-        eprintln!("phux: warning: partial results — {message}");
-    }
-    match probe {
-        Ok(None) => Ok(()),
-        Ok(Some(_)) => {
-            conn.send(&FrameKind::DeleteMetadata {
-                request_id: 102,
-                scope: Scope::Global,
-                key: probe_key.clone(),
-            })
-            .await
-            .map_err(|err| server.report_unreachable(json, &err, "new"))?;
-            // Ordered read-back confirms that the old server processed the
-            // cleanup before this connection closes.
-            let _ = conn
-                .request_metadata(103, Scope::Global, probe_key)
-                .await
-                .map_err(|err| server.report_unreachable(json, &err, "new"))?;
+    let result = phux_client::session::atomic_agent_session_preflight(conn, &mut notices).await;
+    // Printed before the error is reported, in encounter order: a notice
+    // collected before a later transport failure must not be dropped.
+    warn_partial_results(&notices);
+    let outcome = result.map_err(|err| server.report_unreachable(json, &err, "new"))?;
+    match outcome {
+        AtomicPreflightOutcome::Supported => Ok(()),
+        AtomicPreflightOutcome::Unsupported => {
             eprintln!(
                 "phux: create-session failed: server does not support atomic agent-session restore"
             );
             Err(ExitCode::FAILURE)
         }
-        Err(refusal) => {
+        AtomicPreflightOutcome::Refused(refusal) => {
             eprintln!(
                 "phux: create-session failed: server refused the agent-session capability probe: {refusal}"
             );
@@ -521,13 +482,13 @@ pub(crate) async fn preflight_atomic_agent_session_create(
     require_atomic_agent_session_create(&mut conn, &server, false).await
 }
 
-/// Create a named session without attaching via the conventional
-/// `SESSION_CREATE_KEY` write, then read the seed-pane id back from a
-/// nonce-correlated, one-shot result key.
+/// Create a named session without attaching via
+/// [`phux_client::session::create_session`], then translate the typed
+/// outcome into this verb's historical stderr diagnostics.
 ///
 /// `agent_session_preflighted` is true only when a multi-session caller has
 /// already run [`preflight_atomic_agent_session_create`] before creating any
-/// member of its batch; otherwise this function performs that probe itself.
+/// member of its batch; otherwise the create itself performs that probe.
 /// Returns the seed pane's local id on success, or the failure `ExitCode`
 /// (already reported to stderr) otherwise. Shared by `phux new --json`; mirrors
 /// the MCP `phux_new` path. `server` is the local socket or a `--remote` host.
@@ -540,22 +501,12 @@ pub(crate) async fn create_session_via_metadata(
     name: &str,
     command: Option<Vec<String>>,
     cwd: Option<String>,
-    env: std::collections::BTreeMap<String, String>,
+    env: BTreeMap<String, String>,
     agent_session: Option<Vec<u8>>,
     agent_session_preflighted: bool,
     json: bool,
 ) -> Result<u64, ExitCode> {
     let allow_legacy_result = agent_session.is_none();
-    let request_token = uuid::Uuid::new_v4().to_string();
-    let result_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{request_token}");
-    let create_bytes = encode_create_request(
-        name,
-        command.as_deref(),
-        cwd.as_deref(),
-        &env,
-        &request_token,
-        agent_session.as_deref(),
-    )?;
 
     let mut conn = server
         .connect()
@@ -564,47 +515,70 @@ pub(crate) async fn create_session_via_metadata(
 
     reject_duplicate_session_name(&mut conn, server, name, json).await?;
 
-    if !allow_legacy_result && !agent_session_preflighted {
-        require_atomic_agent_session_create(&mut conn, server, json).await?;
-    }
-
-    send_create_request(&mut conn, server, create_bytes, json).await?;
-
-    let (bytes, correlated) = read_create_result(
-        &mut conn,
-        server,
+    let request = CreateSessionRequest {
         name,
-        json,
-        result_key,
+        command: command.as_deref(),
+        cwd: cwd.as_deref(),
+        env: &env,
+        agent_session: agent_session.as_deref(),
+    };
+    let mut notices = Vec::new();
+    let result = phux_client::session::create_session(
+        &mut conn,
+        &request,
         allow_legacy_result,
+        agent_session_preflighted,
+        &mut notices,
     )
-    .await?;
-
-    seed_pane_id_from_result(&bytes, name, &request_token, correlated)
-        .ok_or_else(|| report_session_not_registered(name))
+    .await;
+    drop(conn);
+    // Printed before the error is reported, in encounter order: a notice
+    // collected before a later transport failure must not be dropped.
+    warn_partial_results(&notices);
+    let outcome = result.map_err(|err| report_create_session_error(server, json, err))?;
+    match outcome {
+        CreateOutcome::Created(id) => Ok(id),
+        CreateOutcome::AtomicRestoreUnsupported => {
+            eprintln!(
+                "phux: create-session failed: server does not support atomic agent-session restore"
+            );
+            Err(ExitCode::FAILURE)
+        }
+        CreateOutcome::ProbeRefused(refusal) => {
+            eprintln!(
+                "phux: create-session failed: server refused the agent-session capability probe: {refusal}"
+            );
+            Err(ExitCode::FAILURE)
+        }
+        CreateOutcome::ReadRefused(refusal) => {
+            eprintln!("phux: create-session failed: server refused the read-back: {refusal}");
+            Err(ExitCode::FAILURE)
+        }
+        CreateOutcome::LegacyReadRefused(refusal) => {
+            eprintln!("phux: create-session failed: server refused legacy read-back: {refusal}");
+            Err(ExitCode::FAILURE)
+        }
+        CreateOutcome::NotRegistered => Err(report_session_not_registered(name)),
+    }
 }
 
-/// Encode the `SESSION_CREATE_KEY` request document.
-fn encode_create_request(
-    name: &str,
-    command: Option<&[String]>,
-    cwd: Option<&str>,
-    env: &std::collections::BTreeMap<String, String>,
-    request_token: &str,
-    agent_session: Option<&[u8]>,
-) -> Result<Vec<u8>, ExitCode> {
-    serde_json::to_vec(&serde_json::json!({
-        "name": name,
-        "command": command,
-        "cwd": cwd,
-        "env": env,
-        "request_token": request_token,
-        "agent_session": agent_session,
-    }))
-    .map_err(|err| {
-        eprintln!("phux: failed to serialize create request: {err}");
-        ExitCode::FAILURE
-    })
+/// Translate a [`CreateSessionError`] into the verb's failure `ExitCode`,
+/// hardcoded to attribute transport failures to `"new"` regardless of the
+/// caller's own verb name — matching this probe's historical behavior even
+/// when reached through `preflight_atomic_agent_session_create`'s
+/// `"workspace restore"` connect.
+fn report_create_session_error(
+    server: &ServerTarget,
+    json: bool,
+    err: CreateSessionError,
+) -> ExitCode {
+    match err {
+        CreateSessionError::Attach(err) => server.report_unreachable(json, &err, "new"),
+        CreateSessionError::Encode(err) => {
+            eprintln!("phux: failed to serialize create request: {err}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// Reject a duplicate name before writing (the server also refuses it, but
@@ -632,92 +606,10 @@ async fn reject_duplicate_session_name(
     Ok(())
 }
 
-/// Request the create.
-///
-/// Frames are ordered on the connection, while the nonce inside the request
-/// prevents another concurrent creator from supplying a stale or unrelated
-/// Terminal id to the read-back that follows.
-async fn send_create_request(
-    conn: &mut Connection,
-    server: &ServerTarget,
-    create_bytes: Vec<u8>,
-    json: bool,
-) -> Result<(), ExitCode> {
-    conn.send(&FrameKind::SetMetadata {
-        request_id: 1,
-        scope: Scope::Global,
-        key: SESSION_CREATE_KEY.to_owned(),
-        value: create_bytes,
-    })
-    .await
-    .map_err(|err| server.report_unreachable(json, &err, "new"))
-}
-
-/// Read only this request's one-shot result, falling back to the legacy
-/// uncorrelated key when the caller allows it. The `bool` reports whether the
-/// bytes came from the correlated key.
-///
-/// The read-back rides `request_metadata`, not a hand-rolled wait. The
-/// loop that used to be here matched `METADATA_VALUE` on request id 2 and
-/// dropped everything else, so a server that refused the read with a
-/// correlated ERROR (`proto.md` §9) left `phux new` hanging with the
-/// session possibly already created — the worst shape of this bug, because
-/// the user's Ctrl-C then looks like the create failed.
-async fn read_create_result(
-    conn: &mut Connection,
-    server: &ServerTarget,
-    name: &str,
-    json: bool,
-    result_key: String,
-    allow_legacy_result: bool,
-) -> Result<(Vec<u8>, bool), ExitCode> {
-    let (answer, interleaved) = conn
-        .request_metadata(2, Scope::Global, result_key)
-        .await
-        .map_err(|err| server.report_unreachable(json, &err, "new"))?
-        .into_parts();
-    warn_partial_results(&interleaved);
-    let result_value = answer.map_err(|refusal| {
-        // Distinct from "no value": the server declined to answer at all, so
-        // saying "did not register" below would be a guess stated as a fact.
-        eprintln!("phux: create-session failed: server refused the read-back: {refusal}");
-        ExitCode::FAILURE
-    })?;
-    if let Some(bytes) = result_value {
-        return Ok((bytes, true));
-    }
-    if !allow_legacy_result {
-        return Err(report_session_not_registered(name));
-    }
-    let legacy = read_legacy_create_result(conn, server, name, json).await?;
-    Ok((legacy, false))
-}
-
-/// Read the uncorrelated `SESSION_CREATE_RESULT_KEY` a server that predates
-/// the nonce still answers on.
-async fn read_legacy_create_result(
-    conn: &mut Connection,
-    server: &ServerTarget,
-    name: &str,
-    json: bool,
-) -> Result<Vec<u8>, ExitCode> {
-    let (legacy_answer, legacy_interleaved) = conn
-        .request_metadata(3, Scope::Global, SESSION_CREATE_RESULT_KEY.to_owned())
-        .await
-        .map_err(|err| server.report_unreachable(json, &err, "new"))?
-        .into_parts();
-    warn_partial_results(&legacy_interleaved);
-    legacy_answer
-        .map_err(|refusal| {
-            eprintln!("phux: create-session failed: server refused legacy read-back: {refusal}");
-            ExitCode::FAILURE
-        })?
-        .ok_or_else(|| report_session_not_registered(name))
-}
-
-/// Report every degradation notice that rode along with a metadata answer.
-fn warn_partial_results(interleaved: &[FrameKind]) {
-    for message in phux_client::state::degradation_notices(interleaved) {
+/// Print every degradation notice a [`phux_client::session`] wire call
+/// collected, in encounter order.
+fn warn_partial_results(notices: &[String]) {
+    for message in notices {
         eprintln!("phux: warning: partial results — {message}");
     }
 }
@@ -726,28 +618,6 @@ fn warn_partial_results(interleaved: &[FrameKind]) {
 fn report_session_not_registered(name: &str) -> ExitCode {
     eprintln!("phux: create-session failed: server did not register session '{name}'");
     ExitCode::FAILURE
-}
-
-/// Read the seed pane's Terminal id out of a create-result document, rejecting
-/// one that does not answer for this request: the name must match, and the
-/// nonce must be present on a correlated read and absent on a legacy one.
-fn seed_pane_id_from_result(
-    bytes: &[u8],
-    name: &str,
-    request_token: &str,
-    correlated: bool,
-) -> Option<u64> {
-    serde_json::from_slice::<serde_json::Value>(bytes)
-        .ok()
-        .filter(|v| v.get("name").and_then(serde_json::Value::as_str) == Some(name))
-        .filter(|v| {
-            if correlated {
-                v.get("request_token").and_then(serde_json::Value::as_str) == Some(request_token)
-            } else {
-                v.get("request_token").is_none()
-            }
-        })
-        .and_then(|v| v.get("terminal_id").and_then(serde_json::Value::as_u64))
 }
 
 /// The seed pane's working directory (phux-0db).
@@ -848,14 +718,17 @@ pub(crate) fn unique_session_name(existing: &[String], base: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AttachTarget, Path, PathBuf, RANDOM_NAME_ATTEMPTS, choose_session_name,
-        empty_create_request, empty_session_json, empty_session_result_matches, fresh_session_name,
+        AttachTarget, Path, PathBuf, RANDOM_NAME_ATTEMPTS, ServerTarget, choose_session_name,
+        create_empty_session_via_metadata, empty_session_json, fresh_session_name,
         new_session_json, new_session_target, requested_session_name, seed_cwd,
         unique_session_name,
     };
 
     /// ADR-0105: `phux new --empty --json` keeps the three documented keys,
-    /// with `terminal_id` null, and adds `empty` and `keep_empty`.
+    /// with `terminal_id` null, and adds `empty` and `keep_empty`. The
+    /// analogous request-document and result-matching shapes
+    /// (`phux.session.create/v1`'s wire encoding) are pinned in
+    /// `phux-client`'s `session.rs` tests, next to the code that builds them.
     #[test]
     fn empty_session_json_pins_the_contract_shape() {
         let doc = empty_session_json("parked");
@@ -867,28 +740,39 @@ mod tests {
         assert_eq!(doc.as_object().map(serde_json::Map::len), Some(5));
     }
 
-    /// The create request asks for an empty, keep-empty session and carries
-    /// no command, so a server cannot mistake it for a seeded create.
-    #[test]
-    fn empty_create_request_carries_no_command() {
-        let doc = empty_create_request("parked", "tok");
-        assert_eq!(doc["name"], "parked");
-        assert_eq!(doc["empty"], true);
-        assert_eq!(doc["keep_empty"], true);
-        assert_eq!(doc["request_token"], "tok");
-        assert!(doc.get("command").is_none());
+    /// L21b review (fix 1): against a server that never advertises
+    /// `KeepEmptySessions`, `phux new --empty` must refuse on the
+    /// capability check alone — no `GET_STATE` round trip, and so no
+    /// possible partial-view warning from one. The pre-migration code
+    /// checked support before the duplicate-name lookup; this pins that
+    /// order surviving the move into `phux_client::session`.
+    #[tokio::test]
+    async fn create_empty_session_refuses_before_any_get_state_when_unsupported() {
+        use phux_client::testkit::{ScriptSpec, ScriptedServer};
+        use phux_protocol::wire::frame::FrameKind;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+        // A bare `ScriptSpec` advertises no `KeepEmptySessions` bit.
+        let spec = ScriptSpec::new();
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+
+        let target = ServerTarget::local(&socket);
+        let result = create_empty_session_via_metadata(&target, "parked", false).await;
+        let seen = server.await.expect("scripted server task");
+
+        assert_eq!(result, Err(std::process::ExitCode::FAILURE));
+        assert_eq!(
+            seen.len(),
+            1,
+            "expected only the HELLO handshake, no GET_STATE; sent {seen:?}"
+        );
+        assert!(matches!(seen[0], FrameKind::Hello { .. }));
     }
 
-    /// Only a result naming this request, with `empty: true`, confirms it.
-    #[test]
-    fn empty_session_result_requires_name_nonce_and_empty() {
-        let ok = br#"{"name":"parked","terminal_id":null,"request_token":"tok","empty":true}"#;
-        assert!(empty_session_result_matches(ok, "parked", "tok"));
-        let other_nonce = br#"{"name":"parked","request_token":"x","empty":true}"#;
-        assert!(!empty_session_result_matches(other_nonce, "parked", "tok"));
-        let seeded = br#"{"name":"parked","terminal_id":3,"request_token":"tok"}"#;
-        assert!(!empty_session_result_matches(seeded, "parked", "tok"));
-    }
     use phux_config::{NameRng, random_name};
 
     const CWD: &str = "/home/me/proj";

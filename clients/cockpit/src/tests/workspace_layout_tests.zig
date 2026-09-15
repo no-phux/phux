@@ -144,9 +144,12 @@ test "the painter, the hit targets, and the PTY pump agree on one set of rects" 
     } });
     for (panes[0..count]) |pane| {
         const terminal = app_state.model.provider.terminal(pane.terminal) orelse return error.TestExpectedTerminal;
+        // Split cards keep a constant chrome inset; the PTY is sized to the
+        // inner grid, not the layout card. Focus does not change this.
+        const grid_rect = app.paneGridRect(pane.rect, count);
         const expected = grid.Session.clampGrid(
-            @intFromFloat(@max(2, pane.rect.width / terminal.session.measuredCell().?.width)),
-            @intFromFloat(@max(2, pane.rect.height / terminal.session.measuredCell().?.height)),
+            @intFromFloat(@max(2, grid_rect.width / terminal.session.measuredCell().?.width)),
+            @intFromFloat(@max(2, grid_rect.height / terminal.session.measuredCell().?.height)),
         );
         try testing.expectEqual(expected.x, terminal.cols);
         try testing.expectEqual(expected.y, terminal.rows);
@@ -187,6 +190,74 @@ test "each split pane paints inside its own rect and keeps its own live session"
     try typeCanvasText(harness, app_iface, "left");
     try testing.expectEqualStrings("left", app_state.effects.ptyWrittenBytes(app.ptyKey(0)));
     try testing.expectEqualStrings("", app_state.effects.ptyWrittenBytes(app.ptyKey(1)));
+}
+
+test "split pane chrome is a rounded ring whose geometry does not follow focus" {
+    const gpa = testing.allocator;
+    const harness = try native_sdk.TestHarness().create(gpa, .{ .size = surface });
+    defer harness.destroy(gpa);
+    const app_state = try startSplitCockpit(gpa, harness);
+    defer gpa.destroy(app_state);
+    defer destroyModelSessions(&app_state.model);
+    defer app_state.deinit();
+    const app_iface = app_state.app();
+    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
+
+    var panes: [app.max_panes_per_tab]app.LayoutPane = undefined;
+    const count = app.resolvePanes(&app_state.model, surface, &panes);
+    try testing.expectEqual(@as(usize, 2), count);
+
+    const list = harness.runtime.views[0].canvasDisplayList();
+    const before_origin = try paneGridOrigin(list, 0);
+    const before_viewports = app.proposedViewportsIn(&app_state.model, app_state.model.wsConst(), surface);
+    try expectRoundedSplitChrome(list, count, app.cockpitTokens(&app_state.model));
+
+    const left_target = rectCenter(panes[0].rect);
+    try clickCanvas(harness, app_iface, left_target.x, left_target.y);
+    try harness.runtime.dispatchPlatformEvent(app_iface, .frame_requested);
+
+    const after_list = harness.runtime.views[0].canvasDisplayList();
+    const after_origin = try paneGridOrigin(after_list, 0);
+    const after_viewports = app.proposedViewportsIn(&app_state.model, app_state.model.wsConst(), surface);
+    try testing.expectApproxEqAbs(before_origin.x, after_origin.x, 0.001);
+    try testing.expectApproxEqAbs(before_origin.y, after_origin.y, 0.001);
+    try testing.expectEqual(before_viewports.count, after_viewports.count);
+    for (before_viewports.slice(), after_viewports.slice()) |before, after| {
+        try testing.expectEqual(before.cols, after.cols);
+        try testing.expectEqual(before.rows, after.rows);
+    }
+    try expectRoundedSplitChrome(after_list, count, app.cockpitTokens(&app_state.model));
+}
+
+fn paneGridOrigin(display_list: anytype, index: usize) !geometry.RectF {
+    const view = support.findPaneCellGrid(display_list, index) orelse return error.TestExpectedCellGrid;
+    return view.cellRect(0, 0);
+}
+
+fn expectRoundedSplitChrome(display_list: anytype, pane_count: usize, tokens: native_sdk.canvas.DesignTokens) !void {
+    var borders: usize = 0;
+    var rings: usize = 0;
+    for (display_list.commands) |command| {
+        switch (command) {
+            .stroke_rect => |stroke| {
+                if (stroke.id >= app.pane_focus_command_id_base and stroke.id < app.pane_border_command_id_base) {
+                    rings += 1;
+                    try testing.expect(stroke.radius.top_left > 0);
+                    try testing.expectApproxEqAbs(tokens.stroke.focus, stroke.stroke.width, 0.001);
+                } else if (stroke.id >= app.pane_border_command_id_base and stroke.id < app.link_preview_ground_command_id_base) {
+                    borders += 1;
+                    try testing.expect(stroke.radius.top_left > 0);
+                    try testing.expectApproxEqAbs(tokens.stroke.hairline, stroke.stroke.width, 0.001);
+                }
+            },
+            .fill_rect => |fill| {
+                try testing.expect(!(fill.id >= app.pane_focus_command_id_base and fill.id < app.pane_focus_command_id_base + 4));
+            },
+            else => {},
+        }
+    }
+    try testing.expectEqual(pane_count, borders);
+    try testing.expectEqual(@as(usize, 1), rings);
 }
 
 test "directional focus and pane cycling move between panes, not tabs" {

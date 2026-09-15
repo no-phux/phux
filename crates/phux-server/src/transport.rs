@@ -415,6 +415,10 @@ pub(crate) struct WsListener {
     tcp: TcpListener,
     tls: Option<tokio_rustls::TlsAcceptor>,
     tokens: Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>,
+    /// The workload registry, present only when a workload CA is configured
+    /// (and then `tls` verifies client certificates against that CA). Every
+    /// admission maps the client certificate through it, as QUIC does.
+    workload: Option<std::sync::Arc<crate::workload::ReloadingWorkloadRegistry>>,
     rejection_warnings: Mutex<PeerRejectionWarnLimiter>,
 }
 
@@ -423,18 +427,25 @@ impl WsListener {
         tcp: TcpListener,
         tls: Option<tokio_rustls::TlsAcceptor>,
         tokens: Option<std::sync::Arc<crate::auth::ReloadingTokenStore>>,
+        workload: Option<std::sync::Arc<crate::workload::ReloadingWorkloadRegistry>>,
     ) -> Self {
         Self {
             tcp,
             tls,
             tokens,
+            workload,
             rejection_warnings: Mutex::new(PeerRejectionWarnLimiter::new()),
         }
     }
 
     /// Bind a plaintext, unauthenticated listener (loopback browser client).
     pub(crate) async fn bind(addr: SocketAddr) -> io::Result<Self> {
-        Ok(Self::from_parts(TcpListener::bind(addr).await?, None, None))
+        Ok(Self::from_parts(
+            TcpListener::bind(addr).await?,
+            None,
+            None,
+            None,
+        ))
     }
 
     /// Bind a TLS-terminated, token-authenticated listener for remote consumers.
@@ -443,15 +454,21 @@ impl WsListener {
     /// handshake, so there is no token-over-plaintext path. ADR-0031's
     /// no-plaintext-remote invariant is enforced by this constructor being the
     /// only way to attach a token store.
+    ///
+    /// `workload` is `Some` exactly when `tls` was built with a workload CA
+    /// (ADR-0116): the pairing token stays outer admission, and the client
+    /// certificate must then map to an active registry credential too.
     pub(crate) async fn bind_secure(
         addr: SocketAddr,
         tls: tokio_rustls::TlsAcceptor,
         tokens: std::sync::Arc<crate::auth::ReloadingTokenStore>,
+        workload: Option<std::sync::Arc<crate::workload::ReloadingWorkloadRegistry>>,
     ) -> io::Result<Self> {
         Ok(Self::from_parts(
             TcpListener::bind(addr).await?,
             Some(tls),
             Some(tokens),
+            workload,
         ))
     }
 
@@ -553,24 +570,9 @@ impl Incoming for WsListener {
         // handshake failure are distinguishable when PHUX_LOG is debug.
         // Bounded by `HANDSHAKE_DEADLINE`: a peer that stalls mid-handshake
         // must not hold the accept loop, and so the whole listener, forever.
-        let stream = match &self.tls {
-            Some(acceptor) => ServerStream::Tls(Box::new(
-                tokio::time::timeout(HANDSHAKE_DEADLINE, acceptor.accept(tcp))
-                    .await
-                    .map_err(|_| {
-                        tracing::debug!(%source_ip, "WebSocket TLS handshake timed out");
-                        ws_accept_error(WsAcceptStage::TlsHandshake, source_ip)
-                    })?
-                    .map_err(|err| {
-                        tracing::debug!(
-                            %source_ip,
-                            error = %err,
-                            "WebSocket TLS handshake failed"
-                        );
-                        ws_accept_error(WsAcceptStage::TlsHandshake, source_ip)
-                    })?,
-            )),
-            None => ServerStream::Plain(tcp),
+        let (stream, peer_leaf) = match &self.tls {
+            Some(acceptor) => tls_handshake(acceptor, tcp, source_ip).await?,
+            None => (ServerStream::Plain(tcp), None),
         };
 
         // WebSocket upgrade. With a token store, validate the
@@ -581,6 +583,7 @@ impl Incoming for WsListener {
         let (ws, credential) = match &self.tokens {
             Some(store) => {
                 let store = store.clone();
+                let workload = self.workload.clone();
                 let captured: std::rc::Rc<
                     std::cell::RefCell<Option<crate::auth::AuthenticatedCredential>>,
                 > = std::rc::Rc::new(std::cell::RefCell::new(None));
@@ -592,7 +595,10 @@ impl Incoming for WsListener {
                 let ws = tokio::time::timeout(
                     HANDSHAKE_DEADLINE,
                     tokio_tungstenite::accept_hdr_async(stream, move |req: &Request, resp| {
-                        authorize_request(req, &store).map_or_else(
+                        let workload = workload
+                            .as_deref()
+                            .map(|registry| (registry, peer_leaf.as_deref()));
+                        admit_upgrade(req, &store, workload).map_or_else(
                             || Err(unauthorized_response()),
                             |credential| {
                                 *sink.borrow_mut() = Some(credential);
@@ -817,6 +823,61 @@ fn authorize_request(
     store.authenticate(&token)
 }
 
+/// Admit a WebSocket upgrade: the pairing token first (outer admission,
+/// consulted before and independently of the certificate registry), then,
+/// when a workload CA is configured, the TLS client certificate through the
+/// registry's current generation. Both must pass, and the workload
+/// credential becomes the connection's identity, exactly as on QUIC. Every
+/// refusal is the same 401, so a peer cannot tell which check failed
+/// (`workload-auth.md` §3, §7).
+fn admit_upgrade(
+    req: &Request,
+    store: &crate::auth::ReloadingTokenStore,
+    workload: Option<(&crate::workload::ReloadingWorkloadRegistry, Option<&[u8]>)>,
+) -> Option<crate::auth::AuthenticatedCredential> {
+    let bearer = authorize_request(req, store)?;
+    let Some((registry, leaf)) = workload else {
+        return Some(bearer);
+    };
+    registry.lookup_certificate(leaf?)
+}
+
+/// Terminate TLS under [`HANDSHAKE_DEADLINE`], keeping the client's leaf
+/// certificate, if it sent one, for the workload registry lookup.
+async fn tls_handshake(
+    acceptor: &tokio_rustls::TlsAcceptor,
+    tcp: TcpStream,
+    source_ip: IpAddr,
+) -> io::Result<(
+    ServerStream,
+    Option<rustls::pki_types::CertificateDer<'static>>,
+)> {
+    let tls = tokio::time::timeout(HANDSHAKE_DEADLINE, acceptor.accept(tcp))
+        .await
+        .map_err(|_| {
+            tracing::debug!(%source_ip, "WebSocket TLS handshake timed out");
+            ws_accept_error(WsAcceptStage::TlsHandshake, source_ip)
+        })?
+        .map_err(|err| {
+            tracing::debug!(%source_ip, error = %err, "WebSocket TLS handshake failed");
+            ws_accept_error(WsAcceptStage::TlsHandshake, source_ip)
+        })?;
+    let leaf = peer_leaf_certificate(&tls);
+    Ok((ServerStream::Tls(Box::new(tls)), leaf))
+}
+
+/// The leaf certificate a TLS client presented, if any. With a workload CA
+/// configured, rustls has already verified its chain during the handshake.
+fn peer_leaf_certificate(
+    tls: &tokio_rustls::server::TlsStream<TcpStream>,
+) -> Option<rustls::pki_types::CertificateDer<'static>> {
+    tls.get_ref()
+        .1
+        .peer_certificates()?
+        .first()
+        .map(|leaf| leaf.clone().into_owned())
+}
+
 fn request_token(req: &Request) -> Option<&str> {
     let (browser_protocol, browser_token) = browser_auth_protocols(req)?;
     let mut headers = req.headers().get_all("authorization").iter();
@@ -923,7 +984,7 @@ mod tests {
 
         let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = tcp.local_addr().unwrap();
-        let listener = WsListener::from_parts(tcp, None, Some(Arc::new(store)));
+        let listener = WsListener::from_parts(tcp, None, Some(Arc::new(store)), None);
         (listener, addr, token_hex, file)
     }
 
@@ -1025,6 +1086,140 @@ mod tests {
         let (_, _, identity) = accepted.unwrap();
         assert!(identity.credential.is_none());
         assert_eq!(response.headers()["sec-websocket-protocol"], "phux.v1");
+    }
+
+    /// One mTLS WebSocket attempt against `listener`: the admitted identity,
+    /// or `None` when the listener refused it (and the client then failed).
+    async fn mtls_attempt(
+        listener: &WsListener,
+        url: &str,
+        token: &str,
+        identity: &phux_dial::TlsClientIdentity,
+    ) -> Option<crate::auth::ConnectionIdentity> {
+        let dial = phux_dial::WsDial {
+            url: url.to_owned(),
+            token: Some(token.to_owned()),
+            trust: phux_dial::CertTrust::SkipVerify,
+            tls_server_name: None,
+        };
+        let (accepted, dialed) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(
+                listener.accept(),
+                phux_dial::ws::dial_with_identity(&dial, identity)
+            )
+        })
+        .await
+        .expect("the attempt settles");
+        if let Ok((_, _, admitted)) = accepted {
+            assert!(dialed.is_ok(), "an admitted client completes its dial");
+            Some(admitted)
+        } else {
+            assert!(
+                dialed.is_err(),
+                "a refused client does not complete its dial"
+            );
+            None
+        }
+    }
+
+    /// With a workload CA configured, WSS maps the client certificate through
+    /// the registry exactly as QUIC does: the pairing token stays outer
+    /// admission, an enrolled certificate becomes the connection's credential
+    /// (stamped with the registry generation), and a missing certificate, a
+    /// wrong token, or a revoked credential is refused by the same running
+    /// listener.
+    #[tokio::test]
+    async fn wss_with_a_configured_ca_looks_up_the_client_certificate_like_quic() {
+        use crate::workload::{
+            ClientMaterial, ReloadingWorkloadRegistry, WorkloadPaths, WorkloadRegistry,
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let leaf = dir.path().join("leaf.pem");
+        let leaf_key = dir.path().join("leaf-key.pem");
+        crate::transport::tls::ensure_self_signed_for(&leaf, &leaf_key, &["localhost".to_owned()])
+            .unwrap();
+        let paths = WorkloadPaths {
+            ca_cert: dir.path().join("ca.pem"),
+            ca_key: dir.path().join("ca.key"),
+            registry: dir.path().join("workload-keys"),
+        };
+        crate::workload::init_authority(&paths.ca_cert, &paths.ca_key).unwrap();
+
+        let client_key = rcgen::KeyPair::generate().unwrap();
+        let csr = rcgen::CertificateParams::new(vec!["client".to_owned()])
+            .unwrap()
+            .serialize_request(&client_key)
+            .unwrap();
+        let material = ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
+        let expires = chrono::Utc::now().timestamp() + 3600;
+        let prepared = crate::workload::prepare_enrollment(&paths, &material, expires).unwrap();
+        let client_cert = dir.path().join("client.pem");
+        let client_key_path = dir.path().join("client.key");
+        std::fs::write(&client_cert, prepared.issued_chain_pem().unwrap()).unwrap();
+        std::fs::write(&client_key_path, client_key.serialize_pem()).unwrap();
+        let enrolled = prepared
+            .commit(&paths.registry, vec!["*@global".to_owned()], expires)
+            .unwrap();
+
+        let tokens = dir.path().join("tokens.json");
+        let secret = [0x11; crate::auth::TOKEN_LEN];
+        crate::auth::write_test_credential(&tokens, &secret);
+        let acceptor = crate::transport::tls::acceptor_from_pem_with_client_ca(
+            &leaf,
+            &leaf_key,
+            Some(&crate::workload::authority_certificate(&paths.ca_cert).unwrap()),
+        )
+        .unwrap();
+        let listener = WsListener::bind_secure(
+            "127.0.0.1:0".parse().unwrap(),
+            acceptor,
+            Arc::new(crate::auth::ReloadingTokenStore::load(tokens).unwrap()),
+            Some(Arc::new(
+                ReloadingWorkloadRegistry::load(paths.registry.clone()).unwrap(),
+            )),
+        )
+        .await
+        .unwrap();
+        let url = format!("wss://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let token = hex::encode(secret);
+        let enrolled_identity = phux_dial::TlsClientIdentity::PemFiles {
+            certificate: client_cert,
+            private_key: client_key_path,
+        };
+
+        let admitted = mtls_attempt(&listener, &url, &token, &enrolled_identity)
+            .await
+            .expect("an enrolled certificate with a valid token is admitted");
+        let credential = admitted
+            .credential
+            .as_ref()
+            .expect("the workload credential");
+        assert_eq!(credential.id, enrolled.id);
+        assert_eq!(credential.generation, 1);
+        assert_eq!(credential.scopes, ["*@global"]);
+        assert_eq!(admitted.mcp_host_key.as_deref(), Some(enrolled.id.as_str()));
+
+        let anonymous = phux_dial::TlsClientIdentity::None;
+        assert!(
+            mtls_attempt(&listener, &url, &token, &anonymous)
+                .await
+                .is_none(),
+            "no client certificate"
+        );
+        let wrong_token = hex::encode([0x22; crate::auth::TOKEN_LEN]);
+        assert!(
+            mtls_attempt(&listener, &url, &wrong_token, &enrolled_identity)
+                .await
+                .is_none(),
+            "the pairing token stays outer admission"
+        );
+        WorkloadRegistry::revoke(&paths.registry, &enrolled.id).unwrap();
+        assert!(
+            mtls_attempt(&listener, &url, &token, &enrolled_identity)
+                .await
+                .is_none(),
+            "revocation applies to the next connection without a restart"
+        );
     }
 
     #[tokio::test]

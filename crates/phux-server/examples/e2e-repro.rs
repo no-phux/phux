@@ -92,9 +92,10 @@ async fn run() {
     // symptom (zsh completion menu / syntax highlight): every cell of
     // every row carries its own 256-color SGR, so an SGR change roughly
     // every other column, rewritten in place (`\033[H`) each generation.
-    // This is the same shape the `perf_colored_output` gate drives and the
-    // heaviest churn for the per-consumer diff + client VT apply/render.
-    // Keep it in sync with `tests/common/builder::colored_burst_command`.
+    // This is the same VT shape the `perf_colored_output` gate drives
+    // (`colored_burst_bytes`); the gate cats precomputed bytes so emit is
+    // not a `/bin/sh` concat loop (phux-iuxr). This example still builds
+    // a shorter 10-gen burst inline so it stays self-contained.
     let mut script = String::new();
     script.push_str("sleep 0.2; cols=80; rows=40; ");
     script.push_str("for g in $(seq 1 10); do ");
