@@ -57,6 +57,21 @@ fn makeBuilder(commands: []canvas.CanvasCommand) !*canvas.Builder {
     return builder;
 }
 
+/// Host paints use the full command envelope. Two or three of those arrays
+/// still sit in the test frame next to TestHarness after Builders move to
+/// the heap, which is how `window blur` died in `startPointerHost`.
+fn heapHostBuilder(gpa: std.mem.Allocator) !*canvas.Builder {
+    const commands = try gpa.alloc(canvas.CanvasCommand, native_sdk.runtime.max_canvas_commands_per_view);
+    errdefer gpa.free(commands);
+    const builder = try makeBuilder(commands);
+    return builder;
+}
+
+fn destroyHostBuilder(gpa: std.mem.Allocator, builder: *canvas.Builder) void {
+    gpa.free(builder.commands);
+    gpa.destroy(builder);
+}
+
 /// The middle of cell (col, row), in widget points.
 ///
 /// MEASURED, never assumed: the cell box comes from the painter that just ran
@@ -514,9 +529,8 @@ test "long OSC 8 userinfo cannot hide the rendered effective authority" {
     const frame = terminalInteractionFrame(harness, "https://bank.example") orelse return error.TestExpectedTerminalInteractionSurface;
     try pointerInput(harness, app_iface, .pointer_move, terminalCellPoint(pane, frame, 5, 0), 0, .{}, 0);
 
-    var commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    const builder = try makeBuilder(&commands);
-    defer testing.allocator.destroy(builder);
+    const builder = try heapHostBuilder(gpa);
+    defer destroyHostBuilder(gpa, builder);
     _ = try paintHostGrid(host, builder);
     const authority = previewAuthority(builder.displayList(), 0) orelse return error.TestExpectedLinkPreview;
     try testing.expect(std.mem.startsWith(u8, authority.text, "..."));
@@ -544,6 +558,8 @@ test "no preview permanently taxes a saturated terminal command budget" {
 
 test "the link chord arms the hover underline, and a bare pointer does not" {
     const gpa = testing.allocator;
+    const builder = try heapHostBuilder(gpa);
+    defer destroyHostBuilder(gpa, builder);
     const size = geometry.SizeF.init(980, 640);
     const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
     defer harness.destroy(gpa);
@@ -566,26 +582,19 @@ test "the link chord arms the hover underline, and a bare pointer does not" {
     // URL must not underline it on its own — the underline advertises a chord,
     // and one that is not being held promises a click that would only select.
     try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{}, 0);
-    var bare_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    const bare_builder = try makeBuilder(&bare_commands);
-    defer testing.allocator.destroy(bare_builder);
-    const bare = try paintHostGrid(host, bare_builder);
+    const bare = try paintHostGrid(host, builder);
     try expectUnderlinedRange(bare, 0, 0, 0, 32);
 
     // ACT: same point, chord held.
     try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{ .command = true }, 0);
-    var armed_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    const armed_builder = try makeBuilder(&armed_commands);
-    defer testing.allocator.destroy(armed_builder);
-    const armed = try paintHostGrid(host, armed_builder);
+    builder.reset();
+    const armed = try paintHostGrid(host, builder);
     try expectUnderlinedRange(armed, 0, 4, 4 + "https://example.com/docs".len, 32);
 
     // ...and letting the chord go takes it away again.
     try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{}, 0);
-    var released_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    const released_builder = try makeBuilder(&released_commands);
-    defer testing.allocator.destroy(released_builder);
-    const released = try paintHostGrid(host, released_builder);
+    builder.reset();
+    const released = try paintHostGrid(host, builder);
     try expectUnderlinedRange(released, 0, 0, 0, 32);
 }
 
@@ -593,6 +602,8 @@ test "window blur takes the hover underline with it" {
     // The chord is a HELD key, and a blur is exactly how it stops being held
     // without this app ever seeing the release.
     const gpa = testing.allocator;
+    const builder = try heapHostBuilder(gpa);
+    defer destroyHostBuilder(gpa, builder);
     const size = geometry.SizeF.init(980, 640);
     const harness = try native_sdk.TestHarness().create(gpa, .{ .size = size });
     defer harness.destroy(gpa);
@@ -612,16 +623,11 @@ test "window blur takes the hover underline with it" {
     const on_link = terminalCellPoint(pane, frame, 10, 0);
     try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{ .command = true }, 0);
 
-    var armed_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    const armed_builder = try makeBuilder(&armed_commands);
-    defer testing.allocator.destroy(armed_builder);
-    const armed = try paintHostGrid(host, armed_builder);
+    const armed = try paintHostGrid(host, builder);
     try expectUnderlinedRange(armed, 0, 4, 4 + "https://example.com/docs".len, 32);
 
     app.update(&host.inner.model, .{ .focus_changed = false }, &host.inner.effects);
-    var blurred_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    const blurred_builder = try makeBuilder(&blurred_commands);
-    defer testing.allocator.destroy(blurred_builder);
-    const blurred = try paintHostGrid(host, blurred_builder);
+    builder.reset();
+    const blurred = try paintHostGrid(host, builder);
     try expectUnderlinedRange(blurred, 0, 0, 0, 32);
 }
