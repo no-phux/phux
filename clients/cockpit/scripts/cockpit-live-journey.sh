@@ -1,0 +1,163 @@
+#!/usr/bin/env bash
+# PID-bound presentation journey over the isolated dev bundle. It never opens,
+# activates, inspects, or kills /Applications/Phux Cockpit.app.
+set -euo pipefail
+
+ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+export PHUX_COCKPIT_PROCESS_NAME=phux-cockpit-dev
+# shellcheck source=scripts/lib/app-instance.sh disable=SC1091
+. "${ROOT}/scripts/lib/app-instance.sh"
+
+EXPECT_KNOWN_RED=0
+KEEP=0
+NO_BUILD=0
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --expect-known-red) EXPECT_KNOWN_RED=1 ;;
+        --keep) KEEP=1 ;;
+        --no-build) NO_BUILD=1 ;;
+        -h|--help)
+            sed -n '2,4p' "$0"
+            printf 'usage: %s [--expect-known-red] [--no-build] [--keep]\n' "$0"
+            exit 0
+            ;;
+        *) printf 'unknown argument: %s\n' "$1" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+WORK="$(mktemp -d "${TMPDIR:-/private/tmp}/cockpit-presentation.XXXXXX")"
+DEV_HOME="${WORK}/dev-home"
+APP_PID=""
+# shellcheck disable=SC2329 # invoked by the EXIT trap below
+cleanup() {
+    if [[ -n "$APP_PID" && "$KEEP" == 0 ]]; then
+        app_instance_stop "$APP_PID"
+    fi
+    if [[ "$KEEP" == 0 ]]; then
+        rm -rf -- "$WORK"
+    else
+        printf 'retained isolated run: %s (pid %s)\n' "$WORK" "$APP_PID"
+    fi
+}
+trap cleanup EXIT
+
+# The dev executable has a distinct process name and bundle id. The private
+# cwd supplies its own automation dropbox; config and workspace state also live
+# under WORK. A concurrently installed app named phux-cockpit is irrelevant.
+app_instance_require_free
+run_args=(--debug --automation --fresh --detach)
+(( NO_BUILD == 0 )) || run_args+=(--no-build)
+launch_log="${WORK}/dev-run.log"
+PHUX_COCKPIT_DEV_HOME="$DEV_HOME" "${ROOT}/scripts/dev-run.sh" "${run_args[@]}" | tee "$launch_log"
+APP_PID="$(sed -n 's/^pid \([0-9][0-9]*\), log .*/\1/p' "$launch_log" | tail -1)"
+if [[ ! "$APP_PID" =~ ^[0-9]+$ ]]; then
+    printf 'FAILED: dev-run did not report a usable pid; transcript: %s\n' "$launch_log" >&2
+    exit 1
+fi
+
+NATIVE="$("${ROOT}/scripts/build-automation-cli.sh")"
+(cd "$DEV_HOME" && "$NATIVE" automate wait >/dev/null)
+(cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 30000 \
+    "publisher_pid=${APP_PID}" 'markup_watch=armed' 'ready=true' >/dev/null)
+# app-instance.sh invokes its native command directly. Keep those guarded reads
+# in this run's private dropbox without changing the harness process's cwd.
+# shellcheck disable=SC2329 # invoked indirectly by app-instance.sh
+app_native() {
+    (cd "$DEV_HOME" && "$NATIVE" "$@")
+}
+app_instance_bind app_native "$APP_PID"
+
+snapshot="$(app_instance_snapshot)"
+if ! grep -q "publisher_pid=${APP_PID} .*markup_watch=armed" <<<"$snapshot"; then
+    printf 'FAILED: Debug dev pid %s is not the armed automation publisher.\n' "$APP_PID" >&2
+    printf 'Expected publisher_pid=%s and markup_watch=armed in the same header.\n' "$APP_PID" >&2
+    exit 1
+fi
+printf '  ok: pid %s exclusively owns an armed markup watcher\n' "$APP_PID"
+
+widget() {
+    local role="$1" name="$2" snapshot line count
+    snapshot="$(app_instance_snapshot)" || return 1
+    count="$(grep -Fc "role=${role} name=\"${name}\"" <<<"$snapshot" || true)"
+    if [[ "$count" != 1 ]]; then
+        printf 'FAILED: expected one role=%s name=%q, found %s.\n' "$role" "$name" "$count" >&2
+        return 1
+    fi
+    line="$(grep -F "role=${role} name=\"${name}\"" <<<"$snapshot")"
+    if [[ "$line" =~ @w[0-9]+/([^#[:space:]]+)#([0-9]+) ]]; then
+        printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+        return 0
+    fi
+    printf 'FAILED: could not parse widget identity from: %s\n' "$line" >&2
+    return 1
+}
+
+click_named() {
+    local role="$1" name="$2" view id
+    read -r view id <<<"$(widget "$role" "$name")"
+    app_instance_assert
+    (cd "$DEV_HOME" && "$NATIVE" automate widget-click "$view" "$id" >/dev/null)
+}
+
+(cd "$DEV_HOME" && "$NATIVE" automate assert --absent 'name="Agent inspection details"' >/dev/null)
+click_named button 'Inspect agents'
+(cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 'name="Agent inspection details"' >/dev/null)
+printf '  ok: Agents opens the inspector\n'
+
+# A zero-distance drag finishes with the automation pointer parked over the
+# shipping scroll surface. The semantic snapshot, not a reference-renderer
+# screenshot, decides whether that passive surface adopted hover chrome.
+passive_snapshot="${WORK}/passive-hover.snapshot"
+read -r passive_view passive_id <<<"$(widget group 'Agent inspection details')"
+(cd "$DEV_HOME" && "$NATIVE" automate widget-drag "$passive_view" "$passive_id" 0.5 0.5 0.5 0.5 >/dev/null)
+app_instance_snapshot >"$passive_snapshot"
+passive_red=0
+if ! node "${ROOT}/scripts/cockpit-state-gallery.mjs" --check-snapshot "$passive_snapshot" \
+    --passive-role group --passive-name 'Agent inspection details'; then
+    passive_red=1
+fi
+
+# Negative control: the navigator search is not present while Agents owns the
+# slot. The next assertion requires it to replace, not stack under, inspector.
+(cd "$DEV_HOME" && "$NATIVE" automate assert --absent 'name="Search navigator"' >/dev/null)
+click_named listitem 'Sessions'
+(cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 \
+    'role=listitem name="Sessions".*state=\[[^]]*selected' >/dev/null)
+snapshot="$(app_instance_snapshot)"
+
+transition_red=0
+if grep -q 'name="Search navigator"' <<<"$snapshot" \
+    && ! grep -q 'name="Agent inspection details"' <<<"$snapshot"; then
+    :
+elif grep -q 'name="Agent inspection details"' <<<"$snapshot" \
+    && ! grep -q 'name="Search navigator"' <<<"$snapshot"; then
+    transition_red=1
+else
+    printf 'FAILED: Agents -> Sessions reached neither the accepted nor known-red presentation.\n' >&2
+    printf 'Expected exactly one of Search navigator and Agent inspection details.\n' >&2
+    exit 1
+fi
+
+if [[ "$EXPECT_KNOWN_RED" == 1 ]]; then
+    if [[ "$transition_red" == 1 && "$passive_red" == 1 ]]; then
+        printf 'EXPECTED FAILURE: Sessions retained the Agents inspector and projected no navigator.\n'
+        printf 'EXPECTED FAILURE: Agent inspection details became hover-highlighted.\n'
+        printf 'Strict gate: %s\n' "$0"
+        exit 0
+    fi
+    (( transition_red == 0 )) && printf 'UNEXPECTED PASS: Agents -> Sessions now replaces inspector.\n' >&2
+    (( passive_red == 0 )) && printf 'UNEXPECTED PASS: Agent inspection details remained passive under hover.\n' >&2
+    printf 'Remove --expect-known-red for fixed contracts and promote their strict integration gates.\n' >&2
+    exit 1
+fi
+
+if [[ "$transition_red" == 1 ]]; then
+    printf 'FAILED: Agents -> Sessions did not replace inspector in pid %s.\n' "$APP_PID" >&2
+    printf 'Expected Search navigator present and Agent inspection details absent.\n' >&2
+fi
+if [[ "$passive_red" == 1 ]]; then
+    printf 'FAILED: Agent inspection details became hover-highlighted in pid %s.\n' "$APP_PID" >&2
+fi
+(( transition_red == 0 && passive_red == 0 ))
+printf 'PASS: live transition and passive-hover contracts hold in pid %s\n' "$APP_PID"
