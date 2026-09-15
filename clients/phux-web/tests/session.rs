@@ -460,6 +460,7 @@ async fn attach_barrier_close_repaints_the_prior_visible_terminal_to_blank() {
         terminal_id,
         exit_status: None,
         reason: phux_protocol::wire::frame::CloseReason::Unknown,
+        signal: None,
     });
     assert!(!closed.render);
     assert!(!session.render_visible());
@@ -858,6 +859,7 @@ async fn agent_sessions_become_badges_and_never_panes() {
         terminal_id: agent_id,
         exit_status: None,
         reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+        signal: None,
     });
     assert!(closed.badges);
     assert!(closed.fatal.is_none());
