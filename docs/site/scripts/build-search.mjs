@@ -49,6 +49,7 @@ function parseFrontmatter(raw) {
 
 export async function buildSearchIndex(distDir) {
   const files = [];
+  const mcpPages = [];
   let pageCount = 0;
 
   for (const abs of await walk(SYNCED)) {
@@ -64,6 +65,12 @@ export async function buildSearchIndex(distDir) {
           description: meta.description || meta.summary,
           structuredData: structure(body),
         },
+      });
+      mcpPages.push({
+        title: meta.title ?? rel,
+        url: mcpUrl(rel),
+        description: meta.description || meta.summary,
+        text: plainText(body).slice(0, 1200),
       });
       pageCount++;
     } else if (abs.endsWith("meta.json")) {
@@ -81,5 +88,44 @@ export async function buildSearchIndex(distDir) {
 
   await mkdir(join(distDir, "api"), { recursive: true });
   await writeFile(join(distDir, "api", "search.json"), JSON.stringify(exported), "utf8");
-  console.log(`build-search: indexed ${pageCount} pages -> api/search.json`);
+  await writeFile(
+    join(distDir, "api", "mcp-search.json"),
+    JSON.stringify({ pages: mcpPages, release: await releaseInfo() }),
+    "utf8",
+  );
+  console.log(`build-search: indexed ${pageCount} pages -> api/search.json + api/mcp-search.json`);
+}
+
+/** Bare canonical route for a synced markdown path (matches trailingSlash "never"). */
+function mcpUrl(rel) {
+  const route = rel.replace(/\.md$/, "").replace(/(^|\/)index$/, "");
+  return route === "" ? "/" : `/${route}`;
+}
+
+/** Crude markdown-to-plain-text for MCP keyword search. */
+function plainText(body) {
+  return body
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/[*_`>|-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+async function releaseInfo() {
+  const raw = await readFile(join(ROOT, "src/lib/release.json"), "utf8").catch(() => null);
+  const release = raw ? JSON.parse(raw) : {};
+  return {
+    phux: {
+      tag: release.tag ?? "unknown",
+      url: release.url ?? "https://github.com/no-phux/phux/releases",
+      publishedAt: release.publishedAt ?? "unknown",
+    },
+    cockpit: {
+      tag: release.cockpit?.tag ?? "unknown",
+      url: release.cockpit?.url ?? "https://github.com/no-phux/phux/releases",
+      publishedAt: release.cockpit?.publishedAt ?? "unknown",
+    },
+  };
 }
