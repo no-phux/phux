@@ -999,8 +999,8 @@ typedef struct PhuxWorkspaceMutation {
     uint32_t path_len;
     uint64_t path_bits;
 } PhuxWorkspaceMutation;
-/* Host request IDs across spawn/subscribe/refresh/mutate must strictly increase,
- * 1..0x7fffffff. The bridge reserves the upper half for internal correlation.
+/* Host request IDs across spawn/subscribe/refresh/mutate/named-projection
+ * must strictly increase, 1..0x7fffffff. The bridge reserves the upper half for internal correlation.
  * One refresh OR mutation may be pending. Poll <=1s and before palette display.
  * Refresh never changes the actual attached session or allocates emulators.
  * Mutation is whole-value LWW SET followed by GET confirmation, NOT CAS:
@@ -1012,6 +1012,56 @@ PhuxClientResult phux_client_workspace_info(const PhuxClient *client, PhuxWorksp
 PhuxClientResult phux_client_workspace_window_get(const PhuxClient *client, size_t index, PhuxWorkspaceWindow *out_window);
 PhuxClientResult phux_client_workspace_node_get(const PhuxClient *client, size_t index, PhuxWorkspaceNode *out_node);
 PhuxClientResult phux_client_catalog_terminal_get(const PhuxClient *client, size_t index, PhuxCatalogTerminal *out_terminal);
+
+/* Named projections (ADR-0129, docs/spec/L3.md section 3.5). Additive to ABI
+ * version 2. A projection is not a resource: it is the L3 metadata key
+ * <prefix>.layout/v1/<session-id> (canonical decimal session id, nonempty
+ * prefix that does not itself contain .layout/v1/). Scope is Group 1. Values
+ * are opaque bytes (the section 3.2 CBOR envelope when the writer is a layout
+ * consumer). GET/SET/DELETE map to those L3 verbs. SET and DELETE have no
+ * success reply, so the bridge queues a confirming GET on a reserved internal
+ * id (last-write-wins, not CAS). Requires HELLO_OK layers to include L3;
+ * otherwise PHUX_CLIENT_INVALID_STATE, nothing queued, no request ID consumed.
+ * Needs a negotiated client, attached or not. One op may be pending. Request
+ * IDs share the strictly increasing host space with spawn/subscribe/refresh.
+ * A value over 256 KiB is refused before queueing. Disconnecting while
+ * PENDING yields UNKNOWN_OUTCOME. Spans from info are borrowed until the next
+ * mutable client call. */
+typedef enum PhuxProjectionStatus {
+    PHUX_PROJECTION_NONE = 0,
+    PHUX_PROJECTION_PENDING = 1,
+    PHUX_PROJECTION_OK = 2,
+    PHUX_PROJECTION_REFUSED = 3,
+    PHUX_PROJECTION_UNKNOWN_OUTCOME = 4
+} PhuxProjectionStatus;
+typedef enum PhuxProjectionOp {
+    PHUX_PROJECTION_OP_NONE = 0,
+    PHUX_PROJECTION_OP_GET = 1,
+    PHUX_PROJECTION_OP_SET = 2,
+    PHUX_PROJECTION_OP_DELETE = 3
+} PhuxProjectionOp;
+/** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
+ * present is true when a value is held: GET of an absent key and a confirmed
+ * DELETE report OK with present false. REFUSED keeps any confirming-read
+ * bytes for diagnosis. */
+typedef struct PhuxProjectionInfo {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    uint32_t status;
+    uint32_t op;
+    uint32_t session_id;
+    bool present;
+    PhuxBytes key;
+    PhuxBytes value;
+    PhuxBytes message;
+} PhuxProjectionInfo;
+PhuxClientResult phux_client_projection_supported(const PhuxClient *client, bool *out_supported);
+PhuxClientResult phux_client_projection_get(PhuxClient *client, uint32_t request_id, PhuxBytes key);
+PhuxClientResult phux_client_projection_set(PhuxClient *client, uint32_t request_id, PhuxBytes key, PhuxBytes value);
+PhuxClientResult phux_client_projection_delete(PhuxClient *client, uint32_t request_id, PhuxBytes key);
+PhuxClientResult phux_client_projection_info(const PhuxClient *client, PhuxProjectionInfo *out_info);
+
 size_t phux_client_outgoing_count(const PhuxClient *client);
 PhuxClientResult phux_client_outgoing_get(const PhuxClient *client, size_t index, PhuxBytes *out_frame);
 PhuxClientResult phux_client_outgoing_clear(PhuxClient *client);
