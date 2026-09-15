@@ -130,6 +130,85 @@ class BuildContracts(unittest.TestCase):
         package = (ROOT / "scripts/package-macos.sh").read_text()
         self.assertIn("bash ./scripts/build-shipping-app.sh package", package)
 
+    def test_package_retries_hdiutil_without_quiet(self):
+        # Main-push cockpit-ci failed after a verified ZIP with a silent
+        # hdiutil exit 1 (Resource busy; -quiet closed stderr). The PR-only
+        # production build step is not the missing dependency: this script
+        # owns the shipping compile on main.
+        package = (ROOT / "scripts/package-macos.sh").read_text()
+        self.assertIn("hdiutil_retry() {", package)
+        for verb in ("create", "verify", "attach", "detach"):
+            self.assertIn(f"hdiutil_retry {verb}", package)
+        self.assertNotRegex(package, r"(?m)^\s*/usr/bin/hdiutil create\b")
+        self.assertNotRegex(package, r"(?m)^\s*/usr/bin/hdiutil verify\b")
+        self.assertNotRegex(package, r"(?m)^\s*/usr/bin/hdiutil attach\b")
+        create = re.search(r"hdiutil_retry create \\\n(?:.*\n)*?    \"\$\{DMG\}\"", package)
+        self.assertIsNotNone(create)
+        self.assertNotIn("-quiet", create.group(0))
+        self.assertIn("${HDIUTIL:-/usr/bin/hdiutil}", package)
+
+        helper = re.search(r"^hdiutil_retry\(\) \{.*?\n\}\n", package, re.M | re.S)
+        self.assertIsNotNone(helper)
+        with tempfile.TemporaryDirectory(prefix="cockpit-hdiutil-retry-") as directory:
+            root = Path(directory)
+            state = root / "calls"
+            mock = root / "hdiutil"
+            mock.write_text(
+                "#!/bin/sh\n"
+                'n=$(cat "$STATE" 2>/dev/null || echo 0)\n'
+                'n=$((n + 1))\n'
+                'echo "$n" > "$STATE"\n'
+                'printf "%s\\n" "$@" >> "$ARGS"\n'
+                'if [ "$n" -lt 3 ]; then\n'
+                '  echo "hdiutil: create failed - Resource busy" >&2\n'
+                "  exit 1\n"
+                "fi\n"
+                'echo "created: fake.dmg"\n'
+                )
+            mock.chmod(0o755)
+            script = root / "retry.sh"
+            script.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                f'DMG="{root / "out.dmg"}"\n'
+                f'DMG_MOUNT="{root / "mnt"}"\n'
+                f'HDIUTIL="{mock}"\n'
+                "HDIUTIL_RETRY_ATTEMPTS=5\n"
+                "HDIUTIL_RETRY_DELAY=0\n"
+                f'STATE="{state}"\n'
+                f'ARGS="{root / "args"}"\n'
+                "export STATE ARGS\n"
+                f"{helper.group(0)}"
+                "hdiutil_retry create -ov \"$DMG\"\n"
+            )
+            script.chmod(0o755)
+            subprocess.run(["bash", str(script)], check=True, capture_output=True)
+            self.assertEqual(state.read_text().strip(), "3")
+
+            always_fail = root / "hdiutil-fail"
+            always_fail.write_text(
+                "#!/bin/sh\n"
+                'echo "hdiutil: create failed - Resource busy" >&2\n'
+                "exit 1\n"
+            )
+            always_fail.chmod(0o755)
+            fail_script = root / "retry-fail.sh"
+            fail_script.write_text(
+                "#!/usr/bin/env bash\n"
+                "set -euo pipefail\n"
+                f'DMG="{root / "out.dmg"}"\n'
+                f'DMG_MOUNT="{root / "mnt"}"\n'
+                f'HDIUTIL="{always_fail}"\n'
+                "HDIUTIL_RETRY_ATTEMPTS=3\n"
+                "HDIUTIL_RETRY_DELAY=0\n"
+                f"{helper.group(0)}"
+                "hdiutil_retry create -ov \"$DMG\"\n"
+            )
+            fail_script.chmod(0o755)
+            failed = subprocess.run(["bash", str(fail_script)], capture_output=True, text=True)
+            self.assertNotEqual(failed.returncode, 0)
+            self.assertIn("hdiutil failed after 3 attempts", failed.stderr)
+
     def test_shipping_compile_and_package_share_inputs(self):
         with tempfile.TemporaryDirectory(prefix="cockpit-shipping-contract-") as directory:
             root = Path(directory)
