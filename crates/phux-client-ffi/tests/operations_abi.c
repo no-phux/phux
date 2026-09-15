@@ -1,6 +1,12 @@
 /* Native ABI smoke: compile/link against this checkout's phux-client-ffi. */
 #include "phux/client.h"
 #include <assert.h>
+#include <stddef.h>
+
+_Static_assert(offsetof(PhuxSpawnOptions, cols) < offsetof(PhuxSpawnOptions, has_retain_secs),
+               "retain_secs and idempotency_key are trailing-additive");
+_Static_assert(offsetof(PhuxSpawnOptions, has_retain_secs) < offsetof(PhuxSpawnOptions, idempotency_key),
+               "idempotency_key follows retain_secs");
 
 int main(void) {
     PhuxClientOptions options = {

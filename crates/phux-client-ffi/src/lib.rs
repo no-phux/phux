@@ -977,6 +977,15 @@ fn apply_hello_ok(
     client.conditional_kill = server_caps
         .features
         .contains(phux_protocol::ServerFeature::ConditionalKill);
+    client.event_journal = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::EventJournal);
+    client.retain_on_exit = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::RetainOnExit);
+    client.spawn_idempotency = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::SpawnIdempotency);
     client.protocol_ready = true;
     session_rename::negotiated(client)
 }

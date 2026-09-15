@@ -679,6 +679,9 @@ pub const Host = struct {
             .cwd = bytes(cwd),
             .cols = viewport.cols,
             .rows = viewport.rows,
+            .has_retain_secs = false,
+            .retain_secs = 0,
+            .idempotency_key = [_]u8{0} ** 16,
         };
         if (bound)
             try resultError(c.phux_client_queue_spawn_bound(host.client, &options))
