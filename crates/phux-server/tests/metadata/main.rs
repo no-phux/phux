@@ -2,6 +2,7 @@
 
 mod agent_asked;
 mod agent_events;
+mod event_journal;
 mod get_perf;
 mod list_directory;
 mod metadata_reply;

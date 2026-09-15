@@ -48,8 +48,10 @@ pub use layer::{
 pub use remote::RemoteConfigEntry;
 pub use satellite::SatelliteConfigEntry;
 pub use schema::{
-    Action, ChromeCfg, Config, CwdInheritance, DEFAULT_AGENT_LOG_BYTES, DEFAULT_HISTORY_BYTES,
-    DefaultsCfg, ExperimentalCfg, HookEntry, KeybindingsCfg, MAX_AGENT_LOG_BYTES,
+    Action, ChromeCfg, Config, CwdInheritance, DEFAULT_AGENT_LOG_BYTES,
+    DEFAULT_EVENT_JOURNAL_BYTES, DEFAULT_EVENT_JOURNAL_ENTRIES, DEFAULT_HISTORY_BYTES,
+    DEFAULT_METADATA_VALUE_BYTES, DefaultsCfg, ExperimentalCfg, HookEntry, KeybindingsCfg,
+    LimitsCfg, MAX_AGENT_LOG_BYTES, MAX_EVENT_JOURNAL_BYTES, MAX_EVENT_JOURNAL_ENTRIES,
     MAX_HISTORY_BYTES, ParamAction, ScrollbackLimits, SidebarCfg, SidebarPosition, StatusCfg,
     StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
 };

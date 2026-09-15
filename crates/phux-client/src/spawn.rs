@@ -140,6 +140,11 @@ pub enum RollbackOutcome {
 /// `notices`, in encounter order, so a caller can print them in the order
 /// they were seen.
 ///
+/// `projection`, when given, names the shared-layout metadata key
+/// (`--projection`, ADR-0129) the new pane is spliced into instead of the
+/// default `phux.tui.layout/v1/<session>` envelope; it is validated against
+/// `placement.owner_session` before anything is written.
+///
 /// A transport failure verifying ownership or rolling back is folded into
 /// the returned outcome's reason/cleanup text rather than propagated,
 /// matching the historical behavior of reporting placement failure rather
@@ -149,6 +154,7 @@ pub async fn verify_and_publish_placement(
     placement: &Placement,
     dir: SplitDir,
     ratio: f32,
+    projection: Option<&str>,
     layout_request_id: u32,
     notices: &mut Vec<String>,
 ) -> RollbackOutcome {
@@ -158,7 +164,15 @@ pub async fn verify_and_publish_placement(
         return rollback_after_failure(socket_path, &placement.new_pane, reason, notices).await;
     }
 
-    if let Err(reason) = publish_layout(socket_path, placement, dir, ratio, layout_request_id).await
+    if let Err(reason) = publish_layout(
+        socket_path,
+        placement,
+        dir,
+        ratio,
+        projection,
+        layout_request_id,
+    )
+    .await
     {
         return rollback_after_failure(socket_path, &placement.new_pane, reason, notices).await;
     }
@@ -243,14 +257,21 @@ async fn verify_ownership(
 }
 
 /// Splice `placement.new_pane` beside `placement.owner` in
-/// `placement.owner_session`'s shared layout.
+/// `placement.owner_session`'s shared layout — the named `projection` key
+/// when given (validated against `placement.owner_session` first), the
+/// default `phux.tui.layout/v1/<session>` envelope otherwise.
 async fn publish_layout(
     socket_path: &Path,
     placement: &Placement,
     dir: SplitDir,
     ratio: f32,
+    projection: Option<&str>,
     request_id: u32,
 ) -> Result<(), String> {
+    if let Some(key) = projection {
+        crate::layout_ops::validate_projection_key(key, placement.owner_session)
+            .map_err(|err| err.to_string())?;
+    }
     let mut conn = Connection::connect(socket_path)
         .await
         .map_err(|err| err.to_string())?;
@@ -260,7 +281,21 @@ async fn publish_layout(
         dir,
         ratio,
     };
-    crate::layout_ops::LayoutOps::new(&mut conn, placement.owner_session, request_id)
+    let layout = match projection {
+        Some(key) => crate::layout_ops::LayoutOps::with_key(
+            &mut conn,
+            placement.owner_session,
+            key.to_owned(),
+            request_id,
+        ),
+        None => Ok(crate::layout_ops::LayoutOps::new(
+            &mut conn,
+            placement.owner_session,
+            request_id,
+        )),
+    };
+    let mut layout = layout.map_err(|err| err.to_string())?;
+    layout
         .mutate_or_seed(Workspace::single(placement.owner.clone()), mutation)
         .await
         .map(|_workspace| ())

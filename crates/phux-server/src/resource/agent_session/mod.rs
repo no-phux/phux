@@ -184,8 +184,6 @@ impl AgentSessionActor {
         );
         let ResourceCoreChannels {
             output,
-            subscribe_to_events,
-            unsubscribe_from_events,
             control,
             exit_notify,
         } = channels;
@@ -211,8 +209,6 @@ impl AgentSessionActor {
             consumer_attach: mpsc::channel(1).0,
             consumer_detach: mpsc::channel(1).0,
             consumer_ack: mpsc::channel(1).0,
-            subscribe_to_events,
-            unsubscribe_from_events,
             upgrade: mpsc::channel(1).0,
             control,
             facet: ResourceFacetHandle::AgentSession(facet),
@@ -251,16 +247,6 @@ impl AgentSessionActor {
                     }
                     None => break,
                 },
-                request = self.core.subscribe_to_events_rx.recv() => {
-                    if let Some(request) = request {
-                        self.core.subscribe_events(request);
-                    }
-                }
-                request = self.core.unsubscribe_from_events_rx.recv() => {
-                    if let Some(request) = request {
-                        self.core.unsubscribe_events(&request);
-                    }
-                }
                 request = self.core.control_rx.recv() => {
                     if let Some(request) = request {
                         Self::refuse_control(request);

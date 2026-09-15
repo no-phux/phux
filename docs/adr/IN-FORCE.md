@@ -134,6 +134,7 @@ by a newer one, the newer line is the operative reading.
 
 ## TUI conventions
 
+- [0129](./0129-projections-are-named-by-key.md) A named projection is a `--projection`-chosen metadata key, not a resource; durability is the workspace archive.
 - [0100](./0100-the-tui-is-its-own-crate.md) The TUI lives in `phux-tui`; `phux-client` is the headless library, dependency one-way.
 - [0089](./0089-three-zone-attention-sidebar.md) The sidebar projects peer metadata client-side; layout and ordering are amended by 0112.
 - [0112](./0112-stable-split-sidebar-navigation.md) Fixed Agents and host-aware Sessions panels preserve navigation positions across state changes.

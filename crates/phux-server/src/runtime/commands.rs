@@ -12,11 +12,9 @@ use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
+use super::client::PaneEvents;
 use super::input_lane::InputLaneHandle;
-use super::{
-    AttachPrepared, broadcast_event, spawn_agent_state_drain, spawn_pane_event_drain,
-    spawn_terminal_exit_watcher,
-};
+use super::{AttachPrepared, spawn_agent_state_drain, spawn_terminal_exit_watcher};
 use crate::agent_asked::{AskedPayload, AskedSource};
 use crate::resource::{ResourceHandle, WrongResourceKind};
 use crate::runtime::pump::{self, PumpGeneration};
@@ -64,41 +62,59 @@ pub(crate) fn wrong_resource_kind(error: WrongResourceKind) -> CommandResult {
 /// from a caller that did not supply `SPAWN_RESOURCE.initial_size`. A
 /// layout-owning consumer that DOES know the tile should send it (phux-a5xj)
 /// rather than let the pane bootstrap here and be reflowed afterwards.
-pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = (80, 24);
+pub(crate) const DEFAULT_SPAWN_DIMS: (u16, u16) = crate::state::HEADLESS_TERMINAL_DIMS;
 
-/// Announce a freshly-seeded session's **first** pane on the event stream
-/// (phux-8uly, [SPEC](../../../../docs/spec/L1.md) §7.1).
+/// Who and what caused a pane's spawn, for its `pane_spawned` stamp
+/// (ADR-0123): the spawning connection and the idempotency key of its
+/// `SPAWN_RESOURCE`. `Default` is a server-driven spawn, such as a seed pane.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct SpawnAttribution {
+    /// The connection that asked for the pane.
+    pub(crate) actor: Option<ClientId>,
+    /// The spawn's idempotency key (`SPAWN_RESOURCE` field 17, ADR-0126).
+    pub(crate) operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+}
+
+/// Where a session's seed pane came from: the agent-session provenance its
+/// create request carried, and who asked for it (ADR-0123). `Default` is a
+/// server-driven seed (the startup session, an attach `CreateIfMissing`).
+#[derive(Debug, Default)]
+pub(crate) struct SeedOrigin {
+    /// Opaque native agent-session provenance to install on the pane.
+    pub(crate) agent_session: Option<Vec<u8>>,
+    /// The seed pane's `pane_spawned` attribution.
+    pub(crate) attribution: SpawnAttribution,
+}
+
+/// Journal a pane's `pane_spawned` (phux-8uly, [SPEC](../../../../docs/spec/L1.md)
+/// §7.1) in the lock that registers its actor.
 ///
-/// `handle_spawn_terminal` already broadcasts `pane_spawned` for every pane
-/// it adds to an *existing* session, but a session's seed pane is created
-/// by the helpers below instead and used to announce nothing. That left a
-/// hole in push coverage of the session lifecycle — death is carried by
-/// `pane_closed` and rename by `METADATA_CHANGED`, while creation was
-/// silent — so a server-wide follower (ADR-0089's fleet-inbox roster, the
-/// planned `phux agent wait --any`) could not observe a session that
-/// appeared after it subscribed until the new pane happened to emit
-/// something else.
+/// Every Terminal the server creates is announced, the seed pane of a new
+/// session as much as a `SPAWN_RESOURCE` into an existing one, with the same
+/// event shape, so a server-wide follower (ADR-0089's fleet-inbox roster,
+/// `phux agent wait --any`) observes session creation, not merely the
+/// creations it asked for.
 ///
-/// Deliberately identical to the spawn path's emission: same helper, same
-/// pane scope, same event shape, so a subscriber cannot tell a seeded
-/// pane's announcement from a spawned one's. Fanout is best-effort and
-/// resolves subscribers at emit time, so this is called once the pane's
-/// actor is live and its wire id is interned.
-///
-/// Both seed helpers call this, covering the attach `CreateIfMissing` path
-/// and the headless [`phux_protocol::wire::frame::SESSION_CREATE_KEY`]
-/// path. Neither helper is reachable from `handle_spawn_terminal` (which
-/// seeds through `spawn_pane_with_pty_and_colors`), so no pane is announced
-/// twice.
-fn announce_seed_pane(state: &SharedState, wire_terminal_id: &phux_protocol::ids::ResourceId) {
-    broadcast_event(
-        state,
-        Some(wire_terminal_id),
-        &AgentEvent::ResourceSpawned {
+/// Journaling here, before the pane's exit watcher exists, is what makes
+/// the journal causal (ADR-0123): a process that exits at once still has
+/// its `pane_spawned` take a lower `seq` than its `pane_closed`. The
+/// spawner may still see `RESOURCE_SPAWNED` before the event; only the
+/// journal order has to be causal.
+fn journal_pane_spawned(
+    s: &mut crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    attribution: SpawnAttribution,
+) {
+    let record = crate::state::EventRecord::new(
+        Some(wire_terminal_id.clone()),
+        AgentEvent::ResourceSpawned {
             kind: phux_protocol::ids::ResourceKind::Terminal,
             parent: None,
         },
-    );
+    )
+    .with_actor(attribution.actor)
+    .with_operation_id(attribution.operation_id);
+    let _ = s.record_and_fanout(record);
 }
 
 pub(crate) fn seed_session_with_actor(
@@ -107,7 +123,7 @@ pub(crate) fn seed_session_with_actor(
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
 ) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
-    seed_session_with_actor_and_metadata(state, name, scrollback, root_token, None)
+    seed_session_with_actor_and_metadata(state, name, scrollback, root_token, SeedOrigin::default())
 }
 
 fn seed_session_with_actor_and_metadata(
@@ -115,9 +131,13 @@ fn seed_session_with_actor_and_metadata(
     name: &str,
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
-    agent_session: Option<Vec<u8>>,
+    origin: SeedOrigin,
 ) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     use phux_core::ids::ResourceId;
+    let SeedOrigin {
+        agent_session,
+        attribution,
+    } = origin;
     let terminal: ResourceId = state.with_mut(|s| {
         let terminal = s.seed_session(name).2;
         if let Some(value) = agent_session {
@@ -144,17 +164,32 @@ fn seed_session_with_actor_and_metadata(
             }
         };
     let crate::terminal_actor::TerminalActorBundle {
-        actor,
+        mut actor,
         handle,
         exit_notify,
         ..
     } = bundle;
+    // A no-PTY pane sources no output events, but its supervisory
+    // `terminal_control` (take / give) rides the same sink as every other
+    // pane's, so it is journaled like theirs (ADR-0123).
+    let (event_sink, event_source) = crate::resource::event_sink::event_sink(EVENT_SINK_CAPACITY);
+    actor.set_event_sink(event_sink);
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
-        s.intern_terminal_wire(terminal)
+        let wire = s.intern_terminal_wire(terminal);
+        journal_pane_spawned(s, &wire, attribution);
+        wire
     });
-    spawn_terminal_exit_watcher(state.clone(), terminal, exit_notify, root_token.clone());
-    announce_seed_pane(state, &wire_terminal_id);
+    spawn_terminal_exit_watcher(
+        state.clone(),
+        terminal,
+        exit_notify,
+        root_token.clone(),
+        Some(PaneEvents {
+            wire: wire_terminal_id.clone(),
+            source: event_source,
+        }),
+    );
     // docs/consumers/tui.md §9 (phux-r82.1): the pane's actor is live.
     crate::hooks::fire_hook(
         state,
@@ -207,7 +242,7 @@ pub fn seed_session_with_pty_and_colors(
         scrollback,
         root_token,
         default_colors,
-        None,
+        SeedOrigin::default(),
     )
 }
 
@@ -218,9 +253,13 @@ fn seed_session_with_pty_and_colors_and_metadata(
     scrollback: phux_config::ScrollbackLimits,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
-    agent_session: Option<Vec<u8>>,
+    origin: SeedOrigin,
 ) -> Result<phux_core::ids::ResourceId, crate::terminal_actor::TerminalActorError> {
     use phux_core::ids::ResourceId;
+    let SeedOrigin {
+        agent_session,
+        attribution,
+    } = origin;
     // phux-p4vp: capture the spawn-time working directory before `cmd`
     // is moved into the actor build below, so it can be stamped onto the
     // pane's registry descriptor (see `stamp_spawn_cwd`).
@@ -266,8 +305,8 @@ fn seed_session_with_pty_and_colors_and_metadata(
     // that fans bell / title / dirty / idle events out to event-stream
     // subscribers scoped to this pane. The wire `ResourceId` is interned
     // up front (stable for the pane's lifetime) and captured by the drain.
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_SINK_CAPACITY);
-    actor.set_event_sink(event_tx);
+    let (event_sink, event_source) = crate::resource::event_sink::event_sink(EVENT_SINK_CAPACITY);
+    actor.set_event_sink(event_sink);
     // ADR-0046: same shape as the event sink, and for the same reason — the
     // sink MUST be installed before `actor.run()` moves the actor into the
     // spawn, while the wire `ResourceId` the drain needs only exists after.
@@ -276,12 +315,21 @@ fn seed_session_with_pty_and_colors_and_metadata(
     actor.set_live_session_probe(live_session_probe(state, terminal));
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
-        s.intern_terminal_wire(terminal)
+        let wire = s.intern_terminal_wire(terminal);
+        journal_pane_spawned(s, &wire, attribution);
+        wire
     });
-    spawn_pane_event_drain(state.clone(), wire_terminal_id.clone(), event_rx);
     spawn_agent_state_drain(state.clone(), wire_terminal_id.clone(), agent_rx);
-    spawn_terminal_exit_watcher(state.clone(), terminal, exit_notify, root_token.clone());
-    announce_seed_pane(state, &wire_terminal_id);
+    spawn_terminal_exit_watcher(
+        state.clone(),
+        terminal,
+        exit_notify,
+        root_token.clone(),
+        Some(PaneEvents {
+            wire: wire_terminal_id.clone(),
+            source: event_source,
+        }),
+    );
     // docs/consumers/tui.md §9 (phux-r82.1): the pane's actor is live and
     // its PTY child spawned.
     crate::hooks::fire_hook(
@@ -319,6 +367,7 @@ pub fn spawn_pane_with_pty(
         None,
         None,
         None,
+        SpawnAttribution::default(),
     )
 }
 
@@ -354,6 +403,7 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
     agent_session: Option<Vec<u8>>,
     initial_size: Option<(u16, u16)>,
+    attribution: SpawnAttribution,
 ) -> Result<Option<phux_core::ids::ResourceId>, crate::terminal_actor::TerminalActorError> {
     use phux_core::ids::ResourceId;
     // Clamp exactly as `TerminalActor::handle_resize` does: libghostty has no
@@ -414,8 +464,8 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     } = bundle;
     // Same agent-event wiring as the seed path (phux-y2t): intern the wire id
     // up front and spawn the per-pane event drain.
-    let (event_tx, event_rx) = tokio::sync::mpsc::channel(EVENT_SINK_CAPACITY);
-    actor.set_event_sink(event_tx);
+    let (event_sink, event_source) = crate::resource::event_sink::event_sink(EVENT_SINK_CAPACITY);
+    actor.set_event_sink(event_sink);
     // ADR-0046: same shape as the event sink, and for the same reason — the
     // sink MUST be installed before `actor.run()` moves the actor into the
     // spawn, while the wire `ResourceId` the drain needs only exists after.
@@ -424,11 +474,21 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     actor.set_live_session_probe(live_session_probe(state, terminal));
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
-        s.intern_terminal_wire(terminal)
+        let wire = s.intern_terminal_wire(terminal);
+        journal_pane_spawned(s, &wire, attribution);
+        wire
     });
-    spawn_pane_event_drain(state.clone(), wire_terminal_id.clone(), event_rx);
     spawn_agent_state_drain(state.clone(), wire_terminal_id.clone(), agent_rx);
-    spawn_terminal_exit_watcher(state.clone(), terminal, exit_notify, root_token.clone());
+    spawn_terminal_exit_watcher(
+        state.clone(),
+        terminal,
+        exit_notify,
+        root_token.clone(),
+        Some(PaneEvents {
+            wire: wire_terminal_id.clone(),
+            source: event_source,
+        }),
+    );
     // docs/consumers/tui.md §9 (phux-r82.1): the split pane's actor is live.
     let session_name = state.with(|s| {
         let window = s.registry().resource(terminal)?.window?;
@@ -477,8 +537,10 @@ fn stamp_spawn_cwd(
 
 /// Bounded capacity of the per-pane agent-event sink (SPEC §7.5,
 /// phux-y2t). Small: events are coalesced (one `dirty` per burst, one
-/// `idle` to close it) and the stream tolerates loss — a full sink drops
-/// the event rather than stalling the actor's hot PTY-pump loop.
+/// `idle` to close it), and a full sink drops the event rather than
+/// stalling the actor's hot PTY-pump loop. Every drop is counted and
+/// journaled as a `source_gap` for the pane (ADR-0123), so raising this is
+/// never how a loss gets fixed.
 pub(crate) const EVENT_SINK_CAPACITY: usize = 64;
 
 /// Bounded capacity of the per-pane agent-state sink (ADR-0046).
@@ -2636,9 +2698,11 @@ async fn handle_satellite_command(
         Some(relay) => match &command {
             Command::SubscribeResourceEvents { terminal_id, .. }
             | Command::AttachResource { terminal_id } => {
-                relay_stream_establishing(
+                let change =
+                    register_satellite_event_filter(state, client_id, host, &command, out_tx);
+                let result = relay_stream_establishing(
                     &relay,
-                    &command,
+                    &unfiltered_for_link(&command),
                     terminal_id,
                     client_id,
                     out_tx,
@@ -2646,7 +2710,9 @@ async fn handle_satellite_command(
                     bootstrap_limits,
                     state.with(|server| server.client_connection_cancellation(client_id)),
                 )
-                .await
+                .await;
+                settle_satellite_event_filter(state, client_id, change, &result);
+                result
             }
             Command::DetachResource { terminal_id } => {
                 resolve_hub_detach_terminal(state, &relay, client_id, host, terminal_id).await
@@ -2912,9 +2978,84 @@ async fn resolve_hub_detach_terminal(
     if result == CommandResult::Ok {
         state.with_mut(|s| {
             s.unregister_satellite_proxy_attach(client_id, host, id);
+            let scope = phux_protocol::ids::ResourceId::Satellite {
+                host: host.clone(),
+                id,
+            };
+            s.unsubscribe_terminal_events(client_id, &scope);
         });
     }
     result
+}
+
+/// The command the link forwards for a hub consumer's
+/// `SUBSCRIBE_RESOURCE_EVENTS`: always unfiltered. The link is one client
+/// on the satellite, where the latest filter on a scope wins, so a
+/// consumer's filter forwarded as-is would narrow every other consumer of
+/// that Terminal; each consumer's filter is applied here instead, by the
+/// hub's registry (ADR-0123). Every other command is forwarded unchanged.
+fn unfiltered_for_link(command: &Command) -> Command {
+    match command {
+        Command::SubscribeResourceEvents { terminal_id, .. } => Command::SubscribeResourceEvents {
+            terminal_id: terminal_id.clone(),
+            event_types: Vec::new(),
+        },
+        other => other.clone(),
+    }
+}
+
+/// Finish a relayed `SUBSCRIBE_RESOURCE_EVENTS` (`change` is what
+/// [`register_satellite_event_filter`] installed): start the consumer's
+/// event pump when the satellite accepted it, and put the registry scope
+/// back as it was when it did not, so a stream that never started leaves
+/// nothing behind and an established scope is kept. Every other command
+/// installed nothing and is left alone.
+fn settle_satellite_event_filter(
+    state: &SharedState,
+    client_id: ClientId,
+    change: Option<crate::state::SatelliteScopeChange>,
+    result: &CommandResult,
+) {
+    let Some(change) = change else {
+        return;
+    };
+    if matches!(result, CommandResult::Error { .. }) {
+        state.with_mut(|s| s.restore_satellite_scope(client_id, change));
+        return;
+    }
+    super::client::ensure_event_pump(state, client_id);
+}
+
+/// Install the hub registry scope a relayed `SUBSCRIBE_RESOURCE_EVENTS`
+/// delivers through (ADR-0123): relayed events reach a hub consumer only
+/// through the registry, under the filter the consumer asked for. Returns
+/// what the scope held before, for the rollback; `None` for every other
+/// relayed command, which installs nothing.
+fn register_satellite_event_filter(
+    state: &SharedState,
+    client_id: ClientId,
+    host: &phux_protocol::ids::SatelliteHost,
+    command: &Command,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+) -> Option<crate::state::SatelliteScopeChange> {
+    let Command::SubscribeResourceEvents {
+        terminal_id,
+        event_types,
+    } = command
+    else {
+        return None;
+    };
+    let id = terminal_id.local_id()?;
+    let scope = phux_protocol::ids::ResourceId::Satellite {
+        host: host.clone(),
+        id,
+    };
+    let filter = crate::state::EventFilter::of(event_types.clone());
+    Some(
+        state.with_mut(|s| {
+            s.subscribe_satellite_events(client_id, scope, filter, None, out_tx.clone())
+        }),
+    )
 }
 
 /// The hub-side lease coordinates one satellite-routed input command acts on.
@@ -3310,7 +3451,7 @@ pub(crate) fn create_named_session(
     command: Option<Vec<String>>,
     cwd: Option<&str>,
     env: std::collections::BTreeMap<String, String>,
-    agent_session: Option<Vec<u8>>,
+    origin: SeedOrigin,
     root_token: &CancellationToken,
 ) -> Result<phux_protocol::ids::ResourceId, String> {
     if state.with(|s| s.session_by_name(name).is_some()) {
@@ -3357,16 +3498,10 @@ pub(crate) fn create_named_session(
         }
         crate::terminal_actor::apply_term(&mut seed_cmd, &term);
         seed_session_with_pty_and_colors_and_metadata(
-            state,
-            name,
-            seed_cmd,
-            scrollback,
-            root_token,
-            None,
-            agent_session,
+            state, name, seed_cmd, scrollback, root_token, None, origin,
         )
     } else {
-        seed_session_with_actor_and_metadata(state, name, scrollback, root_token, agent_session)
+        seed_session_with_actor_and_metadata(state, name, scrollback, root_token, origin)
     };
 
     match seed_result {
@@ -4436,16 +4571,15 @@ pub(crate) async fn handle_report_agent_state(
 
 /// Handle `SUBSCRIBE_RESOURCE_EVENTS` command.
 ///
-/// Resolves the wire `terminal_id` to a pane actor and registers the caller
-/// as an event subscriber. The server will broadcast semantic events
-/// (`CommandStarted`, `CommandEnded`, `GridChanged`, etc.) as they occur, filtered
-/// by `event_types` (empty = all types). The subscription persists until the
-/// client detaches or the connection closes.
+/// `SUBSCRIBE_RESOURCE_EVENTS` is `SUBSCRIBE_EVENTS { terminal: Some(id) }`
+/// with a type filter, kept in the same registry (ADR-0123): a client
+/// subscribed both ways receives each event once, every event type reaches
+/// it (`event_types` empty = all), and a repeated subscription to the same
+/// Terminal replaces its filter. The subscription persists until the client
+/// detaches or the connection closes.
 ///
-/// Replies `CommandResult::Ok` immediately; events flow asynchronously as
-/// `Event` frames to the client's outbound mailbox. `try_send` semantics:
-/// a full subscriber mailbox drops events (accelerator semantics, not
-/// guaranteed delivery).
+/// Registration happens under the state lock before `Ok` is answered, so an
+/// event emitted after the reply is always delivered.
 pub(crate) fn handle_subscribe_terminal_events(
     state: &SharedState,
     client_id: ClientId,
@@ -4453,48 +4587,19 @@ pub(crate) fn handle_subscribe_terminal_events(
     event_types: Vec<phux_protocol::wire::frame::ResourceEventType>,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) -> CommandResult {
-    use crate::terminal_actor::{ResourceEventSubscriber, SubscribeToEventsRequest};
-
-    // Resolve the wire id to its pane actor (same pattern as handle_route_input).
-    let handle = state.with(|s| {
-        let core = s.terminal_from_wire(terminal_id)?;
-        s.resource_handle(core).cloned()
+    let filter = crate::state::EventFilter::of(event_types);
+    let registered = state.with_mut(|s| {
+        s.terminal_from_wire(terminal_id)?;
+        s.subscribe_resource_events(client_id, terminal_id.clone(), filter, out_tx.clone());
+        Some(())
     });
-
-    let Some(handle) = handle else {
+    if registered.is_none() {
         return CommandResult::Error {
             code: ErrorCode::TerminalNotFound,
             message: format!("no such terminal: {terminal_id:?}"),
         };
-    };
-
-    debug!(
-        ?client_id,
-        ?terminal_id,
-        "SUBSCRIBE_RESOURCE_EVENTS registering"
-    );
-
-    // Get the wire terminal id for use in Event frames.
-    let wire_terminal_id = terminal_id.local_id().unwrap_or(0);
-
-    // Build the subscriber request and send to the actor.
-    // The subscriber receives the client's outbound mailbox directly,
-    // so events are forwarded straight to the client without an intermediary.
-    let req = SubscribeToEventsRequest {
-        subscriber: ResourceEventSubscriber {
-            outbound: out_tx.clone(),
-            event_types,
-        },
-        wire_terminal_id,
-    };
-
-    if handle.subscribe_to_events.try_send(req).is_err() {
-        return CommandResult::Error {
-            code: ErrorCode::InternalError,
-            message: "pane actor unavailable for SUBSCRIBE_RESOURCE_EVENTS".to_owned(),
-        };
     }
-
+    super::client::ensure_event_pump(state, client_id);
     debug!(
         ?client_id,
         ?terminal_id,

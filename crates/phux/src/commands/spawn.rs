@@ -37,6 +37,7 @@ pub(crate) fn run_spawn(
     target: Option<String>,
     split: SpawnSplit,
     ratio: f32,
+    projection: Option<&str>,
     cwd: Option<String>,
     json: bool,
     socket: Option<PathBuf>,
@@ -74,6 +75,7 @@ pub(crate) fn run_spawn(
             &target,
             split,
             ratio,
+            projection,
             None,
             json,
         ),
@@ -136,7 +138,7 @@ pub(crate) fn dispatch_spawn(
 /// which prints the spawn's own degradation notices itself (before calling
 /// `persist_record`, so the two interleaved prints land in the historical
 /// encounter order) rather than returning them for this wrapper to print.
-async fn dispatch_spawn_async(
+pub(crate) async fn dispatch_spawn_async(
     socket_path: &Path,
     frame: &FrameKind,
     agent_session: Option<&AgentSessionRecord>,
@@ -166,6 +168,7 @@ pub(crate) fn dispatch_spawn_placed(
     target_text: &str,
     split: SpawnSplit,
     ratio: f32,
+    projection: Option<&str>,
     agent_session: Option<&AgentSessionRecord>,
     json: bool,
 ) -> Result<SpawnResult, ExitCode> {
@@ -235,6 +238,7 @@ pub(crate) fn dispatch_spawn_placed(
             &placement,
             dir,
             ratio,
+            projection,
             request_id.wrapping_add(1),
             &mut notices,
         )
@@ -567,6 +571,7 @@ mod tests {
             SpawnSplit::Vertical,
             0.3,
             None,
+            None,
             false,
         );
         assert!(matches!(result, Ok(SpawnResult::Ok(id)) if id == ResourceId::local(3)));
@@ -586,6 +591,7 @@ mod tests {
             "@1",
             SpawnSplit::Horizontal,
             0.5,
+            None,
             None,
             false,
         );

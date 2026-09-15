@@ -700,6 +700,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
     let super::relay::RelayMailbox {
         requests: mut relay_rx,
         unsubscribes: mut unsub_rx,
+        journal,
     } = mailbox;
     let spec = match plan_link(&entry) {
         Ok(spec) => spec,
@@ -768,7 +769,15 @@ pub(crate) async fn run_link<T: LinkTransport>(
                 info!(satellite = %host, target = %spec, "hub link established");
                 statuses.set(&host, LinkStatus::Connected);
                 let connected_at = tokio::time::Instant::now();
-                match run_relay_session(&host, conn, &mut relay_rx, &mut unsub_rx, &cancel).await {
+                let session = run_relay_session(
+                    &host,
+                    conn,
+                    &mut relay_rx,
+                    &mut unsub_rx,
+                    &cancel,
+                    journal.as_ref(),
+                );
+                match session.await {
                     Some(reason) => {
                         warn!(
                             satellite = %host,
@@ -836,11 +845,13 @@ async fn run_relay_session<C: LinkConn>(
     relay_rx: &mut tokio::sync::mpsc::Receiver<super::relay::RelayRequest>,
     unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<super::relay::Unsubscribe>,
     cancel: &CancellationToken,
+    journal: Option<&crate::state::SharedState>,
 ) -> Option<String> {
     let mut session = match negotiated_relay_session(host, &conn) {
         Ok(session) => session,
         Err(error) => return Some(error),
     };
+    session.set_journal(journal.cloned());
     let (mut reader, writer) = conn.into_parts();
     let (write_tx, write_rx) = tokio::sync::mpsc::channel(LINK_WRITE_QUEUE);
     let queued_write_bytes = Rc::new(Cell::new(0usize));
@@ -1275,16 +1286,19 @@ fn validate_link_hello_ok(
 ///
 /// Called from the server runtime's hub bring-up; `statuses` and `relays`
 /// are the same handles mirrored into shared state for command routing
-/// and future `LIST` aggregation.
+/// and future `LIST` aggregation. `journal` is that shared state, whose
+/// event journal re-stamps every event the links relay (ADR-0123).
 pub(crate) fn spawn_links(
     table: &HubTable,
     statuses: &HubLinkStatuses,
     relays: &super::relay::HubRelays,
     cancel: &CancellationToken,
+    journal: &crate::state::SharedState,
 ) {
     let transport = NetLinkTransport::from_env();
     for (host, entry) in table.iter() {
-        let (handle, mailbox) = super::relay::RelayHandle::new(host.clone());
+        let (handle, mut mailbox) = super::relay::RelayHandle::new(host.clone());
+        mailbox.journal = Some(journal.clone());
         relays.insert(handle);
         tokio::task::spawn_local(run_link(
             host.clone(),
@@ -2608,6 +2622,7 @@ mod tests {
                     let super::super::relay::RelayMailbox {
                         mut requests,
                         mut unsubscribes,
+                        ..
                     } = mailbox;
                     run_relay_session(
                         &session_host,
@@ -2615,6 +2630,7 @@ mod tests {
                         &mut requests,
                         &mut unsubscribes,
                         &session_cancel,
+                        None,
                     )
                     .await
                 });
@@ -2688,6 +2704,7 @@ mod tests {
                     let super::super::relay::RelayMailbox {
                         mut requests,
                         mut unsubscribes,
+                        ..
                     } = mailbox;
                     run_relay_session(
                         &session_host,
@@ -2695,6 +2712,7 @@ mod tests {
                         &mut requests,
                         &mut unsubscribes,
                         &CancellationToken::new(),
+                        None,
                     )
                     .await
                 });

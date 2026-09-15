@@ -11,6 +11,7 @@
 
 use std::collections::BTreeMap;
 
+use phux_protocol::ids::{ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     FrameKind, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX,
     SESSION_NAME_KEY, Scope,
@@ -18,6 +19,8 @@ use phux_protocol::wire::frame::{
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
+use crate::layout::Workspace;
+use crate::layout_ops::{LayoutOps, LayoutOpsError};
 
 /// The conventional rename write: `current\0new` under [`SESSION_NAME_KEY`].
 ///
@@ -77,6 +80,10 @@ pub enum CreateSessionError {
     /// The request document could not be serialized.
     #[error("failed to serialize create request: {0}")]
     Encode(#[from] serde_json::Error),
+    /// The session was created but its initial headless layout could not be
+    /// read, encoded, written, or confirmed.
+    #[error("failed to initialize created session layout: {0}")]
+    Layout(#[from] LayoutOpsError),
 }
 
 /// What the atomic-agent-session-restore capability probe found.
@@ -164,6 +171,12 @@ pub enum CreateOutcome {
     NotRegistered,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CreatedSession {
+    terminal_id: u32,
+    session_id: Option<SessionId>,
+}
+
 /// A `phux new` create-without-attach request. Borrowed so a caller with
 /// owned `Option<Vec<String>>`/`Option<String>` fields need not clone them.
 #[derive(Debug, Clone, Copy)]
@@ -228,20 +241,37 @@ pub async fn create_session(
         "agent_session": request.agent_session,
     }))?;
     send_create(conn, create_bytes).await?;
-    let outcome = match read_result(conn, result_key, allow_legacy_result, notices).await? {
-        ReadBack::Refused(message) => CreateOutcome::ReadRefused(message),
-        ReadBack::LegacyRefused(message) => CreateOutcome::LegacyReadRefused(message),
-        ReadBack::Absent => CreateOutcome::NotRegistered,
+    let created = match read_result(conn, result_key, allow_legacy_result, notices).await? {
+        ReadBack::Refused(message) => return Ok(CreateOutcome::ReadRefused(message)),
+        ReadBack::LegacyRefused(message) => return Ok(CreateOutcome::LegacyReadRefused(message)),
+        ReadBack::Absent => return Ok(CreateOutcome::NotRegistered),
         ReadBack::Correlated(bytes) => {
-            seed_pane_id_from_result(&bytes, request.name, &request_token, true)
-                .map_or(CreateOutcome::NotRegistered, CreateOutcome::Created)
+            created_session_from_result(&bytes, request.name, &request_token, true)
         }
         ReadBack::Legacy(bytes) => {
-            seed_pane_id_from_result(&bytes, request.name, &request_token, false)
-                .map_or(CreateOutcome::NotRegistered, CreateOutcome::Created)
+            created_session_from_result(&bytes, request.name, &request_token, false)
         }
     };
-    Ok(outcome)
+    let Some(created) = created else {
+        return Ok(CreateOutcome::NotRegistered);
+    };
+    let session_id = if let Some(session_id) = created.session_id {
+        session_id
+    } else {
+        let view = crate::state::get_state_on(conn).await?;
+        notices.extend(view.degradation().notices().iter().cloned());
+        let Some(session_id) =
+            created_session_id_from_snapshot(view.snapshot(), request.name, created.terminal_id)
+        else {
+            return Ok(CreateOutcome::NotRegistered);
+        };
+        session_id
+    };
+    let fallback = Workspace::single(ResourceId::local(created.terminal_id));
+    LayoutOps::new(conn, session_id, 10)
+        .read_or_seed(fallback)
+        .await?;
+    Ok(CreateOutcome::Created(u64::from(created.terminal_id)))
 }
 
 /// What creating an empty, keep-empty session (ADR-0105) answered.
@@ -375,16 +405,16 @@ async fn read_result(
     }
 }
 
-/// Read the seed pane's Terminal id out of a create-result document,
+/// Read the seed pane and owning Session ids out of a create-result document,
 /// rejecting one that does not answer for this request: the name must
 /// match, and the nonce must be present on a correlated read and absent on a
 /// legacy one.
-fn seed_pane_id_from_result(
+fn created_session_from_result(
     bytes: &[u8],
     name: &str,
     request_token: &str,
     correlated: bool,
-) -> Option<u64> {
+) -> Option<CreatedSession> {
     serde_json::from_slice::<serde_json::Value>(bytes)
         .ok()
         .filter(|v| v.get("name").and_then(serde_json::Value::as_str) == Some(name))
@@ -395,7 +425,42 @@ fn seed_pane_id_from_result(
                 v.get("request_token").is_none()
             }
         })
-        .and_then(|v| v.get("terminal_id").and_then(serde_json::Value::as_u64))
+        .and_then(|v| {
+            let terminal_id = u32::try_from(v.get("terminal_id")?.as_u64()?).ok()?;
+            let session_id = v
+                .get("session_id")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|id| u32::try_from(id).ok())
+                .map(SessionId::new);
+            Some(CreatedSession {
+                terminal_id,
+                session_id,
+            })
+        })
+}
+
+/// Bind a legacy name-only create receipt to the session that still owns its
+/// returned Terminal, so concurrent rename/recreate activity cannot seed a
+/// same-named but unrelated session.
+fn created_session_id_from_snapshot(
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    name: &str,
+    terminal_id: u32,
+) -> Option<SessionId> {
+    let terminal = ResourceId::local(terminal_id);
+    let resource = snapshot
+        .resources
+        .iter()
+        .find(|resource| resource.id == terminal)?;
+    let window = snapshot
+        .windows
+        .iter()
+        .find(|window| window.id == resource.window_id)?;
+    snapshot
+        .sessions
+        .iter()
+        .find(|session| session.name == name && session.id == window.session_id)
+        .map(|session| session.id)
 }
 
 /// Whether a create-result document answers an empty-session request: the
@@ -411,6 +476,9 @@ fn empty_session_result_matches(bytes: &[u8], name: &str, request_token: &str) -
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::ScriptSpec;
+    use phux_protocol::ids::WindowId;
+    use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
     #[test]
     fn empty_session_result_requires_name_nonce_and_empty() {
@@ -426,26 +494,61 @@ mod tests {
     /// nonce this request minted; a legacy (uncorrelated) read must carry no
     /// nonce at all.
     #[test]
-    fn seed_pane_id_from_result_requires_the_right_correlation() {
-        let correlated = br#"{"name":"work","terminal_id":3,"request_token":"tok"}"#;
+    fn created_session_from_result_requires_the_right_correlation() {
+        let correlated = br#"{"name":"work","session_id":7,"terminal_id":3,"request_token":"tok"}"#;
         assert_eq!(
-            seed_pane_id_from_result(correlated, "work", "tok", true),
-            Some(3)
+            created_session_from_result(correlated, "work", "tok", true),
+            Some(CreatedSession {
+                terminal_id: 3,
+                session_id: Some(SessionId::new(7)),
+            })
         );
         assert_eq!(
-            seed_pane_id_from_result(correlated, "work", "other", true),
+            created_session_from_result(correlated, "work", "other", true),
             None,
             "a mismatched nonce must not confirm the create"
         );
         let legacy = br#"{"name":"work","terminal_id":5}"#;
         assert_eq!(
-            seed_pane_id_from_result(legacy, "work", "tok", false),
-            Some(5)
+            created_session_from_result(legacy, "work", "tok", false),
+            Some(CreatedSession {
+                terminal_id: 5,
+                session_id: None,
+            })
         );
         assert_eq!(
-            seed_pane_id_from_result(correlated, "work", "tok", false),
+            created_session_from_result(correlated, "work", "tok", false),
             None,
             "a nonce present on a legacy (uncorrelated) read must not confirm it"
+        );
+    }
+
+    #[test]
+    fn legacy_create_receipt_must_match_the_terminals_current_owner() {
+        let owner = SessionId::new(7);
+        let impostor = SessionId::new(8);
+        let window = WindowId::new(9);
+        let snapshot = SessionSnapshot::new(owner, window, ResourceId::local(11))
+            .with_sessions(vec![
+                SessionInfo::new(owner, "renamed"),
+                SessionInfo::new(impostor, "requested"),
+            ])
+            .with_windows(vec![WindowInfo::new(window, owner, "1")])
+            .with_resources(vec![ResourceInfo::new(
+                ResourceId::local(11),
+                window,
+                80,
+                24,
+            )]);
+
+        assert_eq!(
+            created_session_id_from_snapshot(&snapshot, "renamed", 11),
+            Some(owner)
+        );
+        assert_eq!(
+            created_session_id_from_snapshot(&snapshot, "requested", 11),
+            None,
+            "a same-named session that does not own the receipt Terminal must not be seeded"
         );
     }
 
@@ -518,14 +621,13 @@ mod tests {
 
     #[tokio::test]
     async fn create_session_reads_back_the_correlated_result_and_surfaces_degradation() {
-        use crate::testkit::ScriptSpec;
-
         let spec = ScriptSpec::new()
             .metadata(|_scope, key| {
                 key.strip_prefix(SESSION_CREATE_RESULT_KEY_PREFIX)
                     .map(|token| {
                         serde_json::json!({
                             "name": "work",
+                            "session_id": 7,
                             "terminal_id": 3,
                             "request_token": token,
                         })
@@ -574,13 +676,23 @@ mod tests {
 
     #[tokio::test]
     async fn create_session_falls_back_to_the_legacy_key_when_allowed() {
-        use crate::testkit::ScriptSpec;
-
         let legacy = serde_json::json!({"name": "work", "terminal_id": 5})
             .to_string()
             .into_bytes();
-        let spec =
-            ScriptSpec::new().stored_metadata(Scope::Global, SESSION_CREATE_RESULT_KEY, legacy);
+        let session = SessionId::new(7);
+        let window = WindowId::new(9);
+        let snapshot = SessionSnapshot::new(session, window, ResourceId::local(5))
+            .with_sessions(vec![SessionInfo::new(session, "work")])
+            .with_windows(vec![WindowInfo::new(window, session, "1")])
+            .with_resources(vec![ResourceInfo::new(
+                ResourceId::local(5),
+                window,
+                80,
+                24,
+            )]);
+        let spec = ScriptSpec::new()
+            .stored_metadata(Scope::Global, SESSION_CREATE_RESULT_KEY, legacy)
+            .state(snapshot);
         let (socket, _dir, server) = scripted(spec);
 
         let mut conn = Connection::connect(&socket).await.expect("connect");

@@ -25,7 +25,10 @@ use std::path::Path;
 
 pub use write::{Edit, EditOutcome, apply_edit, write_edit};
 
-use crate::{ConfigError, ConfigProvenance, LayerSource, MAX_AGENT_LOG_BYTES, MAX_HISTORY_BYTES};
+use crate::{
+    ConfigError, ConfigProvenance, LayerSource, MAX_AGENT_LOG_BYTES, MAX_EVENT_JOURNAL_BYTES,
+    MAX_EVENT_JOURNAL_ENTRIES, MAX_HISTORY_BYTES,
+};
 
 /// A top-level `config.toml` table that holds scalar settings.
 ///
@@ -52,6 +55,8 @@ pub enum SettingSection {
     Experimental,
     /// `[voice]`.
     Voice,
+    /// `[limits]`.
+    Limits,
 }
 
 impl SettingSection {
@@ -65,6 +70,7 @@ impl SettingSection {
         Self::Theme,
         Self::Experimental,
         Self::Voice,
+        Self::Limits,
     ];
 
     /// Human title for a section header.
@@ -79,6 +85,7 @@ impl SettingSection {
             Self::Theme => "Theme",
             Self::Experimental => "Experimental",
             Self::Voice => "Voice",
+            Self::Limits => "Limits",
         }
     }
 
@@ -94,6 +101,7 @@ impl SettingSection {
             Self::Theme => "theme",
             Self::Experimental => "experimental",
             Self::Voice => "voice",
+            Self::Limits => "limits",
         }
     }
 
@@ -133,6 +141,10 @@ impl SettingSection {
             Self::Voice => {
                 "The server-side transcriber behind TRANSCRIBE: an argv that turns an \
                  uploaded clip into text for a paste."
+            }
+            Self::Limits => {
+                "Server-enforced ceilings that are not a per-pane spawn default: the \
+                 largest L3 metadata value the server stores at one key."
             }
         }
     }
@@ -295,6 +307,22 @@ const HISTORY_BYTES_MAX: i64 = MAX_HISTORY_BYTES as i64;
 
 /// Upper bound of the `defaults.agent-log-bytes` integer setting.
 const AGENT_LOG_BYTES_MAX: i64 = MAX_AGENT_LOG_BYTES as i64;
+/// Floor of `limits.metadata-value-bytes`: the built-in agent-session
+/// record write is checked against `MAX_AGENT_SESSION_RECORD_BYTES` only
+/// *after* the generic cap (`crates/phux-server/src/runtime/client.rs`'s
+/// `reject_set_metadata` checks the cap before its per-key interceptors), so
+/// a cap below this size would silently break `phux new`, `phux rename`,
+/// and keep-empty session metadata, not just agent-session resume.
+#[allow(
+    clippy::cast_possible_wrap,
+    reason = "MAX_AGENT_SESSION_RECORD_BYTES is a small compile-time constant (4096)"
+)]
+const METADATA_VALUE_BYTES_MIN: i64 =
+    phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES as i64;
+/// Upper bound of the `defaults.event-journal-entries` integer setting.
+const EVENT_JOURNAL_ENTRIES_MAX: i64 = MAX_EVENT_JOURNAL_ENTRIES as i64;
+/// Upper bound of the `defaults.event-journal-bytes` integer setting.
+const EVENT_JOURNAL_BYTES_MAX: i64 = MAX_EVENT_JOURNAL_BYTES as i64;
 /// Cap on `keybindings.which-key-delay-ms`: one minute. See the row's
 /// detail text.
 const WHICH_KEY_DELAY_MAX_MS: i64 = 60_000;
@@ -390,6 +418,36 @@ pub const CATALOG: &[SettingSpec] = &[
                  counts a tombstone the bootstrap reports; it is never an error. Records \
                  are small, so the 4 MiB default is tens of thousands of them. 67108864 \
                  (64 MiB) is the accepted maximum; phux config check rejects more.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.event-journal-entries",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: EVENT_JOURNAL_ENTRIES_MAX,
+        },
+        summary: "Recent events the server keeps for cursor replay",
+        detail: "The server stamps every event with one sequence and keeps the most recent \
+                 ones (ADR-0123), so a watcher or waiter that reconnects with a cursor is \
+                 replayed what it missed. A cursor older than the ring is told it missed \
+                 events and re-reads state; nothing is lost silently. The oldest events go \
+                 first when this or event-journal-bytes is reached. 1048576 is the \
+                 accepted maximum; phux config check rejects more.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.event-journal-bytes",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: EVENT_JOURNAL_BYTES_MAX,
+        },
+        summary: "Estimated bytes of recent events the server keeps",
+        detail: "The memory bound beside event-journal-entries: most events are tiny, but \
+                 titles, working directories, and agent questions are not. The 1 MiB \
+                 default holds thousands of ordinary events. 67108864 (64 MiB) is the \
+                 accepted maximum; phux config check rejects more.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {
@@ -609,6 +667,24 @@ pub const CATALOG: &[SettingSpec] = &[
                  request and killing the process. Capped here at 3600 (one hour): the \
                  request is held open the whole time, and an hour is already far past any \
                  useful clip. 0 would refuse every request, so the editor floor is 1.",
+        applies: Applies::NextSpawn,
+    },
+    // -- [limits] -------------------------------------------------------
+    SettingSpec {
+        key: "limits.metadata-value-bytes",
+        section: SettingSection::Limits,
+        kind: SettingKind::Integer {
+            min: METADATA_VALUE_BYTES_MIN,
+            max: U32_MAX,
+        },
+        summary: "Largest L3 metadata value stored at one key",
+        detail: "A SET_METADATA write over this cap is silently refused — the frame has no \
+                 reply, so the writer is not told; nothing is stored (ADR-0129). The one \
+                 shared metadata store backs every consumer's convention — session names, \
+                 tags, and any named layout projection alike — so the cap is global, not per \
+                 key family. Floored at 4096 bytes: the built-in agent-session record write \
+                 is checked against its own 4096-byte limit only after this cap, so a lower \
+                 cap would silently break session-create, rename, and keep-empty metadata too.",
         applies: Applies::NextSpawn,
     },
 ];
@@ -1144,7 +1220,7 @@ mod tests {
 
     #[test]
     fn section_metadata_is_consistent() {
-        assert_eq!(SettingSection::ALL.len(), 8);
+        assert_eq!(SettingSection::ALL.len(), 9);
         for section in SettingSection::ALL {
             assert!(!section.title().is_empty());
             assert!(section.summary().ends_with('.'));

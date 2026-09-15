@@ -151,6 +151,13 @@ pub struct ScriptSpec {
     /// When set, every metadata request is refused with a *correlated*
     /// `ERROR` instead of answered.
     metadata_error: Option<(ErrorCode, String)>,
+    /// `SET_METADATA` on one of these `(scope, key)` pairs is silently
+    /// ignored — never stored, no reply (there is none to send anyway) —
+    /// the same real-world shape as a value over
+    /// `limits.metadata-value-bytes` or a concurrent writer's own write
+    /// landing after this session's confirming `GET_METADATA` already
+    /// captured the old value. See [`Self::drop_metadata_writes`].
+    dropped_metadata_writes: std::collections::HashSet<(Scope, String)>,
     /// The `RESOURCE_SPAWNED` payload a `SPAWN_RESOURCE` is answered with.
     spawn: Option<SpawnResult>,
     /// When set, every `SPAWN_RESOURCE` is refused with a *correlated*
@@ -201,6 +208,7 @@ impl fmt::Debug for ScriptSpec {
             .field("metadata", &self.metadata.is_some())
             .field("metadata_store", &self.metadata_store)
             .field("metadata_error", &self.metadata_error)
+            .field("dropped_metadata_writes", &self.dropped_metadata_writes)
             .field("spawn", &self.spawn)
             .field("spawn_error", &self.spawn_error)
             .field("move_result", &self.move_result)
@@ -411,6 +419,19 @@ impl ScriptSpec {
     #[must_use]
     pub fn refuse_metadata(mut self, code: ErrorCode, message: &str) -> Self {
         self.metadata_error = Some((code, message.to_owned()));
+        self
+    }
+
+    /// Make `SET_METADATA` on this exact `(scope, key)` a silent no-op: the
+    /// value is never stored, and (since `SET_METADATA` has no reply frame
+    /// to carry an error) nothing is sent back either — the same shape a
+    /// value over `limits.metadata-value-bytes` has on the real server, or
+    /// what a concurrent writer's own later write looks like from this
+    /// session's side. Pair with [`Self::stored_metadata`] to seed the
+    /// value a subsequent `GET_METADATA` (a confirming read) sees instead.
+    #[must_use]
+    pub fn drop_metadata_writes(mut self, scope: Scope, key: &str) -> Self {
+        self.dropped_metadata_writes.insert((scope, key.to_owned()));
         self
     }
 
@@ -780,34 +801,12 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
             out.push(metadata_reply(*request_id, scope, key, spec));
             out
         }
-        // `SET_METADATA` is **fire-and-forget**: `handle_set_metadata`
-        // (`crates/phux-server/src/runtime/client.rs`) is not even handed the
-        // outbound sender, and says so in prose — "SET_METADATA has no reply
-        // frame to carry an error", so a malformed write is a silent no-op.
-        // Acking it here would be precisely the class of lie this module
-        // exists to prevent: a client written against the ack would wait for
-        // a frame the server never sends. The write is still *stored*, so a
-        // read-modify-write caller sees its own value on the confirming GET,
-        // which is how the layout CAS actually closes.
         FrameKind::SetMetadata {
             request_id,
             scope,
             key,
             value,
-        } => {
-            if let Some((code, message)) = spec.metadata_error.clone() {
-                return vec![FrameKind::Error {
-                    request_id: Some(*request_id),
-                    code,
-                    message,
-                }];
-            }
-            spec.metadata_store
-                .retain(|(s, k, _)| !(s == scope && k == key));
-            spec.metadata_store
-                .push((scope.clone(), key.clone(), value.clone()));
-            Vec::new()
-        }
+        } => set_metadata_reply(*request_id, scope, key, value, spec),
         FrameKind::DeleteMetadata { scope, key, .. } => {
             spec.metadata_store
                 .retain(|(stored_scope, stored_key, _)| stored_scope != scope || stored_key != key);
@@ -860,6 +859,43 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
         // ROUTE_INPUT, VIEWPORT_RESIZE, FRAME_ACK, DETACH, PING's pong aside.
         _ => Vec::new(),
     }
+}
+
+/// `SET_METADATA` is **fire-and-forget**: `handle_set_metadata`
+/// (`crates/phux-server/src/runtime/client.rs`) is not even handed the
+/// outbound sender, and says so in prose — "`SET_METADATA` has no reply
+/// frame to carry an error", so a malformed write is a silent no-op. Acking
+/// it here would be precisely the class of lie this module exists to
+/// prevent: a client written against the ack would wait for a frame the
+/// server never sends. The write is still *stored* unless `key` is one of
+/// [`ScriptSpec::drop_metadata_writes`]'s pinned no-ops, so a
+/// read-modify-write caller sees its own value on the confirming GET,
+/// which is how the layout CAS actually closes.
+fn set_metadata_reply(
+    request_id: u32,
+    scope: &Scope,
+    key: &str,
+    value: &[u8],
+    spec: &mut ScriptSpec,
+) -> Vec<FrameKind> {
+    if let Some((code, message)) = spec.metadata_error.clone() {
+        return vec![FrameKind::Error {
+            request_id: Some(request_id),
+            code,
+            message,
+        }];
+    }
+    if spec
+        .dropped_metadata_writes
+        .contains(&(scope.clone(), key.to_owned()))
+    {
+        return Vec::new();
+    }
+    spec.metadata_store
+        .retain(|(s, k, _)| !(s == scope && k == key));
+    spec.metadata_store
+        .push((scope.clone(), key.to_owned(), value.to_vec()));
+    Vec::new()
 }
 
 /// The reply sequence for one `COMMAND`, pre-ack pushes first.

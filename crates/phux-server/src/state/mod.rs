@@ -54,6 +54,7 @@ mod hook_dispatch;
 mod hub;
 mod hub_state;
 mod id_space;
+mod journal;
 mod lease_table;
 mod leases;
 mod lifecycle;
@@ -78,9 +79,13 @@ pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
 pub use conditional_kill::KillIfRefusal;
 use config::ServerConfig;
-pub use events::{EventScope, EventSubscription};
+pub use events::{
+    EventFilter, EventPump, EventScope, EventSubscription, PumpStep, SatelliteScopeChange,
+    journal_gap_frame,
+};
 use hub_state::HubState;
 pub use id_space::IdSpace;
+pub use journal::EventRecord;
 // Facade: the mailbox payloads live at the crate root (`crate::mailbox`) so
 // `state` and `terminal_actor` can both depend on them without depending on
 // each other. Re-exported here because `crate::state::Outbound` is the spelling
@@ -105,6 +110,12 @@ pub use upgrade_blob::RebuildError;
 /// reference TUI's `phux.tui.layout/v1` key — ADR-0019 ties layout
 /// persistence to a Group scope and the TUI needs a Group to write into.
 pub const DEFAULT_GROUP_ID: GroupId = GroupId::new(1);
+
+/// Usable Terminal geometry when no attached view contributes a viewport.
+///
+/// Session seeds start here, and automatic window-size policies return here
+/// after the final usable view detaches. `Manual` deliberately opts out.
+pub(crate) const HEADLESS_TERMINAL_DIMS: (u16, u16) = (80, 24);
 
 /// Opaque process-incarnation identifier advertised during `HELLO_OK`.
 ///
@@ -166,6 +177,13 @@ pub struct ServerState {
     /// map alone is readable from outside, through [`Self::attached`]. See
     /// [`client_table`] for the per-field documentation.
     clients: ClientTable,
+    /// The server-wide event journal (ADR-0123): the one `seq` every event
+    /// is stamped with, and the bounded ring a cursor subscription replays
+    /// from. Written only by [`Self::record_and_fanout`] (and the hub's
+    /// relay re-stamp), under this lock, so an event's order and any
+    /// snapshot cut in the same lock agree. See [`journal`] and
+    /// `state::events`.
+    journal: journal::Journal,
     /// Everything keyed on a live pane's identity: actor handles, shutdown
     /// tokens, the pane-actor `JoinSet`, per-pane client subscriptions, and
     /// the `ATTACH_RESOURCE` output pumps.
@@ -390,8 +408,6 @@ mod tests {
             consumer_attach: mpsc::channel(8).0,
             consumer_detach: mpsc::channel(8).0,
             consumer_ack: mpsc::channel(8).0,
-            subscribe_to_events: channels.subscribe_to_events,
-            unsubscribe_from_events: channels.unsubscribe_from_events,
             upgrade: mpsc::channel(8).0,
             control: channels.control,
             facet: crate::resource::ResourceFacetHandle::Terminal(
@@ -736,6 +752,66 @@ mod tests {
         s.set_window_size(WindowSize::Smallest);
         s.set_client_viewport(small, ViewportInfo::new(0, 0));
         assert_eq!(s.resolve_terminal_geometry(pid, None), Some((120, 48)));
+    }
+
+    #[test]
+    fn detach_uses_remaining_views_then_restores_usable_headless_geometry() {
+        use phux_protocol::wire::frame::ViewportInfo;
+
+        let mut s = ServerState::new();
+        let (_sid, _wid, pid) = s.seed_session("default");
+        let big = s.new_client_id();
+        let tiny = s.new_client_id();
+        s.attach_default_caps(big, "default", mk_tx()).unwrap();
+        s.attach_default_caps(tiny, "default", mk_tx()).unwrap();
+        s.set_client_viewport(big, ViewportInfo::new(120, 48));
+        s.set_client_viewport(tiny, ViewportInfo::new(1, 1));
+        s.registry_mut().terminal_mut(pid).unwrap().dims = (1, 1);
+
+        s.detach(tiny);
+        assert_eq!(s.registry().terminal(pid).unwrap().dims, (120, 48));
+        s.detach(big);
+        assert_eq!(
+            s.registry().terminal(pid).unwrap().dims,
+            HEADLESS_TERMINAL_DIMS
+        );
+    }
+
+    #[test]
+    fn manual_policy_holds_explicit_geometry_after_last_detach() {
+        use phux_config::WindowSize;
+        use phux_protocol::wire::frame::ViewportInfo;
+
+        let mut s = ServerState::new();
+        let (_sid, _wid, pid) = s.seed_session("default");
+        let client = s.new_client_id();
+        s.attach_default_caps(client, "default", mk_tx()).unwrap();
+        s.set_client_viewport(client, ViewportInfo::new(1, 1));
+        s.registry_mut().terminal_mut(pid).unwrap().dims = (137, 53);
+        s.set_window_size(WindowSize::Manual);
+
+        s.detach(client);
+        assert_eq!(s.registry().terminal(pid).unwrap().dims, (137, 53));
+    }
+
+    #[test]
+    fn latest_policy_uses_the_most_recent_remaining_view_after_detach() {
+        use phux_config::WindowSize;
+        use phux_protocol::wire::frame::ViewportInfo;
+
+        let mut s = ServerState::new();
+        let (_sid, _wid, pid) = s.seed_session("default");
+        let recent = s.new_client_id();
+        let departing = s.new_client_id();
+        s.attach_default_caps(recent, "default", mk_tx()).unwrap();
+        s.attach_default_caps(departing, "default", mk_tx())
+            .unwrap();
+        s.set_client_viewport(recent, ViewportInfo::new(111, 37));
+        s.set_client_viewport(departing, ViewportInfo::new(70, 20));
+        s.set_window_size(WindowSize::Latest);
+
+        s.detach(departing);
+        assert_eq!(s.registry().terminal(pid).unwrap().dims, (111, 37));
     }
 
     #[test]

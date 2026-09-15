@@ -143,6 +143,344 @@ fn wait_for_terminal_absent(socket: &str, selector: &str) {
     panic!("{selector} was still present {budget:?} after kill");
 }
 
+/// PHA-406 L18 review item 9: `workspace save` reads a session's *real* L3
+/// layout envelope (the split a `phux spawn --target --split` write
+/// produces) instead of `GET_STATE`'s `WindowInfo.layout`, which the
+/// reference server never populates. Full round trip: split a pane on a
+/// source server, save (asserting the archive already carries a real
+/// `Split` node, not a flat one-pane-per-window fallback), restore into a
+/// fresh server, then save that server too and assert the same split shape
+/// survived the round trip.
+#[test]
+#[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear save-restore-resave round trip keeps its own assertions together"
+)]
+fn workspace_save_captures_and_restore_replays_a_real_split_tree() {
+    let source = ServerGuard::start("source");
+    let dest = ServerGuard::start("seed");
+    let archive_dir = tempfile::tempdir().expect("archive tempdir");
+    let source_archive = archive_dir.path().join("source.json");
+    let dest_archive = archive_dir.path().join("dest.json");
+    let cwd = archive_dir.path().to_string_lossy().into_owned();
+    let source_socket = source.socket_text();
+    let dest_socket = dest.socket_text();
+
+    let (code, stdout, stderr) = ServerGuard::run(&[
+        "new",
+        "--socket",
+        &source_socket,
+        "--json",
+        "-s",
+        "split-bench",
+        "--cwd",
+        &cwd,
+    ]);
+    assert_eq!(code, 0, "create split-bench session failed: {stderr}");
+    let created: serde_json::Value = serde_json::from_str(&stdout).expect("new --json");
+    let seed_pane = created["terminal_id"]
+        .as_u64()
+        .expect("new --json names the seed pane");
+    let seed_selector = format!("@{seed_pane}");
+
+    // A second pane placed beside the first writes a real two-leaf split
+    // into `split-bench`'s layout envelope (`SplitPreservingFocus`) — this
+    // is the tree `GET_STATE` can never see, only `GET_METADATA` can.
+    let (code, _stdout, stderr) = ServerGuard::run(&[
+        "spawn",
+        "--socket",
+        &source_socket,
+        "--target",
+        &seed_selector,
+        "--split",
+        "vertical",
+        "--",
+        "sleep",
+        "30",
+    ]);
+    assert_eq!(code, 0, "placed spawn failed: {stderr}");
+
+    let (code, stdout, stderr) = ServerGuard::run(&[
+        "workspace",
+        "save",
+        "--socket",
+        &source_socket,
+        "--output",
+        &source_archive.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "workspace save failed: {stderr}");
+    assert!(stdout.is_empty());
+
+    let saved: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&source_archive).expect("read saved archive"),
+    )
+    .expect("saved archive JSON");
+    let split_window = split_bench_window(&saved);
+    assert_eq!(
+        split_window["panes"].as_array().expect("panes array").len(),
+        2,
+        "the saved window must carry both panes, not just the seed: {split_window}"
+    );
+    assert_eq!(
+        split_window["layout"]["kind"], "split",
+        "the saved layout must be the real two-leaf split, not the bare-pane fallback: {split_window}"
+    );
+
+    let (code, stdout, stderr) = ServerGuard::run(&[
+        "workspace",
+        "restore",
+        &source_archive.to_string_lossy(),
+        "--socket",
+        &dest_socket,
+    ]);
+    assert_eq!(code, 0, "workspace restore failed: {stderr}");
+    let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
+    assert!(
+        summary["failed"].as_array().is_none_or(Vec::is_empty),
+        "restore must not report a failure: {summary}"
+    );
+    assert!(
+        summary["restored"]
+            .as_array()
+            .expect("restored array")
+            .iter()
+            .any(|name| name == "split-bench")
+    );
+
+    // Saving the just-restored server proves the round trip end to end: the
+    // replayed layout envelope decodes back into the same split shape.
+    let (code, stdout, stderr) = ServerGuard::run(&[
+        "workspace",
+        "save",
+        "--socket",
+        &dest_socket,
+        "--output",
+        &dest_archive.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "workspace save (post-restore) failed: {stderr}");
+    assert!(stdout.is_empty());
+    let resaved: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&dest_archive).expect("read resaved archive"),
+    )
+    .expect("resaved archive JSON");
+    let resaved_window = split_bench_window(&resaved);
+    assert_eq!(
+        resaved_window["panes"]
+            .as_array()
+            .expect("panes array")
+            .len(),
+        2,
+        "the round-tripped window must still carry both panes: {resaved_window}"
+    );
+    assert_eq!(
+        resaved_window["layout"]["kind"], "split",
+        "the round-tripped layout must still be a real split, not flattened: {resaved_window}"
+    );
+}
+
+/// The one window of the archive's `split-bench` session.
+fn split_bench_window(archive: &serde_json::Value) -> serde_json::Value {
+    let sessions = archive["sessions"].as_array().expect("sessions array");
+    let session = sessions
+        .iter()
+        .find(|session| session["name"] == "split-bench")
+        .unwrap_or_else(|| panic!("archive names no split-bench session: {archive}"));
+    session["windows"]
+        .as_array()
+        .and_then(|windows| windows.first())
+        .unwrap_or_else(|| panic!("split-bench session has no window: {session}"))
+        .clone()
+}
+
+/// Named session's windows array from an archive, or panics naming the
+/// archive it looked in.
+fn session_windows<'a>(archive: &'a serde_json::Value, name: &str) -> &'a Vec<serde_json::Value> {
+    archive["sessions"]
+        .as_array()
+        .expect("sessions array")
+        .iter()
+        .find(|session| session["name"] == name)
+        .unwrap_or_else(|| panic!("archive names no {name:?} session: {archive}"))
+        .get("windows")
+        .and_then(serde_json::Value::as_array)
+        .unwrap_or_else(|| panic!("{name:?} session has no windows array: {archive}"))
+}
+
+/// Total pane count across every window of `windows`.
+fn total_panes(windows: &[serde_json::Value]) -> usize {
+    windows
+        .iter()
+        .map(|window| window["panes"].as_array().map_or(0, std::vec::Vec::len))
+        .sum()
+}
+
+/// PHA-406 L18 verification review items 1+2: a stored layout envelope can
+/// both miss live panes entirely (a headless `phux spawn` with no
+/// `--target` never touches L3 layout — it only joins the session) and go
+/// on referencing one that has since closed (nothing ever prunes a dead
+/// leaf out of a stored layout). Before the fix, `workspace save` used to
+/// (1) silently drop the headless pane from the archive, and (2) archive
+/// the dead leaf as a `{"active":false,"cols":0,"rows":0}` phantom that
+/// `workspace restore` then recreated as a brand new, empty shell — a
+/// restored workspace with the wrong pane count either way.
+///
+/// Repro, in one session: split a pane into the layout, kill it (leaving a
+/// dead leaf nothing prunes), then spawn a second, headless pane with no
+/// `--target` (leaving a live pane the layout never named). `workspace
+/// save` must reconcile both: the dead leaf is dropped from its window,
+/// and the headless pane lands in a synthesized `"unplaced"` window with a
+/// stderr warning naming the session. Saving the restored destination
+/// again and comparing pane counts proves the round trip preserves
+/// exactly the two live panes the source actually had — never three
+/// (the dead leaf resurrected) and never one (the headless pane dropped).
+#[test]
+#[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear repro-save-restore-resave round trip keeps its own assertions together"
+)]
+fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
+    // The server's own pre-seeded session (not a second one created via
+    // `phux new`) is deliberately the only session on this server: a
+    // headless spawn's "join the most recently active session" heuristic
+    // (`resolve_spawn_ownership`, `crates/phux-server/src/runtime/attach.rs`)
+    // only tracks *attach* activity — nothing in this headless flow ever
+    // attaches — so with more than one session present it falls back to
+    // "the first session in the registry", which is the pre-seeded one,
+    // not a session created afterward. One session removes that ambiguity:
+    // whichever fallback fires, it can only mean this session. The
+    // pre-seeded session's seed pane is always wire id 1 (the first
+    // resource a fresh server ever creates).
+    let source = ServerGuard::start("reconcile-repro");
+    let dest = ServerGuard::start("seed");
+    let archive_dir = tempfile::tempdir().expect("archive tempdir");
+    let source_archive = archive_dir.path().join("reconcile-source.json");
+    let dest_archive = archive_dir.path().join("reconcile-dest.json");
+    let source_socket = source.socket_text();
+    let dest_socket = dest.socket_text();
+    let seed_selector = "@1";
+
+    // A pane placed into the layout, then killed: a dead layout leaf
+    // (review item 2) that nothing ever prunes.
+    let (code, stdout, stderr) = ServerGuard::run(&[
+        "spawn",
+        "--socket",
+        &source_socket,
+        "--target",
+        seed_selector,
+        "--split",
+        "vertical",
+        "--json",
+        "--",
+        "sleep",
+        "30",
+    ]);
+    assert_eq!(code, 0, "placed spawn failed: {stderr}");
+    let placed: serde_json::Value = serde_json::from_str(&stdout).expect("spawn --json");
+    let placed_id = placed["terminal_id"]
+        .as_u64()
+        .expect("spawn --json names the placed pane");
+    let placed_selector = format!("@{placed_id}");
+    let (code, _, stderr) =
+        ServerGuard::run(&["kill", "--socket", &source_socket, &placed_selector]);
+    assert_eq!(code, 0, "kill the placed pane before save: {stderr}");
+    wait_for_terminal_absent(&source_socket, &placed_selector);
+
+    // A headless spawn with no --target joins the session (the only one on
+    // this server) but never touches its layout (review item 1).
+    let (code, _stdout, stderr) =
+        ServerGuard::run(&["spawn", "--socket", &source_socket, "--", "sleep", "30"]);
+    assert_eq!(code, 0, "headless spawn failed: {stderr}");
+
+    let (code, stdout, stderr) = ServerGuard::run(&[
+        "workspace",
+        "save",
+        "--socket",
+        &source_socket,
+        "--output",
+        &source_archive.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "workspace save failed: {stderr}");
+    assert!(stdout.is_empty());
+    assert!(
+        stderr.contains("reconcile-repro") && stderr.contains("absent from its stored layout"),
+        "save must warn about the unplaced headless pane naming the session: {stderr}"
+    );
+
+    let saved: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&source_archive).expect("read saved archive"),
+    )
+    .expect("saved archive JSON");
+    let windows = session_windows(&saved, "reconcile-repro");
+    assert_eq!(
+        total_panes(windows),
+        2,
+        "archive must hold exactly the seed pane and the headless spawn — the dead leaf \
+         dropped, the headless pane not lost: {windows:?}"
+    );
+    let unplaced = windows
+        .iter()
+        .find(|window| window["name"] == "unplaced")
+        .unwrap_or_else(|| {
+            panic!("the headless pane must land in a synthesized unplaced window: {windows:?}")
+        });
+    assert_eq!(
+        unplaced["panes"].as_array().expect("panes array").len(),
+        1,
+        "unplaced window must hold exactly the one pane the layout never named: {unplaced}"
+    );
+    let seed_window = windows
+        .iter()
+        .find(|window| window["name"] != "unplaced")
+        .expect("the seed's own window is still present");
+    assert_eq!(
+        seed_window["panes"].as_array().expect("panes array").len(),
+        1,
+        "the dead leaf must be pruned from the seed's own window, collapsing its split: \
+         {seed_window}"
+    );
+
+    let (code, stdout, stderr) = ServerGuard::run(&[
+        "workspace",
+        "restore",
+        &source_archive.to_string_lossy(),
+        "--socket",
+        &dest_socket,
+    ]);
+    assert_eq!(code, 0, "workspace restore failed: {stderr}");
+    let summary: serde_json::Value = serde_json::from_str(&stdout).expect("restore summary JSON");
+    assert!(
+        summary["failed"].as_array().is_none_or(Vec::is_empty),
+        "restore must not report a failure: {summary}"
+    );
+
+    // Saving the just-restored destination proves the round trip end to
+    // end: exactly the source's two live panes, never a phantom shell for
+    // the pruned dead leaf and never a dropped headless pane.
+    let (code, stdout, stderr) = ServerGuard::run(&[
+        "workspace",
+        "save",
+        "--socket",
+        &dest_socket,
+        "--output",
+        &dest_archive.to_string_lossy(),
+    ]);
+    assert_eq!(code, 0, "workspace save (post-restore) failed: {stderr}");
+    assert!(stdout.is_empty());
+    let resaved: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(&dest_archive).expect("read resaved archive"),
+    )
+    .expect("resaved archive JSON");
+    let resaved_windows = session_windows(&resaved, "reconcile-repro");
+    assert_eq!(
+        total_panes(resaved_windows),
+        2,
+        "the restored session must carry exactly two live panes, matching the source: \
+         {resaved_windows:?}"
+    );
+}
+
 #[test]
 #[ignore = "spawns real phux servers; run explicitly when validating workspace archives."]
 fn workspace_archive_saves_and_restores_sessions() {

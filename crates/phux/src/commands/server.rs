@@ -197,11 +197,16 @@ fn load_config() -> Result<phux_config::Config, ExitCode> {
 
 /// Compose the `ServerConfig` the runtime binds from, out of the single
 /// config snapshot's `defaults` and the flags that override them.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one config snapshot's independent sections, threaded through the single startup call"
+)]
 fn build_server_config(
     session: Option<&str>,
     socket_path: &Path,
     defaults: phux_config::DefaultsCfg,
     voice: phux_config::VoiceCfg,
+    limits: &phux_config::LimitsCfg,
     hook_catalog: phux_server::hooks::HookCatalog,
     seed_command: Option<&str>,
     exit_after_idle: Option<u64>,
@@ -260,12 +265,26 @@ fn build_server_config(
         seed_command,
         scrollback: defaults.scrollback_limits(),
         agent_log_bytes: defaults.agent_log_bytes,
+        event_journal_entries: defaults.event_journal_entries,
+        event_journal_bytes: defaults.event_journal_bytes,
         cwd_inheritance: defaults.cwd_inheritance,
         term: defaults.term,
         shell,
         login_shell,
         window_size: defaults.window_size,
         voice,
+        // PHA-406 L18 review item 3: `phux config check` flags a value
+        // below this floor (`limits_findings` in `phux-config`), but a
+        // config that ships one anyway must not silently break the
+        // built-in agent-session record write `reject_set_metadata`
+        // checks this generic cap ahead of — clamp here, the one place
+        // every startup path builds the runtime's `ServerConfig`, so the
+        // shared cap can degrade but the writes that depend on it never
+        // do.
+        metadata_value_bytes: limits.metadata_value_bytes.max(
+            u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES)
+                .unwrap_or(u32::MAX),
+        ),
         // Permissive HELLO authorization (ADR-0072): the local trust model
         // is "same OS user, kernel-enforced". phux-pjc5 installs the
         // scope-enforcing engine here for paired/remote deployments.
@@ -424,6 +443,7 @@ pub(crate) fn run_server(
         &socket_path,
         config.defaults,
         config.voice,
+        &config.limits,
         hook_catalog,
         seed_command,
         exit_after_idle,
@@ -1053,6 +1073,57 @@ mod tests {
         assert_eq!(parse_auto_spawn_idle("1.5"), None);
         assert_eq!(parse_auto_spawn_idle("-1"), None);
         assert_eq!(parse_auto_spawn_idle("forever"), None);
+    }
+
+    /// PHA-406 L18 review item 3: `phux config check` flags
+    /// `limits.metadata-value-bytes` below the built-in agent-session
+    /// record floor (`phux-config::check::limits_findings`), but a config
+    /// file is not the only way to reach this value — the clamp itself has
+    /// to live here too, or a config that ships one anyway silently
+    /// breaks the built-in writes `reject_set_metadata` checks this cap
+    /// ahead of.
+    #[test]
+    fn metadata_value_bytes_below_the_agent_session_record_floor_is_clamped_up() {
+        let limits = phux_config::LimitsCfg {
+            metadata_value_bytes: 0,
+        };
+        let cfg = build_server_config(
+            None,
+            Path::new("/tmp/phux-test.sock"),
+            phux_config::DefaultsCfg::default(),
+            phux_config::VoiceCfg::default(),
+            &limits,
+            phux_server::hooks::HookCatalog::default(),
+            None,
+            None,
+        );
+        assert_eq!(
+            cfg.metadata_value_bytes,
+            u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES).unwrap()
+        );
+    }
+
+    /// A configured value already at or above the floor passes through
+    /// unclamped.
+    #[test]
+    fn metadata_value_bytes_at_or_above_the_floor_passes_through() {
+        let limits = phux_config::LimitsCfg {
+            metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
+        };
+        let cfg = build_server_config(
+            None,
+            Path::new("/tmp/phux-test.sock"),
+            phux_config::DefaultsCfg::default(),
+            phux_config::VoiceCfg::default(),
+            &limits,
+            phux_server::hooks::HookCatalog::default(),
+            None,
+            None,
+        );
+        assert_eq!(
+            cfg.metadata_value_bytes,
+            phux_config::DEFAULT_METADATA_VALUE_BYTES
+        );
     }
 
     #[test]

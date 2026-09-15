@@ -58,17 +58,18 @@
 //! read-only [`super::ServerState::attached`] accessor — narrower than the
 //! bare field it replaces, since every write still goes through `state`.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 
 use phux_core::ids::SessionId;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, Layer, LayerSet};
 use phux_protocol::ids::ResourceId as WireResourceId;
-use phux_protocol::wire::frame::{FrameKind, Scope};
+use phux_protocol::wire::frame::{ActorRef, FrameKind, Scope};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
 use super::client::{AttachedClient, ClientId};
 use super::events::{EventScope, EventSubscription};
+use super::journal::JournalEntry;
 use crate::mailbox::Outbound;
 
 /// Every client-keyed table the server owns, plus the allocator that mints
@@ -171,6 +172,14 @@ pub(super) struct ClientTable {
     /// remove abandoned results, while the per-client cap bounds a connected
     /// client that submits creates without reading replies.
     pub(super) session_create_results: HashMap<ClientId, VecDeque<String>>,
+    /// The `HELLO.client_name` each connection announced (ADR-0123): the
+    /// label on the `ActorRef` of every event and metadata change it
+    /// causes. Connection-scoped, like the HELLO layer set, so it survives
+    /// `DETACH` and is cleared only by `ServerState::forget_connection`.
+    pub(super) client_names: HashMap<ClientId, String>,
+    /// The epoch the next event subscription is created with, so a pump
+    /// can tell its subscription from a later one for the same client.
+    next_subscription_epoch: u64,
 }
 
 impl Default for ClientTable {
@@ -193,6 +202,8 @@ impl ClientTable {
             peer_identities: HashMap::new(),
             connection_cancellations: HashMap::new(),
             session_create_results: HashMap::new(),
+            client_names: HashMap::new(),
+            next_subscription_epoch: 0,
         }
     }
 
@@ -314,60 +325,44 @@ impl ClientTable {
 
     // -- agent-event subscriptions -------------------------------------
 
-    /// Record an agent-event subscription for `client` at the scope named
-    /// by `terminal` (SPEC §7.5, phux-y2t). Idempotent: re-subscribing the
-    /// same scope is a no-op (the per-client scope set absorbs the
-    /// duplicate). `None` maps to [`EventScope::Server`]; `Some(id)` maps
-    /// to [`EventScope::Terminal`].
+    /// `client`'s agent-event subscription, created empty on first use.
     ///
-    /// `tx` is the client's outbound mailbox, captured here so event
-    /// fanout reaches a pure `watch` client that never attached. A
-    /// re-subscribe leaves the stored mailbox in place (the connection's
-    /// tx is stable, so this is a no-op in practice).
-    pub(super) fn subscribe_events(
+    /// One entry per client whichever verb installed its scopes, which is
+    /// what makes a client subscribed both ways receive each event once
+    /// (ADR-0123). `tx` is the client's outbound mailbox, captured so event
+    /// fanout reaches a pure `watch` client that never attached; an
+    /// existing entry keeps its sender (a connection's tx is stable).
+    pub(super) fn event_subscription(
         &mut self,
         client: ClientId,
-        terminal: Option<WireResourceId>,
         tx: mpsc::Sender<Outbound>,
-    ) {
-        let scope = terminal.map_or(EventScope::Server, EventScope::Terminal);
-        let entry = self
-            .event_subscriptions
-            .entry(client)
-            .or_insert_with(|| EventSubscription {
-                tx,
-                scopes: HashSet::new(),
-            });
-        entry.scopes.insert(scope);
+    ) -> &mut EventSubscription {
+        let epoch = &mut self.next_subscription_epoch;
+        self.event_subscriptions.entry(client).or_insert_with(|| {
+            *epoch += 1;
+            EventSubscription::new(tx, *epoch)
+        })
     }
 
-    /// Collect the outbound mailbox of every client subscribed to an agent
-    /// event scoped to `terminal`, or to the `parent` that event is a
-    /// lifecycle edge of (SPEC §7.5, phux-y2t; ADR-0104 §2).
-    ///
-    /// Resolves the mailbox from the subscription registry, NOT from
-    /// [`Self::attached`], so a pure `watch` client (subscribed without an
-    /// attach) is still reached. One mailbox per client however many of the
-    /// three scopes match: the subscription entry is per client, so the
-    /// filter cannot yield a duplicate.
+    /// Offer one journaled event to every subscription (the fan-out half
+    /// of `ServerState::record_and_fanout`).
+    pub(super) fn offer_event(&mut self, entry: &JournalEntry) {
+        super::events::offer_to_all(self.event_subscriptions.values_mut(), entry);
+    }
+
+    /// The `ActorRef` naming `client`: its wire id, the credential it
+    /// authenticated with, and the name it announced in `HELLO`.
     #[must_use]
-    pub(super) fn event_targets(
-        &self,
-        terminal: Option<&WireResourceId>,
-        parent: Option<&WireResourceId>,
-    ) -> Vec<mpsc::Sender<Outbound>> {
-        let watches = |sub: &EventSubscription, id: Option<&WireResourceId>| {
-            id.is_some_and(|tid| sub.scopes.contains(&EventScope::Terminal(tid.clone())))
-        };
-        self.event_subscriptions
-            .values()
-            .filter(|sub| {
-                sub.scopes.contains(&EventScope::Server)
-                    || watches(sub, terminal)
-                    || watches(sub, parent)
-            })
-            .map(|sub| sub.tx.clone())
-            .collect()
+    pub(super) fn actor_ref(&self, client: ClientId) -> ActorRef {
+        let wire = phux_protocol::ids::ClientId::new(u32::try_from(client.0).unwrap_or(u32::MAX));
+        let credential_id = self
+            .peer_identities
+            .get(&client)
+            .and_then(|identity| identity.credential.as_ref())
+            .map(|credential| credential.id.clone());
+        ActorRef::new(wire)
+            .with_credential_id(credential_id)
+            .with_client_name(self.client_names.get(&client).cloned())
     }
 
     /// Drop `client`'s per-terminal agent-event subscription for `wire`
@@ -377,8 +372,13 @@ impl ClientTable {
     pub(super) fn unsubscribe_terminal_events(&mut self, client: ClientId, wire: &WireResourceId) {
         if let Some(sub) = self.event_subscriptions.get_mut(&client) {
             sub.scopes.remove(&EventScope::Terminal(wire.clone()));
-            if sub.scopes.is_empty() {
-                self.event_subscriptions.remove(&client);
+            // A subscription still owed a gap stays until its pump delivers
+            // it; detach drops it with the connection.
+            if sub.scopes.is_empty()
+                && !sub.is_owed_work()
+                && let Some(sub) = self.event_subscriptions.remove(&client)
+            {
+                sub.retire();
             }
         }
     }
@@ -507,6 +507,7 @@ impl ClientTable {
         scope: &Scope,
         key: &str,
         value: Option<&[u8]>,
+        actor: Option<&ActorRef>,
     ) -> Vec<ClientId> {
         let mut delivered = Vec::with_capacity(subscribers.len());
         for client_id in subscribers {
@@ -525,7 +526,7 @@ impl ClientTable {
                 scope: scope.clone(),
                 key: key.to_owned(),
                 value: value.map(<[u8]>::to_vec),
-                actor: None,
+                actor: actor.cloned(),
             };
             // `try_send`: the mailbox is bounded (DEFAULT_CLIENT_MAILBOX)
             // and we hold the state mutex synchronously; awaiting on a

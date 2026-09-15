@@ -243,6 +243,7 @@ fn semantic_pass(
     findings: &mut Vec<Finding>,
 ) {
     defaults_findings(&config.defaults, provenance, findings);
+    limits_findings(&config.limits, provenance, findings);
     keybinding_findings(&config.keybindings, provenance, findings);
     hook_findings(&config.hooks, provenance, findings);
     status_widget_findings(&config.status, provenance, findings);
@@ -291,6 +292,81 @@ fn defaults_findings(
                  value buys a transcript nobody waits out",
                 defaults.agent_log_bytes,
                 crate::MAX_AGENT_LOG_BYTES,
+            ),
+        );
+    }
+    event_journal_findings(defaults, provenance, findings);
+}
+
+/// The two event-journal bounds (ADR-0123): a value above either ceiling is
+/// memory the server would hold for events nobody replays that far back.
+fn event_journal_findings(
+    defaults: &DefaultsCfg,
+    provenance: &crate::ConfigProvenance,
+    findings: &mut Vec<Finding>,
+) {
+    if defaults.event_journal_entries > crate::MAX_EVENT_JOURNAL_ENTRIES {
+        push_semantic(
+            findings,
+            provenance,
+            "defaults.event-journal-entries".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{} exceeds the accepted maximum of {} events; the journal is held resident \
+                 for the life of the server",
+                defaults.event_journal_entries,
+                crate::MAX_EVENT_JOURNAL_ENTRIES,
+            ),
+        );
+    }
+    if defaults.event_journal_bytes > crate::MAX_EVENT_JOURNAL_BYTES {
+        push_semantic(
+            findings,
+            provenance,
+            "defaults.event-journal-bytes".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{} exceeds the accepted maximum of {} bytes (64 MiB); the journal is held \
+                 resident for the life of the server",
+                defaults.event_journal_bytes,
+                crate::MAX_EVENT_JOURNAL_BYTES,
+            ),
+        );
+    }
+}
+
+/// Semantic validation for `[limits]` values.
+///
+/// `limits.metadata-value-bytes` parses as any `u32`, including one below
+/// the built-in agent-session record write's own size
+/// (`MAX_AGENT_SESSION_RECORD_BYTES`): `reject_set_metadata`
+/// (`crates/phux-server/src/runtime/client.rs`) checks this generic cap
+/// *before* that per-key interceptor runs, so a smaller configured value
+/// would otherwise silently break `phux new`, `phux rename`, and
+/// keep-empty session metadata, not just agent-session resume (PHA-406
+/// L18 review item 3). The server clamps it back up at startup
+/// (`build_server_config`) rather than refuse to start, but a config
+/// that asked for less than it will get is exactly what this check
+/// exists to surface.
+fn limits_findings(
+    limits: &crate::LimitsCfg,
+    provenance: &crate::ConfigProvenance,
+    findings: &mut Vec<Finding>,
+) {
+    let floor = u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES)
+        .unwrap_or(u32::MAX);
+    if limits.metadata_value_bytes < floor {
+        push_semantic(
+            findings,
+            provenance,
+            "limits.metadata-value-bytes".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{} is below the built-in floor of {floor} bytes (the size of the server's own \
+                 agent-session record write, checked against this same cap); the server clamps \
+                 it up to {floor} at startup rather than refuse to start, so this value is not \
+                 actually in force",
+                limits.metadata_value_bytes,
             ),
         );
     }
@@ -755,6 +831,42 @@ mod tests {
     fn history_bytes_at_or_under_the_maximum_is_clean() {
         for bytes in [1_u32, 2 * 1024 * 1024, crate::MAX_HISTORY_BYTES] {
             let report = run(&format!("[defaults]\nhistory-bytes = {bytes}\n"));
+            assert!(
+                report.is_ok(),
+                "false positive at {bytes}: {:?}",
+                report.findings
+            );
+        }
+    }
+
+    /// `metadata-value-bytes` at or below the built-in agent-session record
+    /// floor is a located finding naming that floor (PHA-406 L18 review
+    /// item 3): the server clamps it back up at startup rather than refuse
+    /// to start, so a value like `0` parses fine and yet does nothing —
+    /// exactly the silent-no-op class this checker exists to surface.
+    #[test]
+    fn a_metadata_value_bytes_below_the_floor_is_flagged_with_the_floor() {
+        let report = run("[limits]\nmetadata-value-bytes = 0\n");
+        assert_eq!(paths(&report), vec!["limits.metadata-value-bytes"]);
+        let finding = &report.findings[0];
+        assert_eq!(finding.fault, Fault::BadValue);
+        assert!(
+            finding
+                .message
+                .contains(&phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES.to_string()),
+            "message must name the floor: {}",
+            finding.message,
+        );
+    }
+
+    /// The floor itself, and any value at or above it, is accepted.
+    #[test]
+    fn metadata_value_bytes_at_or_above_the_floor_is_clean() {
+        for bytes in [
+            u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES).unwrap(),
+            crate::DEFAULT_METADATA_VALUE_BYTES,
+        ] {
+            let report = run(&format!("[limits]\nmetadata-value-bytes = {bytes}\n"));
             assert!(
                 report.is_ok(),
                 "false positive at {bytes}: {:?}",

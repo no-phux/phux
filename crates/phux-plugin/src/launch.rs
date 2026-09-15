@@ -14,6 +14,7 @@
 //! [ADR-0042]: ../../docs/adr/0042-launch-executor.md
 
 use std::collections::BTreeMap;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
 use phux_config::integration::{
@@ -169,6 +170,18 @@ pub enum LaunchError {
         /// Requested integration id.
         name: String,
     },
+    /// The integration is valid but one or more external programs it needs
+    /// are not executable on the launcher's `PATH`.
+    #[error(
+        "integration {name:?} is unavailable because these executables are not on PATH: {}",
+        missing.join(", ")
+    )]
+    MissingExecutables {
+        /// Requested integration id.
+        name: String,
+        /// Required executable names that were not found, in template order.
+        missing: Vec<String>,
+    },
 }
 
 struct EnabledPlugin {
@@ -221,6 +234,7 @@ fn resolve_loaded(
     let mut available: Vec<String> = Vec::new();
     let mut matched_owner: Option<String> = None;
     let mut resolved: Option<ResolvedLaunch> = None;
+    let mut missing_requirements: Option<Vec<String>> = None;
     for entry in loaded {
         let template = match entry.template {
             Ok(template) => template,
@@ -237,7 +251,12 @@ fn resolve_loaded(
                 continue;
             }
         };
-        if template.launch.is_some() {
+        let missing = template
+            .launch
+            .as_ref()
+            .map(missing_executables)
+            .unwrap_or_default();
+        if template.launch.is_some() && missing.is_empty() {
             available.push(template.id.clone());
         }
         if template.id != integration_id {
@@ -251,7 +270,9 @@ fn resolve_loaded(
             });
         }
         matched_owner = Some(entry.plugin_id.clone());
-        if let Some(launch) = template.launch.clone() {
+        if let Some(launch) = template.launch.clone()
+            && missing.is_empty()
+        {
             resolved = Some(build_resolved(
                 &entry.plugin_id,
                 &entry.plugin_root,
@@ -260,12 +281,20 @@ fn resolve_loaded(
                 extra_args,
                 workspace_cwd,
             ));
+        } else if !missing.is_empty() {
+            missing_requirements = Some(missing);
         }
     }
     if let Some(resolved) = resolved {
         return Ok(resolved);
     }
     if matched_owner.is_some() {
+        if let Some(missing) = missing_requirements {
+            return Err(LaunchError::MissingExecutables {
+                name: integration_id.to_owned(),
+                missing,
+            });
+        }
         return Err(LaunchError::NoLaunchCommand {
             name: integration_id.to_owned(),
         });
@@ -439,7 +468,10 @@ fn launchable(loaded: &[LoadedTemplate]) -> Vec<LaunchableIntegration> {
         .iter()
         .filter_map(|entry| {
             let template = entry.template.as_ref().ok()?;
-            template.launch.as_ref()?;
+            let launch = template.launch.as_ref()?;
+            if !missing_executables(launch).is_empty() {
+                return None;
+            }
             Some(LaunchableIntegration {
                 plugin_id: entry.plugin_id.clone(),
                 integration_id: template.id.clone(),
@@ -449,6 +481,42 @@ fn launchable(loaded: &[LoadedTemplate]) -> Vec<LaunchableIntegration> {
             })
         })
         .collect()
+}
+
+fn missing_executables(launch: &IntegrationLaunch) -> Vec<String> {
+    let path = std::env::var_os("PATH");
+    launch
+        .required_executables
+        .iter()
+        .filter(|name| !executable_on_path(name, path.as_deref()))
+        .cloned()
+        .collect()
+}
+
+fn executable_on_path(name: &str, path: Option<&OsStr>) -> bool {
+    path.is_some_and(|value| {
+        std::env::split_paths(value)
+            .map(|dir| dir.join(name))
+            .any(|candidate| is_executable(&candidate))
+    })
+}
+
+fn is_executable(path: &Path) -> bool {
+    let Ok(metadata) = path.metadata() else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
 }
 
 fn build_resolved(

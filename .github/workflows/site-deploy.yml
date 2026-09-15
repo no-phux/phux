@@ -80,6 +80,65 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
 
+      # Exercise the custom domain and Worker-only member routes after deploy.
+      # A successful asset upload does not prove either surface: in particular,
+      # a newly required secret can leave /api/claim returning 503 while the
+      # deployment itself remains green.
+      - name: Verify the docs surface and member routes
+        run: |
+          set -euo pipefail
+          deployed="${GITHUB_SHA}"
+
+          redirect="$(curl -fsS --retry 6 --retry-delay 5 --retry-all-errors \
+            -o /dev/null -w '%{redirect_url}' \
+            "https://docs.phux.sh/?deployed=${deployed}")"
+          if [ "$redirect" != "https://docs.phux.sh/overview?deployed=${deployed}" ]; then
+            echo "docs.phux.sh root redirected to '${redirect}', not /overview" >&2
+            exit 1
+          fi
+
+          overview="$(curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors \
+            "https://docs.phux.sh/overview?deployed=${deployed}")"
+          if ! grep -Fq '<title>phux — Get started</title>' <<<"$overview"; then
+            echo "docs.phux.sh/overview did not return the docs document" >&2
+            exit 1
+          fi
+          stylesheet="${overview#*href=\"/_astro/}"
+          stylesheet="/_astro/${stylesheet%%\"*}"
+          case "$stylesheet" in
+            /_astro/*.css) ;;
+            *)
+              echo "docs.phux.sh/overview did not reference its built stylesheet" >&2
+              exit 1
+              ;;
+          esac
+          css_type="$(curl -fsSL --retry 6 --retry-delay 5 --retry-all-errors \
+            -o /dev/null -w '%{content_type}' "https://docs.phux.sh${stylesheet}")"
+          case "$css_type" in
+            text/css*) ;;
+            *)
+              echo "${stylesheet} returned content type '${css_type}', not CSS" >&2
+              exit 1
+              ;;
+          esac
+
+          claim_status="$(curl -sS --retry 6 --retry-delay 5 --retry-all-errors \
+            -o /dev/null -w '%{http_code}' \
+            "https://docs.phux.sh/api/claim?t=invalid&deployed=${deployed}")"
+          if [ "$claim_status" != 400 ]; then
+            echo "member claim route returned ${claim_status}; expected configured token validation (400)" >&2
+            exit 1
+          fi
+          join_status="$(curl -sS --retry 6 --retry-delay 5 --retry-all-errors \
+            -X POST -H 'content-type: application/json' --data '{}' \
+            -o /dev/null -w '%{http_code}' \
+            "https://docs.phux.sh/api/join?deployed=${deployed}")"
+          if [ "$join_status" != 400 ]; then
+            echo "member join route returned ${join_status}; expected configured validation (400)" >&2
+            exit 1
+          fi
+          echo "docs surface and member routes verified"
+
       # The curl installers are the assets whose ROUTES cannot be proven before
       # a deploy: `wrangler.jsonc` sets html_handling, and an extensionless
       # asset is an unusual shape for it to resolve. Everything else about the

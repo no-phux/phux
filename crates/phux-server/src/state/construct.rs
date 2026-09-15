@@ -10,6 +10,10 @@ impl ServerState {
         Self {
             sessions: SessionTable::new(),
             clients: ClientTable::new(),
+            journal: super::journal::Journal::new(
+                usize::try_from(phux_config::DEFAULT_EVENT_JOURNAL_ENTRIES).unwrap_or(usize::MAX),
+                usize::try_from(phux_config::DEFAULT_EVENT_JOURNAL_BYTES).unwrap_or(usize::MAX),
+            ),
             resources: ResourceTable::new(),
             leases: LeaseTable::new(),
             satellite_spawns: super::satellite_spawns::SatelliteSpawnLedger::default(),

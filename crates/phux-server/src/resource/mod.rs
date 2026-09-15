@@ -3,7 +3,8 @@
 //! The server serves *resources*. Every resource, whatever its kind, has
 //! the same backing-agnostic surface: an ordered output stream with a
 //! checked `u64` sequence, a set of consumers attached to that stream, a
-//! semantic event fan-out to subscribed clients, a lifecycle (a cancel
+//! semantic event sink the runtime drains into the server-wide event
+//! journal ([`event_sink`], ADR-0123), a lifecycle (a cancel
 //! token in, an exit notification out), and a supervisory control mailbox.
 //! [`ResourceCore`] owns that state on the engine side; [`ResourceHandle`]
 //! is the `Send + Clone` channel set the runtime holds for it.
@@ -25,20 +26,16 @@
 //! `spawn_local` task and is the sole borrower of that state; the core adds
 //! no shared cells across tasks.
 
-use std::cell::RefCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use phux_protocol::ClientId;
-use phux_protocol::wire::frame::{
-    AgentEvent, ControlAction, FrameKind, ReportedAgentState, ResourceEventType, TerminalSignal,
-};
+use phux_protocol::wire::frame::{ControlAction, FrameKind, ReportedAgentState, TerminalSignal};
 use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use crate::mailbox::Outbound;
-
 pub mod agent_session;
+pub mod event_sink;
 pub mod terminal;
 
 pub use phux_core::ids::ResourceId;
@@ -253,44 +250,6 @@ pub enum PaneOutput {
     },
 }
 
-// ---- semantic event fan-out -------------------------------------------------
-
-/// A client subscribed to semantic events for a single resource.
-/// Holds the client's outbound mailbox and event type filter.
-#[derive(Clone, Debug)]
-pub struct ResourceEventSubscriber {
-    /// Client's outbound frame channel (where Event frames are sent).
-    pub outbound: mpsc::Sender<Outbound>,
-    /// Event type filter (empty = all types). Only events matching a type
-    /// in this list are forwarded; if empty, all events are sent.
-    pub event_types: Vec<ResourceEventType>,
-}
-
-/// Request to subscribe to a resource's semantic events.
-#[derive(Debug)]
-pub struct SubscribeToEventsRequest {
-    /// The new subscriber to register.
-    pub subscriber: ResourceEventSubscriber,
-    /// Wire-level resource id for Event frames (SPEC §7.1).
-    /// The runtime passes this when registering.
-    pub wire_terminal_id: u32,
-}
-
-/// Request to unsubscribe from a resource's semantic events.
-#[derive(Debug)]
-pub struct UnsubscribeFromEventsRequest {
-    /// Address of the subscriber's outbound mailbox, used for identity
-    /// comparison against the registered subscribers.
-    ///
-    /// A `usize` address rather than a `*const Sender<Outbound>`: a raw
-    /// pointer is `!Send`, which would make [`ResourceHandle`] — and through
-    /// it the entire [`ServerState`](crate::state::ServerState) — `!Send`,
-    /// blocking the dedicated input lane (phux-51n6.2, ADR-0044) that routes
-    /// input from a separate thread. The identity semantics are unchanged:
-    /// the core compares this against `&raw const sub.outbound as usize`.
-    pub outbound_addr: usize,
-}
-
 // ---- supervisory control ----------------------------------------------------
 
 /// A supervisory control request delivered to a resource's engine over its
@@ -299,10 +258,10 @@ pub struct UnsubscribeFromEventsRequest {
 /// The input *lease* itself lives in [`crate::state::ServerState`] (the input
 /// gate runs there, under the state lock, where the originating `ClientId` is
 /// known). The engine is the emitter of the
-/// [`AgentEvent::TerminalControl`] broadcast because it owns both the
-/// event-subscriber list and the process lifecycle — so the handler forwards
+/// [`phux_protocol::wire::frame::AgentEvent::TerminalControl`] event because
+/// it owns the process lifecycle that event reports — so the handler forwards
 /// the *fact* of a change and lets the engine stamp its current lifecycle and
-/// fan the event out.
+/// emit the event into its sink, which the runtime journals (ADR-0123).
 ///
 /// The variant set is the union the runtime issues; an engine handles the
 /// variants that apply to its kind and answers the rest with an error reply
@@ -471,22 +430,15 @@ pub struct ResourceHandle {
     /// resolved to this resource. Silent no-op if the consumer is not
     /// currently registered.
     pub consumer_ack: mpsc::Sender<ConsumerAckRequest>,
-    /// Subscribe to semantic events for this resource. The runtime sends a
-    /// [`SubscribeToEventsRequest`] when a client subscribes; the core
-    /// registers the subscriber and begins fanning matching events out.
-    pub subscribe_to_events: mpsc::Sender<SubscribeToEventsRequest>,
-    /// Unsubscribe from semantic events. The runtime sends an
-    /// [`UnsubscribeFromEventsRequest`] when a client detaches; the core
-    /// removes the subscriber from its list (idempotent).
-    pub unsubscribe_from_events: mpsc::Sender<UnsubscribeFromEventsRequest>,
     /// Graceful-upgrade handoff channel (ADR-0032). The upgrade producer
     /// sends an [`UpgradeHandleRequest`] per resource to collect what the
     /// re-exec'd image needs to re-adopt it.
     pub upgrade: mpsc::Sender<UpgradeHandleRequest>,
     /// Supervisory control channel (ADR-0033). The runtime sends a
     /// [`ControlRequest`] when a client takes the wheel, releases it, or
-    /// signals the resource. The engine broadcasts `TerminalControl` events
-    /// (it owns the event-subscriber list) and delivers what applies to it.
+    /// signals the resource. The engine emits the `TerminalControl` event
+    /// (it owns the lifecycle that event reports) and delivers what
+    /// applies to it.
     pub control: mpsc::Sender<ControlRequest>,
     /// The kind-specific channels. Reach them through [`Self::terminal`].
     pub facet: ResourceFacetHandle,
@@ -536,33 +488,23 @@ impl ResourceHandle {
 /// The generic, engine-side half of a resource.
 ///
 /// Owned by exactly one engine task. Holds the checked output sequence, the
-/// output broadcast sender, the semantic-event subscriber registry and the
-/// fan-out over it, the lifecycle (cancel token in, exit notification out),
-/// and the receiving ends of the core mailboxes. An engine polls the
-/// receivers in its own `select!` and calls back in for the bookkeeping.
-///
-/// No shared interior mutability crosses a task boundary: the
-/// `RefCell` around the subscriber list exists so an engine's `select!`
-/// arms can fan events out from `&self` while another arm holds a
-/// disjoint `&mut` field, and it is only ever touched from the owning
-/// task (ADR-0014).
+/// output broadcast sender, the lifecycle (cancel token in, exit
+/// notification out), and the receiving end of the control mailbox. An
+/// engine polls the receiver in its own `select!` and calls back in for the
+/// bookkeeping. Semantic events leave through the engine's
+/// [`event_sink::EventSink`]; the subscriber registry is server state
+/// (ADR-0123), not the engine's.
 pub struct ResourceCore {
     /// Which engine owns this core.
     pub(super) kind: ResourceKind,
     /// The resource this one is bound to, if any.
     pub(super) parent: Option<ResourceId>,
-    /// Wire-level resource id stamped on Event frames. `0` until the first
-    /// event subscriber registers and supplies it.
-    pub(super) wire_id: u32,
     /// Resource-global raw output sequence; never resets across bootstrap
     /// generations. Advances only through [`Self::next_seq`].
     pub(super) seq: u64,
     /// Output broadcast sender. The seed receiver is dropped at
     /// construction, so `receiver_count()` is the live-subscriber count.
     pub(super) output_tx: broadcast::Sender<PaneOutput>,
-    /// Semantic-event subscribers. Added by [`Self::subscribe_events`],
-    /// removed by [`Self::unsubscribe_events`].
-    pub(super) event_subscribers: RefCell<Vec<ResourceEventSubscriber>>,
     /// One-shot fired when the engine observes its backing exit. `Option`
     /// so it can be `take()`n after firing — sending on a `oneshot::Sender`
     /// is a by-value move. `None` after the first fire.
@@ -571,10 +513,6 @@ pub struct ResourceCore {
     /// engine to shut down cleanly. Dropping the token does NOT cancel —
     /// cancellation is always explicit.
     pub(super) token: CancellationToken,
-    /// Inbound event-subscription requests.
-    pub(super) subscribe_to_events_rx: mpsc::Receiver<SubscribeToEventsRequest>,
-    /// Inbound event-unsubscription requests.
-    pub(super) unsubscribe_from_events_rx: mpsc::Receiver<UnsubscribeFromEventsRequest>,
     /// Supervisory control mailbox (ADR-0033).
     pub(super) control_rx: mpsc::Receiver<ControlRequest>,
 }
@@ -585,10 +523,6 @@ pub struct ResourceCore {
 pub struct ResourceCoreChannels {
     /// Output broadcast sender, cloned into the handle.
     pub output: broadcast::Sender<PaneOutput>,
-    /// Event-subscription sender.
-    pub subscribe_to_events: mpsc::Sender<SubscribeToEventsRequest>,
-    /// Event-unsubscription sender.
-    pub unsubscribe_from_events: mpsc::Sender<UnsubscribeFromEventsRequest>,
     /// Supervisory control sender.
     pub control: mpsc::Sender<ControlRequest>,
     /// Fires with the exit outcome (code or signal) when the engine
@@ -608,27 +542,19 @@ impl ResourceCore {
         output_capacity: usize,
     ) -> (Self, ResourceCoreChannels) {
         let (output_tx, _seed_rx) = broadcast::channel(output_capacity);
-        let (subscribe_tx, subscribe_to_events_rx) = mpsc::channel(CORE_MAILBOX);
-        let (unsubscribe_tx, unsubscribe_from_events_rx) = mpsc::channel(CORE_MAILBOX);
         let (control_tx, control_rx) = mpsc::channel(CORE_MAILBOX);
         let (exit_tx, exit_rx) = oneshot::channel();
         let core = Self {
             kind,
             parent,
-            wire_id: 0,
             seq: 0,
             output_tx: output_tx.clone(),
-            event_subscribers: RefCell::new(Vec::new()),
             exit_notify: Some(exit_tx),
             token,
-            subscribe_to_events_rx,
-            unsubscribe_from_events_rx,
             control_rx,
         };
         let channels = ResourceCoreChannels {
             output: output_tx,
-            subscribe_to_events: subscribe_tx,
-            unsubscribe_from_events: unsubscribe_tx,
             control: control_tx,
             exit_notify: exit_rx,
         };
@@ -665,66 +591,6 @@ impl ResourceCore {
         }
     }
 
-    /// Register an event subscriber and adopt the wire id it was
-    /// registered under for Event frames.
-    pub fn subscribe_events(&mut self, request: SubscribeToEventsRequest) {
-        self.wire_id = request.wire_terminal_id;
-        self.event_subscribers.borrow_mut().push(request.subscriber);
-    }
-
-    /// Remove the subscriber whose outbound mailbox address matches.
-    /// Silent no-op if none does.
-    pub fn unsubscribe_events(&self, request: &UnsubscribeFromEventsRequest) {
-        let mut subs = self.event_subscribers.borrow_mut();
-        subs.retain(|sub| (&raw const sub.outbound) as usize != request.outbound_addr);
-    }
-
-    /// `true` when no client is subscribed to semantic events.
-    #[must_use]
-    pub fn has_no_event_subscribers(&self) -> bool {
-        self.event_subscribers.borrow().is_empty()
-    }
-
-    /// Fan `event` out to every subscriber whose type filter admits it.
-    /// `try_send`: a full mailbox drops the event rather than stalling the
-    /// engine — the event stream is an accelerator, never a guarantee.
-    pub fn fan_out_event(&self, event: &AgentEvent) {
-        let subs = self.event_subscribers.borrow();
-        for subscriber in subs.iter() {
-            // Map AgentEvent variants to ResourceEventType for filtering.
-            let event_type = match event {
-                AgentEvent::CommandStarted => Some(ResourceEventType::CommandStarted),
-                AgentEvent::CommandFinished { .. } => Some(ResourceEventType::CommandEnded),
-                AgentEvent::CwdChanged { .. } => Some(ResourceEventType::CwdChanged),
-                AgentEvent::Dirty => Some(ResourceEventType::GridChanged),
-                AgentEvent::Idle => Some(ResourceEventType::OutputReceived),
-                // Other event types don't map to semantic filters yet
-                _ => None,
-            };
-
-            // Supervisory control events (ADR-0033) bypass the semantic-type
-            // filter: "who has the wheel" and "frozen" are not grid activity,
-            // and every subscriber needs them to render an honest state.
-            let interested = matches!(event, AgentEvent::TerminalControl { .. })
-                || event_type.is_some_and(|et| {
-                    subscriber.event_types.is_empty() || subscriber.event_types.contains(&et)
-                });
-
-            if interested {
-                let frame = FrameKind::Event {
-                    terminal: if self.wire_id == 0 {
-                        None
-                    } else {
-                        Some(phux_protocol::ids::ResourceId::local(self.wire_id))
-                    },
-                    event: event.clone(),
-                    stamp: None,
-                };
-                let _ = subscriber.outbound.try_send(Outbound::Frame(frame));
-            }
-        }
-    }
-
     /// Report the backing's exit outcome to whoever holds the bundle's
     /// receiver. Fires at most once; later calls are no-ops.
     pub fn notify_exit(&mut self, outcome: phux_core::process::ExitOutcome) {
@@ -739,9 +605,7 @@ impl std::fmt::Debug for ResourceCore {
         f.debug_struct("ResourceCore")
             .field("kind", &self.kind)
             .field("parent", &self.parent)
-            .field("wire_id", &self.wire_id)
             .field("seq", &self.seq)
-            .field("event_subscribers", &self.event_subscribers.borrow().len())
             .finish_non_exhaustive()
     }
 }
@@ -765,8 +629,6 @@ mod tests {
             consumer_attach: mpsc::channel(1).0,
             consumer_detach: mpsc::channel(1).0,
             consumer_ack: mpsc::channel(1).0,
-            subscribe_to_events: channels.subscribe_to_events,
-            unsubscribe_from_events: channels.unsubscribe_from_events,
             upgrade: mpsc::channel(1).0,
             control: channels.control,
             facet: ResourceFacetHandle::Terminal(TerminalHandle::detached_for_test(80, 24)),
@@ -810,66 +672,5 @@ mod tests {
             channels.exit_notify.blocking_recv(),
             Ok(phux_core::process::ExitOutcome::exited(3))
         );
-    }
-
-    #[test]
-    fn event_fan_out_respects_type_filter_and_wire_id() {
-        let (mut core, _channels) = ResourceCore::new(
-            ResourceKind::Terminal,
-            None,
-            CancellationToken::new(),
-            DEFAULT_OUTPUT_BROADCAST,
-        );
-        let (all_tx, mut all_rx) = mpsc::channel(4);
-        let (cwd_tx, mut cwd_rx) = mpsc::channel(4);
-        core.subscribe_events(SubscribeToEventsRequest {
-            subscriber: ResourceEventSubscriber {
-                outbound: all_tx,
-                event_types: Vec::new(),
-            },
-            wire_terminal_id: 7,
-        });
-        core.subscribe_events(SubscribeToEventsRequest {
-            subscriber: ResourceEventSubscriber {
-                outbound: cwd_tx.clone(),
-                event_types: vec![ResourceEventType::CwdChanged],
-            },
-            wire_terminal_id: 7,
-        });
-
-        core.fan_out_event(&AgentEvent::Dirty);
-        core.fan_out_event(&AgentEvent::CwdChanged {
-            cwd: "/tmp".to_owned(),
-        });
-
-        let mut all = Vec::new();
-        while let Ok(out) = all_rx.try_recv() {
-            all.push(out);
-        }
-        assert_eq!(all.len(), 2, "unfiltered subscriber sees both");
-        match &all[0] {
-            Outbound::Frame(FrameKind::Event { terminal, .. }) => {
-                assert_eq!(*terminal, Some(phux_protocol::ids::ResourceId::local(7)));
-            }
-            other => panic!("expected an Event frame, got {other:?}"),
-        }
-        let mut cwd_only = Vec::new();
-        while let Ok(out) = cwd_rx.try_recv() {
-            cwd_only.push(out);
-        }
-        assert_eq!(
-            cwd_only.len(),
-            1,
-            "filtered subscriber sees only CwdChanged"
-        );
-
-        core.unsubscribe_events(&UnsubscribeFromEventsRequest {
-            outbound_addr: {
-                let subs = core.event_subscribers.borrow();
-                (&raw const subs[1].outbound) as usize
-            },
-        });
-        assert_eq!(core.event_subscribers.borrow().len(), 1);
-        drop(cwd_tx);
     }
 }

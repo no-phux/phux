@@ -578,6 +578,15 @@ fn report_create_session_error(
             eprintln!("phux: failed to serialize create request: {err}");
             ExitCode::FAILURE
         }
+        CreateSessionError::Layout(err) => crate::commands::json_err::emit(
+            json,
+            &crate::commands::json_err::CliError::new(
+                crate::commands::json_err::codes::LAYOUT_REJECTED,
+                format!("session was created but its initial layout could not be stored: {err}"),
+                "inspect `phux ls`; if the session exists, attach once or place its pane explicitly",
+            ),
+            1,
+        ),
     }
 }
 

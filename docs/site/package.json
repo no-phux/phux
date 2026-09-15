@@ -32,6 +32,7 @@
     "@astrojs/sitemap": "^3.7.4",
     "@cloudflare/containers": "0.3.7",
     "@pierre/diffs": "1.4.1",
+    "effect": "4.0.0-rc.115",
     "fumadocs-core": "^16.15.8",
     "fumadocs-ui": "^16.15.8",
     "jose": "^6.2.12",

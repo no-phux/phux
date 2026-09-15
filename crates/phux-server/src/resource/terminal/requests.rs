@@ -16,8 +16,8 @@ use phux_protocol::wire::frame::FrameKind;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 pub use crate::resource::{
-    ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResourceEventSubscriber, ResyncAudience,
-    ResyncReason, ResyncTarget, SubscribeToEventsRequest, UnsubscribeFromEventsRequest,
+    ControlRequest, DEFAULT_OUTPUT_BROADCAST, PaneOutput, ResyncAudience, ResyncReason,
+    ResyncTarget,
 };
 
 /// Request to register a new consumer with the actor.

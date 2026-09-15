@@ -360,6 +360,48 @@ pub(crate) struct RelayMailbox {
     pub(crate) requests: mpsc::Receiver<RelayRequest>,
     /// Unbounded, undroppable subscription teardown (phux-v45.11).
     pub(crate) unsubscribes: mpsc::UnboundedReceiver<Unsubscribe>,
+    /// The hub's own state, whose event journal re-stamps every relayed
+    /// `EVENT` (ADR-0123). `None` in link tests that exercise delivery
+    /// alone; such a relay forwards the satellite's stamp untouched.
+    pub(crate) journal: Option<crate::state::SharedState>,
+}
+
+/// The `dropped` count a satellite's link-level `journal_gap` stands for:
+/// the gap it sends the link's own subscription names no Terminal.
+const fn link_journal_gap(frame: &FrameKind) -> Option<u64> {
+    match frame {
+        FrameKind::Event {
+            terminal: None,
+            event:
+                AgentEvent::JournalGap {
+                    first_missing,
+                    last_missing,
+                },
+            ..
+        } => Some(
+            last_missing
+                .saturating_sub(*first_missing)
+                .saturating_add(1),
+        ),
+        _ => None,
+    }
+}
+
+/// Rewrite a satellite's `journal_gap` as the hub's `source_gap`.
+///
+/// The satellite sent the gap to the link's own subscription, naming
+/// satellite sequences no hub consumer can resume from. What it means on
+/// the hub is that events for that terminal were lost before the hub could
+/// journal them, which is exactly `source_gap { dropped }` (ADR-0123).
+fn satellite_gap_as_source_gap(event: &mut AgentEvent) {
+    if let AgentEvent::JournalGap {
+        first_missing,
+        last_missing,
+    } = *event
+    {
+        let dropped = last_missing.saturating_sub(first_missing).saturating_add(1);
+        *event = AgentEvent::SourceGap { dropped };
+    }
 }
 
 /// Cheaply-cloneable producer handle to one satellite's relay mailbox.
@@ -392,6 +434,7 @@ impl RelayHandle {
             RelayMailbox {
                 requests: rx,
                 unsubscribes: unsub_rx,
+                journal: None,
             },
         )
     }
@@ -607,14 +650,24 @@ impl RelayHandle {
     /// gets a typed `ERROR` push instead of silence (phux-v45.11
     /// finding 2 — `SUBSCRIBE_EVENTS` has no reply frame to carry the
     /// failure, so the push is the only observable channel).
-    pub(crate) fn subscribe(&self, mut subscription: ProxySubscription, forward: FrameKind) {
+    /// `false` when the request never reached the link (saturated or down);
+    /// the consumer has already been sent the typed error, and the caller
+    /// rolls back anything it installed for the subscription.
+    pub(crate) fn subscribe(
+        &self,
+        mut subscription: ProxySubscription,
+        forward: FrameKind,
+    ) -> bool {
         subscription.seq = self.next_seq();
         let consumer = subscription.out_tx.clone();
         let terminal = subscription.terminal;
-        if let Err(err) = self.tx.try_send(RelayRequest::Subscribe {
+        let Err(err) = self.tx.try_send(RelayRequest::Subscribe {
             subscription,
             forward,
-        }) {
+        }) else {
+            return true;
+        };
+        {
             let (code, message) = match err {
                 mpsc::error::TrySendError::Full(_) => (
                     ErrorCode::ResourceExhausted,
@@ -637,6 +690,7 @@ impl RelayHandle {
                 message,
             }));
         }
+        false
     }
 
     /// Drop every proxy subscription `client` holds on this link.
@@ -1074,6 +1128,9 @@ pub(crate) struct RelaySession {
     inflight_generation_bytes: u64,
     inflight_generation_frames: u32,
     encode_buf: BytesMut,
+    /// The hub's state, whose journal re-stamps relayed events
+    /// ([`Self::restamp_event`]). `None` forwards the satellite's stamp.
+    journal: Option<crate::state::SharedState>,
 }
 
 impl RelaySession {
@@ -1118,7 +1175,13 @@ impl RelaySession {
             inflight_generation_bytes: 0,
             inflight_generation_frames: 0,
             encode_buf: BytesMut::with_capacity(1024),
+            journal: None,
         }
+    }
+
+    /// Re-stamp relayed events from `journal`, the hub's own state.
+    pub(crate) fn set_journal(&mut self, journal: Option<crate::state::SharedState>) {
+        self.journal = journal;
     }
 
     /// A first explicit attach must start after any automatically published
@@ -1151,9 +1214,10 @@ impl RelaySession {
         let mut frames = vec![self.encode_terminal_detach(terminal)];
         if restore_events {
             self.legacy_events.insert(terminal);
+            let cursor = self.link_event_cursor();
             frames.push(self.encode(&FrameKind::SubscribeEvents {
                 terminal: Some(ResourceId::local(terminal)),
-                after_seq: None,
+                after_seq: cursor,
             }));
         }
         frames
@@ -1311,7 +1375,8 @@ impl RelaySession {
             self.legacy_events.insert(*id);
         }
         self.register_subscriber(subscription);
-        Some(self.encode(forward))
+        let forward = self.with_link_cursor(forward);
+        Some(self.encode(&forward))
     }
 
     #[cfg(test)]
@@ -1651,6 +1716,10 @@ impl RelaySession {
     /// satellite-local terminal id, clear the bootstrap-flow gate its kind
     /// carries, then re-tag the scope and fan it out to subscribers.
     fn relay_stream_frame(&mut self, frame: FrameKind) -> Result<(), String> {
+        if let Some(dropped) = link_journal_gap(&frame) {
+            self.relay_link_gap(dropped);
+            return Ok(());
+        }
         let Some(id) = self.retag_inbound(stream_frame_scope(&frame)) else {
             return Ok(());
         };
@@ -1668,8 +1737,78 @@ impl RelaySession {
             self.enforce_stream_frame_flow(id, &frame)?;
         }
         let retagged = self.retag_stream_frame(frame, id);
-        self.fan_out(id, &retagged);
+        self.deliver_stream_frame(id, retagged);
         Ok(())
+    }
+
+    /// Deliver one re-tagged return-leg frame. An `EVENT` goes through the
+    /// hub's event registry (ADR-0123, L1 §7.3): it takes the hub's next
+    /// `seq`, since the satellite's stamp names a journal a hub consumer
+    /// cannot subscribe to, and reaches exactly the consumers subscribed to
+    /// its satellite Terminal, with the registry's gap tracking. Without a
+    /// journal (link tests) the stamp is dropped and the event fans out
+    /// like any other stream frame.
+    fn deliver_stream_frame(&mut self, id: u32, frame: FrameKind) {
+        let FrameKind::Event {
+            terminal,
+            mut event,
+            stamp,
+        } = frame
+        else {
+            self.fan_out(id, &frame);
+            return;
+        };
+        satellite_gap_as_source_gap(&mut event);
+        if let (Some(journal), Some(scope)) = (self.journal.clone(), terminal.clone()) {
+            let _ = journal.with_mut(|s| s.record_relayed_event(scope, event, stamp.as_deref()));
+            return;
+        }
+        let unstamped = FrameKind::Event {
+            terminal,
+            event,
+            stamp: None,
+        };
+        self.fan_out(id, &unstamped);
+    }
+
+    /// Report a satellite's `journal_gap` on the link's own subscription.
+    ///
+    /// The satellite addressed it to no Terminal, because one subscription
+    /// carries every scope the link watches, so it spans all of them. Each
+    /// relayed Terminal's consumers are told with a `source_gap`: events for
+    /// it were lost before the hub could journal them. Its `dropped` is an
+    /// upper bound: the satellite's range counts every sequence its journal
+    /// skipped for the link, including events for scopes a given Terminal's
+    /// consumers never subscribed to.
+    fn relay_link_gap(&mut self, dropped: u64) {
+        let terminals: Vec<u32> = self.subscribers.keys().copied().collect();
+        for id in terminals {
+            let gap = FrameKind::Event {
+                terminal: Some(ResourceId::satellite(self.host.clone(), id)),
+                event: AgentEvent::SourceGap { dropped },
+                stamp: None,
+            };
+            self.deliver_stream_frame(id, gap);
+        }
+    }
+
+    /// The cursor the link's own `SUBSCRIBE_EVENTS` carries: journal
+    /// semantics with no replay (`2^64 - 1`) when the satellite speaks
+    /// them, so an `EXPIRED` lease crosses the link as itself (L1 §7.1);
+    /// otherwise the live-only subscription an older satellite expects.
+    fn link_event_cursor(&self) -> Option<u64> {
+        self.satellite_features
+            .contains(ServerFeature::EventJournal)
+            .then_some(u64::MAX)
+    }
+
+    /// `forward`, with the link's event cursor when it subscribes events.
+    fn with_link_cursor(&self, forward: &FrameKind) -> FrameKind {
+        let mut forward = forward.clone();
+        if let FrameKind::SubscribeEvents { after_seq, .. } = &mut forward {
+            *after_seq = self.link_event_cursor();
+        }
+        forward
     }
 
     /// The bootstrap-flow gate each stream frame kind must clear before it is
@@ -1736,18 +1875,13 @@ impl RelaySession {
     /// Re-tag one stream frame's terminal scope `Local { id }` ->
     /// `Satellite { host, id }`. Every other field is forwarded verbatim
     /// (ADR-0007: opaque relay), so the scope is rewritten in place rather
-    /// than the frame rebuilt field by field. The one exception is an
-    /// event's journal stamp: it names the satellite's journal, not the
-    /// hub's, so it does not cross the hub (`docs/spec/L1.md` §7.3).
+    /// than the frame rebuilt field by field. An event's journal stamp is
+    /// the one field that does not cross as-is; [`Self::restamp_event`]
+    /// replaces it after the re-tag (`docs/spec/L1.md` §7.3).
     fn retag_stream_frame(&self, mut frame: FrameKind, id: u32) -> FrameKind {
         let scope = ResourceId::satellite(self.host.clone(), id);
         match &mut frame {
-            FrameKind::Event {
-                terminal, stamp, ..
-            } => {
-                *terminal = Some(scope);
-                *stamp = None;
-            }
+            FrameKind::Event { terminal, .. } => *terminal = Some(scope),
             FrameKind::ResourceOutput { terminal_id, .. }
             | FrameKind::BootstrapBegin { terminal_id, .. }
             | FrameKind::BootstrapChunk { terminal_id, .. }
@@ -1868,6 +2002,7 @@ impl RelaySession {
                 "notified proxy subscribers of satellite teardown"
             );
         }
+        self.interrupt_consumer_scopes();
         self.subscribers.clear();
         self.bootstrap_flows.clear();
         self.explicit_content.clear();
@@ -1877,6 +2012,21 @@ impl RelaySession {
         self.retained_frames = 0;
         self.inflight_generation_bytes = 0;
         self.inflight_generation_frames = 0;
+    }
+
+    /// The link is gone, so every consumer's satellite scope on it is
+    /// interrupted: dropped from the hub's event registry and owed a
+    /// `journal_gap`, because its stream stopped mid-flight (ADR-0123).
+    fn interrupt_consumer_scopes(&self) {
+        let Some(journal) = &self.journal else {
+            return;
+        };
+        for (id, subs) in &self.subscribers {
+            let scope = ResourceId::satellite(self.host.clone(), *id);
+            for sub in subs {
+                journal.with_mut(|s| s.interrupt_satellite_scope(sub.client, &scope));
+            }
+        }
     }
 
     /// Drop pending entries whose consumer stopped waiting (the
@@ -4553,6 +4703,133 @@ mod tests {
         assert_eq!(session.prune_abandoned(), 0, "consumer still waits");
         drop(rx);
         assert_eq!(session.prune_abandoned(), 1, "abandoned spawn pruned");
+    }
+
+    // --- session: journal re-stamp (ADR-0123) -----------------------------
+
+    #[test]
+    fn relayed_events_go_through_the_hub_registry_with_the_hubs_seq() {
+        let journal = crate::state::SharedState::new();
+        let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+        let (registry_tx, mut registry_rx) = mpsc::channel(8);
+        journal.with_mut(|s| {
+            s.subscribe_satellite_events(
+                consumer,
+                ResourceId::satellite("devbox", 9),
+                crate::state::EventFilter::all(),
+                None,
+                registry_tx,
+            );
+        });
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        session.set_journal(Some(journal.clone()));
+        let (proxy_tx, mut proxy_rx) = mpsc::channel(8);
+        subscribe(&mut session, 9, consumer, proxy_tx);
+        let actor = phux_protocol::wire::frame::ActorRef::new(phux_protocol::ids::ClientId::new(4))
+            .with_client_name(Some("satellite-side".to_owned()));
+        let satellite_stamp =
+            phux_protocol::wire::frame::EventStamp::new(77, 1_234).with_actor(Some(actor));
+        let scoped_gap = AgentEvent::JournalGap {
+            first_missing: 5,
+            last_missing: 7,
+        };
+        let link_gap = AgentEvent::JournalGap {
+            first_missing: 1,
+            last_missing: 4,
+        };
+        for (terminal, event, stamp) in [
+            (
+                Some(ResourceId::local(9)),
+                AgentEvent::CommandStarted,
+                Some(Box::new(satellite_stamp)),
+            ),
+            (Some(ResourceId::local(9)), scoped_gap, None),
+            // A satellite's gap on the link's own subscription names no
+            // Terminal; it spans every scope the link relays.
+            (None, link_gap, None),
+        ] {
+            session
+                .handle_inbound(&encode(&FrameKind::Event {
+                    terminal,
+                    event,
+                    stamp,
+                }))
+                .expect("valid satellite frame");
+        }
+        let delivered: Vec<_> = std::iter::from_fn(|| registry_rx.try_recv().ok())
+            .map(|out| match out {
+                Outbound::Frame(FrameKind::Event {
+                    terminal,
+                    event,
+                    stamp,
+                }) => (terminal, event, stamp.expect("stamped by the hub")),
+                other => panic!("expected an EVENT, got {other:?}"),
+            })
+            .collect();
+        let [(t1, started, first), (t2, gap, second), (t3, link, third)] = delivered.as_slice()
+        else {
+            panic!("three events through the registry: {delivered:?}");
+        };
+        let scope = Some(ResourceId::satellite("devbox", 9));
+        assert!([t1, t2, t3].iter().all(|t| **t == scope), "re-tagged");
+        assert_eq!(*started, AgentEvent::CommandStarted);
+        assert_eq!(first.seq, 1, "the hub's seq, not the satellite's 77");
+        assert_eq!(first.ts_ms, 1_234, "the satellite's time crosses the hub");
+        assert_eq!(first.actor, None, "the satellite's actor does not");
+        assert_eq!(*gap, AgentEvent::SourceGap { dropped: 3 });
+        assert_eq!(*link, AgentEvent::SourceGap { dropped: 4 });
+        assert_eq!((second.seq, third.seq), (2, 3));
+        assert!(
+            proxy_rx.try_recv().is_err(),
+            "events are delivered once, by the registry, not by the relay"
+        );
+        assert_eq!(journal.with(crate::state::ServerState::journal_head), 3);
+    }
+
+    /// L1 §7.1 / ADR-0123: the link subscribes with journal semantics (and
+    /// no replay) only when the satellite speaks them, so `EXPIRED` crosses
+    /// the link as itself and an older satellite still gets the frame it
+    /// knows.
+    #[test]
+    fn the_link_subscribes_events_with_journal_semantics_when_the_satellite_speaks_them() {
+        for (features, cursor) in [
+            (
+                ServerFeatureSet::with(&[ServerFeature::EventJournal]),
+                Some(u64::MAX),
+            ),
+            (ServerFeatureSet::new(), None),
+        ] {
+            let mut session = RelaySession::new_negotiated(
+                host(),
+                BootstrapLimits::default(),
+                BootstrapProfile::SynthesizedVtRaw,
+                features,
+            );
+            let (out_tx, _out_rx) = mpsc::channel(1);
+            let wire = session.handle_request(RelayRequest::Subscribe {
+                subscription: ProxySubscription {
+                    terminal: 9,
+                    client: ClientId(1),
+                    out_tx,
+                    consumer_cancel: CancellationToken::new(),
+                    seq: 1,
+                    awaits_snapshot: false,
+                    bootstrap_profile: None,
+                    bootstrap_limits: None,
+                },
+                forward: FrameKind::SubscribeEvents {
+                    terminal: Some(ResourceId::local(9)),
+                    after_seq: None,
+                },
+            });
+            assert!(
+                matches!(
+                    decode(&wire),
+                    FrameKind::SubscribeEvents { after_seq, .. } if after_seq == cursor
+                ),
+                "forwarded cursor must be {cursor:?}"
+            );
+        }
     }
 
     // --- session: return-leg re-tagging ----------------------------------

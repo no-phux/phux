@@ -34,6 +34,7 @@ pub(crate) fn run_launch(
     target: Option<String>,
     split: SpawnSplit,
     ratio: f32,
+    projection: Option<&str>,
     cwd: Option<PathBuf>,
     socket: Option<PathBuf>,
     extra: &[String],
@@ -82,9 +83,11 @@ pub(crate) fn run_launch(
         target,
         split,
         ratio,
+        projection,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_resolved(
     resolved: &ResolvedLaunch,
     prepared: Option<&PreparedAgentSession>,
@@ -93,6 +96,7 @@ fn spawn_resolved(
     target: Option<String>,
     split: SpawnSplit,
     ratio: f32,
+    projection: Option<&str>,
 ) -> ExitCode {
     let argv = prepared.map_or(&resolved.argv, |session| &session.argv);
     let env = prepared.map(|session| {
@@ -134,6 +138,7 @@ fn spawn_resolved(
             &target,
             split,
             ratio,
+            projection,
             prepared.map(|session| &session.record),
             json,
         ),

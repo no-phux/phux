@@ -126,6 +126,15 @@ pub struct ServerConfig {
     /// threaded into every Terminal engine. The binary populates this from
     /// `phux_config`; [`Self::with_default_socket`] uses the schema default.
     pub agent_log_bytes: u32,
+    /// Events the server-wide event journal retains for cursor replay
+    /// (`defaults.event-journal-entries`, ADR-0123). The binary populates
+    /// this from `phux_config`; [`Self::with_default_socket`] uses the
+    /// schema default.
+    pub event_journal_entries: u32,
+    /// Estimated encoded bytes the event journal retains
+    /// (`defaults.event-journal-bytes`, ADR-0123). Whichever bound is
+    /// reached first evicts the oldest events.
+    pub event_journal_bytes: u32,
     /// How a freshly-spawned pane chooses its working directory
     /// (`defaults.cwd-inheritance`, docs/experience.md). Threaded into
     /// shared state so `SPAWN_RESOURCE` resolves the new pane's CWD when
@@ -186,6 +195,11 @@ pub struct ServerConfig {
     pub window_size: phux_config::WindowSize,
     /// `[voice]`: the transcriber behind `TRANSCRIBE` (phux-ypsa).
     pub voice: phux_config::VoiceCfg,
+    /// `limits.metadata-value-bytes` (ADR-0129): largest L3 metadata value
+    /// the server stores at one key. The binary populates this from
+    /// `phux_config`; [`Self::with_default_socket`] uses the schema default
+    /// (256 KiB).
+    pub metadata_value_bytes: u32,
     /// Optional HELLO authorization engine (ADR-0072). `None` — what the
     /// `phux` binary passes today — leaves the default
     /// [`crate::policy::PermissivePolicy`] in place. This is the injection
@@ -294,12 +308,15 @@ impl ServerConfig {
             seed_command: None,
             scrollback: phux_config::DefaultsCfg::default().scrollback_limits(),
             agent_log_bytes: phux_config::DEFAULT_AGENT_LOG_BYTES,
+            event_journal_entries: phux_config::DEFAULT_EVENT_JOURNAL_ENTRIES,
+            event_journal_bytes: phux_config::DEFAULT_EVENT_JOURNAL_BYTES,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
             shell: crate::terminal_actor::resolve_shell(None),
             login_shell: false,
             window_size: phux_config::WindowSize::default(),
             voice: phux_config::VoiceCfg::default(),
+            metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             policy_engine: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
@@ -1099,6 +1116,13 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
     state.with_mut(|s| {
         s.set_scrollback_limits(cfg.scrollback);
         s.set_agent_log_bytes(cfg.agent_log_bytes);
+        // `defaults.event-journal-*` (ADR-0123): bound the ring before any
+        // client can subscribe, so no cursor is ever cut against the
+        // schema-default bounds of a server configured otherwise.
+        s.set_event_journal_bounds(
+            usize::try_from(cfg.event_journal_entries).unwrap_or(usize::MAX),
+            usize::try_from(cfg.event_journal_bytes).unwrap_or(usize::MAX),
+        );
     });
     // Mirror `defaults.cwd-inheritance` so the `SPAWN_RESOURCE` handler
     // resolves a new pane's working directory from the configured policy.
@@ -1121,6 +1145,9 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
     // (phux-nk07).
     state.with_mut(|s| s.set_window_size(cfg.window_size));
     state.with_mut(|s| s.set_voice(cfg.voice.clone()));
+    // Mirror `limits.metadata-value-bytes` (ADR-0129) so `SET_METADATA`
+    // enforces the configured cap instead of the schema default.
+    state.with_mut(|s| s.set_metadata_value_bytes(cfg.metadata_value_bytes));
     // Wire the policy engine from config into shared state.
     if let Some(engine) = cfg.policy_engine.clone() {
         state.with_mut(|s| s.set_policy_engine(engine));
@@ -1199,7 +1226,7 @@ fn spawn_hub_links(
         s.set_hub_link_statuses(statuses.clone());
         s.set_hub_relays(relays.clone());
     });
-    crate::hub::link::spawn_links(table, &statuses, &relays, root_token);
+    crate::hub::link::spawn_links(table, &statuses, &relays, root_token, state);
 }
 
 /// Supervise the planned outbound connectors. Nothing to supervise without a
@@ -1229,6 +1256,7 @@ fn resume_session_tree(state: &SharedState, blob: &StateBlob, root_token: &Cance
                     pane,
                     Some(exit_notify),
                     root_token.clone(),
+                    None,
                 );
             }
             info!(
@@ -2564,8 +2592,6 @@ mod tests {
         let (consumer_attach_tx, _consumer_attach_rx) = mpsc::channel(8);
         let (consumer_detach_tx, _consumer_detach_rx) = mpsc::channel(8);
         let (consumer_ack_tx, _consumer_ack_rx) = mpsc::channel(8);
-        let (subscribe_to_events_tx, _subscribe_to_events_rx) = mpsc::channel(8);
-        let (unsubscribe_from_events_tx, _unsubscribe_from_events_rx) = mpsc::channel(8);
         let handle = crate::resource::ResourceHandle {
             kind: crate::resource::ResourceKind::Terminal,
             parent: None,
@@ -2573,8 +2599,6 @@ mod tests {
             consumer_attach: consumer_attach_tx,
             consumer_detach: consumer_detach_tx,
             consumer_ack: consumer_ack_tx,
-            subscribe_to_events: subscribe_to_events_tx,
-            unsubscribe_from_events: unsubscribe_from_events_tx,
             upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
             control: mpsc::channel(8).0,
             facet: crate::resource::ResourceFacetHandle::Terminal(
@@ -2714,9 +2738,6 @@ mod tests {
                     let (consumer_attach_tx, _consumer_attach_rx) = mpsc::channel(8);
                     let (consumer_detach_tx, _consumer_detach_rx) = mpsc::channel(8);
                     let (consumer_ack_tx, _consumer_ack_rx) = mpsc::channel(8);
-                    let (subscribe_to_events_tx, _subscribe_to_events_rx) = mpsc::channel(8);
-                    let (unsubscribe_from_events_tx, _unsubscribe_from_events_rx) =
-                        mpsc::channel(8);
                     let handle = crate::resource::ResourceHandle {
                         kind: crate::resource::ResourceKind::Terminal,
                         parent: None,
@@ -2724,8 +2745,6 @@ mod tests {
                         consumer_attach: consumer_attach_tx,
                         consumer_detach: consumer_detach_tx,
                         consumer_ack: consumer_ack_tx,
-                        subscribe_to_events: subscribe_to_events_tx,
-                        unsubscribe_from_events: unsubscribe_from_events_tx,
                         upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
                         control: mpsc::channel(8).0,
                         facet: crate::resource::ResourceFacetHandle::Terminal(
@@ -2913,8 +2932,6 @@ mod tests {
                 let (consumer_detach_tx, mut consumer_detach_rx) =
                     mpsc::channel::<ConsumerDetachRequest>(8);
                 let (consumer_ack_tx, _consumer_ack_rx) = mpsc::channel(8);
-                let (subscribe_to_events_tx, _subscribe_to_events_rx) = mpsc::channel(8);
-                let (unsubscribe_from_events_tx, _unsubscribe_from_events_rx) = mpsc::channel(8);
                 let handle = crate::resource::ResourceHandle {
                     kind: crate::resource::ResourceKind::Terminal,
                     parent: None,
@@ -2922,8 +2939,6 @@ mod tests {
                     consumer_attach: consumer_attach_tx,
                     consumer_detach: consumer_detach_tx,
                     consumer_ack: consumer_ack_tx,
-                    subscribe_to_events: subscribe_to_events_tx,
-                    unsubscribe_from_events: unsubscribe_from_events_tx,
                     upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
                     control: mpsc::channel(8).0,
                     facet: crate::resource::ResourceFacetHandle::Terminal(
@@ -3238,7 +3253,7 @@ mod tests {
             let (exit_tx, exit_rx) =
                 tokio::sync::oneshot::channel::<phux_core::process::ExitOutcome>();
             let token = CancellationToken::new();
-            spawn_terminal_exit_watcher(state.clone(), pane, Some(exit_rx), token);
+            spawn_terminal_exit_watcher(state.clone(), pane, Some(exit_rx), token, None);
             exit_tx
                 .send(phux_core::process::ExitOutcome::exited(3))
                 .expect("exit notify");
@@ -3286,8 +3301,6 @@ mod tests {
                 consumer_attach: mpsc::channel(8).0,
                 consumer_detach: mpsc::channel(8).0,
                 consumer_ack: mpsc::channel(8).0,
-                subscribe_to_events: mpsc::channel(8).0,
-                unsubscribe_from_events: mpsc::channel(8).0,
                 upgrade: mpsc::channel::<crate::terminal_actor::UpgradeHandleRequest>(8).0,
                 control: mpsc::channel(8).0,
                 facet: crate::resource::ResourceFacetHandle::Terminal(
@@ -3477,8 +3490,6 @@ mod tests {
                     consumer_attach: consumer_attach_tx,
                     consumer_detach: consumer_detach_tx,
                     consumer_ack: mpsc::channel(8).0,
-                    subscribe_to_events: mpsc::channel(8).0,
-                    unsubscribe_from_events: mpsc::channel(8).0,
                     upgrade: mpsc::channel(8).0,
                     control: mpsc::channel(8).0,
                     facet: crate::resource::ResourceFacetHandle::Terminal(

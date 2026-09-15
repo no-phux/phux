@@ -164,6 +164,7 @@ async fn apply_pane_move(
             intent.target,
             intent.dir,
             intent.ratio,
+            &[],
         )
         .await
         .map_err(|error| AttachError::Protocol(error.to_string()))

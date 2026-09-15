@@ -312,7 +312,11 @@ impl ServerState {
     /// agent-event subscriptions, which `docs/spec/L3.md` §1.2 says are
     /// "dropped automatically on `DETACH` and on transport close".
     pub fn detach(&mut self, client_id: ClientId) {
-        self.clients.attached.remove(&client_id);
+        let detached_session = self
+            .clients
+            .attached
+            .remove(&client_id)
+            .map(|client| client.session);
         // Release any input leases this client held (ADR-0033) so a
         // disconnect never strands the wheel, local and hub-side satellite
         // (phux-v45.7) in one step. The runtime broadcasts the `Released`
@@ -347,7 +351,12 @@ impl ServerState {
         // Agent-event subscriptions follow the same lifecycle as the L3
         // metadata subscriptions above (SPEC §7.5). Drop them so the map
         // stays bounded across attach churn.
-        self.clients.event_subscriptions.remove(&client_id);
+        if let Some(sub) = self.clients.event_subscriptions.remove(&client_id) {
+            sub.retire();
+        }
+        if let Some(session) = detached_session {
+            self.restore_session_geometry_after_detach(session);
+        }
     }
 
     /// Forget everything the server knows about `client_id`'s *connection*,
@@ -373,6 +382,7 @@ impl ServerState {
     pub fn forget_connection(&mut self, client_id: ClientId) {
         self.detach(client_id);
         self.clients.layers.remove(&client_id);
+        self.clients.client_names.remove(&client_id);
         self.clients.connection_cancellations.remove(&client_id);
         self.remove_peer_identity(client_id);
     }
