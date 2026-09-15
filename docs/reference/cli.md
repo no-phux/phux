@@ -47,6 +47,7 @@ Panes:
   insert-pane   Insert an existing pane into a layout
   move-pane     Move a pane beside another, across sessions too
   swap-pane     Swap two panes in a layout
+  resource      Inspect a resource or wait for its process to exit
 
 Agents:
   agent         See and drive the agents running in panes
@@ -1658,6 +1659,10 @@ Flags:
   -e, --env <KEY=VALUE>           Environment assignment for the seed process.
                                   Repeat for multiple variables. Headless
                                   `--json` mode only.
+      --idempotency-key <HEX32>   Make the create safe to retry: a repeat with
+                                  the same key (32 hex digits) answers the first
+                                  create's result instead of failing on the
+                                  name. Headless `--json` mode only.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -2394,6 +2399,114 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux resource`
+
+```text
+Inspect a resource or wait for its process to exit
+
+`show` reads one resource: kind, parent, lifecycle, how a retained process
+exited, its process facts, input holder, tags, and agent record. `wait` blocks
+until the resource's process ends (exit 0), reports a resource that is already
+gone (exit 1), or gives up at `--timeout` (exit 124), and prints a cursor that
+resumes it. `methods` lists what the resource answers on this server. None of
+them attaches or resizes.
+
+Usage: phux resource <SUBCOMMAND>
+
+Commands:
+  methods  List the methods a resource answers on this server.
+  show     Show one resource: kind, lifecycle, exit, process, tags, agent.
+  wait     Wait until a resource's process exits.
+  help     Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux resource methods`
+
+```text
+List the methods a resource answers on this server.
+
+Each method's verb, whether it changes state, and whether it is available here:
+a method another kind owns, or one that needs a feature this server does not
+advertise, is listed with the reason. Listing a method grants nothing.
+
+Usage: phux resource methods [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector. A direct id (`@N`, `host/@N`) is read as given.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux resource show`
+
+```text
+Show one resource: kind, lifecycle, exit, process, tags, agent.
+
+Prints `key: value` lines, or with `--json` the stable document. Read-only:
+never attaches or resizes.
+
+Usage: phux resource show [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector. A direct id (`@N`, `host/@N`) is read as given.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux resource wait`
+
+```text
+Wait until a resource's process exits.
+
+Exit 0 when it exited (now or earlier, while the server still holds it), 1 when
+it is gone (it closed unretained, or never existed), 124 at `--timeout`, 2 for a
+bad argument. Race-free: an exit that happens while the wait starts is never
+missed. With `--json` the document carries the outcome, the exit status or
+signal, and a `cursor`; pass that cursor to `--after` to resume after a
+disconnect.
+
+Usage: phux resource wait [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector. A direct id (`@N`) is used as given, so a resource
+            that already exited can still be waited on.
+
+Flags:
+      --timeout <SECS>  Give up after this many seconds (exit 124), counted from
+                        the start of the command. Default: wait forever.
+      --after <CURSOR>  Resume from the cursor a previous `resource wait` or
+                        `watch` printed: a close the server still holds is
+                        replayed instead of read as gone. A cursor from another
+                        server run is ignored.
+      --json            Emit stable, versioned JSON on stdout instead of the
+                        human view. On failure, stdout stays empty and stderr
+                        carries one JSON error object.
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux run`
 
 ```text
@@ -2900,30 +3013,42 @@ Arguments:
               follow `--`: `phux spawn -- htop`.
 
 Flags:
-      --satellite <NAME>  Route the spawn to a configured federation satellite
-                          (a name from `phux host ls --role satellite`, on a
-                          server running `--hub`).
-      --target <TARGET>   Existing local pane beside which to place the new
-                          pane.
-      --split <SPLIT>     Split axis for explicit placement (requires
-                          `--target`).
-                          [possible values: horizontal, h, vertical, v]
-                          (default: horizontal)
-      --ratio <RATIO>     Fraction of the split retained by TARGET (requires
-                          `--target`).
-                          (default: 0.5)
-      --projection <KEY>  Named projection to place into instead of the shared
-                          default (requires `--target`). Must be
-                          `<prefix>.layout/v1/<session-id>` for TARGET's
-                          session.
-  -c, --cwd <CWD>         Working directory for the new pane.
-      --json              Emit stable, versioned JSON on stdout instead of the
-                          human view. On failure, stdout stays empty and stderr
-                          carries one JSON error object.
-  -h, --help              Print help
+      --satellite <NAME>         Route the spawn to a configured federation
+                                 satellite (a name from `phux host ls --role
+                                 satellite`, on a server running `--hub`).
+      --target <TARGET>          Existing local pane beside which to place the
+                                 new pane.
+      --split <SPLIT>            Split axis for explicit placement (requires
+                                 `--target`).
+                                 [possible values: horizontal, h, vertical, v]
+                                 (default: horizontal)
+      --ratio <RATIO>            Fraction of the split retained by TARGET
+                                 (requires `--target`).
+                                 (default: 0.5)
+      --projection <KEY>         Named projection to place into instead of the
+                                 shared default (requires `--target`). Must be
+                                 `<prefix>.layout/v1/<session-id>` for TARGET's
+                                 session.
+  -c, --cwd <CWD>                Working directory for the new pane.
+      --retain [SECS]            Keep the pane inspectable after its process
+                                 exits, for SECS seconds (bare `--retain`: the
+                                 server's default). Its screen, history, and
+                                 exit status stay readable through `phux
+                                 resource show` and `phux resource wait` until
+                                 then, or until `phux kill`. Write
+                                 `--retain=SECS` when a command follows.
+      --idempotency-key <HEX32>  Make the spawn safe to retry: a repeat with the
+                                 same key (32 hex digits) and the same request
+                                 answers the first pane instead of spawning
+                                 another. Draw one key per spawn and reuse it on
+                                 retry.
+      --json                     Emit stable, versioned JSON on stdout instead
+                                 of the human view. On failure, stdout stays
+                                 empty and stderr carries one JSON error object.
+  -h, --help                     Print help
 
 Global flags:
-      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux status`
@@ -3281,13 +3406,24 @@ Flags:
                         Repeatable; any one of them satisfies the watch. The
                         vocabulary is the one this stream prints: `agent_state`,
                         `asked`, `bell`, `command_finished`, `command_started`,
-                        `dirty`, `idle`, `pane_closed`, `pane_spawned`,
-                        `title_changed`, `unknown`. An unrecognized name is a
-                        usage error (exit 2) reported before the watch starts,
-                        never a watch that quietly never matches.
+                        `cwd_changed`, `dirty`, `idle`, `journal_gap`,
+                        `pane_closed`, `pane_spawned`, `source_gap`,
+                        `terminal_control`, `title_changed`, `unknown`.
+                        `unknown` also matches `cwd_changed`,
+                        `terminal_control`, `journal_gap`, and `source_gap`,
+                        which printed as `unknown` before they had names, so an
+                        existing `--until unknown` keeps working. An
+                        unrecognized name is a usage error (exit 2) reported
+                        before the watch starts, never a watch that quietly
+                        never matches.
       --timeout <SECS>  Give up after this many seconds (exit 124). Applies with
                         or without `--until`. Default: stream until EOF or
                         Ctrl-C.
+      --after <CURSOR>  Resume from the cursor a previous run printed: events
+                        the server still holds since then are replayed before
+                        live ones. A cursor from another server run is ignored,
+                        and said so. The cursor this run reached is the last
+                        line on stderr.
       --json            Emit stable, versioned JSON on stdout instead of the
                         human view. On failure, stdout stays empty and stderr
                         carries one JSON error object.

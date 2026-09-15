@@ -65,6 +65,19 @@ pub(crate) fn spawn_schema() -> Value {
             "projection": projection_key_schema(),
             "cwd": string_schema(),
             "command": { "type": "array", "maxItems": 64, "items": string_schema() },
+            "retain_secs": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 86400,
+                "description": "Keep the pane inspectable this many seconds after its process exits (0: the server's default); read its exit with phux_resource_wait / phux_resource_show. Refused with unsupported_server when the server does not advertise retain_on_exit.",
+            },
+            "idempotency_key": {
+                "type": "string",
+                "minLength": 32,
+                "maxLength": 32,
+                "pattern": "^[0-9a-fA-F]{32}$",
+                "description": "Make the spawn safe to retry: a repeat with the same key and request returns the first pane (`replayed: true`) instead of spawning another. Refused with unsupported_server when the server does not advertise spawn_idempotency.",
+            },
             "socket": string_schema(),
         }),
         &[],
@@ -339,12 +352,16 @@ async fn spawn(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
             "projection",
             "cwd",
             "command",
+            "retain_secs",
+            "idempotency_key",
             "socket",
         ],
         &[],
     )?;
     let target = bounded_string(args, "target", false)?;
     let satellite = bounded_string(args, "satellite", false)?;
+    let retain_secs = retain_secs(args)?;
+    let idempotency_key = bounded_string(args, "idempotency_key", false)?;
     if target.is_some() && satellite.is_some() {
         return Err(ToolError::new("`target` conflicts with `satellite`"));
     }
@@ -366,6 +383,12 @@ async fn spawn(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
     push_placement(&mut argv, target, &split, ratio, projection);
     push_option(&mut argv, "--satellite", satellite);
     push_option(&mut argv, "-c", bounded_string(args, "cwd", false)?);
+    // `=` form: `--retain` takes an optional value, so a separate word
+    // would be read as the value only by accident of what follows.
+    if let Some(secs) = retain_secs {
+        argv.push(format!("--retain={secs}"));
+    }
+    push_option(&mut argv, "--idempotency-key", idempotency_key);
     push_socket(&mut argv, args)?;
     let command = bounded_strings(args, "command", false)?;
     if !command.is_empty() {
@@ -543,6 +566,17 @@ fn push_placement(
             argv.extend(["--projection".to_owned(), projection]);
         }
     }
+}
+
+/// The optional `retain_secs` argument, bounded to `0..=86400`.
+fn retain_secs(args: &Value) -> Result<Option<u64>, ToolError> {
+    args.get("retain_secs").map_or(Ok(None), |value| {
+        value
+            .as_u64()
+            .filter(|secs| *secs <= 86_400)
+            .map(Some)
+            .ok_or_else(|| ToolError::new("`retain_secs` must be an integer in 0..=86400"))
+    })
 }
 
 pub(crate) fn push_option(argv: &mut Vec<String>, flag: &str, value: Option<String>) {

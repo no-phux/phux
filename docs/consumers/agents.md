@@ -103,6 +103,24 @@ agent TUI — where there is no sentinel to harvest.
 phux run --json --timeout 120 build "cargo test"
 ```
 
+For a process whose **end** you need (a build, a test run, a one-shot
+job), spawn it retained and wait on its exit. `phux resource wait` is
+race-free: an exit that happens while the wait starts is never missed,
+and a process that already exited is still read, because the retained
+pane keeps its status:
+
+```sh
+pane=$(phux spawn --json --retain=600 -- make test | jq -r '"@\(.terminal_id)"')
+phux resource wait --json --timeout 900 "$pane"
+phux snapshot --json --scrollback 200 "$pane"
+```
+
+Exit `0` is an observed exit (`exit.status`, or `exit.signal` for a
+death by signal); `1` is `gone` (the resource closed unretained before
+the wait, or never existed); `124` is the timeout. Keep the printed
+`cursor`: after a disconnect, `--after CURSOR` replays a close the
+server still journals. `phux kill "$pane"` purges a retained pane early.
+
 A paste **inserts**; it does not **submit**. Bracketed paste (DEC mode
 2004) delivers one block; paste-aware shells and REPLs buffer it until a
 real Enter. Follow with `phux send-keys TARGET Enter` to run what you
@@ -241,7 +259,21 @@ It never creates, splits, moves, or focuses layout.
   subscription on the resolved pane, not a fleet-wide stream.
   `command_started` / `command_finished` come from OSC 133 `C` / `D` in
   the raw PTY bytes; a shell with no integration never emits them, and
-  `idle` is only as quiet as the prompt.
+  `idle` is only as quiet as the prompt. On a server with the event
+  journal (`event_journal` in `phux status --json`) the last stderr line
+  is the cursor this run reached; `--after CURSOR` resumes from it, and
+  events the journal still holds are replayed before live ones.
+- **`resource wait`** — block until one resource's process ends, then
+  report how (exit 0), `gone` (exit 1), or the timeout (exit 124). A
+  direct `@N` target is used as given, so a pane that already closed can
+  still be named. Subscribe-then-read on one connection makes it
+  race-free; it is the completion gate for a process, as `agent wait` is
+  for an agent.
+- **`resource show`** — one resource's record: kind, parent, lifecycle,
+  the exit of a retained process, the typed process facts (pid,
+  foreground group, cwd, prompt state), the input-lease holder, tags,
+  and agent record. `resource methods` lists what the resource answers
+  on this server; listing grants nothing.
 - **`ask`** — advisory human attention. It does not move focus. The
   reference TUI presents it as `C-a q` / `C-a Q`.
 
@@ -329,8 +361,10 @@ object (exceptions noted). `--json` is the long flag; there is no `-j`.
   ],
   "terminals": ["@3"],
   "resources": [
-    { "id": "@3", "kind": "terminal", "parent": null },
-    { "id": "@9", "kind": "agent_session", "parent": "@3" }
+    { "id": "@3", "kind": "terminal", "parent": null,
+      "lifecycle": "running", "exit": null },
+    { "id": "@9", "kind": "agent_session", "parent": "@3",
+      "lifecycle": "running", "exit": null }
   ],
   "hosts": [],
   "hosts_complete": true,
@@ -343,7 +377,11 @@ object (exceptions noted). `--json` is the long flag; there is no `-j`.
 `unreachable == []`, never on diagnostic substrings. An absent key is a
 pre-v3 binary. `terminals` is the Terminal-kind inventory. `resources`
 is additive: omit it on an older server; `kind` is `terminal` or
-`agent_session` (unknown kinds render as `unknown`). `keep_empty` /
+`agent_session` (unknown kinds render as `unknown`). `lifecycle`
+(`running`, `frozen`, or `exited`) and `exit` are additive: `exited`
+with an `exit` object `{ status, signal, reason, exited_at_ms,
+retained_until_ms }` is a pane spawned with `--retain` whose process
+ended; read an absent key as `running` / `null`. `keep_empty` /
 `empty` are additive; read an absent key as `false`. `sessions` lists
 this host only. `hosts` is the fleet grouped by machine; read it as
 complete only when `hosts_complete` is `true` (the server advertises
@@ -438,16 +476,30 @@ headless geometry; automatic window-size policies return to that geometry
 after the last view detaches, while `manual` holds an explicit `phux resize`.
 `--empty --json` has `"terminal_id": null` plus
 `empty` / `keep_empty`. Terminal-facet verbs against an empty session
-fail immediately with `no_such_target`.
+fail immediately with `no_such_target`. `--idempotency-key HEX32`
+(32 hex digits, drawn once per request and reused on every retry) makes
+the create safe to retry: a repeat answers the first create's result
+instead of failing on the name. It needs `spawn_idempotency` in
+`phux status --json` `features`; otherwise it is refused before any
+write with `unsupported_server`, exit 2.
 
 ### `spawn` / `launch` / spatial
 
 ```json
-{ "schema_version": 1, "terminal_id": 7, "satellite": null }
+{ "schema_version": 1, "terminal_id": 7, "satellite": null, "replayed": false }
 ```
 
 `satellite` is the registry name when routed with `--satellite`; then
-`terminal_id` is the id *on that satellite*. Launch adds `integration`,
+`terminal_id` is the id *on that satellite*. `spawn --retain[=SECS]`
+keeps the pane inspectable after its process exits (bare `--retain`:
+the server's default), until the time passes or `phux kill`; write
+`--retain=SECS` when a command follows. `spawn --idempotency-key HEX32`
+makes a retry answer the first pane with `replayed: true` instead of
+spawning another; the same key with a different request is
+`idempotency_conflict`, exit 2. Each flag needs its feature
+(`retain_on_exit`, `spawn_idempotency`); without it the spawn is refused
+before sending with `unsupported_server`, exit 2, never silently
+ignored. Launch adds `integration`,
 `plugin`, and the resolved `argv`. `--list` / `--print` are separate
 documents; placement does not add a second success shape.
 
@@ -565,6 +617,69 @@ omits it or the shell has no OSC-133); `agent_state.{name,kind,session,
 state,attention,from}` — `from` is the state last seen *in this watch
 run*, absent on the first record; `attention` is derived from `state`; a
 deleted record emits `state: null` rather than dropping the line.
+`cwd_changed.cwd`; `terminal_control.{lifecycle,action,exit_status,
+input_holder,actor_client}` (`action: exited` is a retained pane's
+process ending); `journal_gap.{first_missing,last_missing}` (this watch
+missed that range: re-read level state); `source_gap.dropped` (events
+lost before they were journaled). On a journaling server every event
+line also carries `seq`, `ts_ms`, and `actor` (`{ client,
+credential_id, client_name }`) when present; a `journal_gap` line has
+none. After the stream ends, the last stderr line is the cursor: under
+`--json` one object `{ "cursor": "SERVER_ID:SEQ", "cursor_void":
+false }`; `cursor_void: true` means the `--after` cursor came from
+another server run and the stream started live. `--until unknown` still
+matches every event outside the gate names frozen at 1.0 (`agent_state`,
+`asked`, `bell`, `command_finished`, `command_started`, `dirty`, `idle`,
+`pane_closed`, `pane_spawned`, `title_changed`, `unknown`), including
+`cwd_changed`, `terminal_control`, `journal_gap`, and `source_gap`, which
+printed as `unknown` before they had names; an existing `--until unknown`
+gate keeps working, and the new names gate on exactly one kind.
+
+### `resource show` / `resource wait` / `resource methods`
+
+```json
+{ "schema_version": 1, "resource": "@7", "outcome": "exited",
+  "exit": { "status": 42, "signal": null, "reason": "exited",
+            "exited_at_ms": 1757800000123 },
+  "retained": true, "waited_ms": 1834, "cursor": "9f1c...:118",
+  "evidence_lost": false }
+```
+
+That is `resource wait --json`. `outcome` is `exited`, `gone`, or
+`timed_out`; the document is printed on **stdout for all three** (exit
+0, 1, 124), so branch on `outcome`. `exit` is `null` unless `exited`;
+inside it any fact the client could not learn is `null` (a close seen
+only as an event carries no `reason`). `retained` says the resource is
+still listed. `cursor` is `null` on a server without the event journal.
+A malformed `--after` is `invalid_cursor`, exit 2; an absence in a
+partial fleet view is `partial_view`, exit 3, never `gone`. A resumed
+wait does not answer `gone` until the replay has reached the server's
+journal head at the snapshot cut, so a close still being replayed is
+reported as the exit it was. That head is the connection's own (the
+newest event its subscription admits), so other panes' events never
+keep a resumed wait on a gone pane waiting. `evidence_lost: true` means
+the replay reported a range the journal had already evicted: a close in
+that range was never seen, so a `gone` may hide an exit (resume sooner,
+or retain the pane). A wait that saw no event returns that head
+as its `cursor`, so a resume replays nothing already accounted for, and
+an error exit names the cursor it reached in its remedy. A scoped
+workload refused the subscription or the state read gets
+`permission_denied`, exit 2.
+
+`resource show --json` is `{ schema_version: 1, resource, kind, parent,
+session, title, cwd, lifecycle, exit, input_holder, process, tags,
+agent, agent_session, unreachable }`. `exit` adds `retained_until_ms`.
+`process` is the `GET_TERMINAL_STATE` process facet below, `null` for a
+non-Terminal or an older server. `tags` is `null` when the read was
+refused. `input_holder` is the lease holder's connection id, or `null`.
+
+`resource methods --json` is `{ schema_version: 1, resource, kind,
+methods: [{ name, facet, verb, mutating, available, reason }] }`.
+`facet` is `substrate` or the kind that owns the method; `verb` is the
+closed verb label (`OBSERVE`, `BIND+OBSERVE`, `none`); `reason` is
+`null` when available, else `feature_unadvertised`, `wrong_kind`,
+`transport`, or `unimplemented`. Discovery grants nothing:
+authorization happens when the method is sent.
 
 ### `resize`
 
@@ -620,8 +735,9 @@ failure creates no pane.
 
 ### `GET_TERMINAL_STATE` — `process` facet (`schema_version` 1, wire only)
 
-No CLI verb emits this document yet. SDKs and MCP hosts that send the
-`GET_TERMINAL_STATE` command read it directly. The `process` object is
+`phux resource show --json` embeds the `process` object; SDKs that send
+the `GET_TERMINAL_STATE` command read the whole document. The `process`
+object is
 `{ child, foreground, cwd, prompt, exit }`, and the Rust type is
 `phux_core::process::TerminalProcessState`:
 
@@ -655,8 +771,10 @@ you `KILL_RESOURCE` it (`reason: KILLED`, idempotent). A retained Terminal holds
 its grid and history until then (up to `defaults.history-bytes`, so roughly
 512 MiB at the default bound of 256 with the 2 MiB default) but no
 pseudoterminal or descriptor. Check `RETAIN_ON_EXIT`
-in `HELLO_OK` first; a server without it closes the Terminal at exit. The CLI
-flag is not in this tree yet.
+in `HELLO_OK` first; a server without it closes the Terminal at exit. From the
+CLI: `phux spawn --retain[=SECS]` sets the field (refused with
+`unsupported_server` when the bit is absent), and `phux resource wait` is that
+waiter.
 
 ### Other `--json` verbs
 
@@ -711,6 +829,9 @@ Mirroring that `--help` does not collect in one place:
 | `agent send-keys` / `prompt` / `answer` | `0` kernel-queue receipt; `2` pre-write refusal; `1` transport or `delivery_unknown`. |
 | `agent session open\|close` / `emit` / `log` | `2` for `wrong_resource_kind`, `unsupported_server`, `not_producer`, `record_invalid`, `overflow`. A closed session is `no_such_target` (exit 1), not a refusal. `log` has no 124. |
 | `resize` | `0` only when the server holds the requested size. |
+| `resource wait` | `0` exited (now or earlier, while retained); `1` `gone`; `124` timeout; `2` usage (`invalid_cursor`) or a scope that cannot observe the resource (`permission_denied`, answered at once rather than at the deadline); `3` absent from a partial fleet. The document is on stdout for `0`, `1`, and `124`. |
+| `resource show` / `resource methods` | `1` `no_such_target`; `3` when the miss is against an incomplete fleet. |
+| `spawn` / `new` with `--retain` / `--idempotency-key` | `2` for `unsupported_server` (feature not advertised; nothing sent), `invalid_idempotency_key`, and `idempotency_conflict` (spawn only). A keyed `new` whose key already belongs to another create request registers nothing and exits `1`: a create result has no refusal form. |
 | `kill` / `tag` / `agent show\|set\|clear` | `3` when the miss is against an incomplete fleet. |
 
 **Exit `3`.** A federation hub that cannot reach a satellite still

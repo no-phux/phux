@@ -233,8 +233,18 @@ pub async fn get_state_on(conn: &mut Connection) -> Result<StateView, AttachErro
 pub(crate) async fn get_state_on_with_interleaved(
     conn: &mut Connection,
 ) -> Result<(StateView, Vec<FrameKind>), AttachError> {
+    let (result, interleaved) = get_state_reply(conn).await?;
+    let view = state_view(conn, result, &interleaved)?;
+    Ok((view, interleaved))
+}
+
+/// `GET_STATE`'s raw answer and the frames interleaved ahead of it, which a
+/// caller can still read when the answer is a refusal.
+pub(crate) async fn get_state_reply(
+    conn: &mut Connection,
+) -> Result<(CommandResult, Vec<FrameKind>), AttachError> {
     const REQUEST_ID: u32 = 0;
-    let (result, interleaved) = conn
+    Ok(conn
         .request(
             REQUEST_ID,
             Command::GetState {
@@ -242,23 +252,30 @@ pub(crate) async fn get_state_on_with_interleaved(
             },
         )
         .await?
-        .into_parts();
+        .into_parts())
+}
+
+/// The [`StateView`] a `GET_STATE` answer carries.
+pub(crate) fn state_view(
+    conn: &Connection,
+    result: CommandResult,
+    interleaved: &[FrameKind],
+) -> Result<StateView, AttachError> {
     // A hub answers GET_STATE with a *merged* snapshot and reports each
     // unreachable satellite as an uncorrelated ERROR pushed ahead of the ack
     // (`handle_get_state_federated`: "observable degradation, not silence").
     // The snapshot is still usable — it just does not list that satellite's
     // panes — so degradation rides *with* the value instead of failing it.
-    let degradation = Degradation::from_interleaved(&interleaved);
+    let degradation = Degradation::from_interleaved(interleaved);
     match result {
         CommandResult::OkWith(CommandValue::State(snapshot)) => {
             let view = StateView::new(snapshot, degradation);
             // The features tell a reader what an absent field means (an
             // empty `hosts` is complete only under HOST_SESSIONS).
-            let view = match conn.negotiated_bootstrap() {
+            Ok(match conn.negotiated_bootstrap() {
                 Some(negotiated) => view.with_server_features(negotiated.server_features),
                 None => view,
-            };
-            Ok((view, interleaved))
+            })
         }
         CommandResult::Error { message, .. } => Err(AttachError::Refused(message)),
         other => Err(AttachError::Protocol(crate::explain::explain_unexpected(

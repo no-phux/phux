@@ -35,9 +35,10 @@ phux runtime-info --json
    command. Use `send-keys` for interactive keys and `paste` for multiline
    text. Put flags before the target so they are not swallowed as input.
 5. **Observe under a finite bound.** Use `wait` for screen conditions, `watch`
-   for events, or `agent wait` for lifecycle transitions. Always pass
-   `--timeout`. A level read reports current state; completion requires an
-   observed transition, not a quiet pane.
+   for events, `agent wait` for lifecycle transitions, or `resource wait` for
+   a process's exit (spawn it with `--retain` so a finished run keeps its
+   status). Always pass `--timeout`. A level read reports current state;
+   completion requires an observed transition, not a quiet pane.
 6. **Verify.** Snapshot or list state again. A quiet pane or an ended watcher is
    not proof of completion.
 

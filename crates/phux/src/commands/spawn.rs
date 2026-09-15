@@ -3,16 +3,115 @@ use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
 use phux_client::layout::SplitDir;
-use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
+use phux_protocol::caps::ServerFeature;
+use phux_protocol::ids::{GroupId, IdempotencyKey, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, SpawnError, SpawnResult, StateScope,
+    Command, CommandResult, CommandValue, FrameKind, SpawnError, SpawnResource, SpawnResult,
+    StateScope,
 };
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::agent::AgentSessionRecord;
+use crate::commands::json_err::{CliError, codes};
 use crate::commands::{
     SpawnSplit, cli_runtime, json_err, parse_selector, request_command, resolve_targets,
 };
+use crate::exit_codes::EXIT_USAGE;
+
+/// What `phux spawn` asks the server to keep for it: the pane after its
+/// process exits (`--retain`, ADR-0124), and the answer to a retry
+/// (`--idempotency-key`, ADR-0126).
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct SpawnDurability {
+    /// `--retain[=SECS]`; `Some(0)` asks for the server's default.
+    pub(crate) retain_secs: Option<u32>,
+    /// `--idempotency-key`, already parsed.
+    pub(crate) idempotency_key: Option<IdempotencyKey>,
+}
+
+impl SpawnDurability {
+    /// Neither flag was given: the spawn is the plain one every server
+    /// understands.
+    const fn is_plain(self) -> bool {
+        self.retain_secs.is_none() && self.idempotency_key.is_none()
+    }
+
+    /// The spawn fields that carry it, or `None` for a plain spawn, which
+    /// keeps the bytes a server without either feature always received.
+    fn resource(self) -> Option<Box<SpawnResource>> {
+        (self.retain_secs.is_some() || self.idempotency_key.is_some()).then(|| {
+            Box::new(
+                SpawnResource::default()
+                    .with_retain_secs(self.retain_secs)
+                    .with_idempotency_key(self.idempotency_key),
+            )
+        })
+    }
+}
+
+/// Parse an `--idempotency-key` argument, reporting a malformed one as a
+/// usage error before any connection.
+pub(crate) fn parse_key_arg(
+    raw: Option<&str>,
+    json: bool,
+) -> Result<Option<IdempotencyKey>, ExitCode> {
+    raw.map(phux_client::spawn::parse_idempotency_key)
+        .transpose()
+        .map_err(|err| {
+            json_err::emit(
+                json,
+                &CliError::new(
+                    codes::INVALID_IDEMPOTENCY_KEY,
+                    err.to_string(),
+                    "generate one with `openssl rand -hex 16` and reuse it on every retry \
+                     of the same request",
+                ),
+                EXIT_USAGE,
+            )
+        })
+}
+
+/// Refuse a request whose durability flag the server would silently ignore:
+/// it does not advertise `missing`. Exit 2 with `unsupported_server`.
+pub(crate) fn unsupported_server(json: bool, missing: ServerFeature) -> ExitCode {
+    let flag = match missing {
+        ServerFeature::RetainOnExit => "--retain",
+        _ => "--idempotency-key",
+    };
+    let name = crate::feature_names::feature_name(missing).unwrap_or("the feature");
+    json_err::emit(
+        json,
+        &CliError::new(
+            codes::UNSUPPORTED_SERVER,
+            format!("this server does not support {flag}: it does not advertise {name}"),
+            "upgrade the server (`phux upgrade` after installing a newer phux), or drop the flag",
+        ),
+        EXIT_USAGE,
+    )
+}
+
+/// The refusal for a spawn whose durability fields the server would skip,
+/// or `None` when it can be sent. A plain spawn costs no extra connection.
+fn refuse_unsupported(
+    socket_path: &Path,
+    durability: SpawnDurability,
+    frame: &FrameKind,
+    json: bool,
+) -> Option<ExitCode> {
+    if durability.is_plain() {
+        return None;
+    }
+    let rt = match cli_runtime() {
+        Ok(rt) => rt,
+        Err(code) => return Some(code),
+    };
+    let features = match rt.block_on(phux_client::spawn::server_features(socket_path)) {
+        Ok(features) => features,
+        Err(err) => return Some(json_err::report_no_server(json, &err, socket_path, "spawn")),
+    };
+    let missing = phux_client::spawn::missing_spawn_feature(frame, features)?;
+    Some(unsupported_server(json, missing))
+}
 
 /// `phux spawn` — create a Terminal without attaching (`SPAWN_RESOURCE`,
 /// SPEC L1 §3.1). Does not auto-start a server.
@@ -42,6 +141,7 @@ pub(crate) fn run_spawn(
     json: bool,
     socket: Option<PathBuf>,
     command: Vec<String>,
+    durability: SpawnDurability,
 ) -> ExitCode {
     let socket_path = socket.unwrap_or_else(default_socket_path);
     let request_id = 1u32;
@@ -64,8 +164,11 @@ pub(crate) fn run_spawn(
         // layout, so it has nothing honest to name here. The pane takes the
         // server default and is sized by whichever client attaches.
         initial_size: None,
-        resource: None,
+        resource: durability.resource(),
     };
+    if let Some(code) = refuse_unsupported(&socket_path, durability, &frame, json) {
+        return code;
+    }
     let result = match target {
         Some(target) => dispatch_spawn_placed(
             &socket_path,
@@ -82,7 +185,19 @@ pub(crate) fn run_spawn(
         None => dispatch_spawn(&socket_path, &frame, "spawn", None, json),
     };
     match result {
-        Ok(SpawnResult::Ok(terminal_id)) => print_spawned(&terminal_id, json),
+        Ok(SpawnResult::Ok(terminal_id)) => print_spawned(&terminal_id, false, json),
+        // A keyed retry inside the server's horizon: the first spawn's pane,
+        // already placed by that spawn, so nothing is placed again.
+        Ok(SpawnResult::Replayed { id, .. }) => print_spawned(&id, true, json),
+        Ok(SpawnResult::Err(SpawnError::IdempotencyConflict)) => json_err::emit(
+            json,
+            &CliError::new(
+                codes::IDEMPOTENCY_CONFLICT,
+                "the idempotency key was already used for a different spawn; nothing was spawned",
+                "reuse a key only to retry the identical spawn; draw a fresh key for a new one",
+            ),
+            EXIT_USAGE,
+        ),
         Ok(SpawnResult::Err(err)) => {
             report_spawn_error(&err);
             ExitCode::FAILURE
@@ -266,13 +381,13 @@ pub(crate) fn dispatch_spawn_placed(
 /// Print the freshly spawned Terminal id — human line or the stable JSON
 /// document (`terminal_id` is the satellite-local id when `satellite` is
 /// non-null; address it through the hub as `satellite`+`terminal_id`).
-fn print_spawned(terminal_id: &ResourceId, json: bool) -> ExitCode {
+fn print_spawned(terminal_id: &ResourceId, replayed: bool, json: bool) -> ExitCode {
     let (id, host) = match terminal_id {
         ResourceId::Local { id } => (*id, None),
         ResourceId::Satellite { host, id } => (*id, Some(host.as_str())),
     };
     if json {
-        let payload = spawned_json(id, host);
+        let payload = spawned_json(id, host, replayed);
         match serde_json::to_string_pretty(&payload) {
             Ok(s) => {
                 outln!("{s}");
@@ -284,23 +399,26 @@ fn print_spawned(terminal_id: &ResourceId, json: bool) -> ExitCode {
             }
         }
     } else {
-        match host {
-            Some(host) => {
-                outln!("Created pane {host}/@{id}. Next: `phux snapshot {host}/@{id}`.");
-            }
-            None => outln!("Created pane @{id}. Next: `phux snapshot @{id}`."),
-        }
+        let selector = host.map_or_else(|| format!("@{id}"), |host| format!("{host}/@{id}"));
+        let verb = if replayed {
+            "Found pane (an earlier spawn with this key)"
+        } else {
+            "Created pane"
+        };
+        outln!("{verb} {selector}. Next: `phux snapshot {selector}`.");
         ExitCode::SUCCESS
     }
 }
 
 /// The `phux spawn --json` result document. Pure, so the shape (including
-/// `schema_version`) is unit-testable without a server.
-fn spawned_json(id: u32, host: Option<&str>) -> serde_json::Value {
+/// `schema_version`) is unit-testable without a server. `replayed` is
+/// additive: `true` when a keyed retry answered an earlier spawn's pane.
+fn spawned_json(id: u32, host: Option<&str>, replayed: bool) -> serde_json::Value {
     serde_json::json!({
         "schema_version": 1,
         "terminal_id": id,
         "satellite": host,
+        "replayed": replayed,
     })
 }
 
@@ -531,14 +649,82 @@ mod tests {
     /// fields (§4.11) for both a local and a satellite-routed spawn.
     #[test]
     fn spawned_json_pins_the_contract_shape() {
-        let doc = spawned_json(7, None);
+        let doc = spawned_json(7, None, false);
         assert_eq!(doc["schema_version"], 1);
         assert_eq!(doc["terminal_id"], 7);
         assert!(doc["satellite"].is_null());
-        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(3));
+        assert_eq!(doc["replayed"], false);
+        assert_eq!(doc.as_object().map(serde_json::Map::len), Some(4));
 
-        let doc = spawned_json(3, Some("edge"));
+        let doc = spawned_json(3, Some("edge"), true);
         assert_eq!(doc["satellite"], "edge");
+        assert_eq!(doc["replayed"], true);
+    }
+
+    #[test]
+    fn durability_rides_the_spawn_only_when_asked() {
+        assert!(SpawnDurability::default().resource().is_none());
+        let key = phux_client::spawn::parse_idempotency_key("0123456789abcdef0123456789abcdef")
+            .expect("key");
+        let resource = SpawnDurability {
+            retain_secs: Some(0),
+            idempotency_key: Some(key),
+        }
+        .resource()
+        .expect("fields");
+        assert_eq!(resource.retain_secs, Some(0));
+        assert_eq!(resource.idempotency_key, Some(key));
+    }
+
+    #[test]
+    fn a_malformed_key_is_a_usage_error() {
+        for bad in [
+            "",
+            "abc",
+            "00000000000000000000000000000000",
+            "zz23456789abcdef0123456789abcdef",
+        ] {
+            assert_eq!(
+                parse_key_arg(Some(bad), true).expect_err(bad),
+                ExitCode::from(EXIT_USAGE)
+            );
+        }
+        assert_eq!(parse_key_arg(None, true), Ok(None));
+    }
+
+    #[test]
+    fn retain_and_key_flags_parse_before_the_command() {
+        let cli = crate::parse_cli([
+            "phux",
+            "spawn",
+            "--retain=30",
+            "--idempotency-key",
+            "0123456789abcdef0123456789abcdef",
+            "--",
+            "true",
+        ])
+        .expect("parses");
+        let Some(crate::commands::Command::Spawn {
+            retain,
+            idempotency_key,
+            command,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected Spawn");
+        };
+        assert_eq!(retain, Some(30));
+        assert_eq!(
+            idempotency_key.as_deref(),
+            Some("0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(command, vec!["true".to_owned()]);
+
+        let bare = crate::parse_cli(["phux", "spawn", "--retain", "--", "true"]).expect("parses");
+        let Some(crate::commands::Command::Spawn { retain, .. }) = bare.command else {
+            panic!("expected Spawn");
+        };
+        assert_eq!(retain, Some(0), "bare --retain asks for the server default");
     }
 
     fn spawn_frame() -> FrameKind {
