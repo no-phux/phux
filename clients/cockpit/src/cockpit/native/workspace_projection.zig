@@ -47,16 +47,16 @@ pub fn windowPadding(model: *const Model) f32 {
 /// here — `metrics.control_height` is 40, `control_height_sm` is 32, and
 /// `spacing.xs` is 4. See docs/DESIGN_SYSTEM.md for the derivations and the
 /// sources.
-pub const chrome_band_height: f32 = 40;
-pub const chrome_band_inset: f32 = 4;
-pub const chrome_control_extent: f32 = 32;
+pub const chrome_band_height: f32 = semantic_theme.geometry.control;
+pub const chrome_band_inset: f32 = semantic_theme.geometry.space_xs;
+pub const chrome_control_extent: f32 = semantic_theme.geometry.control_sm;
 /// Every inline icon in the chrome, from three derivations that agree: the
 /// SDK's own `label_size + icon_text_step` (13 + 2 = 15), the cap-height recipe
 /// (1.65 x cap = 1.163 x size = 15.1), and Carbon's shipped 16px-against-14px
 /// pairing. 15.1 rounds to the artboard every icon system ships, and 16 centres
 /// on whole device pixels at 1x and 2x where 15 does not.
 pub const chrome_icon_extent: f32 = 16;
-pub const chrome_gap: f32 = 8;
+pub const chrome_gap: f32 = semantic_theme.geometry.space_sm;
 
 /// The floor for anything the pointer has to hit. WCAG 2.2 SC 2.5.8 asks 24x24
 /// for AA; Apple's macOS guidance is a 28pt default over a 20pt minimum, which
@@ -72,7 +72,7 @@ pub const chrome_hit_target: f32 = 24;
 /// underline indicator down into the terminal's first row. The Geist pack
 /// computes 50 at the default control size (`metrics.tabs_trigger_height`),
 /// and `headerHeightCoversTriggers` pins the two together.
-pub const header_height: f32 = 50;
+pub const header_height: f32 = semantic_theme.geometry.tab;
 /// Tab geometry. Lives here rather than in the view because the visible-window
 /// derivation below is the thing tests pin, and it needs the same numbers the
 /// strip lays out with.
@@ -133,7 +133,7 @@ pub fn tabLabelWidth(extent: f32) f32 {
 /// The selected tab's accent bar — the Geist pack's own
 /// `metrics.tabs_indicator_thickness`, which is the vocabulary its underline
 /// tab register already speaks.
-pub const tab_indicator_thickness: f32 = 2;
+pub const tab_indicator_thickness: f32 = semantic_theme.geometry.indicator;
 /// The trailing status's slot, by the kind of status it is.
 ///
 /// MEASURED, not chosen, through the same seam layout and paint use —

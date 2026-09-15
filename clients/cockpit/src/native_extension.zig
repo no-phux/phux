@@ -19,6 +19,21 @@ test {
     _ = cockpit.projection.semantic_theme;
     _ = cockpit.machines;
 }
+test "semantic chrome tokens ignore broken terminal colors" {
+    const engine = try Engine.create(std.testing.allocator, std.testing.io);
+    defer engine.destroy();
+    const baseline = cockpit.projection.cockpitTokens(engine.model);
+    engine.model.config.background = .{ .r = 17, .g = 17, .b = 17 };
+    engine.model.config.foreground = .{ .r = 17, .g = 17, .b = 17 };
+
+    const chrome = cockpit.projection.cockpitTokens(engine.model);
+    try std.testing.expect(std.meta.eql(baseline, chrome));
+
+    const terminal = cockpit.projection.terminalTokens(engine.model);
+    const configured = native_sdk.canvas.Color.rgb8(17, 17, 17);
+    try std.testing.expectEqual(configured, terminal.colors.background);
+    try std.testing.expectEqual(configured, terminal.colors.text);
+}
 test "keybindings SDK registration and fallback dispatch share applied chord" {
     try @import("keybindings_sdk_tests.zig").check(native_sdk, cockpit.keybindings_runtime);
 }

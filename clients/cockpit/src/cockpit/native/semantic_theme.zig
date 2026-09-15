@@ -10,6 +10,12 @@ const std = @import("std");
 const native_sdk = @import("native_sdk");
 
 const canvas = native_sdk.canvas;
+const geist_register = canvas.DesignTokens.theme(.{ .color_scheme = .dark, .pack = .geist });
+
+/// The durable location marker for selected tabs, sections, and navigation
+/// rows. Wave 2 applies this to shipping markup because the SDK deliberately
+/// leaves selected ghost buttons visually at rest unless they are toggles.
+pub const selection_indicator = canvas.Color.rgb8(190, 242, 100);
 
 pub const Palette = struct {
     background: canvas.Color,
@@ -41,41 +47,60 @@ pub const palette: Palette = .{
     .text = canvas.Color.rgb8(244, 247, 251),
     .text_muted = canvas.Color.rgb8(154, 164, 178),
     .border = canvas.Color.rgb8(52, 58, 70),
-    .accent = canvas.Color.rgb8(190, 242, 100),
+    .accent = selection_indicator,
     .accent_text = canvas.Color.rgb8(9, 11, 15),
     .accent_hover = canvas.Color.rgb8(217, 249, 157),
     .accent_pressed = canvas.Color.rgb8(163, 230, 53),
-    .focus = canvas.accentFocusRing(canvas.Color.rgb8(190, 242, 100), .dark),
+    .focus = canvas.accentFocusRing(selection_indicator, .dark),
     .attention = canvas.Color.rgb8(253, 224, 71),
     .attention_text = canvas.Color.rgb8(9, 11, 15),
     .destructive = canvas.Color.rgb8(248, 113, 113),
 };
 
 pub const Geometry = struct {
-    space_xs: f32 = 4,
-    space_sm: f32 = 8,
-    space_md: f32 = 12,
-    space_lg: f32 = 16,
-    space_xl: f32 = 24,
-    control_sm: f32 = 32,
-    control: f32 = 40,
-    control_lg: f32 = 48,
-    row: f32 = 32,
-    tab: f32 = 50,
-    indicator: f32 = 2,
-    hairline: f32 = 1,
-    focus_stroke: f32 = 2,
-    focus_offset: f32 = 2,
+    space_xs: f32,
+    space_sm: f32,
+    space_md: f32,
+    space_lg: f32,
+    space_xl: f32,
+    control_sm: f32,
+    control: f32,
+    control_lg: f32,
+    tab: f32,
+    indicator: f32,
+    hairline: f32,
+    focus_stroke: f32,
+    focus_offset: f32,
 };
 
-pub const geometry: Geometry = .{};
+/// Cockpit names the Geist geometry it has intentionally adopted; the pinned
+/// SDK remains the value authority. Unnamed metrics, including row extent,
+/// pass through untouched.
+pub const geometry: Geometry = .{
+    .space_xs = geist_register.spacing.xs,
+    .space_sm = geist_register.spacing.sm,
+    .space_md = geist_register.spacing.md,
+    .space_lg = geist_register.spacing.lg,
+    .space_xl = geist_register.spacing.xl,
+    .control_sm = geist_register.metrics.control_height_sm,
+    .control = geist_register.metrics.control_height,
+    .control_lg = geist_register.metrics.control_height_lg,
+    .tab = geist_register.metrics.tabs_trigger_height,
+    .indicator = geist_register.metrics.tabs_indicator_thickness,
+    .hairline = geist_register.stroke.hairline,
+    .focus_stroke = geist_register.stroke.focus,
+    .focus_offset = geist_register.stroke.focus_offset,
+};
 
 pub const Radii = struct {
-    control: f32 = 6,
-    surface: f32 = 12,
+    control: f32,
+    surface: f32,
 };
 
-pub const radii: Radii = .{};
+pub const radii: Radii = .{
+    .control = geist_register.radius.sm,
+    .surface = geist_register.radius.xl,
+};
 
 /// Semantic recipes are optional-field overrides so applying them preserves
 /// SDK-owned disabled colors and component-specific details from Geist.
@@ -190,35 +215,10 @@ fn tokenOverrides() canvas.DesignTokenOverrides {
             .warning_text = palette.attention_text,
             .destructive = palette.destructive,
         },
-        .spacing = .{
-            .xs = geometry.space_xs,
-            .sm = geometry.space_sm,
-            .md = geometry.space_md,
-            .lg = geometry.space_lg,
-            .xl = geometry.space_xl,
-        },
-        .radius = .{
-            .sm = radii.control,
-            .md = radii.control,
-            .lg = radii.control,
-            .xl = radii.surface,
-        },
-        .stroke = .{
-            .hairline = geometry.hairline,
-            .regular = geometry.hairline,
-            .focus = geometry.focus_stroke,
-            .focus_offset = geometry.focus_offset,
-        },
-        .metrics = .{
-            .control_height_sm = geometry.control_sm,
-            .control_height = geometry.control,
-            .control_height_lg = geometry.control_lg,
-            .row_extent = geometry.row,
-            .tabs_trigger_height = geometry.tab,
-            .tabs_indicator_thickness = geometry.indicator,
-        },
         .controls = .{
-            .button_default = states.toolbar_action,
+            // Shipping CTAs use the SDK's default variant, so default must
+            // retain Cockpit's filled lime emphasis.
+            .button_default = states.primary_action,
             .button_primary = states.primary_action,
             .button_secondary = states.toolbar_action,
             .button_outline = states.settings_row,
@@ -309,6 +309,18 @@ test "semantic state recipes render distinct actionable states" {
     try std.testing.expect(!std.meta.eql(hovered, pressed));
 }
 
+test "default buttons preserve the shipping CTA state ladder" {
+    const rest = try renderedFill(.button, .default, .{}, 1);
+    const hovered = try renderedFill(.button, .default, .{ .hovered = true }, 1);
+    const pressed = try renderedFill(.button, .default, .{ .hovered = true, .pressed = true }, 1);
+
+    try std.testing.expectEqual(palette.accent, rest);
+    try std.testing.expectEqual(palette.accent_hover, hovered);
+    // The SDK's default variant routes pointer-down through active_background;
+    // unlike primary, it does not consume the dedicated pressed channel.
+    try std.testing.expectEqual(palette.accent, pressed);
+}
+
 test "navigation and tab selection share the semantic state ladder" {
     const row_hover = try renderedFill(.list_item, .default, .{ .hovered = true }, 1);
     const row_selected = try renderedFill(.list_item, .default, .{ .selected = true }, 1);
@@ -349,18 +361,38 @@ test "focus and attention retain independent high-contrast signals" {
     try std.testing.expect(!std.meta.eql(tokens.colors.warning, tokens.colors.accent));
 }
 
-test "semantic geometry remains on the Geist and four-point registers" {
+test "semantic geometry resolves from Geist without changing unadopted metrics" {
+    const geist = canvas.DesignTokens.theme(.{ .color_scheme = .dark, .pack = .geist });
     const tokens = designTokens();
-    try std.testing.expectEqual(geometry.control, geometry.control_sm + 2 * geometry.space_xs);
-    try std.testing.expectEqual(geometry.control_sm, tokens.metrics.control_height_sm);
-    try std.testing.expectEqual(geometry.control, tokens.metrics.control_height);
-    try std.testing.expectEqual(geometry.control_lg, tokens.metrics.control_height_lg);
-    try std.testing.expectEqual(geometry.tab, tokens.metrics.tabs_trigger_height);
-    try std.testing.expectEqual(geometry.indicator, tokens.metrics.tabs_indicator_thickness);
-    try std.testing.expectEqual(radii.control, tokens.radius.sm);
-    try std.testing.expectEqual(radii.surface, tokens.radius.xl);
-    try std.testing.expectEqual(geometry.focus_stroke, tokens.stroke.focus);
-    try std.testing.expectEqual(geometry.focus_offset, tokens.stroke.focus_offset);
+    try std.testing.expectEqual(geist.metrics.control_height, geist.metrics.control_height_sm + 2 * geist.spacing.xs);
+    try std.testing.expect(std.meta.eql(geist.spacing, tokens.spacing));
+    try std.testing.expect(std.meta.eql(geist.radius, tokens.radius));
+    try std.testing.expect(std.meta.eql(geist.stroke, tokens.stroke));
+    try std.testing.expect(std.meta.eql(geist.metrics, tokens.metrics));
+    try std.testing.expectEqual(geist.spacing.xs, geometry.space_xs);
+    try std.testing.expectEqual(geist.spacing.sm, geometry.space_sm);
+    try std.testing.expectEqual(geist.spacing.md, geometry.space_md);
+    try std.testing.expectEqual(geist.spacing.lg, geometry.space_lg);
+    try std.testing.expectEqual(geist.spacing.xl, geometry.space_xl);
+    try std.testing.expectEqual(geist.metrics.control_height_sm, geometry.control_sm);
+    try std.testing.expectEqual(geist.metrics.control_height, geometry.control);
+    try std.testing.expectEqual(geist.metrics.control_height_lg, geometry.control_lg);
+    try std.testing.expectEqual(geist.metrics.tabs_trigger_height, geometry.tab);
+    try std.testing.expectEqual(geist.metrics.tabs_indicator_thickness, geometry.indicator);
+    try std.testing.expectEqual(geist.radius.sm, radii.control);
+    try std.testing.expectEqual(geist.radius.xl, radii.surface);
+    try std.testing.expectEqual(geist.stroke.hairline, geometry.hairline);
+    try std.testing.expectEqual(geist.stroke.focus, geometry.focus_stroke);
+    try std.testing.expectEqual(geist.stroke.focus_offset, geometry.focus_offset);
+    try std.testing.expectEqual(geist.metrics.row_extent, tokens.metrics.row_extent);
+    try std.testing.expectEqual(@as(f32, 28), tokens.metrics.row_extent);
+}
+
+test "selection indicator clears non-text contrast on row state surfaces" {
+    try std.testing.expectEqual(palette.accent, selection_indicator);
+    for ([_]canvas.Color{ palette.background, palette.surface, palette.hover, palette.selected }) |surface| {
+        try std.testing.expect(contrast(selection_indicator, surface) >= 3.0);
+    }
 }
 
 test "Settings rescue text remains readable on every semantic surface" {
