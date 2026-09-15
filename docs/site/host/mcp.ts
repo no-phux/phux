@@ -16,9 +16,23 @@
  */
 import { htmlToMarkdown } from "./markdown";
 
-const PROTOCOL_VERSION = "2025-06-15";
+// MCP spec versions this server implements, oldest first. Clients negotiate in
+// initialize: a requested version from this list is echoed back, anything else
+// falls back to DEFAULT. Every version here must be a real, released spec
+// date — clients hard-reject unknown versions (a made-up date like
+// "2025-06-15" breaks every connecting client).
+const SUPPORTED_PROTOCOL_VERSIONS = ["2024-11-05", "2025-03-26", "2025-06-18"] as const;
+const DEFAULT_PROTOCOL_VERSION = "2025-03-26";
+const PROTOCOL_VERSION = DEFAULT_PROTOCOL_VERSION;
 const SERVER_NAME = "phux-site";
 const SERVER_VERSION = "1.0.0";
+
+function isSupportedProtocolVersion(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    (SUPPORTED_PROTOCOL_VERSIONS as readonly string[]).includes(value)
+  );
+}
 
 export interface McpEnv {
   ASSETS: { fetch(input: Request): Promise<Response> };
@@ -224,17 +238,27 @@ export async function handleMcpRequest(
   const { id, method, params = {} } = message;
   // Notifications have no id and never get a response body.
   if (id === undefined || id === null) {
-    return new Response(null, { status: 202, headers: corsHeaders() });
+    return new Response(null, { status: 202, headers: corsHeaders(headerVersion(request)) });
   }
 
   switch (method) {
-    case "initialize":
+    case "initialize": {
       observe?.("signal", "mcp:initialize");
-      return jsonRpcResult(id, {
-        protocolVersion: PROTOCOL_VERSION,
-        capabilities: { tools: { listChanged: false } },
-        serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
-      });
+      // Negotiate per spec: echo a supported requested version, otherwise
+      // fall back to the default so old and new clients both connect.
+      const negotiated = isSupportedProtocolVersion(params.protocolVersion)
+        ? params.protocolVersion
+        : headerVersion(request);
+      return jsonRpcResult(
+        id,
+        {
+          protocolVersion: negotiated,
+          capabilities: { tools: { listChanged: false } },
+          serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+        },
+        negotiated,
+      );
+    }
     case "ping":
       return jsonRpcResult(id, {});
     case "tools/list":
@@ -273,28 +297,33 @@ export async function handleMcpRequest(
   }
 }
 
-function corsHeaders(): Headers {
+function headerVersion(request: Request): string {
+  const requested = request.headers.get("mcp-protocol-version");
+  return isSupportedProtocolVersion(requested) ? requested : DEFAULT_PROTOCOL_VERSION;
+}
+
+function corsHeaders(protocolVersion: string = DEFAULT_PROTOCOL_VERSION): Headers {
   return new Headers({
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "POST, OPTIONS",
     "access-control-allow-headers": "content-type, mcp-protocol-version",
     "access-control-expose-headers": "mcp-protocol-version",
-    "mcp-protocol-version": PROTOCOL_VERSION,
+    "mcp-protocol-version": protocolVersion,
   });
 }
 
-function jsonRpcResult(id: unknown, result: unknown): Response {
-  return jsonResponse({ jsonrpc: "2.0", id, result });
+function jsonRpcResult(id: unknown, result: unknown, protocolVersion?: string): Response {
+  return jsonResponse({ jsonrpc: "2.0", id, result }, 200, protocolVersion);
 }
 
 function jsonRpcError(id: unknown, code: number, message: string, status: number): Response {
   return jsonResponse({ jsonrpc: "2.0", id, error: { code, message } }, status);
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
+function jsonResponse(body: unknown, status = 200, protocolVersion?: string): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { ...objectFromHeaders(corsHeaders()), "content-type": "application/json" },
+    headers: { ...objectFromHeaders(corsHeaders(protocolVersion)), "content-type": "application/json" },
   });
 }
 
