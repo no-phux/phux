@@ -67,6 +67,14 @@ jobs:
       - name: Check native Cockpit prerequisites
         run: bash scripts/doctor.sh cockpit
 
+      # Node 24 will not strip @native-sdk/core .ts under node_modules; the
+      # navigation-loader does. just cockpit-node-test is the same command.
+      - name: Run Cockpit Node tests
+        working-directory: clients/cockpit
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          node --import ./src/tests/navigation-loader.mjs --test ./src/tests/*.test.mjs
+
       # rust-cache keys on Cargo.lock itself; the shared key keeps this
       # macOS ffi-release cache disjoint from ci.yml's Linux check/test
       # profiles. Save only from main pushes — GitHub's Actions cache is a

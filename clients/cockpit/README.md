@@ -458,9 +458,10 @@ shares the installed app's identity and state file; the script does not. See
 
 ### Regression testing
 
-Ordinary behavioral tests gate PRs through `just cockpit-test` from the
-repository root. Bug fixes include one-time evidence that the named test fails
-against the actual defect and passes with the fix. Automatic mutation scans
+Ordinary behavioral tests gate PRs through `just cockpit-test` (Zig graph) and
+`just cockpit-node-test` (Node TypeScript tests) from the repository root.
+Bug fixes include one-time evidence that the named test fails against the
+actual defect and passes with the fix. Automatic mutation scans
 are separate, opt-in and diff-scoped; their reports guide assertion improvements
 without permanent patches or a 100% kill quota. See the
 [mutation testing policy](../../docs/TESTING_MUTATIONS.md) and the
