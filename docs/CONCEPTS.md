@@ -93,8 +93,20 @@ Target-versus-shipped gaps as of the last review. Each row names the ADR that ow
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| On-disk output journal and crash recovery | The server keeps every resource in memory. Nothing is journaled and there is no recovery flag. | [ADR-0092](adr/0092-durable-work-coordinator-authority.md) | phux-p91i |
+| On-disk output journal and crash recovery | Decided: not built ([ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md)). A crash loses every pane's scrollback; the `EVENT` stream is a separate, memory-bounded journal ([ADR-0123](adr/0123-events-are-journaled.md)) that carries no PTY bytes. | [ADR-0003](adr/0003-server-process-model.md), [ADR-0092](adr/0092-durable-work-coordinator-authority.md), [ADR-0130](adr/0130-on-disk-pty-journal-is-not-built.md) | phux-p91i |
 | Workload authentication enforcement | Paired mode requests a client certificate and enforces the scope matrix at dispatch; a revoked or expired credential now loses authority on the live connection, not just at the next HELLO. Unset mode beside a remote listener still admits every connection with the owner's full grant — a warned transitional posture, not the startup error the spec's target table asks for — and a configured CA or registry path with no mode is ignored rather than refused. | [ADR-0116](adr/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
+
+Scopes, attach roles, and approval gates are shipped: scope enforcement at
+dispatch ([ADR-0116](adr/0116-workload-auth-is-mtls.md)), `VIEWER`/`PRIMARY`
+attach intent on the lease ([ADR-0127](adr/0127-attach-roles-are-lease-intent.md)),
+and server-held approvals for dangerous actions
+([ADR-0128](adr/0128-approvals-are-held-actions.md)) all have nothing left
+open beyond the transitional posture row above. The next program,
+PHA-333/334 (named streams, `MULTI_STREAM`, a browser kind), composes on
+top of this phase's work rather than reopening it: a stream label becomes
+one more `Subject` dimension for the scope guard, a browser `navigate` is
+one more dangerous row in the approval catalog, and the keyed-operation
+dedupe substrate is the shared service that program already asks for.
 
 ## Where to go next
 

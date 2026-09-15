@@ -1,10 +1,10 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-15
 ---
 
-# 0113 — One QUIC stream per Terminal plus a control stream
+# 0115 — One QUIC stream per Terminal plus a control stream
 
 **TL;DR.** Over QUIC, a connection stops being one bidi stream carrying
 every frame and becomes one **control stream** (HELLO, COMMAND, attach,

@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-05-28
+last-reviewed: 2026-09-15
 ---
 
 # 0003 — Single server, many sessions
@@ -10,6 +10,7 @@ last-reviewed: 2026-05-28
 
 Status: Accepted
 Date: 2026-05-24
+See [ADR-0130](./0130-on-disk-pty-journal-is-not-built.md) for the on-disk PTY journal and `--recover` mode named in the mitigation below: decided, not built.
 
 ## Context
 

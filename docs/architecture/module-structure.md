@@ -126,7 +126,14 @@ src/
     change and at expiry; workload-auth.md §7, ADR-0116),
     dispatch_guard.rs (turns a `policy::enforce` denial into the reply
     each of the three call sites sends: correlated `PERMISSION_DENIED`,
-    a rate-limited uncorrelated `ERROR`, or a dropped frame)
+    a rate-limited uncorrelated `ERROR`, or a dropped frame),
+    keyed_ops.rs (KILL_RESOURCE(S)/KILL_RESOURCE_IF/SIGNAL_TERMINAL with a
+    trailing `operation_id` on the shared dedupe record: the first
+    admission runs the command, a repeat replays its result; ADR-0126,
+    L1.md §5.1.1),
+    approvals.rs (the held-command waiter on the requester's own
+    connection: runs, once approved, exactly as the requester's dispatch
+    would have; ADR-0128, workload-auth.md §6.1)
     input_lane/       — the dedicated input-encoding thread (ADR-0044) and
                         the acknowledged-input journal (ADR-0053)
   state/              — ServerState: sessions, windows, resources, leases,
@@ -150,7 +157,15 @@ src/
     ADR-0123),
     retained.rs (the exit-facet timer wheel and count bound behind
     `retain_secs`: purges an exited-but-retained Terminal on TTL or
-    when the retained set overflows, ADR-0124), ...
+    when the retained set overflows, ADR-0124),
+    approvals.rs (the pending-approval table, its server-owned
+    `phux.approval/v1/<id>` records, and the two journaled events;
+    ADR-0128, workload-auth.md §6.1 — opening, deciding, expiring, and
+    withdrawing each run in one critical section so the table, record,
+    and event always agree),
+    roles.rs (declared attach-role intent projected onto the input
+    lease: which subscriptions are observe-only, and turning a declared
+    takeover into the lease change it stands for; ADR-0127, L1.md §8.1), ...
   resource/           — the generic resource core and the engines behind it
     mod.rs            — ResourceCore (engine-side: kind, parent, wire id,
                         checked u64 output sequence, output broadcast,
@@ -225,7 +240,11 @@ src/
   hub/                — federation hub: satellite registry, outbound
                         dialer/link supervisor, byte relay/splice
                         (phux-v45, ADR-0007)
-    mod.rs, link.rs, relay.rs
+    mod.rs, link.rs, relay.rs, operation_fence.rs (the incarnation fence
+    and actor correlation for keyed operations forwarded to one
+    satellite: records, per operation id, the incarnation forwarded to,
+    and answers a cross-restart retry with `INCARNATION_CHANGED` instead
+    of forwarding it; L1.md §9.1, ADR-0053 item 5)
   transport.rs, transport/
                       — per-transport listeners and frame reader/writer
                         pairs: UDS and WebSocket in transport.rs, quic.rs,
@@ -241,6 +260,11 @@ src/
                       — the per-connection grant minted at HELLO and the
                         dispatch guard every frame, command, and QUIC
                         stream bind passes (workload-auth.md §6-§8)
+  policy/hold.rs      — the guard's third outcome, Hold, and the subject a
+                        decision is judged on: asks, for a request
+                        `enforce` already admitted, whether a `SIGNAL` it
+                        needs reaches its subject only through a clause
+                        that holds it (ADR-0128, workload-auth.md §6.1)
   auth.rs, connector.rs, cwd_query.rs, proc_query.rs, id_bridge.rs,
   search.rs, extract.rs, telemetry.rs
     — auth token checks, outbound connector dialing, kernel cwd/process
@@ -294,6 +318,12 @@ over the free functions here (`docs/consumers/sdk.md`). No `ratatui`, no
 ```
 src/
   lib.rs              — module list + re-exports of the client-core substrate
+  approvals.rs        — list and decide server-held approvals (`phux
+                        approve`/`deny`/`approvals`, ADR-0128): the pending
+                        set is read from the `phux.approval/v1/<id>`
+                        records; a decision is a `SET_METADATA` of
+                        `phux.approval.decide/v1/<id>` the server
+                        intercepts, confirmed by reading the record back
   attach/             — the headless half of attaching
     mod.rs            — re-exports: Dial vocabulary, InputReplayJournal,
                         AttachError / AttachEnd
@@ -618,7 +648,22 @@ rather than a layer with its own internal architecture worth diagramming:
   residue), and what it touches. The parity gate (`tests/parity.rs`) holds
   that table to the live catalog, the CLI grammar, and the kind table;
   `phux`'s refdocs compile the same file to render
-  `docs/reference/parity.md`.
+  `docs/reference/parity.md`. `phux_spawn` and the three spatial edits
+  (in `pane_tools.rs`) and `approval_tools.rs` (`phux_approvals`/
+  `phux_approve` over `phux_client::approvals`, ADR-0128, with
+  `phux_approve` gated by the same `annotations::require_confirmation`
+  check as any other destructive tool) run in-process through the same
+  `phux-client` builders the CLI calls, so those surfaces cannot drift.
+  Four tools are marked `Exec::InProcessMirror` instead: `phux_kill`
+  (`kill_tool.rs`, mirroring
+  `crates/phux/src/commands/kill.rs::kill_selected`) and `phux_signal`,
+  `phux_tag` and `phux_rename` (in `pane_tools.rs`, mirroring
+  `supervise.rs` and `tag.rs`). They run in-process but re-implement the
+  CLI verb's logic and share only the lower-level `phux_client` wire
+  helpers, so the two paths can drift; unifying them is tracked
+  separately (phux-c3vw). `phux_kill` also drops one CLI behaviour with
+  no tool-result channel to carry it: the partial-fleet warning a
+  degraded view prints.
 - **`phux-plugin`** — the shared plugin-runtime surface (argv execution,
   timeouts, env injection) used by both the CLI's `config run` and the
   server's `hooks.rs` dispatcher.

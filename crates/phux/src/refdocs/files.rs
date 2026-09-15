@@ -137,11 +137,14 @@ pub(crate) fn page() -> Page {
            optional screen dump, and a `report.md` an agent can open). \
            `latest` points at the newest; `phux report` lists them and \
            `phux report show` prints one.\n\n\
-         ## Design intent (not yet implemented)\n\n\
+         ## Decided: not built\n\n\
          A `server.pid` file and a `journal/` directory of per-pane PTY \
-         output for crash recovery remain design intent; neither path \
-         exists today. Workspace archives are written only where `phux \
-         workspace save` is pointed.\n",
+         output for crash recovery are decided: not built (ADR-0130). \
+         Neither path exists today; a crash loses every pane's \
+         scrollback. The `EVENT` stream is a separate, memory-bounded \
+         journal (ADR-0123) that carries no PTY bytes. Workspace \
+         archives are written only where `phux workspace save` is \
+         pointed.\n",
     );
 
     Page {
