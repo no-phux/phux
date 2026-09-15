@@ -3899,353 +3899,511 @@ function validPresentationModel(model: Model): Model {
     window1Open: false, window2Open: false, window3Open: false, window4Open: false };
 }
 
-export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+type RequestReplyKind = Extract<Msg, { readonly body: Uint8Array }>["kind"] | Extract<Msg, { readonly error: Uint8Array }>["kind"];
+type DelayedMessageKind = Extract<Msg, { readonly at: number }>["kind"];
+
+interface PlannedRequest {
+  readonly name: string;
+  readonly payload: Uint8Array;
+  readonly key: string;
+  readonly ok: RequestReplyKind;
+  readonly err: RequestReplyKind;
+}
+
+interface UpdatePlan {
+  readonly model: Model;
+  readonly effect: number;
+  readonly hostName: string;
+  readonly hostPayload: Uint8Array;
+  readonly firstRequest: PlannedRequest;
+  readonly secondRequest: PlannedRequest;
+  readonly thirdRequest: PlannedRequest;
+  readonly cancelKey: string;
+  readonly delayKey: string;
+  readonly delayMs: number;
+  readonly delayKind: DelayedMessageKind;
+}
+
+const UPDATE_EFFECT_MODEL = 0;
+const UPDATE_EFFECT_HOST = 1;
+const UPDATE_EFFECT_REQUEST = 2;
+const UPDATE_EFFECT_COMMITTED_REQUEST = 3;
+const UPDATE_EFFECT_COMMITTED_REQUEST_CANCEL = 4;
+const UPDATE_EFFECT_CANCEL_COMMITTED_REQUEST = 5;
+const UPDATE_EFFECT_COMMITTED_CANCEL = 6;
+const UPDATE_EFFECT_COMMITTED_HOST = 7;
+const UPDATE_EFFECT_DELAY = 8;
+const UPDATE_EFFECT_TWO_REQUESTS = 9;
+const UPDATE_EFFECT_THREE_REQUESTS = 10;
+const UPDATE_EFFECT_COMMITTED_TWO_REQUESTS = 11;
+
+const NO_PLANNED_REQUEST: PlannedRequest = { name: "", payload: NO_BYTES, key: "", ok: "snapshot_loaded", err: "snapshot_failed" };
+
+function plannedRequest(name: string, payload: Uint8Array, key: string, ok: RequestReplyKind, err: RequestReplyKind): PlannedRequest {
+  return { name, payload, key, ok, err };
+}
+
+function baseUpdatePlan(model: Model, effect: number): UpdatePlan {
+  return { model, effect, hostName: "", hostPayload: NO_BYTES, firstRequest: NO_PLANNED_REQUEST,
+    secondRequest: NO_PLANNED_REQUEST, thirdRequest: NO_PLANNED_REQUEST, cancelKey: "",
+    delayKey: "", delayMs: 0, delayKind: "tool_status_tick" };
+}
+
+function modelPlan(model: Model): UpdatePlan {
+  return baseUpdatePlan(model, UPDATE_EFFECT_MODEL);
+}
+
+function hostPlan(model: Model, name: string, payload: Uint8Array): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_HOST), hostName: name, hostPayload: payload };
+}
+
+function requestPlan(model: Model, request: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_REQUEST), firstRequest: request };
+}
+
+function committedRequestPlan(model: Model, request: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_REQUEST), firstRequest: request };
+}
+
+function committedRequestCancelPlan(model: Model, request: PlannedRequest, key: string): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_REQUEST_CANCEL), firstRequest: request, cancelKey: key };
+}
+
+function cancelCommittedRequestPlan(model: Model, key: string, request: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_CANCEL_COMMITTED_REQUEST), firstRequest: request, cancelKey: key };
+}
+
+function committedCancelPlan(model: Model, key: string): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_CANCEL), cancelKey: key };
+}
+
+function committedHostPlan(model: Model, name: string, payload: Uint8Array): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_HOST), hostName: name, hostPayload: payload };
+}
+
+function delayPlan(model: Model, key: string, afterMs: number, kind: DelayedMessageKind): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_DELAY), delayKey: key, delayMs: afterMs, delayKind: kind };
+}
+
+function twoRequestPlan(model: Model, first: PlannedRequest, second: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_TWO_REQUESTS), firstRequest: first, secondRequest: second };
+}
+
+function threeRequestPlan(model: Model, first: PlannedRequest, second: PlannedRequest, third: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_THREE_REQUESTS), firstRequest: first, secondRequest: second, thirdRequest: third };
+}
+
+function navigatorLowEffect(decision: NavigatorDecision): UpdatePlan {
+  switch (decision.effect) {
+    case 1: return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
+    case 2: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.machines", decision.request, "cockpit-machines", "machines_loaded", "machines_failed"));
+    case 3: return committedRequestCancelPlan(decision.model,
+      plannedRequest("cockpit.navigation", decision.request, "cockpit-navigation", "navigation_loaded", "navigation_failed"),
+      "cockpit-window-command");
+    case 4: return committedRequestCancelPlan(decision.model,
+      plannedRequest("cockpit.keybindings", decision.request, "cockpit-keybindings", "keybindings_loaded", "keybindings_failed"),
+      "cockpit-window-command");
+    case 5: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.new-session", decision.request, "cockpit-new-session", "new_session_loaded", "new_session_failed"));
+    case 6: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-local-tools", "local_tool_loaded", "local_tool_failed"));
+    case 7: return requestPlan(decision.model,
+      plannedRequest("cockpit.appearance", decision.request, "cockpit-appearance", "appearance_loaded", "appearance_failed"));
+    default: return modelPlan(decision.model);
+  }
+}
+
+function navigatorMidEffect(decision: NavigatorDecision): UpdatePlan {
+  switch (decision.effect) {
+    case 8: return requestPlan(decision.model,
+      plannedRequest("cockpit.remote", decision.request, "cockpit-remote", "remote_loaded", "remote_failed"));
+    case 9: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.remote", decision.request, "cockpit-remote", "remote_loaded", "remote_failed"));
+    case 10: return requestPlan(decision.model,
+      plannedRequest("cockpit.window-command", decision.request, "cockpit-window-command", "window_action_loaded", "window_action_failed"));
+    case 11: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.tab-command", decision.request, "cockpit-tab-command", "tab_command_completed", "tab_command_failed"));
+    case 12: return requestPlan(decision.model,
+      plannedRequest("cockpit.navigation", decision.request, "cockpit-navigation", "navigation_loaded", "navigation_failed"));
+    case 13: return cancelCommittedRequestPlan(decision.model, "cockpit-new-session",
+      plannedRequest("cockpit.new-session", decision.request, "cockpit-new-session-cancel", "new_session_cancelled", "new_session_cancel_failed"));
+    case 14: return committedCancelPlan(decision.model, "cockpit-window-command");
+    default: return modelPlan(decision.model);
+  }
+}
+
+function navigatorHighEffect(decision: NavigatorDecision): UpdatePlan {
+  switch (decision.effect) {
+    case 15: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-tool-status", "local_tool_status_loaded", "local_tool_status_failed"));
+    case 16: return delayPlan(decision.model, "cockpit-tool-status-tick", 500, "tool_status_tick");
+    case 17: return requestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-tool-status", "local_tool_status_loaded", "local_tool_status_failed"));
+    case 18: return requestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-tool-status", "local_tool_acknowledged", "local_tool_ack_failed"));
+    case 19: return committedRequestPlan(decision.model,
+      plannedRequest("cockpit.local-tools", decision.request, "cockpit-tool-launch", "local_tool_launch_loaded", "local_tool_launch_failed"));
+    case 20: return hostPlan(decision.model, "cockpit.intent", decision.request);
+    case 21: return committedHostPlan(decision.model, "cockpit.intent", decision.request);
+    default: return modelPlan(decision.model);
+  }
+}
+
+function navigatorUpdate(decision: NavigatorDecision): UpdatePlan {
+  if (decision.effect <= 7) return navigatorLowEffect(decision);
+  if (decision.effect <= 14) return navigatorMidEffect(decision);
+  return navigatorHighEffect(decision);
+}
+
+function directoryUpdate(decision: DirectoryDecision): UpdatePlan {
+  const request = plannedRequest("cockpit.directory", decision.request, "cockpit-directory", "directory_loaded", "directory_failed");
+  if (decision.request.length > 0 && decision.committed) return committedRequestPlan(decision.model, request);
+  if (decision.request.length > 0) return requestPlan(decision.model, request);
+  if (decision.committed) return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
+  return modelPlan(decision.model);
+}
+
+function renameUpdate(decision: RenameDecision): UpdatePlan {
+  const request = plannedRequest("cockpit.session", decision.request, "cockpit-session", "session_loaded", "session_failed");
+  if (decision.request.length > 0 && decision.committed) return committedRequestPlan(decision.model, request);
+  if (decision.request.length > 0) return requestPlan(decision.model, request);
+  if (decision.committed) return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
+  return modelPlan(decision.model);
+}
+
+function commandResultUpdate(decision: TabCommandTransition): UpdatePlan {
+  if (decision.request.length === 0) return modelPlan(decision.model);
+  return requestPlan(decision.model,
+    plannedRequest("cockpit.command-results", decision.request, "cockpit-command-results", "command_result_loaded", "command_result_failed"));
+}
+
+function selfUpdateResult(decision: UpdateDecision): UpdatePlan {
+  if (decision.request.length === 0) return modelPlan(decision.model);
+  const updateRequest = plannedRequest("cockpit.update", decision.request, "cockpit-update", "update_loaded", "update_failed");
+  if (!decision.opening) return requestPlan(decision.model, updateRequest);
+  return committedThenTwoRequestsPlan(decision.model,
+    plannedRequest("cockpit.appearance", decision.appearanceRequest, "cockpit-appearance", "appearance_loaded", "appearance_failed"),
+    updateRequest);
+}
+
+function committedThenTwoRequestsPlan(model: Model, first: PlannedRequest, second: PlannedRequest): UpdatePlan {
+  return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_TWO_REQUESTS), firstRequest: first, secondRequest: second };
+}
+
+function appearanceUpdate(model: Model, decision: AppearanceDecision): UpdatePlan {
+  const next = decision.model;
+  if (decision.closed && model.pendingToolOpen) {
+    const editor = describeLocalTool(next, 2);
+    return committedRequestPlan(editor.model,
+      plannedRequest("cockpit.local-tools", editor.request, "cockpit-local-tools", "local_tool_loaded", "local_tool_failed"));
+  }
+  if (decision.opening) return committedRequestPlan(next,
+    plannedRequest("cockpit.appearance", decision.request, "cockpit-appearance", "appearance_loaded", "appearance_failed"));
+  if (decision.navigate) return committedRequestPlan(next,
+    plannedRequest("cockpit.navigation", navigationRequestFor(next), "cockpit-navigation", "navigation_loaded", "navigation_failed"));
+  if (decision.closed) return hostPlan(next, "cockpit.committed", NO_BYTES);
+  if (decision.request.length === 0) return modelPlan(next);
+  return requestPlan(next,
+    plannedRequest("cockpit.appearance", decision.request, "cockpit-appearance", "appearance_loaded", "appearance_failed"));
+}
+
+function tabCommandUpdate(decision: TabCommandTransition, fromCommands: boolean): UpdatePlan {
+  if (decision.request.length === 0) {
+    if (fromCommands) return hostPlan(decision.model, "cockpit.committed", NO_BYTES);
+    return modelPlan(decision.model);
+  }
+  const request = plannedRequest("cockpit.tab-command", decision.request, "cockpit-tab-command", "tab_command_completed", "tab_command_failed");
+  if (fromCommands) return committedRequestPlan(decision.model, request);
+  return requestPlan(decision.model, request);
+}
+
+function selectedCommand(model: Model, msg: Msg): PreparedMessage | null {
+  if (!model.paletteOpen || model.navigatorView !== 4) return { model, msg };
+  const action = selectedAction(model, msg);
+  if (action !== null) return { model: closePalette(model), msg: action };
+  if (msg.kind === "palette_submit" || msg.kind === "commands_pick") return null;
+  return { model, msg };
+}
+
+function selectionMessageUpdate(model: Model, msg: Msg): UpdatePlan | null {
+  switch (msg.kind) {
+    case "select_tab":
+      return hostPlan({ ...model, tabs: selectTab(model.tabs, msg.index),
+        visibleTabs: selectTab(model.visibleTabs, msg.index), selectedTab: msg.index },
+      "cockpit.intent", intent(1, model.engineRevision, msg.index, 0));
+    case "select_active_tab":
+      return hostPlan(model, "cockpit.intent", intent(1, model.engineRevision, msg.index, 255));
+    case "select_slot": {
+      const payload = legacySlotIntent(model.engineRevision, msg.slot);
+      if (payload.length === 0) return modelPlan(model);
+      return hostPlan(model, "cockpit.intent", payload);
+    }
+    case "reconnect":
+      return hostPlan(model, "cockpit.intent", intent(12, model.engineRevision, 0, 255));
+    default:
+      return null;
+  }
+}
+
+function emptyMessageUpdate(model: Model, msg: Msg): UpdatePlan | null {
+  switch (msg.kind) {
+    case "empty_new_tab":
+      if (model.emptyBusy || model.emptyWindows === 0) return modelPlan(model);
+      return requestPlan({ ...model, emptyBusy: true, emptyNotice: asciiBytes("Opening a new tab...") },
+        plannedRequest("cockpit.session", sessionRequest(SESSION_KIND_NEW_TAB, NO_BYTES), "cockpit-session-empty", "empty_loaded", "empty_failed"));
+    case "empty_dismiss":
+      if (!model.emptyPicked) return modelPlan(model);
+      return requestPlan(model,
+        plannedRequest("cockpit.session", sessionRequest(SESSION_KIND_DISMISS, NO_BYTES), "cockpit-session-empty", "empty_loaded", "empty_failed"));
+    case "empty_loaded":
+      return modelPlan(receiveEmpty(model, msg.body));
+    case "empty_failed":
+      return modelPlan({ ...model, emptyBusy: false, emptyNotice: asciiBytes("Could not open a tab there. Try again.") });
+    default:
+      return null;
+  }
+}
+
+function closedWindowUpdate(model: Model, window: number): UpdatePlan {
+  // Native retirement already matched the actual OS window incarnation.
+  // Withdraw its declaration before the SDK rebuilds; this label never
+  // authorizes a second lifecycle mutation against a recycled slot.
+  return committedRequestPlan(forgetClosedWindow(model, window),
+    plannedRequest("cockpit.snapshot", NO_BYTES, "cockpit-snapshot", "snapshot_loaded", "snapshot_failed"));
+}
+
+function tabPlacementUpdate(model: Model, fromCommands: boolean): UpdatePlan {
+  const placement: TabPlacement = model.tabPlacement === "top" ? "side" : "top";
+  const next = { ...model, tabPlacement: placement };
+  const payload = intent(4, model.engineRevision, placement === "side" ? 1 : 0, 255);
+  if (fromCommands) return committedHostPlan(next, "cockpit.intent", payload);
+  return hostPlan(next, "cockpit.intent", payload);
+}
+
+interface SnapshotRouting {
+  readonly projected: EngineSnapshot;
+  readonly scoped: Model;
+  readonly directoryRelists: boolean;
+  readonly askRemote: boolean;
+}
+
+function routeSnapshot(model: Model, loaded: LoadedSnapshotProjection): SnapshotRouting {
+  const projected = loaded.projected;
+  // An open Go to Directory names a listing on the connection that just
+  // moved: withdraw its rows, and list again once connected.
+  const directoryMoved = model.dirOpen && model.lastConnection !== 255 && projected.connection !== model.lastConnection;
+  const directoryRelists = directoryMoved && projected.connection === 2;
+  const synced = loaded.model;
+  const scoped = retainMachineInvalidation(directoryMoved ? relistDirectory(scopeOverlays(synced), directoryRelists) : scopeOverlays(synced));
+  // Remote status is asked for only when the connection moved (or a
+  // Connect to Host is waiting on it), never once per snapshot.
+  const askRemote = projected.connection !== model.lastConnection || model.hostAwaiting;
+  return { projected, scoped, directoryRelists, askRemote };
+}
+
+function snapshotWithoutNavigator(model: Model, routed: SnapshotRouting): UpdatePlan {
+  const remote = plannedRequest("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), "cockpit-remote", "remote_loaded", "remote_failed");
+  const session = plannedRequest("cockpit.session", sessionRequest(SESSION_KIND_STATUS, NO_BYTES), "cockpit-session", "session_loaded", "session_failed");
+  if (model.renameAwaiting && routed.askRemote) return twoRequestPlan(routed.scoped, remote, session);
+  if (model.renameAwaiting) return requestPlan(routed.scoped, session);
+  if (!routed.askRemote) return modelPlan(routed.scoped);
+  if (routed.directoryRelists) return twoRequestPlan(routed.scoped, remote,
+    plannedRequest("cockpit.directory", directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES),
+      "cockpit-directory", "directory_loaded", "directory_failed"));
+  return requestPlan(routed.scoped, remote);
+}
+
+function snapshotWithNavigator(routed: SnapshotRouting): UpdatePlan {
+  const refreshed = refreshNavigation(routed.scoped);
+  const navigation = plannedRequest("cockpit.navigation", navigationRequestFor(refreshed),
+    "cockpit-navigation", "navigation_loaded", "navigation_failed");
+  if (!routed.askRemote) return requestPlan(refreshed, navigation);
+  const remote = plannedRequest("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES),
+    "cockpit-remote", "remote_loaded", "remote_failed");
+  return twoRequestPlan(refreshed, navigation, remote);
+}
+
+function loadedSnapshotUpdate(model: Model, body: Uint8Array): UpdatePlan {
+  const loaded = projectLoadedSnapshot(model, body);
+  if (loaded === null) return modelPlan(engineUnavailable(model, asciiBytes("BAD SNAPSHOT")));
+  if (loaded.stale) return modelPlan(model);
+  const routed = routeSnapshot(model, loaded);
+  const machinePoll = refreshMachineSnapshot(routed.scoped);
+  if (machinePoll !== null) return requestPlan(machinePoll.model,
+    plannedRequest("cockpit.machines", machinePoll.request, "cockpit-machines", "machines_loaded", "machines_failed"));
+  if (model.newSessionAwaiting) return requestPlan(routed.scoped,
+    plannedRequest("cockpit.new-session", newSessionRequest(3, model.newSessionToken, NO_BYTES),
+      "cockpit-new-session", "new_session_loaded", "new_session_failed"));
+  if (!model.paletteOpen || model.navigatorView === 2 || model.navigatorView === 4) return snapshotWithoutNavigator(model, routed);
+  return snapshotWithNavigator(routed);
+}
+
+function eventModel(model: Model, sequence: WireU64): Model {
+  const read = requestCommandResults(model.commandResults);
+  return {
+    ...withdrawAgentRows(model),
+    commandResults: read.state,
+    engineSequence: sequence,
+    engineConnected: false,
+    status: asciiBytes("SYNCING"),
+    // Agent inspection drops the prior page; everyday navigator keeps held
+    // painted targets across the fence until the refreshed page lands.
+    paletteRows: model.agentsMode ? NO_ROWS : model.paletteRows,
+    paletteLoading: model.paletteOpen && (model.agentsMode || (model.navigatorView !== 2 && model.navigatorView !== 4)),
+    palettePrevious: model.agentsMode ? false : model.palettePrevious,
+    paletteNext: model.agentsMode ? false : model.paletteNext,
+    paletteNotice: model.agentsMode ? asciiBytes("Updating workspace and agent state...") : model.paletteNotice,
+  };
+}
+
+function eventRequests(next: Model, resultRequest: Uint8Array, directoryPoll: Uint8Array, pollDirectory: boolean): UpdatePlan {
+  const snapshotRequest = plannedRequest("cockpit.snapshot", NO_BYTES, "cockpit-snapshot", "snapshot_loaded", "snapshot_failed");
+  const results = plannedRequest("cockpit.command-results", resultRequest,
+    "cockpit-command-results", "command_result_loaded", "command_result_failed");
+  const directory = plannedRequest("cockpit.directory", directoryPoll, "cockpit-directory", "directory_loaded", "directory_failed");
+  if (resultRequest.length > 0 && pollDirectory) return threeRequestPlan(next, snapshotRequest, results, directory);
+  if (resultRequest.length > 0) return twoRequestPlan(next, snapshotRequest, results);
+  if (pollDirectory) return twoRequestPlan(next, snapshotRequest, directory);
+  return requestPlan(next, snapshotRequest);
+}
+
+function engineEventUpdate(model: Model, msg: Extract<Msg, { readonly kind: "engine_event" }>): UpdatePlan {
+  if (msg.state !== "data") {
+    const status = msg.state === "rejected" ? asciiBytes("ENGINE REFUSED") : asciiBytes("ENGINE CLOSED");
+    return modelPlan(engineUnavailable(model, status));
+  }
+  const event = invalidation(msg.bytes);
+  if (event === null) return modelPlan({ ...model, status: asciiBytes("ENGINE PROTOCOL ERROR") });
+  const read = requestCommandResults(model.commandResults);
+  const next = eventModel(model, event.sequence);
+  // A listing Go to Directory waits on settles in the provider drain
+  // that announced this invalidation; ask for its page with the snapshot.
+  const pollDirectory = model.dirOpen && model.dirAwaiting;
+  const directoryPoll = directoryRequest(DIR_KIND_PAGE, model.dirRequest, model.dirOffset, 0, model.dirQuery);
+  return eventRequests(next, read.request, directoryPoll, pollDirectory);
+}
+
+function applicationMessageUpdate(model: Model, msg: Msg, fromCommands: boolean): UpdatePlan {
+  switch (msg.kind) {
+    case "settings_reveal":
+      if (!model.settingsOpen || !model.configExists) return modelPlan(model);
+      return hostPlan(model, "cockpit.intent", intent(6, model.engineRevision, 0, 0));
+    case "native_command": {
+      const payload = intent(11, model.engineRevision, msg.command, 255);
+      if (fromCommands) return committedHostPlan(model, "cockpit.intent", payload);
+      return hostPlan(model, "cockpit.intent", payload);
+    }
+    case "engine_wake":
+      return modelPlan({ ...model });
+    case "snapshot_failed":
+      return modelPlan(engineUnavailable(model, asciiBytes("ENGINE UNAVAILABLE")));
+    default:
+      return modelPlan(model);
+  }
+}
+
+function finalMessageUpdate(model: Model, msg: Msg, fromCommands: boolean): UpdatePlan {
+  const selection = selectionMessageUpdate(model, msg);
+  if (selection !== null) return selection;
+  const empty = emptyMessageUpdate(model, msg);
+  if (empty !== null) return empty;
+  if (msg.kind === "window_closed") return closedWindowUpdate(model, msg.window);
+  if (msg.kind === "toggle_tab_placement") return tabPlacementUpdate(model, fromCommands);
+  if (msg.kind === "snapshot_loaded") return loadedSnapshotUpdate(model, msg.body);
+  if (msg.kind === "engine_event") return engineEventUpdate(model, msg);
+  return applicationMessageUpdate(model, msg, fromCommands);
+}
+
+function planUpdate(incoming: Model, msg: Msg): UpdatePlan {
   incoming = validPresentationModel(incoming);
   incoming = observeNativeLifecycle(incoming, msg);
   const prepared = prepareContinuations(incoming, msg);
   const fromCommands = commandDeparture(incoming, prepared.model);
   incoming = prepared.model;
   msg = prepared.msg;
-  if (incoming.paletteOpen && incoming.navigatorView === 4) {
-    const action = selectedAction(incoming, msg);
-    if (action !== null) { incoming = closePalette(incoming); msg = action; }
-    else if (msg.kind === "palette_submit" || msg.kind === "commands_pick") return { ...incoming, paletteNotice: asciiBytes("This command is unavailable in the captured context. Reopen Commands to use the current terminal.") };
-  }
+  const selected = selectedCommand(incoming, msg);
+  if (selected === null) return modelPlan({ ...incoming, paletteNotice: asciiBytes("This command is unavailable in the captured context. Reopen Commands to use the current terminal.") });
+  incoming = selected.model;
+  msg = selected.msg;
   const navigator = navigatorTransition(incoming, msg);
-  if (navigator !== null) {
-    if (navigator.effect === 1) return [navigator.model, Cmd.host("cockpit.committed", NO_BYTES)];
-    if (navigator.effect === 2) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.machines", navigator.request, { key: "cockpit-machines", ok: "machines_loaded", err: "machines_failed" }),
-    ])];
-    if (navigator.effect === 3) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.navigation", navigator.request, { key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed" }),
-      Cmd.cancel("cockpit-window-command"),
-    ])];
-    if (navigator.effect === 4) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.keybindings", navigator.request, { key: "cockpit-keybindings", ok: "keybindings_loaded", err: "keybindings_failed" }),
-      Cmd.cancel("cockpit-window-command"),
-    ])];
-    if (navigator.effect === 5) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.new-session", navigator.request, { key: "cockpit-new-session", ok: "new_session_loaded", err: "new_session_failed" }),
-    ])];
-    if (navigator.effect === 6) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-local-tools", ok: "local_tool_loaded", err: "local_tool_failed" }),
-    ])];
-    if (navigator.effect === 7) return [navigator.model, Cmd.request("cockpit.appearance", navigator.request, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" })];
-    if (navigator.effect === 8) return [navigator.model, Cmd.request("cockpit.remote", navigator.request, { key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed" })];
-    if (navigator.effect === 9) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.remote", navigator.request, { key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed" }),
-    ])];
-    if (navigator.effect === 10) return [navigator.model, Cmd.request("cockpit.window-command", navigator.request, { key: "cockpit-window-command", ok: "window_action_loaded", err: "window_action_failed" })];
-    if (navigator.effect === 11) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.tab-command", navigator.request, { key: "cockpit-tab-command", ok: "tab_command_completed", err: "tab_command_failed" }),
-    ])];
-    if (navigator.effect === 12) return [navigator.model, Cmd.request("cockpit.navigation", navigator.request, { key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed" })];
-    if (navigator.effect === 13) return [navigator.model, Cmd.batch([
-      Cmd.cancel("cockpit-new-session"),
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.new-session", navigator.request, { key: "cockpit-new-session-cancel", ok: "new_session_cancelled", err: "new_session_cancel_failed" }),
-    ])];
-    if (navigator.effect === 14) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.cancel("cockpit-window-command"),
-    ])];
-    if (navigator.effect === 15) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-status", ok: "local_tool_status_loaded", err: "local_tool_status_failed" }),
-    ])];
-    if (navigator.effect === 16) return [navigator.model, Cmd.delay("cockpit-tool-status-tick", 500, "tool_status_tick")];
-    if (navigator.effect === 17) return [navigator.model, Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-status", ok: "local_tool_status_loaded", err: "local_tool_status_failed" })];
-    if (navigator.effect === 18) return [navigator.model, Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-status", ok: "local_tool_acknowledged", err: "local_tool_ack_failed" })];
-    if (navigator.effect === 19) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.local-tools", navigator.request, { key: "cockpit-tool-launch", ok: "local_tool_launch_loaded", err: "local_tool_launch_failed" }),
-    ])];
-    if (navigator.effect === 20) return [navigator.model, Cmd.host("cockpit.intent", navigator.request)];
-    if (navigator.effect === 21) return [navigator.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.host("cockpit.intent", navigator.request),
-    ])];
-    return navigator.model;
-  }
+  if (navigator !== null) return navigatorUpdate(navigator);
   // Go to Directory first: while it is open it owns Escape and the arrows.
   const directory = directoryTransition(incoming, msg);
-  if (directory !== null) {
-    const decided = directory.model;
-    if (directory.request.length > 0 && directory.committed) return [decided, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.directory", directory.request, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" }),
-    ])];
-    if (directory.request.length > 0) {
-      return [decided, Cmd.request("cockpit.directory", directory.request, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" })];
-    }
-    if (directory.committed) return [decided, Cmd.host("cockpit.committed", NO_BYTES)];
-    return decided;
-  }
+  if (directory !== null) return directoryUpdate(directory);
   const undirected = displaceDirectory(incoming, msg);
   // Rename Session next: while it is open it owns Escape and its field.
   const rename = renameTransition(undirected, msg);
-  if (rename !== null) {
-    const decided = rename.model;
-    if (rename.request.length > 0 && rename.committed) return [decided, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.session", rename.request, { key: "cockpit-session", ok: "session_loaded", err: "session_failed" }),
-    ])];
-    if (rename.request.length > 0) {
-      return [decided, Cmd.request("cockpit.session", rename.request, { key: "cockpit-session", ok: "session_loaded", err: "session_failed" })];
-    }
-    if (rename.committed) return [decided, Cmd.host("cockpit.committed", NO_BYTES)];
-    return decided;
-  }
+  if (rename !== null) return renameUpdate(rename);
   const model = displaceRename(undirected, msg);
   const result = resultTransition(model, msg);
-  if (result !== null) {
-    if (result.request.length === 0) return result.model;
-    return [result.model, Cmd.request("cockpit.command-results", result.request, {
-      key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
-    })];
-  }
+  if (result !== null) return commandResultUpdate(result);
   const selfUpdate = handleSelfUpdate(model, msg);
-  if (selfUpdate !== null) {
-    if (selfUpdate.request.length === 0) return selfUpdate.model;
-    if (selfUpdate.opening) {
-      return [selfUpdate.model, Cmd.batch([
-        Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.request("cockpit.appearance", selfUpdate.appearanceRequest, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" }),
-        Cmd.request("cockpit.update", selfUpdate.request, { key: "cockpit-update", ok: "update_loaded", err: "update_failed" }),
-      ])];
-    }
-    return [selfUpdate.model, Cmd.request("cockpit.update", selfUpdate.request, { key: "cockpit-update", ok: "update_loaded", err: "update_failed" })];
-  }
+  if (selfUpdate !== null) return selfUpdateResult(selfUpdate);
   const appearance = updateAppearance(model, msg);
-  if (appearance !== null) {
-    const next = appearance.model;
-    if (appearance.closed && model.pendingToolOpen) {
-      const editor = describeLocalTool(next, 2);
-      return [editor.model, Cmd.batch([
-        Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.request("cockpit.local-tools", editor.request, { key: "cockpit-local-tools", ok: "local_tool_loaded", err: "local_tool_failed" }),
-      ])];
-    }
-    if (appearance.opening) return [next, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.appearance", appearance.request, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" }),
-    ])];
-    if (appearance.navigate) return [next, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.navigation", navigationRequestFor(next), {
-        key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
-      }),
-    ])];
-    if (appearance.closed) return [next, Cmd.host("cockpit.committed", NO_BYTES)];
-    if (appearance.request.length === 0) return next;
-    return [next, Cmd.request("cockpit.appearance", appearance.request, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" })];
-  }
+  if (appearance !== null) return appearanceUpdate(model, appearance);
   const command = tabCommandTransition(model, msg);
-  if (command !== null) {
-    if (command.request.length === 0) {
-      if (fromCommands) return [command.model, Cmd.host("cockpit.committed", NO_BYTES)];
-      return command.model;
-    }
-    if (fromCommands) return [command.model, Cmd.batch([
-      Cmd.host("cockpit.committed", NO_BYTES),
-      Cmd.request("cockpit.tab-command", command.request, { key: "cockpit-tab-command", ok: "tab_command_completed", err: "tab_command_failed" }),
-    ])];
-    return [command.model, Cmd.request("cockpit.tab-command", command.request, {
-      key: "cockpit-tab-command", ok: "tab_command_completed", err: "tab_command_failed",
-    })];
-  }
-  switch (msg.kind) {
-    case "select_tab":
-      return [
-        {
-          ...model,
-          tabs: selectTab(model.tabs, msg.index),
-          visibleTabs: selectTab(model.visibleTabs, msg.index),
-          selectedTab: msg.index,
-        },
-        Cmd.host("cockpit.intent", intent(1, model.engineRevision, msg.index, 0)),
-      ];
-    case "select_active_tab":
-      return [model, Cmd.host("cockpit.intent", intent(1, model.engineRevision, msg.index, 255))];
-    case "select_slot": {
-      const payload = legacySlotIntent(model.engineRevision, msg.slot);
-      if (payload.length === 0) return model;
-      return [model, Cmd.host("cockpit.intent", payload)];
-    }
-    case "reconnect":
-      return [model, Cmd.host("cockpit.intent", intent(12, model.engineRevision, 0, 255))];
-    case "empty_new_tab":
-      if (model.emptyBusy || model.emptyWindows === 0) return model;
-      return [{ ...model, emptyBusy: true, emptyNotice: asciiBytes("Opening a new tab...") },
-        Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_NEW_TAB, NO_BYTES), {
-          key: "cockpit-session-empty", ok: "empty_loaded", err: "empty_failed",
-        })];
-    case "empty_dismiss":
-      if (!model.emptyPicked) return model;
-      return [model, Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_DISMISS, NO_BYTES), {
-        key: "cockpit-session-empty", ok: "empty_loaded", err: "empty_failed",
-      })];
-    case "empty_loaded":
-      return receiveEmpty(model, msg.body);
-    case "empty_failed":
-      return { ...model, emptyBusy: false, emptyNotice: asciiBytes("Could not open a tab there. Try again.") };
-    case "window_closed": {
-      // Native retirement already matched the actual OS window incarnation.
-      // Withdraw its declaration before the SDK rebuilds; this label never
-      // authorizes a second lifecycle mutation against a recycled slot.
-      return [forgetClosedWindow(model, msg.window), Cmd.batch([
+  if (command !== null) return tabCommandUpdate(command, fromCommands);
+  return finalMessageUpdate(model, msg, fromCommands);
+}
+
+export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+  const planned = planUpdate(incoming, msg);
+  const first = planned.firstRequest;
+  const second = planned.secondRequest;
+  const third = planned.thirdRequest;
+  switch (planned.effect) {
+    case UPDATE_EFFECT_HOST:
+      return [planned.model, Cmd.host(planned.hostName, planned.hostPayload)];
+    case UPDATE_EFFECT_REQUEST:
+      return [planned.model, Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err })];
+    case UPDATE_EFFECT_COMMITTED_REQUEST:
+      return [planned.model, Cmd.batch([
         Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.request("cockpit.snapshot", NO_BYTES, {
-          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
-        }),
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
       ])];
-    }
-    case "toggle_tab_placement": {
-      const placement: TabPlacement = model.tabPlacement === "top" ? "side" : "top";
-      if (fromCommands) return [{ ...model, tabPlacement: placement }, Cmd.batch([
+    case UPDATE_EFFECT_COMMITTED_REQUEST_CANCEL:
+      return [planned.model, Cmd.batch([
         Cmd.host("cockpit.committed", NO_BYTES),
-        Cmd.host("cockpit.intent", intent(4, model.engineRevision, placement === "side" ? 1 : 0, 255)),
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
+        Cmd.cancel(planned.cancelKey),
       ])];
-      return [
-        { ...model, tabPlacement: placement },
-        Cmd.host("cockpit.intent", intent(4, model.engineRevision, placement === "side" ? 1 : 0, 255)),
-      ];
-    }
-    case "settings_reveal":
-      if (!model.settingsOpen || !model.configExists) return model;
-      return [model, Cmd.host("cockpit.intent", intent(6, model.engineRevision, 0, 0))];
-    case "native_command":
-      if (fromCommands) return [model, Cmd.batch([Cmd.host("cockpit.committed", NO_BYTES), Cmd.host("cockpit.intent", intent(11, model.engineRevision, msg.command, 255))])];
-      return [model, Cmd.host("cockpit.intent", intent(11, model.engineRevision, msg.command, 255))];
-    case "engine_wake":
-      return { ...model };
-    case "snapshot_loaded": {
-      const loaded = projectLoadedSnapshot(model, msg.body);
-      if (loaded === null) return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
-      if (loaded.stale) return model;
-      const projected = loaded.projected;
-      const synced = loaded.model;
-      // An open Go to Directory names a listing on the connection that just
-      // moved: withdraw its rows, and list again once connected.
-      const directoryMoved = model.dirOpen && model.lastConnection !== 255 && projected.connection !== model.lastConnection;
-      const directoryRelists = directoryMoved && projected.connection === 2;
-      const scoped = retainMachineInvalidation(directoryMoved ? relistDirectory(scopeOverlays(synced), directoryRelists) : scopeOverlays(synced));
-      const machinePoll = refreshMachineSnapshot(scoped);
-      if (machinePoll !== null) return [machinePoll.model, Cmd.request("cockpit.machines", machinePoll.request, { key: "cockpit-machines", ok: "machines_loaded", err: "machines_failed" })];
-      // Remote status is asked for only when the connection moved (or a
-      // Connect to Host is waiting on it), never once per snapshot.
-      const askRemote = projected.connection !== model.lastConnection || model.hostAwaiting;
-      if (model.newSessionAwaiting) return [scoped, Cmd.request("cockpit.new-session", newSessionRequest(3, model.newSessionToken, NO_BYTES), {
-        key: "cockpit-new-session", ok: "new_session_loaded", err: "new_session_failed",
-      })];
-      if (!model.paletteOpen || model.navigatorView === 2 || model.navigatorView === 4) {
-        // A rename waits on its coordinator: each snapshot asks how it went.
-        if (model.renameAwaiting && askRemote) return [scoped, Cmd.batch([
-          Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
-            key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
-          }),
-          Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_STATUS, NO_BYTES), {
-            key: "cockpit-session", ok: "session_loaded", err: "session_failed",
-          }),
-        ])];
-        if (model.renameAwaiting) return [scoped, Cmd.request("cockpit.session", sessionRequest(SESSION_KIND_STATUS, NO_BYTES), {
-          key: "cockpit-session", ok: "session_loaded", err: "session_failed",
-        })];
-        if (!askRemote) return scoped;
-        if (directoryRelists) return [scoped, Cmd.batch([
-          Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
-            key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
-          }),
-          Cmd.request("cockpit.directory", directoryRequest(DIR_KIND_OPEN, NO_DIRECTORY_REQUEST, 0, 0, NO_BYTES), {
-            key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed",
-          }),
-        ])];
-        return [scoped, Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
-          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
-        })];
-      }
-      if (!askRemote) {
-        const refreshed = refreshNavigation(scoped);
-        return [refreshed, Cmd.request("cockpit.navigation", navigationRequestFor(refreshed), {
-          key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
-        })];
-      }
-      return [refreshNavigation(scoped), Cmd.batch([
-        Cmd.request("cockpit.navigation", navigationRequestFor(refreshNavigation(scoped)), {
-          key: "cockpit-navigation", ok: "navigation_loaded", err: "navigation_failed",
-        }),
-        Cmd.request("cockpit.remote", remoteRequest(REMOTE_KIND_STATUS, NO_BYTES), {
-          key: "cockpit-remote", ok: "remote_loaded", err: "remote_failed",
-        }),
-      ])];    }
-    case "snapshot_failed":
-      return engineUnavailable(model, asciiBytes("ENGINE UNAVAILABLE"));
-    case "engine_event": {
-      if (msg.state !== "data") {
-        return engineUnavailable(model, msg.state === "rejected" ? asciiBytes("ENGINE REFUSED") : asciiBytes("ENGINE CLOSED"));
-      }
-      const event = invalidation(msg.bytes);
-      if (event === null) return { ...model, status: asciiBytes("ENGINE PROTOCOL ERROR") };
-      const read = requestCommandResults(model.commandResults);
-      const next = {
-        ...withdrawAgentRows(model),
-        commandResults: read.state,
-        engineSequence: event.sequence,
-        engineConnected: false,
-        status: asciiBytes("SYNCING"),
-        // Agent inspection drops the prior page; everyday navigator keeps held
-        // painted targets across the fence until the refreshed page lands.
-        paletteRows: model.agentsMode ? NO_ROWS : model.paletteRows,
-        paletteLoading: model.paletteOpen && (model.agentsMode || (model.navigatorView !== 2 && model.navigatorView !== 4)),
-        palettePrevious: model.agentsMode ? false : model.palettePrevious,
-        paletteNext: model.agentsMode ? false : model.paletteNext,
-        paletteNotice: model.agentsMode ? asciiBytes("Updating workspace and agent state...") : model.paletteNotice,
-      };
-      // A listing Go to Directory waits on settles in the provider drain
-      // that announced this invalidation; ask for its page with the snapshot.
-      const pollDirectory = model.dirOpen && model.dirAwaiting;
-      const directoryPoll = directoryRequest(DIR_KIND_PAGE, model.dirRequest, model.dirOffset, 0, model.dirQuery);
-      if (read.request.length > 0 && pollDirectory) return [next, Cmd.batch([
-        Cmd.request("cockpit.snapshot", NO_BYTES, {
-          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
-        }),
-        Cmd.request("cockpit.command-results", read.request, {
-          key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
-        }),
-        Cmd.request("cockpit.directory", directoryPoll, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" }),
+    case UPDATE_EFFECT_CANCEL_COMMITTED_REQUEST:
+      return [planned.model, Cmd.batch([
+        Cmd.cancel(planned.cancelKey),
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
       ])];
-      if (read.request.length > 0) return [next, Cmd.batch([
-        Cmd.request("cockpit.snapshot", NO_BYTES, {
-          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
-        }),
-        Cmd.request("cockpit.command-results", read.request, {
-          key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
-        }),
+    case UPDATE_EFFECT_COMMITTED_CANCEL:
+      return [planned.model, Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.cancel(planned.cancelKey),
       ])];
-      if (pollDirectory) return [next, Cmd.batch([
-        Cmd.request("cockpit.snapshot", NO_BYTES, {
-          key: "cockpit-snapshot", ok: "snapshot_loaded", err: "snapshot_failed",
-        }),
-        Cmd.request("cockpit.directory", directoryPoll, { key: "cockpit-directory", ok: "directory_loaded", err: "directory_failed" }),
+    case UPDATE_EFFECT_COMMITTED_HOST:
+      return [planned.model, Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.host(planned.hostName, planned.hostPayload),
       ])];
-      return [
-        next,
-        Cmd.request("cockpit.snapshot", new Uint8Array(0), {
-          key: "cockpit-snapshot",
-          ok: "snapshot_loaded",
-          err: "snapshot_failed",
-        }),
-      ];
-    }
+    case UPDATE_EFFECT_DELAY:
+      return [planned.model, Cmd.delay(planned.delayKey, planned.delayMs, planned.delayKind)];
+    case UPDATE_EFFECT_TWO_REQUESTS:
+      return [planned.model, Cmd.batch([
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
+        Cmd.request(second.name, second.payload, { key: second.key, ok: second.ok, err: second.err }),
+      ])];
+    case UPDATE_EFFECT_THREE_REQUESTS:
+      return [planned.model, Cmd.batch([
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
+        Cmd.request(second.name, second.payload, { key: second.key, ok: second.ok, err: second.err }),
+        Cmd.request(third.name, third.payload, { key: third.key, ok: third.ok, err: third.err }),
+      ])];
+    case UPDATE_EFFECT_COMMITTED_TWO_REQUESTS:
+      return [planned.model, Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.request(first.name, first.payload, { key: first.key, ok: first.ok, err: first.err }),
+        Cmd.request(second.name, second.payload, { key: second.key, ok: second.ok, err: second.err }),
+      ])];
     default:
-      return model;
+      return planned.model;
   }
 }
