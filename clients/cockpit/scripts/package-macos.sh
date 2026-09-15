@@ -250,11 +250,48 @@ verify_bundle "${ZIP_VERIFY}/Phux Cockpit.app"
 verify_signature "${ZIP_VERIFY}/Phux Cockpit.app"
 rm -rf -- "${ZIP_VERIFY}"
 
+# GitHub-hosted macOS flakes on hdiutil create/attach: XProtect/Spotlight can
+# lock a just-written image with "Resource busy". -quiet closes stderr, so the
+# job logged only "Process completed with exit code 1" after a verified ZIP.
+# Keep diagnostics visible and retry with backoff. Overridable for tests.
+hdiutil_retry() {
+    local n=0
+    local delay="${HDIUTIL_RETRY_DELAY:-2}"
+    local max="${HDIUTIL_RETRY_ATTEMPTS:-8}"
+    local status=0
+    while true; do
+        status=0
+        "${HDIUTIL:-/usr/bin/hdiutil}" "$@" || status=$?
+        if [ "$status" -eq 0 ]; then
+            return 0
+        fi
+        n=$((n + 1))
+        if [ "$n" -ge "$max" ]; then
+            printf 'error: hdiutil failed after %s attempts (exit %s): %s\n' \
+                "$n" "$status" "$*" >&2
+            return "$status"
+        fi
+        printf 'warning: hdiutil failed (attempt %s/%s, exit %s); retrying in %ss: %s\n' \
+            "$n" "$max" "$status" "$delay" "$*" >&2
+        if [ "$1" = create ]; then
+            rm -f -- "${DMG}"
+        fi
+        if [ "$1" = attach ]; then
+            "${HDIUTIL:-/usr/bin/hdiutil}" detach -force "${DMG_MOUNT}" >/dev/null 2>&1 || true
+        fi
+        sleep "$delay"
+        if [ "$delay" -gt 0 ] && [ "$delay" -lt 16 ]; then
+            delay=$((delay * 2))
+        fi
+    done
+}
+
 mkdir -p -- "${STAGING}"
 /usr/bin/ditto "${APP}" "${STAGING}/Phux Cockpit.app"
 ln -s /Applications "${STAGING}/Applications"
-/usr/bin/hdiutil create \
-    -quiet \
+printf 'creating disk image %s\n' "${DMG}"
+/usr/bin/sync
+hdiutil_retry create \
     -ov \
     -fs HFS+ \
     -format UDZO \
@@ -262,10 +299,10 @@ ln -s /Applications "${STAGING}/Applications"
     -volname "Phux Cockpit" \
     -srcfolder "${STAGING}" \
     "${DMG}"
-/usr/bin/hdiutil verify -quiet "${DMG}"
+hdiutil_retry verify "${DMG}"
 rm -rf -- "${STAGING}"
 mkdir -p -- "${DMG_MOUNT}"
-/usr/bin/hdiutil attach -quiet -readonly -nobrowse -mountpoint "${DMG_MOUNT}" "${DMG}"
+hdiutil_retry attach -readonly -nobrowse -mountpoint "${DMG_MOUNT}" "${DMG}"
 DMG_ATTACHED="true"
 verify_bundle "${DMG_MOUNT}/Phux Cockpit.app"
 verify_signature "${DMG_MOUNT}/Phux Cockpit.app"
@@ -273,7 +310,7 @@ verify_signature "${DMG_MOUNT}/Phux Cockpit.app"
     printf 'error: disk image does not contain the expected Applications link\n' >&2
     exit 1
 }
-/usr/bin/hdiutil detach -quiet "${DMG_MOUNT}"
+hdiutil_retry detach "${DMG_MOUNT}"
 DMG_ATTACHED="false"
 rm -rf -- "${DMG_MOUNT}"
 
