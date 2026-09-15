@@ -5025,6 +5025,7 @@ const parity_states = [_]ChromeState{
     .{ .label = "settings over rail", .settings = true, .placement = .side },
     .{ .label = "workspace settings", .settings = true, .settings_section = 1 },
     .{ .label = "keyboard settings", .settings = true, .settings_section = 2 },
+    .{ .label = "connection settings", .settings = true, .settings_section = 4 },
     .{ .label = "about settings", .settings = true, .settings_section = 5 },
     .{ .label = "both overlays, full strip", .tabs = 16, .palette = true, .settings = true },
 };

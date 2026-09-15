@@ -54,26 +54,22 @@
                 </if>
                 <else><if test="{noSettingRows}"><text foreground="text_muted">No matching settings in this group</text></if></else>
                 <for each="settingRows" key="id" as="setting">
-                  <column gap="8">
-                    <row gap="8" cross="center">
-                      <text grow="1">{setting.label}</text>
-                      <if test="{setting.editable}">
+                  <if test="{setting.editable}">
+                    <column gap="8">
+                      <row gap="8" cross="center">
+                        <text grow="1">{setting.label}</text>
                         <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="settings_select:{setting.id}">Edit</button>
                         <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reset:{setting.id}">Reset</button>
-                      </if>
-                    </row>
-                    <row gap="8"><text foreground="text_muted">Effective:</text><text wrap="true">{setting.effectiveValue}</text></row>
-                    <row gap="8"><text foreground="text_muted">Default:</text><text wrap="true">{setting.defaultLabel}</text></row>
-                    <text wrap="true" foreground="text_muted">{setting.applicability}</text>
-                    <text foreground="text_muted">{setting.timing}</text>
-                    <if test="{settingEditId == setting.id}">
-                      <row gap="8" cross="center">
-                        <input grow="1" text="{settingEditValue}" label="Setting value" on-input="settings_value" on-submit="settings_apply" />
-                        <button size="sm" disabled="{appearanceBusy}" on-press="settings_apply">Preview</button>
                       </row>
-                    </if>
-                    <separator />
-                  </column>
+                      <if test="{settingEditId == setting.id}">
+                        <row gap="8" cross="center">
+                          <input grow="1" text="{settingEditValue}" label="Setting value" on-input="settings_value" on-submit="settings_apply" />
+                          <button size="sm" disabled="{appearanceBusy}" on-press="settings_apply">Preview</button>
+                        </row>
+                      </if>
+                      <separator />
+                    </column>
+                  </if>
                 </for>
                 <if test="{settingsSection == 0}">
                   <text>Theme presets</text>
@@ -83,12 +79,18 @@
                     </for>
                   </grid>
                   <if test="{appearance.overrides}"><text wrap="true" foreground="warning">Explicit foreground or background overrides this theme. Edit Configuration to change those keys.</text></if>
+                  <text wrap="true" foreground="text_muted">{confignotice}</text>
+                  <row gap="8">
+                    <button size="sm" variant="outline" on-press="settings_edit_configuration">Edit Configuration</button>
+                    <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reload">Reload Configuration</button>
+                  </row>
                 </if>
                 <if test="{settingsSection == 4}">
-                  <text>Current connection</text>
                   <text wrap="true">{workspaceLabel}</text>
-                  <text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text>
-                  <text wrap="true" foreground="text_muted">{connectionDetail}</text>
+                  <if test="{coordinatorEndpoint}"><text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text></if>
+                  <if test="{connectionDetail}"><text wrap="true" foreground="text_muted">{connectionDetail}</text></if>
+                  <button size="sm" on-press="sessions_open">Sessions</button>
+                  <text wrap="true" foreground="text_muted">Shell and history for phux panes live on the serving machine. Change them with phux config or TUI Settings there.</text>
                 </if>
                 <if test="{settingsSection == 5}">
                   <text>Phux Cockpit</text>
@@ -101,22 +103,23 @@
                     <if test="{updateCanInstall}"><button size="sm" disabled="{updateBusy}" on-press="update_install">Install</button></if>
                   </row>
                 </if>
-                <text wrap="true" foreground="text_muted">{confignotice}</text>
-                <row gap="8">
-                  <button size="sm" variant="outline" on-press="settings_edit_configuration">Edit Configuration</button>
-                  <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reload">Reload Configuration</button>
-                </row>
               </column>
             </scroll>
             <if test="{appearance.notice}"><text wrap="true" foreground="warning">{appearance.notice}</text></if>
             <if test="{settingsNotice}"><text wrap="true" foreground="warning">{settingsNotice}</text></if>
             <separator />
             <row gap="8" cross="center">
-              <if test="{appearance.dirty}"><text foreground="text_muted">Unsaved preview</text></if>
-              <else><text foreground="text_muted">{appearance.contrastLabel}</text></else>
-              <spacer grow="1" />
-              <button size="sm" variant="ghost" on-press="settings_close">Cancel</button>
-              <button size="sm" disabled="{appearanceBusy}" on-press="settings_commit">Save changes</button>
+              <if test="{settingsFooterSave}">
+                <if test="{appearance.dirty}"><text foreground="text_muted">Unsaved preview</text></if>
+                <else><text foreground="text_muted">{appearance.contrastLabel}</text></else>
+                <spacer grow="1" />
+                <button size="sm" variant="ghost" on-press="settings_close">Cancel</button>
+                <button size="sm" disabled="{appearanceBusy}" on-press="settings_commit">Save changes</button>
+              </if>
+              <else>
+                <spacer grow="1" />
+                <button size="sm" variant="ghost" on-press="settings_close">Done</button>
+              </else>
             </row>
           </column>
         </panel>

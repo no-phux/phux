@@ -25,7 +25,18 @@ test('catalog names actual timing, defaults, and remote owner route', () => {
   assert.match(text(rows[4].applicability), /Scratch.*Phux/);
   assert.match(text(rows[6].timing), /New scratch/);
   assert.equal(rows[12].editable, false);
-  assert.match(text(rows[13].applicability), /phux config path/);
+  assert.match(text(rows[12].label), /Attached session/);
+  assert.match(text(rows[13].applicability), /phux config or TUI Settings/);
+  const catalogText = rows.map(row => `${text(row.label)}\n${text(row.defaultLabel)}`).join('\n');
+  assert.doesNotMatch(catalogText, /Resolved environment/);
+  assert.doesNotMatch(catalogText, /Phux destination \/ session/);
+  assert.doesNotMatch(catalogText, /Phux server and TUI preferences/);
+});
+
+test('Connection catalog rows never render through the generic settings list', () => {
+  assert.deepEqual(settingsRows(initialAppearance(), bytes(''), 4).map(row => row.id), []);
+  assert.equal(settingsRows(initialAppearance(), bytes('Read-only attached session'), 0).length, 0);
+  assert.equal(settingsRows(initialAppearance(), bytes('phux config or TUI Settings'), 0).length, 0);
 });
 
 test('unsupported requested font names do not masquerade as effective faces', () => {

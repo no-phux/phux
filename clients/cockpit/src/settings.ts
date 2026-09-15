@@ -35,8 +35,8 @@ export function settingsCatalog(): readonly Setting[] {
     setting(9, 3, "Tab placement", "top", "Choose top or side. All Cockpit windows.", "Live preview", true),
     setting(10, 1, "Preferred editor", "VISUAL, then EDITOR", "Local configuration editor command and arguments. Blank uses environment discovery.", "Next editor launch", true),
     setting(11, 2, "Keyboard shortcuts", "Shipping Cockpit commands", "Remap and reset actual Cockpit bindings below. Use Cmd-based chords or none; conflicts are checked before applying.", "Live preview; persisted on Save", false),
-    setting(12, 4, "Phux destination / session", "Resolved environment, config, or platform default", "Read-only connection context below. Use Machines and Sessions to change work.", "Explicit connection action", false),
-    setting(13, 4, "Phux server and TUI preferences", "Serving machine configuration", "Shell and history for Phux panes belong to that machine. Run phux config path there, then edit that file; TUI Settings edits TUI preferences.", "Owner-specific; server defaults on server start", false),
+    setting(12, 4, "Attached session", "Current workspace", "Read-only attached session. Use Sessions to change work.", "Shown on Connection", false),
+    setting(13, 4, "Serving machine", "phux on the attached machine", "Shell and history for phux panes live on the serving machine. Change them with phux config or TUI Settings there.", "Owned by the serving machine", false),
     setting(14, 5, "App version", "CFBundleShortVersionString", "The running Phux Cockpit release. Check for Updates uses the same cockpit-vX.Y.Z GitHub stream as scripts/install-cockpit.sh.", "In-app check; installer-placed copies can reinstall", false),
   ];
 }
@@ -83,6 +83,8 @@ function effectiveSettingValue(row: Setting, value: Uint8Array): Uint8Array {
 export function settingsRows(appearance: Appearance, query: Uint8Array, section: number): readonly Setting[] {
   const rows: Setting[] = [];
   for (const row of settingsCatalog()) {
+    // Connection is a status panel, not generic setting rows (ids 12 and 13).
+    if (row.id === 12 || row.id === 13) continue;
     if (query.length === 0 && row.section !== section) continue;
     if (query.length > 0 && !matches(row, query)) continue;
     const value = row.id < appearance.values.length ? appearance.values[row.id] : new Uint8Array(0);
