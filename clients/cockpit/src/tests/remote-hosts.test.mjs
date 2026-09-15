@@ -78,9 +78,9 @@ test('Connect to Host opens in whichever window invoked it, not always the main 
   // panel is its own template: another cockpit-window argument would push the
   // tab loop past the live interpreter's 16-entry scope bound.
   const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
-  const component = read('../windows/components/cockpit-window.native');
+  const component = read('../windows/components/cockpit-host.native');
   assert.match(component, /<template name="cockpit-host" args="hostopen">/);
-  assert.doesNotMatch(component, /<template name="cockpit-window" args="[^"]*hostopen/);
+  assert.doesNotMatch(read('../windows/components/cockpit-window.native'), /<template name="cockpit-window" args="[^"]*hostopen/);
   const use = flag => new RegExp(`<use template="cockpit-host" hostopen="\\{${flag}\\}" />`);
   assert.match(read('../app.native'), use('mainHostOpen'));
   for (const n of [1, 2, 3, 4]) assert.match(read(`../windows/phux-window-${n}.native`), use(`window${n}HostOpen`));
@@ -190,7 +190,7 @@ test('Disconnect removes the host named in the panel, Disconnect All every host;
   [model, cmd] = step(model, { kind: 'remote_loaded', body: reply(0, '') });
   assert.equal(model.hostOpen, false);
   assert.equal(cmd.name, 'cockpit.committed');
-  const panel = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
+  const panel = readFileSync(new URL('../windows/components/cockpit-host.native', import.meta.url), 'utf8');
   assert.match(panel, /on-press="host_disconnect">Disconnect<\/button>/);
   assert.match(panel, /on-press="host_disconnect_all">Disconnect All<\/button>/);
 });

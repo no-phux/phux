@@ -1,0 +1,42 @@
+<template name="cockpit-agents" args="open rows notice previous next status">
+  <stack>
+    <if test="{open}">
+      <sheet width="520" padding="12" on-dismiss="palette_close">
+        <column gap="8">
+          <row cross="center" gap="8">
+            <text>Agents</text>
+            <text grow="1" wrap="true" foreground="text_muted">{notice}</text>
+            <button size="sm" variant="ghost" icon="x" label="Close agent inspector" on-press="palette_close" />
+          </row>
+          <scroll height="160" label="Agent inspection details">
+            <column gap="8">
+              <text wrap="true" foreground="text_muted">{status}</text>
+              <for each="rows" key="id" as="agent">
+                <column gap="4">
+                  <text wrap="true">{agent.label}</text>
+                  <text foreground="text_muted">Resource</text>
+                  <text wrap="true" label="{agent.resource}">{agent.resource}</text>
+                  <text foreground="text_muted">Parent</text>
+                  <text wrap="true" label="{agent.parent}">{agent.parent}</text>
+                  <text foreground="text_muted">Native ID</text>
+                  <text wrap="true" label="{agent.nativeId}">{agent.nativeId}</text>
+                  <text wrap="true" foreground="text_muted" label="{agent.evidence}">{agent.evidence}</text>
+                </column>
+              </for>
+            </column>
+          </scroll>
+          <for each="rows" key="id" as="agent">
+            <if test="{agent.index != 65535}"><button size="sm" autofocus="true" on-press="palette_submit">Jump to parent</button></if>
+            <else><text foreground="text_muted">Parent unavailable</text></else>
+          </for>
+          <row gap="8" cross="center">
+            <if test="{previous}"><button size="sm" variant="ghost" on-press="palette_previous">Previous agent</button></if>
+            <spacer grow="1" />
+            <button size="sm" variant="ghost" autofocus="true" on-press="palette_retry">Refresh</button>
+            <if test="{next}"><button size="sm" variant="ghost" on-press="palette_next">Next agent</button></if>
+          </row>
+        </column>
+      </sheet>
+    </if>
+  </stack>
+</template>

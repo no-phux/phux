@@ -295,6 +295,6 @@ test('every window template binds its own context, not the ambient primary label
   for (const [file, prefix] of uses) {
     const source = readFileSync(new URL(file, import.meta.url), 'utf8');
     assert.match(source, new RegExp(`title="\\{${prefix}Context\\.title\\}" detail="\\{${prefix}Context\\.detail\\}"`), file);
-    assert.match(source, new RegExp(`name="\\{${prefix}Context\\.emptyName\\}" detail="\\{${prefix}Context\\.emptyDetail\\}"`), file);
+    assert.match(source, new RegExp(`emptyname="\\{${prefix}Context\\.emptyName\\}" emptydetail="\\{${prefix}Context\\.emptyDetail\\}"`), file);
   }
 });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Shipping declaration inventory for Cockpit presentation states. This is not
-// a rendered gallery: Native integration Wave 2 owns compiled state fixtures.
-// Screenshots use the CPU reference renderer and never see CoreText.
+// Shipping declaration inventory for Cockpit presentation states. Compiled
+// native fixtures prove identity and overlay geometry. Screenshots use the
+// CPU reference renderer and never see CoreText.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -16,36 +16,34 @@ export const declaredSizes = Object.freeze([
 
 export const declaredDensities = Object.freeze(['compact', 'regular', 'spacious']);
 
-// Each item records where a shipping state belongs. Source declarations prove
-// only identity/configuration; interactive rest/hover/press rendering remains
-// deliberately unclaimed until compiled native fixtures exist.
 export const shippingStateInventory = Object.freeze([
   Object.freeze({ state: 'rest', file: 'windows/components/cockpit-window.native',
-    pattern: null, evidence: 'compiled native fixture reserved for integration Wave 2' }),
+    pattern: null, evidence: 'pointer rest fill is a Zig renderer recipe, not a compiled overlay fixture' }),
   Object.freeze({ state: 'hover', file: 'windows/components/cockpit-window.native',
-    pattern: null, evidence: 'compiled native fixture reserved for integration Wave 2' }),
+    pattern: null, evidence: 'pointer hover fill is a Zig renderer recipe, not a compiled overlay fixture' }),
   Object.freeze({ state: 'press', file: 'windows/components/cockpit-window.native',
-    pattern: null, evidence: 'compiled native fixture reserved for integration Wave 2' }),
-  Object.freeze({ state: 'selected', file: 'windows/components/cockpit-window.native',
-    pattern: 'selected="{navigatorView == 1}"', evidence: 'current navigator destination' }),
-  Object.freeze({ state: 'focus', file: 'windows/components/cockpit-window.native',
-    pattern: 'autofocus="true"', evidence: 'keyboard-owned navigator control' }),
+    pattern: null, evidence: 'pointer press fill is a Zig renderer recipe, not a compiled overlay fixture' }),
+  Object.freeze({ state: 'selected', file: 'windows/components/cockpit-navigator.native',
+    pattern: 'selected="{navigatorView == 1}"', evidence: 'compiled navigator destination in native_extension overlay shells' }),
+  Object.freeze({ state: 'focus', file: 'windows/components/cockpit-navigator.native',
+    pattern: 'autofocus="true"', evidence: 'compiled overlay autofocus in native_extension overlay shells' }),
   Object.freeze({ state: 'disabled', file: 'windows/components/cockpit-settings.native',
     pattern: 'disabled="{appearanceBusy}"', evidence: 'pending Settings transaction' }),
   Object.freeze({ state: 'attention', file: 'windows/components/cockpit-window.native',
     pattern: '<if test="{tab.attention}">', evidence: 'provider-backed tab attention' }),
-  Object.freeze({ state: 'loading', file: 'windows/components/cockpit-window.native',
+  Object.freeze({ state: 'loading', file: 'windows/components/cockpit-navigator.native',
     pattern: '{palettenotice}', evidence: 'navigator loading notice from the public model' }),
   Object.freeze({ state: 'empty', file: 'windows/components/cockpit-window.native',
-    pattern: '<template name="cockpit-empty"', evidence: 'shipping empty-session surface' }),
-  Object.freeze({ state: 'failed', file: 'windows/components/cockpit-window.native',
+    pattern: 'Empty session', evidence: 'compiled inline empty-session terminal-space fixture' }),
+  Object.freeze({ state: 'failed', file: 'windows/components/cockpit-navigator.native',
     pattern: '<if test="{machines.failed}">', evidence: 'shipping machine failure surface' }),
-  Object.freeze({ state: 'passive-hover', file: 'windows/components/cockpit-window.native',
-    pattern: '<template name="cockpit-agents"', evidence: 'shipping inspector stays hit-testable; rendered fill is a Zig contract' }),
+  Object.freeze({ state: 'passive-hover', file: 'windows/components/cockpit-agents.native',
+    pattern: '<template name="cockpit-agents"', evidence: 'compiled inspector sheet stays hit-testable; rendered fill is a Zig contract' }),
 ]);
 
 const requiredPassiveHoverZigTest = 'semantic_theme test "passive panel hover is visually stable without disabling hit testing"';
 export const strictAcceptanceCommand = 'PHUX_COCKPIT_ACCEPTANCE_STRICT=1 node --import ./src/tests/navigation-loader.mjs --test src/tests/presentation-acceptance.test.mjs';
+const compiledOverlayGallery = 'native_extension tests "shipping overlays use SDK dialog and sheet shells with owner geometry" and "shipping empty session stays inline in terminal space without modal semantics"';
 
 export const evidenceScope = Object.freeze({
   snapshot: 'layout, semantic state, and shipping control identity',
@@ -63,10 +61,10 @@ export function inspectShippingStateInventory(root) {
     const source = readFileSync(path.join(rootPath, 'src', item.file), 'utf8');
     if (!source.includes(item.pattern)) missing.push(`${item.state}: ${item.file} lacks ${JSON.stringify(item.pattern)}`);
   }
+  const unrenderedStates = shippingStateInventory.filter(item => item.pattern === null).map(item => item.state);
   return { kind: 'shipping-state-inventory', missing, states: shippingStateInventory.map(item => item.state),
-    unrenderedStates: shippingStateInventory.map(item => item.state),
-    sizes: declaredSizes, densities: declaredDensities, evidenceScope,
-    renderedStateGallery: 'reserved for compiled native integration Wave 2',
+    unrenderedStates, sizes: declaredSizes, densities: declaredDensities, evidenceScope,
+    renderedStateGallery: compiledOverlayGallery,
     strictAcceptanceCommand,
     crossCommitZigRequirement: `full Zig gate must include ${requiredPassiveHoverZigTest}` };
 }

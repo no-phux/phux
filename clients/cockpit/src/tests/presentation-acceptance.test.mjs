@@ -316,10 +316,11 @@ test('shipping state inventory names declarations and reserves rendered fixtures
   assert.equal(strictAcceptanceCommand,
     'PHUX_COCKPIT_ACCEPTANCE_STRICT=1 node --import ./src/tests/navigation-loader.mjs --test src/tests/presentation-acceptance.test.mjs');
   assert.equal(report.strictAcceptanceCommand, strictAcceptanceCommand);
-  assert.deepEqual(report.unrenderedStates, report.states);
+  assert.deepEqual(report.unrenderedStates, ['rest', 'hover', 'press']);
   assert.match(report.crossCommitZigRequirement,
     /^full Zig gate must include semantic_theme test "passive panel hover is visually stable without disabling hit testing"$/);
-  assert.equal(report.renderedStateGallery, 'reserved for compiled native integration Wave 2');
+  assert.match(report.renderedStateGallery, /shipping overlays use SDK dialog and sheet shells/);
+  assert.match(report.renderedStateGallery, /shipping empty session stays inline/);
   assert.match(report.evidenceScope.passiveHover, /pointer reachability only/);
   assert.match(report.evidenceScope.liveScreenshot, /optional only.*never use full-frame PNG equality/);
   const audit = readFileSync(new URL('../native_extension.zig', import.meta.url), 'utf8');

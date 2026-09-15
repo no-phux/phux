@@ -291,7 +291,7 @@ test('the codec frames requests exactly and refuses what it cannot read', () => 
 
 test('every window presents the picker through its own flag', () => {
   const read = path => readFileSync(new URL(path, import.meta.url), 'utf8');
-  assert.match(read('../windows/components/cockpit-window.native'), /<template name="cockpit-directory" args="diropen">/);
+  assert.match(read('../windows/components/cockpit-directory.native'), /<template name="cockpit-directory" args="diropen">/);
   const use = flag => new RegExp(`<use template="cockpit-directory" diropen="\\{${flag}\\}" />`);
   assert.match(read('../app.native'), use('mainDirOpen'));
   for (const n of [1, 2, 3, 4]) assert.match(read(`../windows/phux-window-${n}.native`), use(`window${n}DirOpen`));

@@ -1,9 +1,10 @@
 <import src="windows/components/cockpit-window.native" />
-<use template="cockpit-window" tabs="{visibleTabs}" rail="{railRows}" width="{tabWidth}" more="{hasOverflow}" cue="{overflowLabel}" paletteopen="{mainPaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" paletteprevious="{palettePrevious}" palettenext="{paletteNext}" palettenotice="{paletteNotice}" status="{connectionStatus}" title="{mainContext.title}" detail="{mainContext.detail}">
+<stack>
+  <use template="cockpit-window" tabs="{visibleTabs}" rail="{railRows}" width="{tabWidth}" more="{hasOverflow}" cue="{overflowLabel}" status="{connectionStatus}" title="{mainContext.title}" detail="{mainContext.detail}" emptyopen="{mainEmptyOpen}" emptyname="{mainContext.emptyName}" emptydetail="{mainContext.emptyDetail}" emptypicked="{mainContext.emptyPicked}" />
+  <use template="cockpit-navigator" paletteopen="{mainPaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" paletteprevious="{palettePrevious}" palettenext="{paletteNext}" palettenotice="{paletteNotice}" />
   <use template="cockpit-settings" settingsopen="{mainSettingsOpen}" themes="{themes}" configexists="{configExists}" confignotice="{configNotice}" />
   <use template="cockpit-host" hostopen="{mainHostOpen}" />
   <use template="cockpit-directory" diropen="{mainDirOpen}" />
   <use template="cockpit-rename" renameopen="{mainRenameOpen}" />
-  <use template="cockpit-empty" emptyopen="{mainEmptyOpen}" name="{mainContext.emptyName}" detail="{mainContext.emptyDetail}" picked="{mainContext.emptyPicked}" />
   <use template="cockpit-agents" open="{mainAgentsOpen}" rows="{paletteRows}" notice="{paletteNotice}" previous="{palettePrevious}" next="{paletteNext}" status="{connectionStatus}" />
-</use>
+</stack>

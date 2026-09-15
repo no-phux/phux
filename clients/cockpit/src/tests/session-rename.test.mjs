@@ -36,7 +36,7 @@ test('Rename Session is a Window menu command', () => {
   assert.deepEqual(commandMsg('session.rename'), { kind: 'rename_open' });
   const zon = readFileSync(new URL('../../app.zon', import.meta.url), 'utf8');
   assert.match(zon, /\.label = "Rename Session…", \.command = "session\.rename"/);
-  const markup = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
+  const markup = readFileSync(new URL('../windows/components/cockpit-rename.native', import.meta.url), 'utf8');
   assert.match(markup, /<template name="cockpit-rename" args="renameopen">/);
   for (const file of ['../app.native', '../windows/phux-window-1.native', '../windows/phux-window-4.native']) {
     assert.match(readFileSync(new URL(file, import.meta.url), 'utf8'), /<use template="cockpit-rename" renameopen="\{\w+RenameOpen\}" \/>/);
@@ -128,7 +128,7 @@ function rowTarget(resource, session, provider = 0x80000001) {
 }
 
 test('a session row offers Rename in its context menu, by its own captured target', () => {
-  const markup = readFileSync(new URL('../windows/components/cockpit-window.native', import.meta.url), 'utf8');
+  const markup = readFileSync(new URL('../windows/components/cockpit-navigator.native', import.meta.url), 'utf8');
   assert.match(markup, /on-press="palette_pick:\{row\.target\}">[\s\S]*?<context-menu>\s*<if test="\{row\.renamable\}">\s*<menu-item on-press="rename_row:\{row\.target\}">Rename Session…<\/menu-item>/);
 });
 

@@ -1,0 +1,41 @@
+<template name="cockpit-host" args="hostopen">
+  <stack>
+    <if test="{hostopen}">
+      <dialog width="640" height="1000" padding="16" on-dismiss="host_close">
+        <column gap="8">
+          <row cross="center" gap="8">
+            <icon name="external-link" width="16" height="16" />
+            <if test="{toolPurpose == 1}"><text grow="1" size="heading">Add Machine</text></if>
+            <else><if test="{toolPurpose == 2}"><text grow="1" size="heading">Edit Configuration</text></if>
+            <else><text grow="1">Connect to Host</text></else></else>
+            <button size="sm" variant="ghost" icon="x" label="Close Connect to Host" on-press="host_close" />
+          </row>
+          <if test="{toolPurpose != 2}">
+            <input text="{hostQuery}" placeholder="Hostname or SSH destination" autofocus="true" on-input="host_edit" on-submit="host_submit" label="Machine destination" />
+          </if>
+          <if test="{toolPurpose == 1}">
+            <input text="{hostFriendlyName}" placeholder="Friendly name" on-input="host_name_edit" on-submit="tool_submit" label="Machine name" />
+            <text wrap="true" foreground="text_muted">Set up authentication in a dedicated terminal on This Mac. When setup finishes, return to Machines and choose Recheck.</text>
+          </if>
+          <if test="{toolPurpose == 2}">
+            <text wrap="true">{toolTarget}</text>
+            <text wrap="true" foreground="text_muted">The configuration editor opens in a new local Phux terminal.</text>
+          </if>
+          <text wrap="true" foreground="text_muted">{hostNotice}</text>
+          <row gap="8" cross="center">
+            <if test="{toolPurpose == 0}">
+              <button size="sm" variant="ghost" on-press="host_local">Use this Mac</button>
+              <button size="sm" variant="ghost" on-press="host_disconnect">Disconnect</button>
+              <button size="sm" variant="ghost" on-press="host_disconnect_all">Disconnect All</button>
+            </if>
+            <spacer grow="1" />
+            <button size="sm" variant="ghost" on-press="host_close">Cancel</button>
+            <if test="{toolPurpose == 1}"><button size="sm" disabled="{hostBusy}" on-press="tool_submit">Open Setup Terminal</button></if>
+            <else><if test="{toolPurpose == 2}"><button size="sm" variant="ghost" autofocus="true" on-press="settings_open">Choose Editor in Settings</button></if>
+            <else><button size="sm" on-press="host_submit">Connect</button></else></else>
+          </row>
+        </column>
+      </dialog>
+    </if>
+  </stack>
+</template>
