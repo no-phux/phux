@@ -1,0 +1,36 @@
+schema_version = 1
+id = "grok"
+display_name = "Grok Build"
+kind = "terminal-agent"
+description = "Grok Build running inside a phux-managed terminal."
+package_version = "0.1.0"
+package_status = "public"
+first_party = true
+capabilities = ["terminal-control", "code-editing", "human-question"]
+
+[detect]
+mode = "opt-in"
+command = "grok"
+env = "PHUX_AGENT_TOOLS_DETECT"
+
+[link]
+mode = "state-file"
+default_session = "agent-bench-grok"
+
+[session_identity]
+# Grok 1.0.30 documents `--session-id UUID` for a fresh session and
+# `--resume ID_OR_TITLE` for restore in user-guide/17-sessions.md.
+mode = "native-or-phux"
+native_env = "PHUX_GROK_SESSION_ID"
+restore = "external-cli"
+resume_args = ["--resume", "${PHUX_AGENT_SESSION_ID}"]
+fresh_args = ["--session-id", "${PHUX_AGENT_SESSION_ID}"]
+
+[agent_identity]
+name = "grok"
+kind = "grok"
+
+[launch]
+command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-grok-wrap.sh"]
+required_executables = ["grok"]
+working_directory = "workspace"

@@ -1,0 +1,39 @@
+
+  grok-fixture /tmp/grok-fixture · 25K / 500K │ [Dashboard]
+
+
+     ❯ Use the terminal tool to run sleep 15, wait for it to finish, then answer exactly done.              12:46 AM
+
+
+     ◆ Thought for 5.9s
+
+     I'll run sleep 15 and wait until it exits, then reply exactly as requested.                            12:46 AM
+
+     ◆ Task started: Sleep for 15 seconds
+     ◆ Thought for 0.5s
+     ◆ Task completed in 1.0s: Sleep for 15 seconds
+
+     The sleep is still running in the background; I'll wait for it to finish.                              12:46 AM
+
+     ◆ Thought for 0.0s
+
+     done                                                                                                   12:46 AM
+
+     Worked for 30s
+
+
+
+
+
+
+
+  Help improve Grok                                                                                 [Opt out] [Opt in]
+  Off by default. Opt-in to allow SpaceXAI to retain coding data, e.g., prompts, traces, & metrics,
+  for training and debugging purposes. Change anytime via settings.
+  Read Terms and Privacy Policy.
+
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────── Grok 4.6 (high) · always-approve ─╯
+
+  Shift+Tab:mode  │  Ctrl+.:shortcuts
