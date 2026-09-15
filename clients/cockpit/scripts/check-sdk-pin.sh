@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Fail when the SDK/engine pins documented in README.md have drifted from the
-# pins build.zig.zon actually resolves. Offline and fast, so it belongs beside
-# check-release-version.sh at the top of CI rather than in a build job.
+# Fail when the SDK/engine pins documented in README.md or the shipped notices
+# have drifted from the pins build.zig.zon actually resolves. Offline and fast,
+# so it belongs beside check-release-version.sh at the top of CI rather than in
+# a build job.
 #
 # This check exists because the drift already happened: README claimed
 # phall1/native@f7347de long after build.zig.zon had moved to f3678832.
@@ -10,6 +11,7 @@ set -euo pipefail
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 ZON="${ROOT}/build.zig.zon"
 README="${ROOT}/README.md"
+NOTICES="${ROOT}/THIRD_PARTY_NOTICES.md"
 
 # shellcheck source=scripts/lib/zon.sh
 source "${ROOT}/scripts/lib/zon.sh"
@@ -17,7 +19,7 @@ source "${ROOT}/scripts/lib/zon.sh"
 status=0
 
 check_pin() {
-    local name="$1" url read_status slug sha
+    local name="$1" url read_status slug sha pinned_source notice_source_lines
     # `set -e` would kill the script at this assignment on a non-zero read,
     # before the refusal below could name what went wrong — a silent exit 3.
     # Capture the status instead of inheriting it.
@@ -69,7 +71,17 @@ check_pin() {
         fi
     done < <(grep -Eo "${slug}@[0-9a-f]{7,40}" "${README}" | sed "s|${slug}@||")
 
-    printf 'Pinned %s is %s@%s and README.md agrees.\n' "${name}" "${slug}" "${sha}"
+    pinned_source="Pinned source: https://github.com/${slug}/tree/${sha}"
+    notice_source_lines="$(grep -F "Pinned source: https://github.com/${slug}/tree/" "${NOTICES}" || true)"
+    if [[ "${notice_source_lines}" != "${pinned_source}" ]]; then
+        printf 'error: THIRD_PARTY_NOTICES.md does not record the pinned .%s source: %s\n' \
+            "${name}" "${pinned_source}" >&2
+        status=1
+        return
+    fi
+
+    printf 'Pinned %s is %s@%s; README.md and THIRD_PARTY_NOTICES.md agree.\n' \
+        "${name}" "${slug}" "${sha}"
 }
 
 check_pin native_sdk

@@ -230,7 +230,7 @@ never calls CoreText. See "Rendering Evidence" above.
 | `scripts/drive-shell-ceiling.sh --want N` | how many concurrent shells does the shipped bundle reach before one is refused? |
 | `scripts/host-raster-check.sh` | does the host's real CoreText rasterizer still ink glyphs as thickly as the pinned baseline? |
 | `scripts/host-raster-compare.sh <ref>` | did an SDK change move glyph pixels between two commits that both shipped? |
-| `scripts/check-sdk-pin.sh` | does README name the sha `build.zig.zon` actually resolves? |
+| `scripts/check-sdk-pin.sh` | do README and the shipped notices name the shas `build.zig.zon` actually resolves? |
 | `scripts/build-automation-cli.sh` | builds the only `native` CLI that can drive this app; the npm one is fingerprint-refused and always will be. |
 
 Check what binary a bug report is about before diagnosing it. On 2026-08-12

@@ -7,7 +7,7 @@ Phux Cockpit includes software from the following projects.
 Native SDK is licensed under the Apache License, Version 2.0. A complete copy
 of that license is distributed as `LICENSE.txt` with the application.
 
-Pinned source: https://github.com/phall1/native/tree/ad3f0fae36a7d1380c459c6b23ed12d83cad6a7a
+Pinned source: https://github.com/phall1/native/tree/806846ef3fd9d60c36abc8c6e459abc0d3df8242
 
 Upstream: https://github.com/vercel-labs/native
 
@@ -35,7 +35,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Source: https://github.com/ghostty-org/ghostty
+Pinned source: https://github.com/ghostty-org/ghostty/tree/7aa9591746ffa4d2eee458960c76554352832595
+
+Upstream: https://github.com/ghostty-org/ghostty
 
 ## Phux Client FFI and Rust Dependencies
 
