@@ -18,7 +18,7 @@ use crate::attach::connection::{Connection, Dial};
 use crate::attach::outcome::{AttachEnd, AttachError};
 use crate::attach::paint::{
     SidebarEdge, SidebarReservation, StatusBarPaint, content_rect, paint_bar_after_pane,
-    paint_full_frame,
+    paint_full_frame, sidebar_reservation,
 };
 use crate::attach::pane_state::{AttachKernel, PaneSlot};
 use crate::attach::render::ReplicaWalk;
@@ -1300,7 +1300,16 @@ const PROBE_PANE_TEXT: &str = "PANE-BASE";
 /// `default.toml`, so the shipped `[status]` lineup, the responsive
 /// slot policy, and the widget-level shrink ladders are all exercised
 /// together rather than one layer at a time.
-fn shipped_frame_rows(view: (u16, u16), windows: &[WindowInfo]) -> Vec<String> {
+///
+/// `sidebar` is the same reservation the driver threads to every layout
+/// site. The painter is always live (the driver always has one); it only
+/// emits when the reservation is `Some`, so a yielded `None` must leave
+/// no strip even though the roster is populated.
+fn shipped_frame_rows(
+    view: (u16, u16),
+    windows: &[WindowInfo],
+    sidebar: Option<SidebarReservation>,
+) -> Vec<String> {
     let (cols, rows) = view;
     let id = ResourceId::local(1);
     let workspace = Workspace::single(id.clone());
@@ -1321,6 +1330,17 @@ fn shipped_frame_rows(view: (u16, u16), windows: &[WindowInfo]) -> Vec<String> {
     );
     let engine_kernel = published_test_kernel(&id, cols, pane_rows, PROBE_PANE_TEXT.as_bytes());
 
+    let theme = crate::render::theme::Theme::default();
+    let mut sidebar_painter = SidebarPainter::new(theme);
+    sidebar_painter.set_roster(vec![crate::render::chrome::sidebar::SessionRosterEntry {
+        name: "probe".to_owned(),
+        host: PROBE_HOST.to_owned(),
+        active: true,
+        selectable: true,
+        ..Default::default()
+    }]);
+    sidebar_painter.set_windows(windows.to_vec());
+
     let mut out: Vec<u8> = Vec::new();
     paint_full_frame(
         &mut out,
@@ -1330,10 +1350,10 @@ fn shipped_frame_rows(view: (u16, u16), windows: &[WindowInfo]) -> Vec<String> {
         Some(&id),
         view,
         Some(&mut status_bar),
-        None,
-        None,
+        sidebar,
+        Some(&mut sidebar_painter),
         "phux",
-        &crate::render::theme::Theme::default(),
+        &theme,
     );
 
     let mut probe = PaneSlot::new_with_size(cols, rows).expect("probe slot");
@@ -1380,7 +1400,7 @@ fn shipped_frame_at_a_roomy_viewport() {
         probe_window("nvim", true),
         probe_window("server", false),
     ];
-    let rows = shipped_frame_rows((100, 12), &windows);
+    let rows = shipped_frame_rows((100, 12), &windows, None);
     let bar = rows.first().expect("a top bar row");
     assert!(bar.contains(" 1:nvim "), "{bar:?}");
     assert!(bar.contains("s Sessions"), "{bar:?}");
@@ -1402,7 +1422,7 @@ fn shipped_frame_at_a_phone_sized_viewport() {
         probe_window("server", false),
         probe_window("logs", false),
     ];
-    let rows = shipped_frame_rows((46, 12), &windows);
+    let rows = shipped_frame_rows((46, 12), &windows, None);
     let bar = rows.first().expect("a top bar row");
     assert!(bar.contains(" 1:nvim "), "active tab whole: {bar:?}");
     assert!(bar.contains("switch"), "{bar:?}");
@@ -1424,7 +1444,7 @@ fn shipped_frame_when_the_tab_strip_must_collapse() {
         probe_window("server", false),
         probe_window("logs", false),
     ];
-    let rows = shipped_frame_rows((36, 10), &windows);
+    let rows = shipped_frame_rows((36, 10), &windows, None);
     let bar = rows.first().expect("a top bar row");
     assert!(bar.contains(" 1:nvim "), "active tab whole: {bar:?}");
     assert!(bar.contains('\u{203a}'), "hidden tabs are marked: {bar:?}");
@@ -1432,6 +1452,144 @@ fn shipped_frame_when_the_tab_strip_must_collapse() {
     assert!(bar.contains("switch"), "affordance survives: {bar:?}");
     assert!(bar.chars().count() <= 36, "row overran: {bar:?}");
     insta::assert_snapshot!("shipped_frame_collapsed_tabs", rows.join("\n"));
+}
+
+/// Reflow, mouse hit-testing, and the divider rasterizer must consume
+/// the same yielded reservation the paint path just used. A stale
+/// 20-column left strip would inset `content` to `x=20, w=30` and put a
+/// 0.5 split's divider near column 35.
+fn assert_yielded_layout_sites(view: (u16, u16), sidebar: Option<SidebarReservation>) {
+    use crate::layout::{LayoutNode, LayoutState, SplitDir, split_at};
+    use crate::multi_pane::{RouteDecision, route_mouse_event};
+    use crate::render::chrome::status_bar::Position;
+    use phux_protocol::input::key::ModSet;
+    use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
+
+    let content = content_rect(view, Some(Position::Top), sidebar);
+    assert_eq!(
+        content.x, 0,
+        "content origin must not shift for a yielded strip"
+    );
+    assert_eq!(content.w, view.0, "panes must receive the whole width");
+
+    let id = ResourceId::local(1);
+    let workspace = Workspace::single(id.clone());
+    let pane_rect = view_rects(&workspace, None, content, view)
+        .get(&id)
+        .copied()
+        .expect("reflow rect");
+    assert_eq!(pane_rect.x, 0, "reflow must not inset for a yielded strip");
+    assert_eq!(
+        pane_rect.w, view.0,
+        "reflow must hand the pane the whole width"
+    );
+
+    let press_at = |x: u16| MouseEvent {
+        action: MouseAction::Press,
+        button: MouseButton::Left,
+        mods: ModSet::empty(),
+        x: f64::from(x),
+        y: f64::from(content.y),
+    };
+    let ls = workspace.render_window(None).expect("layout");
+    match route_mouse_event(ls.as_ref(), content, view, &press_at(0)) {
+        RouteDecision::Pane { target, .. } => {
+            assert_eq!(target, id, "column 0 is pane, not a reserved strip");
+        }
+        other => panic!("click at column 0 must hit the pane, got {other:?}"),
+    }
+
+    let right = ResourceId::local(2);
+    let split = LayoutState {
+        tree: Some(
+            split_at(
+                &LayoutNode::Leaf(id.clone()),
+                &id,
+                &right,
+                SplitDir::Horizontal,
+                0.5,
+            )
+            .expect("split"),
+        ),
+        focus: Some(id),
+    };
+    let divider_x = (0..view.0)
+        .find(|&x| {
+            matches!(
+                route_mouse_event(&split, content, view, &press_at(x)),
+                RouteDecision::Divider { .. }
+            )
+        })
+        .expect("a two-pane split has a divider column");
+    assert!(
+        (20..30).contains(&divider_x),
+        "yielded divider must sit near the 50-col midpoint, not past a phantom strip; got {divider_x}"
+    );
+}
+
+/// phux-ed8j: the sidebar's narrow-terminal yield, composited.
+///
+/// `sidebar_reservation()` already folds to `None` at 50 columns in
+/// unit tests. This is the glass: the same fold the driver threads to
+/// every layout site, painted through `paint_full_frame` with a live
+/// sidebar painter and replayed through the PTY probe. Panes must own
+/// the whole width, the strip must not appear, and the divider / mouse
+/// / reflow sites that consume that reservation must not still believe
+/// twenty columns are reserved.
+#[test]
+fn shipped_frame_yields_the_sidebar_on_a_narrow_terminal() {
+    use crate::render::ChromeBreakpoints;
+
+    let view = (50u16, 12u16);
+    let min_pane = ChromeBreakpoints::DEFAULT.min_pane_cols;
+    let sidebar = sidebar_reservation(view.0, true, 20, SidebarEdge::Left, min_pane);
+    assert!(
+        sidebar.is_none(),
+        "a 20-col strip on 50 cols would starve the panes; the driver must yield"
+    );
+    // Shipped automatic width (28) yields on this viewport too.
+    assert!(sidebar_reservation(view.0, true, 0, SidebarEdge::Left, min_pane).is_none());
+
+    let windows = [probe_window("nvim", true)];
+    let rows = shipped_frame_rows(view, &windows, sidebar);
+    let frame = rows.join("\n");
+
+    let pane = rows
+        .iter()
+        .find(|r| r.contains(PROBE_PANE_TEXT))
+        .expect("pane content");
+    assert!(
+        pane.starts_with(PROBE_PANE_TEXT),
+        "pane must start at column 0; a reserved strip would inset it:\n{frame}"
+    );
+    assert!(
+        !frame.contains(PROBE_HOST),
+        "yielded reservation must not paint the sidebar strip:\n{frame}"
+    );
+    assert!(
+        rows.iter()
+            .all(|r| r.chars().count() <= usize::from(view.0)),
+        "a row overran the viewport:\n{frame}"
+    );
+
+    // The pane-grid rail is `render_dividers` for a single leaf: it must
+    // span the full width from column 0, not start after a phantom strip.
+    let rail = rows
+        .iter()
+        .find(|r| r.contains('─'))
+        .expect("pane-grid rail");
+    assert!(
+        rail.starts_with('─'),
+        "rail must start at column 0; a reserved strip would inset it:\n{frame}"
+    );
+    assert_eq!(
+        rail.chars().count(),
+        usize::from(view.0),
+        "rail must span the whole viewport; a reserved strip would shorten it: {rail:?}"
+    );
+
+    assert_yielded_layout_sites(view, sidebar);
+    insta::assert_snapshot!("shipped_frame_narrow_sidebar_yield", frame);
 }
 
 /// Replay `bytes` (a full frame of VT output) into a fresh libghostty
