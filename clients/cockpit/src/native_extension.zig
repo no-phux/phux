@@ -2543,7 +2543,10 @@ const Rig = struct {
             try self.dispatch(if (state.settings) .settings_open else .settings_close);
             try self.settleAppearance();
         }
-        if (state.settings) try self.dispatch(.{ .settings_section = state.settings_section });
+        if (state.settings) {
+            try self.dispatch(.{ .settings_section = state.settings_section });
+            try std.testing.expectEqual(state.settings_section, self.app_state.model.settingsSection);
+        }
         try std.testing.expectEqual(state.tabs, self.app_state.model.tabs.len);
     }
 };
@@ -2886,6 +2889,16 @@ fn firstPaintedCatalogMessage(node: Adapter.Ui.Node) ?core.Msg {
     }
     for (node.nodes) |child| {
         if (firstPaintedCatalogMessage(child)) |msg| return msg;
+    }
+    return null;
+}
+
+fn paintedSettingsSection(node: Adapter.Ui.Node, section: i64) ?core.Msg {
+    if (node.on_press) |msg| {
+        if (msg == .settings_section and msg.settings_section == section) return msg;
+    }
+    for (node.nodes) |child| {
+        if (paintedSettingsSection(child, section)) |found| return found;
     }
     return null;
 }
@@ -5371,6 +5384,29 @@ test "the settings surface shows the engine's theme catalog and saves through th
     try std.testing.expectEqual(.no_destination, bridge.appearance.outcome);
     try std.testing.expectEqualStrings("nord", engine.model.config.theme.slice());
     try std.testing.expect(rig.app_state.model.themes[3].active);
+}
+
+test "the visible About settings tab reaches version and update content" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "About"));
+    try std.testing.expect(!try compiledViewHasLabel(&rig.app_state.model, 0, "Check for Updates"));
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const press = paintedSettingsSection(mainView(&ui, &rig.app_state.model), 5) orelse return error.TestExpectedAboutButton;
+    try rig.dispatch(press);
+
+    try std.testing.expectEqual(@as(i64, 5), rig.app_state.model.settingsSection);
+    try std.testing.expect(!rig.app_state.model.updateBusy);
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Check for Updates"));
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Installed"));
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "Latest"));
+    try std.testing.expect(try compiledViewHasLabel(&rig.app_state.model, 0, "App version"));
 }
 
 /// An effects recorder for the native-behaviour guards: counts what the
