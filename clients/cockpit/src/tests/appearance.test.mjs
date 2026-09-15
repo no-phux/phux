@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { initialModel, update } from '../core.ts';
 import { appearanceResponse } from '../appearance.ts';
 
@@ -17,6 +18,14 @@ function reply({ active = true, outcome = 0, dirty = false, theme = 0, cursor = 
 function opened() {
   const model = step(initialModel()[0], { kind: 'settings_open' })[0];
   return step(model, { kind: 'appearance_loaded', body: reply() })[0];
+}
+function keybindingReply(binding = 'Cmd+Shift+t', defaultBinding = 'Cmd+t') {
+  const command = bytes('terminal.new');
+  const label = bytes('New Tab');
+  const current = bytes(binding);
+  const fallback = bytes(defaultBinding);
+  return new Uint8Array([1, 1, 0, 0, 0, +(binding !== defaultBinding), command.length, label.length,
+    current.length, fallback.length, ...command, ...label, ...current, ...fallback]);
 }
 
 test('appearance response rejects malformed lengths and flags', () => {
@@ -159,4 +168,34 @@ test('search reveals concealed matching details without using a search-field', (
   const [timing] = step(opened(), { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Live preview') } });
   assert.ok(timing.settingRows.some(row => row.id === 0));
   assert.equal(timing.settingsDetailId, 65535);
+});
+
+test('Settings search sanitizes an invalid detail identity at the model boundary', () => {
+  const corrupt = { ...opened(), settingsDetailId: Number.NaN };
+  const [model] = step(corrupt, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Live preview') } });
+  assert.equal(model.settingsDetailId, 65535);
+});
+
+test('keyboard search reveals a concealed default chord across Settings groups', () => {
+  const [loaded] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+  assert.equal(loaded.showBindingRows, false);
+  const [matched] = step(loaded, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Cmd+t') } });
+  assert.equal(matched.showBindingRows, true);
+  assert.equal(matched.bindingRows.length, 1);
+  assert.equal(matched.bindingDetailIndex, 0);
+});
+
+test('Settings groups cannot retain keyboard rows or share the connection accordion identity', () => {
+  const [loaded] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+  const [keyboard] = step(loaded, { kind: 'settings_section', section: 2 });
+  assert.equal(keyboard.showBindingRows, true);
+  const [connection] = step(keyboard, { kind: 'settings_section', section: 4 });
+  assert.equal(connection.showBindingRows, false);
+  assert.deepEqual(connection.settingRows.map(row => row.id), [12, 13]);
+
+  const markup = readFileSync(new URL('../windows/components/cockpit-settings.native', import.meta.url), 'utf8');
+  assert.equal(markup.match(/on-toggle="settings_detail:12"/g)?.length ?? 0, 0);
+  assert.equal(markup.match(/setting\.id == 12/g)?.length ?? 0, 1);
+  assert.match(markup, /accordion text="Details" label="\{setting\.label\}"/);
+  assert.match(markup, /accordion text="Details" label="\{binding\.label\}"/);
 });

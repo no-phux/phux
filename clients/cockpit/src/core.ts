@@ -427,6 +427,7 @@ export interface Model {
   readonly settingsReloadStage: number;
   readonly settingsNotice: Uint8Array;
   readonly bindingRows: readonly KeybindingRow[];
+  readonly showBindingRows: boolean;
   readonly noBindingRows: boolean;
   readonly noSettingRows: boolean;
   readonly bindingEditIndex: number;
@@ -2319,6 +2320,7 @@ export function initialModel(): [Model, Cmd<Msg>] {
       settingsReloadStage: 0,
       settingsNotice: NO_BYTES,
       bindingRows: NO_BINDING_ROWS,
+      showBindingRows: false,
       pendingSessionAction: null,
       pendingSettingsAction: null,
       retiredSessionToken: NO_BYTES,
@@ -2575,10 +2577,11 @@ function requestAppearance(model: Model, action: number, argument: number): Appe
 
 function openAppearance(model: Model): AppearanceDecision {
   if (model.settingsOpen) return appearanceDecision(model);
-  const next = scopeOverlays(withVisibleSettings({ ...model, settingsOpen: true, paletteOpen: false, hostOpen: false, hostAwaiting: false, settingsSection: 0,
+  const opening = { ...model, settingsOpen: true, paletteOpen: false, hostOpen: false, hostAwaiting: false, settingsSection: 0,
      navigationAfterSettings: false, surfaceAfterSettings: 0, pendingToolOpen: false, configEditorConfirm: false,
      appearanceClosing: false, appearance: initialAppearance(), appearanceBusy: true,
-    settingEditId: 65535, settingsDetailId: 65535, bindingDetailIndex: 65535, settingsQuery: NO_BYTES, settingsNotice: NO_BYTES, settingsReloadStage: 0 }));
+    settingEditId: 65535, settingsDetailId: 65535, bindingDetailIndex: 65535, settingsQuery: NO_BYTES, settingsNotice: NO_BYTES, settingsReloadStage: 0 };
+  const next = scopeOverlays(withVisibleSettings(withVisibleBindings(opening, model.bindings)));
   return { ...requestAppearance(next, 0, 0), opening: true };
 }
 
@@ -2909,9 +2912,10 @@ function retainMachineInvalidation(model: Model): Model {
 function loadedKeybindings(model: Model, body: Uint8Array): NavigatorDecision {
   const bindings = keybindingResponse(body);
   if (bindings === null) return failedKeybindings(model);
-  if (model.appearanceClosing || model.settingsReloadStage > 0) return navigatorDecision({ ...model, bindings,
-    bindingRows: filteredBindings(bindings, model.settingsQuery), settingsNotice: bindings.notice }, 0, NO_BYTES);
-  const next = { ...model, bindings, bindingRows: filteredBindings(bindings, model.settingsQuery), appearanceBusy: false, settingsNotice: bindings.notice };
+  const listed = withVisibleBindings(model, bindings);
+  if (model.appearanceClosing || model.settingsReloadStage > 0) return navigatorDecision({ ...listed,
+    settingsNotice: bindings.notice }, 0, NO_BYTES);
+  const next = { ...listed, appearanceBusy: false, settingsNotice: bindings.notice };
   if (model.settingsOpen) return navigatorDecision({ ...next, appearanceBusy: true }, 7, appearanceRequest(0, 0));
   return navigatorDecision(refreshActions(next, model.paletteCursor), 0, NO_BYTES);
 }
@@ -2924,9 +2928,35 @@ function failedKeybindings(model: Model): NavigatorDecision {
 function filteredBindings(bindings: KeybindingPage, query: Uint8Array): readonly KeybindingRow[] {
   const rows: KeybindingRow[] = [];
   for (const row of bindings.rows) {
-    if (containsQuery(row.label, query) || containsQuery(row.command, query)) rows.push(row);
+    if (bindingSearchHit(row, query)) rows.push(row);
   }
   return rows;
+}
+
+function bindingSearchHit(row: KeybindingRow, query: Uint8Array): boolean {
+  return containsQuery(row.label, query) || containsQuery(row.command, query)
+    || containsQuery(row.binding, query) || containsQuery(row.defaultBinding, query);
+}
+
+function bindingConcealedHit(row: KeybindingRow, query: Uint8Array): boolean {
+  if (query.length === 0 || containsQuery(row.label, query) || containsQuery(row.command, query)
+    || containsQuery(row.binding, query)) return false;
+  return containsQuery(row.defaultBinding, query);
+}
+
+function revealedBindingDetail(rows: readonly KeybindingRow[], query: Uint8Array, current: number): number {
+  if (query.length === 0) return current;
+  for (const row of rows) if (row.index === current && bindingConcealedHit(row, query)) return current;
+  for (const row of rows) if (bindingConcealedHit(row, query)) return row.index;
+  return 65535;
+}
+
+function withVisibleBindings(model: Model, bindings: KeybindingPage): Model {
+  const bindingRows = filteredBindings(bindings, model.settingsQuery);
+  const revealed = revealedBindingDetail(bindingRows, model.settingsQuery, model.bindingDetailIndex);
+  const bindingDetailIndex = revealed >= 0 && revealed <= 65535 ? Math.trunc(revealed) : 65535;
+  const showBindingRows = model.settingsSection === 2 || (model.settingsQuery.length > 0 && bindingRows.length > 0);
+  return { ...model, bindings, bindingRows, bindingDetailIndex, showBindingRows, noBindingRows: bindingRows.length === 0 };
 }
 
 function commandsTransition(model: Model, msg: Msg): NavigatorDecision | null {
@@ -3092,8 +3122,10 @@ function revealedSettingDetail(rows: readonly Setting[], query: Uint8Array, curr
 
 function withVisibleSettings(model: Model): Model {
   const settingRows = visibleSettingRows(model.appearance, model.settingsQuery, model.settingsSection);
+  const revealed = revealedSettingDetail(settingRows, model.settingsQuery, model.settingsDetailId);
+  const settingsDetailId = revealed >= 0 && revealed <= 65535 ? Math.trunc(revealed) : 65535;
   return { ...model, settingRows, noSettingRows: settingRows.length === 0,
-    settingsDetailId: revealedSettingDetail(settingRows, model.settingsQuery, model.settingsDetailId) };
+    settingsDetailId };
 }
 
 function editSettingsSearch(model: Model, edit: TextInputEvent): Model {
@@ -3102,8 +3134,8 @@ function editSettingsSearch(model: Model, edit: TextInputEvent): Model {
   if (next === null) return model;
   const anchor = next.selection.anchor >= 0 && next.selection.anchor <= 64 ? Math.trunc(next.selection.anchor) : 0;
   const focus = next.selection.focus >= 0 && next.selection.focus <= 64 ? Math.trunc(next.selection.focus) : 0;
-  return withVisibleSettings({ ...model, settingsQuery: next.text, settingsAnchor: anchor, settingsFocus: focus,
-    bindingRows: filteredBindings(model.bindings, next.text), bindingDetailIndex: 65535 });
+  const queried = { ...model, settingsQuery: next.text, settingsAnchor: anchor, settingsFocus: focus };
+  return withVisibleSettings(withVisibleBindings(queried, model.bindings));
 }
 
 function selectSetting(model: Model, id: number): Model {
@@ -3131,8 +3163,8 @@ function chooseSettingsSection(model: Model, section: number): NavigatorDecision
   // still opens About with its own request; this path only selects the tab.
   if (!(section >= 0 && section <= 5)) return navigatorDecision(model, 0, NO_BYTES);
   const selected = Math.trunc(section);
-  const next = withVisibleSettings({ ...model, settingsSection: selected, settingEditId: 65535,
-    settingsDetailId: 65535, bindingDetailIndex: 65535 });
+  const next = withVisibleSettings(withVisibleBindings({ ...model, settingsSection: selected, settingEditId: 65535,
+    settingsDetailId: 65535, bindingDetailIndex: 65535 }, model.bindings));
   if (selected === 2) return navigatorDecision({ ...next, appearanceBusy: true }, 4, keybindingRequest(0, 0, NO_BYTES));
   return navigatorDecision(next, 0, NO_BYTES);
 }

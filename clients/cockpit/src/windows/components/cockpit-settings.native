@@ -27,7 +27,7 @@
             </if>
             <scroll grow="1">
               <column gap="16">
-                <if test="{settingsSection == 2}">
+                <if test="{showBindingRows}">
                   <column gap="16">
                     <text wrap="true" foreground="text_muted">Use chords such as super+shift+p. Enter none to remove a shortcut.</text>
                     <if test="{noBindingRows}"><text foreground="text_muted">No matching keyboard shortcuts</text></if>
@@ -41,7 +41,7 @@
                           <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="binding_select:{binding.index}">Edit</button>
                           <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="binding_reset:{binding.index}">Reset</button>
                         </row>
-                        <accordion text="Details" selected="{bindingDetailIndex == binding.index}" on-toggle="binding_detail:{binding.index}">
+                        <accordion text="Details" label="{binding.label}" selected="{bindingDetailIndex == binding.index}" on-toggle="binding_detail:{binding.index}">
                           <column gap="8">
                             <text foreground="text_muted">Default: {binding.defaultBinding}</text>
                           </column>
@@ -71,12 +71,17 @@
                         <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reset:{setting.id}">Reset</button>
                       </if>
                     </row>
-                    <accordion text="Details" selected="{settingsDetailId == setting.id}" on-toggle="settings_detail:{setting.id}">
+                    <accordion text="Details" label="{setting.label}" selected="{settingsDetailId == setting.id}" on-toggle="settings_detail:{setting.id}">
                       <column gap="8">
                         <row gap="8"><text foreground="text_muted">Default</text><text wrap="true">{setting.defaultLabel}</text></row>
                         <text wrap="true" foreground="text_muted">{setting.applicability}</text>
                         <text foreground="text_muted">{setting.timing}</text>
                         <row gap="8"><text foreground="text_muted">Configured</text><text wrap="true">{setting.value}</text></row>
+                        <if test="{setting.id == 12}">
+                          <text wrap="true">{workspaceLabel}</text>
+                          <text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text>
+                          <text wrap="true" foreground="text_muted">{connectionDetail}</text>
+                        </if>
                       </column>
                     </accordion>
                     <if test="{settingEditId == setting.id}">
@@ -97,16 +102,6 @@
                     </for>
                   </grid>
                   <if test="{appearance.overrides}"><text wrap="true" foreground="warning">Explicit foreground or background overrides this theme. Edit Configuration to change those keys.</text></if>
-                </if>
-                <if test="{settingsSection == 4}">
-                  <text>Current connection</text>
-                  <accordion text="Connection details" selected="{settingsDetailId == 12}" on-toggle="settings_detail:12">
-                    <column gap="8">
-                      <text wrap="true">{workspaceLabel}</text>
-                      <text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text>
-                      <text wrap="true" foreground="text_muted">{connectionDetail}</text>
-                    </column>
-                  </accordion>
                 </if>
                 <if test="{settingsSection == 5}">
                   <text>Phux Cockpit</text>

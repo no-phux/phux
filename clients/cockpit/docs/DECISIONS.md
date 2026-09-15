@@ -154,6 +154,9 @@ hide an in-flight Preview. Search is an ordinary `input` (not `search-field`,
 whose Escape-clears fights Escape-to-Cancel) and, when the hit is only in
 concealed copy, opens that row's details. IDs 0..14, appearance records 0..10,
 request bytes, rollback/Save, and About (section 5) stay on the same wire.
+Keyboard search includes installed and default chords, revealing a default-only
+match even outside the Keyboard group. Accordion triggers keep the visual
+"Details" affordance but carry the row label as their accessible name.
 
 ---
 
@@ -541,4 +544,3 @@ Hybrid C always sets that fit; `grid.paint` callers keep the default
 
 Reopen this if a measured bind after the bump disagrees, or if 16 full
 panes become a product requirement.
-

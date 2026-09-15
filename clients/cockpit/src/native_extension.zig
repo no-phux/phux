@@ -3012,6 +3012,9 @@ fn firstPaintedCatalogMessage(node: Adapter.Ui.Node) ?core.Msg {
 }
 
 fn paintedSettingsSection(node: Adapter.Ui.Node, section: i64) ?core.Msg {
+    if (node.on_toggle) |msg| {
+        if (msg == .settings_section and msg.settings_section == section) return msg;
+    }
     if (node.on_press) |msg| {
         if (msg == .settings_section and msg.settings_section == section) return msg;
     }
@@ -5539,8 +5542,8 @@ test "the visible About settings tab reaches version and update content" {
     try rig.settleAppearance();
 
     // Tab captions are child text, not semantics.label. The compiled About
-    // control is the settings_section:5 press; Check for Updates is absent
-    // until that press selects the group.
+    // control is the settings_section:5 toggle; Check for Updates is absent
+    // until that toggle selects the group.
     {
         var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
         defer arena.deinit();
