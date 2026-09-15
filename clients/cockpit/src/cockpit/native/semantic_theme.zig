@@ -133,7 +133,10 @@ pub fn stateRecipes() StateRecipes {
         .toolbar_action = .{
             .background = palette.surface,
             .hover_background = palette.hover,
-            .active_background = palette.selected,
+            // Secondary buttons couple pressed and selected through the
+            // active channel. Shipping toolbar actions are not selection-
+            // bearing, so spend that channel on visible pointer feedback.
+            .active_background = palette.pressed,
             .pressed_background = palette.pressed,
             .foreground = palette.text,
             .border = palette.border,
@@ -169,10 +172,15 @@ pub fn stateRecipes() StateRecipes {
             .radius = radii.control,
         },
         .tab = .{
+            // Toggle buttons merge this table over their button variant.
+            // State every visible rest channel so default CTA lime cannot
+            // leak into inactive tab chrome through that fallback.
+            .background = palette.surface,
             .hover_background = palette.hover,
             .active_background = palette.selected,
             .pressed_background = palette.pressed,
             .foreground = palette.text,
+            .border = palette.border,
             .radius = radii.control,
         },
         .navigation_row = .{
@@ -267,6 +275,10 @@ fn tokenOverrides() canvas.DesignTokenOverrides {
 const test_widget_id: canvas.ObjectId = 9001;
 
 fn renderedFill(kind: canvas.WidgetKind, variant: canvas.WidgetVariant, state: canvas.WidgetState, part: u4) !canvas.Color {
+    return renderedColor(kind, variant, state, .{}, part);
+}
+
+fn renderedColor(kind: canvas.WidgetKind, variant: canvas.WidgetVariant, state: canvas.WidgetState, style: canvas.WidgetStyle, part: u4) !canvas.Color {
     var commands: [16]canvas.CanvasCommand = undefined;
     var builder = canvas.Builder.init(&commands);
     try canvas.emitWidgetTree(&builder, .{
@@ -276,12 +288,14 @@ fn renderedFill(kind: canvas.WidgetKind, variant: canvas.WidgetVariant, state: c
         .text = "Semantic state",
         .variant = variant,
         .state = state,
+        .style = style,
     }, designTokens());
     const command = builder.displayList().findCommandById(canvas.widgetPartId(test_widget_id, part)) orelse return error.TestExpectedFill;
     return switch (command.command) {
         .fill_rect => |fill| fillColor(fill.fill),
         .fill_rounded_rect => |fill| fillColor(fill.fill),
         .stroke_rect => |stroke| fillColor(stroke.stroke.fill),
+        .draw_text => |text| text.color,
         else => error.TestExpectedFill,
     };
 }
@@ -357,6 +371,52 @@ test "navigation and tab selection share the semantic state ladder" {
     try std.testing.expectEqual(palette.selected, tab_selected);
     try std.testing.expect(!std.meta.eql(row_hover, row_selected));
     try std.testing.expect(!std.meta.eql(row_selected, row_pressed));
+}
+
+test "shipping default tabs keep safe chrome through every current state" {
+    const tokens = designTokens();
+    const shipping_style: canvas.WidgetStyle = .{
+        .accent = tokens.colors.surface_pressed,
+        .accent_foreground = tokens.colors.text,
+    };
+    const states = [_]canvas.WidgetState{
+        .{},
+        .{ .hovered = true },
+        .{ .selected = true },
+        .{ .hovered = true, .pressed = true },
+    };
+    const expected_fills = [_]canvas.Color{
+        palette.surface,
+        palette.hover,
+        palette.selected,
+        palette.selected,
+    };
+
+    for (states, expected_fills) |state, expected_fill| {
+        const fill = try renderedColor(.toggle_button, .default, state, shipping_style, 1);
+        const border = try renderedColor(.toggle_button, .default, state, shipping_style, 2);
+        const text = try renderedColor(.toggle_button, .default, state, shipping_style, 4);
+        try std.testing.expectEqual(expected_fill, fill);
+        try std.testing.expectEqual(palette.border, border);
+        try std.testing.expectEqual(palette.text, text);
+        try std.testing.expect(contrast(text, fill) >= 4.5);
+    }
+    try std.testing.expect(!std.meta.eql(expected_fills[0], expected_fills[1]));
+    try std.testing.expect(!std.meta.eql(expected_fills[0], expected_fills[2]));
+    try std.testing.expect(!std.meta.eql(expected_fills[1], expected_fills[2]));
+}
+
+test "secondary toolbar actions render distinct pointer feedback" {
+    const rest = try renderedFill(.button, .secondary, .{}, 1);
+    const hovered = try renderedFill(.button, .secondary, .{ .hovered = true }, 1);
+    const pressed = try renderedFill(.button, .secondary, .{ .hovered = true, .pressed = true }, 1);
+
+    try std.testing.expectEqual(palette.surface, rest);
+    try std.testing.expectEqual(palette.hover, hovered);
+    try std.testing.expectEqual(palette.pressed, pressed);
+    try std.testing.expect(!std.meta.eql(rest, hovered));
+    try std.testing.expect(!std.meta.eql(rest, pressed));
+    try std.testing.expect(!std.meta.eql(hovered, pressed));
 }
 
 test "passive panel hover is visually stable without disabling hit testing" {
