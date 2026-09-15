@@ -2,13 +2,18 @@
 <template name="cockpit-window" args="tabs rail width more cue paletteopen palettequery paletterows paletteprevious palettenext palettenotice status title detail">
   <stack>
     <column>
-      <!-- Hidden-inset chrome: this header row is the window-drag surface.
-           Press-claiming children (tabs, buttons, the session chip) stay
-           buttons; empty chrome, gaps, and the traffic-light reserve move
-           the window. Do not park window-drag on the 78pt spacer alone —
-           that reserve sits under the lights and is not a usable grab. -->
-      <row height="50" padding="4" gap="8" cross="center" background="surface" window-drag="true">
-        <spacer width="78" />
+      <!-- Hidden-inset chrome: empty spacers are the window-drag surface.
+           The header row cannot carry window-drag — a 16-tab strip's
+           press exclusions overflow the null platform's 16-slot table.
+           The 78pt reserve sits under the traffic lights and is not a
+           usable grab. Tabs keep grow so shipping_tab_strip_width still
+           measures leftover chrome; a grow spacer after the tab cluster
+           (or in place of the strip when tabs ride the side rail) is
+           the handle. Spacers need an explicit height: the header is
+           cross-centered, so an empty stack otherwise lays out at 0pt
+           and the collector skips it. -->
+      <row height="50" padding="4" gap="8" cross="center" background="surface">
+        <spacer width="78" height="40" window-drag="true" />
         <list-item height="40" width="176" label="Sessions" on-press="sessions_open">
           <column gap="0">
             <text overflow="ellipsis">{title}</text>
@@ -30,9 +35,10 @@
               </column>
             </for>
             <if test="{more}"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button></if>
+            <spacer grow="1" height="40" window-drag="true" />
           </tabs>
         </if>
-        <else><spacer grow="1" /></else>
+        <else><spacer grow="1" height="40" window-drag="true" /></else>
         <button size="sm" variant="ghost" icon="external-link" label="Machines" on-press="machines_open">Machines</button>
         <button size="sm" variant="ghost" icon="plus" label="New Tab" on-press="new_terminal" />
         <button size="sm" variant="ghost" icon="panel-left" label="Move tabs to top or side" on-press="toggle_tab_placement" />
