@@ -143,6 +143,14 @@ cockpit-test: cockpit-ffi cockpit-build-contracts
 cockpit-test-no-phux: cockpit-ffi
     ./scripts/zig-build.sh test -Dplatform=null -Dphux-client-ffi-profile=ffi-dev --summary all
 
+# Node TypeScript tests. The loader strips @native-sdk/core's published .ts
+# (plain `node --test` on Node 24 will not). Needs clients/cockpit/node_modules.
+[group('cockpit')]
+[doc('Cockpit Node TypeScript tests via navigation-loader.')]
+[working-directory('clients/cockpit')]
+cockpit-node-test:
+    node --import ./src/tests/navigation-loader.mjs --test ./src/tests/*.test.mjs
+
 # Split out of cockpit-test only because it is the one step that runs from the
 # repository root; the rest share [working-directory('clients/cockpit')].
 [group('cockpit')]

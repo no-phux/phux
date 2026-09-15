@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-15
 ---
 
 # Contributing to phux
@@ -74,6 +74,7 @@ checks; the root target does not build those clients.
 | `just build-all` | All workspace targets, including integration tests, examples and benchmarks |
 | `just build-release` | Shipping executables with full release optimization |
 | `just cockpit-build`, `just cockpit-dev`, `just cockpit-test` | Cockpit with the unwind-safe, incremental `ffi-dev` profile |
+| `just cockpit-node-test` | Cockpit Node TypeScript tests (`src/tests/*.test.mjs`) |
 | `just cockpit-ffi-release` | Production FFI with unwind safety and full release optimization |
 
 The default executable still supports browser WebTransport. Lean builds opt out
