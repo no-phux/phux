@@ -252,7 +252,11 @@ export async function handleClaim(
   const parts = token.split(".");
   if (parts.length < 2 || parts.length > 3) return new Response("bad token", { status: 400 });
   const [memberId, proof, issuedAt] = parts;
-  if (!/^[a-f0-9]{64}$/.test(memberId ?? "")) return new Response("bad token", { status: 400 });
+  // The private store uses a stable 128-bit (32-hex) prefix as its member ID;
+  // accept full HMAC IDs too so the format can migrate without another break.
+  if (!/^(?:[a-f0-9]{32}|[a-f0-9]{64})$/.test(memberId ?? "")) {
+    return new Response("bad token", { status: 400 });
+  }
   if (!/^[a-f0-9]{64}$/.test(proof ?? "")) return new Response("bad proof", { status: 403 });
   const expected = await claimProof(env.MEMBER_KEY, memberId!);
   if (!timingSafeEqualHex(proof!, expected)) {

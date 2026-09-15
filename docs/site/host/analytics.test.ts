@@ -90,6 +90,20 @@ function claimUrl(memberId: string, proof: string, issuedAt?: number): string {
 }
 
 describe("GET /api/claim (PHA-425)", () => {
+  test("accepts the private store's stable 32-hex member IDs", async () => {
+    const memberId = (await memberIdForEmail(
+      MEMBER_KEY,
+      "stored@example.com",
+    )).slice(0, 32);
+    const proof = await claimProof(MEMBER_KEY, memberId);
+    const response = await handleClaim(
+      new Request(claimUrl(memberId, proof, Date.now())),
+      envOf(),
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("set-cookie")).toContain(`phux_mid=${memberId}`);
+  });
+
   test("full proof sets the opt-in cookie and redirects", async () => {
     const memberId = await memberIdForEmail(MEMBER_KEY, "person@example.com");
     const proof = await claimProof(MEMBER_KEY, memberId);
