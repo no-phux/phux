@@ -675,7 +675,7 @@ rather than a layer with its own internal architecture worth diagramming:
   Unix-domain socket pair and a QUIC/WSS dial (`phux_remote_tunnel_*`).
   Its `directory` module carries the `LIST_DIRECTORY` host query for a
   go-to-directory picker, retaining one correlated listing per client
-  (`phux_client_list_directory`, `phux_client_directory_*`). Its `log`
+  (`phux_client_list_directory_on`, `phux_client_directory_*`). Its `log`
   module installs the bridge's one `tracing` subscriber on standard error
   (`phux_client_log_init`), so an embedder that redirects descriptor 2 to a
   file gets the tunnel's lifecycle beside its own lines. Named projections
