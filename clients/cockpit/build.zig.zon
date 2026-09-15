@@ -175,8 +175,8 @@
         // 320x96 product grids fit; sixteen still do not. Cockpit derives
         // the split from the pin — see docs/DECISIONS.md Hybrid C.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/ad3f0fae36a7d1380c459c6b23ed12d83cad6a7a.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQoV3tQL2ImGN9v7gVDnhwg2AMYL82LTMCZF2R_RF",
+            .url = "https://github.com/phall1/native/archive/98bfe36e857ec6e9a135e0bbde91a44c198e1a88.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQsp4tQKMVU4a7rCPWw9PuRGFapv1Xmy0gDZJAIHe",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream
