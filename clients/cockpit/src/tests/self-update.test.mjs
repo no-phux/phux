@@ -31,6 +31,15 @@ test('self-update response is whole or rejected', () => {
   assert.deepEqual(selfUpdateRequest(true), new Uint8Array([1, 1]));
 });
 
+function appearanceReply() {
+  return new Uint8Array([1, 1, 0, 0, 0, 0, 0, 0, 0, 0]);
+}
+
+function openedSettings() {
+  const model = step(initialModel()[0], { kind: 'settings_open' })[0];
+  return step(model, { kind: 'appearance_loaded', body: appearanceReply() })[0];
+}
+
 test('Check for Updates opens About and requests the installer driver', () => {
   const [model, cmd] = step(initialModel()[0], commandMsg('app.update'));
   assert.equal(model.settingsOpen, true);
@@ -40,6 +49,23 @@ test('Check for Updates opens About and requests the installer driver', () => {
   assert.ok(names.includes('cockpit.appearance'));
   assert.ok(names.includes('cockpit.update'));
   assert.deepEqual([...cmd.cmds.find(effect => effect.name === 'cockpit.update').payload], [1, 0]);
+});
+
+test('the visible About tab opens from Settings without checking for updates', () => {
+  const opened = openedSettings();
+  assert.equal(opened.settingsOpen, true);
+  assert.equal(opened.settingsSection, 0);
+  const [about, cmd] = step(opened, { kind: 'settings_section', section: 5 });
+  assert.equal(about.settingsSection, 5);
+  assert.equal(cmd, null);
+  assert.equal(about.updateBusy, false);
+  assert.deepEqual(about.settingRows.map(row => row.id), [14]);
+  assert.equal(text(about.settingRows[0].label), 'App version');
+  for (const section of [-1, 6, 7, 255]) {
+    const [ignored, ignoredCmd] = step(about, { kind: 'settings_section', section });
+    assert.equal(ignored.settingsSection, 5, `section ${section} must stay ignored`);
+    assert.equal(ignoredCmd, null, `section ${section} must not issue a request`);
+  }
 });
 
 test('current, newer, refused and failed replies stay visible', () => {
