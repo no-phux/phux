@@ -7,6 +7,7 @@
  * (host/mcp.ts), records passive aggregate telemetry (host/telemetry.ts),
  * and serves the public telemetry dashboard API at /api/telemetry.
  */
+import { Effect } from "effect";
 import { routeRequest } from "./routes";
 import { handleMcpRequest } from "./mcp";
 import { estimateTokens, htmlToMarkdown, wantsMarkdown } from "./markdown";
@@ -21,9 +22,9 @@ import {
 import {
   buildEnvelope,
   forwardEnvelope,
-  handleClaim,
-  handleJoin,
+  runAnalyticsBackground,
 } from "./analytics";
+import { handleAnalyticsHttp } from "./analytics-http";
 
 export { TelemetryDO };
 
@@ -38,6 +39,8 @@ export interface Env {
   ANALYTICS_INGEST_URL?: string;
   ANALYTICS_INGEST_KEY?: string;
   MEMBER_KEY?: string;
+  MEMBER_CLAIM_KEY?: string;
+  MEMBER_CLAIM_KEY_PREVIOUS?: string;
 }
 
 export default {
@@ -75,11 +78,8 @@ export default {
       return telemetryIngest(request, env);
     }
     // Voluntary member signup (the join-the-beta form) and device claim.
-    if (url.pathname === "/api/join" && request.method === "POST") {
-      return handleJoin(request, env, ctx);
-    }
-    if (url.pathname === "/api/claim") {
-      return handleClaim(request, env);
+    if (url.pathname === "/api/join" || url.pathname === "/api/claim") {
+      return handleAnalyticsHttp(request, env, ctx);
     }
 
     const asset = await env.ASSETS.fetch(request);
@@ -130,13 +130,13 @@ function observe(
   request: Request,
   response: Response,
 ): void {
-  try {
-    if (!shouldSkipPath(new URL(request.url).pathname)) {
-      forwardEnvelope(env, ctx, buildEnvelope(request, response));
-    }
-  } catch {
-    // analytics must never affect the request
-  }
+  if (shouldSkipPath(new URL(request.url).pathname)) return;
+  runAnalyticsBackground(
+    ctx,
+    buildEnvelope(request, response).pipe(
+      Effect.flatMap((envelope) => forwardEnvelope(env, envelope)),
+    ),
+  );
 }
 
 async function markdownResponse(asset: Response): Promise<Response> {

@@ -42,7 +42,12 @@ import {
   classifyRequest,
   forwardEvents,
 } from "../../host/telemetry";
-import { buildEnvelope, forwardEnvelope } from "../../host/analytics";
+import { Effect } from "effect";
+import {
+  buildEnvelope,
+  forwardEnvelope,
+  runAnalyticsBackground,
+} from "../../host/analytics";
 
 export { SessionDO, GlobalCapDO, PhuxSessionContainer, RateLimitDO };
 
@@ -60,7 +65,6 @@ export interface Env extends AuthEnv {
   // HTTP fallback for local development and staged migration only.
   ANALYTICS_INGEST_URL?: string;
   ANALYTICS_INGEST_KEY?: string;
-  MEMBER_KEY?: string;
 
   SESSION_TOKEN_SECRET: string; // secret (wrangler secret put)
   SYNTHETIC_TOKEN_SECRET?: string; // shared only with the production monitor
@@ -120,24 +124,21 @@ function recordSession(
   mode: string,
   backend: string,
 ): void {
-  try {
-    forwardEvents(
-      env.TELEMETRY_INGEST_URL,
-      env.TELEMETRY_INGEST_KEY,
-      ctx,
-      [
-        ...classifyRequest(request, response),
-        { dim: "session", key: `${mode}:${backend}` },
-      ],
-    );
-    forwardEnvelope(
-      env,
-      ctx,
-      buildEnvelope(request, response, { mode, backend }),
-    );
-  } catch {
-    // telemetry must never affect the demo door
-  }
+  forwardEvents(
+    env.TELEMETRY_INGEST_URL,
+    env.TELEMETRY_INGEST_KEY,
+    ctx,
+    [
+      ...classifyRequest(request, response),
+      { dim: "session", key: `${mode}:${backend}` },
+    ],
+  );
+  runAnalyticsBackground(
+    ctx,
+    buildEnvelope(request, response, { mode, backend }).pipe(
+      Effect.flatMap((envelope) => forwardEnvelope(env, envelope)),
+    ),
+  );
 }
 
 function clientIp(request: Request): string {
