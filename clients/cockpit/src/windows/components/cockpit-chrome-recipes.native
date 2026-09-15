@@ -1,9 +1,5 @@
-<template name="cockpit-tab-control" args="target label">
-  <toggle-button size="sm" variant="ghost" role="tab" selected="false" on-toggle="select_target:{target}" grow="1">{label}</toggle-button>
-</template>
-
-<template name="cockpit-selected-tab-control" args="target label">
-  <toggle-button size="sm" variant="ghost" role="tab" selected="true" on-toggle="select_target:{target}" grow="1">{label}</toggle-button>
+<template name="cockpit-tab-control" args="target label selected">
+  <toggle-button size="sm" variant="ghost" role="tab" selected="{selected}" on-toggle="select_target:{target}" grow="1">{label}</toggle-button>
 </template>
 
 <template name="cockpit-highlighted-row" args="highlighted">

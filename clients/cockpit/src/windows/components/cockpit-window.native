@@ -14,8 +14,7 @@
           <for each="tabs" key="id" as="tab">
             <column width="{width}" gap="4">
               <row gap="4" cross="center">
-                <if test="{tab.selected}"><use template="cockpit-selected-tab-control" target="{tab.target}" label="{tab.title}" /></if>
-                <else><use template="cockpit-tab-control" target="{tab.target}" label="{tab.title}" /></else>
+                <use template="cockpit-tab-control" target="{tab.target}" label="{tab.title}" selected="{tab.selected}" />
                 <if test="{tab.attention}"><text foreground="warning" label="{tab.attentionLabel}">●</text></if>
               </row>
               <if test="{tab.selected}"><spacer height="2" background="accent" /></if>
@@ -58,7 +57,7 @@
                 <else>
                   <row gap="4" cross="center">
                     <use template="cockpit-highlighted-row" highlighted="{row.selected}">
-                      <toggle-button size="sm" variant="ghost" role="tab" selected="{row.selected}" on-toggle="select_target:{row.target}" grow="1">{row.label}</toggle-button>
+                      <use template="cockpit-tab-control" target="{row.target}" label="{row.label}" selected="{row.selected}" />
                     </use>
                     <if test="{row.mark}"><text label="{row.attentionLabel}">{row.mark}</text></if>
                   </row>
