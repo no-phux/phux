@@ -341,18 +341,9 @@ impl TerminalActor {
                 Some(req) = self.consumer_ack_rx.recv(), if !bootstrap_pending =>
                     self.service_frame_ack(&req, &mut tick, &mut tick_interval),
 
-                // Semantic event subscription request. Register the subscriber
-                // and begin broadcasting matching events to their outbound mailbox.
-                Some(req) = self.core.subscribe_to_events_rx.recv() => self.core.subscribe_events(req),
-
-                // Semantic event unsubscription request. Remove the subscriber
-                // from the broadcast list. Silent no-op if already unsubscribed.
-                Some(req) = self.core.unsubscribe_from_events_rx.recv() =>
-                    self.core.unsubscribe_events(&req),
-
                 // Supervisory control (ADR-0033): lease-change broadcasts and
                 // process signals. The lease itself lives in `ServerState`; the
-                // actor is the emitter (it owns the subscriber list + lifecycle)
+                // actor is the emitter (it owns the lifecycle)
                 // and the signal deliverer (it owns the PTY child pid).
                 Some(req) = self.core.control_rx.recv() => self.handle_control_request(req),
 

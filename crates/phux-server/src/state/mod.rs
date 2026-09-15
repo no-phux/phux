@@ -54,6 +54,7 @@ mod hook_dispatch;
 mod hub;
 mod hub_state;
 mod id_space;
+mod journal;
 mod lease_table;
 mod leases;
 mod lifecycle;
@@ -78,9 +79,13 @@ pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
 pub use conditional_kill::KillIfRefusal;
 use config::ServerConfig;
-pub use events::{EventScope, EventSubscription};
+pub use events::{
+    EventFilter, EventPump, EventScope, EventSubscription, PumpStep, SatelliteScopeChange,
+    journal_gap_frame,
+};
 use hub_state::HubState;
 pub use id_space::IdSpace;
+pub use journal::EventRecord;
 // Facade: the mailbox payloads live at the crate root (`crate::mailbox`) so
 // `state` and `terminal_actor` can both depend on them without depending on
 // each other. Re-exported here because `crate::state::Outbound` is the spelling
@@ -172,6 +177,13 @@ pub struct ServerState {
     /// map alone is readable from outside, through [`Self::attached`]. See
     /// [`client_table`] for the per-field documentation.
     clients: ClientTable,
+    /// The server-wide event journal (ADR-0123): the one `seq` every event
+    /// is stamped with, and the bounded ring a cursor subscription replays
+    /// from. Written only by [`Self::record_and_fanout`] (and the hub's
+    /// relay re-stamp), under this lock, so an event's order and any
+    /// snapshot cut in the same lock agree. See [`journal`] and
+    /// `state::events`.
+    journal: journal::Journal,
     /// Everything keyed on a live pane's identity: actor handles, shutdown
     /// tokens, the pane-actor `JoinSet`, per-pane client subscriptions, and
     /// the `ATTACH_RESOURCE` output pumps.
@@ -396,8 +408,6 @@ mod tests {
             consumer_attach: mpsc::channel(8).0,
             consumer_detach: mpsc::channel(8).0,
             consumer_ack: mpsc::channel(8).0,
-            subscribe_to_events: channels.subscribe_to_events,
-            unsubscribe_from_events: channels.unsubscribe_from_events,
             upgrade: mpsc::channel(8).0,
             control: channels.control,
             facet: crate::resource::ResourceFacetHandle::Terminal(

@@ -474,6 +474,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::SshOrigin,
         ServerFeature::ConditionalKill,
         ServerFeature::OpenListener,
+        ServerFeature::EventJournal,
     ])
 }
 
@@ -618,16 +619,221 @@ mod negotiated_feature_tests {
     }
 }
 
-pub(crate) fn spawn_pane_event_drain(
-    state: SharedState,
-    wire_terminal_id: phux_protocol::ids::ResourceId,
-    mut event_rx: tokio::sync::mpsc::Receiver<AgentEvent>,
-) {
+/// A pane's event source and the wire id its events are journaled under
+/// (ADR-0123). Handed to the pane's exit watcher, which is its drain.
+///
+/// The engine's sink is the one place an event can be lost before the
+/// journal. Each drop is counted there, and the drain journals the count as
+/// a `source_gap` scoped to this pane right after the event it read, so a
+/// full sink is a typed loss rather than silence.
+pub(crate) struct PaneEvents {
+    /// The pane's wire id, interned at spawn.
+    pub(crate) wire: phux_protocol::ids::ResourceId,
+    /// The runtime end of the pane's event sink.
+    pub(crate) source: crate::resource::event_sink::EventSource,
+}
+
+#[cfg(test)]
+mod pane_event_drain_tests {
+    use super::*;
+
+    /// A pane reaped by a failed publication already has its `pane_closed`;
+    /// an event its drain reads afterwards is not journaled.
+    #[test]
+    fn a_reaped_pane_journals_nothing_after_its_close() {
+        let mut s = crate::state::ServerState::new();
+        let (_session, _window, pane) = s.seed_session("drain");
+        let wire = s.intern_terminal_wire(pane);
+        journal_drained_event(&mut s, &wire, AgentEvent::Bell, 0);
+        let live = s.journal_head();
+        assert_eq!(live, 1, "a live pane's event is journaled");
+        let _ = reap_pane_journaling_close(&mut s, pane);
+        let closed = s.journal_head();
+        assert_eq!(closed, live + 1, "the close");
+        journal_drained_event(&mut s, &wire, AgentEvent::Bell, 2);
+        assert_eq!(s.journal_head(), closed, "nothing follows pane_closed");
+    }
+}
+
+/// Drain a pane's events into the journal for as long as its sink lives:
+/// the fallback for a pane with no exit notification to watch.
+fn spawn_pane_event_drain(state: SharedState, mut events: PaneEvents) {
     tokio::task::spawn_local(async move {
-        while let Some(event) = event_rx.recv().await {
-            broadcast_event(&state, Some(&wire_terminal_id), &event);
+        while let Some(event) = events.source.recv().await {
+            let dropped = events.source.take_dropped();
+            state.with_mut(|s| journal_drained_event(s, &events.wire, event, dropped));
+        }
+        let dropped = events.source.take_dropped();
+        state.with_mut(|s| journal_source_gap(s, &events.wire, dropped));
+    });
+}
+
+/// Journal a pane's events, in emission order, until its exit fires.
+/// Returns the exit status and, when the sink is still open, the source,
+/// whose already-queued events the reap lock journals before the close.
+async fn journal_until_exit(
+    state: &SharedState,
+    mut exit: oneshot::Receiver<phux_core::process::ExitOutcome>,
+    events: Option<PaneEvents>,
+) -> (phux_core::process::ExitOutcome, Option<PaneEvents>) {
+    let Some(mut events) = events else {
+        return (exit.await.unwrap_or_default(), None);
+    };
+    loop {
+        tokio::select! {
+            biased;
+            outcome = &mut exit => return (outcome.unwrap_or_default(), Some(events)),
+            event = events.source.recv() => {
+                let Some(event) = event else { break };
+                let dropped = events.source.take_dropped();
+                state.with_mut(|s| journal_drained_event(s, &events.wire, event, dropped));
+            }
+        }
+    }
+    let dropped = events.source.take_dropped();
+    state.with_mut(|s| journal_source_gap(s, &events.wire, dropped));
+    (exit.await.unwrap_or_default(), None)
+}
+
+/// Start the event pump for `client_id`'s subscription, once (ADR-0123):
+/// a task that waits for room in the connection's mailbox and hands the
+/// subscription whatever it is owed, a `journal_gap` or the rest of a
+/// cursor replay, a frame at a time. It never runs inside frame dispatch,
+/// so a consumer that stops reading delays only itself, and it ends with
+/// the connection or the subscription.
+pub(crate) fn ensure_event_pump(state: &SharedState, client_id: ClientId) {
+    let Some(pump) = state.with_mut(|s| s.claim_event_pump(client_id)) else {
+        return;
+    };
+    let cancel = state
+        .with(|s| s.client_connection_cancellation(client_id))
+        .unwrap_or_default();
+    let state = state.clone();
+    tokio::task::spawn_local(async move {
+        loop {
+            tokio::select! {
+                () = cancel.cancelled() => return,
+                () = pump.wake.notified() => {}
+            }
+            if !pump_owed_frames(&state, (client_id, pump.epoch), &pump.tx, &cancel).await {
+                return;
+            }
         }
     });
+}
+
+/// Send subscription `epoch` of `client_id` its owed event frames as
+/// mailbox room frees. `false` once the connection or that subscription is
+/// gone, including when a re-subscribe replaced it.
+async fn pump_owed_frames(
+    state: &SharedState,
+    (client_id, epoch): (ClientId, u64),
+    tx: &tokio::sync::mpsc::Sender<Outbound>,
+    cancel: &CancellationToken,
+) -> bool {
+    loop {
+        let permit = tokio::select! {
+            () = cancel.cancelled() => return false,
+            permit = tx.reserve() => match permit {
+                Ok(permit) => permit,
+                Err(_) => return false,
+            },
+        };
+        match state.with_mut(|s| s.next_owed_event_frame(client_id, epoch)) {
+            crate::state::PumpStep::Frame(frame) => permit.send(Outbound::Frame(frame)),
+            crate::state::PumpStep::Idle => return true,
+            crate::state::PumpStep::Gone => return false,
+        }
+    }
+}
+
+/// Reap a pane whose publication failed after its `pane_spawned` was
+/// journaled (the spawner vanished, a preflight or send failed, its
+/// generation was lost): journal its `pane_closed` in the same lock, once
+/// (ADR-0123). The pane's exit watcher then finds it gone and journals
+/// nothing more, so every `pane_spawned` is followed by exactly one
+/// `pane_closed`. Returns what [`crate::state::ServerState::reap_terminal`]
+/// returns; `false` without journaling when the pane is already gone.
+pub(crate) fn reap_pane_journaling_close(
+    s: &mut crate::state::ServerState,
+    pane: phux_core::ids::ResourceId,
+) -> bool {
+    if s.registry().resource(pane).is_none() {
+        return false;
+    }
+    let wire = s.intern_terminal_wire(pane);
+    let parent = s
+        .resource_parent(pane)
+        .map(|parent| s.intern_terminal_wire(parent));
+    journal_pane_closed(s, &wire, parent.as_ref(), None);
+    s.reap_terminal(pane)
+}
+
+/// Journal every event a closing pane already queued, and any loss its
+/// sink counted, so all of them take a `seq` before its `pane_closed`.
+fn journal_pending_events(s: &mut crate::state::ServerState, events: &mut PaneEvents) {
+    while let Some(event) = events.source.try_recv() {
+        journal_drained_event(s, &events.wire, event, 0);
+    }
+    journal_source_gap(s, &events.wire, events.source.take_dropped());
+}
+
+/// Journal one event a pane's engine emitted, then any loss its sink
+/// counted since the previous one. Nothing once the pane is gone: a pane
+/// reaped by a failed publication or its parent's cascade already has its
+/// `pane_closed`, and nothing about it may follow.
+fn journal_drained_event(
+    s: &mut crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    event: AgentEvent,
+    dropped: u64,
+) {
+    if !pane_is_live(s, wire_terminal_id) {
+        return;
+    }
+    let actor = control_actor(&event);
+    let record =
+        crate::state::EventRecord::new(Some(wire_terminal_id.clone()), event).with_actor(actor);
+    let _ = s.record_and_fanout(record);
+    journal_source_gap(s, wire_terminal_id, dropped);
+}
+
+/// Journal `source_gap { dropped }` for a pane, when anything was dropped.
+fn journal_source_gap(
+    s: &mut crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    dropped: u64,
+) {
+    if dropped == 0 || !pane_is_live(s, wire_terminal_id) {
+        return;
+    }
+    let gap = AgentEvent::SourceGap { dropped };
+    let _ = s.record_and_fanout(crate::state::EventRecord::new(
+        Some(wire_terminal_id.clone()),
+        gap,
+    ));
+}
+
+/// Whether the pane `wire_terminal_id` names is still registered. A reap
+/// retires the wire id, so a reaped pane no longer resolves.
+fn pane_is_live(
+    s: &crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+) -> bool {
+    s.terminal_from_wire(wire_terminal_id)
+        .is_some_and(|pane| s.registry().resource(pane).is_some())
+}
+
+/// The connection an engine-emitted event names as its cause: the `actor`
+/// of a supervisory `terminal_control` (a take, a give, a signal). Every
+/// other engine event is server-driven.
+fn control_actor(event: &AgentEvent) -> Option<ClientId> {
+    match event {
+        AgentEvent::TerminalControl {
+            actor: Some(actor), ..
+        } => Some(ClientId(u64::from(actor.get()))),
+        _ => None,
+    }
 }
 
 /// Spawn the per-pane detector metadata drain (ADR-0046).
@@ -1074,15 +1280,25 @@ pub(crate) fn spawn_terminal_exit_watcher(
     pane: phux_core::ids::ResourceId,
     exit_notify: Option<oneshot::Receiver<phux_core::process::ExitOutcome>>,
     root_token: CancellationToken,
+    events: Option<PaneEvents>,
 ) {
     let Some(rx) = exit_notify else {
+        if let Some(events) = events {
+            spawn_pane_event_drain(state, events);
+        }
         return;
     };
     tokio::task::spawn_local(async move {
+        // ADR-0123: this task is also the pane's event drain, so every
+        // event the pane emitted is journaled before its `pane_closed`:
+        // live until the exit fires, then whatever is still queued, in the
+        // reap lock below. A separate drain task could stamp a final
+        // `command_finished` after the close.
+        //
         // Recv error (sender dropped without firing) is treated the
         // same as a fired EOF with unknown exit status: in both cases
         // the pane is dead and every subscribed client must be told.
-        let exit = rx.await.unwrap_or_default();
+        let (exit, mut events) = journal_until_exit(&state, rx, events).await;
         // phux-emdv: gather the broadcast subscriber set AND reap the
         // dead pane in ONE critical section, BEFORE the awaited
         // RESOURCE_CLOSED sends. This closes the TOCTOU window that left
@@ -1104,7 +1320,6 @@ pub(crate) fn spawn_terminal_exit_watcher(
             wire_terminal_id,
             reason,
             cascaded,
-            parent,
             targets,
             server_empty,
             served,
@@ -1124,6 +1339,9 @@ pub(crate) fn spawn_terminal_exit_watcher(
             // the parent it is leaving with, and before the reap because a
             // retired resource has no wire id left to intern.
             let wire_terminal_id = s.intern_terminal_wire(pane);
+            if let Some(events) = events.as_mut() {
+                journal_pending_events(s, events);
+            }
             let parent = s
                 .resource_parent(pane)
                 .map(|parent| s.intern_terminal_wire(parent));
@@ -1142,10 +1360,13 @@ pub(crate) fn spawn_terminal_exit_watcher(
                 };
                 let wire_child_id = s.intern_terminal_wire(child);
                 let child_targets = s.terminal_fanout_targets(child);
+                // ADR-0123: journaled in the lock that reaps it, children
+                // first, so a snapshot cut after this lock never shows a
+                // resource whose close a subscriber has not been sent.
+                journal_pane_closed(s, &wire_child_id, Some(&wire_terminal_id), None);
                 s.reap_terminal(child);
                 cascaded.push(CascadedClose {
                     wire_terminal_id: wire_child_id,
-                    parent: wire_terminal_id.clone(),
                     targets: child_targets,
                     reason: child_reason,
                 });
@@ -1160,6 +1381,11 @@ pub(crate) fn spawn_terminal_exit_watcher(
             // requires. It kept streaming nothing, indistinguishable from
             // an idle pane, and the hub retained dead proxy state.
             let targets: Vec<tokio::sync::mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
+            // ADR-0123: the `pane_closed` event takes its `seq` in the same
+            // lock that removes the pane, so "absent from a snapshot" and
+            // "its close was journaled" can never disagree. A `watch`-only
+            // client that never attached learns of the close here too.
+            journal_pane_closed(s, &wire_terminal_id, parent.as_ref(), exit.status);
             // phux-60s: reap the dead pane, cascading to its window and
             // session when they empty. Done here (inside the same lock
             // that gathered subscribers) so no ATTACH can interleave
@@ -1179,7 +1405,6 @@ pub(crate) fn spawn_terminal_exit_watcher(
                 wire_terminal_id,
                 reason,
                 cascaded,
-                parent,
                 targets,
                 server_empty,
                 killed_clients,
@@ -1214,24 +1439,14 @@ pub(crate) fn spawn_terminal_exit_watcher(
         // process to report one.
         for child in &cascaded {
             broadcast_terminal_closed(
-                &state,
                 &child.wire_terminal_id,
-                Some(&child.parent),
                 &child.targets,
                 phux_core::process::ExitOutcome::UNKNOWN,
                 child.reason,
             )
             .await;
         }
-        broadcast_terminal_closed(
-            &state,
-            &wire_terminal_id,
-            parent.as_ref(),
-            &targets,
-            exit,
-            reason,
-        )
-        .await;
+        broadcast_terminal_closed(&wire_terminal_id, &targets, exit, reason).await;
 
         // ADR-0105: after the closes, so a client sees its last pane go
         // before the session that held it.
@@ -1276,10 +1491,6 @@ struct ReapAndNotify {
     /// The children this pane took with it, already reaped, each waiting
     /// only for its off-lock frame.
     cascaded: Vec<CascadedClose>,
-    /// The resource this one was parented to, resolved before the reap
-    /// retired the binding, so its `pane_closed` reaches whoever is
-    /// watching the parent (ADR-0104 §2). `None` for a root pane.
-    parent: Option<phux_protocol::ids::ResourceId>,
     /// Outbound mailboxes of every client subscribed to the pane at reap
     /// time. The L1 `RESOURCE_CLOSED` fanout targets exactly this set.
     targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
@@ -1298,9 +1509,6 @@ struct ReapAndNotify {
 struct CascadedClose {
     /// The child's wire id, interned before its reap retired it.
     wire_terminal_id: phux_protocol::ids::ResourceId,
-    /// The closing pane it hung off, so its `pane_closed` reaches the
-    /// parent's watchers as well as its own.
-    parent: phux_protocol::ids::ResourceId,
     /// Mailboxes subscribed to the child at reap time.
     targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
     /// The reason its `RESOURCE_CLOSED` carries.
@@ -1313,10 +1521,10 @@ struct CascadedClose {
 /// The subscriber set and `wire_terminal_id` are gathered by the caller
 /// ([`spawn_terminal_exit_watcher`]) in the SAME state lock that reaps the
 /// pane, so they reflect exactly the clients subscribed at reap time. This
-/// function only performs the off-lock work: the awaited L1 fanout and the
-/// `ResourceClosed` agent-event broadcast. Both are done off-lock because
-/// `with_mut` is synchronous and the borrow must not be held across an
-/// await (phux-emdv).
+/// function only performs the off-lock work: the awaited L1 fanout, done
+/// off-lock because `with_mut` is synchronous and the borrow must not be
+/// held across an await (phux-emdv). The `pane_closed` agent event is not
+/// sent here: it is journaled in the reap lock itself (ADR-0123).
 ///
 /// The `wire_terminal_id` is the one the client saw on `RESOURCE_SPAWNED`
 /// / `TERMINAL_SNAPSHOT`; the caller interned it before the reap retired
@@ -1335,9 +1543,7 @@ struct CascadedClose {
 /// process simply left. A consumer tells a cascade from a kill by reading
 /// it, without correlating frames.
 pub(crate) async fn broadcast_terminal_closed(
-    state: &SharedState,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
-    parent: Option<&phux_protocol::ids::ResourceId>,
     targets: &[tokio::sync::mpsc::Sender<Outbound>],
     exit: phux_core::process::ExitOutcome,
     reason: phux_protocol::wire::frame::CloseReason,
@@ -1361,22 +1567,27 @@ pub(crate) async fn broadcast_terminal_closed(
                 .await;
         }
     }
-    // phux-y2t: fan a `pane_closed` agent event to event-stream
-    // subscribers (SPEC §7.5) regardless of L1 subscribers — a
-    // `watch`-only client that never attached must still learn the pane
-    // died, so this MUST run even when the L1 fanout above was empty.
-    // The child half goes to the parent's watchers too, for the reason the
-    // spawn's does (ADR-0104 §2): a consumer following a pane is following
-    // the sessions inside it, and it learned of them from an event addressed
-    // the same way.
-    broadcast_child_event(
-        state,
-        wire_terminal_id,
-        parent,
-        &AgentEvent::ResourceClosed {
-            exit_status: exit.status,
-        },
-    );
+}
+
+/// Journal a resource's `pane_closed` (phux-y2t, ADR-0123) under the lock
+/// that reaps it.
+///
+/// A child's close also reaches its parent's watchers (ADR-0104 §2): a
+/// consumer following a pane is following the sessions inside it, and it
+/// learned of them from a `pane_spawned` addressed the same way. Its
+/// `exit_status` is `None`, since a session has no process to report one.
+fn journal_pane_closed(
+    s: &mut crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    parent: Option<&phux_protocol::ids::ResourceId>,
+    exit_status: Option<i32>,
+) {
+    let record = crate::state::EventRecord::new(
+        Some(wire_terminal_id.clone()),
+        AgentEvent::ResourceClosed { exit_status },
+    )
+    .with_parent(parent.cloned());
+    let _ = s.record_and_fanout(record);
 }
 
 /// Free the per-consumer state-sync entries (ADR-0018, phux-0q8) this
@@ -2517,6 +2728,10 @@ async fn negotiate_hello(
         // SPEC §6.2: cache the negotiated layer set. The L3
         // dispatch arms gate METADATA_CHANGED on this value.
         s.set_client_layers(client_id, client_caps.layers);
+        // ADR-0123: the announced name labels this connection's actor on
+        // every event and metadata change it causes. A label, not an
+        // authenticated fact.
+        s.set_client_name(client_id, client_name);
     });
     let hello_ok = FrameKind::HelloOk {
         protocol_major: PROTOCOL_VERSION.major,
@@ -2813,6 +3028,10 @@ where
     state.with_mut(|server| {
         server.set_client_connection_cancellation(client_id, token.clone());
     });
+    // However this task ends (EOF included, not only cancellation), the
+    // connection token fires, so no per-connection task (an event pump, a
+    // relay proxy subscription) outlives the connection.
+    let _cancel_on_exit = token.clone().drop_guard();
 
     // Held in this scope so it drops with `handle_client`: the writer aborts
     // if it hasn't already exited via its own close-on-EOF path, and the
@@ -3277,8 +3496,11 @@ where
             FrameKind::SubscribeMetadata { scope, key } => {
                 handle_subscribe_metadata(&state, client_id, scope, key, &plumbing.out_tx);
             }
-            FrameKind::SubscribeEvents { terminal, .. } => {
-                handle_subscribe_events(&state, client_id, terminal, &plumbing.out_tx);
+            FrameKind::SubscribeEvents {
+                terminal,
+                after_seq,
+            } => {
+                handle_subscribe_events(&state, client_id, terminal, after_seq, &plumbing.out_tx);
             }
             FrameKind::SpawnResource {
                 request_id,
@@ -3845,19 +4067,29 @@ fn parse_session_create_request(value: &[u8]) -> Option<SessionCreateRequest> {
 /// pane's wire id, or `None` for an empty session.
 fn run_session_create(
     state: &SharedState,
+    writer: ClientId,
     request: SessionCreateRequest,
     root_token: &tokio_util::sync::CancellationToken,
 ) -> Result<Option<phux_protocol::ids::ResourceId>, String> {
     if request.empty {
         return crate::runtime::commands::create_empty_session(state, &request.name).map(|()| None);
     }
+    // The seed pane's `pane_spawned` names the connection whose create
+    // write made it (ADR-0123).
+    let origin = crate::runtime::commands::SeedOrigin {
+        agent_session: request.agent_session,
+        attribution: crate::runtime::commands::SpawnAttribution {
+            actor: Some(writer),
+            operation_id: None,
+        },
+    };
     let wire = crate::runtime::commands::create_named_session(
         state,
         &request.name,
         request.command,
         request.cwd.as_deref(),
         request.env,
-        request.agent_session,
+        origin,
         root_token,
     )?;
     if request.keep_empty {
@@ -3928,7 +4160,12 @@ fn apply_session_keep_empty(
             outcome,
             KeepEmptyOutcome::Changed | KeepEmptyOutcome::Removed
         ) {
-            let _ = s.metadata_broadcast(scope, ServerInterceptedKey::SessionKeepEmpty, value);
+            let _ = s.metadata_broadcast_by(
+                scope,
+                ServerInterceptedKey::SessionKeepEmpty,
+                value,
+                Some(client_id),
+            );
         }
         let removed = outcome == KeepEmptyOutcome::Removed;
         let clients = match session {
@@ -4086,7 +4323,7 @@ fn handle_session_create_metadata(
         );
         return;
     }
-    let outcome = run_session_create(state, request, root_token);
+    let outcome = run_session_create(state, client_id, request, root_token);
     if let Ok(wire) = &outcome {
         // Creation and this lookup run synchronously in the same server turn.
         let session_id = state.with_mut(|s| {
@@ -4260,7 +4497,12 @@ fn apply_session_rename(
         // stored (see `metadata_broadcast`).
         let delivered =
             if matches!(outcome, crate::state::RenameOutcome::Renamed) && current != new_name {
-                s.metadata_broadcast(scope, ServerInterceptedKey::SessionName, value)
+                s.metadata_broadcast_by(
+                    scope,
+                    ServerInterceptedKey::SessionName,
+                    value,
+                    Some(client_id),
+                )
             } else {
                 Vec::new()
             };
@@ -4304,7 +4546,7 @@ fn store_metadata_value(
         {
             s.agent_records_mut().note_explicit_set(terminal, bytes);
         }
-        s.metadata_set(scope, key, value)
+        s.metadata_set_by(scope, key, value, Some(client_id))
     });
     // The store just changed under the detector's edge filter.
     invalidate_agent_detector(state, scope, key);
@@ -4390,7 +4632,7 @@ pub(crate) fn handle_delete_metadata(
         {
             s.agent_records_mut().note_explicit_delete(terminal);
         }
-        s.metadata_delete(scope, key)
+        s.metadata_delete_by(scope, key, Some(client_id))
     });
     // ADR-0046 §E's "the detector resumes" is only true if the detector is
     // told: its edge filter still holds the state it derived before the
@@ -4585,100 +4827,126 @@ pub(crate) fn handle_subscribe_metadata(
 }
 
 /// Record an agent-event subscription for `client_id` (SPEC §7.5,
-/// phux-y2t). `terminal = None` subscribes server-wide; `Some(id)`
-/// subscribes per-pane. Idempotent (the per-client scope set absorbs
-/// duplicates) and connection-scoped (cleared on detach). Unlike the L3
-/// metadata path this is not tier-gated — the event stream is part of L1
-/// and any consumer may opt in.
+/// phux-y2t; ADR-0123). `terminal = None` subscribes server-wide;
+/// `Some(id)` subscribes per-pane. Connection-scoped (cleared on detach).
+/// Unlike the L3 metadata path this is not tier-gated — the event stream is
+/// part of L1 and any consumer may opt in.
+///
+/// Without `after_seq` this is the live-only subscription an older client
+/// sends. With it, the subscription is replayed from the journal before it
+/// goes live (L1 §7.3), in the same lock that installs it and without
+/// waiting: whatever the mailbox cannot take is owed as a `journal_gap`, so
+/// a client that stops reading can never pin this connection's frame loop.
 pub(crate) fn handle_subscribe_events(
     state: &SharedState,
     client_id: ClientId,
     terminal: Option<phux_protocol::ids::ResourceId>,
+    after_seq: Option<u64>,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
-    debug!(?client_id, ?terminal, "SUBSCRIBE_EVENTS");
-    // Satellite-scoped subscription (phux-v45.4): register the caller as
-    // a hub-side proxy subscriber on the owning link and forward the
-    // SUBSCRIBE_EVENTS frame (id rewritten satellite-local) so the
-    // satellite starts pushing EVENT frames back over the link; the relay
-    // re-tags them `Local -> Satellite { host, .. }` on the way to this
-    // consumer. SUBSCRIBE_EVENTS has no reply frame, so a missing route
-    // (non-hub server / unknown host) surfaces as a typed ERROR push
-    // rather than silence.
+    debug!(?client_id, ?terminal, ?after_seq, "SUBSCRIBE_EVENTS");
     if let Some(wire_id) = &terminal
-        && let Some((host, id)) = crate::hub::relay::satellite_route(wire_id)
+        && let Some(route) = crate::hub::relay::satellite_route(wire_id)
     {
-        if let Some(relay) = state.with(|s| s.hub_relay(&host)) {
-            let Some(consumer_cancel) = state.with(|s| s.client_connection_cancellation(client_id))
-            else {
-                let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
-                    request_id: None,
-                    code: ErrorCode::InternalError,
-                    message: "client connection cancellation is unavailable".to_owned(),
-                }));
-                return;
-            };
-            // Atomic register-and-forward (phux-v45.11 finding 2): the
-            // hub-side registration and the satellite-side SUBSCRIBE_EVENTS
-            // either both happen or the consumer gets a typed error push.
-            relay.subscribe(
-                crate::hub::relay::ProxySubscription {
-                    terminal: id,
-                    client: client_id,
-                    out_tx: out_tx.clone(),
-                    consumer_cancel,
-                    // Stamped with the issue-order token by `subscribe`
-                    // at enqueue.
-                    seq: 0,
-                    // An event subscription carries no snapshot; its EVENT
-                    // deltas must flow immediately, so it is not gated
-                    // (phux-v45.14).
-                    awaits_snapshot: false,
-                    bootstrap_profile: None,
-                    bootstrap_limits: None,
-                },
-                FrameKind::SubscribeEvents {
-                    terminal: Some(phux_protocol::ids::ResourceId::local(id)),
-                    after_seq: None,
-                },
-            );
-        } else {
-            warn!(
-                ?client_id,
-                satellite = %host,
-                "SUBSCRIBE_EVENTS: no route to satellite; refusing subscription"
-            );
-            let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
-                request_id: None,
-                code: ErrorCode::UnsupportedSatelliteRoute,
-                message: format!(
-                    "no satellite route to {host:?}: this server is not a federation hub \
-                     for that host"
-                ),
-            }));
-        }
+        subscribe_via_hub(state, client_id, wire_id, route, after_seq, out_tx);
         return;
     }
     // Capture the client's mailbox in the subscription so event fanout
     // reaches it even without an ATTACH (a pure `watch` client never
     // attaches).
-    state.with_mut(|s| s.subscribe_events(client_id, terminal, out_tx.clone()));
+    state.with_mut(|s| match after_seq {
+        None => s.subscribe_events(client_id, terminal, out_tx.clone()),
+        Some(after_seq) => s.subscribe_events_after(client_id, terminal, after_seq, out_tx.clone()),
+    });
+    ensure_event_pump(state, client_id);
 }
 
-/// Push an [`AgentEvent`] to every client subscribed to events scoped to
-/// `terminal` (SPEC §7.5, phux-y2t).
+/// Satellite-scoped `SUBSCRIBE_EVENTS` (phux-v45.4): register the caller
+/// as a hub-side proxy subscriber on the owning link and forward the
+/// frame (id rewritten satellite-local) so the satellite starts pushing
+/// `EVENT` frames back over the link. `SUBSCRIBE_EVENTS` has no reply
+/// frame, so a missing route (non-hub server / unknown host) surfaces as a
+/// typed `ERROR` push rather than silence.
 ///
-/// `terminal` is the wire id the event concerns, or `None` for a
-/// server-scoped event with no owning Terminal. Fan-out uses
-/// [`crate::state::ServerState::event_targets`], which matches server-wide
-/// subscribers
-/// plus (when `terminal` is `Some`) per-pane subscribers for that id.
-/// Best-effort: a client whose mailbox is full or closed is silently
-/// skipped — the event stream is an accelerator, never a guarantee
-/// (a dropped event just means the consumer falls back to the poll floor).
-///
-/// Synchronous: fanout uses non-blocking `try_send`, so there is nothing
-/// to await — the caller need not be in an async context to push an event.
+/// The relay re-tags each returned event `Local -> Satellite { host, .. }`
+/// and delivers it through this hub's event registry with this hub's `seq`
+/// (ADR-0123), so the scope is installed there first. The hub does not
+/// retain relayed events, so a cursor on a satellite scope cannot be
+/// replayed: it is owed a `journal_gap` and the consumer re-reads level
+/// state. The satellite's own cursor space never crosses the hub.
+fn subscribe_via_hub(
+    state: &SharedState,
+    client_id: ClientId,
+    wire_id: &phux_protocol::ids::ResourceId,
+    (host, id): (phux_protocol::ids::SatelliteHost, u32),
+    after_seq: Option<u64>,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+) {
+    let Some(relay) = state.with(|s| s.hub_relay(&host)) else {
+        warn!(
+            ?client_id,
+            satellite = %host,
+            "SUBSCRIBE_EVENTS: no route to satellite; refusing subscription"
+        );
+        let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::UnsupportedSatelliteRoute,
+            message: format!(
+                "no satellite route to {host:?}: this server is not a federation hub for that host"
+            ),
+        }));
+        return;
+    };
+    let Some(consumer_cancel) = state.with(|s| s.client_connection_cancellation(client_id)) else {
+        let _ = out_tx.try_send(Outbound::Frame(FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::InternalError,
+            message: "client connection cancellation is unavailable".to_owned(),
+        }));
+        return;
+    };
+    let change = state.with_mut(|s| {
+        s.subscribe_satellite_events(
+            client_id,
+            wire_id.clone(),
+            crate::state::EventFilter::all(),
+            after_seq,
+            out_tx.clone(),
+        )
+    });
+    // Atomic register-and-forward (phux-v45.11 finding 2): the hub-side
+    // registration and the satellite-side SUBSCRIBE_EVENTS either both
+    // happen or the consumer gets a typed error push. The relay forwards
+    // the journal-semantics cursor when the satellite speaks it.
+    let forwarded = relay.subscribe(
+        crate::hub::relay::ProxySubscription {
+            terminal: id,
+            client: client_id,
+            out_tx: out_tx.clone(),
+            consumer_cancel,
+            // Stamped with the issue-order token by `subscribe` at enqueue.
+            seq: 0,
+            // An event subscription carries no snapshot; its EVENT deltas
+            // must flow immediately, so it is not gated (phux-v45.14).
+            awaits_snapshot: false,
+            bootstrap_profile: None,
+            bootstrap_limits: None,
+        },
+        FrameKind::SubscribeEvents {
+            terminal: Some(phux_protocol::ids::ResourceId::local(id)),
+            after_seq: None,
+        },
+    );
+    if !forwarded {
+        // The link never took it, and the consumer has the typed error:
+        // put the registry scope back as it was, so a stream that never
+        // started leaves nothing behind and an established one is kept.
+        state.with_mut(|s| s.restore_satellite_scope(client_id, change));
+        return;
+    }
+    ensure_event_pump(state, client_id);
+}
+
 /// Whether `terminal_id` resolves, on this server, to an agent session.
 ///
 /// The guard the two raw-profile refusals above share. `false` for an
@@ -4692,63 +4960,32 @@ fn is_agent_session(state: &SharedState, terminal_id: &phux_protocol::ids::Resou
     })
 }
 
+/// Journal a server-driven [`AgentEvent`] about `terminal` and fan it out
+/// (SPEC §7.5, phux-y2t; ADR-0123).
+///
+/// `terminal` is the wire id the event concerns, or `None` for a
+/// server-scoped event with no owning Terminal. A thin wrapper over
+/// [`journal_event`] for the call sites that attribute nothing.
 pub(crate) fn broadcast_event(
     state: &SharedState,
     terminal: Option<&phux_protocol::ids::ResourceId>,
     event: &AgentEvent,
 ) {
-    let targets = state.with(|s| s.event_targets(terminal));
-    fan_out_event(&targets, terminal, event);
-}
-
-/// Push a child resource's lifecycle event to that child's subscribers AND
-/// to the parent's (ADR-0104 §2), once each.
-///
-/// `pane_spawned` and `pane_closed` for a child are the two events whose
-/// audience is not the resource they name. A consumer learns an
-/// `AgentSession` exists *from* the spawn event, so it cannot have
-/// subscribed to it beforehand; the subscription it does hold is on the pane
-/// the session was parented to, which is the one thing the event body says.
-/// Delivering only to the child's own scope made `phux watch @parent` blind
-/// to every session opened inside the pane it was watching.
-///
-/// The frame is unchanged — it still names the child, and the body still
-/// names the parent. Only the fan-out is widened, and only for these two.
-pub(crate) fn broadcast_child_event(
-    state: &SharedState,
-    terminal: &phux_protocol::ids::ResourceId,
-    parent: Option<&phux_protocol::ids::ResourceId>,
-    event: &AgentEvent,
-) {
-    let targets = state.with(|s| s.child_event_targets(terminal, parent));
-    fan_out_event(&targets, Some(terminal), event);
-}
-
-/// The shared best-effort fan-out both broadcasters end in.
-fn fan_out_event(
-    targets: &[tokio::sync::mpsc::Sender<Outbound>],
-    terminal: Option<&phux_protocol::ids::ResourceId>,
-    event: &AgentEvent,
-) {
-    if targets.is_empty() {
-        return;
-    }
-    trace!(
-        ?terminal,
-        ?event,
-        count = targets.len(),
-        "EVENT: broadcasting"
+    journal_event(
+        state,
+        crate::state::EventRecord::new(terminal.cloned(), event.clone()),
     );
-    for tx in targets {
-        // `try_send` is non-blocking: a full mailbox drops the event
-        // rather than stalling the emitter. The accelerator contract
-        // tolerates loss (the CLI poll floor still converges).
-        let _ = tx.try_send(Outbound::Frame(FrameKind::Event {
-            terminal: terminal.cloned(),
-            event: event.clone(),
-            stamp: None,
-        }));
-    }
+}
+
+/// Journal `record` and offer it to every subscription: the one emission
+/// path (ADR-0123), taken in its own short lock. Emitters that already hold
+/// the lock call [`crate::state::ServerState::record_and_fanout`] directly.
+///
+/// Synchronous: delivery is non-blocking, and a subscription whose mailbox
+/// is full is owed a `journal_gap` rather than dropped silently.
+pub(crate) fn journal_event(state: &SharedState, record: crate::state::EventRecord) {
+    trace!(terminal = ?record.terminal, event = ?record.event, "EVENT: journaling");
+    let _ = state.with_mut(|s| s.record_and_fanout(record));
 }
 
 /// Upper bound on outbound messages coalesced into one transport write.
@@ -5836,6 +6073,40 @@ mod writer_close_tests {
             .await;
     }
 
+    struct EofReader;
+
+    impl FrameReader for EofReader {
+        fn read_frame(&mut self) -> impl Future<Output = io::Result<Option<BytesMut>>> {
+            std::future::ready(Ok(None))
+        }
+    }
+
+    /// A connection that ends at EOF cancels its token, so no task keyed to
+    /// the connection (an event pump, a relay proxy subscription) outlives
+    /// it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn eof_cancels_the_connection_token() {
+        LocalSet::new()
+            .run_until(async {
+                let token = CancellationToken::new();
+                handle_client(
+                    EofReader,
+                    RecordingWriter(Rc::new(RefCell::new(Vec::new()))),
+                    SharedState::new(),
+                    ClientId(12),
+                    token.clone(),
+                    CancellationToken::new(),
+                    None,
+                    TransportType::UnixSocket,
+                    false,
+                )
+                .await
+                .expect("clean eof");
+                assert!(token.is_cancelled());
+            })
+            .await;
+    }
+
     struct PingBeforeHelloReader {
         remaining: u8,
     }
@@ -6024,8 +6295,6 @@ mod fatal_preflight_close_tests {
                 consumer_attach,
                 consumer_detach,
                 consumer_ack: mpsc::channel(8).0,
-                subscribe_to_events: mpsc::channel(8).0,
-                unsubscribe_from_events: mpsc::channel(8).0,
                 upgrade: mpsc::channel(8).0,
                 control: mpsc::channel(8).0,
                 facet: crate::resource::ResourceFacetHandle::Terminal(

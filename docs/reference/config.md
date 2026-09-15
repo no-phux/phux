@@ -46,6 +46,8 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `chrome.min-pane-cols` | `40` |
 | `defaults.agent-log-bytes` | `4194304` |
 | `defaults.cwd-inheritance` | `"inherit-focused"` |
+| `defaults.event-journal-bytes` | `1048576` |
+| `defaults.event-journal-entries` | `4096` |
 | `defaults.history-bytes` | `2097152` |
 | `defaults.history-limit` | `50000` |
 | `defaults.mouse` | `true` |
@@ -129,6 +131,14 @@ history-bytes = 2097152
 # the bootstrap reports; it is never an error. 67108864 (64 MiB) is the
 # accepted maximum.
 agent-log-bytes = 4194304
+# The server's event journal (ADR-0123): how many recent events it keeps, and
+# their estimated encoded size, so a watcher or waiter that reconnects with a
+# cursor is replayed what it missed. Whichever bound is reached first evicts
+# the oldest events; a cursor older than what remains is told it missed events
+# (a journal gap) and re-reads state. 1048576 events and 67108864 (64 MiB) are
+# the accepted maxima.
+event-journal-entries = 4096
+event-journal-bytes = 1048576
 # Client-side outer-terminal mouse tracking on attach (ADR-0048): divider
 # drag-to-resize and click-to-focus work without an inner program turning
 # mouse mode on. false = pass-through-only (native click-drag selection).

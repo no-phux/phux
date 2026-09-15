@@ -295,6 +295,44 @@ fn defaults_findings(
             ),
         );
     }
+    event_journal_findings(defaults, provenance, findings);
+}
+
+/// The two event-journal bounds (ADR-0123): a value above either ceiling is
+/// memory the server would hold for events nobody replays that far back.
+fn event_journal_findings(
+    defaults: &DefaultsCfg,
+    provenance: &crate::ConfigProvenance,
+    findings: &mut Vec<Finding>,
+) {
+    if defaults.event_journal_entries > crate::MAX_EVENT_JOURNAL_ENTRIES {
+        push_semantic(
+            findings,
+            provenance,
+            "defaults.event-journal-entries".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{} exceeds the accepted maximum of {} events; the journal is held resident \
+                 for the life of the server",
+                defaults.event_journal_entries,
+                crate::MAX_EVENT_JOURNAL_ENTRIES,
+            ),
+        );
+    }
+    if defaults.event_journal_bytes > crate::MAX_EVENT_JOURNAL_BYTES {
+        push_semantic(
+            findings,
+            provenance,
+            "defaults.event-journal-bytes".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{} exceeds the accepted maximum of {} bytes (64 MiB); the journal is held \
+                 resident for the life of the server",
+                defaults.event_journal_bytes,
+                crate::MAX_EVENT_JOURNAL_BYTES,
+            ),
+        );
+    }
 }
 
 /// Semantic validation for `[limits]` values.

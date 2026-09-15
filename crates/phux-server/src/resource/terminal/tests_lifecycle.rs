@@ -408,21 +408,16 @@ async fn signal_freezes_resumes_and_kills_the_child() {
         clippy::future_not_send,
         reason = "current-thread test helper; the actor's TerminalHandle is intentionally !Sync"
     )]
-    async fn next_control(rx: &mut mpsc::Receiver<Outbound>) -> (ControlAction, ResourceLifecycle) {
+    async fn next_control(
+        rx: &mut mpsc::Receiver<AgentEvent>,
+    ) -> (ControlAction, ResourceLifecycle) {
         // Scan past any incidental grid events (Dirty/Idle) for the next
-        // supervisory TerminalControl broadcast.
+        // supervisory TerminalControl emission.
         let scan = async {
             loop {
-                let Outbound::Frame(frame) = rx.recv().await.expect("event channel open") else {
-                    panic!("unexpected terminal outbound sentinel")
-                };
-                if let FrameKind::Event {
-                    event:
-                        AgentEvent::TerminalControl {
-                            action, lifecycle, ..
-                        },
-                    ..
-                } = frame
+                if let AgentEvent::TerminalControl {
+                    action, lifecycle, ..
+                } = rx.recv().await.expect("event channel open")
                 {
                     return (action, lifecycle);
                 }
@@ -472,22 +467,12 @@ async fn signal_freezes_resumes_and_kills_the_child() {
             let handle = bundle.handle.clone();
             let token = bundle.token.clone();
             let mut exit_rx = bundle.exit_notify.expect("exit notify");
-            tokio::task::spawn_local(bundle.actor.run());
-
-            // Subscribe to the agent-event stream so we observe the
-            // TerminalControl broadcasts.
-            let (evt_tx, mut evt_rx) = mpsc::channel::<Outbound>(64);
-            handle
-                .subscribe_to_events
-                .send(SubscribeToEventsRequest {
-                    subscriber: ResourceEventSubscriber {
-                        outbound: evt_tx,
-                        event_types: Vec::new(),
-                    },
-                    wire_terminal_id: 1,
-                })
-                .await
-                .expect("subscribe");
+            // Wire the agent-event sink so we observe the TerminalControl
+            // emissions the runtime would journal.
+            let mut actor = bundle.actor;
+            let (evt_tx, mut evt_rx) = mpsc::channel::<AgentEvent>(64);
+            actor.set_event_sink(evt_tx);
+            tokio::task::spawn_local(actor.run());
 
             let by = phux_protocol::ids::ClientId::new(7);
 

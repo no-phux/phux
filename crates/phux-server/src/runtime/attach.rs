@@ -8,8 +8,8 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{BootstrapId, GroupId, StreamId};
 use phux_protocol::wire::frame::{
-    AgentEvent, AttachTarget, DetachReason, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES,
-    MoveError, MoveResult, SpawnError, SpawnResult,
+    AttachTarget, DetachReason, ErrorCode, FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, MoveError,
+    MoveResult, SpawnError, SpawnResult,
 };
 use std::ops::ControlFlow;
 use tokio::sync::oneshot;
@@ -19,8 +19,8 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, trace, warn};
 
 use super::{
-    SpawnOwnership, broadcast_event, prepare_attach, seed_session_with_actor,
-    seed_session_with_pty_and_colors, send_error, spawn_pane_with_pty_and_colors,
+    SpawnOwnership, prepare_attach, seed_session_with_actor, seed_session_with_pty_and_colors,
+    send_error, spawn_pane_with_pty_and_colors,
 };
 use crate::hub::relay::SatelliteSpawn;
 use crate::resource::ResourceHandle;
@@ -1961,6 +1961,12 @@ pub(crate) async fn handle_spawn_terminal(
         .as_ref()
         .map_or(phux_protocol::ids::ResourceKind::Terminal, |r| r.kind);
     let bind_instance = resource.as_ref().is_some_and(|r| r.bind_instance);
+    // ADR-0123: the pane's `pane_spawned` names who asked and under which
+    // idempotency key.
+    let attribution = super::commands::SpawnAttribution {
+        actor: Some(client_id),
+        operation_id: resource.as_ref().and_then(|r| r.idempotency_key),
+    };
     match crate::resource::core_kind(kind) {
         Some(crate::resource::ResourceKind::Terminal) => {}
         Some(crate::resource::ResourceKind::AgentSession) => {
@@ -2053,6 +2059,7 @@ pub(crate) async fn handle_spawn_terminal(
             default_colors,
             agent_session,
             initial_size,
+            attribution,
         },
     ) {
         Ok(id) => id,
@@ -2158,6 +2165,8 @@ struct PaneSpawnPlan {
     agent_session: Option<Vec<u8>>,
     /// `(cols, rows)` to build the pane's grid and PTY at (phux-a5xj).
     initial_size: Option<(u16, u16)>,
+    /// Who asked, for the pane's `pane_spawned` stamp (ADR-0123).
+    attribution: super::commands::SpawnAttribution,
 }
 
 /// Spawn the PTY-backed pane into the resolved owner's window, mapping both
@@ -2179,6 +2188,7 @@ fn spawn_pane_or_refusal(
         plan.default_colors,
         plan.agent_session,
         plan.initial_size,
+        plan.attribution,
     ) {
         Ok(Some(id)) => Ok(id),
         Ok(None) => {
@@ -2220,7 +2230,7 @@ async fn refuse_vanished_pane_handle(
         "SPAWN_RESOURCE: spawn succeeded but TerminalHandle vanished",
     );
     state.with_mut(|s| {
-        s.reap_terminal(core_terminal_id);
+        let _ = super::client::reap_pane_journaling_close(s, core_terminal_id);
     });
     refuse_spawn(
         out_tx,
@@ -2464,7 +2474,7 @@ fn spawn_terminal_output_pump(
                 | PumpFault::ReplayAbandoned => {}
                 PumpFault::GenerationLost => {
                     pump_state.with_mut(|s| {
-                        s.reap_terminal(core_terminal_id);
+                        let _ = super::client::reap_pane_journaling_close(s, core_terminal_id);
                     });
                     pump_connection_token.cancel();
                 }
@@ -2524,7 +2534,7 @@ impl SpawnPublication<'_> {
     /// generation for it.
     fn reap(&self) {
         self.state.with_mut(|s| {
-            s.reap_terminal(self.core_terminal_id);
+            let _ = super::client::reap_pane_journaling_close(s, self.core_terminal_id);
         });
     }
 
@@ -2541,21 +2551,6 @@ impl SpawnPublication<'_> {
             }))
             .await
             .is_ok()
-    }
-
-    /// phux-y2t: fan a `pane_spawned` agent event to event-stream
-    /// subscribers (SPEC §7.5). The new pane's wire id rides the
-    /// `EVENT` envelope; server-wide subscribers and any per-pane
-    /// subscribers for this id receive it.
-    fn announce_pane_spawned(&self) {
-        broadcast_event(
-            self.state,
-            Some(&self.wire_terminal_id),
-            &AgentEvent::ResourceSpawned {
-                kind: phux_protocol::ids::ResourceKind::Terminal,
-                parent: None,
-            },
-        );
     }
 
     /// Capture the pane's first native checkpoint. `None` once the actor is
@@ -2679,7 +2674,6 @@ impl SpawnPublication<'_> {
             replay: publication.replay,
             live: Some(publication.live),
         });
-        self.announce_pane_spawned();
     }
 
     /// Capture the pane's first synthesized snapshot and the actor cut it was
@@ -2753,7 +2747,6 @@ impl SpawnPublication<'_> {
             replay: Vec::new(),
             live: None,
         });
-        self.announce_pane_spawned();
     }
 }
 
@@ -4798,8 +4791,6 @@ mod tests {
                 consumer_attach,
                 consumer_detach: mpsc::channel(8).0,
                 consumer_ack: mpsc::channel(8).0,
-                subscribe_to_events: mpsc::channel(8).0,
-                unsubscribe_from_events: mpsc::channel(8).0,
                 upgrade: mpsc::channel(8).0,
                 control: mpsc::channel(8).0,
                 facet: crate::resource::ResourceFacetHandle::Terminal(

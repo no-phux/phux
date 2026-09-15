@@ -12,21 +12,23 @@ use crate::agent_detect::DetectedState;
 
 impl TerminalActor {
     /// Wire an agent-event sink (SPEC §7.5, phux-y2t). The actor emits
-    /// `bell` / `title_changed` / `dirty` / `idle` / `command_*` events to
-    /// `sink`; the runtime drains it and fans each event out to
-    /// event-stream subscribers scoped to this pane. Called by the spawn
-    /// path before the actor is handed to `spawn_local`.
-    pub fn set_event_sink(&mut self, sink: mpsc::Sender<AgentEvent>) {
-        self.event_sink = Some(sink);
+    /// every semantic event it sources — `bell` / `title_changed` /
+    /// `dirty` / `idle` / `command_*` / `cwd_changed` and the supervisory
+    /// `terminal_control` — to `sink`; the runtime drains it into the
+    /// server-wide event journal (ADR-0123), which is the only fan-out.
+    /// Called by the spawn path before the actor is handed to
+    /// `spawn_local`.
+    pub fn set_event_sink(&mut self, sink: impl Into<crate::resource::event_sink::EventSink>) {
+        self.event_sink = Some(sink.into());
     }
 
-    /// Best-effort agent-event emission (SPEC §7.5). `try_send` so a full
-    /// sink drops the event rather than stalling the actor — the event
-    /// stream is an accelerator, never a guarantee. No-op when no sink is
-    /// wired (the common test path).
+    /// Emit one agent event without blocking the actor. A full sink drops
+    /// the event and counts the drop, which the drain journals as a
+    /// `source_gap` for this pane (ADR-0123). No-op when no sink is wired
+    /// (the common test path).
     pub(super) fn emit_event(&self, event: AgentEvent) {
         if let Some(sink) = self.event_sink.as_ref() {
-            let _ = sink.try_send(event);
+            sink.emit(event);
         }
     }
 
@@ -207,8 +209,6 @@ impl TerminalActor {
     /// - `dirty` — the chunk mutated the grid (a new output burst began).
     ///   Coalesced: at most one `dirty` per burst; the settling `idle`
     ///   fires from the tick arm.
-    /// - `OutputReceived` — broadcast to semantic event subscribers.
-    /// - `GridChanged` — broadcast to semantic event subscribers.
     ///
     /// `command_started` / `command_finished` (phux-foz.4) — sourced from a
     /// direct OSC-133 scan of the raw chunk (see [`osc133`]): `C` emits
@@ -231,7 +231,7 @@ impl TerminalActor {
         let title_changed = self.refresh_title();
         let marks = self.osc133.feed(chunk);
         self.observe_marks(&marks);
-        if self.event_sink.is_none() && self.core.has_no_event_subscribers() {
+        if self.event_sink.is_none() {
             return;
         }
         self.output_since_idle_tick = true;
@@ -240,13 +240,9 @@ impl TerminalActor {
         // burst arrive in stream order.
         for mark in marks {
             match mark {
-                osc133::OscMark::CommandStart => {
-                    self.emit_event(AgentEvent::CommandStarted);
-                    self.broadcast_agent_event(&AgentEvent::CommandStarted);
-                }
+                osc133::OscMark::CommandStart => self.emit_event(AgentEvent::CommandStarted),
                 osc133::OscMark::CommandEnd { exit_code } => {
                     self.emit_event(AgentEvent::CommandFinished { exit_code });
-                    self.broadcast_agent_event(&AgentEvent::CommandFinished { exit_code });
                     // The command just finished: the shell is back at a
                     // prompt and any `cd` has landed. Re-query the kernel
                     // cwd and announce a change.
@@ -294,10 +290,6 @@ impl TerminalActor {
         if !self.in_output_burst {
             self.in_output_burst = true;
             self.emit_event(AgentEvent::Dirty);
-            if !self.dirty_event_emitted_this_burst {
-                self.broadcast_agent_event(&AgentEvent::Dirty);
-                self.dirty_event_emitted_this_burst = true;
-            }
         }
     }
 
@@ -357,9 +349,7 @@ impl TerminalActor {
         let had_output = std::mem::take(&mut self.output_since_idle_tick);
         if self.in_output_burst && !had_output {
             self.in_output_burst = false;
-            self.dirty_event_emitted_this_burst = false;
             self.emit_event(AgentEvent::Idle);
-            self.broadcast_agent_event(&AgentEvent::Idle);
             // phux-foz.4: an output burst settling is the fallback prompt
             // boundary for shells without OSC-133 integration — a `cd`
             // echoes a prompt (burst), settles (idle), and the kernel cwd
@@ -393,21 +383,13 @@ impl TerminalActor {
             return;
         }
         self.last_known_cwd.borrow_mut().clone_from(&cwd);
-        self.emit_event(AgentEvent::CwdChanged { cwd: cwd.clone() });
-        self.broadcast_agent_event(&AgentEvent::CwdChanged { cwd });
-    }
-
-    /// Fan an `AgentEvent` out to every event subscriber whose filter admits
-    /// it. The subscriber registry and the wire id stamped on the frame are
-    /// the core's; this engine only decides *when* an event happens.
-    pub(super) fn broadcast_agent_event(&self, event: &AgentEvent) {
-        self.core.fan_out_event(event);
+        self.emit_event(AgentEvent::CwdChanged { cwd });
     }
 
     /// Handle a supervisory [`ControlRequest`] (ADR-0033): a lease-change
     /// broadcast or a process signal. The input lease lives in `ServerState`;
-    /// this actor is the emitter (it owns the event-subscriber list and the
-    /// lifecycle) and the signal deliverer (it owns the PTY child pid).
+    /// this actor is the emitter (it owns the lifecycle the event reports)
+    /// and the signal deliverer (it owns the PTY child pid).
     pub(super) fn handle_control_request(&mut self, req: ControlRequest) {
         match req {
             ControlRequest::LeaseChanged {
@@ -598,8 +580,10 @@ impl TerminalActor {
         Ok(())
     }
 
-    /// Build and broadcast an [`AgentEvent::TerminalControl`] (ADR-0033)
-    /// stamped with this actor's current lifecycle.
+    /// Emit an [`AgentEvent::TerminalControl`] (ADR-0033) carrying this
+    /// actor's current lifecycle. It rides the same sink as every other
+    /// event, so it is journaled and reaches both subscribe verbs; the
+    /// drain attributes the stamp to `actor`.
     pub(super) fn emit_terminal_control(
         &self,
         action: ControlAction,
@@ -607,7 +591,7 @@ impl TerminalActor {
         actor: Option<phux_protocol::ClientId>,
         exit_status: Option<i32>,
     ) {
-        self.broadcast_agent_event(&AgentEvent::TerminalControl {
+        self.emit_event(AgentEvent::TerminalControl {
             lifecycle: self.lifecycle,
             exit_status,
             input_holder,

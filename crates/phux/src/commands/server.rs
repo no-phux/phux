@@ -265,6 +265,8 @@ fn build_server_config(
         seed_command,
         scrollback: defaults.scrollback_limits(),
         agent_log_bytes: defaults.agent_log_bytes,
+        event_journal_entries: defaults.event_journal_entries,
+        event_journal_bytes: defaults.event_journal_bytes,
         cwd_inheritance: defaults.cwd_inheritance,
         term: defaults.term,
         shell,
