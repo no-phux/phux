@@ -1011,6 +1011,9 @@ pub struct TerminalActor {
     /// `process.child` facet reports; captured up front so it still names
     /// the right process after the child is reaped and its pid recycled.
     child_start_ms: Option<u64>,
+    /// The PTY child's pid, kept once a retained pane has let go of its PTY
+    /// (ADR-0124), so `process.child` still names the process that ran.
+    released_child_pid: Option<i32>,
     /// The exit facet, recorded when PTY EOF reaps the child. `None` while
     /// the child runs (or when this actor has no PTY).
     exit: Option<phux_core::process::ProcessExit>,

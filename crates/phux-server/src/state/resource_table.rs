@@ -266,6 +266,22 @@ impl ResourceTable {
         }
     }
 
+    /// A clone of `terminal`'s engine token, while it is registered. A
+    /// retained pane's exit watcher waits on it: every purge cancels it.
+    pub(super) fn token(&self, terminal: ResourceId) -> Option<CancellationToken> {
+        self.tokens.get(&terminal).cloned()
+    }
+
+    /// Register a bare engine token for `terminal`, with no handle.
+    #[cfg(test)]
+    pub(super) fn register_token_for_test(
+        &mut self,
+        terminal: ResourceId,
+        token: CancellationToken,
+    ) {
+        self.tokens.insert(terminal, token);
+    }
+
     // -- subscriptions ------------------------------------------------
 
     /// Subscribers (snapshot) for `terminal`. Returns an empty slice if no

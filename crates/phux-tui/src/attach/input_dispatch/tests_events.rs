@@ -1324,8 +1324,57 @@ async fn dispatch_mouse_two_pane_into(
     std::collections::HashSet<ResourceId>,
     bool,
 ) {
-    dispatch_mouse_two_pane_into_with_journal(overlays, events, seed_optout, seed_vt, cell_px, None)
-        .await
+    dispatch_mouse_two_pane_into_with_journal(
+        overlays,
+        events,
+        seed_optout,
+        seed_vt,
+        cell_px,
+        None,
+        &[],
+    )
+    .await
+}
+
+/// ADR-0124: a pane retained after its process exited takes no input. Keys,
+/// a paste, and a mouse report aimed at it produce no `INPUT_*` frame; the
+/// same key aimed at its live neighbour still goes out.
+#[tokio::test]
+async fn input_to_a_retained_pane_is_dropped_by_the_dispatcher() {
+    let mut overlays = OverlayState::new();
+    let (sent, _, _, _, _) = dispatch_mouse_two_pane_into_with_journal(
+        &mut overlays,
+        vec![
+            press(PhysicalKey::A, Some("a")),
+            press(PhysicalKey::Enter, None),
+        ],
+        &[],
+        &[(tid(1), b"final screen")],
+        (8, 16),
+        None,
+        &[tid(1)],
+    )
+    .await;
+    assert!(
+        sent.is_empty(),
+        "nothing is sent to an exited pane: {sent:?}"
+    );
+
+    let mut overlays = OverlayState::new();
+    let (sent, _, _, _, _) = dispatch_mouse_two_pane_into_with_journal(
+        &mut overlays,
+        vec![press(PhysicalKey::A, Some("a"))],
+        &[],
+        &[],
+        (8, 16),
+        None,
+        &[tid(2)],
+    )
+    .await;
+    assert!(
+        matches!(sent.as_slice(), [FrameKind::InputKey { terminal_id, .. }] if *terminal_id == tid(1)),
+        "a live focused pane still takes input: {sent:?}"
+    );
 }
 
 #[allow(
@@ -1343,6 +1392,7 @@ async fn dispatch_mouse_two_pane_into_with_journal(
     seed_vt: &[(ResourceId, &[u8])],
     cell_px: (u16, u16),
     input_replay: Option<&std::cell::RefCell<crate::attach::input_replay::InputReplayJournal>>,
+    exited: &[ResourceId],
 ) -> (
     Vec<FrameKind>,
     Option<DragGrab>,
@@ -1365,6 +1415,14 @@ async fn dispatch_mouse_two_pane_into_with_journal(
         .collect();
     let (mut engine_kernel, _, mut panes) =
         super::super::pane_state::published_test_state(&entries);
+    for id in exited {
+        if let Some(slot) = panes.get_mut(id) {
+            slot.exited = Some(super::super::pane_state::ExitMark {
+                status: Some(0),
+                signal: None,
+            });
+        }
+    }
     let mut next_request_id = 1;
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
@@ -1496,6 +1554,7 @@ async fn dispatch_queues_paste_then_paste_then_enter_in_terminal_order() {
         &[],
         (8, 16),
         Some(&journal),
+        &[],
     )
     .await;
     assert_eq!(sent.len(), 1, "only A is sent before its reply");

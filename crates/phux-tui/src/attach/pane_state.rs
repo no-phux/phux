@@ -117,6 +117,12 @@ pub(super) struct PaneSlot {
     /// `TerminalControl` events: `Running` until a `Freeze` (SIGSTOP) flips it
     /// to `Frozen`. Read at paint time to render the "FROZEN" chrome badge.
     pub lifecycle: ResourceLifecycle,
+    /// ADR-0124: how this pane's process ended, once it has and the server
+    /// retained the pane. `Some` makes the pane read-only: its last grid
+    /// stays on screen, the chrome shows an "exited N" mark, and input to it
+    /// is dropped. Set from `TerminalControl { action: Exited }` or the
+    /// `ATTACHED` snapshot's exit facet; the pane leaves on `RESOURCE_CLOSED`.
+    pub exited: Option<ExitMark>,
     /// ADR-0033 input-lease holder for this pane (the wire `ClientId` that has
     /// "the wheel"), or `None` when the pane is `Open`. Compared against the
     /// driver's own `ClientId` to render "you" vs another client.
@@ -209,6 +215,7 @@ impl PaneSlot {
             renderer: TerminalRenderer::new()?,
             geometry: (cols.max(1), rows.max(1)),
             lifecycle: ResourceLifecycle::Running,
+            exited: None,
             input_holder: None,
             control_seen: false,
             viewport_scrolled: false,
@@ -488,6 +495,40 @@ pub(super) fn clear_attention_on_input(
         }
         _ => false,
     }
+}
+
+/// How a retained pane's process ended (ADR-0124), as the chrome shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ExitMark {
+    /// `_exit(n)` status, when the server reported one.
+    pub status: Option<i32>,
+    /// The terminating signal, when the server reported one.
+    pub signal: Option<i32>,
+}
+
+impl ExitMark {
+    /// The mark for the exit facet an `ATTACHED` snapshot carries.
+    pub(super) const fn from_facet(facet: &phux_protocol::wire::info::ExitFacet) -> Self {
+        Self {
+            status: facet.exit_status,
+            signal: facet.signal,
+        }
+    }
+
+    /// `exited 3`, `exited signal 9`, or `exited` when neither is known.
+    pub(super) fn label(self) -> String {
+        match (self.status, self.signal) {
+            (Some(code), _) => format!("exited {code}"),
+            (None, Some(signal)) => format!("exited signal {signal}"),
+            (None, None) => "exited".to_owned(),
+        }
+    }
+}
+
+/// ADR-0124: whether `pane` is retained after its process exited. Input to it
+/// is dropped; its last grid stays on screen.
+pub(super) fn pane_exited(panes: &HashMap<ResourceId, PaneSlot>, pane: &ResourceId) -> bool {
+    panes.get(pane).is_some_and(|slot| slot.exited.is_some())
 }
 
 #[cfg(test)]

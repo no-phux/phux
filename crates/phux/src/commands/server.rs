@@ -267,6 +267,16 @@ fn build_server_config(
         agent_log_bytes: defaults.agent_log_bytes,
         event_journal_entries: defaults.event_journal_entries,
         event_journal_bytes: defaults.event_journal_bytes,
+        retain: phux_server::state::RetainPolicy {
+            by_default: defaults.retain_on_exit,
+            default_secs: defaults.retain_on_exit_secs,
+            max_secs: defaults.retain_on_exit_max_secs,
+            // `phux config check` flags a larger value; a config that ships
+            // one anyway is clamped here rather than holding that many grids.
+            max_count: defaults
+                .retain_on_exit_max
+                .min(phux_config::MAX_RETAIN_ON_EXIT_MAX),
+        },
         cwd_inheritance: defaults.cwd_inheritance,
         term: defaults.term,
         shell,

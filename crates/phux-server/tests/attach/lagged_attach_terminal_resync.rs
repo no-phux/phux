@@ -95,6 +95,17 @@ fn burst_cmd(gate: &Path) -> String {
     )
 }
 
+/// The same workload for a pane retained after its exit (ADR-0124): wait for
+/// `gate`, dump, print the marker, and exit at once. Retention keeps the
+/// engine, so the resync a fenced pump is owed still lands after the exit
+/// (phux-fpgl.28).
+fn exiting_burst_cmd(gate: &Path) -> String {
+    format!(
+        "while [ ! -e '{}' ]; do sleep 0.02; done; seq 1 {DUMP_LINES}; echo {TAIL_MARKER}",
+        gate.display(),
+    )
+}
+
 /// Per-generation live-sequence expectation, mirroring the client kernel's
 /// `expect_next_seq`.
 #[derive(Default)]
@@ -181,7 +192,11 @@ fn apply(frame: &FrameKind, oracle: &mut SequenceOracle, screen: &mut Screen) ->
 ///
 /// A second pane rather than the seed pane, so the seed keeps the session
 /// alive for the whole run independently of the burst pane.
-async fn spawn_burst_pane(owner: &mut UnixStream, cmd: String) -> ResourceId {
+async fn spawn_burst_pane(
+    owner: &mut UnixStream,
+    cmd: String,
+    resource: Option<Box<phux_protocol::wire::frame::SpawnResource>>,
+) -> ResourceId {
     send_frame(
         owner,
         &FrameKind::SpawnResource {
@@ -195,7 +210,7 @@ async fn spawn_burst_pane(owner: &mut UnixStream, cmd: String) -> ResourceId {
             owner_terminal: None,
             agent_session: None,
             initial_size: None,
-            resource: None,
+            resource,
         },
     )
     .await;
@@ -260,7 +275,7 @@ fn lagged_attach_terminal_consumer_converges_on_a_replacement_generation() {
 
         let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut owner, &attach_by_name("lag")).await;
-        let pane = spawn_burst_pane(&mut owner, burst_cmd(&gate)).await;
+        let pane = spawn_burst_pane(&mut owner, burst_cmd(&gate), None).await;
 
         let mut watcher = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         let opening = attach_terminal_only(&mut watcher, &pane).await;
@@ -310,6 +325,115 @@ fn lagged_attach_terminal_consumer_converges_on_a_replacement_generation() {
             oracle.generations > 1,
             "consumer converged without a replacement generation ever being published, \
              so this run never actually lagged — the test proves nothing",
+        );
+
+        drop(probe);
+        drop(watcher);
+        drop(owner);
+        let _ = shutdown.send(());
+        let _ = server.await;
+    });
+}
+
+/// Poll `GET_STATE` on `probe` until `pane` is listed as exited (ADR-0124).
+async fn wait_until_exited(probe: &mut UnixStream, pane: &ResourceId) {
+    use phux_protocol::wire::frame::{CommandValue, ResourceLifecycle, StateScope};
+    let started = Instant::now();
+    for request_id in 500.. {
+        assert!(
+            started.elapsed() < HANG_GUARD,
+            "the retained pane never exited"
+        );
+        send_frame(
+            probe,
+            &FrameKind::Command {
+                request_id,
+                command: Command::GetState {
+                    scope: StateScope::Server,
+                },
+            },
+        )
+        .await;
+        let result = phux_server_testkit::await_command_result(probe, request_id).await;
+        let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
+            panic!("GET_STATE failed: {result:?}");
+        };
+        let exited = snapshot
+            .resources
+            .iter()
+            .any(|r| &r.id == pane && matches!(r.lifecycle, ResourceLifecycle::Exited));
+        if exited {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// phux-fpgl.28 with ADR-0124: a fenced consumer of a RETAINED pane whose
+/// child exits while the consumer is behind still converges on the final
+/// screen. The pane keeps its engine after the exit, so the replacement
+/// generation the lagged pump is owed is still published, and the consumer
+/// is not left on a subscription that ends in `RESOURCE_CLOSED` alone.
+#[test]
+fn lagged_consumer_of_a_retained_pane_converges_on_the_final_screen_after_exit() {
+    phux_server::resource::set_output_broadcast_capacity_for_test(TEST_OUTPUT_BROADCAST);
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let gate = tmp.path().join("dump.gate");
+        let mut seed = CommandBuilder::new("/bin/sh");
+        seed.args(["-c", "while :; do sleep 3600; done"]);
+        let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "lag", seed);
+
+        let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut owner, &attach_by_name("lag")).await;
+        let retained =
+            phux_protocol::wire::frame::SpawnResource::default().with_retain_secs(Some(600));
+        let pane = spawn_burst_pane(
+            &mut owner,
+            exiting_burst_cmd(&gate),
+            Some(Box::new(retained)),
+        )
+        .await;
+
+        let mut watcher = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let opening = attach_terminal_only(&mut watcher, &pane).await;
+        let mut oracle = SequenceOracle::default();
+        let mut screen = Screen::new(COLS, ROWS).expect("screen oracle");
+        for frame in &opening {
+            if let Applied::Fatal(what) = apply(frame, &mut oracle, &mut screen) {
+                panic!("subscription failed while opening: {what}");
+            }
+        }
+
+        // The stall, as above, except that the pane now exits right after
+        // its marker, and the consumer is still unread when it does.
+        let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        std::fs::write(&gate, b"").expect("open the dump gate");
+        wait_for_server_screen_text(&mut probe, &pane, TAIL_MARKER, HANG_GUARD).await;
+        wait_until_exited(&mut probe, &pane).await;
+
+        let started = Instant::now();
+        loop {
+            assert!(
+                started.elapsed() < HANG_GUARD,
+                "a lagged consumer of a retained pane never converged after its exit",
+            );
+            let (_type_byte, frame) = recv_typed(&mut watcher).await;
+            assert!(
+                !matches!(&frame, FrameKind::ResourceClosed { terminal_id, .. } if *terminal_id == pane),
+                "a retained pane is not closed at exit",
+            );
+            if let Applied::Fatal(what) = apply(&frame, &mut oracle, &mut screen) {
+                panic!("server ended the subscription instead of resyncing: {what}");
+            }
+            if screen.contains(TAIL_MARKER) {
+                break;
+            }
+        }
+        assert!(
+            oracle.generations > 1,
+            "the consumer never lagged, so the test proves nothing",
         );
 
         drop(probe);

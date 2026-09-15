@@ -141,6 +141,13 @@ pub struct ServerConfig {
     /// (`defaults.event-journal-bytes`, ADR-0123). Whichever bound is
     /// reached first evicts the oldest events.
     pub event_journal_bytes: u32,
+    /// Retain-on-exit settings (`defaults.retain-on-exit*`, ADR-0124): the
+    /// default retention a spawn that omits `retain_secs` gets, what `0`
+    /// means, the cap on any request, and the bound on how many exited
+    /// Terminals are retained at once. The binary populates this from
+    /// `phux_config`; [`Self::with_default_socket`] uses the schema defaults
+    /// (retention off unless a spawner asks).
+    pub retain: crate::state::RetainPolicy,
     /// How a freshly-spawned pane chooses its working directory
     /// (`defaults.cwd-inheritance`, docs/experience.md). Threaded into
     /// shared state so `SPAWN_RESOURCE` resolves the new pane's CWD when
@@ -323,6 +330,7 @@ impl ServerConfig {
             agent_log_bytes: phux_config::DEFAULT_AGENT_LOG_BYTES,
             event_journal_entries: phux_config::DEFAULT_EVENT_JOURNAL_ENTRIES,
             event_journal_bytes: phux_config::DEFAULT_EVENT_JOURNAL_BYTES,
+            retain: crate::state::RetainPolicy::default(),
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
             shell: crate::terminal_actor::resolve_shell(None),
@@ -1150,6 +1158,9 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
             usize::try_from(cfg.event_journal_entries).unwrap_or(usize::MAX),
             usize::try_from(cfg.event_journal_bytes).unwrap_or(usize::MAX),
         );
+        // `defaults.retain-on-exit*` (ADR-0124), before any spawn resolves
+        // its retention.
+        s.set_retain_policy(cfg.retain);
     });
     // Mirror `defaults.cwd-inheritance` so the `SPAWN_RESOURCE` handler
     // resolves a new pane's working directory from the configured policy.
@@ -1412,6 +1423,10 @@ fn resume_session_tree(state: &SharedState, blob: &StateBlob, root_token: &Cance
                     None,
                 );
             }
+            // ADR-0124 §6: a pane the old image retained after its process
+            // exited came across with no PTY, only so it closes through the
+            // ordinary path with `RESOURCE_CLOSED { SERVER_SHUTDOWN }`.
+            state.with_mut(|s| s.close_upgrade_retained(blob));
             info!(
                 sessions = blob.sessions.len(),
                 panes = blob.panes.len(),
@@ -2393,6 +2408,160 @@ mod tests {
     use phux_protocol::caps::ClientCapabilities;
     use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
     use tokio::task::JoinSet;
+
+    /// ADR-0124 §6: a pane retained after its process exited crosses a
+    /// graceful upgrade with no PTY, marked retained, and the resumed image
+    /// closes it through its exit watcher with `RESOURCE_CLOSED
+    /// { SERVER_SHUTDOWN }`.
+    /// Register one Terminal in `state` backed by a running no-PTY actor.
+    /// Returns its core id, its wire id, and its engine token.
+    fn register_seeded_pane(
+        state: &mut crate::state::ServerState,
+        window: phux_core::ids::WindowId,
+    ) -> (
+        phux_core::ids::ResourceId,
+        phux_protocol::ids::ResourceId,
+        CancellationToken,
+    ) {
+        let pane = state.registry_mut().new_terminal(window).expect("pane");
+        let bundle =
+            crate::terminal_actor::TerminalActor::new_with_seed(20, 5, b"seeded").expect("actor");
+        let token = bundle.token;
+        tokio::task::spawn_local(bundle.actor.run());
+        let wire = state.register_resource_handle(pane, bundle.handle, token.clone());
+        (pane, wire, token)
+    }
+
+    /// An old image holding a pane retained after it exited with status 5
+    /// and a running pane that asked to be retained. Returns the image,
+    /// both panes' wire ids (exited, running), and their engine tokens.
+    fn old_image_with_retained_panes() -> (
+        crate::state::ServerState,
+        phux_protocol::ids::ResourceId,
+        phux_protocol::ids::ResourceId,
+        [CancellationToken; 2],
+    ) {
+        let mut old = crate::state::ServerState::new();
+        let sid = old.registry_mut().new_session("main".to_owned());
+        let wid = old.registry_mut().new_window(sid).expect("window");
+        let (exited, exited_wire, exited_token) = register_seeded_pane(&mut old, wid);
+        let (running, running_wire, running_token) = register_seeded_pane(&mut old, wid);
+        let _ = old.build_session_snapshot(sid);
+        old.note_retain_request(running, 60);
+        old.note_retain_request(exited, 60);
+        let _retention = old
+            .retain_exited(exited, phux_core::process::ExitOutcome::exited(5), 1)
+            .expect("retained");
+        (
+            old,
+            exited_wire,
+            running_wire,
+            [exited_token, running_token],
+        )
+    }
+
+    /// The next `RESOURCE_CLOSED` for `wire` on `rx`: its reason and exit
+    /// status.
+    async fn next_close_of(
+        rx: &mut tokio::sync::mpsc::Receiver<Outbound>,
+        wire: &phux_protocol::ids::ResourceId,
+    ) -> (phux_protocol::wire::frame::CloseReason, Option<i32>) {
+        use phux_protocol::wire::frame::FrameKind;
+        loop {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv())
+                .await
+                .expect("RESOURCE_CLOSED arrives");
+            match frame {
+                Some(Outbound::Frame(FrameKind::ResourceClosed {
+                    terminal_id,
+                    reason,
+                    exit_status,
+                    ..
+                })) if &terminal_id == wire => return (reason, exit_status),
+                Some(_) => {}
+                None => panic!("the mailbox closed before RESOURCE_CLOSED"),
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn graceful_upgrade_drops_retained_resources_with_server_shutdown() {
+        use phux_protocol::wire::frame::CloseReason;
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(Box::pin(async {
+                let (old, wire, running_wire, tokens) = old_image_with_retained_panes();
+                let blob = old.build_upgrade_blob(7).await;
+                let crossed = blob
+                    .panes
+                    .iter()
+                    .find(|p| Some(p.wire_id) == wire.local_id())
+                    .expect("the pane is in the blob");
+                assert_eq!(
+                    crossed.retained_exit.map(|exit| exit.exit_status),
+                    Some(Some(5)),
+                    "marked, with its exit, for the new image to close"
+                );
+                let live_blob = blob
+                    .panes
+                    .iter()
+                    .find(|p| Some(p.wire_id) == running_wire.local_id())
+                    .expect("the running pane is in the blob");
+                assert_eq!(
+                    (live_blob.retained_exit, live_blob.retain_secs),
+                    (None, Some(60)),
+                    "a running pane's retention request crosses"
+                );
+                assert_eq!(
+                    (crossed.master_fd, crossed.child_pid),
+                    (None, None),
+                    "no PTY crosses for a retained pane"
+                );
+
+                let resumed = SharedState::new();
+                let root = CancellationToken::new();
+                resume_session_tree(&resumed, &blob, &root);
+                let pane = resumed
+                    .with(|s| s.terminal_from_wire(&wire))
+                    .expect("rebuilt, to be closed");
+                let running_pane = resumed
+                    .with(|s| s.terminal_from_wire(&running_wire))
+                    .expect("the running pane is rebuilt");
+                assert_eq!(
+                    resumed.with(|s| s.retain_request(running_pane)),
+                    Some(60),
+                    "its retention request survived the upgrade"
+                );
+                assert!(
+                    resumed
+                        .with_mut(|s| s.retain_exited(
+                            running_pane,
+                            phux_core::process::ExitOutcome::exited(1),
+                            2
+                        ))
+                        .is_some(),
+                    "so it is still retained at exit"
+                );
+                let (tx, mut rx) = tokio::sync::mpsc::channel(8);
+                resumed.with_mut(|s| {
+                    let client = s.new_client_id();
+                    s.subscribe_terminal(client, pane, Some(tx));
+                });
+                assert_eq!(
+                    next_close_of(&mut rx, &wire).await,
+                    (CloseReason::ServerShutdown, Some(5)),
+                    "closed as a shutdown, carrying the exit it was retained with"
+                );
+                assert!(
+                    resumed.with(|s| s.registry().resource(pane).is_none()),
+                    "the resumed image reaped it"
+                );
+                for token in &tokens {
+                    token.cancel();
+                }
+            }))
+            .await;
+    }
 
     /// phux-c6g6: the whole point of `PHUX_NO_AUTO_LISTEN` is to skip the
     /// `tailscale` shell-out, not just to discard its answer afterward. This

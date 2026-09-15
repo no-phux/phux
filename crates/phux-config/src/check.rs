@@ -296,6 +296,20 @@ fn defaults_findings(
         );
     }
     event_journal_findings(defaults, provenance, findings);
+    if defaults.retain_on_exit_max > crate::MAX_RETAIN_ON_EXIT_MAX {
+        push_semantic(
+            findings,
+            provenance,
+            "defaults.retain-on-exit-max".to_owned(),
+            Fault::BadValue,
+            format!(
+                "{} exceeds the accepted maximum of {} retained panes; each one holds its grid \
+                 and history until it is purged",
+                defaults.retain_on_exit_max,
+                crate::MAX_RETAIN_ON_EXIT_MAX,
+            ),
+        );
+    }
 }
 
 /// The two event-journal bounds (ADR-0123): a value above either ceiling is

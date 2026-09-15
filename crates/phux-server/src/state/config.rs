@@ -164,6 +164,12 @@ pub(super) struct ServerConfig {
     /// session tree is seeded, and is consulted only while a live session
     /// still has this name. It never authorizes creation.
     pub(super) pre_seeded_session: Option<String>,
+    /// Retain-on-exit settings (`defaults.retain-on-exit*`, ADR-0124),
+    /// read by `SPAWN_RESOURCE` to resolve a spawn's retention and by the
+    /// exit watcher to bound the retained set. Set by the runtime via
+    /// [`super::ServerState::set_retain_policy`]; defaults to the schema
+    /// defaults (retention off unless asked for).
+    pub(super) retain: super::retained::RetainPolicy,
 }
 
 impl Default for ServerConfig {
@@ -186,6 +192,7 @@ impl Default for ServerConfig {
             attach_create_seeds_pty: false,
             attach_create_seed_command: None,
             pre_seeded_session: None,
+            retain: super::retained::RetainPolicy::default(),
         }
     }
 }
