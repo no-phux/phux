@@ -87,8 +87,9 @@ pub(crate) fn catalog() -> Value {
                     "target": { "type": "string", "description": TARGET_DESC },
                     "scrollback": { "type": "number", "description": "Include scrollback history. 0 = all retained history; N = the most-recent N rows. Omit for the viewport only." },
                     "cells": { "type": "boolean", "description": "When true, include per-cell OSC-133 marks and styles. Default false." },
-                    "tail": { "type": "number", "description": "Return only the last N rendered rows (history, then viewport). 0 = all, capped at 10000. The viewport is a floor — a grid is never returned in part — so a window narrower than the viewport returns more rows than asked, never fewer, and `truncated` reports what was dropped." },
-                    "unwrap": { "type": "boolean", "description": "Join soft-wrapped rows into logical lines (rows as written, not as painted), so a match straddling a wrap is findable. Cannot be combined with `cells`: cell coordinates are grid coordinates and do not survive the join." },
+                    "format": { "type": "string", "enum": ["html", "vt"], "description": "Render through the server's libghostty-vt Formatter instead of the lines/cells projection: 'html' for inline-styled markup, 'vt' for re-playable VT escape sequences (base64 in the `rendered.data` field). Populates the reply's `rendered` field. Cannot be combined with `cells`." },
+                    "tail": { "type": "number", "description": "Return only the last N rendered rows (history, then viewport). 0 = all, capped at 10000. The viewport is a floor — a grid is never returned in part — so a window narrower than the viewport returns more rows than asked, never fewer, and `truncated` reports what was dropped. With `format`, this instead bounds how far back the rendered capture reaches (same request as `scrollback`)." },
+                    "unwrap": { "type": "boolean", "description": "Join soft-wrapped rows into logical lines (rows as written, not as painted), so a match straddling a wrap is findable. Cannot be combined with `cells`: cell coordinates are grid coordinates and do not survive the join. With `format`, this instead asks the server's Formatter to join soft-wrapped rows in the rendered capture." },
                     "socket": { "type": "string" }
                 }
             }
@@ -296,6 +297,7 @@ async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
     let cells = bool_arg(args, "cells").unwrap_or(false);
     let tail = u32_arg(args, "tail");
     let unwrap = bool_arg(args, "unwrap").unwrap_or(false);
+    let format = snapshot_format_arg(args)?;
 
     if unwrap && cells {
         return Err(ToolError::new(
@@ -303,28 +305,61 @@ async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
              coordinates and do not survive the join",
         ));
     }
+    if format.is_some() && cells {
+        return Err(ToolError::new(
+            "`format` cannot be combined with `cells`: a rendered capture carries \
+             no per-cell projection",
+        ));
+    }
     if tail.is_some() || unwrap {
-        return snapshot_projected(args, scrollback, cells, tail, unwrap).await;
+        return snapshot_projected(args, scrollback, cells, tail, unwrap, format).await;
     }
 
     let view = state::get_state(&socket).await?;
     let terminal_id = resolve_one(&socket, &selector, &view).await?;
-    let screen =
-        phux_client::snapshot::get_screen_scrollback(&socket, terminal_id, scrollback, cells)
-            .await?;
+    let screen = phux_client::snapshot::get_screen_scrollback_format(
+        &socket,
+        terminal_id,
+        scrollback,
+        cells,
+        format.map_or(0, format_wire_byte),
+    )
+    .await?;
     serde_json::to_value(&screen)
         .map_err(|err| ToolError::new(format!("failed to serialize screen: {err}")))
 }
 
-/// The `tail`/`unwrap` half of [`phux_snapshot`], executed as canonical
-/// `phux snapshot --json` so the ADR-0077 projection has exactly one
-/// implementation.
+/// Read and validate the `format` argument: `None` when absent, otherwise
+/// `"html"` or `"vt"` (D9); any other string is a usage error.
+fn snapshot_format_arg(args: &Value) -> Result<Option<&str>, ToolError> {
+    match str_arg(args, "format") {
+        None => Ok(None),
+        Some(value @ ("html" | "vt")) => Ok(Some(value)),
+        Some(other) => Err(ToolError::new(format!(
+            "unknown `format`: {other:?} (expected \"html\" or \"vt\")"
+        ))),
+    }
+}
+
+/// `GET_SCREEN`'s wire byte for a validated `format` string.
+fn format_wire_byte(format: &str) -> u8 {
+    if format == "html" {
+        phux_client::snapshot::SCREEN_FORMAT_HTML
+    } else {
+        phux_client::snapshot::SCREEN_FORMAT_VT
+    }
+}
+
+/// The `tail`/`unwrap`/`format` half of [`phux_snapshot`], executed as
+/// canonical `phux snapshot --json` so the ADR-0077 projection (and now
+/// the D9 rendering) has exactly one implementation.
 async fn snapshot_projected(
     args: &Value,
     scrollback: Option<u32>,
     cells: bool,
     tail: Option<u32>,
     unwrap: bool,
+    format: Option<&str>,
 ) -> Result<Value, ToolError> {
     let mut argv = vec!["snapshot".to_owned(), "--json".to_owned()];
     if let Some(scrollback) = scrollback {
@@ -332,6 +367,9 @@ async fn snapshot_projected(
     }
     if cells {
         argv.push("--cells".to_owned());
+    }
+    if let Some(format) = format {
+        argv.extend(["--format".to_owned(), format.to_owned()]);
     }
     if let Some(tail) = tail {
         argv.extend(["--tail".to_owned(), tail.to_string()]);
@@ -1069,6 +1107,8 @@ mod tests {
         let props = &snap["inputSchema"]["properties"];
         assert_eq!(props["scrollback"]["type"], json!("number"));
         assert_eq!(props["cells"]["type"], json!("boolean"));
+        assert_eq!(props["format"]["type"], json!("string"));
+        assert_eq!(props["format"]["enum"], json!(["html", "vt"]));
         // snapshot's selector is optional (no `required`).
         assert!(snap["inputSchema"].get("required").is_none());
 
@@ -1401,6 +1441,23 @@ mod tests {
         assert_eq!(bool_arg(&json!({ "cells": true }), "cells"), Some(true));
         assert_eq!(bool_arg(&json!({ "cells": false }), "cells"), Some(false));
         assert_eq!(bool_arg(&json!({ "cells": "yes" }), "cells"), None);
+    }
+
+    /// `snapshot_format_arg` (D9): absent is `None`, `"html"`/`"vt"` pass
+    /// through, anything else is a usage error naming the bad value.
+    #[test]
+    fn snapshot_format_arg_validates_the_closed_vocabulary() {
+        assert_eq!(snapshot_format_arg(&json!({})).unwrap(), None);
+        assert_eq!(
+            snapshot_format_arg(&json!({ "format": "html" })).unwrap(),
+            Some("html"),
+        );
+        assert_eq!(
+            snapshot_format_arg(&json!({ "format": "vt" })).unwrap(),
+            Some("vt"),
+        );
+        let err = snapshot_format_arg(&json!({ "format": "png" })).unwrap_err();
+        assert!(err.0.contains("png"), "{}", err.0);
     }
 
     /// `parse_target` is the optional-selector front door (snapshot/wait):

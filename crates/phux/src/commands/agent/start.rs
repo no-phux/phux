@@ -1659,6 +1659,8 @@ mod tests {
             truncated: false,
             truncated_reason: None,
             title: None,
+            rendered: None,
+            rendered_error: None,
         }
     }
 

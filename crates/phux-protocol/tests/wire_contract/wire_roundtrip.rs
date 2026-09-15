@@ -1988,23 +1988,63 @@ fn command_signal_terminal_round_trips() {
 #[test]
 fn command_get_screen_round_trips() {
     // GET_SCREEN (tag 0x07): ResourceId + a trailing optional<u32>
-    // `request_scrollback` (phux-o1v) + a trailing bool `cells` (phux-8yl).
-    // The reply is OK_WITH(JSON(..)) — covered by the generic
-    // CommandValue::Json roundtrip. Exercise every scrollback state crossed
-    // with both `cells` values so the presence byte + value + cells bool
-    // round-trip.
+    // `request_scrollback` (phux-o1v) + a trailing bool `cells` (phux-8yl)
+    // + a trailing u8 `format` (D9). The reply is OK_WITH(JSON(..)) —
+    // covered by the generic CommandValue::Json roundtrip. Exercise every
+    // scrollback state crossed with both `cells` values and every defined
+    // `format` value so the presence byte + value + cells bool + format
+    // byte all round-trip.
     for request_scrollback in [None, Some(0), Some(42)] {
         for cells in [false, true] {
-            assert_round_trip(&FrameKind::Command {
-                request_id: 11,
-                command: Command::GetScreen {
-                    terminal_id: ResourceId::local(5),
-                    request_scrollback,
-                    cells,
-                },
-            });
+            for format in [0, 1, 2] {
+                assert_round_trip(&FrameKind::Command {
+                    request_id: 11,
+                    command: Command::GetScreen {
+                        terminal_id: ResourceId::local(5),
+                        request_scrollback,
+                        cells,
+                        format,
+                    },
+                });
+            }
         }
     }
+}
+
+#[test]
+fn get_screen_without_format_is_byte_identical() {
+    // Backward-compat (D9): a GET_SCREEN frame encoded after `cells`
+    // landed but before `format` existed has a body that ends after
+    // `cells`. A current decoder must read the missing `format` as `0`
+    // (no rendering), not error on EOF — the same `at_body_end` guard
+    // `cells` itself relies on for the pre-`cells` shape below.
+    let expected = FrameKind::Command {
+        request_id: 7,
+        command: Command::GetScreen {
+            terminal_id: ResourceId::local(9),
+            request_scrollback: Some(3),
+            cells: true,
+            format: 0,
+        },
+    };
+
+    // Command::GetScreen positional value, minus the trailing format byte.
+    let mut get_screen = vec![0x07u8]; // COMMAND_TAG_GET_SCREEN
+    get_screen.push(0x00); // RESOURCE_ID_TAG_LOCAL
+    get_screen.extend_from_slice(&9u32.to_be_bytes());
+    get_screen.push(0x01); // request_scrollback = Some
+    get_screen.extend_from_slice(&3u32.to_be_bytes());
+    get_screen.push(0x01); // cells = true
+    // no format byte
+
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &7u32.to_be_bytes()); // field::command::REQUEST_ID
+    tlv_field(&mut fields, 2, &get_screen); // field::command::COMMAND
+    let buf = framed_tlv(0x31, &fields);
+
+    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
+    assert_eq!(decoded, expected, "absent format byte must decode as 0");
+    assert!(tail.is_empty());
 }
 
 #[test]
@@ -2024,6 +2064,7 @@ fn command_get_screen_decodes_pre_cells_body_as_false() {
             terminal_id: ResourceId::local(9),
             request_scrollback: Some(3),
             cells: false,
+            format: 0,
         },
     };
 
@@ -2068,6 +2109,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
             terminal_id: ResourceId::local(2),
             request_scrollback: None,
             cells: true,
+            format: 0,
         },
     };
     let mut second_buf = BytesMut::new();
@@ -2085,6 +2127,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
                 terminal_id: ResourceId::local(1),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
         },
         "first frame's absent cells must default false, not steal frame 2's byte",

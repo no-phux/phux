@@ -3330,6 +3330,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
             terminal_id,
             request_scrollback,
             cells,
+            format,
         } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
@@ -3338,6 +3339,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                     terminal_id: ResourceId::local(id),
                     request_scrollback: *request_scrollback,
                     cells: *cells,
+                    format: *format,
                 },
             ))
         }
@@ -3585,6 +3587,7 @@ mod tests {
             terminal_id: ResourceId::satellite("devbox", 7),
             request_scrollback: Some(10),
             cells: true,
+            format: 0,
         };
         let (routed_host, rewritten) = route_to_satellite(&command).expect("satellite target");
         assert_eq!(routed_host, host());
@@ -3594,6 +3597,7 @@ mod tests {
                 terminal_id: ResourceId::local(7),
                 request_scrollback: Some(10),
                 cells: true,
+                format: 0,
             }
         );
     }
@@ -3605,6 +3609,7 @@ mod tests {
                 terminal_id: ResourceId::local(7),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             })
             .is_none()
         );

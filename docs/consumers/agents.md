@@ -365,7 +365,9 @@ listed with `reachable: false` and no sessions.
   "soft_wrap": { "lines": [], "scrollback": [] },
   "truncated": false,
   "truncated_reason": null,
-  "title": "phux"
+  "title": "phux",
+  "rendered": null,
+  "rendered_error": null
 }
 ```
 
@@ -384,7 +386,26 @@ array: `{ col, row, semantic?, style }`. `semantic` is `Input` or
 booleans plus `fg` / `bg`, each a tagged `CellColor` (`default`,
 `palette` `{ index }`, or `rgb` `{ r, g, b }`) so "terminal default"
 is distinct from "explicitly black". The right half of a double-width
-glyph is skipped.
+glyph is skipped. `--format html|vt` fills `rendered`:
+`{ format: "html" | "vt", data }`, rendered through the server's own
+libghostty-vt Formatter, its history window capped at 10000 rows and its
+byte size checked before allocation (over 8 MiB refuses the whole read with
+a `resource_exhausted`-class error, naming the budget) — `data` is UTF-8
+text for `"html"`, standard base64 for `"vt"` (VT output is not guaranteed
+valid UTF-8). `--unwrap` with `--format` asks the Formatter itself to join
+soft-wrapped rows, rather than the client-side `unwrap` this surface uses
+otherwise. When a rendering is requested, `lines`/`scrollback`/`soft_wrap`
+are omitted from the reply (the capture already carries that text) and
+`truncated` reads `false`. `rendered` is `null` when no rendering was
+requested, or when one was requested but the CLI/MCP call itself failed
+(see below); `rendered_error` names a same-server render failure that the
+plain projection survived. **No server negotiation gates `--format`**: a
+server predating it silently answers as if it were absent, so the CLI/MCP
+layer detects a missing `rendered` after a non-`None` request and reports a
+typed failure (`phux snapshot`: exit 2; MCP: a tool error) instead of quietly
+returning success with no capture. Text output writes `data` straight to
+stdout instead of the boxed view (VT decoded to raw bytes); `--json` keeps
+the whole document.
 
 ### `run` — `RunResult` (no `schema_version`)
 
@@ -807,7 +828,13 @@ from raw bytes, and prefer the higher rung:
    viewport or scrollback window — not a typed fact about the process
    behind it. Matching text is fuzzier than checking a typed field, and a
    truncated or soft-wrapped read can misrepresent a line the process
-   never emitted that way.
+   never emitted that way. `snapshot --format html|vt` (`../spec/L1.md`
+   §6.1) rides the same rung: the server renders the capture through its
+   own libghostty-vt Formatter (never reimplemented, per CONTRIBUTING)
+   into HTML with inline styles or re-playable VT escape sequences, for a
+   consumer that wants styling or an exact byte-for-byte replay rather
+   than the plain-text/JSON projection — still a rendered projection, not
+   a typed fact.
 4. **Synthetic input.** `send-keys`, `paste`, and their wire form
    (`ROUTE_INPUT` fire-and-forget, `APPLY_INPUT` acknowledged). This is
    the fallback of last resort: acknowledgment proves kernel tty-queue

@@ -2841,11 +2841,16 @@ Flags:
                         viewport, then the viewport). Bare `--tail` returns 80;
                         `--tail 0` returns all, capped at 10000. The viewport is
                         a floor — a grid is never returned in part — and
-                        `truncated` reports any dropped rows.
+                        `truncated` reports any dropped rows. With `--format`,
+                        this instead bounds how far back the rendered capture
+                        reaches (same wire request as `--scrollback N`); the
+                        server applies the same 10000-row cap regardless.
       --unwrap          Join soft-wrapped rows into logical lines (rows as
                         written, not as painted). Cannot be combined with
                         `--cells`: cell coordinates are grid coordinates and do
-                        not survive the join.
+                        not survive the join. With `--format`, this instead asks
+                        the SERVER's Formatter to join soft-wrapped rows in the
+                        rendered capture.
       --rendered        Emit the CLIENT's composited multi-pane view — the
                         assembled frame (layout tiling + dividers + status bar)
                         as the human's glass shows it — as dense structured
@@ -2854,6 +2859,15 @@ Flags:
                         Mutually exclusive with `--cells` / `--scrollback` /
                         `--tail` / `--unwrap`; sizes the composite via `--cols`
                         / `--rows`.
+      --format <FMT>    Render through the SERVER's libghostty-vt Formatter
+                        instead of the lines/cells JSON: `html` for
+                        inline-styled markup, `vt` for re-playable VT escape
+                        sequences. Text output writes the capture verbatim to
+                        stdout (HTML as UTF-8, VT as its raw decoded byte
+                        stream); `--json` instead emits the whole `ScreenState`
+                        document with the `rendered` field populated. Mutually
+                        exclusive with `--cells` and `--rendered`.
+                        [possible values: html, vt]
       --cols <COLS>     Composited viewport width for `--rendered` (no TTY to
                         measure).
                         (default: 80)

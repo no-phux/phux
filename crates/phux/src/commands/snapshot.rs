@@ -2,6 +2,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use base64::Engine as _;
 use phux_client::attach::AttachError;
 use phux_client::snapshot::{
     ROW_WINDOW_ALL, RenderedFrame, ScreenState, SoftWrap, TRUNCATED_ROW_WINDOW, row_window,
@@ -10,7 +11,7 @@ use phux_protocol::wire::frame::AttachTarget;
 use phux_server::runtime::default_socket_path;
 use phux_tui::attach::run_headless_rendered;
 
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{SnapshotFormat, cli_runtime, json_err, parse_selector, resolve_target};
 
 /// Options for the structured pane read (ADR-0022 §2, ADR-0077).
 ///
@@ -28,6 +29,9 @@ pub(crate) struct ReadOpts {
     pub tail: Option<u32>,
     /// Join soft-wrapped rows into logical lines (ADR-0077 §2).
     pub unwrap: bool,
+    /// Render through the server's libghostty-vt Formatter instead of the
+    /// lines/cells JSON (`--format html|vt`, D9).
+    pub format: Option<SnapshotFormat>,
 }
 
 /// Options for the composited `--rendered` view (`phux-l5xa`). Bundled so the
@@ -55,9 +59,15 @@ pub(crate) struct RenderedOpts {
 /// branch ATTACHES rather than reading side-effect-free.
 ///
 /// `--tail` / `--unwrap` ([`ReadOpts`], ADR-0077) are **client-side
-/// projections** of the same reply: there is no new wire field, and the
-/// server's own read stays exactly the side-effect-free `GET_SCREEN` it
-/// already was.
+/// projections** of the plain `lines`/`scrollback` reply: there is no new
+/// wire field for `--tail`, and the server's own read stays exactly the
+/// side-effect-free `GET_SCREEN` it already was. With `--format`
+/// (D9), the server omits `lines`/`scrollback` from the reply (review
+/// item 2(c)), so those projections have nothing to act on; `--tail N`
+/// still reaches the server as `request_scrollback` (bounding what the
+/// *rendered* capture covers, same as `--scrollback N`), and `--unwrap`
+/// rides `format`'s high bit so the engine's own Formatter joins
+/// soft-wrapped capture rows instead.
 pub(crate) fn run_snapshot(
     session: Option<&str>,
     json: bool,
@@ -84,6 +94,7 @@ pub(crate) fn run_snapshot(
     let cells = read.cells;
     let unwrap = read.unwrap;
     let tail = read.tail;
+    let format = read.format;
 
     rt.block_on(async move {
         let terminal_id = match resolve_target(&socket_path, &selector, "snapshot", json).await {
@@ -93,18 +104,39 @@ pub(crate) fn run_snapshot(
 
         // Read the screen — side-effect-free, safe to poll. `scrollback`
         // maps straight onto the wire request: None/Some(0=all)/Some(n);
-        // `cells` requests the per-cell semantic/style projection.
-        let screen = match phux_client::snapshot::get_screen_scrollback(
+        // `cells` requests the per-cell semantic/style projection; `format`
+        // additionally asks the server to render through libghostty-vt's
+        // Formatter (D9), with `--unwrap` riding its high bit.
+        let format_byte = format.map_or(0, |f| {
+            let mut byte = f.wire_byte();
+            if unwrap {
+                byte |= phux_client::snapshot::SCREEN_FORMAT_UNWRAP;
+            }
+            byte
+        });
+        let screen = match phux_client::snapshot::get_screen_scrollback_format(
             &socket_path,
             terminal_id,
             request_scrollback,
             cells,
+            format_byte,
         )
         .await
         {
             Ok(screen) => screen,
             Err(err @ AttachError::Io(_)) => {
                 return json_err::report_no_server(json, &err, &socket_path, "snapshot");
+            }
+            Err(AttachError::FormatUnsupported(message)) => {
+                return json_err::emit(
+                    json,
+                    &json_err::CliError::new(
+                        json_err::codes::FORMAT_UNSUPPORTED,
+                        message,
+                        "retry without --format, or upgrade the phux server",
+                    ),
+                    2,
+                );
             }
             Err(err) => {
                 eprintln!("phux: snapshot failed: {err}");
@@ -124,6 +156,8 @@ pub(crate) fn run_snapshot(
                     ExitCode::FAILURE
                 }
             }
+        } else if format.is_some() {
+            print_rendered_capture(&screen)
         } else if unwrap {
             print_screen_rows(&screen);
             ExitCode::SUCCESS
@@ -132,6 +166,28 @@ pub(crate) fn run_snapshot(
             ExitCode::SUCCESS
         }
     })
+}
+
+/// `--format html|vt`: write the server's rendered capture straight to
+/// stdout — HTML as UTF-8 text, VT as the raw decoded byte stream — rather
+/// than through `outln!`, which would insert a newline the capture does
+/// not own. `--json` bypasses this entirely and emits the whole
+/// `ScreenState` document instead, `rendered` field included.
+fn print_rendered_capture(screen: &ScreenState) -> ExitCode {
+    let Some(rendered) = screen.rendered.as_ref() else {
+        eprintln!("phux: snapshot: server returned no rendered capture");
+        return ExitCode::FAILURE;
+    };
+    if rendered.format == phux_client::snapshot::RENDERED_FORMAT_VT {
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&rendered.data) else {
+            eprintln!("phux: snapshot: malformed base64 in rendered VT capture");
+            return ExitCode::FAILURE;
+        };
+        crate::output::bytes(&bytes);
+    } else {
+        crate::output::bytes(rendered.data.as_bytes());
+    }
+    ExitCode::SUCCESS
 }
 
 /// The history window to ask the server for.
@@ -358,6 +414,7 @@ mod tests {
             cells: false,
             tail,
             unwrap,
+            format: None,
         }
     }
 

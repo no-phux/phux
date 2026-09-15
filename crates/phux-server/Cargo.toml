@@ -44,6 +44,9 @@ criterion = { workspace = true, optional = true }
 dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
+# `GET_SCREEN --format vt`'s rendered capture is base64 (D9); already in
+# the dep graph via wtransport -> pem, see the workspace justification.
+base64.workspace = true
 # phux-config supplies the canonical scrollback bounds — `ScrollbackLimits`
 # plus the `defaults.history-limit` / `defaults.history-bytes` defaults
 # (`DefaultsCfg::default().scrollback_limits()`) — so

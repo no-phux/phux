@@ -236,6 +236,7 @@ fn get_screen(request_id: u32, terminal_id: WireResourceId) -> FrameKind {
             terminal_id,
             request_scrollback: None,
             cells: false,
+            format: 0,
         },
     )
 }

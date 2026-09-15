@@ -106,6 +106,7 @@ fn get_screen(terminal_id: WireResourceId) -> Command {
         terminal_id,
         request_scrollback: None,
         cells: false,
+        format: 0,
     }
 }
 

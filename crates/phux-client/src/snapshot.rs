@@ -35,9 +35,9 @@ use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{Command, CommandResult, CommandValue};
 
 pub use phux_core::screen::{
-    CursorState, RENDERED_SCHEMA_VERSION, ROW_WINDOW_ALL, ROW_WINDOW_DEFAULT, ROW_WINDOW_MAX,
-    RenderedCell, RenderedFrame, SCHEMA_VERSION, ScreenState, SoftWrap, TRUNCATED_ROW_WINDOW,
-    row_window,
+    CursorState, RENDERED_FORMAT_HTML, RENDERED_FORMAT_VT, RENDERED_SCHEMA_VERSION, ROW_WINDOW_ALL,
+    ROW_WINDOW_DEFAULT, ROW_WINDOW_MAX, RenderedCell, RenderedFrame, RenderedScreen,
+    SCHEMA_VERSION, ScreenState, SoftWrap, TRUNCATED_ROW_WINDOW, row_window,
 };
 
 use crate::attach::AttachError;
@@ -57,6 +57,27 @@ pub async fn get_screen(
 ) -> Result<ScreenState, AttachError> {
     get_screen_scrollback(socket, terminal_id, None, false).await
 }
+
+/// `GET_SCREEN`'s wire byte for "no rendering requested" — today's default
+/// (D9). See [`get_screen_scrollback_format`].
+pub const SCREEN_FORMAT_NONE: u8 = 0;
+
+/// `GET_SCREEN`'s wire byte (low bits) for a libghostty-vt HTML rendering
+/// (D9).
+pub const SCREEN_FORMAT_HTML: u8 = 1;
+
+/// `GET_SCREEN`'s wire byte (low bits) for a libghostty-vt VT rendering
+/// (D9).
+pub const SCREEN_FORMAT_VT: u8 = 2;
+
+/// `GET_SCREEN`'s wire byte high bit.
+///
+/// Join soft-wrapped capture rows via the engine Formatter's own unwrap
+/// (`phux snapshot --format html|vt --unwrap`, D9). Combine with
+/// [`SCREEN_FORMAT_HTML`]/[`SCREEN_FORMAT_VT`] (`format |
+/// SCREEN_FORMAT_UNWRAP`); ignored when combined with
+/// [`SCREEN_FORMAT_NONE`].
+pub const SCREEN_FORMAT_UNWRAP: u8 = 0x80;
 
 /// Read `terminal_id`'s current screen as structured data, optionally
 /// including scrollback history.
@@ -84,9 +105,70 @@ pub async fn get_screen_scrollback(
     request_scrollback: Option<u32>,
     cells: bool,
 ) -> Result<ScreenState, AttachError> {
-    ScreenPollConnection::new(socket)
-        .read(terminal_id, request_scrollback, cells)
-        .await
+    get_screen_scrollback_format(
+        socket,
+        terminal_id,
+        request_scrollback,
+        cells,
+        SCREEN_FORMAT_NONE,
+    )
+    .await
+}
+
+/// Like [`get_screen_scrollback`], additionally requesting a Formatter rendering.
+///
+/// `phux snapshot --format html|vt`, D9: `format` is `GET_SCREEN`'s wire
+/// byte ([`SCREEN_FORMAT_NONE`], [`SCREEN_FORMAT_HTML`] /
+/// [`SCREEN_FORMAT_VT`] optionally combined with [`SCREEN_FORMAT_UNWRAP`]);
+/// when it requests a rendering, the reply's [`ScreenState::rendered`]
+/// carries it.
+///
+/// No feature bit gates `format` (bits are scarce, and a peer that
+/// predates this byte cannot advertise its absence). Instead this detects
+/// the gap client-side: an `Ok` reply to a non-`SCREEN_FORMAT_NONE`
+/// request with no `rendered` field is either a pre-D9 peer that silently
+/// dropped the byte, or a D9-or-later peer whose render failed on its own
+/// engine (non-fatal there — the plain projection still ships). Either
+/// way this returns [`AttachError::FormatUnsupported`] rather than
+/// success with a capture that never arrived; when the server named a
+/// reason (`ScreenState::rendered_error`), the message carries it
+/// verbatim.
+///
+/// # Errors
+///
+/// See [`get_screen_scrollback`]; additionally
+/// [`AttachError::FormatUnsupported`] per the above.
+pub async fn get_screen_scrollback_format(
+    socket: &Path,
+    terminal_id: ResourceId,
+    request_scrollback: Option<u32>,
+    cells: bool,
+    format: u8,
+) -> Result<ScreenState, AttachError> {
+    let screen = ScreenPollConnection::new(socket)
+        .read(terminal_id, request_scrollback, cells, format)
+        .await?;
+    if format != SCREEN_FORMAT_NONE && screen.rendered.is_none() {
+        return Err(AttachError::FormatUnsupported(format_unsupported_message(
+            screen.rendered_error.as_deref(),
+        )));
+    }
+    Ok(screen)
+}
+
+/// The [`AttachError::FormatUnsupported`] message: the server's own
+/// explanation when it gave one, otherwise the generic "either an old
+/// peer or a failed render" statement — the two are indistinguishable
+/// from the reply alone (see [`get_screen_scrollback_format`]).
+fn format_unsupported_message(rendered_error: Option<&str>) -> String {
+    rendered_error.map_or_else(
+        || {
+            "the server returned no rendered capture for --format; it may predate --format \
+             support (upgrade it), or the render may have failed silently"
+                .to_owned()
+        },
+        |detail| format!("the server could not render the requested --format capture: {detail}"),
+    )
 }
 
 /// One persistent control connection for a bounded screen-polling operation.
@@ -114,6 +196,7 @@ impl ScreenPollConnection {
         terminal_id: ResourceId,
         request_scrollback: Option<u32>,
         cells: bool,
+        format: u8,
     ) -> Result<ScreenState, AttachError> {
         let mut recovered = false;
         loop {
@@ -133,6 +216,7 @@ impl ScreenPollConnection {
                         terminal_id: terminal_id.clone(),
                         request_scrollback,
                         cells,
+                        format,
                     },
                 )
                 .await;
@@ -178,5 +262,100 @@ fn decode_screen_reply(result: CommandResult) -> Result<ScreenState, AttachError
             "GET_SCREEN",
             &other,
         ))),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod tests {
+    use tokio::net::UnixListener;
+
+    use phux_protocol::ResourceId;
+
+    use super::{
+        SCREEN_FORMAT_HTML, SCREEN_FORMAT_NONE, format_unsupported_message,
+        get_screen_scrollback_format,
+    };
+    use crate::attach::AttachError;
+    use crate::testkit::{self, ScriptSpec};
+
+    /// A pre-D9 peer's `GET_SCREEN` decoder never reads the trailing
+    /// `format` byte, so it answers `Ok` with no `rendered` key at all —
+    /// exactly `ScreenState::default()`'s shape. `format != 0` against
+    /// that reply must surface a typed refusal, not a silent "succeeded
+    /// but rendered nothing" (D9, review item 1: no feature bit gates a
+    /// byte an old peer cannot know exists).
+    #[tokio::test]
+    async fn old_peer_silently_dropping_format_is_detected_client_side() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("old-peer.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let screen = phux_core::screen::ScreenState {
+            lines: vec!["hi".to_owned()],
+            ..phux_core::screen::ScreenState::default()
+        };
+        let peer = tokio::spawn(testkit::serve_every(listener, move || {
+            ScriptSpec::new().screen(&screen)
+        }));
+
+        let err = get_screen_scrollback_format(
+            &socket,
+            ResourceId::local(1),
+            None,
+            false,
+            SCREEN_FORMAT_HTML,
+        )
+        .await
+        .expect_err("an old peer's silent rendered:None must be refused, not returned as success");
+        assert!(
+            matches!(err, AttachError::FormatUnsupported(_)),
+            "expected FormatUnsupported, got {err:?}"
+        );
+        peer.abort();
+    }
+
+    /// `format: 0` never checks for a `rendered` reply at all, so the same
+    /// old-peer-shaped reply is still an ordinary success.
+    #[tokio::test]
+    async fn format_none_does_not_require_a_rendered_reply() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let socket = dir.path().join("plain.sock");
+        let listener = UnixListener::bind(&socket).expect("bind");
+        let screen = phux_core::screen::ScreenState {
+            lines: vec!["hi".to_owned()],
+            ..phux_core::screen::ScreenState::default()
+        };
+        let peer = tokio::spawn(testkit::serve_every(listener, move || {
+            ScriptSpec::new().screen(&screen)
+        }));
+
+        let screen = get_screen_scrollback_format(
+            &socket,
+            ResourceId::local(1),
+            None,
+            false,
+            SCREEN_FORMAT_NONE,
+        )
+        .await
+        .expect("format: 0 must succeed even against a reply with no rendered field");
+        assert!(screen.rendered.is_none());
+        peer.abort();
+    }
+
+    /// A reply that named why the render failed (`rendered_error`, review
+    /// item 3) must reach the caller's message verbatim, distinguishing
+    /// "the server tried and failed" from "the server never saw the
+    /// request".
+    #[test]
+    fn format_unsupported_message_prefers_the_servers_own_reason() {
+        let generic = format_unsupported_message(None);
+        assert!(generic.contains("upgrade"), "got: {generic}");
+
+        let specific = format_unsupported_message(Some("libghostty: out of memory"));
+        assert!(
+            specific.contains("libghostty: out of memory"),
+            "got: {specific}"
+        );
+        assert_ne!(generic, specific);
     }
 }

@@ -27,7 +27,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// It stays at `3` across the ADR-0077 additions ([`ScreenState::soft_wrap`],
 /// [`ScreenState::truncated`], [`ScreenState::truncated_reason`],
-/// [`ScreenState::title`]). `docs/consumers/agents.md` §4.1 is the governing
+/// [`ScreenState::title`]) and the D9 addition ([`ScreenState::rendered`]).
+/// `docs/consumers/agents.md` §4.1 is the governing
 /// contract and it moves the version only when a key is **removed, renamed,
 /// or retyped**; every one of those four is a new optional key that an older
 /// consumer ignores and an older payload omits. Consumers that need to know
@@ -223,6 +224,37 @@ pub struct SoftWrap {
     pub scrollback: Vec<u32>,
 }
 
+/// [`RenderedScreen::format`] tag for a libghostty-vt HTML rendering.
+pub const RENDERED_FORMAT_HTML: &str = "html";
+
+/// [`RenderedScreen::format`] tag for a libghostty-vt VT rendering.
+pub const RENDERED_FORMAT_VT: &str = "vt";
+
+/// A pane rendered through libghostty-vt's own Formatter.
+///
+/// Never reimplemented here (CONTRIBUTING's extraction ban) — the additive
+/// `GET_SCREEN` fallback surface rung three (`phux snapshot --format
+/// html|vt`, D9): below typed commands and semantic streams, above
+/// synthetic input (`docs/consumers/agents.md`).
+///
+/// `data` is UTF-8 text for [`RENDERED_FORMAT_HTML`]; for
+/// [`RENDERED_FORMAT_VT`] it is standard base64-encoded bytes (the `base64`
+/// crate, on the producing/consuming ends that need to decode it — this
+/// crate is pure data and carries no codec), because VT output interleaves
+/// escape-sequence bytes with arbitrary
+/// style/OSC content and is not guaranteed to be valid UTF-8. `format` is a
+/// string, not a closed enum, so a future rendering a newer server adds
+/// never fails an older consumer's deserialize — the same pattern as
+/// [`ScreenState::truncated_reason`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenderedScreen {
+    /// Which rendering this is: [`RENDERED_FORMAT_HTML`] or
+    /// [`RENDERED_FORMAT_VT`]. Consumers MUST tolerate an unknown value.
+    pub format: String,
+    /// The rendered payload; see the type-level note for the encoding.
+    pub data: String,
+}
+
 /// `skip_serializing_if` helper for [`ScreenState::truncated`]: a `false`
 /// truncation flag is the pre-ADR-0077 shape, so it emits no key at all.
 #[allow(
@@ -333,6 +365,29 @@ pub struct ScreenState {
     /// which is the same fail-safe answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// A libghostty-vt Formatter rendering of the same capture, requested
+    /// via `GET_SCREEN`'s `format` byte (`phux snapshot --format html|vt`,
+    /// D9). `None` when no rendering was requested — including every
+    /// pre-D9 producer, which cannot set this key at all.
+    ///
+    /// `#[serde(default)]` plus `skip_serializing_if` keeps an unrendered
+    /// read byte-identical to the pre-D9 shape: absent means "not
+    /// requested", which is also the fail-safe reading for an older
+    /// producer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered: Option<RenderedScreen>,
+    /// Why [`Self::rendered`] is absent despite a non-zero `format`
+    /// having been requested, when the server can say — a render that
+    /// failed on the server's own engine (D9, review item 3: the failure
+    /// is non-fatal, so the rest of the projection is still returned).
+    /// `None` either means no rendering was requested, or means a
+    /// pre-D9 peer never saw the request at all (its decoder stops
+    /// before the `format` byte) — the two are indistinguishable from
+    /// this field alone; `phux_client::snapshot::get_screen_scrollback_format`
+    /// reports the generic "unsupported or failed" message when this is
+    /// absent and reports this message verbatim when it is present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rendered_error: Option<String>,
 }
 
 impl Default for ScreenState {
@@ -355,6 +410,8 @@ impl Default for ScreenState {
             truncated: false,
             truncated_reason: None,
             title: None,
+            rendered: None,
+            rendered_error: None,
         }
     }
 }
@@ -945,6 +1002,73 @@ mod tests {
             ..ScreenState::default()
         };
         let json = serde_json::to_string(&original).expect("serialize");
+        let decoded: ScreenState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, original);
+    }
+
+    /// A `rendered = None` snapshot must serialize to exactly the pre-D9
+    /// shape: no `rendered` key at all (`skip_serializing_if`).
+    #[test]
+    fn omits_rendered_key_when_none() {
+        let screen = ScreenState {
+            lines: vec!["hi".to_owned()],
+            ..ScreenState::default()
+        };
+        let json = serde_json::to_string(&screen).expect("serialize");
+        assert!(
+            !json.contains("\"rendered\""),
+            "None rendered must not emit a key, got: {json}",
+        );
+    }
+
+    /// A populated `rendered` field round-trips.
+    #[test]
+    fn round_trips_rendered_field() {
+        let original = ScreenState {
+            lines: vec!["hi".to_owned()],
+            rendered: Some(RenderedScreen {
+                format: RENDERED_FORMAT_HTML.to_owned(),
+                data: "<span>hi</span>".to_owned(),
+            }),
+            ..ScreenState::default()
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        assert!(json.contains("\"format\":\"html\""), "got: {json}");
+        let decoded: ScreenState = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded, original);
+    }
+
+    /// A `rendered_error = None` snapshot must serialize to exactly the
+    /// pre-review shape: no `rendered_error` key at all
+    /// (`skip_serializing_if`).
+    #[test]
+    fn omits_rendered_error_key_when_none() {
+        let screen = ScreenState {
+            lines: vec!["hi".to_owned()],
+            ..ScreenState::default()
+        };
+        let json = serde_json::to_string(&screen).expect("serialize");
+        assert!(
+            !json.contains("\"rendered_error\""),
+            "None rendered_error must not emit a key, got: {json}",
+        );
+    }
+
+    /// A populated `rendered_error` round-trips, and can coexist with
+    /// `rendered: None` — the "server saw the request and its render
+    /// failed" case a client distinguishes from "an old peer never saw
+    /// the request at all".
+    #[test]
+    fn round_trips_rendered_error_field() {
+        let original = ScreenState {
+            lines: vec!["hi".to_owned()],
+            rendered: None,
+            rendered_error: Some("libghostty: out of memory".to_owned()),
+            ..ScreenState::default()
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        assert!(json.contains("\"rendered_error\":"), "got: {json}");
+        assert!(!json.contains("\"rendered\":"), "got: {json}");
         let decoded: ScreenState = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded, original);
     }

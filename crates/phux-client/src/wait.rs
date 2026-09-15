@@ -500,6 +500,7 @@ pub async fn poll_until_scoped_with_deadline(
             terminal_id.clone(),
             scope.history_request(),
             scope.wants_cells(),
+            crate::snapshot::SCREEN_FORMAT_NONE,
         );
         let budget = if polls == 0 {
             deadline.floored(FIRST_READ_FLOOR)

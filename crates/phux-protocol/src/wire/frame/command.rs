@@ -354,6 +354,28 @@ pub enum Command {
         /// (which ended after `request_scrollback`) finds no byte and
         /// defaults it to `false`, so the field is wire-additive.
         cells: bool,
+        /// Which rendering, if any, the reply's additive `ScreenState.
+        /// rendered` field should carry (D9, fallback rung three: below
+        /// typed commands and semantic streams, above synthetic input —
+        /// `docs/consumers/agents.md`). Two parts, see
+        /// [`GET_SCREEN_FORMAT_SELECTOR_MASK`] /
+        /// [`GET_SCREEN_FORMAT_UNWRAP`]: the low 7 bits select the
+        /// rendering (`0` today's default, no rendering, `rendered`
+        /// absent; `1` libghostty-vt's own Formatter as HTML; `2` as VT
+        /// escape sequences — the server never reimplements extraction,
+        /// per CONTRIBUTING; any other selector is refused with
+        /// `INVALID_COMMAND`), and the high bit requests the Formatter's
+        /// own soft-wrapped-line join (ignored when the selector is `0`).
+        /// A pre-D9 peer's decoder stops reading this body after `cells`
+        /// and never sees this byte at all, so it silently answers as if
+        /// `format: 0` were asked — the client detects that from the
+        /// reply's absent `rendered` field
+        /// (`phux_client::snapshot::get_screen_scrollback_format`), since
+        /// no feature bit gates a byte an old peer cannot know exists.
+        /// Encoded as a trailing `u8` byte *after* `cells`; a decoder
+        /// reading a pre-D9 body (which ended after `cells`) finds no
+        /// byte and defaults it to `0`, so the field is wire-additive.
+        format: u8,
     },
     /// Deliver an already-built input `event` to `terminal_id` without an
     /// attach, subscription, or resize. The write counterpart to the
@@ -639,6 +661,19 @@ pub enum Command {
         linger_secs: u32,
     },
 }
+
+/// [`Command::GetScreen::format`]'s low 7 bits: which rendering to
+/// produce (D9). `0` none, `1` HTML, `2` VT; `3..=127` are undefined and
+/// refused with `INVALID_COMMAND`.
+pub const GET_SCREEN_FORMAT_SELECTOR_MASK: u8 = 0x7F;
+
+/// [`Command::GetScreen::format`]'s high bit.
+///
+/// Also join soft-wrapped capture rows via the engine Formatter's own
+/// unwrap (`phux snapshot --format html|vt --unwrap`, D9). Combine with
+/// the selector bits (`format | GET_SCREEN_FORMAT_UNWRAP`); ignored when
+/// the selector is `0` (no rendering requested).
+pub const GET_SCREEN_FORMAT_UNWRAP: u8 = 0x80;
 
 /// The transport a [`Command::OpenListener`] asks for (`u8` on the wire).
 ///

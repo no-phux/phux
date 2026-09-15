@@ -37,6 +37,8 @@
 
 use std::time::Duration;
 
+use base64::Engine as _;
+use libghostty_vt::terminal::{Point, PointCoordinate};
 use phux_protocol::ids::{GroupId, InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
@@ -223,6 +225,7 @@ fn get_screen_returns_structured_screen_for_live_pane() {
                     terminal_id: pane_id.clone(),
                     request_scrollback: None,
                     cells: false,
+                    format: 0,
                 },
             },
         )
@@ -252,6 +255,10 @@ fn get_screen_returns_structured_screen_for_live_pane() {
                 assert!(
                     screen.cells.is_none(),
                     "no cells requested -> cells None (phux-8yl)",
+                );
+                assert!(
+                    screen.rendered.is_none(),
+                    "format: 0 -> no rendered key at all (D9)",
                 );
             }
             other => panic!("expected Ok_With(Json(..)), got {other:?}"),
@@ -290,6 +297,7 @@ fn get_screen_with_cells_requests_cell_projection() {
                     terminal_id: pane_id.clone(),
                     request_scrollback: None,
                     cells: true,
+                    format: 0,
                 },
             },
         )
@@ -349,9 +357,348 @@ fn get_screen_unknown_id_returns_terminal_not_found() {
                 terminal_id: ResourceId::local(99_999),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
         )
         .await;
+    });
+}
+
+/// `GET_SCREEN` with a `format` byte this build does not define must be
+/// refused with `INVALID_COMMAND`, never guessed at or silently treated as
+/// `0` (D9).
+#[test]
+fn get_screen_unknown_format_returns_invalid_command() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let (_shutdown_tx, _server) = spawn_server(socket_path.clone(), Some("work"));
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        send_frame(&mut stream, &attach_by_name("work")).await;
+        let pane_id = loop {
+            let (_t, frame) = recv_typed(&mut stream).await;
+            if let FrameKind::Attached { snapshot, .. } = frame {
+                break snapshot.resources[0].id.clone();
+            }
+        };
+
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 22,
+                command: Command::GetScreen {
+                    terminal_id: pane_id,
+                    request_scrollback: None,
+                    cells: false,
+                    format: 3,
+                },
+            },
+        )
+        .await;
+
+        match await_command_result(&mut stream, 22).await {
+            CommandResult::Error { code, .. } => {
+                assert_eq!(code, ErrorCode::InvalidCommand);
+            }
+            other => panic!("expected Error(InvalidCommand), got {other:?}"),
+        }
+    });
+}
+
+/// `GET_SCREEN { format: Html }` on a pane with styled content must return
+/// a `ScreenState.rendered` carrying HTML markup for that styling — the
+/// server's own libghostty-vt Formatter, never a reimplementation
+/// (CONTRIBUTING).
+#[test]
+fn get_screen_format_html_returns_markup_for_styled_cells() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args(["-c", "printf '\\033[1;31mHELLO\\033[0m'; sleep 5"]);
+        let (_shutdown_tx, _server) =
+            phux_server_testkit::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        send_frame(&mut stream, &attach_by_name("work")).await;
+        let pane_id = loop {
+            let (_t, frame) = recv_typed(&mut stream).await;
+            if let FrameKind::Attached { snapshot, .. } = frame {
+                break snapshot.resources[0].id.clone();
+            }
+        };
+        phux_server_testkit::wait_for_server_screen_text(
+            &mut stream,
+            &pane_id,
+            "HELLO",
+            WIRE_RECV_TIMEOUT,
+        )
+        .await;
+
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 23,
+                command: Command::GetScreen {
+                    terminal_id: pane_id,
+                    request_scrollback: None,
+                    cells: false,
+                    format: 1,
+                },
+            },
+        )
+        .await;
+
+        match await_command_result(&mut stream, 23).await {
+            CommandResult::OkWith(CommandValue::Json(json)) => {
+                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json)
+                    .expect("GET_SCREEN reply must be valid ScreenState");
+                let rendered = screen
+                    .rendered
+                    .expect("format: html must populate ScreenState.rendered");
+                assert_eq!(rendered.format, "html");
+                assert!(
+                    rendered.data.contains("HELLO"),
+                    "html rendering must carry the pane's text, got: {}",
+                    rendered.data
+                );
+                assert!(
+                    rendered.data.to_ascii_lowercase().contains("style")
+                        || rendered.data.contains("color"),
+                    "html rendering of bold-red text must carry inline styling, got: {}",
+                    rendered.data
+                );
+            }
+            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
+        }
+    });
+}
+
+/// `GET_SCREEN { format: Vt }` must return VT bytes (base64-encoded) that,
+/// replayed into a fresh `libghostty_vt::Terminal` of the same dimensions,
+/// reproduce the same grid text — proof the server's own Formatter is
+/// producing a faithful re-playable capture, not a lossy summary.
+#[test]
+fn get_screen_format_vt_roundtrips_into_a_fresh_engine_with_the_same_grid() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        // Styled, not plain: a byte-faithful replay must reproduce the
+        // SGR state too, not just the codepoints (review item 5).
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "printf '\\033[1;31mroundtrip-vt-check\\033[0m'; sleep 5",
+        ]);
+        let (_shutdown_tx, _server) =
+            phux_server_testkit::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        send_frame(&mut stream, &attach_by_name("work")).await;
+        let (pane_id, cols, rows) = loop {
+            let (_t, frame) = recv_typed(&mut stream).await;
+            if let FrameKind::Attached { snapshot, .. } = frame {
+                let p = &snapshot.resources[0];
+                break (p.id.clone(), p.cols, p.rows);
+            }
+        };
+        phux_server_testkit::wait_for_server_screen_text(
+            &mut stream,
+            &pane_id,
+            "roundtrip-vt-check",
+            WIRE_RECV_TIMEOUT,
+        )
+        .await;
+
+        // `cells: true` alongside `format: 2` still populates the sparse
+        // per-cell projection (only `lines`/`scrollback`/`soft_wrap` are
+        // omitted for a non-zero format, review item 2(c)) — the
+        // structured "source" style to compare the replay against.
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 24,
+                command: Command::GetScreen {
+                    terminal_id: pane_id.clone(),
+                    request_scrollback: None,
+                    cells: true,
+                    format: 2,
+                },
+            },
+        )
+        .await;
+
+        let (screen, rendered) = match await_command_result(&mut stream, 24).await {
+            CommandResult::OkWith(CommandValue::Json(json)) => {
+                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json)
+                    .expect("GET_SCREEN reply must be valid ScreenState");
+                let rendered = screen
+                    .rendered
+                    .clone()
+                    .expect("format: vt must populate ScreenState.rendered");
+                (screen, rendered)
+            }
+            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
+        };
+        assert_eq!(rendered.format, "vt");
+        assert!(
+            screen.lines.is_empty() && screen.scrollback.is_empty(),
+            "a non-zero format must omit the duplicate text projection \
+             (review item 2(c)), got lines={:?} scrollback={:?}",
+            screen.lines,
+            screen.scrollback,
+        );
+        let source_cell = screen
+            .cells
+            .as_ref()
+            .and_then(|cells| cells.iter().find(|c| c.style.bold))
+            .expect("the styled marker must produce at least one bold source cell");
+
+        let vt_bytes = base64::engine::general_purpose::STANDARD
+            .decode(&rendered.data)
+            .expect("vt rendering data must be valid base64");
+
+        let mut replay = libghostty_vt::Terminal::new(cols, rows).expect("fresh terminal");
+        replay.vt_write(&vt_bytes);
+        let text = replay_plain_text(&replay);
+        assert!(
+            text.contains("roundtrip-vt-check"),
+            "VT replay into a fresh engine must reproduce the captured text, got: {text:?}",
+        );
+
+        // Attribute comparison, not just text: the same cell coordinate
+        // the source reported as styled must still be styled after the
+        // VT bytes replay into a completely fresh engine.
+        let replay_styled = replay
+            .grid_ref(Point::Viewport(PointCoordinate {
+                x: source_cell.col,
+                y: u32::from(source_cell.row),
+            }))
+            .and_then(|grid_ref| grid_ref.cell())
+            .and_then(libghostty_vt::screen::Cell::has_styling)
+            .unwrap_or(false);
+        assert!(
+            replay_styled,
+            "the source's styled cell at ({}, {}) must still carry styling after VT replay",
+            source_cell.col, source_cell.row,
+        );
+    });
+}
+
+/// Format `terminal`'s whole screen as plain text via the same
+/// libghostty-vt Formatter the production code uses (never a hand-rolled
+/// walker here either) — the comparison surface for a VT-replay test.
+fn replay_plain_text(terminal: &libghostty_vt::Terminal<'_, '_>) -> String {
+    let mut formatter = libghostty_vt::fmt::Formatter::new(
+        terminal,
+        libghostty_vt::fmt::FormatterOptions::new()
+            .with_format(libghostty_vt::fmt::Format::Plain)
+            .with_trim(true),
+    )
+    .expect("formatter init for replay verification");
+    let bytes = formatter
+        .format_alloc(None)
+        .expect("format replay terminal");
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// `GET_SCREEN { format: Vt, request_scrollback: Some(n) }` must extend the
+/// rendered capture's selection into history exactly as far as the request
+/// asks — the same tri-state convention `screen_state_with_scrollback`
+/// already applies to `lines`/`scrollback` (D9).
+#[test]
+fn get_screen_format_respects_request_scrollback() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket_path = tmp.path().join("phux.sock");
+        // 80x24 is the test viewport (`attach_by_name`); 40 echoed lines
+        // plus the marker push line 1 well into scrollback so "no
+        // scrollback requested" and "Some(0)" are actually distinguishable.
+        // The first line gets its own unambiguous sentinel rather than
+        // "scrollback-line-1": that string is also a *substring* of
+        // "scrollback-line-10".."-19", which would make a later-line-only
+        // capture pass the "reached line 1" assertion by accident.
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "echo SCROLLBACK-FIRST-LINE; \
+             i=2; while [ $i -le 40 ]; do echo \"scrollback-line-$i\"; i=$((i+1)); done; \
+             printf 'scrollback-marker'; sleep 5",
+        ]);
+        let (_shutdown_tx, _server) =
+            phux_server_testkit::spawn_server_with_seed_cmd(socket_path.clone(), "work", cmd);
+        let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+
+        send_frame(&mut stream, &attach_by_name("work")).await;
+        let pane_id = loop {
+            let (_t, frame) = recv_typed(&mut stream).await;
+            if let FrameKind::Attached { snapshot, .. } = frame {
+                break snapshot.resources[0].id.clone();
+            }
+        };
+        phux_server_testkit::wait_for_server_screen_text(
+            &mut stream,
+            &pane_id,
+            "scrollback-marker",
+            WIRE_RECV_TIMEOUT,
+        )
+        .await;
+
+        // No scrollback requested: the rendered capture must not reach back
+        // into history far enough to see the first echoed line.
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 25,
+                command: Command::GetScreen {
+                    terminal_id: pane_id.clone(),
+                    request_scrollback: None,
+                    cells: false,
+                    format: 1,
+                },
+            },
+        )
+        .await;
+        let viewport_only = match await_command_result(&mut stream, 25).await {
+            CommandResult::OkWith(CommandValue::Json(json)) => {
+                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json).unwrap();
+                screen.rendered.expect("format: html").data
+            }
+            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
+        };
+
+        // `Some(0)`: all retained history, so the rendered capture must
+        // reach back to the first echoed line.
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 26,
+                command: Command::GetScreen {
+                    terminal_id: pane_id,
+                    request_scrollback: Some(0),
+                    cells: false,
+                    format: 1,
+                },
+            },
+        )
+        .await;
+        let with_history = match await_command_result(&mut stream, 26).await {
+            CommandResult::OkWith(CommandValue::Json(json)) => {
+                let screen: phux_core::screen::ScreenState = serde_json::from_str(&json).unwrap();
+                screen.rendered.expect("format: html").data
+            }
+            other => panic!("expected Ok_With(Json(..)), got {other:?}"),
+        };
+
+        assert!(
+            with_history.contains("SCROLLBACK-FIRST-LINE"),
+            "Some(0) must reach the oldest retained history row, got: {with_history}",
+        );
+        assert!(
+            !viewport_only.contains("SCROLLBACK-FIRST-LINE"),
+            "no scrollback requested must not silently include history, got: {viewport_only}",
+        );
     });
 }
 

@@ -105,6 +105,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
                 terminal_id: terminal(),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
             &C_GET_SCREEN,
         ),

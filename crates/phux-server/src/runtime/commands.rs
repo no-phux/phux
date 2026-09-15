@@ -23,8 +23,8 @@ use crate::state::{
     TerminalInput,
 };
 use crate::terminal_actor::{
-    ConsumerAckRequest, ControlRequest, EncodedInputRequest, ResizeRequest, ScreenRequest,
-    TerminalActor, TerminalHandle,
+    ConsumerAckRequest, ControlRequest, EncodedInputRequest, ResizeRequest, ScreenReply,
+    ScreenRequest, TerminalActor, TerminalHandle,
 };
 
 /// The command-result shape of a Terminal-only request aimed at a resource
@@ -1012,7 +1012,8 @@ pub(crate) async fn handle_command(
             terminal_id,
             request_scrollback,
             cells,
-        } => handle_get_screen(state, &terminal_id, request_scrollback, cells).await,
+            format,
+        } => handle_get_screen(state, &terminal_id, request_scrollback, cells, format).await,
         Command::RouteInput { terminal_id, event } => match input_lane {
             Some(lane) => lane.route_command(client_id, terminal_id, event).await,
             None => handle_route_input(state, client_id, &terminal_id, event),
@@ -3892,6 +3893,15 @@ fn retag_satellite_resource_id(
     }
 }
 
+/// Highest `GET_SCREEN.format` selector this build renders (D9): `1`
+/// HTML, `2` VT — the low 7 bits of the wire byte
+/// ([`phux_protocol::wire::frame::GET_SCREEN_FORMAT_SELECTOR_MASK`]).
+/// Anything above it is refused with `INVALID_COMMAND` by
+/// [`handle_get_screen`] before the request reaches the pane actor. The
+/// high bit ([`phux_protocol::wire::frame::GET_SCREEN_FORMAT_UNWRAP`]) is
+/// not a selector and is not checked here.
+const MAX_SCREEN_FORMAT: u8 = 2;
+
 /// Build the `OK_WITH(JSON(..))` reply for `GET_SCREEN`.
 ///
 /// Resolves the wire id to its pane actor, then asks the actor to project
@@ -3899,12 +3909,28 @@ fn retag_satellite_resource_id(
 /// serialized as JSON — the stable agent-surface contract (ADR-0022 §2).
 /// This is side-effect-free: it neither attaches nor resizes, so polling
 /// it (the `phux wait`/`run` floor) never disturbs the live pane.
+///
+/// `format` additionally requests a libghostty-vt Formatter rendering into
+/// `ScreenState.rendered` (D9): its low 7 bits select `0` none, `1` HTML,
+/// `2` VT. A selector this build does not define is refused with
+/// `INVALID_COMMAND` — the server never guesses at an unknown rendering.
+/// A rendering that would exceed the server's per-read byte budget is
+/// refused with `RESOURCE_EXHAUSTED` instead of a truncated or silently
+/// empty capture (review item 2(b)).
 pub(crate) async fn handle_get_screen(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     request_scrollback: Option<u32>,
     cells: bool,
+    format: u8,
 ) -> CommandResult {
+    let selector = format & phux_protocol::wire::frame::GET_SCREEN_FORMAT_SELECTOR_MASK;
+    if selector > MAX_SCREEN_FORMAT {
+        return CommandResult::Error {
+            code: ErrorCode::InvalidCommand,
+            message: format!("unknown GET_SCREEN format: {format}"),
+        };
+    }
     // Clone the (Send) handle out of the lock; the actor reply is awaited
     // outside the critical section.
     let handle = state.with(|s| {
@@ -3929,6 +3955,7 @@ pub(crate) async fn handle_get_screen(
             pane,
             scrollback: request_scrollback,
             cells,
+            format,
             reply: reply_tx,
         })
         .await
@@ -3944,16 +3971,31 @@ pub(crate) async fn handle_get_screen(
             code: ErrorCode::InternalError,
             message: "pane actor dropped the GET_SCREEN reply".to_owned(),
         },
-        |screen| {
-            serde_json::to_string(&screen).map_or_else(
-                |err| CommandResult::Error {
-                    code: ErrorCode::InternalError,
-                    message: format!("screen serialization failed: {err}"),
-                },
-                |json| CommandResult::OkWith(CommandValue::Json(json)),
-            )
-        },
+        screen_reply_result,
     )
+}
+
+/// Turn a [`ScreenReply`] into the `GET_SCREEN` `CommandResult`.
+fn screen_reply_result(reply: ScreenReply) -> CommandResult {
+    match reply {
+        ScreenReply::TooLarge {
+            required_bytes,
+            budget_bytes,
+        } => CommandResult::Error {
+            code: ErrorCode::ResourceExhausted,
+            message: format!(
+                "rendered capture would be {required_bytes} bytes, over the \
+                 {budget_bytes}-byte budget; retry with a narrower --tail/--scrollback"
+            ),
+        },
+        ScreenReply::Projection(screen) => serde_json::to_string(&screen).map_or_else(
+            |err| CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: format!("screen serialization failed: {err}"),
+            },
+            |json| CommandResult::OkWith(CommandValue::Json(json)),
+        ),
+    }
 }
 
 /// Build the `Ok_With(Json(TerminalState))` reply for `GET_TERMINAL_STATE`.
@@ -4033,6 +4075,7 @@ pub(crate) async fn handle_get_terminal_state(
                 None
             },
             cells: true, // Always request cells for semantic info (styles, OSC-133 marks)
+            format: 0, // GET_TERMINAL_STATE has no rendered-capture surface (D9 is GET_SCREEN-only)
             reply: reply_tx,
         })
         .await
@@ -4044,10 +4087,20 @@ pub(crate) async fn handle_get_terminal_state(
         };
     }
 
-    let Ok(screen_state) = reply_rx.await else {
+    let Ok(reply) = reply_rx.await else {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor dropped the GET_TERMINAL_STATE reply".to_owned(),
+        };
+    };
+    // `format: 0` above never triggers a `ScreenReply::TooLarge` refusal
+    // (review item 2(b) only ever applies to a requested rendering); this
+    // arm exists so an enum a future format-aware caller could reach
+    // fails loudly here instead of via a non-exhaustive match.
+    let ScreenReply::Projection(screen_state) = reply else {
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "unexpected oversized-capture refusal for GET_TERMINAL_STATE".to_owned(),
         };
     };
 

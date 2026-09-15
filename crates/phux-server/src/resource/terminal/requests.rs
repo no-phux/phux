@@ -506,9 +506,44 @@ pub struct ScreenRequest {
     /// per-cell semantic marks + styles. Carried from `GET_SCREEN.cells`
     /// (`phux-8yl`).
     pub cells: bool,
+    /// Which libghostty-vt Formatter rendering, if any, to populate
+    /// [`phux_core::screen::ScreenState::rendered`] with: `0` none, `1`
+    /// HTML, `2` VT. Carried from `GET_SCREEN.format` (D9); the caller has
+    /// already refused any other value with `INVALID_COMMAND`.
+    pub format: u8,
     /// Channel the actor uses to ship the projection back. Dropping the
     /// receiver is benign — the actor discards the reply.
-    pub reply: oneshot::Sender<phux_core::screen::ScreenState>,
+    pub reply: oneshot::Sender<ScreenReply>,
+}
+
+/// Reply payload for a [`ScreenRequest`] (D9, review item 2(b)).
+///
+/// Almost always [`Self::Projection`] — including when a requested
+/// rendering failed on the engine (non-fatal: the plain projection still
+/// ships, with `rendered: None` and `rendered_error` naming why, review
+/// item 3). [`Self::TooLarge`] is different in kind: a refusal the actor
+/// makes *before* replying, when the requested rendered capture would
+/// exceed the server's per-read byte budget. That must reach the caller
+/// as a typed `RESOURCE_EXHAUSTED` command error, not a silently smaller
+/// or empty capture — hence its own variant instead of folding into
+/// `Projection`'s `rendered_error` string.
+#[derive(Debug)]
+pub enum ScreenReply {
+    /// The requested projection. Boxed: `ScreenState` (264+ bytes once
+    /// the D9 `rendered`/`rendered_error` fields landed) dwarfs
+    /// `TooLarge`'s two `usize`s, and every `ScreenReply` would otherwise
+    /// pay for the larger variant's size regardless of which one it is.
+    Projection(Box<phux_core::screen::ScreenState>),
+    /// The rendered capture `GET_SCREEN.format` asked for would exceed
+    /// the server's per-read byte budget, measured via the engine
+    /// Formatter's own `format_len` before any allocation.
+    TooLarge {
+        /// The Formatter's own measured byte count for the requested
+        /// selection/format.
+        required_bytes: usize,
+        /// The server's per-read budget the request exceeded.
+        budget_bytes: usize,
+    },
 }
 
 /// Request for the pane's graceful-upgrade handoff (ADR-0032).

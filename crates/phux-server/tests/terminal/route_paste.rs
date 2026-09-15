@@ -80,6 +80,7 @@ async fn screen_text(
                 terminal_id: terminal_id.clone(),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
         },
     )

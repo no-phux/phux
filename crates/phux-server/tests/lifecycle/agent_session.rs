@@ -989,6 +989,7 @@ fn wrong_kind_refusals() {
                     terminal_id: session.clone(),
                     request_scrollback: None,
                     cells: false,
+                    format: 0,
                 },
             },
         )
