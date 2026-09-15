@@ -1639,11 +1639,6 @@ fn settingsConsumesOutsidePointer(routed: native_sdk.runtime.CanvasWidgetPointer
     return !routeContainsSheet(routed.route);
 }
 
-fn windowOwnsSettingsForView(view_label: []const u8) bool {
-    const index = Engine.windowIndexForCanvas(view_label) orelse return false;
-    return windowOwnsSettings(Adapter.Host.model(), index);
-}
-
 fn overlayOwnsOrigin() bool {
     if (bridge.interaction_mode == .terminal) return false;
     const origin = bridge.fallback_origin orelse return true;
@@ -1838,13 +1833,64 @@ pub fn configureOptions(options: *Adapter.Options, init: std.process.Init) void 
 const PointerHost = struct {
     const workspace_timer_id = std.hash.Wyhash.hash(0, "phux-workspace-refresh");
     const maintenance_timer_id = std.hash.Wyhash.hash(0, "phux-local-maintenance");
+    const SettingsClickthrough = struct {
+        window_id: native_sdk.platform.WindowId = 0,
+        window_index: ?usize = null,
+        command_consumed: bool = false,
+
+        fn clear(self: *SettingsClickthrough) void {
+            self.* = .{};
+        }
+
+        fn arm(self: *SettingsClickthrough, dismissed: native_sdk.runtime.CanvasWidgetDismissEvent) void {
+            const index = Engine.windowIndexForCanvas(dismissed.view_label) orelse return self.clear();
+            if (!windowOwnsSettings(Adapter.Host.model(), index)) return self.clear();
+            self.* = .{ .window_id = dismissed.window_id, .window_index = index };
+        }
+
+        fn matches(self: *const SettingsClickthrough, window_id: native_sdk.platform.WindowId, view_label: []const u8) bool {
+            const index = self.window_index orelse return false;
+            return window_id == self.window_id and Engine.windowIndexForCanvas(view_label) == index;
+        }
+
+        fn consumeCommand(self: *SettingsClickthrough, command: native_sdk.CommandEvent) bool {
+            // Only the SDK's command from this exact routed pointer belongs to
+            // the dismissal sequence. Menu, shortcut, and automation commands
+            // are later interactions even when they address the same window.
+            if (command.source != .native_view or !self.matches(command.window_id, command.view_label) or self.command_consumed) {
+                self.clear();
+                return false;
+            }
+            self.command_consumed = true;
+            return true;
+        }
+
+        fn consumePointer(self: *SettingsClickthrough, routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
+            const matches_owner = self.matches(routed.window_id, routed.view_label);
+            // The SDK always routes this pointer after dismissal (and after an
+            // optional command). AppKit may then own a window drag forever, so
+            // this routed event—not a release that may never arrive—bounds the
+            // one clickthrough suppression sequence.
+            self.clear();
+            return matches_owner;
+        }
+
+        fn clearForWidgetEvent(self: *SettingsClickthrough, window_id: native_sdk.platform.WindowId, view_label: []const u8) void {
+            if (self.matches(window_id, view_label)) self.clear();
+        }
+
+        fn release(self: *SettingsClickthrough, raw: native_sdk.platform.GpuSurfaceInputEvent) void {
+            if (raw.kind != .pointer_up and raw.kind != .pointer_cancel and raw.kind != .key_up) return;
+            self.clearForWidgetEvent(raw.window_id, raw.label);
+        }
+    };
     inner: native_sdk.App = undefined,
     selection_autoscroll_timer_active: bool = false,
     maintenance_timer_active: bool = false,
     // SDK gpu_surface_events: dismiss, then command from the already-routed
     // outside target, then canvas_widget_pointer. Settings must consume that
     // command; other overlays keep light-dismiss.
-    consume_settings_clickthrough: bool = false,
+    settings_clickthrough: SettingsClickthrough = .{},
 
     fn wrap(self: *PointerHost, inner: native_sdk.App) native_sdk.App {
         self.* = .{ .inner = inner };
@@ -1916,16 +1962,17 @@ const PointerHost = struct {
     fn consumeSettingsOutsideGesture(self: *PointerHost, value: native_sdk.Event) bool {
         switch (value) {
             .canvas_widget_dismiss => |dismissed| {
-                if (windowOwnsSettingsForView(dismissed.view_label)) self.consume_settings_clickthrough = true;
+                self.settings_clickthrough.arm(dismissed);
                 return false;
             },
-            .command => return self.consume_settings_clickthrough,
-            .canvas_widget_pointer => |routed| return self.consume_settings_clickthrough or settingsConsumesOutsidePointer(routed),
+            .command => |command| return self.settings_clickthrough.consumeCommand(command),
+            .canvas_widget_pointer => |routed| return self.settings_clickthrough.consumePointer(routed) or settingsConsumesOutsidePointer(routed),
+            .canvas_widget_keyboard => |routed| {
+                self.settings_clickthrough.clearForWidgetEvent(routed.window_id, routed.view_label);
+                return false;
+            },
             .gpu_surface_input => |raw| {
-                switch (raw.kind) {
-                    .pointer_up, .pointer_cancel, .key_up => self.consume_settings_clickthrough = false,
-                    else => {},
-                }
+                self.settings_clickthrough.release(raw);
                 return false;
             },
             else => return false,
@@ -7089,6 +7136,58 @@ test "Settings outside pointer down and up dismisses once without activating chr
     try std.testing.expectEqual(tabs_before, bridge.engine.?.model.ws().tab_count);
     try rig.settleAppearance();
     try std.testing.expect(!rig.app_state.model.settingsOpen);
+}
+
+test "Settings clickthrough suppression is window scoped and ends without a release" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.window1SettingsOpen);
+
+    const owner_label = cockpit.scene.canvasLabelFor(1);
+    const owner_window = bridge.engine.?.model.wsAtConst(1).?.window_id;
+    const main_window = bridge.engine.?.model.wsAtConst(0).?.window_id;
+    const dismissed: native_sdk.Event = .{ .canvas_widget_dismiss = .{
+        .window_id = owner_window,
+        .view_label = owner_label,
+        .id = 1,
+    } };
+    const owner_command: native_sdk.Event = .{ .command = .{
+        .name = "terminal.new",
+        .source = .native_view,
+        .window_id = owner_window,
+        .view_label = owner_label,
+    } };
+    const main_command: native_sdk.Event = .{ .command = .{
+        .name = "terminal.new",
+        .source = .native_view,
+        .window_id = main_window,
+        .view_label = canvas_label,
+    } };
+    const owner_menu_command: native_sdk.Event = .{ .command = .{
+        .name = "terminal.new",
+        .source = .menu,
+        .window_id = owner_window,
+    } };
+    const owner_down: native_sdk.Event = .{ .canvas_widget_pointer = .{
+        .window_id = owner_window,
+        .view_label = owner_label,
+        .pointer = .{ .phase = .down, .point = .{ .x = 8, .y = 8 } },
+    } };
+
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(dismissed));
+    try std.testing.expect(pointer_host.consumeSettingsOutsideGesture(owner_command));
+    try std.testing.expect(pointer_host.consumeSettingsOutsideGesture(owner_down));
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(owner_command));
+
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(dismissed));
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(main_command));
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(dismissed));
+    try std.testing.expect(!pointer_host.consumeSettingsOutsideGesture(owner_menu_command));
 }
 
 test "Settings repeated Escape emits one rollback" {

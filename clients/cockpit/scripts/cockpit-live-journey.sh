@@ -153,9 +153,11 @@ node "${ROOT}/scripts/cockpit-state-inventory.mjs" --check-pointer-target "$pass
     --target-role group --target-name 'Agent inspection details'
 
 # Negative control: the navigator search is not present while Agents owns the
-# slot. The next assertion requires it to replace, not stack under, inspector.
+# slot. Invoke the shipping menu command rather than clicking the toolbar button
+# behind the modal sheet: pointer hit-testing correctly gives that click to the
+# sheet's light-dismiss layer, so it cannot prove a Sessions transition.
 (cd "$DEV_HOME" && "$NATIVE" automate assert --absent 'name="Search navigator"' >/dev/null)
-click_named listitem 'Sessions'
+(cd "$DEV_HOME" && "$NATIVE" automate native-command navigator.sessions "$passive_view" >/dev/null)
 if (cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 \
     'name="Search navigator"' >/dev/null); then
     :
