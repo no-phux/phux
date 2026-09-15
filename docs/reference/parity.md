@@ -60,6 +60,8 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_resource_show` | `phux resource show` | in-process | yes | no |
 | `phux_resource_wait` | `phux resource wait` | in-process | yes | no |
 | `phux_resource_methods` | `phux resource methods` | in-process | yes | no |
+| `phux_approvals` | `phux approvals` | in-process | yes | no |
+| `phux_approve` | `phux approve` | in-process | no | yes |
 
 ## In-process mirrors
 
@@ -106,10 +108,11 @@ Agent-facing verbs in the JSON index of `docs/consumers/agents.md` that have no 
 - `phux host ls`: operator inventory of the host registry, not an agent action.
 - `phux pair`: mints a pairing secret; credential handling stays outside the model-facing set.
 - `phux mcp`: launches this adapter itself.
+- `phux deny`: `phux_approve` decides both ways: `decision: deny` is `phux deny` (ADR-0128).
 - `phux resize`: not exposed over MCP yet; a known parity gap.
 - `phux rec`: not exposed over MCP yet; a recording is written to a file on the adapter's host.
 - `phux play`: not exposed over MCP yet; playback replays a file from the adapter's host.
 
 ## Annotation sources
 
-`Read-only` is the kind table's `mutating` rule: a tool is read-only only when no method it can send changes server state. `Destructive` comes from the SIGNAL/INPUT verb rule in the MCP tool table (`crates/phux-mcp/src/tool_table.rs`), pending the kind table's `dangerous` flag (L17).
+`Read-only` is the kind table's `mutating` rule: a tool is read-only only when no method it can send changes server state. `Destructive` comes from the kind table's `MethodSpec.dangerous` flag (ADR-0128), or a method that needs `INPUT`.

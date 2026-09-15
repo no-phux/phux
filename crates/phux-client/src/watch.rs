@@ -92,6 +92,8 @@ pub const fn event_name(event: &AgentEvent) -> &'static str {
         AgentEvent::CwdChanged { .. } => "cwd_changed",
         AgentEvent::JournalGap { .. } => "journal_gap",
         AgentEvent::SourceGap { .. } => "source_gap",
+        AgentEvent::ApprovalRequested { .. } => "approval_requested",
+        AgentEvent::ApprovalDecided { .. } => "approval_decided",
         _ => "unknown",
     }
 }
@@ -150,6 +152,12 @@ fn payload_json(event: &AgentEvent) -> Value {
             last_missing,
         } => json!({ "first_missing": first_missing, "last_missing": last_missing }),
         AgentEvent::SourceGap { dropped } => json!({ "dropped": dropped }),
+        // ADR-0128: the id names the `phux.approval/v1/<id>` record, which
+        // holds the details while the action is pending.
+        AgentEvent::ApprovalRequested { id } => json!({ "id": id.to_string() }),
+        AgentEvent::ApprovalDecided { id, outcome } => {
+            json!({ "id": id.to_string(), "outcome": outcome.as_str() })
+        }
         AgentEvent::Unknown { tag, .. } => json!({ "tag": tag }),
         _ => json!({}),
     }

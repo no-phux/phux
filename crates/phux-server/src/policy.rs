@@ -37,6 +37,7 @@
 //! choice for tests and embedders (ADR-0072).
 
 mod enforce;
+mod hold;
 
 #[cfg(test)]
 mod tests;
@@ -59,6 +60,32 @@ pub use enforce::{
     Denial, Request, authorize_command, authorize_frame, authorize_stream_bind, enforce,
     resolve_attach_session,
 };
+pub use hold::Admission;
+
+/// The Terminals a batch command names: `KILL_RESOURCES` and
+/// `CLOSE_TAB_RESOURCES`, or nothing. The guard's all-or-nothing subject, a
+/// held action's subjects, and its withdrawal all read this one list.
+#[must_use]
+pub(crate) fn batch_terminals(
+    command: &phux_protocol::wire::frame::Command,
+) -> &[phux_protocol::ids::ResourceId] {
+    use phux_protocol::wire::frame::Command;
+    match command {
+        Command::KillResources { ids, .. } | Command::CloseTabResources { ids } => ids,
+        _ => &[],
+    }
+}
+
+/// Every Terminal a held command names: a batch's ids, or the one it
+/// names. The record's subjects, the viewer check, and the withdrawal of a
+/// reaped Terminal's holds all read this (ADR-0128).
+pub(crate) fn held_terminals(
+    command: &phux_protocol::wire::frame::Command,
+) -> impl Iterator<Item = &phux_protocol::ids::ResourceId> {
+    batch_terminals(command)
+        .iter()
+        .chain(enforce::named_terminal(Request::Command(command)))
+}
 
 /// The tracing target every authorization decision logs under.
 pub const POLICY_TARGET: &str = "phux_server::policy";

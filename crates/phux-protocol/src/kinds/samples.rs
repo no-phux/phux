@@ -520,6 +520,39 @@ fn metadata_samples() -> Vec<(FrameKind, &'static Rule)> {
         (subscribe(&result), &F_RESULT_NAMESPACE_SUBSCRIBE),
         (subscribe(RESOURCE_AGENT_KEY), &F_SUBSCRIBE_METADATA),
     ]
+    .into_iter()
+    .chain(approval_samples())
+    .collect()
+}
+
+/// The decision key and the approval records (ADR-0128).
+fn approval_samples() -> Vec<(FrameKind, &'static Rule)> {
+    let id = "0123456789abcdef0123456789abcdef";
+    let decide = format!("{APPROVAL_DECIDE_KEY_PREFIX}{id}");
+    let record = format!("{APPROVAL_KEY_PREFIX}{id}");
+    let pane = Scope::Resource(terminal());
+    vec![
+        (set(Scope::Global, &decide, b"approve"), &F_APPROVAL_DECIDE),
+        (set(Scope::Global, &decide, b"deny"), &F_APPROVAL_DECIDE),
+        (
+            set(Scope::Global, &decide, b"maybe"),
+            &F_APPROVAL_DECIDE_OTHER,
+        ),
+        (
+            set(
+                Scope::Global,
+                &format!("{APPROVAL_DECIDE_KEY_PREFIX}NOT-AN-ID"),
+                b"approve",
+            ),
+            &F_APPROVAL_DECIDE_OTHER,
+        ),
+        (set(Scope::Global, &record, b"{}"), &F_SERVER_OWNED_WRITE),
+        (set(pane.clone(), &record, b"{}"), &F_SERVER_OWNED_WRITE),
+        (delete(&record), &F_SERVER_OWNED_WRITE),
+        (delete(&decide), &F_SERVER_OWNED_WRITE),
+        // Only the Global decision is intercepted; elsewhere it is ordinary.
+        (set(pane, &decide, b"approve"), &F_METADATA_WRITE),
+    ]
 }
 
 fn input_samples() -> Vec<(FrameKind, &'static Rule)> {
@@ -833,6 +866,7 @@ fn only_exempt_or_read_only_methods_are_not_mutating() {
         rules: &DENIED_ONLY,
         gate: None,
         shipped: false,
+        dangerous: false,
     };
     assert!(
         denied.mutating(),
@@ -853,4 +887,70 @@ fn only_exempt_or_read_only_methods_are_not_mutating() {
     ] {
         assert!(!method_named(name).unwrap().mutating(), "{name}");
     }
+}
+
+/// The dangerous methods are exactly the approval-gate list of ADR-0128:
+/// every consumer confirmation (MCP `destructiveHint` and `confirm`, CLI
+/// `--yes`) derives from this set, so it is pinned here by name.
+#[test]
+fn dangerous_methods_are_exactly_the_adr_0128_list() {
+    let dangerous: BTreeSet<&str> = methods()
+        .filter(|method| method.dangerous)
+        .map(|method| method.name)
+        .collect();
+    let golden: BTreeSet<&str> = [
+        "KILL_RESOURCE",
+        "KILL_RESOURCE_IF",
+        "KILL_RESOURCES",
+        "CLOSE_TAB_RESOURCES",
+        "SIGNAL_TERMINAL",
+        "DETACH_CLIENTS",
+        "SHUTDOWN",
+        "OPEN_LISTENER",
+        "UPGRADE",
+        CONFIG_RELOAD_KEY,
+        APPROVAL_DECIDE_KEY_PREFIX,
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(dangerous, golden);
+}
+
+#[test]
+fn freeze_resume_and_deny_are_the_payload_exceptions() {
+    let signal = |signal| Command::SignalTerminal {
+        terminal_id: terminal(),
+        signal,
+        operation_id: None,
+    };
+    for reversible in [TerminalSignal::Freeze, TerminalSignal::Resume] {
+        assert!(!command_is_dangerous(&signal(reversible)));
+    }
+    for ending in [
+        TerminalSignal::Interrupt,
+        TerminalSignal::Terminate,
+        TerminalSignal::Kill,
+    ] {
+        assert!(command_is_dangerous(&signal(ending)));
+    }
+    assert!(command_is_dangerous(&Command::KillResources {
+        ids: vec![],
+        operation_id: None,
+    }));
+    assert!(!command_is_dangerous(&Command::GetState {
+        scope: StateScope::Server
+    }));
+    let decide = format!("{APPROVAL_DECIDE_KEY_PREFIX}0123456789abcdef0123456789abcdef");
+    assert!(frame_is_dangerous(&set(Scope::Global, &decide, b"approve")));
+    assert!(!frame_is_dangerous(&set(Scope::Global, &decide, b"deny")));
+    assert!(frame_is_dangerous(&set(
+        Scope::Global,
+        CONFIG_RELOAD_KEY,
+        b"1"
+    )));
+    assert!(!frame_is_dangerous(&set(
+        Scope::Global,
+        RESOURCE_TAGS_KEY,
+        b"[]"
+    )));
 }

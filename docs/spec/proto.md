@@ -415,6 +415,10 @@ ServerFeature = bitset (u32) {
     KEYED_SIGNAL       = 0x20000000, // trailing operation_id on KILL_RESOURCE, KILL_RESOURCE_IF,
                                      //   KILL_RESOURCES, SIGNAL_TERMINAL; federated keyed ops and
                                      //   APPLY_INPUT, INCARNATION_CHANGED (L1.md §5.1.1, §9.1)
+    APPROVALS          = 0x40000000, // held SIGNAL actions: ?signal grants, phux.approval/v1/<id>,
+                                     //   phux.approval.decide/v1/<id>, approval_requested /
+                                     //   approval_decided (workload-auth.md §6.1; L3.md §3.10;
+                                     //   ADR-0128)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -496,7 +500,8 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `QUIC_STREAMS = 0x400000`, `OPEN_LISTENER = 0x800000`,
 `EVENT_JOURNAL = 0x1000000`, `RETAIN_ON_EXIT = 0x2000000`,
 `SPAWN_IDEMPOTENCY = 0x4000000`, `ATTACH_ROLES = 0x8000000`,
-`CLOSE_TAB_RESOURCES = 0x10000000`, and `KEYED_SIGNAL = 0x20000000`; unknown
+`CLOSE_TAB_RESOURCES = 0x10000000`, `KEYED_SIGNAL = 0x20000000`, and
+`APPROVALS = 0x40000000`; unknown
 feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
@@ -617,6 +622,17 @@ whose reply it lost. On a federation hub the bit also means the hub forwards
 a keyed operation, and an `APPLY_INPUT`, to a satellite that evaluates it and
 answers `INCARNATION_CHANGED` instead of forwarding a retry across that
 satellite's restart ([L1.md](./L1.md) §9.1).
+
+`APPROVALS = 0x40000000` gates server-held approvals
+([workload-auth.md](./workload-auth.md) §6.1, ADR-0128): a `SIGNAL` command
+from a grant that holds `?signal` is held, its `COMMAND_RESULT` deferred,
+until a connection holding un-held `SIGNAL` on the same subject writes
+`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }`. The pending
+`phux.approval/v1/<id>` records ([L3.md](./L3.md) §3.10) and the
+`approval_requested` / `approval_decided` events ([L1.md](./L1.md) §7.1) come
+with it. A server without the bit stores a decide key as an ordinary value,
+so a client MUST see the bit before writing a decision. The bits between
+`ATTACH_ROLES` and `APPROVALS` are allocated to other drafts, not free.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,

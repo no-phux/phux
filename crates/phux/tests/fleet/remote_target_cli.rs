@@ -63,9 +63,9 @@ fn run_with_config(config: Option<&str>, args: &[&str]) -> (i32, String, String)
 const SESSION_VERBS: [&[&str]; 5] = [
     &["ls"],
     &["new", "-s", "x", "--json"],
-    &["kill", "x"],
+    &["kill", "--yes", "x"],
     &["rename", "a", "b"],
-    &["detach"],
+    &["detach", "--yes"],
 ];
 
 /// The session verbs share attach's usage rules: a malformed target is exit
@@ -206,7 +206,8 @@ fn an_unpinned_routable_entry_is_one_json_line_under_json() {
         "{doc}"
     );
 
-    let (code, _stdout, stderr) = run_with_config(Some(config), &["kill", "--remote", "bare", "x"]);
+    let (code, _stdout, stderr) =
+        run_with_config(Some(config), &["kill", "--yes", "--remote", "bare", "x"]);
     assert_eq!(code, 1, "stderr={stderr}");
     assert!(
         stderr.contains("no certificate pin") && !stderr.contains("phux attach"),

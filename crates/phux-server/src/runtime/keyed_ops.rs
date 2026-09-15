@@ -86,6 +86,22 @@ async fn admit_within(state: &SharedState, command: &Command, wait: Duration) ->
     }
 }
 
+/// Before a keyed command is held for approval (ADR-0128): the answer its
+/// key already has, if any. A settled key replays its result, and a
+/// conflicting or in-flight key answers as a repeat would, so a retry is
+/// never held twice. A free key is not kept: the claim is released at once,
+/// and the approved command admits the key when it runs.
+pub(crate) async fn prior_answer(state: &SharedState, command: &Command) -> Option<CommandResult> {
+    match admit_within(state, command, Duration::ZERO).await {
+        KeyedAdmission::Unkeyed => None,
+        KeyedAdmission::Owner(claim) => {
+            drop(claim);
+            None
+        }
+        KeyedAdmission::Answer(result) => Some(result),
+    }
+}
+
 /// Settle an owned key with the command's `result`. A result that did the
 /// whole job binds, so its repeats answer it; a refusal, or a
 /// `KILL_RESOURCES` some part of which failed, binds nothing, and dropping

@@ -56,6 +56,7 @@ pub mod agent_prompt;
 // transition", which is a different contract from `wait`'s screen-level
 // conditions and must not be confused with them.
 pub mod agent_wait;
+pub mod approvals;
 pub mod ask;
 pub mod attach;
 // Conditional kills (ADR-0109): bind a spawn to the server's instance token

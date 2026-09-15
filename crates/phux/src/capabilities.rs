@@ -50,6 +50,7 @@ fn method_json(method: &MethodSpec) -> Value {
         "carrier": carrier_json(method.carrier),
         "verbs": method.verbs().iter().map(Verb::name).collect::<Vec<_>>(),
         "mutating": method.mutating(),
+        "dangerous": method.dangerous,
         "owner_uds_only": method.owner_uds_only(),
         "gate": method.gate.map(gate_json),
         "shipped": method.shipped,

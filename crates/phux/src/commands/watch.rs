@@ -47,6 +47,8 @@ const AGENT_STATE_EVENT: &str = "agent_state";
 /// exists to prevent.
 pub(crate) const WATCH_EVENT_NAMES: &[&str] = &[
     AGENT_STATE_EVENT,
+    "approval_decided",
+    "approval_requested",
     "asked",
     "bell",
     "command_finished",
@@ -528,6 +530,8 @@ fn human_detail(event: &AgentEvent) -> String {
             last_missing,
         } => format!(" missed {first_missing}..={last_missing}"),
         AgentEvent::SourceGap { dropped } => format!(" dropped={dropped}"),
+        AgentEvent::ApprovalRequested { id } => format!(" {id}"),
+        AgentEvent::ApprovalDecided { id, outcome } => format!(" {id} {}", outcome.as_str()),
         AgentEvent::Unknown { tag, .. } => format!(" tag={tag}"),
         _ => String::new(),
     }

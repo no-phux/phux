@@ -307,6 +307,9 @@ const HISTORY_BYTES_MAX: i64 = MAX_HISTORY_BYTES as i64;
 
 /// Upper bound of the `defaults.agent-log-bytes` integer setting.
 const AGENT_LOG_BYTES_MAX: i64 = MAX_AGENT_LOG_BYTES as i64;
+const APPROVAL_TTL_MAX: i64 = crate::MAX_APPROVAL_TTL_SECS as i64;
+const APPROVAL_MAX_PENDING_MAX: i64 = crate::MAX_APPROVAL_MAX_PENDING as i64;
+const APPROVAL_MAX_PENDING_TOTAL_MAX: i64 = crate::MAX_APPROVAL_MAX_PENDING_TOTAL as i64;
 /// Floor of `limits.metadata-value-bytes`: the built-in agent-session
 /// record write is checked against `MAX_AGENT_SESSION_RECORD_BYTES` only
 /// *after* the generic cap (`crates/phux-server/src/runtime/client.rs`'s
@@ -502,6 +505,46 @@ pub const CATALOG: &[SettingSpec] = &[
                  at the default 256 with the 2 MiB default history. It holds no PTY or \
                  descriptor. 0 retains none; 4096 is the accepted maximum; phux config \
                  check rejects more and the server clamps to it.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.approval-ttl-secs",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 1,
+            max: APPROVAL_TTL_MAX,
+        },
+        summary: "Seconds a held action waits for a decision before it expires",
+        detail: "Only a workload grant spelled ?signal holds anything, so this is inert \
+                 until one exists. A held command that nobody approves or denies in time \
+                 is refused as expired and never runs. 86400 (one day) is the accepted \
+                 maximum; phux config check rejects 0 and anything larger.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.approval-max-pending",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: APPROVAL_MAX_PENDING_MAX,
+        },
+        summary: "How many actions one connection may hold for approval at once",
+        detail: "One more is refused as resource exhausted rather than held. 0 refuses \
+                 every hold. 1024 is the accepted maximum; phux config check rejects \
+                 more and the server clamps to it.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.approval-max-pending-total",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: APPROVAL_MAX_PENDING_TOTAL_MAX,
+        },
+        summary: "How many actions the whole server may hold for approval at once",
+        detail: "The server-wide bound beside the per-connection one: one more hold is \
+                 refused as resource exhausted rather than held. 65536 is the accepted \
+                 maximum; phux config check rejects more and the server clamps to it.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {

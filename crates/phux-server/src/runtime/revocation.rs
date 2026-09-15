@@ -385,12 +385,24 @@ fn judge_record(
 /// one staying covered keeps the clause inside the ceiling. A ceiling that
 /// splits one clause across several grants is judged as not containing it:
 /// the safe direction.
+///
+/// A hold only restricts (ADR-0128): a grant that holds a verb the clause
+/// minted un-held no longer contains it, so adding `?signal` to a live
+/// credential revokes its connections and the reconnect gets the hold.
+/// Removing a hold widens and never revokes.
 fn contains_clause(ceiling: &TerminalScopeSet, clause: &EffectiveClause) -> bool {
     ceiling.grants().iter().any(|grant| {
         verbs_cover(grant.verbs, clause.verbs)
+            && holds_no_more(grant, clause)
             && (covers(&grant.selector, &clause.ceiling)
                 || covers(&grant.selector, &clause.requested))
     })
+}
+
+/// Whether `grant` leaves un-held every verb `clause` minted un-held.
+const fn holds_no_more(grant: &phux_protocol::scope::ScopeGrant, clause: &EffectiveClause) -> bool {
+    let unheld = clause.verbs.bits() & !clause.held.bits();
+    grant.held.bits() & unheld == 0
 }
 
 const fn verbs_cover(have: Verbs, need: Verbs) -> bool {

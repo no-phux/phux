@@ -326,7 +326,7 @@ async fn in_process_tools_produce_the_same_documents_as_the_former_subprocess_pa
 fn sweep_args(tool: &str) -> Value {
     let dead = "/nonexistent/phux-mcp-sweep.sock";
     let mut args = match tool {
-        "phux_ls" | "phux_spawn" | "phux_agent_clear" => json!({}),
+        "phux_ls" | "phux_spawn" | "phux_agent_clear" | "phux_approvals" => json!({}),
         "phux_snapshot" | "phux_resource_methods" | "phux_resource_show" => {
             json!({ "target": "@1" })
         }
@@ -345,6 +345,7 @@ fn sweep_args(tool: &str) -> Value {
         "phux_move_pane" => json!({ "source": "@1", "target": "@2" }),
         "phux_swap_pane" => json!({ "first": "@1", "second": "@2" }),
         "phux_agent_set" => json!({ "name": "bot" }),
+        "phux_approve" => json!({ "id": "0123456789abcdef0123456789abcdef", "decision": "deny" }),
         "phux_plugin_action" | "phux_plugin_workspace" => {
             return json!({
                 "plugin_id": "none", "action_id": "none",

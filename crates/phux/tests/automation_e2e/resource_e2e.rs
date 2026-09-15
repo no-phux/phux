@@ -168,7 +168,7 @@ fn spawn_retain_wait_exit_end_to_end() {
     assert_eq!(row["exit"]["status"], 42);
 
     // The purge is an explicit kill; afterwards the pane is gone (exit 1).
-    assert!(server.phux(&["kill", &pane]).status.success());
+    assert!(server.phux(&["kill", "--yes", &pane]).status.success());
     let deadline = Instant::now() + SOCKET_DEADLINE;
     loop {
         let (doc, out) = server.json(&["resource", "wait", "--json", "--timeout", "5", &pane]);
@@ -520,7 +520,7 @@ fn scripted_task_lifecycle_pha406() {
 
     // Kill purges the retained pane; afterwards `resource show` answers a
     // plain miss, not a stale exit facet.
-    assert!(server.phux(&["kill", &pane]).status.success());
+    assert!(server.phux(&["kill", "--yes", &pane]).status.success());
     let deadline = Instant::now() + SOCKET_DEADLINE;
     loop {
         let show = server.phux(&["resource", "show", "--json", &pane]);

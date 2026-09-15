@@ -48,6 +48,8 @@ A paste inserts text but does not submit it.
 - Before kill, detach, or a destructive signal, resolve and display the target,
   inspect its state, explain the effect, obtain affirmative confirmation, pass
   `confirm: true`, then verify the inventory change.
+- A call the server holds for approval waits for a human decision:
+  `phux_approvals` lists it, and you cannot approve your own.
 - Tool failures use `isError: true`; inspect their content. A stopped server or
   failed diagnostic check may be structured successful output.
 

@@ -106,6 +106,8 @@ phux agent show
 phux agent start
 phux agent uninstall-claude
 phux agent wait
+phux approvals
+phux approve
 phux ask
 phux attach
 phux bootstrap
@@ -121,6 +123,7 @@ phux config plugins
 phux config reload
 phux config run
 phux config show
+phux deny
 phux detach
 phux doctor
 phux gen-reference-docs
@@ -341,9 +344,10 @@ fn long_help_has_one_complete_grouped_inventory() {
 
 /// The root page is a single readable screenful at 80 columns: no line
 /// wider than the width it is laid out for, and the page as a whole stays
-/// under the bound. Forty-nine visible verbs on their own rows plus six
-/// group headings set the floor; the bound leaves no room for a
-/// reference-style epilogue to creep back in.
+/// under the bound. Fifty-two visible verbs on their own rows (the three
+/// approval verbs of ADR-0128 among them) plus six group headings set the
+/// floor; the bound leaves no room for a reference-style epilogue to creep
+/// back in.
 #[test]
 fn root_long_help_fits_eighty_columns_and_stays_short() {
     let long = root_long_help();
@@ -355,7 +359,7 @@ fn root_long_help_fits_eighty_columns_and_stays_short() {
     }
     let lines = long.lines().count();
     assert!(
-        lines <= 90,
+        lines <= 93,
         "root help grew to {lines} lines; the page is meant to be one screen"
     );
     assert!(

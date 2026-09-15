@@ -206,7 +206,7 @@ fn session_verbs_create_list_rename_and_kill_over_remote() {
     assert!(stdout(&out).contains("renamed"), "{}", stdout(&out));
     remote.assert_sessions(&["keep", "ci"], &["build"]);
 
-    let out = remote.phux(&["detach", "--remote", REMOTE, "keep"]);
+    let out = remote.phux(&["detach", "--yes", "--remote", REMOTE, "keep"]);
     assert!(out.status.success(), "detach: {}", stderr(&out));
     assert!(
         stdout(&out).contains("detached 0 client(s)"),
@@ -214,7 +214,7 @@ fn session_verbs_create_list_rename_and_kill_over_remote() {
         stdout(&out)
     );
 
-    let out = remote.phux(&["kill", "--remote", REMOTE, "ci"]);
+    let out = remote.phux(&["kill", "--yes", "--remote", REMOTE, "ci"]);
     assert!(out.status.success(), "kill: {}", stderr(&out));
     remote.assert_sessions(&["keep"], &["ci", "build"]);
 

@@ -106,6 +106,8 @@ const fn bypasses_type_filter(event: &AgentEvent) -> bool {
             | AgentEvent::ResourceSpawned { .. }
             | AgentEvent::ResourceClosed { .. }
             | AgentEvent::SourceGap { .. }
+            | AgentEvent::ApprovalRequested { .. }
+            | AgentEvent::ApprovalDecided { .. }
     )
 }
 

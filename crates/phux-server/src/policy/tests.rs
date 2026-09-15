@@ -55,6 +55,8 @@ struct World {
     alpha_window: WindowId,
     beta_window: WindowId,
     alpha_group: u32,
+    /// A held kill of `alpha`, pending, so a decision on it resolves.
+    approval: phux_protocol::ids::ApprovalId,
 }
 
 fn world() -> World {
@@ -67,6 +69,16 @@ fn world() -> World {
     state.idspace.intern_session(beta_session);
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     state.attach_default_caps(CLIENT, "alpha", tx).unwrap();
+    let approval = state
+        .open_approval(
+            ClientId(99),
+            &Command::KillResource {
+                terminal_id: alpha.clone(),
+                operation_id: None,
+            },
+        )
+        .unwrap()
+        .id;
     World {
         state,
         alpha,
@@ -75,6 +87,7 @@ fn world() -> World {
         alpha_window,
         beta_window,
         alpha_group,
+        approval,
     }
 }
 
@@ -308,6 +321,8 @@ fn samples(world: &World) -> Vec<FrameKind> {
         ),
         set(Scope::Global, SESSION_KEEP_EMPTY_KEY, b"alpha"),
         set(Scope::Global, CONFIG_RELOAD_KEY, b"1"),
+        set(Scope::Global, &world.approval.decide_key(), b"approve"),
+        set(Scope::Global, &world.approval.decide_key(), b"maybe"),
         set(Scope::Global, "phux.session.created/v1", b"x"),
         FrameKind::SubscribeMetadata {
             scope: Scope::Global,

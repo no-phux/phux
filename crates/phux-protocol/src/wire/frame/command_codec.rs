@@ -15,18 +15,19 @@ use crate::wire::info::{
 
 use super::codec::encode_optional_u32;
 use super::{
-    AgentEvent, COMMAND_RESULT_TAG_ERROR, COMMAND_RESULT_TAG_OK, COMMAND_RESULT_TAG_OK_WITH,
-    COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT, COMMAND_TAG_APPLY_INPUT,
-    COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_CLOSE_TAB_RESOURCES, COMMAND_TAG_DETACH_CLIENTS,
-    COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN,
-    COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE,
-    COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_OPEN_LISTENER,
-    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
-    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
-    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE,
-    COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD,
-    COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID,
-    COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED,
+    AgentEvent, ApprovalOutcome, COMMAND_RESULT_TAG_ERROR, COMMAND_RESULT_TAG_OK,
+    COMMAND_RESULT_TAG_OK_WITH, COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT,
+    COMMAND_TAG_APPLY_INPUT, COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_CLOSE_TAB_RESOURCES,
+    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_PERF,
+    COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
+    COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES,
+    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT,
+    COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT,
+    COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS,
+    COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES,
+    COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON,
+    COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue,
+    ControlAction, EVENT_TAG_APPROVAL_DECIDED, EVENT_TAG_APPROVAL_REQUESTED, EVENT_TAG_ASKED,
     EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
     EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
     EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL,
@@ -1129,6 +1130,15 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 write_u64_field(&mut body_enc, field::event_source_gap::DROPPED, *dropped);
                 EVENT_TAG_SOURCE_GAP
             }
+            AgentEvent::ApprovalRequested { id } => {
+                write_approval_id(id, &mut body_enc);
+                EVENT_TAG_APPROVAL_REQUESTED
+            }
+            AgentEvent::ApprovalDecided { id, outcome } => {
+                write_approval_id(id, &mut body_enc);
+                body_enc.write_u8(outcome.to_u8());
+                EVENT_TAG_APPROVAL_DECIDED
+            }
             // `Unknown` is decoder-only: an encoder that reaches here has
             // round-tripped an event this version did not understand.
             // Re-emit the captured body verbatim so a relay (a hub
@@ -1143,6 +1153,34 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
     }
     enc.write_u8(tag);
     enc.write_bytes(&body);
+}
+
+/// Write an approval id as its 16 raw bytes (ADR-0128).
+fn write_approval_id(id: &crate::ids::ApprovalId, enc: &mut Encoder<'_>) {
+    for byte in id.as_bytes() {
+        enc.write_u8(*byte);
+    }
+}
+
+/// Decode an `approval_requested` or `approval_decided` body: 16 id bytes,
+/// then, for a decision, the outcome byte. `Ok(None)` for a zero id or an
+/// unknown outcome; a truncated body is still an error.
+fn decode_approval_event(
+    tag: u8,
+    dec: &mut Decoder<'_>,
+) -> Result<Option<AgentEvent>, DecodeError> {
+    let mut bytes = [0; 16];
+    for byte in &mut bytes {
+        *byte = dec.read_u8()?;
+    }
+    let id = crate::ids::ApprovalId::new(bytes);
+    if tag == EVENT_TAG_APPROVAL_REQUESTED {
+        return Ok(id.map(|id| AgentEvent::ApprovalRequested { id }));
+    }
+    let outcome = ApprovalOutcome::from_u8(dec.read_u8()?);
+    Ok(id
+        .zip(outcome)
+        .map(|(id, outcome)| AgentEvent::ApprovalDecided { id, outcome }))
 }
 
 /// Write one field-tagged `u64` inside an event body.
@@ -1213,6 +1251,14 @@ pub(in crate::wire) fn decode_agent_event(
         },
         EVENT_TAG_JOURNAL_GAP => decode_journal_gap_event(&mut body_dec)?,
         EVENT_TAG_SOURCE_GAP => decode_source_gap_event(&mut body_dec)?,
+        // A zero id or an outcome this build does not know makes the event
+        // opaque rather than failing the frame, as for `terminal_control`.
+        EVENT_TAG_APPROVAL_REQUESTED | EVENT_TAG_APPROVAL_DECIDED => {
+            decode_approval_event(tag, &mut body_dec)?.unwrap_or_else(|| AgentEvent::Unknown {
+                tag,
+                body: body.to_vec(),
+            })
+        }
         // Unknown event tag: preserve the body verbatim and skip. This is
         // the forward-compat path — a v0.2.x server may add event kinds an
         // older client does not know.

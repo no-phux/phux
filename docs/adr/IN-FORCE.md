@@ -83,6 +83,7 @@ by a newer one, the newer line is the operative reading.
 - [0053](./0053-acknowledged-idempotent-input.md) `APPLY_INPUT` is one bounded, acknowledged, idempotent input batch under the command envelope.
 - [0044](./0044-dedicated-input-lane.md) Input routing and encoding run on a dedicated thread from published mode snapshots.
 - [0127](./0127-attach-roles-are-lease-intent.md) An attach may declare `VIEWER` (observe-only, input refused) or `PRIMARY` with `DELIBERATE` takeover (attach and seize); the lease and the grant stay the only arbiters.
+- [0128](./0128-approvals-are-held-actions.md) A `?signal` grant's kills, signals, and forced detaches are held until a connection holding un-held `SIGNAL` on the subject approves (run once, as the requester) or denies; approvals expire, and every confirmation derives from the catalog's `dangerous` mark.
 - [0033](./0033-input-authority-and-process-signals.md) Exclusive input leases and process signals ride the command envelope as Terminal-scoped verbs.
 
 ## Federation and transport

@@ -24,7 +24,8 @@
 use phux_protocol::ids::ResourceId;
 use phux_protocol::kinds::{self, Verb, Verbs};
 use phux_protocol::wire::frame::{
-    FrameKind, RESOURCE_TAGS_KEY, SESSION_CREATE_KEY, SESSION_NAME_KEY, Scope, WHOAMI_KEY,
+    APPROVAL_DECIDE_KEY_PREFIX, FrameKind, RESOURCE_TAGS_KEY, SESSION_CREATE_KEY, SESSION_NAME_KEY,
+    Scope, WHOAMI_KEY,
 };
 
 /// Which CLI verb a tool mirrors, if any.
@@ -391,6 +392,16 @@ pub(crate) const TOOLS: &[Row] = &[
         "resource methods",
         Touches::Wire(&[RESOLVE]),
     ),
+    cli(
+        "phux_approvals",
+        "approvals",
+        Touches::Wire(&["LIST_METADATA", "GET_METADATA"]),
+    ),
+    cli(
+        "phux_approve",
+        "approve",
+        Touches::Wire(&[APPROVAL_DECIDE_KEY_PREFIX, "GET_METADATA"]),
+    ),
 ];
 
 /// CLI verbs in `docs/consumers/agents.md`'s JSON index (its headings and
@@ -410,6 +421,10 @@ pub(crate) const CLI_ONLY: &[(&str, &str)] = &[
         "mints a pairing secret; credential handling stays outside the model-facing set",
     ),
     ("mcp", "launches this adapter itself"),
+    (
+        "deny",
+        "`phux_approve` decides both ways: `decision: deny` is `phux deny` (ADR-0128)",
+    ),
     ("resize", "not exposed over MCP yet; a known parity gap"),
     (
         "rec",
@@ -441,19 +456,16 @@ pub(crate) const UNMAPPED: Hints = Hints {
     destructive: true,
 };
 
-/// Where the `destructive` column comes from today. The kind table has no
-/// `dangerous` flag yet; when L17 adds `MethodSpec.dangerous`, [`dangerous`]
-/// is the one function that changes and this note goes with it.
-pub(crate) const DESTRUCTIVE_SOURCE: &str = "the SIGNAL/INPUT verb rule in the MCP tool table \
-     (`crates/phux-mcp/src/tool_table.rs`), pending the kind table's `dangerous` flag (L17)";
+/// Where the `destructive` column comes from.
+pub(crate) const DESTRUCTIVE_SOURCE: &str = "the kind table's `MethodSpec.dangerous` flag \
+     (ADR-0128), or a method that needs `INPUT`";
 
-/// Whether a method needing `verbs` is destructive: it can end a process or
-/// eject a client (`SIGNAL`), or type into a live PTY (`INPUT`). `CREATE`
+/// Whether a method is destructive: the kind table marks it `dangerous`
+/// (it can end a process, eject a client, stop the server, or release a
+/// held action; ADR-0128), or it types into a live PTY (`INPUT`). `CREATE`
 /// and `BIND` add resources and rewrite bindings: mutating, not destructive.
-///
-/// The single swap point for L17's `MethodSpec.dangerous`.
-const fn dangerous(verbs: Verbs) -> bool {
-    verbs.contains(Verb::Signal) || verbs.contains(Verb::Input)
+const fn dangerous(verbs: Verbs, marked: bool) -> bool {
+    marked || verbs.contains(Verb::Input)
 }
 
 /// The hints `touches` implies, or `None` when it names a method the
@@ -475,23 +487,24 @@ fn wire_hints(names: &[&str]) -> Option<Hints> {
         destructive: false,
     };
     for name in names {
-        let (verbs, mutating) = method_verbs(name)?;
+        let (verbs, mutating, marked) = method_facts(name)?;
         hints.read_only &= !mutating;
-        hints.destructive |= dangerous(verbs);
+        hints.destructive |= dangerous(verbs, marked);
     }
     Some(hints)
 }
 
-/// The verbs `name` can need, and whether it can change state
-/// ([`kinds::MethodSpec::mutating`]'s conservative rule).
-fn method_verbs(name: &str) -> Option<(Verbs, bool)> {
+/// The verbs `name` can need, whether it can change state
+/// ([`kinds::MethodSpec::mutating`]'s conservative rule), and whether the
+/// kind table marks it dangerous.
+fn method_facts(name: &str) -> Option<(Verbs, bool, bool)> {
     if name == METADATA_WRITE {
         let verbs = kinds::frame_rule(&ordinary_metadata_write()).verb_set();
         // A row that admits no verb is a denial: conservatively a write.
-        return Some((verbs, verbs.is_empty() || verbs.mutates()));
+        return Some((verbs, verbs.is_empty() || verbs.mutates(), false));
     }
     let method = kinds::method_named(name)?;
-    Some((method.verbs(), method.mutating()))
+    Some((method.verbs(), method.mutating(), method.dangerous))
 }
 
 /// A representative ordinary write: a Terminal's tags.

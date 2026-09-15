@@ -276,6 +276,58 @@ impl ControlAction {
     }
 }
 
+/// How a held action's approval ended (ADR-0128), carried by
+/// [`AgentEvent::ApprovalDecided`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ApprovalOutcome {
+    /// A connection holding un-held `SIGNAL` on the subject approved it; the
+    /// held command then ran once, under the requester's grant.
+    Approved = 0,
+    /// A connection holding un-held `SIGNAL` on the subject denied it; the
+    /// requester got `PERMISSION_DENIED`.
+    Denied = 1,
+    /// Nobody decided within the approval TTL; the requester got
+    /// `PERMISSION_DENIED { "approval expired" }`.
+    Expired = 2,
+    /// The action was withdrawn while held, and nothing ran. Two cases: a
+    /// Terminal it names was reaped, and the requester is answered
+    /// `PERMISSION_DENIED { "terminal gone" }`; or the requester disconnected
+    /// or its authority was revoked, and nobody is answered, because the
+    /// requester is gone.
+    Withdrawn = 3,
+}
+
+impl ApprovalOutcome {
+    /// Wire byte for this outcome.
+    #[must_use]
+    pub const fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode from the wire byte; `None` for unknown values.
+    #[must_use]
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Approved),
+            1 => Some(Self::Denied),
+            2 => Some(Self::Expired),
+            3 => Some(Self::Withdrawn),
+            _ => None,
+        }
+    }
+
+    /// The stable lowercase name consumers print.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::Expired => "expired",
+            Self::Withdrawn => "withdrawn",
+        }
+    }
+}
+
 /// A typed control-plane command carried by [`FrameKind::Command`](super::FrameKind::Command) (SPEC §5.1).
 ///
 /// `#[non_exhaustive]`: the spec catalog has seven L1 commands; v0.1 wires
@@ -1051,6 +1103,28 @@ pub enum AgentEvent {
     SourceGap {
         /// How many events were lost at the source.
         dropped: u64,
+    },
+    /// A `SIGNAL` action was held for approval rather than run (ADR-0128).
+    ///
+    /// The details (requester, method, subjects, expiry) are the server-owned
+    /// `phux.approval/v1/<id>` record; the event carries only the id.
+    /// Journaled with the requester as `actor`. Positional body: `id` as 16
+    /// raw bytes. A decoder that predates tag `0x0d` reads it as
+    /// [`AgentEvent::Unknown`].
+    ApprovalRequested {
+        /// The held action's approval id.
+        id: crate::ids::ApprovalId,
+    },
+    /// A held action's approval ended (ADR-0128). Journaled with the
+    /// approver as `actor` for an approval or a denial, and with no actor
+    /// for an expiry or a withdrawal. Positional body: `id` as 16 raw bytes,
+    /// then `outcome: u8`. An outcome byte this build does not know makes
+    /// the whole event [`AgentEvent::Unknown`].
+    ApprovalDecided {
+        /// The held action's approval id.
+        id: crate::ids::ApprovalId,
+        /// How the approval ended.
+        outcome: ApprovalOutcome,
     },
     /// An event whose `tag` this protocol version does not recognise.
     ///

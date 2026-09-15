@@ -40,6 +40,7 @@ Addressed to the server or the connection rather than to one resource.
 | `phux.session.name/v1` | metadata key | BIND | yes | none | shipped |
 | `phux.session.keep_empty/v1` | metadata key | CREATE, BIND, SIGNAL | yes | `keep_empty_sessions` | shipped |
 | `phux.config.reload/v1` | metadata key | SIGNAL | yes | none | shipped |
+| `phux.approval.decide/v1/` | metadata key | SIGNAL | yes | `approvals` | shipped |
 | `phux.whoami/v1` | metadata key | exempt: self | no | `whoami` | shipped |
 
 ## Server events
@@ -47,6 +48,8 @@ Addressed to the server or the connection rather than to one resource.
 | Event | Tag |
 |---|---|
 | `journal_gap` | `0x0b` |
+| `approval_requested` | `0x0d` |
+| `approval_decided` | `0x0e` |
 
 ## Substrate methods
 
@@ -187,9 +190,11 @@ Every client-originated frame lands on exactly one row.
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false` | SIGNAL | `NamedSession` |
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value | deny | `None` |
 | `SET_METADATA { Global, "phux.config.reload/v1" }` | SIGNAL | `Global { owner_uds_only: false }` |
+| `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value `approve` or `deny` | SIGNAL | `HeldAction` |
+| `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with a malformed id or any other value | deny | `None` |
 | `SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results | deny | `None` |
 | `SUBSCRIBE_METADATA` targeting that result namespace | deny | `None` |
-| `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1` or `phux.whoami/v1`, or `DELETE_METADATA` targeting `phux.config.reload/v1` or `phux.session.keep_empty/v1` | deny | `None` |
+| `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, `phux.whoami/v1`, or a `phux.approval/v1/<id>` record, or `DELETE_METADATA` targeting `phux.config.reload/v1`, `phux.session.keep_empty/v1`, or a `phux.approval.decide/v1/<id>` key | deny | `None` |
 | Other `SET_METADATA`, `DELETE_METADATA` | BIND | `MetadataScope` |
 | `LIST_METADATA` | INVENTORY | `MetadataScope` |
 | `LIST_DIRECTORY` | INVENTORY | `Global { owner_uds_only: false }` |

@@ -124,7 +124,7 @@ Exit `0` is an observed exit (`exit.status`, or `exit.signal` for a
 death by signal); `1` is `gone` (the resource closed unretained before
 the wait, or never existed); `124` is the timeout. Keep the printed
 `cursor`: after a disconnect, `--after CURSOR` replays a close the
-server still journals. `phux kill "$pane"` purges a retained pane early.
+server still journals. `phux kill --yes "$pane"` purges a retained pane early.
 
 A paste **inserts**; it does not **submit**. Bracketed paste (DEC mode
 2004) delivers one block; paste-aware shells and REPLs buffer it until a
@@ -636,7 +636,10 @@ deleted record emits `state: null` rather than dropping the line.
 input_holder,actor_client}` (`action: exited` is a retained pane's
 process ending); `journal_gap.{first_missing,last_missing}` (this watch
 missed that range: re-read level state); `source_gap.dropped` (events
-lost before they were journaled). On a journaling server every event
+lost before they were journaled); `approval_requested.id` and
+`approval_decided.{id,outcome}` (`approved`, `denied`, `expired`,
+`withdrawn`; ADR-0128: the id names the `phux.approval/v1/<id>` record
+`phux approvals` lists). On a journaling server every event
 line also carries `seq`, `ts_ms`, and `actor` (`{ client,
 credential_id, client_name }`) when present; a `journal_gap` line has
 none. After the stream ends, the last stderr line is the cursor: under
@@ -691,7 +694,10 @@ refused. `input_holder` is the lease holder's connection id, or `null`.
 ascending, `[]` when none; the human form prints it only when non-empty.
 
 `resource methods --json` is `{ schema_version: 1, resource, kind,
-methods: [{ name, facet, verb, mutating, available, reason }] }`.
+methods: [{ name, facet, verb, mutating, dangerous, available, reason }] }`.
+`dangerous` is the catalog's mark (ADR-0128): sending the method can end a
+process, eject a client, or release a held action, so the CLI asks for
+`--yes` and MCP for `confirm: true`.
 `facet` is `substrate` or the kind that owns the method; `verb` is the
 closed verb label (`OBSERVE`, `BIND+OBSERVE`, `none`); `reason` is
 `null` when available, else `feature_unadvertised`, `wrong_kind`,
@@ -850,6 +856,8 @@ Mirroring that `--help` does not collect in one place:
 | `resource show` / `resource methods` | `1` `no_such_target`; `3` when the miss is against an incomplete fleet. |
 | `spawn` / `new` with `--retain` / `--idempotency-key` | `2` for `unsupported_server` (feature not advertised; nothing sent), `invalid_idempotency_key`, and `idempotency_conflict` (spawn only). A keyed `new` whose key already belongs to another create request registers nothing and exits `1`: a create result has no refusal form. |
 | `kill` / `tag` / `agent show\|set\|clear` | `3` when the miss is against an incomplete fleet. |
+| `kill` / `signal interrupt\|terminate\|kill` / `detach` / `approve` | `2` without `--yes` when stdin is not a terminal: nothing was sent (ADR-0128). Scripts and agents pass `--yes`. `kill --server` never asks. |
+| `approvals` / `approve` / `deny` | `2` for a malformed id, a refused decision (not pending, or no un-held `signal` on the held subject), or `server_too_old`; `1` when the server is unreachable. |
 
 **Exit `3`.** A federation hub that cannot reach a satellite still
 answers `GET_STATE` with those panes missing. A miss then has two

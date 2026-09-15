@@ -231,6 +231,7 @@ impl From<SignalArg> for TerminalSignal {
 }
 
 pub(crate) mod agent;
+pub(crate) mod approvals;
 pub(crate) mod ask;
 pub(crate) mod attach;
 pub(crate) mod bootstrap;
@@ -239,6 +240,7 @@ pub(crate) mod cockpit;
 pub(crate) mod completion;
 pub(crate) mod config;
 pub(crate) mod config_action;
+pub(crate) mod confirm;
 pub(crate) mod detach;
 pub(crate) mod doctor;
 pub(crate) mod enroll;
@@ -987,6 +989,13 @@ pub(crate) enum Command {
         /// `keyed_signal`.
         #[usage(long = "idempotency-key", value_name = "HEX32", conflicts("--server"))]
         idempotency_key: Option<String>,
+        /// Kill without asking.
+        ///
+        /// Without it, `phux kill TARGET` asks on a terminal, and when stdin
+        /// is not one it refuses with exit 2 having sent nothing. `--server`
+        /// never asks.
+        #[usage(long)]
+        yes: bool,
 
         #[usage(flatten)]
         remote: RemoteOpt,
@@ -1139,6 +1148,13 @@ pub(crate) enum Command {
         /// client on the server.
         session: Option<String>,
 
+        /// Detach without asking.
+        ///
+        /// Without it, `phux detach` asks on a terminal, and when stdin is
+        /// not one it refuses with exit 2 having sent nothing.
+        #[usage(long)]
+        yes: bool,
+
         #[usage(flatten)]
         remote: RemoteOpt,
     },
@@ -1208,6 +1224,51 @@ pub(crate) enum Command {
         /// The server must advertise `keyed_signal`.
         #[usage(long = "idempotency-key", value_name = "HEX32")]
         idempotency_key: Option<String>,
+        /// Deliver `interrupt`, `terminate`, or `kill` without asking.
+        ///
+        /// Without it those three ask on a terminal, and when stdin is not
+        /// one they refuse with exit 2 having sent nothing. `freeze` and
+        /// `resume`, the reversible brake, never ask.
+        #[usage(long)]
+        yes: bool,
+    },
+
+    /// List actions held for approval
+    ///
+    /// A workload whose grant holds `?signal` has its kills, signals, and
+    /// forced detaches held by the server until someone holding un-held
+    /// `signal` on the same subject approves or denies them. This lists what
+    /// is waiting: the id, who asked, the held method, its subjects, and the
+    /// time left before it expires.
+    #[usage(help_heading = "Agents", display_order = 71)]
+    Approvals {
+        #[usage(flatten)]
+        json: JsonOpt,
+    },
+
+    /// Approve a held action
+    ///
+    /// Releases the held action ID once: the server runs it as the workload
+    /// that asked, under that workload's own grant, and answers that
+    /// workload. Asks on a terminal; pass `--yes` when stdin is not one.
+    #[usage(help_heading = "Agents", display_order = 72)]
+    Approve {
+        /// The approval id `phux approvals` lists.
+        id: String,
+
+        /// Approve without asking.
+        #[usage(long)]
+        yes: bool,
+    },
+
+    /// Deny a held action
+    ///
+    /// Refuses the held action ID: the workload that asked gets a
+    /// permission-denied answer and nothing runs.
+    #[usage(help_heading = "Agents", display_order = 73)]
+    Deny {
+        /// The approval id `phux approvals` lists.
+        id: String,
     },
 
     /// Update phux to the latest stable or next release, keeping sessions alive.

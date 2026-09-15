@@ -41,6 +41,7 @@ use phux_protocol::ids::GroupId;
 
 mod agent;
 mod agent_tracking;
+mod approvals;
 mod bindings;
 mod client;
 mod client_table;
@@ -77,6 +78,7 @@ mod viewport;
 mod wire_ids;
 
 use agent_tracking::AgentState;
+pub use approvals::{Decision, HoldRefusal, OpenedApproval, PendingApproval};
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
 pub use conditional_kill::KillIfRefusal;
@@ -317,6 +319,9 @@ pub struct ServerState {
     /// bounds. It holds its own lock, so the input lane reaches it without
     /// this one.
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,
+    /// Held `SIGNAL` actions awaiting a decision (ADR-0128): the pending
+    /// table and its bounds. See [`approvals`].
+    approvals: approvals::ApprovalTable,
 }
 
 impl Default for ServerState {

@@ -3,6 +3,7 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::detach::DetachOutcome;
 
+use crate::commands::confirm;
 use crate::commands::server_target::ServerSpec;
 use crate::commands::warn_interleaved_degradation;
 
@@ -18,11 +19,22 @@ use crate::commands::warn_interleaved_degradation;
 /// Exit codes: 0 on success (including "nobody was attached"), 1 on no server,
 /// 2 on a server-side refusal. `server` is the local socket or a `--remote`
 /// host (see `server_target`).
-pub(crate) fn run_detach(session: Option<String>, server: ServerSpec) -> ExitCode {
+///
+/// Forced detach is dangerous (ADR-0128): without `yes` it asks on a
+/// terminal and refuses with exit 2 otherwise, after the target is validated
+/// and before anything is dialed.
+pub(crate) fn run_detach(session: Option<String>, yes: bool, server: ServerSpec) -> ExitCode {
     let (rt, target) = match server.prepare("detach", false) {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
+    let action = session.as_deref().map_or_else(
+        || "detach every attached client".to_owned(),
+        |name| format!("detach every client from session {name:?}"),
+    );
+    if let Err(code) = confirm::confirmed(yes, &action) {
+        return code;
+    }
 
     rt.block_on(async move {
         let mut conn = match target.connect().await {

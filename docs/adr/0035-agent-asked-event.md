@@ -18,6 +18,8 @@ tier. The body is field-tagged TLV so `suggestions` and `elapsed_seconds` are
 additive; an older decoder skips it by length to `AgentEvent::Unknown`.
 
 Status: Accepted
+
+See [ADR-0128](./0128-approvals-are-held-actions.md) for held actions: an attempted action awaiting a decision, beside this pending question.
 Date: 2026-06-17
 
 ## Context

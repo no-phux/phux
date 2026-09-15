@@ -559,7 +559,7 @@ fn tag_round_trips_and_drives_the_hash_selector() {
 
     // `#tag` drives a mutating verb: kill every Terminal tagged `build`.
     assert_eq!(
-        run_status(&server, &["kill", "#build"]),
+        run_status(&server, &["kill", "--yes", "#build"]),
         0,
         "`phux kill #build` should tear down the tagged Terminal",
     );

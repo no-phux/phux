@@ -36,6 +36,7 @@
 
 mod agent_tools;
 mod annotations;
+mod approval_tools;
 mod ask_tool;
 mod cli_adapter;
 mod cli_tools;
@@ -622,7 +623,7 @@ mod tests {
             serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#).unwrap();
         let resp = handle_request(req).await.expect("tools/list replies");
         let tools = resp["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 42);
+        assert_eq!(tools.len(), 44);
         // The resource noun (PHA-406), one bounded tool each.
         for name in [
             "phux_resource_show",

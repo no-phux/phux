@@ -230,6 +230,7 @@ pub(crate) fn catalog() -> Value {
         entries.extend(crate::agent_tools::schemas());
         entries.extend(crate::diagnostic_tools::schemas());
         entries.extend(crate::resource_tools::schemas());
+        entries.extend(crate::approval_tools::schemas());
     }
     // Hints derived from the kind catalog, never hand-set (ADR-0125).
     crate::annotations::annotate(&mut tools);
@@ -245,6 +246,10 @@ pub(crate) fn catalog() -> Value {
 /// argument, or any failure from the underlying agent surface (no server,
 /// unknown session, transport error).
 pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolError> {
+    // The one confirmation check (ADR-0128): a tool whose own action is a
+    // catalog-dangerous method needs `confirm: true`, before any argument
+    // parsing, socket resolution, or wire traffic.
+    crate::annotations::require_confirmation(name, args)?;
     match name {
         "phux_ls" => phux_ls(args).await,
         "phux_snapshot" => phux_snapshot(args).await,
@@ -269,6 +274,9 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
         }
         resource if crate::resource_tools::owns(resource) => {
             crate::resource_tools::call(resource, args).await
+        }
+        approval if crate::approval_tools::owns(approval) => {
+            crate::approval_tools::call(approval, args).await
         }
         other => Err(ToolError::new(format!("unknown tool: {other}"))),
     }
@@ -551,12 +559,6 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
         &["target", "confirm", "idempotency_key", "socket"],
         &["target", "confirm"],
     )?;
-    // L17 replaces this hand-written confirm with one table-driven check.
-    if args.get("confirm") != Some(&Value::Bool(true)) {
-        return Err(ToolError::new(
-            "phux_kill is destructive; pass `confirm: true`",
-        ));
-    }
     let target = crate::cli_adapter::bounded_string(args, "target", true)?.unwrap_or_default();
     let key = crate::cli_adapter::bounded_string(args, "idempotency_key", false)?
         .as_deref()
@@ -581,12 +583,6 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
 /// way `phux_agent_*`'s header comment says a raw ANSI stream cannot.
 async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
     strict_object(args, &["session", "confirm", "socket"], &["confirm"])?;
-    // L17 replaces this hand-written confirm with one table-driven check.
-    if args.get("confirm") != Some(&Value::Bool(true)) {
-        return Err(ToolError::new(
-            "phux_detach forcibly disconnects attached clients; pass `confirm: true`",
-        ));
-    }
     let socket = socket::resolve(str_arg(args, "socket"));
     let session = crate::cli_adapter::bounded_string(args, "session", false)?;
     let mut conn = Connection::connect(&socket).await?;
@@ -1101,6 +1097,8 @@ mod tests {
                 "phux_resource_show",
                 "phux_resource_wait",
                 "phux_resource_methods",
+                "phux_approvals",
+                "phux_approve",
             ]
         );
         for tool in arr {
@@ -1235,14 +1233,16 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(
-            kill_error.0, "missing required argument `confirm`",
+            kill_error.0, "phux_kill is destructive; pass `confirm: true`",
             "kill must reject before discovering or starting the CLI",
         );
-        // Same shape as `kill`: rejected before any socket connection, and a
-        // present-but-false `confirm` is a distinct, equally-rejected case
-        // from an absent one.
+        // Same check as `kill`: rejected before any socket connection, and a
+        // present-but-false `confirm` is refused like an absent one.
         let detach_error = dispatch("phux_detach", &json!({})).await.unwrap_err();
-        assert_eq!(detach_error.0, "missing required argument `confirm`");
+        assert_eq!(
+            detach_error.0,
+            "phux_detach is destructive; pass `confirm: true`"
+        );
         assert!(
             dispatch("phux_detach", &json!({ "confirm": false }))
                 .await

@@ -1211,14 +1211,17 @@ fn dispatch(
             target,
             server,
             idempotency_key,
+            yes,
             remote,
         }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
-            Ok(key) => commands::kill::run(target, server, key, remote.with_socket(socket)),
+            Ok(key) => commands::kill::run(target, server, key, yes, remote.with_socket(socket)),
             Err(code) => code,
         },
-        Some(Command::Detach { session, remote }) => {
-            commands::detach::run_detach(session, remote.with_socket(socket))
-        }
+        Some(Command::Detach {
+            session,
+            yes,
+            remote,
+        }) => commands::detach::run_detach(session, yes, remote.with_socket(socket)),
         Some(Command::InsertPane {
             target,
             new_pane,
@@ -1268,10 +1271,14 @@ fn dispatch(
             target,
             signal,
             idempotency_key,
+            yes,
         }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
-            Ok(key) => commands::supervise::run_signal(&target, signal, key, socket),
+            Ok(key) => commands::supervise::run_signal(&target, signal, key, yes, socket),
             Err(code) => code,
         },
+        Some(Command::Approvals { json }) => commands::approvals::run_approvals(json.json, socket),
+        Some(Command::Approve { id, yes }) => commands::approvals::run_approve(&id, yes, socket),
+        Some(Command::Deny { id }) => commands::approvals::run_deny(&id, socket),
         Some(Command::Update { opts }) => commands::update::run_update(&opts, socket),
         Some(Command::Channel { channel, json }) => {
             commands::channel::run(channel, json.json, socket)

@@ -112,6 +112,31 @@ fn validate_dispatch_frame(
     Ok(frame)
 }
 
+/// Where an admitted command is dispatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Route {
+    /// The input lane: acknowledged or routed input to a local Terminal.
+    InputLane,
+    /// The connection's bulk worker, retaining this many payload bytes.
+    Bulk(usize),
+    /// The command handler.
+    Handler,
+}
+
+/// The route an admitted command takes. An approved held command asks the
+/// same question (ADR-0128), so it routes as it would have unheld.
+pub(super) fn route(command: &Command, has_input_lane: bool) -> Route {
+    let local_input = matches!(
+        command,
+        Command::ApplyInput { terminal_id, .. } | Command::RouteInput { terminal_id, .. }
+            if matches!(terminal_id, WireResourceId::Local { .. })
+    );
+    if has_input_lane && local_input {
+        return Route::InputLane;
+    }
+    super::command_tasks::CommandTasks::retained_bytes(command).map_or(Route::Handler, Route::Bulk)
+}
+
 struct CommandDispatch<'a> {
     state: &'a SharedState,
     client_id: ClientId,
@@ -123,6 +148,9 @@ struct CommandDispatch<'a> {
     command_tasks: &'a mut super::command_tasks::CommandTasks,
     input_receipts: &'a mut JoinSet<()>,
     input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
+    /// The waiters of this connection's held commands (ADR-0128). Aborted
+    /// with the connection, which withdraws their approvals.
+    held_commands: &'a mut JoinSet<()>,
 }
 
 enum CommandDispatchOutcome {
@@ -146,7 +174,7 @@ impl CommandDispatch<'_> {
         let command_started = std::time::Instant::now();
         // workload-auth §6: the command guard, above the input lane, the bulk
         // worker, and every handler and satellite relay below.
-        if super::dispatch_guard::refuse_command(
+        match super::dispatch_guard::guard_command(
             self.state,
             self.client_id,
             request_id,
@@ -155,7 +183,12 @@ impl CommandDispatch<'_> {
         )
         .await
         {
-            return None;
+            super::dispatch_guard::Guarded::Admitted => {}
+            super::dispatch_guard::Guarded::Refused => return None,
+            super::dispatch_guard::Guarded::Held => {
+                self.hold(request_id, command).await;
+                return None;
+            }
         }
         let defer_subscription = self
             .selection
@@ -168,27 +201,24 @@ impl CommandDispatch<'_> {
             })
             .flatten();
 
-        if let Some(lane) = self.input_lane
-            && matches!(
-                &command,
-                Command::ApplyInput { terminal_id, .. } | Command::RouteInput { terminal_id, .. }
-                    if matches!(terminal_id, WireResourceId::Local { .. })
-            )
-        {
-            super::commands::note_local_use(self.state, self.client_id, &command);
-            self.submit_input(lane, request_id, command).await;
-            return None;
-        }
-        if let Some(retained) = super::command_tasks::CommandTasks::retained_bytes(&command) {
-            self.submit_bulk(
-                request_id,
-                command,
-                retained,
-                command_started,
-                defer_subscription,
-            )
-            .await;
-            return None;
+        match (route(&command, self.input_lane.is_some()), self.input_lane) {
+            (Route::InputLane, Some(lane)) => {
+                super::commands::note_local_use(self.state, self.client_id, &command);
+                self.submit_input(lane, request_id, command).await;
+                return None;
+            }
+            (Route::Bulk(retained), _) => {
+                self.submit_bulk(
+                    request_id,
+                    command,
+                    retained,
+                    command_started,
+                    defer_subscription,
+                )
+                .await;
+                return None;
+            }
+            _ => {}
         }
         handle_command(
             self.state,
@@ -207,6 +237,27 @@ impl CommandDispatch<'_> {
         .await;
         crate::perf::CMD_HANDLE.record_elapsed(command_started);
         detached_stream
+    }
+
+    /// Hold a command the guard held (ADR-0128). Its waiter runs it later
+    /// in this connection's context, exactly as this dispatch would have.
+    async fn hold(&mut self, request_id: u32, command: Command) {
+        let ctx = super::approvals::HeldContext {
+            state: self.state.clone(),
+            client_id: self.client_id,
+            out_tx: self.out_tx.clone(),
+            client_caps: self.selection.client_caps,
+            profile: self.selection.profile,
+            limits: self.selection.limits,
+            input_lane: self.input_lane.cloned(),
+            token: self.token.clone(),
+            root_token: self.root_token.clone(),
+            defer_subscription: self
+                .selection
+                .server_features
+                .contains(ServerFeature::QuicStreams),
+        };
+        super::approvals::hold_command(ctx, self.held_commands, request_id, command).await;
     }
 
     async fn submit_input(&mut self, lane: &InputLaneHandle, request_id: u32, command: Command) {
@@ -333,6 +384,7 @@ mod input_receipt_capacity_tests {
                     command_tasks: &mut command_tasks,
                     input_receipts: &mut receipts,
                     input_receipt_slots: &slots,
+                    held_commands: &mut JoinSet::new(),
                 }
                 .submit_input(
                     &lane,
@@ -1833,13 +1885,16 @@ pub(crate) async fn broadcast_terminal_closed(
 /// consumer following a pane is following the sessions inside it, and it
 /// learned of them from a `pane_spawned` addressed the same way. Its
 /// `exit_status` is `None`, since a session has no process to report one.
-fn journal_pane_closed(
+pub(super) fn journal_pane_closed(
     s: &mut crate::state::ServerState,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
     parent: Option<&phux_protocol::ids::ResourceId>,
     exit_status: Option<i32>,
     attribution: crate::state::CloseAttribution,
 ) {
+    // Nothing follows a close (L1 §7): a held action naming this Terminal
+    // is withdrawn, and journaled, first (ADR-0128).
+    s.withdraw_approvals_naming(wire_terminal_id);
     // A kill names the connection that sent it and, when keyed, its
     // `operation_id` (L1 §5.1.1, §7.3); a natural exit names neither.
     let record = crate::state::EventRecord::new(
@@ -1904,6 +1959,9 @@ pub(crate) fn release_revoked_consumer_state(
     client_id: ClientId,
 ) -> Option<DetachedFrom> {
     let attached_session = attached_session_name(s, client_id);
+    // A revoked connection's held actions are withdrawn in the same
+    // critical section: nothing it held can be approved (ADR-0128).
+    let _ = s.withdraw_approvals(client_id);
     release_actor_consumers(s, client_id);
     announce_lease_releases(s, client_id, None);
     release_relay_state(s, client_id);
@@ -2055,6 +2113,8 @@ fn release_relay_state(s: &ServerState, client_id: ClientId) {
 /// every transport funnels through on its way out — the in-loop teardown
 /// sites all `return` into it.
 pub(crate) fn release_connection_state(state: &SharedState, client_id: ClientId) {
+    // A closing connection withdraws the actions it holds (ADR-0128).
+    super::approvals::withdraw(state, client_id);
     detach_and_release_consumer_state(state, client_id);
     state.with_mut(|s| s.forget_connection(client_id));
 }
@@ -3398,6 +3458,7 @@ where
     let mut plumbing = ClientPlumbing::spawn(writer, client_id, revocation_rx);
     let mut command_tasks = super::command_tasks::CommandTasks::new(token.clone());
     let mut input_receipts = JoinSet::new();
+    let mut held_commands = JoinSet::new();
     let input_receipt_slots =
         std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_INPUT_RECEIPTS));
     // An attach id names one immutable aggregate generation for the life of
@@ -3435,6 +3496,10 @@ where
             biased;
             () = token.cancelled() => {
                 debug!(?client_id, "client task cancelled");
+                // A closing connection withdraws its holds before any await
+                // (ADR-0128): no decision can land in the teardown window.
+                super::approvals::withdraw(&state, client_id);
+                held_commands.shutdown().await;
                 input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing
@@ -3444,6 +3509,10 @@ where
             }
             () = wait_initial_hello(hello_deadline.as_mut(), negotiated.is_none()) => {
                 warn!(?client_id, "client did not complete HELLO before deadline; closing");
+                // A closing connection withdraws its holds before any await
+                // (ADR-0128): no decision can land in the teardown window.
+                super::approvals::withdraw(&state, client_id);
+                held_commands.shutdown().await;
                 input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(ConnectionClose {
@@ -3457,6 +3526,10 @@ where
                 Ok(Some(framed)) => (framed, reader.frame_origin()),
                 Ok(None) => {
                     debug!("client disconnected (eof)");
+                    // A closing connection withdraws its holds before any await
+                    // (ADR-0128): no decision can land in the teardown window.
+                    super::approvals::withdraw(&state, client_id);
+                    held_commands.shutdown().await;
                     input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     return Ok(());
@@ -3464,10 +3537,18 @@ where
                 Err(err) => {
                     let Some(close) = framing_violation_close(&err, client_id) else {
                         debug!(error = %err, "client read error; closing");
+                        // A closing connection withdraws its holds before any await
+                        // (ADR-0128): no decision can land in the teardown window.
+                        super::approvals::withdraw(&state, client_id);
+                        held_commands.shutdown().await;
                         input_receipts.shutdown().await;
                         command_tasks.shutdown().await;
                         return Ok(());
                     };
+                    // A closing connection withdraws its holds before any await
+                    // (ADR-0128): no decision can land in the teardown window.
+                    super::approvals::withdraw(&state, client_id);
+                    held_commands.shutdown().await;
                     input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
@@ -3476,6 +3557,10 @@ where
             },
             () = command_tasks.stopped() => {
                 warn!(?client_id, "bulk command worker stopped unexpectedly; closing");
+                // A closing connection withdraws its holds before any await
+                // (ADR-0128): no decision can land in the teardown window.
+                super::approvals::withdraw(&state, client_id);
+                held_commands.shutdown().await;
                 input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(ConnectionClose {
@@ -3486,6 +3571,7 @@ where
                 return Ok(());
             }
             Some(_) = input_receipts.join_next(), if !input_receipts.is_empty() => continue,
+            Some(_) = held_commands.join_next(), if !held_commands.is_empty() => continue,
             event = async {
                 match stream_events.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -3509,6 +3595,10 @@ where
             match validate_dispatch_frame(&framed, negotiated.as_ref(), frame_origin, client_id) {
                 Ok(frame) => frame,
                 Err(close) => {
+                    // A closing connection withdraws its holds before any await
+                    // (ADR-0128): no decision can land in the teardown window.
+                    super::approvals::withdraw(&state, client_id);
+                    held_commands.shutdown().await;
                     input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
@@ -3555,6 +3645,10 @@ where
                 )
                 .await
                 {
+                    // A closing connection withdraws its holds before any await
+                    // (ADR-0128): no decision can land in the teardown window.
+                    super::approvals::withdraw(&state, client_id);
+                    held_commands.shutdown().await;
                     input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
@@ -3605,6 +3699,10 @@ where
                             code: ErrorCode::MalformedMessage,
                             message: "ATTACH attach_id must be nonzero".to_owned(),
                         };
+                        // A closing connection withdraws its holds before any await
+                        // (ADR-0128): no decision can land in the teardown window.
+                        super::approvals::withdraw(&state, client_id);
+                        held_commands.shutdown().await;
                         input_receipts.shutdown().await;
                         command_tasks.shutdown().await;
                         plumbing.close(close, &state, client_id).await;
@@ -3830,6 +3928,22 @@ where
                 scope,
                 key,
                 value,
+            } if super::approvals::is_decision(&scope, &key) => {
+                super::approvals::decide(
+                    &state,
+                    client_id,
+                    request_id,
+                    &key,
+                    &value,
+                    &plumbing.out_tx,
+                )
+                .await;
+            }
+            FrameKind::SetMetadata {
+                request_id,
+                scope,
+                key,
+                value,
             } => {
                 handle_set_metadata(
                     &state,
@@ -3957,6 +4071,7 @@ where
                     command_tasks: &mut command_tasks,
                     input_receipts: &mut input_receipts,
                     input_receipt_slots: &input_receipt_slots,
+                    held_commands: &mut held_commands,
                 })
                 .run(request_id, command)
                 .await;
@@ -3969,6 +4084,10 @@ where
                     }
                     CommandDispatchOutcome::Completed(None) => {}
                     CommandDispatchOutcome::Cancelled => {
+                        // A closing connection withdraws its holds before any await
+                        // (ADR-0128): no decision can land in the teardown window.
+                        super::approvals::withdraw(&state, client_id);
+                        held_commands.shutdown().await;
                         input_receipts.shutdown().await;
                         command_tasks.shutdown().await;
                         plumbing
@@ -3987,6 +4106,10 @@ where
                         "frame is not valid from a client in the negotiated phase: {other:?}"
                     ),
                 };
+                // A closing connection withdraws its holds before any await
+                // (ADR-0128): no decision can land in the teardown window.
+                super::approvals::withdraw(&state, client_id);
+                held_commands.shutdown().await;
                 input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(close, &state, client_id).await;
@@ -4413,12 +4536,13 @@ fn read_metadata_value(
 
 /// Keys only the server writes. A client `SET_METADATA` or `DELETE_METADATA`
 /// of one is a logged no-op in any scope: the pane-occupant record is the
-/// server's observation of a pane, and the whoami record is computed per
-/// connection and never stored.
+/// server's observation of a pane, the whoami record is computed per
+/// connection and never stored, and an approval record is the server's
+/// account of a held action (ADR-0128).
 fn is_server_owned_key(key: &str) -> bool {
-    use phux_protocol::wire::frame::{RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY};
+    use phux_protocol::wire::frame::{APPROVAL_KEY_PREFIX, RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY};
 
-    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY
+    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY || key.starts_with(APPROVAL_KEY_PREFIX)
 }
 
 #[derive(serde::Deserialize)]

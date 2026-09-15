@@ -2804,7 +2804,7 @@ fn event_asked_decodes_as_unknown_for_an_older_decoder() {
     // verbatim) rather than failing the frame parse. This pins the additive
     // forward-compat contract.
     let body_bytes = [0x01u8, 0x02, 0x03];
-    let mut agent_event = vec![0x0du8]; // a tag this version does not know
+    let mut agent_event = vec![0x0fu8]; // a tag this version does not know
     agent_event.extend_from_slice(&u32::try_from(body_bytes.len()).unwrap().to_be_bytes());
     agent_event.extend_from_slice(&body_bytes);
     let mut fields = Vec::new();
@@ -2817,7 +2817,7 @@ fn event_asked_decodes_as_unknown_for_an_older_decoder() {
         FrameKind::Event {
             terminal: None,
             event: AgentEvent::Unknown {
-                tag: 0x0d,
+                tag: 0x0f,
                 body: body_bytes.to_vec(),
             },
             stamp: None,
