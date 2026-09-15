@@ -20,8 +20,9 @@ registration does not start a phux server.
 2. Read with `phux_snapshot` or an agent level read before acting.
 3. Act with `phux_run` for one command, paste plus `phux_send_keys` for
    multiline interactive input, or `phux_agent_prompt` for an agent turn.
-4. Observe with a finite timeout using `phux_wait`, `phux_watch`, or
-   `phux_agent_wait`.
+4. Observe with a finite timeout using `phux_wait`, `phux_watch`,
+   `phux_agent_wait`, or `phux_resource_wait` for a process's exit (spawn it
+   with `retain_secs` so a finished run keeps its status).
 5. Re-read state. A quiet pane, successful write, or ended watcher is not proof
    of completion.
 6. Diagnose unexpected state with the read-only `phux_status` and `phux_doctor`

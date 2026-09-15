@@ -218,6 +218,23 @@ impl Journal {
         self.head
     }
 
+    /// The newest retained `seq` that `admits` accepts, `0` when none is.
+    /// Scans the ring newest first, so it is bounded by it.
+    #[must_use]
+    pub(crate) fn newest_admitted(&self, admits: impl Fn(&JournalEntry) -> bool) -> u64 {
+        self.entries
+            .iter()
+            .rev()
+            .find(|entry| admits(entry))
+            .map_or(0, JournalEntry::seq)
+    }
+
+    /// The newest `seq` evicted from the ring; `0` while nothing has been.
+    #[must_use]
+    pub(crate) const fn evicted_through(&self) -> u64 {
+        self.evicted_through
+    }
+
     /// Assign the next `seq`, or `None` once the sequence is exhausted:
     /// `2^64 - 1` is never assigned (it is the no-replay cursor).
     pub(crate) fn allocate_seq(&mut self) -> Option<u64> {
@@ -506,6 +523,22 @@ mod tests {
         let replay = journal.replay_after(0, |_| true);
         assert_eq!(replay.gap, None);
         assert_eq!(seqs(&replay), vec![1, 3]);
+    }
+
+    #[test]
+    fn the_newest_admitted_seq_ignores_other_scopes() {
+        let mut journal = Journal::new(3, 1 << 20);
+        for terminal in [1, 2, 1, 2] {
+            let _ = journal.record(bell(terminal), None, 0);
+        }
+        let only = |terminal: u32| {
+            move |entry: &JournalEntry| entry.terminal == Some(WireResourceId::local(terminal))
+        };
+        assert_eq!(journal.newest_admitted(only(1)), 3);
+        assert_eq!(journal.newest_admitted(only(2)), 4);
+        assert_eq!(journal.newest_admitted(only(9)), 0, "nothing retained");
+        assert_eq!(journal.evicted_through(), 1);
+        assert_eq!(Journal::new(3, 1 << 20).newest_admitted(|_| true), 0);
     }
 
     #[test]

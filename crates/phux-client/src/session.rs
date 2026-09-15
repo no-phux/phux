@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use phux_protocol::ids::{ResourceId, SessionId};
+use phux_protocol::ids::{IdempotencyKey, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     FrameKind, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX,
     SESSION_NAME_KEY, Scope,
@@ -192,6 +192,31 @@ pub struct CreateSessionRequest<'a> {
     /// Encoded `AgentSessionRecord` provenance to restore atomically with
     /// the create, when the server supports it.
     pub agent_session: Option<&'a [u8]>,
+    /// Make the create idempotent (ADR-0126): the key becomes the request's
+    /// `request_token`, so a repeat inside the server's horizon answers the
+    /// same result. Check [`keyed_create_supported`] first.
+    pub idempotency_key: Option<IdempotencyKey>,
+}
+
+/// Whether the connected server honors a keyed create (it advertises
+/// `SPAWN_IDEMPOTENCY`, ADR-0126). An older server would treat the repeat as
+/// a second create of a name already in use.
+#[must_use]
+pub fn keyed_create_supported(conn: &Connection) -> bool {
+    conn.negotiated_bootstrap().is_some_and(|bootstrap| {
+        bootstrap
+            .server_features
+            .contains(phux_protocol::caps::ServerFeature::SpawnIdempotency)
+    })
+}
+
+/// The `request_token` for a create: the idempotency key in the UUID shape
+/// the server accepts, or a fresh random one.
+fn request_token(key: Option<IdempotencyKey>) -> String {
+    key.map_or_else(
+        || uuid::Uuid::new_v4().to_string(),
+        |key| uuid::Uuid::from_bytes(*key.as_bytes()).to_string(),
+    )
 }
 
 /// Create a named session without attaching, via the conventional
@@ -230,7 +255,7 @@ pub async fn create_session(
             }
         }
     }
-    let request_token = uuid::Uuid::new_v4().to_string();
+    let request_token = request_token(request.idempotency_key);
     let result_key = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}{request_token}");
     let create_bytes = serde_json::to_vec(&serde_json::json!({
         "name": request.name,
@@ -641,6 +666,7 @@ mod tests {
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let env = BTreeMap::new();
         let request = CreateSessionRequest {
+            idempotency_key: None,
             name: "work",
             command: None,
             cwd: None,
@@ -698,6 +724,7 @@ mod tests {
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let env = BTreeMap::new();
         let request = CreateSessionRequest {
+            idempotency_key: None,
             name: "work",
             command: None,
             cwd: None,
@@ -731,6 +758,7 @@ mod tests {
         let mut conn = Connection::connect(&socket).await.expect("connect");
         let env = BTreeMap::new();
         let request = CreateSessionRequest {
+            idempotency_key: None,
             name: "work",
             command: None,
             cwd: None,

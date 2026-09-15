@@ -999,7 +999,9 @@ pub(crate) async fn handle_command(
         Command::DetachResource { terminal_id } => {
             handle_detach_terminal(state, client_id, &terminal_id).await
         }
-        Command::GetState { scope } => handle_get_state_federated(state, &scope, out_tx).await,
+        Command::GetState { scope } => {
+            handle_get_state_federated(state, client_id, &scope, out_tx).await
+        }
         Command::GetPerf { reset } => handle_get_perf(state, reset),
         Command::Transcribe {
             upload_id,
@@ -3617,7 +3619,7 @@ pub(crate) fn create_empty_session(state: &SharedState, name: &str) -> Result<()
 pub(crate) fn handle_get_perf(state: &SharedState, reset: bool) -> CommandResult {
     let (sessions, panes) =
         state.with_mut(|s| (s.registry().session_count(), s.registry().terminal_count()));
-    let clients = match handle_get_state(state, &StateScope::Server) {
+    let clients = match handle_get_state(state, None, &StateScope::Server) {
         CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot
             .sessions
             .iter()
@@ -3637,7 +3639,11 @@ pub(crate) fn handle_get_perf(state: &SharedState, reset: bool) -> CommandResult
     CommandResult::OkWith(CommandValue::Json(report.to_json()))
 }
 
-pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> CommandResult {
+pub(crate) fn handle_get_state(
+    state: &SharedState,
+    viewer: Option<ClientId>,
+    scope: &StateScope,
+) -> CommandResult {
     match scope {
         StateScope::Server => {
             let snapshot = state.with_mut(|s| {
@@ -3654,7 +3660,14 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
                 if snapshot.listeners().is_none() && s.has_remote_listener_report() {
                     snapshot = snapshot.with_listeners(s.remote_listeners().clone());
                 }
-                snapshot
+                // The journal head at the cut (L1 §7.3), read under the lock
+                // the snapshot is built in, so a consumer knows how far a
+                // cursor replay must reach before it trusts an absence. It is
+                // the viewer's: the newest seq its subscriptions admit, so
+                // other scopes' events never hold its catch-up open. This
+                // server always advertises EVENT_JOURNAL; a hub's head is its
+                // own journal's, the space its consumers' cursors live in.
+                snapshot.with_journal_head(Some(s.journal_head_for(viewer)))
             });
             CommandResult::OkWith(CommandValue::State(snapshot))
         }
@@ -3709,10 +3722,11 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
 /// [`retag_satellite_resource_id`].
 pub(crate) async fn handle_get_state_federated(
     state: &SharedState,
+    viewer: ClientId,
     scope: &StateScope,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) -> CommandResult {
-    let local = handle_get_state(state, scope);
+    let local = handle_get_state(state, Some(viewer), scope);
     if !matches!(scope, StateScope::Server) {
         return local;
     }

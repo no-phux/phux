@@ -264,6 +264,7 @@ pub(crate) mod remote_target;
 pub(crate) mod rename;
 pub(crate) mod report;
 pub(crate) mod resize;
+pub(crate) mod resource;
 pub(crate) mod run;
 pub(crate) mod runtime_info;
 pub(crate) mod satellite;
@@ -780,6 +781,17 @@ pub(crate) enum Command {
         )]
         env: Vec<EnvAssignment>,
 
+        /// Make the create safe to retry: a repeat with the same key (32 hex
+        /// digits) answers the first create's result instead of failing on
+        /// the name. Headless `--json` mode only.
+        #[usage(
+            long = "idempotency-key",
+            value_name = "HEX32",
+            requires("--json"),
+            conflicts("--empty")
+        )]
+        idempotency_key: Option<String>,
+
         #[usage(flatten)]
         remote: RemoteOpt,
 
@@ -841,6 +853,20 @@ pub(crate) enum Command {
         /// Working directory for the new pane.
         #[usage(short = 'c', long = "cwd")]
         cwd: Option<String>,
+
+        /// Keep the pane inspectable after its process exits, for SECS
+        /// seconds (bare `--retain`: the server's default). Its screen,
+        /// history, and exit status stay readable through `phux resource
+        /// show` and `phux resource wait` until then, or until `phux kill`.
+        /// Write `--retain=SECS` when a command follows.
+        #[usage(long, value_name = "SECS", num_args = 0..=1, default_missing = "0")]
+        retain: Option<u32>,
+
+        /// Make the spawn safe to retry: a repeat with the same key (32 hex
+        /// digits) and the same request answers the first pane instead of
+        /// spawning another. Draw one key per spawn and reuse it on retry.
+        #[usage(long = "idempotency-key", value_name = "HEX32")]
+        idempotency_key: Option<String>,
 
         #[usage(flatten)]
         json: JsonOpt,
@@ -1563,8 +1589,12 @@ pub(crate) enum Command {
         /// Exit 0 as soon as an event with this name arrives. Repeatable;
         /// any one of them satisfies the watch. The vocabulary is the one
         /// this stream prints: `agent_state`, `asked`, `bell`,
-        /// `command_finished`, `command_started`, `dirty`, `idle`,
-        /// `pane_closed`, `pane_spawned`, `title_changed`, `unknown`. An
+        /// `command_finished`, `command_started`, `cwd_changed`, `dirty`,
+        /// `idle`, `journal_gap`, `pane_closed`, `pane_spawned`,
+        /// `source_gap`, `terminal_control`, `title_changed`, `unknown`.
+        /// `unknown` also matches `cwd_changed`, `terminal_control`,
+        /// `journal_gap`, and `source_gap`, which printed as `unknown` before
+        /// they had names, so an existing `--until unknown` keeps working. An
         /// unrecognized name is a usage error (exit 2) reported before the
         /// watch starts, never a watch that quietly never matches.
         #[usage(long, value_name = "EVENT")]
@@ -1575,8 +1605,30 @@ pub(crate) enum Command {
         #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
 
+        /// Resume from the cursor a previous run printed: events the server
+        /// still holds since then are replayed before live ones. A cursor
+        /// from another server run is ignored, and said so. The cursor this
+        /// run reached is the last line on stderr.
+        #[usage(long, value_name = "CURSOR")]
+        after: Option<String>,
+
         #[usage(flatten)]
         json: JsonOpt,
+    },
+
+    /// Inspect a resource or wait for its process to exit
+    ///
+    /// `show` reads one resource: kind, parent, lifecycle, how a retained
+    /// process exited, its process facts, input holder, tags, and agent
+    /// record. `wait` blocks until the resource's process ends (exit 0),
+    /// reports a resource that is already gone (exit 1), or gives up at
+    /// `--timeout` (exit 124), and prints a cursor that resumes it. `methods`
+    /// lists what the resource answers on this server. None of them attaches
+    /// or resizes.
+    #[usage(help_heading = "Panes", display_order = 32)]
+    Resource {
+        #[usage(subcommand)]
+        action: ResourceAction,
     },
 
     /// Record a pane and export it as an asciinema cast, an animated GIF, or
@@ -2437,6 +2489,68 @@ pub(crate) enum WorktreeAction {
         /// teardown script has the same parsing problem creation does.
         #[usage(long)]
         json: bool,
+    },
+}
+
+/// `phux resource <action>` — one resource's record, its methods, and a
+/// resumable wait on its exit.
+#[derive(Debug, Subcommands)]
+pub(crate) enum ResourceAction {
+    /// Show one resource: kind, lifecycle, exit, process, tags, agent.
+    ///
+    /// Prints `key: value` lines, or with `--json` the stable document.
+    /// Read-only: never attaches or resizes.
+    Show {
+        #[usage(flatten)]
+        json: JsonOpt,
+
+        /// Target selector. A direct id (`@N`, `host/@N`) is read as given.
+        #[usage(value_name = "TARGET")]
+        target: String,
+    },
+
+    /// Wait until a resource's process exits.
+    ///
+    /// Exit 0 when it exited (now or earlier, while the server still holds
+    /// it), 1 when it is gone (it closed unretained, or never existed), 124
+    /// at `--timeout`, 2 for a bad argument. Race-free: an exit that happens
+    /// while the wait starts is never missed. With `--json` the document
+    /// carries the outcome, the exit status or signal, and a `cursor`; pass
+    /// that cursor to `--after` to resume after a disconnect.
+    Wait {
+        /// Give up after this many seconds (exit 124), counted from the start
+        /// of the command. Default: wait forever.
+        #[usage(long, value_name = "SECS")]
+        timeout: Option<u64>,
+
+        /// Resume from the cursor a previous `resource wait` or `watch`
+        /// printed: a close the server still holds is replayed instead of
+        /// read as gone. A cursor from another server run is ignored.
+        #[usage(long, value_name = "CURSOR")]
+        after: Option<String>,
+
+        #[usage(flatten)]
+        json: JsonOpt,
+
+        /// Target selector. A direct id (`@N`) is used as given, so a
+        /// resource that already exited can still be waited on.
+        #[usage(value_name = "TARGET")]
+        target: String,
+    },
+
+    /// List the methods a resource answers on this server.
+    ///
+    /// Each method's verb, whether it changes state, and whether it is
+    /// available here: a method another kind owns, or one that needs a
+    /// feature this server does not advertise, is listed with the reason.
+    /// Listing a method grants nothing.
+    Methods {
+        #[usage(flatten)]
+        json: JsonOpt,
+
+        /// Target selector. A direct id (`@N`, `host/@N`) is read as given.
+        #[usage(value_name = "TARGET")]
+        target: String,
     },
 }
 

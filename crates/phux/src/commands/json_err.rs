@@ -288,6 +288,15 @@ pub(crate) mod codes {
     /// The server refused to spawn the `AgentSession` for another reason.
     /// Exit 1.
     pub(crate) const AGENT_SESSION_REFUSED: &str = "agent_session_refused";
+    /// An `--after` value is not a cursor (`SERVER_ID_HEX:SEQ`). Exit 2,
+    /// before any connection.
+    pub(crate) const INVALID_CURSOR: &str = "invalid_cursor";
+    /// An `--idempotency-key` is not 32 hex digits, or is all zero. Exit 2,
+    /// before any connection.
+    pub(crate) const INVALID_IDEMPOTENCY_KEY: &str = "invalid_idempotency_key";
+    /// The idempotency key was already used for a different request inside
+    /// the server's horizon, so nothing was spawned. Exit 2.
+    pub(crate) const IDEMPOTENCY_CONFLICT: &str = "idempotency_conflict";
     /// A result document could not be serialized as JSON.
     pub(crate) const JSON_SERIALIZE: &str = "json_serialize";
     /// A local state-directory write failed (a bug-report bundle).

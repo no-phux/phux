@@ -651,6 +651,10 @@ pub mod snapshot_extension {
     /// followed by the field-tagged [`resource_state`](super::resource_state)
     /// fields. Repeated, one per resource with non-default state.
     pub const RESOURCE_STATE: u32 = 1;
+    /// The newest event-journal `seq` when the snapshot was cut (`u64`),
+    /// written once by a server that advertises `EVENT_JOURNAL`
+    /// (`docs/spec/L1.md` §7.3).
+    pub const JOURNAL_HEAD: u32 = 2;
 }
 
 /// Fields inside one `snapshot_extension::RESOURCE_STATE` value, after its
