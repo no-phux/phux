@@ -92,7 +92,7 @@ dst=${@: -1}
 if [[ ${SIGNAL_AFTER_FIRST_PUBLISH:-0} == 1 && $src == */.phux-install.*/phux && $dst == "$SIGNAL_INSTALL_DIR/phux" && ! -e $SIGNAL_MARKER ]]; then
   /bin/mv "$@"
   : > "$SIGNAL_MARKER"
-  kill -TERM "$PPID"
+  kill -"${SIGNAL_NAME:-TERM}" "$PPID"
   exit 0
 fi
 if [[ $src == */.phux-install.*/phux-mcp && $dst == "${FAIL_INSTALL_DIR:-/nonexistent}/phux-mcp" && ! -e $FAIL_MARKER ]]; then
@@ -113,11 +113,34 @@ if [[ -n ${COCKPIT_MV_ACTION:-} && ! -e $COCKPIT_MV_MARKER ]]; then
       kill -TERM "$PPID"
       exit 0
       ;;
+    "$operation-hup")
+      /bin/mv "$@"
+      : > "$COCKPIT_MV_MARKER"
+      kill -HUP "$PPID"
+      exit 0
+      ;;
   esac
 fi
 exec /bin/mv "$@"
 EOF
 chmod 755 "$FAKE_BIN/mv"
+
+cat > "$FAKE_BIN/mkdir" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ ${SIGNAL_AFTER_LOCK_MKDIR:-0} == 1 && ${1:-} != -* && ! -e ${SIGNAL_MARKER:-/nonexistent} ]]; then
+  case "$1" in
+    */.phux-install.lock.*|*/.phux-cockpit-install.lock.*)
+      /bin/mkdir "$@"
+      : > "$SIGNAL_MARKER"
+      kill -"${SIGNAL_NAME:-TERM}" "$PPID"
+      exit 0
+      ;;
+  esac
+fi
+exec /bin/mkdir "$@"
+EOF
+chmod 755 "$FAKE_BIN/mkdir"
 
 ROLLBACK="$TMP/rollback"
 mkdir "$ROLLBACK"
@@ -139,25 +162,29 @@ fi
 
 # Interrupt a fresh install immediately after the first publish rename. The
 # destination must contain the complete pair or neither binary, never half.
-INTERRUPTED="$TMP/interrupted"
-mkdir "$INTERRUPTED"
-if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
-  SIGNAL_AFTER_FIRST_PUBLISH=1 SIGNAL_INSTALL_DIR="$INTERRUPTED" \
-  SIGNAL_MARKER="$TMP/signaled-once" FAIL_INSTALL_DIR=/nonexistent \
-  FAIL_MARKER="$TMP/not-failed" \
-  "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
-    --install-dir "$INTERRUPTED" >"$TMP/interrupted.out" 2>"$TMP/interrupted.err"; then
-  echo "installer unexpectedly succeeded after a publish interruption" >&2
-  exit 1
-fi
-if [[ -e $INTERRUPTED/phux || -e $INTERRUPTED/phux-mcp ]]; then
-  echo "installer left a partial binary pair after interruption" >&2
-  exit 1
-fi
-if find "$INTERRUPTED" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
-  echo "installer left transaction artifacts after interruption" >&2
-  exit 1
-fi
+for signal in TERM HUP; do
+  INTERRUPTED="$TMP/interrupted-$signal"
+  mkdir "$INTERRUPTED"
+  marker="$TMP/signaled-once-$signal"
+  if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
+    SIGNAL_AFTER_FIRST_PUBLISH=1 SIGNAL_NAME="$signal" SIGNAL_INSTALL_DIR="$INTERRUPTED" \
+    SIGNAL_MARKER="$marker" FAIL_INSTALL_DIR=/nonexistent \
+    FAIL_MARKER="$TMP/not-failed-$signal" \
+    "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
+      --install-dir "$INTERRUPTED" >"$TMP/interrupted-$signal.out" 2>"$TMP/interrupted-$signal.err"; then
+    echo "installer unexpectedly succeeded after a $signal publish interruption" >&2
+    exit 1
+  fi
+  [[ -e $marker ]] || { echo "$signal publish interruption was not reached" >&2; exit 1; }
+  if [[ -e $INTERRUPTED/phux || -e $INTERRUPTED/phux-mcp ]]; then
+    echo "installer left a partial binary pair after $signal interruption" >&2
+    exit 1
+  fi
+  if find "$INTERRUPTED" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
+    echo "installer left transaction artifacts after $signal interruption" >&2
+    exit 1
+  fi
+done
 
 # Refusing a concurrent install must never remove the active installer's lock.
 LOCKED="$TMP/locked"
@@ -170,6 +197,29 @@ fi
   echo "refused installer removed another installer's lock" >&2
   exit 1
 }
+
+# A signal after the lock mkdir succeeds, before lock_acquired=1, must not
+# strand the lock. A later install has to be able to proceed.
+for signal in TERM HUP; do
+  dest="$TMP/lock-interrupt-$signal"
+  marker="$TMP/lock-interrupt-$signal-reached"
+  mkdir "$dest"
+  if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
+    SIGNAL_AFTER_LOCK_MKDIR=1 SIGNAL_NAME="$signal" SIGNAL_MARKER="$marker" \
+    "$INSTALLER_SH" "$ROOT/scripts/install.sh" --version "$VERSION" --os linux --arch x86_64 \
+      --install-dir "$dest" >"$TMP/lock-interrupt-$signal.out" 2>"$TMP/lock-interrupt-$signal.err"; then
+    echo "installer unexpectedly succeeded after a $signal lock interruption" >&2
+    exit 1
+  fi
+  [[ -e $marker ]] || { echo "$signal lock interruption was not reached" >&2; exit 1; }
+  if find "$dest" -maxdepth 1 -name '.phux-install*' -print -quit | grep -q .; then
+    echo "installer stranded a lock after $signal lock interruption" >&2
+    exit 1
+  fi
+  run_install "$dest" "/usr/bin:/bin" >/dev/null
+  cmp "$BINS/phux" "$dest/phux"
+  cmp "$BINS/phux-mcp" "$dest/phux-mcp"
+done
 
 echo "installer transaction tests passed"
 
@@ -290,6 +340,31 @@ fi
 [[ -d $COCKPIT_LOCKED/.phux-cockpit-install.lock ]]
 [[ ! -e "$COCKPIT_LOCKED/Phux Cockpit.app" ]]
 
+# Same lock-acquisition window as the core installer: HUP/TERM after mkdir
+# must recover, and must not steal the live lock above.
+for signal in TERM HUP; do
+  apps="$TMP/cockpit-lock-interrupt-$signal"
+  marker="$TMP/cockpit-lock-interrupt-$signal-reached"
+  mkdir "$apps"
+  if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$FIXTURE" \
+    XATTR_MARKER="$TMP/xattr-unused-$signal" \
+    SIGNAL_AFTER_LOCK_MKDIR=1 SIGNAL_NAME="$signal" SIGNAL_MARKER="$marker" \
+    "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_VERSION" \
+      --os darwin --arch arm64 --applications-dir "$apps" \
+      --bin-dir "$TMP/cockpit-bin" \
+      >"$TMP/cockpit-lock-interrupt-$signal.out" 2>"$TMP/cockpit-lock-interrupt-$signal.err"; then
+    echo "cockpit installer unexpectedly succeeded after a $signal lock interruption" >&2
+    exit 1
+  fi
+  [[ -e $marker ]] || { echo "cockpit $signal lock interruption was not reached" >&2; exit 1; }
+  if find "$apps" -maxdepth 1 -name '.phux-cockpit-install*' -print -quit | grep -q .; then
+    echo "cockpit installer stranded a lock after $signal lock interruption" >&2
+    exit 1
+  fi
+  run_cockpit_install "$apps" >/dev/null
+  cmp "$FIXTURE/Phux Cockpit.app/Contents/Info.plist" "$apps/Phux Cockpit.app/Contents/Info.plist"
+done
+
 # A bare semver normalizes to the release tag.
 output="$(PATH="$FAKE_BIN:/usr/bin:/bin" \
   "$INSTALLER_SH" "$ROOT/scripts/install-cockpit.sh" --version "$COCKPIT_SEMVER" \
@@ -320,7 +395,7 @@ fi
 # A backup rename failure must leave the original app intact. A failure or
 # signal at either rename must restore it, including a signal delivered after
 # mv succeeded but before the shell executes its next statement.
-for action in backup-fail backup-term publish-fail publish-term; do
+for action in backup-fail backup-term backup-hup publish-fail publish-term publish-hup; do
   apps="$TMP/cockpit-$action"
   marker="$TMP/cockpit-$action-reached"
   mkdir -p "$apps/Phux Cockpit.app/Contents"
@@ -340,7 +415,7 @@ done
 
 # A first-time install has no backup. Failure or interruption during its publish
 # rename must remove the new app rather than leave a partial/uncertain install.
-for action in publish-fail publish-term; do
+for action in publish-fail publish-term publish-hup; do
   apps="$TMP/cockpit-fresh-$action"
   marker="$TMP/cockpit-fresh-$action-reached"
   if COCKPIT_MV_ACTION="$action" COCKPIT_MV_MARKER="$marker" COCKPIT_MV_APPS="$apps" \
