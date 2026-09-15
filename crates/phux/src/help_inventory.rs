@@ -190,6 +190,11 @@ phux upgrade
 phux wait
 phux watch
 phux whoami
+phux workload
+phux workload add-key
+phux workload authority
+phux workload list
+phux workload revoke
 phux workspace
 phux workspace inspect
 phux workspace restore

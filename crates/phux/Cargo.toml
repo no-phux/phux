@@ -134,6 +134,11 @@ tempfile.workspace = true
 # Shared real-server integration-test cleanup uses kill(2) directly rather
 # than depending on an external `kill` executable.
 libc = "0.2"
+# The `phux workload` e2e (tests/lifecycle_e2e/workload_e2e.rs) generates a
+# client key and CSR the way an outside workload would, so the binary is
+# exercised on material it did not mint. Same version and features phux-dial
+# and phux-server already declare; no new row enters Cargo.lock.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [features]
 default = ["webtransport"]

@@ -1408,6 +1408,7 @@ mod tests {
                     issued_at: chrono::Utc::now(),
                     expires_at: Some(chrono::Utc::now() + chrono::Duration::hours(1)),
                     generation: 7,
+                    registry_instance: None,
                 }),
             },
         );
