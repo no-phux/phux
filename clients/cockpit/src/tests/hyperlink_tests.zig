@@ -48,6 +48,15 @@ fn paintGrid(session: *grid.Session, builder: *canvas.Builder) !support.CellGrid
     return support.expectCellGrid(builder.displayList());
 }
 
+/// `Builder` stores the cell lattice inline. Two live stack copies overflow
+/// the macOS thread after the 4x cell bump; the view borrows those stores,
+/// so each paint keeps its own heap builder until the assertions finish.
+fn makeBuilder(commands: []canvas.CanvasCommand) !*canvas.Builder {
+    const builder = try testing.allocator.create(canvas.Builder);
+    builder.initAt(commands);
+    return builder;
+}
+
 /// The middle of cell (col, row), in widget points.
 ///
 /// MEASURED, never assumed: the cell box comes from the painter that just ran
@@ -278,8 +287,9 @@ test "hovering an OSC 8 link underlines its whole run and nothing else" {
 
     // ABSENT: nothing is hovered, so nothing on the row is underlined.
     var before_commands: [512]canvas.CanvasCommand = undefined;
-    var before_builder = canvas.Builder.init(&before_commands);
-    const before = try paintGrid(session, &before_builder);
+    const before_builder = try makeBuilder(&before_commands);
+    defer testing.allocator.destroy(before_builder);
+    const before = try paintGrid(session, before_builder);
     try expectUnderlinedRange(before, 0, 0, 0, 14);
 
     // ACT: put the pointer inside the link's display text.
@@ -288,8 +298,9 @@ test "hovering an OSC 8 link underlines its whole run and nothing else" {
     // PRESENT: exactly the link's cells, columns 2..12 ("click here"). The
     // "ab" before it and the "cd" after it stay bare.
     var after_commands: [512]canvas.CanvasCommand = undefined;
-    var after_builder = canvas.Builder.init(&after_commands);
-    const after = try paintGrid(session, &after_builder);
+    const after_builder = try makeBuilder(&after_commands);
+    defer testing.allocator.destroy(after_builder);
+    const after = try paintGrid(session, after_builder);
     try expectUnderlinedRange(after, 0, 2, 12, 14);
 }
 
@@ -301,15 +312,17 @@ test "hovering a bare URL underlines the run the click would open" {
     session.refreshScreenText();
 
     var before_commands: [512]canvas.CanvasCommand = undefined;
-    var before_builder = canvas.Builder.init(&before_commands);
-    const before = try paintGrid(session, &before_builder);
+    const before_builder = try makeBuilder(&before_commands);
+    defer testing.allocator.destroy(before_builder);
+    const before = try paintGrid(session, before_builder);
     try expectUnderlinedRange(before, 0, 0, 0, 32);
 
     _ = session.setHoverPoint(cellPoint(session, 8, 0));
 
     var after_commands: [512]canvas.CanvasCommand = undefined;
-    var after_builder = canvas.Builder.init(&after_commands);
-    const after = try paintGrid(session, &after_builder);
+    const after_builder = try makeBuilder(&after_commands);
+    defer testing.allocator.destroy(after_builder);
+    const after = try paintGrid(session, after_builder);
     // "see " is 4 columns; the URL is ASCII so its columns are its bytes.
     try expectUnderlinedRange(after, 0, 4, 4 + url_text.len, 32);
 }
@@ -321,15 +334,17 @@ test "a hover over ordinary text underlines nothing" {
     session.refreshScreenText();
 
     var commands: [512]canvas.CanvasCommand = undefined;
-    var builder = canvas.Builder.init(&commands);
-    _ = try paintGrid(session, &builder);
+    const builder = try makeBuilder(&commands);
+    defer testing.allocator.destroy(builder);
+    _ = try paintGrid(session, builder);
     // Column 1 is inside the word "see". The pointer is armed and over the
     // same ROW as a link — only the cell it is actually on decides.
     _ = session.setHoverPoint(cellPoint(session, 1, 0));
 
     var after_commands: [512]canvas.CanvasCommand = undefined;
-    var after_builder = canvas.Builder.init(&after_commands);
-    const after = try paintGrid(session, &after_builder);
+    const after_builder = try makeBuilder(&after_commands);
+    defer testing.allocator.destroy(after_builder);
+    const after = try paintGrid(session, after_builder);
     try expectUnderlinedRange(after, 0, 0, 0, 32);
 }
 
@@ -342,13 +357,15 @@ test "a refused OSC 8 href underlines nothing either" {
     session.refreshScreenText();
 
     var commands: [512]canvas.CanvasCommand = undefined;
-    var builder = canvas.Builder.init(&commands);
-    _ = try paintGrid(session, &builder);
+    const builder = try makeBuilder(&commands);
+    defer testing.allocator.destroy(builder);
+    _ = try paintGrid(session, builder);
     _ = session.setHoverPoint(cellPoint(session, 2, 0));
 
     var after_commands: [512]canvas.CanvasCommand = undefined;
-    var after_builder = canvas.Builder.init(&after_commands);
-    const after = try paintGrid(session, &after_builder);
+    const after_builder = try makeBuilder(&after_commands);
+    defer testing.allocator.destroy(after_builder);
+    const after = try paintGrid(session, after_builder);
     try expectUnderlinedRange(after, 0, 0, 0, 10);
 }
 
@@ -363,13 +380,15 @@ test "the underline follows its text when output scrolls under the pointer" {
     session.refreshScreenText();
 
     var commands: [512]canvas.CanvasCommand = undefined;
-    var builder = canvas.Builder.init(&commands);
-    _ = try paintGrid(session, &builder);
+    const builder = try makeBuilder(&commands);
+    defer testing.allocator.destroy(builder);
+    _ = try paintGrid(session, builder);
     _ = session.setHoverPoint(cellPoint(session, 4, 0));
 
     var armed_commands: [512]canvas.CanvasCommand = undefined;
-    var armed_builder = canvas.Builder.init(&armed_commands);
-    const armed = try paintGrid(session, &armed_builder);
+    const armed_builder = try makeBuilder(&armed_commands);
+    defer testing.allocator.destroy(armed_builder);
+    const armed = try paintGrid(session, armed_builder);
     try expectUnderlinedRange(armed, 0, 0, 10, 14);
 
     // Print a plain line at the top, pushing the link down a row without the
@@ -378,8 +397,9 @@ test "the underline follows its text when output scrolls under the pointer" {
     session.refreshScreenText();
 
     var moved_commands: [512]canvas.CanvasCommand = undefined;
-    var moved_builder = canvas.Builder.init(&moved_commands);
-    const moved = try paintGrid(session, &moved_builder);
+    const moved_builder = try makeBuilder(&moved_commands);
+    defer testing.allocator.destroy(moved_builder);
+    const moved = try paintGrid(session, moved_builder);
     // Row 0 now holds "plain", which is not a link; the pointer is still on
     // row 0, so nothing is underlined anywhere.
     try expectUnderlinedRange(moved, 0, 0, 0, 14);
@@ -495,8 +515,9 @@ test "long OSC 8 userinfo cannot hide the rendered effective authority" {
     try pointerInput(harness, app_iface, .pointer_move, terminalCellPoint(pane, frame, 5, 0), 0, .{}, 0);
 
     var commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    var builder = canvas.Builder.init(&commands);
-    _ = try paintHostGrid(host, &builder);
+    const builder = try makeBuilder(&commands);
+    defer testing.allocator.destroy(builder);
+    _ = try paintHostGrid(host, builder);
     const authority = previewAuthority(builder.displayList(), 0) orelse return error.TestExpectedLinkPreview;
     try testing.expect(std.mem.startsWith(u8, authority.text, "..."));
     try testing.expect(std.mem.endsWith(u8, authority.text, ".evil.example"));
@@ -546,22 +567,25 @@ test "the link chord arms the hover underline, and a bare pointer does not" {
     // and one that is not being held promises a click that would only select.
     try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{}, 0);
     var bare_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    var bare_builder = canvas.Builder.init(&bare_commands);
-    const bare = try paintHostGrid(host, &bare_builder);
+    const bare_builder = try makeBuilder(&bare_commands);
+    defer testing.allocator.destroy(bare_builder);
+    const bare = try paintHostGrid(host, bare_builder);
     try expectUnderlinedRange(bare, 0, 0, 0, 32);
 
     // ACT: same point, chord held.
     try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{ .command = true }, 0);
     var armed_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    var armed_builder = canvas.Builder.init(&armed_commands);
-    const armed = try paintHostGrid(host, &armed_builder);
+    const armed_builder = try makeBuilder(&armed_commands);
+    defer testing.allocator.destroy(armed_builder);
+    const armed = try paintHostGrid(host, armed_builder);
     try expectUnderlinedRange(armed, 0, 4, 4 + "https://example.com/docs".len, 32);
 
     // ...and letting the chord go takes it away again.
     try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{}, 0);
     var released_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    var released_builder = canvas.Builder.init(&released_commands);
-    const released = try paintHostGrid(host, &released_builder);
+    const released_builder = try makeBuilder(&released_commands);
+    defer testing.allocator.destroy(released_builder);
+    const released = try paintHostGrid(host, released_builder);
     try expectUnderlinedRange(released, 0, 0, 0, 32);
 }
 
@@ -589,13 +613,15 @@ test "window blur takes the hover underline with it" {
     try pointerInput(harness, app_iface, .pointer_move, on_link, 0, .{ .command = true }, 0);
 
     var armed_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    var armed_builder = canvas.Builder.init(&armed_commands);
-    const armed = try paintHostGrid(host, &armed_builder);
+    const armed_builder = try makeBuilder(&armed_commands);
+    defer testing.allocator.destroy(armed_builder);
+    const armed = try paintHostGrid(host, armed_builder);
     try expectUnderlinedRange(armed, 0, 4, 4 + "https://example.com/docs".len, 32);
 
     app.update(&host.inner.model, .{ .focus_changed = false }, &host.inner.effects);
     var blurred_commands: [native_sdk.runtime.max_canvas_commands_per_view]canvas.CanvasCommand = undefined;
-    var blurred_builder = canvas.Builder.init(&blurred_commands);
-    const blurred = try paintHostGrid(host, &blurred_builder);
+    const blurred_builder = try makeBuilder(&blurred_commands);
+    defer testing.allocator.destroy(blurred_builder);
+    const blurred = try paintHostGrid(host, blurred_builder);
     try expectUnderlinedRange(blurred, 0, 0, 0, 32);
 }
