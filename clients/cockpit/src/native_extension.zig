@@ -2343,6 +2343,7 @@ test "shipping TypeScript graph registers the terminal family and Cockpit token 
 /// declared window label builds its own compiled markup over the core model.
 const window_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "components/cockpit-window.native", .source = @embedFile("windows/components/cockpit-window.native") },
+    .{ .path = "components/cockpit-chrome-recipes.native", .source = @embedFile("windows/components/cockpit-chrome-recipes.native") },
     .{ .path = "components/cockpit-settings.native", .source = @embedFile("windows/components/cockpit-settings.native") },
     .{ .path = "components/cockpit-navigator.native", .source = @embedFile("windows/components/cockpit-navigator.native") },
     .{ .path = "components/cockpit-host.native", .source = @embedFile("windows/components/cockpit-host.native") },
@@ -5110,6 +5111,7 @@ test "shipping failed reconnect publishes the retired pending window" {
 const main_sources = [_]canvas.ui_markup.SourceFile{
     .{ .path = "app.native", .source = @embedFile("app.native") },
     .{ .path = "windows/components/cockpit-window.native", .source = @embedFile("windows/components/cockpit-window.native") },
+    .{ .path = "windows/components/cockpit-chrome-recipes.native", .source = @embedFile("windows/components/cockpit-chrome-recipes.native") },
     .{ .path = "windows/components/cockpit-settings.native", .source = @embedFile("windows/components/cockpit-settings.native") },
     .{ .path = "windows/components/cockpit-navigator.native", .source = @embedFile("windows/components/cockpit-navigator.native") },
     .{ .path = "windows/components/cockpit-host.native", .source = @embedFile("windows/components/cockpit-host.native") },
@@ -6503,6 +6505,295 @@ fn measureWindow(model: *const core.Model, window: usize, size: native_sdk.geome
     return .{ .measured = measured, .tree = tree, .arena = arena };
 }
 
+fn emittedWidgetColor(widget: canvas.Widget, tokens: canvas.DesignTokens, part: u4) !canvas.Color {
+    var commands: [32]canvas.CanvasCommand = undefined;
+    var builder = canvas.Builder.init(&commands);
+    try canvas.emitWidgetTree(&builder, widget, tokens);
+    const command = builder.displayList().findCommandById(canvas.widgetPartId(widget.id, part)) orelse
+        return error.TestExpectedWidgetPaint;
+    return switch (command.command) {
+        .fill_rect => |fill| emittedFillColor(fill.fill),
+        .fill_rounded_rect => |fill| emittedFillColor(fill.fill),
+        .stroke_rect => |stroke| emittedFillColor(stroke.stroke.fill),
+        .draw_text => |text| text.color,
+        else => error.TestExpectedWidgetPaint,
+    };
+}
+
+fn emittedFillColor(fill: canvas.Fill) !canvas.Color {
+    return switch (fill) {
+        .color => |color| color,
+        else => error.TestExpectedWidgetColor,
+    };
+}
+
+fn selectedTabWidget(measured: canvas.WidgetLayoutTree) ?canvas.Widget {
+    for (measured.nodes) |entry| {
+        if (entry.widget.kind != .toggle_button or entry.widget.semantics.role != .tab or !entry.widget.state.selected) continue;
+        var widget = entry.widget;
+        widget.frame = entry.frame;
+        return widget;
+    }
+    return null;
+}
+
+fn expectPairwiseDistinct(colors: []const canvas.Color) !void {
+    for (colors, 0..) |color, index| {
+        for (colors[index + 1 ..]) |other| try std.testing.expect(!std.meta.eql(color, other));
+    }
+}
+
+test "compiled shipping tabs consume the ghost pressed channel with readable pairwise distinct states" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    var built = try measureWindow(&rig.app_state.model, 0, .init(1100, 640));
+    defer built.arena.deinit();
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    const compiled = selectedTabWidget(built.measured) orelse return error.TestExpectedSelectedTab;
+    try std.testing.expectEqual(canvas.WidgetVariant.ghost, compiled.variant);
+
+    const states = [_]canvas.WidgetState{
+        .{},
+        .{ .hovered = true },
+        .{ .selected = true },
+        .{ .hovered = true, .pressed = true },
+    };
+    var fills: [states.len]canvas.Color = undefined;
+    for (states, 0..) |state, index| {
+        var widget = compiled;
+        widget.state = state;
+        fills[index] = try emittedWidgetColor(widget, tokens, 1);
+        const text = try emittedWidgetColor(widget, tokens, 4);
+        try std.testing.expect(cockpit.projection.semantic_theme.contrastRatio(text, fills[index]) >= 4.5);
+    }
+    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.surface, fills[0]);
+    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.hover, fills[1]);
+    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.selected, fills[2]);
+    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.pressed, fills[3]);
+    try expectPairwiseDistinct(&fills);
+}
+
+fn findSelectedListItem(measured: canvas.WidgetLayoutTree, label: []const u8) ?canvas.WidgetLayoutNode {
+    for (measured.nodes) |entry| {
+        if (entry.widget.kind != .list_item or !entry.widget.state.selected) continue;
+        if (std.mem.eql(u8, entry.widget.semantics.label, label)) return entry;
+    }
+    return null;
+}
+
+fn expectHighlightedRowMarker(model: *const core.Model, label: []const u8) !void {
+    var built = try measureWindow(model, 0, .init(1100, 640));
+    defer built.arena.deinit();
+    const row = findSelectedListItem(built.measured, label) orelse return error.TestExpectedHighlightedRow;
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    for (built.measured.nodes) |entry| {
+        const background = entry.widget.style.background orelse continue;
+        if (!std.meta.eql(background, tokens.colors.accent)) continue;
+        if (@abs(entry.frame.width - 2) > 0.01 or @abs(entry.frame.height - 24) > 0.01) continue;
+        try expectRectInside(entry.frame, row.frame);
+        try std.testing.expect(cockpit.projection.semantic_theme.contrastRatio(background, cockpit.projection.semantic_theme.palette.selected) >= 3.0);
+        return;
+    }
+    return error.TestExpectedSelectionMarker;
+}
+
+test "compiled command session machine and directory rows share the highlighted-row accent marker" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+
+    try rig.dispatch(.commands_open);
+    try expectHighlightedRowMarker(&rig.app_state.model, rig.app_state.model.actionRows[0].label);
+
+    const session = core.SwitcherRow{
+        .id = 1,
+        .index = 0,
+        .label = "Marker Session",
+        .target = "session-target",
+        .highlighted = true,
+        .current = false,
+        .detail = "Session row",
+        .kind = 1,
+        .host = "This Mac",
+        .selectable = true,
+        .disabled = false,
+        .renamable = true,
+        .resource = "",
+        .parent = "",
+        .nativeId = "",
+        .evidence = "",
+    };
+    const session_rows = [_]*const core.SwitcherRow{&session};
+    var sessions = rig.app_state.model;
+    sessions.navigatorView = 1;
+    sessions.paletteRows = &session_rows;
+    try expectHighlightedRowMarker(&sessions, session.label);
+
+    const machine_target = "machine-target";
+    const machine = core.MachineRow{
+        .index = 0,
+        .role = 0,
+        .route = 0,
+        .state = 0,
+        .name = "Marker Machine",
+        .endpoint = "ssh://marker",
+        .session = "",
+        .message = "",
+        .status = "Saved",
+        .action = "Connect",
+        .target = machine_target,
+        .highlighted = true,
+        .connected = false,
+        .canDisconnect = false,
+        .height = 96,
+        .canForget = false,
+        .disabled = false,
+    };
+    const machine_rows = [_]*const core.MachineRow{&machine};
+    var machines = rig.app_state.model;
+    machines.navigatorView = 2;
+    machines.machineRows = &machine_rows;
+    try expectHighlightedRowMarker(&machines, machine.name);
+
+    const directory = core.DirRow{ .id = 1, .index = 0, .label = "/marker/directory", .highlighted = true };
+    const directory_rows = [_]*const core.DirRow{&directory};
+    var directories = rig.app_state.model;
+    directories.paletteOpen = false;
+    directories.mainPaletteOpen = false;
+    directories.dirOpen = true;
+    directories.mainDirOpen = true;
+    directories.dirRows = &directory_rows;
+    try expectHighlightedRowMarker(&directories, directory.label);
+}
+
+fn findWidgetByText(measured: canvas.WidgetLayoutTree, kind: canvas.WidgetKind, text: []const u8) ?canvas.WidgetLayoutNode {
+    for (measured.nodes) |entry| {
+        if (entry.widget.kind == kind and std.mem.eql(u8, entry.widget.text, text)) return entry;
+    }
+    return null;
+}
+
+test "compiled navigator destinations are one exclusive segmented control in the same owner dialog" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const cases = [_]struct { label: []const u8, msg: core.Msg, view: i64 }{
+        .{ .label = "Sessions", .msg = .sessions_open, .view = 1 },
+        .{ .label = "Machines", .msg = .machines_open, .view = 2 },
+        .{ .label = "Windows", .msg = .windows_open, .view = 3 },
+        .{ .label = "Commands", .msg = .commands_open, .view = 4 },
+    };
+    for (cases) |case| {
+        try rig.dispatch(case.msg);
+        if (case.view != 4) try rig.settleNavigation();
+        try std.testing.expect(rig.app_state.model.paletteOpen);
+        try std.testing.expect(rig.app_state.model.mainPaletteOpen);
+        try std.testing.expectEqual(case.view, rig.app_state.model.navigatorView);
+        var built = try measureWindow(&rig.app_state.model, 0, .init(1100, 640));
+        defer built.arena.deinit();
+        try std.testing.expectEqual(@as(usize, 1), overlayKindCount(built.measured, .dialog));
+        var segments: usize = 0;
+        for (built.measured.nodes) |entry| {
+            if (entry.widget.kind == .segmented_control) segments += 1;
+        }
+        try std.testing.expectEqual(@as(usize, 4), segments);
+        const selected = findWidgetByText(built.measured, .segmented_control, case.label) orelse
+            return error.TestExpectedNavigatorDestination;
+        try std.testing.expect(selected.widget.state.selected);
+        try std.testing.expectEqual(case.msg, built.tree.msgForPointer(selected.widget.id, .up) orelse
+            return error.TestExpectedNavigatorDestinationMessage);
+    }
+}
+
+test "compiled top strip and side rail tabs share one register and distinct selection focus and attention" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    var top = try measureWindow(&rig.app_state.model, 0, .init(1100, 640));
+    defer top.arena.deinit();
+    const top_tab = selectedTabWidget(top.measured) orelse return error.TestExpectedSelectedTab;
+    try std.testing.expectEqual(canvas.WidgetVariant.ghost, top_tab.variant);
+    try std.testing.expectApproxEqAbs(cockpit.projection.semantic_theme.geometry.control_sm, top_tab.frame.height, 0.01);
+
+    var side_model = rig.app_state.model;
+    side_model.tabPlacement = .side;
+    var side = try measureWindow(&side_model, 0, .init(1100, 640));
+    defer side.arena.deinit();
+    const side_tab = selectedTabWidget(side.measured) orelse return error.TestExpectedSelectedTab;
+    try std.testing.expectEqual(top_tab.kind, side_tab.kind);
+    try std.testing.expectEqual(top_tab.variant, side_tab.variant);
+    try std.testing.expectApproxEqAbs(top_tab.frame.height, side_tab.frame.height, 0.01);
+
+    var focused = top_tab;
+    focused.state.focused = true;
+    const focus = try emittedWidgetColor(focused, tokens, 3);
+    try std.testing.expectEqual(cockpit.projection.semantic_theme.palette.focus, focus);
+    try std.testing.expect(!std.meta.eql(focus, cockpit.projection.semantic_theme.palette.accent));
+    try std.testing.expect(!std.meta.eql(tokens.colors.warning, cockpit.projection.semantic_theme.palette.accent));
+}
+
+test "compiled titlebar chrome starts after the declared traffic-light reserve and keeps one toolbar register" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const labels = [_][]const u8{ "Sessions", "Inspect agents", "Machines", "New Tab", "Move tabs to top or side", "Settings" };
+    for (parity_sizes) |size| {
+        var built = try measureWindow(&rig.app_state.model, 0, size);
+        defer built.arena.deinit();
+        var tabs_frame: ?native_sdk.geometry.RectF = null;
+        for (built.measured.nodes) |entry| {
+            if (std.mem.eql(u8, entry.widget.semantics.label, "Terminal tabs")) tabs_frame = entry.frame;
+        }
+        const tabs = tabs_frame orelse return error.TestExpectedTabStrip;
+        try std.testing.expectApproxEqAbs(
+            cockpit.projection.titlebar_tab_leading_reserve + cockpit.projection.chrome_gap,
+            tabs.x,
+            0.01,
+        );
+        for (labels) |label| {
+            const frame = for (built.measured.nodes) |entry| {
+                if (entry.widget.kind == .button and std.mem.eql(u8, entry.widget.semantics.label, label)) break entry.frame;
+            } else return error.TestExpectedToolbarControl;
+            try std.testing.expectApproxEqAbs(cockpit.projection.semantic_theme.geometry.control_sm, frame.height, 0.01);
+            try std.testing.expectApproxEqAbs(cockpit.projection.header_height * 0.5, frame.y + frame.height * 0.5, 0.01);
+        }
+    }
+}
+
+test "shipping menus cap every group at seven and name navigator destinations consistently" {
+    const menus = @import("tests/shipping_commands.zig").menus;
+    for (menus) |menu| {
+        var group_count: usize = 0;
+        for (menu.items) |item| {
+            if (item.separator) {
+                try std.testing.expect(group_count > 0);
+                group_count = 0;
+                continue;
+            }
+            group_count += 1;
+            try std.testing.expect(group_count <= 7);
+        }
+        try std.testing.expect(group_count > 0);
+    }
+    const destinations = [_]struct { command: []const u8, label: []const u8 }{
+        .{ .command = "navigator.sessions", .label = "Sessions…" },
+        .{ .command = "navigator.machines", .label = "Machines…" },
+        .{ .command = "navigator.windows", .label = "Windows…" },
+        .{ .command = "commands.open", .label = "Commands…" },
+    };
+    for (destinations) |destination| {
+        var found = false;
+        for (menus) |menu| for (menu.items) |item| {
+            if (!std.mem.eql(u8, item.command, destination.command)) continue;
+            try std.testing.expectEqualStrings(destination.label, item.label);
+            found = true;
+        };
+        try std.testing.expect(found);
+    }
+}
+
 fn expectSingleOverlay(
     model: *const core.Model,
     window: usize,
@@ -6719,9 +7010,8 @@ test "Settings outside pointer down and up dismisses once without activating chr
     try rig.dispatch(.settings_open);
     try rig.settleAppearance();
     try rig.resize(.init(1100, 640));
-    const frame = try widgetFrameByLabel(&rig.app_state.model, 0, .init(1100, 640), "Sessions");
-    const x = frame.x + frame.width * 0.5;
-    const y = frame.y + frame.height * 0.5;
+    const x: f32 = 8;
+    const y: f32 = 8;
     const tabs_before = bridge.engine.?.model.ws().tab_count;
     try dispatchPointer(&rig, .pointer_down, x, y);
     try std.testing.expect(rig.app_state.model.appearanceClosing);

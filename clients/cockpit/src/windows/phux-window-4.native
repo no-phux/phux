@@ -1,6 +1,6 @@
 <import src="components/cockpit-window.native"/>
 <stack>
-  <use template="cockpit-window" tabs="{window4Tabs}" rail="{window4RailRows}" width="{window4TabWidth}" more="{window4HasOverflow}" cue="{window4OverflowLabel}" status="{window4Status}" title="{window4Context.title}" detail="{window4Context.detail}" emptyopen="{window4EmptyOpen}" emptyname="{window4Context.emptyName}" emptydetail="{window4Context.emptyDetail}" emptypicked="{window4Context.emptyPicked}" />
+  <use template="cockpit-window" tabs="{window4Tabs}" rail="{window4RailRows}" width="{window4TabWidth}" cue="{window4OverflowLabel}" status="{window4Status}" title="{window4Context.title}" detail="{window4Context.detail}" emptyopen="{window4EmptyOpen}" emptyname="{window4Context.emptyName}" emptydetail="{window4Context.emptyDetail}" emptypicked="{window4Context.emptyPicked}" />
   <use template="cockpit-navigator" paletteopen="{window4PaletteOpen}" palettequery="{paletteQuery}" paletterows="{paletteRows}" paletteprevious="{palettePrevious}" palettenext="{paletteNext}" palettenotice="{paletteNotice}" />
   <use template="cockpit-settings" settingsopen="{window4SettingsOpen}" themes="{themes}" configexists="{configExists}" confignotice="{configNotice}" />
   <use template="cockpit-host" hostopen="{window4HostOpen}" />

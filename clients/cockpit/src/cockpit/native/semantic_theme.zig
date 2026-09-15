@@ -307,7 +307,7 @@ fn fillColor(fill: canvas.Fill) !canvas.Color {
     };
 }
 
-fn contrast(foreground: canvas.Color, background: canvas.Color) f32 {
+pub fn contrastRatio(foreground: canvas.Color, background: canvas.Color) f32 {
     const foreground_luminance = luminance(foreground);
     const background_luminance = luminance(background);
     return (@max(foreground_luminance, background_luminance) + 0.05) /
@@ -373,12 +373,8 @@ test "navigation and tab selection share the semantic state ladder" {
     try std.testing.expect(!std.meta.eql(row_selected, row_pressed));
 }
 
-test "shipping default tabs keep safe chrome through every current state" {
-    const tokens = designTokens();
-    const shipping_style: canvas.WidgetStyle = .{
-        .accent = tokens.colors.surface_pressed,
-        .accent_foreground = tokens.colors.text,
-    };
+test "shipping ghost tabs keep safe distinct chrome through every current state" {
+    const shipping_style: canvas.WidgetStyle = .{};
     const states = [_]canvas.WidgetState{
         .{},
         .{ .hovered = true },
@@ -389,21 +385,22 @@ test "shipping default tabs keep safe chrome through every current state" {
         palette.surface,
         palette.hover,
         palette.selected,
-        palette.selected,
+        palette.pressed,
     };
 
     for (states, expected_fills) |state, expected_fill| {
-        const fill = try renderedColor(.toggle_button, .default, state, shipping_style, 1);
-        const border = try renderedColor(.toggle_button, .default, state, shipping_style, 2);
-        const text = try renderedColor(.toggle_button, .default, state, shipping_style, 4);
+        const fill = try renderedColor(.toggle_button, .ghost, state, shipping_style, 1);
+        const text = try renderedColor(.toggle_button, .ghost, state, shipping_style, 4);
         try std.testing.expectEqual(expected_fill, fill);
-        try std.testing.expectEqual(palette.border, border);
         try std.testing.expectEqual(palette.text, text);
-        try std.testing.expect(contrast(text, fill) >= 4.5);
+        try std.testing.expect(contrastRatio(text, fill) >= 4.5);
     }
     try std.testing.expect(!std.meta.eql(expected_fills[0], expected_fills[1]));
     try std.testing.expect(!std.meta.eql(expected_fills[0], expected_fills[2]));
     try std.testing.expect(!std.meta.eql(expected_fills[1], expected_fills[2]));
+    try std.testing.expect(!std.meta.eql(expected_fills[0], expected_fills[3]));
+    try std.testing.expect(!std.meta.eql(expected_fills[1], expected_fills[3]));
+    try std.testing.expect(!std.meta.eql(expected_fills[2], expected_fills[3]));
 }
 
 test "secondary toolbar actions render distinct pointer feedback" {
@@ -440,8 +437,8 @@ test "focus and attention retain independent high-contrast signals" {
     const tokens = designTokens();
 
     try std.testing.expectEqual(palette.focus, focus);
-    try std.testing.expect(contrast(palette.focus, palette.hover) >= 3.0);
-    try std.testing.expect(contrast(tokens.colors.warning_text, tokens.colors.warning) >= 4.5);
+    try std.testing.expect(contrastRatio(palette.focus, palette.hover) >= 3.0);
+    try std.testing.expect(contrastRatio(tokens.colors.warning_text, tokens.colors.warning) >= 4.5);
     try std.testing.expect(!std.meta.eql(tokens.colors.warning, tokens.colors.accent));
 }
 
@@ -475,15 +472,15 @@ test "semantic geometry resolves from Geist without changing unadopted metrics" 
 test "selection indicator clears non-text contrast on row state surfaces" {
     try std.testing.expectEqual(palette.accent, selection_indicator);
     for ([_]canvas.Color{ palette.background, palette.surface, palette.hover, palette.selected }) |surface| {
-        try std.testing.expect(contrast(selection_indicator, surface) >= 3.0);
+        try std.testing.expect(contrastRatio(selection_indicator, surface) >= 3.0);
     }
 }
 
 test "Settings rescue text remains readable on every semantic surface" {
     const tokens = designTokens();
     for ([_]canvas.Color{ tokens.colors.background, tokens.colors.surface, tokens.colors.surface_subtle, tokens.colors.surface_pressed }) |surface| {
-        try std.testing.expect(contrast(tokens.colors.text, surface) >= 7.0);
-        try std.testing.expect(contrast(tokens.colors.text_muted, surface) >= 4.5);
+        try std.testing.expect(contrastRatio(tokens.colors.text, surface) >= 7.0);
+        try std.testing.expect(contrastRatio(tokens.colors.text_muted, surface) >= 4.5);
     }
-    try std.testing.expect(contrast(tokens.colors.accent_text, tokens.colors.accent) >= 4.5);
+    try std.testing.expect(contrastRatio(tokens.colors.accent_text, tokens.colors.accent) >= 4.5);
 }

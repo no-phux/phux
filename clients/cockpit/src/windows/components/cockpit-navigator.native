@@ -1,3 +1,4 @@
+<import src="cockpit-chrome-recipes.native" />
 <template name="cockpit-navigator" args="paletteopen palettequery paletterows paletteprevious palettenext palettenotice">
   <stack>
     <if test="{paletteopen}">
@@ -10,13 +11,12 @@
             <button size="sm" variant="ghost" icon="x" label="Close navigator" on-press="palette_close" />
 
           </row>
-          <row gap="4" cross="center" label="Navigator views">
+          <tabs gap="0" label="Navigator views">
             <button size="sm" variant="ghost" selected="{navigatorView == 1}" on-press="sessions_open">Sessions</button>
             <button size="sm" variant="ghost" selected="{navigatorView == 2}" on-press="machines_open">Machines</button>
             <button size="sm" variant="ghost" selected="{navigatorView == 3}" on-press="windows_open">Windows</button>
-            <spacer grow="1" />
             <button size="sm" variant="ghost" selected="{navigatorView == 4}" on-press="commands_open">Commands</button>
-          </row>
+          </tabs>
           <if test="{navigatorView == 4}"><input text="{palettequery}" placeholder="Type a command" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search commands" /></if>
           <else><input text="{palettequery}" placeholder="Search by name, machine or directory" autofocus="true" on-input="palette_edit" on-submit="palette_submit" label="Search navigator" /></else>
           <if test="{navigatorView == 2}">
@@ -27,16 +27,14 @@
           <if test="{navigatorView == 4}">
             <list gap="4" label="Commands">
               <for each="actionRows" key="index" as="action">
-                <list-item height="48" label="{action.label}" selected="{action.highlighted}" disabled="{action.disabled}" accent="surface_pressed" accent-foreground="text" on-press="commands_pick:{action.index}">
-                  <row gap="8" cross="center">
-                    <if test="{action.highlighted}"><spacer width="2" height="24" background="accent" /></if>
-                    <else><spacer width="2" height="24" /></else>
+                <list-item height="48" label="{action.label}" selected="{action.highlighted}" disabled="{action.disabled}" on-press="commands_pick:{action.index}">
+                  <use template="cockpit-highlighted-row" highlighted="{action.highlighted}">
                     <column grow="1" gap="0">
                       <text overflow="ellipsis">{action.label}</text>
                       <text foreground="text_muted" overflow="ellipsis">{action.detail}</text>
                     </column>
                     <text foreground="text_muted">{action.shortcut}</text>
-                  </row>
+                  </use>
                 </list-item>
               </for>
             </list>
@@ -46,21 +44,23 @@
             <column gap="8">
               <list gap="4" label="Saved machines">
                 <for each="machineRows" key="target" as="machine">
-                  <list-item height="{machine.height}" label="{machine.name}" selected="{machine.highlighted}" accent="surface_pressed" accent-foreground="text" on-press="machine_pick:{machine.target}">
-                    <column gap="4">
-                      <row gap="8" cross="center">
-                        <text grow="1" overflow="ellipsis">{machine.name}</text>
-                        <text foreground="text_muted">{machine.status}</text>
-                      </row>
-                      <text foreground="text_muted" overflow="ellipsis">{machine.endpoint}</text>
-                      <if test="{machine.message}"><text wrap="true" foreground="warning">{machine.message}</text></if>
-                      <row gap="8" cross="center">
-                        <text foreground="text_muted">{machine.action}</text>
-                        <spacer grow="1" />
-                        <if test="{machine.canDisconnect}"><button size="sm" variant="ghost" on-press="machine_disconnect:{machine.target}">Disconnect</button></if>
-                        <if test="{machine.canForget}"><button size="sm" variant="ghost" on-press="machine_forget:{machine.target}">Forget…</button></if>
-                      </row>
-                    </column>
+                  <list-item height="{machine.height}" label="{machine.name}" selected="{machine.highlighted}" on-press="machine_pick:{machine.target}">
+                    <use template="cockpit-highlighted-row" highlighted="{machine.highlighted}">
+                      <column grow="1" gap="4">
+                        <row gap="8" cross="center">
+                          <text grow="1" overflow="ellipsis">{machine.name}</text>
+                          <text foreground="text_muted">{machine.status}</text>
+                        </row>
+                        <text foreground="text_muted" overflow="ellipsis">{machine.endpoint}</text>
+                        <if test="{machine.message}"><text wrap="true" foreground="warning">{machine.message}</text></if>
+                        <row gap="8" cross="center">
+                          <text foreground="text_muted">{machine.action}</text>
+                          <spacer grow="1" />
+                          <if test="{machine.canDisconnect}"><button size="sm" variant="ghost" on-press="machine_disconnect:{machine.target}">Disconnect</button></if>
+                          <if test="{machine.canForget}"><button size="sm" variant="ghost" on-press="machine_forget:{machine.target}">Forget…</button></if>
+                        </row>
+                      </column>
+                    </use>
                   </list-item>
                 </for>
               </list>
@@ -70,16 +70,14 @@
           <else>
           <list gap="0" label="Terminals and sessions">
             <for each="paletterows" key="target" as="row">
-              <list-item height="40" label="{row.label}" selected="{row.highlighted}" disabled="{row.disabled}" accent="surface_pressed" accent-foreground="text" on-press="palette_pick:{row.target}">
-                <row gap="8" cross="center">
-                  <if test="{row.highlighted}"><spacer width="2" height="24" background="accent" /></if>
-                  <else><spacer width="2" height="24" /></else>
+              <list-item height="40" label="{row.label}" selected="{row.highlighted}" disabled="{row.disabled}" on-press="palette_pick:{row.target}">
+                <use template="cockpit-highlighted-row" highlighted="{row.highlighted}">
                   <column grow="1" gap="0">
                     <text overflow="ellipsis">{row.label}</text>
                     <text foreground="text_muted" overflow="ellipsis">{row.detail}</text>
                   </column>
                   <if test="{row.current}"><text foreground="accent">Current</text></if>
-                </row>
+                </use>
                 <!-- A session row's own actions: Rename goes to the coordinator
                      that listed the row, by the row's captured target. -->
                 <context-menu>

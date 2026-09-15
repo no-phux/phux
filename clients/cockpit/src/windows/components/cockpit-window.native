@@ -4,35 +4,35 @@
 <import src="cockpit-directory.native" />
 <import src="cockpit-rename.native" />
 <import src="cockpit-agents.native" />
-<template name="cockpit-window" args="tabs rail width more cue status title detail emptyopen emptyname emptydetail emptypicked">
+<import src="cockpit-chrome-recipes.native" />
+<template name="cockpit-window" args="tabs rail width cue status title detail emptyopen emptyname emptydetail emptypicked">
   <column grow="1">
-    <row height="50" padding="4" gap="8" cross="center" background="surface">
+    <row height="50" gap="8" cross="center" background="surface">
       <spacer width="78" window-drag="true" />
-      <list-item height="40" width="176" label="Sessions" on-press="sessions_open">
-        <column gap="0">
-          <text overflow="ellipsis">{title}</text>
-          <text foreground="text_muted" overflow="ellipsis">{detail}</text>
-        </column>
-      </list-item>
-      <button size="sm" variant="ghost" icon="terminal" label="Inspect agents" on-press="agents_open" />
-
       <if test="{tabPlacement == 'top'}">
         <tabs grow="1" gap="4" label="Terminal tabs">
           <for each="tabs" key="id" as="tab">
             <column width="{width}" gap="4">
               <row gap="4" cross="center">
-                <toggle-button size="sm" role="tab" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}" grow="1">{tab.title}</toggle-button>
-                <if test="{tab.attention}"><text label="{tab.attentionLabel}">●</text></if>
+                <if test="{tab.selected}"><use template="cockpit-selected-tab-control" target="{tab.target}" label="{tab.title}" /></if>
+                <else><use template="cockpit-tab-control" target="{tab.target}" label="{tab.title}" /></else>
+                <if test="{tab.attention}"><text foreground="warning" label="{tab.attentionLabel}">●</text></if>
               </row>
               <if test="{tab.selected}"><spacer height="2" background="accent" /></if>
               <else><spacer height="2" /></else>
             </column>
           </for>
-          <if test="{more}"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button></if>
+          <if test="{cue}"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button></if>
         </tabs>
       </if>
       <else><spacer grow="1" /></else>
-      <button size="sm" variant="ghost" icon="external-link" label="Machines" on-press="machines_open">Machines</button>
+      <button size="sm" variant="ghost" icon="folder-open" label="Sessions" on-press="sessions_open" />
+      <column width="176" gap="0" label="Current session">
+        <text overflow="ellipsis">{title}</text>
+        <text foreground="text_muted" overflow="ellipsis">{detail}</text>
+      </column>
+      <button size="sm" variant="ghost" icon="terminal" label="Inspect agents" on-press="agents_open" />
+      <button size="sm" variant="ghost" icon="external-link" label="Machines" on-press="machines_open" />
       <button size="sm" variant="ghost" icon="plus" label="New Tab" on-press="new_terminal" />
       <button size="sm" variant="ghost" icon="panel-left" label="Move tabs to top or side" on-press="toggle_tab_placement" />
       <button size="sm" variant="ghost" icon="settings" label="Settings" on-press="settings_open" />
@@ -57,9 +57,9 @@
                 </if>
                 <else>
                   <row gap="4" cross="center">
-                    <if test="{row.selected}"><spacer width="2" height="24" background="accent" /></if>
-                    <else><spacer width="2" height="24" /></else>
-                    <list-item grow="1" icon="terminal" role="tab" selected="{row.selected}" accent="surface_pressed" accent-foreground="text" on-press="select_target:{row.target}">{row.label}</list-item>
+                    <use template="cockpit-highlighted-row" highlighted="{row.selected}">
+                      <toggle-button size="sm" variant="ghost" role="tab" selected="{row.selected}" on-toggle="select_target:{row.target}" grow="1">{row.label}</toggle-button>
+                    </use>
                     <if test="{row.mark}"><text label="{row.attentionLabel}">{row.mark}</text></if>
                   </row>
                 </else>

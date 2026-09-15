@@ -1,3 +1,4 @@
+<import src="cockpit-chrome-recipes.native" />
 <template name="cockpit-directory" args="diropen">
   <stack>
     <if test="{diropen}">
@@ -12,8 +13,10 @@
           <input text="{dirQuery}" placeholder="Filter directories" autofocus="true" on-input="dir_edit" on-submit="dir_submit" label="Filter directories" />
           <list gap="0" label="Directories">
             <for each="dirRows" key="id" as="row">
-              <list-item height="40" label="{row.label}" selected="{row.highlighted}" accent="surface_pressed" accent-foreground="text" on-press="dir_pick:{row.index}">
-                <text overflow="ellipsis">{row.label}</text>
+              <list-item height="40" label="{row.label}" selected="{row.highlighted}" on-press="dir_pick:{row.index}">
+                <use template="cockpit-highlighted-row" highlighted="{row.highlighted}">
+                  <text grow="1" overflow="ellipsis">{row.label}</text>
+                </use>
               </list-item>
             </for>
           </list>

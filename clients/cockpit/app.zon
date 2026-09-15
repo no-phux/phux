@@ -32,7 +32,6 @@
             .{ .label = "Find Previous", .command = "terminal.find-previous", .key = "g", .modifiers = .{ "primary", "shift" } },
         } },
         .{ .title = "View", .items = .{
-            .{ .label = "Commands…", .command = "commands.open", .key = "p", .modifiers = .{ "primary", "shift" } },
             .{ .label = "Settings…", .command = "settings.open", .key = ",", .modifiers = .{"primary"} },
             .{ .label = "Check for Updates…", .command = "app.update" },
             .{ .label = "Edit Configuration…", .command = "config.edit" },
@@ -45,15 +44,19 @@
             .{ .separator = true },
             .{ .label = "Toggle Tab Placement", .command = "tabs.toggle-placement" },
         } },
-        .{ .title = "Window", .items = .{
-            .{ .label = "Minimize", .command = "window.minimize", .key = "m", .modifiers = .{"primary"} },
-            .{ .separator = true },
+        .{ .title = "Navigate", .items = .{
             .{ .label = "Sessions…", .command = "navigator.sessions" },
             .{ .label = "Machines…", .command = "navigator.machines", .key = "o", .modifiers = .{ "primary", "shift" } },
-            .{ .label = "Show All Windows…", .command = "navigator.windows" },
+            .{ .label = "Windows…", .command = "navigator.windows" },
+            .{ .label = "Commands…", .command = "commands.open", .key = "p", .modifiers = .{ "primary", "shift" } },
+            .{ .separator = true },
             .{ .label = "Go to Terminal…", .command = "tabs.palette" },
             .{ .label = "Go to Directory…", .command = "directory.open", .key = "j", .modifiers = .{ "primary", "shift" } },
+            .{ .separator = true },
             .{ .label = "Rename Session…", .command = "session.rename" },
+        } },
+        .{ .title = "Window", .items = .{
+            .{ .label = "Minimize", .command = "window.minimize", .key = "m", .modifiers = .{"primary"} },
             .{ .separator = true },
             .{ .label = "Previous Tab", .command = "tab.previous", .key = "[", .modifiers = .{ "primary", "shift" } },
             .{ .label = "Next Tab", .command = "tab.next", .key = "]", .modifiers = .{ "primary", "shift" } },

@@ -23,7 +23,6 @@ pub const menus: []const native_sdk.Menu = &.{
         .{ .label = "Find Previous", .command = "terminal.find-previous", .key = "g", .modifiers = .{ .primary = true, .shift = true } },
     } },
     .{ .title = "View", .items = &.{
-        .{ .label = "Commands…", .command = "commands.open", .key = "p", .modifiers = .{ .primary = true, .shift = true } },
         .{ .label = "Settings…", .command = "settings.open", .key = ",", .modifiers = .{ .primary = true } },
         .{ .label = "Check for Updates…", .command = "app.update", .key = "", .modifiers = .{} },
         .{ .label = "Edit Configuration…", .command = "config.edit", .key = "", .modifiers = .{} },
@@ -36,15 +35,19 @@ pub const menus: []const native_sdk.Menu = &.{
         .{ .separator = true },
         .{ .label = "Toggle Tab Placement", .command = "tabs.toggle-placement", .key = "", .modifiers = .{} },
     } },
-    .{ .title = "Window", .items = &.{
-        .{ .label = "Minimize", .command = "window.minimize", .key = "m", .modifiers = .{ .primary = true } },
-        .{ .separator = true },
+    .{ .title = "Navigate", .items = &.{
         .{ .label = "Sessions…", .command = "navigator.sessions", .key = "", .modifiers = .{} },
         .{ .label = "Machines…", .command = "navigator.machines", .key = "o", .modifiers = .{ .primary = true, .shift = true } },
-        .{ .label = "Show All Windows…", .command = "navigator.windows", .key = "", .modifiers = .{} },
+        .{ .label = "Windows…", .command = "navigator.windows", .key = "", .modifiers = .{} },
+        .{ .label = "Commands…", .command = "commands.open", .key = "p", .modifiers = .{ .primary = true, .shift = true } },
+        .{ .separator = true },
         .{ .label = "Go to Terminal…", .command = "tabs.palette", .key = "", .modifiers = .{} },
         .{ .label = "Go to Directory…", .command = "directory.open", .key = "j", .modifiers = .{ .primary = true, .shift = true } },
+        .{ .separator = true },
         .{ .label = "Rename Session…", .command = "session.rename", .key = "", .modifiers = .{} },
+    } },
+    .{ .title = "Window", .items = &.{
+        .{ .label = "Minimize", .command = "window.minimize", .key = "m", .modifiers = .{ .primary = true } },
         .{ .separator = true },
         .{ .label = "Previous Tab", .command = "tab.previous", .key = "[", .modifiers = .{ .primary = true, .shift = true } },
         .{ .label = "Next Tab", .command = "tab.next", .key = "]", .modifiers = .{ .primary = true, .shift = true } },
