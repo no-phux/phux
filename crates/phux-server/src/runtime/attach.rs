@@ -2017,7 +2017,7 @@ pub(crate) async fn handle_spawn_terminal(
                 term,
                 owner_terminal,
                 initial_size,
-                resource: forwarded_bind_request(bind_instance),
+                resource: forwarded_resource(bind_instance, attribution.operation_id),
             },
         );
         dispatch_satellite_spawn(state, client_id, out_tx, request_id, &host, spawn).await;
@@ -2087,6 +2087,11 @@ pub(crate) async fn handle_spawn_terminal(
         }
     };
 
+    // ADR-0126: bind the key to the registered pane before anything awaits,
+    // so a repeat never observes the pane without its binding.
+    state.with(|s| {
+        super::idempotent_create::bind_spawned(s, attribution.operation_id, &wire_terminal_id);
+    });
     SpawnPublication {
         state,
         out_tx,
@@ -2101,19 +2106,26 @@ pub(crate) async fn handle_spawn_terminal(
         profile,
         limits: bootstrap_limits,
         bind_instance,
+        idempotency_key: attribution.operation_id,
     }
     .publish(output_pumps, connection_token)
     .await;
 }
 
 /// The resource record a satellite Terminal spawn forwards: the bind request
-/// alone, when the consumer asked for one (ADR-0109). The satellite answers
-/// with its own instance token, which the hub relays unchanged.
-fn forwarded_bind_request(
+/// (ADR-0109) and the idempotency key (ADR-0126), when the consumer sent
+/// them. The satellite answers with its own instance token and evaluates the
+/// key itself; the hub relays both answers unchanged.
+fn forwarded_resource(
     bind_instance: bool,
+    idempotency_key: Option<phux_protocol::ids::IdempotencyKey>,
 ) -> Option<Box<phux_protocol::wire::frame::SpawnResource>> {
-    bind_instance.then(|| {
-        Box::new(phux_protocol::wire::frame::SpawnResource::default().with_bind_instance(true))
+    (bind_instance || idempotency_key.is_some()).then(|| {
+        Box::new(
+            phux_protocol::wire::frame::SpawnResource::default()
+                .with_bind_instance(bind_instance)
+                .with_idempotency_key(idempotency_key),
+        )
     })
 }
 
@@ -2516,6 +2528,9 @@ struct SpawnPublication<'a> {
     /// The spawn set `bind_instance`: answer with the instance token
     /// (ADR-0109).
     bind_instance: bool,
+    /// The spawn's idempotency key, unbound again if the pane is reaped
+    /// before its spawner could use it (ADR-0126).
+    idempotency_key: Option<phux_protocol::ids::IdempotencyKey>,
 }
 
 impl SpawnPublication<'_> {
@@ -2535,6 +2550,13 @@ impl SpawnPublication<'_> {
     fn reap(&self) {
         self.state.with_mut(|s| {
             let _ = super::client::reap_pane_journaling_close(s, self.core_terminal_id);
+            // ADR-0126: a refused spawn binds nothing, so the key goes with
+            // the pane and a retry spawns fresh.
+            super::idempotent_create::unbind_spawned(
+                s,
+                self.idempotency_key,
+                &self.wire_terminal_id,
+            );
         });
     }
 

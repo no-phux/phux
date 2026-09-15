@@ -154,6 +154,8 @@ pub(crate) async fn spawn_agent_session(
         .with_actor(Some(client_id))
         .with_operation_id(resource.idempotency_key);
         let _ = s.record_and_fanout(announcement);
+        // ADR-0126: the key binds in the step that registers the session.
+        super::idempotent_create::bind_spawned(s, resource.idempotency_key, &wire);
         // ADR-0109: provenance before the spawner's own subscription.
         s.record_spawn(core, client_id);
         s.subscribe_terminal(client_id, core, Some(out_tx.clone()));

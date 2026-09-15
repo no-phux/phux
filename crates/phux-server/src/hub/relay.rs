@@ -1271,6 +1271,10 @@ impl RelaySession {
             }
             RelayRequest::Forward { frame } => Some(self.encode(&frame)),
             RelayRequest::Spawn { spawn, reply } => {
+                if let Some(refusal) = self.spawn_idempotency_rejection(&spawn) {
+                    let _ = reply.send(SpawnResult::Err(refusal));
+                    return None;
+                }
                 let request_id = self.allocate_request_id();
                 self.pending_spawns.insert(request_id, reply);
                 Some(self.encode(&FrameKind::SpawnResource {
@@ -1299,6 +1303,28 @@ impl RelaySession {
             } => self.subscribe_forward(subscription, &forward),
             RelayRequest::ListDirectory { path, reply } => self.enqueue_listing(path, reply),
         }
+    }
+
+    /// ADR-0126: a satellite that never advertised `SPAWN_IDEMPOTENCY` skips
+    /// the key, so a retried keyed spawn would create a second resource
+    /// there. The hub refuses the keyed spawn instead. `None` for an unkeyed
+    /// spawn, or a satellite that evaluates the key.
+    fn spawn_idempotency_rejection(&self, spawn: &SatelliteSpawn) -> Option<SpawnError> {
+        let keyed = spawn
+            .resource
+            .as_ref()
+            .is_some_and(|resource| resource.idempotency_key.is_some());
+        if !keyed
+            || self
+                .satellite_features
+                .contains(ServerFeature::SpawnIdempotency)
+        {
+            return None;
+        }
+        Some(SpawnError::SpawnFailed(format!(
+            "satellite {} lacks SPAWN_IDEMPOTENCY; nothing was spawned",
+            self.host
+        )))
     }
 
     /// ADR-0109: a satellite that never advertised `CONDITIONAL_KILL` cannot
@@ -4481,7 +4507,12 @@ mod tests {
         let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
         let instance = phux_protocol::ids::ServerInstance::new([3; 16]);
         for original in [None, Some(instance)] {
-            let mut session = RelaySession::new(host(), BootstrapLimits::default());
+            let mut session = RelaySession::new_negotiated(
+                host(),
+                BootstrapLimits::default(),
+                BootstrapProfile::SynthesizedVtRaw,
+                ServerFeatureSet::with(&[ServerFeature::SpawnIdempotency]),
+            );
             let (reply, mut rx) = oneshot::channel();
             let mut request = spawn_request(reply);
             if let RelayRequest::Spawn { spawn, .. } = &mut request {
@@ -4520,6 +4551,40 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// ADR-0126: a satellite without `SPAWN_IDEMPOTENCY` would skip the key
+    /// and spawn again on a retry, so the hub refuses a keyed spawn to it
+    /// before anything crosses the link. An unkeyed spawn still relays.
+    #[test]
+    fn hub_refuses_a_keyed_satellite_spawn_when_the_satellite_lacks_the_bit() {
+        let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (reply, mut rx) = oneshot::channel();
+        let mut request = spawn_request(reply);
+        if let RelayRequest::Spawn { spawn, .. } = &mut request {
+            spawn.resource = Some(Box::new(
+                phux_protocol::wire::frame::SpawnResource::default().with_idempotency_key(key),
+            ));
+        }
+        assert!(
+            session.handle_request_checked(request).is_none(),
+            "the satellite never sees the keyed spawn"
+        );
+        assert!(session.pending_spawns.is_empty());
+        assert!(matches!(
+            rx.try_recv().expect("typed refusal"),
+            SpawnResult::Err(SpawnError::SpawnFailed(message))
+                if message.contains("lacks SPAWN_IDEMPOTENCY")
+        ));
+
+        let (reply, _rx) = oneshot::channel();
+        assert!(
+            session
+                .handle_request_checked(spawn_request(reply))
+                .is_some(),
+            "an unkeyed spawn to the same satellite still relays"
+        );
     }
 
     /// ADR-0109: a satellite that never advertised `CONDITIONAL_KILL` never
