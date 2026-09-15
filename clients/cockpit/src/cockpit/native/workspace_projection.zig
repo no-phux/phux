@@ -11,6 +11,7 @@ const scene = @import("scene.zig");
 const config_module = @import("../../config/config.zig");
 const theme_module = @import("../../config/theme.zig");
 const fonts = @import("../../terminal/fonts.zig");
+pub const semantic_theme = @import("semantic_theme.zig");
 
 const canvas = native_sdk.canvas;
 const geometry = native_sdk.geometry;
@@ -452,21 +453,7 @@ const widget_command_reserve: usize = canvas.terminal_grid.widget_command_reserv
 pub const chrome_command_envelope: usize = native_sdk.runtime.max_canvas_commands_per_view - widget_command_reserve;
 
 pub fn baseTokens() canvas.DesignTokens {
-    var tokens = canvas.DesignTokens.themeWithOverrides(
-        .{ .color_scheme = .dark, .pack = .geist },
-        canvas.accentOverrides(canvas.Color.rgb8(190, 242, 100), .dark),
-    );
-    tokens.colors.background = canvas.Color.rgb8(9, 11, 15);
-    tokens.colors.surface = canvas.Color.rgb8(17, 20, 27);
-    tokens.colors.surface_subtle = canvas.Color.rgb8(23, 27, 35);
-    tokens.colors.surface_pressed = canvas.Color.rgb8(35, 41, 52);
-    tokens.colors.text = canvas.Color.rgb8(244, 247, 251);
-    tokens.colors.text_muted = canvas.Color.rgb8(154, 164, 178);
-    tokens.colors.border = canvas.Color.rgb8(52, 58, 70);
-    tokens.colors.accent = canvas.Color.rgb8(190, 242, 100);
-    tokens.colors.accent_text = canvas.Color.rgb8(9, 11, 15);
-    tokens.colors.warning = canvas.Color.rgb8(253, 224, 71);
-    tokens.colors.destructive = canvas.Color.rgb8(248, 113, 113);
+    var tokens = semantic_theme.designTokens();
     tokens.typography.mono_font_id = scene.terminal_font_id;
     // Naming the companions is what turns a carried `bold`/`italic` flag into
     // a different glyph. Left unset, the renderers synthesize instead — which

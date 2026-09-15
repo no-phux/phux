@@ -16,6 +16,7 @@ const std = @import("std");
 const result_wire = cockpit.command_results;
 test {
     _ = @import("tests/shipping_pointer_tests.zig");
+    _ = cockpit.projection.semantic_theme;
     _ = cockpit.machines;
 }
 test "keybindings SDK registration and fallback dispatch share applied chord" {
