@@ -2080,7 +2080,10 @@ pub const Engine = struct {
             tunnel.close();
             return error.StaleTarget;
         }
-        const remote = self.model.phuxForAttachment(target.attachment_id).?;
+        const remote = self.model.phuxForAttachment(target.attachment_id) orelse {
+            tunnel.close();
+            return error.StaleTarget;
+        };
         try remote.replaceCapturedTunnel(tunnel, identity);
         if (self.model.peerSlotForAttachment(target.attachment_id)) |slot| {
             self.cancelPeerRetry(fx, slot);

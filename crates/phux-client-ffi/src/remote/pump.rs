@@ -19,9 +19,12 @@
 //! `plan_quic_dial` / `plan_ws_dial`): a routable host needs a certificate
 //! pin, and a routable WebSocket also needs `wss://` and a bearer token. The
 //! token file is read here, on this thread, just before the dial, and the
-//! owned copy is dropped as soon as the dial returns.
+//! owned copy is dropped as soon as the dial returns. Client TLS identity is
+//! always [`TlsClientIdentity::None`]: an embedder must not inherit
+//! `PHUX_WORKLOAD_CERT` / `PHUX_WORKLOAD_KEY` from a launcher shell.
 
 use std::net::{IpAddr, SocketAddr};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -30,7 +33,7 @@ use futures_util::StreamExt;
 use futures_util::stream::SplitStream;
 use phux_dial::quic::{QuicDial, parse_token_hex};
 use phux_dial::ws::{WS_LIVENESS_TIMEOUT, Ws, WsDial, WsKeepalive, WsLiveness, WsTarget, WsWriter};
-use phux_dial::{CertTrust, DialError};
+use phux_dial::{CertTrust, DialError, TlsClientIdentity};
 use phux_protocol::wire::framing;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::unix::{ReadHalf, WriteHalf};
@@ -51,16 +54,44 @@ const DIAL_TIMEOUT: Duration = Duration::from_secs(15);
 /// (`transport.max_frame_bytes` less its 4-byte prefix).
 const MAX_FRAME_BODY: usize = 16 * 1024 * 1024;
 
+#[cfg(test)]
+const TEST_PANIC_HOST: &str = "__phux_test_tunnel_panic__";
+
 /// Run one tunnel to completion on the calling (dedicated) thread.
 ///
 /// The terminal state is published BEFORE the embedder's socket is dropped,
 /// so an embedder that reads EOF and then asks why always finds the answer.
+///
+/// A panic on this thread used to abort the host process (Cockpit links the
+/// FFI with `panic = unwind`, and this is the one remote-dial thread the C
+/// ABI's `catch_unwind` does not wrap). Contain it, publish FAILED, then
+/// drop the socket so the embedder still reads a reason before EOF.
 pub(super) fn run(
     shared: &Arc<Shared>,
     cancel: &Arc<Notify>,
     resolved: &Resolved,
     stream: std::os::unix::net::UnixStream,
 ) {
+    // Keep the embedder's pair open across an unwind so FAILED is published
+    // before EOF, matching the ordinary failure contract.
+    let hold = stream.try_clone().ok();
+    let panicked = catch_unwind(AssertUnwindSafe(|| {
+        run_inner(shared, cancel, resolved, stream);
+    }));
+    if panicked.is_err() {
+        shared.fail("the remote tunnel aborted unexpectedly".to_owned());
+    }
+    drop(hold);
+}
+
+fn run_inner(
+    shared: &Arc<Shared>,
+    cancel: &Arc<Notify>,
+    resolved: &Resolved,
+    stream: std::os::unix::net::UnixStream,
+) {
+    #[cfg(test)]
+    assert!(resolved.name != TEST_PANIC_HOST, "injected tunnel panic");
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -149,7 +180,8 @@ async fn serve_quic(
     let established = tokio::time::timeout(DIAL_TIMEOUT, async {
         let dial = plan_quic(resolved, authority).await?;
         tracing::info!(host = name, transport = "quic", addr = %dial.addr, "remote tunnel dialing");
-        let connected = phux_dial::quic::dial(&dial)
+        // Embedders must not inherit `PHUX_WORKLOAD_*` from a launcher shell.
+        let connected = phux_dial::quic::dial_with_identity(&dial, &TlsClientIdentity::None)
             .await
             .map_err(|err| dial_message(name, &err));
         // The bearer preamble has been written; the owned token goes now,
@@ -254,7 +286,8 @@ async fn serve_ws(
     let ws = tokio::time::timeout(DIAL_TIMEOUT, async {
         let dial = plan_ws(resolved, url, load_token(resolved)?)?;
         tracing::info!(host = name, transport = "ws", url, "remote tunnel dialing");
-        let connected = phux_dial::ws::dial(&dial)
+        // Embedders must not inherit `PHUX_WORKLOAD_*` from a launcher shell.
+        let connected = phux_dial::ws::dial_with_identity(&dial, &TlsClientIdentity::None)
             .await
             .map_err(|err| dial_message(name, &err));
         // The Authorization header has been sent; drop the owned token now.
@@ -544,6 +577,34 @@ mod tests {
             token_file: Some(PathBuf::from("/secret/mini.token")),
             cert_fingerprint: pin.map(str::to_owned),
         }
+    }
+
+    #[test]
+    fn a_panic_on_the_tunnel_thread_publishes_failed_before_eof() {
+        use std::io::Read;
+        use std::os::unix::net::UnixStream;
+        use std::time::Duration;
+
+        let (mut embedder, tunnel_end) = UnixStream::pair().expect("pair");
+        embedder
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("timeout");
+        let shared = Arc::new(Shared::with_state(crate::remote::REMOTE_TUNNEL_CONNECTING));
+        let cancel = Arc::new(Notify::new());
+        let mut target = resolved("ws://127.0.0.1:1", None);
+        target.name = TEST_PANIC_HOST.to_owned();
+        let joined = std::thread::spawn({
+            let shared = Arc::clone(&shared);
+            move || run(&shared, &cancel, &target, tunnel_end)
+        })
+        .join();
+        assert!(
+            joined.is_ok(),
+            "a panic on the tunnel thread must not unwind into the host process"
+        );
+        assert_eq!(shared.state(), crate::remote::REMOTE_TUNNEL_FAILED);
+        let mut byte = [0u8; 1];
+        assert_eq!(embedder.read(&mut byte).expect("eof"), 0);
     }
 
     #[test]

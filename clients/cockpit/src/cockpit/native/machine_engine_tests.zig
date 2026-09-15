@@ -50,6 +50,9 @@ test "Engine captured Machines retry and group disconnect fence every exact atta
     try std.testing.expect(engine.model.phuxForAttachment(one.attachment_id) == first);
     try std.testing.expect(engine.model.phuxForAttachment(two.attachment_id) == second);
     try std.testing.expectError(error.StaleTarget, engine.retryCapturedPeer(stale, try remote_api.Tunnel.resolve("mini", registry.path), identity, &fx));
+    var missing = one;
+    missing.attachment_id = 0;
+    try std.testing.expectError(error.StaleTarget, engine.retryCapturedPeer(missing, try remote_api.Tunnel.resolve("mini", registry.path), identity, &fx));
     try std.testing.expectEqual(@as(usize, 2), fx.restarts);
     try engine.retryCapturedPeer(one, try remote_api.Tunnel.resolve("mini", registry.path), identity, &fx);
     try std.testing.expectEqual(@as(usize, 3), fx.restarts);
