@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-14
 ---
 
 # Module structure
@@ -270,6 +270,24 @@ src/
                       — one module per agent-CLI verb's library half
                         (docs/consumers/agents.md); layout_ops, agent_meta,
                         vcs, and perf are also read by the TUI chrome
+  detach.rs           — DETACH_CLIENTS classification (`phux detach`)
+  kill.rs             — SHUTDOWN / KILL_RESOURCES / KILL_RESOURCE and the
+                        keep-empty clear (`phux kill`); selector resolution
+                        and the whole-session-vs-per-pane choice stay CLI-side
+  session.rs          — session-identity L3 writes; today just `rename`
+                        (`phux rename`), whose request id is now a caller
+                        parameter rather than hardcoded inside the write
+                        (the CLI still passes a fixed id today; this only
+                        matters once a caller composes more than one rename
+                        per connection); create-without-attach (`phux new`)
+                        is a pending follow-up into this module
+  signal.rs           — ACQUIRE_INPUT / RELEASE_INPUT / SIGNAL_TERMINAL
+                        command builders and their shared outcome
+                        (`phux take` / `phux give` / `phux signal`, ADR-0033)
+  spawn.rs            — SPAWN_RESOURCE, and the ownership-verify +
+                        KILL_RESOURCE rollback dance behind explicit
+                        placement (`phux spawn`, `phux launch`)
+  tags.rs             — phux.tags/v1 read/write (`phux tag`, ADR-0027)
   state.rs            — GET_STATE / GET_PERF reads and the degradation notices
   testkit.rs          — the one scripted server every client-side test
                         speaks to (feature `testkit`; phux-tui, phux-mcp,

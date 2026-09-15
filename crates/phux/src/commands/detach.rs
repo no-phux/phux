@@ -1,10 +1,10 @@
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
-use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, CommandValue};
+use phux_client::detach::DetachOutcome;
 
-use crate::commands::command_on;
 use crate::commands::server_target::ServerSpec;
+use crate::commands::warn_interleaved_degradation;
 
 /// `phux detach [SESSION]` — force-detach clients from *outside* the attach UI.
 ///
@@ -30,41 +30,31 @@ pub(crate) fn run_detach(session: Option<String>, server: ServerSpec) -> ExitCod
             Err(err) => return target.report_unreachable(false, &err, "detach"),
         };
 
-        match command_on(
-            &mut conn,
-            1,
-            WireCommand::DetachClients {
-                session: session.clone(),
-            },
-        )
-        .await
-        {
-            Ok(CommandResult::OkWith(CommandValue::Json(count))) => {
-                // The reply contract is a JSON count; anything unparsable is a
-                // malformed reply, not "0 clients detached".
-                count.trim().parse::<u64>().map_or_else(
-                    |_| {
-                        eprintln!("phux: malformed detach reply (expected a count): {count:?}");
-                        ExitCode::from(2)
-                    },
-                    |n| {
-                        match session.as_deref() {
-                            Some(name) => {
-                                outln!("phux: detached {n} client(s) from session {name:?}");
-                            }
-                            None => outln!("phux: detached {n} client(s)"),
-                        }
-                        ExitCode::SUCCESS
-                    },
-                )
+        match phux_client::detach::detach_clients(&mut conn, 1, session.clone()).await {
+            Ok((DetachOutcome::Detached(n), degradation)) => {
+                warn_interleaved_degradation(&degradation);
+                match session.as_deref() {
+                    Some(name) => {
+                        outln!("phux: detached {n} client(s) from session {name:?}");
+                    }
+                    None => outln!("phux: detached {n} client(s)"),
+                }
+                ExitCode::SUCCESS
             }
-            Ok(CommandResult::Error { message, .. }) => {
+            Ok((DetachOutcome::Malformed(count), degradation)) => {
+                warn_interleaved_degradation(&degradation);
+                eprintln!("phux: malformed detach reply (expected a count): {count:?}");
+                ExitCode::from(2)
+            }
+            Ok((DetachOutcome::Refused(message), degradation)) => {
+                warn_interleaved_degradation(&degradation);
                 eprintln!("phux: detach refused: {message}");
                 ExitCode::from(2)
             }
             // The reply contract is `OkWith(Json(count))`; a bare `Ok` (or any
             // other shape) means we cannot confirm what happened.
-            Ok(other) => {
+            Ok((DetachOutcome::Unexpected(other), degradation)) => {
+                warn_interleaved_degradation(&degradation);
                 eprintln!(
                     "phux: {}",
                     phux_client::explain::explain_unexpected("detach", &other)

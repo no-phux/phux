@@ -52,7 +52,14 @@ pub mod attach;
 // request wrapper over `attach::connection`.
 pub mod conditional_kill;
 pub mod deadline;
+// `DETACH_CLIENTS` (`phux detach`): force-detaching clients from outside the
+// attach UI, distinct from the sending connection's own `FrameKind::Detach`.
+pub mod detach;
 pub mod explain;
+// `SHUTDOWN` / `KILL_RESOURCES` / `KILL_RESOURCE` / the keep-empty clear
+// (`phux kill`). Selector resolution and the whole-session-vs-per-pane
+// choice stay in the CLI; this module owns the wire round trips.
+pub mod kill;
 pub mod layout_ops;
 pub mod pane_move;
 pub mod perf;
@@ -64,8 +71,18 @@ pub mod resource;
 pub mod run;
 pub mod selector;
 pub mod send_keys;
+// Session-identity writes over L3 (`phux rename` today; ADR-0022 §5).
+pub mod session;
+// `ACQUIRE_INPUT` / `RELEASE_INPUT` / `SIGNAL_TERMINAL` command builders and
+// their shared outcome (`phux take` / `phux give` / `phux signal`, ADR-0033).
+pub mod signal;
 pub mod snapshot;
+// `SPAWN_RESOURCE` and the ownership-verify + `KILL_RESOURCE` rollback dance
+// behind explicit placement (`phux spawn`, `phux launch`).
+pub mod spawn;
 pub mod state;
+// `phux.tags/v1` read/write (`phux tag`, ADR-0027).
+pub mod tags;
 // The one scripted server every client-side test speaks to (phux-h5hj.3).
 // Compiled for this crate's own unit tests, and behind the `testkit` feature
 // for the downstream crates (`phux-mcp`, the `phux` binary) whose unit tests

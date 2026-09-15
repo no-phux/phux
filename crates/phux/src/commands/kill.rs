@@ -3,16 +3,14 @@ use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
+use phux_client::kill::{KillOutcome, ShutdownOutcome};
 use phux_protocol::ResourceId;
-use phux_protocol::wire::frame::{
-    Command as WireCommand, CommandResult, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope,
-    encode_session_keep_empty,
-};
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
+use crate::commands::partial;
 use crate::commands::server_target::{ServerSpec, ServerTarget};
-use crate::commands::{cli_runtime, command_on, partial, report_no_server};
+use crate::commands::{cli_runtime, report_no_server, warn_interleaved_degradation};
 use crate::selector;
 
 /// Why `kill --server` refuses `--remote`, and what to do instead.
@@ -86,22 +84,25 @@ pub(crate) fn run_kill_server(socket: Option<PathBuf>) -> ExitCode {
     }
 
     rt.block_on(async move {
-        let mut conn = match Connection::connect(&socket_path).await {
+        let mut conn = match ServerTarget::local(&socket_path).connect().await {
             Ok(conn) => conn,
             Err(err) => return report_no_server(&err, &socket_path, "kill --server"),
         };
 
-        let result = command_on(&mut conn, 1, WireCommand::Shutdown).await;
+        let result = phux_client::kill::shutdown(&mut conn, 1).await;
         drop(conn);
         match result {
             // The server acks then tears down, so losing the connection at
             // any point after the request is the expected shape, not a fault.
-            Ok(CommandResult::Ok) | Err(AttachError::Disconnected) => {}
-            Ok(CommandResult::Error { code, message }) => {
+            Ok((ShutdownOutcome::Ok, degradation)) => warn_interleaved_degradation(&degradation),
+            Err(AttachError::Disconnected) => {}
+            Ok((ShutdownOutcome::Refused { code, message }, degradation)) => {
+                warn_interleaved_degradation(&degradation);
                 eprintln!("phux: server refused to stop ({code:?}): {message}");
                 return ExitCode::from(2);
             }
-            Ok(other) => {
+            Ok((ShutdownOutcome::Unexpected(other), degradation)) => {
+                warn_interleaved_degradation(&degradation);
                 eprintln!("phux: unexpected reply to SHUTDOWN: {other:?}");
                 return ExitCode::from(2);
             }
@@ -217,8 +218,7 @@ async fn kill_selected(
         // while half the fleet is invisible is still worth saying out
         // loud: the user asked to kill "everything named X".
         partial::warn_partial_view("kill", &degradation);
-        let command = WireCommand::KillResources { ids };
-        return kill_whole_session(&mut conn, server, &session_name, command).await;
+        return kill_whole_session(&mut conn, server, &session_name, ids).await;
     }
 
     let terminals = resolve_terminals(&mut conn, selector, &snapshot).await;
@@ -273,13 +273,7 @@ async fn kill_empty_session(
     server: &ServerTarget,
     session_name: &str,
 ) -> ExitCode {
-    let clear = FrameKind::SetMetadata {
-        request_id: 1,
-        scope: Scope::Global,
-        key: SESSION_KEEP_EMPTY_KEY.to_owned(),
-        value: encode_session_keep_empty(session_name, false),
-    };
-    if let Err(err) = conn.send(&clear).await {
+    if let Err(err) = phux_client::kill::clear_session_keep_empty(conn, 1, session_name).await {
         return server.report_unreachable(false, &err, "kill");
     }
     match phux_client::state::get_state_on(conn).await {
@@ -303,18 +297,24 @@ async fn kill_whole_session(
     conn: &mut Connection,
     server: &ServerTarget,
     session_name: &str,
-    command: WireCommand,
+    ids: Vec<ResourceId>,
 ) -> ExitCode {
-    match command_on(conn, 1, command).await {
-        // `Ok` is the ack; a clean disconnect means the server
+    match phux_client::kill::kill_resources(conn, 1, ids).await {
+        // `Killed` is the ack; a clean disconnect means the server
         // self-exited after its last session was reaped (phux-60s),
         // so the session is already gone — both are success.
-        Ok(CommandResult::Ok) | Err(AttachError::Disconnected) => ExitCode::SUCCESS,
-        Ok(CommandResult::Error { message, .. }) => {
+        Ok((KillOutcome::Killed, degradation)) => {
+            warn_interleaved_degradation(&degradation);
+            ExitCode::SUCCESS
+        }
+        Err(AttachError::Disconnected) => ExitCode::SUCCESS,
+        Ok((KillOutcome::Refused(message), degradation)) => {
+            warn_interleaved_degradation(&degradation);
             eprintln!("phux: kill refused for session {session_name:?}: {message}");
             ExitCode::from(2)
         }
-        Ok(other) => {
+        Ok((KillOutcome::Unexpected(other), degradation)) => {
+            warn_interleaved_degradation(&degradation);
             eprintln!(
                 "phux: session {session_name:?}: {}",
                 phux_client::explain::explain_unexpected("kill", &other)
@@ -357,13 +357,18 @@ async fn kill_each_terminal(conn: &mut Connection, terminals: Vec<ResourceId>) -
 /// Send one `KILL_RESOURCE`, reporting a refusal or failure on stderr.
 async fn kill_one(conn: &mut Connection, request_id: u32, terminal_id: ResourceId) -> KillStep {
     let label = crate::selector::format_terminal_id(&terminal_id);
-    match command_on(conn, request_id, WireCommand::KillResource { terminal_id }).await {
-        Ok(CommandResult::Ok) => KillStep::Killed,
-        Ok(CommandResult::Error { message, .. }) => {
+    match phux_client::kill::kill_resource(conn, request_id, terminal_id).await {
+        Ok((KillOutcome::Killed, degradation)) => {
+            warn_interleaved_degradation(&degradation);
+            KillStep::Killed
+        }
+        Ok((KillOutcome::Refused(message), degradation)) => {
+            warn_interleaved_degradation(&degradation);
             eprintln!("phux: kill refused for {label}: {message}");
             KillStep::Refused
         }
-        Ok(other) => {
+        Ok((KillOutcome::Unexpected(other), degradation)) => {
+            warn_interleaved_degradation(&degradation);
             eprintln!(
                 "phux: {label}: {}",
                 phux_client::explain::explain_unexpected("kill", &other)
