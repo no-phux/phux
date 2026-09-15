@@ -259,10 +259,13 @@ fn addNativeRegressionTests(
 
 // ---------------------------------------------------------------- phux FFI
 
-/// ring 0.17's Apple ARM64 P-256 wrappers `bl` file-local helpers
-/// (`__ecp_nistz256_mul_mont`). Mach-O `.subsections_via_symbols` plus
-/// dead_strip drops those helpers and leaves the wrappers' PC-relative `bl`
-/// pointing at zeros, so a QUIC TLS handshake aborts in `phux-remote-tunnel`.
+/// ring 0.17's Apple ARM64 P-256 wrappers (`_p256_mul_mont`, `_p256_sqr_mont`)
+/// `bl` file-local helpers. Mach-O `.subsections_via_symbols` plus dead_strip
+/// drops those helpers and leaves the wrappers' PC-relative `bl` pointing at
+/// zeros (`udf #0`). QUIC TLS 1.3 then SIGILL in `verify_tls13_signature` on
+/// `phux-remote-tunnel`; Zig's segfault handler aborts. Confirmed Cockpit
+/// 0.23.3 DiagnosticReports 2026-09-15. `catch_unwind` cannot contain SIGILL.
+/// Pin vs skip-verify does not avoid this: both still run ring ECDSA.
 fn keepRingP256Helpers(compile: *std.Build.Step.Compile) void {
     compile.link_gc_sections = false;
 }

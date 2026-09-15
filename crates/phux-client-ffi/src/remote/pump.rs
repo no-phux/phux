@@ -62,10 +62,18 @@ const TEST_PANIC_HOST: &str = "__phux_test_tunnel_panic__";
 /// The terminal state is published BEFORE the embedder's socket is dropped,
 /// so an embedder that reads EOF and then asks why always finds the answer.
 ///
-/// A panic on this thread used to abort the host process (Cockpit links the
-/// FFI with `panic = unwind`, and this is the one remote-dial thread the C
-/// ABI's `catch_unwind` does not wrap). Contain it, publish FAILED, then
-/// drop the socket so the embedder still reads a reason before EOF.
+/// A Rust panic on this thread used to abort the host process (Cockpit
+/// links the FFI with `panic = unwind`, and this is the one remote-dial
+/// thread the C ABI's `catch_unwind` does not wrap). Contain it, publish
+/// FAILED, then drop the socket so the embedder still reads a reason
+/// before EOF.
+///
+/// This does not contain SIGILL. Cockpit 0.23.3 aborted on Apple ARM64
+/// during QUIC TLS 1.3 signature verify (`p256_mul_mont`) because
+/// `dead_strip` dropped ring's local helpers. That is
+/// `keepRingP256Helpers` in the Cockpit build, not a trust-policy bug:
+/// [`CertTrust::Pinned`] and [`CertTrust::SkipVerify`] both still call
+/// ring ECDSA.
 pub(super) fn run(
     shared: &Arc<Shared>,
     cancel: &Arc<Notify>,

@@ -18,7 +18,9 @@ use crate::DialError;
 ///
 /// TLS still provides encryption in both modes. The choice here is whether the
 /// server's self-signed certificate is pinned out-of-band, or accepted blindly
-/// for loopback-only development.
+/// for loopback-only development. Handshake *signatures* are still verified
+/// with ring ECDSA in both modes; pin vs skip only changes
+/// `ServerCertVerifier::verify_server_cert`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CertTrust {
     /// Accept the server's certificate without verification. **Loopback dev
