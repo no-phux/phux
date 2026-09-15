@@ -3,7 +3,7 @@ use std::convert::Infallible;
 
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::wire::frame::TombstoneReason;
+use phux_protocol::wire::frame::{CloseReason, TombstoneReason};
 use phux_protocol::{BootstrapId, BootstrapProfile, BootstrapStreamProfile, ResourceId, StreamId};
 
 use super::{
@@ -740,6 +740,9 @@ impl KernelRig {
                 let terminal_id = self.terminal_id.clone();
                 self.update(KernelInput::ResourceClosed {
                     terminal_id: &terminal_id,
+                    exit_status: None,
+                    signal: None,
+                    reason: CloseReason::Unknown,
                 })
             }
         }

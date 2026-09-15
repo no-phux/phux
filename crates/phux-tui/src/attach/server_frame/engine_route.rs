@@ -381,9 +381,17 @@ fn content_stream_input(frame: &FrameKind) -> Option<KernelInput<'_>> {
             seq: *seq,
             payload: bytes,
         }),
-        FrameKind::ResourceClosed { terminal_id, .. } => {
-            Some(KernelInput::ResourceClosed { terminal_id })
-        }
+        FrameKind::ResourceClosed {
+            terminal_id,
+            exit_status,
+            reason,
+            signal,
+        } => Some(KernelInput::ResourceClosed {
+            terminal_id,
+            exit_status: *exit_status,
+            signal: *signal,
+            reason: *reason,
+        }),
         _ => None,
     }
 }
@@ -567,11 +575,33 @@ fn collect_route_effects(route: &mut KernelRoute, effects: &KernelEffectBuffer) 
                     pane_label(&key.terminal_id),
                 )));
             }
+            // PHA-406/PHA-284: cwd/command-boundary/process-exit status. The
+            // TUI has no chrome for these yet (a separate change), so a
+            // cwd change, a command boundary, or a pane exit producing one
+            // is expected on every attach, not a warning-worthy surprise.
+            KernelEffect::Status(
+                status @ (phux_client_core::session::KernelStatus::Cwd { .. }
+                | phux_client_core::session::KernelStatus::CommandStarted { .. }
+                | phux_client_core::session::KernelStatus::CommandFinished { .. }
+                | phux_client_core::session::KernelStatus::Exited { .. }),
+            ) => {
+                tracing::debug!(?status, "session kernel status (no TUI consumer yet)");
+            }
             KernelEffect::Status(status) => {
                 tracing::warn!(?status, "session kernel status");
             }
             KernelEffect::Job(job) => {
                 tracing::debug!(?job, "session kernel cooperative job");
+            }
+            // The kernel emits this once every ATTACH_READY so the FFI's
+            // status effects (PHA-406/PHA-284) actually arrive; the TUI
+            // manages its own connection-wide SUBSCRIBE_EVENTS directly
+            // (`driver/loop_state.rs::subscribe_bootstrap`), so this
+            // duplicate is expected and dropped without a warning.
+            KernelEffect::Send(KernelSend::SubscribeEvents { .. }) => {
+                tracing::trace!(
+                    "kernel-emitted SUBSCRIBE_EVENTS superseded by the TUI's own subscription"
+                );
             }
             KernelEffect::Send(send) => {
                 tracing::warn!(?send, "unexpected synchronous engine send");
