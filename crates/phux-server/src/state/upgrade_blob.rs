@@ -284,7 +284,10 @@ fn pane_blob(
 
 /// Each rebuilt pane's core id and the one-shot exit receiver the runtime
 /// restores its lifecycle watcher from.
-type PaneExitWatchers = Vec<(ResourceId, oneshot::Receiver<Option<i32>>)>;
+type PaneExitWatchers = Vec<(
+    ResourceId,
+    oneshot::Receiver<phux_core::process::ExitOutcome>,
+)>;
 
 /// What the pane pass produces: the wire-id -> core-id map the re-link passes
 /// resolve against, and each rebuilt pane's exit receiver.
@@ -318,7 +321,7 @@ impl ServerState {
     pub fn rebuild_from_blob(
         &mut self,
         blob: &StateBlob,
-    ) -> Result<Vec<(ResourceId, oneshot::Receiver<Option<i32>>)>, RebuildError> {
+    ) -> Result<PaneExitWatchers, RebuildError> {
         let session_core = self.rebuild_sessions(blob);
         let window_core = self.rebuild_windows(blob, &session_core)?;
         let panes = self.rebuild_panes(blob, &window_core)?;

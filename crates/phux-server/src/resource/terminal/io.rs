@@ -4,8 +4,8 @@
 use super::{
     Bytes, EncodedInputRequest, InputEncoderSnapshot, PANE_KILL_POLL, PANE_KILL_REAP_BUDGET,
     PaneOutput, PasteOutcome, PtyOwned, PtySize, ResyncAudience, ResyncReason, SizeReportSize,
-    SnapshotBytes, TerminalActor, TerminalInput, WriteCompletion, debug, error,
-    exit_status_to_wire, mpsc, trace, warn,
+    SnapshotBytes, TerminalActor, TerminalInput, WriteCompletion, debug, error, exit_outcome, mpsc,
+    trace, warn,
 };
 
 impl TerminalActor {
@@ -388,15 +388,16 @@ impl TerminalActor {
     /// leave the child alone (it might still be alive doing something
     /// odd; the shutdown path will deal with it).
     ///
-    /// Returns the exit status in the shape the `RESOURCE_CLOSED` wire
-    /// frame wants (phux-4li.11): `Some(code)` for a normal `_exit(n)`,
-    /// `None` for signal-killed children or otherwise-unknown exits.
-    /// `portable_pty::ExitStatus.signal` is the discriminator — a
-    /// non-`None` signal name means the kernel reports the death as
-    /// signal-driven, which collapses to `exit_status = None` on the
-    /// wire per the SPEC §10.1 compact-subset rule.
-    pub(super) fn reap_child_if_any(&mut self) -> Option<i32> {
-        let pty = self.pty.as_mut()?;
+    /// Returns the child's [`ExitOutcome`](phux_core::process::ExitOutcome):
+    /// the code for a normal `_exit(n)`, the signal number for a death by
+    /// signal (no longer flattened away), and neither when the child could
+    /// not be reaped or the cause is unknown. `RESOURCE_CLOSED.exit_status`
+    /// still carries only the code (SPEC §10.1 compact subset).
+    pub(super) fn reap_child_if_any(&mut self) -> phux_core::process::ExitOutcome {
+        use phux_core::process::ExitOutcome;
+        let Some(pty) = self.pty.as_mut() else {
+            return ExitOutcome::UNKNOWN;
+        };
         // PTY EOF races the child becoming waitable: the master reads EOF
         // the moment the last slave fd closes, which can be a hair before
         // the kernel marks the process reapable. A single `try_wait` here
@@ -413,18 +414,18 @@ impl TerminalActor {
             match pty.child.try_wait() {
                 Ok(Some(status)) => {
                     debug!(?status, "child reaped on PTY EOF");
-                    return exit_status_to_wire(&status);
+                    return exit_outcome(&status);
                 }
                 Ok(None) if std::time::Instant::now() < deadline => {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 Ok(None) => {
                     trace!("PTY EOF but child still alive — leaving to shutdown path");
-                    return None;
+                    return ExitOutcome::UNKNOWN;
                 }
                 Err(err) => {
                     debug!(?err, "child try_wait failed on PTY EOF");
-                    return None;
+                    return ExitOutcome::UNKNOWN;
                 }
             }
         }
@@ -449,8 +450,9 @@ impl TerminalActor {
     pub(super) fn handle_pty_eof(&mut self) {
         debug!("PTY EOF; firing exit_notify and keeping actor alive for late snapshot/input drain");
         self.pty_rx = None;
-        let exit_status = self.reap_child_if_any();
-        self.core.notify_exit(exit_status);
+        let exit = self.reap_child_if_any();
+        self.record_exit(exit);
+        self.core.notify_exit(exit);
     }
 
     /// Tear down the PTY: gracefully stop the child if still alive, drop

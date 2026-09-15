@@ -584,6 +584,23 @@ pub struct PwdRequest {
     pub reply: oneshot::Sender<Option<String>>,
 }
 
+/// Request for the pane's typed process facet (PHA-406 D5).
+///
+/// The facet names the PTY child and its start time, the tty's foreground
+/// process group, the kernel cwd, the OSC-133 prompt state, and the exit
+/// facet once the child has left.
+///
+/// Sent by the `GET_TERMINAL_STATE` handler. Side-effect-free, and served
+/// after PTY EOF too (the actor stays alive for late reads), so an exit
+/// observed before the pane is reaped is visible here. Every kernel fact is
+/// best-effort: an unobtainable one is `None` in the reply, never a guess.
+#[derive(Debug)]
+pub struct ProcessFacetRequest {
+    /// Channel the actor uses to ship the facet back. Dropping the receiver
+    /// is benign — the actor discards the reply.
+    pub reply: oneshot::Sender<phux_core::process::TerminalProcessState>,
+}
+
 /// A resize request delivered to a [`super::TerminalActor`] over its `resize`
 /// mailbox.
 ///
@@ -679,6 +696,10 @@ pub struct TerminalHandle {
     /// child, see [`PwdRequest`]) and seeds the new pane's
     /// `CommandBuilder.cwd` with it.
     pub pwd: mpsc::Sender<PwdRequest>,
+    /// Sender for typed process-facet reads (PHA-406 D5). The
+    /// `GET_TERMINAL_STATE` handler uses this to build the `process` object;
+    /// see [`ProcessFacetRequest`].
+    pub process: mpsc::Sender<ProcessFacetRequest>,
     /// Resize control channel. The actor honours each request by
     /// resizing libghostty's `Terminal` and the PTY winsize ioctl, and
     /// (when [`ResizeRequest::resync_clients`] is set) re-broadcasting a
@@ -713,6 +734,7 @@ impl TerminalHandle {
             set_default_colors: mpsc::channel(1).0,
             screen: mpsc::channel(1).0,
             pwd: mpsc::channel(1).0,
+            process: mpsc::channel(1).0,
             resize: mpsc::channel(1).0,
             cols,
             rows,

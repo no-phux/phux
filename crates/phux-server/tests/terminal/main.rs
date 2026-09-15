@@ -10,6 +10,7 @@ mod kip_roundtrip;
 mod lagged_consumer_resync;
 mod phux_0q8_no_double_emit;
 mod phux_3uv_acked_incremental;
+mod process_facet;
 mod pty_pump;
 mod q0e_1_incremental_synthesis;
 mod q0e_actor;

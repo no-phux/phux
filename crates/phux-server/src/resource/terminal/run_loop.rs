@@ -312,6 +312,8 @@ impl TerminalActor {
 
                 Some(req) = self.pwd_rx.recv() => self.reply_pane_cwd(req),
 
+                Some(req) = self.process_rx.recv() => self.reply_process_facet(req),
+
                 Some(req) = self.resize_rx.recv(), if !bootstrap_pending =>
                     self.service_resize_request(req, &mut resync, resync_deadline.as_mut()),
 

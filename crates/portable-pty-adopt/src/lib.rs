@@ -160,6 +160,16 @@ impl Read for PtyReader {
     }
 }
 
+/// Signal name carried by the [`ExitStatus`] an [`AdoptedChild`] reports when
+/// `waitpid` fails with `ECHILD`: the process is gone from our view, but how it
+/// ended is unknown.
+///
+/// It is not a real signal name, so a consumer mapping names to signal numbers
+/// finds no match and reports "unknown" — exactly the truth. `success()` is
+/// `false` for it, and `exit_code()` is `portable-pty`'s signal placeholder
+/// (`1`), which callers must not read as an exit code.
+pub const ECHILD_EXIT_SIGNAL_NAME: &str = "unknown (ECHILD: not our child)";
+
 /// A child process re-adopted by PID, exposed as a [`Child`].
 ///
 /// Sound only when the current process is the child's parent — true across an
@@ -178,11 +188,15 @@ impl Read for PtyReader {
 /// not set it).
 ///
 /// `ECHILD` (the PID is not our child — already reaped, or never ours) is
-/// reported as a benign exit so callers stop polling. The corollary is a
-/// caveat for `execve` handoffs: only adopt PIDs you captured as *live* in the
-/// same process lineage. A PID that already exited and was reaped before the
-/// exec could in principle be recycled by the OS; carry per-child liveness in
-/// the handoff blob rather than blindly adopting every recorded PID.
+/// reported as a terminal status so callers stop polling, but as an
+/// *unknown* one: an [`ExitStatus`] whose signal name is
+/// [`ECHILD_EXIT_SIGNAL_NAME`], never a fabricated `exit 0`. Nothing was
+/// observed about how the process ended, so claiming success would be a lie
+/// an exit-code reader cannot detect. The corollary is a caveat for `execve`
+/// handoffs: only adopt PIDs you captured as *live* in the same process
+/// lineage. A PID that already exited and was reaped before the exec could in
+/// principle be recycled by the OS; carry per-child liveness in the handoff
+/// blob rather than blindly adopting every recorded PID.
 #[derive(Debug)]
 pub struct AdoptedChild {
     pid: libc::pid_t,
@@ -200,8 +214,9 @@ impl AdoptedChild {
     ///
     /// Returns `Ok(None)` when `WNOHANG` finds the child still running,
     /// `Ok(Some(status))` once it is reaped, and treats `ECHILD` (not our
-    /// child / already reaped elsewhere) as a benign exit so callers stop
-    /// polling rather than spin on an error.
+    /// child / already reaped elsewhere) as an unknown terminal status
+    /// ([`ECHILD_EXIT_SIGNAL_NAME`]) so callers stop polling rather than spin
+    /// on an error, without claiming the child exited cleanly.
     fn waitpid(&self, flags: libc::c_int) -> io::Result<Option<ExitStatus>> {
         loop {
             let mut status: libc::c_int = 0;
@@ -212,7 +227,9 @@ impl AdoptedChild {
                 let err = io::Error::last_os_error();
                 return match err.raw_os_error() {
                     Some(libc::EINTR) => continue,
-                    Some(libc::ECHILD) => Ok(Some(ExitStatus::with_exit_code(0))),
+                    Some(libc::ECHILD) => {
+                        Ok(Some(ExitStatus::with_signal(ECHILD_EXIT_SIGNAL_NAME)))
+                    }
                     _ => Err(err),
                 };
             }
@@ -334,5 +351,28 @@ fn tty_name(fd: RawFd) -> Option<PathBuf> {
         // SAFETY: on success `ttyname_r` null-terminated the buffer.
         let cstr = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
         return Some(PathBuf::from(OsStr::from_bytes(cstr.to_bytes())));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
+mod tests {
+    use super::{AdoptedChild, Child, ECHILD_EXIT_SIGNAL_NAME};
+
+    /// pid 1 is never this test process's child, so `waitpid` fails with
+    /// `ECHILD`. That must read as "gone, cause unknown" — not as a clean
+    /// `exit 0` an exit-code reader would believe.
+    #[test]
+    fn echild_is_unknown_status_not_zero() {
+        let mut child = AdoptedChild::new(1);
+        let status = child
+            .try_wait()
+            .expect("ECHILD is a terminal status, not an error")
+            .expect("ECHILD stops polling");
+        assert!(!status.success(), "ECHILD must not claim success");
+        assert_eq!(status.signal(), Some(ECHILD_EXIT_SIGNAL_NAME));
+        // Cached: a second poll reports the same unknown status.
+        let again = child.try_wait().expect("cached").expect("cached");
+        assert_eq!(again.signal(), Some(ECHILD_EXIT_SIGNAL_NAME));
     }
 }

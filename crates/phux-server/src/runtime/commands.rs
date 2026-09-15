@@ -3947,16 +3947,16 @@ pub(crate) async fn handle_get_terminal_state(
         }
     }
 
-    // Step 5: Query shell state.
-    // The TerminalActor could provide shell PID (child of PTY master),
-    // shell name, job list, and in_copy_mode. For now, set to None;
-    // a future iteration adds a GetShellStateRequest channel and wires
-    // shell state queries (phux-y2t Phase 2).
-    //
-    // Graceful degrade: if the actor has no PTY (no-PTY test actor),
-    // or the query fails, leave shell_state as None. Agents can work
-    // with partial snapshots.
-    let shell_state: Option<serde_json::Value> = None;
+    // Step 5: Query the typed process facet (PHA-406 D5): the PTY child and
+    // its start time, the tty's foreground group, the kernel cwd, the
+    // OSC-133 prompt state, and the exit facet. Every kernel fact inside is
+    // already best-effort (`null` when unobtainable). An actor that cannot
+    // answer at all degrades to `process: null` rather than failing the
+    // whole snapshot. `shell_state` mirrors the prompt facet.
+    let process = query_process_facet(terminal).await;
+    let shell_state = process
+        .as_ref()
+        .and_then(|process| serde_json::to_value(process.prompt).ok());
 
     // Step 6: Compute timestamp and sequence number.
     let timestamp_secs = SystemTime::now()
@@ -3970,6 +3970,8 @@ pub(crate) async fn handle_get_terminal_state(
 
     // Step 7: Build the TerminalState as JSON.
     let terminal_state_json = serde_json::json!({
+        "schema_version": phux_core::process::TERMINAL_STATE_SCHEMA_VERSION,
+        "process": process,
         "cols": screen_state.cols,
         "rows": screen_state.rows,
         "cells": viewport_cells,
@@ -3990,6 +3992,22 @@ pub(crate) async fn handle_get_terminal_state(
             message: format!("terminal state serialization failed: {err}"),
         },
     }
+}
+
+/// Ask a Terminal's actor for its typed process facet (PHA-406 D5).
+///
+/// `None` when the actor's mailbox is closed or it dropped the reply; the
+/// caller reports that as `process: null` rather than failing the snapshot.
+async fn query_process_facet(
+    terminal: &crate::terminal_actor::TerminalHandle,
+) -> Option<phux_core::process::TerminalProcessState> {
+    let (reply, reply_rx) = oneshot::channel();
+    terminal
+        .process
+        .send(crate::terminal_actor::ProcessFacetRequest { reply })
+        .await
+        .ok()?;
+    reply_rx.await.ok()
 }
 
 /// Build the `Ok` reply for `ROUTE_INPUT`.

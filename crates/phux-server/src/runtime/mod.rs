@@ -2543,6 +2543,7 @@ mod tests {
                     set_default_colors: mpsc::channel(8).0,
                     screen: screen_tx,
                     pwd: pwd_tx,
+                    process: mpsc::channel(8).0,
                     resize: resize_tx,
                     cols: 80,
                     rows: 24,
@@ -2705,6 +2706,7 @@ mod tests {
                                 set_default_colors: mpsc::channel(8).0,
                                 screen: screen_tx,
                                 pwd: pwd_tx,
+                                process: mpsc::channel(8).0,
                                 resize: resize_tx,
                                 cols: 80,
                                 rows: 24,
@@ -2890,6 +2892,7 @@ mod tests {
                             set_default_colors: mpsc::channel(8).0,
                             screen: screen_tx,
                             pwd: pwd_tx,
+                            process: mpsc::channel(8).0,
                             resize: resize_tx,
                             cols: 80,
                             rows: 24,
@@ -3178,10 +3181,13 @@ mod tests {
                 s.set_hook_dispatcher(crate::hooks::HookDispatcher::from_sender(hook_tx));
             });
             let (_sid, _wid, pane) = state.with_mut(|s| s.seed_session("dying"));
-            let (exit_tx, exit_rx) = tokio::sync::oneshot::channel::<Option<i32>>();
+            let (exit_tx, exit_rx) =
+                tokio::sync::oneshot::channel::<phux_core::process::ExitOutcome>();
             let token = CancellationToken::new();
             spawn_terminal_exit_watcher(state.clone(), pane, Some(exit_rx), token);
-            exit_tx.send(Some(3)).expect("exit notify");
+            exit_tx
+                .send(phux_core::process::ExitOutcome::exited(3))
+                .expect("exit notify");
             let event = tokio::time::timeout(MAILBOX_DEADLINE, hook_rx.recv())
                 .await
                 .expect("pane-exit hook timed out")
@@ -3250,6 +3256,7 @@ mod tests {
                         set_default_colors: mpsc::channel(8).0,
                         screen: mpsc::channel(8).0,
                         pwd: mpsc::channel(8).0,
+                        process: mpsc::channel(8).0,
                         resize: mpsc::channel::<ResizeRequest>(8).0,
                         cols: 80,
                         rows: 24,
@@ -3436,6 +3443,7 @@ mod tests {
                             set_default_colors: mpsc::channel(8).0,
                             screen: mpsc::channel(8).0,
                             pwd: mpsc::channel(8).0,
+                            process: mpsc::channel(8).0,
                             resize: mpsc::channel(8).0,
                             cols: 80,
                             rows: 24,

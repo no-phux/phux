@@ -566,7 +566,7 @@ pub struct ResourceCore {
     /// One-shot fired when the engine observes its backing exit. `Option`
     /// so it can be `take()`n after firing — sending on a `oneshot::Sender`
     /// is a by-value move. `None` after the first fire.
-    pub(super) exit_notify: Option<oneshot::Sender<Option<i32>>>,
+    pub(super) exit_notify: Option<oneshot::Sender<phux_core::process::ExitOutcome>>,
     /// Cancellation token the engine's loop watches. Cancel to ask the
     /// engine to shut down cleanly. Dropping the token does NOT cancel —
     /// cancellation is always explicit.
@@ -591,9 +591,9 @@ pub struct ResourceCoreChannels {
     pub unsubscribe_from_events: mpsc::Sender<UnsubscribeFromEventsRequest>,
     /// Supervisory control sender.
     pub control: mpsc::Sender<ControlRequest>,
-    /// Fires with the exit status when the engine observes its backing
-    /// exit.
-    pub exit_notify: oneshot::Receiver<Option<i32>>,
+    /// Fires with the exit outcome (code or signal) when the engine
+    /// observes its backing exit.
+    pub exit_notify: oneshot::Receiver<phux_core::process::ExitOutcome>,
 }
 
 impl ResourceCore {
@@ -725,11 +725,11 @@ impl ResourceCore {
         }
     }
 
-    /// Report the backing's exit status to whoever holds the bundle's
+    /// Report the backing's exit outcome to whoever holds the bundle's
     /// receiver. Fires at most once; later calls are no-ops.
-    pub fn notify_exit(&mut self, status: Option<i32>) {
+    pub fn notify_exit(&mut self, outcome: phux_core::process::ExitOutcome) {
         if let Some(tx) = self.exit_notify.take() {
-            let _ = tx.send(status);
+            let _ = tx.send(outcome);
         }
     }
 }
@@ -804,9 +804,12 @@ mod tests {
             CancellationToken::new(),
             DEFAULT_OUTPUT_BROADCAST,
         );
-        core.notify_exit(Some(3));
-        core.notify_exit(Some(4));
-        assert_eq!(channels.exit_notify.blocking_recv(), Ok(Some(3)));
+        core.notify_exit(phux_core::process::ExitOutcome::exited(3));
+        core.notify_exit(phux_core::process::ExitOutcome::signaled(9));
+        assert_eq!(
+            channels.exit_notify.blocking_recv(),
+            Ok(phux_core::process::ExitOutcome::exited(3))
+        );
     }
 
     #[test]
