@@ -34,6 +34,7 @@
         .{ .title = "View", .items = .{
             .{ .label = "Commands…", .command = "commands.open", .key = "p", .modifiers = .{ "primary", "shift" } },
             .{ .label = "Settings…", .command = "settings.open", .key = ",", .modifiers = .{"primary"} },
+            .{ .label = "Check for Updates…", .command = "app.update" },
             .{ .label = "Edit Configuration…", .command = "config.edit" },
             .{ .separator = true },
             .{ .label = "Enter Full Screen", .command = "window.fullscreen", .key = "f", .modifiers = .{ "primary", "control" } },

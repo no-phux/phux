@@ -7,6 +7,7 @@ import { type Appearance, initialAppearance, appearanceRequest, appearanceRespon
 import { type ActionRow, commandRows, commandDefinition, contextualCommand, containsQuery } from "./commands.ts";
 import { type KeybindingPage, type KeybindingRow, initialKeybindings, keybindingRequest, keybindingResponse } from "./keybindings.ts";
 import { type Setting, settingsRows, settingRequest, resetSettingRequest, reloadSettingsRequest } from "./settings.ts";
+import { type SelfUpdate, initialSelfUpdate, selfUpdateRequest, selfUpdateResponse } from "./self-update.ts";
 import { windowTarget, windowCommand, windowReceipt } from "./window-navigation.ts";
 import { newSessionRequest, newSessionReply } from "./new-session.ts";
 import { localToolRequest, localToolReply } from "./local-tools.ts";
@@ -411,6 +412,12 @@ export interface Model {
   readonly configNotice: Uint8Array;
   readonly appearance: Appearance;
   readonly appearanceBusy: boolean;
+  readonly updateBusy: boolean;
+  readonly updateCanInstall: boolean;
+  readonly updateCurrent: Uint8Array;
+  readonly updateLatest: Uint8Array;
+  readonly updateStatus: Uint8Array;
+  readonly updateRemedy: Uint8Array;
   readonly settingsSection: number;
   readonly settingsSections: readonly SettingsChoice[];
   readonly cursorChoices: readonly SettingsChoice[];
@@ -585,6 +592,10 @@ export type Msg =
   | { readonly kind: "settings_placement"; readonly index: number }
   | { readonly kind: "appearance_loaded"; readonly body: Uint8Array }
   | { readonly kind: "appearance_failed"; readonly error: Uint8Array }
+  | { readonly kind: "update_check" }
+  | { readonly kind: "update_install" }
+  | { readonly kind: "update_loaded"; readonly body: Uint8Array }
+  | { readonly kind: "update_failed"; readonly error: Uint8Array }
   | { readonly kind: "native_command"; readonly command: number }
   // Posted by the native engine for every shell event it consumed: no bytes
   // ride along, the core only learns that the grids beneath it moved.
@@ -667,6 +678,10 @@ export const viewUnbound = [
   "settings_move",
   "appearance_loaded",
   "appearance_failed",
+  "update_check",
+  "update_install",
+  "update_loaded",
+  "update_failed",
   "navigationAfterSettings",
   "appearanceClosing",
   "engineConnected",
@@ -2042,6 +2057,7 @@ function creationCommandMsg(name: string): Msg | null {
   if (name === "terminal.new") return { kind: "new_terminal" };
   if (name === "window.new") return { kind: "new_window" };
   if (name === "settings.open") return { kind: "settings_open" };
+  if (name === "app.update") return { kind: "update_check" };
   if (name === "remote.connect") return { kind: "host_open" };
   if (name === "directory.open") return { kind: "dir_open" };
   if (name === "session.rename") return { kind: "rename_open" };
@@ -2299,9 +2315,15 @@ export function initialModel(): [Model, Cmd<Msg>] {
       configNotice: new Uint8Array(0),
       appearance: initialAppearance(),
       appearanceBusy: false,
+      updateBusy: false,
+      updateCanInstall: false,
+      updateCurrent: NO_BYTES,
+      updateLatest: NO_BYTES,
+      updateStatus: initialSelfUpdate().message,
+      updateRemedy: NO_BYTES,
       settingsSection: 0,
       settingsSections: [
-        { index: 0, label: asciiBytes("Appearance") }, { index: 1, label: asciiBytes("Terminal") }, { index: 2, label: asciiBytes("Keyboard") }, { index: 3, label: asciiBytes("Window") }, { index: 4, label: asciiBytes("Advanced") },
+        { index: 0, label: asciiBytes("Appearance") }, { index: 1, label: asciiBytes("Terminal") }, { index: 2, label: asciiBytes("Keyboard") }, { index: 3, label: asciiBytes("Window") }, { index: 4, label: asciiBytes("Advanced") }, { index: 5, label: asciiBytes("About") },
       ],
       cursorChoices: [
         { index: 0, label: asciiBytes("Block") }, { index: 1, label: asciiBytes("Bar") }, { index: 2, label: asciiBytes("Underline") },
@@ -2473,6 +2495,52 @@ interface AppearanceDecision {
   readonly opening: boolean;
   readonly closed: boolean;
   readonly navigate: boolean;
+}
+
+interface UpdateDecision {
+  readonly model: Model;
+  readonly request: Uint8Array;
+  readonly appearanceRequest: Uint8Array;
+  readonly opening: boolean;
+}
+
+function applyUpdateState(model: Model, report: SelfUpdate): Model {
+  return { ...model, updateBusy: false, updateCanInstall: report.canInstall,
+    updateCurrent: report.current, updateLatest: report.latest, updateStatus: report.message, updateRemedy: report.remedy };
+}
+
+function updateDecision(model: Model): UpdateDecision {
+  return { model, request: NO_BYTES, appearanceRequest: NO_BYTES, opening: false };
+}
+
+function handleSelfUpdate(model: Model, msg: Msg): UpdateDecision | null {
+  if (msg.kind === "update_loaded") {
+    const parsed = selfUpdateResponse(msg.body);
+    if (parsed === null) {
+      return updateDecision({ ...model, updateBusy: false, updateCanInstall: false,
+        updateStatus: asciiBytes("Update status was unreadable. Try Check for Updates again.") });
+    }
+    return updateDecision(applyUpdateState(model, parsed));
+  }
+  if (msg.kind === "update_failed") {
+    return updateDecision({ ...model, updateBusy: false, updateCanInstall: false,
+      updateStatus: msg.error.length === 0 ? asciiBytes("Could not check for updates.") : msg.error });
+  }
+  if (msg.kind === "update_install") {
+    if (!model.updateCanInstall || model.updateBusy) return updateDecision(model);
+    return { model: { ...model, updateBusy: true, updateStatus: asciiBytes("Installing the latest Phux Cockpit release...") },
+      request: selfUpdateRequest(true), appearanceRequest: NO_BYTES, opening: false };
+  }
+  if (msg.kind !== "update_check") return null;
+  if (model.updateBusy) return updateDecision(model);
+  const checking = asciiBytes("Checking for updates...");
+  if (model.settingsOpen) {
+    return { model: { ...model, settingsSection: 5, updateBusy: true, updateStatus: checking },
+      request: selfUpdateRequest(false), appearanceRequest: NO_BYTES, opening: false };
+  }
+  const opened = openAppearance({ ...model, settingsSection: 5 });
+  return { model: { ...opened.model, settingsSection: 5, updateBusy: true, updateStatus: checking },
+    request: selfUpdateRequest(false), appearanceRequest: opened.request, opening: true };
 }
 
 function appearanceDecision(model: Model): AppearanceDecision {
@@ -3667,6 +3735,18 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     return [result.model, Cmd.request("cockpit.command-results", result.request, {
       key: "cockpit-command-results", ok: "command_result_loaded", err: "command_result_failed",
     })];
+  }
+  const selfUpdate = handleSelfUpdate(model, msg);
+  if (selfUpdate !== null) {
+    if (selfUpdate.request.length === 0) return selfUpdate.model;
+    if (selfUpdate.opening) {
+      return [selfUpdate.model, Cmd.batch([
+        Cmd.host("cockpit.committed", NO_BYTES),
+        Cmd.request("cockpit.appearance", selfUpdate.appearanceRequest, { key: "cockpit-appearance", ok: "appearance_loaded", err: "appearance_failed" }),
+        Cmd.request("cockpit.update", selfUpdate.request, { key: "cockpit-update", ok: "update_loaded", err: "update_failed" }),
+      ])];
+    }
+    return [selfUpdate.model, Cmd.request("cockpit.update", selfUpdate.request, { key: "cockpit-update", ok: "update_loaded", err: "update_failed" })];
   }
   const appearance = updateAppearance(model, msg);
   if (appearance !== null) {
