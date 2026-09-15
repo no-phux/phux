@@ -547,7 +547,10 @@ rather than a layer with its own internal architecture worth diagramming:
   (`phux_client_list_directory`, `phux_client_directory_*`). Its `log`
   module installs the bridge's one `tracing` subscriber on standard error
   (`phux_client_log_init`), so an embedder that redirects descriptor 2 to a
-  file gets the tunnel's lifecycle beside its own lines. The bridge
+  file gets the tunnel's lifecycle beside its own lines. Named projections
+  (ADR-0129) are L3 metadata key ops on keys shaped
+  `<prefix>.layout/v1/<session-id>` (`phux_client_projection_get` /
+  `_set` / `_delete`), not a new resource kind. The bridge
   subscribes to the connection-wide `AgentEvent` stream on every
   `ATTACH_READY` (as a `KernelSend::SubscribeEvents` effect the kernel
   itself emits, `phux-client-core` having no transport of its own to send

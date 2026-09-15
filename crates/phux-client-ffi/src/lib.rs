@@ -12,6 +12,7 @@ mod grid_metadata;
 mod log;
 mod operations;
 mod pointer;
+mod projection;
 mod remote;
 mod session_create;
 mod session_query;
@@ -48,6 +49,7 @@ pub use pointer::{
     PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,
     phux_client_terminal_mouse_mode,
 };
+pub use projection::*;
 pub use remote::registry::*;
 pub use remote::*;
 pub use session_create::*;
@@ -694,6 +696,9 @@ fn dispatch_frame(
     let Some(frame) = session_rename::dispatch(client, frame)? else {
         return Ok(());
     };
+    let Some(frame) = projection::dispatch(client, frame) else {
+        return Ok(());
+    };
     if workspace::resources::dispatch(client, &frame)? {
         return Ok(());
     }
@@ -986,6 +991,7 @@ fn apply_hello_ok(
     client.spawn_idempotency = server_caps
         .features
         .contains(phux_protocol::ServerFeature::SpawnIdempotency);
+    client.l3_metadata = server_caps.layers.contains(phux_protocol::Layer::L3);
     client.protocol_ready = true;
     session_rename::negotiated(client)
 }

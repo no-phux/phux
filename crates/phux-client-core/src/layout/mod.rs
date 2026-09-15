@@ -271,6 +271,9 @@ impl WindowState {
 }
 
 mod identity;
+mod projection;
+
+pub use projection::{LAYOUT_METADATA_GROUP, MAX_LAYOUT_METADATA_BYTES, projection_key_session};
 
 /// The set of windows the TUI presents for one Group, plus which
 /// one is active.

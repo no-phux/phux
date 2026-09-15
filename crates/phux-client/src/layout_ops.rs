@@ -37,7 +37,7 @@ use crate::layout::{
 pub const LAYOUT_KEY: &str = "phux.tui.layout/v1";
 
 /// The static Group used by v0.x servers for layout metadata.
-pub const DEFAULT_LAYOUT_GROUP_ID: GroupId = GroupId::new(1);
+pub const DEFAULT_LAYOUT_GROUP_ID: GroupId = crate::layout::LAYOUT_METADATA_GROUP;
 
 /// Return the metadata key for `session`.
 #[must_use]
@@ -127,17 +127,12 @@ pub fn validate_projection_key(key: &str, session: SessionId) -> Result<(), Layo
 ///
 /// Used to match an unordered pair of `--projection` keys against a pair of
 /// sessions (a cross-session `move-pane`) — see `phux_client::pane_move`.
+///
+/// The grammar lives in `phux-client-core` so the C FFI named-projection
+/// seam shares it.
 #[must_use]
 pub fn projection_key_session(key: &str) -> Option<SessionId> {
-    let (prefix, suffix) = key.rsplit_once(".layout/v1/")?;
-    if prefix.is_empty() || prefix.contains(".layout/v1/") {
-        return None;
-    }
-    let id = suffix.parse::<u32>().ok()?;
-    if suffix != id.to_string() {
-        return None;
-    }
-    Some(SessionId::new(id))
+    crate::layout::projection_key_session(key)
 }
 
 /// One pure mutation of a decoded [`Workspace`].

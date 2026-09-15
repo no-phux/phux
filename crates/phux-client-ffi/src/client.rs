@@ -317,6 +317,10 @@ pub(crate) struct Client {
     /// `HELLO_OK` advertised `SPAWN_IDEMPOTENCY` (ADR-0126): a spawn may
     /// carry a retry key.
     pub spawn_idempotency: bool,
+    /// `HELLO_OK` advertised L3 metadata (`docs/spec/L3.md`). Named
+    /// projection get/set/delete need this layer; there is no extra
+    /// `ServerFeature` bit.
+    pub l3_metadata: bool,
     /// Journal cursor for the next `SUBSCRIBE_EVENTS` this client sends,
     /// including the automatic post-`ATTACH_READY` subscribe. `None` is
     /// live-only.
@@ -328,6 +332,8 @@ pub(crate) struct Client {
     pub session_creates: crate::session_create::SessionCreates,
     /// The latest session rename and the rename key's subscription.
     pub session_rename: crate::session_rename::SessionRename,
+    /// The outstanding named-projection L3 get/set/delete (ADR-0129).
+    pub projection: crate::projection::Projection,
     pub detached: bool,
 }
 
@@ -389,11 +395,13 @@ impl Client {
             event_journal: false,
             retain_on_exit: false,
             spawn_idempotency: false,
+            l3_metadata: false,
             event_after_seq: None,
             directory: crate::directory::DirectoryState::default(),
             session_query: crate::session_query::SessionQuery::default(),
             session_creates: crate::session_create::SessionCreates::default(),
             session_rename: crate::session_rename::SessionRename::default(),
+            projection: crate::projection::Projection::default(),
             detached: false,
         }
     }
@@ -511,6 +519,7 @@ impl Client {
         self.session_query.disconnect();
         self.session_creates.disconnect();
         self.session_rename.disconnect();
+        self.projection.disconnect();
         self.outgoing.clear();
         self.session.release_active_attach();
         self.effects.clear();
