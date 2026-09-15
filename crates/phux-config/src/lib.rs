@@ -49,9 +49,9 @@ pub use remote::RemoteConfigEntry;
 pub use satellite::SatelliteConfigEntry;
 pub use schema::{
     Action, ChromeCfg, Config, CwdInheritance, DEFAULT_AGENT_LOG_BYTES, DEFAULT_HISTORY_BYTES,
-    DefaultsCfg, ExperimentalCfg, HookEntry, KeybindingsCfg, MAX_AGENT_LOG_BYTES,
-    MAX_HISTORY_BYTES, ParamAction, ScrollbackLimits, SidebarCfg, SidebarPosition, StatusCfg,
-    StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
+    DEFAULT_METADATA_VALUE_BYTES, DefaultsCfg, ExperimentalCfg, HookEntry, KeybindingsCfg,
+    LimitsCfg, MAX_AGENT_LOG_BYTES, MAX_HISTORY_BYTES, ParamAction, ScrollbackLimits, SidebarCfg,
+    SidebarPosition, StatusCfg, StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
 };
 pub use session_name::{NameRng, RANDOM_NAME_PLACEHOLDER, random_name, template_has_random_name};
 pub use settings::{

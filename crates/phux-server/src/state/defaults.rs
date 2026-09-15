@@ -88,6 +88,20 @@ impl ServerState {
         self.config.voice = voice;
     }
 
+    /// Set the L3 per-key metadata value cap (`limits.metadata-value-bytes`,
+    /// ADR-0129). Called once at server startup to mirror
+    /// [`crate::runtime::ServerConfig::metadata_value_bytes`].
+    pub const fn set_metadata_value_bytes(&mut self, bytes: u32) {
+        self.config.metadata_value_bytes = bytes;
+    }
+
+    /// Largest L3 metadata value the server stores at one key, set by
+    /// [`Self::set_metadata_value_bytes`].
+    #[must_use]
+    pub const fn metadata_value_bytes(&self) -> u32 {
+        self.config.metadata_value_bytes
+    }
+
     /// Read the `[voice]` settings set by [`Self::set_voice`].
     #[must_use]
     pub fn voice(&self) -> phux_config::VoiceCfg {

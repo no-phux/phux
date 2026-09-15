@@ -36,12 +36,11 @@ use self::record::{run_agent_clear, run_agent_set};
 pub(crate) use self::model::format_terminal;
 pub(crate) use self::record::fetch_agent_index;
 pub(crate) use self::session::{
-    AgentSessionRecord, PreparedAgentSession, fetch_record_index, persist_record, prepare,
-    prepare_for_launch,
+    AgentSessionRecord, PreparedAgentSession, fetch_record_index, prepare, prepare_for_launch,
 };
-// `AgentSessionRecord`/`fetch_record_index`/`persist_record` above are
-// `session.rs` re-exports of `phux_client::agent_session_record` (the wire
-// round trips now live there); `session.rs` keeps only the launch-plan
+// `AgentSessionRecord`/`fetch_record_index` above are `session.rs`
+// re-exports of `phux_client::agent_session_record` (the wire round trips
+// now live there); `session.rs` keeps only the launch-plan
 // resolution that needs `phux-plugin`.
 
 #[derive(Debug, usage::Subcommands)]

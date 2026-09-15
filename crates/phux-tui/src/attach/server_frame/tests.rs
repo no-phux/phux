@@ -1349,6 +1349,46 @@ fn an_unscoped_layout_key_has_no_session_authority() {
     assert_eq!(window_leaves(&local, 0), vec![tid(1)]);
 }
 
+/// ADR-0129: a named `--projection` key for our own focused session is
+/// still a foreign prefix — `phux.tui.layout/v1` is the TUI's own family,
+/// not `<prefix>.layout/v1`. The TUI and Cockpit share only the default
+/// key; a private arrangement never reaches this client's workspace even
+/// when its session id matches.
+#[test]
+fn a_named_projection_key_is_never_adopted_even_for_our_own_session() {
+    use phux_protocol::wire::frame::Scope;
+
+    let mut local = Workspace::single(tid(1));
+    let before = local.clone();
+    let incoming = ws1(split2(1, 2, 1));
+    let bytes = incoming.encode_cbor().expect("encode workspace");
+    let mut focused = Some(tid(1));
+    let mut panes = panes_for(&[&tid(1), &tid(2)]);
+
+    let outcome = drive_layout_frame(
+        FrameKind::MetadataChanged {
+            scope: Scope::Group(super::DEFAULT_GROUP_ID),
+            key: "myapp.layout/v1/1".to_owned(),
+            value: Some(bytes),
+            actor: None,
+        },
+        None,
+        &mut local,
+        &mut focused,
+        &mut panes,
+    );
+
+    assert!(!outcome.layout_replaced);
+    assert!(
+        outcome.foreign_layout.is_none(),
+        "a private projection is not routed to the roster either — it names no session we recognize"
+    );
+    assert_eq!(
+        local, before,
+        "the TUI's own workspace must be untouched by a foreign-prefixed key"
+    );
+}
+
 /// A `phux.agent/v1` push for a pane outside our workspace is a
 /// peer's, even when ATTACHED allocated a mirror slot. It must not enter the local index, which
 /// `sync_agent_meta_subscriptions` retains against the LOCAL pane set —

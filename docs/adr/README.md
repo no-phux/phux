@@ -171,6 +171,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0124](./0124-retain-on-exit.md) | Retain on exit: exit is a facet, close is a purge | Accepted (builds on [0104](./0104-parent-bindings-are-l1-lifecycle.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0125](./0125-kind-catalog-is-generated-metadata.md) | The kind catalog is generated metadata, not wire | Accepted (builds on [0098](./0098-workload-proof-and-closed-scope-authority.md), [0102](./0102-resources-the-server-serves-kinds.md)) |
 | [0126](./0126-idempotent-create.md) | Creates are idempotent under a client key | Accepted (builds on [0053](./0053-acknowledged-idempotent-input.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
+| [0129](./0129-projections-are-named-by-key.md) | Named projections are a metadata-key convention, not a resource | Accepted |
 
 ## When to write an ADR
 

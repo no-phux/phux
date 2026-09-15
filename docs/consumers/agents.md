@@ -740,6 +740,26 @@ rather than merging (`../spec/L3.md` §3.2).
 [`../spec/L3.md`](../spec/L3.md) §3.5. Sharing the TUI's layout schema is
 opt-in, not the default.
 
+**`--projection KEY` names that choice on the CLI.** `insert-pane`,
+`move-pane`, `swap-pane`, and the placement flags on `spawn` / `launch`
+accept `--projection <prefix>.layout/v1/<session-id>` naming any envelope
+of the §3.2 shape for the session addressed; omitting it keeps the shared
+default. A cross-session `move-pane` touches two distinct envelopes — pass
+`--projection` twice (source and destination, either order) or not at all,
+never exactly once. There is still no projection resource: naming a key is
+the whole mechanism, and durability is `phux workspace save` / `restore`
+replaying the archived split tree, not server-held state
+([ADR-0129](../adr/0129-projections-are-named-by-key.md)).
+
+`phux workspace save` reads each session's real split tree from that same
+envelope (`--projection KEY` there names the key *prefix* to read every
+session's own copy from, default the shared one); `GET_STATE` never carries
+one, so a session with nothing stored falls back to a bare pane list.
+`phux workspace restore` replays every archived pane, not only a session's
+seed process — including a native agent session's own resume, where it
+still resolves to the plugin that owns it — and rolls back just the one
+session on a partial failure rather than the whole archive.
+
 ## 10. Fallback hierarchy
 
 Rank affordances by how much of the answer is typed fact versus inferred

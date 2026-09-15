@@ -804,6 +804,12 @@ pub(crate) enum Command {
         )]
         ratio: f32,
 
+        /// Named projection to place into instead of the shared default
+        /// (requires `--target`). Must be
+        /// `<prefix>.layout/v1/<session-id>` for TARGET's session.
+        #[usage(long, value_name = "KEY", requires("--target"))]
+        projection: Option<String>,
+
         /// Working directory for the new pane.
         #[usage(short = 'c', long = "cwd")]
         cwd: Option<String>,
@@ -863,6 +869,12 @@ pub(crate) enum Command {
             validate_error = "ratio must be finite and strictly between 0 and 1"
         )]
         ratio: f32,
+
+        /// Named projection to place into instead of the shared default
+        /// (requires `--target`). Must be
+        /// `<prefix>.layout/v1/<session-id>` for TARGET's session.
+        #[usage(long, value_name = "KEY", requires("--target"))]
+        projection: Option<String>,
 
         /// Working directory for a `working_directory = "workspace"`
         /// template. Defaults to the current directory.
@@ -927,6 +939,12 @@ pub(crate) enum Command {
             validate_error = "ratio must be finite and strictly between 0 and 1"
         )]
         ratio: f32,
+        /// Named projection to edit instead of the shared default
+        /// (`phux.tui.layout/v1/<session>`). Must be
+        /// `<prefix>.layout/v1/<session-id>` for the session both selectors
+        /// resolve to; at most one may be given.
+        #[usage(long, value_name = "KEY")]
+        projection: Vec<String>,
         /// Emit a schema-versioned JSON result or error.
         #[usage(long)]
         json: bool,
@@ -958,6 +976,14 @@ pub(crate) enum Command {
             validate_error = "ratio must be finite and strictly between 0 and 1"
         )]
         ratio: f32,
+        /// Named projection(s) to edit instead of the shared default.
+        /// A same-session move takes at most one KEY. A
+        /// cross-session move touches two distinct envelopes — each key
+        /// embeds its own session id — so pass this flag twice (source and
+        /// destination, either order) or not at all; passing it exactly
+        /// once for a cross-session move is refused (exit 2).
+        #[usage(long, value_name = "KEY")]
+        projection: Vec<String>,
         /// Emit a schema-versioned JSON result or error.
         #[usage(long)]
         json: bool,
@@ -974,6 +1000,10 @@ pub(crate) enum Command {
         first: String,
         /// Second pane selector.
         second: String,
+        /// Named projection to edit instead of the shared default;
+        /// at most one may be given.
+        #[usage(long, value_name = "KEY")]
+        projection: Vec<String>,
         /// Emit a schema-versioned JSON result or error.
         #[usage(long)]
         json: bool,
@@ -2529,6 +2559,17 @@ pub(crate) enum WorkspaceAction {
         /// Write the archive to a path instead of stdout.
         #[usage(long, short = 'o', value_name = "PATH")]
         output: Option<std::path::PathBuf>,
+
+        /// Read each session's split tree from this projection key PREFIX
+        /// (`<PREFIX>.layout/v1`) instead of the shared default, appending
+        /// `/<session-id>` itself for each session archived. Unlike every
+        /// other `--projection` flag, this one takes a bare prefix, not a
+        /// full key: a full `<prefix>.layout/v1/<id>` key is refused. A
+        /// session with nothing stored under its own key falls back to its
+        /// bare pane list; when this flag is given, that absence is also
+        /// reported on stderr.
+        #[usage(long, value_name = "PREFIX")]
+        projection: Option<String>,
     },
 
     /// Restore missing sessions from a workspace archive.

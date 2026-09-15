@@ -82,6 +82,10 @@ pub struct Config {
     /// `[voice]`: the server-side transcriber behind `TRANSCRIBE`.
     #[serde(default)]
     pub voice: VoiceCfg,
+
+    /// `[limits]`: server-enforced ceilings that are not per-pane defaults.
+    #[serde(default)]
+    pub limits: LimitsCfg,
 }
 
 // ---------------------------------------------------------------------------
@@ -369,6 +373,43 @@ pub const DEFAULT_AGENT_LOG_BYTES: u32 = 4 * 1024 * 1024;
 
 const fn default_agent_log_bytes() -> u32 {
     DEFAULT_AGENT_LOG_BYTES
+}
+
+/// `[limits]` table: server-enforced ceilings on shared resources that are
+/// not a per-pane spawn default (those live in `[defaults]`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct LimitsCfg {
+    /// Largest L3 metadata value the server stores at one key
+    /// (`SET_METADATA`, `docs/spec/L3.md` §2), in bytes. A write over the
+    /// cap is refused and nothing is stored (ADR-0129) — this closes the
+    /// gap `docs/spec/L3.md` §2 always allowed ("implementations MAY
+    /// enforce a per-key size limit, recommended 256 KiB"): the reference
+    /// server now does. The one shared metadata store backs every
+    /// consumer's convention (session names, tags, and any
+    /// `<prefix>.layout/v1/<session>` named projection alike), so the cap
+    /// is global rather than per-key-family.
+    #[serde(
+        default = "default_metadata_value_bytes",
+        rename = "metadata-value-bytes"
+    )]
+    pub metadata_value_bytes: u32,
+}
+
+impl Default for LimitsCfg {
+    fn default() -> Self {
+        Self {
+            metadata_value_bytes: default_metadata_value_bytes(),
+        }
+    }
+}
+
+/// Shipped `limits.metadata-value-bytes`: 256 KiB, `docs/spec/L3.md` §2's
+/// long-recommended cap.
+pub const DEFAULT_METADATA_VALUE_BYTES: u32 = 256 * 1024;
+
+const fn default_metadata_value_bytes() -> u32 {
+    DEFAULT_METADATA_VALUE_BYTES
 }
 const fn default_true() -> bool {
     true

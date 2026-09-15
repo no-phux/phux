@@ -126,6 +126,13 @@ const SECTIONS: &[Section] = &[
         summary: "The server-side transcriber behind `TRANSCRIBE`: an argv \
                   that turns an uploaded clip into text for a paste.",
     },
+    Section {
+        key: "limits",
+        header: "[limits]",
+        summary: "Server-enforced ceilings that are not a per-pane spawn \
+                  default: the largest L3 metadata value the server stores \
+                  at one key.",
+    },
 ];
 
 /// Collect every scalar leaf of `value` as a `(dotted-key, TOML literal)`

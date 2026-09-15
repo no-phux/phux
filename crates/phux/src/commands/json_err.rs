@@ -83,6 +83,13 @@ pub(crate) mod codes {
     pub(crate) const DESTINATION_LAYOUT_FAILED: &str = "destination_layout_failed";
     /// The source layout cleanup after a cross-session move failed.
     pub(crate) const SOURCE_LAYOUT_FAILED: &str = "source_layout_failed";
+    /// A `--projection` value does not name a valid `<prefix>.layout/v1/<session>`
+    /// key for the session the operation addresses (ADR-0129).
+    pub(crate) const PROJECTION_INVALID: &str = "projection_invalid";
+    /// `--projection` was passed the wrong number of times for the
+    /// operation: more than one for a single-session edit, or exactly one
+    /// for a cross-session move (which touches two distinct envelopes).
+    pub(crate) const PROJECTION_ARITY: &str = "projection_arity";
     /// A local config-registry operation failed: a `[[plugins]]` /
     /// `[[remote]]` / `[[satellites]]` entry could not be read, validated,
     /// or written (phux-i0e8.8.3).

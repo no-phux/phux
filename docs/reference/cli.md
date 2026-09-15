@@ -1376,18 +1376,22 @@ Arguments:
   <NEW_PANE>  Already-created pane to insert; no implicit spawn occurs.
 
 Flags:
-      --split <SPLIT>  Split axis: `horizontal` stacks the panes, `vertical`
-                       places them side-by-side.
-                       [possible values: horizontal, h, vertical, v]
-                       (default: horizontal)
-      --ratio <RATIO>  Fraction assigned to TARGET; must be strictly between 0
-                       and 1.
-                       (default: 0.5)
-      --json           Emit a schema-versioned JSON result or error.
-  -h, --help           Print help
+      --split <SPLIT>     Split axis: `horizontal` stacks the panes, `vertical`
+                          places them side-by-side.
+                          [possible values: horizontal, h, vertical, v]
+                          (default: horizontal)
+      --ratio <RATIO>     Fraction assigned to TARGET; must be strictly between
+                          0 and 1.
+                          (default: 0.5)
+      --projection <KEY>  Named projection to edit instead of the shared default
+                          (`phux.tui.layout/v1/<session>`). Must be
+                          `<prefix>.layout/v1/<session-id>` for the session both
+                          selectors resolve to; at most one may be given.
+      --json              Emit a schema-versioned JSON result or error.
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux kill`
@@ -1456,29 +1460,33 @@ Arguments:
   [EXTRA]…       Extra arguments appended to the agent command, after `--`.
 
 Flags:
-      --list             List launchable integrations from enabled plugins and
-                         exit.
-      --print            Resolve and print the launch argv (and cwd) without
-                         spawning a pane — a server-free dry run.
-      --json             Emit stable, versioned JSON on stdout instead of the
-                         human view. On failure, stdout stays empty and stderr
-                         carries one JSON error object.
-      --target <TARGET>  Existing local pane beside which to place the launched
-                         pane.
-      --split <SPLIT>    Split axis for explicit placement (requires
-                         `--target`).
-                         [possible values: horizontal, h, vertical, v]
-                         (default: horizontal)
-      --ratio <RATIO>    Fraction of the split retained by TARGET (requires
-                         `--target`).
-                         (default: 0.5)
-  -c, --cwd <DIR>        Working directory for a `working_directory =
-                         "workspace"` template. Defaults to the current
-                         directory.
-  -h, --help             Print help
+      --list              List launchable integrations from enabled plugins and
+                          exit.
+      --print             Resolve and print the launch argv (and cwd) without
+                          spawning a pane — a server-free dry run.
+      --json              Emit stable, versioned JSON on stdout instead of the
+                          human view. On failure, stdout stays empty and stderr
+                          carries one JSON error object.
+      --target <TARGET>   Existing local pane beside which to place the launched
+                          pane.
+      --split <SPLIT>     Split axis for explicit placement (requires
+                          `--target`).
+                          [possible values: horizontal, h, vertical, v]
+                          (default: horizontal)
+      --ratio <RATIO>     Fraction of the split retained by TARGET (requires
+                          `--target`).
+                          (default: 0.5)
+      --projection <KEY>  Named projection to place into instead of the shared
+                          default (requires `--target`). Must be
+                          `<prefix>.layout/v1/<session-id>` for TARGET's
+                          session.
+  -c, --cwd <DIR>         Working directory for a `working_directory =
+                          "workspace"` template. Defaults to the current
+                          directory.
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux logs`
@@ -1591,18 +1599,25 @@ Arguments:
   <TARGET>  Existing destination pane.
 
 Flags:
-      --split <SPLIT>  Destination split axis: `horizontal` stacks the panes,
-                       `vertical` places them side-by-side.
-                       [possible values: horizontal, h, vertical, v]
-                       (default: horizontal)
-      --ratio <RATIO>  Fraction assigned to TARGET; must be strictly between 0
-                       and 1.
-                       (default: 0.5)
-      --json           Emit a schema-versioned JSON result or error.
-  -h, --help           Print help
+      --split <SPLIT>     Destination split axis: `horizontal` stacks the panes,
+                          `vertical` places them side-by-side.
+                          [possible values: horizontal, h, vertical, v]
+                          (default: horizontal)
+      --ratio <RATIO>     Fraction assigned to TARGET; must be strictly between
+                          0 and 1.
+                          (default: 0.5)
+      --projection <KEY>  Named projection(s) to edit instead of the shared
+                          default. A same-session move takes at most one KEY. A
+                          cross-session move touches two distinct envelopes —
+                          each key embeds its own session id — so pass this flag
+                          twice (source and destination, either order) or not at
+                          all; passing it exactly once for a cross-session move
+                          is refused (exit 2).
+      --json              Emit a schema-versioned JSON result or error.
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux new`
@@ -2881,6 +2896,10 @@ Flags:
       --ratio <RATIO>     Fraction of the split retained by TARGET (requires
                           `--target`).
                           (default: 0.5)
+      --projection <KEY>  Named projection to place into instead of the shared
+                          default (requires `--target`). Must be
+                          `<prefix>.layout/v1/<session-id>` for TARGET's
+                          session.
   -c, --cwd <CWD>         Working directory for the new pane.
       --json              Emit stable, versioned JSON on stdout instead of the
                           human view. On failure, stdout stays empty and stderr
@@ -2923,18 +2942,20 @@ Swap two panes in a layout
 Both selectors must each resolve to exactly one local pane. Split geometry is
 preserved and attached clients retain their local focus.
 
-Usage: phux swap-pane [--json] <FIRST> <SECOND>
+Usage: phux swap-pane [--projection <KEY>] [--json] <FIRST> <SECOND>
 
 Arguments:
   <FIRST>   First pane selector.
   <SECOND>  Second pane selector.
 
 Flags:
-      --json           Emit a schema-versioned JSON result or error.
-  -h, --help           Print help
+      --projection <KEY>  Named projection to edit instead of the shared
+                          default; at most one may be given.
+      --json              Emit a schema-versioned JSON result or error.
+  -h, --help              Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux tag`
@@ -3475,14 +3496,24 @@ Global flags:
 ```text
 Save the running phux workspace as a JSON archive.
 
-Usage: phux workspace save [-o --output <PATH>]
+Usage: phux workspace save [-o --output <PATH>] [--projection <PREFIX>]
 
 Flags:
-  -o, --output <PATH>  Write the archive to a path instead of stdout.
-  -h, --help           Print help
+  -o, --output <PATH>        Write the archive to a path instead of stdout.
+      --projection <PREFIX>  Read each session's split tree from this projection
+                             key PREFIX (`<PREFIX>.layout/v1`) instead of the
+                             shared default, appending `/<session-id>` itself
+                             for each session archived. Unlike every other
+                             `--projection` flag, this one takes a bare prefix,
+                             not a full key: a full `<prefix>.layout/v1/<id>`
+                             key is refused. A session with nothing stored under
+                             its own key falls back to its bare pane list; when
+                             this flag is given, that absence is also reported
+                             on stderr.
+  -h, --help                 Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux worktree`

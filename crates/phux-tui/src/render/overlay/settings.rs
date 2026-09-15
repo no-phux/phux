@@ -1954,7 +1954,7 @@ mod tests {
         page.handle_key(&back);
         assert_eq!(
             SettingSection::ALL[page.section],
-            SettingSection::Voice,
+            SettingSection::Limits,
             "wraps"
         );
     }

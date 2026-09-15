@@ -1127,11 +1127,20 @@ fn dispatch(
             target,
             split,
             ratio,
+            projection,
             cwd,
             json,
             command,
         }) => commands::spawn::run_spawn(
-            satellite, target, split, ratio, cwd, json.json, socket, command,
+            satellite,
+            target,
+            split,
+            ratio,
+            projection.as_deref(),
+            cwd,
+            json.json,
+            socket,
+            command,
         ),
         Some(Command::Launch {
             integration,
@@ -1141,6 +1150,7 @@ fn dispatch(
             target,
             split,
             ratio,
+            projection,
             cwd,
             extra,
         }) => commands::launch::run_launch(
@@ -1151,6 +1161,7 @@ fn dispatch(
             target,
             split,
             ratio,
+            projection.as_deref(),
             cwd,
             socket,
             &extra,
@@ -1168,12 +1179,14 @@ fn dispatch(
             new_pane,
             split,
             ratio,
+            projection,
             json,
         }) => commands::spatial::run_insert_pane(
             &target,
             &new_pane,
             split.into(),
             ratio,
+            projection,
             json,
             socket,
         ),
@@ -1182,13 +1195,23 @@ fn dispatch(
             target,
             split,
             ratio,
+            projection,
             json,
-        }) => commands::spatial::run_move_pane(&source, &target, split.into(), ratio, json, socket),
+        }) => commands::spatial::run_move_pane(
+            &source,
+            &target,
+            split.into(),
+            ratio,
+            projection,
+            json,
+            socket,
+        ),
         Some(Command::SwapPane {
             first,
             second,
+            projection,
             json,
-        }) => commands::spatial::run_swap_pane(&first, &second, json, socket),
+        }) => commands::spatial::run_swap_pane(&first, &second, projection, json, socket),
         Some(Command::Resize {
             target,
             geometry,
@@ -2744,6 +2767,7 @@ mod tests {
             new_pane,
             split,
             ratio,
+            projection,
             json,
         }) = cli.command
         else {
@@ -2753,6 +2777,7 @@ mod tests {
         assert_eq!(new_pane, "@2");
         assert_eq!(split, crate::commands::SpawnSplit::Vertical);
         assert!((ratio - 0.3).abs() < f32::EPSILON);
+        assert!(projection.is_empty());
         assert!(json);
 
         assert!(
