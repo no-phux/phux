@@ -1104,6 +1104,19 @@ pub(crate) enum Command {
     Take {
         /// Target selector (resolves to one pane).
         target: String,
+
+        /// Auto-release after this many seconds — the server, not this
+        /// process, enforces it, so it survives this command exiting. Omit
+        /// to hold the lease until `phux give` or a disconnect, today's
+        /// default. The wire's `ttl_ms` is a `u32`, so this caps at
+        /// 4294967 (about 49.7 days).
+        #[usage(
+            long,
+            value_name = "SECS",
+            validate = "int(value) <= 4294967",
+            validate_error = "must be at most 4294967 seconds (ttl_ms is a u32)"
+        )]
+        ttl: Option<u32>,
     },
 
     /// Give back input control taken with `take`

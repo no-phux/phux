@@ -273,11 +273,12 @@ pub enum ControlRequest {
     LeaseChanged {
         /// The client now holding the lease, or `None` if released to `Open`.
         input_holder: Option<ClientId>,
-        /// What just happened (`Acquired` / `Seized` / `Released`).
+        /// What just happened (`Acquired` / `Seized` / `Released` /
+        /// `Expired`).
         action: ControlAction,
         /// The client that performed the action; `None` when the server
-        /// released the lease on its own, as live revocation does
-        /// (`docs/spec/workload-auth.md` §7).
+        /// released the lease on its own — a TTL expiry (ADR-0033's
+        /// `ttl_ms`) or live revocation (`docs/spec/workload-auth.md` §7).
         actor: Option<ClientId>,
     },
     /// Something other than the detector wrote this pane's `phux.agent/v1`
