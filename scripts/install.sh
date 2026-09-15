@@ -516,10 +516,13 @@ cleanup() {
   release_install_lock
   rm -rf "$tmp_dir"
 }
+trap_install_signals() {
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+}
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap_install_signals
 
 archive_path="${tmp_dir}/${artifact}"
 sha_path="${archive_path}.sha256"
@@ -630,19 +633,28 @@ validate_extracted_tree
 
 mkdir -p "$install_dir"
 lock_dir="${install_dir}/.phux-install.lock"
-# Rename a pid-tagged directory into place so ownership is recoverable if a
-# signal arrives before lock_acquired=1, without deleting a live foreign lock.
+# Exclusive mkdir still claims the canonical lock. Ownership is recorded in a
+# pid-tagged pending directory first so interruption before lock_acquired=1
+# cannot strand our lock or delete another installer's.
 lock_pending="${lock_dir}.$$"
 rm -rf "$lock_pending" 2>/dev/null || true
 mkdir "$lock_pending" || die "could not create install lock"
 printf '%s\n' "$$" > "${lock_pending}/pid"
-if ! mv "$lock_pending" "$lock_dir" 2>/dev/null; then
+# Hold HUP/INT/TERM across the exclusive mkdir so a signal cannot land after
+# the lock exists and before lock_acquired=1. The pending directory still
+# covers interruption before this hold.
+trap '' HUP INT TERM
+if ! mkdir "$lock_dir" 2>/dev/null; then
+  trap_install_signals
   rm -rf "$lock_pending"
   lock_pending=""
   die "another phux install is already publishing to ${install_dir}"
 fi
-lock_pending=""
 lock_acquired=1
+mv "${lock_pending}/pid" "${lock_dir}/pid"
+rm -rf "$lock_pending"
+lock_pending=""
+trap_install_signals
 
 # Stage and back up on the destination filesystem so every publish/restore is
 # a rename. The trap restores the complete previous pair after any partial
