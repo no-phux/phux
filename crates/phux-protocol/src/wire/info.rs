@@ -440,6 +440,9 @@ pub struct ResourceInfo {
     /// The connection holding the input lease; `None` while the Terminal is
     /// open to every attached client (ADR-0033).
     pub input_holder: Option<ClientId>,
+    /// Connections subscribed as `VIEWER` (ADR-0127), ascending; empty when
+    /// none is. Rides `RESOURCE_STATE` field 4, repeated once per viewer.
+    pub viewers: Vec<ClientId>,
 }
 
 impl ResourceInfo {
@@ -463,6 +466,7 @@ impl ResourceInfo {
             lifecycle: ResourceLifecycle::Running,
             exit: None,
             input_holder: None,
+            viewers: Vec::new(),
         }
     }
 
@@ -483,6 +487,7 @@ impl ResourceInfo {
             lifecycle: ResourceLifecycle::Running,
             exit: None,
             input_holder: None,
+            viewers: Vec::new(),
         }
     }
 
@@ -542,6 +547,13 @@ impl ResourceInfo {
         self
     }
 
+    /// Builder setter for [`Self::viewers`].
+    #[must_use]
+    pub fn with_viewers(mut self, viewers: Vec<ClientId>) -> Self {
+        self.viewers = viewers;
+        self
+    }
+
     /// Whether this entry carries anything beyond the Terminal-era
     /// positional prefix, i.e. whether the snapshot's trailing resource
     /// facet list needs a row for it.
@@ -550,12 +562,13 @@ impl ResourceInfo {
     }
 
     /// Whether the snapshot extension block needs a `RESOURCE_STATE` entry
-    /// for this resource: it is not plainly running, or someone holds its
-    /// input lease.
+    /// for this resource: it is not plainly running, someone holds its
+    /// input lease, or someone watches it as a viewer.
     const fn has_resource_state(&self) -> bool {
         !matches!(self.lifecycle, ResourceLifecycle::Running)
             || self.exit.is_some()
             || self.input_holder.is_some()
+            || !self.viewers.is_empty()
     }
 }
 
@@ -1160,6 +1173,7 @@ pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<ResourceInfo
         lifecycle: ResourceLifecycle::Running,
         exit: None,
         input_holder: None,
+        viewers: Vec::new(),
     })
 }
 
@@ -1300,6 +1314,11 @@ fn encode_resource_state(info: &ResourceInfo, enc: &mut Encoder<'_>) {
             encode_client_id(holder, e);
         });
     }
+    for viewer in &info.viewers {
+        enc.write_field_with(field::resource_state::VIEWER, |e| {
+            encode_client_id(*viewer, e);
+        });
+    }
 }
 
 /// `ExitFacet`, positional: `exit_status: optional<i32> || signal:
@@ -1359,9 +1378,11 @@ fn apply_resource_state(value: &[u8], resources: &mut [ResourceInfo]) -> Result<
     let mut lifecycle = ResourceLifecycle::Running;
     let mut exit = None;
     let mut input_holder = None;
+    let mut viewers = Vec::new();
     while let Some((field_id, v)) = dec.read_field()? {
         let mut v = Decoder::new(v);
         match field_id {
+            field::resource_state::VIEWER => viewers.push(decode_client_id(&mut v)?),
             field::resource_state::LIFECYCLE => {
                 lifecycle = ResourceLifecycle::from_u8(v.read_u8()?).unwrap_or_default();
             }
@@ -1374,6 +1395,7 @@ fn apply_resource_state(value: &[u8], resources: &mut [ResourceInfo]) -> Result<
         info.lifecycle = lifecycle;
         info.exit = exit;
         info.input_holder = input_holder;
+        info.viewers = viewers;
     }
     Ok(())
 }

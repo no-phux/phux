@@ -855,6 +855,16 @@ impl Connection {
         self.negotiated_bootstrap
     }
 
+    /// The role an observer attaches with (ADR-0127): `VIEWER` when the
+    /// server advertises `ATTACH_ROLES`, so a recorder or a log follower can
+    /// never type into what it watches; `None`, an ordinary attach, on an
+    /// older server, which would ignore the byte anyway.
+    #[must_use]
+    pub fn observer_role_policy(&self) -> Option<phux_protocol::wire::frame::RolePolicy> {
+        self.advertises(ServerFeature::AttachRoles)
+            .then_some(phux_protocol::wire::frame::RolePolicy::VIEWER)
+    }
+
     /// Whether this connection's `HELLO_OK` advertised `feature`; `false` on
     /// the unnegotiated test seam, which proved nothing.
     fn advertises(&self, feature: ServerFeature) -> bool {

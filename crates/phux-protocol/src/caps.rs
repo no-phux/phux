@@ -1013,6 +1013,11 @@ pub const RETAIN_ON_EXIT: u32 = 0x0200_0000;
 /// field 17, `RESOURCE_SPAWNED.replayed`, and `IDEMPOTENCY_CONFLICT`.
 pub const SPAWN_IDEMPOTENCY: u32 = 0x0400_0000;
 
+/// Wire bit advertising attach roles (ADR-0127): `ATTACH_RESOURCE`'s
+/// trailing `role_policy` byte, session `ATTACH` field 6, and
+/// `terminal_control { action: ROLE_CHANGED }`.
+pub const ATTACH_ROLES: u32 = 0x0800_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1150,6 +1155,12 @@ pub enum ServerFeature {
     /// (ADR-0126). A server without the bit skips the field and spawns
     /// again, so a client MUST see the bit before retrying a spawn blind.
     SpawnIdempotency = SPAWN_IDEMPOTENCY,
+    /// The server honors a declared attach role (ADR-0127): a `VIEWER`
+    /// subscription's input is refused, and `{ PRIMARY, DELIBERATE }`
+    /// attaches and seizes the input lease in one step. A server without
+    /// the bit ignores the byte and grants an ordinary attach, so a client
+    /// MUST see the bit before relying on either.
+    AttachRoles = ATTACH_ROLES,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1178,7 +1189,8 @@ impl ServerFeatureSet {
         | (ServerFeature::OpenListener as u32)
         | (ServerFeature::EventJournal as u32)
         | (ServerFeature::RetainOnExit as u32)
-        | (ServerFeature::SpawnIdempotency as u32);
+        | (ServerFeature::SpawnIdempotency as u32)
+        | (ServerFeature::AttachRoles as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -2029,6 +2041,7 @@ mod tests {
             "SPAWN_IDEMPOTENCY",
             SPAWN_IDEMPOTENCY,
         ),
+        (ServerFeature::AttachRoles, "ATTACH_ROLES", ATTACH_ROLES),
     ];
 
     /// Each feature is one distinct bit, the known mask is exactly their

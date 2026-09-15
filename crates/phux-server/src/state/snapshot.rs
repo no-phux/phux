@@ -108,6 +108,17 @@ impl ServerState {
                             u32::try_from(holder.0).unwrap_or(u32::MAX),
                         )
                     });
+                    // ADR-0127: who watches without input, beside who holds
+                    // the wheel.
+                    let viewers = self
+                        .terminal_viewers(&terminal_wire)
+                        .into_iter()
+                        .map(|viewer| {
+                            phux_protocol::ids::ClientId::new(
+                                u32::try_from(viewer.0).unwrap_or(u32::MAX),
+                            )
+                        })
+                        .collect();
                     panes.push(
                         ResourceInfo::new(
                             terminal_wire,
@@ -119,7 +130,8 @@ impl ServerState {
                         .with_cwd(cwd)
                         .with_lifecycle(lifecycle)
                         .with_exit(exit)
-                        .with_input_holder(input_holder),
+                        .with_input_holder(input_holder)
+                        .with_viewers(viewers),
                     );
                 }
             }

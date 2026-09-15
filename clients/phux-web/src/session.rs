@@ -719,6 +719,7 @@ impl Session {
                         viewport: ViewportInfo::new(self.cols, self.rows),
                         request_scrollback: true,
                         scrollback_limit_lines: HISTORY_LINES,
+                        role_policy: None,
                     })],
                     ..Outcome::default()
                 }

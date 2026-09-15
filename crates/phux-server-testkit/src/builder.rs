@@ -324,6 +324,7 @@ impl ClientHandle {
                 viewport,
                 request_scrollback: false,
                 scrollback_limit_lines: 0,
+                role_policy: None,
             },
         )
         .await;

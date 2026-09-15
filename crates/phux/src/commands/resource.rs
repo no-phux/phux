@@ -231,6 +231,7 @@ fn print_show(details: &ResourceDetails, json: bool) -> ExitCode {
         "lifecycle",
         "exit",
         "input_holder",
+        "viewers",
         "process",
         "tags",
         "agent",
@@ -248,6 +249,11 @@ fn print_show(details: &ResourceDetails, json: bool) -> ExitCode {
 /// JSON.
 fn human_field(doc: &serde_json::Value, key: &str) -> Option<String> {
     let value = doc.get(key).filter(|value| !value.is_null())?;
+    // ADR-0127: a Terminal nobody watches as a viewer says nothing, rather
+    // than a `viewers: []` line on every record.
+    if key == "viewers" && value.as_array().is_some_and(Vec::is_empty) {
+        return None;
+    }
     let text = value
         .as_str()
         .map_or_else(|| value.to_string(), str::to_owned);
@@ -386,6 +392,17 @@ mod tests {
         assert_eq!(after.as_deref(), Some("ab:4"));
         assert!(json.json);
         assert_eq!(target, "@7");
+    }
+
+    #[test]
+    fn a_viewer_list_prints_only_when_someone_watches() {
+        let nobody = serde_json::json!({ "viewers": [] });
+        assert_eq!(human_field(&nobody, "viewers"), None);
+        let watched = serde_json::json!({ "viewers": [5, 6] });
+        assert_eq!(
+            human_field(&watched, "viewers").as_deref(),
+            Some("viewers: [5,6]")
+        );
     }
 
     #[test]

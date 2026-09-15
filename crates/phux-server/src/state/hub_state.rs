@@ -60,6 +60,12 @@ pub(super) struct HubState {
     /// dispatch resolve `ResourceId::Satellite { host, .. }` through it to
     /// the owning link's relay mailbox.
     relays: Option<crate::hub::relay::HubRelays>,
+    /// What each satellite advertised on its current link (ADR-0127), set by
+    /// the link's relay session when it negotiates. Empty off-hub.
+    satellite_features: Vec<(
+        phux_protocol::ids::SatelliteHost,
+        phux_protocol::caps::ServerFeatureSet,
+    )>,
 }
 
 impl Default for HubState {
@@ -76,7 +82,31 @@ impl HubState {
             table: None,
             link_statuses: None,
             relays: None,
+            satellite_features: Vec::new(),
         }
+    }
+
+    /// Record what `host` advertised on its newest link, replacing any
+    /// earlier link's.
+    pub(super) fn set_satellite_features(
+        &mut self,
+        host: phux_protocol::ids::SatelliteHost,
+        features: phux_protocol::caps::ServerFeatureSet,
+    ) {
+        self.satellite_features.retain(|(known, _)| *known != host);
+        self.satellite_features.push((host, features));
+    }
+
+    /// What `host` advertised; empty for a host with no negotiated link.
+    pub(super) fn satellite_features(
+        &self,
+        host: &phux_protocol::ids::SatelliteHost,
+    ) -> phux_protocol::caps::ServerFeatureSet {
+        self.satellite_features
+            .iter()
+            .find(|(known, _)| known == host)
+            .map(|(_, features)| *features)
+            .unwrap_or_default()
     }
 
     /// Install the validated hub satellite table (phux-v45.1).

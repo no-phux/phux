@@ -159,6 +159,7 @@ async fn explicit_attach(
             request_id,
             command: Command::AttachResource {
                 terminal_id: pane.clone(),
+                role_policy: None,
             },
         },
     )

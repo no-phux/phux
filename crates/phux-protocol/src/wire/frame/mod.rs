@@ -908,6 +908,7 @@ mod command_codec;
 mod directory;
 mod kind;
 mod payload;
+mod role;
 mod status;
 mod whoami;
 
@@ -926,6 +927,7 @@ pub use payload::{
     ActorRef, AttachTarget, EventStamp, MoveError, MoveResult, Scope, SpawnError, SpawnResource,
     SpawnResult, ViewportInfo,
 };
+pub use role::{RolePolicy, TakeoverPolicy, TerminalRole};
 pub use status::{
     CloseReason, DetachReason, ErrorCode, ErrorScope, HistoryRejectionReason,
     HistoryTombstoneReason, TombstoneReason,

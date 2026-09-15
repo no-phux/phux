@@ -229,6 +229,7 @@ fn another_hub_consumer_attaching_refuses_the_kill_at_the_hub() {
         let mut other = wait_for_socket(&t.hub_path, STEP_DEADLINE).await;
         let attach = Command::AttachResource {
             terminal_id: pane.clone(),
+            role_policy: None,
         };
         let attached = command(&mut other, 8101, attach).await;
         assert!(

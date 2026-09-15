@@ -984,6 +984,7 @@ proptest! {
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
             scrollback_limit_lines: 0,
+            role_policy: None,
         };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);
@@ -998,6 +999,7 @@ proptest! {
         viewport in arb_viewport_info(),
         request_scrollback in any::<bool>(),
         scrollback_limit_lines in any::<u32>(),
+        role_byte in proptest::option::of(any::<u8>()),
     ) {
         let frame = FrameKind::Attach {
             attach_id: 1,
@@ -1005,6 +1007,7 @@ proptest! {
             viewport,
             request_scrollback,
             scrollback_limit_lines,
+            role_policy: role_byte.map(phux_protocol::wire::frame::RolePolicy::from_u8),
         };
         assert_round_trip(&frame);
     }
@@ -1942,6 +1945,7 @@ fn command_attach_detach_terminal_round_trip() {
         for command in [
             Command::AttachResource {
                 terminal_id: terminal_id.clone(),
+                role_policy: None,
             },
             Command::DetachResource {
                 terminal_id: terminal_id.clone(),
@@ -3646,4 +3650,28 @@ fn unknown_session_facet_flag_bits_are_ignored() {
         panic!("expected a GET_STATE reply");
     };
     assert!(state.sessions[0].keep_empty);
+}
+
+/// ADR-0127: a session `ATTACH` with no role is byte-for-byte the frame
+/// from before roles; field 6 is written only for `Some`.
+#[test]
+fn session_attach_without_a_role_matches_its_golden_bytes() {
+    use std::fmt::Write as _;
+    const GOLDEN: &str =
+        "00000028020104090100000004776f726b020406005000180000030401010404040000271005040400000007";
+    let frame = FrameKind::Attach {
+        attach_id: 7,
+        target: phux_protocol::wire::frame::AttachTarget::ByName("work".to_owned()),
+        viewport: ViewportInfo::new(80, 24),
+        request_scrollback: true,
+        scrollback_limit_lines: 10_000,
+        role_policy: None,
+    };
+    let mut buf = BytesMut::new();
+    frame.encode(&mut buf);
+    let mut hex = String::new();
+    for byte in &buf {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    assert_eq!(hex, GOLDEN);
 }

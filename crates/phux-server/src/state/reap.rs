@@ -304,6 +304,8 @@ impl ServerState {
         // hands it back rather than dropping it.
         if let Some(wire) = self.idspace.retire_terminal(pane) {
             self.metadata.forget_terminal(&wire);
+            // A viewer mark (ADR-0127) must not outlive the Terminal it names.
+            self.clients.forget_viewed_terminal(&wire);
             // The record died with the per-Terminal metadata scope; the
             // arbiter's bookkeeping about who owned it must not outlive it,
             // or a recycled wire id would inherit a stale declaration.

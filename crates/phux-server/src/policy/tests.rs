@@ -117,6 +117,7 @@ fn attach(target: AttachTarget) -> FrameKind {
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
         scrollback_limit_lines: 0,
+        role_policy: None,
     }
 }
 
@@ -330,6 +331,7 @@ fn samples(world: &World) -> Vec<FrameKind> {
         FrameKind::Pong { nonce: 1 },
         command(Command::AttachResource {
             terminal_id: t.clone(),
+            role_policy: None,
         }),
         command(Command::DetachResource {
             terminal_id: t.clone(),

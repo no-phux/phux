@@ -70,6 +70,13 @@ impl Denial {
         verbs: Verbs::EMPTY,
         subject: "revoked",
     };
+
+    /// Input to a Terminal the connection subscribed as a `VIEWER`
+    /// (ADR-0127).
+    const VIEWER: Self = Self {
+        verbs: Verbs::of(&[Verb::Input]),
+        subject: "viewer",
+    };
 }
 
 /// What the guard is asked to admit.
@@ -112,7 +119,43 @@ fn authorize(s: &ServerState, client: ClientId, request: Request<'_>) -> Result<
         tracing::debug!(target: POLICY_TARGET, ?client, "operation denied: no grant was minted");
         return Err(Denial::UNGRANTED);
     };
-    enforce(s, client, grant, request).inspect_err(|denial| trace_denial(grant, *denial))
+    enforce(s, client, grant, request)
+        .and_then(|()| refuse_viewer_input(s, client, request))
+        .inspect_err(|denial| trace_denial(grant, *denial))
+}
+
+/// A `VIEWER` subscription is observe-only (ADR-0127): a request that needs
+/// `INPUT` on a Terminal the connection subscribed as a viewer, or asks for
+/// its lease, is refused whatever the grant admits, through the same
+/// refusal paths a scope denial takes. The role is intent the connection
+/// declared; widening it takes a fresh `ATTACH_RESOURCE { PRIMARY }`, which
+/// is journaled.
+fn refuse_viewer_input(
+    s: &ServerState,
+    client: ClientId,
+    request: Request<'_>,
+) -> Result<(), Denial> {
+    let request = unwrap_command(request);
+    let Some(terminal) = named_terminal(request) else {
+        return Ok(());
+    };
+    if is_input_request(request) && s.is_viewer(client, terminal) {
+        return Err(Denial::VIEWER);
+    }
+    Ok(())
+}
+
+/// `ACQUIRE_INPUT`, or any row that needs `INPUT` on a named Terminal:
+/// `INPUT_*`, `ROUTE_INPUT`, `APPLY_INPUT`, `PUT_FILE`, `TRANSCRIBE`.
+fn is_input_request(request: Request<'_>) -> bool {
+    if matches!(request, Request::Command(Command::AcquireInput { .. })) {
+        return true;
+    }
+    matches!(
+        classify(request),
+        Classification::Allow { verbs, subject: Subject::NamedTerminal }
+            if verbs.iter().any(|verb| verb == Verb::Input)
+    )
 }
 
 /// Decide `request` for `client` under `grant`, reading `s` as the snapshot
@@ -520,7 +563,7 @@ const fn frame_terminal(frame: &FrameKind) -> Option<&WireResourceId> {
 
 const fn command_terminal(command: &Command) -> Option<&WireResourceId> {
     match command {
-        Command::AttachResource { terminal_id }
+        Command::AttachResource { terminal_id, .. }
         | Command::DetachResource { terminal_id }
         | Command::KillResource { terminal_id, .. }
         | Command::KillResourceIf { terminal_id, .. }

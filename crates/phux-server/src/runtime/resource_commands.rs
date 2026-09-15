@@ -159,6 +159,8 @@ pub(crate) async fn spawn_agent_session(
         // ADR-0109: provenance before the spawner's own subscription.
         s.record_spawn(core, client_id);
         s.subscribe_terminal(client_id, core, Some(out_tx.clone()));
+        // ADR-0127: a session attached as `VIEWER` watches its spawns too.
+        s.mark_if_viewer_session(client_id, &wire);
         Ok((core, wire))
     });
     let (core_session, wire_session) = match registered {

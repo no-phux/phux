@@ -240,6 +240,13 @@ pub enum ControlAction {
     /// subscription and reports the same transition as `Released` to any
     /// other (`docs/spec/L1.md` §7.1).
     Expired = 9,
+    /// The actor re-attached the Terminal with a different declared role
+    /// (ADR-0127): a `VIEWER` widened to `PRIMARY`, or the reverse. Like
+    /// `Expired`, a pre-`0.9.0-draft.15` decoder fails the frame on it, so
+    /// a server sends it only to a journal-aware subscription and withholds
+    /// it from any other; a later decoder that predates it reads
+    /// `Unknown { tag: 0x08 }`.
+    RoleChanged = 10,
 }
 
 impl ControlAction {
@@ -263,6 +270,7 @@ impl ControlAction {
             7 => Some(Self::Killed),
             8 => Some(Self::Exited),
             9 => Some(Self::Expired),
+            10 => Some(Self::RoleChanged),
             _ => None,
         }
     }
@@ -293,8 +301,7 @@ pub enum Command {
     /// Re-attaching replaces the generation without duplicating the stream.
     /// It does NOT resize the Terminal (no viewport rides the command);
     /// callers that want their geometry applied follow with
-    /// `RESIZE_TERMINAL`. The catalog's `role_policy` field is not yet
-    /// encoded; absence means `{ PRIMARY, takeover: NEVER }` (SPEC §8.1).
+    /// `RESIZE_TERMINAL`.
     /// Reply: `COMMAND_RESULT { Ok }` (the snapshot MAY precede it, per
     /// SPEC §5 command/stream interleaving), or
     /// `Error { TerminalNotFound }`. This is the verb a federation hub
@@ -302,6 +309,12 @@ pub enum Command {
     AttachResource {
         /// The Terminal whose content stream to subscribe to.
         terminal_id: ResourceId,
+        /// The declared attach intent (ADR-0127, SPEC §8.1), one trailing
+        /// byte. `None` writes no byte and means `{ PRIMARY, NEVER }`, so an
+        /// attach without it is byte-identical to one from before roles.
+        /// Send `Some` only to a server advertising `ATTACH_ROLES`: an older
+        /// one ignores the byte and grants an ordinary attach.
+        role_policy: Option<super::RolePolicy>,
     },
     /// Drop the caller's per-Terminal subscriptions on `terminal_id`
     /// (SPEC §5.1 `DETACH_RESOURCE`, phux-v45.7): the output stream wired

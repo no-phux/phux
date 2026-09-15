@@ -116,6 +116,7 @@ fn attach_resizes_seed_pty_to_client_viewport() {
                 viewport,
                 request_scrollback: false,
                 scrollback_limit_lines: 0,
+                role_policy: None,
             },
         )
         .await;

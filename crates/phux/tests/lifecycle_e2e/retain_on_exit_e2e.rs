@@ -317,6 +317,7 @@ fn spawn_retain_then_wait_exit_after_the_fact_reads_status() {
             1004,
             Command::AttachResource {
                 terminal_id: pane.clone(),
+                role_policy: None,
             },
         )
         .await;

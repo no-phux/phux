@@ -100,6 +100,15 @@ from the worktree path. That is a CLI composition; attaching to the
 derived name is ordinary TUI attach. See [`agents.md`](./agents.md) for
 the verbs.
 
+**Attach roles.** `phux attach --viewer` attaches to watch: every pane
+renders, and the server refuses this attach's input. `phux attach --take`
+attaches and takes the wheel of every pane it opens in the same step; the
+previous holder stays attached and sees the handover notice. A plain
+`phux attach` is neither and behaves as it always has. Both flags need a
+server that advertises attach roles and are refused by an older one
+(ADR-0127). A viewer's viewport still sizes the panes, and it cannot answer
+terminal queries, so an application waiting on a reply times out.
+
 ## Selectors
 
 A selector names a session, window, or pane in CLI arguments, keybinding

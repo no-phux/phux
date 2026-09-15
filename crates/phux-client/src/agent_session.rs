@@ -504,8 +504,10 @@ pub async fn log(
     let (result, primed) = conn
         .request(
             REQUEST_ATTACH,
+            // A log follower only reads (ADR-0127).
             Command::AttachResource {
                 terminal_id: resource.clone(),
+                role_policy: conn.observer_role_policy(),
             },
         )
         .await?
@@ -976,7 +978,7 @@ mod tests {
             matches!(
                 seen.get(1),
                 Some(FrameKind::Command {
-                    command: Command::AttachResource { terminal_id },
+                    command: Command::AttachResource { terminal_id, .. },
                     ..
                 }) if *terminal_id == session()
             ),

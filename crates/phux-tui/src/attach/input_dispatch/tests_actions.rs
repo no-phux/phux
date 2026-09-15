@@ -2736,6 +2736,7 @@ fn switching_to_a_satellite_session_opens_its_pane_through_the_hub() {
         command,
         &phux_protocol::wire::frame::Command::AttachResource {
             terminal_id: satellite_id("edge", 9),
+            role_policy: None,
         }
     );
 }

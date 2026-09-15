@@ -321,6 +321,12 @@ pub(crate) struct Client {
     /// projection get/set/delete need this layer; there is no extra
     /// `ServerFeature` bit.
     pub l3_metadata: bool,
+    /// `HELLO_OK` advertised `ATTACH_ROLES` (ADR-0127): an attach may
+    /// declare a role.
+    pub attach_roles: bool,
+    /// The role every later `ATTACH` and `ATTACH_RESOURCE` declares, set by
+    /// `phux_client_attach_role`. `None` is the default and sends nothing.
+    pub attach_role: Option<phux_protocol::wire::frame::RolePolicy>,
     /// Journal cursor for the next `SUBSCRIBE_EVENTS` this client sends,
     /// including the automatic post-`ATTACH_READY` subscribe. `None` is
     /// live-only.
@@ -338,6 +344,18 @@ pub(crate) struct Client {
 }
 
 impl Client {
+    /// The role the next attach declares (ADR-0127). A takeover is one
+    /// deliberate act, so it is consumed here and later attaches (a
+    /// workspace's auto-attached panes, a re-attach) declare the default;
+    /// `VIEWER` stays declared until changed.
+    pub(crate) fn next_attach_role(&mut self) -> Option<phux_protocol::wire::frame::RolePolicy> {
+        let role = self.attach_role;
+        if role.is_some_and(phux_protocol::wire::frame::RolePolicy::takes_over) {
+            self.attach_role = None;
+        }
+        role
+    }
+
     pub(crate) fn new(limits: Limits) -> Self {
         let history_config = HistoryCacheConfig {
             max_bytes: limits.history_cache_bytes,
@@ -396,6 +414,8 @@ impl Client {
             retain_on_exit: false,
             spawn_idempotency: false,
             l3_metadata: false,
+            attach_roles: false,
+            attach_role: None,
             event_after_seq: None,
             directory: crate::directory::DirectoryState::default(),
             session_query: crate::session_query::SessionQuery::default(),

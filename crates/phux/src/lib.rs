@@ -866,8 +866,23 @@ struct AttachInvocation {
     ssh: Option<String>,
     remote_phux: String,
     udp_ports: Option<String>,
+    viewer: bool,
+    take: bool,
     rec: commands::RecOpts,
     socket: Option<std::path::PathBuf>,
+}
+
+/// The attach role `--viewer` / `--take` declare (ADR-0127); the parser
+/// already refuses both at once.
+const fn declared_attach_role(viewer: bool, take: bool) -> phux_protocol::wire::frame::RolePolicy {
+    use phux_protocol::wire::frame::RolePolicy;
+    if viewer {
+        RolePolicy::VIEWER
+    } else if take {
+        RolePolicy::TAKEOVER
+    } else {
+        RolePolicy::PRIMARY
+    }
 }
 
 /// Run `phux attach`: resolve the recording plan, then dial whichever
@@ -886,9 +901,14 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         ssh,
         remote_phux,
         udp_ports,
+        viewer,
+        take,
         rec,
         socket,
     } = invocation;
+    // Every ATTACH this process sends carries it, whichever transport the
+    // flags below pick, so a reconnect keeps the role too.
+    phux_tui::attach::set_attach_role(declared_attach_role(viewer, take));
 
     // `phux attach` owns its own `--rec`; the root copy is reserved
     // for the naked invocation below.
@@ -1044,6 +1064,8 @@ fn dispatch(
             ssh,
             remote_phux,
             udp_ports,
+            viewer,
+            take,
             rec,
         }) => run_attach(AttachInvocation {
             session,
@@ -1058,6 +1080,8 @@ fn dispatch(
             ssh,
             remote_phux,
             udp_ports,
+            viewer,
+            take,
             rec,
             socket,
         }),
@@ -2896,6 +2920,29 @@ mod tests {
         assert!(
             crate::parse_cli(["phux", "take", "@1"]).is_ok(),
             "omitting --ttl entirely must still parse"
+        );
+    }
+
+    /// ADR-0127: `--viewer` and `--take` parse on `attach`, refuse each
+    /// other at clap, and map onto the declared role every ATTACH carries.
+    #[test]
+    fn attach_viewer_and_take_parse_refuse_each_other_and_map_to_roles() {
+        use phux_protocol::wire::frame::RolePolicy;
+        assert!(crate::parse_cli(["phux", "attach", "--viewer"]).is_ok());
+        assert!(crate::parse_cli(["phux", "attach", "--take", "work"]).is_ok());
+        assert!(
+            crate::parse_cli(["phux", "attach", "--viewer", "--take"]).is_err(),
+            "a viewer cannot take over: the flags conflict at parse time"
+        );
+        assert_eq!(crate::declared_attach_role(true, false), RolePolicy::VIEWER);
+        assert_eq!(
+            crate::declared_attach_role(false, true),
+            RolePolicy::TAKEOVER
+        );
+        assert_eq!(
+            crate::declared_attach_role(false, false),
+            RolePolicy::PRIMARY,
+            "no flag is the default attach, which writes no role byte"
         );
     }
 

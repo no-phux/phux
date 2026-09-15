@@ -121,6 +121,8 @@ pub mod attach {
     pub const SCROLLBACK_LIMIT_LINES: u32 = 4;
     /// Client-chosen attach correlation id (`u32`).
     pub const ATTACH_ID: u32 = 5;
+    /// `role_policy: u8` (ADR-0127); absent = `{ PRIMARY, NEVER }`.
+    pub const ROLE_POLICY: u32 = 6;
 }
 
 /// `INPUT_KEY` body fields (`docs/spec/input.md` §2).
@@ -667,6 +669,9 @@ pub mod resource_state {
     pub const EXIT: u32 = 2;
     /// `ClientId` (`u32`) of the input-lease holder; absent = open.
     pub const INPUT_HOLDER: u32 = 3;
+    /// `ClientId` (`u32`) of one `VIEWER` subscriber (ADR-0127), repeated
+    /// once per viewer; absent = none.
+    pub const VIEWER: u32 = 4;
 }
 
 /// `AgentEvent::Asked` body fields (`docs/spec/L1.md` §7.5).

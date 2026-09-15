@@ -3,6 +3,7 @@
 use bytes::Bytes;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::input::InputEvent;
+use phux_protocol::wire::frame::RolePolicy;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, DetachReason, ErrorCode,
     FrameKind, InputMode, ResourceLifecycle, StateScope, TerminalSignal, ViewportInfo,
@@ -18,6 +19,7 @@ use super::{AttachPrepared, spawn_agent_state_drain, spawn_terminal_exit_watcher
 use crate::agent_asked::{AskedPayload, AskedSource};
 use crate::resource::{ResourceHandle, WrongResourceKind};
 use crate::runtime::pump::{self, PumpGeneration};
+use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
     TerminalInput,
@@ -945,6 +947,18 @@ pub(crate) async fn handle_command(
         other => other,
     };
 
+    // ADR-0127: `{ VIEWER, DELIBERATE }` is refused before anything is
+    // subscribed or relayed, local and satellite alike.
+    if let Some(result) = refuse_invalid_role_policy(&command) {
+        let _ = out_tx
+            .send(Outbound::Frame(FrameKind::CommandResult {
+                request_id,
+                result,
+            }))
+            .await;
+        return;
+    }
+
     // ADR-0109: a verb that drives or reads a resource another connection
     // spawned counts as attaching it; noted before the verb runs.
     note_local_use(state, client_id, &command);
@@ -969,19 +983,19 @@ pub(crate) async fn handle_command(
     }
 
     let result = match command {
-        Command::AttachResource { terminal_id } => {
+        Command::AttachResource {
+            terminal_id,
+            role_policy,
+        } => {
+            // Absent is `{ PRIMARY, NEVER }` (ADR-0127); an invalid policy
+            // was refused before routing.
+            let role = role_policy.unwrap_or_default();
             if defer_subscription {
                 // Multi-stream: register the subscription against the
                 // control mailbox and stop. The content stream — pump,
                 // bootstrap, live output — starts at STREAM_BIND with the
                 // stream's mailbox (see `bootstrap_attach_terminal`).
-                match subscribe_attach_terminal(state, client_id, &terminal_id, out_tx) {
-                    Some(_) => CommandResult::Ok,
-                    None => CommandResult::Error {
-                        code: ErrorCode::TerminalNotFound,
-                        message: format!("no such terminal: {terminal_id:?}"),
-                    },
-                }
+                subscribe_deferred_attach(state, client_id, &terminal_id, out_tx, role).await
             } else {
                 handle_attach_terminal(
                     state,
@@ -992,6 +1006,7 @@ pub(crate) async fn handle_command(
                     bootstrap_profile,
                     bootstrap_limits,
                     connection_token,
+                    role,
                 )
                 .await
             }
@@ -1250,17 +1265,24 @@ async fn handle_attach_terminal(
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
     connection_token: &CancellationToken,
+    role: RolePolicy,
 ) -> CommandResult {
     // Profile validation lives in `bootstrap_attach_terminal` (it runs
     // after subscribe so the bind path shares it); a bad profile fails
     // there and this path drops the subscription it just registered.
-    let Some((core, handle)) = subscribe_attach_terminal(state, client_id, terminal_id, out_tx)
-    else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
+    let subscription =
+        match subscribe_attach_terminal(state, client_id, terminal_id, out_tx, Some(role)) {
+            Ok(subscription) => subscription,
+            Err(refusal) => return refusal,
         };
-    };
+    announce_role_effects(&subscription, client_id).await;
+    let AttachSubscription {
+        core,
+        handle,
+        effects,
+        was_viewer,
+        ..
+    } = subscription;
 
     let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
     match bootstrap_attach_terminal(
@@ -1282,8 +1304,40 @@ async fn handle_attach_terminal(
         Err(failure) => {
             // The COMMAND path owns its subscription: a failed bootstrap
             // drops it (the pre-refactor behavior). The STREAM_BIND path
-            // keeps it — see `bootstrap_attach_terminal`.
-            state.with_mut(|s| s.unsubscribe_terminal(client_id, core));
+            // keeps it — see `bootstrap_attach_terminal`. A lease this
+            // attach seized is handed back, and a widening it made is undone
+            // (ADR-0127): a failed attach must neither leave an unsubscribed
+            // client holding the wheel nor shed a viewer tombstone. A
+            // declared `VIEWER` stays declared.
+            let restore = was_viewer && !role.is_viewer();
+            let (released, holder) = state.with_mut(|s| {
+                s.unsubscribe_terminal(client_id, core);
+                if restore {
+                    s.set_viewer_mark(client_id, terminal_id, true);
+                }
+                let released = s.undo_attach_takeover(client_id, core, effects);
+                (released, s.input_lease_holder(core))
+            });
+            if restore && effects.role_changed {
+                let _ = handle
+                    .control
+                    .send(ControlRequest::LeaseChanged {
+                        input_holder: holder.map(wire_client_id),
+                        action: ControlAction::RoleChanged,
+                        actor: Some(wire_client_id(client_id)),
+                    })
+                    .await;
+            }
+            if released {
+                let _ = handle
+                    .control
+                    .send(ControlRequest::LeaseChanged {
+                        input_holder: None,
+                        action: ControlAction::Released,
+                        actor: Some(wire_client_id(client_id)),
+                    })
+                    .await;
+            }
             CommandResult::Error {
                 code: failure.code,
                 message: failure.message,
@@ -1440,17 +1494,133 @@ pub(crate) async fn bootstrap_attach_terminal(
 /// The `STREAM_BIND` path subscribes with the *control* mailbox and
 /// bootstraps with the stream's: lifecycle fanout and bind authorization
 /// resolve through the remembered mailbox, content through the passed one.
+///
+/// `role` is the attach's declared intent (ADR-0127), applied in this same
+/// critical section: the observe-only mark, and for a deliberate takeover the
+/// lease seizure, land with the subscription or not at all. `None` leaves the
+/// connection's role untouched — the `STREAM_BIND` of a Terminal whose
+/// `ATTACH_RESOURCE` already declared it.
 pub(crate) fn subscribe_attach_terminal(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-) -> Option<(phux_core::ids::ResourceId, ResourceHandle)> {
+    role: Option<RolePolicy>,
+) -> Result<AttachSubscription, CommandResult> {
+    let not_found = || CommandResult::Error {
+        code: ErrorCode::TerminalNotFound,
+        message: format!("no such terminal: {terminal_id:?}"),
+    };
     state.with_mut(|s| {
-        let core = s.terminal_from_wire(terminal_id)?;
-        let handle = s.resource_handle(core).cloned()?;
+        let core = s.terminal_from_wire(terminal_id).ok_or_else(not_found)?;
+        let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
+        // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
+        // any other kind is refused the way `ACQUIRE_INPUT` refuses it.
+        if role.is_some_and(RolePolicy::takes_over)
+            && let Err(error) = handle.terminal()
+        {
+            return Err(wrong_resource_kind(error));
+        }
+        let was_subscribed = s.subscribers_for_terminal(core).contains(&client_id);
+        let was_viewer = s.is_viewer(client_id, terminal_id);
         s.subscribe_terminal(client_id, core, Some(out_tx.clone()));
-        Some((core, handle))
+        let effects = role.map_or_else(RoleEffects::default, |policy| {
+            s.apply_attach_role(client_id, terminal_id, Some(core), policy, was_subscribed)
+        });
+        Ok(AttachSubscription {
+            core,
+            handle,
+            effects,
+            was_viewer,
+            holder: s.input_lease_holder(core),
+        })
+    })
+}
+
+/// What [`subscribe_attach_terminal`] registered, and what its declared role
+/// changed (ADR-0127).
+pub(crate) struct AttachSubscription {
+    /// The subscribed Terminal.
+    pub(crate) core: phux_core::ids::ResourceId,
+    /// Its engine handle.
+    pub(crate) handle: ResourceHandle,
+    /// What the role changed; empty when no role was applied.
+    pub(crate) effects: RoleEffects,
+    /// Whether the connection had declared `VIEWER` on this Terminal
+    /// before this attach, so a failed widening can put the tombstone back.
+    pub(crate) was_viewer: bool,
+    /// The lease holder once the role applied, which every broadcast names.
+    pub(crate) holder: Option<ClientId>,
+}
+
+/// Broadcast what an attach's declared role changed (ADR-0127) through the
+/// pane's engine, the path `ACQUIRE_INPUT` uses, so journaling and lifecycle
+/// stamping stay the engine's: `ROLE_CHANGED` first, then the lease
+/// transition, each naming the attaching connection as the actor. A
+/// deliberate takeover therefore reaches every subscriber as one `SEIZED`.
+pub(crate) async fn announce_role_effects(subscription: &AttachSubscription, client_id: ClientId) {
+    announce_role_effects_on(
+        &subscription.handle,
+        client_id,
+        subscription.effects,
+        subscription.holder,
+    )
+    .await;
+}
+
+/// [`announce_role_effects`] for a caller holding the parts rather than an
+/// [`AttachSubscription`] (the session `ATTACH` sweep).
+pub(crate) async fn announce_role_effects_on(
+    handle: &ResourceHandle,
+    client_id: ClientId,
+    effects: RoleEffects,
+    holder: Option<ClientId>,
+) {
+    let changed = effects.role_changed.then_some(ControlAction::RoleChanged);
+    for action in [changed, effects.lease].into_iter().flatten() {
+        let _ = handle
+            .control
+            .send(ControlRequest::LeaseChanged {
+                input_holder: holder.map(wire_client_id),
+                action,
+                actor: Some(wire_client_id(client_id)),
+            })
+            .await;
+    }
+}
+
+/// The QUIC multi-stream `ATTACH_RESOURCE`: subscribe and apply the role
+/// against the control mailbox, announce what the role changed, and stop.
+async fn subscribe_deferred_attach(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    role: RolePolicy,
+) -> CommandResult {
+    match subscribe_attach_terminal(state, client_id, terminal_id, out_tx, Some(role)) {
+        Ok(subscription) => {
+            announce_role_effects(&subscription, client_id).await;
+            CommandResult::Ok
+        }
+        Err(refusal) => refusal,
+    }
+}
+
+/// `{ VIEWER, DELIBERATE }` on `ATTACH_RESOURCE` is `INVALID_COMMAND`
+/// (L1 §8.1): a viewer cannot take the wheel.
+fn refuse_invalid_role_policy(command: &Command) -> Option<CommandResult> {
+    let Command::AttachResource {
+        role_policy: Some(policy),
+        ..
+    } = command
+    else {
+        return None;
+    };
+    (!policy.is_valid()).then(|| CommandResult::Error {
+        code: ErrorCode::InvalidCommand,
+        message: "role_policy { VIEWER, DELIBERATE } is invalid: a viewer cannot take over"
+            .to_owned(),
     })
 }
 
@@ -2532,6 +2702,8 @@ pub(crate) async fn handle_detach_terminal(
 
     let handle = state.with_mut(|s| {
         s.unsubscribe_terminal_events(client_id, terminal_id);
+        // A declared `VIEWER` is a tombstone that outlives the subscription
+        // (ADR-0127): detaching, or a Terminal stream's reset, never widens.
         let core = s.terminal_from_wire(terminal_id)?;
         s.unsubscribe_terminal(client_id, core);
         Some((core, s.resource_handle(core).cloned()))
@@ -2733,8 +2905,22 @@ async fn handle_satellite_command(
             ),
         },
         Some(relay) => match &command {
-            Command::SubscribeResourceEvents { terminal_id, .. }
-            | Command::AttachResource { terminal_id } => {
+            Command::AttachResource {
+                terminal_id,
+                role_policy,
+            } => {
+                relay_satellite_attach(
+                    &SatelliteLeaseTarget::new(state, host, client_id, terminal_id),
+                    &relay,
+                    &command,
+                    role_policy.unwrap_or_default(),
+                    out_tx,
+                    bootstrap_profile,
+                    bootstrap_limits,
+                )
+                .await
+            }
+            Command::SubscribeResourceEvents { terminal_id, .. } => {
                 let change =
                     register_satellite_event_filter(state, client_id, host, &command, out_tx);
                 let result = relay_stream_establishing(
@@ -2813,7 +2999,7 @@ async fn handle_satellite_command(
 /// lease, an upload, a transcription, a signal, and a screen read.
 const fn used_resource(command: &Command) -> Option<&phux_protocol::ids::ResourceId> {
     match command {
-        Command::AttachResource { terminal_id }
+        Command::AttachResource { terminal_id, .. }
         | Command::RouteInput { terminal_id, .. }
         | Command::ApplyInput { terminal_id, .. }
         | Command::AcquireInput { terminal_id, .. }
@@ -2921,7 +3107,7 @@ async fn reply_satellite_command(
     connection_token: &CancellationToken,
 ) {
     if !matches!(result, CommandResult::Error { .. })
-        && let Command::AttachResource { terminal_id } = command
+        && let Command::AttachResource { terminal_id, .. } = command
         && let Some(id) = terminal_id.local_id()
     {
         state.with_mut(|s| {
@@ -3180,6 +3366,18 @@ async fn relay_satellite_acquire_input(
     // it holds the wheel while its relayed INPUT_* is silently
     // dropped at the hub lease gate.
     let result = relay.command(command.clone()).await;
+    settle_satellite_seize(target, &result, out_tx);
+    result
+}
+
+/// Settle a hub-ledger acquire once its relay has answered, for
+/// `ACQUIRE_INPUT` and a deliberate-takeover attach (ADR-0127) alike. The
+/// caller marked the terminal pending before relaying.
+fn settle_satellite_seize(
+    target: &SatelliteLeaseTarget<'_>,
+    result: &CommandResult,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+) {
     if matches!(result, CommandResult::Error { .. }) {
         // A refused/failed acquire never installs a lease: stop ignoring
         // Released/Expired for this terminal, or a genuinely free lease
@@ -3187,10 +3385,11 @@ async fn relay_satellite_acquire_input(
         target
             .state
             .with_mut(|s| s.clear_satellite_lease_acquire_pending(target.host, target.terminal));
-        return result;
+        return;
     }
-    // Deliberately NOT clearing the pending mark here: see the comment
-    // above where it was set. `mirror_satellite_lease_event` clears it.
+    // Deliberately NOT clearing the pending mark here: see the comment in
+    // `relay_satellite_acquire_input` where it is set.
+    // `mirror_satellite_lease_event` clears it.
     let evicted = target.state.with_mut(|s| {
         s.set_satellite_lease(
             target.host.clone(),
@@ -3202,7 +3401,164 @@ async fn relay_satellite_acquire_input(
     if let Some(evicted) = evicted {
         notify_satellite_lease_seized(target.host, target.terminal, target.client_id, &evicted);
     }
+}
+
+/// `ATTACH_RESOURCE` for a satellite Terminal on a hub (ADR-0127).
+///
+/// Every hub consumer reaches the satellite through the link's one identity,
+/// so the consumer's declared role is the hub's to hold: a viewer mark keyed
+/// by the satellite-tagged id, which the dispatch guard enforces before any
+/// relay, and a deliberate takeover as a hub-ledger seize under the same
+/// pending-mark discipline as `ACQUIRE_INPUT`. The link carries the takeover
+/// only to a satellite advertising `ATTACH_ROLES`, where the attach and the
+/// seize land in one command ([`crate::hub::relay::link_attach_command`]);
+/// any other satellite gets a plain attach followed by a relayed
+/// `ACQUIRE_INPUT { SEIZE }`, the degraded two-command path. If that seize
+/// fails, the attach stands and the seize's refusal is the reply.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the lease target, relay, routed command, and declared role plus the negotiated bootstrap context the stream-establishing relay needs"
+)]
+async fn relay_satellite_attach(
+    target: &SatelliteLeaseTarget<'_>,
+    relay: &crate::hub::relay::RelayHandle,
+    command: &Command,
+    role: RolePolicy,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    bootstrap_profile: BootstrapProfile,
+    bootstrap_limits: BootstrapLimits,
+) -> CommandResult {
+    let state = target.state;
+    let local = phux_protocol::ids::ResourceId::local(target.terminal);
+    let wire = phux_protocol::ids::ResourceId::satellite(target.host.clone(), target.terminal);
+    // A narrowing applies before the relay, in the lock, so no input slips
+    // through while it is in flight; a widening applies only once the
+    // satellite has accepted the attach (ADR-0127).
+    let (was_attached, narrowed) = state.with_mut(|s| {
+        let was_attached =
+            s.has_satellite_proxy_attach(target.client_id, target.host, target.terminal);
+        let narrowed = role
+            .is_viewer()
+            .then(|| s.apply_attach_role(target.client_id, &wire, None, role, was_attached));
+        (was_attached, narrowed)
+    });
+    let seize = role.takes_over();
+    if seize {
+        state.with_mut(|s| {
+            s.mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal);
+        });
+    }
+    let attached = relay_stream_establishing(
+        relay,
+        command,
+        &local,
+        target.client_id,
+        out_tx,
+        bootstrap_profile,
+        bootstrap_limits,
+        state.with(|s| s.client_connection_cancellation(target.client_id)),
+    )
+    .await;
+    if matches!(attached, CommandResult::Error { .. }) {
+        // A refused attach leaves the mark as it is: a narrowing stays
+        // declared, and a widening never happened, so nothing is journaled.
+        if seize {
+            settle_satellite_seize(target, &attached, out_tx);
+        }
+        return attached;
+    }
+    // The attach stands, so its proxy registration is recorded here, even
+    // when a degraded seize after it is refused.
+    state.with_mut(|s| {
+        s.register_satellite_proxy_attach(target.client_id, target.host.clone(), target.terminal);
+    });
+    let effects = narrowed.unwrap_or_else(|| {
+        state.with_mut(|s| s.apply_attach_role(target.client_id, &wire, None, role, was_attached))
+    });
+    if effects.role_changed {
+        journal_satellite_role_change(target, wire);
+    }
+    if role.is_viewer() {
+        release_satellite_lease_for_viewer(target, relay).await;
+    }
+    if seize {
+        return seize_after_satellite_attach(target, relay, attached, out_tx).await;
+    }
+    attached
+}
+
+/// Finish a deliberate takeover whose attach the satellite accepted: a
+/// satellite advertising `ATTACH_ROLES` already seized with the attach;
+/// any other gets the relayed `ACQUIRE_INPUT { SEIZE }`. The hub ledger
+/// records the new holder either way.
+async fn seize_after_satellite_attach(
+    target: &SatelliteLeaseTarget<'_>,
+    relay: &crate::hub::relay::RelayHandle,
+    attached: CommandResult,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+) -> CommandResult {
+    let result = if satellite_seizes_on_attach(target) {
+        attached
+    } else {
+        relay
+            .command(Command::AcquireInput {
+                terminal_id: phux_protocol::ids::ResourceId::local(target.terminal),
+                mode: InputMode::Seize,
+                ttl_ms: 0,
+            })
+            .await
+    };
+    settle_satellite_seize(target, &result, out_tx);
     result
+}
+
+/// A hub consumer that narrows to `VIEWER` gives back the satellite lease it
+/// holds (L1 §8.1), through the ordinary release relay so the satellite and
+/// the hub ledger converge.
+async fn release_satellite_lease_for_viewer(
+    target: &SatelliteLeaseTarget<'_>,
+    relay: &crate::hub::relay::RelayHandle,
+) {
+    if target.holder() != Some(target.client_id) {
+        return;
+    }
+    let release = Command::ReleaseInput {
+        terminal_id: phux_protocol::ids::ResourceId::local(target.terminal),
+    };
+    let _ = relay_satellite_release_input(target, relay, &release).await;
+}
+
+/// Whether the link carried the takeover with the attach: the satellite
+/// advertised `ATTACH_ROLES`.
+fn satellite_seizes_on_attach(target: &SatelliteLeaseTarget<'_>) -> bool {
+    target.state.with(|s| {
+        s.satellite_advertises(target.host, phux_protocol::caps::ServerFeature::AttachRoles)
+    })
+}
+
+/// Journal a hub consumer's role flip on a satellite Terminal (ADR-0127)
+/// hub-side: the satellite never sees the role, so only the hub can report
+/// it.
+fn journal_satellite_role_change(
+    target: &SatelliteLeaseTarget<'_>,
+    wire: phux_protocol::ids::ResourceId,
+) {
+    target.state.with_mut(|s| {
+        let event = AgentEvent::TerminalControl {
+            // The hub keeps no satellite lifecycle (see
+            // `notify_satellite_lease_seized`); `Running` is its default.
+            lifecycle: ResourceLifecycle::Running,
+            exit_status: None,
+            input_holder: s
+                .satellite_lease_holder(target.host, target.terminal)
+                .map(wire_client_id),
+            action: ControlAction::RoleChanged,
+            actor: Some(wire_client_id(target.client_id)),
+        };
+        let _ = s.record_and_fanout(
+            crate::state::EventRecord::new(Some(wire), event).with_actor(Some(target.client_id)),
+        );
+    });
 }
 
 /// Resolve `RELEASE_INPUT` against the hub-side lease before relaying it.

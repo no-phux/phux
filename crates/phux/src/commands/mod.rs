@@ -514,6 +514,22 @@ pub(crate) enum Command {
         )]
         udp_ports: Option<String>,
 
+        // ADR-0127: a declared VIEWER role on every pane this attach opens.
+        /// Attach as a viewer: watch every pane, type into none.
+        /// The server refuses this attach's input, and widening it takes a
+        /// fresh attach without the flag, which every watcher sees. Your
+        /// viewport still sizes the panes, and an app waiting on a
+        /// terminal-query reply times out.
+        #[usage(long, conflicts("--take"), help_heading = "Attach role")]
+        viewer: bool,
+
+        // ADR-0127: PRIMARY with DELIBERATE takeover, spent on this attach.
+        /// Attach and take the wheel: seize the input lease of
+        /// every pane this attach opens, in the same step as the attach. The
+        /// previous holder stays attached. `phux give` hands it back.
+        #[usage(long, conflicts("--viewer"), help_heading = "Attach role")]
+        take: bool,
+
         /// Tee this attach's composited output to a recording. Declared here
         /// (and on the root command) rather than globally so it only shows up
         /// on the verbs that raise a TUI.

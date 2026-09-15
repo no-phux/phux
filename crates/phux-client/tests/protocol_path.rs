@@ -826,6 +826,7 @@ async fn begin_attach(
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: true,
             scrollback_limit_lines: 10_000,
+            role_policy: None,
         })
         .await
         .expect("send ATTACH");
@@ -1637,6 +1638,7 @@ async fn raw_attach(send: &mut quinn::SendStream, recv: &mut quinn::RecvStream) 
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
             scrollback_limit_lines: 0,
+            role_policy: None,
         },
     )
     .await;

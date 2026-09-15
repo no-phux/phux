@@ -324,6 +324,7 @@ async fn native_warm_attach(socket: &std::path::Path) -> Duration {
             viewport: ViewportInfo::new(200, 60),
             request_scrollback: false,
             scrollback_limit_lines: 0,
+            role_policy: None,
         },
     )
     .await;
