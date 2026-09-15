@@ -9,8 +9,6 @@ use std::rc::Rc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::ids::ResourceId;
 use rustix::termios::{LocalModes, OptionalActions, Termios};
 

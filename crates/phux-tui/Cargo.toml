@@ -13,11 +13,6 @@ authors.workspace = true
 workspace = true
 
 [features]
-default = ["native-engine"]
-# Safe native libghostty replica/capability host. Synthesis profiles remain
-# available as negotiated fallback; wasm consumers depend on client-core
-# directly and never build this crate.
-native-engine = ["phux-client-core/native-engine"]
 # Exposes the driver's test-only seams (`ReplicaWalk::for_test`) and turns on
 # `phux_client::testkit`, the scripted server the driver's unit tests speak
 # to. Off by default because it is test scaffolding, not product surface;
@@ -36,7 +31,10 @@ phux-client.workspace = true
 # math, multi-pane composition, predictive echo, the session kernel. The
 # split makes the `ratatui` confinement compiler-enforced: `phux-client-core`
 # has no `ratatui` dependency, so a stray `use ratatui` there fails to build.
-phux-client-core.workspace = true
+# Always enable the native replica host: this crate is the attach driver
+# (ADR-0100). Wasm consumers depend on client-core directly and never
+# build phux-tui; a synthesis-profile fallback here was never compiled.
+phux-client-core = { workspace = true, features = ["native-engine"] }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 # phux-nz4.5: status-bar composer (`StatusBar`) + widget contract live in

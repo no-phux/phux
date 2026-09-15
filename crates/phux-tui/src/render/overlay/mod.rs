@@ -1170,7 +1170,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "native-engine")]
     #[test]
     fn unicode_vt_paint_keeps_borders_on_grid_in_full_and_clipped_paths() {
         use crate::attach::render::{ReplicaWalk, TerminalRenderer};
