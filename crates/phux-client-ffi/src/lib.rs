@@ -37,7 +37,7 @@ use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
+use phux_protocol::wire::frame::{AgentEvent, AttachTarget, CloseReason, FrameKind, ViewportInfo};
 use phux_protocol::{PROTOCOL_VERSION, SessionId};
 
 pub use directory::*;
@@ -877,13 +877,50 @@ fn dispatch_terminal_frame(client: &mut Client, frame: FrameKind) -> Result<(), 
             seq,
             bytes.as_ref(),
         ),
-        FrameKind::ResourceClosed { terminal_id, .. } => {
-            apply_terminal_closed(client, &terminal_id)
-        }
+        FrameKind::ResourceClosed {
+            terminal_id,
+            exit_status,
+            reason,
+            signal,
+        } => apply_terminal_closed(client, &terminal_id, exit_status, signal, reason),
+        // `stamp` (ADR-0123, the journal envelope) is a separate lane's
+        // concern; this build's status effects need only the event itself.
+        FrameKind::Event {
+            terminal, event, ..
+        } => apply_agent_event(client, terminal, &event),
         _ => Err(BridgeError::protocol(
             "server sent a frame not accepted by the client session kernel",
         )),
     }
+}
+
+/// Applies one subscribed `AgentEvent` (`SUBSCRIBE_EVENTS`,
+/// `docs/spec/L1.md` §7.5). Only the terminal-scoped status events this
+/// build surfaces (cwd/command boundaries/process exit) reach the kernel;
+/// every other case — a server-scoped event with no terminal, a target
+/// outside this client's active attach, and every event kind the kernel
+/// does not translate into status (including one this decoder does not
+/// recognise, `AgentEvent::Unknown`) — is a silent no-op. `SUBSCRIBE_EVENTS`
+/// is a best-effort accelerator, not a contract every delivered event must
+/// satisfy.
+fn apply_agent_event(
+    client: &mut Client,
+    terminal: Option<phux_protocol::ResourceId>,
+    event: &AgentEvent,
+) -> Result<(), BridgeError> {
+    let Some(terminal_id) = terminal else {
+        return Ok(());
+    };
+    if client.ensure_participant(&terminal_id).is_err() {
+        return Ok(());
+    }
+    apply_kernel_input(
+        client,
+        KernelInput::Event {
+            terminal_id: &terminal_id,
+            event,
+        },
+    )
 }
 
 /// Capabilities this client advertises in `HELLO`, built from stored limits.
@@ -1329,12 +1366,21 @@ fn apply_bootstrap_tombstone(
 fn apply_terminal_closed(
     client: &mut Client,
     terminal_id: &phux_protocol::ResourceId,
+    exit_status: Option<i32>,
+    signal: Option<i32>,
+    reason: CloseReason,
 ) -> Result<(), BridgeError> {
+    let resource_closed = KernelInput::ResourceClosed {
+        terminal_id,
+        exit_status,
+        signal,
+        reason,
+    };
     // A delayed explicit close after temporary inventory withdrawal still creates
     // a durable tombstone, without retiring the host projection a second time.
     client.workspace.subscriptions.cancel(terminal_id);
     if client.workspace.subscriptions.was_withdrawn(terminal_id) {
-        apply_kernel_input(client, KernelInput::ResourceClosed { terminal_id })?;
+        apply_kernel_input(client, resource_closed)?;
         client.workspace.subscriptions.mark_closed(terminal_id);
         client.forget_resource(terminal_id);
         return Ok(());
@@ -1345,7 +1391,7 @@ fn apply_terminal_closed(
         return Ok(());
     }
     client.ensure_participant(terminal_id)?;
-    apply_kernel_input(client, KernelInput::ResourceClosed { terminal_id })?;
+    apply_kernel_input(client, resource_closed)?;
     if client.is_agent_stream(terminal_id) {
         client.workspace.subscriptions.mark_closed(terminal_id);
         retire_agent_stream(client, terminal_id);
@@ -2313,6 +2359,7 @@ pub unsafe extern "C" fn phux_client_search_results_release(
 mod tests {
     mod clear_presentation;
     mod resource_discovery;
+    mod status_effects;
 
     use super::*;
     use phux_protocol::caps::ServerCapabilities;

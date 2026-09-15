@@ -871,6 +871,15 @@ impl Client {
                     max_rows,
                 })?;
             }
+            KernelSend::SubscribeEvents { terminal } => {
+                // `after_seq` (ADR-0123, the journal cursor) is a separate
+                // lane's concern; `None` is the live-only subscription
+                // every client without journal replay sends.
+                self.queue_frame(&FrameKind::SubscribeEvents {
+                    terminal,
+                    after_seq: None,
+                })?;
+            }
         }
         Ok(())
     }
@@ -914,6 +923,41 @@ impl Client {
                 out.stream_id = key.stream_id.get();
                 out.bootstrap_id = key.bootstrap_id.get();
                 out.status_code = history_unavailable_code(reason);
+                self.owned_effects.push(out);
+            }
+            KernelStatus::Cwd { terminal_id, cwd } => {
+                let mut out = OwnedEffect::simple(2, 8, terminal_id);
+                out.bytes = cwd.into_bytes();
+                self.owned_effects.push(out);
+            }
+            KernelStatus::CommandStarted { terminal_id } => {
+                self.owned_effects
+                    .push(OwnedEffect::simple(2, 9, terminal_id));
+            }
+            KernelStatus::CommandFinished {
+                terminal_id,
+                exit_code,
+            } => {
+                let mut out = OwnedEffect::simple(2, 10, terminal_id);
+                encode_optional_i32(&mut out.stream_id, &mut out.bootstrap_id, exit_code);
+                self.owned_effects.push(out);
+            }
+            KernelStatus::Exited {
+                terminal_id,
+                exit_status,
+                signal,
+                reason,
+            } => {
+                let mut out = OwnedEffect::simple(2, 11, terminal_id);
+                out.status_code = u32::from(reason.as_wire());
+                encode_optional_i32(&mut out.stream_id, &mut out.bootstrap_id, exit_status);
+                // `0` is never a real termination signal, so it doubles as
+                // "absent" without a separate presence flag; an
+                // out-of-`u16`-range value (never expected in practice)
+                // degrades to "absent" rather than truncating.
+                out.first_row = signal
+                    .and_then(|value| u16::try_from(value).ok())
+                    .unwrap_or(0);
                 self.owned_effects.push(out);
             }
         }
@@ -1615,6 +1659,21 @@ fn view_terminal_id(terminal_id: &ResourceId, host_arena: &mut Vec<u8>) -> PhuxR
                 host: bytes_out(host_arena),
             }
         }
+    }
+}
+
+/// Encode one optional signed 32-bit status payload — `COMMAND_FINISHED`'s
+/// `exit_code` and `EXITED`'s `exit_status` — into a presence flag and its
+/// bit pattern, the convention every such payload uses since
+/// `PhuxClientEffect` carries no dedicated "has a value" field: `presence`
+/// is `1` when `value.is_some()` and `0` otherwise (its default), and
+/// `payload` holds the value's `u32` bit pattern (`0` when absent, also its
+/// default). A host recovers the value with `(int32_t)(uint32_t)payload`
+/// once it has checked `presence != 0`.
+fn encode_optional_i32(presence: &mut u64, payload: &mut u64, value: Option<i32>) {
+    if let Some(value) = value {
+        *presence = 1;
+        *payload = u64::from(value.cast_unsigned());
     }
 }
 
