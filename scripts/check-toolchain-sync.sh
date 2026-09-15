@@ -107,6 +107,26 @@ grep -Fq "ARG PHUX_VERSION=$phux_version" "$site_dockerfile" ||
     fail "site builder ARG PHUX_VERSION must be workspace version $phux_version"
 grep -Fq 'test "$(/usr/local/bin/phux --version)" = "phux $PHUX_VERSION"' "$site_dockerfile" ||
     fail "site builder must assert installed phux --version matches PHUX_VERSION"
+# Generic extra-files only rewrite annotated regions. Missing markers leave
+# ARG PHUX_VERSION and the RUN test guard stale on the next release (#700, #711).
+awk '
+  /x-release-please-start-version/ { in_block = 1 }
+  /^ARG PHUX_VERSION=/ || /^RUN test "\$PHUX_VERSION" = "/ {
+    if (!in_block) {
+      printf "site Dockerfile line %d is not in a release-please version block\n", NR > "/dev/stderr"
+      bad = 1
+    }
+    seen++
+  }
+  /x-release-please-end/ { in_block = 0 }
+  END {
+    if (seen != 3) {
+      printf "site Dockerfile must annotate ARG PHUX_VERSION twice and the RUN test guard\n" > "/dev/stderr"
+      bad = 1
+    }
+    if (bad) exit 1
+  }
+' "$site_dockerfile" || fail "site Dockerfile PHUX_VERSION literals must be extra-files annotated"
 
 libghostty_rev="$(sed -n -E 's/.*libghostty-rs\.git", rev = "([0-9a-f]{40})".*/\1/p' "$ROOT/Cargo.toml")"
 [[ "$libghostty_rev" =~ ^[0-9a-f]{40}$ ]] || fail "workspace libghostty-vt rev is missing"
