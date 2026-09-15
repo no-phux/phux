@@ -39,6 +39,14 @@ test('Connection catalog rows never render through the generic settings list', (
   assert.equal(settingsRows(initialAppearance(), bytes('phux config or TUI Settings'), 0).length, 0);
 });
 
+test('editable rows always have an effective value for the closed-row line', () => {
+  for (const row of settingsRows(initialAppearance(), bytes(''), 0)) {
+    assert.equal(row.editable, true);
+    assert.ok(row.effectiveValue.length > 0, `id ${row.id}`);
+  }
+  assert.equal(text(settingsRows(initialAppearance(), bytes(''), 3)[0].effectiveValue), 'top');
+});
+
 test('unsupported requested font names do not masquerade as effective faces', () => {
   const appearance = { ...initialAppearance(), values: [bytes('Unknown Font')] };
   const row = settingsRows(appearance, bytes('font family'), 0)[0];

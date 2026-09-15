@@ -67,6 +67,7 @@
                           <button size="sm" disabled="{appearanceBusy}" on-press="settings_apply">Preview</button>
                         </row>
                       </if>
+                      <else><text wrap="true" foreground="text_muted">{setting.effectiveValue}</text></else>
                       <separator />
                     </column>
                   </if>
@@ -93,7 +94,7 @@
                   <text wrap="true" foreground="text_muted">Shell and history for phux panes live on the serving machine. Change them with phux config or TUI Settings there.</text>
                 </if>
                 <if test="{settingsSection == 5}">
-                  <text>Phux Cockpit</text>
+                  <text>phux Cockpit</text>
                   <row gap="8"><text foreground="text_muted">Installed</text><text>{updateCurrent}</text></row>
                   <row gap="8"><text foreground="text_muted">Latest</text><text>{updateLatest}</text></row>
                   <text wrap="true">{updateStatus}</text>
