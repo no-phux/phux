@@ -235,11 +235,12 @@ as its own quoted argv element to `phux` (never through `eval`/`sh -c`), and if
 agent still launches. Set `PHUX_AGENT_PHUX_BIN` to point at a non-`PATH` `phux`
 binary.
 
-`smoke-agent-wrap` drives the wrapper against a stub `phux` and a fake agent,
-asserting the launch write (`agent set @<pane> --name ... --kind ...`) and the
-exit write pinned to the same pane (`agent clear @<pane>`), plus the safety case
-that with no resolvable target the wrapper writes nothing at all. It needs no
-server and leaves nothing behind:
+`smoke-agent-wrap` drives the wrapper against a stub `phux` and fake agents. It
+checks identity targeting, exact AgentSession-child targeting in the presence
+of other children, complete event payloads, successful and failed lifecycle
+records, command-not-found handling, and signal forwarding/reaping. It also
+checks that a missing pane target writes nothing. It needs no server and leaves
+nothing behind:
 
 ```sh
 cargo run -q -p phux -- config run com.phux.demo.agent-tools smoke-agent-wrap
@@ -252,9 +253,10 @@ leave lifecycle to provider screen/title rules. Grok's provider wrapper adds a
 narrow exception for modes where the process itself is exactly one turn
 (`-p` / `--single`, `--prompt-file`, or `--prompt-json`). Those modes can paint
 a blank, titleless `--no-alt-screen` viewport while processing, so the wrapper
-opens an AgentSession and emits `prompt` before execution, then `stop` on exit.
-It leaves `done` visible for a one-second grace before closing the child
-session, which also prevents a stale session when the wrapper is invoked from
-an existing shell pane. A normal interactive `grok` process never opens that
-stream; otherwise it would be incorrectly pinned `working` for the entire TUI
-lifetime.
+opens an AgentSession and emits `session_start` with its provider plus `prompt`
+with the real prompt character count before execution. Exit 0 emits `stop` and
+leaves `done` visible for a one-second grace. Every outcome then emits terminal
+`session_end` and closes the exact child ID returned by `session open`; failures
+and forwarded signals carry a reason and never emit `stop`. A normal interactive
+`grok` process never opens that stream; otherwise it would be incorrectly pinned
+`working` for the entire TUI lifetime.

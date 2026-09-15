@@ -105,6 +105,7 @@ fn integration_template_actions_are_local_and_validated() {
     let listed = stdout_from_json(&output);
     assert!(listed.contains("codex\tCodex\tterminal-agent\t0.2.0\topt-in\tcodex"));
     assert!(listed.contains("claude-code\tClaude Code\tterminal-agent\t0.2.0\topt-in\tclaude"));
+    assert!(listed.contains("grok\tGrok Build\tterminal-agent\t0.1.0\topt-in\tgrok"));
     assert!(listed.contains("generic-shell-agent\tGeneric Shell Agent"));
 
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, VALIDATE_ACTION, "--json"]);
@@ -113,7 +114,7 @@ fn integration_template_actions_are_local_and_validated() {
         "validate integrations should succeed; stderr={stderr}"
     );
     let output: serde_json::Value = serde_json::from_str(&stdout).expect("validate stdout is JSON");
-    assert!(stdout_from_json(&output).contains("validated 4 integration templates"));
+    assert!(stdout_from_json(&output).contains("validated 5 integration templates"));
 
     let (code, stdout, stderr) = run_demo(&["config", "run", PLUGIN_ID, DETECT_ACTION, "--json"]);
     assert_eq!(
@@ -156,12 +157,9 @@ fn agent_detection_is_opt_in_and_path_overridable() {
     assert!(detected.contains("claude-code\tClaude Code\tclaude\tmissing"));
 }
 
-/// phux-r82.11: the agent-identity wrapper writes a `phux.agent/v1`
-/// record at launch and clears it on exit. `smoke-agent-wrap` drives
-/// `phux-agent-wrap.sh` against a stub `phux` (that logs its argv) and a
-/// fake agent, asserting `phux agent set --name ... --kind ...` runs at
-/// launch and `phux agent clear` runs on exit — the record-write path the
-/// sidebar consumes, exercised with no server.
+/// The wrapper smoke covers identity cleanup plus complete one-turn stream
+/// records, exact child targeting, provider failure, command lookup failure,
+/// and signal forwarding/reaping against a stub `phux`, with no server.
 #[test]
 fn agent_wrap_writes_and_clears_the_identity_record() {
     let (code, stdout, stderr) = run_demo(&[
