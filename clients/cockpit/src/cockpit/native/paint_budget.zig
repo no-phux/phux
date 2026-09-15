@@ -17,10 +17,9 @@
 //!     Production does not read it. A lone 320x96 grid needs the whole
 //!     store, not half of it.
 //!
-//! The cell store on the current pin holds one full product grid, not two.
-//! That fact is a regression, not a forever invariant: a pin bump Metal
-//! approves will raise `maxFullPanesThatFit`. Hybrid C still refuses to
-//! treat `layout.max_panes` full grids as one envelope.
+//! The cell store on the current pin holds more than one full product
+//! grid (`maxFullPanesThatFit`). Hybrid C still refuses to treat
+//! `layout.max_panes` full grids as one envelope.
 
 const native_sdk = @import("native_sdk");
 const grid = @import("../../terminal/grid.zig");
@@ -145,6 +144,23 @@ pub const PlanArgs = struct {
     focused: []const bool,
 };
 
+/// Split a store the way Hybrid C splits cells: each degraded pane holds a
+/// full-grid proportion of `degraded_cell_share`, then the focused pane takes
+/// the remainder. After the 4x cell bump the cap binds, so N degraded panes
+/// can ask for more than the store (`n * cap > full_cells`). Saturate so
+/// `plan` cannot overflow; later full panes still get whatever is left.
+fn sharesAfterDegraded(total: usize, n_full: usize, n_degraded: usize, degraded_cell_share: usize) struct { full: usize, degraded: usize, unused: usize } {
+    const proportional: usize = if (n_degraded == 0 or full_cells == 0)
+        0
+    else
+        total * degraded_cell_share / full_cells;
+    const degraded: usize = if (n_degraded == 0) 0 else @min(proportional, total / n_degraded);
+    const rest = total -| n_degraded * degraded;
+    const full: usize = if (n_full == 0) 0 else rest;
+    const unused = total -| n_full * full -| n_degraded * degraded;
+    return .{ .full = full, .degraded = degraded, .unused = unused };
+}
+
 pub fn plan(args: PlanArgs) Plan {
     const count = args.pane_count;
     var fidelities: [layout.max_panes]Fidelity = @splat(.degraded);
@@ -165,52 +181,25 @@ pub fn plan(args: PlanArgs) Plan {
     else
         @min(leftover_cells / n_degraded, degraded_cell_cap);
 
-    const grid_text = text_store - widget_text_reserve;
-    const degraded_text_share = if (n_degraded == 0 or full_cells == 0)
-        0
-    else
-        grid_text * degraded_cell_share / full_cells;
-    const full_text_share = if (n_full == 0)
-        0
-    else
-        grid_text - n_degraded * degraded_text_share;
-    const unused_text = grid_text - n_full * full_text_share - n_degraded * degraded_text_share;
-
-    const grid_paths = path_store - widget_path_reserve;
-    const degraded_path_share = if (n_degraded == 0 or full_cells == 0)
-        0
-    else
-        grid_paths * degraded_cell_share / full_cells;
-    const full_path_share = if (n_full == 0)
-        0
-    else
-        grid_paths - n_degraded * degraded_path_share;
-    const unused_paths = grid_paths - n_full * full_path_share - n_degraded * degraded_path_share;
-
-    const degraded_glyph_share = if (n_degraded == 0 or full_cells == 0)
-        0
-    else
-        glyph_budget * degraded_cell_share / full_cells;
-    const full_glyph_share = if (n_full == 0)
-        glyph_budget
-    else
-        glyph_budget - n_degraded * degraded_glyph_share;
+    const text = sharesAfterDegraded(text_store - widget_text_reserve, n_full, n_degraded, degraded_cell_share);
+    const paths = sharesAfterDegraded(path_store - widget_path_reserve, n_full, n_degraded, degraded_cell_share);
+    const glyphs = sharesAfterDegraded(glyph_budget, n_full, n_degraded, degraded_cell_share);
 
     return .{
         .count = count,
         .n_full = n_full,
         .n_degraded = n_degraded,
         .leftover_cells = leftover_cells,
-        .unused_cells = leftover_cells - n_degraded * degraded_cell_share,
+        .unused_cells = leftover_cells -| n_degraded * degraded_cell_share,
         .degraded_cell_share = degraded_cell_share,
-        .full_text_share = full_text_share,
-        .degraded_text_share = degraded_text_share,
-        .unused_text = unused_text,
-        .full_path_share = full_path_share,
-        .degraded_path_share = degraded_path_share,
-        .unused_paths = unused_paths,
-        .full_glyph_share = full_glyph_share,
-        .degraded_glyph_share = degraded_glyph_share,
+        .full_text_share = text.full,
+        .degraded_text_share = text.degraded,
+        .unused_text = text.unused,
+        .full_path_share = paths.full,
+        .degraded_path_share = paths.degraded,
+        .unused_paths = paths.unused,
+        .full_glyph_share = if (n_full == 0) glyph_budget else glyphs.full,
+        .degraded_glyph_share = glyphs.degraded,
         .fidelities = fidelities,
     };
 }
@@ -247,19 +236,20 @@ test "a lone active pane keeps the whole cell store" {
     try testing.expectEqual(@as(usize, 1), planned.n_full);
     try testing.expectEqual(Fidelity.full, planned.fidelities[0]);
     const alloc = planned.forPane(0, 0);
-    // Leftover after one full 320x96 grid stays in unused_cells
-    // (32768 - 30720 = 2048). That is slack, not the SDK two-pane floor, and
-    // a lone full pane is not charged it: nothing later needs holding.
+    // Leftover after one full product grid stays in unused_cells
+    // (`cell_store - full_cells`). That is slack, not the SDK two-pane
+    // floor, and a lone full pane is not charged it: nothing later needs
+    // holding.
     try testing.expectEqual(cell_store - full_cells, planned.unused_cells);
     try testing.expectEqual(@as(usize, 0), alloc.cell_reserve);
     try testing.expectEqual(command_envelope, alloc.command_budget);
     try testing.expectEqual(glyph_budget, alloc.glyph_budget);
-    // The SDK two-pane leftover must not become a production floor: a
-    // 320x96 grid is 30720 cells and `widget_cell_reserve` is half the
-    // store (16384). Using it as a floor would truncate the common case.
+    // The SDK two-pane leftover must not become a production floor.
+    // After the 4x cell bump, half the store exceeds one product grid;
+    // production still does not read `widget_cell_reserve`.
     try testing.expect(canvas.terminal_grid.widget_cell_reserve * 2 == cell_store);
     try testing.expect(alloc.cell_reserve != canvas.terminal_grid.widget_cell_reserve);
-    try testing.expect(full_cells > canvas.terminal_grid.widget_cell_reserve);
+    try testing.expect(full_cells != canvas.terminal_grid.widget_cell_reserve);
 }
 
 test "focused of two panes takes a full grid; the neighbour takes leftover" {
@@ -272,13 +262,14 @@ test "focused of two panes takes a full grid; the neighbour takes leftover" {
     try testing.expectEqual(@as(usize, 1), planned.n_full);
     try testing.expectEqual(@as(usize, 1), planned.n_degraded);
     try testing.expectEqual(cell_store - full_cells, planned.leftover_cells);
-    try testing.expectEqual(planned.leftover_cells, planned.degraded_cell_share);
+    try testing.expectEqual(@min(planned.leftover_cells, degraded_cell_cap), planned.degraded_cell_share);
+    try testing.expect(planned.leftover_cells > planned.degraded_cell_share);
     const focused = planned.forPane(0, 0);
     const other = planned.forPane(1, 0);
     try testing.expectEqual(Fidelity.full, focused.fidelity);
     try testing.expectEqual(Fidelity.degraded, other.fidelity);
-    try testing.expectEqual(planned.degraded_cell_share, focused.cell_reserve);
-    try testing.expectEqual(@as(usize, 0), other.cell_reserve);
+    try testing.expectEqual(planned.leftover_cells, focused.cell_reserve);
+    try testing.expectEqual(planned.unused_cells, other.cell_reserve);
     try testing.expect(focused.glyph_budget > equalCutGlyphShare(2));
     try testing.expect(focused.glyph_budget > other.glyph_budget);
 }
@@ -294,7 +285,7 @@ test "an unfocused pane that paints first still holds the focused grid" {
     const focused = planned.forPane(1, 0);
     try testing.expectEqual(Fidelity.degraded, first.fidelity);
     try testing.expectEqual(Fidelity.full, focused.fidelity);
-    try testing.expectEqual(full_cells, first.cell_reserve);
+    try testing.expectEqual(full_cells + planned.unused_cells, first.cell_reserve);
     try testing.expectEqual(@as(usize, 0), focused.cell_reserve);
 }
 
@@ -316,28 +307,44 @@ test "inactive windows degrade every pane" {
     try testing.expectEqual(planned.unused_cells, last.cell_reserve);
 }
 
-test "the current pin does not hold two full product grids, nor sixteen" {
+test "the current pin holds two full product grids, not sixteen" {
     const testing = @import("std").testing;
-    // Cockpit pkg3b / Metal hybrid C. The first assertion is the pin's
-    // measured fact; a cell-store bump Metal approves will flip it and
-    // that bump PR updates this test. The second is the forever claim:
-    // N = layout.max_panes full 320x96 grids do not share one envelope.
-    try testing.expect(grid.max_cells * 2 > cell_store);
+    // Cockpit pkg3b / Metal Hybrid C signed bump. The first assertion is
+    // the pin: two full product grids share one envelope. The second is
+    // the forever claim: N = layout.max_panes full grids do not.
+    try testing.expect(grid.max_cells * 2 < cell_store);
     try testing.expect(grid.max_cells * layout.max_panes > cell_store);
-    try testing.expectEqual(@as(usize, 1), maxFullPanesThatFit());
+    try testing.expectEqual(cell_store / grid.max_cells, maxFullPanesThatFit());
+    try testing.expect(maxFullPanesThatFit() >= 2);
     try testing.expect(maxFullPanesThatFit() < layout.max_panes);
     try testing.expectEqual(grid.max_cols * grid.max_rows, grid.max_cells);
 }
 
-test "degraded last-n on this pin keeps six trailing rows at 320, not the top 24" {
+test "plan shares fit the stores at eight panes" {
+    const testing = @import("std").testing;
+    const planned = plan(.{
+        .window_active = true,
+        .pane_count = 8,
+        .focused = &.{ true, false, false, false, false, false, false, false },
+    });
+    try testing.expectEqual(@as(usize, 1), planned.n_full);
+    try testing.expectEqual(@as(usize, 7), planned.n_degraded);
+    const grid_text = text_store - widget_text_reserve;
+    try testing.expect(planned.n_full * planned.full_text_share + planned.n_degraded * planned.degraded_text_share + planned.unused_text == grid_text);
+    try testing.expect(planned.n_degraded * planned.degraded_glyph_share <= glyph_budget);
+    try testing.expect(planned.full_glyph_share + planned.n_degraded * planned.degraded_glyph_share <= glyph_budget);
+    _ = planned.forPane(0, 0);
+    _ = planned.forPane(7, 0);
+}
+
+test "degraded last-n on this pin is bound by the row cap, not leftover" {
     const testing = @import("std").testing;
     const leftover = cell_store - full_cells;
-    try testing.expectEqual(@as(usize, 6), leftover / grid.max_cols);
+    try testing.expect(leftover / grid.max_cols > degraded_rows);
     try testing.expectEqual(
-        @as(usize, 6),
+        degraded_rows,
         keepRows(.degraded, grid.max_cols, grid.max_rows, 0, full_cells),
     );
-    try testing.expect(keepRows(.degraded, grid.max_cols, grid.max_rows, 0, full_cells) < degraded_rows);
 
     const inactive = plan(.{
         .window_active = false,

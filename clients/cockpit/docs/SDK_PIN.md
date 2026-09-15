@@ -64,6 +64,10 @@ Run this before pushing a pin bump. It is the same sequence `sdk-head.yml` runs,
 so anything it catches would otherwise wait for the next dispatch or weekly
 fallback.
 
+A cell or text ceiling bump additionally requires macOS
+`./scripts/measure-paint-ceiling.sh` green. Linux source arithmetic is not
+enough for the pin move.
+
 **1. See what would move.** `scripts/repoint-sdk.sh` resolves the ref, rewrites
 `build.zig.zon` through `zig fetch --save` (which touches only the `.url` and
 `.hash` lines, so the dependency's comment block survives), and reports whether

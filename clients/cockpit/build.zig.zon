@@ -168,9 +168,15 @@
         // Composed watched fragments retain per-window source provenance on
         // their first frame and reload. Checked CLI write-back distinguishes
         // each resolver root so secondary edits cannot alias another file.
+        //
+        // Metal Hybrid C signed bump (2026-09-15): canvas cell ceiling
+        // 32768 -> 131072 (4x) and text 65536 -> 131072 (2x). Glyphs,
+        // commands, paths, and atlas_variants_per_glyph stay. Four full
+        // 320x96 product grids fit; sixteen still do not. Cockpit derives
+        // the split from the pin — see docs/DECISIONS.md Hybrid C.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/c188459a09ba59989c405946554addd64f53b6c0.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQgp4tQKqIHXRd0RruFCbjhJiq_kzDzv4taSwVcHB",
+            .url = "https://github.com/phall1/native/archive/ad3f0fae36a7d1380c459c6b23ed12d83cad6a7a.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQoV3tQL2ImGN9v7gVDnhwg2AMYL82LTMCZF2R_RF",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream
