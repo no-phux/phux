@@ -12,19 +12,21 @@
 use bytes::BytesMut;
 use phux_protocol::caps::BootstrapStreamProfile;
 use phux_protocol::ids::{
-    BootstrapId, ClientId, GroupId, ResourceId, ResourceKind, SatelliteHost, SessionId, StreamId,
-    WindowId,
+    BootstrapId, ClientId, GroupId, IdempotencyKey, ResourceId, ResourceKind, SatelliteHost,
+    SessionId, StreamId, WindowId,
 };
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{
-    AgentEvent, CloseReason, Command, CommandResult, CommandValue, DetachReason, ErrorCode,
-    FrameKind, MoveError, MoveResult, Scope, SpawnError, SpawnResource, SpawnResult, ViewportInfo,
+    ActorRef, AgentEvent, CloseReason, Command, CommandResult, CommandValue, ControlAction,
+    DetachReason, ErrorCode, EventStamp, FrameKind, MoveError, MoveResult, ResourceLifecycle,
+    Scope, SpawnError, SpawnResource, SpawnResult, ViewportInfo,
 };
 use phux_protocol::wire::info::{
-    AgentFacet, HostInventory, HostSessionInfo, ResourceInfo, SessionInfo, SessionSnapshot,
+    AgentFacet, ExitFacet, HostInventory, HostSessionInfo, ResourceInfo, SessionInfo,
+    SessionSnapshot,
 };
 
 /// Render `bytes` as an `xxd`-style hex dump: 16 cols per row,
@@ -273,6 +275,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 scope: Scope::Group(GroupId::new(1)),
                 key: "phux.tui.layout/v1".to_owned(),
                 value: Some(b"\xa2\x01\x01\x02\x82\x00\x01".to_vec()),
+                actor: None,
             },
         ),
         (
@@ -281,6 +284,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 scope: Scope::Global,
                 key: "phux.example/v1".to_owned(),
                 value: None,
+                actor: None,
             },
         ),
         // L3 metadata reply frames.
@@ -449,6 +453,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                     kind: ResourceKind::Terminal,
                     parent: None,
                 },
+                stamp: None,
             },
         ),
         (
@@ -459,6 +464,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                     kind: ResourceKind::AgentSession,
                     parent: Some(ResourceId::local(0x0000_002A)),
                 },
+                stamp: None,
             },
         ),
         (
@@ -589,6 +595,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 terminal_id: ResourceId::local(0x0000_002A),
                 exit_status: Some(0),
                 reason: CloseReason::Unknown,
+                signal: None,
             },
         ),
         (
@@ -598,6 +605,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 terminal_id: ResourceId::local(0x0000_002A),
                 exit_status: None,
                 reason: CloseReason::Unknown,
+                signal: None,
             },
         ),
         (
@@ -608,6 +616,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 terminal_id: ResourceId::local(0x0000_002B),
                 exit_status: None,
                 reason: CloseReason::ParentClosed,
+                signal: None,
             },
         ),
         (
@@ -616,6 +625,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 terminal_id: ResourceId::local(0x0000_002A),
                 exit_status: Some(-9),
                 reason: CloseReason::Killed,
+                signal: None,
             },
         ),
         // APPEND_RESOURCE_OUTPUT (tag 0x1a): the producer verb, one complete
@@ -772,6 +782,146 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                 cols: 0,
                 rows: 0,
                 base_seq: 0,
+            },
+        ),
+        // 0.9.0-draft.15 (ADR-0123): a journaled event with every stamp
+        // field, a subscription with a cursor, both gap events, an expired
+        // lease, and an attributed metadata change.
+        (
+            "snap_event_journal_stamped",
+            FrameKind::Event {
+                terminal: Some(ResourceId::local(0x2B)),
+                event: AgentEvent::ResourceSpawned {
+                    kind: ResourceKind::Terminal,
+                    parent: None,
+                },
+                stamp: Some(Box::new(
+                    EventStamp::new(0x0102, 0x0000_0189_0000_0000)
+                        .with_actor(Some(
+                            ActorRef::new(ClientId::new(7))
+                                .with_credential_id(Some("cred".to_owned()))
+                                .with_client_name(Some("cli".to_owned())),
+                        ))
+                        .with_operation_id(IdempotencyKey::new([0x5A; 16])),
+                )),
+            },
+        ),
+        (
+            "snap_subscribe_events_after_seq",
+            FrameKind::SubscribeEvents {
+                terminal: Some(ResourceId::local(0x2B)),
+                after_seq: Some(0x0102),
+            },
+        ),
+        (
+            "snap_event_journal_gap",
+            FrameKind::Event {
+                terminal: None,
+                event: AgentEvent::JournalGap {
+                    first_missing: 0x10,
+                    last_missing: 0x20,
+                },
+                stamp: None,
+            },
+        ),
+        (
+            "snap_event_source_gap",
+            FrameKind::Event {
+                terminal: Some(ResourceId::local(0x2B)),
+                event: AgentEvent::SourceGap { dropped: 3 },
+                stamp: Some(Box::new(EventStamp::new(0x21, 0))),
+            },
+        ),
+        (
+            "snap_event_terminal_control_expired",
+            FrameKind::Event {
+                terminal: Some(ResourceId::local(0x2B)),
+                event: AgentEvent::TerminalControl {
+                    lifecycle: ResourceLifecycle::Running,
+                    exit_status: None,
+                    input_holder: None,
+                    action: ControlAction::Expired,
+                    actor: None,
+                },
+                stamp: None,
+            },
+        ),
+        (
+            "snap_metadata_changed_with_actor",
+            FrameKind::MetadataChanged {
+                scope: Scope::Global,
+                key: "phux.tui.layout/v1/1".to_owned(),
+                value: Some(b"{}".to_vec()),
+                actor: Some(ActorRef::new(ClientId::new(7))),
+            },
+        ),
+        // 0.9.0-draft.15 (ADR-0124): a signal death, a retained spawn, and
+        // a snapshot whose extension block carries an exited and a held
+        // resource.
+        (
+            "snap_terminal_closed_signal",
+            FrameKind::ResourceClosed {
+                terminal_id: ResourceId::local(0x2B),
+                exit_status: None,
+                reason: CloseReason::Exited,
+                signal: Some(9),
+            },
+        ),
+        (
+            "snap_spawn_terminal_retain_and_idempotency_key",
+            FrameKind::SpawnResource {
+                request_id: 0x0000_0017,
+                group: GroupId::new(1),
+                command: None,
+                cwd: None,
+                env: None,
+                term: None,
+                satellite: None,
+                owner_terminal: None,
+                agent_session: None,
+                initial_size: None,
+                resource: Some(Box::new(
+                    SpawnResource::default()
+                        .with_retain_secs(Some(600))
+                        .with_idempotency_key(IdempotencyKey::new([0x5A; 16])),
+                )),
+            },
+        ),
+        (
+            "snap_command_result_state_with_resource_state",
+            FrameKind::CommandResult {
+                request_id: 0x0000_0018,
+                result: CommandResult::OkWith(CommandValue::State(
+                    SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+                        .with_resources(vec![
+                            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                                .with_lifecycle(ResourceLifecycle::Exited)
+                                .with_exit(Some(
+                                    ExitFacet::new(0x0100, 0x0200).with_exit_status(Some(0)),
+                                )),
+                            ResourceInfo::new(ResourceId::local(2), WindowId::new(1), 80, 24)
+                                .with_input_holder(Some(ClientId::new(7))),
+                            ResourceInfo::new(ResourceId::local(3), WindowId::new(1), 80, 24),
+                        ]),
+                )),
+            },
+        ),
+        // 0.9.0-draft.15 (ADR-0126): a replayed spawn and a key conflict.
+        (
+            "snap_terminal_spawned_replayed",
+            FrameKind::ResourceSpawned {
+                request_id: 0x0000_0017,
+                result: SpawnResult::Replayed {
+                    id: ResourceId::local(0x2B),
+                    instance: None,
+                },
+            },
+        ),
+        (
+            "snap_terminal_spawned_err_idempotency_conflict",
+            FrameKind::ResourceSpawned {
+                request_id: 0x0000_0017,
+                result: SpawnResult::Err(SpawnError::IdempotencyConflict),
             },
         ),
         (

@@ -337,6 +337,7 @@ point before any handler or satellite branch:
 | `SIGNAL_TERMINAL` | `SIGNAL` | named Terminal |
 | `REPORT_ASKED`, `REPORT_AGENT_STATE` | `BIND` | named Terminal |
 | `PUT_FILE` | `INPUT` | named Terminal |
+| `TRANSCRIBE` | `INPUT` | named Terminal (`terminal_id`) |
 | `DETACH_CLIENTS { session: Some }` | `SIGNAL` | resolved Group |
 | `DETACH_CLIENTS { session: None }` | `SIGNAL` | Global |
 | `SHUTDOWN` | `SIGNAL` plus transport predicate | Global, and the authenticated transport MUST be the owner UDS; remote paired grants cannot stop the server |

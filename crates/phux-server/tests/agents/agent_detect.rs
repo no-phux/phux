@@ -305,7 +305,9 @@ async fn collect_agent_record(
         let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             return None;
         };
-        if let FrameKind::MetadataChanged { scope, key, value } = frame
+        if let FrameKind::MetadataChanged {
+            scope, key, value, ..
+        } = frame
             && key == RESOURCE_AGENT_KEY
             && scope == Scope::Resource(terminal.clone())
             && let Some(bytes) = value
@@ -331,7 +333,9 @@ async fn collect_pane_occupant(
         let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
             return None;
         };
-        if let FrameKind::MetadataChanged { scope, key, value } = frame
+        if let FrameKind::MetadataChanged {
+            scope, key, value, ..
+        } = frame
             && key == RESOURCE_PANE_OCCUPANT_KEY
             && scope == Scope::Resource(terminal.clone())
             && let Some(bytes) = value
@@ -463,9 +467,9 @@ fn detector_publishes_blocked_from_a_live_prompt_box() {
                     request_id: 71,
                     result: CommandResult::Ok,
                 } => acked = true,
-                FrameKind::MetadataChanged { scope, key, value }
-                    if scope == Scope::Resource(terminal.clone()) && key == RESOURCE_AGENT_KEY =>
-                {
+                FrameKind::MetadataChanged {
+                    scope, key, value, ..
+                } if scope == Scope::Resource(terminal.clone()) && key == RESOURCE_AGENT_KEY => {
                     saw_done = value
                         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
                         .and_then(|record| record.get("state").cloned())
@@ -968,7 +972,9 @@ fn a_detector_written_record_is_retracted_when_the_agent_leaves_the_pane() {
             let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(&mut stream)).await else {
                 panic!("the record was never retracted");
             };
-            if let FrameKind::MetadataChanged { scope, key, value } = frame
+            if let FrameKind::MetadataChanged {
+                scope, key, value, ..
+            } = frame
                 && key == RESOURCE_AGENT_KEY
                 && scope == Scope::Resource(terminal.clone())
             {

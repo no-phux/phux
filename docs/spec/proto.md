@@ -401,6 +401,13 @@ ServerFeature = bitset (u32) {
     QUIC_STREAMS       = 0x00400000, // one control stream + one bidi stream per
                                      //   attached Terminal (§4.2; ADR-0115)
     OPEN_LISTENER      = 0x00800000, // OPEN_LISTENER, Unix socket only (L1.md §5.6; ADR-0120)
+    EVENT_JOURNAL      = 0x01000000, // EVENT journal stamp (fields 3-6), SUBSCRIBE_EVENTS.after_seq,
+                                     //   journal_gap / source_gap, METADATA_CHANGED.actor
+                                     //   (L1.md §7; L3.md §1; ADR-0123)
+    RETAIN_ON_EXIT     = 0x02000000, // SPAWN_RESOURCE.retain_secs, retained exit state in
+                                     //   the snapshot (L1.md §1.2, §3.1, §9.1; ADR-0124)
+    SPAWN_IDEMPOTENCY  = 0x04000000, // SPAWN_RESOURCE.idempotency_key, RESOURCE_SPAWNED.replayed,
+                                     //   IDEMPOTENCY_CONFLICT (L1.md §3.1; ADR-0126)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -479,7 +486,9 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `HOST_SESSIONS = 0x10000`, `KEEP_EMPTY_SESSIONS = 0x20000`,
 `WHOAMI = 0x40000`, `LIST_DIRECTORY_HOST = 0x80000`,
 `SSH_ORIGIN = 0x100000`, `CONDITIONAL_KILL = 0x200000`,
-`QUIC_STREAMS = 0x400000`, and `OPEN_LISTENER = 0x800000`; unknown
+`QUIC_STREAMS = 0x400000`, `OPEN_LISTENER = 0x800000`,
+`EVENT_JOURNAL = 0x1000000`, `RETAIN_ON_EXIT = 0x2000000`, and
+`SPAWN_IDEMPOTENCY = 0x4000000`; unknown
 feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
@@ -549,6 +558,34 @@ decode tag `0x1c`. The bit says the server can open a listener for one remote
 attach, not that this connection may ask. A server refuses the command on any
 transport but its Unix socket, and advertises the bit on every transport so a
 consumer can tell "not here" from "not supported".
+
+<!-- impl-status: partial; probe: EVENT_JOURNAL,RETAIN_ON_EXIT,SPAWN_IDEMPOTENCY -->
+> **Status: partial.** The reference codec carries every field the three
+> bits below gate; the reference server does not yet advertise them.
+
+`EVENT_JOURNAL = 0x1000000` gates the journaled event contract of
+[L1.md](./L1.md) §7: the `EVENT` stamp (fields 3-6), `SUBSCRIBE_EVENTS`
+field 2 `after_seq`, the `journal_gap` / `source_gap` event tags, and the
+`actor` field on `METADATA_CHANGED` ([L3.md](./L3.md) §1). Every one of those
+is skip-by-length additive, so a server MAY stamp events whether or not a
+client reads the stamp, and an older client sees the events it always saw. A
+client MUST see the bit before it treats a cursor as resumable or the absence
+of a gap as proof that nothing was missed: without it, `after_seq` is skipped
+and delivery is best-effort.
+
+`RETAIN_ON_EXIT = 0x2000000` gates `SPAWN_RESOURCE` field 16 `retain_secs`
+([L1.md](./L1.md) §3.1) and the retained-resource state in the snapshot
+extension block ([L1.md](./L1.md) §9.1). Sending the field unadvertised
+degrades: a server without the bit skips it and closes the resource at exit,
+as it always did. A client MUST see the bit before it relies on reading an
+exit it did not watch happen.
+
+`SPAWN_IDEMPOTENCY = 0x4000000` gates `SPAWN_RESOURCE` field 17
+`idempotency_key`, `RESOURCE_SPAWNED` field 4 `replayed`, and
+`SpawnError::IDEMPOTENCY_CONFLICT` ([L1.md](./L1.md) §3.1). A server without
+the bit skips the key and spawns again, so a client MUST see the bit before it
+retries a spawn whose reply it lost; without it, a retry can create a second
+resource.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,
@@ -1184,8 +1221,10 @@ A consumer that attaches to `phux-server` 0.9 implements:
   `RESOURCE_CLOSED`. There is no `TERMINAL_OPENED` on the wire; a
   consumer learns about a Terminal it did not create from
   `GET_STATE` / `ATTACHED` snapshots and `EVENT` (`pane_spawned`).
-- **Structured events:** `BELL`. `TERMINAL_EVENT` and `ALERT` are
-  spec-only; OSC title and cwd travel inside `RESOURCE_OUTPUT`.
+- **Structured events:** `BELL`, and `EVENT` ([L1.md](./L1.md) §7) for
+  the server's reading of title, cwd, and command boundaries. `ALERT` is
+  spec-only and `TERMINAL_EVENT` is retired; the OSC sequences themselves
+  also travel inside `RESOURCE_OUTPUT`.
 - **Input:** `INPUT_KEY`; `INPUT_PASTE`, `INPUT_MOUSE`, `INPUT_FOCUS`,
   `INPUT_TERMINAL_REPLY`, and `VIEWPORT_RESIZE` as the consumer needs
   them. `INPUT_RAW` is spec-only and MUST NOT be sent.
@@ -1206,7 +1245,7 @@ definitions.
 
 #### 11.2.0 Paper-protocol L1
 
-The L1 catalog also lists `TERMINAL_OPENED`, `TERMINAL_EVENT`,
+The L1 catalog also lists `TERMINAL_OPENED`,
 `ALERT`, `TERMINAL_RESIZED`, `INPUT_RAW`, subscription `SUBSCRIBE`
 (`0x40`), and the unallocated `SPAWN` / `RESIZE_TERMINAL` /
 `RUN_HOOK` command tags. Those are the paper protocol. They are not

@@ -41,6 +41,7 @@ fn event_only_subscription_before_spawn_content_attach_keeps_link_and_events_liv
             &mut legacy,
             &FrameKind::SubscribeEvents {
                 terminal: Some(pane.clone()),
+                after_seq: None,
             },
         )
         .await;
@@ -119,6 +120,7 @@ async fn assert_legacy_event_after_cut(
             if let FrameKind::Event {
                 terminal,
                 event: AgentEvent::Asked { id, .. },
+                ..
             } = recv_typed(observer).await.1
             {
                 assert_eq!(terminal.as_ref(), Some(pane));

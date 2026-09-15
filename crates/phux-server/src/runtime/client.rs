@@ -1352,6 +1352,7 @@ pub(crate) async fn broadcast_terminal_closed(
                     terminal_id: wire_terminal_id.clone(),
                     exit_status,
                     reason,
+                    signal: None,
                 }))
                 .await;
         }
@@ -3270,7 +3271,7 @@ where
             FrameKind::SubscribeMetadata { scope, key } => {
                 handle_subscribe_metadata(&state, client_id, scope, key, &plumbing.out_tx);
             }
-            FrameKind::SubscribeEvents { terminal } => {
+            FrameKind::SubscribeEvents { terminal, .. } => {
                 handle_subscribe_events(&state, client_id, terminal, &plumbing.out_tx);
             }
             FrameKind::SpawnResource {
@@ -4605,6 +4606,7 @@ pub(crate) fn handle_subscribe_events(
                 },
                 FrameKind::SubscribeEvents {
                     terminal: Some(phux_protocol::ids::ResourceId::local(id)),
+                    after_seq: None,
                 },
             );
         } else {
@@ -4711,6 +4713,7 @@ fn fan_out_event(
         let _ = tx.try_send(Outbound::Frame(FrameKind::Event {
             terminal: terminal.cloned(),
             event: event.clone(),
+            stamp: None,
         }));
     }
 }

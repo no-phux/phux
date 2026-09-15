@@ -3083,6 +3083,7 @@ fn notify_satellite_lease_seized(
             action: ControlAction::Seized,
             actor: Some(wire_client_id(new_holder)),
         },
+        stamp: None,
     };
     if evicted.out_tx.try_send(Outbound::Frame(frame)).is_err() {
         debug!(
@@ -5324,6 +5325,7 @@ mod hub_detach_fence_tests {
                     },
                     forward: FrameKind::SubscribeEvents {
                         terminal: Some(ResourceId::local(7)),
+                        after_seq: None,
                     },
                 })
                 .unwrap();

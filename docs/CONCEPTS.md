@@ -93,7 +93,9 @@ Target-versus-shipped gaps as of the last review. Each row names the ADR that ow
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Working-directory and command-boundary events as an L1 Terminal-facet frame | `TERMINAL_EVENT` has no codec entry. `cwd_changed`, `command_started`, and `command_finished` reach consumers only through the `SUBSCRIBE_RESOURCE_EVENTS` gate path. | [ADR-0015](adr/0015-protocol-layering.md) | phux-ue2r |
+| Typed terminal facts for embedders | `TERMINAL_EVENT` is retired. `cwd_changed`, `command_started`, and `command_finished` ride `EVENT`, which the native FFI does not yet surface, and `GET_TERMINAL_STATE` has no typed process object. | [ADR-0123](adr/0123-events-are-journaled.md) | phux-ue2r |
+| Journaled, resumable event delivery | The codec carries the `EVENT` stamp, `after_seq`, and the gap events. The reference server neither journals nor replays, and a full connection mailbox still drops an event without a gap. | [ADR-0123](adr/0123-events-are-journaled.md) | PHA-406 |
+| Retained exits and idempotent creates | The codec carries `retain_secs`, the snapshot exit facet, `idempotency_key`, and `replayed`. The reference server closes every Terminal at exit and spawns again on a retried key. | [ADR-0124](adr/0124-retain-on-exit.md), [ADR-0126](adr/0126-idempotent-create.md) | PHA-406 |
 | On-disk output journal and crash recovery | The server keeps every resource in memory. Nothing is journaled and there is no recovery flag. | [ADR-0092](adr/0092-durable-work-coordinator-authority.md) | phux-p91i |
 | Workload authentication enforcement | The mTLS + scope-matrix profile is specified in `workload-auth.md`. The reference server requests no client certificate and enforces no scope matrix. | [ADR-0116](adr/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
 | Cockpit projection of agent sessions | Cockpit lists Terminal-kind resources only; AgentSession children are not shown under their parent. | [ADR-0103](adr/0103-agent-session-resource-and-producer-fed-streams.md) | phux-am9y.25 |

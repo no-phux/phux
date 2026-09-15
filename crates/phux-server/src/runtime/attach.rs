@@ -2936,7 +2936,7 @@ impl AttachStaging {
                 .map(|terminal_id| FrameKind::ResourceClosed {
                     terminal_id,
                     exit_status: None,
-                    reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                    reason: phux_protocol::wire::frame::CloseReason::Unknown, signal: None,
                 }),
         );
         self.budget

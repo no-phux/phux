@@ -298,6 +298,7 @@ async fn last_pane_close_on_first_burst_skips_deferred_bootstrap_writes() {
         terminal_id: ResourceId::local(1),
         exit_status: Some(7),
         reason: phux_protocol::wire::frame::CloseReason::Exited,
+        signal: None,
     };
     let step = state
         .handle_frame_burst(&mut client, &mut out, None, closed)
@@ -590,6 +591,7 @@ async fn peer_metadata_and_hostname_reach_visible_sidebar_at_the_burst_drain() {
         scope: Scope::Resource(peer_id),
         key: phux_client::agent_meta::RESOURCE_AGENT_KEY.to_owned(),
         value: Some(done.encode()),
+        actor: None,
     };
     out.clear();
     state
@@ -632,6 +634,7 @@ async fn peer_layout_broadcast_discovers_and_subscribes_new_agent_leaves() {
         scope: Scope::Group(phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID),
         key: phux_client::layout_ops::layout_key(SessionId::new(2)),
         value: Some(Workspace::single(id.clone()).encode_cbor().unwrap()),
+        actor: None,
     };
     state
         .apply_server_frame(

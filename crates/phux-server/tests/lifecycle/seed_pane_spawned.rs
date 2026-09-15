@@ -94,7 +94,14 @@ fn blocking_seed_command() -> Vec<String> {
 /// `handle_subscribe_events`, which registers the subscription
 /// synchronously in `ServerState`.
 async fn subscribe_server_wide(stream: &mut UnixStream, request_id: u32) {
-    send_frame(stream, &FrameKind::SubscribeEvents { terminal: None }).await;
+    send_frame(
+        stream,
+        &FrameKind::SubscribeEvents {
+            terminal: None,
+            after_seq: None,
+        },
+    )
+    .await;
     send_frame(
         stream,
         &FrameKind::Command {
@@ -139,6 +146,7 @@ async fn await_pane_spawned(
         if let FrameKind::Event {
             terminal,
             event: AgentEvent::ResourceSpawned { .. },
+            ..
         } = frame
         {
             return Some(terminal);

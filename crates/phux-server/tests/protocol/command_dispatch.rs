@@ -1282,7 +1282,10 @@ fn session_rename_broadcasts_metadata_changed_to_subscribers() {
             let (_type_byte, frame) = timeout(remaining, recv_typed(&mut subscriber))
                 .await
                 .expect("subscriber stream must stay live while awaiting the rename fanout");
-            if let FrameKind::MetadataChanged { scope, key, value } = frame {
+            if let FrameKind::MetadataChanged {
+                scope, key, value, ..
+            } = frame
+            {
                 assert_eq!(scope, Scope::Global, "rename fanout scope");
                 assert_eq!(key, SESSION_NAME_KEY, "rename fanout key");
                 break value;
