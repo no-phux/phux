@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Fail if ring's aarch64 P-256 mul wrapper branches into dead-stripped padding.
+"""Fail if ring's aarch64 P-256 wrappers branch into dead-stripped padding.
 
-ring 0.17's Apple ARM64 assembly defines `_p256_mul_mont` as a global wrapper
-that `bl`s a file-local `__ecp_nistz256_mul_mont`. Mach-O
-`.subsections_via_symbols` plus dead_strip can drop that helper while leaving
-the wrapper's PC-relative `bl` intact. The next instruction at the target is
-then `udf #0` (zeros), and a QUIC TLS handshake aborts in
-`phux-remote-tunnel`.
+ring 0.17's Apple ARM64 assembly defines `_p256_mul_mont` and
+`_p256_sqr_mont` as global wrappers that `bl` file-local helpers
+(`__ecp_nistz256_mul_mont`, `__ecp_nistz256_sqr_mont`). Mach-O
+`.subsections_via_symbols` plus dead_strip can drop those helpers while
+leaving the wrappers' PC-relative `bl` intact. The next instruction at
+the target is then `udf #0` (zeros). QUIC TLS 1.3 handshake verification
+(`verify_tls13_signature` → webpki → ring ECDSA) then SIGILL on
+`phux-remote-tunnel`; Zig's segfault handler aborts the app.
 
-This inspects a linked Mach-O: the first `bl` in `_ring_core_*p256_mul_mont`
-must land on a 64-bit `mul`, which is how the helper starts in
-`p256-armv8-asm-ios64.S`.
+Confirmed 2026-09-15 DiagnosticReports (Cockpit 0.23.3): EXC_BAD_INSTRUCTION
+on `_ring_core_*p256_mul_mont` during the handshake. `catch_unwind` cannot
+contain SIGILL. The shipping fix is `link_gc_sections = false`.
+
+This inspects a linked Mach-O: the first `bl` in each
+`_ring_core_*p256_{mul,sqr}_mont` wrapper must land on a 64-bit `mul`,
+which is how both helpers start in `p256-armv8-asm-ios64.S`.
 """
 
 from __future__ import annotations
@@ -25,7 +31,10 @@ BL_MASK = 0xFC000000
 BL_OP = 0x94000000
 MUL64_MASK = 0xFF000000
 MUL64_OP = 0x9B000000
-SYMBOL = "_ring_core_0_17_14__p256_mul_mont"
+SYMBOLS = (
+    "_ring_core_0_17_14__p256_mul_mont",
+    "_ring_core_0_17_14__p256_sqr_mont",
+)
 
 
 def fail(message: str) -> None:
@@ -37,13 +46,13 @@ def parse_macho_int(value: str) -> int:
     return int(value, 16) if value.lower().startswith("0x") else int(value)
 
 
-def symbol_address(path: Path) -> int:
+def symbol_address(path: Path, symbol: str) -> int:
     listed = subprocess.check_output(["/usr/bin/nm", str(path)], text=True)
     for line in listed.splitlines():
         parts = line.split()
-        if len(parts) >= 3 and parts[-1] == SYMBOL:
+        if len(parts) >= 3 and parts[-1] == symbol:
             return int(parts[0], 16)
-    fail(f"{path}: missing {SYMBOL}")
+    fail(f"{path}: missing {symbol}")
     raise AssertionError
 
 
@@ -85,7 +94,7 @@ def bl_target(pc: int, inst: int) -> int | None:
     return pc + (imm26 << 2)
 
 
-def first_bl(data: bytes, vmaddr: int, fileoff: int, start: int) -> tuple[int, int]:
+def first_bl(data: bytes, vmaddr: int, fileoff: int, start: int, symbol: str) -> tuple[int, int]:
     pc = start
     for _ in range(32):
         inst = read_word(data, vmaddr, fileoff, pc)
@@ -93,25 +102,35 @@ def first_bl(data: bytes, vmaddr: int, fileoff: int, start: int) -> tuple[int, i
         if target is not None:
             return pc, target
         pc += 4
-    fail(f"{SYMBOL} has no bl in its first 32 instructions")
+    fail(f"{symbol} has no bl in its first 32 instructions")
     raise AssertionError
 
 
-def check(path: Path) -> None:
-    address = symbol_address(path)
-    vmaddr, size, fileoff = text_mapping(path)
+def check_symbol(path: Path, data: bytes, vmaddr: int, size: int, fileoff: int, symbol: str) -> None:
+    address = symbol_address(path, symbol)
     if not (vmaddr <= address < vmaddr + size):
-        fail(f"{SYMBOL} at 0x{address:x} is outside __text")
-    data = path.read_bytes()
-    pc, target = first_bl(data, vmaddr, fileoff, address)
+        fail(f"{symbol} at 0x{address:x} is outside __text")
+    pc, target = first_bl(data, vmaddr, fileoff, address, symbol)
     landed = read_word(data, vmaddr, fileoff, target)
     if landed & MUL64_MASK != MUL64_OP:
-        fail(
-            f"{path}: {SYMBOL} bl at 0x{pc:x} lands on 0x{target:x} "
-            f"(word 0x{landed:08x}, want 64-bit mul). "
-            "dead_strip dropped ring's local __ecp_nistz256_mul_mont helper."
+        helper = (
+            "__ecp_nistz256_mul_mont"
+            if "mul_mont" in symbol
+            else "__ecp_nistz256_sqr_mont"
         )
-    print(f"ok: {SYMBOL} bl 0x{pc:x} -> mul at 0x{target:x}")
+        fail(
+            f"{path}: {symbol} bl at 0x{pc:x} lands on 0x{target:x} "
+            f"(word 0x{landed:08x}, want 64-bit mul). "
+            f"dead_strip dropped ring's local {helper} helper."
+        )
+    print(f"ok: {symbol} bl 0x{pc:x} -> mul at 0x{target:x}")
+
+
+def check(path: Path) -> None:
+    vmaddr, size, fileoff = text_mapping(path)
+    data = path.read_bytes()
+    for symbol in SYMBOLS:
+        check_symbol(path, data, vmaddr, size, fileoff, symbol)
 
 
 def main() -> None:
