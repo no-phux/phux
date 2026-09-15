@@ -551,13 +551,14 @@ the FFI and fails loudly rather than building an app with no Phux path:
 zig build test -Dphux-enabled=true
 ```
 
-At launch, the Phux provider attaches the running server's current session. It
-never creates a server session as a startup side effect. `PHUX_SESSION=name`
-selects an existing session by name; the terminal switcher then exposes the
-server's complete attached-session catalog by stable server ID. If no server
-session can be attached, Cockpit keeps the direct local terminal usable, marks
-it as ephemeral with `PHUX OFFLINE`, and offers one explicit retry after a Phux
-session is started or created.
+At launch, a configured Phux provider drops any local seed terminal and waits
+for coordinator-owned work. It attaches the running server's current session
+and never creates a server session as a startup side effect.
+`PHUX_SESSION=name` selects an existing session by name; the terminal switcher
+then exposes the server's complete attached-session catalog by stable server
+ID. If no server session can be attached, the workspace stays empty in a
+recovery state (`PHUX OFFLINE`) rather than minting a replacement local shell,
+and offers one explicit retry after a Phux session is started or created.
 
 Tabs start at the top by default. Set `PHUX_COCKPIT_TABS=side` (or `sidebar`)
 to start with the side rail; the in-app placement control switches the current

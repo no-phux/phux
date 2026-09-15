@@ -154,15 +154,18 @@ tab_count() {
     app_instance_snapshot | grep -c 'role=tab name=' || true
 }
 
-# A Phux run starts with the ephemeral local terminal, then admits the current
-# provider-backed terminal when readiness arrives. Do not drive the app while
-# that asynchronous attachment is still changing the tab run.
+# A configured Phux run drops the local seed and waits for coordinator-owned
+# work. Do not drive the app while that asynchronous attachment is still
+# changing the tab run. Require a Phux terminal and exactly one tab so a leftover
+# ephemeral local seed cannot satisfy the wait.
 if [[ "$PHUX" == 1 ]]; then
     deadline=$((SECONDS + 30))
     while :; do
         snapshot="$(app_instance_snapshot)"
         attached_tabs="$(grep -c 'role=tab name=' <<<"$snapshot" || true)"
-        if [[ "$attached_tabs" == 2 ]] && grep -q 'role=textbox name=' <<<"$snapshot"; then
+        if [[ "$attached_tabs" == 1 ]] &&
+            grep -q 'phux terminal' <<<"$snapshot" &&
+            grep -q 'role=textbox name=' <<<"$snapshot"; then
             break
         fi
         if [[ "$SECONDS" -ge "$deadline" ]]; then
