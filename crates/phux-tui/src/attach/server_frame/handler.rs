@@ -7,9 +7,8 @@ use phux_client_core::session::EffectBuffer as KernelEffectBuffer;
 use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
-    AgentEvent, CONFIG_RELOAD_KEY, CloseReason, DetachReason, ErrorCode, FrameKind,
-    ResourceLifecycle, SESSION_KEEP_EMPTY_KEY, Scope, SpawnError, SpawnResult,
-    decode_session_keep_empty,
+    AgentEvent, CONFIG_RELOAD_KEY, DetachReason, ErrorCode, FrameKind, ResourceLifecycle,
+    SESSION_KEEP_EMPTY_KEY, Scope, SpawnError, SpawnResult, decode_session_keep_empty,
 };
 
 use crate::attach::actions::{
@@ -23,7 +22,7 @@ use crate::attach::pane_state::{
 };
 use crate::attach::render::ReplicaWalk;
 use crate::layout::{self, LayoutState, Rect, Workspace};
-use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell};
+use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell_at};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
 use phux_client::agent_meta::RESOURCE_AGENT_KEY;
 use phux_client::conditional_kill::BoundResource;
@@ -315,10 +314,14 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
             notices: route.notices,
             ..FrameOutcome::default()
         }),
-        FrameKind::AttachReady { .. } => Ok(FrameOutcome {
-            layout_replaced: !route.damaged.is_empty(),
-            ..FrameOutcome::default()
-        }),
+        FrameKind::AttachReady { .. } => {
+            let authoritative_damage = route.damaged.iter().cloned().collect();
+            Ok(FrameOutcome {
+                layout_replaced: !route.damaged.is_empty(),
+                authoritative_damage,
+                ..FrameOutcome::default()
+            })
+        }
         FrameKind::ResourceOutput {
             terminal_id,
             stream_id: _,
@@ -339,25 +342,16 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         FrameKind::MetadataValue { request_id, value } => {
             handle_metadata_value(ctx, request_id, value)
         }
-        FrameKind::MetadataChanged { scope, key, value } => {
-            handle_metadata_changed(ctx, &scope, &key, value)
-        }
+        FrameKind::MetadataChanged {
+            scope, key, value, ..
+        } => handle_metadata_changed(ctx, &scope, &key, value),
         FrameKind::DirectoryListing { request_id, result } => {
             Ok(directory_listing_outcome(request_id, result))
         }
         FrameKind::ResourceSpawned { request_id, result } => {
             handle_terminal_spawned(ctx, request_id, result)
         }
-        FrameKind::ResourceClosed {
-            terminal_id,
-            exit_status,
-            reason,
-        } => Ok(handle_terminal_closed(
-            ctx,
-            &terminal_id,
-            exit_status,
-            reason,
-        )),
+        closed @ FrameKind::ResourceClosed { .. } => Ok(handle_terminal_closed(ctx, closed)),
         event @ FrameKind::Event { .. } => Ok(handle_agent_event(ctx, event, &route)),
         FrameKind::Error {
             request_id,
@@ -613,6 +607,7 @@ fn handle_bootstrap_ready<W: crate::attach::RenderSink>(
     let damaged = route.damaged(terminal_id);
     Ok(FrameOutcome {
         layout_replaced: damaged,
+        authoritative_damage: damaged.then(|| terminal_id.clone()).into_iter().collect(),
         chrome_dirty: damaged && title_changed,
         history_request: route.history_request,
         pty_writes: route.pty_writes,
@@ -731,6 +726,7 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
         crate::attach::render_prof::note_skipped(1);
         return Ok(FrameOutcome {
             ack,
+            authoritative_damage: vec![terminal_id.clone()],
             chrome_dirty: title_changed,
             pty_writes,
             notices,
@@ -756,6 +752,9 @@ fn handle_terminal_output<W: crate::attach::RenderSink>(
     );
     Ok(FrameOutcome {
         ack,
+        authoritative_damage: vec![terminal_id.clone()],
+        painted_output: (ctx.focused_resource.as_ref() == Some(terminal_id))
+            .then(|| terminal_id.clone()),
         chrome_dirty: title_changed,
         pty_writes,
         notices,
@@ -964,8 +963,9 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     // confirmed predictions drop, contradictions drop their
     // suffix, predictions still ahead of confirmed state
     // stay alive. See [`crate::predict`] for the truth table.
+    let now_ms = crate::attach::input_dispatch::predict_now_ms();
     if let Some((row, col)) = focused_cursor_local {
-        let _stats = reconcile_terminal_output_per_cell(predict, row, col, |r, c| {
+        let _stats = reconcile_terminal_output_per_cell_at(predict, row, col, now_ms, |r, c| {
             panes.get_mut(fid).and_then(|s| {
                 // Read the full grapheme cluster, not just the
                 // base scalar, so multi-codepoint Insert
@@ -991,7 +991,7 @@ fn paint_focused_interior<W: crate::attach::RenderSink>(
     // alt-screen echo latch is locked, the state is tentative,
     // or the front guess is past the TTL, the tail reconciles
     // silently instead of painting.
-    if predict.should_display(crate::attach::input_dispatch::predict_now_ms()) {
+    if predict.should_display(now_ms) {
         let _ = overlay.render(predict, pane_origin, out);
         // phux-esge: the guesses now sit over the pane's cells; the front
         // buffer must not keep claiming what was there before them.
@@ -1498,13 +1498,22 @@ fn window_holding_pane(workspace: &Workspace, pane: &ResourceId) -> Option<usize
 /// in lockstep.
 fn handle_terminal_closed<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal_id: &ResourceId,
-    exit_status: Option<i32>,
-    reason: CloseReason,
+    frame: FrameKind,
 ) -> FrameOutcome {
+    let FrameKind::ResourceClosed {
+        terminal_id,
+        exit_status,
+        reason,
+        signal,
+    } = frame
+    else {
+        return FrameOutcome::default();
+    };
+    let terminal_id = &terminal_id;
     tracing::info!(
         terminal = ?terminal_id,
         exit_status = ?exit_status,
+        ?signal,
         ?reason,
         "ResourceClosed",
     );
@@ -1675,6 +1684,7 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::ResourceSpawned { .. },
+            ..
         } if route.declared_agent.as_ref() == Some(&terminal) => FrameOutcome {
             attach_panes: vec![terminal],
             chrome_dirty: true,
@@ -1688,18 +1698,22 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
                     input_holder,
                     ..
                 },
+            ..
         } => fold_terminal_control(ctx, &terminal, lifecycle, input_holder),
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::Asked { .. },
+            ..
         } => fold_agent_ask(ctx, terminal),
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::CwdChanged { cwd },
+            ..
         } => fold_cwd_changed(ctx, &terminal, cwd),
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::CommandFinished { exit_code },
+            ..
         } => fold_command_finished(ctx, &terminal, exit_code),
         // phux-k0cw: the pane set of ANOTHER session changed. This client
         // holds a server-wide `SUBSCRIBE_EVENTS { terminal: None }`, so the
@@ -1709,6 +1723,7 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::ResourceSpawned { .. } | AgentEvent::ResourceClosed { .. },
+            ..
         } if !ctx.panes.contains_key(&terminal) && !ctx.is_agent_session(&terminal) => {
             FrameOutcome {
                 foreign_pane_set_dirty: true,

@@ -410,6 +410,9 @@ pub mod metadata_changed {
     pub const KEY: u32 = 2;
     /// Optional new value bytes (absent field = `None` / tombstone).
     pub const VALUE: u32 = 3;
+    /// Optional `ActorRef` of the connection whose write caused the change
+    /// (positional; ADR-0123, gated on `ServerFeature::EventJournal`).
+    pub const ACTOR: u32 = 4;
 }
 
 /// `METADATA_VALUE` body fields (`docs/spec/L3.md` §1).
@@ -506,6 +509,13 @@ pub mod spawn_terminal {
     /// token in `RESOURCE_SPAWNED.instance` (ADR-0109). Absent or `0` =
     /// unbound.
     pub const BIND_INSTANCE: u32 = 15;
+    /// Optional `u32` retention in seconds after the process exits
+    /// (ADR-0124). Absent = not retained; `0` = the server's default.
+    /// Terminal only.
+    pub const RETAIN_SECS: u32 = 16;
+    /// Optional 16-byte non-zero idempotency key (ADR-0126). Valid for
+    /// every kind.
+    pub const IDEMPOTENCY_KEY: u32 = 17;
 }
 
 /// `RESOURCE_SPAWNED` body fields (`docs/spec/L1.md` §10.1).
@@ -518,6 +528,9 @@ pub mod terminal_spawned {
     /// (ADR-0109); written only in reply to a spawn that set
     /// `BIND_INSTANCE`.
     pub const INSTANCE: u32 = 3;
+    /// Optional `u8` flag (`1` = the reply repeats an earlier spawn with the
+    /// same idempotency key, ADR-0126). Written only beside an `Ok` result.
+    pub const REPLAYED: u32 = 4;
 }
 
 /// `MOVE_RESOURCE` body fields (`docs/spec/L1.md` §10.1; ADR-0056).
@@ -550,6 +563,9 @@ pub mod terminal_closed {
     /// reason (`CloseReason::Unknown`), which is what every pre-reason body
     /// decodes as.
     pub const REASON: u32 = 3;
+    /// Optional terminating signal number (`i32`, two's-complement `u32`).
+    /// Absent = the process was not killed by a signal, or it is unknown.
+    pub const SIGNAL: u32 = 4;
 }
 
 /// `RESIZE_TERMINAL` body fields (`docs/spec/L1.md` §10.2).
@@ -582,14 +598,71 @@ pub mod command_result {
 pub mod subscribe_events {
     /// Optional `ResourceId` scope (absent field = server-scoped `None`).
     pub const TERMINAL: u32 = 1;
+    /// Optional `u64` journal cursor: replay retained events with a greater
+    /// `seq` before going live (ADR-0123).
+    pub const AFTER_SEQ: u32 = 2;
 }
 
 /// `EVENT` body fields (`docs/spec/L1.md` §7.5).
+///
+/// Fields 3-6 are the journal stamp (ADR-0123): a server that advertises
+/// `ServerFeature::EventJournal` writes `SEQ` and `TS_MS` on every journaled
+/// event, `ACTOR` when a connection caused it, and `OPERATION_ID` when a
+/// keyed operation did. An older decoder skips all four by length.
 pub mod event {
     /// Optional `ResourceId` scope (absent field = server-scoped `None`).
     pub const TERMINAL: u32 = 1;
     /// `AgentEvent` tagged union (positional TLV: tag + length-prefixed body).
     pub const EVENT: u32 = 2;
+    /// Server-wide journal sequence (`u64`, starts at 1, never wraps).
+    pub const SEQ: u32 = 3;
+    /// Server wall-clock time the event was journaled, Unix milliseconds
+    /// (`u64`).
+    pub const TS_MS: u32 = 4;
+    /// `ActorRef` of the connection that caused the event (positional).
+    pub const ACTOR: u32 = 5;
+    /// The idempotency key of the operation that caused the event
+    /// (16 bytes).
+    pub const OPERATION_ID: u32 = 6;
+}
+
+/// `AgentEvent::JournalGap` body fields (`docs/spec/L1.md` §7.1).
+pub mod event_journal_gap {
+    /// First missing journal sequence (`u64`, inclusive).
+    pub const FIRST_MISSING: u32 = 1;
+    /// Last missing journal sequence (`u64`, inclusive).
+    pub const LAST_MISSING: u32 = 2;
+}
+
+/// `AgentEvent::SourceGap` body fields (`docs/spec/L1.md` §7.1).
+pub mod event_source_gap {
+    /// Number of events the scoped resource produced and the server dropped
+    /// before journaling them (`u64`).
+    pub const DROPPED: u32 = 1;
+}
+
+/// Fields of the `SessionSnapshot` extension block (`docs/spec/L1.md` §9.1).
+///
+/// The block is the fifth trailing element, after the listeners report: one
+/// length-prefixed field-tagged TLV sequence, so later snapshot additions
+/// are new field ids here rather than new positional trailing lists.
+pub mod snapshot_extension {
+    /// One retained or held resource's state: positional `ResourceId`
+    /// followed by the field-tagged [`resource_state`](super::resource_state)
+    /// fields. Repeated, one per resource with non-default state.
+    pub const RESOURCE_STATE: u32 = 1;
+}
+
+/// Fields inside one `snapshot_extension::RESOURCE_STATE` value, after its
+/// positional `ResourceId`.
+pub mod resource_state {
+    /// `ResourceLifecycle` (`u8`); absent = `RUNNING`.
+    pub const LIFECYCLE: u32 = 1;
+    /// `ExitFacet` (positional); present iff the resource exited and is
+    /// retained (ADR-0124).
+    pub const EXIT: u32 = 2;
+    /// `ClientId` (`u32`) of the input-lease holder; absent = open.
+    pub const INPUT_HOLDER: u32 = 3;
 }
 
 /// `AgentEvent::Asked` body fields (`docs/spec/L1.md` §7.5).

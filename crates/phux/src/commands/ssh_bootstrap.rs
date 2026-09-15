@@ -20,21 +20,13 @@
 //! on the host at all, is reported instead: the fallback would fail the same
 //! way.
 
-use std::ffi::OsString;
 use std::process::{Command, ExitCode, Stdio};
-use std::time::Duration;
 
-use phux_client::attach::connection::Connection;
 use phux_protocol::PROTOCOL_VERSION;
 
 use super::attach;
+use super::enroll::{authority, ssh_hostname, ssh_program};
 use super::rec::RecordSpec;
-
-/// How long the probe dial may take before UDP is judged unreachable. A
-/// reachable host answers a QUIC handshake in one round trip; this only
-/// fires on a filtered path, where the alternative is waiting out quinn's
-/// idle timeout.
-const PROBE_DEADLINE: Duration = Duration::from_secs(5);
 
 /// ssh's exit status when ssh itself failed (resolution, connection,
 /// authentication), as opposed to the remote command.
@@ -106,7 +98,9 @@ pub(crate) fn run(args: SshAttach<'_>) -> ExitCode {
 
     let host = ssh_hostname(&args.destination);
     let target = authority(&host, report.port);
-    if let Err(reason) = probe(&target, &report) {
+    if let Err(reason) =
+        super::enroll::probe(&target, &report.token, Some(&report.cert_fingerprint))
+    {
         return fall_back(
             &args,
             &format!("QUIC to {target} did not connect: {reason}"),
@@ -138,12 +132,6 @@ fn fall_back(args: &SshAttach<'_>, why: &str) -> ExitCode {
         &args.remote_phux,
         args.session.as_deref(),
     )
-}
-
-/// The ssh program: `$PHUX_SSH` when set, the same seam `phux host enroll`
-/// and the federation hub use, otherwise `ssh`.
-fn ssh_program() -> OsString {
-    std::env::var_os("PHUX_SSH").unwrap_or_else(|| "ssh".into())
 }
 
 /// Run `phux bootstrap` on the host and read back its report.
@@ -292,97 +280,9 @@ fn check_protocol(theirs: Option<&str>, destination: &str) -> Result<(), String>
     ))
 }
 
-/// The host ssh would connect to for `destination`, from `ssh -G`, so an
-/// alias with a `HostName` resolves to the machine it names. Falls back to
-/// the host spelled in the destination when `ssh -G` has no answer.
-fn ssh_hostname(destination: &str) -> String {
-    Command::new(ssh_program())
-        .arg("-G")
-        .arg("--")
-        .arg(destination)
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| parse_ssh_g_hostname(&String::from_utf8_lossy(&output.stdout)))
-        .unwrap_or_else(|| destination_host(destination))
-}
-
-/// The `hostname` line of `ssh -G` output.
-fn parse_ssh_g_hostname(output: &str) -> Option<String> {
-    output
-        .lines()
-        .find_map(|line| line.strip_prefix("hostname "))
-        .map(str::trim)
-        .filter(|host| !host.is_empty())
-        .map(str::to_owned)
-}
-
-/// The host part of an ssh destination: `[user@]host`, `[user@]host:port`,
-/// or `ssh://[user@]host[:port]`, with IPv6 brackets removed.
-fn destination_host(destination: &str) -> String {
-    let rest = destination.strip_prefix("ssh://").unwrap_or(destination);
-    let authority = rest.split('/').next().unwrap_or(rest);
-    let host = authority
-        .rsplit_once('@')
-        .map_or(authority, |(_, host)| host);
-    if let Some(inner) = host.strip_prefix('[') {
-        return inner
-            .split_once(']')
-            .map_or(inner, |(host, _)| host)
-            .to_owned();
-    }
-    if host.matches(':').count() == 1 {
-        return host
-            .split_once(':')
-            .map_or(host, |(host, _)| host)
-            .to_owned();
-    }
-    host.to_owned()
-}
-
-/// `HOST:PORT`, bracketing an IPv6 literal.
-fn authority(host: &str, port: u16) -> String {
-    if host.contains(':') {
-        format!("[{host}]:{port}")
-    } else {
-        format!("{host}:{port}")
-    }
-}
-
-/// Dial once, briefly, to learn whether UDP reaches the listener at all.
-fn probe(target: &str, report: &Report) -> Result<(), String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| format!("could not build a runtime: {err}"))?;
-    let plan = attach::plan_quic_dial(
-        &rt,
-        target,
-        Some(report.token.clone()),
-        Some(report.cert_fingerprint.clone()),
-        None,
-    )
-    .map_err(|refusal| format!("{refusal:?}"))?;
-    rt.block_on(async {
-        match tokio::time::timeout(PROBE_DEADLINE, Connection::connect_dial(&plan.dial)).await {
-            Ok(Ok(_connection)) => Ok(()),
-            Ok(Err(err)) => Err(err.to_string()),
-            Err(_) => Err(format!(
-                "no answer within {}s (is UDP filtered?)",
-                PROBE_DEADLINE.as_secs()
-            )),
-        }
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        authority, check_protocol, destination_host, parse_report, parse_ssh_g_hostname,
-        remote_command, shell_quote,
-    };
+    use super::{check_protocol, parse_report, remote_command, shell_quote};
 
     const DOC: &str = r#"{"schema_version":1,"transport":"quic","port":60123,"cert_fingerprint":"AB:CD","token":"00ff","protocol_version":"0.9.0"}"#;
 
@@ -417,29 +317,6 @@ mod tests {
         let err = check_protocol(Some("0.1.0"), "box").unwrap_err();
         assert!(err.contains("0.1.0") && err.contains(&ours), "{err}");
         assert!(check_protocol(Some("garbage"), "box").is_err());
-    }
-
-    #[test]
-    fn ssh_g_names_the_real_host() {
-        let output = "user me\nhostname 10.0.0.5\nport 22\n";
-        assert_eq!(parse_ssh_g_hostname(output).as_deref(), Some("10.0.0.5"));
-        assert_eq!(parse_ssh_g_hostname("user me\n"), None);
-    }
-
-    #[test]
-    fn destination_host_reads_every_ssh_spelling() {
-        assert_eq!(destination_host("box"), "box");
-        assert_eq!(destination_host("me@box"), "box");
-        assert_eq!(destination_host("me@box:2222"), "box");
-        assert_eq!(destination_host("ssh://me@box:2222"), "box");
-        assert_eq!(destination_host("ssh://me@[fd7a::1]:2222"), "fd7a::1");
-        assert_eq!(destination_host("fd7a::1"), "fd7a::1");
-    }
-
-    #[test]
-    fn authority_brackets_ipv6() {
-        assert_eq!(authority("box", 60123), "box:60123");
-        assert_eq!(authority("fd7a::1", 60123), "[fd7a::1]:60123");
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod client;
 mod directory;
 mod error;
 mod grid_metadata;
+mod log;
 mod operations;
 mod pointer;
 mod remote;
@@ -27,6 +28,7 @@ use client::{Client, Limits};
 use error::{BridgeError, bytes_in, check_struct, outbound_bytes_in, terminal_id_in};
 use phux_client_core::engine::CanonicalGeometry;
 use phux_client_core::engine::ghostty::native_bootstrap_capabilities;
+use phux_client_core::handshake::validate_hello_ok;
 use phux_client_core::session::{AgentSessionDeclaration, KernelAction, KernelInput};
 use phux_protocol::ResourceKind;
 use phux_protocol::caps::BootstrapLimits;
@@ -40,6 +42,7 @@ use phux_protocol::{PROTOCOL_VERSION, SessionId};
 
 pub use directory::*;
 pub use grid_metadata::*;
+pub use log::*;
 pub use operations::*;
 pub use pointer::{
     PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,
@@ -461,12 +464,7 @@ pub unsafe extern "C" fn phux_client_queue_hello(
         if name.is_empty() {
             return Err(BridgeError::invalid("client name is empty"));
         }
-        let limits =
-            BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
-                .ok_or_else(|| BridgeError::state("stored bootstrap limits are invalid"))?;
-        let caps = phux_protocol::ClientCapabilities::new()
-            .with_layers(phux_protocol::LayerSet::with(&[phux_protocol::Layer::L3]))
-            .with_bootstrap(native_bootstrap_capabilities(limits));
+        let caps = advertised_client_caps(client)?;
         client.queue_frame(&FrameKind::Hello {
             client_name: name.to_owned(),
             protocol_major: PROTOCOL_VERSION.major,
@@ -474,6 +472,7 @@ pub unsafe extern "C" fn phux_client_queue_hello(
             protocol_patch: PROTOCOL_VERSION.patch,
             client_caps: caps,
         })?;
+        client.offered_caps = Some(caps);
         client.hello_queued = true;
         Ok(())
     })
@@ -708,16 +707,17 @@ fn dispatch_frame(
         FrameKind::HelloOk {
             protocol_major,
             protocol_minor,
+            protocol_patch,
             server_caps,
             selected_profile,
             bootstrap_limits,
             server_id,
-            ..
         } => {
             apply_hello_ok(
                 client,
                 protocol_major,
                 protocol_minor,
+                protocol_patch,
                 server_caps,
                 selected_profile,
                 bootstrap_limits,
@@ -886,49 +886,15 @@ fn dispatch_terminal_frame(client: &mut Client, frame: FrameKind) -> Result<(), 
     }
 }
 
-/// Rejects a `HELLO_OK` that does not answer this client's handshake on the
-/// terms it advertised.
-fn ensure_hello_ok_accepted(
+/// Capabilities this client advertises in `HELLO`, built from stored limits.
+fn advertised_client_caps(
     client: &Client,
-    protocol_major: u16,
-    protocol_minor: u16,
-    bootstrap_limits: BootstrapLimits,
-) -> Result<(), BridgeError> {
-    if protocol_major != PROTOCOL_VERSION.major || protocol_minor != PROTOCOL_VERSION.minor {
-        return Err(BridgeError::protocol(
-            "server selected an unsupported protocol version",
-        ));
-    }
-    if bootstrap_limits.max_chunk_bytes() > client.limits.bootstrap_chunk
-        || bootstrap_limits.max_history_page_bytes() > client.limits.history_page
-    {
-        return Err(BridgeError::protocol(
-            "server selected payload limits above the client advertisement",
-        ));
-    }
-    if !client.hello_queued || client.protocol_ready {
-        return Err(BridgeError::protocol("unsolicited or duplicate HELLO_OK"));
-    }
-    Ok(())
-}
-
-/// True when the selected bootstrap profile is one this client advertised.
-const fn profile_is_advertised(
-    advertised: &phux_protocol::BootstrapCapabilities,
-    selected_profile: phux_protocol::BootstrapProfile,
-) -> bool {
-    match selected_profile {
-        phux_protocol::BootstrapProfile::NativeState { codec, features } => {
-            advertised.native_codecs.contains(codec) && features.supports_native()
-        }
-        phux_protocol::BootstrapProfile::SynthesizedVtRaw => advertised
-            .profiles
-            .contains(phux_protocol::BootstrapProfileKind::SynthesizedVtRaw),
-        phux_protocol::BootstrapProfile::SynthesizedVtStateSync => advertised
-            .profiles
-            .contains(phux_protocol::BootstrapProfileKind::SynthesizedVtStateSync),
-        _ => false,
-    }
+) -> Result<phux_protocol::ClientCapabilities, BridgeError> {
+    let limits = BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
+        .ok_or_else(|| BridgeError::state("stored bootstrap limits are invalid"))?;
+    Ok(phux_protocol::ClientCapabilities::new()
+        .with_layers(phux_protocol::LayerSet::with(&[phux_protocol::Layer::L3]))
+        .with_bootstrap(native_bootstrap_capabilities(limits)))
 }
 
 /// Closes the handshake and installs the negotiated bootstrap profile.
@@ -936,17 +902,27 @@ fn apply_hello_ok(
     client: &mut Client,
     protocol_major: u16,
     protocol_minor: u16,
+    protocol_patch: u16,
     server_caps: phux_protocol::caps::ServerCapabilities,
     selected_profile: phux_protocol::BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
 ) -> Result<(), BridgeError> {
-    ensure_hello_ok_accepted(client, protocol_major, protocol_minor, bootstrap_limits)?;
-    let advertised = native_bootstrap_capabilities(bootstrap_limits);
-    if !profile_is_advertised(&advertised, selected_profile) {
-        return Err(BridgeError::protocol(
-            "server selected a bootstrap profile the client did not advertise",
-        ));
+    if !client.hello_queued || client.protocol_ready {
+        return Err(BridgeError::protocol("unsolicited or duplicate HELLO_OK"));
     }
+    let offered = match client.offered_caps {
+        Some(caps) => caps,
+        None => advertised_client_caps(client)?,
+    };
+    validate_hello_ok(
+        &offered,
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        selected_profile,
+        bootstrap_limits,
+    )
+    .map_err(|err| BridgeError::protocol(err.to_string()))?;
     client.install_profile(selected_profile, bootstrap_limits);
     client.selected_profile = Some(selected_profile);
     client.terminal_reply = server_caps
@@ -2560,6 +2536,97 @@ mod tests {
         assert!(unsafe { (*new).inner.terminal_reply });
         unsafe { phux_client_free(new) };
     }
+
+    fn hello_ok(patch: u16, selected_profile: phux_protocol::BootstrapProfile) -> FrameKind {
+        FrameKind::HelloOk {
+            protocol_major: PROTOCOL_VERSION.major,
+            protocol_minor: PROTOCOL_VERSION.minor,
+            protocol_patch: patch,
+            server_caps: ServerCapabilities::new(),
+            server_id: b"server".to_vec(),
+            selected_profile,
+            bootstrap_limits: BootstrapLimits::new(1024, 1024).expect("valid test limits"),
+        }
+    }
+
+    fn native_hello_ok_profile() -> phux_protocol::BootstrapProfile {
+        phux_protocol::BootstrapProfile::NativeState {
+            codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
+            features: phux_protocol::EngineFeatureSet::required_native(),
+        }
+    }
+
+    #[test]
+    fn hello_ok_accepts_matching_patch_and_native_features() {
+        let client = boxed_client();
+        unsafe { (*client).inner.hello_queued = true };
+        let offered = advertised_client_caps(unsafe { &(*client).inner }).expect("advertisement");
+        let profile = if offered
+            .bootstrap
+            .profiles
+            .contains(phux_protocol::BootstrapProfileKind::NativeState)
+        {
+            native_hello_ok_profile()
+        } else {
+            phux_protocol::BootstrapProfile::SynthesizedVtRaw
+        };
+        assert_eq!(
+            feed_kind(client, &hello_ok(PROTOCOL_VERSION.patch, profile)),
+            PhuxClientResult::Ok
+        );
+        assert!(unsafe { (*client).inner.protocol_ready });
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    fn hello_ok_refuses_protocol_patch_mismatch() {
+        let client = boxed_client();
+        unsafe { (*client).inner.hello_queued = true };
+        assert_eq!(
+            feed_kind(
+                client,
+                &hello_ok(
+                    PROTOCOL_VERSION.patch.wrapping_add(1),
+                    phux_protocol::BootstrapProfile::SynthesizedVtRaw,
+                ),
+            ),
+            PhuxClientResult::ProtocolError
+        );
+        assert!(!unsafe { (*client).inner.protocol_ready });
+        unsafe { phux_client_free(client) };
+    }
+
+    #[test]
+    fn hello_ok_refuses_native_profile_when_required_features_are_missing() {
+        let client = boxed_client();
+        unsafe {
+            (*client).inner.hello_queued = true;
+            (*client).inner.offered_caps = Some(
+                phux_protocol::ClientCapabilities::new().with_bootstrap(
+                    phux_protocol::BootstrapCapabilities::new()
+                        .with_profiles(phux_protocol::BootstrapProfileSet::with(&[
+                            phux_protocol::BootstrapProfileKind::NativeState,
+                        ]))
+                        .with_native_codecs(phux_protocol::EngineCodecSet::with(&[
+                            phux_protocol::EngineCodec::LibghosttySnapshotV1,
+                        ]))
+                        .with_native_features(phux_protocol::EngineFeatureSet::with(&[
+                            phux_protocol::EngineFeature::Continuation,
+                        ])),
+                ),
+            );
+        }
+        assert_eq!(
+            feed_kind(
+                client,
+                &hello_ok(PROTOCOL_VERSION.patch, native_hello_ok_profile()),
+            ),
+            PhuxClientResult::ProtocolError
+        );
+        assert!(!unsafe { (*client).inner.protocol_ready });
+        unsafe { phux_client_free(client) };
+    }
+
     #[test]
     fn attach_ready_must_match_the_queued_attach_id() {
         let client = boxed_client();
@@ -3066,6 +3133,7 @@ mod tests {
                     terminal_id: seed.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                    signal: None,
                 },
             ),
             PhuxClientResult::Ok,
@@ -3406,6 +3474,7 @@ mod tests {
                     terminal_id: terminal_id.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                    signal: None,
                 },
             ),
             PhuxClientResult::ProtocolError
@@ -4076,6 +4145,7 @@ mod tests {
                     terminal_id: agent.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+                    signal: None,
                 },
             ),
             PhuxClientResult::Ok

@@ -448,6 +448,73 @@ fn release_terminal_reclaims_churn_and_allows_explicit_subscription_replacement(
     }
 }
 
+#[test]
+fn close_transfers_the_final_replica_without_reopening_the_terminal() {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let id = terminal(1);
+    let mut effects = EffectBuffer::new();
+    publish_direct_with_history(
+        &mut kernel,
+        &id,
+        stream(7),
+        bootstrap(3),
+        0,
+        b"cursor-0",
+        &mut effects,
+    );
+    kernel
+        .update(
+            KernelInput::HistoryPage {
+                terminal_id: &id,
+                stream_id: stream(7),
+                bootstrap_id: bootstrap(3),
+                cursor: b"cursor-0",
+                next_cursor: Some(b"cursor-1"),
+                payload: b"finished-history",
+                page_seq: 1,
+                rows: 2,
+            },
+            &mut effects,
+        )
+        .unwrap();
+    kernel.set_retain_replica_on_close(&id, true);
+
+    kernel
+        .update(
+            KernelInput::ResourceClosed { terminal_id: &id },
+            &mut effects,
+        )
+        .unwrap();
+
+    assert!(kernel.published(&id).is_none());
+    assert!(matches!(
+        kernel.input_eligibility(&id),
+        InputEligibility::Ineligible(InputBlockReason::Closed)
+    ));
+    let closed = kernel.take_closed_replica(&id).expect("final replica");
+    assert_eq!(closed.key().stream_id, stream(7));
+    assert_eq!(closed.key().bootstrap_id, bootstrap(3));
+    assert_eq!(closed.geometry(), geometry());
+    assert!(closed.engine().transcript.ends_with(b"finished-history"));
+    assert_eq!(closed.history().status().materialized_rows, 2);
+    assert!(kernel.take_closed_replica(&id).is_none());
+}
+
+#[test]
+fn close_drops_the_final_replica_unless_retention_is_requested() {
+    let mut kernel = kernel(ReadyMode::ChunkFirst);
+    let id = terminal(1);
+    let mut effects = EffectBuffer::new();
+    publish_direct(&mut kernel, &id, stream(7), bootstrap(3), 0, &mut effects);
+    kernel
+        .update(
+            KernelInput::ResourceClosed { terminal_id: &id },
+            &mut effects,
+        )
+        .unwrap();
+    assert!(kernel.take_closed_replica(&id).is_none());
+}
+
 fn begin(
     kernel: &mut SessionKernel<FakeAdapter>,
     terminal_id: &ResourceId,

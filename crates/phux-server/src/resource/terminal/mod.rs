@@ -384,6 +384,48 @@ const MAX_INPUT_COALESCE: usize = 16;
 const PANE_KILL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 const PANE_KILL_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 
+/// Effective hangup grace. Production is always [`PANE_KILL_GRACE`].
+///
+/// The wait is a deadline on "have the snapshotted groups exited?", not a
+/// sleep: a child that dies on the hangup returns on the first poll. Tests
+/// may stretch the ceiling so a starved SIGHUP trap can still flush
+/// (phux-7n1g).
+#[cfg(not(test))]
+const fn pane_kill_grace() -> std::time::Duration {
+    PANE_KILL_GRACE
+}
+
+#[cfg(test)]
+fn pane_kill_grace() -> std::time::Duration {
+    PANE_KILL_GRACE_OVERRIDE
+        .with(Cell::get)
+        .unwrap_or(PANE_KILL_GRACE)
+}
+
+#[cfg(test)]
+thread_local! {
+    static PANE_KILL_GRACE_OVERRIDE: Cell<Option<std::time::Duration>> =
+        const { Cell::new(None) };
+}
+
+/// Stretch the pane-kill grace ceiling for the rest of this thread.
+/// Cleared when the guard drops. Production never calls this.
+#[cfg(test)]
+fn stretch_pane_kill_grace(grace: std::time::Duration) -> PaneKillGraceOverride {
+    PANE_KILL_GRACE_OVERRIDE.with(|slot| slot.set(Some(grace)));
+    PaneKillGraceOverride
+}
+
+#[cfg(test)]
+struct PaneKillGraceOverride;
+
+#[cfg(test)]
+impl Drop for PaneKillGraceOverride {
+    fn drop(&mut self) {
+        PANE_KILL_GRACE_OVERRIDE.with(|slot| slot.set(None));
+    }
+}
+
 /// Ceiling on how long the pane-kill path will wait to reap the child after
 /// it has been signalled, and on how long it will wait for either bridge
 /// thread to exit (phux-l96p.12).

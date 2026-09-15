@@ -29,7 +29,7 @@ use tokio_tungstenite::tungstenite::{Error as TungsteniteError, Message};
 use tokio_tungstenite::{WebSocketStream, client_async};
 
 use crate::DialError;
-use crate::tls::CertTrust;
+use crate::tls::{CertTrust, TlsClientIdentity};
 
 /// How often an otherwise silent WebSocket sends a client-initiated RFC 6455
 /// ping, matched to `quic::KEEP_ALIVE` so both remote lanes behave the same.
@@ -214,6 +214,26 @@ impl tokio::io::AsyncWrite for ClientStream {
 /// [`DialError::Io`] on tungstenite-level socket I/O failures during the
 /// upgrade.
 pub async fn dial(d: &WsDial) -> Result<Ws, DialError> {
+    dial_inner(d, None).await
+}
+
+/// Connect using explicit TLS identity configuration.
+///
+/// This path never reads `PHUX_WORKLOAD_CERT` or `PHUX_WORKLOAD_KEY`. Native
+/// embedders that own their process environment should use it with
+/// [`TlsClientIdentity::None`] (pairing-token auth only) or explicit PEM paths.
+/// Certificate trust remains the explicit [`WsDial::trust`] value; routable
+/// mobile connections should use [`CertTrust::Pinned`].
+///
+/// # Errors
+///
+/// Returns the same establishment errors as [`dial`], plus explicit identity
+/// file parse/read failures.
+pub async fn dial_with_identity(d: &WsDial, identity: &TlsClientIdentity) -> Result<Ws, DialError> {
+    dial_inner(d, Some(identity)).await
+}
+
+async fn dial_inner(d: &WsDial, identity: Option<&TlsClientIdentity>) -> Result<Ws, DialError> {
     let target = WsTarget::parse(&d.url)?;
     // Resolve explicitly first: a name that does not resolve is a
     // reachability failure, not a generic connect failure — on an overlay
@@ -245,7 +265,7 @@ pub async fn dial(d: &WsDial) -> Result<Ws, DialError> {
     // than failing the dial (and this crate carries no logger of its own).
     let _ = tcp.set_nodelay(true);
     let stream = if target.secure {
-        ClientStream::Tls(Box::new(tls_connect(tcp, &target, d).await?))
+        ClientStream::Tls(Box::new(tls_connect(tcp, &target, d, identity).await?))
     } else {
         ClientStream::Plain(tcp)
     };
@@ -274,8 +294,13 @@ async fn tls_connect(
     tcp: TcpStream,
     target: &WsTarget,
     dial: &WsDial,
+    identity: Option<&TlsClientIdentity>,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>, DialError> {
-    let config = Arc::new(crate::tls::client_config(&dial.trust, None)?);
+    let config = match identity {
+        Some(identity) => crate::tls::client_config_with_identity(&dial.trust, identity, None)?,
+        None => crate::tls::client_config(&dial.trust, None)?,
+    };
+    let config = Arc::new(config);
     let connector = tokio_rustls::TlsConnector::from(config);
     let server_name = dial
         .tls_server_name
@@ -439,17 +464,38 @@ impl WsReader {
     /// Propagates transport failures as [`DialError`].
     pub async fn recv_message(&mut self) -> Result<Option<Vec<u8>>, DialError> {
         loop {
-            match self.rx.next().await {
-                None | Some(Ok(Message::Close(_))) => return Ok(None),
-                Some(Ok(Message::Binary(data))) => {
-                    self.keepalive.note_inbound(Instant::now());
-                    return Ok(Some(data.to_vec()));
-                }
-                Some(Err(err)) => return Err(ws_error(err)),
-                // Text / ping / pong / raw: not a phux frame, but proof the
-                // path is still carrying bytes. tungstenite has already
-                // queued the automatic pong for a peer ping.
-                Some(Ok(_)) => self.keepalive.note_inbound(Instant::now()),
+            match self.recv_activity().await? {
+                WsActivity::Message(data) => return Ok(Some(data)),
+                WsActivity::Control => {}
+                WsActivity::Closed => return Ok(None),
+            }
+        }
+    }
+
+    /// Receive one inbound WebSocket activity without hiding control frames.
+    ///
+    /// A control frame carries no phux payload, but it is authoritative proof
+    /// that a foreground liveness probe reached the peer and received an
+    /// answer. Callers that only need protocol messages should use
+    /// [`Self::recv_message`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport failures as [`DialError`].
+    pub async fn recv_activity(&mut self) -> Result<WsActivity, DialError> {
+        match self.rx.next().await {
+            None | Some(Ok(Message::Close(_))) => Ok(WsActivity::Closed),
+            Some(Ok(Message::Binary(data))) => {
+                self.keepalive.note_inbound(Instant::now());
+                Ok(WsActivity::Message(data.to_vec()))
+            }
+            Some(Err(err)) => Err(ws_error(err)),
+            // Text / ping / pong / raw: not a phux frame, but proof the path
+            // is still carrying bytes. tungstenite has already queued the
+            // automatic pong for a peer ping.
+            Some(Ok(_)) => {
+                self.keepalive.note_inbound(Instant::now());
+                Ok(WsActivity::Control)
             }
         }
     }
@@ -494,6 +540,17 @@ impl WsReader {
     }
 }
 
+/// One observable inbound event from an established WebSocket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WsActivity {
+    /// One complete binary phux frame.
+    Message(Vec<u8>),
+    /// WebSocket-level activity with no phux payload.
+    Control,
+    /// A clean WebSocket close or end of stream.
+    Closed,
+}
+
 /// Receive the next phux frame, keeping the connection alive and reporting a
 /// stalled peer instead of waiting on it forever.
 ///
@@ -523,6 +580,33 @@ pub async fn recv_message_alive(
     writer: &mut WsWriter,
 ) -> Result<Option<Vec<u8>>, DialError> {
     loop {
+        match recv_activity_alive(reader, writer).await? {
+            WsActivity::Message(data) => return Ok(Some(data)),
+            WsActivity::Control => {}
+            WsActivity::Closed => return Ok(None),
+        }
+    }
+}
+
+/// Receive one inbound WebSocket activity with the shared liveness policy.
+///
+/// Unlike [`recv_message_alive`], this returns after a control frame. That is
+/// useful to callers with a shorter, explicitly armed probe deadline: a Pong
+/// is proof of life even though it is not a phux protocol message.
+///
+/// # Cancel safety
+///
+/// Safe to drop and re-enter for the same reasons as [`recv_message_alive`].
+///
+/// # Errors
+///
+/// [`DialError::Stalled`] when the peer stops answering; otherwise the
+/// transport failures [`WsReader::recv_activity`] surfaces.
+pub async fn recv_activity_alive(
+    reader: &mut WsReader,
+    writer: &mut WsWriter,
+) -> Result<WsActivity, DialError> {
+    loop {
         let nap = match reader.keepalive.poll(Instant::now()) {
             WsLiveness::Dead => {
                 return Err(DialError::Stalled(format!(
@@ -539,7 +623,7 @@ pub async fn recv_message_alive(
             }
             WsLiveness::Idle(nap) => nap,
         };
-        match tokio::time::timeout(nap, reader.recv_message()).await {
+        match tokio::time::timeout(nap, reader.recv_activity()).await {
             Ok(result) => return result,
             // The nap elapsed: loop back and let `poll` decide whether that
             // means "ping" or "dead".
@@ -552,6 +636,68 @@ pub async fn recv_message_alive(
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
+
+    async fn spawn_pinned_wss_server(
+        token: &'static str,
+    ) -> (String, String, impl std::future::Future<Output = ()>) {
+        let dir = tempfile::tempdir().expect("temporary certificate directory");
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        crate::cert::ensure_self_signed(&cert_path, &key_path).expect("self-signed certificate");
+        let fingerprint = crate::cert::cert_fingerprint(&cert_path).expect("certificate pin");
+
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let config = rustls::ServerConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .expect("TLS 1.3 server config")
+            .with_no_client_auth()
+            .with_single_cert(
+                crate::cert::load_certs(&cert_path).expect("certificate chain"),
+                crate::cert::load_key(&key_path).expect("private key"),
+            )
+            .expect("TLS identity");
+        let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind WSS fixture");
+        let port = listener.local_addr().expect("fixture address").port();
+
+        let server = async move {
+            let _dir = dir;
+            let (tcp, _) = listener.accept().await.expect("accept TCP");
+            let tls = acceptor.accept(tcp).await.expect("accept TLS");
+            #[allow(
+                clippy::result_large_err,
+                reason = "tokio-tungstenite fixes the HTTP rejection response type for its handshake callback"
+            )]
+            let mut ws = tokio_tungstenite::accept_hdr_async(
+                tls,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    assert_eq!(
+                        request
+                            .headers()
+                            .get("authorization")
+                            .expect("bearer header")
+                            .to_str()
+                            .expect("ASCII bearer header"),
+                        format!("Bearer {token}")
+                    );
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("upgrade WebSocket");
+            assert_eq!(
+                ws.next()
+                    .await
+                    .expect("binary message")
+                    .expect("read message"),
+                Message::Binary(b"pinned-wss".to_vec().into())
+            );
+        };
+
+        (format!("wss://127.0.0.1:{port}"), fingerprint, server)
+    }
 
     #[test]
     fn parses_ws_and_wss_targets() {
@@ -614,6 +760,30 @@ mod tests {
             err.to_string().contains("name resolution failed"),
             "got {err}"
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_no_identity_dials_pinned_wss_with_bearer_auth() {
+        const TOKEN: &str = "11111111111111111111111111111111";
+        let (url, fingerprint, server) = spawn_pinned_wss_server(TOKEN).await;
+        let client = async {
+            let mut ws = dial_with_identity(
+                &WsDial {
+                    url,
+                    token: Some(TOKEN.to_owned()),
+                    trust: CertTrust::Pinned(fingerprint),
+                    tls_server_name: Some("localhost".to_owned()),
+                },
+                &TlsClientIdentity::None,
+            )
+            .await
+            .expect("explicit pinned WSS dial");
+            ws.send(Message::Binary(b"pinned-wss".to_vec().into()))
+                .await
+                .expect("send payload");
+        };
+
+        tokio::join!(server, client);
     }
 
     // ---- keepalive policy ------------------------------------------------
@@ -860,5 +1030,27 @@ mod tests {
             outcome.is_err(),
             "a quiet healthy connection stays open; got {outcome:?}"
         );
+    }
+
+    /// A caller-owned foreground probe must see the Pong instead of waiting
+    /// for an unrelated binary protocol frame. The ordinary message API keeps
+    /// hiding controls; the activity-aware API exposes the proof of life.
+    #[tokio::test]
+    async fn activity_receive_surfaces_a_probe_pong() {
+        let url = spawn_responsive_ws_server().await;
+        let (mut reader, mut writer) = connect_halves(
+            &url,
+            WsKeepalive::with_timings(Instant::now(), TEST_PING, TEST_DEAD),
+        )
+        .await;
+
+        writer.send_ping().await.expect("probe ping");
+        let activity =
+            tokio::time::timeout(TEST_DEAD, recv_activity_alive(&mut reader, &mut writer))
+                .await
+                .expect("responsive peer answers before the probe deadline")
+                .expect("probe receive");
+
+        assert_eq!(activity, WsActivity::Control);
     }
 }

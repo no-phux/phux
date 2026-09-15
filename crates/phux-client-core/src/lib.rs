@@ -5,12 +5,14 @@
 //!
 //! - [`engine`] and [`session`] — the generic terminal adapter and synchronous
 //!   protocol-0.7 session kernel.
+//! - [`handshake`] — `HELLO_OK` acceptance shared by every frontend.
 //! - [`layout`] — the pane-geometry layout tree, split math, and the CBOR
 //!   metadata envelope that persists it server-side.
 //! - [`multi_pane`] — layout tree → per-pane rectangles + the divider
 //!   cells between them (pure compute; the chrome layer rasterizes the
 //!   `DividerCell`s to VT).
 //! - [`predict`] — Mosh-class predictive local echo over the pane mirror.
+//! - [`input_replay`] — acknowledged input ordering and reconnect policy.
 //!
 //! # Frontend boundary
 //!
@@ -25,7 +27,9 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod engine;
+pub mod handshake;
 pub mod history;
+pub mod input_replay;
 pub mod layout;
 pub mod multi_pane;
 pub mod perf;

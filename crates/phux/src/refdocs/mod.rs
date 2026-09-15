@@ -26,6 +26,7 @@ pub(crate) mod actions;
 pub(crate) mod cli;
 pub(crate) mod config;
 pub(crate) mod deprecations;
+pub(crate) mod environment;
 pub(crate) mod exit_codes;
 pub(crate) mod files;
 pub(crate) mod hooks;
@@ -104,6 +105,7 @@ pub(crate) fn pages() -> Vec<Page> {
         widgets::page(),
         hooks::page(),
         exit_codes::page(),
+        environment::page(),
         files::page(),
         deprecations::page(),
     ];

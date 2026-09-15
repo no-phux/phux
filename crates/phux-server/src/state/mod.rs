@@ -89,7 +89,9 @@ pub use crate::mailbox::{DEFAULT_CLIENT_MAILBOX, Outbound, TerminalInput};
 use lease_table::LeaseTable;
 pub(crate) use lease_table::SatelliteLease;
 use lifecycle_state::Lifecycle;
-pub use metadata::{KeepEmptyOutcome, MetadataSetOutcome, MetadataStore, RenameOutcome};
+pub use metadata::{
+    KeepEmptyOutcome, MetadataSetOutcome, MetadataStore, RenameOutcome, ServerInterceptedKey,
+};
 pub(crate) use resolve::{RelayRoute, Resolved, ResolvedOwned};
 use resource_table::ResourceTable;
 use session_table::SessionTable;
@@ -1153,6 +1155,7 @@ mod tests {
                 scope: s2,
                 key,
                 value,
+                ..
             } => {
                 assert_eq!(s2, &scope);
                 assert_eq!(key, "phux.tui.layout/v1");
@@ -1189,6 +1192,7 @@ mod tests {
                 scope: s2,
                 key: k,
                 value,
+                ..
             } => {
                 assert_eq!(s2, &scope);
                 assert_eq!(k, key);
@@ -1310,6 +1314,7 @@ mod tests {
                 value: None,
                 key,
                 scope: s2,
+                ..
             } => {
                 assert_eq!(key, "phux.k/v1");
                 assert_eq!(s2, &scope);

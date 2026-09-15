@@ -126,6 +126,17 @@ require_fixed scripts/install.sh 'download "$sha_url" "$sha_path"'
 require_fixed scripts/install.sh 'sha256sum -c "$(basename "$sha_path")"'
 require_fixed scripts/install.sh 'shasum -a 256 -c "$(basename "$sha_path")"'
 require_fixed scripts/install.sh '"${stage_name}/phux-mcp"'
+# The tarball member list is owned by pack-release.sh. Workflows and dist.sh
+# must call it rather than copying docs inline — that inline copy is how
+# LICENSE-MIT/LICENSE-APACHE survived the relicense and broke curl | sh.
+require_fixed scripts/pack-release.sh 'RELEASE_DOCS=(README.md LICENSE NOTICE THIRD-PARTY-NOTICES.md)'
+require_fixed scripts/pack-release.sh 'RELEASE_BINS=(phux phux-mcp)'
+require_fixed .github/workflows/release.yml 'bash scripts/pack-release.sh'
+require_fixed .github/workflows/next-release.yml 'bash scripts/pack-release.sh'
+require_fixed scripts/dist.sh 'bash scripts/pack-release.sh'
+forbid_fixed .github/workflows/release.yml 'LICENSE-MIT LICENSE-APACHE'
+forbid_fixed .github/workflows/next-release.yml 'LICENSE-MIT LICENSE-APACHE'
+require_fixed scripts/test-pack-release.sh 'packer contract tests passed'
 require_fixed scripts/install.sh 'publish_dir="$(mktemp -d "${install_dir}/.phux-install.XXXXXX")"'
 require_fixed scripts/install.sh 'rollback_publish'
 require_fixed scripts/install.sh 'mv "${publish_dir}/phux-mcp" "${install_dir}/phux-mcp"'
@@ -169,6 +180,22 @@ require_fixed scripts/install-cockpit.sh '${bin_dir}/phux-cockpit'
 require_fixed scripts/test-install.sh 'cockpit installer transaction tests passed'
 require_fixed scripts/test-install.sh 'phux-cockpit launcher'
 forbid_fixed scripts/test-install.sh 'bash "$ROOT/scripts/install-cockpit.sh"'
+
+# In-app Check for Updates drives that installer rather than a second stack.
+require_regex scripts/cockpit-self-update.sh '^#!/bin/sh$'
+forbid_fixed scripts/cockpit-self-update.sh '#!/usr/bin/env bash'
+forbid_regex scripts/cockpit-self-update.sh '^[[:space:]]*[^#[:space:]].*pipefail'
+require_fixed scripts/cockpit-self-update.sh 'install-cockpit.sh'
+require_fixed scripts/cockpit-self-update.sh 'source="homebrew"'
+require_fixed scripts/cockpit-self-update.sh 'brew upgrade --cask no-phux/tap/phux-cockpit'
+require_fixed scripts/cockpit-self-update.sh 'source="nix"'
+require_fixed scripts/cockpit-self-update.sh 'source="dev"'
+require_fixed scripts/test-cockpit-self-update.sh 'cockpit self-update tests passed'
+require_fixed scripts/test-cockpit-self-update.sh 'driver overwrote a Homebrew cask install'
+require_fixed scripts/test-cockpit-self-update.sh 'BAD_CHECKSUM=1'
+require_fixed scripts/test-cockpit-self-update.sh 'FAIL_DITTO=1'
+forbid_fixed scripts/test-cockpit-self-update.sh 'bash "$ROOT/scripts/install-cockpit.sh"'
+require_fixed docs/INSTALL.md 'Check for Updates'
 
 # --- The installer is POSIX sh, and phux.sh serves it -------------------------
 #
@@ -279,7 +306,7 @@ forbid_fixed .github/workflows/release.yml 'toolchain install 1.'
 require_fixed .github/workflows/release.yml 'rust-toolchain.toml'
 require_fixed scripts/build-release-binaries.sh 'cargo build --locked --release --bin phux --bin phux-mcp'
 require_fixed scripts/dist.sh '.phux-cpu-baseline'
-require_fixed .github/workflows/release.yml 'cp -f target/release/phux target/release/phux-mcp'
+require_fixed .github/workflows/release.yml '--bin-dir target/release'
 require_fixed .github/workflows/release.yml 'target: aarch64-apple-darwin'
 require_fixed .github/workflows/release.yml 'target: x86_64-unknown-linux-gnu'
 require_fixed .github/workflows/release.yml 'target: aarch64-unknown-linux-gnu'
@@ -301,7 +328,7 @@ require_fixed .github/workflows/release.yml 'refusing to downgrade it to'
 require_fixed scripts/check-binary-portability.sh 'check_elf'
 require_fixed scripts/check-binary-portability.sh 'check_macho'
 require_fixed scripts/check-binary-portability.sh 'x86-64-v[234]'
-require_regex .github/workflows/release.yml 'test -x .*phux-mcp|command -v .*phux-mcp|./phux-mcp --'
+require_regex scripts/pack-release.sh 'test -x .*phux-mcp'
 
 forbid_fixed .github/workflows/release.yml 'mlugg/setup-zig'
 # Remaining setup-zig callers must disable the action's Zig-cache post
@@ -432,14 +459,14 @@ forbid_fixed .github/workflows/agent-integration-release.yml "-type f -name '*.t
 # --- Self-update contract (ADR-0074) ------------------------------------------
 #
 # `phux update` derives its download URLs and its archive-member allowlist from
-# release.yml's packaging step. That makes the artifact naming a consumed
-# contract, not a convention: rename an artifact or drop the sidecar and every
-# already-installed phux loses the ability to update itself. The pins below tie
-# the three halves together — what the workflow writes, what the code expects,
-# and what the docs promise — so a change to any one of them fails here rather
-# than at a user's terminal.
-require_fixed .github/workflows/release.yml 'stage="phux-${tag}-${target}"'
-require_fixed .github/workflows/release.yml 'echo "${sha}  ${stage}.tar.gz" > "${stage}.tar.gz.sha256"'
+# pack-release.sh. That makes the artifact naming a consumed contract, not a
+# convention: rename an artifact or drop the sidecar and every already-installed
+# phux loses the ability to update itself. The pins below tie the three halves
+# together — what the packer writes, what the code expects, and what the docs
+# promise — so a change to any one of them fails here rather than at a user's
+# terminal.
+require_fixed scripts/pack-release.sh 'stage="phux-${id}-${target}"'
+require_fixed scripts/pack-release.sh 'echo "${sha}  ${stage}.tar.gz" > "${archive}.sha256"'
 require_fixed crates/phux/src/commands/update/release.rs 'format!("phux-{tag}-{target}")'
 require_fixed crates/phux/src/commands/update/release.rs 'releases/download/{tag}/{archive}'
 require_fixed crates/phux/src/commands/update/release.rs 'format!("{archive_url}.sha256")'
@@ -465,13 +492,16 @@ require_fixed docs/INSTALL.md '--channel next'
 require_fixed docs/INSTALL.md 'PHUX_CHANNEL=next'
 require_fixed docs/INSTALL.md 'sh -s -- --channel next'
 require_fixed docs/RELEASING.md 'This layout is a consumed contract'
+require_fixed docs/RELEASING.md 'scripts/pack-release.sh'
 
 if [ "$failures" -ne 0 ]; then
   printf 'install surface check failed: %d missing contract item(s)\n' "$failures" >&2
   exit 1
 fi
 
+bash "$ROOT/scripts/test-pack-release.sh"
 bash "$ROOT/scripts/test-install.sh"
+bash "$ROOT/scripts/test-cockpit-self-update.sh"
 bash "$ROOT/scripts/sync-install-resolver.sh" --check
 bash "$ROOT/scripts/test-install-resolution.sh"
 echo "install surface check passed"

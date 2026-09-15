@@ -25,21 +25,67 @@ use std::time::{Duration, SystemTime};
 /// wants; a long-lived host has hundreds of stale ones.
 const SHOWN_CLIENT_LOGS: usize = 3;
 
-/// `phux logs [--server | --client [--pid PID]] [-f] [-n NUM] [--json]`.
+/// Trailing lines shown when `-n` is omitted.
+const DEFAULT_TAIL_LINES: u32 = 200;
+
+/// Cockpit's one log file: `PHUX_COCKPIT_LOG` names it outright, else it is
+/// `~/Library/Logs/Phux Cockpit/cockpit.log`. The app resolves the same two
+/// inputs in the same order.
+const COCKPIT_LOG_ENV: &str = "PHUX_COCKPIT_LOG";
+const COCKPIT_LOG_RELATIVE: [&str; 4] = ["Library", "Logs", "Phux Cockpit", "cockpit.log"];
+
+/// `phux logs [--server | --client [--pid PID] | --cockpit] [-f] [-n NUM] [--json]`.
 #[allow(
     clippy::fn_params_excessive_bools,
-    reason = "the parameters mirror the clap flags one-to-one, and clap's \
-              own groups/conflicts already forbid the contradictory \
+    reason = "the parameters mirror the usage flags one-to-one, and the \
+              parser's own groups/conflicts already forbid the contradictory \
               combinations before this is called"
 )]
 pub(crate) fn run_logs(
     server: bool,
     client: bool,
+    cockpit: bool,
     pid: Option<u32>,
     follow: bool,
-    lines: u32,
+    lines: Option<u32>,
     json: bool,
 ) -> ExitCode {
+    // The tail modifiers need a tail. The parser cannot say "one of these
+    // three" (its `requires` is every-listed-flag), so the rule lives here.
+    if !(server || client || cockpit) && (follow || lines.is_some()) {
+        eprintln!(
+            "phux logs: -f and -n tail a log; pick one with --server, --client, or --cockpit"
+        );
+        return ExitCode::from(crate::exit_codes::EXIT_USAGE);
+    }
+    let lines = lines.unwrap_or(DEFAULT_TAIL_LINES);
+    if cockpit {
+        // The same refusal `phux cockpit` gives: the app, and so its log, is
+        // macOS-only. A usage error, since the flag can never apply here.
+        if !cfg!(target_os = "macos") {
+            return crate::commands::json_err::emit(
+                false,
+                &crate::commands::json_err::CliError::new(
+                    crate::commands::json_err::codes::COCKPIT_UNSUPPORTED_PLATFORM,
+                    "Phux Cockpit is macOS-only",
+                    "run `phux logs --cockpit` on the Mac that runs Cockpit",
+                ),
+                crate::exit_codes::EXIT_USAGE,
+            );
+        }
+        let Some(log) = cockpit_log_path_from_env() else {
+            eprintln!(
+                "phux logs: HOME is unset, so the Cockpit log path cannot be resolved;                  set {COCKPIT_LOG_ENV} to the file."
+            );
+            return ExitCode::FAILURE;
+        };
+        let missing = format!(
+            "phux logs: no Cockpit log at {} yet.\n\
+             Cockpit writes it when it next starts; run `phux cockpit`.",
+            log.display()
+        );
+        return tail_file(&log, follow, lines, &missing);
+    }
     if server {
         let log = phux_server::telemetry::server_log_path();
         let missing = format!(
@@ -68,7 +114,11 @@ pub(crate) fn run_logs(
         return tail_file(&log, follow, lines, &missing);
     }
 
-    let inventory = inventory(dir, phux_server::telemetry::server_log_path());
+    let inventory = inventory(
+        dir,
+        phux_server::telemetry::server_log_path(),
+        cockpit_log_path_from_env(),
+    );
     if json {
         return match serde_json::to_string_pretty(&json_doc(&inventory)) {
             Ok(rendered) => {
@@ -210,6 +260,38 @@ fn client_pid(path: &Path) -> Option<u32> {
 }
 
 // ---------------------------------------------------------------------------
+// the Cockpit log
+// ---------------------------------------------------------------------------
+
+/// Where the native macOS app writes its log. An explicit override is taken
+/// as given, even relative; otherwise the path hangs off `home`, and no home
+/// means no path — the caller says so rather than guessing a directory the
+/// app would never have written to.
+fn cockpit_log_path(override_path: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    if let Some(explicit) = override_path {
+        return Some(explicit.to_path_buf());
+    }
+    let mut path = home?.to_path_buf();
+    path.extend(COCKPIT_LOG_RELATIVE);
+    Some(path)
+}
+
+/// [`cockpit_log_path`] over the real environment. Off macOS the app never
+/// runs, so the inventory carries no Cockpit row there.
+fn cockpit_log_path_from_env() -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") {
+        return None;
+    }
+    let override_path = std::env::var_os(COCKPIT_LOG_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    cockpit_log_path(override_path.as_deref(), home.as_deref())
+}
+
+// ---------------------------------------------------------------------------
 // the inventory
 // ---------------------------------------------------------------------------
 
@@ -230,6 +312,8 @@ struct Inventory {
     server: FileFacts,
     /// Newest first.
     clients: Vec<FileFacts>,
+    /// The native macOS app's log; `None` where the app cannot run.
+    cockpit: Option<FileFacts>,
 }
 
 /// Stat one path into its report row; a missing file is a row, not an error.
@@ -252,7 +336,7 @@ fn file_facts(path: PathBuf) -> FileFacts {
 /// environment so tests can drive it against a temp dir; the real caller
 /// resolves both through `phux_server::telemetry`, the same helpers the
 /// writers use.
-fn inventory(state_dir: PathBuf, server_log: PathBuf) -> Inventory {
+fn inventory(state_dir: PathBuf, server_log: PathBuf, cockpit_log: Option<PathBuf>) -> Inventory {
     let clients = client_logs_newest_first(&state_dir)
         .into_iter()
         .map(file_facts)
@@ -261,6 +345,7 @@ fn inventory(state_dir: PathBuf, server_log: PathBuf) -> Inventory {
         server: file_facts(server_log),
         state_dir,
         clients,
+        cockpit: cockpit_log.map(file_facts),
     }
 }
 
@@ -290,14 +375,25 @@ fn render_human(inventory: &Inventory) -> String {
             );
         }
     }
+    if let Some(cockpit) = &inventory.cockpit {
+        let _ = writeln!(out);
+        let _ = writeln!(
+            out,
+            "Cockpit log (the native macOS app, every launch appends):"
+        );
+        let _ = writeln!(out, "  {}", describe(cockpit));
+    }
     let _ = writeln!(out);
     let _ = writeln!(out, "State dir: {}", inventory.state_dir.display());
     let _ = writeln!(out);
-    let _ = writeln!(
-        out,
+    let tail_hint = if inventory.cockpit.is_some() {
+        "Tail with `phux logs --server`, `phux logs --client [--pid PID]`, or\n\
+         `phux logs --cockpit`; `phux doctor` checks the whole install."
+    } else {
         "Tail with `phux logs --server` or `phux logs --client [--pid PID]`;\n\
          `phux doctor` checks the whole install."
-    );
+    };
+    let _ = writeln!(out, "{tail_hint}");
     out
 }
 
@@ -345,7 +441,8 @@ fn human_age(elapsed: Duration) -> String {
 }
 
 /// The `--json` document. `schema_version` 1; additive changes only within
-/// a version, like every other `--json` surface in this binary.
+/// a version, like every other `--json` surface in this binary. `cockpit_log`
+/// is such an addition: a file row on macOS, `null` elsewhere.
 fn json_doc(inventory: &Inventory) -> serde_json::Value {
     let clients: Vec<_> = inventory
         .clients
@@ -363,6 +460,7 @@ fn json_doc(inventory: &Inventory) -> serde_json::Value {
         "state_dir": inventory.state_dir.display().to_string(),
         "server_log": file_json(&inventory.server),
         "client_logs": clients,
+        "cockpit_log": inventory.cockpit.as_ref().map(file_json),
     })
 }
 
@@ -392,8 +490,8 @@ mod tests {
     use std::time::{Duration, SystemTime};
 
     use super::{
-        client_log_target, client_logs_newest_first, client_pid, inventory, json_doc, render_human,
-        tail_file,
+        client_log_target, client_logs_newest_first, client_pid, cockpit_log_path, inventory,
+        json_doc, render_human, tail_file,
     };
     /// Write a client log and pin its mtime, so "newest" is a controlled
     /// fact rather than a race against the filesystem clock.
@@ -415,7 +513,7 @@ mod tests {
         let state = dir.path().to_path_buf();
         let server_log = state.join("server.log");
 
-        let inv = inventory(state.clone(), server_log.clone());
+        let inv = inventory(state.clone(), server_log.clone(), None);
         let human = render_human(&inv);
         assert!(human.contains(&server_log.display().to_string()));
         assert!(human.contains("not created yet"));
@@ -426,7 +524,7 @@ mod tests {
         // A state dir that does not even exist yet is the same story, not
         // an error.
         let absent = state.join("never-created");
-        let inv = inventory(absent.clone(), absent.join("server.log"));
+        let inv = inventory(absent.clone(), absent.join("server.log"), None);
         let human = render_human(&inv);
         assert!(human.contains("not created yet"));
         assert!(human.contains("none yet"));
@@ -448,7 +546,11 @@ mod tests {
             write_client_log(dir.path(), name, Duration::from_secs(age));
         }
 
-        let inv = inventory(dir.path().to_path_buf(), dir.path().join("server.log"));
+        let inv = inventory(
+            dir.path().to_path_buf(),
+            dir.path().join("server.log"),
+            None,
+        );
         assert_eq!(inv.clients.len(), 4);
         assert!(
             inv.clients[0].path.ends_with("client-4.log"),
@@ -513,6 +615,7 @@ mod tests {
         let doc = json_doc(&inventory(
             dir.path().to_path_buf(),
             dir.path().join("server.log"),
+            None,
         ));
         assert_eq!(doc["schema_version"], 1);
         assert_eq!(doc["state_dir"], dir.path().display().to_string().as_str());
@@ -527,10 +630,71 @@ mod tests {
         let doc = json_doc(&inventory(
             dir.path().to_path_buf(),
             dir.path().join("no-such.log"),
+            None,
         ));
         assert_eq!(doc["server_log"]["exists"], false);
         assert!(doc["server_log"]["size_bytes"].is_null());
         assert!(doc["server_log"]["modified_unix"].is_null());
+        // No Cockpit row at all (off macOS, or no HOME) is an explicit null,
+        // never an absent key.
+        assert!(doc["cockpit_log"].is_null());
+    }
+
+    /// The Cockpit row rides the same shape as the other files, in both
+    /// renderers, and the human text then offers `--cockpit` as a tail.
+    #[test]
+    fn cockpit_log_is_reported_like_the_other_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let cockpit = dir.path().join("cockpit.log");
+        std::fs::write(&cockpit, b"launch\n").unwrap();
+
+        let inv = inventory(
+            dir.path().to_path_buf(),
+            dir.path().join("server.log"),
+            Some(cockpit.clone()),
+        );
+        let human = render_human(&inv);
+        assert!(human.contains("Cockpit log"));
+        assert!(human.contains(&cockpit.display().to_string()));
+        assert!(human.contains("phux logs --cockpit"));
+
+        let doc = json_doc(&inv);
+        assert_eq!(doc["cockpit_log"]["exists"], true);
+        assert_eq!(doc["cockpit_log"]["size_bytes"], 7);
+        assert_eq!(
+            doc["cockpit_log"]["path"],
+            cockpit.display().to_string().as_str()
+        );
+
+        // Not created yet is a row too, so the path is named before the
+        // app has ever run.
+        let inv = inventory(
+            dir.path().to_path_buf(),
+            dir.path().join("server.log"),
+            Some(dir.path().join("absent.log")),
+        );
+        assert!(render_human(&inv).contains("absent.log (not created yet)"));
+        assert_eq!(json_doc(&inv)["cockpit_log"]["exists"], false);
+    }
+
+    /// The path rule the app follows: the override is taken verbatim, else
+    /// the fixed spot under HOME; and no HOME resolves to no path.
+    #[test]
+    fn cockpit_log_path_follows_the_apps_rule() {
+        let home = Path::new("/Users/someone");
+        assert_eq!(
+            cockpit_log_path(None, Some(home)).unwrap(),
+            Path::new("/Users/someone/Library/Logs/Phux Cockpit/cockpit.log")
+        );
+        assert_eq!(
+            cockpit_log_path(Some(Path::new("/tmp/c.log")), Some(home)).unwrap(),
+            Path::new("/tmp/c.log")
+        );
+        assert_eq!(
+            cockpit_log_path(Some(Path::new("/tmp/c.log")), None).unwrap(),
+            Path::new("/tmp/c.log")
+        );
+        assert!(cockpit_log_path(None, None).is_none());
     }
 
     /// The pid parse takes exactly the shape the client writer produces.
@@ -562,6 +726,8 @@ mod tests {
         assert!(crate::parse_cli(["phux", "logs", "--json"]).is_ok());
         assert!(crate::parse_cli(["phux", "logs", "--server", "-f", "-n", "50"]).is_ok());
         assert!(crate::parse_cli(["phux", "logs", "--client", "--pid", "42"]).is_ok());
+        assert!(crate::parse_cli(["phux", "logs", "--client", "-f"]).is_ok());
+        assert!(crate::parse_cli(["phux", "logs", "--cockpit", "-f", "-n", "50"]).is_ok());
 
         assert!(
             crate::parse_cli(["phux", "logs", "--json", "-f"]).is_err(),
@@ -572,8 +738,41 @@ mod tests {
             "one tail target at a time"
         );
         assert!(
-            crate::parse_cli(["phux", "logs", "-f"]).is_err(),
+            crate::parse_cli(["phux", "logs", "--cockpit", "--client"]).is_err(),
+            "one tail target at a time"
+        );
+        assert!(
+            crate::parse_cli(["phux", "logs", "--cockpit", "--pid", "42"]).is_err(),
+            "--pid only selects a client log"
+        );
+        assert!(
+            crate::parse_cli(["phux", "logs", "--json", "--cockpit"]).is_err(),
+            "--json is the inventory; it cannot tail"
+        );
+        // `-f` and `-n` without a tail target parse (the parser's `requires`
+        // cannot express "one of three") and are refused by `run_logs`.
+        assert!(crate::parse_cli(["phux", "logs", "-f"]).is_ok());
+        assert_eq!(
+            format!(
+                "{:?}",
+                super::run_logs(false, false, false, None, true, None, false)
+            ),
+            format!(
+                "{:?}",
+                std::process::ExitCode::from(crate::exit_codes::EXIT_USAGE)
+            ),
             "-f without a tail target has nothing to follow"
+        );
+        assert_eq!(
+            format!(
+                "{:?}",
+                super::run_logs(false, false, false, None, false, Some(5), false)
+            ),
+            format!(
+                "{:?}",
+                std::process::ExitCode::from(crate::exit_codes::EXIT_USAGE)
+            ),
+            "-n without a tail target has nothing to size"
         );
         assert!(
             crate::parse_cli(["phux", "logs", "--pid", "42"]).is_err(),

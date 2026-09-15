@@ -574,6 +574,74 @@ impl<'a, E: EngineAdapter> PublishedReplica<'a, E> {
     }
 }
 
+/// An owned final replica transferred out of the kernel after terminal close.
+///
+/// The close transition still makes future stream input ineligible immediately,
+/// but a native frontend may opt in before close and take this value to preserve
+/// scrollable finished-pane history without retaining a second raw-byte copy.
+pub struct ClosedReplica<E: EngineAdapter> {
+    key: ReplicaKey,
+    geometry: CanonicalGeometry,
+    last_seq: u64,
+    engine: E::Replica,
+    history: HistoryCache,
+}
+
+impl<E: EngineAdapter> std::fmt::Debug for ClosedReplica<E> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ClosedReplica")
+            .field("key", &self.key)
+            .field("geometry", &self.geometry)
+            .field("last_seq", &self.last_seq)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<E: EngineAdapter> ClosedReplica<E> {
+    /// Exact protocol identity and profile of the final published generation.
+    #[must_use]
+    pub const fn key(&self) -> &ReplicaKey {
+        &self.key
+    }
+
+    /// Final canonical PTY geometry.
+    #[must_use]
+    pub const fn geometry(&self) -> CanonicalGeometry {
+        self.geometry
+    }
+
+    /// Highest contiguous live sequence applied before close.
+    #[must_use]
+    pub const fn last_seq(&self) -> u64 {
+        self.last_seq
+    }
+
+    /// Borrow the final progressive-history metadata.
+    #[must_use]
+    pub const fn history(&self) -> &HistoryCache {
+        &self.history
+    }
+
+    /// Borrow the adapter-owned final replica for projection.
+    #[must_use]
+    pub const fn engine(&self) -> &E::Replica {
+        &self.engine
+    }
+
+    /// Mutably borrow the final replica for frontend-local viewport controls.
+    #[must_use]
+    pub const fn engine_mut(&mut self) -> &mut E::Replica {
+        &mut self.engine
+    }
+
+    /// Consume the wrapper and retain only the engine replica.
+    #[must_use]
+    pub fn into_engine(self) -> E::Replica {
+        self.engine
+    }
+}
+
 /// Borrowed staging state, exposed for diagnostics without publication.
 pub struct StagingReplica<'a, E: EngineAdapter> {
     key: &'a ReplicaKey,
@@ -977,6 +1045,10 @@ pub struct SessionKernel<E: EngineAdapter> {
     adapter: E,
     selected_profile: BootstrapProfile,
     terminals: HashMap<ResourceId, TerminalState<E::Replica>>,
+    /// Final published generations awaiting optional frontend transfer.
+    closed_replicas: HashMap<ResourceId, ClosedReplica<E>>,
+    /// Terminals whose next close should retain the published generation.
+    retain_replica_on_close: HashSet<ResourceId>,
     /// Kind per resource, from the attach inventory, a declaration, or the
     /// first bootstrap profile. Survives closure so a close can still be
     /// classified; released with the resource.
@@ -1002,6 +1074,11 @@ impl<E: EngineAdapter> std::fmt::Debug for SessionKernel<E> {
             .debug_struct("SessionKernel")
             .field("selected_profile", &self.selected_profile)
             .field("terminal_count", &self.terminals.len())
+            .field("closed_replica_count", &self.closed_replicas.len())
+            .field(
+                "retain_replica_on_close_count",
+                &self.retain_replica_on_close.len(),
+            )
             .field("agent_session_count", &self.agents.len())
             .field("closed_terminal_count", &self.closed.len())
             .field(
@@ -1031,6 +1108,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
             adapter,
             selected_profile,
             terminals: HashMap::new(),
+            closed_replicas: HashMap::new(),
+            retain_replica_on_close: HashSet::new(),
             kinds: HashMap::new(),
             agents: HashMap::new(),
             closed: HashSet::new(),
@@ -1049,7 +1128,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
     /// This is the portable clock seam for browser and deterministic hosts.
     /// Once selected, callers must keep supplying timestamps; values that move
     /// backward are clamped to the last observed value. Native hosts may keep
-    /// using [`Self::update`], which uses a process-local [`Instant`] origin.
+    /// using [`Self::update`], which uses a process-local monotonic clock.
     pub fn update_at(
         &mut self,
         now_ms: u64,
@@ -1198,6 +1277,8 @@ impl<E: EngineAdapter> SessionKernel<E> {
             return false;
         }
         self.terminals.remove(terminal_id);
+        self.closed_replicas.remove(terminal_id);
+        self.retain_replica_on_close.remove(terminal_id);
         self.agents.remove(terminal_id);
         self.kinds.remove(terminal_id);
         self.closed.remove(terminal_id);
@@ -1271,6 +1352,29 @@ impl<E: EngineAdapter> SessionKernel<E> {
                 .as_mut()?
                 .engine,
         )
+    }
+
+    /// Choose whether the next close retains this terminal's published replica.
+    ///
+    /// Retention is opt-in so clients that do not expose finished-pane history
+    /// keep the kernel's original immediate-drop behavior. The preference is
+    /// consumed by close and cleared by release.
+    pub fn set_retain_replica_on_close(&mut self, terminal_id: &ResourceId, retain: bool) {
+        if retain {
+            self.retain_replica_on_close.insert(terminal_id.clone());
+        } else {
+            self.retain_replica_on_close.remove(terminal_id);
+        }
+    }
+
+    /// Transfer the final published replica retained by a close transition.
+    ///
+    /// Returns `None` when the terminal closed before publication, the final
+    /// replica was already taken, or the resource is not closed. Taking the
+    /// value does not reopen the terminal or alter close/damage semantics.
+    #[must_use]
+    pub fn take_closed_replica(&mut self, terminal_id: &ResourceId) -> Option<ClosedReplica<E>> {
+        self.closed_replicas.remove(terminal_id)
     }
 
     /// Clear only this client's presentation. The published generation, parser
@@ -3244,10 +3348,24 @@ impl<E: EngineAdapter> SessionKernel<E> {
         self.perf_echo.forget(terminal_id);
         self.agents.remove(terminal_id);
         let damage_blocked = self.attach_blocks(terminal_id);
-        let had_published = self
+        let published = self
             .terminals
             .remove(terminal_id)
-            .is_some_and(|state| state.published.is_some());
+            .and_then(|mut state| state.published.take());
+        let had_published = published.is_some();
+        if self.retain_replica_on_close.remove(terminal_id)
+            && let Some(replica) = published
+        {
+            self.closed_replicas
+                .entry(terminal_id.clone())
+                .or_insert_with(|| ClosedReplica {
+                    key: replica.key,
+                    geometry: replica.geometry,
+                    last_seq: replica.last_seq,
+                    engine: replica.engine,
+                    history: replica.history,
+                });
+        }
         self.closed.insert(terminal_id.clone());
         self.mark_attach_closed(terminal_id, had_published && damage_blocked);
         if had_published && !damage_blocked {

@@ -166,6 +166,10 @@ not a summary: the TL;DR lives in the ADR.
 | [0119](./0119-attach-leases-retained-history.md) | Attach leases retained history instead of encoding it | Accepted (supersedes in part [0094](./0094-explicit-per-pane-scrollback-byte-ceiling.md)) |
 | [0120](./0120-ssh-bootstrap-opens-a-listener-per-attach.md) | ssh bootstrap opens a listener for one attach | Accepted (amends [0055](./0055-always-on-server-and-ssh-bootstrapped-enrollment.md)) |
 | [0121](./0121-cli-parser-is-usage-rs.md) | The CLI parser is usage-rs | Accepted (amends [0065](./0065-one-cli-grammar.md), [0069](./0069-generated-reference-docs.md)) |
+| [0122](./0122-host-add-is-the-front-door.md) | `phux host add HOST` is the front door to a machine | Accepted (supersedes in part [0066](./0066-host-namespace.md); amends [0093](./0093-remote-target-as-a-resolution-ladder.md)) |
+| [0123](./0123-events-are-journaled.md) | Events are journaled, resumable, and never dropped silently | Accepted (builds on [0033](./0033-input-authority-and-process-signals.md), [0053](./0053-acknowledged-idempotent-input.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
+| [0124](./0124-retain-on-exit.md) | Retain on exit: exit is a facet, close is a purge | Accepted (builds on [0104](./0104-parent-bindings-are-l1-lifecycle.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
+| [0126](./0126-idempotent-create.md) | Creates are idempotent under a client key | Accepted (builds on [0053](./0053-acknowledged-idempotent-input.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
 
 ## When to write an ADR
 

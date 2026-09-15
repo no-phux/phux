@@ -6,56 +6,103 @@ last-reviewed: 2026-09-13
 
 # Remote access
 
-**TL;DR.** Attach to another machine with one command. The first run attempts
-to install and start its per-user phux service, pairs the host, and attaches.
-Later runs use direct encrypted QUIC when the host advertises it, with an SSH
-route as the automatic fallback and no phux account. Manual overlay, enroll,
-and relay paths are below for when that command cannot.
+**TL;DR.** Reach another machine with one command: `phux host add me@mini`
+sets it up over the ssh you already have — confirms phux is there, starts and
+supervises its server, pairs, finds a direct route, registers it — and from
+then on `phux attach mini` dials it directly. A server you stop by hand is
+restarted by the next attach. No account, no hex strings typed by hand; the
+manual, overlay, and relay paths are below for when that command cannot.
 
 ---
 
-## The short way: `phux --remote`
-
-One command, and it reads like the one you already type:
+## The short way: `phux host add`
 
 ```sh
-phux --remote me@mini
+phux host add me@mini
+phux attach mini
 ```
 
-The first time, `mini` is not a registered host, so phux pairs it before
-attaching. It walks four rungs, cheapest first
-([ADR-0093](adr/0093-remote-target-as-a-resolution-ladder.md)):
+The first command reads like the `ssh me@mini` you already type, and it uses
+that same trust: anyone who can ssh to the host can run `phux pair` there and
+read the token, so this grants nothing ssh did not already grant
+([ADR-0055](adr/0055-always-on-server-and-ssh-bootstrapped-enrollment.md),
+[ADR-0122](adr/0122-host-add-is-the-front-door.md)). Prefer to attach
+straight away? `phux --remote me@mini` does the same setup and then attaches.
 
-1. **A registered host** — a `[[remote]]` entry supplies the endpoint, the
-   certificate pin, and the token, and the dial is a direct QUIC connection.
-   This is the steady state and the only rung that runs once a host is known.
-2. **A pasted connect code** — `--code`, below. No ssh, no shell on the far
-   end.
-3. **A one-time ssh bootstrap** — installs and starts the remote per-user
-   service, runs `phux pair --json` over your existing ssh trust, registers
-   what it mints, and dials. Once per host in the normal direct case; rung 1
-   catches everything after.
-4. **A refusal** naming both remedies, when ssh cannot help.
+### What it checks, in order
 
-If a saved direct route later stops answering or its credentials no longer
-establish a connection, the interactive `--remote` form re-enters the SSH
-bootstrap once, refreshes the registry, and retries the attach. `--no-enroll`
-disables both first-time bootstrap and this repair path.
+Each step prints one line as it happens; each failure names the next command.
 
-`PORT` defaults to `8788`, the port a server auto-binds on its overlay
-address ([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
-Pass `[USER@]HOST:PORT` to say otherwise; the port applies to that dial and
-does not rewrite the registry.
+1. **phux is on the host.** `ssh me@mini phux --version`. ssh failing is
+   reported as that, with `ssh me@mini` to check; no phux there gets the
+   install one-liner (`ssh me@mini 'curl -fsSL https://phux.sh/install | sh'`)
+   or `--remote-phux PATH` when it is installed somewhere a non-interactive
+   shell does not look.
+2. **A server is running and will keep running.** `phux service install
+   --quic` writes the host's per-user unit (launchd on macOS, systemd
+   `--user` on Linux) and starts it. A server that is already running is
+   left alone and the unit is armed for its next start (`--adopt`); a host
+   with no service manager gets an unsupervised `phux server --ensure` and a
+   warning that it will not survive a reboot. `--no-service` asks for that
+   deliberately.
+3. **Pairing.** `phux pair --json` on the host mints a token and reports the
+   certificate fingerprint and the detected overlay addresses. A token store
+   that predates versioning is migrated once, and the server restarted so its
+   listeners re-read it.
+4. **A direct route.** Every candidate is dialed briefly with the credentials
+   just minted: `--endpoint` if you gave one, each overlay address, then the
+   host ssh itself connects to (`ssh -G`). The first that answers is
+   registered as `quic://HOST:PORT`.
+5. **Registration.** The entry lands in `[[remote]]` under the host's name
+   (`mini` for `me@mini`; `--name` to choose), with the token owner-only
+   under the state dir, the certificate pin, and the ssh destination it was
+   set up through. Nothing answered? The entry is `ssh://me@mini`, which still
+   attaches through ssh, and the first candidate is kept as `direct` so a
+   later attach can try it again and promote it once UDP is open.
 
-The `user@` half is a label, not a wire identity: phux runs one server per
-user and the QUIC preamble carries a bearer token, not a username, so which
-server you reach is decided by the address and port. `user@` names the ssh
-destination for rung 3 and the registry key that remembers the result.
+Running it again on a registered host is safe: if the saved route answers it
+says so and changes nothing; if not, it sets the host up again.
+
+`--role satellite` uses the same steps to register a peer this hub dials for
+its users instead of a server you attach to. `--ssh-only` registers an
+`ssh://` entry without contacting the host at all.
+
+### What happens when the server is stopped
+
+Stopping the server on `mini` by hand — `phux kill --server`, or your own
+`kill` — leaves its unit loaded and stopped on purpose: a deliberate stop
+stays stopped. The next `phux attach mini` (or `phux --remote mini`) walks the
+same ladder an operator would:
+
+1. dial the saved route; an `ssh://` entry with a kept `direct` route tries
+   that route first and promotes it if it answers;
+2. nobody answered: start the server over `ssh me@mini` and dial again with
+   the saved credentials — no re-pair;
+3. still refused: re-pair over ssh and rewrite the entry;
+4. ssh itself failed: report the dial error and the ssh error together, with
+   both remedies.
+
+`--no-enroll` stops after the first dial. The headless verbs (`ls --remote`
+and friends) never shell out from a `--json` call.
+
+### The manual form
+
+When the credentials were minted elsewhere — a phone paired from a QR, or a
+host you cannot ssh to — register exactly what you hold:
+
+```sh
+phux host add mini quic://100.64.0.2:8788 --token-file ~/.local/state/phux/remotes/mini.token --cert-fingerprint AB:CD:...
+phux host add mini ssh://me@mini            # ssh trust only; no credentials
+```
+
+`NAME ENDPOINT`, or an endpoint URI alone (`--name` to label it), is the
+manual form; anything else is an ssh destination. Each form refuses the
+other's flags by name.
 
 ### Pairing without ssh at all
 
-If the host has no ssh you can use — or you would rather not shell into it —
-run `phux pair` there, copy the one-tap link it prints, and hand it over:
+If the host has no ssh you can use, run `phux pair` there, copy the one-tap
+link it prints, and hand it over:
 
 ```sh
 phux --remote mini --code 'https://phux.phall.io/connect?url=wss://100.64.0.2:8787&fp=...&token=...'
@@ -64,11 +111,16 @@ phux --remote mini --code 'https://phux.phall.io/connect?url=wss://100.64.0.2:87
 That is the same link `phux pair --qr` renders for a phone, so a laptop and a
 phone pair through one artifact. `--code` also accepts the link's
 `phux://connect?...` spelling, which `phux pair` prints on a second line for
-older app builds. The link is registered under the target's
-name, and later attaches need no code.
+older app builds. The link is registered under the target's name, and later
+attaches need no code.
 
-`--no-enroll` refuses the ssh rung outright: an unregistered host is reported
-with its remedies named rather than paired.
+`PORT` on a `--remote` target defaults to `8788`, the port a server auto-binds
+on its overlay address
+([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)). The
+`user@` half is a label, not a wire identity: phux runs one server per user
+and the QUIC preamble carries a bearer token, so which server you reach is
+decided by the address and port
+([ADR-0093](adr/0093-remote-target-as-a-resolution-ladder.md)).
 
 ### Managing a remote host's sessions without attaching
 
@@ -85,11 +137,10 @@ phux kill --remote me@mini ci
 
 `ls`, `new`, `kill`, `rename`, and `detach` accept it. Each one resolves the
 target through the same ladder as `phux --remote` and dials the same QUIC or
-WSS endpoint, so a host bootstrapped once for attach needs nothing more here
-(and a cold host starts and pairs over ssh the first time, exactly as attach
-would). With
-`--json` a cold host is refused instead of paired, with the remedies in the
-error's `remedy` field: pairing narrates on stderr and ssh may prompt, and a
+WSS endpoint, so a host added once needs nothing more here (and a cold host
+is set up over ssh the first time, exactly as attach would). With `--json` a
+cold host is refused instead of set up, with the remedies in the error's
+`remedy` field: setup narrates on stderr and ssh may prompt, and a
 machine-readable call must do neither. Three limits are deliberate:
 
 - `--remote` and `--socket` cannot combine: one names a local socket, the
@@ -97,7 +148,7 @@ machine-readable call must do neither. Three limits are deliberate:
 - `phux kill --server --remote HOST` is refused. The server accepts its stop
   command on the local socket only, so run `phux kill --server` on that host.
 - An `ssh://` registry entry is refused. It carries an interactive attach
-  over `ssh -t` and nothing else; `phux host enroll HOST` gives it a direct
+  over `ssh -t` and nothing else; `phux host add HOST` gives it a direct
   QUIC endpoint the session verbs can dial.
 
 `phux new --remote` without `--json` creates the session and attaches to it,
@@ -109,45 +160,10 @@ server's default directory: a path on this machine names nothing there.
 Cockpit's Connect to Host (`cmd+shift+O`) reads this same `[[remote]]`
 registry and dials through the same QUIC/WSS stack, so a host that
 `phux --remote NAME` reaches is one Cockpit reaches by NAME. It does only
-rung 1 of the ladder: pairing stays in the terminal, and an unregistered host
-is refused with the command that pairs it. Details, including the
-`phux-remote` setting and relaunch behavior, are in
+the first rung of the ladder: setup stays in the terminal, and an
+unregistered host is refused with the command that adds it. Details,
+including the `phux-remote` setting and relaunch behavior, are in
 [Cockpit's remote hosts](../clients/cockpit/docs/REMOTE_HOSTS.md).
-
-### Explicit setup without attaching: `phux host enroll`
-
-`--remote` performs the ordinary per-user service setup automatically. Use the
-explicit host verb when you want to prepare or repair a machine without
-attaching, select a role, or supply enrollment options:
-
-```sh
-phux host enroll mini
-```
-
-(Before the `phux host` namespace this verb was spelled `phux enroll`. See
-[ADR-0066](adr/0066-host-namespace.md).)
-
-It confirms phux is installed on `mini`, installs the host's service unit so
-the server survives reboot, mints a pairing token there, reads back the
-certificate fingerprint and the overlay address, writes the token locally
-0600, and registers a `[[remote]]` entry. Afterwards both spellings work with
-no flags:
-
-```sh
-phux attach mini
-phux --remote mini
-```
-
-No token, no fingerprint, no address typed by hand. This grants nothing ssh
-did not already grant — whoever can `ssh mini` can run `phux pair` there and
-read the token themselves ([ADR-0055](adr/0055-always-on-server-and-ssh-bootstrapped-enrollment.md)).
-
-A host with no overlay address, or one whose certificate could not be read,
-has nothing dialable; enrollment says so and registers an `ssh://` entry
-instead. `phux attach mini` then bootstraps a one-attach QUIC listener over
-ssh ([ADR-0120](adr/0120-ssh-bootstrap-opens-a-listener-per-attach.md)) and
-falls back to `ssh -t` only when UDP cannot reach it. Re-run `phux host enroll`
-once the overlay is up to upgrade to a persistent direct endpoint.
 
 ### The mosh-style way: `phux attach --ssh`
 
@@ -178,17 +194,17 @@ If the QUIC dial does not connect within a few seconds, or the host's phux
 predates `phux bootstrap`, the attach falls back to `ssh -t me@box phux attach`
 and says why. A registered `ssh://` host takes the same path.
 
-The rest of this page is the manual path: what `enroll` automates, and what
-to do when it cannot reach the host.
+The rest of this page is the manual path: what `host add` automates, and
+what to do when it cannot reach the host.
 
 ### Joining a satellite to this hub
 
-`--remote` and `phux host enroll` (default `--role remote`) attach *to*
-another machine. To have this machine *dial* another as a federation
-satellite, pass `--role satellite`:
+`phux host add` (default `--role remote`) attaches *to* another machine. To
+have this machine *dial* another as a federation satellite, pass
+`--role satellite`:
 
 ```sh
-phux host enroll --role satellite mini
+phux host add --role satellite mini
 ```
 
 One command, typically under a minute if `mini` already has phux and you

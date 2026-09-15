@@ -15,28 +15,30 @@ echo "installer shell: $INSTALLER_SH"
 
 VERSION=v9.8.7
 TARGET=x86_64-unknown-linux-gnu
-STAGE="phux-${VERSION}-${TARGET}"
+BINS="$TMP/bins"
 FIXTURE="$TMP/fixture"
 FAKE_BIN="$TMP/fake-bin"
-mkdir -p "$FIXTURE/$STAGE" "$FAKE_BIN"
-printf 'new phux\n' > "$FIXTURE/$STAGE/phux"
-printf 'new phux-mcp\n' > "$FIXTURE/$STAGE/phux-mcp"
-chmod 755 "$FIXTURE/$STAGE/phux" "$FIXTURE/$STAGE/phux-mcp"
-tar -czf "$FIXTURE/$STAGE.tar.gz" -C "$FIXTURE" "$STAGE"
-(
-  cd "$FIXTURE"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
-  else
-    shasum -a 256 "$STAGE.tar.gz" > "$STAGE.tar.gz.sha256"
-  fi
-)
+mkdir -p "$BINS" "$FIXTURE" "$FAKE_BIN"
+printf 'new phux\n' > "$BINS/phux"
+printf 'new phux-mcp\n' > "$BINS/phux-mcp"
+chmod 755 "$BINS/phux" "$BINS/phux-mcp"
+bash "$ROOT/scripts/pack-release.sh" \
+  --id "$VERSION" --target "$TARGET" --bin-dir "$BINS" --out-dir "$FIXTURE"
 
 cat > "$FAKE_BIN/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-url=$2
-out=$4
+url=""
+out=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out=$2; shift 2 ;;
+    -fsSL|-fsSLI|-f|-s|-S|-L|-I|-q) shift ;;
+    -w) shift 2 ;;
+    http*) url=$1; shift ;;
+    *) shift ;;
+  esac
+done
 case "$url" in
   *cockpit*.zip) cp "$INSTALL_FIXTURE/cockpit.zip" "$out" ;;
   *cockpit*SHA256SUMS) cp "$INSTALL_FIXTURE/cockpit.SHA256SUMS" "$out" ;;
@@ -63,8 +65,8 @@ if grep -Fq 'PATH remedy:' <<<"$output"; then
   echo "installer printed a PATH remedy for a discoverable destination" >&2
   exit 1
 fi
-cmp "$FIXTURE/$STAGE/phux" "$ON_PATH/phux"
-cmp "$FIXTURE/$STAGE/phux-mcp" "$ON_PATH/phux-mcp"
+cmp "$BINS/phux" "$ON_PATH/phux"
+cmp "$BINS/phux-mcp" "$ON_PATH/phux-mcp"
 
 SHADOW="$TMP/shadow"
 mkdir "$SHADOW"
@@ -361,21 +363,14 @@ echo "cockpit installer transaction tests passed"
 rm -f "$FAKE_BIN/mv"
 
 NEXT_SHA=0123456789abcdef0123456789abcdef01234567
-NEXT_STAGE="phux-next.${NEXT_SHA}-${TARGET}"
+NEXT_BINS="$TMP/next-bins"
 NEXT_FIXTURE="$TMP/next-fixture"
-mkdir -p "$NEXT_FIXTURE/$NEXT_STAGE" "$NEXT_FIXTURE"
-printf 'next phux\n' > "$NEXT_FIXTURE/$NEXT_STAGE/phux"
-printf 'next phux-mcp\n' > "$NEXT_FIXTURE/$NEXT_STAGE/phux-mcp"
-chmod 755 "$NEXT_FIXTURE/$NEXT_STAGE/phux" "$NEXT_FIXTURE/$NEXT_STAGE/phux-mcp"
-tar -czf "$NEXT_FIXTURE/${NEXT_STAGE}.tar.gz" -C "$NEXT_FIXTURE" "$NEXT_STAGE"
-(
-  cd "$NEXT_FIXTURE"
-  if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "${NEXT_STAGE}.tar.gz" > "${NEXT_STAGE}.tar.gz.sha256"
-  else
-    shasum -a 256 "${NEXT_STAGE}.tar.gz" > "${NEXT_STAGE}.tar.gz.sha256"
-  fi
-)
+mkdir -p "$NEXT_BINS" "$NEXT_FIXTURE"
+printf 'next phux\n' > "$NEXT_BINS/phux"
+printf 'next phux-mcp\n' > "$NEXT_BINS/phux-mcp"
+chmod 755 "$NEXT_BINS/phux" "$NEXT_BINS/phux-mcp"
+bash "$ROOT/scripts/pack-release.sh" \
+  --id "next.${NEXT_SHA}" --target "$TARGET" --bin-dir "$NEXT_BINS" --out-dir "$NEXT_FIXTURE"
 cat > "$NEXT_FIXTURE/channel.json" <<EOF
 {"schema_version":1,"channel":"next","sha":"${NEXT_SHA}","version":"9.8.7"}
 EOF
@@ -417,8 +412,8 @@ PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$NEXT_FIXTURE" \
     --install-dir "$NEXT_DIR" >"$TMP/next.out"
 grep -Fq "installed phux next.${NEXT_SHA}" "$TMP/next.out"
 grep -Fxq next "$NEXT_DIR/.phux-channel"
-cmp "$NEXT_FIXTURE/$NEXT_STAGE/phux" "$NEXT_DIR/phux"
-cmp "$NEXT_FIXTURE/$NEXT_STAGE/phux-mcp" "$NEXT_DIR/phux-mcp"
+cmp "$NEXT_BINS/phux" "$NEXT_DIR/phux"
+cmp "$NEXT_BINS/phux-mcp" "$NEXT_DIR/phux-mcp"
 
 if PATH="$FAKE_BIN:/usr/bin:/bin" INSTALL_FIXTURE="$NEXT_FIXTURE" \
   "$INSTALLER_SH" "$ROOT/scripts/install.sh" --channel next --version "$VERSION" \

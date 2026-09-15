@@ -90,6 +90,17 @@
                   <text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text>
                   <text wrap="true" foreground="text_muted">{connectionDetail}</text>
                 </if>
+                <if test="{settingsSection == 5}">
+                  <text>Phux Cockpit</text>
+                  <row gap="8"><text foreground="text_muted">Installed</text><text>{updateCurrent}</text></row>
+                  <row gap="8"><text foreground="text_muted">Latest</text><text>{updateLatest}</text></row>
+                  <text wrap="true">{updateStatus}</text>
+                  <if test="{updateRemedy}"><text wrap="true" foreground="text_muted">{updateRemedy}</text></if>
+                  <row gap="8">
+                    <button size="sm" variant="outline" disabled="{updateBusy}" on-press="update_check">Check for Updates</button>
+                    <if test="{updateCanInstall}"><button size="sm" disabled="{updateBusy}" on-press="update_install">Install</button></if>
+                  </row>
+                </if>
                 <text wrap="true" foreground="text_muted">{confignotice}</text>
                 <row gap="8">
                   <button size="sm" variant="outline" on-press="settings_edit_configuration">Edit Configuration</button>

@@ -408,7 +408,10 @@ pub async fn fetch_agent_record(
               tombstone, which is the one observation the wait must not miss"
 )]
 fn record_from_frame(frame: &FrameKind, terminal: &ResourceId) -> Option<Option<AgentRecord>> {
-    let FrameKind::MetadataChanged { scope, key, value } = frame else {
+    let FrameKind::MetadataChanged {
+        scope, key, value, ..
+    } = frame
+    else {
         return None;
     };
     if key != RESOURCE_AGENT_KEY {
@@ -832,7 +835,9 @@ async fn fold_fleet_frame(
     needs_baseline: &mut Vec<ResourceId>,
 ) -> Result<Option<FleetAgentMatch>, AttachError> {
     match frame {
-        FrameKind::MetadataChanged { scope, key, value } if key == RESOURCE_AGENT_KEY => {
+        FrameKind::MetadataChanged {
+            scope, key, value, ..
+        } if key == RESOURCE_AGENT_KEY => {
             let Scope::Resource(terminal) = scope else {
                 return Ok(None);
             };
@@ -852,6 +857,7 @@ async fn fold_fleet_frame(
                     kind: ResourceKind::Terminal,
                     ..
                 },
+            ..
         } => {
             if subscription.subscribe_terminal(terminal.clone()).await? {
                 needs_baseline.push(terminal);
@@ -861,6 +867,7 @@ async fn fold_fleet_frame(
         FrameKind::Event {
             terminal: Some(terminal),
             event: phux_protocol::wire::frame::AgentEvent::ResourceClosed { .. },
+            ..
         } => {
             subscription.remove_terminal(&terminal);
             trackers.remove(&terminal);
@@ -1074,6 +1081,7 @@ mod tests {
             scope: Scope::Resource(pane.clone()),
             key: RESOURCE_AGENT_KEY.to_owned(),
             value,
+            actor: None,
         }
     }
 
@@ -1305,6 +1313,7 @@ mod tests {
                     scope: Scope::Resource(pane.clone()),
                     key: "phux.tags/v1".to_owned(),
                     value: Some(record("idle")),
+                    actor: None,
                 },
                 &pane,
             )
@@ -1556,6 +1565,7 @@ mod tests {
                     .push(FrameKind::Event {
                         terminal: None,
                         event: phux_protocol::wire::frame::AgentEvent::Bell,
+                        stamp: None,
                     })
                     .end(EndOfScript::HangUp),
             )

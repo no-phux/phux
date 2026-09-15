@@ -77,6 +77,29 @@ this section is the home for the facts.
   `--json`) — `telemetry::init_client()`. Logs to a **file only**: the
   attach loop owns the alt screen, so a stray log line corrupts the
   display.
+- **Cockpit** (the native macOS app) — one file,
+  `~/Library/Logs/Phux Cockpit/cockpit.log`; `PHUX_COCKPIT_LOG` names a
+  different file. Launch Services gives the app no terminal, so at
+  startup Cockpit points its standard error at that file and the Rust
+  bridge installs its `tracing` subscriber on the same descriptor. The
+  file therefore holds everything the process says: Cockpit's own log
+  lines, the bridge's remote-tunnel lifecycle (resolve, dial, handshake,
+  relay, close, and every failure reason) at info with quinn and rustls
+  at warn, Rust panic text, and the Zig fatal-signal handler's report.
+  `PHUX_COCKPIT_LOG_FILTER` is a `RUST_LOG`-style filter for the bridge's
+  part. A file over 8 MiB rotates to `cockpit.log.1` at the next launch.
+  `phux logs --cockpit` tails it.
+
+### Crash reports
+
+A fatal signal in the Cockpit process leaves two artifacts. The log above
+ends with the Zig handler's report, which is where the last thing the
+process was doing sits. macOS writes the full report to
+`~/Library/Logs/DiagnosticReports/phux-cockpit-<date>.ips`; its
+`Triggered by Thread` line names the thread that faulted (for example
+`phux-remote-tunnel`, the bridge's remote dial and relay thread), and the
+first frames under that thread are the ones to read. Console.app shows
+the same reports under Crash Reports.
 
 ### Local bug reports
 
@@ -324,15 +347,16 @@ closed` at debug.
 ### Finding and tailing the logs
 
 `phux logs` is the discovery verb. Bare invocation prints the inventory
-— the canonical server log, the per-pid client logs (newest first), and
-the state dir that holds them — with existence, size, and age; a file
-that does not exist yet is reported as "not created yet", never as an
-error. `phux logs --server` tails the server log and `phux logs --client`
-the newest client log (`--pid PID` picks a specific one); `-f` follows
-and `-n NUM` sets the tail length. `phux logs --json` emits the inventory
-as a stable `schema_version` 1 document on stdout. `phux service logs` is
-the same tail over the same server log, kept for symmetry with the other
-`service` verbs.
+— the canonical server log, the per-pid client logs (newest first), the
+state dir that holds them, and on macOS the Cockpit log — with existence,
+size, and age; a file that does not exist yet is reported as "not created
+yet", never as an error. `phux logs --server` tails the server log,
+`phux logs --client` the newest client log (`--pid PID` picks a specific
+one), and `phux logs --cockpit` the Cockpit log; `-f` follows and
+`-n NUM` sets the tail length. `phux logs --json` emits the inventory as
+a stable `schema_version` 1 document on stdout (`cockpit_log` is `null`
+off macOS). `phux service logs` is the same tail over the same server
+log, kept for symmetry with the other `service` verbs.
 
 There is no Prometheus/OpenTelemetry exporter, or runtime per-target
 log-level control. Use `phux status` and `phux ls --json` for the running
@@ -691,7 +715,7 @@ and SSH-stdio. Satellites are phux servers on other machines. A server
 started with `--hub` dials enabled `[[satellites]]` and routes
 host-qualified operations over the same wire. Routes are hub-and-spoke;
 remote sessions and windows are not merged. Enrollment is
-[Remote access](./remote-access.md): `phux host enroll --role satellite HOST`
+[Remote access](./remote-access.md): `phux host add --role satellite HOST`
 installs the satellite's per-user service, registers it here, and enables
 local `--hub` without dropping listeners already baked into the unit.
 

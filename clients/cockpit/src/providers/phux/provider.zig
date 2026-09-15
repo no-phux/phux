@@ -31,6 +31,7 @@ pub const SessionSummary = host_mod.SessionSummary;
 pub const RenameInfo = host_mod.Host.RenameInfo;
 pub const SessionCreateInfo = host_mod.Host.SessionCreateInfo;
 pub const Error = host_mod.Error;
+pub const logInit = host_mod.logInit;
 pub const OperationResult = host_mod.OperationResult;
 pub const ColorPolicy = host_mod.ColorPolicy;
 pub const max_agent_sessions = host_mod.max_agent_sessions;

@@ -9,7 +9,14 @@
 //! pinned TLS transport," but the trust direction is opposite — a satellite
 //! is a peer a *hub* dials on behalf of its users, a remote is a server *this
 //! consumer* dials on behalf of itself. Collapsing them would let
-//! `phux host enroll` edit federation topology.
+//! `phux host add` edit federation topology.
+//!
+//! Two keys remember how the entry was made so a later attach can act on
+//! it without the operator retyping anything: `ssh` is the destination
+//! `phux host add` enrolled through, which is what a stopped server is
+//! restarted over; `direct` is a paired `quic://` endpoint kept while
+//! `endpoint` is `ssh://`, so an attach can try the direct route first and
+//! promote it once it answers.
 
 use std::path::PathBuf;
 
@@ -54,4 +61,18 @@ pub struct RemoteConfigEntry {
     /// last-attach memory decides, exactly as a local naked `phux` does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<String>,
+
+    /// The ssh destination this entry was enrolled through (`me@mini`, or
+    /// a `~/.ssh/config` alias), exactly as it is typed after `ssh`. An
+    /// attach that finds the saved endpoint not answering restarts the
+    /// server over it; absent, the entry's name is used as the destination.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ssh: Option<String>,
+
+    /// A paired direct endpoint (`quic://HOST:PORT`) that did not answer
+    /// when the entry was written, kept beside an `ssh://` endpoint so a
+    /// later attach can try it first and promote it to `endpoint` once it
+    /// does. Meaningless, and cleared, once `endpoint` is itself direct.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct: Option<String>,
 }

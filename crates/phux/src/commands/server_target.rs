@@ -247,7 +247,7 @@ fn unusable_entry(entry: &RemoteEntry, why: &str, remedy: &str) -> CliError {
 
 /// The first remedy for any bad entry: re-pairing rewrites it whole.
 fn re_pair_remedy(name: &str) -> String {
-    format!("re-pair the host so its registry entry is rewritten: `phux host enroll {name}`")
+    format!("re-pair the host so its registry entry is rewritten: `phux host add {name}`")
 }
 
 /// The way out of a name that did not resolve: the overlay hint for a DNS
@@ -271,7 +271,7 @@ fn ssh_only_refusal(name: &str, destination: &str, verb: &str) -> CliError {
         codes::REMOTE_UNRESOLVED,
         format!("remote {name:?} is an ssh:// entry, which carries an interactive attach only"),
         format!(
-            "`phux host enroll {name}` registers a direct QUIC endpoint the session verbs can dial;\n\
+            "`phux host add {name}` registers a direct QUIC endpoint the session verbs can dial;\n\
              until then, run the command on the host: `ssh {destination} phux {verb} ...`"
         ),
     )
@@ -426,6 +426,8 @@ mod tests {
             token_file: None,
             cert_fingerprint: fingerprint.map(str::to_owned),
             session: None,
+            ssh: None,
+            direct: None,
         }
     }
 
@@ -603,7 +605,7 @@ mod tests {
                 err.message
             );
             assert!(
-                err.remedy.contains("phux host enroll mini"),
+                err.remedy.contains("phux host add mini"),
                 "{refusal:?}: {}",
                 err.remedy
             );

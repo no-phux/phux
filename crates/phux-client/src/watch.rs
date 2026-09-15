@@ -178,6 +178,7 @@ const fn lifecycle_change(frame: &FrameKind) -> Option<(&ResourceId, bool)> {
     let FrameKind::Event {
         terminal: Some(terminal),
         event,
+        ..
     } = frame
     else {
         return None;
@@ -205,8 +206,11 @@ const fn lifecycle_change(frame: &FrameKind) -> Option<(&ResourceId, bool)> {
 /// Returns [`AttachError`] on connect, enumeration, or subscription failure.
 pub async fn subscribe_fleet(socket: &Path) -> Result<FleetSubscription, AttachError> {
     let mut conn = Connection::connect(socket).await?;
-    conn.send(&FrameKind::SubscribeEvents { terminal: None })
-        .await?;
+    conn.send(&FrameKind::SubscribeEvents {
+        terminal: None,
+        after_seq: None,
+    })
+    .await?;
     let (view, interleaved) = get_state_on_with_interleaved(&mut conn).await?;
     let mut terminals: HashSet<ResourceId> = view
         .snapshot()
@@ -272,14 +276,19 @@ where
                         last_seen.remove(&terminal);
                     }
                 }
-                let FrameKind::Event { terminal, event } = frame else {
+                let FrameKind::Event {
+                    terminal, event, ..
+                } = frame
+                else {
                     unreachable!();
                 };
                 if !sink(WatchItem::Event(WatchEvent { terminal, event })) {
                     return Ok(());
                 }
             }
-            Ok(FrameKind::MetadataChanged { scope, key, value }) => {
+            Ok(FrameKind::MetadataChanged {
+                scope, key, value, ..
+            }) => {
                 if key != RESOURCE_AGENT_KEY {
                     continue;
                 }
@@ -332,6 +341,7 @@ pub async fn subscribe(
     let mut conn = Connection::connect(socket).await?;
     conn.send(&FrameKind::SubscribeEvents {
         terminal: terminal.clone(),
+        after_seq: None,
     })
     .await?;
     if let Some(id) = &terminal {
@@ -364,12 +374,16 @@ where
     let mut last_seen: HashMap<ResourceId, AgentRecord> = HashMap::new();
     loop {
         match conn.recv().await {
-            Ok(FrameKind::Event { terminal, event }) => {
+            Ok(FrameKind::Event {
+                terminal, event, ..
+            }) => {
                 if !sink(WatchItem::Event(WatchEvent { terminal, event })) {
                     return Ok(());
                 }
             }
-            Ok(FrameKind::MetadataChanged { scope, key, value }) => {
+            Ok(FrameKind::MetadataChanged {
+                scope, key, value, ..
+            }) => {
                 if key != RESOURCE_AGENT_KEY {
                     continue;
                 }
@@ -564,6 +578,7 @@ mod tests {
             scope: Scope::Resource(scope_terminal.clone()),
             key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(json.as_bytes().to_vec()),
+            actor: None,
         }
     }
 
@@ -598,6 +613,7 @@ mod tests {
                     .push(FrameKind::Event {
                         terminal: Some(pane),
                         event: AgentEvent::Dirty,
+                        stamp: None,
                     })
                     .end(EndOfScript::ServeUntilDetach),
             )
@@ -724,7 +740,7 @@ mod tests {
         assert!(
             seen.iter().any(|f| matches!(
                 f,
-                FrameKind::SubscribeEvents { terminal: Some(id) } if *id == pane
+                FrameKind::SubscribeEvents { terminal: Some(id), .. } if *id == pane
             )),
             "watch must subscribe to events for the pane; sent {seen:?}"
         );
@@ -807,6 +823,7 @@ mod tests {
                     scope: Scope::Resource(pane.clone()),
                     key: RESOURCE_AGENT_KEY.to_owned(),
                     value: None,
+                    actor: None,
                 },
             ],
         )
@@ -854,6 +871,7 @@ mod tests {
                     scope: Scope::Resource(pane.clone()),
                     key: "phux.tui.layout/v1".to_owned(),
                     value: Some(b"{}".to_vec()),
+                    actor: None,
                 },
                 agent_record(&pane, r#"{"name":"reviewer","state":"idle"}"#),
             ],
@@ -874,6 +892,7 @@ mod tests {
                 FrameKind::Event {
                     terminal: Some(pane.clone()),
                     event: AgentEvent::Bell,
+                    stamp: None,
                 },
                 agent_record(&pane, r#"{"name":"reviewer","state":"blocked"}"#),
             ],
@@ -932,14 +951,17 @@ mod tests {
                 FrameKind::Event {
                     terminal: Some(pane.clone()),
                     event: AgentEvent::Dirty,
+                    stamp: None,
                 },
                 FrameKind::Event {
                     terminal: Some(pane.clone()),
                     event: AgentEvent::Bell,
+                    stamp: None,
                 },
                 FrameKind::Event {
                     terminal: Some(pane.clone()),
                     event: AgentEvent::Idle,
+                    stamp: None,
                 },
             ],
             EndOfScript::HangUp,
@@ -989,6 +1011,7 @@ mod tests {
             vec![FrameKind::Event {
                 terminal: Some(pane.clone()),
                 event: AgentEvent::Dirty,
+                stamp: None,
             }],
             // Stay connected: only the deadline can end this watch.
             EndOfScript::ServeUntilDetach,
@@ -1017,6 +1040,7 @@ mod tests {
             vec![FrameKind::Event {
                 terminal: Some(pane.clone()),
                 event: AgentEvent::Dirty,
+                stamp: None,
             }],
             EndOfScript::HangUp,
             Some(Duration::from_secs(30)),
@@ -1055,6 +1079,7 @@ mod tests {
                 scope: Scope::Resource(first.clone()),
                 key: "phux.other/v1".to_owned(),
                 value: Some(b"not an agent record".to_vec()),
+                actor: None,
             })
             .push_after_subscribe(
                 Scope::Resource(first.clone()),
@@ -1131,6 +1156,7 @@ mod tests {
                 kind: ResourceKind::Terminal,
                 parent: None,
             },
+            stamp: None,
         };
         let server = tokio::spawn(async move {
             ScriptedServer::accept(
@@ -1168,7 +1194,7 @@ mod tests {
 
         assert!(
             seen.iter()
-                .any(|f| matches!(f, FrameKind::SubscribeEvents { terminal: None })),
+                .any(|f| matches!(f, FrameKind::SubscribeEvents { terminal: None, .. })),
             "sent {seen:?}"
         );
         assert!(

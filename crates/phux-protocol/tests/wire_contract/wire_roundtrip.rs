@@ -1456,8 +1456,9 @@ proptest! {
         scope in arb_scope(),
         key in ".{0,64}",
         value in proptest::option::of(arb_metadata_value()),
+        actor in proptest::option::of(arb_actor()),
     ) {
-        assert_round_trip(&FrameKind::MetadataChanged { scope, key, value });
+        assert_round_trip(&FrameKind::MetadataChanged { scope, key, value, actor });
     }
 
     /// METADATA_VALUE — reply to GET_METADATA (phux-4li.8). Carries the
@@ -1603,6 +1604,7 @@ fn arb_spawn_error() -> impl Strategy<Value = SpawnError> {
         Just(SpawnError::UnsupportedKind),
         Just(SpawnError::ParentNotFound),
         Just(SpawnError::ParentKindMismatch),
+        Just(SpawnError::IdempotencyConflict),
     ]
 }
 
@@ -1623,6 +1625,12 @@ fn arb_spawn_result() -> impl Strategy<Value = SpawnResult> {
         (arb_terminal_id(), any::<[u8; 16]>()).prop_map(|(id, bytes)| SpawnResult::OkBound {
             id,
             instance: phux_protocol::ids::ServerInstance::new(bytes),
+        }),
+        (arb_terminal_id(), proptest::option::of(any::<[u8; 16]>())).prop_map(|(id, bytes)| {
+            SpawnResult::Replayed {
+                id,
+                instance: bytes.map(phux_protocol::ids::ServerInstance::new),
+            }
         }),
     ]
 }
@@ -1726,7 +1734,7 @@ proptest! {
                 parent,
                 provider: None,
                 native_id: None,
-                bind_instance: false,
+                bind_instance: false, idempotency_key: None, retain_secs: None,
             })),
         });
     }
@@ -1741,7 +1749,7 @@ proptest! {
     ) {
         assert_round_trip(&FrameKind::Event {
             terminal: Some(terminal),
-            event: AgentEvent::ResourceSpawned { kind, parent },
+            event: AgentEvent::ResourceSpawned { kind, parent }, stamp: None,
         });
     }
 
@@ -1780,8 +1788,9 @@ proptest! {
         terminal_id in arb_terminal_id(),
         exit_status in proptest::option::of(any::<i32>()),
         reason in arb_close_reason(),
+        signal in proptest::option::of(any::<i32>()),
     ) {
-        assert_round_trip(&FrameKind::ResourceClosed { terminal_id, exit_status, reason });
+        assert_round_trip(&FrameKind::ResourceClosed { terminal_id, exit_status, reason, signal });
     }
 
     /// Zero dims are in-range: SPEC §10.2 leaves them implementation-defined
@@ -2505,8 +2514,44 @@ fn command_unknown_tag_is_rejected() {
 // Agent-event frames — SPEC §7.5 (phux-y2t).
 // -----------------------------------------------------------------------------
 
+fn arb_actor() -> impl Strategy<Value = phux_protocol::wire::frame::ActorRef> {
+    (
+        any::<u32>(),
+        proptest::option::of(".{0,16}"),
+        proptest::option::of(".{0,16}"),
+    )
+        .prop_map(|(client, credential_id, client_name)| {
+            phux_protocol::wire::frame::ActorRef::new(ClientId::new(client))
+                .with_credential_id(credential_id)
+                .with_client_name(client_name)
+        })
+}
+
+/// A journal stamp (ADR-0123) over the full `u64` range, with and without
+/// an actor and an operation id; an all-zero key draw means no key.
+fn arb_event_stamp() -> impl Strategy<Value = phux_protocol::wire::frame::EventStamp> {
+    (
+        any::<u64>(),
+        any::<u64>(),
+        proptest::option::of(arb_actor()),
+        proptest::option::of(any::<[u8; 16]>()),
+    )
+        .prop_map(|(seq, ts_ms, actor, key)| {
+            phux_protocol::wire::frame::EventStamp::new(seq, ts_ms)
+                .with_actor(actor)
+                .with_operation_id(key.and_then(phux_protocol::ids::IdempotencyKey::new))
+        })
+}
+
 fn arb_agent_event() -> impl Strategy<Value = AgentEvent> {
     prop_oneof![
+        (any::<u64>(), any::<u64>()).prop_map(|(first_missing, last_missing)| {
+            AgentEvent::JournalGap {
+                first_missing,
+                last_missing,
+            }
+        }),
+        any::<u64>().prop_map(|dropped| AgentEvent::SourceGap { dropped }),
         Just(AgentEvent::CommandStarted),
         proptest::option::of(any::<i32>())
             .prop_map(|exit_code| AgentEvent::CommandFinished { exit_code }),
@@ -2524,7 +2569,7 @@ fn arb_agent_event() -> impl Strategy<Value = AgentEvent> {
             0u8..3,
             proptest::option::of(any::<i32>()),
             proptest::option::of(any::<u32>()),
-            0u8..9,
+            0u8..10,
             proptest::option::of(any::<u32>()),
         )
             .prop_map(
@@ -2559,18 +2604,22 @@ proptest! {
     /// `SUBSCRIBE_EVENTS` round-trips for both per-Terminal and
     /// server-scoped (`None`) subscriptions.
     #[test]
-    fn roundtrip_subscribe_events(terminal in proptest::option::of(arb_terminal_id())) {
-        assert_round_trip(&FrameKind::SubscribeEvents { terminal });
+    fn roundtrip_subscribe_events(
+        terminal in proptest::option::of(arb_terminal_id()),
+        after_seq in proptest::option::of(any::<u64>()),
+    ) {
+        assert_round_trip(&FrameKind::SubscribeEvents { terminal, after_seq });
     }
 
-    /// `EVENT` round-trips across the full event taxonomy and both scope
-    /// shapes.
+    /// `EVENT` round-trips across the full event taxonomy, both scope
+    /// shapes, and with or without a journal stamp.
     #[test]
     fn roundtrip_event(
         terminal in proptest::option::of(arb_terminal_id()),
         event in arb_agent_event(),
+        stamp in proptest::option::of(arb_event_stamp()),
     ) {
-        assert_round_trip(&FrameKind::Event { terminal, event });
+        assert_round_trip(&FrameKind::Event { terminal, event, stamp: stamp.map(Box::new) });
     }
 }
 
@@ -2618,7 +2667,11 @@ fn event_fixture_variants_round_trip() {
             },
         ),
     ] {
-        assert_round_trip(&FrameKind::Event { terminal, event });
+        assert_round_trip(&FrameKind::Event {
+            terminal,
+            event,
+            stamp: None,
+        });
     }
 }
 
@@ -2647,6 +2700,7 @@ fn event_unknown_tag_decodes_as_unknown_and_skips() {
                 tag: 0x7F,
                 body: body_bytes.to_vec(),
             },
+            stamp: None,
         }
     );
     assert!(tail.is_empty());
@@ -2655,14 +2709,14 @@ fn event_unknown_tag_decodes_as_unknown_and_skips() {
 #[test]
 fn event_asked_decodes_as_unknown_for_an_older_decoder() {
     // Forward-compat guard: prove the unknown-event-tag skip path. The
-    // highest allocated tag is CWD_CHANGED at `0x0a` (phux-foz.4), so we
-    // build an event with tag `0x0b` — a tag THIS version does not know —
+    // highest allocated tag is SOURCE_GAP at `0x0c` (ADR-0123), so we
+    // build an event with tag `0x0d` — a tag THIS version does not know —
     // carrying an opaque body, and assert an older-style decoder skips it by
     // its outer length prefix to `AgentEvent::Unknown` (body preserved
     // verbatim) rather than failing the frame parse. This pins the additive
     // forward-compat contract.
     let body_bytes = [0x01u8, 0x02, 0x03];
-    let mut agent_event = vec![0x0bu8]; // a tag this version does not know
+    let mut agent_event = vec![0x0du8]; // a tag this version does not know
     agent_event.extend_from_slice(&u32::try_from(body_bytes.len()).unwrap().to_be_bytes());
     agent_event.extend_from_slice(&body_bytes);
     let mut fields = Vec::new();
@@ -2675,9 +2729,10 @@ fn event_asked_decodes_as_unknown_for_an_older_decoder() {
         FrameKind::Event {
             terminal: None,
             event: AgentEvent::Unknown {
-                tag: 0x0b,
+                tag: 0x0d,
                 body: body_bytes.to_vec(),
             },
+            stamp: None,
         }
     );
     assert!(tail.is_empty());
@@ -2884,6 +2939,7 @@ fn event_pane_spawned_empty_body_decodes_as_root_terminal() {
             kind: ResourceKind::Terminal,
             parent: None,
         },
+        stamp: None,
     };
     assert_eq!(decoded, expected);
     let mut buf = BytesMut::new();
@@ -2909,6 +2965,7 @@ fn event_pane_spawned_empty_body_decodes_as_root_terminal() {
                 kind: ResourceKind::AgentSession,
                 parent: Some(ResourceId::local(7)),
             },
+            stamp: None,
         }
     );
 }
@@ -2975,6 +3032,7 @@ fn terminal_closed_reason_is_additive_and_forgiving() {
             terminal_id: ResourceId::local(42),
             exit_status: None,
             reason: CloseReason::Unknown,
+            signal: None,
         }
     );
     // A stated reason decodes to its variant.

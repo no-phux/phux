@@ -304,7 +304,7 @@ fn help_does_not_print_banner() {
         "--help must not print the banner to stderr; stdout={stdout:?} stderr={stderr:?}"
     );
     assert!(
-        stdout.contains("ATTACH / SERVE"),
+        stdout.contains("Sessions:"),
         "--help stdout should be the long help, not a banner line; got {stdout:?}"
     );
 }
@@ -318,16 +318,17 @@ fn short_and_long_help_progressively_disclose_the_root() {
     assert!(short.contains("Start here:"), "short help:\n{short}");
     assert!(short.contains("phux                     Attach"));
     assert!(short.contains("phux --skill"));
-    assert!(!short.contains("ATTACH / SERVE"), "short help:\n{short}");
-    assert!(long.contains("ATTACH / SERVE"), "long help:\n{long}");
-    // usage-rs wraps the curated inventory, so column padding does not survive.
+    assert!(!short.contains("Sessions:"), "short help:\n{short}");
+    assert!(long.contains("Sessions:"), "long help:\n{long}");
+    assert!(long.contains("Learn more:"), "long help:\n{long}");
+    // Grouped rows are laid out in columns; compare on whitespace-collapsed text.
     let flat = long.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(
         flat.contains("spawn Create a pane"),
         "long help must list spawn:\n{long}"
     );
     assert!(
-        flat.contains("launch Start a configured agent"),
+        flat.contains("launch Start an agent integration"),
         "long help must list launch:\n{long}"
     );
 }

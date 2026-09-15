@@ -1,7 +1,7 @@
 ---
 audience: humans, consumers
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-14
 ---
 
 # Cockpit
@@ -42,8 +42,8 @@ brew tap no-phux/tap
 brew install --cask no-phux/tap/phux-cockpit
 ```
 
-Full installer notes, including pinning a `cockpit-vX.Y.Z` tag, live in
-[`../INSTALL.md`](../INSTALL.md).
+Full installer notes, including pinning a `cockpit-vX.Y.Z` tag and the
+in-app Check for Updates path, live in [`../INSTALL.md`](../INSTALL.md).
 
 ## Authority
 

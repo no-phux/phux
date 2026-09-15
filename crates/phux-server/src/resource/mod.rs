@@ -26,6 +26,7 @@
 //! no shared cells across tasks.
 
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
 use phux_protocol::ClientId;
@@ -91,6 +92,32 @@ use terminal::{
 /// a busy resource can emit a few dozen frames in a short window before a
 /// slow subscriber falls behind and gets a `RecvError::Lagged`.
 pub const DEFAULT_OUTPUT_BROADCAST: usize = 256;
+
+/// Process-wide override of [`DEFAULT_OUTPUT_BROADCAST`], read by new
+/// resource cores. Zero is never stored; the default is 256.
+static OUTPUT_BROADCAST_CAPACITY: AtomicUsize = AtomicUsize::new(DEFAULT_OUTPUT_BROADCAST);
+
+/// Capacity used when a resource core opens its output broadcast.
+///
+/// Production always sees [`DEFAULT_OUTPUT_BROADCAST`]. Lagged-consumer
+/// tests shrink it with [`set_output_broadcast_capacity_for_test`] so a
+/// stall overflows the ring even when the PTY reader coalesces a burst
+/// into a handful of large frames.
+#[must_use]
+pub fn output_broadcast_capacity() -> usize {
+    OUTPUT_BROADCAST_CAPACITY.load(Ordering::Relaxed).max(1)
+}
+
+/// Shrink (or restore) [`output_broadcast_capacity`] for this process.
+///
+/// The attach/broadcast path is otherwise unchanged: this is only a test
+/// seam so an `ATTACH_RESOURCE` consumer can be forced off the ring
+/// without dumping tens of megabytes past [`DEFAULT_OUTPUT_BROADCAST`]
+/// coalesced frames (phux-a1dn). Nextest runs each test in its own
+/// process, so the override does not leak.
+pub fn set_output_broadcast_capacity_for_test(capacity: usize) {
+    OUTPUT_BROADCAST_CAPACITY.store(capacity.max(1), Ordering::Relaxed);
+}
 
 /// Depth of the core's request mailboxes (event subscription, control).
 ///
@@ -691,6 +718,7 @@ impl ResourceCore {
                         Some(phux_protocol::ids::ResourceId::local(self.wire_id))
                     },
                     event: event.clone(),
+                    stamp: None,
                 };
                 let _ = subscriber.outbound.try_send(Outbound::Frame(frame));
             }

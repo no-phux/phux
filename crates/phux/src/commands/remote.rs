@@ -8,15 +8,26 @@
 //! The user-facing verbs live in [`super::host`]: `phux host add|ls|rm`
 //! (role `remote`, the default) operates on this registry. The former
 //! `phux remote` verb tree was absorbed into `phux host` (ADR-0066) and
-//! removed in v0.12.1 once its deprecation window closed (phux-dpjf).
+//! removed in v0.12.1 once its deprecation window closed (phux-dpjf);
+//! `phux host enroll` was folded into `phux host add` (ADR-0122).
+//!
+//! Beside the endpoint and its credentials an entry may remember how it was
+//! made: `ssh`, the destination `phux host add` enrolled through, is what a
+//! stopped server is restarted over when an attach finds the saved route
+//! dead; `direct`, a paired `quic://` endpoint kept while `endpoint` is
+//! `ssh://`, is what a later attach tries first and promotes once it
+//! answers. `host ls --json` carries both as nullable keys under the same
+//! `schema_version` 1: readers tolerate keys they do not know, so adding
+//! two is not a break.
 //!
 //! Three endpoint schemes, in increasing order of setup cost:
 //!
 //! * `ssh://HOST` — no pairing at all. Attach re-execs `ssh -t HOST phux
 //!   attach`, so the session still lives on the remote server and survives
 //!   the ssh connection dropping. This is the zero-ceremony path, and it is
-//!   what `phux host enroll` falls back to when a host has no reachable
-//!   listener.
+//!   what `phux host add` falls back to when a host has no reachable
+//!   listener, and what `phux host add` records when no direct route
+//!   answers.
 //! * `quic://HOST:PORT` — the real remote transport (ADR-0031). Needs a
 //!   token and a pin.
 //! * `wss://HOST:PORT` — the same, for networks that block UDP.
@@ -50,6 +61,27 @@ pub(crate) struct RemoteEntry {
     pub(crate) cert_fingerprint: Option<String>,
     /// Session to request on arrival, when the operator pinned one.
     pub(crate) session: Option<String>,
+    /// The ssh destination the entry was enrolled through, when it was.
+    pub(crate) ssh: Option<String>,
+    /// A paired direct endpoint kept beside an `ssh://` route, when the
+    /// direct route did not answer at enrollment.
+    pub(crate) direct: Option<String>,
+}
+
+impl RemoteEntry {
+    /// The destination to hand `ssh` when this entry's server needs
+    /// starting: the one it was enrolled through, else the ssh host of an
+    /// `ssh://` endpoint, else the entry's own name (an operator who typed
+    /// `phux host add mini` can `ssh mini`).
+    pub(crate) fn ssh_destination(&self) -> String {
+        if let Some(ssh) = &self.ssh {
+            return ssh.clone();
+        }
+        if let Ok(Endpoint::Ssh(host)) = Endpoint::parse(&self.endpoint) {
+            return host;
+        }
+        self.name.clone()
+    }
 }
 
 /// The transport a validated endpoint names.
@@ -119,6 +151,8 @@ pub(crate) fn load_registry() -> Result<Vec<RemoteEntry>, String> {
             token_file: remote.token_file,
             cert_fingerprint: remote.cert_fingerprint,
             session: remote.session,
+            ssh: remote.ssh,
+            direct: remote.direct,
         });
     }
     Ok(entries)
@@ -150,9 +184,38 @@ pub(crate) struct NewRemote {
     pub(crate) token_file: Option<PathBuf>,
     pub(crate) cert_fingerprint: Option<String>,
     pub(crate) session: Option<String>,
+    pub(crate) ssh: Option<String>,
+    pub(crate) direct: Option<String>,
 }
 
 impl NewRemote {
+    /// Remember the ssh destination the entry was enrolled through.
+    pub(crate) fn with_ssh(mut self, ssh: Option<&str>) -> Self {
+        self.ssh = ssh
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        self
+    }
+
+    /// Keep a paired direct endpoint beside an `ssh://` route. Validated
+    /// like an endpoint, and dropped when the entry's own endpoint is
+    /// already direct: it would only duplicate it.
+    pub(crate) fn with_direct(mut self, direct: Option<&str>) -> Result<Self, String> {
+        self.direct = match direct.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(direct) if self.endpoint.starts_with("ssh://") => match Endpoint::parse(direct)? {
+                Endpoint::Quic(_) | Endpoint::Ws(_) => Some(direct.to_owned()),
+                Endpoint::Ssh(_) => {
+                    return Err(format!(
+                        "direct endpoint {direct} must be quic:// or wss://, not ssh://"
+                    ));
+                }
+            },
+            _ => None,
+        };
+        Ok(self)
+    }
+
     /// Validate every field up front, so a rejected entry never reaches the
     /// config file half-written.
     pub(crate) fn new(
@@ -173,7 +236,7 @@ impl NewRemote {
         if parsed.needs_pairing() && cert_fingerprint.is_none() {
             return Err(format!(
                 "{endpoint} needs --cert-fingerprint (run `phux pair` on the remote host, \
-                 or let `phux host enroll` fetch it over ssh)"
+                 or let `phux host add HOST` fetch it over ssh)"
             ));
         }
 
@@ -186,6 +249,8 @@ impl NewRemote {
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
                 .map(str::to_owned),
+            ssh: None,
+            direct: None,
         })
     }
 }
@@ -282,6 +347,22 @@ fn fill_table(table: &mut Table, new: &NewRemote) {
             table.remove("session");
         }
     }
+    match &new.ssh {
+        Some(ssh) => {
+            table.insert("ssh", value(ssh));
+        }
+        None => {
+            table.remove("ssh");
+        }
+    }
+    match &new.direct {
+        Some(direct) => {
+            table.insert("direct", value(direct));
+        }
+        None => {
+            table.remove("direct");
+        }
+    }
 }
 
 /// Read the bearer token for an entry, if it declares a token file.
@@ -314,6 +395,8 @@ mod tests {
             token_file: path,
             cert_fingerprint: None,
             session: None,
+            ssh: None,
+            direct: None,
         }
     }
 
@@ -375,6 +458,54 @@ mod tests {
         // With a pin, quic is accepted.
         let fp = "ab".repeat(32);
         assert!(NewRemote::new("mini", "quic://mini:8788", None, Some(&fp), None).is_ok());
+    }
+
+    /// `direct` only means something beside an `ssh://` route: it is the
+    /// paired endpoint a later attach promotes. Beside a direct endpoint it
+    /// would only duplicate it, so it is dropped rather than stored.
+    #[test]
+    fn direct_candidate_is_kept_only_beside_an_ssh_route() {
+        let fp = "ab".repeat(32);
+        let ssh = NewRemote::new("mini", "ssh://me@mini", None, Some(&fp), None)
+            .expect("ssh entry")
+            .with_direct(Some("quic://100.64.0.7:8788"))
+            .expect("a quic candidate is valid");
+        assert_eq!(ssh.direct.as_deref(), Some("quic://100.64.0.7:8788"));
+
+        let quic = NewRemote::new("mini", "quic://mini:8788", None, Some(&fp), None)
+            .expect("quic entry")
+            .with_direct(Some("quic://100.64.0.7:8788"))
+            .expect("dropped, not refused");
+        assert_eq!(quic.direct, None, "already direct: nothing to promote");
+
+        let err = NewRemote::new("mini", "ssh://mini", None, None, None)
+            .expect("ssh entry")
+            .with_direct(Some("ssh://mini"))
+            .expect_err("an ssh candidate is not a direct route");
+        assert!(err.contains("quic://"), "got {err}");
+        assert!(
+            NewRemote::new("mini", "ssh://mini", None, None, None)
+                .expect("ssh entry")
+                .with_direct(Some("nonsense"))
+                .is_err(),
+            "a candidate is validated like an endpoint"
+        );
+    }
+
+    /// The destination a repair sshes to: the enrolled one first, then the
+    /// host of an `ssh://` endpoint, then the name itself.
+    #[test]
+    fn ssh_destination_prefers_what_the_entry_remembers() {
+        let mut entry = entry_with_token(None);
+        assert_eq!(
+            entry.ssh_destination(),
+            "mini",
+            "a bare name is an ssh alias"
+        );
+        entry.endpoint = "ssh://me@box".to_owned();
+        assert_eq!(entry.ssh_destination(), "me@box");
+        entry.ssh = Some("me@mini.lan".to_owned());
+        assert_eq!(entry.ssh_destination(), "me@mini.lan");
     }
 
     #[test]

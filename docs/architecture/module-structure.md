@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-13
 ---
 
 # Module structure
@@ -351,6 +351,9 @@ src/
   engine.rs, engine/ghostty.rs — the generic terminal adapter trait plus
                         its libghostty implementation (feature
                         `native-engine`)
+  handshake.rs        — shared HELLO_OK acceptance (exact protocol triple,
+                        advertised profile, native feature intersection,
+                        payload limits)
   session.rs, session/  — the synchronous session kernel
                         (agent_stream.rs, kernel_rig.rs, property_tests.rs,
                         tests.rs)
@@ -494,7 +497,10 @@ rather than a layer with its own internal architecture worth diagramming:
   Unix-domain socket pair and a QUIC/WSS dial (`phux_remote_tunnel_*`).
   Its `directory` module carries the `LIST_DIRECTORY` host query for a
   go-to-directory picker, retaining one correlated listing per client
-  (`phux_client_list_directory`, `phux_client_directory_*`).
+  (`phux_client_list_directory`, `phux_client_directory_*`). Its `log`
+  module installs the bridge's one `tracing` subscriber on standard error
+  (`phux_client_log_init`), so an embedder that redirects descriptor 2 to a
+  file gets the tunnel's lifecycle beside its own lines.
 - **`phux-crash`** — vendored fatal-signal handler (see its NOTICE; the one
   Apache-2.0-only crate in the workspace). SIGSEGV/SIGBUS/SIGABRT do not
   unwind, so neither `RawModeGuard::drop` nor the panic hook runs; this

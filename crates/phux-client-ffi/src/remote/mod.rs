@@ -130,16 +130,21 @@ impl Shared {
         );
     }
 
+    /// Publish the reason and the FAILED state, in that order. The one warn
+    /// event for a tunnel failure is emitted here, so every caller's reason
+    /// reaches the log exactly once.
     pub(crate) fn fail(&self, message: String) {
         if self.terminal() {
             return;
         }
+        tracing::warn!(reason = %message, "remote tunnel failed");
         let _ = self.message.set(message);
         self.state.store(REMOTE_TUNNEL_FAILED, Ordering::Release);
     }
 
     pub(crate) fn close(&self) {
         if !self.terminal() {
+            tracing::info!("remote tunnel closed");
             self.state.store(REMOTE_TUNNEL_CLOSED, Ordering::Release);
         }
     }
@@ -178,16 +183,25 @@ impl std::fmt::Debug for PhuxRemoteTunnel {
 impl PhuxRemoteTunnel {
     fn resolve(raw: &str, config_path: Option<&Path>) -> Self {
         match target::resolve(raw, config_path) {
-            Ok(resolved) => Self {
-                name: resolved.name.clone(),
-                endpoint: resolved.endpoint.clone(),
-                session: resolved.session.clone().unwrap_or_default(),
-                resolved: Some(resolved),
-                shared: Arc::new(Shared::with_state(REMOTE_TUNNEL_RESOLVED)),
-                cancel: Arc::new(Notify::new()),
-                thread: Mutex::new(None),
-            },
+            Ok(resolved) => {
+                tracing::info!(
+                    host = %resolved.name,
+                    endpoint = %resolved.endpoint,
+                    transport = resolved.transport.label(),
+                    "remote tunnel resolved"
+                );
+                Self {
+                    name: resolved.name.clone(),
+                    endpoint: resolved.endpoint.clone(),
+                    session: resolved.session.clone().unwrap_or_default(),
+                    resolved: Some(resolved),
+                    shared: Arc::new(Shared::with_state(REMOTE_TUNNEL_RESOLVED)),
+                    cancel: Arc::new(Notify::new()),
+                    thread: Mutex::new(None),
+                }
+            }
             Err(message) => {
+                tracing::warn!(target = raw.trim(), reason = %message, "remote tunnel resolution failed");
                 let shared = Shared::with_state(REMOTE_TUNNEL_FAILED);
                 let _ = shared.message.set(message);
                 Self {
@@ -236,6 +250,7 @@ impl PhuxRemoteTunnel {
                 "remote tunnel is not in the RESOLVED state",
             ));
         }
+        tracing::info!(host = %resolved.name, "remote tunnel starting");
         let shared = Arc::clone(&self.shared);
         let cancel = Arc::clone(&self.cancel);
         let spawned = std::thread::Builder::new()
@@ -270,7 +285,7 @@ impl Drop for PhuxRemoteTunnel {
     }
 }
 
-fn guard(f: impl FnOnce() -> Result<(), BridgeError>) -> PhuxClientResult {
+pub(crate) fn guard(f: impl FnOnce() -> Result<(), BridgeError>) -> PhuxClientResult {
     match catch_unwind(AssertUnwindSafe(f)) {
         Ok(Ok(())) => PhuxClientResult::Ok,
         Ok(Err(error)) => error.result,
@@ -283,7 +298,11 @@ fn guard(f: impl FnOnce() -> Result<(), BridgeError>) -> PhuxClientResult {
 /// # Safety
 ///
 /// A non-empty span must be readable for `span.len` bytes for the call.
-unsafe fn text_in(span: PhuxBytes, max: usize, field: &str) -> Result<&str, BridgeError> {
+pub(crate) unsafe fn text_in(
+    span: PhuxBytes,
+    max: usize,
+    field: &str,
+) -> Result<&str, BridgeError> {
     if span.len > max {
         return Err(BridgeError::invalid(format!("{field} is too long")));
     }

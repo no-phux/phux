@@ -19,228 +19,98 @@ Each section below is the verbatim `--help` text for one invocation path, render
 ## `phux`
 
 ```text
-phux 0.36.0
-phux — a terminal multiplexer you can drive by hand or script.
+phux 0.37.0
+A terminal multiplexer you can drive by hand or script.
 
-Run `phux` with no arguments to attach to your session (auto-starting a
-server if needed). The control verbs below read and drive panes without a
-TTY, and most accept `--json` for clean, scriptable output.
-
-ATTACH / SERVE
-attach Attach to a session (interactive)
-server Run a server in the foreground
-mcp Run the bundled MCP stdio adapter
-host Register the machines phux talks to: remotes and satellites
-service Keep a server running across logout and reboot
-cockpit Open the native macOS Cockpit app
-channel Show or switch the release channel (latest or next)
-update Update phux to the latest stable or next release, keeping sessions alive
-upgrade Hot-swap the running server binary, keeping sessions alive
-
-INSPECT
-ls List sessions
-status Report the running server: pid, uptime, version, clients, logs
-runtime-info Inspect this binary's protocol and runtime capabilities
-whoami Report who this connection is to the server, and whose server it is
-perf Show the server's performance telemetry, live or as a snapshot
-snapshot Capture a pane's screen as JSON or a boxed view
-watch Stream a pane's live events (bell, title, output, lifecycle)
-rec Record a pane to an asciinema cast, a GIF, or an APNG
-play Play a recording back as a live pane
-agent Observe agents, send prompts, answer questions, and wait for turns
-
-DRIVE
-new Create a session
-spawn Create a pane without attaching
-launch Start a configured agent integration in a new pane
-kill Kill a session, window, pane, or the server itself
-detach Detach clients from a session
-insert-pane Insert an already-created pane into a layout
-move-pane Move an existing pane beside another, across sessions too
-swap-pane Swap two existing pane leaves
-rename Rename a session
-resize Set a pane's grid size, with no TTY
-send-keys Send keys to a pane
-paste Paste text into a pane (bracketed when the pane asks)
-run Run a command in a pane and capture its exit code
-wait Block until a pane meets a condition
-ask Report an agent ask event for a pane
-
-SUPERVISE
-take Seize exclusive input authority over a pane
-give Release the input authority taken with `take`
-signal Send a POSIX signal to a pane's process group
-
-ORGANIZE
-tag Read and write a pane's tags (address them with #tag)
-skill Print the agent skill this binary ships with
-completion Print a shell completion script for phux
-doctor Diagnose the install: config, socket, server, plugins
-logs Show where phux's logs live, or tail one of them
-report List local bug-report bundles, print one, or capture logs
-config Inspect config and run configured plugin actions
-plugin Manage local plugin manifests in config
-workspace Inspect worktrees and save/restore session archives
-worktree Create, open, list, and remove worktree-bound sessions
-
-FEDERATION
-pair Mint, rotate, or revoke remote credentials
-relay Run a standalone relay, or enroll a route with it
-
-TARGET is a session name, `name:window`, `name:window.pane`, `@id`,
-`#tag`, `%agent-name`, or `.` (focused). `=` is reserved for the
-attached view's focus history. The same selectors work across
-kill/snapshot/send-keys/run/wait/ask.
+Run `phux` alone to attach to your session; every other verb is headless.
 
 Usage: phux [FLAGS] [SUBCOMMAND]
 
-Commands:
-  agent         List, show, explain, set, or clear per-pane agent state.
-  ask           Report an agent ask event for a pane
-  attach        Attach to a session (interactive). [aliases: a]
-  channel       Show or switch the release channel
-  cockpit       Open the native macOS Cockpit app
-  completion    Print a shell completion script on stdout
-  config        Inspect, scaffold, and reload the phux config file.
-  detach        Detach clients from a session, from outside the attach UI.
-  doctor        Diagnose a phux install: config, socket, server, plugins.
-  give          Give back the input wheel of a pane.
-  host          Register the machines phux talks to: remotes and satellites.
-  insert-pane   Insert an already-created pane into a session layout.
-  kill          Kill a session, window, pane, or the server itself.
-  launch        Launch an agent integration in a new pane.
-  logs          Show where phux's logs live, or tail one of them.
-  ls            List sessions on the running server. [aliases: list]
-  mcp           Run the bundled MCP stdio adapter.
-  move-pane     Move one existing pane beside another, even across sessions.
-  new           Create a new session and attach to it.
-  pair          Mint, rotate, or revoke a remote-consumer credential.
-  paste         Paste text into a pane (bracketed when the pane asks for it)
-  perf          Show the server's performance telemetry.
-  play          Play a recording back as a live pane
-  plugin        Manage local plugin manifests in the phux config registry.
-  rec           Record a pane and export it as a cast, GIF, or APNG
-  relay         Run a standalone relay, or enroll a route with it.
-  rename        Rename a session.
-  report        Capture or list local bug reports. [aliases: bug]
-  resize        Set a pane's grid size, with no TTY
-  run           Run a command in a pane and capture its exit code
-  runtime-info  Inspect this binary's runtime protocol and capabilities without
-                connecting.
+Sessions:
+  attach        Attach to a session, here or on a registered host [aliases: a]
+  new           Create a session and attach to it
+  ls            List sessions [aliases: list]
+  kill          Kill a session, window, pane, or the server
+  detach        Detach clients from a session
+  rename        Rename a session
+
+Panes:
+  spawn         Create a pane without attaching
+  snapshot      Read a pane's screen as text or JSON
   send-keys     Send keys to a pane
-  server        Run a phux server, or ensure one is accepting without attaching.
-  service       Keep a server running across logout and reboot.
-  signal        Signal a pane's process group
-  skill         Print the agent skill this binary ships with, on stdout
-  snapshot      Capture a pane's screen as JSON or a boxed text view
-  spawn         Create a pane without attaching.
-  status        Report the running server: pid, up since, protocol, clients,
-                logs.
-  swap-pane     Swap two existing pane leaves in the same session layout.
-  tag           Read and write pane tags.
-  take          Take the input wheel of a pane.
-  update        Update phux to the latest stable or next release, keeping
-                sessions alive
-  upgrade       Graceful-upgrade the running server in place.
+  paste         Paste text into a pane
+  run           Run a command in a pane and capture its exit code
   wait          Block until a pane meets a condition
-  watch         Stream a pane's live events (bell, title, dirty/idle, lifecycle)
-  whoami        Report who this connection is to the server it reaches.
-  workspace     Inspect a git workspace and its worktrees for agent
-                orchestration.
-  worktree      Manage git worktrees and the sessions bound to them.
-  help          Print this message or the help of the given subcommand(s)
+  watch         Stream a pane's events as they happen
+  resize        Set a pane's grid size
+  tag           Read and write pane tags (address them with #tag)
+  insert-pane   Insert an existing pane into a layout
+  move-pane     Move a pane beside another, across sessions too
+  swap-pane     Swap two panes in a layout
+
+Agents:
+  agent         See and drive the agents running in panes
+  launch        Start an agent integration in a new pane
+  ask           Report that an agent is waiting on a human
+  take          Take exclusive input control of a pane
+  give          Give back input control taken with `take`
+  signal        Send a signal to a pane's process group
+
+Machines:
+  host          Add and manage the machines phux reaches [aliases: machine]
+  server        Run a server in the foreground
+  service       Keep a server running across logout and reboot
+  pair          Mint, rotate, or revoke remote credentials
+  relay         Run a standalone relay, or enroll a route with it
+
+Maintain:
+  status        Report the running server: pid, uptime, clients
+  doctor        Diagnose the install: config, socket, server
+  logs          Show where the logs live, or tail one
+  report        Capture or list local bug reports [aliases: bug]
+  config        Inspect, scaffold, and reload the config file
+  plugin        Manage plugin manifests in the config
+  update        Update phux, keeping sessions alive
+  upgrade       Hot-swap the running server to the installed binary
+  channel       Show or switch the release channel
+
+More:
+  rec           Record a pane to a cast, GIF, or APNG
+  play          Play a recording back as a live pane
+  perf          Show the server's performance telemetry
+  whoami        Report who this connection is to the server
+  runtime-info  Inspect this binary's protocol and capabilities
+  workspace     Inspect a git workspace and its worktrees
+  worktree      Manage git worktrees and their bound sessions
+  cockpit       Open the native macOS Cockpit app
+  mcp           Run the bundled MCP stdio adapter
+  skill         Print the agent skill this binary ships with
+  completion    Print a shell completion script
 
 Flags:
-      --rec <PATH>                Record this session while it runs and write
-                                  the result to PATH.
+      --rec <PATH>            Record this session to PATH (.cast, .gif, or
+                              .apng)
+      --rec-format <FMT>      Recording format, overriding PATH's extension
+                              [possible values: cast, gif, apng]
+      --socket <PATH>         Server socket to dial (default: `$PHUX_SOCKET`)
+      --skill [SCOPE]         Print agent guidance and exit
+                              [possible values: quick, agent, terminal, full]
+      --remote <[USER@]HOST>  Attach to a phux server on another machine
+      --capabilities          Print machine-readable capabilities (with --json)
+  -h, --help                  Print help
+  -V, --version               Print version
 
-                                  The format follows the extension (.cast, .gif,
-                                  .png, .apng); pass
-                                  --rec-format to override. A path with no
-                                  extension gets `.gif`.
-
-                                  Examples:
-                                  phux --rec demo.gif
-                                  phux attach work --rec demo.cast
-      --rec-format <FMT>          Output format for --rec, overriding the
-                                  extension.
-                                  [possible values: cast, gif, apng]
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
-      --skill [SCOPE]             Print compiled agent guidance, optionally
-                                  scoped, then exit.
-                                  [possible values: quick, agent, terminal,
-                                  full]
-      --remote <[USER@]HOST[:PORT]>  Attach to a phux server on another machine,
-                                  ssh-style: `phux --remote me@mini`. Belongs
-                                  to the naked `phux` attach alone; `phux
-                                  attach --remote` carries its own copy (and
-                                  the `--code` / `--no-enroll` modifiers that
-                                  go with it), and `ls`, `new`, `kill`,
-                                  `rename`, and `detach` take their own after
-                                  the verb.
-      --capabilities              Print machine-readable capabilities with
-                                  `--json`, then exit.
-  -h, --help                      Print help
-  -V, --version                   Print version
-
-EXIT STATUS
-0 Success.
-1 Failure: no server, no such target, or the verb itself failed.
-2 Usage error, or the server refused the request.
-3 Unanswerable: the selector was resolved against a partial view
-        of the fleet (a federation satellite was unreachable). Retry
-        once the link is back — unlike 1, the target may exist.
-124 `phux wait` gave up because `--timeout` expired.
-125 `phux run` gave up because `--timeout` expired; otherwise
-        `run` mirrors the exit code of the command it ran, so
-        `phux run … && next` composes like a shell.
-
-ENVIRONMENT
-PHUX_SOCKET UDS path for the CLI verbs and the server. A `--socket`
-                    flag overrides it; default is
-                    $XDG_RUNTIME_DIR/phux/phux.sock (or /tmp/phux-$USER/...).
-PHUX_WS_ADDR Also accept WebSocket clients on HOST:PORT. Equivalent to
-                    `phux server --listen`, which overrides it.
-PHUX_WS_SECURE Force TLS + token auth on a loopback --listen address
-                    (exercise the remote path locally).
-PHUX_WS_TLS_CERT Operator-supplied server cert/key (PEM), instead of the
-PHUX_WS_TLS_KEY auto-provisioned self-signed pair used off-loopback.
-PHUX_WS_TOKENS Pairing-token store the server reads and `phux pair` writes.
-PHUX_QUIC_ADDR Also accept QUIC clients on HOST:PORT. Equivalent to
-                    `phux server --quic`, which overrides it.
-PHUX_WT_ADDR Also accept WebTransport (HTTP/3 over QUIC) clients on
-                    HOST:PORT. Equivalent to `phux server --webtransport`.
-PHUX_SSH OpenSSH-compatible program a federation hub spawns to
-                    dial ssh:// satellites (default: `ssh` on PATH).
-PHUX_TAILSCALE Tailscale-compatible CLI run to detect the overlay
-                    address (default: `tailscale` on PATH) for `phux pair`,
-                    `phux doctor`, and the server's auto-bound remote
-                    listener. When set it is the only source consulted:
-                    the CGNAT route-probe fallback is disabled, so naming
-                    a command that reports nothing turns detection off
-                    everywhere (no overlay auto-listen, no doctor dial).
-PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE
-                    Give an auto-spawned server an idle limit in seconds
-                    (1..=86400), as if it were started with
-                    `phux server --exit-after-idle`. Unset means no limit,
-                    which is the multiplexer default. For test harnesses and
-                    CI jobs that cannot guarantee their own cleanup runs.
-PHUX_LOG Write logs to this file (server tees; client writes here).
-PHUX_LOG_FORMAT text (default) or json — log line format.
-RUST_LOG tracing level filter, e.g. phux=debug.
-
-Run `phux server --listen 127.0.0.1:8787` to expose a port; see
-`phux help server` for the remote/TLS details.
+Learn more:
+  phux <command> --help    Flags and examples for one command
+  phux help targets        How TARGET names sessions, windows, panes, agents
+  phux help environment    Environment variables phux reads
+  phux help exit-codes     Exit statuses, for scripts
 ```
 
 ## `phux agent`
 
 ```text
-List, show, explain, set, or clear per-pane agent state.
+See and drive the agents running in panes
 
 Inference (`list`/`show`/`explain`) reports the agent phux infers is running in
 each pane. `set`/`clear` write and delete an explicit per-pane agent identity
@@ -279,10 +149,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent answer`
@@ -326,10 +193,7 @@ Flags:
   -h, --help            Print help
 
 Global flags:
-      --socket <PATH>   Override the UDS path of the server to dial. Defaults to
-                        `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                        (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                        isn't set).
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent clear`
@@ -346,10 +210,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent emit`
@@ -381,10 +242,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent explain`
@@ -425,11 +283,7 @@ Flags:
   -h, --help             Print help
 
 Global flags:
-      --socket <PATH>    Override the UDS path of the server to dial. Defaults
-                         to `$PHUX_SOCKET`, else
-                         `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                         `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't
-                         set).
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent install-claude`
@@ -447,10 +301,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent list`
@@ -465,10 +316,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent log`
@@ -495,10 +343,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent prompt`
@@ -556,11 +401,7 @@ Flags:
   -h, --help                 Print help
 
 Global flags:
-      --socket <PATH>        Override the UDS path of the server to dial.
-                             Defaults to `$PHUX_SOCKET`, else
-                             `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                             `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                             isn't set).
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent report-state`
@@ -579,10 +420,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent send-keys`
@@ -621,11 +459,7 @@ Flags:
   -h, --help                 Print help
 
 Global flags:
-      --socket <PATH>        Override the UDS path of the server to dial.
-                             Defaults to `$PHUX_SOCKET`, else
-                             `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                             `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                             isn't set).
+      --socket <PATH>        Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent session`
@@ -650,10 +484,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent session close`
@@ -673,10 +504,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent session open`
@@ -709,10 +537,7 @@ Flags:
   -h, --help            Print help
 
 Global flags:
-      --socket <PATH>   Override the UDS path of the server to dial. Defaults to
-                        `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                        (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                        isn't set).
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent set`
@@ -739,11 +564,7 @@ Flags:
   -h, --help                   Print help
 
 Global flags:
-      --socket <PATH>          Override the UDS path of the server to dial.
-                               Defaults to `$PHUX_SOCKET`, else
-                               `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                               `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                               isn't set).
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent show`
@@ -761,10 +582,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent start`
@@ -823,11 +641,7 @@ Flags:
   -h, --help              Print help
 
 Global flags:
-      --socket <PATH>     Override the UDS path of the server to dial. Defaults
-                          to `$PHUX_SOCKET`, else
-                          `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                          `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't
-                          set).
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent uninstall-claude`
@@ -841,10 +655,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux agent wait`
@@ -889,10 +700,7 @@ Flags:
   -h, --help            Print help
 
 Global flags:
-      --socket <PATH>   Override the UDS path of the server to dial. Defaults to
-                        `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                        (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                        isn't set).
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux ask`
@@ -928,25 +736,20 @@ Flags:
   -h, --help                    Print help
 
 Global flags:
-      --socket <PATH>           Override the UDS path of the server to dial.
-                                Defaults to `$PHUX_SOCKET`, else
-                                `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                                isn't set).
+      --socket <PATH>           Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux attach`
 
 ```text
-Attach to a session (interactive).
+Attach to a session, here or on a registered host
 
-With no name, attaches to the most-recently-focused session, auto-spawning a
-server if none is running. Requires a TTY.
+Interactive: requires a TTY. With no name, attaches to the most-recently-focused
+session, auto-spawning a server if none is running.
 
-A name enrolled in the host registry (`phux host enroll`, `phux host add`)
-shadows a local session of the same name: `phux attach NAME` dials the
-registered host instead of the local socket. Pass `--socket` to force the local
-reading of the name.
+A name registered as a host (`phux host add`) shadows a local session of the
+same name: `phux attach NAME` dials the registered host instead of the local
+socket. Pass `--socket` to force the local reading of the name.
 
 Usage: phux attach [FLAGS] [SESSION]
 
@@ -956,6 +759,9 @@ Arguments:
              Omit to attach to the most-recently-focused session.
 
 Flags:
+  -h, --help                      Print help
+
+Direct dial:
       --quic <HOST:PORT>          Attach over QUIC to a remote `phux server
                                   --quic` listener at this `HOST:PORT` instead
                                   of the local Unix socket. HOST may be an IP
@@ -987,6 +793,8 @@ Flags:
                                   listener. QUIC defaults to `localhost`;
                                   WebSocket defaults to the URL host. Requires
                                   `--quic` or `--ws`.
+
+Remote host:
       --remote <[USER@]HOST[:PORT]>  Attach to a phux server on another machine,
                                   ssh-style: `--remote me@mini`. Resolves to
                                   a registered host when there is one,
@@ -1030,28 +838,16 @@ Flags:
                                   in this inclusive range, e.g. `60000-61000`,
                                   so one firewall rule covers every attach. Any
                                   free port by default.
-      --rec <PATH>                Record this session while it runs and write
-                                  the result to PATH.
 
-                                  The format follows the extension (.cast, .gif,
-                                  .png, .apng); pass
-                                  --rec-format to override. A path with no
-                                  extension gets `.gif`.
-
-                                  Examples:
-                                  phux --rec demo.gif
-                                  phux attach work --rec demo.cast
-      --rec-format <FMT>          Output format for --rec, overriding the
-                                  extension.
+Recording:
+      --rec <PATH>                Record this session to PATH (.cast, .gif, or
+                                  .apng)
+      --rec-format <FMT>          Recording format, overriding PATH's extension
                                   [possible values: cast, gif, apng]
-  -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux channel`
@@ -1083,10 +879,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux cockpit`
@@ -1111,10 +904,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux completion`
@@ -1144,16 +934,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config`
 
 ```text
-Inspect, scaffold, and reload the phux config file.
+Inspect, scaffold, and reload the config file
 
 phux is config-driven: defaults ship in the binary and your `config.toml` is a
 sparse overlay merged on top. These subcommands never touch a running server,
@@ -1182,10 +969,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config agents`
@@ -1200,10 +984,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config check`
@@ -1229,10 +1010,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config init`
@@ -1260,11 +1038,7 @@ Flags:
   -h, --help                   Print help
 
 Global flags:
-      --socket <PATH>          Override the UDS path of the server to dial.
-                               Defaults to `$PHUX_SOCKET`, else
-                               `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                               `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                               isn't set).
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config path`
@@ -1279,10 +1053,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config plugins`
@@ -1297,10 +1068,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config reload`
@@ -1321,10 +1089,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config run`
@@ -1347,10 +1112,7 @@ Flags:
   -h, --help            Print help
 
 Global flags:
-      --socket <PATH>   Override the UDS path of the server to dial. Defaults to
-                        `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                        (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                        isn't set).
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux config show`
@@ -1374,16 +1136,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux detach`
 
 ```text
-Detach clients from a session, from outside the attach UI.
+Detach clients from a session
 
 The CLI counterpart to the `C-a d` keybinding. With `SESSION`, detaches every
 client attached to that session; with no argument, detaches every attached
@@ -1411,17 +1170,14 @@ Flags:
   -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux doctor`
 
 ```text
-Diagnose a phux install: config, socket, server, plugins.
+Diagnose the install: config, socket, server
 
 Composes the checks that already exist as separate verbs and reports one
 verdict, because knowing which four commands to run and how to read each one is
@@ -1437,16 +1193,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux give`
 
 ```text
-Give back the input wheel of a pane.
+Give back input control taken with `take`
 
 Releases the input lease taken with `phux take`, returning the pane to open
 input. A no-op if you do not hold the lease. TARGET is a selector.
@@ -1460,16 +1213,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host`
 
 ```text
-Register the machines phux talks to: remotes and satellites.
+Add and manage the machines phux reaches
 
 One namespace over both machine registries. `--role remote` (the default)
 manages the servers `phux attach <name>` dials; `--role satellite` manages the
@@ -1480,50 +1230,73 @@ directions; this verb absorbs the split into a flag.
 Usage: phux host <SUBCOMMAND>
 
 Commands:
-  add     Register a machine, or replace an entry with the same name.
-  enroll  Set up a machine over ssh, end to end, and register it.
-  ls      List registered machines from both registries. [aliases: list]
-  rm      Remove a registered machine. Its token file is left in place.
-          [aliases: remove]
-  help    Print this message or the help of the given subcommand(s)
+  add   Add a machine so `phux attach NAME` reaches it.
+  ls    List registered machines from both registries. [aliases: list]
+  rm    Remove a registered machine. Its token file is left in place. [aliases:
+        remove]
+  help  Print this message or the help of the given subcommand(s)
 
 Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host add`
 
 ```text
-Register a machine, or replace an entry with the same name.
+Add a machine so `phux attach NAME` reaches it.
 
-`--role remote` (the default) registers a server `phux attach <name>` can dial;
-`--role satellite` registers a peer this hub dials for its users. Updating
-replaces the whole entry, so repeat `--token-file` / `--cert-fingerprint` when
-re-adding a name or the auth material is cleared.
+`phux host add me@mini` is all a new machine needs. Over the ssh trust you
+already have it confirms phux is installed there, starts the server and keeps it
+running across reboots, pairs, tries the direct routes, and registers the first
+one that answers. Nothing to type by hand: no port, no token, no fingerprint.
+Run it again on a registered machine to check it and repair it if it stopped
+answering.
 
-Usage: phux host add [FLAGS] <NAME> <ENDPOINT>
+The manual form registers an endpoint you already hold credentials for: `phux
+host add NAME quic://HOST:PORT --token-file PATH --cert-fingerprint FP`
+(`wss://` likewise; `ssh://HOST` needs no credentials). It replaces the whole
+entry, so repeat the credential flags when re-adding a name. `--role satellite`
+registers a peer this hub dials for its users instead of a server you attach to.
+
+Usage: phux host add [FLAGS] <TARGET> [ENDPOINT]
 
 Arguments:
-  <NAME>      Local label for the machine.
-  <ENDPOINT>  Endpoint URI: `quic://HOST:PORT`, `wss://HOST:PORT`, or
-              `ssh://HOST`. `ssh://` rides your existing ssh trust and needs no
-              pairing; the other two need a token and a certificate pin.
+  <TARGET>    `[USER@]HOST[:PORT]` to set up over ssh, or an endpoint URI
+              (`quic://`, `wss://`, `ssh://`) to register as is.
+  [ENDPOINT]  Manual form: the endpoint URI to register, with TARGET as the
+              entry's name.
 
 Flags:
-      --role <ROLE>            Which registry the entry lands in.
+      --role <ROLE>            Which registry the machine lands in: a server you
+                               attach to (`remote`, the default) or a peer this
+                               hub dials for its users.
                                [possible values: remote, satellite]
                                (default: remote)
-      --token-file <PATH>      Absolute path to a file holding the pairing token
-                               minted by `phux pair` on the other machine.
-      --cert-fingerprint <FP>  The other machine's TLS certificate SHA-256
-                               fingerprint, as printed by `phux pair`. Required
-                               for `quic://` and `wss://`.
+      --name <NAME>            Local label to register. Defaults to HOST without
+                               any `user@`, or to the host of an endpoint URI.
+      --endpoint <HOST:PORT>   Register this address instead of the routes
+                               detected on the host: `HOST:PORT` (dialed over
+                               QUIC) or a full `quic://`/`wss://` URI.
+      --quic-port <PORT>       QUIC port to configure on the host and dial.
+                               (default: 8788)
+      --no-service             Start the host's server but skip installing its
+                               service unit. The server will not come back on
+                               its own after a reboot.
+      --ssh-only               Register an `ssh://HOST` entry without contacting
+                               the host at all.
+      --remote-phux <PATH>     The `phux` to run on the host, for when a
+                               non-interactive ssh shell's `PATH` does not find
+                               it (a Homebrew or Nix install).
+                               (default: phux)
+      --token-file <PATH>      Manual form only: absolute path to a file holding
+                               the pairing token minted by `phux pair` on the
+                               other machine.
+      --cert-fingerprint <FP>  Manual form only: the other machine's TLS
+                               certificate SHA-256 fingerprint, as printed by
+                               `phux pair`. Required for `quic://` and `wss://`.
       --session <NAME>         Session to attach on arrival (`--role remote`
                                only). Omitted: the remote server's own
                                last-attach memory decides.
@@ -1535,66 +1308,7 @@ Flags:
   -h, --help                   Print help
 
 Global flags:
-      --socket <PATH>          Override the UDS path of the server to dial.
-                               Defaults to `$PHUX_SOCKET`, else
-                               `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                               `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                               isn't set).
-```
-
-## `phux host enroll`
-
-```text
-Set up a machine over ssh, end to end, and register it.
-
-Confirms phux is installed on HOST, installs its service unit so the server
-survives reboot, mints a pairing token there, and registers the result in the
-role-correct registry — `--role remote` (the default) yields an entry `phux
-attach <name>` dials with no flags and no hex strings typed by hand; `--role
-satellite` a peer this hub dials for its users, and this machine's per-user
-service is made a hub (`--hub`) without dropping listeners already baked into
-the unit. Uses the ssh trust you already have; it grants nothing ssh did not
-already grant.
-
-A host with no reachable listener falls back to an ssh:// entry, which still
-gives you sessions that outlive the connection.
-
-Usage: phux host enroll [FLAGS] <HOST>
-
-Arguments:
-  <HOST>  ssh destination, exactly as you would type it after `ssh` (`mini`,
-          `me@mini`, or a `~/.ssh/config` alias).
-
-Flags:
-      --role <ROLE>           Which registry the enrolled machine lands in.
-                              [possible values: remote, satellite]
-                              (default: remote)
-      --name <NAME>           Local label to register. Defaults to HOST without
-                              any `user@`.
-      --endpoint <HOST:PORT>  Address to register instead of the remote's
-                              detected overlay address. Accepts `HOST:PORT`
-                              (dialed over QUIC) or a full `quic://`/`wss://`
-                              URI.
-      --quic-port <PORT>      QUIC port to configure on the remote and register.
-                              (default: 8788)
-      --no-service            Skip installing the remote's service unit. The
-                              server will not come back on its own after a
-                              reboot.
-      --ssh-only              Register an ssh:// entry without contacting the
-                              host at all.
-      --session <NAME>        Session to attach on arrival (`--role remote`
-                              only).
-      --json                  Emit stable, versioned JSON on stdout instead of
-                              the human view. On failure, stdout stays empty and
-                              stderr carries one JSON error object.
-  -h, --help                  Print help
-
-Global flags:
-      --socket <PATH>         Override the UDS path of the server to dial.
-                              Defaults to `$PHUX_SOCKET`, else
-                              `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                              `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                              isn't set).
+      --socket <PATH>          Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host ls`
@@ -1616,10 +1330,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux host rm`
@@ -1645,16 +1356,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux insert-pane`
 
 ```text
-Insert an already-created pane into a session layout.
+Insert an existing pane into a layout
 
 Both selectors must each resolve to exactly one local pane in the same session.
 This command does not spawn: create `NEW_PANE` first with `phux spawn`, then
@@ -1678,16 +1386,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux kill`
 
 ```text
-Kill a session, window, pane, or the server itself.
+Kill a session, window, pane, or the server
 
 `TARGET` uses the selector grammar (see the top-level help): `name`, `name:N`,
 `name:N.M`, `name:tag`, `@N`, `.`. The selector is resolved client-side against
@@ -1726,17 +1431,14 @@ Flags:
   -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux launch`
 
 ```text
-Launch an agent integration in a new pane.
+Start an agent integration in a new pane
 
 Resolves INTEGRATION (a `phux launch --list` id) to its `[launch]` command from
 an enabled plugin's integration template, then creates a pane running it. The
@@ -1775,24 +1477,21 @@ Flags:
   -h, --help             Print help
 
 Global flags:
-      --socket <PATH>    Override the UDS path of the server to dial. Defaults
-                         to `$PHUX_SOCKET`, else
-                         `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                         `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't
-                         set).
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux logs`
 
 ```text
-Show where phux's logs live, or tail one of them.
+Show where the logs live, or tail one
 
 Bare `phux logs` prints the inventory: the canonical server log (every spawn
 path writes it), the per-pid client logs, and the state dir that holds them —
 with existence, size, and age, so a fresh machine reads "not created yet"
-instead of an error. `--server` tails the server log and `--client` the newest
-client log (`--pid` picks a specific one); `-f` follows and `-n` sets the tail
-length. `--json` emits the inventory as a stable document.
+instead of an error. `--server` tails the server log, `--client` the newest
+client log (`--pid` picks a specific one), and `--cockpit` the native macOS
+app's log; `-f` follows and `-n` sets the tail length. `--json` emits the
+inventory as a stable document.
 
 Usage: phux logs [FLAGS]
 
@@ -1800,29 +1499,27 @@ Flags:
       --server         Tail the canonical server log.
       --client         Tail the newest per-pid client log (or the one `--pid`
                        names).
+      --cockpit        Tail the Phux Cockpit app's log (macOS;
+                       `PHUX_COCKPIT_LOG` overrides the path).
       --pid <PID>      With --client: the client pid whose log to tail, instead
                        of the newest.
-  -f, --follow         Follow the tailed log as it grows (needs --server or
-                       --client).
-  -n, --lines <LINES>  How many trailing lines to show (needs --server or
-                       --client).
-                       (default: 200)
+  -f, --follow         Follow the tailed log as it grows (needs --server,
+                       --client, or --cockpit).
+  -n, --lines <NUM>    How many trailing lines to show; 200 when omitted (needs
+                       --server, --client, or --cockpit).
       --json           Emit the path inventory as a stable JSON document instead
                        of human text. Inventory only — it cannot combine with a
                        tail.
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux ls`
 
 ```text
-List sessions on the running server.
+List sessions
 
 Queries the running server and prints one line per session. Does not start a
 server: with no server running it reports as much and exits non-zero (like `tmux
@@ -1850,17 +1547,14 @@ Flags:
   -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux mcp`
 
 ```text
-Run the bundled MCP stdio adapter.
+Run the bundled MCP stdio adapter
 
 This is a transparent launcher for the separate MCP companion binary. All
 arguments are forwarded unchanged. With no arguments it serves MCP over
@@ -1876,16 +1570,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux move-pane`
 
 ```text
-Move one existing pane beside another, even across sessions.
+Move a pane beside another, across sessions too
 
 SOURCE is collapsed out of its current tree position and inserted beside TARGET.
 Both selectors must resolve to exactly one local pane. When TARGET lives in a
@@ -1910,16 +1601,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux new`
 
 ```text
-Create a new session and attach to it.
+Create a session and attach to it
 
 Creates the named session if it does not already exist, then attaches.
 Auto-starts a server if none is running. A name already in use is an error; omit
@@ -1974,17 +1662,14 @@ Flags:
   -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux pair`
 
 ```text
-Mint, rotate, or revoke a remote-consumer credential.
+Mint, rotate, or revoke remote credentials
 
 With no subcommand, mint one credential into the server's store and print its
 stable ID, one-time bearer secret, and certificate fingerprint. `rotate`
@@ -2023,19 +1708,15 @@ Flags:
                           link, shown by the device in its server list. Omitted:
                           the device picks a default.
       --json              Emit the mint, rotation, or revocation result as JSON
-                          on stdout. `phux host enroll` consumes the mint
-                          document over ssh.
+                          on stdout. `phux host add` consumes the mint document
+                          over ssh.
       --migrate-legacy    Explicitly convert legacy anonymous token lines before
                           pairing. Conversion preserves each bearer secret but
                           stores only its verifier.
   -h, --help              Print help
 
 Global flags:
-      --socket <PATH>     Override the UDS path of the server to dial. Defaults
-                          to `$PHUX_SOCKET`, else
-                          `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                          `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't
-                          set).
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux pair revoke`
@@ -2052,15 +1733,12 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
       --tokens <PATH>  Versioned credential store to update. Defaults to
                        `PHUX_WS_TOKENS`.
       --json           Emit the mint, rotation, or revocation result as JSON on
-                       stdout. `phux host enroll` consumes the mint document
-                       over ssh.
+                       stdout. `phux host add` consumes the mint document over
+                       ssh.
 ```
 
 ## `phux pair rotate`
@@ -2082,15 +1760,12 @@ Flags:
   -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
       --tokens <PATH>             Versioned credential store to update. Defaults
                                   to `PHUX_WS_TOKENS`.
       --json                      Emit the mint, rotation, or revocation result
-                                  as JSON on stdout. `phux host enroll` consumes
+                                  as JSON on stdout. `phux host add` consumes
                                   the mint document over ssh.
 ```
 
@@ -2134,16 +1809,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux perf`
 
 ```text
-Show the server's performance telemetry.
+Show the server's performance telemetry
 
 Reads the always-on latency histograms, throughput counters, and process figures
 the server keeps about itself (`GET_PERF`) and prints them as a table grouped by
@@ -2167,10 +1839,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux play`
@@ -2232,17 +1901,13 @@ Flags:
   -h, --help               Print help
 
 Global flags:
-      --socket <PATH>      Override the UDS path of the server to dial. Defaults
-                           to `$PHUX_SOCKET`, else
-                           `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                           `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                           isn't set).
+      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux plugin`
 
 ```text
-Manage local plugin manifests in the phux config registry.
+Manage plugin manifests in the config
 
 This is a client-local config operation: it validates `phux-plugin.toml`
 manifests and edits `[[plugins]]` entries in the user's config without
@@ -2265,10 +1930,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux plugin disable`
@@ -2286,10 +1948,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux plugin enable`
@@ -2307,10 +1966,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux plugin install`
@@ -2341,10 +1997,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux plugin link`
@@ -2363,10 +2016,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux plugin list`
@@ -2381,10 +2031,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux plugin unlink`
@@ -2402,10 +2049,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux plugin update`
@@ -2428,10 +2072,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux plugin validate`
@@ -2449,10 +2090,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux rec`
@@ -2504,17 +2142,13 @@ Flags:
   -h, --help               Print help
 
 Global flags:
-      --socket <PATH>      Override the UDS path of the server to dial. Defaults
-                           to `$PHUX_SOCKET`, else
-                           `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                           `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                           isn't set).
+      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux relay`
 
 ```text
-Run a standalone relay, or enroll a route with it.
+Run a standalone relay, or enroll a route with it
 
 The relay is a separate rendezvous process for reaching a phux server that
 cannot accept inbound connections: the server dials OUT to the relay and
@@ -2536,10 +2170,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux relay pair`
@@ -2567,10 +2198,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux relay run`
@@ -2600,17 +2228,13 @@ Flags:
   -h, --help                Print help
 
 Global flags:
-      --socket <PATH>       Override the UDS path of the server to dial.
-                            Defaults to `$PHUX_SOCKET`, else
-                            `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                            `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                            isn't set).
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux rename`
 
 ```text
-Rename a session.
+Rename a session
 
 Reassigns `SESSION`'s human-readable name to `NEW_NAME` in one round-trip. The
 server is authoritative; attached clients pick up the new name on their next
@@ -2637,17 +2261,14 @@ Flags:
   -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux report`
 
 ```text
-Capture or list local bug reports.
+Capture or list local bug reports
 
 Bare `phux report` lists bundles under the profile state directory (newest
 first; `latest` is printed first). `phux report show [ID]` prints one
@@ -2671,10 +2292,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux report new`
@@ -2695,10 +2313,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux report show`
@@ -2718,10 +2333,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux resize`
@@ -2761,10 +2373,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux run`
@@ -2811,16 +2420,13 @@ Flags:
   -h, --help            Print help
 
 Global flags:
-      --socket <PATH>   Override the UDS path of the server to dial. Defaults to
-                        `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                        (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                        isn't set).
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux runtime-info`
 
 ```text
-Inspect this binary's runtime protocol and capabilities without connecting.
+Inspect this binary's protocol and capabilities
 
 Usage: phux runtime-info [--json]
 
@@ -2831,10 +2437,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux send-keys`
@@ -2867,16 +2470,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux server`
 
 ```text
-Run a phux server, or ensure one is accepting without attaching.
+Run a server in the foreground
 
 Binds a Unix domain socket, pre-seeds a session whose initial pane spawns the
 user's `$SHELL` inside a real PTY, and serves `ATTACH` requests until Ctrl-C.
@@ -2959,17 +2559,14 @@ Flags:
   -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux service`
 
 ```text
-Keep a server running across logout and reboot.
+Keep a server running across logout and reboot
 
 Generates this host's native per-user service unit — a `launchd` `LaunchAgent`
 on macOS, a systemd user unit on Linux — with the server's environment baked in,
@@ -2993,10 +2590,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux service install`
@@ -3042,11 +2636,7 @@ Flags:
   -h, --help                Print help
 
 Global flags:
-      --socket <PATH>       Override the UDS path of the server to dial.
-                            Defaults to `$PHUX_SOCKET`, else
-                            `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                            `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                            isn't set).
+      --socket <PATH>       Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux service logs`
@@ -3063,10 +2653,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux service prune-logs`
@@ -3081,10 +2668,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux service reconcile`
@@ -3110,10 +2694,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux service status`
@@ -3127,10 +2708,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux service uninstall`
@@ -3144,10 +2722,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux signal`
@@ -3176,10 +2751,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux skill`
@@ -3215,16 +2787,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux snapshot`
 
 ```text
-Capture a pane's screen as JSON or a boxed text view.
+Read a pane's screen as text or JSON
 
 The agent "floor": read what's on screen as JSON (`--json`) or a boxed text
 view, without a TTY or tmux. The read is side-effect-free — the server walks its
@@ -3277,16 +2846,13 @@ Flags:
   -h, --help            Print help
 
 Global flags:
-      --socket <PATH>   Override the UDS path of the server to dial. Defaults to
-                        `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                        (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                        isn't set).
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux spawn`
 
 ```text
-Create a pane without attaching.
+Create a pane without attaching
 
 With `--target`, the pane is inserted beside an exact local owner; otherwise it
 joins the server's most recently active session. The new pane's id prints to
@@ -3321,17 +2887,13 @@ Flags:
   -h, --help              Print help
 
 Global flags:
-      --socket <PATH>     Override the UDS path of the server to dial. Defaults
-                          to `$PHUX_SOCKET`, else
-                          `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                          `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't
-                          set).
+      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux status`
 
 ```text
-Report the running server: pid, up since, protocol, clients, logs.
+Report the running server: pid, uptime, clients
 
 One glance at the server behind the socket: whether it is running and as which
 pid, since when, the protocol version it speaks, how many clients are attached,
@@ -3349,16 +2911,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux swap-pane`
 
 ```text
-Swap two existing pane leaves in the same session layout.
+Swap two panes in a layout
 
 Both selectors must each resolve to exactly one local pane. Split geometry is
 preserved and attached clients retain their local focus.
@@ -3374,16 +2933,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux tag`
 
 ```text
-Read and write pane tags.
+Read and write pane tags (address them with #tag)
 
 Tags are freeform strings attached to panes. Once a pane is tagged, the `#tag`
 selector addresses every pane carrying that tag — e.g. `phux kill #build`, `phux
@@ -3402,10 +2958,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux tag add`
@@ -3426,10 +2979,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux tag ls`
@@ -3449,10 +2999,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux tag rm`
@@ -3473,16 +3020,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux take`
 
 ```text
-Take the input wheel of a pane.
+Take exclusive input control of a pane
 
 Seizes exclusive input authority over the resolved pane: while held, only this
 connection's input reaches the PTY — every other client's keystrokes (and any
@@ -3499,10 +3043,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux update`
@@ -3563,17 +3104,13 @@ Flags:
   -h, --help               Print help
 
 Global flags:
-      --socket <PATH>      Override the UDS path of the server to dial. Defaults
-                           to `$PHUX_SOCKET`, else
-                           `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                           `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                           isn't set).
+      --socket <PATH>      Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux upgrade`
 
 ```text
-Graceful-upgrade the running server in place.
+Hot-swap the running server to the installed binary
 
 Asks the server to snapshot every pane, re-exec the on-disk binary, and re-adopt
 the live PTYs, so the shells / editors / agents in every session survive a
@@ -3588,10 +3125,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux wait`
@@ -3667,11 +3201,7 @@ Flags:
   -h, --help             Print help
 
 Global flags:
-      --socket <PATH>    Override the UDS path of the server to dial. Defaults
-                         to `$PHUX_SOCKET`, else
-                         `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                         `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR` isn't
-                         set).
+      --socket <PATH>    Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux watch`
@@ -3721,16 +3251,13 @@ Flags:
   -h, --help            Print help
 
 Global flags:
-      --socket <PATH>   Override the UDS path of the server to dial. Defaults to
-                        `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                        (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                        isn't set).
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux whoami`
 
 ```text
-Report who this connection is to the server it reaches.
+Report who this connection is to the server
 
 Prints the principal and credential id (for a paired device), the auth route
 (the local socket, or a QUIC / WebSocket bearer credential), the peer uid (local
@@ -3760,17 +3287,14 @@ Flags:
   -h, --help                      Print help
 
 Global flags:
-      --socket <PATH>             Override the UDS path of the server to dial.
-                                  Defaults to `$PHUX_SOCKET`, else
-                                  `$XDG_RUNTIME_DIR/phux/phux.sock` (or
-                                  `/tmp/phux-$USER/phux.sock` if
-                                  `XDG_RUNTIME_DIR` isn't set).
+      --socket <PATH>             Server socket to dial (default:
+                                  `$PHUX_SOCKET`)
 ```
 
 ## `phux workspace`
 
 ```text
-Inspect a git workspace and its worktrees for agent orchestration.
+Inspect a git workspace and its worktrees
 
 This is a local repo operation: it never contacts a running phux server and
 never creates or deletes worktrees. Agents use it to map code checkouts to phux
@@ -3788,10 +3312,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux workspace inspect`
@@ -3810,10 +3331,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux workspace restore`
@@ -3830,10 +3348,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux workspace save`
@@ -3848,16 +3363,13 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux worktree`
 
 ```text
-Manage git worktrees and the sessions bound to them.
+Manage git worktrees and their bound sessions
 
 Each worktree binds to one session whose name is derived from the worktree's
 directory basename. The derivation is a pure function of the path, so the
@@ -3879,10 +3391,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux worktree list`
@@ -3905,10 +3414,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux worktree new`
@@ -3945,10 +3451,7 @@ Flags:
   -h, --help            Print help
 
 Global flags:
-      --socket <PATH>   Override the UDS path of the server to dial. Defaults to
-                        `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                        (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                        isn't set).
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux worktree open`
@@ -3975,10 +3478,7 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux worktree remove`
@@ -4006,8 +3506,5 @@ Flags:
   -h, --help           Print help
 
 Global flags:
-      --socket <PATH>  Override the UDS path of the server to dial. Defaults to
-                       `$PHUX_SOCKET`, else `$XDG_RUNTIME_DIR/phux/phux.sock`
-                       (or `/tmp/phux-$USER/phux.sock` if `XDG_RUNTIME_DIR`
-                       isn't set).
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```

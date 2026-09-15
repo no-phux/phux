@@ -391,7 +391,7 @@ pub(crate) fn run_pair(
 
     // `--json` keeps stdout a single document (the repo-wide contract in
     // docs/consumers/agents.md): the human blocks below are suppressed and
-    // every diagnostic still goes to stderr. `phux host enroll` consumes
+    // every diagnostic still goes to stderr. `phux host add` consumes
     // this over ssh, which is what keeps a 64-hex token out of human hands.
     if !json {
         print_credential_block(&minted.id, &token);
@@ -739,7 +739,7 @@ fn migrate_legacy_credentials(tokens: &std::path::Path) -> bool {
 /// (from the environment the listener reads), not a dialable address — the
 /// consumer pairs them with an overlay address to build an endpoint. They are
 /// null when this host has no listener configured, which is exactly the
-/// signal `phux host enroll` uses to fall back to `ssh://`.
+/// signal `phux host add` uses to fall back to `ssh://`.
 #[allow(
     clippy::too_many_arguments,
     reason = "one argument per pairing document source keeps secret-bearing output construction explicit"

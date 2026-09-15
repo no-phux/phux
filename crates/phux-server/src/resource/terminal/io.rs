@@ -2,10 +2,10 @@
 //! lifecycle plumbing for [`TerminalActor`].
 
 use super::{
-    Bytes, EncodedInputRequest, InputEncoderSnapshot, PANE_KILL_GRACE, PANE_KILL_POLL,
-    PANE_KILL_REAP_BUDGET, PaneOutput, PasteOutcome, PtyOwned, PtySize, ResyncAudience,
-    ResyncReason, SizeReportSize, SnapshotBytes, TerminalActor, TerminalInput, WriteCompletion,
-    debug, error, exit_status_to_wire, mpsc, trace, warn,
+    Bytes, EncodedInputRequest, InputEncoderSnapshot, PANE_KILL_POLL, PANE_KILL_REAP_BUDGET,
+    PaneOutput, PasteOutcome, PtyOwned, PtySize, ResyncAudience, ResyncReason, SizeReportSize,
+    SnapshotBytes, TerminalActor, TerminalInput, WriteCompletion, debug, error,
+    exit_status_to_wire, mpsc, trace, warn,
 };
 
 impl TerminalActor {
@@ -554,7 +554,7 @@ impl TerminalActor {
     /// process group and the session-leading shell group. Interactive shells
     /// put foreground jobs such as `claude` in a separate process group, so
     /// signaling only the shell group misses the process that needs to flush.
-    /// Poll for both groups to exit within [`PANE_KILL_GRACE`], then `SIGKILL`
+    /// Poll for both groups to exit within [`super::PANE_KILL_GRACE`], then `SIGKILL`
     /// any survivors as a backstop. The PTY master stays open for the duration,
     /// so the foreground process can still write during the grace window.
     ///
@@ -633,7 +633,7 @@ fn hangup_pane_groups(groups: &[nix::unistd::Pid]) -> bool {
     delivered
 }
 
-/// Wait out the [`PANE_KILL_GRACE`] budget, returning `true` once every
+/// Wait out the [`super::pane_kill_grace`] budget, returning `true` once every
 /// snapshotted group has exited.
 ///
 /// Poll every snapshotted group, not just the shell child: the shell can
@@ -648,7 +648,7 @@ async fn await_pane_group_exit(pty: &mut PtyOwned, groups: &[nix::unistd::Pid]) 
     use nix::errno::Errno;
     use nix::sys::signal::killpg;
 
-    let deadline = tokio::time::Instant::now() + PANE_KILL_GRACE;
+    let deadline = tokio::time::Instant::now() + super::pane_kill_grace();
     while tokio::time::Instant::now() < deadline {
         if let Err(err) = pty.child.try_wait() {
             debug!(?err, "try_wait during pane-kill grace failed");

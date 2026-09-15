@@ -14,8 +14,10 @@ pub(super) unsafe fn prepare(
     unsafe { unplace_fallback_seed(ws, &mut next, input) }?;
     // SAFETY: caller supplies a validated sized record with readable spans.
     unsafe { edit(ws, &mut next, input) }?;
-    next.prune_empty_windows();
-    model::preserve_focus(&mut next, &ws.topology);
+    if input.kind != 3 {
+        next.prune_empty_windows();
+        model::preserve_focus(&mut next, &ws.topology);
+    }
     model::flatten(&next)?;
     Ok(next)
 }
@@ -86,6 +88,10 @@ unsafe fn edit(
         // SAFETY: forwards the input record's readable spans.
         return unsafe { add_window(ws, next, input) };
     }
+    if input.kind == 3 {
+        // SAFETY: input identity span is readable.
+        return unsafe { remove_terminal(next, input) };
+    }
     let index = next
         .windows
         .iter()
@@ -95,10 +101,6 @@ unsafe fn edit(
         2 => {
             // SAFETY: forwards input identity spans.
             unsafe { split(ws, &mut next.windows[index], input) }?;
-        }
-        3 => {
-            // SAFETY: input identity span is readable.
-            unsafe { remove_terminal(&mut next.windows[index], input) }?;
         }
         4 => reorder(next, index, input.index as usize)?,
         5 => resize(&mut next.windows[index], input)?,
@@ -128,13 +130,12 @@ unsafe fn add_window(
 }
 
 unsafe fn remove_terminal(
-    window: &mut WindowState,
+    next: &mut Workspace,
     input: &PhuxWorkspaceMutation,
 ) -> Result<(), BridgeError> {
     // SAFETY: input identity span is readable.
     let id = unsafe { terminal_id_in(ptr::from_ref(&input.terminal_id)) }?;
-    window.state.tree = layout::kill_pane(tree(window)?, &id).map_err(layout_error)?;
-    Ok(())
+    next.close_pane(&id).map_err(close_error)
 }
 
 unsafe fn name(input: &PhuxWorkspaceMutation) -> Result<String, BridgeError> {
@@ -189,6 +190,15 @@ unsafe fn split(
         layout::split_at(tree(window)?, &target, &id, dir, input.ratio).map_err(layout_error)?,
     );
     Ok(())
+}
+
+fn close_error(error: layout::LayoutError) -> BridgeError {
+    match error {
+        layout::LayoutError::LastPane => {
+            BridgeError::invalid("cannot close the final pane in a persisted layout")
+        }
+        other => layout_error(other),
+    }
 }
 
 #[allow(

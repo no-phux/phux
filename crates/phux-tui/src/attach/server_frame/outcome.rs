@@ -21,6 +21,11 @@ use crate::render::chrome::status_bar::Notice;
 )]
 #[derive(Debug, Clone, Default)]
 pub(in crate::attach) struct FrameOutcome {
+    /// Terminal whose authoritative output changed and still needs to become
+    /// visible before an acknowledged-input ambiguity fence may clear.
+    pub(in crate::attach) authoritative_damage: Vec<ResourceId>,
+    /// Damaged Terminal this frame actually painted while it was focused.
+    pub(in crate::attach) painted_output: Option<ResourceId>,
     /// `true` ⇒ the loop should exit cleanly: either the server sent
     /// `DETACHED`, or a `RESOURCE_CLOSED` folded the last pane out of the
     /// layout and the consumer-owned detach policy (phux-4r1) decided to

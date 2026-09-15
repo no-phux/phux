@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-14
 ---
 
 # Install
@@ -129,6 +129,15 @@ brew install --cask no-phux/tap/phux-cockpit
 Cockpit requires Apple silicon macOS 11 or later. Intel Macs have no release
 artifact; the curl installer and the cask both refuse there.
 
+From a running installer-placed app, **Check for Updates…** (View menu, or
+Settings → About) compares `CFBundleShortVersionString` to the latest
+`cockpit-vX.Y.Z` GitHub release the same way `scripts/install-cockpit.sh` does.
+If a newer release exists, Install drives that script — SHA256SUMS, atomic
+replace, quarantine-clear, and rollback on placement failure. After a
+successful replace the new binary relaunches; Phux-backed remote sessions stay
+on the server. Homebrew, Nix, and development copies refuse and print the
+native command instead of overwriting.
+
 ## Release tarball
 
 Release tags include target-specific tarballs and checksum sidecars. Pick a
@@ -209,6 +218,10 @@ phux channel            # which rail this install follows
 phux channel next       # follow green main
 phux channel latest     # back to the latest vX.Y.Z
 ```
+
+Cockpit's in-app **Check for Updates…** is the same honesty for the macOS app:
+it only rewrites an installer-placed `Phux Cockpit.app`. See
+[Cockpit (native macOS)](#cockpit-native-macos).
 
 `phux update` exists because a deployment is a lockstep set: mismatched peers
 refuse each other at HELLO. See

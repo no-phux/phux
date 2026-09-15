@@ -25,6 +25,7 @@ pub const menus: []const native_sdk.Menu = &.{
     .{ .title = "View", .items = &.{
         .{ .label = "Commands…", .command = "commands.open", .key = "p", .modifiers = .{ .primary = true, .shift = true } },
         .{ .label = "Settings…", .command = "settings.open", .key = ",", .modifiers = .{ .primary = true } },
+        .{ .label = "Check for Updates…", .command = "app.update", .key = "", .modifiers = .{} },
         .{ .label = "Edit Configuration…", .command = "config.edit", .key = "", .modifiers = .{} },
         .{ .separator = true },
         .{ .label = "Enter Full Screen", .command = "window.fullscreen", .key = "f", .modifiers = .{ .primary = true, .control = true } },

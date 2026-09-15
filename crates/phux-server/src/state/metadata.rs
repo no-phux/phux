@@ -93,6 +93,31 @@ pub enum KeepEmptyOutcome {
     NotFound,
 }
 
+/// Conventional keys the server intercepts on write: the payload is a
+/// command, not a value the store retains.
+///
+/// [`super::ServerState::metadata_broadcast`] accepts only these keys so a
+/// caller cannot emit `METADATA_CHANGED` for an ordinary key whose
+/// subsequent `GET_METADATA` would contradict the broadcast (phux-wdar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerInterceptedKey {
+    /// `phux.session.name/v1` — rename payload `current\0new`.
+    SessionName,
+    /// `phux.session.keep_empty/v1` — mark payload `name\0true|false`.
+    SessionKeepEmpty,
+}
+
+impl ServerInterceptedKey {
+    /// The conventional key string this variant broadcasts on.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SessionName => phux_protocol::wire::frame::SESSION_NAME_KEY,
+            Self::SessionKeepEmpty => phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY,
+        }
+    }
+}
+
 impl MetadataStore {
     /// Get the value at `(scope, key)`, if any.
     #[must_use]
@@ -274,7 +299,7 @@ impl ServerState {
         if unchanged {
             return Vec::new();
         }
-        let delivered = self.metadata_broadcast(scope, key, &value);
+        let delivered = self.broadcast_metadata_change(scope, key, Some(&value));
         // Commit the write last; `MetadataSetOutcome` is now redundant
         // here but kept on the lower-level API for direct callers.
         let _ = self.metadata.set(scope, key, value);
@@ -296,21 +321,27 @@ impl ServerState {
     /// `(scope, key)` WITHOUT touching the store.
     ///
     /// Exists for the server-intercepted conventional keys whose written
-    /// value is a *command* the server applies, not state it retains — the
-    /// session rename (`phux.session.name/v1`, value `current\0new`) being
-    /// the first caller. Routing such a payload through
-    /// [`Self::metadata_set`] would (a) leak a stale transition blob into
-    /// `GET_METADATA` / `LIST_METADATA`, and (b) let the equal-bytes dedup
-    /// swallow a legitimate repeat of the same rename pair (rename `A -> B`,
-    /// `B` dies, a new `A` appears, rename `A -> B` again). The caller is
-    /// responsible for broadcasting only when the underlying mutation
-    /// actually happened.
+    /// value is a *command* the server applies, not state it retains —
+    /// [`ServerInterceptedKey::SessionName`] (`current\0new`) and
+    /// [`ServerInterceptedKey::SessionKeepEmpty`]. Routing such a payload
+    /// through [`Self::metadata_set`] would (a) leak a stale transition blob
+    /// into `GET_METADATA` / `LIST_METADATA`, and (b) let the equal-bytes
+    /// dedup swallow a legitimate repeat of the same rename pair (rename
+    /// `A -> B`, `B` dies, a new `A` appears, rename `A -> B` again).
+    /// `key` is a [`ServerInterceptedKey`] so an ordinary stored key cannot
+    /// be named here. The caller is still responsible for broadcasting only
+    /// when the underlying mutation actually happened.
     ///
     /// Returns the set of clients the broadcast was attempted against, as
     /// [`Self::metadata_set`] does, so callers can assert fanout shape.
     #[must_use]
-    pub fn metadata_broadcast(&self, scope: &Scope, key: &str, value: &[u8]) -> Vec<ClientId> {
-        self.broadcast_metadata_change(scope, key, Some(value))
+    pub fn metadata_broadcast(
+        &self,
+        scope: &Scope,
+        key: ServerInterceptedKey,
+        value: &[u8],
+    ) -> Vec<ClientId> {
+        self.broadcast_metadata_change(scope, key.as_str(), Some(value))
     }
 
     /// The one fanout: resolve the subscribers of `(scope, key)` and enqueue
@@ -415,6 +446,20 @@ mod tests {
 
     fn key(n: usize) -> String {
         format!("phux.test.key/{n}/v1")
+    }
+
+    /// The type boundary `metadata_broadcast` now accepts: only the two
+    /// intercepted conventional keys, mapped to the protocol constants.
+    #[test]
+    fn intercepted_key_variants_are_the_broadcast_only_session_writes() {
+        assert_eq!(
+            ServerInterceptedKey::SessionName.as_str(),
+            phux_protocol::wire::frame::SESSION_NAME_KEY,
+        );
+        assert_eq!(
+            ServerInterceptedKey::SessionKeepEmpty.as_str(),
+            phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY,
+        );
     }
 
     /// Filling a client to the cap succeeds on every distinct key; the

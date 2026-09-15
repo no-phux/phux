@@ -159,7 +159,7 @@ const sectionContent: Record<string, { label: string; intro: string; links: [str
     intro: "Architecture explains what the code is. The protocol defines interoperability; decisions explain why the shape exists.",
     links: [
       ["Glance diagram", "/architecture/diagram", "PTY in, resource engines, the frame seam, client replicas."],
-      ["Process model", "/architecture/process-model", "One server per user, supervision, runtime boundaries."],
+      ["phux and herdr", "/architecture/phux-and-herdr", "Two system shapes, compared at their durable boundaries."],
       ["State sync", "/architecture/state-sync", "What happens on attach."],
     ],
   },

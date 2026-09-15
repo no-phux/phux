@@ -548,24 +548,40 @@ async fn signal_freezes_resumes_and_kills_the_child() {
         .await;
 }
 
+/// Test-only hangup ceiling for the flush-before-death fixtures (phux-7n1g).
+/// Production stays at [`PANE_KILL_GRACE`]; this is a deadline on group
+/// exit, so an idle trap still returns on the first poll.
+const CONTENDED_FLUSH_GRACE: std::time::Duration = std::time::Duration::from_millis(2500);
+
+/// Poll the SIGHUP flush marker until it lands or [`CONTENDED_FLUSH_GRACE`]
+/// expires. Replaces a one-shot read after a fixed actor join.
+async fn wait_for_flush_marker(path: &std::path::Path) -> String {
+    let started = tokio::time::Instant::now();
+    loop {
+        let body = std::fs::read_to_string(path).unwrap_or_default();
+        if body.contains("flushed")
+            || started.elapsed() >= CONTENDED_FLUSH_GRACE + std::time::Duration::from_millis(500)
+        {
+            return body;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 /// phux-sw1: killing a pane (cancel the actor token → `shutdown_pty`)
 /// must give a foreground job in a process group distinct from the shell a
 /// chance to flush before it dies. This reproduces interactive job-control
 /// topology rather than testing a shell and child that share one group.
 ///
-/// **This test is load-sensitive by construction and cannot be made
-/// otherwise from inside the test** (phux-axos). Everything BEFORE the
-/// hangup is fenced by the `armed` barrier below, so no amount of
-/// scheduling delay can reorder it. What remains is the assertion itself:
-/// the trap handler has to run inside [`PANE_KILL_GRACE`], which is a
-/// **500ms product budget**, not a test constant. Under starvation a shell
-/// can miss that window while the product behaves exactly as designed.
-/// Lengthening the grace to suit the test would change shipped behavior,
-/// and no barrier can fence a window the product itself defines — so the
-/// mitigation lives in `.config/nextest.toml`, which gives this test
-/// `threads-required = 'num-cpus'` to clear the runner's own pool. That
-/// cannot clear load from OUTSIDE the runner; a failure here on a box
-/// running several concurrent builds says something about the box.
+/// Everything BEFORE the hangup is fenced by the `armed` barrier below.
+/// The trap then has to run inside the hangup grace. Production keeps the
+/// 500ms [`PANE_KILL_GRACE`] budget; under host load outside nextest's
+/// pool a `/bin/sh` can miss that window (phux-7n1g) while the product
+/// is behaving as designed. These two fixtures stretch only the *ceiling*
+/// of `await_pane_group_exit` (idle traps still return on the first poll).
+/// `.config/nextest.toml` still gives this test `threads-required =
+/// 'num-cpus'` so the runner's own pool is not a second source of
+/// starvation.
 #[tokio::test(flavor = "current_thread")]
 async fn pane_kill_lets_foreground_process_flush_before_death() {
     use portable_pty::CommandBuilder;
@@ -660,6 +676,7 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
                      get scheduled, which is an environment problem (machine load), not a \
                      failure of the flush-before-death path this test covers",
             );
+            let _grace = stretch_pane_kill_grace(CONTENDED_FLUSH_GRACE);
 
             // Now that the job is armed, the PTY's foreground group is
             // settled and can be read once instead of polled for.
@@ -676,12 +693,12 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
 
             // Kill the pane. The actor's shutdown runs SIGHUP + grace.
             token.cancel();
+            let body = wait_for_flush_marker(&marker).await;
             tokio::time::timeout(std::time::Duration::from_secs(5), run)
                 .await
                 .expect("actor shutdown timed out")
                 .expect("actor task failed");
 
-            let body = std::fs::read_to_string(&marker).unwrap_or_default();
             assert!(
                 body.contains("flushed"),
                 "foreground process must run its SIGHUP flush handler before \
@@ -722,8 +739,8 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
 ///   test pass against the exact bug it exists to catch.
 ///
 /// Load-sensitive for the same structural reason as the sibling test, and
-/// mitigated the same way — see the `threads-required` override in
-/// `.config/nextest.toml`.
+/// mitigated the same way: stretch the hangup ceiling (phux-7n1g) and
+/// clear the runner pool via `threads-required` in `.config/nextest.toml`.
 #[tokio::test(flavor = "current_thread")]
 async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
     use portable_pty::CommandBuilder;
@@ -819,6 +836,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
                      get scheduled, which is an environment problem (machine load), not a \
                      failure of the flush-before-death path this test covers",
             );
+            let _grace = stretch_pane_kill_grace(CONTENDED_FLUSH_GRACE);
 
             let foreground_group = master
                 .lock()
@@ -833,13 +851,12 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
 
             let killed_at = std::time::Instant::now();
             token.cancel();
+            let body = wait_for_flush_marker(&marker).await;
             tokio::time::timeout(std::time::Duration::from_secs(10), run)
                 .await
                 .expect("actor shutdown stalled: the pane-kill path did not complete")
                 .expect("actor task failed");
             let shutdown_took = killed_at.elapsed();
-
-            let body = std::fs::read_to_string(&marker).unwrap_or_default();
             let cat_status = std::fs::read_to_string(&status).unwrap_or_default();
             let cat_err = std::fs::read_to_string(&stderr).unwrap_or_default();
             assert!(

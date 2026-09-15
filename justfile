@@ -729,8 +729,8 @@ toolchain:
     @rustc --version
     @cargo --version
 
-# Package the host-target release binaries into a tarball matching the
-# release workflow's naming (phux-<tag>-<target>.tar.gz) under dist/. Used
+# Package the host-target release binaries into a tarball via
+# scripts/pack-release.sh (phux-<tag>-<target>.tar.gz) under dist/. Used
 # to seed the first Homebrew release locally; CI does this per-target on a
 # `v*` tag. Pass the tag, e.g. `just dist v0.0.1`.
 [group('release')]

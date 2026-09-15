@@ -221,6 +221,10 @@ pub struct PredictionState {
     /// last screen switch / contradiction / resync. Unlocks alt-screen
     /// display.
     echo_confirmed: bool,
+    /// Smoothed queue-to-confirm time for non-blank insert predictions, in
+    /// milliseconds. This is a link property, so screen switches, clears,
+    /// resizes, and contradictions deliberately preserve it.
+    srtt_ms: Option<u64>,
 }
 
 /// Consecutive contradicting reconcile passes that turn the state
@@ -251,6 +255,13 @@ const REARM_THRESHOLD: u32 = 2;
 /// replacement once the wire exposes an estimate.
 const DISPLAY_TTL_MS: u64 = 1_000;
 
+/// Maximum SRTT-derived display lifetime. This bounds a stale or sensitive
+/// prediction even on a pathological link.
+const DISPLAY_TTL_CAP_MS: u64 = 5_000;
+
+/// RFC 6298's smoothing gain denominator: alpha is one eighth (`0.125`).
+const SRTT_GAIN_DENOMINATOR: u64 = 8;
+
 impl PredictionState {
     /// New state with predictive echo configured per `cfg` and an
     /// initial viewport of `cols × rows`.
@@ -270,6 +281,7 @@ impl PredictionState {
             tentative: false,
             alt_screen: false,
             echo_confirmed: false,
+            srtt_ms: None,
         }
     }
 
@@ -484,7 +496,8 @@ impl PredictionState {
     ///   ([`Self::echo_confirmed`]) ⇒ hidden — a full-screen app that
     ///   never echoes (htop, less, vim normal mode) must never paint a
     ///   guess;
-    /// - a front prediction older than `DISPLAY_TTL_MS` ⇒ hidden until
+    /// - a front prediction older than twice the smoothed confirmation RTT,
+    ///   clamped to 1–5 seconds (or 1 second before any sample) ⇒ hidden until
     ///   authority catches up (glitch back-off).
     ///
     /// `now_ms` is the caller's monotonic clock, the same one stamped
@@ -500,7 +513,17 @@ impl PredictionState {
         if self.alt_screen && !self.echo_confirmed {
             return false;
         }
-        now_ms.saturating_sub(front.queued_at_ms) <= DISPLAY_TTL_MS
+        now_ms.saturating_sub(front.queued_at_ms) <= self.display_ttl_ms()
+    }
+
+    /// Display lifetime derived from twice the smoothed echo RTT, clamped to
+    /// the 1-second safety floor and 5-second ghost bound.
+    #[must_use]
+    pub fn display_ttl_ms(&self) -> u64 {
+        self.srtt_ms.map_or(DISPLAY_TTL_MS, |srtt| {
+            srtt.saturating_mul(2)
+                .clamp(DISPLAY_TTL_MS, DISPLAY_TTL_CAP_MS)
+        })
     }
 
     /// ADR-0090: whether the app has proven it echoes since the last
@@ -517,6 +540,24 @@ impl PredictionState {
     /// invalidated (contradiction, screen switch, resize, resync).
     pub(crate) const fn confirm_echo(&mut self) {
         self.echo_confirmed = true;
+    }
+
+    /// Record one non-blank insert confirmation at a caller-supplied
+    /// monotonic time. Missing clocks (`queued_at_ms == 0`) and clocks that
+    /// moved backwards are ignored.
+    pub(crate) fn confirm_echo_at(&mut self, queued_at_ms: u64, now_ms: u64) {
+        self.confirm_echo();
+        if queued_at_ms == 0 || now_ms < queued_at_ms {
+            return;
+        }
+        let sample = now_ms - queued_at_ms;
+        self.srtt_ms = Some(self.srtt_ms.map_or(sample, |srtt| {
+            if sample >= srtt {
+                srtt + (sample - srtt) / SRTT_GAIN_DENOMINATOR
+            } else {
+                srtt - (srtt - sample) / SRTT_GAIN_DENOMINATOR
+            }
+        }));
     }
 
     /// Drop every pending prediction. Called by the reconcile path.

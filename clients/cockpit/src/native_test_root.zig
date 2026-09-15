@@ -546,6 +546,7 @@ test "AppKit pointer buttons map to provider mouse buttons" {
 }
 
 test {
+    _ = @import("cockpit/diagnostics.zig");
     _ = @import("cockpit/native/ts_protocol.zig");
     _ = @import("cockpit/native/ts_appearance.zig");
     _ = @import("cockpit/native/new_session.zig");
@@ -578,6 +579,9 @@ test {
     _ = @import("tests/pointer_selection_tests.zig");
     _ = @import("tests/mouse_protocol_tests.zig");
     _ = @import("tests/adversarial_isolation_tests.zig");
+    _ = @import("tests/paint_ceiling_tests.zig");
+    _ = @import("terminal/grid.zig");
+    _ = @import("cockpit/native/paint_budget.zig");
     _ = @import("tests/layout_tree_tests.zig");
     _ = @import("tests/config_tests.zig");
     _ = @import("tests/shell_identity_tests.zig");

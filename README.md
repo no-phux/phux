@@ -1,8 +1,12 @@
 <!--
 audience: humans, contributors, agents
 stability: stable
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-14
 -->
+
+<p align="center">
+  <img src="docs/assets/fox-mark.svg" alt="phux" width="128">
+</p>
 
 # phux
 

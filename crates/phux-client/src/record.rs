@@ -193,6 +193,7 @@ async fn subscribe(
 
     conn.send(&FrameKind::SubscribeEvents {
         terminal: Some(terminal_id.clone()),
+        after_seq: None,
     })
     .await?;
     Ok(primed)
@@ -593,6 +594,7 @@ mod tests {
         FrameKind::Event {
             terminal: Some(terminal()),
             event: AgentEvent::ResourceClosed { exit_status },
+            stamp: None,
         }
     }
 

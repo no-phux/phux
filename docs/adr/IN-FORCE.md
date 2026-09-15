@@ -23,6 +23,8 @@ by a newer one, the newer line is the operative reading.
 
 ## Identity and kinds
 
+- [0126](./0126-idempotent-create.md) A spawn may carry a client key; a retry with the same key and payload returns the original resource, and a different payload is refused.
+- [0124](./0124-retain-on-exit.md) A spawn may ask to keep its Terminal after exit; the exit becomes a facet and `RESOURCE_CLOSED` stays the one purge.
 - [0104](./0104-parent-bindings-are-l1-lifecycle.md) A parent is bound at spawn; closing it closes every child with `ParentClosed`, atomically.
 - [0102](./0102-resources-the-server-serves-kinds.md) The server serves resources of open kinds; `ResourceId` replaces `TerminalId`, with Terminal as kind 0.
 - [0064](./0064-playback-as-a-pane.md) `phux play` creates a real Terminal fed from a cast; no wire change.
@@ -35,6 +37,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Wire and codecs
 
+- [0123](./0123-events-are-journaled.md) Every event is stamped with a server-wide sequence and journaled; a cursor replays it, and every loss is a typed gap.
 - [0086](./0086-shared-render-pool.md) One pooled libghostty render trio lives in `phux-protocol` behind the `server` feature.
 - [0117](./0117-wire-codec-stays-tlv.md) The wire codec stays hand-rolled TLV; protobuf considered and rejected, with a machine-readable schema as follow-up.
 - [0061](./0061-capabilities-add-versions-break.md) New wire surface ships as a negotiated capability; a `major.minor` mismatch is rejected.
@@ -89,9 +92,10 @@ by a newer one, the newer line is the operative reading.
 - [0109](./0109-late-kills-are-conditional-on-instance-and-attachment.md) A late kill is `KILL_RESOURCE_IF`: the server kills only while the caller's instance token names its id space and no connection but the spawning one attached the resource; a hub relays the check to the satellite and vouches for its own consumers.
 - [0108](./0108-a-hub-relays-host-queries-per-request.md) A hub relays a host query that names a satellite (`LIST_DIRECTORY.host`) over that satellite's L3-negotiated link, one request at a time; it never relays metadata or chains, and every routing failure is an `OTHER` refusal naming the host.
 - [0107](./0107-satellite-sessions-are-listed-never-adopted.md) A hub lists satellite sessions host-qualified under their own ids; selecting one opens its active pane through the resource relay.
+- [0122](./0122-host-add-is-the-front-door.md) `phux host add HOST` is the one front door for a machine: confirm, start and supervise, pair, probe, register; an attach whose saved route stops answering starts the server over ssh before it re-pairs.
 - [0093](./0093-remote-target-as-a-resolution-ladder.md) `--remote user@host` resolves to a `[[remote]]` entry and reuses the existing dial.
 - [0081](./0081-overlay-auto-listen-and-one-command-pairing.md) The server auto-binds its overlay listener at startup; `phux pair` only issues credentials.
-- [0066](./0066-host-namespace.md) `phux host add|ls|rm|enroll` with `--role` replaces the split remote and satellite verbs.
+- [0066](./0066-host-namespace.md) `phux host add|ls|rm` with `--role` replaces the split remote and satellite verbs.
 - [0057](./0057-minimal-reference-relay.md) A single-process, single-tenant reference relay ships in-tree as a self-host tool.
 - [0052](./0052-connector-route-identity-and-config.md) Consumers name a tunneled server by TLS SNI; routes bind to tokens at relay enrollment.
 - [0051](./0051-outbound-dial-out-connector-transport.md) A server behind NAT dials out to a relay and holds one persistent QUIC tunnel.

@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -28,6 +29,24 @@ def mock_rustc(tools):
 
 
 class BuildContracts(unittest.TestCase):
+    def test_product_panes_refuse_framework_terminal_store(self):
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "check-shell-engine.py")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
+    def test_product_phux_keeps_vt_off_the_4096_channel(self):
+        completed = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "check-vt-channel.py")],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+
     def cache_steps(self):
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
         steps = re.findall(
@@ -125,7 +144,7 @@ class BuildContracts(unittest.TestCase):
                 result = subprocess.check_output(["bash", str(helper), *goal, "--summary", "all"], text=True)
                 self.assertEqual(result.splitlines(), [*goal, "--summary", "all",
                     "-Dtarget=aarch64-macos", "-Dcpu=baseline",
-                    "-Doptimize=ReleaseSafe", "-Dphux-enabled=true"])
+                    "-Doptimize=ReleaseSafe", "-Dphux-enabled=true", "-Dtrace=off"])
 
     def test_main_has_one_shipping_compile_owner_and_debug_tests(self):
         workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()

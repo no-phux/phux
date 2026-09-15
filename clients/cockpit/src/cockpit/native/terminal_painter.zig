@@ -9,6 +9,7 @@ const provider_contract = @import("provider_contract");
 const model_module = @import("../model.zig");
 const layout = @import("../layout.zig");
 const projection = @import("workspace_projection.zig");
+const paint_budget = @import("paint_budget.zig");
 const search_painter = @import("search_painter.zig");
 
 const canvas = native_sdk.canvas;
@@ -16,9 +17,9 @@ const geometry = native_sdk.geometry;
 const Model = model_module.Model;
 const Pane = @import("../../providers/local/provider.zig").Pane;
 const TerminalRef = @import("../phux_support.zig").TerminalRef;
-const chrome_command_envelope = projection.chrome_command_envelope;
 
 test {
+    _ = paint_budget;
     _ = @import("../../tests/remote_theme_tests.zig");
     _ = @import("../../native_paint_owner_tests.zig");
 }
@@ -194,49 +195,26 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     const count = projection.resolvePanesIn(model, ws, size, &panes);
     if (count == 0) return;
 
-    // The budgets are partitioned by kind, exactly as the two-pane painter
-    // did, generalized to N panes:
-    //   commands  — CUMULATIVE across the prefix, so pane i may spend up to
-    //               its share of the running total and the LAST pane may
-    //               spend the whole envelope;
-    //   text/path — RESERVES, so a pane holds back the shares belonging to
-    //               the panes that paint after it;
-    //   glyphs    — per-paint local, so each pane takes an equal slice.
-    const share_divisor: usize = @max(1, count);
-    const text_share = (canvas.max_display_list_text_bytes - canvas.terminal_grid.widget_text_reserve) / share_divisor;
-    const path_share = (canvas.max_chart_path_elements_per_frame - canvas.terminal_grid.widget_path_reserve) / share_divisor;
-    // Cells are the budget that actually bounds a terminal now, and unlike
-    // text and paths they have no widget floor to hold back: nothing but a
-    // terminal grid emits into the packed cell store. So the WHOLE store is
-    // divided among the panes and each one reserves the shares belonging to
-    // the panes painting after it.
-    //
-    // Deliberately not `terminal_grid.widget_cell_reserve`. Despite the name
-    // that constant is `max/2` — the SDK's even split for exactly TWO panes,
-    // not a widget reserve. Using it as a floor would hold back half the
-    // store at every pane count: a lone full-screen terminal would get 16384
-    // cells and a 320x96 grid needs 30720, so the single-pane case — the
-    // common one — would start silently truncating again.
-    const cell_share = canvas.max_display_list_cells / share_divisor;
+    // Hybrid C (Cockpit pkg3b / Metal): focused pane of the active window
+    // takes a full product grid; everything else shares leftover as a
+    // last-N crop at `max_rows / 4`. Glyphs are not `widget_glyph_budget / N`.
+    // Commands/text/paths keep forward-slack inside a tier so a later
+    // full pane cannot be stolen. `widget_cell_reserve` is not a floor.
     const tree = ws.selectedTreeConst() orelse return;
     const focus_node = tree.focus;
+    var focused_flags: [layout.max_panes]bool = @splat(false);
+    for (panes[0..count], 0..) |pane, index| {
+        focused_flags[index] = pane.node == focus_node;
+    }
+    const budget_plan = paint_budget.plan(.{
+        .window_active = window_active,
+        .pane_count = count,
+        .focused = focused_flags[0..count],
+    });
 
     for (panes[0..count], 0..) |pane, index| {
         if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
-        const remaining = count - 1 - index;
-        // The command budget is measured against the builder's RUNNING
-        // length, so each pane is granted its own equal slice above whatever
-        // the panes before it spent. A fixed cumulative ladder starved the
-        // later panes whenever an earlier one filled its share.
-        // A CUMULATIVE ladder measured from the chrome prologue: pane i may
-        // spend up to its share of the running total, and the LAST pane may
-        // spend the whole envelope. A per-pane slice would strand the tail
-        // of the envelope unused whenever an early pane came in cheap.
-        const command_budget = prologue + chrome_command_envelope * (index + 1) / share_divisor;
-        const text_reserve = canvas.terminal_grid.widget_text_reserve + text_share * remaining;
-        const path_reserve = canvas.terminal_grid.widget_path_reserve + path_share * remaining;
-        const glyph_budget = canvas.terminal_grid.widget_glyph_budget / share_divisor;
-        const cell_reserve = cell_share * remaining;
+        const alloc = budget_plan.forPane(index, prologue);
         // Each pane owns its OWN background frame. Nothing paints outside
         // the pane it belongs to.
         // A window that is not the one the user is in shows no focused pane:
@@ -250,11 +228,13 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
             .running = false,
             .focused = options_focused,
             .selecting = false,
-            .command_budget = command_budget,
-            .text_reserve = text_reserve,
-            .glyph_budget = glyph_budget,
-            .path_reserve = path_reserve,
-            .cell_reserve = cell_reserve,
+            .command_budget = alloc.command_budget,
+            .text_reserve = alloc.text_reserve,
+            .glyph_budget = alloc.glyph_budget,
+            .path_reserve = alloc.path_reserve,
+            .cell_reserve = alloc.cell_reserve,
+            .row_fit = .last_n,
+            .row_cap = alloc.rowCap(),
             .minimum_contrast = model.config.minimum_contrast,
             .id_base = grid.paneIdBase(terminalPaintIndex(model, pane.terminal)),
         });

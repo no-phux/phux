@@ -49,8 +49,18 @@ use tokio::net::UnixStream;
 const TAIL_MARKER: &str = "LAGTEST_DONE";
 
 /// Paced bursts, so output is still flowing after the stall below. Each burst
-/// is ~0.7 MB, well past the 256-frame broadcast window.
+/// is ~0.7 MB. That is *not* 256 distinct broadcast frames: the actor
+/// coalesces a PTY dump into ~48 KiB payloads, so one burst is a handful of
+/// large frames and a fast runner never overflows the production 256-slot
+/// ring during [`STALL`]. The test shrinks the ring with
+/// [`phux_server::resource::set_output_broadcast_capacity_for_test`] instead.
 const BURST_CMD: &str = "for i in 1 2 3 4 5 6; do seq 1 100000; sleep 0.5; done; echo LAGTEST_DONE";
+
+/// Broadcast ring used by this test. Four slots overflow as soon as the
+/// stalled pump is a handful of coalesced frames behind — the same shape as
+/// production `Lagged`, without depending on a 12 MiB dump past the 256-slot
+/// window.
+const TEST_OUTPUT_BROADCAST: usize = 4;
 
 /// How long the consumer reads nothing at all.
 const STALL: Duration = Duration::from_secs(2);
@@ -227,6 +237,7 @@ async fn attach_terminal_only(watcher: &mut UnixStream, pane: &ResourceId) -> Ve
 
 #[test]
 fn lagged_attach_terminal_consumer_converges_on_a_replacement_generation() {
+    phux_server::resource::set_output_broadcast_capacity_for_test(TEST_OUTPUT_BROADCAST);
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
@@ -268,7 +279,9 @@ fn lagged_attach_terminal_consumer_converges_on_a_replacement_generation() {
         }
 
         // The stall. Nothing is read from the watcher's socket, so its writer
-        // task blocks, its mailbox fills, and its pump falls off the broadcast.
+        // task blocks, its mailbox fills, and — because this process's
+        // broadcast ring is [`TEST_OUTPUT_BROADCAST`] slots — the next few
+        // coalesced PTY frames overwrite it. Production stays at 256.
         tokio::time::sleep(STALL).await;
 
         let started = Instant::now();

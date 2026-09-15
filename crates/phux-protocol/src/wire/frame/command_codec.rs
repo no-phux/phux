@@ -28,11 +28,11 @@ use super::{
     COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command,
     CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL,
     EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY,
-    EVENT_TAG_IDLE, EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED,
-    EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck,
-    INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE,
-    InputMode, KillConditions, KillPrecondition, ListenerTransport, MAX_APPEND_BYTES,
-    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    EVENT_TAG_IDLE, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED,
+    EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode,
+    FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE,
+    INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition, ListenerTransport,
+    MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
     MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType, ResourceLifecycle,
     STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event, decode_key_event,
     decode_mouse_event, decode_optional_u32, decode_paste_event, decode_terminal_id,
@@ -903,7 +903,7 @@ fn decode_command_value(dec: &mut Decoder<'_>) -> Result<CommandValue, DecodeErr
 // timestamps in `info.rs`).
 // -----------------------------------------------------------------------------
 
-fn encode_optional_i32(value: Option<i32>, enc: &mut Encoder<'_>) {
+pub(in crate::wire) fn encode_optional_i32(value: Option<i32>, enc: &mut Encoder<'_>) {
     match value {
         None => enc.write_u8(0),
         Some(n) => {
@@ -969,6 +969,8 @@ pub(in crate::wire) fn decode_optional_i32(
 //   ASKED            (0x09) → field-tagged TLV: str id, str question,
 //                            repeated str suggestion, optional u64 elapsed_seconds
 //   CWD_CHANGED      (0x0a) → str cwd
+//   JOURNAL_GAP      (0x0b) → field-tagged TLV: u64 first_missing, u64 last_missing
+//   SOURCE_GAP       (0x0c) → field-tagged TLV: u64 dropped
 // -----------------------------------------------------------------------------
 
 pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<'_>) {
@@ -1033,6 +1035,26 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 body_enc.write_str(cwd);
                 EVENT_TAG_CWD_CHANGED
             }
+            AgentEvent::JournalGap {
+                first_missing,
+                last_missing,
+            } => {
+                write_u64_field(
+                    &mut body_enc,
+                    field::event_journal_gap::FIRST_MISSING,
+                    *first_missing,
+                );
+                write_u64_field(
+                    &mut body_enc,
+                    field::event_journal_gap::LAST_MISSING,
+                    *last_missing,
+                );
+                EVENT_TAG_JOURNAL_GAP
+            }
+            AgentEvent::SourceGap { dropped } => {
+                write_u64_field(&mut body_enc, field::event_source_gap::DROPPED, *dropped);
+                EVENT_TAG_SOURCE_GAP
+            }
             // `Unknown` is decoder-only: an encoder that reaches here has
             // round-tripped an event this version did not understand.
             // Re-emit the captured body verbatim so a relay (a hub
@@ -1047,6 +1069,11 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
     }
     enc.write_u8(tag);
     enc.write_bytes(&body);
+}
+
+/// Write one field-tagged `u64` inside an event body.
+fn write_u64_field(enc: &mut Encoder<'_>, field_id: u32, value: u64) {
+    enc.write_field_with(field_id, |e| e.write_u64_be(value));
 }
 
 fn encode_asked_fields(
@@ -1097,11 +1124,21 @@ pub(in crate::wire) fn decode_agent_event(
         },
         EVENT_TAG_DIRTY => AgentEvent::Dirty,
         EVENT_TAG_IDLE => AgentEvent::Idle,
-        EVENT_TAG_TERMINAL_CONTROL => decode_terminal_control_event(&mut body_dec)?,
+        // A lifecycle or action byte this build does not know makes the
+        // whole event opaque rather than failing the frame, so a later value
+        // degrades like a later tag does.
+        EVENT_TAG_TERMINAL_CONTROL => {
+            decode_terminal_control_event(&mut body_dec)?.unwrap_or_else(|| AgentEvent::Unknown {
+                tag,
+                body: body.to_vec(),
+            })
+        }
         EVENT_TAG_ASKED => decode_asked_event(&mut body_dec)?,
         EVENT_TAG_CWD_CHANGED => AgentEvent::CwdChanged {
             cwd: body_dec.read_str()?.to_owned(),
         },
+        EVENT_TAG_JOURNAL_GAP => decode_journal_gap_event(&mut body_dec)?,
+        EVENT_TAG_SOURCE_GAP => decode_source_gap_event(&mut body_dec)?,
         // Unknown event tag: preserve the body verbatim and skip. This is
         // the forward-compat path — a v0.2.x server may add event kinds an
         // older client does not know.
@@ -1116,26 +1153,60 @@ pub(in crate::wire) fn decode_agent_event(
 /// Decode an [`AgentEvent::TerminalControl`] body (ADR-0033): lifecycle,
 /// optional exit status, optional input-lease holder, the control action, and
 /// the optional actor that caused it.
-fn decode_terminal_control_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> {
-    let lifecycle =
-        ResourceLifecycle::from_u8(dec.read_u8()?).ok_or(DecodeError::UnknownEnumValue {
-            field: "ResourceLifecycle",
-            value: 0,
-        })?;
+///
+/// `Ok(None)` when the lifecycle or action byte is one this build does not
+/// know; the caller keeps the event as `Unknown`. A truncated body is still
+/// an error.
+fn decode_terminal_control_event(dec: &mut Decoder<'_>) -> Result<Option<AgentEvent>, DecodeError> {
+    let lifecycle = ResourceLifecycle::from_u8(dec.read_u8()?);
     let exit_status = decode_optional_i32(dec)?;
     let input_holder = decode_optional_client_id(dec)?;
-    let action = ControlAction::from_u8(dec.read_u8()?).ok_or(DecodeError::UnknownEnumValue {
-        field: "ControlAction",
-        value: 0,
-    })?;
+    let action = ControlAction::from_u8(dec.read_u8()?);
     let actor = decode_optional_client_id(dec)?;
-    Ok(AgentEvent::TerminalControl {
+    let (Some(lifecycle), Some(action)) = (lifecycle, action) else {
+        return Ok(None);
+    };
+    Ok(Some(AgentEvent::TerminalControl {
         lifecycle,
         exit_status,
         input_holder,
         action,
         actor,
+    }))
+}
+
+/// Read a field-tagged `u64` value.
+fn read_u64_value(value: &[u8]) -> Result<u64, DecodeError> {
+    Decoder::new(value).read_u64_be()
+}
+
+/// Decode an [`AgentEvent::JournalGap`] body (field-tagged TLV). An absent
+/// bound reads as `0`; an unknown field is skipped by length.
+fn decode_journal_gap_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> {
+    let mut first_missing = 0;
+    let mut last_missing = 0;
+    while let Some((field_id, value)) = dec.read_field()? {
+        match field_id {
+            field::event_journal_gap::FIRST_MISSING => first_missing = read_u64_value(value)?,
+            field::event_journal_gap::LAST_MISSING => last_missing = read_u64_value(value)?,
+            _ => {}
+        }
+    }
+    Ok(AgentEvent::JournalGap {
+        first_missing,
+        last_missing,
     })
+}
+
+/// Decode an [`AgentEvent::SourceGap`] body (field-tagged TLV).
+fn decode_source_gap_event(dec: &mut Decoder<'_>) -> Result<AgentEvent, DecodeError> {
+    let mut dropped = 0;
+    while let Some((field_id, value)) = dec.read_field()? {
+        if field_id == field::event_source_gap::DROPPED {
+            dropped = read_u64_value(value)?;
+        }
+    }
+    Ok(AgentEvent::SourceGap { dropped })
 }
 
 /// Decode an [`AgentEvent::ResourceSpawned`] body (field-tagged TLV).

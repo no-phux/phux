@@ -879,24 +879,43 @@ async fn probe_connectability(dial: &Dial) -> ProbeAttempt {
 }
 
 /// Result of a registered remote attach, including whether its saved route
-/// failed early enough that re-running the SSH bootstrap can repair it.
+/// failed early enough that ssh can repair it, and how.
 pub(crate) struct RemoteAttachOutcome {
     pub(crate) code: ExitCode,
-    pub(crate) bootstrap_recommended: bool,
+    pub(crate) repair: Repair,
+}
+
+/// What an ssh repair rung should do about a failed registered attach.
+///
+/// Only failures establishing the saved transport authorize a repair. Once
+/// an attach reaches server semantics — or succeeds and later disconnects —
+/// replacing credentials and service state would be both surprising and
+/// ineffective.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Repair {
+    /// The attach got past the transport: nothing ssh can fix.
+    None,
+    /// Nobody answered at the saved route: the server is most likely
+    /// stopped. Start it over ssh and dial again with the saved
+    /// credentials; only re-pair if that still fails.
+    Start,
+    /// A host answered and refused the saved credentials, or the entry
+    /// cannot be dialed as written: only a re-pair rewrites what is wrong.
+    RePair,
 }
 
 impl RemoteAttachOutcome {
     const fn terminal(code: ExitCode) -> Self {
         Self {
             code,
-            bootstrap_recommended: false,
+            repair: Repair::None,
         }
     }
 
     const fn repairable(code: ExitCode) -> Self {
         Self {
             code,
-            bootstrap_recommended: true,
+            repair: Repair::RePair,
         }
     }
 }
@@ -920,8 +939,10 @@ pub(crate) fn run_attach_remote(
 }
 
 /// [`run_attach_remote`] with the early direct-route failure classification
-/// used by `phux --remote` to repair a cold registered host over SSH. A named
-/// registry attach (`phux attach NAME`) keeps the historical one-shot behavior.
+/// the registered-host ladder in `remote_target` uses to repair a cold host
+/// over ssh. `phux attach NAME` and `phux --remote NAME` both go through
+/// that ladder, so a stopped server is restarted the same way whichever
+/// spelling found it.
 pub(crate) fn run_attach_remote_outcome(
     entry: &RemoteEntry,
     session: Option<String>,
@@ -1027,14 +1048,16 @@ pub(crate) fn run_attach_rec(
     }
 
     // A name in the registry is a deliberate operator statement — they ran
-    // `phux host enroll` or `phux host add` for it — so it wins over the
-    // local-session reading of the same word. `--socket` is an explicit
-    // local intent and suppresses the lookup.
+    // `phux host add` for it — so it wins over the local-session reading of
+    // the same word. `--socket` is an explicit local intent and suppresses
+    // the lookup. The registered attach goes through the same ladder as
+    // `phux --remote NAME`, so a stopped remote server is restarted over
+    // ssh here too instead of leaving the operator to do it by hand.
     if socket.is_none()
         && let Some(name) = session.as_deref()
         && let Some(entry) = remote::find(name)
     {
-        return run_attach_remote(&entry, None, rec);
+        return super::remote_target::run_registered(name, entry, rec);
     }
 
     let socket_path = socket.unwrap_or_else(default_socket_path);
@@ -1304,7 +1327,7 @@ fn run_attach_quic_outcome(
         rec,
     ));
     finalize_recording(rec);
-    let bootstrap_recommended = remote_bootstrap_recommended(&result);
+    let repair = remote_repair(&result);
     let code = match result {
         Ok(end) => {
             report_attach_end(end);
@@ -1321,10 +1344,7 @@ fn run_attach_quic_outcome(
             ExitCode::FAILURE
         }
     };
-    RemoteAttachOutcome {
-        code,
-        bootstrap_recommended,
-    }
+    RemoteAttachOutcome { code, repair }
 }
 
 /// A remote dial ready to connect, plus whether it stays on this machine.
@@ -1666,7 +1686,7 @@ fn report_ws_attach_outcome(
     result: Result<AttachEnd, AttachError>,
     loopback: bool,
 ) -> RemoteAttachOutcome {
-    let bootstrap_recommended = remote_bootstrap_recommended(&result);
+    let repair = remote_repair(&result);
     let code = match result {
         Ok(end) => {
             report_attach_end(end);
@@ -1683,21 +1703,18 @@ fn report_ws_attach_outcome(
             ExitCode::FAILURE
         }
     };
-    RemoteAttachOutcome {
-        code,
-        bootstrap_recommended,
-    }
+    RemoteAttachOutcome { code, repair }
 }
 
-/// Only failures establishing the saved transport authorize an SSH repair.
-/// Once an attach reaches server semantics—or succeeds and later disconnects—
-/// replacing credentials and service state would be both surprising and
-/// ineffective.
-const fn remote_bootstrap_recommended(result: &Result<AttachEnd, AttachError>) -> bool {
-    matches!(
-        result,
-        Err(AttachError::Connect(_) | AttachError::Unreachable(_))
-    )
+/// Classify a failed remote attach for the ssh repair rung: an unanswered
+/// dial wants the server started, a refused one wants a re-pair, and
+/// anything past the transport wants nothing.
+const fn remote_repair(result: &Result<AttachEnd, AttachError>) -> Repair {
+    match result {
+        Err(AttachError::Unreachable(_)) => Repair::Start,
+        Err(AttachError::Connect(_)) => Repair::RePair,
+        _ => Repair::None,
+    }
 }
 
 #[cfg(test)]
@@ -2282,23 +2299,27 @@ mod tests {
     }
 
     #[test]
-    fn remote_bootstrap_is_limited_to_early_transport_failures() {
-        assert!(remote_bootstrap_recommended(&Err(AttachError::Connect(
-            "bad credential".to_owned()
-        ))));
-        assert!(remote_bootstrap_recommended(&Err(
-            AttachError::Unreachable("no route".to_owned())
-        )));
+    fn remote_repair_is_limited_to_early_transport_failures() {
+        // A refused credential means a host answered: only a re-pair helps.
+        assert_eq!(
+            remote_repair(&Err(AttachError::Connect("bad credential".to_owned()))),
+            Repair::RePair
+        );
+        // Nobody answered: the server is most likely stopped, so start it.
+        assert_eq!(
+            remote_repair(&Err(AttachError::Unreachable("no route".to_owned()))),
+            Repair::Start
+        );
 
-        assert!(!remote_bootstrap_recommended(&Err(AttachError::Refused(
-            "no such session".to_owned()
-        ))));
-        assert!(!remote_bootstrap_recommended(&Err(
-            AttachError::Disconnected
-        )));
-        assert!(!remote_bootstrap_recommended(&Ok(AttachEnd::Detached {
-            reason: None,
-        })));
+        assert_eq!(
+            remote_repair(&Err(AttachError::Refused("no such session".to_owned()))),
+            Repair::None
+        );
+        assert_eq!(remote_repair(&Err(AttachError::Disconnected)), Repair::None);
+        assert_eq!(
+            remote_repair(&Ok(AttachEnd::Detached { reason: None })),
+            Repair::None
+        );
     }
 
     /// `--quic` targets split on the last `:`, so IPv4 literals, bracketed

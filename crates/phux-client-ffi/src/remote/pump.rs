@@ -77,7 +77,10 @@ pub(super) fn run(
             return;
         };
         let outcome = tokio::select! {
-            () = cancel.notified() => Ok(()),
+            () = cancel.notified() => {
+                tracing::info!(host = %resolved.name, "remote tunnel cancelled by the embedder");
+                Ok(())
+            }
             outcome = serve(shared, resolved, &mut socket) => outcome,
         };
         match outcome {
@@ -142,8 +145,10 @@ async fn serve_quic(
     socket: &mut tokio::net::UnixStream,
 ) -> Result<(), String> {
     let name = resolved.name.as_str();
+    let started = std::time::Instant::now();
     let established = tokio::time::timeout(DIAL_TIMEOUT, async {
         let dial = plan_quic(resolved, authority).await?;
+        tracing::info!(host = name, transport = "quic", addr = %dial.addr, "remote tunnel dialing");
         let connected = phux_dial::quic::dial(&dial)
             .await
             .map_err(|err| dial_message(name, &err));
@@ -155,11 +160,17 @@ async fn serve_quic(
     .await
     .map_err(|_| timed_out(name))??;
     let (endpoint, connection, mut to_host, mut from_host) = established;
+    tracing::info!(
+        host = name,
+        transport = "quic",
+        elapsed_ms = started.elapsed().as_millis(),
+        "remote tunnel connected; relaying frames"
+    );
     shared.connected();
     let (mut from_embedder, mut to_embedder) = socket.split();
     let result = tokio::select! {
         outbound = tokio::io::copy(&mut from_embedder, &mut to_host) => outbound
-            .map(|_| ())
+            .map(|sent| tracing::info!(host = name, bytes_sent = sent, "embedder closed its end"))
             .map_err(|err| format!("{name}: sending failed: {err}")),
         inbound = tokio::io::copy(&mut from_host, &mut to_embedder) => Err(match inbound {
             Ok(_) => format!("{name} closed the connection"),
@@ -239,8 +250,10 @@ async fn serve_ws(
     socket: &mut tokio::net::UnixStream,
 ) -> Result<(), String> {
     let name = resolved.name.as_str();
+    let started = std::time::Instant::now();
     let ws = tokio::time::timeout(DIAL_TIMEOUT, async {
         let dial = plan_ws(resolved, url, load_token(resolved)?)?;
+        tracing::info!(host = name, transport = "ws", url, "remote tunnel dialing");
         let connected = phux_dial::ws::dial(&dial)
             .await
             .map_err(|err| dial_message(name, &err));
@@ -250,6 +263,12 @@ async fn serve_ws(
     })
     .await
     .map_err(|_| timed_out(name))??;
+    tracing::info!(
+        host = name,
+        transport = "ws",
+        elapsed_ms = started.elapsed().as_millis(),
+        "remote tunnel connected; relaying frames"
+    );
     shared.connected();
     relay_ws(name, ws, socket).await
 }
@@ -280,7 +299,10 @@ async fn embedder_to_host(
         // `pending`, and a ping request is a unit with no payload to lose.
         tokio::select! {
             read = from_embedder.read_buf(&mut pending) => match read {
-                Ok(0) => return Ok(()),
+                Ok(0) => {
+                    tracing::info!(host = name, "embedder closed its end");
+                    return Ok(());
+                }
                 Ok(_) => forward_frames(name, &mut pending, &mut writer).await?,
                 Err(err) => return Err(format!("{name}: reading the embedder's frames failed: {err}")),
             },

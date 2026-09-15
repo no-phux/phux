@@ -185,6 +185,7 @@ fn agent_created_after_attach_is_discovered_subscribed_streamed_and_removed() {
                     terminal_id: ResourceId::local(MIXED_AGENT),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+                    signal: None,
                 }
             ),
             PhuxClientResult::Ok,
@@ -225,6 +226,7 @@ fn explicit_agent_close_cannot_be_undone_by_an_outstanding_subscription_refusal(
                 terminal_id: ResourceId::local(MIXED_AGENT),
                 exit_status: None,
                 reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+                signal: None,
             }
         ),
         PhuxClientResult::Ok
@@ -717,6 +719,7 @@ fn assert_closed_agent_precedes_stale_inventory(withdraw_first: bool) {
                     terminal_id: ResourceId::local(MIXED_AGENT),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+                    signal: None,
                 }
             ),
             PhuxClientResult::Ok

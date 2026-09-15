@@ -6,6 +6,7 @@
 //! verification while still exercising the encrypted transport.
 
 use std::fmt::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use rustls::pki_types::pem::PemObject;
@@ -28,6 +29,22 @@ pub enum CertTrust {
     Pinned(String),
 }
 
+/// Explicit TLS client identity for embedders that must not read process
+/// environment configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TlsClientIdentity {
+    /// Send no client certificate. Pairing-token authentication remains
+    /// available at the WebSocket or QUIC layer.
+    None,
+    /// Load one PEM certificate chain and private key from explicit paths.
+    PemFiles {
+        /// PEM certificate chain, leaf first.
+        certificate: PathBuf,
+        /// PEM private key corresponding to the leaf certificate.
+        private_key: PathBuf,
+    },
+}
+
 /// Build a rustls client config with the phux remote trust policy.
 ///
 /// `alpn` is transport-specific: QUIC needs `phux-quic/1`; WebSocket leaves it
@@ -39,6 +56,26 @@ pub enum CertTrust {
 /// re-implements the trust policy is a test that can quietly disagree with it.
 pub fn client_config(
     trust: &CertTrust,
+    alpn: Option<&[u8]>,
+) -> Result<rustls::ClientConfig, DialError> {
+    let identity = client_identity_from_env()?;
+    client_config_with_identity(trust, &identity, alpn)
+}
+
+/// Build a rustls client config from explicit trust and identity inputs.
+///
+/// Unlike [`client_config`], this function never reads
+/// `PHUX_WORKLOAD_CERT` or `PHUX_WORKLOAD_KEY`. Native embedders should use
+/// this path so another library or launch environment cannot silently change
+/// whether the dial presents a workload identity.
+///
+/// # Errors
+///
+/// Returns [`DialError::Connect`] when TLS setup fails or an explicit PEM
+/// identity cannot be read or parsed.
+pub fn client_config_with_identity(
+    trust: &CertTrust,
+    identity: &TlsClientIdentity,
     alpn: Option<&[u8]>,
 ) -> Result<rustls::ClientConfig, DialError> {
     let provider = Arc::new(rustls::crypto::ring::default_provider());
@@ -55,12 +92,16 @@ pub fn client_config(
         .map_err(|err| DialError::Connect(format!("build TLS client config: {err}")))?
         .dangerous()
         .with_custom_certificate_verifier(verifier);
-    let mut crypto = if let Some((cert_path, key_path)) = client_identity_paths()? {
-        let certs = rustls::pki_types::CertificateDer::pem_file_iter(&cert_path)
+    let mut crypto = if let TlsClientIdentity::PemFiles {
+        certificate,
+        private_key,
+    } = identity
+    {
+        let certs = rustls::pki_types::CertificateDer::pem_file_iter(certificate)
             .map_err(|err| DialError::Connect(format!("read workload certificate: {err}")))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|err| DialError::Connect(format!("read workload certificate: {err}")))?;
-        let key = rustls::pki_types::PrivateKeyDer::from_pem_file(&key_path)
+        let key = rustls::pki_types::PrivateKeyDer::from_pem_file(private_key)
             .map_err(|err| DialError::Connect(format!("read workload key: {err}")))?;
         builder
             .with_client_auth_cert(certs, key)
@@ -77,12 +118,15 @@ pub fn client_config(
 /// Optional client identity for paired mTLS endpoints. Both paths are
 /// required; a half-configured identity fails closed at the server rather
 /// than silently downgrading to an unauthenticated client.
-fn client_identity_paths() -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, DialError> {
-    let cert = std::env::var_os("PHUX_WORKLOAD_CERT").map(std::path::PathBuf::from);
-    let key = std::env::var_os("PHUX_WORKLOAD_KEY").map(std::path::PathBuf::from);
+fn client_identity_from_env() -> Result<TlsClientIdentity, DialError> {
+    let cert = std::env::var_os("PHUX_WORKLOAD_CERT").map(PathBuf::from);
+    let key = std::env::var_os("PHUX_WORKLOAD_KEY").map(PathBuf::from);
     match (cert, key) {
-        (None, None) => Ok(None),
-        (Some(cert), Some(key)) => Ok(Some((cert, key))),
+        (None, None) => Ok(TlsClientIdentity::None),
+        (Some(certificate), Some(private_key)) => Ok(TlsClientIdentity::PemFiles {
+            certificate,
+            private_key,
+        }),
         _ => Err(DialError::Connect(
             "PHUX_WORKLOAD_CERT and PHUX_WORKLOAD_KEY must be set together".to_owned(),
         )),
@@ -234,5 +278,49 @@ mod tests {
             bare,
             "whitespace is dropped too"
         );
+    }
+
+    #[test]
+    fn explicit_no_identity_builds_pinned_config_without_environment() {
+        let config = client_config_with_identity(
+            &CertTrust::Pinned("ab:cd".to_owned()),
+            &TlsClientIdentity::None,
+            None,
+        )
+        .expect("explicit anonymous config");
+        assert!(config.alpn_protocols.is_empty());
+    }
+
+    #[test]
+    fn explicit_identity_paths_fail_as_explicit_inputs() {
+        let error = client_config_with_identity(
+            &CertTrust::SkipVerify,
+            &TlsClientIdentity::PemFiles {
+                certificate: PathBuf::from("/definitely/missing/phux-cert.pem"),
+                private_key: PathBuf::from("/definitely/missing/phux-key.pem"),
+            },
+            None,
+        )
+        .expect_err("missing explicit identity");
+        assert!(error.to_string().contains("read workload certificate"));
+    }
+
+    #[test]
+    fn explicit_pem_identity_builds_without_environment_lookup() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let certificate = dir.path().join("client-cert.pem");
+        let private_key = dir.path().join("client-key.pem");
+        crate::cert::ensure_self_signed(&certificate, &private_key).expect("identity pair");
+
+        let config = client_config_with_identity(
+            &CertTrust::SkipVerify,
+            &TlsClientIdentity::PemFiles {
+                certificate,
+                private_key,
+            },
+            Some(b"phux-test/1"),
+        )
+        .expect("explicit PEM identity");
+        assert_eq!(config.alpn_protocols, vec![b"phux-test/1".to_vec()]);
     }
 }

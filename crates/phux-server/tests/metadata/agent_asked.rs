@@ -207,7 +207,14 @@ fn subscribed_client_receives_asked_event_from_ask_title() {
         };
 
         // ---- SUBSCRIBE_EVENTS (server-wide) ----
-        send_frame(&mut stream, &FrameKind::SubscribeEvents { terminal: None }).await;
+        send_frame(
+            &mut stream,
+            &FrameKind::SubscribeEvents {
+                terminal: None,
+                after_seq: None,
+            },
+        )
+        .await;
 
         // Wait until the server has *processed* the subscribe before letting
         // the seed emit the title.
@@ -307,7 +314,14 @@ fn report_asked_command_emits_asked_event() {
             panic!("expected ATTACHED");
         };
 
-        send_frame(&mut stream, &FrameKind::SubscribeEvents { terminal: None }).await;
+        send_frame(
+            &mut stream,
+            &FrameKind::SubscribeEvents {
+                terminal: None,
+                after_seq: None,
+            },
+        )
+        .await;
         send_frame(
             &mut stream,
             &FrameKind::Command {
@@ -412,7 +426,14 @@ fn a_hook_repeating_the_sentinels_question_does_not_re_emit_it() {
             panic!("expected ATTACHED to carry a snapshot");
         };
 
-        send_frame(&mut stream, &FrameKind::SubscribeEvents { terminal: None }).await;
+        send_frame(
+            &mut stream,
+            &FrameKind::SubscribeEvents {
+                terminal: None,
+                after_seq: None,
+            },
+        )
+        .await;
         // Same subscribe barrier as the sentinel test above: a command that
         // replies proves the subscribe ahead of it is installed.
         send_frame(

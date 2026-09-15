@@ -36,7 +36,9 @@ use super::{
     handle_spawn_terminal, handle_terminal_input, handle_terminal_reply, handle_terminal_resize,
     handle_viewport_resize, subscribe_attach_terminal,
 };
-use crate::state::{ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, SharedState, TerminalInput};
+use crate::state::{
+    ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, ServerInterceptedKey, SharedState, TerminalInput,
+};
 use crate::terminal_actor::ConsumerDetachRequest;
 use crate::transport::quic::{
     QuicStreamEvent, QuicStreamFailure, QuicWriter, pump_terminal_stream, refuse_terminal_stream,
@@ -1350,6 +1352,7 @@ pub(crate) async fn broadcast_terminal_closed(
                     terminal_id: wire_terminal_id.clone(),
                     exit_status,
                     reason,
+                    signal: None,
                 }))
                 .await;
         }
@@ -2278,6 +2281,20 @@ impl ClientPlumbing {
     async fn close(mut self, close: ConnectionClose, state: &SharedState, client_id: ClientId) {
         self.drop_all_stream_bindings().await;
         while self.retired_streams.join_next().await.is_some() {}
+        self.close_protocol_violation(state, client_id, close).await;
+    }
+
+    /// Abort pumps, release consumer state, then [`close_for_protocol_error`].
+    ///
+    /// Handshake-phase closes (`attached_reason` is `None`) skip abort/release:
+    /// nothing is attached yet. The accept-loop `release_connection_state` still
+    /// runs after return.
+    async fn close_protocol_violation(
+        mut self,
+        state: &SharedState,
+        client_id: ClientId,
+        close: ConnectionClose,
+    ) {
         if let Some(reason) = close.attached_reason {
             abort_output_pumps(&mut self.output_pumps, client_id, reason).await;
             detach_and_release_consumer_state(state, client_id);
@@ -3254,7 +3271,7 @@ where
             FrameKind::SubscribeMetadata { scope, key } => {
                 handle_subscribe_metadata(&state, client_id, scope, key, &plumbing.out_tx);
             }
-            FrameKind::SubscribeEvents { terminal } => {
+            FrameKind::SubscribeEvents { terminal, .. } => {
                 handle_subscribe_events(&state, client_id, terminal, &plumbing.out_tx);
             }
             FrameKind::SpawnResource {
@@ -3885,7 +3902,6 @@ fn apply_session_keep_empty(
     client_id: ClientId,
     request_id: u32,
     scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
     value: &[u8],
     root_token: &tokio_util::sync::CancellationToken,
 ) {
@@ -3906,7 +3922,7 @@ fn apply_session_keep_empty(
             outcome,
             KeepEmptyOutcome::Changed | KeepEmptyOutcome::Removed
         ) {
-            let _ = s.metadata_broadcast(scope, key, value);
+            let _ = s.metadata_broadcast(scope, ServerInterceptedKey::SessionKeepEmpty, value);
         }
         let removed = outcome == KeepEmptyOutcome::Removed;
         let clients = match session {
@@ -4185,7 +4201,6 @@ fn apply_session_rename(
     client_id: ClientId,
     request_id: u32,
     scope: &phux_protocol::wire::frame::Scope,
-    key: &str,
     value: &[u8],
 ) {
     let parsed = std::str::from_utf8(value).ok().and_then(|s| {
@@ -4212,7 +4227,7 @@ fn apply_session_rename(
         // stored (see `metadata_broadcast`).
         let delivered =
             if matches!(outcome, crate::state::RenameOutcome::Renamed) && current != new_name {
-                s.metadata_broadcast(scope, key, value)
+                s.metadata_broadcast(scope, ServerInterceptedKey::SessionName, value)
             } else {
                 Vec::new()
             };
@@ -4300,13 +4315,13 @@ pub(crate) fn handle_set_metadata(
     // `SET_METADATA` write of the conventional `SESSION_NAME_KEY` under
     // `Scope::Global`, replacing the removed `RENAME_SESSION` verb.
     if key == phux_protocol::wire::frame::SESSION_NAME_KEY && matches!(scope, Scope::Global) {
-        apply_session_rename(state, client_id, request_id, scope, key, &value);
+        apply_session_rename(state, client_id, request_id, scope, &value);
         return;
     }
     // ADR-0105: the keep-empty mark is server-owned session state, applied
     // like a rename and never stored as an opaque blob.
     if key == phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY && matches!(scope, Scope::Global) {
-        apply_session_keep_empty(state, client_id, request_id, scope, key, &value, root_token);
+        apply_session_keep_empty(state, client_id, request_id, scope, &value, root_token);
         return;
     }
     store_metadata_value(state, client_id, request_id, scope, key, value);
@@ -4591,6 +4606,7 @@ pub(crate) fn handle_subscribe_events(
                 },
                 FrameKind::SubscribeEvents {
                     terminal: Some(phux_protocol::ids::ResourceId::local(id)),
+                    after_seq: None,
                 },
             );
         } else {
@@ -4697,6 +4713,7 @@ fn fan_out_event(
         let _ = tx.try_send(Outbound::Frame(FrameKind::Event {
             terminal: terminal.cloned(),
             event: event.clone(),
+            stamp: None,
         }));
     }
 }

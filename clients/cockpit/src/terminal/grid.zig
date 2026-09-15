@@ -11,6 +11,7 @@ pub const Session = session.Session;
 pub const CellBox = session.CellBox;
 
 pub const PaintOptions = render.PaintOptions;
+pub const RowFit = render.RowFit;
 pub const paneIdBase = render.paneIdBase;
 pub const cursorCommandId = render.cursorCommandId;
 pub const idNamespace = render.idNamespace;
@@ -19,3 +20,9 @@ pub const id_namespace_stride = render.id_namespace_stride;
 pub const cursor_command_id = render.cursor_command_id;
 pub const paint = render.paint;
 pub const paintTerminalGrid = render.paintTerminalGrid;
+pub const cropLastN = render.cropLastN;
+pub const cropToFit = render.cropToFit;
+
+test {
+    _ = render;
+}

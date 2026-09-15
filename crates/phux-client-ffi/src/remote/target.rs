@@ -169,6 +169,16 @@ pub(crate) enum Transport {
     Ws(String),
 }
 
+impl Transport {
+    /// The transport's name as a log field.
+    pub(crate) const fn label(&self) -> &'static str {
+        match self {
+            Self::Quic(_) => "quic",
+            Self::Ws(_) => "ws",
+        }
+    }
+}
+
 /// Classify an endpoint, applying an explicit `:PORT` from the target as a
 /// per-dial override (the registry is never rewritten). Returns the effective
 /// endpoint URI beside its transport.
@@ -296,6 +306,8 @@ mod tests {
             token_file: None,
             cert_fingerprint: None,
             session: None,
+            ssh: None,
+            direct: None,
         }
     }
 

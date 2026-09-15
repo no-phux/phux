@@ -15,10 +15,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use bytes::BytesMut;
+use phux_client_core::handshake::validate_hello_ok;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    BootstrapLimits, BootstrapProfile, BootstrapProfileKind, ClientCapabilities, Layer, LayerSet,
-    ServerFeature, ServerFeatureSet,
+    BootstrapLimits, BootstrapProfile, ClientCapabilities, Layer, LayerSet, ServerFeature,
+    ServerFeatureSet,
 };
 use phux_protocol::ids::{ResourceId, StreamId};
 use phux_protocol::wire::frame::{
@@ -826,7 +827,8 @@ impl Connection {
                     protocol_patch,
                     selected_profile,
                     bootstrap_limits,
-                )?;
+                )
+                .map_err(|err| AttachError::Protocol(err.to_string()))?;
                 self.reader.set_bootstrap_limits(bootstrap_limits);
                 self.negotiated_bootstrap = Some(NegotiatedBootstrap {
                     profile: selected_profile,
@@ -1477,63 +1479,6 @@ impl Connection {
             interleaved.push(frame);
         }
     }
-}
-
-fn validate_hello_ok(
-    offered: &ClientCapabilities,
-    protocol_major: u16,
-    protocol_minor: u16,
-    protocol_patch: u16,
-    selected_profile: BootstrapProfile,
-    selected_limits: BootstrapLimits,
-) -> Result<(), AttachError> {
-    if (protocol_major, protocol_minor, protocol_patch)
-        != (
-            PROTOCOL_VERSION.major,
-            PROTOCOL_VERSION.minor,
-            PROTOCOL_VERSION.patch,
-        )
-    {
-        return Err(AttachError::Protocol(format!(
-            "HELLO_OK selected unsupported protocol {protocol_major}.{protocol_minor}.{protocol_patch}; client offered {}.{}.{}",
-            PROTOCOL_VERSION.major, PROTOCOL_VERSION.minor, PROTOCOL_VERSION.patch,
-        )));
-    }
-
-    let profile_is_offered = match selected_profile {
-        BootstrapProfile::NativeState { codec, features } => {
-            offered
-                .bootstrap
-                .profiles
-                .contains(BootstrapProfileKind::NativeState)
-                && offered.bootstrap.native_codecs.contains(codec)
-                && features.supports_native()
-                && offered.bootstrap.native_features.intersect(features) == features
-        }
-        BootstrapProfile::SynthesizedVtRaw => offered
-            .bootstrap
-            .profiles
-            .contains(BootstrapProfileKind::SynthesizedVtRaw),
-        BootstrapProfile::SynthesizedVtStateSync => offered
-            .bootstrap
-            .profiles
-            .contains(BootstrapProfileKind::SynthesizedVtStateSync),
-        _ => false,
-    };
-    if !profile_is_offered {
-        return Err(AttachError::Protocol(format!(
-            "HELLO_OK selected bootstrap profile outside the client's offer: {selected_profile:?}",
-        )));
-    }
-
-    if offered.bootstrap.limits.intersect(selected_limits) != selected_limits {
-        return Err(AttachError::Protocol(format!(
-            "HELLO_OK selected bootstrap limits outside the client's offer: chunk={} history_page={}",
-            selected_limits.max_chunk_bytes(),
-            selected_limits.max_history_page_bytes(),
-        )));
-    }
-    Ok(())
 }
 
 /// The peer's correlated `ERROR` answer to one request (`proto.md` §9).
@@ -2686,49 +2631,5 @@ mod tests {
                 drop(server);
             });
         }
-    }
-
-    #[test]
-    fn hello_ok_profile_must_have_been_offered() {
-        let offered = ClientCapabilities::new().with_bootstrap(
-            phux_protocol::BootstrapCapabilities::new()
-                .with_profiles(phux_protocol::BootstrapProfileSet::with(&[
-                    BootstrapProfileKind::SynthesizedVtRaw,
-                ]))
-                .with_native_codecs(phux_protocol::EngineCodecSet::new())
-                .with_native_features(phux_protocol::EngineFeatureSet::new()),
-        );
-        let malicious = BootstrapProfile::NativeState {
-            codec: phux_protocol::EngineCodec::LibghosttyCheckpointV2,
-            features: phux_protocol::EngineFeatureSet::required_native(),
-        };
-        assert!(matches!(
-            validate_hello_ok(
-                &offered,
-                PROTOCOL_VERSION.major,
-                PROTOCOL_VERSION.minor,
-                PROTOCOL_VERSION.patch,
-                malicious,
-                BootstrapLimits::default(),
-            ),
-            Err(AttachError::Protocol(message)) if message.contains("outside the client's offer")
-        ));
-    }
-
-    #[test]
-    fn hello_ok_limits_must_not_exceed_the_offer() {
-        let offered = ClientCapabilities::new();
-        let excessive = BootstrapLimits::new(512 * 1024, 2 * 1024 * 1024).unwrap();
-        assert!(matches!(
-            validate_hello_ok(
-                &offered,
-                PROTOCOL_VERSION.major,
-                PROTOCOL_VERSION.minor,
-                PROTOCOL_VERSION.patch,
-                BootstrapProfile::SynthesizedVtRaw,
-                excessive,
-            ),
-            Err(AttachError::Protocol(message)) if message.contains("limits outside")
-        ));
     }
 }

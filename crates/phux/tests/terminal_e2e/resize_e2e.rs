@@ -82,6 +82,8 @@ impl ServerGuard {
             .args(["server", "--session", SESSION, "--socket"])
             .arg(&socket)
             .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
+            // Panes run the server's `$SHELL`; never inherit the runner's.
+            .env("SHELL", "/bin/sh")
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())

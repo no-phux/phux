@@ -3,7 +3,7 @@
     .name = "phux-cockpit",
     .display_name = "Phux Cockpit",
     .description = "A native spatial runtime for Phux-backed terminals and directed machine work.",
-    .version = "0.23.3", // x-release-please-version
+    .version = "0.24.0", // x-release-please-version
     .theme = "geist",
     .theme_accent = "#bef264",
     .icons = .{"assets/icon.svg"},
@@ -34,6 +34,7 @@
         .{ .title = "View", .items = .{
             .{ .label = "Commands…", .command = "commands.open", .key = "p", .modifiers = .{ "primary", "shift" } },
             .{ .label = "Settings…", .command = "settings.open", .key = ",", .modifiers = .{"primary"} },
+            .{ .label = "Check for Updates…", .command = "app.update" },
             .{ .label = "Edit Configuration…", .command = "config.edit" },
             .{ .separator = true },
             .{ .label = "Enter Full Screen", .command = "window.fullscreen", .key = "f", .modifiers = .{ "primary", "control" } },

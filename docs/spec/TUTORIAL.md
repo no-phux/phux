@@ -273,15 +273,14 @@ bytes; the server never sees encoder options. Each side owns one half.
 
 ## Step 6: Terminal-originated signals
 
-<!-- impl-status: spec-only; probe: TYPE_TERMINAL_EVENT -->
-> **Status: spec-only —** `TERMINAL_EVENT` (`0xB1`). The live byte stream
-> already carries the same OSC sequences inside `RESOURCE_OUTPUT`, so a
-> consumer reads title and cwd from its own engine. `BELL` (`0xB0`) below
-> is shipped.
+`TERMINAL_EVENT` (`0xB1`) was never built and is withdrawn. The live byte
+stream carries the OSC sequences inside `RESOURCE_OUTPUT`, and the server's
+reading of them rides the `EVENT` stream. `BELL` (`0xB0`) below is shipped.
 
 **What happens:** a BEL in the PTY is forwarded as a structured frame. OSC
-title and cwd sequences travel in `RESOURCE_OUTPUT` today; a later
-`TERMINAL_EVENT` frame would surface them as fields.
+title and cwd sequences travel in `RESOURCE_OUTPUT`; the server's own reading
+of them reaches a subscriber as `EVENT` tags such as `title_changed` and
+`cwd_changed`.
 
 ```
 Process rings the bell (BEL):
@@ -293,11 +292,12 @@ Server sends (frame type 0xB0):
 ```
 
 **Wire shape:** [L1.md §3.2](./L1.md) defines `BELL`. [L1.md §3.3](./L1.md)
-defines the spec-only `TERMINAL_EVENT` union.
+records the retired `TERMINAL_EVENT`, and [L1.md §7](./L1.md) the event
+stream that carries those facts instead.
 
 **Why it matters:** `BELL` is a side-channel the byte stream does not
-preserve as a frame of its own. Structured OSC events, when they land,
-decouple a consumer from parsing those sequences itself.
+preserve as a frame of its own. The event stream decouples a consumer that
+does not run an engine from parsing those sequences itself.
 
 ---
 
