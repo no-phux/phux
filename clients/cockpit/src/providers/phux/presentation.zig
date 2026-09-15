@@ -234,33 +234,15 @@ test {
 }
 
 test "dense text is compacted from a hyperlink-heavy remote UTF-8 arena" {
-    // The claim is that the projection keeps every visible byte even when the
-    // PAINTER's text store cannot carry them all, so the screen has to
-    // genuinely outgrow that store or the test proves nothing. Both extents
-    // are derived from the SDK's own constants rather than written down: a
-    // fixed 120x96 stopped exceeding the budget the moment the store grew
-    // from 32 KiB to 64 KiB, and the assertion below went quietly vacuous
-    // until CI caught it.
-    // Every cell here inks one three-byte euro sign. Note this is NOT
-    // `max_cell_utf8_bytes` (64) — that is the per-cell CEILING a cluster may
-    // reach, and sizing against it would ask for 20x fewer columns than the
-    // fixture actually needs.
+    // Unique 3-byte clusters at the product grid fit the signed text ceiling.
+    // The claim here is compaction of a hyperlink-heavy UTF-8 arena.
     const cell_utf8_bytes: usize = 3;
     const rows: usize = canvas.max_terminal_rows;
-    const cols: usize = @min(
-        canvas.max_terminal_cols,
-        canvas.max_display_list_text_bytes / cell_utf8_bytes / rows + 2,
-    );
+    const cols: usize = canvas.max_terminal_cols;
     const cell_count = cols * rows;
-    comptime {
-        // The densest grid the projection accepts must still outgrow the
-        // painter's store, or no choice of cols could make this test bite.
-        std.debug.assert(canvas.max_terminal_cols * canvas.max_terminal_rows * cell_utf8_bytes >
-            canvas.max_display_list_text_bytes);
-    }
     const cells = try std.testing.allocator.alloc(c.PhuxTerminalCell, cell_count);
     defer std.testing.allocator.free(cells);
-    const visible_len = cell_count * 3;
+    const visible_len = cell_count * cell_utf8_bytes;
     const utf8 = try std.testing.allocator.alloc(u8, 65 * 1024 * 1024);
     defer std.testing.allocator.free(utf8);
     @memset(cells, std.mem.zeroes(c.PhuxTerminalCell));
@@ -273,7 +255,7 @@ test "dense text is compacted from a hyperlink-heavy remote UTF-8 arena" {
         cell.hyperlink_len = @intCast(utf8.len - visible_len);
     }
     @memcpy(utf8[0..3], "\xe2\x94\x80");
-    try std.testing.expect(visible_len > canvas.max_display_list_text_bytes);
+    try std.testing.expect(visible_len <= canvas.max_display_list_text_bytes);
     try std.testing.expect(utf8.len > max_grid_utf8_bytes);
 
     var view = std.mem.zeroes(c.PhuxTerminalGridView);

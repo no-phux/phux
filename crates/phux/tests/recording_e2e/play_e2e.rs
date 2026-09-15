@@ -88,9 +88,8 @@ const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Ceiling on any "the pane reached this state" poll.
 ///
-/// A HANG detector, not a timing gate: the fixture's own timeline is 3.1
-/// seconds, so this is an order of magnitude above the real number and can
-/// only elapse if the state is never coming.
+/// A HANG detector, not a timing gate: this is far above every fixture's
+/// timeline and can only elapse if the state is never coming.
 const STATE_DEADLINE: Duration = Duration::from_secs(45);
 
 /// Poll cadence for every wait loop in this file.
@@ -253,6 +252,15 @@ impl ServerGuard {
             .unwrap_or_default()
     }
 
+    fn title(&self, pane: &str) -> Option<String> {
+        let (code, stdout, _) = self.run(&["snapshot", "--json", pane]);
+        if code != 0 {
+            return None;
+        }
+        let doc: serde_json::Value = serde_json::from_str(&stdout).expect("snapshot must be JSON");
+        doc["title"].as_str().map(str::to_owned)
+    }
+
     /// Poll until `predicate` holds, or panic naming what was seen last.
     fn wait_for(&self, pane: &str, what: &str, predicate: impl Fn(&Self, &str) -> bool) {
         let deadline = Instant::now() + STATE_DEADLINE;
@@ -296,10 +304,14 @@ fn playback_paints_the_recorded_screen_into_a_real_pane() {
     // fit moves a grid.
     assert_eq!(server.size(&pane), Some(NO_TTY_DEFAULT));
 
-    // And the pane is still there after the last byte. A pane that erased
-    // itself would make every assertion above a race, and would make the
-    // whole feature unobservable.
-    std::thread::sleep(Duration::from_secs(2));
+    // Wait for the writer's completion signal rather than guessing how long
+    // persistence ought to take. The writer sets this title only after the
+    // final event, immediately before entering its hold.
+    server.wait_for(&pane, "the playback's ended title", |server, pane| {
+        server
+            .title(pane)
+            .is_some_and(|title| title.ends_with(" (ended)"))
+    });
     assert!(
         server.screen(&pane).is_some(),
         "the playback pane must hold its final frame until it is killed"
@@ -490,13 +502,17 @@ fn close_ends_the_pane_when_playback_ends() {
 #[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
 fn loop_replays_the_recording_more_than_once() {
     let server = ServerGuard::start();
-    // Counted, not timed. `phux rec` subscribes to the playback pane as a
-    // pure observer and writes every byte it sees into a cast; the marker
-    // appears once per pass, so the count in the recording of the playback
-    // is a hard statement about how many passes ran. A stopwatch would only
-    // say "it took a while", which a slow box says too.
+    // Counted, not inferred from elapsed playback time. `phux rec` subscribes
+    // to the playback pane as a pure observer and writes every byte it sees
+    // into a cast; the marker appears once per pass, so its count is a hard
+    // statement about how many passes ran.
+    //
+    // An open-ended loop lets the recorder establish its subscription before
+    // the one-second observation window begins. Collapsing the fixture's long
+    // idle gap then fits several complete passes in that window without
+    // weakening the marker-count assertion.
     let pane = server.play(
-        &["--loop", "3", "--speed", "3", "--close"],
+        &["--loop", "--speed", "3", "--idle-limit", "0.2"],
         &fixture_cast(),
         None,
     );
@@ -505,22 +521,20 @@ fn loop_replays_the_recording_more_than_once() {
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ));
-    // `phux rec` stops early when the pane exits, so `--duration` here is
-    // only a ceiling on a playback that never ends.
     server.success(&[
         "rec",
         &pane,
         "-o",
         &out.to_string_lossy(),
         "--duration",
-        "60",
+        "1",
     ]);
     let recorded = std::fs::read_to_string(&out).expect("the recording of the playback");
     let passes = recorded.matches(MARKER_TWO).count();
     assert!(
-        passes >= 2,
-        "--loop 3 must replay the recording; the observer saw the final \
-         marker {passes} time(s) in {} bytes",
+        passes >= 3,
+        "--loop must replay the recording at least three times; the observer \
+         saw the final marker {passes} time(s) in {} bytes",
         recorded.len()
     );
     let _ = std::fs::remove_file(&out);

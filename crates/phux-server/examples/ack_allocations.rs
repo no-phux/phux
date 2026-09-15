@@ -1,6 +1,6 @@
 //! Reproduce the component allocation measurements motivating ACK scratch reuse.
 //!
-//! Run `cargo run --locked -p phux-server --example ack_allocations`.
+//! Run `cargo run --locked -p phux-server --example ack_allocations --features ack-allocations-example`.
 //! Render allocations are routed through Rust's global allocator so DHAT observes
 //! the engine allocations too. This measures allocation traffic, not live heap,
 //! network latency, whole-server CPU, or all allocations during an ACK.

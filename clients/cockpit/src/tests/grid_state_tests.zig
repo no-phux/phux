@@ -90,16 +90,9 @@ test "grid clamping preserves the full bounded viewport" {
     try testing.expectEqual(@as(u16, 2), tiny.y);
 }
 
-test "a full multibyte viewport retains clusters beyond the paint text budget" {
-    // The point of this test is that the SESSION's projection store is not
-    // bounded by the PAINTER's text budget: the bottom of the screen must
-    // still exist in the projection even when the display list cannot carry
-    // every byte of it. That only means something while the screen actually
-    // outgrows the budget, so this uses the widest, tallest grid the session
-    // supports filled with 3-byte clusters — the densest viewport reachable
-    // (320 * 96 * 3 = 92,160 bytes). Sizing it to a fixed 120 columns made
-    // the test silently vacuous the moment the SDK's text store grew from
-    // 32 KiB to 64 KiB.
+test "a full multibyte viewport retains clusters inside the signed text ceiling" {
+    // The 2x text bump exists so a unique 3-byte 320x96 pane (~92160 bytes)
+    // fits the painter. The session still keeps the bottom of the screen.
     const session = try createSession(grid.max_cols, grid.max_rows);
     defer session.destroy();
     const dense_row = ("\xe2\x82\xac" ** (grid.max_cols - 1)) ++ "\r\n";
@@ -107,7 +100,8 @@ test "a full multibyte viewport retains clusters beyond the paint text budget" {
     session.feed("BOTTOM");
 
     const snapshot = try session.snapshot(.{}, true, false);
-    try testing.expect(session.snap_text_len > canvas.max_display_list_text_bytes);
+    try testing.expect(session.snap_text_len <= canvas.max_display_list_text_bytes);
+    try testing.expect(session.snap_text_len > 0);
     var saw_bottom = false;
     for (snapshot.rows) |row| for (row.cells) |cell| {
         if (std.mem.eql(u8, cell.cluster, "B")) saw_bottom = true;

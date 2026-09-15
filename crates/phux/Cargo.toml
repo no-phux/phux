@@ -15,6 +15,9 @@ workspace = true
 [[bin]]
 name = "phux"
 path = "src/main.rs"
+# This binary is only a shim over the library, so it has no unit-test harness.
+# Integration tests still build it and receive `CARGO_BIN_EXE_phux`.
+test = false
 
 # Heap-profiling entry point, gated by the `dhat-heap` feature below.
 # Deliberately a SEPARATE binary from `phux` (see src/lib.rs's "Why this is

@@ -44,15 +44,15 @@ function envOf() {
 }
 
 async function rpc(method: string, params: unknown, id: number | string = 1) {
-  const response = await handleMcpRequest(
+  const response = (await handleMcpRequest(
     new Request("https://phux.sh/mcp", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
     }),
     envOf(),
-  );
-  return { response, body: await response!.json() };
+  ))!;
+  return { response, body: await response.json() };
 }
 
 describe("MCP endpoint routing", () => {

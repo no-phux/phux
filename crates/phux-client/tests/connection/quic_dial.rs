@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use phux_client::attach::connection::Connection;
-use phux_client::attach::{CertTrust, QuicDial};
+use phux_client::attach::{AttachError, CertTrust, QuicDial};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapCapabilities, ServerCapabilities, ServerFeature, ServerFeatureSet,
@@ -367,6 +367,7 @@ async fn incomplete_terminal_body_does_not_block_control_and_expires() {
     let (_dir, cert, key) = cert_pair();
     let (endpoint, addr) = server_endpoint(&cert, &key);
     let terminal_id = ResourceId::local(9);
+    let (deadline_observed_tx, deadline_observed_rx) = tokio::sync::oneshot::channel();
     let server = async move {
         let conn = endpoint.accept().await.unwrap().await.unwrap();
         let (mut control_send, mut control_recv) = conn.accept_bi().await.unwrap();
@@ -384,7 +385,9 @@ async fn incomplete_terminal_body_does_not_block_control_and_expires() {
             .await
             .unwrap();
         write_frame(&mut control_send, &FrameKind::Pong { nonce: 77 }).await;
-        tokio::time::sleep(std::time::Duration::from_secs(11)).await;
+        deadline_observed_rx
+            .await
+            .expect("client observes the incomplete-frame deadline");
     };
     let client = async move {
         let dial = QuicDial {
@@ -393,22 +396,43 @@ async fn incomplete_terminal_body_does_not_block_control_and_expires() {
             token: None,
             trust: CertTrust::SkipVerify,
         };
+        #[cfg(feature = "testkit")]
+        let mut conn = Connection::connect_quic_with_terminal_frame_deadline_for_test(
+            &dial,
+            std::time::Duration::from_millis(250),
+        )
+        .await
+        .expect("dial");
+        #[cfg(not(feature = "testkit"))]
         let mut conn = Connection::connect_quic(&dial).await.expect("dial");
         conn.bind_terminal(&terminal_id).await.expect("bind");
         assert_eq!(
             conn.recv().await.expect("control remains live"),
             FrameKind::Pong { nonce: 77 }
         );
-        let error = tokio::time::timeout(std::time::Duration::from_secs(12), conn.recv())
+        let deadline = if cfg!(feature = "testkit") {
+            std::time::Duration::from_secs(2)
+        } else {
+            std::time::Duration::from_secs(12)
+        };
+        let error = tokio::time::timeout(deadline, conn.recv())
             .await
             .expect("incomplete frame has an absolute deadline")
-            .expect_err("incomplete Terminal frame must fail")
-            .to_string();
+            .expect_err("incomplete Terminal frame must fail");
+        deadline_observed_tx
+            .send(())
+            .expect("server still holds the stream open");
         drop(conn);
         error
     };
     let ((), error) = tokio::join!(server, client);
-    assert!(error.contains("incomplete-frame deadline"), "{error}");
+    assert!(
+        matches!(
+            &error,
+            AttachError::Protocol(message) if message.contains("incomplete-frame deadline")
+        ),
+        "expected a typed incomplete-frame protocol error, got {error}"
+    );
 }
 
 #[tokio::test]
