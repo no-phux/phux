@@ -36,7 +36,7 @@ fn ffi_client_subscribes_to_events_after_attach() {
     unsafe { phux_client_free(client) };
 }
 
-/// A host that arms a journal cursor before ATTACH_READY gets `after_seq` on
+/// A host that arms a journal cursor before `ATTACH_READY` gets `after_seq` on
 /// the automatic subscribe, so a reconnect can resume instead of going live-only.
 #[test]
 fn ffi_client_subscribes_from_after_seq_when_armed_before_attach() {

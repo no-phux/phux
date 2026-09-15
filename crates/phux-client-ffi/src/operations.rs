@@ -81,7 +81,7 @@ impl Default for PhuxSpawnOptions {
 }
 
 /// Size of the geometry-only spawn record (ABI 2 before retain/idempotency).
-fn spawn_options_min_size() -> usize {
+const fn spawn_options_min_size() -> usize {
     let rows_end = mem::offset_of!(PhuxSpawnOptions, rows) + mem::size_of::<u16>();
     rows_end.next_multiple_of(mem::align_of::<PhuxSpawnOptions>())
 }
