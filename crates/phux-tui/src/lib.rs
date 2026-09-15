@@ -28,10 +28,13 @@
 //!
 //! # Features
 //!
-//! `native-engine` (default) enables the client-core replica host that
-//! bootstraps panes from an exact native checkpoint (ADR-0070). `testkit`
-//! turns on `phux_client::testkit`, the scripted server the driver's unit
-//! tests speak to, for downstream crates that want the same harness.
+//! This crate always enables `phux-client-core`'s `native-engine` replica
+//! host so panes bootstrap from an exact native checkpoint (ADR-0070).
+//! `--no-default-features` is supported and still gets that host; wasm
+//! consumers depend on client-core directly and never build this crate.
+//! `testkit` turns on `phux_client::testkit`, the scripted server the
+//! driver's unit tests speak to, for downstream crates that want the
+//! same harness.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

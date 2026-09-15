@@ -541,6 +541,7 @@ build-features-check:
 build-features-compile:
     cargo check --locked -p phux-client -p phux-mcp --all-targets --no-default-features --features phux-client/testkit
     cargo check --locked -p phux --no-default-features --bin phux
+    cargo check --locked -p phux-tui --all-targets --no-default-features
 
 # Build rustdoc with warnings denied — mirrors the CI `doc` gate.
 [group('gates')]

@@ -83,9 +83,9 @@ enable the complete server transport surface. The TUI is its own crate
 (`phux-tui`, ADR-0100), so a headless consumer such as `phux-mcp` links
 `phux-client` and cannot reach the chrome. `just build-features-check`
 checks these resolved dependency boundaries without compiling.
-`just build-features-compile` separately type-checks the lean executable and
-headless client/MCP targets so workspace feature unification cannot hide errors.
-Both checks run in `just ci` and CI.
+`just build-features-compile` separately type-checks the lean executable,
+headless client/MCP targets, and `phux-tui --no-default-features` so workspace
+feature unification cannot hide errors. Both checks run in `just ci` and CI.
 
 Use `cargo check -p <crate>` for a targeted type check. For repeated workspace
 test runs, keep the Cargo build selection as `--workspace` and select tests with

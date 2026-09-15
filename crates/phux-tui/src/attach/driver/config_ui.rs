@@ -5,8 +5,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::ids::{ClientId, ResourceId};
 
 use crate::attach::paint::{SidebarReservation, StatusBarPaint, paint_full_frame};

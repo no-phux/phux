@@ -4,8 +4,6 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::ids::ResourceId;
 
 use crate::attach::paint::{SidebarReservation, StatusBarPaint, content_rect, paint_full_frame};

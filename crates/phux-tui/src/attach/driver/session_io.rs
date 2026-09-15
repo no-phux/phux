@@ -4,8 +4,6 @@
 
 use std::io::{self};
 
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::{
     BootstrapLimits, ClientCapabilities, Layer, LayerSet, ServerFeature, detect_color_support,
 };
@@ -182,12 +180,9 @@ pub(super) fn attach_client_caps(
     //
     // phux-4li.5: declare L3 (`Layer::L3`) so the server forwards
     // `MetadataChanged` events for the `phux.tui.layout/v1` key.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let bootstrap = phux_client_core::engine::ghostty::native_bootstrap_capabilities(
         BootstrapLimits::default(),
     );
-    #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-    let bootstrap = BootstrapCapabilities::new().with_limits(BootstrapLimits::default());
     let mut client_caps = ClientCapabilities::new()
         .with_bootstrap(bootstrap)
         .with_color_support(detect_color_support())
