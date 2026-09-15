@@ -2412,6 +2412,25 @@ fn command_kill_terminals_round_trips() {
 }
 
 #[test]
+fn command_close_tab_resources_round_trips() {
+    // CLOSE_TAB_RESOURCES (tag 0x1d): same body as KILL_RESOURCES.
+    for ids in [
+        Vec::new(),
+        vec![ResourceId::local(7)],
+        vec![
+            ResourceId::local(1),
+            ResourceId::local(2),
+            ResourceId::satellite("peer-a", 9),
+        ],
+    ] {
+        assert_round_trip(&FrameKind::Command {
+            request_id: 32,
+            command: Command::CloseTabResources { ids },
+        });
+    }
+}
+
+#[test]
 fn command_detach_clients_round_trips() {
     // DETACH_CLIENTS (tag 0x13): a presence byte + optional session name.
     // Exercise both the `None` (detach all) and `Some(name)` targeting so the

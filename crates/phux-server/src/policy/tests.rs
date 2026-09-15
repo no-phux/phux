@@ -356,6 +356,9 @@ fn samples(world: &World) -> Vec<FrameKind> {
         command(Command::KillResources {
             ids: vec![t.clone()],
         }),
+        command(Command::CloseTabResources {
+            ids: vec![t.clone()],
+        }),
         command(Command::GetState {
             scope: StateScope::Server,
         }),

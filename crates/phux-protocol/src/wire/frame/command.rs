@@ -673,6 +673,19 @@ pub enum Command {
         /// `0` asks for the server default.
         linger_secs: u32,
     },
+    /// Atomically terminate every Terminal in `ids` under the server's
+    /// single state lock, like [`Self::KillResources`], without releasing
+    /// keep-empty on a fully covered session (`docs/spec/L1.md` §5.2.2).
+    /// Explicit Close Tab uses this so a keep-empty named session stays
+    /// listed and empty; `phux kill SESSION` / End Session keep
+    /// [`Self::KillResources`]. Gated on
+    /// [`ServerFeature::CloseTabResources`](crate::caps::ServerFeature::CloseTabResources).
+    CloseTabResources {
+        /// The Terminals to terminate. Unknown / already-dead ids are
+        /// skipped silently; the op succeeds as long as it is structurally
+        /// valid.
+        ids: Vec<ResourceId>,
+    },
 }
 
 /// [`Command::GetScreen::format`]'s low 7 bits: which rendering to

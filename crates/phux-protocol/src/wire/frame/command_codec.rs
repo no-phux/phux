@@ -17,27 +17,27 @@ use super::codec::encode_optional_u32;
 use super::{
     AgentEvent, COMMAND_RESULT_TAG_ERROR, COMMAND_RESULT_TAG_OK, COMMAND_RESULT_TAG_OK_WITH,
     COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT, COMMAND_TAG_APPLY_INPUT,
-    COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE,
-    COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE,
-    COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF,
-    COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PUT_FILE,
-    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
-    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
-    COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE,
-    COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID,
-    COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command,
-    CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL,
-    EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY,
-    EVENT_TAG_IDLE, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED,
-    EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode,
-    FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE,
-    INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition, ListenerTransport,
-    MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
-    MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType, ResourceLifecycle,
-    STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event, decode_key_event,
-    decode_mouse_event, decode_optional_u32, decode_paste_event, decode_terminal_id,
-    encode_focus_event, encode_key_event, encode_mouse_event, encode_paste_event,
-    encode_terminal_id,
+    COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_CLOSE_TAB_RESOURCES, COMMAND_TAG_DETACH_CLIENTS,
+    COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN,
+    COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE,
+    COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_OPEN_LISTENER,
+    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
+    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
+    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE,
+    COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD,
+    COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID,
+    COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED,
+    EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
+    EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
+    EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL,
+    EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
+    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition,
+    ListenerTransport, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
+    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType,
+    ResourceLifecycle, STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event,
+    decode_key_event, decode_mouse_event, decode_optional_u32, decode_paste_event,
+    decode_terminal_id, encode_focus_event, encode_key_event, encode_mouse_event,
+    encode_paste_event, encode_terminal_id,
 };
 
 // -----------------------------------------------------------------------------
@@ -124,14 +124,11 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         }
         Command::KillResources { ids } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCES);
-            // Length-prefixed list: u16 count, then each tagged ResourceId.
-            // u16 is ample — a single kill-group never approaches 65 535
-            // panes — and matches the count-prefix width used elsewhere
-            // (e.g. `SubscribeResourceEvents.event_types`).
-            enc.write_u16_be(u16::try_from(ids.len()).unwrap_or(u16::MAX));
-            for id in ids {
-                encode_terminal_id(id, enc);
-            }
+            encode_resource_ids(ids, enc);
+        }
+        Command::CloseTabResources { ids } => {
+            enc.write_u8(COMMAND_TAG_CLOSE_TAB_RESOURCES);
+            encode_resource_ids(ids, enc);
         }
         Command::DetachClients { session } => {
             enc.write_u8(COMMAND_TAG_DETACH_CLIENTS);
@@ -516,7 +513,12 @@ fn decode_session_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Comma
         COMMAND_TAG_GET_STATE => Command::GetState {
             scope: decode_state_scope(dec)?,
         },
-        COMMAND_TAG_KILL_RESOURCES => decode_kill_terminals_command(dec)?,
+        COMMAND_TAG_KILL_RESOURCES => Command::KillResources {
+            ids: decode_resource_ids(dec)?,
+        },
+        COMMAND_TAG_CLOSE_TAB_RESOURCES => Command::CloseTabResources {
+            ids: decode_resource_ids(dec)?,
+        },
         COMMAND_TAG_DETACH_CLIENTS => decode_detach_clients_command(dec)?,
         COMMAND_TAG_UPGRADE => Command::Upgrade,
         COMMAND_TAG_SHUTDOWN => Command::Shutdown,
@@ -604,13 +606,24 @@ fn decode_apply_input_command(
     })
 }
 
-fn decode_kill_terminals_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+/// Length-prefixed list: u16 count, then each tagged `ResourceId`. u16 is
+/// ample — a single close-group never approaches 65 535 panes — and matches
+/// the count-prefix width used elsewhere (e.g.
+/// `SubscribeResourceEvents.event_types`).
+fn encode_resource_ids(ids: &[crate::ids::ResourceId], enc: &mut Encoder<'_>) {
+    enc.write_u16_be(u16::try_from(ids.len()).unwrap_or(u16::MAX));
+    for id in ids {
+        encode_terminal_id(id, enc);
+    }
+}
+
+fn decode_resource_ids(dec: &mut Decoder<'_>) -> Result<Vec<crate::ids::ResourceId>, DecodeError> {
     let count = dec.read_u16_be()? as usize;
     let mut ids = Vec::with_capacity(count);
     for _ in 0..count {
         ids.push(decode_terminal_id(dec)?);
     }
-    Ok(Command::KillResources { ids })
+    Ok(ids)
 }
 
 fn decode_detach_clients_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {

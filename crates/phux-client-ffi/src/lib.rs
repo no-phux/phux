@@ -993,6 +993,9 @@ fn apply_hello_ok(
     client.spawn_idempotency = server_caps
         .features
         .contains(phux_protocol::ServerFeature::SpawnIdempotency);
+    client.close_tab_resources = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::CloseTabResources);
     client.l3_metadata = server_caps.layers.contains(phux_protocol::Layer::L3);
     client.attach_roles = server_caps
         .features

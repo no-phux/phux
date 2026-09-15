@@ -317,6 +317,9 @@ pub(crate) struct Client {
     /// `HELLO_OK` advertised `SPAWN_IDEMPOTENCY` (ADR-0126): a spawn may
     /// carry a retry key.
     pub spawn_idempotency: bool,
+    /// `HELLO_OK` advertised `CLOSE_TAB_RESOURCES` (L1 §5.2.2): an atomic
+    /// close batch that preserves keep-empty.
+    pub close_tab_resources: bool,
     /// `HELLO_OK` advertised L3 metadata (`docs/spec/L3.md`). Named
     /// projection get/set/delete need this layer; there is no extra
     /// `ServerFeature` bit.
@@ -413,6 +416,7 @@ impl Client {
             event_journal: false,
             retain_on_exit: false,
             spawn_idempotency: false,
+            close_tab_resources: false,
             l3_metadata: false,
             attach_roles: false,
             attach_role: None,

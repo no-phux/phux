@@ -410,6 +410,8 @@ ServerFeature = bitset (u32) {
                                      //   IDEMPOTENCY_CONFLICT (L1.md §3.1; ADR-0126)
     ATTACH_ROLES       = 0x08000000, // ATTACH_RESOURCE.role_policy, ATTACH field 6, ROLE_CHANGED,
                                      //   RESOURCE_STATE viewers (L1.md §8.1; ADR-0127)
+    CLOSE_TAB_RESOURCES = 0x10000000, // CLOSE_TAB_RESOURCES: atomic close that
+                                     //   preserves keep-empty (L1.md §5.2.2)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -490,7 +492,8 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `SSH_ORIGIN = 0x100000`, `CONDITIONAL_KILL = 0x200000`,
 `QUIC_STREAMS = 0x400000`, `OPEN_LISTENER = 0x800000`,
 `EVENT_JOURNAL = 0x1000000`, `RETAIN_ON_EXIT = 0x2000000`,
-`SPAWN_IDEMPOTENCY = 0x4000000`, and `ATTACH_ROLES = 0x8000000`; unknown
+`SPAWN_IDEMPOTENCY = 0x4000000`, `ATTACH_ROLES = 0x8000000`, and
+`CLOSE_TAB_RESOURCES = 0x10000000`; unknown
 feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept

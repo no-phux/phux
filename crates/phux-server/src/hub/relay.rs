@@ -3550,8 +3550,9 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                 },
             ))
         }
-        // GET_STATE / UPGRADE are hub-local; KILL_RESOURCES partitions its
-        // mixed batch in `handle_kill_terminals`; forward-compat commands
+        // GET_STATE / UPGRADE are hub-local; KILL_RESOURCES and
+        // CLOSE_TAB_RESOURCES partition mixed batches in
+        // `close_named_resources`; forward-compat commands
         // this hub does not know cannot be routed (their terminal scope is
         // unreadable) and fall through to the local INVALID_COMMAND path.
         _ => None,
@@ -3740,9 +3741,16 @@ mod tests {
             .is_none(),
             "APPLY_INPUT is local-only and must never touch a satellite link"
         );
-        // Mixed batches partition in handle_kill_terminals, not here.
+        // Mixed batches partition in handle_kill_terminals /
+        // handle_close_tab_resources, not here.
         assert!(
             route_to_satellite(&Command::KillResources {
+                ids: vec![ResourceId::satellite("devbox", 1)],
+            })
+            .is_none()
+        );
+        assert!(
+            route_to_satellite(&Command::CloseTabResources {
                 ids: vec![ResourceId::satellite("devbox", 1)],
             })
             .is_none()

@@ -25,7 +25,10 @@ use phux_client_core::session::KernelSend;
 mod close_completion;
 mod close_resource;
 use close_completion::PendingClose;
-pub use close_resource::{phux_client_queue_close_resource, phux_client_queue_close_resources};
+pub use close_resource::{
+    phux_client_close_tab_resources_supported, phux_client_queue_close_resource,
+    phux_client_queue_close_resources, phux_client_queue_close_tab_resources,
+};
 
 pub const MAX_OPERATIONS: usize = 128;
 pub const MAX_DYNAMIC_TERMINALS: usize = 256;

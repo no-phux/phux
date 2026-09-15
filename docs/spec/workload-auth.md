@@ -404,6 +404,7 @@ point before any handler or satellite branch:
 | `GET_SCREEN` | `OBSERVE` | named Terminal |
 | `ROUTE_INPUT`, `APPLY_INPUT` | `INPUT` | named Terminal |
 | `KILL_RESOURCES` | `SIGNAL` | every named Terminal; all-or-nothing |
+| `CLOSE_TAB_RESOURCES` | `SIGNAL` | every named Terminal; all-or-nothing |
 | `RESIZE_TERMINAL` (unallocated) | default-deny | dedicated `RESIZE_TERMINAL` owns resize |
 | `GET_STATE { SERVER }` | `INVENTORY` | requires at least one Inventory grant; returns only resources matched by those selectors, and server-global data only with Global |
 | `RUN_HOOK` (unallocated) | default-deny | no wire contract exists |

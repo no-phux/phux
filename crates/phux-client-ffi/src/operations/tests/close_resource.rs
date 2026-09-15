@@ -285,6 +285,42 @@ fn batch_close_validates_every_owner_before_one_atomic_command() {
     assert!(h.0.inner.outgoing.is_empty());
 }
 
+#[test]
+fn tab_close_batch_encodes_close_tab_resources() {
+    let mut h = Harness::attached();
+    h.0.inner.outgoing.clear();
+    // SAFETY: harness owns client.
+    unsafe {
+        assert_eq!(phux_client_operation_clear(h.ptr()), PhuxClientResult::Ok);
+    }
+    let ids = [terminal_id_out(&ResourceId::local(1))];
+    // SAFETY: owned client and readable ID records.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_close_tab_resources(h.ptr(), 4, ids.as_ptr(), ids.len()),
+            PhuxClientResult::Ok
+        );
+    }
+    assert_eq!(
+        FrameKind::decode(&h.0.inner.outgoing[0]).unwrap().0,
+        FrameKind::Command {
+            request_id: 4,
+            command: Command::CloseTabResources {
+                ids: vec![ResourceId::local(1)]
+            }
+        }
+    );
+    let mut supported = false;
+    // SAFETY: writable bool outlives the call.
+    unsafe {
+        assert_eq!(
+            phux_client_close_tab_resources_supported(h.ptr(), &raw mut supported),
+            PhuxClientResult::Ok
+        );
+    }
+    assert!(!supported);
+}
+
 fn close(h: &mut Harness, request: u32, id: u32) -> PhuxClientResult {
     let id = terminal_id_out(&ResourceId::local(id));
     // SAFETY: harness owns client; stack ID outlives the call.

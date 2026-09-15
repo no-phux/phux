@@ -714,6 +714,7 @@ enum CommandTag {
     AppendResourceOutput = 0x1a,
     KillResourceIf = 0x1b,
     OpenListener = 0x1c,
+    CloseTabResources = 0x1d,
 }
 
 // Wire tags for the `Command` tagged union (SPEC §5.1). Tags follow the
@@ -842,6 +843,11 @@ pub(crate) const COMMAND_TAG_KILL_RESOURCE_IF: u8 = CommandTag::KillResourceIf a
 /// `KILL_RESOURCE_IF`; gated on `ServerFeature::OpenListener` (ADR-0120).
 /// Accepted on the Unix socket only: it opens a new door into the server.
 pub(crate) const COMMAND_TAG_OPEN_LISTENER: u8 = CommandTag::OpenListener as u8;
+/// Wire tag for [`Command::CloseTabResources`]. Appended after
+/// `OPEN_LISTENER`; gated on `ServerFeature::CloseTabResources`. Same body
+/// as `KILL_RESOURCES`, but a full-coverage batch does not release
+/// keep-empty (ADR-0105, ADR-0114). Tag `0x0a` stays reserved.
+pub(crate) const COMMAND_TAG_CLOSE_TAB_RESOURCES: u8 = CommandTag::CloseTabResources as u8;
 }
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These

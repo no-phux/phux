@@ -518,6 +518,92 @@ fn kill_resources_naming_every_pane_removes_a_keep_empty_session() {
     });
 }
 
+/// A `CLOSE_TAB_RESOURCES` naming every pane of a keep-empty session is
+/// explicit Close Tab, not group teardown: the named session stays listed
+/// and empty (phux-2jza.4.2.1.2 / ADR-0114).
+#[test]
+fn close_tab_resources_naming_every_pane_leaves_a_keep_empty_session_empty() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let (mut conn, shutdown_tx, server) = start(&tmp).await;
+
+        let pane = create_seeded(&mut conn, "kept", true, 1).await;
+        command_ok(&mut conn, 2, Command::CloseTabResources { ids: vec![pane] }).await;
+        let snapshot = wait_for_state(&mut conn, 100, "the last window to go", |s| {
+            session(s, "kept").is_some_and(SessionInfo::is_empty)
+        })
+        .await;
+        let kept = session(&snapshot, "kept").expect("the keep-empty session survives");
+        assert!(kept.keep_empty);
+        assert_eq!(kept.window_count, 0);
+
+        drop(conn);
+        join_after_shutdown(shutdown_tx, server).await;
+    });
+}
+
+/// A second attached client sees the keep-empty session survive explicit
+/// Close Tab, then sees End Session (clearing the mark) reap it.
+#[test]
+fn close_tab_resources_leaves_keep_empty_visible_to_a_second_client() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let (mut conn, shutdown_tx, server) = start(&tmp).await;
+        let socket_path = tmp.path().join("phux.sock");
+        let pane = create_seeded(&mut conn, "kept", true, 1).await;
+
+        let mut client = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut client, &attach_by_name("kept")).await;
+        let (type_byte, _attached) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut client))
+            .await
+            .expect("the attach must be answered");
+        assert_eq!(type_byte, TYPE_ATTACHED);
+        send_frame(
+            &mut client,
+            &FrameKind::SubscribeMetadata {
+                scope: Scope::Global,
+                key: SESSION_KEEP_EMPTY_KEY.to_owned(),
+            },
+        )
+        .await;
+        get_state(&mut client, 50).await;
+
+        command_ok(&mut conn, 2, Command::CloseTabResources { ids: vec![pane] }).await;
+        wait_for_state(&mut conn, 100, "the last window to go", |s| {
+            session(s, "kept").is_some_and(SessionInfo::is_empty)
+        })
+        .await;
+
+        let listing = get_state(&mut client, 51).await;
+        let kept = session(&listing, "kept").expect("the second client still sees the session");
+        assert!(kept.keep_empty);
+        assert!(kept.is_empty());
+
+        set_keep_empty(&mut conn, "kept", false, 3).await;
+        let reason = loop {
+            let (_type_byte, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut client))
+                .await
+                .expect("the attached client must be told the session went");
+            match frame {
+                FrameKind::MetadataChanged { key, value, .. } if key == SESSION_KEEP_EMPTY_KEY => {
+                    assert_eq!(value, Some(encode_session_keep_empty("kept", false)));
+                }
+                FrameKind::Detached { reason, .. } => break reason,
+                _ => {}
+            }
+        };
+        assert_eq!(reason, Some(DetachReason::SessionKilled));
+        wait_for_state(&mut conn, 200, "the session to go", |s| {
+            session(s, "kept").is_none()
+        })
+        .await;
+
+        drop(client);
+        drop(conn);
+        join_after_shutdown(shutdown_tx, server).await;
+    });
+}
+
 /// Clearing the mark on an empty session removes it: the kill path for a
 /// session with no pane to name.
 #[test]
