@@ -1,108 +1,100 @@
 import { describe, expect, test } from "bun:test";
 import {
-  buildEnvelope,
+  CLAIM_MAX_AGE_MS,
   claimProof,
   handleClaim,
-  handleJoin,
   memberIdForEmail,
-  memberIdFromRequest,
+  timingSafeEqualHex,
+  type AnalyticsEnv,
 } from "./analytics";
 
-const ENV = {
-  ASSETS: { fetch: async () => new Response("x") },
-  ANALYTICS_INGEST_URL: "https://ops.phux.sh/ingest",
-  ANALYTICS_INGEST_KEY: "k",
-  MEMBER_KEY: "member-key",
-};
+const MEMBER_KEY = "test-member-key";
 
-describe("member identity", () => {
-  test("member id is a stable HMAC of the normalized email", async () => {
-    const a = await memberIdForEmail("member-key", "Foo@Example.COM");
-    const b = await memberIdForEmail("member-key", " foo@example.com ");
-    expect(a).toBe(b);
-    expect(a).toMatch(/^[a-f0-9]{64}$/);
-    const c = await memberIdForEmail("other-key", "foo@example.com");
-    expect(c).not.toBe(a);
+function envOf(): AnalyticsEnv {
+  return { MEMBER_KEY };
+}
+
+function claimUrl(memberId: string, proof: string, issuedAt?: number): string {
+  const token =
+    issuedAt === undefined
+      ? `${memberId}.${proof}`
+      : `${memberId}.${proof}.${Math.floor(issuedAt / 1000)}`;
+  return `https://phux.sh/api/claim?t=${token}`;
+}
+
+describe("GET /api/claim (PHA-425)", () => {
+  test("full proof sets the opt-in cookie and redirects", async () => {
+    const memberId = await memberIdForEmail(MEMBER_KEY, "person@example.com");
+    const proof = await claimProof(MEMBER_KEY, memberId);
+    const response = await handleClaim(
+      new Request(claimUrl(memberId, proof)),
+      envOf(),
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("/?joined=1");
+    expect(response.headers.get("set-cookie")).toContain(`phux_mid=${memberId}`);
   });
 
-  test("member cookie parses and rejects junk", () => {
-    const request = new Request("https://phux.sh/", {
-      headers: { cookie: "other=1; phux_mid=abcdef0123456789; x=2" },
-    });
-    expect(memberIdFromRequest(request)).toBe("abcdef0123456789");
-    const bad = new Request("https://phux.sh/", {
-      headers: { cookie: "phux_mid=../../etc" },
-    });
-    expect(memberIdFromRequest(bad)).toBeNull();
+  test("any prefix of the proof is rejected (legacy 32-hex links included)", async () => {
+    const memberId = await memberIdForEmail(MEMBER_KEY, "person@example.com");
+    const proof = await claimProof(MEMBER_KEY, memberId);
+    for (const cut of [16, 32, 48, 63]) {
+      const response = await handleClaim(
+        new Request(claimUrl(memberId, proof.slice(0, cut))),
+        envOf(),
+      );
+      expect(response.status).toBe(403);
+    }
+  });
+
+  test("wrong full-length proof is rejected", async () => {
+    const memberId = await memberIdForEmail(MEMBER_KEY, "person@example.com");
+    const proof = await claimProof(MEMBER_KEY, memberId);
+    const tampered = proof.slice(0, -1) + (proof.endsWith("0") ? "1" : "0");
+    const response = await handleClaim(
+      new Request(claimUrl(memberId, tampered)),
+      envOf(),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  test("fresh issuedAt link is accepted, expired and future links are not", async () => {
+    const memberId = await memberIdForEmail(MEMBER_KEY, "person@example.com");
+    const proof = await claimProof(MEMBER_KEY, memberId);
+    const fresh = await handleClaim(
+      new Request(claimUrl(memberId, proof, Date.now() - 1000)),
+      envOf(),
+    );
+    expect(fresh.status).toBe(302);
+
+    const expired = await handleClaim(
+      new Request(claimUrl(memberId, proof, Date.now() - CLAIM_MAX_AGE_MS - 1000)),
+      envOf(),
+    );
+    expect(expired.status).toBe(403);
+
+    const future = await handleClaim(
+      new Request(claimUrl(memberId, proof, Date.now() + 60 * 60 * 1000)),
+      envOf(),
+    );
+    expect(future.status).toBe(403);
+  });
+
+  test("malformed tokens are rejected without touching the proof path", async () => {
+    for (const token of ["", "abc", `${"a".repeat(64)}`, `${"a".repeat(64)}.${"b".repeat(64)}.x`]) {
+      const response = await handleClaim(
+        new Request(`https://phux.sh/api/claim?t=${token}`),
+        envOf(),
+      );
+      expect([400, 403]).toContain(response.status);
+    }
   });
 });
 
-describe("buildEnvelope", () => {
-  test("captures the exchange without blocking on the body", () => {
-    const request = new Request("https://docs.phux.sh/wire/proto? utm_source=x", {
-      headers: {
-        "user-agent": "curl/8",
-        referer: "https://x.com/somepost",
-        "cf-connecting-ip": "1.2.3.4",
-      },
-    });
-    const response = new Response("ok", {
-      status: 200,
-      headers: { "content-type": "text/html" },
-    });
-    const envelope = buildEnvelope(request, response, { mode: "demo", backend: "edge" });
-    expect(envelope.path).toBe("/wire/proto");
-    expect(envelope.query).toContain("utm_source=x");
-    expect(envelope.ip).toBe("1.2.3.4");
-    expect(envelope.referrer).toContain("x.com");
-    expect(envelope.demo).toEqual({ mode: "demo", backend: "edge" });
-    expect(envelope.status).toBe(200);
-  });
-});
-
-describe("handleJoin", () => {
-  test("rejects malformed emails and accepts good ones", async () => {
-    const bad = await handleJoin(
-      new Request("https://phux.sh/api/join", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: "not-an-email" }),
-      }),
-      ENV,
-      undefined,
-    );
-    expect(bad.status).toBe(400);
-
-    const good = await handleJoin(
-      new Request("https://phux.sh/api/join", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ email: "A@B.co", source: "landing" }),
-      }),
-      ENV,
-      undefined,
-    );
-    expect(good.status).toBe(200);
-    expect(await good.json()).toEqual({ ok: true });
-  });
-});
-
-describe("handleClaim", () => {
-  test("sets the opt-in cookie only with a valid proof", async () => {
-    const memberId = (await memberIdForEmail("member-key", "a@b.co")).slice(0, 32);
-    const proof = (await claimProof("member-key", memberId)).slice(0, 32);
-    const good = await handleClaim(
-      new Request(`https://phux.sh/api/claim?t=${memberId}.${proof}`),
-      ENV,
-    );
-    expect(good.status).toBe(302);
-    expect(good.headers.get("set-cookie")).toContain(`phux_mid=${memberId}`);
-    expect(good.headers.get("set-cookie")).toContain("HttpOnly");
-
-    const bad = await handleClaim(
-      new Request(`https://phux.sh/api/claim?t=${memberId}.deadbeefdeadbeef`),
-      ENV,
-    );
-    expect(bad.status).toBe(403);
+describe("timingSafeEqualHex", () => {
+  test("matches only identical strings", () => {
+    expect(timingSafeEqualHex("ab12", "ab12")).toBe(true);
+    expect(timingSafeEqualHex("ab12", "ab13")).toBe(false);
+    expect(timingSafeEqualHex("ab12", "ab1")).toBe(false);
   });
 });

@@ -191,21 +191,43 @@ export async function handleJoin(
   return Response.json({ ok: true }, { headers: { "cache-control": "no-store" } });
 }
 
-/** GET /api/claim?t=<memberId>.<proof> — sets the opt-in device cookie. */
+/**
+ * GET /api/claim?t=<memberId>.<proof>[.<issuedAtSec>] — sets the opt-in device
+ * cookie.
+ *
+ * Security shape (PHA-425): the proof must be the FULL 64-hex HMAC compared in
+ * constant time — older links carried a 32-hex prefix and any ≥16-char prefix
+ * of it was accepted. Links carrying an issuedAtSec segment expire after
+ * CLAIM_MAX_AGE_MS (ops repo); segment-less legacy links stay valid because
+ * rotating MEMBER_KEY invalidates everything at once and the member set stays
+ * small enough for per-link revocation to be unnecessary.
+ */
 export async function handleClaim(
   request: Request,
   env: AnalyticsEnv,
 ): Promise<Response> {
   if (!env.MEMBER_KEY) return new Response("not configured", { status: 503 });
   const token = new URL(request.url).searchParams.get("t") ?? "";
-  const dot = token.lastIndexOf(".");
-  if (dot <= 0) return new Response("bad token", { status: 400 });
-  const memberId = token.slice(0, dot);
-  const proof = token.slice(dot + 1);
-  if (!/^[a-f0-9]{16,64}$/.test(memberId)) return new Response("bad token", { status: 400 });
-  const expected = await claimProof(env.MEMBER_KEY, memberId);
-  if (proof !== expected.slice(0, proof.length) || proof.length < 16) {
+  const parts = token.split(".");
+  if (parts.length < 2 || parts.length > 3) return new Response("bad token", { status: 400 });
+  const [memberId, proof, issuedAt] = parts;
+  if (!/^[a-f0-9]{64}$/.test(memberId ?? "")) return new Response("bad token", { status: 400 });
+  if (!/^[a-f0-9]{64}$/.test(proof ?? "")) return new Response("bad proof", { status: 403 });
+  const expected = await claimProof(env.MEMBER_KEY, memberId!);
+  if (!timingSafeEqualHex(proof!, expected)) {
     return new Response("bad proof", { status: 403 });
+  }
+  if (issuedAt !== undefined) {
+    if (!/^\d{10,13}$/.test(issuedAt)) return new Response("bad token", { status: 400 });
+    const issuedMs = issuedAt.length === 13 ? Number(issuedAt) : Number(issuedAt) * 1000;
+    const skewMs = 5 * 60 * 1000;
+    if (
+      !Number.isFinite(issuedMs) ||
+      issuedMs > Date.now() + skewMs ||
+      Date.now() - issuedMs > CLAIM_MAX_AGE_MS
+    ) {
+      return new Response("claim link expired", { status: 403 });
+    }
   }
   const headers = new Headers({ location: "/?joined=1" });
   headers.append(
@@ -213,4 +235,17 @@ export async function handleClaim(
     `${MEMBER_COOKIE}=${memberId}; Path=/; Max-Age=31536000; HttpOnly; Secure; SameSite=Lax`,
   );
   return new Response(null, { status: 302, headers });
+}
+
+// Mirrors CLAIM_MAX_AGE_MS in the ops repo (analytics/src/do.ts).
+export const CLAIM_MAX_AGE_MS = 90 * 86_400_000;
+
+/** Constant-time comparison for equal-length lowercase hex strings. */
+export function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let difference = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    difference |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return difference === 0;
 }
