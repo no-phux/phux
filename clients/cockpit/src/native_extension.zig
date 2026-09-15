@@ -330,6 +330,7 @@ const Bridge = struct {
     local_tool_reply: WorkflowReply(cockpit.local_tools.max_bytes) = .{},
     new_session: cockpit.new_session.Controller = .{},
     new_session_reply: WorkflowReply(cockpit.new_session.max_bytes) = .{},
+    update_reply: WorkflowReply(cockpit.self_update.max_bytes) = .{},
     /// Tests that want no child processes clear this before starting.
     shells: bool = true,
     /// The one snapshot completion in flight. A newer request overwrites an
@@ -567,6 +568,10 @@ const Bridge = struct {
             self.requestNewSession(key, payload);
             return true;
         }
+        if (std.mem.eql(u8, name, cockpit.self_update.request_name)) {
+            self.requestSelfUpdate(key, payload);
+            return true;
+        }
         return false;
     }
 
@@ -668,6 +673,38 @@ const Bridge = struct {
             return;
         };
         self.local_tool_reply.finish(reply);
+    }
+
+    fn requestSelfUpdate(self: *Bridge, key: u64, payload: []const u8) void {
+        self.update_reply.begin(key);
+        const engine = self.engine orelse return self.update_reply.fail("engine unavailable");
+        const reply = cockpit.self_update.handle(engine.model.provider.io, payload, &self.update_reply.buffer) catch |err| {
+            self.update_reply.fail(@errorName(err));
+            return;
+        };
+        self.update_reply.finish(reply);
+        if (reply.len >= 2 and reply[1] == @intFromEnum(cockpit.self_update.Status.installed)) {
+            self.relaunchAfterUpdate();
+        }
+    }
+
+    fn relaunchAfterUpdate(self: *Bridge) void {
+        var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const exe = cockpit.self_update.executablePath(&exe_buf) catch return;
+        const bundle = cockpit.self_update.enclosingApp(exe) orelse return;
+        const io = if (self.engine) |engine| engine.model.provider.io else return;
+        var child = std.process.spawn(io, .{
+            .argv = &.{ "/usr/bin/open", bundle },
+            .stdin = .ignore,
+            .stdout = .ignore,
+            .stderr = .ignore,
+        }) catch return;
+        if (child.id) |id| {
+            var status: c_int = 0;
+            _ = std.c.waitpid(id, &status, 0);
+            child.id = null;
+        }
+        if (engineFx()) |fx| fx.quitApp();
     }
 
     fn requestNewSession(self: *Bridge, key: u64, payload: []const u8) void {
@@ -1018,6 +1055,7 @@ const Bridge = struct {
         self.machine_reply.cancel(key);
         self.local_tool_reply.cancel(key);
         self.new_session_reply.cancel(key);
+        self.update_reply.cancel(key);
     }
 
     fn cancelReply(pending: *bool, reply_key: u64, canceled_key: u64) void {
@@ -1083,7 +1121,8 @@ const Bridge = struct {
     fn pollCreationWorkflows(self: *Bridge) ?native_sdk.HostCallCompletion {
         if (self.machine_reply.take()) |reply| return reply;
         if (self.local_tool_reply.take()) |reply| return reply;
-        return self.new_session_reply.take();
+        if (self.new_session_reply.take()) |reply| return reply;
+        return self.update_reply.take();
     }
 
     fn hasPending(context: *anyopaque) bool {
@@ -1096,7 +1135,7 @@ const Bridge = struct {
     }
 
     fn hasCreationPending(self: *const Bridge) bool {
-        return self.machine_reply.pending or self.local_tool_reply.pending or self.new_session_reply.pending;
+        return self.machine_reply.pending or self.local_tool_reply.pending or self.new_session_reply.pending or self.update_reply.pending;
     }
 
     fn deinitRequests(self: *Bridge) void {
@@ -4951,6 +4990,7 @@ const parity_states = [_]ChromeState{
     .{ .label = "settings over rail", .settings = true, .placement = .side },
     .{ .label = "workspace settings", .settings = true, .settings_section = 1 },
     .{ .label = "keyboard settings", .settings = true, .settings_section = 2 },
+    .{ .label = "about settings", .settings = true, .settings_section = 5 },
     .{ .label = "both overlays, full strip", .tabs = 16, .palette = true, .settings = true },
 };
 

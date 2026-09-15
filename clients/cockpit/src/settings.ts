@@ -14,8 +14,8 @@ export interface Setting {
 }
 
 function setting(id: number, section: number, label: string, defaults: string, applies: string, timing: string, editable: boolean): Setting {
-  return { id: id >= 0 && id <= 13 ? Math.trunc(id) : 0,
-    section: section >= 0 && section <= 4 ? Math.trunc(section) : 0,
+  return { id: id >= 0 && id <= 14 ? Math.trunc(id) : 0,
+    section: section >= 0 && section <= 5 ? Math.trunc(section) : 0,
     label: asciiBytes(label), defaultLabel: asciiBytes(defaults),
     applicability: asciiBytes(applies), timing: asciiBytes(timing), editable, value: new Uint8Array(0), effectiveValue: new Uint8Array(0) };
 }
@@ -37,6 +37,7 @@ export function settingsCatalog(): readonly Setting[] {
     setting(11, 2, "Keyboard shortcuts", "Shipping Cockpit commands", "Remap and reset actual Cockpit bindings below. Use Cmd-based chords or none; conflicts are checked before applying.", "Live preview; persisted on Save", false),
     setting(12, 4, "Phux destination / session", "Resolved environment, config, or platform default", "Read-only connection context below. Use Machines and Sessions to change work.", "Explicit connection action", false),
     setting(13, 4, "Phux server and TUI preferences", "Serving machine configuration", "Shell and history for Phux panes belong to that machine. Run phux config path there, then edit that file; TUI Settings edits TUI preferences.", "Owner-specific; server defaults on server start", false),
+    setting(14, 5, "App version", "CFBundleShortVersionString", "The running Phux Cockpit release. Check for Updates uses the same cockpit-vX.Y.Z GitHub stream as scripts/install-cockpit.sh.", "In-app check; installer-placed copies can reinstall", false),
   ];
 }
 
@@ -61,8 +62,8 @@ function withValue(row: Setting, value: Uint8Array): Setting {
   const id = row.id;
   const section = row.section;
   const effectiveValue = effectiveSettingValue(row, value);
-  return { ...row, id: id >= 0 && id <= 13 ? Math.trunc(id) : 0,
-    section: section >= 0 && section <= 4 ? Math.trunc(section) : 0,
+  return { ...row, id: id >= 0 && id <= 14 ? Math.trunc(id) : 0,
+    section: section >= 0 && section <= 5 ? Math.trunc(section) : 0,
     value, effectiveValue };
 }
 

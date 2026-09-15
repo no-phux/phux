@@ -224,7 +224,7 @@ EXECUTABLE="${APP}/Contents/MacOS/${EXPECTED_EXECUTABLE}"
 RESOURCES="${APP}/Contents/Resources"
 [[ -f "${EXECUTABLE}" && -x "${EXECUTABLE}" ]] ||
     fail "bundle executable is missing or not executable: ${EXECUTABLE}"
-for resource in LICENSE.txt README.txt THIRD_PARTY_NOTICES.md JetBrainsMono-OFL.txt Phux-FFI-THIRD-PARTY.html Phux-FFI-Provenance.json signing-plan.txt; do
+for resource in LICENSE.txt README.txt THIRD_PARTY_NOTICES.md JetBrainsMono-OFL.txt Phux-FFI-THIRD-PARTY.html Phux-FFI-Provenance.json signing-plan.txt cockpit-self-update.sh install-cockpit.sh; do
     [[ -s "${RESOURCES}/${resource}" ]] || fail "required resource is missing: ${resource}"
 done
 "${ROOT}/scripts/verify-phux-ffi.py" \

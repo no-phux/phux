@@ -110,6 +110,9 @@ RESOURCES="${APP}/Contents/Resources"
 /bin/cp "${ROOT}/THIRD_PARTY_NOTICES.md" "${RESOURCES}/THIRD_PARTY_NOTICES.md"
 /bin/cp "${ROOT}/assets/fonts/JetBrainsMono-OFL.txt" "${RESOURCES}/JetBrainsMono-OFL.txt"
 /bin/cp "${ROOT}/assets/licenses/Phux-FFI-THIRD-PARTY.html" "${RESOURCES}/Phux-FFI-THIRD-PARTY.html"
+/bin/cp "${REPO_ROOT}/scripts/cockpit-self-update.sh" "${RESOURCES}/cockpit-self-update.sh"
+/bin/cp "${REPO_ROOT}/scripts/install-cockpit.sh" "${RESOURCES}/install-cockpit.sh"
+/bin/chmod 755 "${RESOURCES}/cockpit-self-update.sh" "${RESOURCES}/install-cockpit.sh"
 "${ROOT}/scripts/verify-phux-ffi.py" \
     --write-provenance "${RESOURCES}/Phux-FFI-Provenance.json"
 rm -f -- "${RESOURCES}/package-manifest.zon"
@@ -187,7 +190,7 @@ EOF
         return 1
     }
     verify_coordinator "${bundle}" || return 1
-    for resource in LICENSE.txt README.txt THIRD_PARTY_NOTICES.md JetBrainsMono-OFL.txt Phux-FFI-THIRD-PARTY.html Phux-FFI-Provenance.json signing-plan.txt; do
+    for resource in LICENSE.txt README.txt THIRD_PARTY_NOTICES.md JetBrainsMono-OFL.txt Phux-FFI-THIRD-PARTY.html Phux-FFI-Provenance.json signing-plan.txt cockpit-self-update.sh install-cockpit.sh; do
         [[ -s "${resources}/${resource}" ]] || {
             printf 'error: required resource %s is missing from %s\n' "${resource}" "${bundle}" >&2
             return 1

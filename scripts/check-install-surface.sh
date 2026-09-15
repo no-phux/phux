@@ -181,6 +181,22 @@ require_fixed scripts/test-install.sh 'cockpit installer transaction tests passe
 require_fixed scripts/test-install.sh 'phux-cockpit launcher'
 forbid_fixed scripts/test-install.sh 'bash "$ROOT/scripts/install-cockpit.sh"'
 
+# In-app Check for Updates drives that installer rather than a second stack.
+require_regex scripts/cockpit-self-update.sh '^#!/bin/sh$'
+forbid_fixed scripts/cockpit-self-update.sh '#!/usr/bin/env bash'
+forbid_regex scripts/cockpit-self-update.sh '^[[:space:]]*[^#[:space:]].*pipefail'
+require_fixed scripts/cockpit-self-update.sh 'install-cockpit.sh'
+require_fixed scripts/cockpit-self-update.sh 'source="homebrew"'
+require_fixed scripts/cockpit-self-update.sh 'brew upgrade --cask no-phux/tap/phux-cockpit'
+require_fixed scripts/cockpit-self-update.sh 'source="nix"'
+require_fixed scripts/cockpit-self-update.sh 'source="dev"'
+require_fixed scripts/test-cockpit-self-update.sh 'cockpit self-update tests passed'
+require_fixed scripts/test-cockpit-self-update.sh 'driver overwrote a Homebrew cask install'
+require_fixed scripts/test-cockpit-self-update.sh 'BAD_CHECKSUM=1'
+require_fixed scripts/test-cockpit-self-update.sh 'FAIL_DITTO=1'
+forbid_fixed scripts/test-cockpit-self-update.sh 'bash "$ROOT/scripts/install-cockpit.sh"'
+require_fixed docs/INSTALL.md 'Check for Updates'
+
 # --- The installer is POSIX sh, and phux.sh serves it -------------------------
 #
 # https://phux.sh/install returns scripts/install.sh byte for byte, and the
@@ -485,6 +501,7 @@ fi
 
 bash "$ROOT/scripts/test-pack-release.sh"
 bash "$ROOT/scripts/test-install.sh"
+bash "$ROOT/scripts/test-cockpit-self-update.sh"
 bash "$ROOT/scripts/sync-install-resolver.sh" --check
 bash "$ROOT/scripts/test-install-resolution.sh"
 echo "install surface check passed"
