@@ -11,6 +11,7 @@ const appearance = (active = true, dirty = false) => new Uint8Array([1, +active,
 const settings = () => step(step(initialModel()[0], { kind: 'settings_open' })[0], { kind: 'appearance_loaded', body: appearance(true, true) })[0];
 const token = new Uint8Array([42, 0, 0, 0, 0, 0, 0, 0]);
 const session = phase => new Uint8Array([1, phase, ...token, 1, 0, 0, 0, 4, ...bytes('mini'), 0]);
+const renameSession = (phase, name = '', host = '') => new Uint8Array([1, phase, name.length, ...bytes(name), host.length, ...bytes(host), 0]);
 function pendingSession() {
   let [model] = step(initialModel()[0], { kind: 'new_session_open' });
   [model] = step(model, { kind: 'new_session_loaded', body: session(0) });
@@ -231,6 +232,51 @@ test('late Windows receipt cannot dismiss newer Commands', () => {
   assert.equal(cmd, null);
 });
 
+test('closing and reopening Rename retires the old request before its late success', () => {
+  let [model] = step(initialModel()[0], { kind: 'rename_open' });
+  [model] = step(model, { kind: 'session_loaded', body: renameSession(0, 'alpha', 'mini') });
+  [model] = step(model, { kind: 'rename_edit', edit: { kind: 'insert_text', text: bytes('-new') } });
+  [model] = step(model, { kind: 'rename_submit' });
+  const firstContinuation = model.renameContinuation;
+  let cmd;
+  [model, cmd] = step(model, { kind: 'rename_close' });
+  assert.ok(committed(cmd));
+  [model, cmd] = step(model, { kind: 'rename_open' });
+  assert.equal(request(cmd, 'cockpit.session')?.key, 'cockpit-session', 'reopen owns the same single-flight key');
+  assert.notEqual(model.renameContinuation, firstContinuation);
+  const currentContinuation = model.renameContinuation;
+  [model] = step(model, { kind: 'session_loaded', body: renameSession(2) });
+  assert.equal(model.renameOpen, true, 'a Rename terminal cannot satisfy a new Describe stage');
+  assert.equal(model.renameBusy, true);
+  assert.equal(model.renameContinuation, currentContinuation);
+});
+
+test('uncorrelated modal providers replace their single-flight key on reopen', () => {
+  const cases = [
+    [{ kind: 'dir_open' }, { kind: 'dir_close' }, 'cockpit.directory', 'cockpit-directory'],
+    [{ kind: 'host_open' }, { kind: 'host_close' }, 'cockpit.remote', 'cockpit-remote'],
+  ];
+  for (const [open, close, provider, key] of cases) {
+    let [model] = step(initialModel()[0], open);
+    let cmd;
+    [model, cmd] = step(model, close);
+    assert.ok(committed(cmd), provider);
+    [model, cmd] = step(model, open);
+    assert.equal(request(cmd, provider)?.key, key, `${provider} reopen replaces only its retired generation`);
+  }
+
+  let [settingsModel] = step(initialModel()[0], { kind: 'settings_open' });
+  const [, replacement] = step(settingsModel, { kind: 'settings_close' });
+  assert.equal(request(replacement, 'cockpit.appearance')?.key, 'cockpit-appearance',
+    'Settings cleanup replaces its opening request before another generation can open');
+
+  let [host] = step(initialModel()[0], { kind: 'host_open' });
+  [host] = step(host, { kind: 'host_close' });
+  [host] = step(host, { kind: 'host_open' });
+  [host] = step(host, { kind: 'remote_loaded', body: new Uint8Array([1, 2, 4, ...bytes('mini'), 0]) });
+  assert.equal(host.hostOpen, true, 'an old settled connection cannot close a reopened status-only host panel');
+});
+
 test('leaving Agents for Sessions or Commands retires the inspector surface', () => {
   for (const destination of [{ kind: 'sessions_open' }, { kind: 'commands_open' }]) {
     let [model] = step(initialModel()[0], { kind: 'agents_open' });
@@ -291,6 +337,30 @@ test('an invalid or closed active window cannot acquire a projected surface', ()
     assert.equal(model.window2AgentsOpen, false, String(activeWindow));
     assert.equal(model.window3AgentsOpen, false, String(activeWindow));
     assert.equal(model.window4AgentsOpen, false, String(activeWindow));
+  }
+});
+
+test('malformed presentation records fail closed at exported update and windows seams', () => {
+  const valid = initialModel()[0];
+  const malformed = [
+    { ...valid.presentation, kind: 0, owner: 1 },
+    { ...valid.presentation, kind: 2, owner: 1, focusReturnWindow: 2, continuation: 1 },
+    { ...valid.presentation, kind: 2, continuation: 0 },
+    { ...valid.presentation, retiredWindows: 1 },
+    { ...valid.presentation, retiredWindows: 2, absentRetiredWindows: 4 },
+    { ...valid.presentation, snapshotObserved: false, snapshotActiveWindow: 1 },
+    { ...valid.presentation, kind: 2, continuation: 1, navigatorView: 1 },
+    { ...valid.presentation, kind: 1, continuation: 1, navigatorView: 1, inspector: true },
+  ];
+  for (const presentation of malformed) {
+    const corrupt = { ...valid, presentation, window1Open: true, mainSettingsOpen: true, window1SettingsOpen: true };
+    assert.equal(windows(corrupt).length, 0);
+    const [sanitized] = step(corrupt, { kind: 'engine_wake' });
+    assert.equal(sanitized.presentation.kind, 0);
+    assert.equal(sanitized.presentation.owner, 0);
+    assert.equal(sanitized.mainSettingsOpen, false);
+    assert.equal(sanitized.window1SettingsOpen, false);
+    assert.equal(windows(sanitized).length, 0);
   }
 });
 

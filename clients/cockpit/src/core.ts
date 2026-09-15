@@ -13,6 +13,9 @@ import {
   type PresentationIntent,
   type PresentationLifecycle,
   initialPresentation,
+  presentationAcceptsReply,
+  presentationContinuation,
+  presentationLifecycleValid,
   presentationOwnedBy,
   projectPresentation,
   reconcilePresentation,
@@ -370,6 +373,12 @@ export interface Model {
   readonly renameNotice: Uint8Array;
   readonly renameBusy: boolean;
   readonly renameAwaiting: boolean;
+  /// The presentation generation that issued the current session request.
+  /// The effect runtime makes `cockpit-session` single-flight; this second
+  /// gate prevents a terminal from being interpreted by another surface.
+  readonly renameContinuation: number;
+  /// 1 describe, 2 rename/status. A terminal valid for another stage is stale.
+  readonly renameRequestStage: number;
   /// The Empty session state (ADR-0105, empty_session.zig): the windows the
   /// snapshot says show it, as a mask, and per window whether it is drawn
   /// (it gives way to every modal). A keep-empty session with no windows is
@@ -739,6 +748,8 @@ export const viewUnbound = [
   "renameFocus",
   "renameBusy",
   "renameAwaiting",
+  "renameContinuation",
+  "renameRequestStage",
   "renameRow",
   "rename_open",
   "session_loaded",
@@ -1195,9 +1206,12 @@ function renameState(model: Model): TextEditState {
 function openRename(model: Model): RenameDecision {
   if (model.renameOpen || model.settingsOpen) return renameDecision(model, NO_BYTES, false);
   const base = model.paletteOpen ? closePalette(model) : model;
-  const next = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: NO_BYTES,
+  const opened = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: NO_BYTES,
     renameQuery: NO_BYTES, renameAnchor: 0, renameFocus: 0, renameBusy: true, renameAwaiting: false,
     renameTitle: asciiBytes("Rename Session"), renameNotice: asciiBytes("Looking for the session on screen...") });
+  const rawContinuation = presentationContinuation(opened.presentation, "rename");
+  const continuation = rawContinuation >= 0 && rawContinuation <= 9007199254740991 ? Math.trunc(rawContinuation) : 0;
+  const next = { ...opened, renameContinuation: continuation, renameRequestStage: 1 };
   return renameDecision(next, sessionRequest(SESSION_KIND_DESCRIBE, NO_BYTES), true);
 }
 
@@ -1208,14 +1222,18 @@ function openRenameRow(model: Model, target: Uint8Array): RenameDecision {
   if (model.renameOpen || model.settingsOpen || !sessionRowTarget(target)) return renameDecision(model, NO_BYTES, false);
   const row = target.slice();
   const base = model.paletteOpen ? closePalette(model) : model;
-  const next = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: row,
+  const opened = scopeOverlays({ ...base, renameOpen: true, hostOpen: false, hostAwaiting: false, renameRow: row,
     renameQuery: NO_BYTES, renameAnchor: 0, renameFocus: 0, renameBusy: true, renameAwaiting: false,
     renameTitle: asciiBytes("Rename Session"), renameNotice: asciiBytes("Looking for the session...") });
+  const rawContinuation = presentationContinuation(opened.presentation, "rename");
+  const continuation = rawContinuation >= 0 && rawContinuation <= 9007199254740991 ? Math.trunc(rawContinuation) : 0;
+  const next = { ...opened, renameContinuation: continuation, renameRequestStage: 1 };
   return renameDecision(next, sessionRowRequest(SESSION_KIND_DESCRIBE_ROW, NO_BYTES, row), true);
 }
 
 function closeRename(model: Model): RenameDecision {
-  return renameDecision(scopeOverlays({ ...model, renameOpen: false, renameBusy: false, renameAwaiting: false }), NO_BYTES, true);
+  return renameDecision(scopeOverlays({ ...model, renameOpen: false, renameBusy: false, renameAwaiting: false,
+    renameContinuation: 0, renameRequestStage: 0 }), NO_BYTES, true);
 }
 
 /// Another modal opening while Rename Session is up takes its slot.
@@ -1235,13 +1253,14 @@ function editRename(model: Model, edit: TextInputEvent): Model {
 
 function submitRename(model: Model): RenameDecision {
   if (model.renameBusy) return renameDecision(model, NO_BYTES, false);
+  if (!presentationAcceptsReply(model.presentation, "rename", model.renameContinuation)) return closeRename(model);
   if (model.renameQuery.length === 0) {
     return renameDecision({ ...model, renameNotice: asciiBytes("Enter a new name for this session.") }, NO_BYTES, false);
   }
   const request = model.renameRow.length > 0
     ? sessionRowRequest(SESSION_KIND_RENAME_ROW, model.renameQuery, model.renameRow)
     : sessionRequest(SESSION_KIND_RENAME, model.renameQuery);
-  return renameDecision({ ...model, renameBusy: true, renameNotice: asciiBytes("Renaming...") }, request, false);
+  return renameDecision({ ...model, renameBusy: true, renameRequestStage: 2, renameNotice: asciiBytes("Renaming...") }, request, false);
 }
 
 function renameHeading(name: Uint8Array, host: Uint8Array): Uint8Array {
@@ -1249,16 +1268,29 @@ function renameHeading(name: Uint8Array, host: Uint8Array): Uint8Array {
   return joinBytes(joinBytes(asciiBytes("Rename "), name, asciiBytes(" on ")), host, NO_BYTES);
 }
 
+function currentRenameRequest(model: Model): boolean {
+  if (model.renameRequestStage !== 1 && model.renameRequestStage !== 2) return false;
+  return presentationAcceptsReply(model.presentation, "rename", model.renameContinuation);
+}
+
+function renameStageAccepts(model: Model, phase: number): boolean {
+  if (model.renameRequestStage === 1) return phase !== SESSION_PHASE_PENDING && phase !== SESSION_PHASE_RENAMED;
+  if (model.renameRequestStage === 2) return phase !== SESSION_PHASE_READY;
+  return false;
+}
+
 /// Apply one engine answer. The first names the session and seeds the field
 /// with its name; a refusal keeps the panel and says why; a rename the
 /// coordinator applied closes it.
 function receiveSession(model: Model, body: Uint8Array): RenameDecision {
   if (!model.renameOpen) return renameDecision(model, NO_BYTES, false);
+  if (!currentRenameRequest(model)) return renameDecision(model, NO_BYTES, false);
   const reply = sessionReply(body);
   if (reply === null) {
     return renameDecision({ ...model, renameBusy: false, renameAwaiting: false,
       renameNotice: asciiBytes("Rename unavailable. Try again.") }, NO_BYTES, false);
   }
+  if (!renameStageAccepts(model, reply.phase)) return renameDecision(model, NO_BYTES, false);
   if (reply.phase === SESSION_PHASE_RENAMED) return closeRename(model);
   if (reply.phase === SESSION_PHASE_PENDING) {
     return renameDecision({ ...model, renameBusy: true, renameAwaiting: true, renameNotice: asciiBytes("Renaming...") }, NO_BYTES, false);
@@ -1268,6 +1300,7 @@ function receiveSession(model: Model, body: Uint8Array): RenameDecision {
     const length = seeded.length;
     const end = length >= 0 && length <= 255 ? Math.trunc(length) : 0;
     return renameDecision({ ...model, renameBusy: false, renameAwaiting: false, renameQuery: seeded,
+      renameRequestStage: 0,
       renameAnchor: 0, renameFocus: end, renameTitle: renameHeading(reply.name, reply.host),
       renameNotice: asciiBytes("Enter a new name for this session.") }, NO_BYTES, false);
   }
@@ -1297,6 +1330,7 @@ function renameReplyTransition(model: Model, msg: Msg): RenameDecision | null {
   if (msg.kind === "session_loaded") return receiveSession(model, msg.body);
   if (msg.kind !== "session_failed") return null;
   if (!model.renameOpen) return renameDecision(model, NO_BYTES, false);
+  if (!currentRenameRequest(model)) return renameDecision(model, NO_BYTES, false);
   return renameDecision({ ...model, renameBusy: false, renameAwaiting: false,
     renameNotice: asciiBytes("Rename unavailable. Try again.") }, NO_BYTES, false);
 }
@@ -1957,6 +1991,7 @@ function describeWindow4(): WindowDescriptor {
 /// requires an array literal of descriptor calls per return, so every
 /// combination of open slots is spelled out.
 export function windows(model: Model): readonly WindowDescriptor[] {
+  if (!presentationLifecycleValid(model.presentation)) return [];
   if (model.window1Open) return windowsWithFirst(model);
   return windowsWithoutFirst(model);
 }
@@ -2234,6 +2269,8 @@ export function initialModel(): [Model, Cmd<Msg>] {
       renameNotice: new Uint8Array(0),
       renameBusy: false,
       renameAwaiting: false,
+      renameContinuation: 0,
+      renameRequestStage: 0,
       emptyWindows: 0,
       mainEmptyOpen: false,
       window1EmptyOpen: false,
@@ -3618,7 +3655,10 @@ function prepareContinuations(model: Model, msg: Msg): PreparedMessage {
 function observeNativeLifecycle(model: Model, msg: Msg): Model {
   if (msg.kind !== "window_closed") return model;
   const owned = presentationOwnedBy(model.presentation, msg.window);
-  const presentation = retirePresentationWindow(model.presentation, msg.window);
+  const presentation = retirePresentationWindow(model.presentation, msg.window, {
+    sequenceHi: model.engineSequence.hi, sequenceLo: model.engineSequence.lo,
+    revisionHi: model.engineRevision.hi, revisionLo: model.engineRevision.lo,
+  });
   const forgotten = forgetClosedWindow({ ...model, presentation }, msg.window);
   if (!owned) return scopeOverlays(forgotten);
   if (model.settingsOpen || model.creatingSession) return scopeOverlays(forgotten);
@@ -3676,17 +3716,29 @@ function snapshotConnectionStatus(model: Model, contexts: WindowContexts, primar
   return remoteConnectionStatus(model, status);
 }
 
-function projectSnapshotModel(model: Model, projected: EngineSnapshot): Model | null {
-  if (!(projected.selectedTab >= 0 && projected.selectedTab <= 255)) return null;
-  if (!(projected.tabWidth >= 0 && projected.tabWidth <= 65535)) return null;
-  const selectedTab = Math.trunc(projected.selectedTab);
-  const refusedMask = projected.flags & 159;
-  const refused = (projected.flags & 8) !== 0;
+function validSnapshotProjection(projected: EngineSnapshot): boolean {
+  if (!(projected.selectedTab >= 0 && projected.selectedTab <= 255)) return false;
+  if (!(projected.tabWidth >= 0 && projected.tabWidth <= 65535)) return false;
+  if (!(projected.activeWindow >= 0 && projected.activeWindow <= 4)) return false;
+  if (projected.activeWindow > 0 && findSection(projected.secondary, projected.activeWindow) === null) return false;
+  return true;
+}
+
+interface SnapshotWindowProjection {
+  readonly w1: WindowState;
+  readonly w2: WindowState;
+  readonly w3: WindowState;
+  readonly w4: WindowState;
+  readonly presentation: PresentationLifecycle;
+  readonly window1Open: boolean;
+  readonly window2Open: boolean;
+  readonly window3Open: boolean;
+  readonly window4Open: boolean;
+  readonly emptyMask: number;
+}
+
+function snapshotWindowProjection(model: Model, projected: EngineSnapshot): SnapshotWindowProjection {
   const connection = projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255;
-  const rawCursor = snapshotCursor(model, projected);
-  const cursor = rawCursor >= 0 && rawCursor <= 32 ? Math.trunc(rawCursor) : 0;
-  const mainTabs = stampSlots(projected.tabs, 0, projected.agents, connection);
-  const mainVisible = sliceRun(mainTabs, projected.runStart, projected.runCount);
   const w1 = windowState(1, findSection(projected.secondary, 1), projected.agents, connection);
   const w2 = windowState(2, findSection(projected.secondary, 2), projected.agents, connection);
   const w3 = windowState(3, findSection(projected.secondary, 3), projected.agents, connection);
@@ -3696,76 +3748,159 @@ function projectSnapshotModel(model: Model, projected: EngineSnapshot): Model | 
   const rawEmptyMask = emptyMaskFromContexts(contexts, legacyEmpty);
   const emptyMask = rawEmptyMask >= 0 && rawEmptyMask <= 31 ? Math.trunc(rawEmptyMask) : 0;
   const activeWindow = projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0;
-  const presentation = syncPresentationSnapshot(model.presentation, snapshotOpenMask(w1, w2, w3, w4), emptyMask, activeWindow);
+  const presentation = syncPresentationSnapshot(model.presentation, {
+    openWindows: snapshotOpenMask(w1, w2, w3, w4), emptyWindows: emptyMask, activeWindow,
+    sequenceHi: projected.sequence.hi, sequenceLo: projected.sequence.lo,
+    revisionHi: projected.revision.hi, revisionLo: projected.revision.lo,
+  });
   const window1Open = windowIsDeclared(presentation, 1, w1.open);
   const window2Open = windowIsDeclared(presentation, 2, w2.open);
   const window3Open = windowIsDeclared(presentation, 3, w3.open);
   const window4Open = windowIsDeclared(presentation, 4, w4.open);
+  return { w1, w2, w3, w4, presentation, window1Open, window2Open, window3Open, window4Open, emptyMask };
+}
+
+interface SnapshotContextProjection {
+  readonly contexts: WindowContexts;
+  readonly mainContext: WindowChromeContext;
+  readonly window1Context: WindowChromeContext;
+  readonly window2Context: WindowChromeContext;
+  readonly window3Context: WindowChromeContext;
+  readonly window4Context: WindowChromeContext;
+  readonly contextRows: readonly WindowChromeContext[];
+  readonly machineLabel: Uint8Array;
+  readonly connectionStatus: Uint8Array;
+}
+
+function snapshotContextProjection(model: Model, projected: EngineSnapshot, windows: SnapshotWindowProjection): SnapshotContextProjection {
+  const contexts = projected.windowContexts;
   const sessionLabel = bytesOr(projected.currentSession, asciiBytes("Sessions"));
   const hostLabel = bytesOr(projected.coordinatorEndpoint, asciiBytes("Machine not yet known"));
   const primaryRecord = findWindowContext(contexts.records, 0);
   const mainContext = windowChromeContext(true, 0, 1, contexts, sessionLabel, hostLabel, projected.emptySession);
-  const window1Context = windowChromeContext(window1Open, 1, 2, contexts, sessionLabel, hostLabel, projected.emptySession);
-  const window2Context = windowChromeContext(window2Open, 2, 4, contexts, sessionLabel, hostLabel, projected.emptySession);
-  const window3Context = windowChromeContext(window3Open, 3, 8, contexts, sessionLabel, hostLabel, projected.emptySession);
-  const window4Context = windowChromeContext(window4Open, 4, 16, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window1Context = windowChromeContext(windows.window1Open, 1, 2, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window2Context = windowChromeContext(windows.window2Open, 2, 4, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window3Context = windowChromeContext(windows.window3Open, 3, 8, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window4Context = windowChromeContext(windows.window4Open, 4, 16, contexts, sessionLabel, hostLabel, projected.emptySession);
   const contextRows = [mainContext, window1Context, window2Context, window3Context, window4Context];
-  const primaryStatus = windowConnectionStatus(true, 0, contexts, projected.connection, projected.terminalStates[0], refusedMask !== 0);
-  const hidden = projected.tabs.length - projected.runCount;
-  const emptyOpening = contexts.present ? false : projected.emptySession.opening;
-  const window1TabWidth = w1.tabWidth >= 0 && w1.tabWidth <= 65535 ? Math.trunc(w1.tabWidth) : 168;
-  const window2TabWidth = w2.tabWidth >= 0 && w2.tabWidth <= 65535 ? Math.trunc(w2.tabWidth) : 168;
-  const window3TabWidth = w3.tabWidth >= 0 && w3.tabWidth <= 65535 ? Math.trunc(w3.tabWidth) : 168;
-  const window4TabWidth = w4.tabWidth >= 0 && w4.tabWidth <= 65535 ? Math.trunc(w4.tabWidth) : 168;
+  const primaryStatus = windowConnectionStatus(true, 0, contexts, projected.connection, projected.terminalStates[0], (projected.flags & 159) !== 0);
+  return { contexts, mainContext, window1Context, window2Context, window3Context, window4Context, contextRows,
+    machineLabel: snapshotPrimaryHost(contexts, primaryRecord, hostLabel),
+    connectionStatus: snapshotConnectionStatus(model, contexts, primaryRecord, primaryStatus) };
+}
+
+function applySnapshotWindows(model: Model, projected: EngineSnapshot, windows: SnapshotWindowProjection): Model {
+  const window1TabWidth = windows.w1.tabWidth >= 0 && windows.w1.tabWidth <= 65535 ? Math.trunc(windows.w1.tabWidth) : 168;
+  const window2TabWidth = windows.w2.tabWidth >= 0 && windows.w2.tabWidth <= 65535 ? Math.trunc(windows.w2.tabWidth) : 168;
+  const window3TabWidth = windows.w3.tabWidth >= 0 && windows.w3.tabWidth <= 65535 ? Math.trunc(windows.w3.tabWidth) : 168;
+  const window4TabWidth = windows.w4.tabWidth >= 0 && windows.w4.tabWidth <= 65535 ? Math.trunc(windows.w4.tabWidth) : 168;
+  const activeWindow = projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0;
   return {
     ...model,
-    presentation,
+    presentation: windows.presentation,
     activeWindow,
-    window1Open, window1Tabs: w1.visibleTabs, window1TabWidth, window1HasOverflow: w1.hasOverflow, window1OverflowLabel: w1.overflowLabel,
-    window2Open, window2Tabs: w2.visibleTabs, window2TabWidth, window2HasOverflow: w2.hasOverflow, window2OverflowLabel: w2.overflowLabel,
-    window3Open, window3Tabs: w3.visibleTabs, window3TabWidth, window3HasOverflow: w3.hasOverflow, window3OverflowLabel: w3.overflowLabel,
-    window4Open, window4Tabs: w4.visibleTabs, window4TabWidth, window4HasOverflow: w4.hasOverflow, window4OverflowLabel: w4.overflowLabel,
+    window1Open: windows.window1Open, window1Tabs: windows.w1.visibleTabs, window1TabWidth, window1HasOverflow: windows.w1.hasOverflow, window1OverflowLabel: windows.w1.overflowLabel,
+    window2Open: windows.window2Open, window2Tabs: windows.w2.visibleTabs, window2TabWidth, window2HasOverflow: windows.w2.hasOverflow, window2OverflowLabel: windows.w2.overflowLabel,
+    window3Open: windows.window3Open, window3Tabs: windows.w3.visibleTabs, window3TabWidth, window3HasOverflow: windows.w3.hasOverflow, window3OverflowLabel: windows.w3.overflowLabel,
+    window4Open: windows.window4Open, window4Tabs: windows.w4.visibleTabs, window4TabWidth, window4HasOverflow: windows.w4.hasOverflow, window4OverflowLabel: windows.w4.overflowLabel,
+  };
+}
+
+function applySnapshotContexts(model: Model, projected: EngineSnapshot, windows: SnapshotWindowProjection, context: SnapshotContextProjection): Model {
+  const refused = (projected.flags & 159) !== 0;
+  return {
+    ...model,
+    workspaceLabel: context.mainContext.title,
+    mainContext: context.mainContext, window1Context: context.window1Context, window2Context: context.window2Context,
+    window3Context: context.window3Context, window4Context: context.window4Context,
+    coordinatorEndpoint: projected.coordinatorEndpoint, machineLabel: context.machineLabel, connectionDetail: projected.connectionDetail,
+    window1RailRows: railRows(windows.w1.tabs), window2RailRows: railRows(windows.w2.tabs),
+    window3RailRows: railRows(windows.w3.tabs), window4RailRows: railRows(windows.w4.tabs),
+    connectionStatus: context.connectionStatus,
+    window1Status: windowConnectionStatus(windows.window1Open, 1, context.contexts, projected.connection, projected.terminalStates[1], refused),
+    window2Status: windowConnectionStatus(windows.window2Open, 2, context.contexts, projected.connection, projected.terminalStates[2], refused),
+    window3Status: windowConnectionStatus(windows.window3Open, 3, context.contexts, projected.connection, projected.terminalStates[3], refused),
+    window4Status: windowConnectionStatus(windows.window4Open, 4, context.contexts, projected.connection, projected.terminalStates[4], refused),
+  };
+}
+
+function applySnapshotState(model: Model, projected: EngineSnapshot, windows: SnapshotWindowProjection, context: SnapshotContextProjection): Model {
+  const selectedTab = projected.selectedTab >= 0 && projected.selectedTab <= 255 ? Math.trunc(projected.selectedTab) : 0;
+  const tabWidth = projected.tabWidth >= 0 && projected.tabWidth <= 65535 ? Math.trunc(projected.tabWidth) : 168;
+  const connection = projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255;
+  const rawCursor = snapshotCursor(model, projected);
+  const cursor = rawCursor >= 0 && rawCursor <= 32 ? Math.trunc(rawCursor) : 0;
+  const emptyMask = windows.emptyMask >= 0 && windows.emptyMask <= 31 ? Math.trunc(windows.emptyMask) : 0;
+  const mainTabs = stampSlots(projected.tabs, 0, projected.agents, connection);
+  const mainVisible = sliceRun(mainTabs, projected.runStart, projected.runCount);
+  const hidden = projected.tabs.length - projected.runCount;
+  const emptyOpening = context.contexts.present ? false : projected.emptySession.opening;
+  const refusedMask = projected.flags & 159;
+  const refused = (projected.flags & 8) !== 0;
+  return {
+    ...model,
     themes: themeRows(projected.themes, projected.activeTheme, cursor), settingsCursor: cursor,
     configExists: projected.configExists,
     configNotice: configNotice(projected.configEnabled, projected.configProbed, projected.configExists, projected.configWritable, refused, projected.configPath),
     tabs: mainTabs, visibleTabs: mainVisible, railRows: railRows(mainTabs),
     agentCountLabel: joinBytes(asciiBytes("Agents "), decimalBytes(projected.agentTotal), NO_BYTES),
-    workspaceLabel: mainContext.title, mainContext, window1Context, window2Context, window3Context, window4Context,
-    coordinatorEndpoint: projected.coordinatorEndpoint,
-    machineLabel: snapshotPrimaryHost(contexts, primaryRecord, hostLabel), connectionDetail: projected.connectionDetail,
-    window1RailRows: railRows(w1.tabs), window2RailRows: railRows(w2.tabs), window3RailRows: railRows(w3.tabs), window4RailRows: railRows(w4.tabs),
-    tabWidth: projected.tabWidth >= 0 && projected.tabWidth <= 65535 ? Math.trunc(projected.tabWidth) : 168,
+    tabWidth,
     hasOverflow: hidden > 0, overflowLabel: snapshotOverflow(hidden), selectedTab,
     tabPlacement: projected.tabPlacement === 1 ? "side" : "top",
     engineConnected: true, engineSequence: projected.sequence, engineRevision: projected.revision,
     canReconnect: projected.connection === 3, lastConnection: connection,
-    connectionStatus: snapshotConnectionStatus(model, contexts, primaryRecord, primaryStatus),
-    window1Status: windowConnectionStatus(window1Open, 1, contexts, projected.connection, projected.terminalStates[1], refusedMask !== 0),
-    window2Status: windowConnectionStatus(window2Open, 2, contexts, projected.connection, projected.terminalStates[2], refusedMask !== 0),
-    window3Status: windowConnectionStatus(window3Open, 3, contexts, projected.connection, projected.terminalStates[3], refusedMask !== 0),
-    window4Status: windowConnectionStatus(window4Open, 4, contexts, projected.connection, projected.terminalStates[4], refusedMask !== 0),
     status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
     emptyWindows: emptyMask, emptyName: projected.emptySession.name,
     emptyDetail: joinBytes(asciiBytes("Empty session on "), projected.emptySession.host, NO_BYTES),
-    emptyPicked: snapshotEmptyPicked(contexts, projected, contextRows),
+    emptyPicked: snapshotEmptyPicked(context.contexts, projected, context.contextRows),
     emptyBusy: snapshotEmptyBusy(model, emptyMask, emptyOpening),
     emptyNotice: emptyMask === 0 ? NO_BYTES : model.emptyNotice,
   };
 }
 
+function projectSnapshotModel(model: Model, projected: EngineSnapshot): Model | null {
+  if (!validSnapshotProjection(projected)) return null;
+  const windows = snapshotWindowProjection(model, projected);
+  const context = snapshotContextProjection(model, projected, windows);
+  const windowed = applySnapshotWindows(model, projected, windows);
+  const contextual = applySnapshotContexts(windowed, projected, windows, context);
+  return applySnapshotState(contextual, projected, windows, context);
+}
+
 interface LoadedSnapshotProjection {
   readonly projected: EngineSnapshot;
   readonly model: Model;
+  readonly stale: boolean;
+}
+
+function wireU64Before(left: WireU64, right: WireU64): boolean {
+  if (left.hi !== right.hi) return left.hi < right.hi;
+  return left.lo < right.lo;
+}
+
+function staleSnapshot(model: Model, projected: EngineSnapshot): boolean {
+  if (wireU64Before(projected.sequence, model.engineSequence)) return true;
+  return wireU64Before(projected.revision, model.engineRevision);
 }
 
 function projectLoadedSnapshot(model: Model, body: Uint8Array): LoadedSnapshotProjection | null {
   const projected = snapshot(body);
   if (projected === null) return null;
+  if (staleSnapshot(model, projected)) return { projected, model, stale: true };
   const synced = projectSnapshotModel(model, projected);
-  return synced === null ? null : { projected, model: synced };
+  return synced === null ? null : { projected, model: synced, stale: false };
+}
+
+function validPresentationModel(model: Model): Model {
+  if (presentationLifecycleValid(model.presentation)) return model;
+  const presentation = initialPresentation();
+  const projection = projectPresentation(presentation);
+  return { ...model, ...projection, presentation,
+    window1Open: false, window2Open: false, window3Open: false, window4Open: false };
 }
 
 export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+  incoming = validPresentationModel(incoming);
   incoming = observeNativeLifecycle(incoming, msg);
   const prepared = prepareContinuations(incoming, msg);
   const fromCommands = commandDeparture(incoming, prepared.model);
@@ -3995,6 +4130,7 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "snapshot_loaded": {
       const loaded = projectLoadedSnapshot(model, msg.body);
       if (loaded === null) return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
+      if (loaded.stale) return model;
       const projected = loaded.projected;
       const synced = loaded.model;
       // An open Go to Directory names a listing on the connection that just

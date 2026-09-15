@@ -26,9 +26,9 @@ function record(kind, body) {
 
 /// A snapshot with no tabs or themes, `secondary` open secondary slots, a
 /// kind 3 navigation context, then each extension record given.
-function snapshotBytes({ secondary = [], connection = 2, extensions = [] } = {}) {
+function snapshotBytes({ secondary = [], connection = 2, extensions = [], sequence = 0, revision = 7, activeWindow = 0 } = {}) {
   const head = new Uint8Array(28);
-  head[0] = 1; head[1] = 2; head[10] = 7; head[23] = connection; head[26] = 168;
+  head[0] = 1; head[1] = 2; head[2] = sequence; head[10] = revision; head[18] = activeWindow; head[23] = connection; head[26] = 168;
   const sections = secondary.flatMap(index => [index, 0, 0, 0, 0, 168, 0]);
   return new Uint8Array([...head, 0, 255, 0, 0, secondary.length, ...sections, 0, 0, 0, 0, 0, ...extensions.flat()]);
 }
@@ -252,20 +252,37 @@ test('closing a window clears its context on the next snapshot', () => {
 });
 
 test('a late snapshot cannot resurrect a retired native window incarnation', () => {
-  let model = loaded({ secondary: [1] });
+  let model = loaded({ secondary: [1], sequence: 5 });
   assert.equal(windows(model).length, 1);
   [model] = step(model, { kind: 'window_closed', window: 1 });
   assert.equal(windows(model).length, 0);
 
-  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ secondary: [1], extensions: [empty(2, 0, 'stale', 'mini')] }) });
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ secondary: [1], sequence: 5, extensions: [empty(2, 0, 'stale', 'mini')] }) });
   assert.equal(model.window1Open, false, 'a snapshot queued before close remains fenced out');
   assert.equal(model.window1EmptyOpen, false, 'stale Empty chrome remains fenced with its retired window');
   assert.equal(windows(model).length, 0);
 
-  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes() });
-  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ secondary: [1] }) });
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ sequence: 5 }) });
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ secondary: [1], sequence: 5 }) });
+  assert.equal(model.window1Open, false, 'old absence cannot acknowledge retirement before replayed old presence');
+
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ sequence: 6 }) });
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ secondary: [1], sequence: 6 }) });
+  assert.equal(model.window1Open, false, 'presence at the absence epoch is still the retired incarnation');
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ secondary: [1], sequence: 7 }) });
   assert.equal(model.window1Open, true, 'absence acknowledges retirement and permits a later incarnation');
   assert.equal(windows(model).length, 1);
+});
+
+test('a protocol-valid snapshot cannot focus a secondary slot it does not declare', () => {
+  const body = snapshotBytes({ activeWindow: 1 });
+  assert.equal(snapshot(body).activeWindow, 1, 'the wire record is protocol-valid');
+  const [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body });
+  assert.equal(text(model.status), 'BAD SNAPSHOT');
+  assert.equal(model.activeWindow, 0);
+  const [opened] = step(model, { kind: 'agents_open' });
+  assert.equal(opened.mainAgentsOpen, true, 'the inconsistent secondary never acquires authority');
+  assert.equal(opened.window1AgentsOpen, false);
 });
 
 test('every window template binds its own context, not the ambient primary labels', () => {
