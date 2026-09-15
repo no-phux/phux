@@ -1,7 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { Clock, Effect } from "effect";
 import {
-  AnalyticsHttp,
   buildEnvelope,
   createClaimToken,
   forwardEnvelope,
@@ -15,8 +14,9 @@ import { handleAnalyticsHttp } from "./analytics-http";
 
 const ENV = {
   ASSETS: { fetch: async () => new Response("x") },
-  ANALYTICS_INGEST_URL: "https://ops.phux.sh/ingest",
-  ANALYTICS_INGEST_KEY: "ingest-key",
+  ANALYTICS: {
+    fetch: async () => new Response(null, { status: 204 }),
+  },
   MEMBER_KEY: "member-key",
   MEMBER_CLAIM_KEY: "claim-key",
 };
@@ -105,38 +105,7 @@ describe("buildEnvelope", () => {
 });
 
 describe("analytics forwarding", () => {
-  test("uses the write-only ingest credential through an injectable service", async () => {
-    const requests: Request[] = [];
-    const program = forwardEnvelope(ENV, {
-      ts: 1,
-      ip: "",
-      country: "",
-      ua: "",
-      referrer_host: "",
-      host: "phux.sh",
-      method: "GET",
-      path: "/",
-      utm_source: "",
-      utm_medium: "",
-      utm_campaign: "",
-      status: 200,
-      content_type: "text/html",
-      accept: "",
-    }).pipe(
-      Effect.provideService(AnalyticsHttp, {
-        execute: (request) =>
-          Effect.sync(() => {
-            requests.push(request);
-            return new Response(null, { status: 204 });
-          }),
-      }),
-    );
-    await Effect.runPromise(program);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]?.headers.get("x-analytics-key")).toBe("ingest-key");
-  });
-
-  test("prefers the service binding without sending an ingest credential", async () => {
+  test("forwards only over the service binding without an ingest credential", async () => {
     let forwarded: Request | undefined;
     await runAnalytics(
       forwardEnvelope(

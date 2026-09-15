@@ -28,9 +28,6 @@ export interface AnalyticsEnv {
   ASSETS?: { fetch(input: Request): Promise<Response> };
   /** Preferred production path: same-account Worker service binding. */
   ANALYTICS?: { fetch(input: Request): Promise<Response> };
-  /** HTTP fallback for local development and staged migration only. */
-  ANALYTICS_INGEST_URL?: string;
-  ANALYTICS_INGEST_KEY?: string;
   MEMBER_KEY?: string;
   MEMBER_CLAIM_KEY?: string;
   MEMBER_CLAIM_KEY_PREVIOUS?: string;
@@ -88,19 +85,12 @@ export const forwardEnvelope = Effect.fn("analytics.forwardEnvelope")(function*(
   envelope: Envelope,
 ): Effect.fn.Return<void, HttpFailure, AnalyticsHttp> {
   if (!canForward(env)) return;
-  const ingestUrl = env.ANALYTICS
-    ? "https://analytics.internal/ingest"
-    : env.ANALYTICS_INGEST_URL!;
+  const ingestUrl = "https://analytics.internal/ingest";
   const http = yield* AnalyticsHttp;
   const response = yield* http.execute(
     new Request(ingestUrl, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...(!env.ANALYTICS && env.ANALYTICS_INGEST_KEY
-          ? { "x-analytics-key": env.ANALYTICS_INGEST_KEY }
-          : {}),
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify({ events: [envelope] }),
     }),
     env.ANALYTICS,
@@ -370,10 +360,7 @@ function claimMessage(memberId: string, expiresAt: number): string {
 }
 
 function canForward(env: AnalyticsEnv): boolean {
-  return Boolean(
-    env.ANALYTICS ||
-      (env.ANALYTICS_INGEST_URL && env.ANALYTICS_INGEST_KEY),
-  );
+  return Boolean(env.ANALYTICS);
 }
 
 function attribution(value: string | null): string {
