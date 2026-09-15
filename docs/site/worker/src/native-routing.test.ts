@@ -103,11 +103,53 @@ describe("native container configuration", () => {
     expect(dockerfile).toContain("USER 10001:10001");
     expect(dockerfile).toContain("EXPOSE 8080 8082");
     expect(dockerfile).toContain("RUSTFLAGS=\"-C target-cpu=x86-64\"");
-    expect(dockerfile).toContain('target == "x86_64-unknown-linux-gnu"');
-    expect(dockerfile).toContain("/opt/zig/lib/std/Random.zig");
-    expect(dockerfile).toContain("max - 1);/'");
+    expect(dockerfile).toContain("LIBGHOSTTY_VT_SYS_CPU=baseline");
     expect(dockerfile).toContain("bun-linux-x64-baseline");
     expect(dockerfile).not.toContain("setpriv --reuid");
+  });
+
+  test("pins installed phux --version to the workspace release", async () => {
+    const dockerfile = await Bun.file(
+      new URL("../Dockerfile", import.meta.url),
+    ).text();
+    const cargo = await Bun.file(
+      new URL("../../../../Cargo.toml", import.meta.url),
+    ).text();
+    const zigPins = await Bun.file(
+      new URL("../../../../.config/zig-toolchain.json", import.meta.url),
+    ).json() as {
+      version: string;
+      archives: { "x86_64-linux": { sha256: string } };
+    };
+    const version = cargo.match(
+      /\[workspace\.package\][\s\S]*?^version = "([^"]+)"/m,
+    )?.[1];
+    const libghosttyRev = cargo.match(
+      /libghostty-rs\.git", rev = "([0-9a-f]{40})"/,
+    )?.[1];
+    const phuxRevision = dockerfile.match(
+      /^ARG PHUX_REVISION=([0-9a-f]{40})$/m,
+    )?.[1];
+
+    expect(version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(dockerfile).toContain(`ARG PHUX_VERSION=${version}`);
+    expect(dockerfile).toContain(
+      'test "$(/usr/local/bin/phux --version)" = "phux $PHUX_VERSION"',
+    );
+    expect(phuxRevision).toMatch(/^[0-9a-f]{40}$/);
+    expect(dockerfile).toContain(
+      `https://github.com/no-phux/phux/archive/${phuxRevision}.tar.gz`,
+    );
+    expect(libghosttyRev).toMatch(/^[0-9a-f]{40}$/);
+    expect(dockerfile).toContain(`ARG LIBGHOSTTY_REVISION=${libghosttyRev}`);
+    expect(dockerfile).toContain(
+      `https://github.com/phall1/libghostty-rs/archive/${libghosttyRev}.tar.gz`,
+    );
+    expect(dockerfile).toContain(`ARG ZIG_VERSION=${zigPins.version}`);
+    expect(dockerfile).toContain(
+      `zig-x86_64-linux-${zigPins.version}.tar.xz`,
+    );
+    expect(dockerfile).toContain(zigPins.archives["x86_64-linux"].sha256);
   });
 
   test("provides a shell toolchain without restoring package management", async () => {
