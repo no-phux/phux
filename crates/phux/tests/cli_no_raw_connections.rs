@@ -64,36 +64,27 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
     ),
     (
         "spawn.rs",
-        7,
+        3,
         "the plain `phux spawn` wire round trip is fully in \
-         `phux_client::spawn`; the residual `Connection::connect` and the \
-         `FrameKind::SpawnResource`/`Command::` uses belong to \
-         `dispatch_spawn_async`'s optional agent-session provenance write and \
-         its same-connection `KILL_RESOURCE` rollback, shared with `phux \
-         launch` (deferred: `AgentSessionRecord` is a CLI-only type, so this \
-         one path stays CLI-side pending an `agent_record.rs` library home).",
-    ),
-    (
-        "new.rs",
-        10,
-        "phux-q00z's create-without-attach path (`phux new`/`phux new \
-         --json`) is not migrated in this pass; deferred to a follow-up \
-         `phux_client::session` extension (the module already exists, for \
-         `rename`).",
+         `phux_client::spawn`; the agent-session provenance write and its \
+         `KILL_RESOURCE` rollback (formerly this file's residue) are fully \
+         in `phux_client::agent_session_record::spawn_with_agent_session_on` \
+         (L21b) — no `Connection::connect`, `.request(`, `.send(&`, \
+         `request_metadata(`, `request_spawn(`, or `command_on(` remains in \
+         this file. The 3 remaining hits are request-shaping, not round \
+         trips: `run_spawn`'s own `FrameKind::SpawnResource` literal, and \
+         `dispatch_spawn_placed`'s `Command::GetState` value passed to the \
+         shared `request_command` helper plus its `FrameKind::SpawnResource` \
+         destructure to stamp `owner_terminal` before the placed spawn.",
     ),
     (
         "launch.rs",
         1,
         "shares `spawn.rs`'s `dispatch_spawn`/`dispatch_spawn_placed` and \
-         builds its own `FrameKind::SpawnResource` from a resolved \
-         integration; deferred with `agent_record.rs` (same \
-         `AgentSessionRecord` coupling).",
-    ),
-    (
-        "upgrade.rs",
-        3,
-        "not migrated in this pass; a small, self-contained residue \
-         (`UPGRADE`) left for a follow-up.",
+         builds its own `FrameKind::SpawnResource` request literal from a \
+         resolved integration, same as `phux spawn`'s own literal \
+         (request-shaping, not a round trip); the wire round trip itself is \
+         fully delegated (L21b).",
     ),
     (
         "spatial.rs",
@@ -159,12 +150,6 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         "not in this lane's write scope (`phux agent answer`); left as-is.",
     ),
     (
-        "agent/record.rs",
-        8,
-        "not in this lane's write scope; `phux_client::agent_record` is a \
-         separate, not-yet-built library home (see this lane's report).",
-    ),
-    (
         "agent/report_state.rs",
         2,
         "not in this lane's write scope (`phux agent report-state`'s \
@@ -175,13 +160,6 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
         1,
         "not in this lane's write scope (`phux agent session` internals); \
          left as-is.",
-    ),
-    (
-        "agent/session.rs",
-        6,
-        "not in this lane's write scope (agent-session provenance encode/\
-         persist, the same `AgentSessionRecord` type `spawn.rs`/`launch.rs` \
-         defer on); left as-is.",
     ),
     (
         "agent/start.rs",

@@ -39,6 +39,10 @@ pub(crate) use self::session::{
     AgentSessionRecord, PreparedAgentSession, fetch_record_index, persist_record, prepare,
     prepare_for_launch,
 };
+// `AgentSessionRecord`/`fetch_record_index`/`persist_record` above are
+// `session.rs` re-exports of `phux_client::agent_session_record` (the wire
+// round trips now live there); `session.rs` keeps only the launch-plan
+// resolution that needs `phux-plugin`.
 
 #[derive(Debug, usage::Subcommands)]
 pub(crate) enum AgentAction {

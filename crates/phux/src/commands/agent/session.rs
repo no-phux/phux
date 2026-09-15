@@ -4,35 +4,23 @@
 //! durable store: terminal metadata dies with the Terminal. `workspace save`
 //! copies a confirmed record into the versioned archive, and restore stamps the
 //! returned replacement Terminal after replaying the provider's native argv.
+//!
+//! The record type and its wire round trips ([`AgentSessionRecord`],
+//! [`persist_record`], [`fetch_record_index`]) live in
+//! `phux_client::agent_session_record` and are re-exported here so the rest
+//! of the CLI keeps its established `crate::commands::agent::{...}` import
+//! path. What stays here is launch-plan resolution
+//! ([`prepare`]/[`prepare_for_launch`]), which depends on `phux-plugin`'s
+//! `ResolvedLaunch` and so cannot live in the headless client library.
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::{Path, PathBuf};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
-use phux_client::attach::connection::{Answer, Connection};
 use phux_plugin::ResolvedLaunch;
-use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{FrameKind, MAX_AGENT_SESSION_RECORD_BYTES, Scope};
-use phux_protocol::wire::info::SessionSnapshot;
-use serde::{Deserialize, Serialize};
 
-pub(crate) use phux_protocol::wire::frame::RESOURCE_AGENT_SESSION_KEY;
-const MAX_PROVENANCE_ID_BYTES: usize = 120;
-
-/// Inert provenance persisted for one exact provider-native agent session.
-///
-/// Executable paths and arguments are deliberately absent. Restore re-resolves
-/// the current enabled integration and uses its current structured argv policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[allow(
-    clippy::struct_field_names,
-    reason = "the versioned L3 schema names each provenance field explicitly"
-)]
-pub(crate) struct AgentSessionRecord {
-    pub(crate) plugin_id: String,
-    pub(crate) integration_id: String,
-    pub(crate) native_id: String,
-}
+pub(crate) use phux_client::agent_session_record::{
+    AgentSessionRecord, fetch_record_index, persist_record,
+};
 
 /// A launch carrying one established or resumed provider-native session.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,40 +29,6 @@ pub(crate) struct PreparedAgentSession {
     pub(crate) argv: Vec<String>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) cwd: PathBuf,
-}
-
-impl AgentSessionRecord {
-    pub(crate) fn new(
-        plugin_id: &str,
-        integration_id: &str,
-        native_id: &str,
-    ) -> Result<Self, String> {
-        validate_provenance("plugin_id", plugin_id)?;
-        validate_provenance("integration_id", integration_id)?;
-        phux_config::integration::validate_native_session_id(native_id)
-            .map_err(|err| err.to_string())?;
-        Ok(Self {
-            plugin_id: plugin_id.to_owned(),
-            integration_id: integration_id.to_owned(),
-            native_id: native_id.to_owned(),
-        })
-    }
-
-    pub(crate) fn encode(&self) -> Result<Vec<u8>, String> {
-        serde_json::to_vec(self)
-            .map_err(|err| format!("could not encode agent session record: {err}"))
-    }
-
-    pub(crate) fn parse(bytes: &[u8]) -> Result<Self, String> {
-        if bytes.is_empty() || bytes.len() > MAX_AGENT_SESSION_RECORD_BYTES {
-            return Err(format!(
-                "invalid {RESOURCE_AGENT_SESSION_KEY}: encoded record must contain 1..={MAX_AGENT_SESSION_RECORD_BYTES} bytes"
-            ));
-        }
-        let raw: Self = serde_json::from_slice(bytes)
-            .map_err(|err| format!("invalid {RESOURCE_AGENT_SESSION_KEY} JSON: {err}"))?;
-        Self::new(&raw.plugin_id, &raw.integration_id, &raw.native_id)
-    }
 }
 
 /// Prepare a native session for a new `phux launch`.
@@ -146,158 +100,4 @@ fn prepare_with_argv(
         env,
         cwd: resolved.cwd.clone(),
     })
-}
-
-/// GET-confirm an atomically installed record, falling back to SET for an older
-/// server that ignored the additive spawn field.
-pub(crate) async fn persist_record(
-    conn: &mut Connection,
-    terminal: &ResourceId,
-    record: &AgentSessionRecord,
-    request_id: u32,
-) -> Result<(), String> {
-    if !matches!(terminal, ResourceId::Local { .. }) {
-        return Err("agent session records are local-terminal only".to_owned());
-    }
-    let value = record.encode()?;
-    let (existing, interleaved) = conn
-        .request_metadata(
-            request_id,
-            Scope::Resource(terminal.clone()),
-            RESOURCE_AGENT_SESSION_KEY.to_owned(),
-        )
-        .await
-        .map_err(|err| err.to_string())?
-        .into_parts();
-    for message in phux_client::state::degradation_notices(&interleaved) {
-        eprintln!("phux: warning: partial results — {message}");
-    }
-    match existing {
-        Answer::Ok(Some(stored)) if stored == value => return Ok(()),
-        Answer::Ok(Some(_)) => {
-            return Err("server returned a different agent session record".to_owned());
-        }
-        Answer::Err(refusal) => {
-            return Err(format!("agent session record was refused: {refusal}"));
-        }
-        Answer::Ok(None) => {}
-    }
-
-    conn.send(&FrameKind::SetMetadata {
-        request_id: request_id.wrapping_add(1),
-        scope: Scope::Resource(terminal.clone()),
-        key: RESOURCE_AGENT_SESSION_KEY.to_owned(),
-        value: value.clone(),
-    })
-    .await
-    .map_err(|err| err.to_string())?;
-    let (answer, interleaved) = conn
-        .request_metadata(
-            request_id.wrapping_add(2),
-            Scope::Resource(terminal.clone()),
-            RESOURCE_AGENT_SESSION_KEY.to_owned(),
-        )
-        .await
-        .map_err(|err| err.to_string())?
-        .into_parts();
-    for message in phux_client::state::degradation_notices(&interleaved) {
-        eprintln!("phux: warning: partial results — {message}");
-    }
-    match answer {
-        Answer::Ok(Some(stored)) if stored == value => Ok(()),
-        Answer::Ok(Some(_)) => Err("server returned a different agent session record".to_owned()),
-        Answer::Ok(None) => Err("agent session record did not persist".to_owned()),
-        Answer::Err(refusal) => Err(format!("agent session record was refused: {refusal}")),
-    }
-}
-
-/// Fetch every valid live resume record by its exact local Terminal id.
-///
-/// Unlike display-only agent metadata, this is not best effort: silently
-/// dropping one record would make a later restore start a blank shell instead
-/// of the saved conversation.
-pub(crate) async fn fetch_record_index(
-    socket_path: &Path,
-    snapshot: &SessionSnapshot,
-) -> Result<HashMap<ResourceId, AgentSessionRecord>, String> {
-    let mut index = HashMap::new();
-    let local = snapshot
-        .resources
-        .iter()
-        .filter(|pane| matches!(pane.id, ResourceId::Local { .. }));
-    let mut conn = Connection::connect(socket_path)
-        .await
-        .map_err(|err| err.to_string())?;
-    for (offset, pane) in local.enumerate() {
-        let request_id = u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(1);
-        let (answer, interleaved) = conn
-            .request_metadata(
-                request_id,
-                Scope::Resource(pane.id.clone()),
-                RESOURCE_AGENT_SESSION_KEY.to_owned(),
-            )
-            .await
-            .map_err(|err| err.to_string())?
-            .into_parts();
-        for message in phux_client::state::degradation_notices(&interleaved) {
-            eprintln!("phux: warning: partial results — {message}");
-        }
-        match answer {
-            Answer::Ok(Some(bytes)) => {
-                index.insert(pane.id.clone(), AgentSessionRecord::parse(&bytes)?);
-            }
-            Answer::Ok(None) => {}
-            Answer::Err(refusal) => {
-                return Err(format!(
-                    "could not read agent session record for {}: {refusal}",
-                    pane.id
-                ));
-            }
-        }
-    }
-    drop(conn);
-    Ok(index)
-}
-
-fn validate_provenance(field: &str, value: &str) -> Result<(), String> {
-    if value.is_empty() || value.len() > MAX_PROVENANCE_ID_BYTES {
-        return Err(format!(
-            "agent session {field} must contain 1..={MAX_PROVENANCE_ID_BYTES} UTF-8 bytes"
-        ));
-    }
-    if value.trim() != value || value.chars().any(char::is_control) {
-        return Err(format!(
-            "agent session {field} must be trimmed and control-free"
-        ));
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn record_round_trips_and_rejects_untrusted_shape() {
-        let record =
-            AgentSessionRecord::new("com.phux.agents", "codex", "thread-42").expect("valid record");
-        assert_eq!(
-            AgentSessionRecord::parse(&record.encode().expect("encode")).expect("parse"),
-            record
-        );
-        assert!(
-            AgentSessionRecord::parse(
-                br#"{"plugin_id":"p","integration_id":"i","native_id":"n","argv":["sh"]}"#
-            )
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn record_rejects_oversized_or_control_bearing_identity() {
-        assert!(AgentSessionRecord::new("p", "i", " line").is_err());
-        assert!(AgentSessionRecord::new("p", "i", &"x".repeat(1_025)).is_err());
-        assert!(AgentSessionRecord::new("p\n", "i", "native").is_err());
-        assert!(AgentSessionRecord::new("p", "i", "--dangerous").is_err());
-    }
 }
