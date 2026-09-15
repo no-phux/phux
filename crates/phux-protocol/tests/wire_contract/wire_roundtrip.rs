@@ -1819,7 +1819,7 @@ proptest! {
     ) {
         assert_round_trip(&FrameKind::Command {
             request_id,
-            command: Command::KillResource { terminal_id },
+            command: Command::KillResource { terminal_id, operation_id: None },
         });
     }
 
@@ -1839,7 +1839,7 @@ proptest! {
         };
         assert_round_trip(&FrameKind::Command {
             request_id,
-            command: Command::KillResourceIf { terminal_id, precondition },
+            command: Command::KillResourceIf { terminal_id, precondition, operation_id: None },
         });
     }
 
@@ -1989,6 +1989,7 @@ fn command_signal_terminal_round_trips() {
             command: Command::SignalTerminal {
                 terminal_id: ResourceId::local(3),
                 signal,
+                operation_id: None,
             },
         });
     }
@@ -2406,7 +2407,10 @@ fn command_kill_terminals_round_trips() {
     ] {
         assert_round_trip(&FrameKind::Command {
             request_id: 31,
-            command: Command::KillResources { ids },
+            command: Command::KillResources {
+                ids,
+                operation_id: None,
+            },
         });
     }
 }

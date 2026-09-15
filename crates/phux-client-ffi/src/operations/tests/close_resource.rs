@@ -98,7 +98,8 @@ fn satellite_close_preserves_bound_instance_and_authoritative_refusal() {
                 precondition: KillPrecondition {
                     instance: Some(ServerInstance::new([7; 16])),
                     conditions: phux_protocol::wire::frame::KillConditions::NONE
-                }
+                },
+                operation_id: None,
             }
         }
     );
@@ -255,7 +256,8 @@ fn batch_close_validates_every_owner_before_one_atomic_command() {
         FrameKind::Command {
             request_id: 2,
             command: Command::KillResources {
-                ids: vec![ResourceId::local(1), ResourceId::local(9)]
+                ids: vec![ResourceId::local(1), ResourceId::local(9)],
+                operation_id: None,
             }
         }
     );
@@ -505,7 +507,8 @@ fn explicit_close_requires_live_owned_attachment_and_keeps_state_until_server_cl
         FrameKind::Command {
             request_id: 1,
             command: Command::KillResource {
-                terminal_id: ResourceId::local(1)
+                terminal_id: ResourceId::local(1),
+                operation_id: None,
             }
         }
     );
@@ -662,7 +665,8 @@ fn explicit_close_uses_retained_instance_without_abandonment_conditions() {
                 precondition: KillPrecondition {
                     instance: Some(token),
                     conditions: phux_protocol::wire::frame::KillConditions::NONE
-                }
+                },
+                operation_id: None,
             }
         }
     );

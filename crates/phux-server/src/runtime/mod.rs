@@ -52,6 +52,7 @@ mod directory;
 mod ephemeral_listener;
 pub mod idempotent_create;
 pub mod input_lane;
+pub mod keyed_ops;
 pub mod operation_dedupe;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;

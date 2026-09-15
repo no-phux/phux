@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-07-24
+last-reviewed: 2026-09-15
 ---
 
 # 0053 — Acknowledged idempotent input batches
@@ -62,6 +62,15 @@ connection-local reply correlation and is remapped by federation.
    `UNSUPPORTED_SATELLITE_ROUTE`; federation needs destination capability
    negotiation and destination-owned dedupe before it can preserve this
    contract.
+
+<!-- impl-status: shipped; probe: KeyedSignal -->
+> **Status: shipped (0.9.0-draft.24).** Item 7's condition is met: a hub that
+> advertises `KEYED_SIGNAL` forwards `APPLY_INPUT` to a satellite that
+> advertises `ACKNOWLEDGED_INPUT`, the satellite owns the dedupe, and the hub
+> answers `INCARNATION_CHANGED` instead of forwarding a retry across the
+> satellite's restart (L1.md §9.1). Any other satellite target still returns
+> `UNSUPPORTED_SATELLITE_ROUTE`.
+
 8. Latency-sensitive interactive `INPUT_*` and existing `ROUTE_INPUT` remain
    fire-and-forget. Consumers use `APPLY_INPUT` for atomic submit, paste, agent
    answers, and other actions where honest completion matters.

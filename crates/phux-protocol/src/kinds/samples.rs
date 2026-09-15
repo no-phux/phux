@@ -93,6 +93,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
         (
             Command::KillResource {
                 terminal_id: terminal(),
+                operation_id: None,
             },
             &C_KILL_RESOURCE,
         ),
@@ -129,6 +130,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
         (
             Command::KillResources {
                 ids: vec![terminal()],
+                operation_id: None,
             },
             &C_KILL_RESOURCES,
         ),
@@ -177,6 +179,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             Command::SignalTerminal {
                 terminal_id: terminal(),
                 signal: TerminalSignal::Interrupt,
+                operation_id: None,
             },
             &C_SIGNAL_TERMINAL,
         ),
@@ -229,6 +232,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
             Command::KillResourceIf {
                 terminal_id: terminal(),
                 precondition: KillPrecondition::default(),
+                operation_id: None,
             },
             &C_KILL_RESOURCE_IF,
         ),

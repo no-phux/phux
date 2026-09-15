@@ -409,17 +409,22 @@ async fn signal_freezes_resumes_and_kills_the_child() {
         reason = "current-thread test helper; the actor's TerminalHandle is intentionally !Sync"
     )]
     async fn next_control(
-        rx: &mut mpsc::Receiver<AgentEvent>,
-    ) -> (ControlAction, ResourceLifecycle) {
+        rx: &mut mpsc::Receiver<crate::resource::event_sink::Emitted>,
+    ) -> (
+        ControlAction,
+        ResourceLifecycle,
+        Option<phux_protocol::ids::IdempotencyKey>,
+    ) {
         // Scan past any incidental grid events (Dirty/Idle) for the next
         // supervisory TerminalControl emission.
         let scan = async {
             loop {
+                let emitted = rx.recv().await.expect("event channel open");
                 if let AgentEvent::TerminalControl {
                     action, lifecycle, ..
-                } = rx.recv().await.expect("event channel open")
+                } = emitted.event
                 {
-                    return (action, lifecycle);
+                    return (action, lifecycle, emitted.operation_id);
                 }
             }
         };
@@ -470,7 +475,7 @@ async fn signal_freezes_resumes_and_kills_the_child() {
             // Wire the agent-event sink so we observe the TerminalControl
             // emissions the runtime would journal.
             let mut actor = bundle.actor;
-            let (evt_tx, mut evt_rx) = mpsc::channel::<AgentEvent>(64);
+            let (evt_tx, mut evt_rx) = mpsc::channel::<crate::resource::event_sink::Emitted>(64);
             actor.set_event_sink(evt_tx);
             tokio::task::spawn_local(actor.run());
 
@@ -485,13 +490,19 @@ async fn signal_freezes_resumes_and_kills_the_child() {
                     input_holder: None,
                     by,
                     reply,
+                    operation_id: phux_protocol::ids::IdempotencyKey::new([4; 16]),
                 })
                 .await
                 .expect("send freeze");
             ack.await.expect("freeze ack").expect("freeze delivered");
-            let (action, lifecycle) = next_control(&mut evt_rx).await;
+            let (action, lifecycle, operation_id) = next_control(&mut evt_rx).await;
             assert_eq!(action, ControlAction::Frozen);
             assert_eq!(lifecycle, ResourceLifecycle::Frozen);
+            assert_eq!(
+                operation_id,
+                phux_protocol::ids::IdempotencyKey::new([4; 16]),
+                "a keyed signal's terminal_control carries its operation_id (L1 §5.1.1)"
+            );
 
             // Resume → Running.
             let (reply, ack) = oneshot::channel();
@@ -502,11 +513,13 @@ async fn signal_freezes_resumes_and_kills_the_child() {
                     input_holder: None,
                     by,
                     reply,
+                    operation_id: None,
                 })
                 .await
                 .expect("send resume");
             ack.await.expect("resume ack").expect("resume delivered");
-            let (action, lifecycle) = next_control(&mut evt_rx).await;
+            let (action, lifecycle, operation_id) = next_control(&mut evt_rx).await;
+            assert_eq!(operation_id, None, "an unkeyed signal carries none");
             assert_eq!(action, ControlAction::Resumed);
             assert_eq!(lifecycle, ResourceLifecycle::Running);
 
@@ -519,6 +532,7 @@ async fn signal_freezes_resumes_and_kills_the_child() {
                     input_holder: None,
                     by,
                     reply,
+                    operation_id: None,
                 })
                 .await
                 .expect("send kill");

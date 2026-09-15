@@ -400,6 +400,7 @@ fn signal_terminal(
         command: Command::SignalTerminal {
             terminal_id: focused_id,
             signal,
+            operation_id: None,
         },
     });
 }

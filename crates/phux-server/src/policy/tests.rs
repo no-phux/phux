@@ -338,10 +338,12 @@ fn samples(world: &World) -> Vec<FrameKind> {
         }),
         command(Command::KillResource {
             terminal_id: t.clone(),
+            operation_id: None,
         }),
         command(Command::KillResourceIf {
             terminal_id: t.clone(),
             precondition: KillPrecondition::default(),
+            operation_id: None,
         }),
         command(get_screen(t.clone())),
         command(Command::RouteInput {
@@ -355,6 +357,7 @@ fn samples(world: &World) -> Vec<FrameKind> {
         }),
         command(Command::KillResources {
             ids: vec![t.clone()],
+            operation_id: None,
         }),
         command(Command::CloseTabResources {
             ids: vec![t.clone()],
@@ -380,6 +383,7 @@ fn samples(world: &World) -> Vec<FrameKind> {
         command(Command::SignalTerminal {
             terminal_id: t.clone(),
             signal: TerminalSignal::Interrupt,
+            operation_id: None,
         }),
         command(Command::ReportAgentState {
             terminal_id: t.clone(),

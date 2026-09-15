@@ -131,6 +131,7 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
                     request_id: req_id,
                     command: Command::KillResource {
                         terminal_id: id.clone(),
+                        operation_id: None,
                     },
                 },
             )
@@ -150,6 +151,7 @@ fn spawn_storm_then_kill_storm_does_not_panic() {
                 request_id: req_id,
                 command: Command::KillResource {
                     terminal_id: spawned[0].clone(),
+                    operation_id: None,
                 },
             },
         )
@@ -215,7 +217,10 @@ fn kill_last_pane_reaps_session_cleanly() {
             &mut stream,
             &FrameKind::Command {
                 request_id: 1,
-                command: Command::KillResource { terminal_id: seed },
+                command: Command::KillResource {
+                    terminal_id: seed,
+                    operation_id: None,
+                },
             },
         )
         .await;

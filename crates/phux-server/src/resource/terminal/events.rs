@@ -32,6 +32,27 @@ impl TerminalActor {
         }
     }
 
+    /// Emit a signal's `terminal_control`, attributed to the client that
+    /// sent it and to its `operation_id` when keyed (L1 §5.1.1, §7.3).
+    pub(super) fn emit_signal_control(
+        &self,
+        action: ControlAction,
+        input_holder: Option<phux_protocol::ClientId>,
+        by: phux_protocol::ClientId,
+        operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+    ) {
+        let event = AgentEvent::TerminalControl {
+            lifecycle: self.lifecycle,
+            exit_status: None,
+            input_holder,
+            action,
+            actor: Some(by),
+        };
+        if let Some(sink) = self.event_sink.as_ref() {
+            sink.emit_keyed(event, operation_id);
+        }
+    }
+
     /// Wire the agent-state detector's sink (ADR-0046). The actor's detector
     /// timer emits edge-filtered [`AgentDetectEvent`]s here; the runtime's
     /// `spawn_agent_state_drain` owns `ServerState` and performs the
@@ -449,6 +470,7 @@ impl TerminalActor {
                 signal,
                 input_holder,
                 by,
+                operation_id,
                 reply,
             } => {
                 let result = self.deliver_signal(signal);
@@ -470,7 +492,7 @@ impl TerminalActor {
                         TerminalSignal::Terminate => ControlAction::Terminated,
                         TerminalSignal::Kill => ControlAction::Killed,
                     };
-                    self.emit_terminal_control(action, input_holder, Some(by), None);
+                    self.emit_signal_control(action, input_holder, by, operation_id);
                 }
                 let _ = reply.send(result);
             }

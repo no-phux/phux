@@ -36,8 +36,18 @@ impl ServerState {
         terminal: &WireResourceId,
         precondition: &KillPrecondition,
     ) -> Result<(), KillIfRefusal> {
+        self.kill_resource_if_attributed(terminal, precondition, super::CloseAttribution::default())
+    }
+
+    /// [`Self::kill_resource_if`], stamping the closes with `attribution`.
+    pub fn kill_resource_if_attributed(
+        &mut self,
+        terminal: &WireResourceId,
+        precondition: &KillPrecondition,
+        attribution: super::CloseAttribution,
+    ) -> Result<(), KillIfRefusal> {
         let core = self.admit_conditional_kill(terminal, precondition)?;
-        self.close_resources(&[core], CloseReason::Killed);
+        self.close_resources_attributed(&[core], CloseReason::Killed, attribution);
         Ok(())
     }
 

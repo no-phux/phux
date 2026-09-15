@@ -329,6 +329,7 @@ fn spawn_retain_then_wait_exit_after_the_fact_reads_status() {
             1002,
             Command::KillResource {
                 terminal_id: pane.clone(),
+                operation_id: None,
             },
         )
         .await;

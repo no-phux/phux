@@ -272,7 +272,15 @@ fn group_kill_detaches_clients_attached_to_a_keep_empty_session() {
         // Barrier: the subscribe ran before this answer was produced.
         get_state(&mut client, 50).await;
 
-        command_ok(&mut conn, 2, Command::KillResources { ids: vec![pane] }).await;
+        command_ok(
+            &mut conn,
+            2,
+            Command::KillResources {
+                ids: vec![pane],
+                operation_id: None,
+            },
+        )
+        .await;
 
         let mut released = false;
         let reason = loop {
@@ -332,7 +340,15 @@ fn losing_the_last_window_deletes_the_stored_layout() {
                 .is_some()
         );
 
-        command_ok(&mut conn, 5, Command::KillResource { terminal_id: pane }).await;
+        command_ok(
+            &mut conn,
+            5,
+            Command::KillResource {
+                terminal_id: pane,
+                operation_id: None,
+            },
+        )
+        .await;
         wait_for_state(&mut conn, 100, "the last window to go", |s| {
             session(s, "kept").is_some_and(SessionInfo::is_empty)
         })
@@ -392,7 +408,15 @@ fn ordinary_session_reap_deletes_every_layout_key_it_wrote() {
                 .is_some()
         );
 
-        command_ok(&mut conn, 6, Command::KillResource { terminal_id: pane }).await;
+        command_ok(
+            &mut conn,
+            6,
+            Command::KillResource {
+                terminal_id: pane,
+                operation_id: None,
+            },
+        )
+        .await;
         wait_for_state(&mut conn, 100, "the ordinary session to be reaped", |s| {
             session(s, "gone").is_none()
         })
@@ -482,8 +506,24 @@ fn cascade_stops_at_a_keep_empty_session() {
 
         let kept = create_seeded(&mut conn, "kept", true, 1).await;
         let plain = create_seeded(&mut conn, "plain", false, 2).await;
-        command_ok(&mut conn, 3, Command::KillResource { terminal_id: kept }).await;
-        command_ok(&mut conn, 4, Command::KillResource { terminal_id: plain }).await;
+        command_ok(
+            &mut conn,
+            3,
+            Command::KillResource {
+                terminal_id: kept,
+                operation_id: None,
+            },
+        )
+        .await;
+        command_ok(
+            &mut conn,
+            4,
+            Command::KillResource {
+                terminal_id: plain,
+                operation_id: None,
+            },
+        )
+        .await;
 
         let snapshot = wait_for_state(&mut conn, 100, "both reaps", |s| {
             session(s, "plain").is_none() && session(s, "kept").is_some_and(SessionInfo::is_empty)
@@ -507,7 +547,15 @@ fn kill_resources_naming_every_pane_removes_a_keep_empty_session() {
         let (mut conn, shutdown_tx, server) = start(&tmp).await;
 
         let pane = create_seeded(&mut conn, "kept", true, 1).await;
-        command_ok(&mut conn, 2, Command::KillResources { ids: vec![pane] }).await;
+        command_ok(
+            &mut conn,
+            2,
+            Command::KillResources {
+                ids: vec![pane],
+                operation_id: None,
+            },
+        )
+        .await;
         wait_for_state(&mut conn, 100, "the session to go", |s| {
             session(s, "kept").is_none()
         })
@@ -654,7 +702,15 @@ fn clearing_keep_empty_on_a_windowless_session_deletes_its_layout_keys_too() {
 
         // The window closes while the session is still keep-empty; the
         // session survives, windowless.
-        command_ok(&mut conn, 3, Command::KillResource { terminal_id: pane }).await;
+        command_ok(
+            &mut conn,
+            3,
+            Command::KillResource {
+                terminal_id: pane,
+                operation_id: None,
+            },
+        )
+        .await;
         wait_for_state(&mut conn, 100, "the last window to go", |s| {
             session(s, "kept").is_some_and(SessionInfo::is_empty)
         })

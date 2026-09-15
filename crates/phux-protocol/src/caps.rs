@@ -1022,6 +1022,15 @@ pub const ATTACH_ROLES: u32 = 0x0800_0000;
 /// atomic close that does not release keep-empty on a fully covered session.
 pub const CLOSE_TAB_RESOURCES: u32 = 0x1000_0000;
 
+/// Wire bit advertising keyed supervisory commands and federated input.
+///
+/// Covers (`docs/spec/L1.md` §5.1.1, §9.1) the trailing
+/// `operation_id` of `KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`,
+/// and `SIGNAL_TERMINAL`, `operation_id` on the events they cause, and a
+/// hub that forwards keyed operations and `APPLY_INPUT` to its satellites
+/// behind an incarnation fence (`INCARNATION_CHANGED`).
+pub const KEYED_SIGNAL: u32 = 0x2000_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1171,6 +1180,17 @@ pub enum ServerFeature {
     /// the mark (ADR-0105, ADR-0114). A client MUST see this bit before
     /// sending the command: an older server cannot decode the tag.
     CloseTabResources = CLOSE_TAB_RESOURCES,
+    /// The server honors the trailing `operation_id` of `KILL_RESOURCE`,
+    /// `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and `SIGNAL_TERMINAL`: a repeat
+    /// with the same key and command answers the first result and runs
+    /// nothing, a different command under the key is refused, and the events
+    /// the operation causes carry the key. As a federation hub it forwards
+    /// keyed operations and `APPLY_INPUT` to a satellite that evaluates them,
+    /// and answers `INCARNATION_CHANGED` instead of forwarding a retry across
+    /// a satellite restart. A server without the bit ignores the trailing
+    /// bytes and runs the command again, so a client MUST see the bit before
+    /// it retries a keyed command blind.
+    KeyedSignal = KEYED_SIGNAL,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1201,7 +1221,8 @@ impl ServerFeatureSet {
         | (ServerFeature::RetainOnExit as u32)
         | (ServerFeature::SpawnIdempotency as u32)
         | (ServerFeature::AttachRoles as u32)
-        | (ServerFeature::CloseTabResources as u32);
+        | (ServerFeature::CloseTabResources as u32)
+        | (ServerFeature::KeyedSignal as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -2058,6 +2079,7 @@ mod tests {
             "CLOSE_TAB_RESOURCES",
             CLOSE_TAB_RESOURCES,
         ),
+        (ServerFeature::KeyedSignal, "KEYED_SIGNAL", KEYED_SIGNAL),
     ];
 
     /// Each feature is one distinct bit, the known mask is exactly their
@@ -2092,5 +2114,6 @@ mod tests {
         assert_eq!(SPAWN_IDEMPOTENCY, 0x0400_0000);
         assert_eq!(ATTACH_ROLES, 0x0800_0000);
         assert_eq!(CLOSE_TAB_RESOURCES, 0x1000_0000);
+        assert_eq!(KEYED_SIGNAL, 0x2000_0000);
     }
 }

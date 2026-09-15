@@ -496,6 +496,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::RetainOnExit,
         ServerFeature::AttachRoles,
         ServerFeature::CloseTabResources,
+        ServerFeature::KeyedSignal,
     ])
 }
 
@@ -666,13 +667,13 @@ mod pane_event_drain_tests {
         let mut s = crate::state::ServerState::new();
         let (_session, _window, pane) = s.seed_session("drain");
         let wire = s.intern_terminal_wire(pane);
-        journal_drained_event(&mut s, &wire, AgentEvent::Bell, 0);
+        journal_drained_event(&mut s, &wire, AgentEvent::Bell.into(), 0);
         let live = s.journal_head();
         assert_eq!(live, 1, "a live pane's event is journaled");
         let _ = reap_pane_journaling_close(&mut s, pane);
         let closed = s.journal_head();
         assert_eq!(closed, live + 1, "the close");
-        journal_drained_event(&mut s, &wire, AgentEvent::Bell, 2);
+        journal_drained_event(&mut s, &wire, AgentEvent::Bell.into(), 2);
         assert_eq!(s.journal_head(), closed, "nothing follows pane_closed");
     }
 }
@@ -787,7 +788,13 @@ pub(crate) fn reap_pane_journaling_close(
     let parent = s
         .resource_parent(pane)
         .map(|parent| s.intern_terminal_wire(parent));
-    journal_pane_closed(s, &wire, parent.as_ref(), None);
+    journal_pane_closed(
+        s,
+        &wire,
+        parent.as_ref(),
+        None,
+        crate::state::CloseAttribution::default(),
+    );
     s.reap_terminal(pane)
 }
 
@@ -807,15 +814,20 @@ fn journal_pending_events(s: &mut crate::state::ServerState, events: &mut PaneEv
 fn journal_drained_event(
     s: &mut crate::state::ServerState,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
-    event: AgentEvent,
+    emitted: crate::resource::event_sink::Emitted,
     dropped: u64,
 ) {
     if !pane_is_live(s, wire_terminal_id) {
         return;
     }
+    let crate::resource::event_sink::Emitted {
+        event,
+        operation_id,
+    } = emitted;
     let actor = control_actor(&event);
-    let record =
-        crate::state::EventRecord::new(Some(wire_terminal_id.clone()), event).with_actor(actor);
+    let record = crate::state::EventRecord::new(Some(wire_terminal_id.clone()), event)
+        .with_actor(actor)
+        .with_operation_id(operation_id);
     let _ = s.record_and_fanout(record);
     journal_source_gap(s, wire_terminal_id, dropped);
 }
@@ -1464,7 +1476,9 @@ async fn hold_until_purge(
 
 /// The next event a pane's engine emits; pending forever once the source is
 /// gone, so a held pane waits only on its purge.
-async fn next_pane_event(events: &mut Option<PaneEvents>) -> Option<AgentEvent> {
+async fn next_pane_event(
+    events: &mut Option<PaneEvents>,
+) -> Option<crate::resource::event_sink::Emitted> {
     match events.as_mut() {
         Some(events) => events.source.recv().await,
         None => std::future::pending().await,
@@ -1476,7 +1490,7 @@ async fn next_pane_event(events: &mut Option<PaneEvents>) -> Option<AgentEvent> 
 fn journal_held_event(
     state: &SharedState,
     events: &mut Option<PaneEvents>,
-    event: Option<AgentEvent>,
+    event: Option<crate::resource::event_sink::Emitted>,
 ) {
     let Some(pane_events) = events.as_mut() else {
         return;
@@ -1556,7 +1570,14 @@ fn reap_exited_pane(
     // removes the pane, so "absent from a snapshot" and "its close was
     // journaled" can never disagree. A `watch`-only client that never
     // attached learns of the close here too.
-    journal_pane_closed(s, &wire_terminal_id, parent.as_ref(), exit.status);
+    let attribution = s.take_close_attribution(pane);
+    journal_pane_closed(
+        s,
+        &wire_terminal_id,
+        parent.as_ref(),
+        exit.status,
+        attribution,
+    );
     // phux-60s: reap the dead pane, cascading to its window and session when
     // they empty. Done here (inside the same lock that gathered subscribers)
     // so no ATTACH can interleave between "gather" and "reap".
@@ -1615,7 +1636,14 @@ fn cascade_children(
         // ADR-0123: journaled in the lock that reaps it, children first, so
         // a snapshot cut after this lock never shows a resource whose close a
         // subscriber has not been sent.
-        journal_pane_closed(s, &wire_child_id, Some(wire_terminal_id), child_exit.status);
+        let attribution = s.take_close_attribution(child);
+        journal_pane_closed(
+            s,
+            &wire_child_id,
+            Some(wire_terminal_id),
+            child_exit.status,
+            attribution,
+        );
         s.reap_terminal(child);
         cascaded.push(CascadedClose {
             wire_terminal_id: wire_child_id,
@@ -1817,12 +1845,17 @@ fn journal_pane_closed(
     wire_terminal_id: &phux_protocol::ids::ResourceId,
     parent: Option<&phux_protocol::ids::ResourceId>,
     exit_status: Option<i32>,
+    attribution: crate::state::CloseAttribution,
 ) {
+    // A kill names the connection that sent it and, when keyed, its
+    // `operation_id` (L1 §5.1.1, §7.3); a natural exit names neither.
     let record = crate::state::EventRecord::new(
         Some(wire_terminal_id.clone()),
         AgentEvent::ResourceClosed { exit_status },
     )
-    .with_parent(parent.cloned());
+    .with_parent(parent.cloned())
+    .with_actor(attribution.actor)
+    .with_operation_id(attribution.operation_id);
     let _ = s.record_and_fanout(record);
 }
 
@@ -5165,9 +5198,9 @@ pub(crate) async fn handle_list_metadata(
 /// Routing is the eventual answer, but it is not this change. It needs a
 /// return leg that re-tags `Scope::Resource(Local(id))` to
 /// `Scope::Resource(Satellite { host, id })`, a decision about what `Global`
-/// and `Group` scopes even mean across a federation boundary, and — to be
-/// worth having — the federated `APPLY_INPUT` that would let a caller act on
-/// what it observed (phux-2en, post-1.0). A refusal is upgradeable to
+/// and `Group` scopes even mean across a federation boundary. The federated
+/// `APPLY_INPUT` that lets a caller act on what it observed now exists (L1
+/// §9.1), so routing is worth having when it comes. A refusal is upgradeable to
 /// routing without breaking a single consumer: today's `ERROR` becomes
 /// tomorrow's `METADATA_CHANGED`, and nothing that works now stops working.
 ///

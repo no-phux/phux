@@ -4,6 +4,7 @@ mod agent_session;
 mod attach_roles;
 mod conditional_kill;
 mod keep_empty;
+mod keyed_signal;
 mod lease_ttl;
 mod retain_on_exit;
 mod seed_pane_spawned;

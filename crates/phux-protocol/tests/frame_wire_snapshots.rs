@@ -533,6 +533,7 @@ fn frame_fixtures() -> Vec<(&'static str, FrameKind)> {
                         phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
                             phux_protocol::ids::ServerInstance::new([0xA5; 16]),
                         ),
+                    operation_id: None,
                 },
             },
         ),

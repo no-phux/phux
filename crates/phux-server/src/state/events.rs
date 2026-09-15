@@ -532,18 +532,34 @@ impl ServerState {
     /// The satellite's time and operation cross the hub; its actor does
     /// not, because it names a connection on the satellite. The actor of a
     /// relayed event is the hub's link, which has no client id here, so the
-    /// event carries none. The event is not retained: a cursor on a
-    /// satellite scope is answered with a gap
-    /// ([`Self::subscribe_satellite_events`]).
+    /// event carries none, unless the hub knows which of its consumers sent
+    /// the keyed operation that caused it ([`Self::record_relayed_event_as`]).
+    /// The event is not retained: a cursor on a satellite scope is answered
+    /// with a gap ([`Self::subscribe_satellite_events`]).
     pub fn record_relayed_event(
         &mut self,
         terminal: WireResourceId,
         event: AgentEvent,
         satellite: Option<&EventStamp>,
     ) -> Option<u64> {
+        self.record_relayed_event_as(terminal, event, satellite, None)
+    }
+
+    /// [`Self::record_relayed_event`], attributed to `actor`: the hub
+    /// consumer whose keyed operation the satellite's stamp names by its
+    /// `operation_id` (`docs/spec/L1.md` §9.1).
+    pub fn record_relayed_event_as(
+        &mut self,
+        terminal: WireResourceId,
+        event: AgentEvent,
+        satellite: Option<&EventStamp>,
+        actor: Option<super::ClientId>,
+    ) -> Option<u64> {
         let seq = self.journal.allocate_seq()?;
         let ts_ms = satellite.map_or_else(now_unix_ms, |stamp| stamp.ts_ms);
+        let actor = actor.map(|client| self.clients.actor_ref(client));
         let stamp = EventStamp::new(seq, ts_ms)
+            .with_actor(actor)
             .with_operation_id(satellite.and_then(|stamp| stamp.operation_id));
         let entry = JournalEntry::relayed(terminal, event, stamp);
         self.clients.offer_event(&entry);

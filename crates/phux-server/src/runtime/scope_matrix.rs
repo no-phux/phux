@@ -492,6 +492,7 @@ async fn relayed_command_is_authorized_on_the_hub_before_forwarding() {
                 5,
                 Command::KillResource {
                     terminal_id: WireResourceId::satellite("devbox", 5),
+                    operation_id: None,
                 },
             );
             for (scope, want) in [

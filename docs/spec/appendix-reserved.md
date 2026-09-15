@@ -120,6 +120,8 @@ proposal and is never reused. `CODEC_UNAVAILABLE = 6` is allocated by ADR-0070.
 and `OVERFLOW = 211` are allocated by the resource model
 ([proto.md §9](./proto.md); [L1.md §1.1, §5.5](./L1.md)).
 `PRECONDITION_FAILED = 212` is allocated by ADR-0109 ([L1.md §5.2.1](./L1.md)).
+`INCARNATION_CHANGED = 213` is allocated by the federation incarnation fence
+([L1.md §9.1](./L1.md)).
 
 `KILL_RESOURCE_IF` condition bits ([L1.md §5.2.1](./L1.md)) allocate upward
 from `0x01`: `0x01 UNATTACHED_SINCE_SPAWN` is taken. A decoder keeps a bit it
