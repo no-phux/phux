@@ -19,14 +19,14 @@ use crate::wire::field;
 
 use super::{
     ATTACH_TARGET_BY_ID, ATTACH_TARGET_BY_NAME, ATTACH_TARGET_CREATE_IF_MISSING,
-    ATTACH_TARGET_LAST, AttachTarget, MOVE_ERROR_TAG_MOVE_FAILED,
+    ATTACH_TARGET_LAST, ActorRef, AttachTarget, MOVE_ERROR_TAG_MOVE_FAILED,
     MOVE_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE, MOVE_RESULT_ERR, MOVE_RESULT_OK, MoveError,
     MoveResult, SCOPE_TAG_GLOBAL, SCOPE_TAG_GROUP, SCOPE_TAG_RESOURCE,
-    SPAWN_ERROR_TAG_GROUP_NOT_FOUND, SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH,
-    SPAWN_ERROR_TAG_PARENT_NOT_FOUND, SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE,
-    SPAWN_ERROR_TAG_SPAWN_FAILED, SPAWN_ERROR_TAG_UNSUPPORTED_KIND,
-    SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE, SPAWN_RESULT_ERR, SPAWN_RESULT_OK, Scope,
-    SpawnError, SpawnResult, ViewportInfo,
+    SPAWN_ERROR_TAG_GROUP_NOT_FOUND, SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT,
+    SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH, SPAWN_ERROR_TAG_PARENT_NOT_FOUND,
+    SPAWN_ERROR_TAG_SATELLITE_UNREACHABLE, SPAWN_ERROR_TAG_SPAWN_FAILED,
+    SPAWN_ERROR_TAG_UNSUPPORTED_KIND, SPAWN_ERROR_TAG_UNSUPPORTED_SATELLITE_ROUTE,
+    SPAWN_RESULT_ERR, SPAWN_RESULT_OK, Scope, SpawnError, SpawnResult, ViewportInfo,
 };
 
 // -----------------------------------------------------------------------------
@@ -673,8 +673,12 @@ pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encod
     match result {
         // A bound result is the same `Ok` bytes; its instance token rides
         // `RESOURCE_SPAWNED` field 3, which an older decoder skips.
+        // A replayed result is the same `Ok` bytes too; its flag rides field 4.
         SpawnResult::Ok(terminal_id)
         | SpawnResult::OkBound {
+            id: terminal_id, ..
+        }
+        | SpawnResult::Replayed {
             id: terminal_id, ..
         } => {
             enc.write_u8(SPAWN_RESULT_OK);
@@ -685,6 +689,35 @@ pub(in crate::wire) fn encode_spawn_result(result: &SpawnResult, enc: &mut Encod
             encode_spawn_error(err, enc);
         }
     }
+}
+
+/// Write an [`ActorRef`] positionally: `client: u32 || credential_id:
+/// optional<str> || client_name: optional<str>` (ADR-0123).
+pub(in crate::wire) fn encode_actor_ref(actor: &ActorRef, enc: &mut Encoder<'_>) {
+    enc.write_u32_be(actor.client.get());
+    crate::wire::info::encode_option_str(actor.credential_id.as_deref(), enc);
+    crate::wire::info::encode_option_str(actor.client_name.as_deref(), enc);
+}
+
+/// Read an [`ActorRef`] written by [`encode_actor_ref`].
+pub(in crate::wire) fn decode_actor_ref(dec: &mut Decoder<'_>) -> Result<ActorRef, DecodeError> {
+    let client = crate::ids::ClientId::new(dec.read_u32_be()?);
+    let credential_id = crate::wire::info::decode_option_str(dec)?.map(str::to_owned);
+    let client_name = crate::wire::info::decode_option_str(dec)?.map(str::to_owned);
+    Ok(ActorRef::new(client)
+        .with_credential_id(credential_id)
+        .with_client_name(client_name))
+}
+
+/// Read an [`IdempotencyKey`](crate::ids::IdempotencyKey) from a field value
+/// that must be exactly 16 non-zero bytes.
+pub(in crate::wire) fn decode_idempotency_key(
+    value: &[u8],
+) -> Result<crate::ids::IdempotencyKey, DecodeError> {
+    let bytes: [u8; 16] = value
+        .try_into()
+        .map_err(|_| DecodeError::InvalidIdempotencyKey)?;
+    crate::ids::IdempotencyKey::new(bytes).ok_or(DecodeError::InvalidIdempotencyKey)
 }
 
 /// Write a [`ServerInstance`](crate::ids::ServerInstance) as its 16 raw bytes.
@@ -741,6 +774,7 @@ fn encode_spawn_error(err: &SpawnError, enc: &mut Encoder<'_>) {
         SpawnError::UnsupportedKind => enc.write_u8(SPAWN_ERROR_TAG_UNSUPPORTED_KIND),
         SpawnError::ParentNotFound => enc.write_u8(SPAWN_ERROR_TAG_PARENT_NOT_FOUND),
         SpawnError::ParentKindMismatch => enc.write_u8(SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH),
+        SpawnError::IdempotencyConflict => enc.write_u8(SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT),
     }
 }
 
@@ -756,6 +790,7 @@ fn decode_spawn_error(dec: &mut Decoder<'_>) -> Result<SpawnError, DecodeError> 
         SPAWN_ERROR_TAG_UNSUPPORTED_KIND => Ok(SpawnError::UnsupportedKind),
         SPAWN_ERROR_TAG_PARENT_NOT_FOUND => Ok(SpawnError::ParentNotFound),
         SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH => Ok(SpawnError::ParentKindMismatch),
+        SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT => Ok(SpawnError::IdempotencyConflict),
         other => Err(DecodeError::UnknownEnumValue {
             field: "SpawnError",
             value: u32::from(other),

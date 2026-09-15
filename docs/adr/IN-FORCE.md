@@ -23,6 +23,8 @@ by a newer one, the newer line is the operative reading.
 
 ## Identity and kinds
 
+- [0126](./0126-idempotent-create.md) A spawn may carry a client key; a retry with the same key and payload returns the original resource, and a different payload is refused.
+- [0124](./0124-retain-on-exit.md) A spawn may ask to keep its Terminal after exit; the exit becomes a facet and `RESOURCE_CLOSED` stays the one purge.
 - [0104](./0104-parent-bindings-are-l1-lifecycle.md) A parent is bound at spawn; closing it closes every child with `ParentClosed`, atomically.
 - [0102](./0102-resources-the-server-serves-kinds.md) The server serves resources of open kinds; `ResourceId` replaces `TerminalId`, with Terminal as kind 0.
 - [0064](./0064-playback-as-a-pane.md) `phux play` creates a real Terminal fed from a cast; no wire change.
@@ -35,6 +37,7 @@ by a newer one, the newer line is the operative reading.
 
 ## Wire and codecs
 
+- [0123](./0123-events-are-journaled.md) Every event is stamped with a server-wide sequence and journaled; a cursor replays it, and every loss is a typed gap.
 - [0086](./0086-shared-render-pool.md) One pooled libghostty render trio lives in `phux-protocol` behind the `server` feature.
 - [0117](./0117-wire-codec-stays-tlv.md) The wire codec stays hand-rolled TLV; protobuf considered and rejected, with a machine-readable schema as follow-up.
 - [0061](./0061-capabilities-add-versions-break.md) New wire surface ships as a negotiated capability; a `major.minor` mismatch is rejected.

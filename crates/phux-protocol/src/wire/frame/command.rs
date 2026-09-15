@@ -179,9 +179,10 @@ impl ReportedAgentState {
 /// `Exited`'s process exit status rides alongside in the event body as an
 /// `Option<i32>` (the same shape `RESOURCE_CLOSED.exit_status` uses), so this
 /// enum stays a flat discriminant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum ResourceLifecycle {
     /// The process group is running normally.
+    #[default]
     Running = 0,
     /// The process group is stopped (SIGSTOP); resumable.
     Frozen = 1,
@@ -233,6 +234,12 @@ pub enum ControlAction {
     Killed = 7,
     /// The process exited (natural or post-signal); lifecycle is now `Exited`.
     Exited = 8,
+    /// An input lease reached its `ttl_ms` and the server returned the
+    /// Terminal to `Open` (ADR-0123). A decoder that predates the value
+    /// cannot read it, so a server sends it only to a journal-aware
+    /// subscription and reports the same transition as `Released` to any
+    /// other (`docs/spec/L1.md` §7.1).
+    Expired = 9,
 }
 
 impl ControlAction {
@@ -255,6 +262,7 @@ impl ControlAction {
             6 => Some(Self::Terminated),
             7 => Some(Self::Killed),
             8 => Some(Self::Exited),
+            9 => Some(Self::Expired),
             _ => None,
         }
     }
@@ -927,6 +935,25 @@ pub enum AgentEvent {
     CwdChanged {
         /// The Terminal's new working directory (absolute, lossy UTF-8).
         cwd: String,
+    },
+    /// The subscription missed journaled events `first_missing..=last_missing`
+    /// (ADR-0123): the journal no longer held them when the subscription
+    /// asked to replay them, or the connection could not take them when
+    /// they happened. The consumer re-reads level state (`GET_STATE`). Sent
+    /// to one subscription, never journaled, and so carries no stamp.
+    JournalGap {
+        /// First missing journal sequence, inclusive.
+        first_missing: u64,
+        /// Last missing journal sequence, inclusive.
+        last_missing: u64,
+    },
+    /// The scoped resource produced `dropped` events that the server lost
+    /// before journaling them (ADR-0123), so no cursor can recover them.
+    /// Journaled like any other event; the consumer re-reads that
+    /// resource's state.
+    SourceGap {
+        /// How many events were lost at the source.
+        dropped: u64,
     },
     /// An event whose `tag` this protocol version does not recognise.
     ///

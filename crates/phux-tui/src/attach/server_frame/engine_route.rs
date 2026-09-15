@@ -207,6 +207,7 @@ fn declare_spawned_agent_session(
                 kind: ResourceKind::AgentSession,
                 parent: Some(parent),
             },
+        ..
     } = frame
     else {
         return;

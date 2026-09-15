@@ -453,6 +453,7 @@ fn command_round_trip_and_stream_retagging() {
             &mut hub,
             &FrameKind::SubscribeEvents {
                 terminal: Some(sat_id.clone()),
+                after_seq: None,
             },
         )
         .await;
@@ -482,7 +483,9 @@ fn command_round_trip_and_stream_retagging() {
                     assert_eq!(result, CommandResult::Ok, "REPORT_ASKED relays Ok");
                     saw_ack = true;
                 }
-                FrameKind::Event { terminal, event } => {
+                FrameKind::Event {
+                    terminal, event, ..
+                } => {
                     assert_eq!(
                         terminal.as_ref(),
                         Some(&sat_id),
@@ -1476,7 +1479,10 @@ fn satellite_seize_takeover_notifies_evicted_hub_consumer() {
                 "evicted holder A never received a SEIZE eviction notification"
             );
             let (_, frame) = recv_typed(&mut a).await;
-            if let FrameKind::Event { terminal, event } = frame {
+            if let FrameKind::Event {
+                terminal, event, ..
+            } = frame
+            {
                 assert_eq!(
                     terminal.as_ref(),
                     Some(&sat_id),

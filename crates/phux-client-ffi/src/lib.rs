@@ -3133,6 +3133,7 @@ mod tests {
                     terminal_id: seed.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                    signal: None,
                 },
             ),
             PhuxClientResult::Ok,
@@ -3473,6 +3474,7 @@ mod tests {
                     terminal_id: terminal_id.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                    signal: None,
                 },
             ),
             PhuxClientResult::ProtocolError
@@ -4143,6 +4145,7 @@ mod tests {
                     terminal_id: agent.clone(),
                     exit_status: None,
                     reason: phux_protocol::wire::frame::CloseReason::ParentClosed,
+                    signal: None,
                 },
             ),
             PhuxClientResult::Ok

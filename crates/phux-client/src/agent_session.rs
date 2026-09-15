@@ -517,6 +517,7 @@ pub async fn log(
     if options.follow {
         conn.send(&FrameKind::SubscribeEvents {
             terminal: Some(resource.clone()),
+            after_seq: None,
         })
         .await?;
     }
@@ -673,6 +674,7 @@ impl Reader {
             FrameKind::Event {
                 terminal: Some(terminal),
                 event: AgentEvent::ResourceClosed { .. },
+                ..
             } if terminal == self.resource => Ok(Absorbed::Closed),
             FrameKind::Error {
                 request_id: None,
@@ -1017,7 +1019,7 @@ mod tests {
             })
             .push(FrameKind::Event {
                 terminal: Some(session()),
-                event: AgentEvent::ResourceClosed { exit_status: None },
+                event: AgentEvent::ResourceClosed { exit_status: None }, stamp: None,
             });
         let (_dir, socket, server) = serve(spec);
         let mut conn = Connection::connect(&socket).await.unwrap();

@@ -119,7 +119,14 @@ fn gated_seed(release: &Path, script: &str) -> CommandBuilder {
 /// Returns only once the pane has been released, so everything the seed
 /// emits from here on is guaranteed to have an observer.
 async fn subscribe_then_release(stream: &mut UnixStream, request_id: u32, release: &Path) {
-    send_frame(stream, &FrameKind::SubscribeEvents { terminal: None }).await;
+    send_frame(
+        stream,
+        &FrameKind::SubscribeEvents {
+            terminal: None,
+            after_seq: None,
+        },
+    )
+    .await;
     send_frame(
         stream,
         &FrameKind::Command {

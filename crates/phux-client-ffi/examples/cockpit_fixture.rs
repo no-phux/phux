@@ -769,6 +769,7 @@ fn session_renamed() -> FrameKind {
         scope: Scope::Global,
         key: SESSION_NAME_KEY.to_owned(),
         value: Some(b"fixture\0renamed".to_vec()),
+        actor: None,
     }
 }
 
@@ -780,6 +781,7 @@ fn standby_session_renamed() -> FrameKind {
         scope: Scope::Global,
         key: SESSION_NAME_KEY.to_owned(),
         value: Some(b"build\0ship".to_vec()),
+        actor: None,
     }
 }
 

@@ -131,6 +131,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             terminal_id: local.clone(),
             exit_status: Some(0),
             reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            signal: None,
         }],
     )?;
     write(
@@ -152,6 +153,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             terminal_id: ResourceId::local(7),
             exit_status: Some(0),
             reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            signal: None,
         }],
     )?;
     for (name, host, owner) in [

@@ -2634,6 +2634,7 @@ mod tests {
                     },
                     FrameKind::SubscribeEvents {
                         terminal: Some(phux_protocol::ResourceId::local(9)),
+                        after_seq: None,
                     },
                 );
                 tokio::time::timeout(Duration::from_secs(1), &mut started)
@@ -2644,6 +2645,7 @@ mod tests {
                 FrameKind::Event {
                     terminal: Some(phux_protocol::ResourceId::local(9)),
                     event: phux_protocol::wire::frame::AgentEvent::CommandStarted,
+                    stamp: None,
                 }
                 .encode(&mut encoded);
                 inbound_tx
@@ -2712,6 +2714,7 @@ mod tests {
                     },
                     FrameKind::SubscribeEvents {
                         terminal: Some(phux_protocol::ResourceId::local(9)),
+                        after_seq: None,
                     },
                 );
                 tokio::time::timeout(Duration::from_secs(1), &mut started)
