@@ -3,6 +3,19 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.26.0](https://github.com/no-phux/phux/compare/cockpit-v0.25.0...cockpit-v0.26.0) (2026-09-15)
+
+
+### Features
+
+* **client-ffi:** plumb after_seq, retain_secs, and spawn idempotency_key ([#698](https://github.com/no-phux/phux/issues/698)) ([e81eb1c](https://github.com/no-phux/phux/commit/e81eb1cc6a129f171037eed8a73910ceaba69811))
+* **cockpit:** replace Advanced settings with a Connection status panel ([#701](https://github.com/no-phux/phux/issues/701)) ([2994034](https://github.com/no-phux/phux/commit/2994034816d1157634b537bae30e0a3ed7ce35ac))
+
+
+### Bug Fixes
+
+* **cockpit:** restore window drag on hidden-inset titlebar chrome ([#696](https://github.com/no-phux/phux/issues/696)) ([5ae2358](https://github.com/no-phux/phux/commit/5ae23587a1fbdb6084c58f1aedc12a80f3a644b8))
+
 ## [0.25.0](https://github.com/no-phux/phux/compare/cockpit-v0.24.0...cockpit-v0.25.0) (2026-09-15)
 
 

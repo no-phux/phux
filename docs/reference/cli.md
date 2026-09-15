@@ -19,7 +19,7 @@ Each section below is the verbatim `--help` text for one invocation path, render
 ## `phux`
 
 ```text
-phux 0.38.0
+phux 0.39.0
 A terminal multiplexer you can drive by hand or script.
 
 Run `phux` alone to attach to your session; every other verb is headless.
