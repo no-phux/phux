@@ -94,14 +94,32 @@ describe("MCP endpoint routing", () => {
 });
 
 describe("MCP JSON-RPC", () => {
-  test("initialize returns server info and capabilities", async () => {
-    const { body } = await rpc("initialize", {
+  test("initialize echoes a supported requested protocol version", async () => {
+    const { body, response } = await rpc("initialize", {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "test", version: "0" },
+    });
+    expect(body.result.protocolVersion).toBe("2025-03-26");
+    expect(response.headers.get("mcp-protocol-version")).toBe("2025-03-26");
+    expect(body.result.serverInfo.name).toBe("phux-site");
+    expect(body.result.capabilities.tools).toBeDefined();
+  });
+
+  test("initialize falls back to the default for unknown requested versions", async () => {
+    // "2025-06-15" was never a released spec date; clients hard-reject it.
+    const { body, response } = await rpc("initialize", {
       protocolVersion: "2025-06-15",
       capabilities: {},
       clientInfo: { name: "test", version: "0" },
     });
-    expect(body.result.serverInfo.name).toBe("phux-site");
-    expect(body.result.capabilities.tools).toBeDefined();
+    expect(body.result.protocolVersion).toBe("2025-03-26");
+    expect(response.headers.get("mcp-protocol-version")).toBe("2025-03-26");
+  });
+
+  test("initialize without a requested version serves the default", async () => {
+    const { body } = await rpc("initialize", {});
+    expect(body.result.protocolVersion).toBe("2025-03-26");
   });
 
   test("notifications get 202 with no body", async () => {
