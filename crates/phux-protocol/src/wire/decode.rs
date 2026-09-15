@@ -21,13 +21,13 @@ use super::frame::{
     TYPE_METADATA_KEYS, TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG,
     TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT,
     TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS,
-    TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, TombstoneReason, decode_agent_event,
-    decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
-    decode_bootstrap_stream_profile, decode_command, decode_command_result,
-    decode_directory_listing, decode_env, decode_focus_event, decode_key_event,
-    decode_list_directory, decode_metadata_scope_key, decode_mouse_event, decode_move_result,
-    decode_paste_event, decode_scope, decode_spawn_result, decode_stream_id, decode_string_list,
-    decode_terminal_id, decode_viewport_info,
+    TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, TombstoneReason, decode_actor_ref,
+    decode_agent_event, decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id,
+    decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_command,
+    decode_command_result, decode_directory_listing, decode_env, decode_focus_event,
+    decode_idempotency_key, decode_key_event, decode_list_directory, decode_metadata_scope_key,
+    decode_mouse_event, decode_move_result, decode_paste_event, decode_scope, decode_spawn_result,
+    decode_stream_id, decode_string_list, decode_terminal_id, decode_viewport_info,
 };
 use super::info::{decode_client_id, decode_session_snapshot};
 use crate::caps::{
@@ -1496,6 +1496,7 @@ impl<'a> Decoder<'a> {
         let mut scope: Option<Scope> = None;
         let mut key: Option<String> = None;
         let mut value_bytes: Option<Vec<u8>> = None;
+        let mut actor = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::metadata_changed::SCOPE => scope = Some(sub!(value, decode_scope)),
@@ -1507,6 +1508,7 @@ impl<'a> Decoder<'a> {
                     );
                 }
                 field::metadata_changed::VALUE => value_bytes = Some(value.to_vec()),
+                field::metadata_changed::ACTOR => actor = Some(sub!(value, decode_actor_ref)),
                 _ => {}
             }
         }
@@ -1514,6 +1516,7 @@ impl<'a> Decoder<'a> {
             scope: scope.ok_or(DecodeError::UnexpectedEof)?,
             key: key.ok_or(DecodeError::UnexpectedEof)?,
             value: value_bytes,
+            actor,
         })
     }
 
@@ -1574,11 +1577,7 @@ impl<'a> Decoder<'a> {
         let mut owner_terminal: Option<crate::ids::ResourceId> = None;
         let mut agent_session: Option<Vec<u8>> = None;
         let mut initial_size: Option<(u16, u16)> = None;
-        let mut kind = ResourceKind::Terminal;
-        let mut parent: Option<ResourceId> = None;
-        let mut provider: Option<String> = None;
-        let mut native_id: Option<String> = None;
-        let mut bind_instance = false;
+        let mut resource = SpawnResource::default();
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::spawn_terminal::REQUEST_ID => {
@@ -1623,32 +1622,10 @@ impl<'a> Decoder<'a> {
                         Ok((cols, rows))
                     }));
                 }
-                field::spawn_terminal::KIND => {
-                    kind = ResourceKind::from_wire(sub!(value, |d: &mut Decoder<'_>| d.read_u8()));
-                }
-                field::spawn_terminal::PARENT => {
-                    parent = Some(sub!(value, decode_terminal_id));
-                }
-                field::spawn_terminal::PROVIDER => {
-                    provider = Some(decode_agent_facet_str(value, MAX_RESOURCE_PROVIDER_BYTES)?);
-                }
-                field::spawn_terminal::NATIVE_ID => {
-                    native_id = Some(decode_agent_facet_str(value, MAX_RESOURCE_NATIVE_ID_BYTES)?);
-                }
-                field::spawn_terminal::BIND_INSTANCE => {
-                    bind_instance = sub!(value, decode_bind_instance);
-                }
-                _ => {}
+                other => absorb_spawn_resource_field(&mut resource, other, value)?,
             }
         }
-        let resource = SpawnResource {
-            kind,
-            parent,
-            provider,
-            native_id,
-            bind_instance,
-        };
-        // A body carrying none of fields 11-15 is the plain Terminal spawn,
+        // A body carrying none of fields 11-17 is the plain Terminal spawn,
         // and so is one that spells the defaults out; both decode to `None`
         // so the value is canonical and re-encodes to the pre-kind bytes.
         let resource = (!resource.is_default()).then(|| Box::new(resource));
@@ -1674,6 +1651,7 @@ impl<'a> Decoder<'a> {
         let mut request_id = 0u32;
         let mut result: Option<crate::wire::frame::SpawnResult> = None;
         let mut instance: Option<crate::ids::ServerInstance> = None;
+        let mut replayed = false;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_spawned::REQUEST_ID => {
@@ -1685,13 +1663,16 @@ impl<'a> Decoder<'a> {
                 field::terminal_spawned::INSTANCE => {
                     instance = Some(sub!(value, crate::wire::frame::decode_server_instance));
                 }
+                field::terminal_spawned::REPLAYED => {
+                    replayed = sub!(value, |d: &mut Decoder<'_>| decode_flag(d, "replayed"));
+                }
                 _ => {}
             }
         }
         let result = result.ok_or(DecodeError::UnexpectedEof)?;
         Ok(FrameKind::ResourceSpawned {
             request_id,
-            result: bind_spawn_result(result, instance),
+            result: bind_spawn_result(result, instance, replayed),
         })
     }
 
@@ -1747,18 +1728,17 @@ impl<'a> Decoder<'a> {
         let mut terminal_id: Option<ResourceId> = None;
         let mut exit_status: Option<i32> = None;
         let mut reason = CloseReason::Unknown;
+        let mut signal: Option<i32> = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::terminal_closed::TERMINAL_ID => {
                     terminal_id = Some(sub!(value, decode_terminal_id));
                 }
-                field::terminal_closed::EXIT_STATUS => {
-                    let bits = sub!(value, |d: &mut Decoder<'_>| d.read_u32_be());
-                    exit_status = Some(i32::from_be_bytes(bits.to_be_bytes()));
-                }
+                field::terminal_closed::EXIT_STATUS => exit_status = Some(read_i32_value(value)?),
                 field::terminal_closed::REASON => {
                     reason = CloseReason::from_wire(sub!(value, |d: &mut Decoder<'_>| d.read_u8()));
                 }
+                field::terminal_closed::SIGNAL => signal = Some(read_i32_value(value)?),
                 _ => {}
             }
         }
@@ -1766,6 +1746,7 @@ impl<'a> Decoder<'a> {
             terminal_id: terminal_id.ok_or(DecodeError::UnexpectedEof)?,
             exit_status,
             reason,
+            signal,
         })
     }
 
@@ -1838,53 +1819,147 @@ impl<'a> Decoder<'a> {
     /// Decode a `SUBSCRIBE_EVENTS` message body into [`FrameKind::SubscribeEvents`].
     fn decode_subscribe_events(&mut self) -> Result<FrameKind, DecodeError> {
         let mut terminal: Option<ResourceId> = None;
+        let mut after_seq: Option<u64> = None;
         while let Some((id, value)) = self.read_field()? {
-            if id == field::subscribe_events::TERMINAL {
-                terminal = Some(sub!(value, decode_terminal_id));
+            match id {
+                field::subscribe_events::TERMINAL => {
+                    terminal = Some(sub!(value, decode_terminal_id));
+                }
+                field::subscribe_events::AFTER_SEQ => {
+                    after_seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+                }
+                _ => {}
             }
         }
-        Ok(FrameKind::SubscribeEvents { terminal })
+        Ok(FrameKind::SubscribeEvents {
+            terminal,
+            after_seq,
+        })
     }
 
     /// Decode an `EVENT` message body into [`FrameKind::Event`].
     fn decode_event(&mut self) -> Result<FrameKind, DecodeError> {
         let mut terminal: Option<ResourceId> = None;
         let mut event: Option<crate::wire::frame::AgentEvent> = None;
+        let mut stamp = StampParts::default();
         while let Some((id, value)) = self.read_field()? {
             match id {
                 field::event::TERMINAL => terminal = Some(sub!(value, decode_terminal_id)),
                 field::event::EVENT => event = Some(sub!(value, decode_agent_event)),
-                _ => {}
+                other => stamp.absorb(other, value)?,
             }
         }
         Ok(FrameKind::Event {
             terminal,
             event: event.ok_or(DecodeError::UnexpectedEof)?,
+            stamp: stamp.finish(),
         })
     }
 }
 
-/// Read `SPAWN_RESOURCE.bind_instance` (field 15): `0` or `1`.
-fn decode_bind_instance(dec: &mut Decoder<'_>) -> Result<bool, DecodeError> {
+/// The journal-stamp fields of one `EVENT` (3-6, ADR-0123), gathered in
+/// any order. The stamp exists iff `seq` (field 3) was present; the other
+/// three are meaningless without it and are dropped.
+#[derive(Default)]
+struct StampParts {
+    seq: Option<u64>,
+    ts_ms: u64,
+    actor: Option<crate::wire::frame::ActorRef>,
+    operation_id: Option<crate::ids::IdempotencyKey>,
+}
+
+impl StampParts {
+    /// Take one `EVENT` field if it is a stamp field; ignore any other id.
+    fn absorb(&mut self, id: u32, value: &[u8]) -> Result<(), DecodeError> {
+        match id {
+            field::event::SEQ => {
+                self.seq = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()));
+            }
+            field::event::TS_MS => self.ts_ms = sub!(value, |d: &mut Decoder<'_>| d.read_u64_be()),
+            field::event::ACTOR => self.actor = Some(sub!(value, decode_actor_ref)),
+            field::event::OPERATION_ID => self.operation_id = Some(decode_idempotency_key(value)?),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn finish(self) -> Option<Box<crate::wire::frame::EventStamp>> {
+        let seq = self.seq?;
+        Some(Box::new(
+            crate::wire::frame::EventStamp::new(seq, self.ts_ms)
+                .with_actor(self.actor)
+                .with_operation_id(self.operation_id),
+        ))
+    }
+}
+
+/// Read a field value that is an `i32` carried as its two's-complement `u32`.
+fn read_i32_value(value: &[u8]) -> Result<i32, DecodeError> {
+    let bits = Decoder::new(value).read_u32_be()?;
+    Ok(i32::from_be_bytes(bits.to_be_bytes()))
+}
+
+/// Read a one-byte flag: `0` or `1`; anything else is malformed.
+fn decode_flag(dec: &mut Decoder<'_>, field: &'static str) -> Result<bool, DecodeError> {
     match dec.read_u8()? {
         0 => Ok(false),
         1 => Ok(true),
         other => Err(DecodeError::UnknownEnumValue {
-            field: "SpawnResource.bind_instance",
+            field,
             value: u32::from(other),
         }),
     }
 }
 
-/// Fold `RESOURCE_SPAWNED.instance` (field 3) into the typed result. A
-/// successful result with a token is `SpawnResult::OkBound`; a token beside
-/// a refusal binds nothing and is dropped.
+/// Take one of `SPAWN_RESOURCE`'s resource fields (11-17) into `resource`;
+/// ignore any other id, which is the skip-unknown-by-length rule.
+fn absorb_spawn_resource_field(
+    resource: &mut SpawnResource,
+    id: u32,
+    value: &[u8],
+) -> Result<(), DecodeError> {
+    match id {
+        field::spawn_terminal::KIND => {
+            resource.kind = ResourceKind::from_wire(sub!(value, |d: &mut Decoder<'_>| d.read_u8()));
+        }
+        field::spawn_terminal::PARENT => resource.parent = Some(sub!(value, decode_terminal_id)),
+        field::spawn_terminal::PROVIDER => {
+            resource.provider = Some(decode_agent_facet_str(value, MAX_RESOURCE_PROVIDER_BYTES)?);
+        }
+        field::spawn_terminal::NATIVE_ID => {
+            resource.native_id = Some(decode_agent_facet_str(value, MAX_RESOURCE_NATIVE_ID_BYTES)?);
+        }
+        field::spawn_terminal::BIND_INSTANCE => {
+            resource.bind_instance = sub!(value, decode_bind_instance);
+        }
+        field::spawn_terminal::RETAIN_SECS => {
+            resource.retain_secs = Some(sub!(value, |d: &mut Decoder<'_>| d.read_u32_be()));
+        }
+        field::spawn_terminal::IDEMPOTENCY_KEY => {
+            resource.idempotency_key = Some(decode_idempotency_key(value)?);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Read `SPAWN_RESOURCE.bind_instance` (field 15): `0` or `1`.
+fn decode_bind_instance(dec: &mut Decoder<'_>) -> Result<bool, DecodeError> {
+    decode_flag(dec, "SpawnResource.bind_instance")
+}
+
+/// Fold `RESOURCE_SPAWNED.instance` (field 3) and `replayed` (field 4) into
+/// the typed result. A successful result that was replayed is
+/// `SpawnResult::Replayed`, else one with a token is `OkBound`; either field
+/// beside a refusal means nothing and is dropped.
 fn bind_spawn_result(
     result: crate::wire::frame::SpawnResult,
     instance: Option<crate::ids::ServerInstance>,
+    replayed: bool,
 ) -> crate::wire::frame::SpawnResult {
     use crate::wire::frame::SpawnResult;
     match (result, instance) {
+        (SpawnResult::Ok(id), instance) if replayed => SpawnResult::Replayed { id, instance },
         (SpawnResult::Ok(id), Some(instance)) => SpawnResult::OkBound { id, instance },
         (result, _) => result,
     }
@@ -1930,12 +2005,15 @@ fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeError> {
     let Some(resource) = resource.as_deref() else {
         return Ok(());
     };
-    // `bind_instance` is valid for every kind, so it has no rule here.
+    // `bind_instance` and `idempotency_key` are valid for every kind, so
+    // they have no rule here; `retain_secs` describes a process exit and is
+    // forbidden where there is no process.
     let SpawnResource {
         kind,
         parent,
         provider,
         native_id,
+        retain_secs,
         ..
     } = resource;
     let rule = |field: u32, required: bool| DecodeError::InvalidSpawnForKind {
@@ -1974,6 +2052,7 @@ fn validate_spawn_for_kind(frame: &FrameKind) -> Result<(), DecodeError> {
                     owner_terminal.is_some(),
                 ),
                 (field::spawn_terminal::INITIAL_SIZE, initial_size.is_some()),
+                (field::spawn_terminal::RETAIN_SECS, retain_secs.is_some()),
             ] {
                 if present {
                     return Err(rule(field, false));

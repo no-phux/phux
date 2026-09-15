@@ -51,6 +51,10 @@ For implementers extending the protocol:
 - Message IDs `0x41..=0x4F` and `0xB3..=0xBF`: reserved for events
   (`SUBSCRIBE_EVENTS = 0x41` C→S and `EVENT = 0xB3` S→C are taken;
   `0x42..=0x4F` and `0xB4..=0xBF` remain open).
+- `0xB1` was `TERMINAL_EVENT` ([L1.md §3.3](./L1.md)), specified and never
+  shipped. It is retired and SHALL NOT be reallocated: the facts it was to
+  carry ride the `EVENT` tags ([L1.md §7](./L1.md)) and `GET_TERMINAL_STATE`.
+  `BELL = 0xB0` is allocated and `ALERT = 0xB2` remains spec-only.
 - Message IDs `0x50..=0x5F` and `0xD0..=0xDF`: L3
   ([L3.md](./L3.md) §1). `0x50..=0x55` C→S and `0xD0..=0xD3` S→C are
   allocated (the metadata verbs, and the `LIST_DIRECTORY` /
@@ -122,15 +126,24 @@ does not know, and a server refuses a kill that carries one with
 `PRECONDITION_FAILED`, so a new condition is additive and never ignored.
 
 `SpawnError` ([L1.md §3.1](./L1.md)) allocates sequentially from `0x00`:
-`0x00..=0x03` are the group / spawn / satellite codes and `0x04
+`0x00..=0x03` are the group / spawn / satellite codes, `0x04
 UNSUPPORTED_KIND`, `0x05 PARENT_NOT_FOUND`, `0x06 PARENT_KIND_MISMATCH` are
-the resource-binding codes ([L1.md §1.2](./L1.md)). `ResourceKind` allocates
+the resource-binding codes ([L1.md §1.2](./L1.md)), and `0x07
+IDEMPOTENCY_CONFLICT` is allocated by ADR-0126 ([L1.md §3.1](./L1.md)). `ResourceKind` allocates
 `TERMINAL = 0` and `AGENT_SESSION = 1`; a tag once allocated is never reused,
 and a decoder maps an unallocated tag to `Unknown { tag }` ([L1.md §1.1](./L1.md)).
 `BootstrapCodec` ([L1.md §4.3](./L1.md)) allocates `0` (synthesized VT v1),
 `1` (native, followed by the engine version byte), and `3`
 (`AgentEventsJsonlV1`); `2` is skipped so the codec tag never shares a value
 with the native v2 version byte that follows tag `1` in a dump.
+
+`AgentEvent` tags ([L1.md §7.1](./L1.md)) allocate sequentially from `0x00`:
+`0x00..=0x0c` are taken, the last two (`journal_gap`, `source_gap`) by
+ADR-0123. A decoder skips an unknown tag by its length prefix, so a new tag is
+additive. `ControlAction` (the `terminal_control` action byte) allocates
+sequentially from `0`: `0..=9` are taken, `9 EXPIRED` by ADR-0123, which also
+fixes the rule under which a server may send a value an older decoder cannot
+read ([L1.md §7.1](./L1.md)).
 
 `CloseReason` ([L1.md §1.2](./L1.md)) allocates sequentially from `0` —
 `0..=3` are taken — and follows the `DetachReason` decode rule below: an

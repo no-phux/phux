@@ -1101,6 +1101,7 @@ async fn subscribe_events(stream: &mut UnixStream, request_id: u32, scopes: &[Op
             stream,
             &FrameKind::SubscribeEvents {
                 terminal: terminal.clone(),
+                after_seq: None,
             },
         )
         .await;
@@ -1135,6 +1136,7 @@ async fn count_child_events(
             FrameKind::Event {
                 terminal: Some(id),
                 event,
+                ..
             } if &id == wanted => match event {
                 phux_protocol::wire::frame::AgentEvent::ResourceSpawned { kind, parent } => {
                     assert_eq!(

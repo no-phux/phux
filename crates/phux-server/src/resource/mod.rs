@@ -718,6 +718,7 @@ impl ResourceCore {
                         Some(phux_protocol::ids::ResourceId::local(self.wire_id))
                     },
                     event: event.clone(),
+                    stamp: None,
                 };
                 let _ = subscriber.outbound.try_send(Outbound::Frame(frame));
             }

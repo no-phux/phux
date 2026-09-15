@@ -1000,6 +1000,19 @@ pub const QUIC_STREAMS: u32 = 0x0040_0000;
 /// ADR-0120): `OPEN_LISTENER`, which `phux attach --ssh` drives over ssh.
 pub const OPEN_LISTENER: u32 = 0x0080_0000;
 
+/// Wire bit advertising the journaled event envelope (ADR-0123): `EVENT`
+/// fields 3-6, `SUBSCRIBE_EVENTS.after_seq`, the `journal_gap` /
+/// `source_gap` events, and `METADATA_CHANGED.actor`.
+pub const EVENT_JOURNAL: u32 = 0x0100_0000;
+
+/// Wire bit advertising retain-on-exit (ADR-0124): `SPAWN_RESOURCE`
+/// field 16 and the snapshot's retained-resource state.
+pub const RETAIN_ON_EXIT: u32 = 0x0200_0000;
+
+/// Wire bit advertising idempotent create (ADR-0126): `SPAWN_RESOURCE`
+/// field 17, `RESOURCE_SPAWNED.replayed`, and `IDEMPOTENCY_CONFLICT`.
+pub const SPAWN_IDEMPOTENCY: u32 = 0x0400_0000;
+
 /// An additive server-owned protocol feature.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1117,6 +1130,26 @@ pub enum ServerFeature {
     /// A client MUST see this bit before sending the command: an older
     /// server cannot decode the tag.
     OpenListener = OPEN_LISTENER,
+    /// The server stamps every journaled `EVENT` with a server-wide `seq`,
+    /// `ts_ms`, `actor`, and (for a keyed operation) `operation_id`; keeps a
+    /// bounded journal a `SUBSCRIBE_EVENTS { after_seq }` replays from; and
+    /// never drops an event silently, sending `journal_gap` / `source_gap`
+    /// instead (ADR-0123). Every shape is skip-by-length additive, so an
+    /// older client sees the events it always saw; the bit is what makes a
+    /// cursor and the absence of a gap meaningful.
+    EventJournal = EVENT_JOURNAL,
+    /// The server honors `SPAWN_RESOURCE.retain_secs` (field 16): a retained
+    /// Terminal that exits stays in the inventory as `Exited` with an exit
+    /// facet until it expires or is killed (ADR-0124). A server without the
+    /// bit skips the field and closes the resource at exit, so a client MUST
+    /// see the bit before relying on a retained exit.
+    RetainOnExit = RETAIN_ON_EXIT,
+    /// The server honors `SPAWN_RESOURCE.idempotency_key` (field 17): a
+    /// repeat with the same key and payload answers the original id with
+    /// `replayed`, and a different payload answers `IDEMPOTENCY_CONFLICT`
+    /// (ADR-0126). A server without the bit skips the field and spawns
+    /// again, so a client MUST see the bit before retrying a spawn blind.
+    SpawnIdempotency = SPAWN_IDEMPOTENCY,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1142,7 +1175,10 @@ impl ServerFeatureSet {
         | (ServerFeature::SshOrigin as u32)
         | (ServerFeature::ConditionalKill as u32)
         | (ServerFeature::QuicStreams as u32)
-        | (ServerFeature::OpenListener as u32);
+        | (ServerFeature::OpenListener as u32)
+        | (ServerFeature::EventJournal as u32)
+        | (ServerFeature::RetainOnExit as u32)
+        | (ServerFeature::SpawnIdempotency as u32);
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
@@ -1921,5 +1957,109 @@ mod tests {
         let future = 1_u32 << 31;
         assert!(ServerFeatureSet::from_wire(future).is_empty());
         assert_eq!(ServerFeatureSet::from_wire(set.as_wire() | future), set);
+    }
+
+    /// Every advertised bit, its wire name, and its value. Adding a feature
+    /// means adding its row here, which is what keeps the uniqueness proof
+    /// and the proto.md check below complete.
+    const ALL_SERVER_FEATURES: &[(ServerFeature, &str, u32)] = &[
+        (
+            ServerFeature::AcknowledgedInput,
+            "ACKNOWLEDGED_INPUT",
+            ACKNOWLEDGED_INPUT,
+        ),
+        (ServerFeature::FileUpload, "FILE_UPLOAD", FILE_UPLOAD),
+        (ServerFeature::MoveResource, "MOVE_RESOURCE", MOVE_RESOURCE),
+        (
+            ServerFeature::TerminalReply,
+            "TERMINAL_REPLY",
+            TERMINAL_REPLY,
+        ),
+        (ServerFeature::Shutdown, "SHUTDOWN", SHUTDOWN),
+        (
+            ServerFeature::SpawnInitialSize,
+            "SPAWN_INITIAL_SIZE",
+            SPAWN_INITIAL_SIZE,
+        ),
+        (
+            ServerFeature::ReportAgentState,
+            "REPORT_AGENT_STATE",
+            REPORT_AGENT_STATE,
+        ),
+        (ServerFeature::GetPerf, "GET_PERF", GET_PERF),
+        (ServerFeature::Transcribe, "TRANSCRIBE", TRANSCRIBE),
+        (
+            ServerFeature::ResourceKinds,
+            "RESOURCE_KINDS",
+            RESOURCE_KINDS,
+        ),
+        (
+            ServerFeature::ListDirectory,
+            "LIST_DIRECTORY",
+            LIST_DIRECTORY,
+        ),
+        (ServerFeature::HostSessions, "HOST_SESSIONS", HOST_SESSIONS),
+        (
+            ServerFeature::KeepEmptySessions,
+            "KEEP_EMPTY_SESSIONS",
+            KEEP_EMPTY_SESSIONS,
+        ),
+        (ServerFeature::Whoami, "WHOAMI", WHOAMI),
+        (
+            ServerFeature::ListDirectoryHost,
+            "LIST_DIRECTORY_HOST",
+            LIST_DIRECTORY_HOST,
+        ),
+        (ServerFeature::SshOrigin, "SSH_ORIGIN", SSH_ORIGIN),
+        (
+            ServerFeature::ConditionalKill,
+            "CONDITIONAL_KILL",
+            CONDITIONAL_KILL,
+        ),
+        (ServerFeature::QuicStreams, "QUIC_STREAMS", QUIC_STREAMS),
+        (ServerFeature::OpenListener, "OPEN_LISTENER", OPEN_LISTENER),
+        (ServerFeature::EventJournal, "EVENT_JOURNAL", EVENT_JOURNAL),
+        (
+            ServerFeature::RetainOnExit,
+            "RETAIN_ON_EXIT",
+            RETAIN_ON_EXIT,
+        ),
+        (
+            ServerFeature::SpawnIdempotency,
+            "SPAWN_IDEMPOTENCY",
+            SPAWN_IDEMPOTENCY,
+        ),
+    ];
+
+    /// Each feature is one distinct bit, the known mask is exactly their
+    /// union, and each bit appears in `docs/spec/proto.md` §6.2 by name and
+    /// value in both the bitset block and the `ServerCapabilities` sentence.
+    #[test]
+    fn server_feature_bits_are_unique_and_documented() {
+        let proto = include_str!("../../../docs/spec/proto.md");
+        let mut union = 0_u32;
+        for &(feature, name, bits) in ALL_SERVER_FEATURES {
+            assert_eq!(feature as u32, bits, "{name} disagrees with its const");
+            assert_eq!(bits.count_ones(), 1, "{name} must be a single bit");
+            assert_eq!(union & bits, 0, "{name} reuses an allocated bit");
+            union |= bits;
+            let block = format!("{name} ");
+            let block_value = format!("0x{bits:08X}");
+            let prose = format!("`{name} = 0x{bits:X}`");
+            assert!(
+                proto
+                    .lines()
+                    .any(|l| l.trim_start().starts_with(&block) && l.contains(&block_value)),
+                "proto.md §6.2 bitset block lacks `{name} = {block_value}`"
+            );
+            assert!(
+                proto.replace('\n', " ").contains(&prose),
+                "proto.md §6.2 ServerCapabilities sentence lacks {prose}"
+            );
+        }
+        assert_eq!(ServerFeatureSet::from_wire(u32::MAX).as_wire(), union);
+        assert_eq!(EVENT_JOURNAL, 0x0100_0000);
+        assert_eq!(RETAIN_ON_EXIT, 0x0200_0000);
+        assert_eq!(SPAWN_IDEMPOTENCY, 0x0400_0000);
     }
 }

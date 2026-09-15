@@ -559,6 +559,8 @@ pub(crate) const SPAWN_ERROR_TAG_UNSUPPORTED_KIND: u8 = 4;
 pub(crate) const SPAWN_ERROR_TAG_PARENT_NOT_FOUND: u8 = 5;
 /// Wire tag for [`SpawnError::ParentKindMismatch`].
 pub(crate) const SPAWN_ERROR_TAG_PARENT_KIND_MISMATCH: u8 = 6;
+/// Wire tag for [`SpawnError::IdempotencyConflict`] (ADR-0126).
+pub(crate) const SPAWN_ERROR_TAG_IDEMPOTENCY_CONFLICT: u8 = 7;
 }
 
 // Wire tags for the `MoveResult` / `MoveError` tagged unions (ADR-0056),
@@ -670,6 +672,13 @@ pub(crate) const EVENT_TAG_ASKED: u8 = 0x09;
 /// spawn-inheritance path uses), polled at OSC-133 prompt boundaries and
 /// output-idle and coalesced on change. Backs the `cwd` status widget.
 pub(crate) const EVENT_TAG_CWD_CHANGED: u8 = 0x0a;
+/// Wire tag for [`AgentEvent::JournalGap`] (ADR-0123): the subscription
+/// missed a range of journaled events and the consumer re-reads level state.
+/// A per-subscription notice, never journaled itself.
+pub(crate) const EVENT_TAG_JOURNAL_GAP: u8 = 0x0b;
+/// Wire tag for [`AgentEvent::SourceGap`] (ADR-0123): the scoped resource
+/// produced events the server dropped before it could journal them.
+pub(crate) const EVENT_TAG_SOURCE_GAP: u8 = 0x0c;
 }
 
 /// Wire tag for one [`Command`] variant inside the `COMMAND` envelope
@@ -913,8 +922,8 @@ pub use directory::{
 };
 pub use kind::FrameKind;
 pub use payload::{
-    AttachTarget, MoveError, MoveResult, Scope, SpawnError, SpawnResource, SpawnResult,
-    ViewportInfo,
+    ActorRef, AttachTarget, EventStamp, MoveError, MoveResult, Scope, SpawnError, SpawnResource,
+    SpawnResult, ViewportInfo,
 };
 pub use status::{
     CloseReason, DetachReason, ErrorCode, ErrorScope, HistoryRejectionReason,
@@ -928,19 +937,20 @@ pub use whoami::{
 };
 
 pub(in crate::wire) use codec::{
-    decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id, decode_bootstrap_profile,
-    decode_bootstrap_stream_profile, decode_env, decode_focus_event, decode_key_event,
-    decode_metadata_scope_key, decode_mouse_event, decode_move_result, decode_optional_u32,
-    decode_paste_event, decode_scope, decode_server_instance, decode_spawn_result,
-    decode_stream_id, decode_string_list, decode_terminal_id, decode_viewport_info,
-    encode_attach_target, encode_bootstrap_codec, encode_bootstrap_profile, encode_env,
-    encode_focus_event, encode_key_event, encode_mouse_event, encode_move_result,
-    encode_paste_event, encode_scope, encode_server_instance, encode_spawn_result,
-    encode_string_list, encode_terminal_id, encode_viewport_info,
+    decode_actor_ref, decode_attach_target, decode_bootstrap_codec, decode_bootstrap_id,
+    decode_bootstrap_profile, decode_bootstrap_stream_profile, decode_env, decode_focus_event,
+    decode_idempotency_key, decode_key_event, decode_metadata_scope_key, decode_mouse_event,
+    decode_move_result, decode_optional_u32, decode_paste_event, decode_scope,
+    decode_server_instance, decode_spawn_result, decode_stream_id, decode_string_list,
+    decode_terminal_id, decode_viewport_info, encode_actor_ref, encode_attach_target,
+    encode_bootstrap_codec, encode_bootstrap_profile, encode_env, encode_focus_event,
+    encode_key_event, encode_mouse_event, encode_move_result, encode_paste_event, encode_scope,
+    encode_server_instance, encode_spawn_result, encode_string_list, encode_terminal_id,
+    encode_viewport_info,
 };
 pub(in crate::wire) use command_codec::{
-    decode_agent_event, decode_command, decode_command_result, encode_agent_event, encode_command,
-    encode_command_result,
+    decode_agent_event, decode_command, decode_command_result, decode_optional_i32,
+    encode_agent_event, encode_command, encode_command_result, encode_optional_i32,
 };
 pub(in crate::wire) use directory::{decode_directory_listing, decode_list_directory};
 

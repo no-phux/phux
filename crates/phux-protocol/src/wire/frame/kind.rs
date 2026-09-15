@@ -22,24 +22,24 @@ use crate::wire::info::{SessionSnapshot, encode_client_id, encode_session_snapsh
 
 use super::directory::{DirectoryListingResult, encode_directory_listing, encode_list_directory};
 use super::{
-    AgentEvent, AttachTarget, CloseReason, Command, CommandResult, DetachReason, ErrorCode,
-    HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN, MoveResult, Scope,
-    SpawnResource, SpawnResult, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED, TYPE_BELL,
-    TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY, TYPE_BOOTSTRAP_TOMBSTONE,
-    TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_DETACHED,
-    TYPE_DIRECTORY_LISTING, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK, TYPE_FRAME_COMPRESSED,
-    TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE, TYPE_HISTORY_REJECTED,
-    TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
-    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY,
-    TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS, TYPE_METADATA_VALUE,
-    TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL, TYPE_RESOURCE_CLOSED,
-    TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED, TYPE_SET_METADATA,
-    TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
-    TombstoneReason, ViewportInfo, encode_agent_event, encode_attach_target,
-    encode_bootstrap_codec, encode_bootstrap_profile, encode_command, encode_command_result,
-    encode_env, encode_focus_event, encode_key_event, encode_mouse_event, encode_move_result,
-    encode_paste_event, encode_scope, encode_spawn_result, encode_string_list, encode_terminal_id,
-    encode_viewport_info,
+    ActorRef, AgentEvent, AttachTarget, CloseReason, Command, CommandResult, DetachReason,
+    ErrorCode, EventStamp, HistoryRejectionReason, HistoryTombstoneReason, MAX_FRAME_LEN,
+    MoveResult, Scope, SpawnResource, SpawnResult, TYPE_ATTACH, TYPE_ATTACH_READY, TYPE_ATTACHED,
+    TYPE_BELL, TYPE_BOOTSTRAP_BEGIN, TYPE_BOOTSTRAP_CHUNK, TYPE_BOOTSTRAP_READY,
+    TYPE_BOOTSTRAP_TOMBSTONE, TYPE_COMMAND, TYPE_COMMAND_RESULT, TYPE_DELETE_METADATA, TYPE_DETACH,
+    TYPE_DETACHED, TYPE_DIRECTORY_LISTING, TYPE_ERROR, TYPE_EVENT, TYPE_FRAME_ACK,
+    TYPE_FRAME_COMPRESSED, TYPE_GET_METADATA, TYPE_HELLO, TYPE_HELLO_OK, TYPE_HISTORY_PAGE,
+    TYPE_HISTORY_REJECTED, TYPE_HISTORY_REQUEST, TYPE_HISTORY_TOMBSTONE, TYPE_INPUT_FOCUS,
+    TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY,
+    TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_METADATA_CHANGED, TYPE_METADATA_KEYS,
+    TYPE_METADATA_VALUE, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_PONG, TYPE_RESIZE_TERMINAL,
+    TYPE_RESOURCE_CLOSED, TYPE_RESOURCE_MOVED, TYPE_RESOURCE_OUTPUT, TYPE_RESOURCE_SPAWNED,
+    TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA,
+    TYPE_VIEWPORT_RESIZE, TombstoneReason, ViewportInfo, encode_actor_ref, encode_agent_event,
+    encode_attach_target, encode_bootstrap_codec, encode_bootstrap_profile, encode_command,
+    encode_command_result, encode_env, encode_focus_event, encode_key_event, encode_mouse_event,
+    encode_move_result, encode_paste_event, encode_scope, encode_spawn_result, encode_string_list,
+    encode_terminal_id, encode_viewport_info,
 };
 
 /// Decoded wire frame.
@@ -538,6 +538,11 @@ pub enum FrameKind {
         key: String,
         /// New value, or `None` for a deletion (tombstone).
         value: Option<Vec<u8>>,
+        /// The connection whose write caused the change, or `None` when the
+        /// server made it or does not attribute. Additive field 4
+        /// (ADR-0123): absent on the wire when `None`, so an unattributed
+        /// change is byte-identical to the pre-field frame.
+        actor: Option<ActorRef>,
     },
 
     /// `METADATA_VALUE` — server reply to a prior `GET_METADATA`
@@ -777,6 +782,11 @@ pub enum FrameKind {
         /// decoder reads an absent field as `Unknown`, so a body from a peer
         /// that predates the field carries no reason rather than failing.
         reason: CloseReason,
+        /// The signal that terminated the process, or `None` when it exited
+        /// on its own or the cause is unknown. Additive optional field id 4:
+        /// absent on the wire when `None`, so an older peer reads the frame
+        /// it always read.
+        signal: Option<i32>,
     },
 
     /// `RESIZE_TERMINAL` — client signals a per-Terminal PTY resize
@@ -848,6 +858,11 @@ pub enum FrameKind {
         /// Per-Terminal scope, or `None` for every Terminal the client may
         /// observe.
         terminal: Option<ResourceId>,
+        /// Journal cursor (ADR-0123): replay every retained event with a
+        /// greater `seq` before going live, or report a `journal_gap` when
+        /// the journal no longer holds them. `None` (field absent) is the
+        /// live-only subscription every older client sends.
+        after_seq: Option<u64>,
     },
 
     /// `EVENT` — server pushes one [`AgentEvent`] to a subscribed client
@@ -863,6 +878,10 @@ pub enum FrameKind {
         terminal: Option<ResourceId>,
         /// The event payload.
         event: AgentEvent,
+        /// The journal stamp (fields 3-6, ADR-0123), or `None` for an
+        /// unjournaled event: everything from a server without
+        /// `EVENT_JOURNAL`, and a `journal_gap` notice.
+        stamp: Option<Box<EventStamp>>,
     },
 }
 
@@ -1286,8 +1305,18 @@ impl FrameKind {
             Self::SubscribeMetadata { scope, key } => {
                 Self::encode_subscribe_metadata(enc, scope, key);
             }
-            Self::MetadataChanged { scope, key, value } => {
+            Self::MetadataChanged {
+                scope,
+                key,
+                value,
+                actor,
+            } => {
                 Self::encode_metadata_changed(enc, scope, key, value.as_deref());
+                if let Some(actor) = actor {
+                    enc.write_field_with(field::metadata_changed::ACTOR, |e| {
+                        encode_actor_ref(actor, e);
+                    });
+                }
             }
             Self::MetadataValue { request_id, value } => {
                 Self::encode_metadata_value(enc, *request_id, value.as_deref());
@@ -1352,7 +1381,13 @@ impl FrameKind {
                 terminal_id,
                 exit_status,
                 reason,
-            } => Self::encode_terminal_closed(enc, terminal_id, *exit_status, *reason),
+                signal,
+            } => {
+                Self::encode_terminal_closed(enc, terminal_id, *exit_status, *reason);
+                if let Some(signal) = signal {
+                    write_i32_field(enc, field::terminal_closed::SIGNAL, *signal);
+                }
+            }
             Self::ResizeTerminal {
                 terminal_id,
                 cols,
@@ -1365,11 +1400,26 @@ impl FrameKind {
             Self::CommandResult { request_id, result } => {
                 Self::encode_command_result_frame(enc, *request_id, result);
             }
-            Self::SubscribeEvents { terminal } => {
+            Self::SubscribeEvents {
+                terminal,
+                after_seq,
+            } => {
                 Self::encode_subscribe_events(enc, terminal.as_ref());
+                if let Some(after_seq) = after_seq {
+                    enc.write_field_with(field::subscribe_events::AFTER_SEQ, |e| {
+                        e.write_u64_be(*after_seq);
+                    });
+                }
             }
-            Self::Event { terminal, event } => {
+            Self::Event {
+                terminal,
+                event,
+                stamp,
+            } => {
                 Self::encode_event(enc, terminal.as_ref(), event);
+                if let Some(stamp) = stamp {
+                    encode_event_stamp(enc, stamp);
+                }
             }
         }
     }
@@ -2112,10 +2162,17 @@ impl FrameKind {
         if resource.bind_instance {
             enc.write_field(field::spawn_terminal::BIND_INSTANCE, &[1]);
         }
+        if let Some(secs) = resource.retain_secs {
+            enc.write_field_with(field::spawn_terminal::RETAIN_SECS, |e| e.write_u32_be(secs));
+        }
+        if let Some(key) = &resource.idempotency_key {
+            enc.write_field(field::spawn_terminal::IDEMPOTENCY_KEY, key.as_bytes());
+        }
     }
 
-    /// Write the `RESOURCE_SPAWNED` payload. A bound result adds field 3,
-    /// so an unbound reply keeps the bytes it always had.
+    /// Write the `RESOURCE_SPAWNED` payload. A bound result adds field 3 and
+    /// a replayed one field 4, so a plain reply keeps the bytes it always
+    /// had.
     fn encode_terminal_spawned(enc: &mut Encoder<'_>, request_id: u32, result: &SpawnResult) {
         enc.write_field_with(field::terminal_spawned::REQUEST_ID, |e| {
             e.write_u32_be(request_id);
@@ -2127,6 +2184,9 @@ impl FrameKind {
             enc.write_field_with(field::terminal_spawned::INSTANCE, |e| {
                 super::encode_server_instance(&instance, e);
             });
+        }
+        if result.is_replayed() {
+            enc.write_field(field::terminal_spawned::REPLAYED, &[1]);
         }
     }
 
@@ -2221,7 +2281,7 @@ impl FrameKind {
         }
     }
 
-    /// Write the `EVENT` payload.
+    /// Write the `EVENT` payload's scope and event (fields 1-2).
     fn encode_event(enc: &mut Encoder<'_>, terminal: Option<&ResourceId>, event: &AgentEvent) {
         if let Some(t) = terminal {
             enc.write_field_with(field::event::TERMINAL, |e| encode_terminal_id(t, e));
@@ -2244,5 +2304,25 @@ impl FrameKind {
         limits: BootstrapLimits,
     ) -> Result<(Self, &[u8]), DecodeError> {
         Decoder::with_bootstrap_limits(input, limits).read_frame()
+    }
+}
+
+/// Write one field whose value is an `i32` as its two's-complement `u32`.
+fn write_i32_field(enc: &mut Encoder<'_>, field_id: u32, value: i32) {
+    enc.write_field_with(field_id, |e| {
+        e.write_u32_be(u32::from_be_bytes(value.to_be_bytes()));
+    });
+}
+
+/// Write an `EVENT` journal stamp (fields 3-6, ADR-0123). `seq` and `ts_ms`
+/// always travel together; `actor` and `operation_id` only when set.
+fn encode_event_stamp(enc: &mut Encoder<'_>, stamp: &EventStamp) {
+    enc.write_field_with(field::event::SEQ, |e| e.write_u64_be(stamp.seq));
+    enc.write_field_with(field::event::TS_MS, |e| e.write_u64_be(stamp.ts_ms));
+    if let Some(actor) = &stamp.actor {
+        enc.write_field_with(field::event::ACTOR, |e| encode_actor_ref(actor, e));
+    }
+    if let Some(key) = &stamp.operation_id {
+        enc.write_field(field::event::OPERATION_ID, key.as_bytes());
     }
 }

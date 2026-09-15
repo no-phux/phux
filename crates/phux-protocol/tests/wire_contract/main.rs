@@ -9,5 +9,6 @@ mod common;
 
 mod bootstrap_wire;
 mod input_terminal_reply_wire;
+mod journal_shapes;
 mod wire_layout_recursion;
 mod wire_roundtrip;

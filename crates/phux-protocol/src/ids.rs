@@ -176,6 +176,41 @@ impl core::fmt::Debug for InputOperationId {
     }
 }
 
+/// Opaque client-generated key that makes one create operation idempotent.
+///
+/// Carried as `SPAWN_RESOURCE` field 17 (ADR-0126), and as the
+/// `operation_id` of an `EVENT` that operation caused (`docs/spec/L1.md`
+/// §7.3).
+///
+/// The all-zero value is reserved and cannot be constructed; a client draws
+/// the 16 bytes from a CSPRNG. Debug output is redacted for the same reason
+/// as [`InputOperationId`]: a key correlates the operations that reused it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct IdempotencyKey([u8; 16]);
+
+impl IdempotencyKey {
+    /// Construct a non-zero key.
+    #[must_use]
+    pub const fn new(bytes: [u8; 16]) -> Option<Self> {
+        match InputOperationId::new(bytes) {
+            Some(_) => Some(Self(bytes)),
+            None => None,
+        }
+    }
+
+    /// Borrow the 16-byte wire representation.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for IdempotencyKey {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("IdempotencyKey(<redacted>)")
+    }
+}
+
 /// Opaque client-generated identifier for one chunked file upload.
 ///
 /// The all-zero value is reserved and cannot be constructed. The identifier

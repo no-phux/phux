@@ -1155,6 +1155,7 @@ mod tests {
                 scope: s2,
                 key,
                 value,
+                ..
             } => {
                 assert_eq!(s2, &scope);
                 assert_eq!(key, "phux.tui.layout/v1");
@@ -1191,6 +1192,7 @@ mod tests {
                 scope: s2,
                 key: k,
                 value,
+                ..
             } => {
                 assert_eq!(s2, &scope);
                 assert_eq!(k, key);
@@ -1312,6 +1314,7 @@ mod tests {
                 value: None,
                 key,
                 scope: s2,
+                ..
             } => {
                 assert_eq!(key, "phux.k/v1");
                 assert_eq!(s2, &scope);

@@ -525,6 +525,7 @@ impl ClientTable {
                 scope: scope.clone(),
                 key: key.to_owned(),
                 value: value.map(<[u8]>::to_vec),
+                actor: None,
             };
             // `try_send`: the mailbox is bounded (DEFAULT_CLIENT_MAILBOX)
             // and we hold the state mutex synchronously; awaiting on a

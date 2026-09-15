@@ -1,7 +1,110 @@
 //! Shared sub-record payload types: attach targets (SPEC §13), viewport
 //! info, L3 metadata scope (SPEC §7.4), and spawn/move results (SPEC §10.1).
 
-use crate::ids::{GroupId, ResourceId, ResourceKind, ServerInstance, SessionId};
+use crate::ids::{
+    ClientId, GroupId, IdempotencyKey, ResourceId, ResourceKind, ServerInstance, SessionId,
+};
+
+// -----------------------------------------------------------------------------
+// ActorRef / EventStamp — attribution and the journal stamp (ADR-0123).
+// -----------------------------------------------------------------------------
+
+/// The connection that caused an event or a metadata change (ADR-0123).
+///
+/// Positional on the wire: `client: u32 || credential_id: optional<str> ||
+/// client_name: optional<str>`. `client` correlates within one connection
+/// and does not survive a reconnect; `credential_id` is the durable identity
+/// on a paired route; `client_name` is the label the client gave in `HELLO`.
+/// Through a federation hub the actor is the hub's link, not the consumer
+/// behind it.
+///
+/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ActorRef {
+    /// The acting connection's wire client id.
+    pub client: ClientId,
+    /// The paired credential the connection authenticated with, if any.
+    pub credential_id: Option<String>,
+    /// The `HELLO.client_name` the connection announced, if any.
+    pub client_name: Option<String>,
+}
+
+impl ActorRef {
+    /// An actor known only by its connection id.
+    #[must_use]
+    pub const fn new(client: ClientId) -> Self {
+        Self {
+            client,
+            credential_id: None,
+            client_name: None,
+        }
+    }
+
+    /// Builder setter for [`Self::credential_id`].
+    #[must_use]
+    pub fn with_credential_id(mut self, credential_id: Option<String>) -> Self {
+        self.credential_id = credential_id;
+        self
+    }
+
+    /// Builder setter for [`Self::client_name`].
+    #[must_use]
+    pub fn with_client_name(mut self, client_name: Option<String>) -> Self {
+        self.client_name = client_name;
+        self
+    }
+}
+
+/// The journal stamp on an `EVENT` (fields 3-6, ADR-0123).
+///
+/// A server that advertises `EVENT_JOURNAL` stamps every journaled event.
+/// On the wire the stamp is present iff field 3 (`seq`) is; the encoder
+/// always writes `seq` and `ts_ms` together and the optional two only when
+/// set. Carried boxed on [`FrameKind::Event`](super::FrameKind::Event) so the
+/// frame enum keeps its size.
+///
+/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EventStamp {
+    /// Server-wide journal sequence: starts at 1, strictly increasing within
+    /// one server incarnation (`HELLO_OK.server_id`), never wraps.
+    pub seq: u64,
+    /// Server wall-clock time the event was journaled, Unix milliseconds.
+    pub ts_ms: u64,
+    /// The connection that caused the event; `None` for server-driven ones.
+    pub actor: Option<ActorRef>,
+    /// The idempotency key of the operation that caused the event.
+    pub operation_id: Option<IdempotencyKey>,
+}
+
+impl EventStamp {
+    /// A stamp with no actor and no operation.
+    #[must_use]
+    pub const fn new(seq: u64, ts_ms: u64) -> Self {
+        Self {
+            seq,
+            ts_ms,
+            actor: None,
+            operation_id: None,
+        }
+    }
+
+    /// Builder setter for [`Self::actor`].
+    #[must_use]
+    pub fn with_actor(mut self, actor: Option<ActorRef>) -> Self {
+        self.actor = actor;
+        self
+    }
+
+    /// Builder setter for [`Self::operation_id`].
+    #[must_use]
+    pub const fn with_operation_id(mut self, operation_id: Option<IdempotencyKey>) -> Self {
+        self.operation_id = operation_id;
+        self
+    }
+}
 
 // -----------------------------------------------------------------------------
 // SpawnResource — the kind-bearing half of SPAWN_RESOURCE (L1.md §1.2).
@@ -55,6 +158,20 @@ pub struct SpawnResource {
     /// bit skips the field by length and answers [`SpawnResult::Ok`]. Valid
     /// for every kind.
     pub bind_instance: bool,
+    /// Keep the resource inspectable for this many seconds after its
+    /// process exits (field 16, ADR-0124). `None` is today's close-at-exit;
+    /// `Some(0)` asks for the server's default. Terminal only: the decoder
+    /// refuses it on an `AgentSession` spawn. A server without
+    /// [`ServerFeature::RetainOnExit`](crate::caps::ServerFeature::RetainOnExit)
+    /// skips the field and closes at exit.
+    pub retain_secs: Option<u32>,
+    /// Make the spawn idempotent under this key (field 17, ADR-0126): a
+    /// repeat with the same key and payload is answered with the original
+    /// id and [`SpawnResult::Replayed`]. Valid for every kind. A server
+    /// without
+    /// [`ServerFeature::SpawnIdempotency`](crate::caps::ServerFeature::SpawnIdempotency)
+    /// skips the field and spawns again.
+    pub idempotency_key: Option<IdempotencyKey>,
 }
 
 impl SpawnResource {
@@ -66,9 +183,22 @@ impl SpawnResource {
             kind: ResourceKind::AgentSession,
             parent: Some(parent),
             provider: Some(provider.into()),
-            native_id: None,
-            bind_instance: false,
+            ..Self::default()
         }
+    }
+
+    /// Builder setter for [`Self::retain_secs`].
+    #[must_use]
+    pub const fn with_retain_secs(mut self, retain_secs: Option<u32>) -> Self {
+        self.retain_secs = retain_secs;
+        self
+    }
+
+    /// Builder setter for [`Self::idempotency_key`].
+    #[must_use]
+    pub const fn with_idempotency_key(mut self, key: Option<IdempotencyKey>) -> Self {
+        self.idempotency_key = key;
+        self
     }
 
     /// Builder setter for [`Self::native_id`].
@@ -94,6 +224,8 @@ impl SpawnResource {
             && self.provider.is_none()
             && self.native_id.is_none()
             && !self.bind_instance
+            && self.retain_secs.is_none()
+            && self.idempotency_key.is_none()
     }
 }
 
@@ -266,6 +398,10 @@ pub enum SpawnError {
     /// requested child: an `AgentSession` requires a Terminal parent, and a
     /// resource that is itself a child cannot be a parent. Wire tag `0x06`.
     ParentKindMismatch,
+    /// The spawn's `idempotency_key` is already bound, inside the retry
+    /// horizon, to a spawn with a different payload (ADR-0126). Nothing was
+    /// created. Wire tag `0x07`.
+    IdempotencyConflict,
 }
 
 /// Tagged union carried by [`FrameKind::ResourceSpawned`](super::FrameKind::ResourceSpawned), SPEC §7.2 / §10.1.
@@ -293,14 +429,26 @@ pub enum SpawnResult {
         /// The token naming the id space `id` was allocated from.
         instance: ServerInstance,
     },
+    /// The id of the resource an earlier spawn with the same idempotency key
+    /// and payload created (ADR-0126); nothing new was spawned. Only a spawn
+    /// that set [`SpawnResource::idempotency_key`] is answered this way. On
+    /// the wire it is the `Ok` tag plus `RESOURCE_SPAWNED` field 4, and field
+    /// 3 when the original spawn was bound.
+    Replayed {
+        /// The resource the original spawn created.
+        id: ResourceId,
+        /// Its instance token, when the original spawn asked to bind it.
+        instance: Option<ServerInstance>,
+    },
 }
 
 impl SpawnResult {
-    /// The spawned resource's id, bound or not; `None` for a refusal.
+    /// The spawned resource's id, bound, replayed, or neither; `None` for a
+    /// refusal.
     #[must_use]
     pub const fn spawned_id(&self) -> Option<&ResourceId> {
         match self {
-            Self::Ok(id) | Self::OkBound { id, .. } => Some(id),
+            Self::Ok(id) | Self::OkBound { id, .. } | Self::Replayed { id, .. } => Some(id),
             Self::Err(_) => None,
         }
     }
@@ -311,8 +459,15 @@ impl SpawnResult {
     pub const fn instance(&self) -> Option<ServerInstance> {
         match self {
             Self::OkBound { instance, .. } => Some(*instance),
+            Self::Replayed { instance, .. } => *instance,
             Self::Ok(_) | Self::Err(_) => None,
         }
+    }
+
+    /// `true` iff the reply repeats an earlier keyed spawn.
+    #[must_use]
+    pub const fn is_replayed(&self) -> bool {
+        matches!(self, Self::Replayed { .. })
     }
 }
 

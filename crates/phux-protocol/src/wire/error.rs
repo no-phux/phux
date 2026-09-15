@@ -72,6 +72,11 @@ pub enum DecodeError {
     #[error("input operation id must not be zero")]
     InvalidInputOperationId,
 
+    /// An idempotency key (`SPAWN_RESOURCE` field 17 or `EVENT` field 6) was
+    /// not exactly 16 bytes, or used the reserved all-zero value.
+    #[error("idempotency key must be 16 non-zero bytes")]
+    InvalidIdempotencyKey,
+
     /// An `APPLY_INPUT` command exceeded its event-count or command-body
     /// limit and was rejected before allocating the event vector.
     #[error("APPLY_INPUT batch exceeds protocol limits")]

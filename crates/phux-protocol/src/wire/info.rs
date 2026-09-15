@@ -12,12 +12,18 @@
 //! through protocol-0.7 bootstrap streams (`ATTACHED` → per-pane
 //! `BOOTSTRAP_BEGIN`/`CHUNK`/`READY` → `ATTACH_READY`).
 
+use bytes::BytesMut;
+
 use crate::ids::{ClientId, ResourceId, ResourceKind, SatelliteHost, SessionId, WindowId};
 
 use super::decode::Decoder;
 use super::encode::Encoder;
 use super::error::DecodeError;
-use super::frame::{decode_terminal_id, encode_terminal_id};
+use super::field;
+use super::frame::{
+    CloseReason, ResourceLifecycle, decode_optional_i32, decode_terminal_id, encode_optional_i32,
+    encode_terminal_id,
+};
 
 // -----------------------------------------------------------------------------
 // Tagged-union tags. `pub(crate)` so the codec and tests can spell them
@@ -308,6 +314,68 @@ impl AgentFacet {
     }
 }
 
+/// How a retained resource ended (ADR-0124), as carried in the snapshot and
+/// in `GET_TERMINAL_STATE`'s `process.exit`.
+///
+/// Present on a [`ResourceInfo`] only while the resource is retained after
+/// its process exited: the resource is still in the inventory, its grid and
+/// history still answer reads, and it closes with `RESOURCE_CLOSED` when
+/// `retained_until_ms` passes or someone kills it.
+///
+/// `#[non_exhaustive]`; construct via [`Self::new`] plus `with_*` setters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ExitFacet {
+    /// `_exit(n)` status, or `None` when the process died by a signal or the
+    /// status is unknown.
+    pub exit_status: Option<i32>,
+    /// The terminating signal, or `None` when the process exited on its own
+    /// or the cause is unknown.
+    pub signal: Option<i32>,
+    /// Why the process ended, in the `RESOURCE_CLOSED.reason` vocabulary.
+    pub reason: CloseReason,
+    /// When the process exited, Unix milliseconds.
+    pub exited_at_ms: u64,
+    /// When the server will close the resource, Unix milliseconds.
+    pub retained_until_ms: u64,
+}
+
+impl ExitFacet {
+    /// A facet for a process that exited on its own at `exited_at_ms`,
+    /// retained until `retained_until_ms`, with no status or signal known.
+    #[must_use]
+    pub const fn new(exited_at_ms: u64, retained_until_ms: u64) -> Self {
+        Self {
+            exit_status: None,
+            signal: None,
+            reason: CloseReason::Exited,
+            exited_at_ms,
+            retained_until_ms,
+        }
+    }
+
+    /// Builder setter for [`Self::exit_status`].
+    #[must_use]
+    pub const fn with_exit_status(mut self, exit_status: Option<i32>) -> Self {
+        self.exit_status = exit_status;
+        self
+    }
+
+    /// Builder setter for [`Self::signal`].
+    #[must_use]
+    pub const fn with_signal(mut self, signal: Option<i32>) -> Self {
+        self.signal = signal;
+        self
+    }
+
+    /// Builder setter for [`Self::reason`].
+    #[must_use]
+    pub const fn with_reason(mut self, reason: CloseReason) -> Self {
+        self.reason = reason;
+        self
+    }
+}
+
 /// Description of a single served resource, sufficient for layout chrome.
 ///
 /// Every resource the server serves has an entry here, whatever its
@@ -363,6 +431,15 @@ pub struct ResourceInfo {
     /// The agent-session facet, present iff `kind` is
     /// [`ResourceKind::AgentSession`].
     pub agent: Option<AgentFacet>,
+    /// Process lifecycle: `Running` by default, `Exited` while a retained
+    /// resource outlives its process (ADR-0124). Rides the snapshot
+    /// extension block, not the positional prefix or the facet row.
+    pub lifecycle: ResourceLifecycle,
+    /// How a retained resource's process ended; `None` while it runs.
+    pub exit: Option<ExitFacet>,
+    /// The connection holding the input lease; `None` while the Terminal is
+    /// open to every attached client (ADR-0033).
+    pub input_holder: Option<ClientId>,
 }
 
 impl ResourceInfo {
@@ -383,6 +460,9 @@ impl ResourceInfo {
             kind: ResourceKind::Terminal,
             parent: None,
             agent: None,
+            lifecycle: ResourceLifecycle::Running,
+            exit: None,
+            input_holder: None,
         }
     }
 
@@ -400,6 +480,9 @@ impl ResourceInfo {
             kind,
             parent: None,
             agent: None,
+            lifecycle: ResourceLifecycle::Running,
+            exit: None,
+            input_holder: None,
         }
     }
 
@@ -438,11 +521,41 @@ impl ResourceInfo {
         self
     }
 
+    /// Builder setter for [`Self::lifecycle`].
+    #[must_use]
+    pub const fn with_lifecycle(mut self, lifecycle: ResourceLifecycle) -> Self {
+        self.lifecycle = lifecycle;
+        self
+    }
+
+    /// Builder setter for [`Self::exit`].
+    #[must_use]
+    pub const fn with_exit(mut self, exit: Option<ExitFacet>) -> Self {
+        self.exit = exit;
+        self
+    }
+
+    /// Builder setter for [`Self::input_holder`].
+    #[must_use]
+    pub const fn with_input_holder(mut self, input_holder: Option<ClientId>) -> Self {
+        self.input_holder = input_holder;
+        self
+    }
+
     /// Whether this entry carries anything beyond the Terminal-era
     /// positional prefix, i.e. whether the snapshot's trailing resource
     /// facet list needs a row for it.
     const fn has_resource_facets(&self) -> bool {
         !self.kind.is_terminal() || self.parent.is_some() || self.agent.is_some()
+    }
+
+    /// Whether the snapshot extension block needs a `RESOURCE_STATE` entry
+    /// for this resource: it is not plainly running, or someone holds its
+    /// input lease.
+    const fn has_resource_state(&self) -> bool {
+        !matches!(self.lifecycle, ResourceLifecycle::Running)
+            || self.exit.is_some()
+            || self.input_holder.is_some()
     }
 }
 
@@ -1023,6 +1136,10 @@ pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<ResourceInfo
         kind: ResourceKind::Terminal,
         parent: None,
         agent: None,
+        // Not positional: these ride the snapshot extension block.
+        lifecycle: ResourceLifecycle::Running,
+        exit: None,
+        input_holder: None,
     })
 }
 
@@ -1112,14 +1229,121 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
     enc.write_u32_be(snap.focused_session.get());
     enc.write_u32_be(snap.focused_window.get());
     encode_terminal_id(&snap.focused_resource, enc);
+    let extension = encode_snapshot_extension(&snap.resources);
+    let extension_follows = !extension.is_empty();
     let session_rows = snap.sessions.iter().filter(|s| s.keep_empty).count();
-    let listeners_follow = snap.listeners().is_some();
+    let listeners_follow = snap.listeners().is_some() || extension_follows;
     let session_facets_follow = session_rows > 0 || listeners_follow;
     let hosts_follow = !snap.hosts().is_empty() || session_facets_follow;
     encode_resource_facets(&snap.resources, hosts_follow, enc);
     encode_host_inventory(snap.hosts(), session_facets_follow, enc);
     encode_session_facets(&snap.sessions, session_rows, listeners_follow, enc);
-    encode_listeners(snap.listeners(), enc);
+    encode_listeners(snap.listeners(), extension_follows, enc);
+    if extension_follows {
+        enc.write_bytes(&extension);
+    }
+}
+
+/// Build the snapshot extension block (see [`SessionSnapshot`]): one
+/// `RESOURCE_STATE` field per resource with non-default state. Empty when
+/// every resource is plainly running and unheld, in which case nothing is
+/// written and the snapshot keeps its pre-extension bytes.
+fn encode_snapshot_extension(resources: &[ResourceInfo]) -> BytesMut {
+    let mut block = BytesMut::new();
+    let mut enc = Encoder::new(&mut block);
+    for info in resources.iter().filter(|r| r.has_resource_state()) {
+        enc.write_field_with(field::snapshot_extension::RESOURCE_STATE, |e| {
+            encode_resource_state(info, e);
+        });
+    }
+    block
+}
+
+/// One `RESOURCE_STATE` value: the positional id, then only the fields that
+/// differ from the defaults.
+fn encode_resource_state(info: &ResourceInfo, enc: &mut Encoder<'_>) {
+    encode_terminal_id(&info.id, enc);
+    if !matches!(info.lifecycle, ResourceLifecycle::Running) {
+        enc.write_field(field::resource_state::LIFECYCLE, &[info.lifecycle.to_u8()]);
+    }
+    if let Some(exit) = &info.exit {
+        enc.write_field_with(field::resource_state::EXIT, |e| encode_exit_facet(exit, e));
+    }
+    if let Some(holder) = info.input_holder {
+        enc.write_field_with(field::resource_state::INPUT_HOLDER, |e| {
+            encode_client_id(holder, e);
+        });
+    }
+}
+
+/// `ExitFacet`, positional: `exit_status: optional<i32> || signal:
+/// optional<i32> || reason: u8 || exited_at_ms: u64 || retained_until_ms: u64`.
+fn encode_exit_facet(exit: &ExitFacet, enc: &mut Encoder<'_>) {
+    encode_optional_i32(exit.exit_status, enc);
+    encode_optional_i32(exit.signal, enc);
+    enc.write_u8(exit.reason.as_wire());
+    enc.write_u64_be(exit.exited_at_ms);
+    enc.write_u64_be(exit.retained_until_ms);
+}
+
+fn decode_exit_facet(dec: &mut Decoder<'_>) -> Result<ExitFacet, DecodeError> {
+    let exit_status = decode_optional_i32(dec)?;
+    let signal = decode_optional_i32(dec)?;
+    let reason = CloseReason::from_wire(dec.read_u8()?);
+    let exited_at_ms = dec.read_u64_be()?;
+    let retained_until_ms = dec.read_u64_be()?;
+    Ok(ExitFacet::new(exited_at_ms, retained_until_ms)
+        .with_exit_status(exit_status)
+        .with_signal(signal)
+        .with_reason(reason))
+}
+
+/// Read the snapshot extension block if bytes remain, applying each
+/// `RESOURCE_STATE` to its `resources` entry by id. Unknown field ids, in
+/// the block or inside an entry, are skipped by length.
+fn decode_snapshot_extension(
+    dec: &mut Decoder<'_>,
+    resources: &mut [ResourceInfo],
+) -> Result<(), DecodeError> {
+    if dec.at_body_end() {
+        return Ok(());
+    }
+    let mut block = Decoder::new(dec.read_bytes()?);
+    while let Some((id, value)) = block.read_field()? {
+        if id == field::snapshot_extension::RESOURCE_STATE {
+            apply_resource_state(value, resources)?;
+        }
+    }
+    Ok(())
+}
+
+/// Decode one `RESOURCE_STATE` value and join it onto its entry. A value
+/// naming no entry is ignored, like a facet row naming no entry; an
+/// unallocated lifecycle byte reads as `Running`, and the exit facet, when
+/// present, is the authoritative fact.
+fn apply_resource_state(value: &[u8], resources: &mut [ResourceInfo]) -> Result<(), DecodeError> {
+    let mut dec = Decoder::new(value);
+    let id = decode_terminal_id(&mut dec)?;
+    let mut lifecycle = ResourceLifecycle::Running;
+    let mut exit = None;
+    let mut input_holder = None;
+    while let Some((field_id, v)) = dec.read_field()? {
+        let mut v = Decoder::new(v);
+        match field_id {
+            field::resource_state::LIFECYCLE => {
+                lifecycle = ResourceLifecycle::from_u8(v.read_u8()?).unwrap_or_default();
+            }
+            field::resource_state::EXIT => exit = Some(decode_exit_facet(&mut v)?),
+            field::resource_state::INPUT_HOLDER => input_holder = Some(decode_client_id(&mut v)?),
+            _ => {}
+        }
+    }
+    if let Some(info) = resources.iter_mut().find(|r| r.id == id) {
+        info.lifecycle = lifecycle;
+        info.exit = exit;
+        info.input_holder = input_holder;
+    }
+    Ok(())
 }
 
 /// Store an inventory canonically: `None` when empty, so a snapshot built
@@ -1219,13 +1443,19 @@ fn encode_session_facets(
     }
 }
 
-/// Write the trailing remote-listeners JSON (see [`SessionSnapshot`]), or
-/// nothing when the serving peer left the report unset.
+/// Write the trailing remote-listeners JSON (see [`SessionSnapshot`]). An
+/// unset report writes nothing, unless the extension block follows
+/// (`more_follow`), which needs an explicit absent marker (`0`) as its
+/// positional anchor.
 fn encode_listeners(
     report: Option<&crate::wire::listeners::RemoteListenersReport>,
+    more_follow: bool,
     enc: &mut Encoder<'_>,
 ) {
     let Some(report) = report else {
+        if more_follow {
+            encode_option_str(None, enc);
+        }
         return;
     };
     let json = report.to_json();
@@ -1292,6 +1522,7 @@ pub(super) fn decode_session_snapshot(
     let hosts = decode_host_inventory(dec)?;
     decode_session_facets(dec, &mut sessions)?;
     let listeners = decode_listeners(dec)?;
+    decode_snapshot_extension(dec, &mut resources)?;
     let mut snapshot = SessionSnapshot {
         sessions,
         windows,

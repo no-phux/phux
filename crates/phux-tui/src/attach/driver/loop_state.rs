@@ -1493,8 +1493,11 @@ impl SessionLoop {
     ) -> Result<(), AttachError> {
         // Server-scoped (`terminal: None`) so we see control events for every
         // pane, not just one.
-        conn.send(&FrameKind::SubscribeEvents { terminal: None })
-            .await?;
+        conn.send(&FrameKind::SubscribeEvents {
+            terminal: None,
+            after_seq: None,
+        })
+        .await?;
         // phux-foz.5: watch the config-reload doorbell so a `phux config
         // reload` from any shell reaches this client as a METADATA_CHANGED
         // broadcast (the config itself never crosses the wire — we re-read

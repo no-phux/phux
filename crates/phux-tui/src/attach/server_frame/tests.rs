@@ -1164,6 +1164,7 @@ fn metadata_changed_preserves_valid_local_window_and_pane_focus() {
             scope: Scope::Group(super::DEFAULT_GROUP_ID),
             key: phux_client::layout_ops::layout_key(SessionId::new(1)),
             value: Some(bytes),
+            actor: None,
         },
         None,
         &mut local,
@@ -1199,6 +1200,7 @@ fn old_layout_schema_refuses_attach_and_broadcast_without_resetting_metadata() {
             scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
             key: phux_client::layout_ops::layout_key(SessionId::new(1)),
             value: Some(bytes),
+            actor: None,
         },
     ] {
         let error =
@@ -1229,6 +1231,7 @@ fn shared_window_identity_preserves_focus_on_reorder_and_empty_is_authoritative(
                 scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
                 key: phux_client::layout_ops::layout_key(SessionId::new(1)),
                 value: Some(topology.encode_topology_cbor().expect("topology")),
+                actor: None,
             },
             None,
             &mut local,
@@ -1275,6 +1278,7 @@ fn a_peer_layout_broadcast_leaves_the_local_workspace_untouched() {
             // Session 2; the fixture client is session 1.
             key: phux_client::layout_ops::layout_key(SessionId::new(2)),
             value: Some(bytes.clone()),
+            actor: None,
         },
         None,
         &mut local,
@@ -1305,6 +1309,7 @@ fn a_peer_layout_broadcast_leaves_the_local_workspace_untouched() {
             scope: Scope::Group(super::DEFAULT_GROUP_ID),
             key: phux_client::layout_ops::layout_key(SessionId::new(2)),
             value: None,
+            actor: None,
         },
         None,
         &mut local,
@@ -1331,6 +1336,7 @@ fn an_unscoped_layout_key_has_no_session_authority() {
             scope: Scope::Group(super::DEFAULT_GROUP_ID),
             key: phux_client::layout_ops::LAYOUT_KEY.to_owned(),
             value: Some(bytes),
+            actor: None,
         },
         None,
         &mut local,
@@ -1361,6 +1367,7 @@ fn a_foreign_agent_record_push_stays_out_of_the_local_index() {
             scope: Scope::Resource(tid(77)),
             key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(record),
+            actor: None,
         },
         None,
         &mut local,
@@ -1394,6 +1401,7 @@ fn rejected_cross_session_layout_emits_no_attach_panes() {
             scope: Scope::Group(super::DEFAULT_GROUP_ID),
             key: phux_client::layout_ops::layout_key(SessionId::new(2)),
             value: Some(bytes),
+            actor: None,
         },
         None,
         &mut local,
@@ -1419,6 +1427,7 @@ fn session_keyed_replacement_keeps_stable_window_with_all_new_leaves() {
             scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
             key: phux_client::layout_ops::layout_key(SessionId::new(1)),
             value: Some(replacement.encode_cbor().unwrap()),
+            actor: None,
         },
         None,
         &mut local,
@@ -1454,6 +1463,7 @@ fn metadata_changed_discovers_peer_added_leaf_without_moving_focus() {
             scope: Scope::Group(super::DEFAULT_GROUP_ID),
             key: phux_client::layout_ops::layout_key(SessionId::new(1)),
             value: Some(bytes),
+            actor: None,
         },
         None,
         &mut local,
@@ -1536,6 +1546,7 @@ fn layout_tombstone_resets_to_local_focused_pane() {
             scope: Scope::Group(super::DEFAULT_GROUP_ID),
             key: phux_client::layout_ops::layout_key(SessionId::new(1)),
             value: None,
+            actor: None,
         },
         None,
         &mut local,
@@ -3764,6 +3775,7 @@ fn drive_closed_expecting(
             terminal_id: terminal_id.clone(),
             exit_status,
             reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            signal: None,
         },
         panes,
         layout,
@@ -3899,6 +3911,7 @@ fn closed_cleanly(pane: &ResourceId) -> FrameKind {
         terminal_id: pane.clone(),
         exit_status: Some(0),
         reason: CloseReason::Unknown,
+        signal: None,
     }
 }
 
@@ -3948,6 +3961,7 @@ fn keep_empty_mark_follows_broadcasts_for_this_session_only() {
         scope: Scope::Global,
         key: SESSION_KEEP_EMPTY_KEY.to_owned(),
         value: Some(value.to_vec()),
+        actor: None,
     };
 
     drive_keep_empty(
@@ -4203,6 +4217,7 @@ fn drive_asked(
                 suggestions: vec!["yes".to_owned(), "no".to_owned()],
                 elapsed_seconds: None,
             },
+            stamp: None,
         },
         panes,
         layout,
@@ -4363,6 +4378,7 @@ fn drive_event(
         FrameKind::Event {
             terminal: Some(terminal_id.clone()),
             event,
+            stamp: None,
         },
         panes,
         &mut layout,
@@ -4603,6 +4619,7 @@ fn unfocused_holder_transition_yields_no_notice() {
         FrameKind::Event {
             terminal: Some(background.clone()),
             event: control_event(None),
+            stamp: None,
         },
     );
     let outcome = drive_frame_focused(
@@ -4611,6 +4628,7 @@ fn unfocused_holder_transition_yields_no_notice() {
         FrameKind::Event {
             terminal: Some(background.clone()),
             event: control_event(Some(holder)),
+            stamp: None,
         },
     );
     assert!(outcome.chrome_dirty, "the badge state still folds");
@@ -4999,6 +5017,7 @@ fn agent_metadata_broadcast_updates_index_and_tombstone_clears_it() {
             scope: Scope::Resource(pane.clone()),
             key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(br#"{"name":"reviewer","state":"blocked"}"#.to_vec()),
+            actor: None,
         },
         &mut agent_meta,
     );
@@ -5016,6 +5035,7 @@ fn agent_metadata_broadcast_updates_index_and_tombstone_clears_it() {
             scope: Scope::Resource(pane.clone()),
             key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(br#"{"name":"reviewer","state":"blocked"}"#.to_vec()),
+            actor: None,
         },
         &mut agent_meta,
     );
@@ -5030,6 +5050,7 @@ fn agent_metadata_broadcast_updates_index_and_tombstone_clears_it() {
             scope: Scope::Resource(pane.clone()),
             key: RESOURCE_AGENT_KEY.to_owned(),
             value: None,
+            actor: None,
         },
         &mut agent_meta,
     );
@@ -5083,6 +5104,7 @@ fn config_reload_doorbell_flags_reload_and_ignores_tombstones() {
             scope: Scope::Global,
             key: CONFIG_RELOAD_KEY.to_owned(),
             value: Some(b"1234-99".to_vec()),
+            actor: None,
         },
         &mut agent_meta,
     );
@@ -5098,6 +5120,7 @@ fn config_reload_doorbell_flags_reload_and_ignores_tombstones() {
             scope: Scope::Global,
             key: CONFIG_RELOAD_KEY.to_owned(),
             value: None,
+            actor: None,
         },
         &mut agent_meta,
     );
@@ -5109,6 +5132,7 @@ fn config_reload_doorbell_flags_reload_and_ignores_tombstones() {
             scope: Scope::Resource(tid(9)),
             key: CONFIG_RELOAD_KEY.to_owned(),
             value: Some(b"5678-99".to_vec()),
+            actor: None,
         },
         &mut agent_meta,
     );
@@ -5127,6 +5151,7 @@ fn agent_metadata_rejects_malformed_records() {
             scope: Scope::Resource(pane),
             key: RESOURCE_AGENT_KEY.to_owned(),
             value: Some(b"not json at all".to_vec()),
+            actor: None,
         },
         &mut agent_meta,
     );
@@ -5435,6 +5460,7 @@ fn closing_an_agent_session_removes_only_its_row() {
             terminal_id: agent.clone(),
             exit_status: None,
             reason: CloseReason::ParentClosed,
+            signal: None,
         },
         &mut panes,
         &mut workspace,
@@ -5489,6 +5515,7 @@ fn a_layout_naming_an_agent_session_is_refused() {
             scope: phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
             key: phux_client::layout_ops::layout_key(SessionId::new(1)),
             value: Some(bytes),
+            actor: None,
         },
         &mut panes,
         &mut workspace,
@@ -5532,6 +5559,7 @@ fn a_live_spawned_agent_session_is_declared_and_attached_as_a_stream() {
                 kind: ResourceKind::AgentSession,
                 parent: Some(pane.clone()),
             },
+            stamp: None,
         },
         &mut panes,
         &mut workspace,
@@ -5564,6 +5592,7 @@ fn a_live_spawned_agent_session_is_declared_and_attached_as_a_stream() {
                 kind: ResourceKind::AgentSession,
                 parent: Some(tid(99)),
             },
+            stamp: None,
         },
         &mut panes,
         &mut workspace,

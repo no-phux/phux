@@ -7,9 +7,8 @@ use phux_client_core::session::EffectBuffer as KernelEffectBuffer;
 use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
-    AgentEvent, CONFIG_RELOAD_KEY, CloseReason, DetachReason, ErrorCode, FrameKind,
-    ResourceLifecycle, SESSION_KEEP_EMPTY_KEY, Scope, SpawnError, SpawnResult,
-    decode_session_keep_empty,
+    AgentEvent, CONFIG_RELOAD_KEY, DetachReason, ErrorCode, FrameKind, ResourceLifecycle,
+    SESSION_KEEP_EMPTY_KEY, Scope, SpawnError, SpawnResult, decode_session_keep_empty,
 };
 
 use crate::attach::actions::{
@@ -343,25 +342,16 @@ fn dispatch_frame<W: crate::attach::RenderSink>(
         FrameKind::MetadataValue { request_id, value } => {
             handle_metadata_value(ctx, request_id, value)
         }
-        FrameKind::MetadataChanged { scope, key, value } => {
-            handle_metadata_changed(ctx, &scope, &key, value)
-        }
+        FrameKind::MetadataChanged {
+            scope, key, value, ..
+        } => handle_metadata_changed(ctx, &scope, &key, value),
         FrameKind::DirectoryListing { request_id, result } => {
             Ok(directory_listing_outcome(request_id, result))
         }
         FrameKind::ResourceSpawned { request_id, result } => {
             handle_terminal_spawned(ctx, request_id, result)
         }
-        FrameKind::ResourceClosed {
-            terminal_id,
-            exit_status,
-            reason,
-        } => Ok(handle_terminal_closed(
-            ctx,
-            &terminal_id,
-            exit_status,
-            reason,
-        )),
+        closed @ FrameKind::ResourceClosed { .. } => Ok(handle_terminal_closed(ctx, closed)),
         event @ FrameKind::Event { .. } => Ok(handle_agent_event(ctx, event, &route)),
         FrameKind::Error {
             request_id,
@@ -1508,13 +1498,22 @@ fn window_holding_pane(workspace: &Workspace, pane: &ResourceId) -> Option<usize
 /// in lockstep.
 fn handle_terminal_closed<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal_id: &ResourceId,
-    exit_status: Option<i32>,
-    reason: CloseReason,
+    frame: FrameKind,
 ) -> FrameOutcome {
+    let FrameKind::ResourceClosed {
+        terminal_id,
+        exit_status,
+        reason,
+        signal,
+    } = frame
+    else {
+        return FrameOutcome::default();
+    };
+    let terminal_id = &terminal_id;
     tracing::info!(
         terminal = ?terminal_id,
         exit_status = ?exit_status,
+        ?signal,
         ?reason,
         "ResourceClosed",
     );
@@ -1685,6 +1684,7 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::ResourceSpawned { .. },
+            ..
         } if route.declared_agent.as_ref() == Some(&terminal) => FrameOutcome {
             attach_panes: vec![terminal],
             chrome_dirty: true,
@@ -1698,18 +1698,22 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
                     input_holder,
                     ..
                 },
+            ..
         } => fold_terminal_control(ctx, &terminal, lifecycle, input_holder),
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::Asked { .. },
+            ..
         } => fold_agent_ask(ctx, terminal),
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::CwdChanged { cwd },
+            ..
         } => fold_cwd_changed(ctx, &terminal, cwd),
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::CommandFinished { exit_code },
+            ..
         } => fold_command_finished(ctx, &terminal, exit_code),
         // phux-k0cw: the pane set of ANOTHER session changed. This client
         // holds a server-wide `SUBSCRIBE_EVENTS { terminal: None }`, so the
@@ -1719,6 +1723,7 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::ResourceSpawned { .. } | AgentEvent::ResourceClosed { .. },
+            ..
         } if !ctx.panes.contains_key(&terminal) && !ctx.is_agent_session(&terminal) => {
             FrameOutcome {
                 foreign_pane_set_dirty: true,

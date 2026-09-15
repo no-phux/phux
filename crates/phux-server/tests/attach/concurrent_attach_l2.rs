@@ -187,6 +187,7 @@ async fn subscribe_to_terminal_events(stream: &mut UnixStream, terminal_id: Opti
         stream,
         &FrameKind::SubscribeEvents {
             terminal: terminal_id.cloned(),
+            after_seq: None,
         },
     )
     .await;
@@ -202,7 +203,12 @@ async fn read_terminal_event(
         return None;
     }
     match timeout(remaining, recv_typed(stream)).await {
-        Ok((_type_byte, FrameKind::Event { terminal, event })) => Some((terminal, event)),
+        Ok((
+            _type_byte,
+            FrameKind::Event {
+                terminal, event, ..
+            },
+        )) => Some((terminal, event)),
         Ok(_) => None,  // skip non-event frames
         Err(_) => None, // timeout
     }

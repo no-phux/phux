@@ -122,6 +122,7 @@ pub(crate) fn dispatch(
             scope: Scope::Global,
             key,
             value,
+            ..
         } if key == SESSION_NAME_KEY => {
             if let Some(value) = value {
                 applied(client, &value);
@@ -536,6 +537,7 @@ mod tests {
             scope: Scope::Global,
             key: SESSION_NAME_KEY.to_owned(),
             value: Some(value.to_vec()),
+            actor: None,
         }
     }
 

@@ -136,6 +136,7 @@ async fn subscribe_to_events(stream: &mut UnixStream, terminal_id: Option<&Resou
         stream,
         &FrameKind::SubscribeEvents {
             terminal: terminal_id.cloned(),
+            after_seq: None,
         },
     )
     .await;

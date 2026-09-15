@@ -307,6 +307,7 @@ fn resource_closed(h: &mut Harness, id: u32) {
             terminal_id: ResourceId::local(id),
             exit_status: None,
             reason: phux_protocol::wire::frame::CloseReason::Killed,
+            signal: None,
         }),
         PhuxClientResult::Ok
     );
@@ -497,7 +498,8 @@ fn explicit_close_requires_live_owned_attachment_and_keeps_state_until_server_cl
         h.feed(FrameKind::ResourceClosed {
             terminal_id: id,
             exit_status: None,
-            reason: phux_protocol::wire::frame::CloseReason::Unknown
+            reason: phux_protocol::wire::frame::CloseReason::Unknown,
+            signal: None
         }),
         PhuxClientResult::Ok
     );

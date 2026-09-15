@@ -744,7 +744,10 @@ pub fn operation_id_hex(operation_id: &InputOperationId) -> String {
               'record or tombstone'; collapsing them erases the tombstone"
 )]
 fn record_from_frame(frame: &FrameKind, terminal: &ResourceId) -> Option<Option<AgentRecord>> {
-    let FrameKind::MetadataChanged { scope, key, value } = frame else {
+    let FrameKind::MetadataChanged {
+        scope, key, value, ..
+    } = frame
+    else {
         return None;
     };
     if key != RESOURCE_AGENT_KEY {

@@ -1153,6 +1153,7 @@ impl RelaySession {
             self.legacy_events.insert(terminal);
             frames.push(self.encode(&FrameKind::SubscribeEvents {
                 terminal: Some(ResourceId::local(terminal)),
+                after_seq: None,
             }));
         }
         frames
@@ -1304,6 +1305,7 @@ impl RelaySession {
         }
         if let FrameKind::SubscribeEvents {
             terminal: Some(ResourceId::Local { id }),
+            ..
         } = forward
         {
             self.legacy_events.insert(*id);
@@ -1561,7 +1563,8 @@ impl RelaySession {
                 terminal_id,
                 exit_status,
                 reason,
-            } => self.relay_terminal_closed(&terminal_id, exit_status, reason),
+                signal,
+            } => self.relay_terminal_closed(&terminal_id, exit_status, reason, signal),
             FrameKind::Bell { terminal_id } => self.relay_bell(&terminal_id),
             other => {
                 return Err(format!(
@@ -1733,11 +1736,18 @@ impl RelaySession {
     /// Re-tag one stream frame's terminal scope `Local { id }` ->
     /// `Satellite { host, id }`. Every other field is forwarded verbatim
     /// (ADR-0007: opaque relay), so the scope is rewritten in place rather
-    /// than the frame rebuilt field by field.
+    /// than the frame rebuilt field by field. The one exception is an
+    /// event's journal stamp: it names the satellite's journal, not the
+    /// hub's, so it does not cross the hub (`docs/spec/L1.md` §7.3).
     fn retag_stream_frame(&self, mut frame: FrameKind, id: u32) -> FrameKind {
         let scope = ResourceId::satellite(self.host.clone(), id);
         match &mut frame {
-            FrameKind::Event { terminal, .. } => *terminal = Some(scope),
+            FrameKind::Event {
+                terminal, stamp, ..
+            } => {
+                *terminal = Some(scope);
+                *stamp = None;
+            }
             FrameKind::ResourceOutput { terminal_id, .. }
             | FrameKind::BootstrapBegin { terminal_id, .. }
             | FrameKind::BootstrapChunk { terminal_id, .. }
@@ -1762,6 +1772,7 @@ impl RelaySession {
         terminal_id: &ResourceId,
         exit_status: Option<i32>,
         reason: phux_protocol::wire::frame::CloseReason,
+        signal: Option<i32>,
     ) {
         let Some(id) = self.retag_inbound(Some(terminal_id)) else {
             return;
@@ -1780,6 +1791,7 @@ impl RelaySession {
                 terminal_id: ResourceId::satellite(self.host.clone(), id),
                 exit_status,
                 reason,
+                signal,
             },
         );
         // No upstream detach is needed: the satellite already declared the
@@ -2552,7 +2564,9 @@ impl RelaySession {
                 cursor,
                 ..
             } => Self::resource_id_bytes(terminal_id).saturating_add(cursor.len()),
-            FrameKind::Event { terminal, event } => terminal
+            FrameKind::Event {
+                terminal, event, ..
+            } => terminal
                 .as_ref()
                 .map_or(0, Self::resource_id_bytes)
                 .saturating_add(Self::agent_event_bytes(event)),
@@ -3087,9 +3101,12 @@ fn retag_spawn_result(host: &SatelliteHost, result: SpawnResult) -> SpawnResult 
         ));
     };
     let id = ResourceId::satellite(host.clone(), *id);
-    match result.instance() {
-        Some(instance) => SpawnResult::OkBound { id, instance },
-        None => SpawnResult::Ok(id),
+    // A replayed reply stays replayed (ADR-0126): a keyed retry through the
+    // hub must not look like a fresh spawn.
+    match (result.is_replayed(), result.instance()) {
+        (true, instance) => SpawnResult::Replayed { id, instance },
+        (false, Some(instance)) => SpawnResult::OkBound { id, instance },
+        (false, None) => SpawnResult::Ok(id),
     }
 }
 
@@ -3341,6 +3358,7 @@ mod tests {
             },
             forward: FrameKind::SubscribeEvents {
                 terminal: Some(ResourceId::local(terminal)),
+                after_seq: None,
             },
         });
         assert!(
@@ -3851,6 +3869,7 @@ mod tests {
             &FrameKind::Event {
                 terminal: Some(ResourceId::satellite("devbox", 9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             },
         );
         let _ = open_rx.try_recv().expect("filler remains");
@@ -3872,6 +3891,7 @@ mod tests {
             &FrameKind::Event {
                 terminal: Some(ResourceId::satellite("devbox", 9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             },
         );
         assert!(!closed.subscribers.contains_key(&9));
@@ -4050,6 +4070,7 @@ mod tests {
             },
             forward: FrameKind::SubscribeEvents {
                 terminal: Some(ResourceId::local(9)),
+                after_seq: None,
             },
         });
         assert!(!wire.is_empty());
@@ -4302,6 +4323,55 @@ mod tests {
         );
     }
 
+    /// ADR-0126: the idempotency key crosses the link, and a satellite's
+    /// replayed reply stays replayed beside the re-tagged id, so a keyed
+    /// retry through the hub never looks like a fresh spawn.
+    #[test]
+    fn session_keeps_a_replayed_spawn_replayed_while_retagging_the_id() {
+        let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
+        let instance = phux_protocol::ids::ServerInstance::new([3; 16]);
+        for original in [None, Some(instance)] {
+            let mut session = RelaySession::new(host(), BootstrapLimits::default());
+            let (reply, mut rx) = oneshot::channel();
+            let mut request = spawn_request(reply);
+            if let RelayRequest::Spawn { spawn, .. } = &mut request {
+                spawn.resource = Some(Box::new(
+                    phux_protocol::wire::frame::SpawnResource::default().with_idempotency_key(key),
+                ));
+            }
+            let wire = session.handle_request(request);
+            let FrameKind::SpawnResource {
+                request_id,
+                resource,
+                ..
+            } = decode(&wire)
+            else {
+                panic!("expected SPAWN_RESOURCE on the wire");
+            };
+            assert_eq!(
+                resource.and_then(|r| r.idempotency_key),
+                key,
+                "the key crosses the link"
+            );
+            session
+                .handle_inbound(&encode(&FrameKind::ResourceSpawned {
+                    request_id,
+                    result: SpawnResult::Replayed {
+                        id: ResourceId::local(42),
+                        instance: original,
+                    },
+                }))
+                .expect("valid satellite frame");
+            assert_eq!(
+                rx.try_recv().expect("spawn resolved"),
+                SpawnResult::Replayed {
+                    id: ResourceId::satellite("devbox", 42),
+                    instance: original,
+                }
+            );
+        }
+    }
+
     /// ADR-0109: a satellite that never advertised `CONDITIONAL_KILL` never
     /// sees the tag, and the consumer gets the typed refusal at once; one
     /// that did receives the precondition unchanged.
@@ -4497,6 +4567,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
         session
@@ -4513,6 +4584,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(10)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
 
@@ -4524,6 +4596,7 @@ mod tests {
             FrameKind::Event {
                 terminal: Some(ResourceId::satellite("devbox", 9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }
         );
         let Outbound::Frame(second) = out_rx.try_recv().expect("output fanned out") else {
@@ -4548,6 +4621,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::satellite("nested", 9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
         assert!(out_rx.try_recv().is_err());
@@ -4563,6 +4637,7 @@ mod tests {
                 terminal_id: ResourceId::local(9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
             }))
             .expect("valid satellite frame");
         let Outbound::Frame(frame) = out_rx.try_recv().expect("closed fanned out") else {
@@ -4574,6 +4649,7 @@ mod tests {
                 terminal_id: ResourceId::satellite("devbox", 9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
             }
         );
         // Subscription is gone: further frames for id 9 do not fan out.
@@ -4581,6 +4657,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
         assert!(out_rx.try_recv().is_err());
@@ -4600,6 +4677,7 @@ mod tests {
                 terminal_id: ResourceId::local(9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
             }))
             .expect("valid close");
         assert!(session.subscribers.contains_key(&9));
@@ -4636,6 +4714,7 @@ mod tests {
                 terminal_id: ResourceId::local(9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
             }))
             .expect("valid close");
 
@@ -4688,6 +4767,7 @@ mod tests {
                 terminal_id: ResourceId::local(9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
             }))
             .expect("valid close");
         let SnapshotGate::Retiring {
@@ -4748,6 +4828,7 @@ mod tests {
                 terminal_id: ResourceId::local(9),
                 exit_status: Some(23),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
             }))
             .expect("valid close");
         assert!(matches!(
@@ -5049,6 +5130,7 @@ mod tests {
                 terminal_id: ResourceId::local(9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
             }))
             .expect("valid satellite frame");
         let Outbound::Frame(frame) = rx_b.try_recv().expect("close delivered past the gate") else {
@@ -5060,6 +5142,7 @@ mod tests {
                 terminal_id: ResourceId::satellite("devbox", 9),
                 exit_status: Some(0),
                 reason: phux_protocol::wire::frame::CloseReason::Unknown,
+                signal: None,
             },
             "a gated subscriber must still see RESOURCE_CLOSED"
         );
@@ -5085,6 +5168,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
         let Outbound::Frame(frame) = out_rx.try_recv().expect("event flows without a snapshot")
@@ -5096,6 +5180,39 @@ mod tests {
             FrameKind::Event {
                 terminal: Some(ResourceId::satellite("devbox", 9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
+            }
+        );
+    }
+
+    /// L1.md §7.3: a satellite's journal stamp names the satellite's
+    /// journal, so the hub re-tags the event and drops the stamp rather than
+    /// hand a consumer a cursor into a journal it cannot subscribe to.
+    #[test]
+    fn a_satellite_event_stamp_does_not_cross_the_hub() {
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        let (out_tx, mut out_rx) = mpsc::channel(8);
+        subscribe(&mut session, 9, ClientId(1), out_tx);
+        let stamp =
+            phux_protocol::wire::frame::EventStamp::new(41, 1_700_000_000_000).with_actor(Some(
+                phux_protocol::wire::frame::ActorRef::new(phux_protocol::ids::ClientId::new(3)),
+            ));
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(ResourceId::local(9)),
+                event: AgentEvent::CommandStarted,
+                stamp: Some(Box::new(stamp)),
+            }))
+            .expect("valid satellite frame");
+        let Outbound::Frame(frame) = out_rx.try_recv().expect("the event flows") else {
+            panic!("unexpected terminal outbound sentinel")
+        };
+        assert_eq!(
+            frame,
+            FrameKind::Event {
+                terminal: Some(ResourceId::satellite("devbox", 9)),
+                event: AgentEvent::CommandStarted,
+                stamp: None,
             }
         );
     }
@@ -5119,6 +5236,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
         assert!(
@@ -5183,6 +5301,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
         assert!(
@@ -5291,6 +5410,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
         assert!(out_rx.try_recv().is_err());
@@ -5334,6 +5454,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
         let Outbound::Frame(_) = rx_b.try_recv().expect("client 2 still fanned out") else {
@@ -5632,7 +5753,8 @@ mod tests {
         assert!(matches!(
             decode(restore_events),
             FrameKind::SubscribeEvents {
-                terminal: Some(ResourceId::Local { id: 9 })
+                terminal: Some(ResourceId::Local { id: 9 }),
+                ..
             }
         ));
         let FrameKind::Command {
@@ -5651,6 +5773,7 @@ mod tests {
         let event = FrameKind::Event {
             terminal: Some(ResourceId::local(9)),
             event: phux_protocol::wire::frame::AgentEvent::CommandStarted,
+            stamp: None,
         };
         session.handle_inbound(&encode(&event)).unwrap();
         assert!(
@@ -5797,6 +5920,7 @@ mod tests {
             },
             FrameKind::SubscribeEvents {
                 terminal: Some(ResourceId::local(9)),
+                after_seq: None,
             },
         );
         let Outbound::Frame(frame) = out_rx.try_recv().expect("typed error pushed") else {
@@ -5889,6 +6013,7 @@ mod tests {
             .handle_inbound(&encode(&FrameKind::Event {
                 terminal: Some(ResourceId::local(9)),
                 event: AgentEvent::CommandStarted,
+                stamp: None,
             }))
             .expect("valid satellite frame");
         assert!(rx_b.try_recv().is_ok(), "B's event stream must be open");

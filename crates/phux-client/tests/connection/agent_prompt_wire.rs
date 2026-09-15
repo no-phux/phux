@@ -222,6 +222,7 @@ async fn session(stream: UnixStream, script: Script, seen: SeenIds) {
                         scope: Scope::Resource(terminal_id.clone()),
                         key: RESOURCE_AGENT_KEY.to_owned(),
                         value,
+                        actor: None,
                     })
                     .await;
                 }
