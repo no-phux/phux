@@ -176,6 +176,7 @@ pub(crate) fn catalog() -> Value {
                 "properties": {
                     "target": { "type": "string", "description": TARGET_DESC },
                     "confirm": { "type": "boolean", "const": true, "description": "Required explicit destructive-operation confirmation." },
+                    "idempotency_key": { "type": "string", "minLength": 32, "maxLength": 32, "pattern": "^[0-9a-fA-F]{32}$", "description": "Make the kill safe to retry: a repeat with the same 32-hex-digit key answers the first kill's result and kills nothing. Refused with unsupported_server when the server does not advertise keyed_signal." },
                     "socket": { "type": "string" }
                 },
                 "required": ["target", "confirm"]
@@ -547,7 +548,7 @@ async fn phux_new(args: &Value) -> Result<Value, ToolError> {
 async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
-        &["target", "confirm", "socket"],
+        &["target", "confirm", "idempotency_key", "socket"],
         &["target", "confirm"],
     )?;
     // L17 replaces this hand-written confirm with one table-driven check.
@@ -557,10 +558,14 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
         ));
     }
     let target = crate::cli_adapter::bounded_string(args, "target", true)?.unwrap_or_default();
+    let key = crate::cli_adapter::bounded_string(args, "idempotency_key", false)?
+        .as_deref()
+        .map(crate::pane_tools::idempotency_key)
+        .transpose()?;
     let socket = socket_arg(args)?;
     let selector = selector::parse(&target)
         .map_err(|err| ToolError::new(format!("invalid target '{target}': {err}")))?;
-    crate::kill_tool::kill_selected(&socket, &selector, &target).await?;
+    crate::kill_tool::kill_selected(&socket, &selector, &target, key).await?;
     Ok(json!({ "schema_version": 1, "killed": true, "target": target }))
 }
 

@@ -1071,6 +1071,7 @@ fn wrong_kind_refusals() {
                 command: Command::SignalTerminal {
                     terminal_id: session.clone(),
                     signal: phux_protocol::wire::frame::TerminalSignal::Interrupt,
+                    operation_id: None,
                 },
             },
         )
@@ -1204,6 +1205,7 @@ fn a_childs_spawn_and_close_reach_the_parents_event_watchers() {
                 request_id: 3,
                 command: Command::KillResource {
                     terminal_id: session.clone(),
+                    operation_id: None,
                 },
             },
         )
@@ -1252,6 +1254,7 @@ fn kill_parent_cascades_child_with_parent_closed() {
                 request_id: 3,
                 command: Command::KillResource {
                     terminal_id: parent.clone(),
+                    operation_id: None,
                 },
             },
         )
@@ -1358,6 +1361,7 @@ fn kill_terminals_mixed_set_closes_once_each() {
                 request_id: 4,
                 command: Command::KillResources {
                     ids: vec![parent.clone(), session.clone(), unrelated.clone()],
+                    operation_id: None,
                 },
             },
         )

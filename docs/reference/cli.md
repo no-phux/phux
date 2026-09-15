@@ -1422,7 +1422,7 @@ each.
 socket only: the server accepts that stop on its local socket alone, so
 `--server` cannot combine with `--remote`.
 
-Usage: phux kill [--server] [--remote <[USER@]HOST[:PORT]>] [TARGET]
+Usage: phux kill [FLAGS] [TARGET]
 
 Arguments:
   [TARGET]  What to kill (selector).
@@ -1436,6 +1436,12 @@ Flags:
                                   Note that the next `phux attach`/`new` will
                                   auto-spawn a fresh server: this stops the
                                   current one, it does not disable phux.
+      --idempotency-key <HEX32>   Make the kill safe to retry: a repeat with the
+                                  same key (32 hex digits) answers the first
+                                  kill's result and kills nothing. An `@N`
+                                  target is sent as written, so a retry after
+                                  the pane is gone still gets the first answer.
+                                  The server must advertise `keyed_signal`.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -2884,7 +2890,7 @@ Examples:
 phux signal build freeze
 phux signal . kill
 
-Usage: phux signal <TARGET> <SIGNAL>
+Usage: phux signal [--idempotency-key <HEX32>] <TARGET> <SIGNAL>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
@@ -2892,10 +2898,14 @@ Arguments:
             [possible values: interrupt, freeze, resume, terminate, kill]
 
 Flags:
-  -h, --help           Print help
+      --idempotency-key <HEX32>  Make the signal safe to retry: a repeat with
+                                 the same key (32 hex digits) answers the first
+                                 signal's result and delivers nothing. The
+                                 server must advertise `keyed_signal`.
+  -h, --help                     Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux skill`

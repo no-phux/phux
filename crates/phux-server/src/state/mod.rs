@@ -153,6 +153,16 @@ impl core::fmt::Debug for ServerIncarnation {
     }
 }
 
+/// The connection and keyed operation behind a kill, stamped on the
+/// `pane_closed` of every resource it closes (`docs/spec/L1.md` §7.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CloseAttribution {
+    /// The connection that sent the kill.
+    pub actor: Option<ClientId>,
+    /// The kill's `operation_id`, when it carried one (L1 §5.1.1).
+    pub operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+}
+
 /// Single owner of all server-side state.
 ///
 /// See the module-level doc for the concurrency model. Wrap this in
@@ -288,6 +298,10 @@ pub struct ServerState {
         phux_core::ids::ResourceId,
         phux_protocol::wire::frame::CloseReason,
     >,
+    /// Who and which keyed operation closed a resource a kill named, for its
+    /// `pane_closed` stamp (`docs/spec/L1.md` §7.3). Bounded like
+    /// [`Self::close_reasons`]: an entry lives from the kill to the reap.
+    close_attributions: std::collections::HashMap<phux_core::ids::ResourceId, CloseAttribution>,
     /// Retain-on-exit bookkeeping (ADR-0124): each pane's requested
     /// retention and the exit facet of every pane retained after its
     /// process exited. See [`retained`].

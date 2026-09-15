@@ -516,7 +516,8 @@ fn retained_pane_emits_terminal_control_exited_not_resource_closed() {
         // The purge is the close, and it carries the exit it retained.
         assert!(matches!(
             h.command(Command::KillResource {
-                terminal_id: pane.clone()
+                terminal_id: pane.clone(),
+                operation_id: None,
             })
             .await,
             CommandResult::Ok
@@ -580,12 +581,14 @@ fn kill_of_a_retained_pane_purges_with_killed_and_is_idempotent() {
         let kill = h
             .command(Command::KillResource {
                 terminal_id: pane.clone(),
+                operation_id: None,
             })
             .await;
         assert!(matches!(kill, CommandResult::Ok), "{kill:?}");
         let again = h
             .command(Command::KillResources {
                 ids: vec![pane.clone()],
+                operation_id: None,
             })
             .await;
         assert!(
@@ -664,6 +667,7 @@ fn input_to_a_retained_pane_is_input_not_written_and_signal_is_invalid_command()
             .command(Command::SignalTerminal {
                 terminal_id: pane.clone(),
                 signal: TerminalSignal::Interrupt,
+                operation_id: None,
             })
             .await;
         assert_error(&signalled, ErrorCode::InvalidCommand, "SIGNAL_TERMINAL");
@@ -735,6 +739,7 @@ fn keep_empty_session_and_retained_pane_compose() {
         let kill = h
             .command(Command::KillResource {
                 terminal_id: seed.clone(),
+                operation_id: None,
             })
             .await;
         assert!(matches!(kill, CommandResult::Ok), "{kill:?}");
@@ -751,6 +756,7 @@ fn keep_empty_session_and_retained_pane_compose() {
         let kill = h
             .command(Command::KillResource {
                 terminal_id: pane.clone(),
+                operation_id: None,
             })
             .await;
         assert!(matches!(kill, CommandResult::Ok), "{kill:?}");

@@ -11,14 +11,35 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::AgentEvent;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
 
+/// One event an engine emitted, with the key of the operation that caused
+/// it (`docs/spec/L1.md` §7.3): a keyed `SIGNAL_TERMINAL`'s
+/// `terminal_control` carries its `operation_id` into the journal stamp.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Emitted {
+    /// The event.
+    pub event: AgentEvent,
+    /// The causing operation's key, when it carried one.
+    pub operation_id: Option<IdempotencyKey>,
+}
+
+impl From<AgentEvent> for Emitted {
+    fn from(event: AgentEvent) -> Self {
+        Self {
+            event,
+            operation_id: None,
+        }
+    }
+}
+
 /// The engine's end: emits without blocking and counts what it had to drop.
 #[derive(Debug, Clone)]
 pub struct EventSink {
-    tx: mpsc::Sender<AgentEvent>,
+    tx: mpsc::Sender<Emitted>,
     dropped: Arc<AtomicU64>,
 }
 
@@ -26,7 +47,7 @@ pub struct EventSink {
 /// last read.
 #[derive(Debug)]
 pub struct EventSource {
-    rx: mpsc::Receiver<AgentEvent>,
+    rx: mpsc::Receiver<Emitted>,
     dropped: Arc<AtomicU64>,
 }
 
@@ -49,7 +70,16 @@ impl EventSink {
     /// closed sink means nobody drains it any more, so there is nothing to
     /// report a loss to.
     pub fn emit(&self, event: AgentEvent) {
-        if let Err(TrySendError::Full(_)) = self.tx.try_send(event) {
+        self.emit_keyed(event, None);
+    }
+
+    /// [`Self::emit`], naming the key of the operation that caused `event`.
+    pub fn emit_keyed(&self, event: AgentEvent, operation_id: Option<IdempotencyKey>) {
+        let emitted = Emitted {
+            event,
+            operation_id,
+        };
+        if let Err(TrySendError::Full(_)) = self.tx.try_send(emitted) {
             // Relaxed: the engine and the drain share one current-thread
             // runtime (ADR-0014); the atomic only has to be shared.
             self.dropped.fetch_add(1, Ordering::Relaxed);
@@ -59,8 +89,8 @@ impl EventSink {
 
 /// A bare channel is a sink whose drops nobody reads, which is what a test
 /// that inspects the raw events wants.
-impl From<mpsc::Sender<AgentEvent>> for EventSink {
-    fn from(tx: mpsc::Sender<AgentEvent>) -> Self {
+impl From<mpsc::Sender<Emitted>> for EventSink {
+    fn from(tx: mpsc::Sender<Emitted>) -> Self {
         Self {
             tx,
             dropped: Arc::new(AtomicU64::new(0)),
@@ -71,13 +101,13 @@ impl From<mpsc::Sender<AgentEvent>> for EventSink {
 impl EventSource {
     /// The next event, or `None` once every sink is gone and the queue is
     /// empty.
-    pub async fn recv(&mut self) -> Option<AgentEvent> {
+    pub async fn recv(&mut self) -> Option<Emitted> {
         self.rx.recv().await
     }
 
     /// The next already-queued event, without waiting: how the exit watcher
     /// journals what a pane emitted before its close.
-    pub fn try_recv(&mut self) -> Option<AgentEvent> {
+    pub fn try_recv(&mut self) -> Option<Emitted> {
         self.rx.try_recv().ok()
     }
 
@@ -101,7 +131,13 @@ mod tests {
         sink.emit(AgentEvent::Idle);
         assert_eq!(source.take_dropped(), 2);
         assert_eq!(source.take_dropped(), 0, "reading resets the count");
-        assert!(matches!(source.rx.try_recv(), Ok(AgentEvent::Bell)));
+        assert!(matches!(
+            source.rx.try_recv(),
+            Ok(Emitted {
+                event: AgentEvent::Bell,
+                operation_id: None
+            })
+        ));
     }
 
     #[test]

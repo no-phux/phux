@@ -380,6 +380,7 @@ pub async fn close(conn: &mut Connection, resource: &ResourceId) -> Result<(), A
             REQUEST_KILL,
             Command::KillResource {
                 terminal_id: resource.clone(),
+                operation_id: None,
             },
         )
         .await?

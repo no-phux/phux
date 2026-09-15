@@ -441,6 +441,7 @@ async fn rollback(socket_path: &Path, pane: &ResourceId) -> (Vec<String>, Cleanu
             1,
             Command::KillResource {
                 terminal_id: pane.clone(),
+                operation_id: None,
             },
         )
         .await

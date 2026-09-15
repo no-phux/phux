@@ -131,6 +131,7 @@ async fn kill_if(
     let kill = Command::KillResourceIf {
         terminal_id: pane.clone(),
         precondition: KillPrecondition::spawned_and_unattached(instance),
+        operation_id: None,
     };
     command(stream, request_id, kill).await
 }
@@ -180,6 +181,7 @@ fn a_relayed_conditional_kill_is_evaluated_on_the_satellite() {
                 instance: Some(stale),
                 conditions: phux_protocol::wire::frame::KillConditions::NONE,
             },
+            operation_id: None,
         };
         let message = refusal_message(command(&mut t.hub, 8009, instance_only).await);
         assert!(

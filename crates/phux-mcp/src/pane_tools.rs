@@ -11,6 +11,7 @@
 use std::path::Path;
 
 use phux_client::attach::connection::Connection;
+use phux_client::kill::KeyedError;
 use phux_client::layout::SplitDir;
 use phux_client::selector::{self, Selector, format_terminal_id};
 use phux_client::signal::LeaseOutcome;
@@ -153,7 +154,9 @@ fn retain_secs(args: &Value) -> Result<Option<u32>, ToolError> {
     })
 }
 
-fn idempotency_key(raw: &str) -> Result<IdempotencyKey, ToolError> {
+/// Parse an `idempotency_key` argument; shared by `phux_spawn`,
+/// `phux_signal`, and `phux_kill`.
+pub(crate) fn idempotency_key(raw: &str) -> Result<IdempotencyKey, ToolError> {
     phux_client::spawn::parse_idempotency_key(raw).map_err(|err| {
         contract_error(
             "invalid_idempotency_key",
@@ -227,6 +230,18 @@ async fn refuse_unsupported(
         "upgrade the server (`phux upgrade` after installing a newer phux), or drop the flag",
         2,
     ))
+}
+
+/// The refusal for a keyed kill or signal to a server without
+/// `KEYED_SIGNAL`, worded as `phux kill` / `phux signal --idempotency-key`
+/// word it: such a server would ignore the key and run a retry again.
+pub(crate) fn unsupported_keyed_signal() -> ToolError {
+    contract_error(
+        "unsupported_server",
+        "this server does not support --idempotency-key: it does not advertise keyed_signal",
+        "upgrade the server (`phux upgrade` after installing a newer phux), or drop the flag",
+        2,
+    )
 }
 
 /// Resolve an explicit local owner, spawn into its exact window, then
@@ -340,7 +355,7 @@ fn spawn_document(result: SpawnResult) -> Result<Value, ToolError> {
 pub(crate) async fn signal(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
-        &["target", "signal", "confirm", "socket"],
+        &["target", "signal", "confirm", "idempotency_key", "socket"],
         &["target", "signal"],
     )?;
     let target = bounded_string(args, "target", true)?.unwrap_or_default();
@@ -357,15 +372,18 @@ pub(crate) async fn signal(args: &Value) -> Result<Value, ToolError> {
             "signal {signal:?} is destructive; pass `confirm: true`"
         )));
     }
+    let key = bounded_string(args, "idempotency_key", false)?
+        .as_deref()
+        .map(idempotency_key)
+        .transpose()?;
     let socket = socket_arg(args)?;
     let selector = parse_selector(&target)?;
     let view = state::get_state(&socket).await?;
     let terminal = resolve_one_for_input(&socket, &selector, &view).await?;
     let mut conn = Connection::connect(&socket).await?;
-    let command = phux_client::signal::signal_command(terminal, wire_signal(&signal));
-    let (result, _) = conn.request(1, command).await?.into_parts();
+    let outcome = send_signal(&mut conn, terminal, wire_signal(&signal), key).await?;
     drop(conn);
-    match LeaseOutcome::from_result(result) {
+    match outcome {
         LeaseOutcome::Ok => Ok(json!({
             "schema_version": 1,
             "signaled": true,
@@ -379,6 +397,26 @@ pub(crate) async fn signal(args: &Value) -> Result<Value, ToolError> {
             "{target}: {}",
             phux_client::explain::explain_unexpected("signal", &other)
         ))),
+    }
+}
+
+/// One `SIGNAL_TERMINAL`, keyed when `key` is set (L1 §5.1.1). A keyed
+/// signal to a server without `KEYED_SIGNAL` is refused before it is sent.
+async fn send_signal(
+    conn: &mut Connection,
+    terminal: ResourceId,
+    signal: TerminalSignal,
+    key: Option<IdempotencyKey>,
+) -> Result<LeaseOutcome, ToolError> {
+    let Some(key) = key else {
+        let command = phux_client::signal::signal_command(terminal, signal);
+        let (result, _) = conn.request(1, command).await?.into_parts();
+        return Ok(LeaseOutcome::from_result(result));
+    };
+    match phux_client::signal::signal_keyed(conn, 1, terminal, signal, key).await {
+        Ok((outcome, _)) => Ok(outcome),
+        Err(KeyedError::Unsupported) => Err(unsupported_keyed_signal()),
+        Err(KeyedError::Attach(err)) => Err(err.into()),
     }
 }
 

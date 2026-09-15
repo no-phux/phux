@@ -72,7 +72,10 @@ pub unsafe extern "C" fn phux_client_queue_close_resources(
     // SAFETY: same readable-array contract as documented on this symbol.
     unsafe {
         queue_close_batch(client, request_id, terminal_ids, count, |ids| {
-            Command::KillResources { ids }
+            Command::KillResources {
+                ids,
+                operation_id: None,
+            }
         })
     }
 }
@@ -219,9 +222,11 @@ fn close_command(client: &Client, id: &ResourceId) -> Result<Command, BridgeErro
                 instance: Some(*instance),
                 conditions: KillConditions::NONE,
             },
+            operation_id: None,
         }),
         (ResourceId::Local { .. }, None) => Ok(Command::KillResource {
             terminal_id: id.clone(),
+            operation_id: None,
         }),
         (ResourceId::Satellite { .. }, None) => Err(BridgeError::state(
             "satellite close requires an instance-bound resource; no safe incarnation fence",

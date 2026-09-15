@@ -126,6 +126,13 @@ pub enum ErrorCode {
     /// message says which. Every case has the same recovery: leave the
     /// resource alone.
     PreconditionFailed = 212,
+    /// A federation hub refused a keyed operation's retry without forwarding
+    /// it: the satellite that owns the target restarted since the hub first
+    /// forwarded that operation id, so the satellite's dedupe record is gone
+    /// and a replay could run the operation twice (ADR-0053 item 5 through a
+    /// hub, `docs/spec/L1.md` §9.1). Recovery is the consumer's own
+    /// incarnation rule: read level state and decide afresh, under a new id.
+    IncarnationChanged = 213,
 
     /// Catch-all for unexpected server-side failures. Carries
     /// `u16::MAX = 65535` on the wire.
@@ -198,7 +205,8 @@ impl ErrorCode {
             | Self::NotProducer
             | Self::RecordInvalid
             | Self::Overflow
-            | Self::PreconditionFailed => ErrorScope::Request,
+            | Self::PreconditionFailed
+            | Self::IncarnationChanged => ErrorScope::Request,
             Self::TerminalNotFound
             | Self::WrongResourceKind
             | Self::UnsupportedSatelliteRoute
@@ -242,6 +250,7 @@ impl ErrorCode {
             210 => Self::RecordInvalid,
             211 => Self::Overflow,
             212 => Self::PreconditionFailed,
+            213 => Self::IncarnationChanged,
             65535 => Self::InternalError,
             _ => return None,
         })
@@ -583,6 +592,7 @@ mod tests {
         ErrorCode::RecordInvalid,
         ErrorCode::Overflow,
         ErrorCode::PreconditionFailed,
+        ErrorCode::IncarnationChanged,
         ErrorCode::InternalError,
     ];
 
@@ -635,5 +645,6 @@ mod tests {
         assert_eq!(ErrorCode::RecordInvalid.scope(), ErrorScope::Request);
         assert_eq!(ErrorCode::Overflow.scope(), ErrorScope::Request);
         assert_eq!(ErrorCode::PreconditionFailed.scope(), ErrorScope::Request);
+        assert_eq!(ErrorCode::IncarnationChanged.scope(), ErrorScope::Request);
     }
 }

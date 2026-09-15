@@ -630,6 +630,9 @@ pub(crate) struct NegotiatedBootstrap {
     /// Features the satellite advertised in `HELLO_OK`; the relay consults
     /// them before relaying a frame an older satellite would drop.
     server_features: phux_protocol::caps::ServerFeatureSet,
+    /// The satellite's incarnation, its `HELLO_OK.server_id`, which the
+    /// hub's incarnation fence compares a keyed retry against (L1 §9.1).
+    server_id: Option<[u8; 16]>,
 }
 /// An established hub link: a duplex of complete encoded phux frames
 /// (length prefix included, the `FrameKind::encode`/`decode` unit) the
@@ -648,6 +651,13 @@ pub(crate) trait LinkConn {
 
     /// Features the satellite advertised in its `HELLO_OK`.
     fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String>;
+
+    /// The satellite's incarnation, its `HELLO_OK.server_id` (L1 §9.1).
+    /// `None` when the transport cannot say, which fences as a single
+    /// incarnation.
+    fn satellite_incarnation(&self) -> Option<[u8; 16]> {
+        None
+    }
 }
 
 pub(crate) trait LinkReader {
@@ -701,6 +711,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
         requests: mut relay_rx,
         unsubscribes: mut unsub_rx,
         journal,
+        operations,
     } = mailbox;
     let spec = match plan_link(&entry) {
         Ok(spec) => spec,
@@ -776,6 +787,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
                     &mut unsub_rx,
                     &cancel,
                     journal.as_ref(),
+                    &operations,
                 );
                 match session.await {
                     Some(reason) => {
@@ -846,6 +858,7 @@ async fn run_relay_session<C: LinkConn>(
     unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<super::relay::Unsubscribe>,
     cancel: &CancellationToken,
     journal: Option<&crate::state::SharedState>,
+    operations: &super::operation_fence::OperationFence,
 ) -> Option<String> {
     let mut session = match negotiated_relay_session(host, &conn) {
         Ok(session) => session,
@@ -858,6 +871,7 @@ async fn run_relay_session<C: LinkConn>(
         let features = session.satellite_features();
         journal.with_mut(|s| s.set_satellite_features(host.clone(), features));
     }
+    session.set_operation_fence(operations.clone());
     let (mut reader, writer) = conn.into_parts();
     let (write_tx, write_rx) = tokio::sync::mpsc::channel(LINK_WRITE_QUEUE);
     let queued_write_bytes = Rc::new(Cell::new(0usize));
@@ -944,12 +958,10 @@ fn negotiated_relay_session<C: LinkConn>(
     let limits = conn.bootstrap_limits()?;
     let features = conn.server_features()?;
     info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
-    Ok(super::relay::RelaySession::new_negotiated(
-        host.clone(),
-        limits,
-        profile,
-        features,
-    ))
+    let mut session =
+        super::relay::RelaySession::new_negotiated(host.clone(), limits, profile, features);
+    session.set_incarnation(conn.satellite_incarnation());
+    Ok(session)
 }
 
 #[allow(
@@ -1197,6 +1209,7 @@ async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
             server_caps,
             selected_profile,
             bootstrap_limits,
+            server_id,
             ..
         } => {
             validate_link_hello_ok(
@@ -1211,6 +1224,7 @@ async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
                 profile: selected_profile,
                 limits: bootstrap_limits,
                 server_features: server_caps.features,
+                server_id: <[u8; 16]>::try_from(server_id.as_slice()).ok(),
             })
         }
         FrameKind::Error { code, message, .. } => {
@@ -1641,6 +1655,12 @@ impl LinkConn for NetLinkConn {
 
     fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String> {
         self.negotiated().map(|selection| selection.server_features)
+    }
+
+    fn satellite_incarnation(&self) -> Option<[u8; 16]> {
+        self.negotiated()
+            .ok()
+            .and_then(|selection| selection.server_id)
     }
 }
 
@@ -2707,6 +2727,7 @@ mod tests {
                         &mut unsubscribes,
                         &session_cancel,
                         None,
+                        &super::super::operation_fence::OperationFence::default(),
                     )
                     .await
                 });
@@ -2789,6 +2810,7 @@ mod tests {
                         &mut unsubscribes,
                         &CancellationToken::new(),
                         None,
+                        &super::super::operation_fence::OperationFence::default(),
                     )
                     .await
                 });

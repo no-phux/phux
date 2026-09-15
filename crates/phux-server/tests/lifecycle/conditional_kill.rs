@@ -101,6 +101,7 @@ async fn kill_if(
     let kill = Command::KillResourceIf {
         terminal_id: pane.clone(),
         precondition: KillPrecondition::spawned_and_unattached(instance),
+        operation_id: None,
     };
     command(stream, request_id, kill).await
 }
@@ -310,6 +311,7 @@ fn the_attachment_condition_without_an_instance_is_refused() {
                 instance: None,
                 conditions: phux_protocol::wire::frame::KillConditions::UNATTACHED_SINCE_SPAWN,
             },
+            operation_id: None,
         };
         assert_refused(&command(&mut spawner, 2, no_token).await);
         assert_alive(&get_screen(&mut spawner, 3, &pane).await);

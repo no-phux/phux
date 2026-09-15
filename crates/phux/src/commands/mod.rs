@@ -980,6 +980,14 @@ pub(crate) enum Command {
         #[usage(long, group = "kill_what")]
         server: bool,
 
+        /// Make the kill safe to retry: a repeat with the same key (32 hex
+        /// digits) answers the first kill's result and kills nothing. An
+        /// `@N` target is sent as written, so a retry after the pane is gone
+        /// still gets the first answer. The server must advertise
+        /// `keyed_signal`.
+        #[usage(long = "idempotency-key", value_name = "HEX32", conflicts("--server"))]
+        idempotency_key: Option<String>,
+
         #[usage(flatten)]
         remote: RemoteOpt,
     },
@@ -1194,6 +1202,12 @@ pub(crate) enum Command {
         /// Which signal to deliver.
         #[usage(value_enum)]
         signal: SignalArg,
+
+        /// Make the signal safe to retry: a repeat with the same key (32 hex
+        /// digits) answers the first signal's result and delivers nothing.
+        /// The server must advertise `keyed_signal`.
+        #[usage(long = "idempotency-key", value_name = "HEX32")]
+        idempotency_key: Option<String>,
     },
 
     /// Update phux to the latest stable or next release, keeping sessions alive.

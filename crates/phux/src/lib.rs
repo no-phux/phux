@@ -1210,8 +1210,12 @@ fn dispatch(
         Some(Command::Kill {
             target,
             server,
+            idempotency_key,
             remote,
-        }) => commands::kill::run(target, server, remote.with_socket(socket)),
+        }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
+            Ok(key) => commands::kill::run(target, server, key, remote.with_socket(socket)),
+            Err(code) => code,
+        },
         Some(Command::Detach { session, remote }) => {
             commands::detach::run_detach(session, remote.with_socket(socket))
         }
@@ -1260,9 +1264,14 @@ fn dispatch(
         }) => commands::resize::run_resize(&target, geometry, json.json, socket),
         Some(Command::Take { target, ttl }) => commands::supervise::run_take(&target, ttl, socket),
         Some(Command::Give { target }) => commands::supervise::run_give(&target, socket),
-        Some(Command::Signal { target, signal }) => {
-            commands::supervise::run_signal(&target, signal, socket)
-        }
+        Some(Command::Signal {
+            target,
+            signal,
+            idempotency_key,
+        }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
+            Ok(key) => commands::supervise::run_signal(&target, signal, key, socket),
+            Err(code) => code,
+        },
         Some(Command::Update { opts }) => commands::update::run_update(&opts, socket),
         Some(Command::Channel { channel, json }) => {
             commands::channel::run(channel, json.json, socket)

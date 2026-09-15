@@ -59,6 +59,7 @@ impl BoundResource {
         Command::KillResourceIf {
             terminal_id: self.id.clone(),
             precondition: KillPrecondition::spawned_and_unattached(self.instance),
+            operation_id: None,
         }
     }
 }
@@ -207,6 +208,7 @@ mod tests {
         let Command::KillResourceIf {
             terminal_id,
             precondition,
+            ..
         } = bound.kill_command()
         else {
             panic!("expected KILL_RESOURCE_IF");

@@ -508,6 +508,16 @@ ignored. Launch adds `integration`,
 `plugin`, and the resolved `argv`. `--list` / `--print` are separate
 documents; placement does not add a second success shape.
 
+`kill` and `signal` take `--idempotency-key HEX32` too, for a supervisor
+that must not act twice: a retry under the same key answers the first
+result instead of killing or signalling again, and a keyed `kill @N` is
+sent as written, so a retry after the pane is already gone still gets the
+first answer. Both need `keyed_signal` in `features`; without it they are
+refused before sending with `unsupported_server`, exit 2. Through a hub, a
+keyed retry whose satellite restarted in between is refused with
+`INCARNATION_CHANGED` and nothing reaches the satellite: read state and
+decide afresh under a new key.
+
 Spatial edits emit `schema_version` 1 with `operation` and `session_id`.
 `direction` is the CLI divider (`vertical` = side-by-side,
 `horizontal` = stacked). A cross-session move adds `source_session_id`

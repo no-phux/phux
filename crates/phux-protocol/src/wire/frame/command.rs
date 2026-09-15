@@ -333,6 +333,14 @@ pub enum Command {
     KillResource {
         /// The Terminal to terminate.
         terminal_id: ResourceId,
+        /// Idempotency key of this kill (`docs/spec/L1.md` §5.1.1), a
+        /// trailing `bytes16` read only when bytes remain, so an unkeyed
+        /// body keeps its earlier bytes. A repeat with the same key and
+        /// target answers the first result and kills nothing. Send it only
+        /// to a server that advertises
+        /// [`ServerFeature::KeyedSignal`](crate::caps::ServerFeature::KeyedSignal):
+        /// an older one ignores the trailing bytes and kills again.
+        operation_id: Option<crate::ids::IdempotencyKey>,
     },
     /// Request a snapshot of server state in `scope`. The reply rides on
     /// `COMMAND_RESULT { Ok_With(State(..)) }`. Backs `phux ls` and the
@@ -434,6 +442,9 @@ pub enum Command {
         /// skipped silently; the op succeeds as long as it is structurally
         /// valid.
         ids: Vec<ResourceId>,
+        /// Idempotency key of the whole batch, trailing like
+        /// [`Command::KillResource::operation_id`].
+        operation_id: Option<crate::ids::IdempotencyKey>,
     },
     /// Force-detach clients from *outside* the attach UI — backs `phux detach`.
     /// `session = Some(name)` detaches every client attached to that session;
@@ -542,6 +553,10 @@ pub enum Command {
         terminal_id: ResourceId,
         /// The signal to deliver.
         signal: TerminalSignal,
+        /// Idempotency key of this signal, trailing like
+        /// [`Command::KillResource::operation_id`]: a repeat answers the
+        /// first result and delivers nothing.
+        operation_id: Option<crate::ids::IdempotencyKey>,
     },
     /// Write one acknowledged chunk of a file into the target host's
     /// server-owned upload sandbox (ADR-0059). `terminal_id` selects the host
@@ -645,6 +660,9 @@ pub enum Command {
         terminal_id: ResourceId,
         /// What must hold for the kill to proceed.
         precondition: KillPrecondition,
+        /// Idempotency key of this kill, trailing after the condition bits
+        /// like [`Command::KillResource::operation_id`].
+        operation_id: Option<crate::ids::IdempotencyKey>,
     },
     /// Open a listener for one remote attach (`docs/spec/L1.md` §5.6,
     /// ADR-0120). The server binds `transport` on the wildcard address, on a
@@ -686,6 +704,24 @@ pub enum Command {
         /// valid.
         ids: Vec<ResourceId>,
     },
+}
+
+impl Command {
+    /// The idempotency key a keyed supervisory command carries:
+    /// `KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, or
+    /// `SIGNAL_TERMINAL` with its trailing `operation_id`
+    /// (`docs/spec/L1.md` §5.1.1). `None` for every other command, and for
+    /// an unkeyed one.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> Option<&crate::ids::IdempotencyKey> {
+        match self {
+            Self::KillResource { operation_id, .. }
+            | Self::KillResourceIf { operation_id, .. }
+            | Self::KillResources { operation_id, .. }
+            | Self::SignalTerminal { operation_id, .. } => operation_id.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 /// [`Command::GetScreen::format`]'s low 7 bits: which rendering to

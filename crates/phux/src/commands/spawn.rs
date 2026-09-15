@@ -557,7 +557,7 @@ mod tests {
                     let mut cleanup = accept(&listener).await;
                     let FrameKind::Command {
                         request_id,
-                        command: Command::KillResource { terminal_id },
+                        command: Command::KillResource { terminal_id, .. },
                     } = cleanup.recv().await
                     else {
                         panic!("expected KILL_RESOURCE rollback");

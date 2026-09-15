@@ -3,8 +3,10 @@ use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
-use phux_client::kill::{KillOutcome, ShutdownOutcome};
+use phux_client::kill::{KeyedError, KillOutcome, ShutdownOutcome};
 use phux_protocol::ResourceId;
+use phux_protocol::caps::ServerFeature;
+use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
@@ -25,13 +27,21 @@ const REMOTE_SHUTDOWN_REFUSAL: &str = "phux: `kill --server` is local-socket onl
      `phux kill --remote HOST NAME`";
 
 /// `phux kill` as the CLI parsed it: a selector, or `--server`.
-pub(crate) fn run(target: Option<String>, stop_server: bool, server: ServerSpec) -> ExitCode {
+///
+/// `key` is `--idempotency-key` (`docs/spec/L1.md` §5.1.1); clap refuses it
+/// beside `--server`.
+pub(crate) fn run(
+    target: Option<String>,
+    stop_server: bool,
+    key: Option<IdempotencyKey>,
+    server: ServerSpec,
+) -> ExitCode {
     if stop_server {
         return run_kill_server_spec(server);
     }
     // No target and no `--server` is unreachable: clap's `kill_what` group
     // is `required(true)`.
-    target.map_or(ExitCode::FAILURE, |target| run_kill(&target, server))
+    target.map_or(ExitCode::FAILURE, |target| run_kill(&target, key, server))
 }
 
 /// `--server` against the local socket; a `--remote` is refused before any
@@ -157,7 +167,13 @@ const SHUTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 ///
 /// `server` is the local socket or a `--remote` host (see `server_target`);
 /// the selector resolves against that server's snapshot either way.
-pub(crate) fn run_kill(target: &str, server: ServerSpec) -> ExitCode {
+///
+/// With `key`, the kill is one keyed command (`KILL_RESOURCE` for one
+/// Terminal, `KILL_RESOURCES` for several), so a retry under the same key
+/// answers the first result instead of killing again (L1 §5.1.1). An `@N` or
+/// `host/@N` target is then sent as written, without a snapshot lookup, so a
+/// retry after the first attempt removed the pane still reaches the server.
+pub(crate) fn run_kill(target: &str, key: Option<IdempotencyKey>, server: ServerSpec) -> ExitCode {
     let selector = match selector::parse(target) {
         Ok(sel) => sel,
         Err(err) => {
@@ -169,7 +185,7 @@ pub(crate) fn run_kill(target: &str, server: ServerSpec) -> ExitCode {
         Ok(prepared) => prepared,
         Err(code) => return code,
     };
-    rt.block_on(kill_selected(target, &selector, &server))
+    rt.block_on(kill_selected(target, &selector, key, &server))
 }
 
 /// Resolve `selector` against a fresh snapshot of `server` and kill what it
@@ -177,12 +193,19 @@ pub(crate) fn run_kill(target: &str, server: ServerSpec) -> ExitCode {
 async fn kill_selected(
     target: &str,
     selector: &selector::Selector,
+    key: Option<IdempotencyKey>,
     server: &ServerTarget,
 ) -> ExitCode {
     let mut conn = match server.connect().await {
         Ok(conn) => conn,
         Err(err) => return server.report_unreachable(false, &err, "kill"),
     };
+    if key.is_some() && !phux_client::kill::keyed_signal_supported(&conn) {
+        return crate::commands::spawn::unsupported_server(false, ServerFeature::KeyedSignal);
+    }
+    if let (Some(key), Some(id)) = (key, explicit_id(selector)) {
+        return kill_keyed(&mut conn, server, target, vec![id], key).await;
+    }
 
     // Resolve the selector against a fresh snapshot, keeping what that
     // snapshot could not see: `kill` acts on what the search finds, so an
@@ -218,7 +241,7 @@ async fn kill_selected(
         // while half the fleet is invisible is still worth saying out
         // loud: the user asked to kill "everything named X".
         partial::warn_partial_view("kill", &degradation);
-        return kill_whole_session(&mut conn, server, &session_name, ids).await;
+        return kill_whole_session(&mut conn, server, &session_name, ids, key).await;
     }
 
     let terminals = resolve_terminals(&mut conn, selector, &snapshot).await;
@@ -233,9 +256,41 @@ async fn kill_selected(
     // A hit under degradation is still narrower than the user asked for:
     // `#tag` would have matched more panes with the fleet whole.
     partial::warn_partial_view("kill", &degradation);
-    let code = kill_each_terminal(&mut conn, terminals).await;
+    let code = match key {
+        Some(key) => kill_keyed(&mut conn, server, target, terminals, key).await,
+        None => kill_each_terminal(&mut conn, terminals).await,
+    };
     drop(conn);
     code
+}
+
+/// The one id an explicit `@N` / `host/@N` target names.
+fn explicit_id(selector: &selector::Selector) -> Option<ResourceId> {
+    match selector {
+        selector::Selector::ResourceId(id) => Some(ResourceId::local(*id)),
+        selector::Selector::SatelliteResourceId { host, id } => {
+            Some(ResourceId::satellite(host.as_str(), *id))
+        }
+        _ => None,
+    }
+}
+
+/// Kill `terminals` as one keyed command: `KILL_RESOURCE` for one,
+/// `KILL_RESOURCES` for several, so the key names the whole operation.
+async fn kill_keyed(
+    conn: &mut Connection,
+    server: &ServerTarget,
+    target: &str,
+    mut terminals: Vec<ResourceId>,
+    key: IdempotencyKey,
+) -> ExitCode {
+    let reply = if terminals.len() == 1 {
+        let terminal_id = terminals.remove(0);
+        phux_client::kill::kill_resource_keyed(conn, 1, terminal_id, key).await
+    } else {
+        phux_client::kill::kill_resources_keyed(conn, 1, terminals, key).await
+    };
+    report_batch_kill(reply, server, &format!("{target:?}"))
 }
 
 /// The Terminals a non-session selector names. A `#tag` selector resolves
@@ -298,8 +353,26 @@ async fn kill_whole_session(
     server: &ServerTarget,
     session_name: &str,
     ids: Vec<ResourceId>,
+    key: Option<IdempotencyKey>,
 ) -> ExitCode {
-    match phux_client::kill::kill_resources(conn, 1, ids).await {
+    let reply = match key {
+        Some(key) => phux_client::kill::kill_resources_keyed(conn, 1, ids, key).await,
+        None => phux_client::kill::kill_resources(conn, 1, ids)
+            .await
+            .map_err(KeyedError::from),
+    };
+    report_batch_kill(reply, server, &format!("session {session_name:?}"))
+}
+
+/// Report one kill round trip that covered a whole target: exit 0 when it
+/// killed, 2 when the server refused (naming `label`), and the transport
+/// error otherwise.
+fn report_batch_kill(
+    reply: Result<(KillOutcome, phux_client::state::Degradation), KeyedError>,
+    server: &ServerTarget,
+    label: &str,
+) -> ExitCode {
+    match reply {
         // `Killed` is the ack; a clean disconnect means the server
         // self-exited after its last session was reaped (phux-60s),
         // so the session is already gone — both are success.
@@ -307,21 +380,24 @@ async fn kill_whole_session(
             warn_interleaved_degradation(&degradation);
             ExitCode::SUCCESS
         }
-        Err(AttachError::Disconnected) => ExitCode::SUCCESS,
+        Err(KeyedError::Attach(AttachError::Disconnected)) => ExitCode::SUCCESS,
+        Err(KeyedError::Unsupported) => {
+            crate::commands::spawn::unsupported_server(false, ServerFeature::KeyedSignal)
+        }
         Ok((KillOutcome::Refused(message), degradation)) => {
             warn_interleaved_degradation(&degradation);
-            eprintln!("phux: kill refused for session {session_name:?}: {message}");
+            eprintln!("phux: kill refused for {label}: {message}");
             ExitCode::from(2)
         }
         Ok((KillOutcome::Unexpected(other), degradation)) => {
             warn_interleaved_degradation(&degradation);
             eprintln!(
-                "phux: session {session_name:?}: {}",
+                "phux: {label}: {}",
                 phux_client::explain::explain_unexpected("kill", &other)
             );
             ExitCode::from(2)
         }
-        Err(err) => server.report_unreachable(false, &err, "kill"),
+        Err(KeyedError::Attach(err)) => server.report_unreachable(false, &err, "kill"),
     }
 }
 
@@ -399,7 +475,7 @@ mod tests {
             socket: None,
             remote: Some("mini".to_owned()),
         };
-        assert_eq!(run(None, true, spec), std::process::ExitCode::from(2));
+        assert_eq!(run(None, true, None, spec), std::process::ExitCode::from(2));
         assert!(REMOTE_SHUTDOWN_REFUSAL.contains("local-socket only"));
         assert!(REMOTE_SHUTDOWN_REFUSAL.contains("phux kill --remote HOST NAME"));
     }

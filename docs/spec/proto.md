@@ -412,6 +412,9 @@ ServerFeature = bitset (u32) {
                                      //   RESOURCE_STATE viewers (L1.md §8.1; ADR-0127)
     CLOSE_TAB_RESOURCES = 0x10000000, // CLOSE_TAB_RESOURCES: atomic close that
                                      //   preserves keep-empty (L1.md §5.2.2)
+    KEYED_SIGNAL       = 0x20000000, // trailing operation_id on KILL_RESOURCE, KILL_RESOURCE_IF,
+                                     //   KILL_RESOURCES, SIGNAL_TERMINAL; federated keyed ops and
+                                     //   APPLY_INPUT, INCARNATION_CHANGED (L1.md §5.1.1, §9.1)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -492,8 +495,8 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `SSH_ORIGIN = 0x100000`, `CONDITIONAL_KILL = 0x200000`,
 `QUIC_STREAMS = 0x400000`, `OPEN_LISTENER = 0x800000`,
 `EVENT_JOURNAL = 0x1000000`, `RETAIN_ON_EXIT = 0x2000000`,
-`SPAWN_IDEMPOTENCY = 0x4000000`, `ATTACH_ROLES = 0x8000000`, and
-`CLOSE_TAB_RESOURCES = 0x10000000`; unknown
+`SPAWN_IDEMPOTENCY = 0x4000000`, `ATTACH_ROLES = 0x8000000`,
+`CLOSE_TAB_RESOURCES = 0x10000000`, and `KEYED_SIGNAL = 0x20000000`; unknown
 feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
@@ -599,6 +602,21 @@ field 6, `terminal_control { action: ROLE_CHANGED }`, and the `viewer` entries
 of the snapshot's `RESOURCE_STATE`. A server without the bit ignores the byte
 and the field and grants an ordinary, input-capable attach, so a client MUST
 see the bit before it declares a role.
+
+<!-- impl-status: shipped; probe: KeyedSignal -->
+> **Status: shipped.** The reference server advertises `KEYED_SIGNAL`, and as
+> a federation hub it forwards keyed operations and `APPLY_INPUT` behind the
+> incarnation fence.
+
+`KEYED_SIGNAL = 0x20000000` gates the trailing `operation_id` of
+`KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and `SIGNAL_TERMINAL`
+([L1.md](./L1.md) §5.1.1) and the `operation_id` stamp on the events they
+cause. A server without the bit ignores the trailing bytes and runs the
+command again, so a client MUST see the bit before it retries a keyed command
+whose reply it lost. On a federation hub the bit also means the hub forwards
+a keyed operation, and an `APPLY_INPUT`, to a satellite that evaluates it and
+answers `INCARNATION_CHANGED` instead of forwarding a retry across that
+satellite's restart ([L1.md](./L1.md) §9.1).
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,
@@ -1110,6 +1128,10 @@ ErrorCode = enum {
     PRECONDITION_FAILED  = 212,  // L1.md §5.2.1: a KILL_RESOURCE_IF condition
                                  //   is false, unknown, or one a hub cannot
                                  //   vouch for; nothing was killed
+    INCARNATION_CHANGED  = 213,  // L1.md §9.1: a hub refused a keyed
+                                 //   operation's retry without forwarding it,
+                                 //   because the satellite restarted since
+                                 //   the hub first forwarded that id
 
     INTERNAL_ERROR       = 65535,
 }
@@ -1145,7 +1167,7 @@ What a code does tell a receiver is its scope: how far to degrade.
 | Scope | Codes | What the receiver keeps |
 |---|---|---|
 | Terminal | `UNKNOWN_MESSAGE_TYPE`, `MALFORMED_MESSAGE`, `CODEC_UNAVAILABLE`, `TERMINAL_NOT_FOUND`, `WRONG_RESOURCE_KIND`, `UNSUPPORTED_SATELLITE_ROUTE`, `SATELLITE_UNREACHABLE`, `RESOURCE_EXHAUSTED`, `INTERNAL_ERROR` | every other Terminal, the layout, and the attach |
-| Request | `NOT_ATTACHED`, `ALREADY_ATTACHED`, `SESSION_NOT_FOUND`, `WINDOW_NOT_FOUND`, `CLIENT_NOT_FOUND`, `UNSAFE_PASTE`, `INPUT_LEASE_HELD`, `INPUT_DELIVERY_UNKNOWN`, `CANONICAL_LIMIT_EXCEEDED`, `INPUT_NOT_WRITTEN`, `NOT_PRODUCER`, `RECORD_INVALID`, `OVERFLOW`, `PRECONDITION_FAILED`, authenticated operation `PERMISSION_DENIED` | all projected state; the correlated request owns the outcome |
+| Request | `NOT_ATTACHED`, `ALREADY_ATTACHED`, `SESSION_NOT_FOUND`, `WINDOW_NOT_FOUND`, `CLIENT_NOT_FOUND`, `UNSAFE_PASTE`, `INPUT_LEASE_HELD`, `INPUT_DELIVERY_UNKNOWN`, `CANONICAL_LIMIT_EXCEEDED`, `INPUT_NOT_WRITTEN`, `NOT_PRODUCER`, `RECORD_INVALID`, `OVERFLOW`, `PRECONDITION_FAILED`, `INCARNATION_CHANGED`, authenticated operation `PERMISSION_DENIED` | all projected state; the correlated request owns the outcome |
 | Connection | `VERSION_INCOMPATIBLE`, `FRAME_TOO_LARGE`, `INVALID_COMMAND`, admission/revocation/expiry `PERMISSION_DENIED` | nothing beyond the frames still in flight |
 
 `Connection` scope means the consumer SHOULD expect the server to close the

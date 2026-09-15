@@ -266,6 +266,7 @@ fn attach_terminal_only_consumer_receives_terminal_closed() {
                 request_id: 2,
                 command: Command::KillResource {
                     terminal_id: victim.clone(),
+                    operation_id: None,
                 },
             },
         )

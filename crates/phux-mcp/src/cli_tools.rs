@@ -106,6 +106,13 @@ pub(crate) fn signal_schema() -> Value {
             "target": string_schema(),
             "signal": { "type": "string", "enum": ["interrupt", "freeze", "resume", "terminate", "kill"] },
             "confirm": { "type": "boolean", "description": "Required true for interrupt, terminate, and kill." },
+            "idempotency_key": {
+                "type": "string",
+                "minLength": 32,
+                "maxLength": 32,
+                "pattern": "^[0-9a-fA-F]{32}$",
+                "description": "Make the signal safe to retry: a repeat with the same key answers the first signal's result and delivers nothing. Refused with unsupported_server when the server does not advertise keyed_signal.",
+            },
             "socket": string_schema(),
         }),
         &["target", "signal"],

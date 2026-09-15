@@ -772,6 +772,7 @@ fn kill_bound_session(
 
     if super::kill::run_kill(
         name,
+        None,
         super::server_target::ServerSpec::local(socket.map(Path::to_path_buf)),
     ) != ExitCode::SUCCESS
     {

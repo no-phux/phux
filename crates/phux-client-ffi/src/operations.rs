@@ -715,6 +715,7 @@ pub unsafe extern "C" fn phux_client_queue_kill_if(
             command: Command::KillResourceIf {
                 terminal_id: id.clone(),
                 precondition: KillPrecondition::spawned_and_unattached(ServerInstance::new(token)),
+                operation_id: None,
             },
         })?;
         client.operations.insert(request_id, Pending::Kill(id));

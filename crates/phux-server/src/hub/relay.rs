@@ -349,6 +349,19 @@ pub(crate) enum RelayRequest {
         /// Resolved with the listing or a typed refusal.
         reply: oneshot::Sender<DirectoryListingResult>,
     },
+    /// Relay a keyed `COMMAND` (an `APPLY_INPUT`, or a kill or signal
+    /// carrying an `operation_id`) from hub consumer `actor`, ids already
+    /// satellite-local (L1 §9.1). Like [`Self::Command`], but the session
+    /// forwards it only to a satellite that evaluates it and never across a
+    /// satellite restart, and it records `actor` for the events it causes.
+    Keyed {
+        /// The command to forward, ids already satellite-local.
+        command: Command,
+        /// The hub consumer that sent it.
+        actor: ClientId,
+        /// Resolved with the satellite's result or the hub's refusal.
+        reply: oneshot::Sender<CommandResult>,
+    },
 }
 
 /// The receiving half of one satellite's relay: the bounded request
@@ -364,6 +377,9 @@ pub(crate) struct RelayMailbox {
     /// `EVENT` (ADR-0123). `None` in link tests that exercise delivery
     /// alone; such a relay forwards the satellite's stamp untouched.
     pub(crate) journal: Option<crate::state::SharedState>,
+    /// This satellite's incarnation fence (L1 §9.1), shared by every
+    /// session the link supervisor runs, so it outlives a reconnect.
+    pub(crate) operations: super::operation_fence::OperationFence,
 }
 
 /// The `dropped` count a satellite's link-level `journal_gap` stands for:
@@ -435,6 +451,7 @@ impl RelayHandle {
                 requests: rx,
                 unsubscribes: unsub_rx,
                 journal: None,
+                operations: super::operation_fence::OperationFence::default(),
             },
         )
     }
@@ -485,6 +502,27 @@ impl RelayHandle {
         self.command_inner(command, Some(subscription)).await
     }
 
+    /// Relay `command` from hub consumer `actor`. A keyed command (an
+    /// `APPLY_INPUT`, or a kill or signal carrying an `operation_id`) goes
+    /// through the satellite's capability check and incarnation fence and
+    /// records `actor` for the events it causes (L1 §9.1); any other
+    /// command relays exactly as [`Self::command`].
+    pub(crate) async fn command_from(&self, command: Command, actor: ClientId) -> CommandResult {
+        if super::operation_fence::fenced_key(&command).is_none() {
+            return self.command(command).await;
+        }
+        let (reply, rx) = oneshot::channel();
+        self.send_and_await(
+            RelayRequest::Keyed {
+                command,
+                actor,
+                reply,
+            },
+            rx,
+        )
+        .await
+    }
+
     async fn command_inner(
         &self,
         command: Command,
@@ -497,11 +535,25 @@ impl RelayHandle {
             sub
         });
         let (reply, rx) = oneshot::channel();
-        match self.tx.try_send(RelayRequest::Command {
-            command,
-            reply,
-            subscribe,
-        }) {
+        self.send_and_await(
+            RelayRequest::Command {
+                command,
+                reply,
+                subscribe,
+            },
+            rx,
+        )
+        .await
+    }
+
+    /// Enqueue a correlated relay request and await its reply, failing fast
+    /// on a saturated or dead link and bounded by [`RELAY_COMMAND_TIMEOUT`].
+    async fn send_and_await(
+        &self,
+        request: RelayRequest,
+        rx: oneshot::Receiver<CommandResult>,
+    ) -> CommandResult {
+        match self.tx.try_send(request) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 return CommandResult::Error {
@@ -797,7 +849,7 @@ pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) 
         // A command's atomic `subscribe` rider registers nothing here:
         // the request never reached a session, so failing the oneshot is
         // the whole story (the consumer sees the typed error reply).
-        RelayRequest::Command { reply, .. } => {
+        RelayRequest::Command { reply, .. } | RelayRequest::Keyed { reply, .. } => {
             let _ = reply.send(CommandResult::Error {
                 code: ErrorCode::SatelliteUnreachable,
                 message: format!("satellite {host} is unreachable: {why}"),
@@ -1131,6 +1183,11 @@ pub(crate) struct RelaySession {
     /// The hub's state, whose journal re-stamps relayed events
     /// ([`Self::restamp_event`]). `None` forwards the satellite's stamp.
     journal: Option<crate::state::SharedState>,
+    /// The satellite's `HELLO_OK.server_id` on this connection.
+    incarnation: super::operation_fence::Incarnation,
+    /// The satellite's incarnation fence and operation-to-consumer record,
+    /// shared with the link's other sessions (L1 §9.1).
+    operations: super::operation_fence::OperationFence,
 }
 
 impl RelaySession {
@@ -1176,12 +1233,30 @@ impl RelaySession {
             inflight_generation_frames: 0,
             encode_buf: BytesMut::with_capacity(1024),
             journal: None,
+            incarnation: None,
+            operations: super::operation_fence::OperationFence::default(),
         }
     }
 
     /// Re-stamp relayed events from `journal`, the hub's own state.
     pub(crate) fn set_journal(&mut self, journal: Option<crate::state::SharedState>) {
         self.journal = journal;
+    }
+
+    /// Record the incarnation this connection's satellite announced.
+    pub(crate) const fn set_incarnation(
+        &mut self,
+        incarnation: super::operation_fence::Incarnation,
+    ) {
+        self.incarnation = incarnation;
+    }
+
+    /// Share the link's incarnation fence, which outlives this connection.
+    pub(crate) fn set_operation_fence(
+        &mut self,
+        operations: super::operation_fence::OperationFence,
+    ) {
+        self.operations = operations;
     }
 
     /// A first explicit attach must start after any automatically published
@@ -1232,11 +1307,8 @@ impl RelaySession {
                 reply,
                 subscribe,
             } => {
-                if let Some(message) = self.conditional_kill_rejection(&command) {
-                    let _ = reply.send(CommandResult::Error {
-                        code: ErrorCode::PreconditionFailed,
-                        message,
-                    });
+                if let Some(refusal) = self.command_rejection(&command) {
+                    let _ = reply.send(refusal);
                     return None;
                 }
                 if let Some(sub) = subscribe.as_ref()
@@ -1267,6 +1339,31 @@ impl RelaySession {
                 Some(self.encode(&FrameKind::Command {
                     request_id,
                     command: link_attach_command(command, self.satellite_features),
+                }))
+            }
+            RelayRequest::Keyed {
+                command,
+                actor,
+                reply,
+            } => {
+                if let Some(refusal) = self
+                    .command_rejection(&command)
+                    .or_else(|| self.fence_rejection(&command, actor))
+                {
+                    let _ = reply.send(refusal);
+                    return None;
+                }
+                let request_id = self.allocate_request_id();
+                self.pending.insert(
+                    request_id,
+                    PendingCommand {
+                        reply,
+                        subscription: None,
+                    },
+                );
+                Some(self.encode(&FrameKind::Command {
+                    request_id,
+                    command,
                 }))
             }
             RelayRequest::Forward { frame } => Some(self.encode(&frame)),
@@ -1331,6 +1428,76 @@ impl RelaySession {
             "satellite {} lacks SPAWN_IDEMPOTENCY; nothing was spawned",
             self.host
         )))
+    }
+
+    /// The typed refusal for a command this satellite cannot evaluate, sent
+    /// without touching the link: a conditional kill it cannot decode
+    /// (ADR-0109), or a keyed operation it would run without dedupe.
+    fn command_rejection(&self, command: &Command) -> Option<CommandResult> {
+        if let Some(message) = self.conditional_kill_rejection(command) {
+            return Some(CommandResult::Error {
+                code: ErrorCode::PreconditionFailed,
+                message,
+            });
+        }
+        self.keyed_capability_rejection(command)
+    }
+
+    /// L1 §9.1: a keyed operation reaches only a satellite that owns its
+    /// dedupe. `APPLY_INPUT` needs `ACKNOWLEDGED_INPUT`; a kill or signal
+    /// carrying an `operation_id` needs `KEYED_SIGNAL`, since an older
+    /// satellite ignores the trailing key and would run a retry again. The
+    /// refusal is the unchanged `UNSUPPORTED_SATELLITE_ROUTE`.
+    fn keyed_capability_rejection(&self, command: &Command) -> Option<CommandResult> {
+        let (needed, name) = match command {
+            Command::ApplyInput { .. } => (ServerFeature::AcknowledgedInput, "ACKNOWLEDGED_INPUT"),
+            _ if command.idempotency_key().is_some() => {
+                (ServerFeature::KeyedSignal, "KEYED_SIGNAL")
+            }
+            _ => return None,
+        };
+        if self.satellite_features.contains(needed) {
+            return None;
+        }
+        Some(CommandResult::Error {
+            code: ErrorCode::UnsupportedSatelliteRoute,
+            message: format!(
+                "satellite {} lacks {name}, so it cannot deduplicate this operation; \
+                 nothing was forwarded",
+                self.host
+            ),
+        })
+    }
+
+    /// L1 §9.1: the incarnation fence. An operation id this hub already
+    /// forwarded to an earlier incarnation of the satellite is refused with
+    /// `INCARNATION_CHANGED`, never forwarded: the satellite's dedupe record
+    /// died with that process (ADR-0053 item 5). A new id is recorded, with
+    /// `actor`, for the events it causes.
+    fn fence_rejection(&self, command: &Command, actor: ClientId) -> Option<CommandResult> {
+        use super::operation_fence::{FenceVerdict, fenced_key};
+        let key = fenced_key(command)?;
+        match self
+            .operations
+            .admit(key, self.incarnation, actor, std::time::Instant::now())
+        {
+            FenceVerdict::Forward => None,
+            FenceVerdict::IncarnationChanged => Some(CommandResult::Error {
+                code: ErrorCode::IncarnationChanged,
+                message: format!(
+                    "satellite {} restarted since this operation id was first forwarded; \
+                     nothing was forwarded",
+                    self.host
+                ),
+            }),
+            FenceVerdict::Full => Some(CommandResult::Error {
+                code: ErrorCode::ResourceExhausted,
+                message: format!(
+                    "the hub's operation record for satellite {} is full; retry later",
+                    self.host
+                ),
+            }),
+        }
     }
 
     /// ADR-0109: a satellite that never advertised `CONDITIONAL_KILL` cannot
@@ -1793,7 +1960,14 @@ impl RelaySession {
         satellite_gap_as_source_gap(&mut event);
         self.mirror_satellite_lease_state(id, &event, stamp.as_deref().map(|s| s.seq));
         if let (Some(journal), Some(scope)) = (self.journal.clone(), terminal.clone()) {
-            let _ = journal.with_mut(|s| s.record_relayed_event(scope, event, stamp.as_deref()));
+            // L1 §9.1: an event a keyed operation caused names the hub
+            // consumer that sent the operation, found by its `operation_id`.
+            let actor = stamp
+                .as_deref()
+                .and_then(|stamp| stamp.operation_id.as_ref())
+                .and_then(|key| self.operations.actor_for_event(key));
+            let _ = journal
+                .with_mut(|s| s.record_relayed_event_as(scope, event, stamp.as_deref(), actor));
             return;
         }
         let unstamped = FrameKind::Event {
@@ -3277,21 +3451,28 @@ impl RelaySession {
 /// The kill verbs' outbound rewrite: `KILL_RESOURCE` and `KILL_RESOURCE_IF`
 /// both move to the satellite's `Local` id space. The precondition crosses
 /// the link unchanged, and the satellite evaluates it against its own
-/// instance and provenance (ADR-0109). `None` for any other command.
+/// instance and provenance (ADR-0109). A keyed kill's `operation_id`
+/// crosses verbatim too: the satellite that kills owns its dedupe (L1
+/// §9.1). `None` for any other command.
 fn route_kill_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
     match command {
-        Command::KillResource { terminal_id } => {
+        Command::KillResource {
+            terminal_id,
+            operation_id,
+        } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
                 host,
                 Command::KillResource {
                     terminal_id: ResourceId::local(id),
+                    operation_id: *operation_id,
                 },
             ))
         }
         Command::KillResourceIf {
             terminal_id,
             precondition,
+            operation_id,
         } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
@@ -3299,11 +3480,35 @@ fn route_kill_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)
                 Command::KillResourceIf {
                     terminal_id: ResourceId::local(id),
                     precondition: *precondition,
+                    operation_id: *operation_id,
                 },
             ))
         }
         _ => None,
     }
+}
+
+/// `APPLY_INPUT`'s outbound rewrite (L1 §9.1): the batch and its operation
+/// id cross verbatim, with the id moved to the satellite's `Local` space.
+/// The satellite that writes the batch owns its dedupe.
+fn route_input_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
+    let Command::ApplyInput {
+        operation_id,
+        terminal_id,
+        events,
+    } = command
+    else {
+        return None;
+    };
+    let (host, id) = satellite_route(terminal_id)?;
+    Some((
+        host,
+        Command::ApplyInput {
+            operation_id: *operation_id,
+            terminal_id: ResourceId::local(id),
+            events: events.clone(),
+        },
+    ))
 }
 
 /// Re-tag a satellite's spawn reply for the consumer (phux-v45.6): the
@@ -3406,6 +3611,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
         Command::KillResource { .. } | Command::KillResourceIf { .. } => {
             route_kill_to_satellite(command)
         }
+        Command::ApplyInput { .. } => route_input_to_satellite(command),
         Command::GetScreen {
             terminal_id,
             request_scrollback,
@@ -3488,6 +3694,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
         Command::SignalTerminal {
             terminal_id,
             signal,
+            operation_id,
         } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
@@ -3495,6 +3702,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                 Command::SignalTerminal {
                     terminal_id: ResourceId::local(id),
                     signal: *signal,
+                    operation_id: *operation_id,
                 },
             ))
         }
@@ -3552,7 +3760,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
         }
         // GET_STATE / UPGRADE are hub-local; KILL_RESOURCES and
         // CLOSE_TAB_RESOURCES partition mixed batches in
-        // `close_named_resources`; forward-compat commands
+        // `handle_kill_terminals` / `handle_close_tab_resources`; forward-compat commands
         // this hub does not know cannot be routed (their terminal scope is
         // unreadable) and fall through to the local INVALID_COMMAND path.
         _ => None,
@@ -3732,20 +3940,12 @@ mod tests {
             .is_none()
         );
         assert!(route_to_satellite(&Command::Upgrade).is_none());
-        assert!(
-            route_to_satellite(&Command::ApplyInput {
-                operation_id: phux_protocol::InputOperationId::new([1; 16]).expect("id"),
-                terminal_id: ResourceId::satellite("devbox", 7),
-                events: vec![],
-            })
-            .is_none(),
-            "APPLY_INPUT is local-only and must never touch a satellite link"
-        );
         // Mixed batches partition in handle_kill_terminals /
         // handle_close_tab_resources, not here.
         assert!(
             route_to_satellite(&Command::KillResources {
                 ids: vec![ResourceId::satellite("devbox", 1)],
+                operation_id: None,
             })
             .is_none()
         );
@@ -3770,6 +3970,7 @@ mod tests {
             },
             Command::KillResource {
                 terminal_id: sat.clone(),
+                operation_id: None,
             },
             Command::GetTerminalState {
                 terminal_id: sat.clone(),
@@ -3791,6 +3992,7 @@ mod tests {
             Command::SignalTerminal {
                 terminal_id: sat.clone(),
                 signal: phux_protocol::wire::frame::TerminalSignal::Interrupt,
+                operation_id: None,
             },
             Command::ReportAsked {
                 terminal_id: sat.clone(),
@@ -3803,11 +4005,19 @@ mod tests {
                 terminal_id: sat.clone(),
                 state: phux_protocol::wire::frame::ReportedAgentState::Done,
             },
+            // L1 §9.1: APPLY_INPUT crosses to the satellite that owns its
+            // dedupe (it was local-only before KEYED_SIGNAL).
+            Command::ApplyInput {
+                operation_id: phux_protocol::InputOperationId::new([1; 16]).expect("id"),
+                terminal_id: sat.clone(),
+                events: vec![],
+            },
             Command::KillResourceIf {
                 terminal_id: sat,
                 precondition: phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
                     phux_protocol::ids::ServerInstance::new([3; 16]),
                 ),
+                operation_id: None,
             },
         ];
         for command in commands {
@@ -4724,6 +4934,7 @@ mod tests {
             precondition: phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
                 phux_protocol::ids::ServerInstance::new([3; 16]),
             ),
+            operation_id: None,
         };
         let mut older = RelaySession::new(host(), BootstrapLimits::default());
         let (reply, mut rx) = oneshot::channel();
@@ -4765,6 +4976,226 @@ mod tests {
         assert_eq!(relayed, command, "the precondition crosses unchanged");
     }
 
+    // --- keyed operations and the incarnation fence (L1 §9.1) -----------
+
+    fn keyed_session(
+        features: &[ServerFeature],
+        incarnation: [u8; 16],
+        fence: &super::super::operation_fence::OperationFence,
+    ) -> RelaySession {
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::with(features),
+        );
+        session.set_incarnation(Some(incarnation));
+        session.set_operation_fence(fence.clone());
+        session
+    }
+
+    fn apply_input_to(terminal_id: ResourceId) -> Command {
+        Command::ApplyInput {
+            operation_id: phux_protocol::InputOperationId::new([6; 16]).expect("id"),
+            terminal_id,
+            events: vec![],
+        }
+    }
+
+    fn keyed_kill(byte: u8) -> Command {
+        Command::KillResource {
+            terminal_id: ResourceId::local(9),
+            operation_id: phux_protocol::ids::IdempotencyKey::new([byte; 16]),
+        }
+    }
+
+    /// Hand `command` to `session` as consumer `actor`'s keyed request:
+    /// the wire bytes it put on the link, if any, and its reply.
+    fn send_keyed(
+        session: &mut RelaySession,
+        command: Command,
+        actor: ClientId,
+    ) -> (Option<Vec<u8>>, oneshot::Receiver<CommandResult>) {
+        let (reply, rx) = oneshot::channel();
+        let wire = session.handle_request_checked(RelayRequest::Keyed {
+            command,
+            actor,
+            reply,
+        });
+        (wire, rx)
+    }
+
+    fn forwarded(wire: Option<Vec<u8>>) -> Command {
+        let FrameKind::Command { command, .. } = decode(&wire.expect("forwarded to the satellite"))
+        else {
+            panic!("expected COMMAND on the wire");
+        };
+        command
+    }
+
+    #[test]
+    fn hub_forwards_keyed_apply_input_to_a_satellite_that_advertises_the_bit() {
+        let (target, command) =
+            route_to_satellite(&apply_input_to(ResourceId::satellite(host(), 9)))
+                .expect("APPLY_INPUT routes to its satellite");
+        assert_eq!(target, host());
+        assert_eq!(
+            command,
+            apply_input_to(ResourceId::local(9)),
+            "the batch and its operation id cross verbatim"
+        );
+        let fence = super::super::operation_fence::OperationFence::default();
+        let mut session = keyed_session(
+            &[ServerFeature::AcknowledgedInput, ServerFeature::KeyedSignal],
+            [1; 16],
+            &fence,
+        );
+        let (wire, _rx) = send_keyed(&mut session, command.clone(), ClientId(4));
+        assert_eq!(forwarded(wire), command);
+        let (wire, _rx) = send_keyed(&mut session, keyed_kill(3), ClientId(4));
+        assert_eq!(
+            forwarded(wire),
+            keyed_kill(3),
+            "a keyed kill crosses with its key; the satellite dedupes it"
+        );
+    }
+
+    #[test]
+    fn hub_refuses_keyed_ops_to_a_satellite_without_the_bit_with_unsupported_satellite_route() {
+        let fence = super::super::operation_fence::OperationFence::default();
+        let mut older = keyed_session(&[], [1; 16], &fence);
+        for command in [apply_input_to(ResourceId::local(9)), keyed_kill(3)] {
+            let (wire, mut rx) = send_keyed(&mut older, command, ClientId(4));
+            assert!(
+                wire.is_none(),
+                "an older satellite never sees the operation"
+            );
+            assert!(matches!(
+                rx.try_recv().expect("typed refusal"),
+                CommandResult::Error {
+                    code: ErrorCode::UnsupportedSatelliteRoute,
+                    ..
+                }
+            ));
+        }
+        assert!(older.pending.is_empty());
+        let key = phux_protocol::ids::IdempotencyKey::new([3; 16]).expect("key");
+        assert_eq!(
+            fence.actor_for_event(&key),
+            None,
+            "a refused operation leaves nothing in the fence"
+        );
+        let unkeyed = Command::KillResource {
+            terminal_id: ResourceId::local(9),
+            operation_id: None,
+        };
+        let (reply, _rx) = oneshot::channel();
+        assert!(
+            older
+                .handle_request_checked(RelayRequest::Command {
+                    command: unkeyed,
+                    reply,
+                    subscribe: None,
+                })
+                .is_some(),
+            "an unkeyed kill still relays to an older satellite"
+        );
+    }
+
+    #[test]
+    fn satellite_restart_between_attempts_yields_incarnation_changed_and_no_forward() {
+        let fence = super::super::operation_fence::OperationFence::default();
+        let features = [ServerFeature::AcknowledgedInput, ServerFeature::KeyedSignal];
+        let mut before = keyed_session(&features, [1; 16], &fence);
+        let (wire, _rx) = send_keyed(&mut before, keyed_kill(5), ClientId(4));
+        assert!(wire.is_some(), "the first attempt reaches the satellite");
+        let (wire, _rx) = send_keyed(
+            &mut before,
+            apply_input_to(ResourceId::local(9)),
+            ClientId(4),
+        );
+        assert!(wire.is_some());
+
+        // The link reconnects to a restarted satellite: a new session, the
+        // same fence, a new HELLO_OK.server_id.
+        let mut after = keyed_session(&features, [2; 16], &fence);
+        for retry in [keyed_kill(5), apply_input_to(ResourceId::local(9))] {
+            let (wire, mut rx) = send_keyed(&mut after, retry, ClientId(4));
+            assert!(
+                wire.is_none(),
+                "a retry across the restart is not forwarded"
+            );
+            assert!(matches!(
+                rx.try_recv().expect("typed refusal"),
+                CommandResult::Error {
+                    code: ErrorCode::IncarnationChanged,
+                    ..
+                }
+            ));
+        }
+        assert!(after.pending.is_empty());
+        let (wire, _rx) = send_keyed(&mut after, keyed_kill(6), ClientId(4));
+        assert!(wire.is_some(), "a new id is new to the restarted satellite");
+    }
+
+    #[test]
+    fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id() {
+        let journal = crate::state::SharedState::new();
+        let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+        let (registry_tx, mut registry_rx) = mpsc::channel(8);
+        journal.with_mut(|s| {
+            s.subscribe_satellite_events(
+                consumer,
+                ResourceId::satellite("devbox", 9),
+                crate::state::EventFilter::all(),
+                None,
+                registry_tx,
+            );
+        });
+        let fence = super::super::operation_fence::OperationFence::default();
+        let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
+        session.set_journal(Some(journal));
+        let (proxy_tx, _proxy_rx) = mpsc::channel(8);
+        subscribe(&mut session, 9, consumer, proxy_tx);
+        let (wire, _rx) = send_keyed(&mut session, keyed_kill(7), consumer);
+        assert!(wire.is_some());
+
+        let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
+        let other = phux_protocol::ids::IdempotencyKey::new([8; 16]);
+        for operation_id in [key, other] {
+            let stamp = phux_protocol::wire::frame::EventStamp::new(40, 1_234)
+                .with_operation_id(operation_id);
+            session
+                .handle_inbound(&encode(&FrameKind::Event {
+                    terminal: Some(ResourceId::local(9)),
+                    event: AgentEvent::ResourceClosed { exit_status: None },
+                    stamp: Some(Box::new(stamp)),
+                }))
+                .expect("valid satellite frame");
+        }
+        let stamps: Vec<_> = std::iter::from_fn(|| registry_rx.try_recv().ok())
+            .map(|out| match out {
+                Outbound::Frame(FrameKind::Event { stamp, .. }) => {
+                    stamp.expect("stamped by the hub")
+                }
+                other => panic!("expected an EVENT, got {other:?}"),
+            })
+            .collect();
+        let [ours, theirs] = stamps.as_slice() else {
+            panic!("two relayed pane_closed events: {stamps:?}");
+        };
+        assert_eq!(ours.operation_id, key, "the key crosses the hub");
+        assert!(
+            ours.actor.is_some(),
+            "the event names the consumer that sent the keyed kill, not the link"
+        );
+        assert_eq!(theirs.operation_id, other);
+        assert_eq!(
+            theirs.actor, None,
+            "an operation this hub never forwarded names no actor"
+        );
+    }
+
     #[test]
     fn instance_only_close_preserves_satellite_fence_and_correlates_refusal() {
         use phux_protocol::wire::frame::{KillConditions, KillPrecondition};
@@ -4775,6 +5206,7 @@ mod tests {
         let (target, command) = route_kill_to_satellite(&Command::KillResourceIf {
             terminal_id: ResourceId::satellite(host(), 9),
             precondition,
+            operation_id: None,
         })
         .expect("satellite route");
         assert_eq!(target, host());
@@ -4803,7 +5235,8 @@ mod tests {
             command,
             Command::KillResourceIf {
                 terminal_id: ResourceId::local(9),
-                precondition
+                precondition,
+                operation_id: None,
             }
         );
         let refusal = CommandResult::Error {

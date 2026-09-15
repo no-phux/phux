@@ -710,6 +710,7 @@ fn kill_terminal_unknown_id_returns_terminal_not_found() {
             Command::KillResource {
                 // A wire id the server never allocated.
                 terminal_id: ResourceId::local(99_999),
+                operation_id: None,
             },
         )
         .await;
@@ -739,6 +740,7 @@ fn kill_terminal_live_pane_acks_and_closes() {
                 request_id: 3,
                 command: Command::KillResource {
                     terminal_id: pane_id.clone(),
+                    operation_id: None,
                 },
             },
         )
@@ -861,6 +863,7 @@ fn kill_terminals_tears_down_a_multi_terminal_group_atomically() {
                 request_id: 42,
                 command: Command::KillResources {
                     ids: vec![pane_a.clone(), pane_b.clone()],
+                    operation_id: None,
                 },
             },
         )
@@ -931,6 +934,7 @@ fn kill_terminals_skips_unknown_ids() {
                 request_id: 45,
                 command: Command::KillResources {
                     ids: vec![pane.clone(), ResourceId::local(999_999)],
+                    operation_id: None,
                 },
             },
         )
@@ -1278,7 +1282,10 @@ fn headless_session_create_forwards_env_and_arms_last_session_exit() {
             &mut stream,
             &FrameKind::Command {
                 request_id: 13,
-                command: Command::KillResources { ids },
+                command: Command::KillResources {
+                    ids,
+                    operation_id: None,
+                },
             },
         )
         .await;

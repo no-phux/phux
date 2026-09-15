@@ -147,6 +147,7 @@ fn a_conditional_kill_needs_the_feature_and_is_correlated_on_a_connection_that_n
             command: Command::KillResourceIf {
                 terminal_id: ResourceId::local(9),
                 precondition: KillPrecondition::spawned_and_unattached(ServerInstance::new(token)),
+                operation_id: None,
             },
         }
     );

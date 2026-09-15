@@ -3,7 +3,7 @@
 
 use bytes::BytesMut;
 
-use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId, ResourceKind};
+use crate::ids::{ClientId, FileUploadId, GroupId, IdempotencyKey, InputOperationId, ResourceKind};
 use crate::input::InputEvent;
 use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
@@ -74,17 +74,23 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             enc.write_u8(COMMAND_TAG_DETACH_RESOURCE);
             encode_terminal_id(terminal_id, enc);
         }
-        Command::KillResource { terminal_id } => {
+        Command::KillResource {
+            terminal_id,
+            operation_id,
+        } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCE);
             encode_terminal_id(terminal_id, enc);
+            encode_trailing_key(operation_id.as_ref(), enc);
         }
         Command::KillResourceIf {
             terminal_id,
             precondition,
+            operation_id,
         } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCE_IF);
             encode_terminal_id(terminal_id, enc);
             encode_kill_precondition(precondition, enc);
+            encode_trailing_key(operation_id.as_ref(), enc);
         }
         Command::GetState { scope } => {
             enc.write_u8(COMMAND_TAG_GET_STATE);
@@ -122,9 +128,10 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
                 encode_input_event(event, enc);
             }
         }
-        Command::KillResources { ids } => {
+        Command::KillResources { ids, operation_id } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCES);
             encode_resource_ids(ids, enc);
+            encode_trailing_key(operation_id.as_ref(), enc);
         }
         Command::CloseTabResources { ids } => {
             enc.write_u8(COMMAND_TAG_CLOSE_TAB_RESOURCES);
@@ -213,10 +220,12 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         Command::SignalTerminal {
             terminal_id,
             signal,
+            operation_id,
         } => {
             enc.write_u8(COMMAND_TAG_SIGNAL_TERMINAL);
             encode_terminal_id(terminal_id, enc);
             enc.write_u8(signal.to_u8());
+            encode_trailing_key(operation_id.as_ref(), enc);
         }
         Command::PutFile {
             upload_id,
@@ -390,14 +399,43 @@ fn decode_terminal_subscription_command(
         },
         COMMAND_TAG_KILL_RESOURCE => Command::KillResource {
             terminal_id: decode_terminal_id(dec)?,
+            operation_id: decode_trailing_key(dec)?,
         },
         COMMAND_TAG_KILL_RESOURCE_IF => Command::KillResourceIf {
             terminal_id: decode_terminal_id(dec)?,
             precondition: decode_kill_precondition(dec)?,
+            operation_id: decode_trailing_key(dec)?,
         },
         _ => return Ok(None),
     };
     Ok(Some(command))
+}
+
+/// Write the trailing `operation_id: bytes16` of a keyed supervisory command
+/// (`docs/spec/L1.md` §5.1.1), or nothing for an unkeyed one, so an unkeyed
+/// body is byte-identical to what an encoder before the field wrote.
+fn encode_trailing_key(key: Option<&IdempotencyKey>, enc: &mut Encoder<'_>) {
+    if let Some(key) = key {
+        for byte in key.as_bytes() {
+            enc.write_u8(*byte);
+        }
+    }
+}
+
+/// Read the trailing `operation_id` only when bytes remain in the command
+/// body, the `GET_SCREEN` rule: a body that ends before it is unkeyed. A
+/// present key must be 16 non-zero bytes.
+fn decode_trailing_key(dec: &mut Decoder<'_>) -> Result<Option<IdempotencyKey>, DecodeError> {
+    if dec.at_body_end() {
+        return Ok(None);
+    }
+    let mut bytes = [0; 16];
+    for byte in &mut bytes {
+        *byte = dec.read_u8()?;
+    }
+    IdempotencyKey::new(bytes)
+        .map(Some)
+        .ok_or(DecodeError::InvalidIdempotencyKey)
 }
 
 /// Write a `KILL_RESOURCE_IF` precondition: an `Option` tag, the 16 instance
@@ -515,6 +553,7 @@ fn decode_session_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Comma
         },
         COMMAND_TAG_KILL_RESOURCES => Command::KillResources {
             ids: decode_resource_ids(dec)?,
+            operation_id: decode_trailing_key(dec)?,
         },
         COMMAND_TAG_CLOSE_TAB_RESOURCES => Command::CloseTabResources {
             ids: decode_resource_ids(dec)?,
@@ -684,6 +723,7 @@ fn decode_signal_terminal_command(dec: &mut Decoder<'_>) -> Result<Command, Deco
     Ok(Command::SignalTerminal {
         terminal_id,
         signal,
+        operation_id: decode_trailing_key(dec)?,
     })
 }
 

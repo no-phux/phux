@@ -14,15 +14,22 @@
 //! warning (`partial::warn_partial_view`) the CLI prints when a hit comes
 //! from an incomplete view. A tool result has no warning channel, so a
 //! kill that lands under degradation reports plain success.
+//!
+//! With an `idempotency_key` the kill is one keyed command, as `phux kill
+//! --idempotency-key` sends it (L1 §5.1.1): `KILL_RESOURCE` for one
+//! Terminal, `KILL_RESOURCES` for several, and an `@N` / `host/@N` target is
+//! sent as written, without a snapshot lookup, so a retry after the first
+//! attempt removed the pane still reaches the server. A server without
+//! `KEYED_SIGNAL` is refused before anything is sent.
 
 use std::path::Path;
 
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
-use phux_client::kill::KillOutcome;
+use phux_client::kill::{KeyedError, KillOutcome};
 use phux_client::selector::{self, Selector};
 use phux_client::state::{self, Degradation};
-use phux_protocol::ids::ResourceId;
+use phux_protocol::ids::{IdempotencyKey, ResourceId};
 use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::tools::ToolError;
@@ -39,9 +46,10 @@ pub(crate) async fn kill_selected(
     socket: &Path,
     selector: &Selector,
     target: &str,
+    key: Option<IdempotencyKey>,
 ) -> Result<(), ToolError> {
     let mut conn = Connection::connect(socket).await?;
-    let result = kill_on(&mut conn, selector, target).await;
+    let result = kill_on(&mut conn, selector, target, key).await;
     drop(conn);
     result
 }
@@ -52,16 +60,54 @@ async fn kill_on(
     conn: &mut Connection,
     selector: &Selector,
     target: &str,
+    key: Option<IdempotencyKey>,
 ) -> Result<(), ToolError> {
+    if key.is_some() && !phux_client::kill::keyed_signal_supported(conn) {
+        return Err(crate::pane_tools::unsupported_keyed_signal());
+    }
+    if let (Some(key), Some(id)) = (key, explicit_id(selector)) {
+        return kill_keyed(conn, target, vec![id], key).await;
+    }
     let (snapshot, degradation) = state::get_state_on(conn).await?.into_parts();
     if let Some(session) = selector::whole_session_name(selector, &snapshot) {
-        return kill_session(conn, selector, &snapshot, &session, target).await;
+        return kill_session(conn, selector, &snapshot, &session, target, key).await;
     }
     let terminals = resolve_terminals(conn, selector, &snapshot).await;
     if terminals.is_empty() {
         return Err(target_miss(target, &degradation));
     }
-    kill_each_terminal(conn, terminals).await
+    match key {
+        Some(key) => kill_keyed(conn, target, terminals, key).await,
+        None => kill_each_terminal(conn, terminals).await,
+    }
+}
+
+/// The one id an explicit `@N` / `host/@N` target names.
+fn explicit_id(selector: &Selector) -> Option<ResourceId> {
+    match selector {
+        Selector::ResourceId(id) => Some(ResourceId::local(*id)),
+        Selector::SatelliteResourceId { host, id } => {
+            Some(ResourceId::satellite(host.as_str(), *id))
+        }
+        _ => None,
+    }
+}
+
+/// Kill `terminals` as one keyed command: `KILL_RESOURCE` for one,
+/// `KILL_RESOURCES` for several, so the key names the whole operation.
+async fn kill_keyed(
+    conn: &mut Connection,
+    target: &str,
+    mut terminals: Vec<ResourceId>,
+    key: IdempotencyKey,
+) -> Result<(), ToolError> {
+    let reply = if terminals.len() == 1 {
+        let terminal = terminals.remove(0);
+        phux_client::kill::kill_resource_keyed(conn, 1, terminal, key).await
+    } else {
+        phux_client::kill::kill_resources_keyed(conn, 1, terminals, key).await
+    };
+    batch_outcome(reply, &format!("{target:?}"))
 }
 
 /// A whole-session target: one atomic `KILL_RESOURCES`, or the keep-empty
@@ -76,10 +122,11 @@ async fn kill_session(
     snapshot: &SessionSnapshot,
     session: &str,
     target: &str,
+    key: Option<IdempotencyKey>,
 ) -> Result<(), ToolError> {
     let ids = selector::resolve(selector, snapshot);
     if !ids.is_empty() {
-        return kill_whole_session(conn, session, ids).await;
+        return kill_whole_session(conn, session, ids, key).await;
     }
     if session_is_empty(snapshot, session) {
         return kill_empty_session(conn, session).await;
@@ -141,22 +188,40 @@ async fn kill_empty_session(conn: &mut Connection, session: &str) -> Result<(), 
     }
 }
 
-/// One `KILL_RESOURCES` for a whole session.
+/// One `KILL_RESOURCES` for a whole session, keyed when `key` is set.
 async fn kill_whole_session(
     conn: &mut Connection,
     session: &str,
     ids: Vec<ResourceId>,
+    key: Option<IdempotencyKey>,
 ) -> Result<(), ToolError> {
-    match phux_client::kill::kill_resources(conn, 1, ids).await {
-        Ok((KillOutcome::Killed, _)) | Err(AttachError::Disconnected) => Ok(()),
+    let reply = match key {
+        Some(key) => phux_client::kill::kill_resources_keyed(conn, 1, ids, key).await,
+        None => phux_client::kill::kill_resources(conn, 1, ids)
+            .await
+            .map_err(KeyedError::from),
+    };
+    batch_outcome(reply, &format!("session {session:?}"))
+}
+
+/// The tool result of one kill round trip that covered a whole target. A
+/// disconnect is the server self-exiting after its last session was reaped,
+/// which is success.
+fn batch_outcome(
+    reply: Result<(KillOutcome, Degradation), KeyedError>,
+    label: &str,
+) -> Result<(), ToolError> {
+    match reply {
+        Ok((KillOutcome::Killed, _)) | Err(KeyedError::Attach(AttachError::Disconnected)) => Ok(()),
+        Err(KeyedError::Unsupported) => Err(crate::pane_tools::unsupported_keyed_signal()),
         Ok((KillOutcome::Refused(message), _)) => Err(ToolError::new(format!(
-            "kill refused for session {session:?}: {message}"
+            "kill refused for {label}: {message}"
         ))),
         Ok((KillOutcome::Unexpected(other), _)) => Err(ToolError::new(format!(
-            "session {session:?}: {}",
+            "{label}: {}",
             phux_client::explain::explain_unexpected("kill", &other)
         ))),
-        Err(err) => Err(err.into()),
+        Err(KeyedError::Attach(err)) => Err(err.into()),
     }
 }
 

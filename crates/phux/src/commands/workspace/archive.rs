@@ -407,6 +407,7 @@ async fn rollback_session(socket_path: &Path, created: &[ResourceId]) {
         socket_path,
         Command::KillResources {
             ids: created.to_vec(),
+            operation_id: None,
         },
     )
     .await
