@@ -2332,7 +2332,7 @@ fn activate_native_for_pump(
     bootstrap_id: phux_protocol::ids::BootstrapId,
     cursor: crate::native_state::OpaqueHistoryCursor,
 ) -> Result<NativePublicationReply, crate::native_state::NativeStateError> {
-    let (reply, response) = oneshot::channel();
+    let (reply, mut response) = oneshot::channel();
     actor.handle_native_publication(NativePublicationRequest {
         owner,
         terminal_id: phux_protocol::ids::ResourceId::local(1),
