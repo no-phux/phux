@@ -349,6 +349,73 @@ fn losing_the_last_window_deletes_the_stored_layout() {
     });
 }
 
+/// ADR-0129: an *ordinary* (non-keep-empty) session that reaps to zero
+/// windows is fully removed rather than kept parked, and the removal must
+/// not orphan its layout keys — the default TUI key and any named
+/// `--projection` alike, since both share the `<prefix>.layout/v1/<id>`
+/// shape (L3.md §3.2, §3.5). Before this fix only a keep-empty session's
+/// layout was ever cleaned up (`losing_the_last_window_deletes_the_stored_layout`
+/// above); a normally-reaped session left its keys behind forever.
+#[test]
+fn ordinary_session_reap_deletes_every_layout_key_it_wrote() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let (mut conn, shutdown_tx, server) = start(&tmp).await;
+
+        let pane = create_seeded(&mut conn, "gone", false, 1).await;
+        let wire_session = session(&get_state(&mut conn, 2).await, "gone")
+            .expect("listed")
+            .id;
+        let default_key = format!("phux.tui.layout/v1/{}", wire_session.get());
+        let named_key = format!("myapp.layout/v1/{}", wire_session.get());
+        let layout_scope = Scope::Group(GroupId::new(1));
+        for key in [&default_key, &named_key] {
+            send_frame(
+                &mut conn,
+                &FrameKind::SetMetadata {
+                    request_id: 3,
+                    scope: layout_scope.clone(),
+                    key: key.clone(),
+                    value: b"stale tree".to_vec(),
+                },
+            )
+            .await;
+        }
+        assert!(
+            get_metadata(&mut conn, 4, layout_scope.clone(), &default_key)
+                .await
+                .is_some()
+        );
+        assert!(
+            get_metadata(&mut conn, 5, layout_scope.clone(), &named_key)
+                .await
+                .is_some()
+        );
+
+        command_ok(&mut conn, 6, Command::KillResource { terminal_id: pane }).await;
+        wait_for_state(&mut conn, 100, "the ordinary session to be reaped", |s| {
+            session(s, "gone").is_none()
+        })
+        .await;
+
+        assert!(
+            get_metadata(&mut conn, 7, layout_scope.clone(), &default_key)
+                .await
+                .is_none(),
+            "an ordinary reap must delete the default layout key, not just a keep-empty one"
+        );
+        assert!(
+            get_metadata(&mut conn, 8, layout_scope, &named_key)
+                .await
+                .is_none(),
+            "a named projection over the same session must be deleted too"
+        );
+
+        drop(conn);
+        join_after_shutdown(shutdown_tx, server).await;
+    });
+}
+
 /// `empty: true` creates a keep-empty session with zero windows, answers
 /// with a `null` terminal id, and lists it as keep-empty and empty.
 #[test]
@@ -470,6 +537,76 @@ fn clearing_the_mark_on_an_empty_session_removes_it() {
         let snapshot = get_state(&mut conn, 3).await;
         assert!(session(&snapshot, "parked").is_none());
         assert!(session(&snapshot, ANCHOR).is_some());
+
+        drop(conn);
+        join_after_shutdown(shutdown_tx, server).await;
+    });
+}
+
+/// ADR-0129 / PHA-406 L18 review item 8: clearing the keep-empty mark on an
+/// already-windowless session reaps it through the very same
+/// `reap_session_if_empty` choke point `reap_window_if_empty`'s cascade
+/// uses, and that path must delete the session's layout keys too — not
+/// only the "window closes while still keep-empty" path
+/// (`losing_the_last_window_deletes_the_stored_layout` above already
+/// covers that one). This pins the *other* removal path: a key written
+/// while the session sits parked (a named `--projection`, or a late TUI
+/// republish) must not survive the session finally going away when its
+/// mark is cleared.
+#[test]
+fn clearing_keep_empty_on_a_windowless_session_deletes_its_layout_keys_too() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let (mut conn, shutdown_tx, server) = start(&tmp).await;
+
+        let pane = create_seeded(&mut conn, "kept", true, 1).await;
+        let wire_session = session(&get_state(&mut conn, 2).await, "kept")
+            .expect("listed")
+            .id;
+        let named_key = format!("myapp.layout/v1/{}", wire_session.get());
+        let layout_scope = Scope::Group(GroupId::new(1));
+
+        // The window closes while the session is still keep-empty; the
+        // session survives, windowless.
+        command_ok(&mut conn, 3, Command::KillResource { terminal_id: pane }).await;
+        wait_for_state(&mut conn, 100, "the last window to go", |s| {
+            session(s, "kept").is_some_and(SessionInfo::is_empty)
+        })
+        .await;
+
+        // A key lands on the now-parked session — the scenario this test
+        // exists for: a named projection or a late republish, not the
+        // window-close broadcast the other test already covers.
+        send_frame(
+            &mut conn,
+            &FrameKind::SetMetadata {
+                request_id: 4,
+                scope: layout_scope.clone(),
+                key: named_key.clone(),
+                value: b"parked-write".to_vec(),
+            },
+        )
+        .await;
+        assert!(
+            get_metadata(&mut conn, 5, layout_scope.clone(), &named_key)
+                .await
+                .is_some()
+        );
+
+        // Clearing the mark removes the (already windowless) session
+        // through `reap_session_if_empty`, not the window-close cascade.
+        set_keep_empty(&mut conn, "kept", false, 6).await;
+        wait_for_state(&mut conn, 100, "the cleared session to be reaped", |s| {
+            session(s, "kept").is_none()
+        })
+        .await;
+
+        assert!(
+            get_metadata(&mut conn, 7, layout_scope, &named_key)
+                .await
+                .is_none(),
+            "clearing keep-empty must delete layout keys too, not just the window-close path"
+        );
 
         drop(conn);
         join_after_shutdown(shutdown_tx, server).await;

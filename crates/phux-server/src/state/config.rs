@@ -50,6 +50,15 @@ pub(super) struct ServerConfig {
     /// [`crate::runtime::ServerConfig::voice`] via
     /// [`super::ServerState::set_voice`].
     pub(super) voice: phux_config::VoiceCfg,
+    /// Largest L3 metadata value the server stores at one key
+    /// (`limits.metadata-value-bytes`, ADR-0129). Mirrors
+    /// [`crate::runtime::ServerConfig::metadata_value_bytes`] via
+    /// [`super::ServerState::set_metadata_value_bytes`] right after
+    /// `SharedState::new`.
+    ///
+    /// Defaults to the `phux_config` schema default (256 KiB) so tests that
+    /// never call the setter still enforce a sane cap.
+    pub(super) metadata_value_bytes: u32,
     /// How a freshly-spawned pane chooses its working directory
     /// (`defaults.cwd-inheritance`). Mirrors
     /// [`crate::runtime::ServerConfig::cwd_inheritance`] so the
@@ -158,6 +167,7 @@ impl Default for ServerConfig {
             scrollback: phux_config::DefaultsCfg::default().scrollback_limits(),
             agent_log_bytes: phux_config::DEFAULT_AGENT_LOG_BYTES,
             voice: phux_config::VoiceCfg::default(),
+            metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             cwd_inheritance: phux_config::CwdInheritance::default(),
             term: phux_config::DefaultsCfg::default().term,
             shell: crate::terminal_actor::resolve_shell(None),

@@ -13,7 +13,7 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_client::layout::SplitDir;
-use phux_client::layout_ops::{LayoutMutation, LayoutOps, LayoutOpsError};
+use phux_client::layout_ops::{LayoutMutation, LayoutOps, LayoutOpsError, validate_projection_key};
 use phux_protocol::ids::{ResourceId, SessionId, WindowId};
 use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, CommandValue, StateScope};
 use phux_protocol::wire::info::SessionSnapshot;
@@ -66,16 +66,19 @@ enum RequestedOperation {
         new_pane: String,
         direction: Direction,
         ratio: f32,
+        projection: Vec<String>,
     },
     Move {
         source: String,
         target: String,
         direction: Direction,
         ratio: f32,
+        projection: Vec<String>,
     },
     Swap {
         first: String,
         second: String,
+        projection: Vec<String>,
     },
 }
 
@@ -83,6 +86,9 @@ enum RequestedOperation {
 struct Plan {
     session: SessionId,
     mutation: LayoutMutation,
+    /// Named projection key (ADR-0129), validated against `session`.
+    /// `None` keeps the shared default `phux.tui.layout/v1/<session>`.
+    projection_key: Option<String>,
     output: serde_json::Value,
     human: String,
 }
@@ -97,6 +103,10 @@ struct CrossMovePlan {
     target: ResourceId,
     dir: SplitDir,
     ratio: f32,
+    /// Raw `--projection` values, resolved and validated by
+    /// `phux_client::pane_move::move_pane` against the two sessions it
+    /// discovers at execution time.
+    projection: Vec<String>,
     output: serde_json::Value,
     human: String,
 }
@@ -113,6 +123,7 @@ pub(crate) fn run_insert_pane(
     new_pane: &str,
     direction: Direction,
     ratio: f32,
+    projection: Vec<String>,
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
@@ -122,6 +133,7 @@ pub(crate) fn run_insert_pane(
             new_pane: new_pane.to_owned(),
             direction,
             ratio,
+            projection,
         },
         json,
         socket,
@@ -135,6 +147,7 @@ pub(crate) fn run_move_pane(
     target: &str,
     direction: Direction,
     ratio: f32,
+    projection: Vec<String>,
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
@@ -144,6 +157,7 @@ pub(crate) fn run_move_pane(
             target: target.to_owned(),
             direction,
             ratio,
+            projection,
         },
         json,
         socket,
@@ -154,6 +168,7 @@ pub(crate) fn run_move_pane(
 pub(crate) fn run_swap_pane(
     first: &str,
     second: &str,
+    projection: Vec<String>,
     json: bool,
     socket: Option<PathBuf>,
 ) -> ExitCode {
@@ -161,6 +176,7 @@ pub(crate) fn run_swap_pane(
         RequestedOperation::Swap {
             first: first.to_owned(),
             second: second.to_owned(),
+            projection,
         },
         json,
         socket,
@@ -198,9 +214,15 @@ fn run(operation: RequestedOperation, json: bool, socket: Option<PathBuf>) -> Ex
         };
         let code = match plan {
             PlanKind::Local(plan) => {
-                let mut layout = LayoutOps::new(&mut conn, plan.session, 100);
-                match layout.mutate(plan.mutation.clone()).await {
-                    Ok(_) => print_success(json, &plan.output, &plan.human),
+                let layout = match plan.projection_key.clone() {
+                    Some(key) => LayoutOps::with_key(&mut conn, plan.session, key, 100),
+                    None => Ok(LayoutOps::new(&mut conn, plan.session, 100)),
+                };
+                match layout {
+                    Ok(mut layout) => match layout.mutate(plan.mutation.clone()).await {
+                        Ok(_) => print_success(json, &plan.output, &plan.human),
+                        Err(err) => print_layout_error(json, &err, &socket_path),
+                    },
                     Err(err) => print_layout_error(json, &err, &socket_path),
                 }
             }
@@ -232,6 +254,7 @@ async fn execute_cross_move(
         plan.target.clone(),
         plan.dir,
         plan.ratio,
+        &plan.projection,
     )
     .await
     {
@@ -240,50 +263,74 @@ async fn execute_cross_move(
             json_err::report_no_server(json, &err, socket_path, "layout")
         }
         Err(error) => {
-            let (code, remedy) = match &error {
+            let (code, remedy, exit_code) = match &error {
                 phux_client::pane_move::PaneMoveError::ServerTooOld => (
                     codes::SERVER_TOO_OLD,
                     "upgrade it with `phux upgrade`, then retry",
+                    1,
                 ),
                 phux_client::pane_move::PaneMoveError::SatellitePane => (
                     codes::SATELLITE_TARGET,
                     "pick a hub-local pane for layout edits",
+                    1,
                 ),
                 phux_client::pane_move::PaneMoveError::DestinationChanged { .. } => (
                     codes::DESTINATION_CHANGED,
                     "re-run `phux ls` and retry with current selectors",
+                    1,
                 ),
                 phux_client::pane_move::PaneMoveError::PostMoveState { .. } => (
                     codes::POST_MOVE_STATE_FAILED,
                     "run `phux ls` to verify where the pane landed",
+                    1,
                 ),
                 phux_client::pane_move::PaneMoveError::DestinationLayout { .. } => (
                     codes::DESTINATION_LAYOUT_FAILED,
                     "run `phux ls` to verify pane ownership, then retry the move",
+                    1,
                 ),
                 phux_client::pane_move::PaneMoveError::SourceLayout(_) => (
                     codes::SOURCE_LAYOUT_FAILED,
                     "retry the layout edit before relying on either session's topology",
+                    1,
                 ),
                 phux_client::pane_move::PaneMoveError::SamePane => (
                     codes::SAME_PANE,
                     "pass two selectors that name different panes",
+                    1,
                 ),
                 phux_client::pane_move::PaneMoveError::UnknownPane { .. } => (
                     codes::SELECTOR_MISS,
                     "run `phux ls` to see live sessions and panes",
+                    1,
                 ),
                 phux_client::pane_move::PaneMoveError::MoveRefused(_) => (
                     codes::MOVE_REFUSED,
                     "run `phux ls` to re-check both panes, then retry",
+                    1,
                 ),
                 phux_client::pane_move::PaneMoveError::Layout(_) => (
                     codes::LAYOUT_REJECTED,
                     "run `phux ls` to inspect the winning layout, then retry",
+                    1,
+                ),
+                phux_client::pane_move::PaneMoveError::ProjectionArityMismatch => (
+                    codes::PROJECTION_ARITY,
+                    "pass --projection twice (source and destination keys) or not at all",
+                    2,
+                ),
+                phux_client::pane_move::PaneMoveError::ProjectionArityTooMany => (
+                    codes::PROJECTION_ARITY,
+                    "this move touches one session layout; pass at most one --projection",
+                    2,
                 ),
                 phux_client::pane_move::PaneMoveError::Transport(_) => unreachable!(),
             };
-            json_err::emit(json, &CliError::new(code, error.to_string(), remedy), 1)
+            json_err::emit(
+                json,
+                &CliError::new(code, error.to_string(), remedy),
+                exit_code,
+            )
         }
     }
 }
@@ -296,7 +343,10 @@ fn cross_move_plan(
     terminals: &[ResourceId],
 ) -> Option<PlanKind> {
     let RequestedOperation::Move {
-        direction, ratio, ..
+        direction,
+        ratio,
+        projection,
+        ..
     } = operation
     else {
         return None;
@@ -315,6 +365,7 @@ fn cross_move_plan(
         target: target.clone(),
         dir: direction.wire(),
         ratio,
+        projection: projection.clone(),
         output: serde_json::json!({
             "schema_version": JSON_SCHEMA_VERSION,
             "operation": "move-pane",
@@ -366,7 +417,7 @@ impl RequestedOperation {
             Self::Move { source, target, .. } => {
                 vec![("source", source), ("target", target)]
             }
-            Self::Swap { first, second } => vec![("first", first), ("second", second)],
+            Self::Swap { first, second, .. } => vec![("first", first), ("second", second)],
         }
     }
 }
@@ -420,81 +471,153 @@ async fn build_plan(
     match (operation, terminals.as_slice()) {
         (
             RequestedOperation::Insert {
-                direction, ratio, ..
+                direction,
+                ratio,
+                projection,
+                ..
             },
             [target, new_pane],
-        ) => Ok(PlanKind::Local(Plan {
-            session,
-            mutation: LayoutMutation::Split {
-                target: target.clone(),
-                new_pane: new_pane.clone(),
-                dir: direction.wire(),
-                ratio,
-            },
-            output: serde_json::json!({
-                "schema_version": JSON_SCHEMA_VERSION,
-                "operation": "insert-pane",
-                "session_id": session.get(),
-                "target_terminal_id": local_id(target),
-                "new_terminal_id": local_id(new_pane),
-                "direction": direction.as_str(),
-                "ratio": ratio,
-            }),
-            human: format!(
-                "inserted @{} beside @{} ({}, ratio {ratio})",
-                local_id(new_pane),
-                local_id(target),
-                direction.as_str(),
-            ),
-        })),
+        ) => build_insert_plan(session, target, new_pane, direction, ratio, &projection),
         (
             RequestedOperation::Move {
-                direction, ratio, ..
+                direction,
+                ratio,
+                projection,
+                ..
             },
             [source, target],
-        ) => Ok(PlanKind::Local(Plan {
-            session,
-            mutation: LayoutMutation::Move {
-                source: source.clone(),
-                target: target.clone(),
-                dir: direction.wire(),
-                ratio,
-            },
-            output: serde_json::json!({
-                "schema_version": JSON_SCHEMA_VERSION,
-                "operation": "move-pane",
-                "session_id": session.get(),
-                "source_terminal_id": local_id(source),
-                "target_terminal_id": local_id(target),
-                "direction": direction.as_str(),
-                "ratio": ratio,
-            }),
-            human: format!(
-                "moved @{} beside @{} ({}, ratio {ratio})",
-                local_id(source),
-                local_id(target),
-                direction.as_str(),
-            ),
-        })),
-        (RequestedOperation::Swap { .. }, [first, second]) => Ok(PlanKind::Local(Plan {
-            session,
-            mutation: LayoutMutation::Swap {
-                first: first.clone(),
-                second: second.clone(),
-            },
-            output: serde_json::json!({
-                "schema_version": JSON_SCHEMA_VERSION,
-                "operation": "swap-pane",
-                "session_id": session.get(),
-                "first_terminal_id": local_id(first),
-                "second_terminal_id": local_id(second),
-            }),
-            human: format!("swapped @{} and @{}", local_id(first), local_id(second)),
-        })),
+        ) => build_move_plan(session, source, target, direction, ratio, &projection),
+        (RequestedOperation::Swap { projection, .. }, [first, second]) => {
+            build_swap_plan(session, first, second, &projection)
+        }
         _ => Err(CliError::new(
             codes::INTERNAL_ERROR,
             "spatial operation argument mismatch",
             "this is a phux bug; run `phux doctor` and report it",
+        )),
+    }
+}
+
+fn build_insert_plan(
+    session: SessionId,
+    target: &ResourceId,
+    new_pane: &ResourceId,
+    direction: Direction,
+    ratio: f32,
+    projection: &[String],
+) -> Result<PlanKind, CliError> {
+    let projection_key = resolve_local_projection(projection, session)?;
+    Ok(PlanKind::Local(Plan {
+        session,
+        mutation: LayoutMutation::Split {
+            target: target.clone(),
+            new_pane: new_pane.clone(),
+            dir: direction.wire(),
+            ratio,
+        },
+        projection_key,
+        output: serde_json::json!({
+            "schema_version": JSON_SCHEMA_VERSION,
+            "operation": "insert-pane",
+            "session_id": session.get(),
+            "target_terminal_id": local_id(target),
+            "new_terminal_id": local_id(new_pane),
+            "direction": direction.as_str(),
+            "ratio": ratio,
+        }),
+        human: format!(
+            "inserted @{} beside @{} ({}, ratio {ratio})",
+            local_id(new_pane),
+            local_id(target),
+            direction.as_str(),
+        ),
+    }))
+}
+
+fn build_move_plan(
+    session: SessionId,
+    source: &ResourceId,
+    target: &ResourceId,
+    direction: Direction,
+    ratio: f32,
+    projection: &[String],
+) -> Result<PlanKind, CliError> {
+    let projection_key = resolve_local_projection(projection, session)?;
+    Ok(PlanKind::Local(Plan {
+        session,
+        mutation: LayoutMutation::Move {
+            source: source.clone(),
+            target: target.clone(),
+            dir: direction.wire(),
+            ratio,
+        },
+        projection_key,
+        output: serde_json::json!({
+            "schema_version": JSON_SCHEMA_VERSION,
+            "operation": "move-pane",
+            "session_id": session.get(),
+            "source_terminal_id": local_id(source),
+            "target_terminal_id": local_id(target),
+            "direction": direction.as_str(),
+            "ratio": ratio,
+        }),
+        human: format!(
+            "moved @{} beside @{} ({}, ratio {ratio})",
+            local_id(source),
+            local_id(target),
+            direction.as_str(),
+        ),
+    }))
+}
+
+fn build_swap_plan(
+    session: SessionId,
+    first: &ResourceId,
+    second: &ResourceId,
+    projection: &[String],
+) -> Result<PlanKind, CliError> {
+    let projection_key = resolve_local_projection(projection, session)?;
+    Ok(PlanKind::Local(Plan {
+        session,
+        mutation: LayoutMutation::Swap {
+            first: first.clone(),
+            second: second.clone(),
+        },
+        projection_key,
+        output: serde_json::json!({
+            "schema_version": JSON_SCHEMA_VERSION,
+            "operation": "swap-pane",
+            "session_id": session.get(),
+            "first_terminal_id": local_id(first),
+            "second_terminal_id": local_id(second),
+        }),
+        human: format!("swapped @{} and @{}", local_id(first), local_id(second)),
+    }))
+}
+
+/// Resolve `--projection` for an operation that addresses exactly one
+/// session layout (`insert-pane`, `swap-pane`, and a same-session
+/// `move-pane`): `[]` keeps the shared default key, `[key]` is validated
+/// against `session`, and anything else is a usage error (ADR-0129).
+fn resolve_local_projection(
+    projection: &[String],
+    session: SessionId,
+) -> Result<Option<String>, CliError> {
+    match projection {
+        [] => Ok(None),
+        [key] => validate_projection_key(key, session)
+            .map(|()| Some(key.clone()))
+            .map_err(|err| {
+                CliError::new(
+                    codes::PROJECTION_INVALID,
+                    err.to_string(),
+                    "pass a key shaped `<prefix>.layout/v1/<session-id>` for this session",
+                )
+            }),
+        _ => Err(CliError::new(
+            codes::PROJECTION_ARITY,
+            "this operation touches one session layout; pass at most one --projection",
+            "drop the extra --projection flags",
         )),
     }
 }
@@ -662,6 +785,15 @@ fn print_layout_error(json: bool, err: &LayoutOpsError, socket_path: &Path) -> E
             2,
         ),
         LayoutOpsError::SamePane => json_err::emit(json, &same_pane_error(), 2),
+        LayoutOpsError::InvalidProjectionKey(_) => json_err::emit(
+            json,
+            &CliError::new(
+                codes::PROJECTION_INVALID,
+                err.to_string(),
+                "pass a key shaped `<prefix>.layout/v1/<session-id>` for this session",
+            ),
+            2,
+        ),
         other => json_err::emit(
             json,
             &CliError::new(
@@ -709,6 +841,7 @@ mod tests {
             target: "@3".to_owned(),
             direction: Direction::Horizontal,
             ratio: 0.5,
+            projection: Vec::new(),
         };
         let selectors = op.parse_selectors().unwrap();
         match build_plan(path, &snapshot, op, selectors).await.unwrap() {
@@ -726,6 +859,7 @@ mod tests {
             new_pane: "@3".to_owned(),
             direction: Direction::Horizontal,
             ratio: 0.5,
+            projection: Vec::new(),
         };
         let selectors = op.parse_selectors().unwrap();
         assert_eq!(
@@ -800,6 +934,7 @@ mod tests {
             new_pane: "@2".to_owned(),
             direction: Direction::Vertical,
             ratio: 0.3,
+            projection: Vec::new(),
         };
         let selectors = insert.parse_selectors().unwrap();
         let plan = local(
@@ -830,6 +965,7 @@ mod tests {
             target: "@2".to_owned(),
             direction: Direction::Horizontal,
             ratio: 0.5,
+            projection: Vec::new(),
         };
         let selectors = move_pane.parse_selectors().unwrap();
         let plan = local(
@@ -852,6 +988,7 @@ mod tests {
         let swap = RequestedOperation::Swap {
             first: "@1".to_owned(),
             second: "@2".to_owned(),
+            projection: Vec::new(),
         };
         let selectors = swap.parse_selectors().unwrap();
         let plan = local(build_plan(path, &snapshot, swap, selectors).await.unwrap());
@@ -860,6 +997,7 @@ mod tests {
         let same = RequestedOperation::Swap {
             first: "@1".to_owned(),
             second: "@1".to_owned(),
+            projection: Vec::new(),
         };
         let selectors = same.parse_selectors().unwrap();
         assert_eq!(

@@ -18,6 +18,7 @@ use crate::attach::connection::Connection;
 use crate::layout::{LayoutNode, SplitDir, Workspace, leaves};
 use crate::layout_ops::{
     DEFAULT_LAYOUT_GROUP_ID, LayoutMutation, LayoutOps, LayoutOpsError, layout_key,
+    projection_key_session, validate_projection_key,
 };
 
 /// A confirmed pane move and the destination topology that won publication.
@@ -91,6 +92,17 @@ pub enum PaneMoveError {
     /// Control connection or snapshot protocol failed before ownership changed.
     #[error(transparent)]
     Transport(#[from] AttachError),
+    /// A cross-session move named only one `--projection` envelope key.
+    /// ADR-0129: each session's projection key embeds that session's own id,
+    /// so a cross-session move touches two distinct envelopes and either
+    /// both must be named or neither.
+    #[error(
+        "cross-session move-pane must name both the source and destination projection keys, or neither"
+    )]
+    ProjectionArityMismatch,
+    /// A single-session operation named more than one `--projection` key.
+    #[error("this operation touches one session layout; pass at most one --projection key")]
+    ProjectionArityTooMany,
 }
 
 #[derive(Debug)]
@@ -105,12 +117,26 @@ struct CrossMovePlan {
     dir: SplitDir,
     ratio: f32,
     rollback_owner: Option<ResourceId>,
+    /// Named projection key for the destination envelope, or `None` for the
+    /// default `phux.tui.layout/v1/<destination>` (ADR-0129).
+    destination_key: Option<String>,
+    /// Named projection key for the source envelope, or `None` for the
+    /// default `phux.tui.layout/v1/<source>` (ADR-0129).
+    source_key: Option<String>,
 }
 
 /// Move `source` beside `target`, preserving the source Terminal identity.
 ///
 /// Call this on a dedicated control connection. Layout requests wait for
 /// correlated replies and intentionally do not consume a live attach stream.
+///
+/// `projection` names the layout envelope(s) to read and write instead of
+/// the default `phux.tui.layout/v1/<session>` (ADR-0129, `--projection`).
+/// It must have 0 or 1 entries for a same-session move (one shared
+/// envelope) and 0 or 2 for a cross-session move: each key embeds its own
+/// session id, so a cross-session move touches two distinct envelopes and
+/// either both must be named or neither — see
+/// [`PaneMoveError::ProjectionArityMismatch`].
 ///
 /// # Errors
 ///
@@ -123,6 +149,7 @@ pub async fn move_pane(
     target: ResourceId,
     dir: SplitDir,
     ratio: f32,
+    projection: &[String],
 ) -> Result<PaneMoveOutcome, PaneMoveError> {
     if source == target {
         return Err(PaneMoveError::SamePane);
@@ -150,7 +177,12 @@ pub async fn move_pane(
         .to_owned();
 
     if source_session == destination_session {
-        let workspace = LayoutOps::new(conn, source_session, 2)
+        let key = resolve_single_session_projection(projection, source_session)?;
+        let mut layout = match key {
+            Some(key) => LayoutOps::with_key(conn, source_session, key, 2)?,
+            None => LayoutOps::new(conn, source_session, 2),
+        };
+        let workspace = layout
             .mutate(LayoutMutation::Move {
                 source,
                 target,
@@ -158,6 +190,7 @@ pub async fn move_pane(
                 ratio,
             })
             .await?;
+        drop(layout);
         return Ok(PaneMoveOutcome {
             source_session,
             destination_session,
@@ -175,6 +208,8 @@ pub async fn move_pane(
     }) {
         return Err(PaneMoveError::ServerTooOld);
     }
+    let (source_key, destination_key) =
+        resolve_cross_session_projection(projection, source_session, destination_session)?;
     let plan = CrossMovePlan {
         rollback_owner: sibling_in_window(&snapshot, &source),
         source,
@@ -186,8 +221,55 @@ pub async fn move_pane(
         destination_session_name,
         dir,
         ratio,
+        destination_key,
+        source_key,
     };
     execute_cross_move(conn, &plan).await
+}
+
+/// Resolve `--projection` for an operation over exactly one session
+/// envelope. `[]` keeps the default key; `[key]` is validated against
+/// `session`; anything else is refused.
+fn resolve_single_session_projection(
+    projection: &[String],
+    session: SessionId,
+) -> Result<Option<String>, PaneMoveError> {
+    match projection {
+        [] => Ok(None),
+        [key] => {
+            validate_projection_key(key, session)?;
+            Ok(Some(key.clone()))
+        }
+        _ => Err(PaneMoveError::ProjectionArityTooMany),
+    }
+}
+
+/// Resolve `--projection` for a cross-session move, which touches two
+/// distinct envelopes. `[]` keeps both defaults; `[a, b]` is matched to
+/// `(source_session, destination_session)` by each key's own embedded
+/// session id, in either order; any other shape (including exactly one key)
+/// is refused rather than silently applying one name to only one side.
+fn resolve_cross_session_projection(
+    projection: &[String],
+    source_session: SessionId,
+    destination_session: SessionId,
+) -> Result<(Option<String>, Option<String>), PaneMoveError> {
+    let [first, second] = projection else {
+        return if projection.is_empty() {
+            Ok((None, None))
+        } else {
+            Err(PaneMoveError::ProjectionArityMismatch)
+        };
+    };
+    let first_session = projection_key_session(first);
+    let second_session = projection_key_session(second);
+    if first_session == Some(source_session) && second_session == Some(destination_session) {
+        return Ok((Some(first.clone()), Some(second.clone())));
+    }
+    if first_session == Some(destination_session) && second_session == Some(source_session) {
+        return Ok((Some(second.clone()), Some(first.clone())));
+    }
+    Err(PaneMoveError::ProjectionArityMismatch)
 }
 
 async fn execute_cross_move(
@@ -214,7 +296,17 @@ async fn execute_cross_move(
         .iter()
         .any(|session| session.id == plan.source_session);
 
-    let destination_workspace = match LayoutOps::new(conn, plan.destination_session, 12)
+    let mut destination_layout = match destination_layout_ops(conn, plan) {
+        Ok(layout) => layout,
+        Err(error) => {
+            let rollback = rollback_suffix(conn, plan).await;
+            return Err(PaneMoveError::DestinationLayout {
+                error: error.to_string(),
+                rollback,
+            });
+        }
+    };
+    let destination_workspace = match destination_layout
         .mutate(LayoutMutation::Split {
             target: plan.target.clone(),
             new_pane: plan.source.clone(),
@@ -237,7 +329,10 @@ async fn execute_cross_move(
         Ok(_) => {
             let rollback = rollback_suffix(conn, plan).await;
             return Err(PaneMoveError::DestinationLayout {
-                error: "a concurrent writer replaced the requested placement".to_owned(),
+                error: "a concurrent writer replaced the requested placement, or the write \
+                        exceeded limits.metadata-value-bytes and was silently dropped (\
+                        SET_METADATA has no reply to report that directly)"
+                    .to_owned(),
                 rollback,
             });
         }
@@ -249,25 +344,12 @@ async fn execute_cross_move(
             });
         }
     };
+    drop(destination_layout);
 
     let cleanup = if source_session_reaped {
-        delete_layout(conn, plan.source_session, 20).await
+        delete_layout(conn, plan.source_session, plan.source_key.clone(), 20).await
     } else {
-        LayoutOps::new(conn, plan.source_session, 20)
-            .mutate(LayoutMutation::Close {
-                target: plan.source.clone(),
-            })
-            .await
-            .and_then(|workspace| {
-                if workspace_contains(&workspace, &plan.source) {
-                    Err(LayoutOpsError::Refused(
-                        "a concurrent writer restored the source leaf".to_owned(),
-                    ))
-                } else {
-                    Ok(workspace)
-                }
-            })
-            .map(|_| ())
+        close_source_leaf(conn, plan).await
     };
     if let Err(error) = cleanup {
         return Err(PaneMoveError::SourceLayout(error.to_string()));
@@ -355,23 +437,67 @@ async fn read_snapshot(
 async fn delete_layout(
     conn: &mut Connection,
     session: SessionId,
+    key: Option<String>,
     request_id: u32,
 ) -> Result<(), LayoutOpsError> {
+    let key = key.unwrap_or_else(|| layout_key(session));
     conn.send(&FrameKind::DeleteMetadata {
         request_id,
         scope: Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
-        key: layout_key(session),
+        key: key.clone(),
     })
     .await?;
-    match LayoutOps::new(conn, session, request_id.wrapping_add(1))
+    let read = LayoutOps::with_key(conn, session, key, request_id.wrapping_add(1))?
         .read()
-        .await
-    {
+        .await;
+    match read {
         Err(LayoutOpsError::MissingLayout) => Ok(()),
         Ok(_) => Err(LayoutOpsError::Refused(
             "source layout still exists after deletion".to_owned(),
         )),
         Err(error) => Err(error),
+    }
+}
+
+/// The `LayoutOps` handle to write the destination envelope: the named
+/// projection when `plan.destination_key` is set, the default key otherwise.
+fn destination_layout_ops<'a>(
+    conn: &'a mut Connection,
+    plan: &CrossMovePlan,
+) -> Result<LayoutOps<'a>, LayoutOpsError> {
+    match &plan.destination_key {
+        Some(key) => LayoutOps::with_key(conn, plan.destination_session, key.clone(), 12),
+        None => Ok(LayoutOps::new(conn, plan.destination_session, 12)),
+    }
+}
+
+/// Collapse the source leaf out of its (still-live) source session envelope
+/// after a successful cross-session placement, respecting a named source
+/// projection the same way [`destination_layout_ops`] does for the
+/// destination.
+async fn close_source_leaf(
+    conn: &mut Connection,
+    plan: &CrossMovePlan,
+) -> Result<(), LayoutOpsError> {
+    let mut layout = match &plan.source_key {
+        Some(key) => LayoutOps::with_key(conn, plan.source_session, key.clone(), 20)?,
+        None => LayoutOps::new(conn, plan.source_session, 20),
+    };
+    let workspace = layout
+        .mutate(LayoutMutation::Close {
+            target: plan.source.clone(),
+        })
+        .await?;
+    drop(layout);
+    if workspace_contains(&workspace, &plan.source) {
+        Err(LayoutOpsError::Refused(
+            "a concurrent writer restored the source leaf, or the close write exceeded \
+             limits.metadata-value-bytes and was silently dropped (SET_METADATA has no reply \
+             to report that directly)"
+                .to_owned(),
+        ))
+    } else {
+        Ok(())
     }
 }
 
@@ -566,7 +692,7 @@ mod tests {
         );
         let (_dir, mut conn, server) = serve(spec).await;
 
-        let outcome = move_pane(&mut conn, tid(1), tid(2), SplitDir::Vertical, 0.6)
+        let outcome = move_pane(&mut conn, tid(1), tid(2), SplitDir::Vertical, 0.6, &[])
             .await
             .unwrap();
         assert!(!outcome.cross_session);
@@ -603,7 +729,7 @@ mod tests {
             );
         let (_dir, mut conn, server) = serve(spec).await;
 
-        let outcome = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5)
+        let outcome = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
             .unwrap();
         assert!(outcome.cross_session);
@@ -675,7 +801,7 @@ mod tests {
                 destination.encode_cbor().unwrap(),
             );
         let (_dir, mut conn, server) = serve(spec).await;
-        let outcome = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5)
+        let outcome = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
             .unwrap();
         assert!(outcome.source_session_reaped);
@@ -701,7 +827,7 @@ mod tests {
             .move_result(MoveResult::Ok(tid(1)))
             .refuse_metadata(ErrorCode::PermissionDenied, "layout blocked");
         let (_dir, mut conn, server) = serve(spec).await;
-        let error = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5)
+        let error = move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[])
             .await
             .unwrap_err();
         assert!(
@@ -721,5 +847,145 @@ mod tests {
             })
             .collect();
         assert_eq!(moves, vec![(tid(1), tid(3)), (tid(1), tid(2))]);
+    }
+
+    /// ADR-0129 trap: a cross-session move touches two distinct envelopes
+    /// (each `--projection` key embeds its own session id), so naming only
+    /// one side is refused instead of silently applying it to one envelope.
+    #[tokio::test]
+    async fn cross_session_move_with_one_projection_key_is_refused() {
+        let spec = ScriptSpec::new()
+            .server_features(move_features())
+            .states([snapshot(false, true)]);
+        let (_dir, mut conn, server) = serve(spec).await;
+        let error = move_pane(
+            &mut conn,
+            tid(1),
+            tid(3),
+            SplitDir::Horizontal,
+            0.5,
+            &["myapp.layout/v1/1".to_owned()],
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(error, PaneMoveError::ProjectionArityMismatch));
+        drop(conn);
+        let seen = server.await.unwrap();
+        assert!(
+            seen.iter()
+                .all(|frame| !matches!(frame, FrameKind::SetMetadata { .. })),
+            "an arity refusal must happen before any layout write"
+        );
+    }
+
+    /// Naming both envelopes (in either order) resolves each key to the
+    /// session whose id it embeds and writes there.
+    #[tokio::test]
+    async fn cross_session_move_with_both_projection_keys_writes_the_named_envelopes() {
+        let source = workspace("origin", split(1, 2), 1);
+        let destination = workspace("target", LayoutNode::Leaf(tid(3)), 3);
+        let source_key = "src.layout/v1/1".to_owned();
+        let destination_key = "dst.layout/v1/2".to_owned();
+        let spec = ScriptSpec::new()
+            .server_features(move_features())
+            .states([snapshot(false, true), snapshot(true, true)])
+            .move_result(MoveResult::Ok(tid(1)))
+            .stored_metadata(
+                Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+                &source_key,
+                source.encode_cbor().unwrap(),
+            )
+            .stored_metadata(
+                Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+                &destination_key,
+                destination.encode_cbor().unwrap(),
+            );
+        let (_dir, mut conn, server) = serve(spec).await;
+
+        // Pass destination-first to prove order doesn't matter — each key is
+        // matched by its own embedded session id, not positionally.
+        let outcome = move_pane(
+            &mut conn,
+            tid(1),
+            tid(3),
+            SplitDir::Horizontal,
+            0.5,
+            &[destination_key.clone(), source_key.clone()],
+        )
+        .await
+        .unwrap();
+        assert!(outcome.cross_session);
+        drop(conn);
+
+        let seen = server.await.unwrap();
+        assert!(
+            seen.iter()
+                .any(|frame| matches!(frame, FrameKind::SetMetadata { key, .. } if key == &destination_key)),
+            "the destination write must target the named destination projection"
+        );
+        assert!(
+            !seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::SetMetadata { key, .. } if key == &layout_key(SessionId::new(2))
+            )),
+            "the default destination key must never be touched"
+        );
+    }
+
+    #[test]
+    fn single_session_projection_arity_and_validation() {
+        let session = SessionId::new(1);
+        assert_eq!(
+            resolve_single_session_projection(&[], session).unwrap(),
+            None
+        );
+        assert_eq!(
+            resolve_single_session_projection(&["myapp.layout/v1/1".to_owned()], session).unwrap(),
+            Some("myapp.layout/v1/1".to_owned())
+        );
+        assert!(matches!(
+            resolve_single_session_projection(
+                &["a.layout/v1/1".to_owned(), "b.layout/v1/1".to_owned()],
+                session
+            ),
+            Err(PaneMoveError::ProjectionArityTooMany)
+        ));
+        assert!(matches!(
+            resolve_single_session_projection(&["myapp.layout/v1/2".to_owned()], session),
+            Err(PaneMoveError::Layout(LayoutOpsError::InvalidProjectionKey(
+                _
+            )))
+        ));
+    }
+
+    #[test]
+    fn cross_session_projection_resolution_matches_by_embedded_session_id() {
+        let source = SessionId::new(1);
+        let destination = SessionId::new(2);
+        assert_eq!(
+            resolve_cross_session_projection(&[], source, destination).unwrap(),
+            (None, None)
+        );
+        assert!(matches!(
+            resolve_cross_session_projection(&["a.layout/v1/1".to_owned()], source, destination),
+            Err(PaneMoveError::ProjectionArityMismatch)
+        ));
+        // Both keys naming the same session: no valid assignment.
+        assert!(matches!(
+            resolve_cross_session_projection(
+                &["a.layout/v1/1".to_owned(), "b.layout/v1/1".to_owned()],
+                source,
+                destination
+            ),
+            Err(PaneMoveError::ProjectionArityMismatch)
+        ));
+        let (resolved_source, resolved_destination) = resolve_cross_session_projection(
+            &["b.layout/v1/2".to_owned(), "a.layout/v1/1".to_owned()],
+            source,
+            destination,
+        )
+        .unwrap();
+        assert_eq!(resolved_source.as_deref(), Some("a.layout/v1/1"));
+        assert_eq!(resolved_destination.as_deref(), Some("b.layout/v1/2"));
     }
 }

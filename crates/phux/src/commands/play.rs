@@ -201,6 +201,7 @@ fn run_launcher(args: &PlayArgs<'_>) -> ExitCode {
         args.split,
         args.ratio,
         None,
+        None,
         args.json,
     ) {
         Ok(result) => result,

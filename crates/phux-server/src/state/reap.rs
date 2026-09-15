@@ -1,12 +1,67 @@
 use phux_core::ids::{ResourceId, SessionId, WindowId};
+use phux_protocol::ids::SessionId as WireSessionId;
 
 use super::{KeepEmptyOutcome, ServerState};
 
-/// The reference TUI's per-session layout key prefix (L3.md §3.2); the full
-/// key is `phux.tui.layout/v1/<wire session id>` in Group 1. Mirrors
-/// `phux_client::layout_ops::LAYOUT_KEY`, which the server crate cannot
-/// depend on. The server otherwise never interprets this key.
-const TUI_LAYOUT_KEY: &str = "phux.tui.layout/v1";
+/// The layout-family metadata suffix (L3.md §3.2, §3.5): every consumer's
+/// per-session layout key, default or named projection alike, is
+/// `<prefix>.layout/v1/<wire session id>` in Group 1. The server never
+/// interprets the prefix; it only ever needs to find "every layout key that
+/// named this now-gone session" so a reap does not orphan one.
+fn layout_key_suffix(session: WireSessionId) -> String {
+    format!(".layout/v1/{}", session.get())
+}
+
+/// Parse the wire session id a `<prefix>.layout/v1/<id>` key names (default
+/// key or named projection alike), for the resurrection guard in
+/// `runtime::client::reject_set_metadata`. `None` when `key` is not in the
+/// layout family at all — including a non-canonical id (a leading zero, a
+/// `+` sign, or anything but ASCII digits), which can never be the literal
+/// suffix [`Self::forget_layout_keys_of_session`] matches, so treating it as
+/// "not a layout key" here is the same "never found, never orphaned by this
+/// guard" answer the client-side `phux_client::layout_ops::projection_key_session`
+/// grammar gives.
+pub(crate) fn layout_key_session_id(key: &str) -> Option<u32> {
+    let (prefix, suffix) = key.rsplit_once(".layout/v1/")?;
+    if prefix.is_empty() || prefix.contains(".layout/v1/") {
+        return None;
+    }
+    let id = suffix.parse::<u32>().ok()?;
+    (suffix == id.to_string()).then_some(id)
+}
+
+impl ServerState {
+    /// Whether `scope`/`key` is a `*.layout/v1/<id>` key in the default
+    /// layout Group naming a session that is no longer live (ADR-0129
+    /// resurrection guard). `None` when `key` is not in the layout family,
+    /// or `scope` is not the default layout Group, so the caller's normal
+    /// rejection path continues unaffected.
+    ///
+    /// The TUI republishes its layout on `RESOURCE_CLOSED` for whichever
+    /// panes survive a close (`phux-tui`'s `loop_state.rs`); that broadcast
+    /// can lose a race with the pane's own reap and land afterward, holding
+    /// the dead session's real (canonical) wire id. Without this guard the
+    /// late write recreates the very key the reap cascade just deleted —
+    /// this session is gone, but its `*.layout/v1/<id>` key would live on
+    /// forever with no reap left to ever clean it up again.
+    #[must_use]
+    pub fn layout_key_names_a_dead_session(
+        &self,
+        scope: &phux_protocol::wire::frame::Scope,
+        key: &str,
+    ) -> Option<bool> {
+        if !matches!(scope, phux_protocol::wire::frame::Scope::Group(gid) if *gid == super::DEFAULT_GROUP_ID)
+        {
+            return None;
+        }
+        let wire_id = layout_key_session_id(key)?;
+        let live = self
+            .idspace
+            .resolve_session(WireSessionId::new(wire_id))
+            .is_some();
+        Some(!live)
+    }
+}
 
 impl ServerState {
     /// Reap a pane whose actor has exited, cascading the removal up the
@@ -49,6 +104,15 @@ impl ServerState {
     ///
     /// The cascade stops at a keep-empty session (ADR-0105): the window goes
     /// and the session stays, with zero windows, until an explicit kill.
+    ///
+    /// Either way the session collapses to zero windows here — kept alive or
+    /// fully removed — so its layout keys (the default TUI key and any named
+    /// `--projection`, ADR-0129) are forgotten in both branches. The
+    /// internal `reap_session_if_empty` is the actual-removal path's own
+    /// choke point for that (every caller of it gets the deletion for
+    /// free, including [`Self::set_session_keep_empty`]'s "clear the mark
+    /// on an already-windowless session" path — see that method's doc);
+    /// this function only has to handle its own "kept alive" branch.
     pub fn reap_window_if_empty(&mut self, window_id: WindowId) {
         let Some(window) = self.sessions.registry.window(window_id) else {
             return;
@@ -61,30 +125,52 @@ impl ServerState {
             self.forget_window_bookkeeping(window_id);
         }
         if !self.reap_session_if_empty(session_id) {
-            self.forget_layout_of_emptied_session(session_id);
+            let wire = self.idspace.session_wire(session_id);
+            self.forget_layout_of_emptied_session(session_id, wire);
         }
     }
 
     /// ADR-0105: a keep-empty session that just lost its last window keeps
-    /// no layout. The stored `phux.tui.layout/v1/<session>` tree now names
-    /// only dead panes, and a client that attaches later would adopt it and
-    /// hide the empty state behind panes that never bootstrap, so it is
-    /// deleted here (broadcasting the tombstone) whether or not a client was
-    /// attached to write one.
-    fn forget_layout_of_emptied_session(&mut self, session_id: SessionId) {
+    /// no layout. The stored layout tree(s) now name only dead panes, and a
+    /// client that attaches later would adopt one and hide the empty state
+    /// behind panes that never bootstrap, so every layout key naming this
+    /// session is deleted here (broadcasting the tombstone) whether or not a
+    /// client was attached to write one.
+    fn forget_layout_of_emptied_session(
+        &mut self,
+        session_id: SessionId,
+        wire: Option<WireSessionId>,
+    ) {
         let emptied = self
             .sessions
             .registry
             .session(session_id)
             .is_some_and(|s| s.keep_empty && s.windows.is_empty());
-        let Some(wire) = self.idspace.session_wire(session_id).filter(|_| emptied) else {
+        if emptied {
+            self.forget_layout_keys_of_session(wire);
+        }
+    }
+
+    /// Delete every `<prefix>.layout/v1/<wire session id>` metadata key in
+    /// the default layout Group (L3.md §3.2, §3.5): the reference TUI's own
+    /// key plus any consumer's named projection over the same session
+    /// envelope shape. A no-op when `wire` is `None` (the session was never
+    /// interned, so it never had a layout key).
+    fn forget_layout_keys_of_session(&mut self, wire: Option<WireSessionId>) {
+        let Some(wire) = wire else {
             return;
         };
-        let key = format!("{TUI_LAYOUT_KEY}/{}", wire.get());
-        let _ = self.metadata_delete(
-            &phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID),
-            &key,
-        );
+        let suffix = layout_key_suffix(wire);
+        let scope = phux_protocol::wire::frame::Scope::Group(super::DEFAULT_GROUP_ID);
+        let keys: Vec<String> = self
+            .metadata()
+            .list(&scope)
+            .into_iter()
+            .filter(|key| key.ends_with(&suffix))
+            .collect();
+        for key in keys {
+            let _ = self.metadata_delete(&scope, &key);
+        }
     }
 
     /// Drain the sessions a group kill released and the cascade has since
@@ -95,17 +181,31 @@ impl ServerState {
 
     /// Remove `session` when it holds no windows and is not keep-empty.
     /// Returns `true` iff the session was removed.
+    ///
+    /// The single choke point every session-removal path goes through
+    /// ([`Self::reap_window_if_empty`]'s cascade and
+    /// [`Self::set_session_keep_empty`]'s "clear the mark on an
+    /// already-windowless session" path both call this, not the registry
+    /// directly), so it is where the session's layout keys (ADR-0129) are
+    /// deleted — no removal path can add itself later and forget to. The
+    /// wire id is captured before the removal, whose own bookkeeping
+    /// retires it.
     fn reap_session_if_empty(&mut self, session_id: SessionId) -> bool {
         let reapable = self
             .sessions
             .registry
             .session(session_id)
             .is_some_and(|s| s.windows.is_empty() && !s.keep_empty);
-        if !reapable || self.sessions.registry.remove_session(session_id).is_none() {
+        if !reapable {
+            return false;
+        }
+        let wire = self.idspace.session_wire(session_id);
+        if self.sessions.registry.remove_session(session_id).is_none() {
             return false;
         }
         self.sessions.note_removed(session_id);
         self.forget_session_bookkeeping(session_id);
+        self.forget_layout_keys_of_session(wire);
         true
     }
 

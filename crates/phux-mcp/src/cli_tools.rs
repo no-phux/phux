@@ -44,6 +44,7 @@ pub(crate) fn launch_schema() -> Value {
             "target": string_schema(),
             "split": { "type": "string", "enum": ["horizontal", "vertical"] },
             "ratio": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+            "projection": projection_key_schema(),
             "cwd": string_schema(),
             "extra": { "type": "array", "maxItems": 64, "items": string_schema() },
             "socket": string_schema(),
@@ -61,12 +62,23 @@ pub(crate) fn spawn_schema() -> Value {
             "satellite": string_schema(),
             "split": { "type": "string", "enum": ["horizontal", "vertical"] },
             "ratio": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+            "projection": projection_key_schema(),
             "cwd": string_schema(),
             "command": { "type": "array", "maxItems": 64, "items": string_schema() },
             "socket": string_schema(),
         }),
         &[],
     )
+}
+
+/// A single named-projection metadata key (ADR-0129): requires `target`.
+fn projection_key_schema() -> Value {
+    json!({
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "description": "Named projection key (`<prefix>.layout/v1/<session-id>`) to place into instead of the shared default; requires `target`.",
+    })
 }
 
 pub(crate) fn signal_schema() -> Value {
@@ -121,6 +133,15 @@ fn spatial_schema(name: &str, description: &str, roles: &[&str], geometry: bool)
             json!({ "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 }),
         );
     }
+    properties.insert(
+        "projection".to_owned(),
+        json!({
+            "type": "array",
+            "maxItems": 2,
+            "items": projection_key_schema(),
+            "description": "Named projection key(s) to edit instead of the shared default (ADR-0129): 0 or 1 for a same-session edit, or exactly 2 (source and destination) for a cross-session move-pane.",
+        }),
+    );
     properties.insert("socket".to_owned(), string_schema());
     schema(name, description, Value::Object(properties), roles)
 }
@@ -200,6 +221,7 @@ async fn launch(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> 
             "target",
             "split",
             "ratio",
+            "projection",
             "cwd",
             "extra",
             "socket",
@@ -228,12 +250,14 @@ fn launch_argv(args: &Value) -> Result<Vec<String>, ToolError> {
     launch_one_argv(args, integration.unwrap_or_default(), placement)
 }
 
-/// The exact local placement the launched pane takes, if any. `split` and
-/// `ratio` are meaningless without a `target` to place against.
+/// The exact local placement the launched pane takes, if any. `split`,
+/// `ratio`, and `projection` are meaningless without a `target` to place
+/// against.
 struct Placement {
     target: Option<String>,
     split: String,
     ratio: Option<f64>,
+    projection: Option<String>,
 }
 
 fn launch_placement(args: &Value) -> Result<Placement, ToolError> {
@@ -245,13 +269,18 @@ fn launch_placement(args: &Value) -> Result<Placement, ToolError> {
         Some("horizontal"),
     )?;
     let ratio = ratio(args)?;
-    if target.is_none() && (args.get("split").is_some() || ratio.is_some()) {
-        return Err(ToolError::new("`split` and `ratio` require `target`"));
+    let projection = bounded_string(args, "projection", false)?;
+    if target.is_none() && (args.get("split").is_some() || ratio.is_some() || projection.is_some())
+    {
+        return Err(ToolError::new(
+            "`split`, `ratio`, and `projection` require `target`",
+        ));
     }
     Ok(Placement {
         target,
         split,
         ratio,
+        projection,
     })
 }
 
@@ -259,7 +288,15 @@ fn launch_placement(args: &Value) -> Result<Placement, ToolError> {
 fn launch_list_argv(args: &Value) -> Result<Vec<String>, ToolError> {
     reject_present(
         args,
-        &["target", "split", "ratio", "cwd", "extra", "socket"],
+        &[
+            "target",
+            "split",
+            "ratio",
+            "projection",
+            "cwd",
+            "extra",
+            "socket",
+        ],
     )?;
     Ok(vec![
         "launch".to_owned(),
@@ -279,6 +316,7 @@ fn launch_one_argv(
         placement.target,
         &placement.split,
         placement.ratio,
+        placement.projection,
     );
     push_option(&mut argv, "-c", bounded_string(args, "cwd", false)?);
     push_socket(&mut argv, args)?;
@@ -298,6 +336,7 @@ async fn spawn(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
             "satellite",
             "split",
             "ratio",
+            "projection",
             "cwd",
             "command",
             "socket",
@@ -316,11 +355,15 @@ async fn spawn(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
         Some("horizontal"),
     )?;
     let ratio = ratio(args)?;
-    if target.is_none() && (args.get("split").is_some() || ratio.is_some()) {
-        return Err(ToolError::new("`split` and `ratio` require `target`"));
+    let projection = bounded_string(args, "projection", false)?;
+    if target.is_none() && (args.get("split").is_some() || ratio.is_some() || projection.is_some())
+    {
+        return Err(ToolError::new(
+            "`split`, `ratio`, and `projection` require `target`",
+        ));
     }
     let mut argv = vec!["spawn".to_owned(), "--json".to_owned()];
-    push_placement(&mut argv, target, &split, ratio);
+    push_placement(&mut argv, target, &split, ratio, projection);
     push_option(&mut argv, "--satellite", satellite);
     push_option(&mut argv, "-c", bounded_string(args, "cwd", false)?);
     push_socket(&mut argv, args)?;
@@ -411,6 +454,7 @@ async fn spatial(
 ) -> Result<Value, ToolError> {
     let mut allowed = roles.to_vec();
     allowed.push("socket");
+    allowed.push("projection");
     if geometry {
         allowed.extend(["direction", "ratio"]);
     }
@@ -430,6 +474,13 @@ async fn spatial(
         if let Some(ratio) = ratio(args)? {
             argv.extend(["--ratio".to_owned(), ratio.to_string()]);
         }
+    }
+    // ADR-0129: 0 or 1 key for a same-session edit; a cross-session
+    // `move-pane` needs both (source and destination), so this passes
+    // `--projection` through once per array entry rather than folding it
+    // into one flag.
+    for key in bounded_strings(args, "projection", false)? {
+        argv.extend(["--projection".to_owned(), key]);
     }
     argv.push("--json".to_owned());
     push_socket(&mut argv, args)?;
@@ -471,7 +522,13 @@ async fn workspace(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolErro
     }
 }
 
-fn push_placement(argv: &mut Vec<String>, target: Option<String>, split: &str, ratio: Option<f64>) {
+fn push_placement(
+    argv: &mut Vec<String>,
+    target: Option<String>,
+    split: &str,
+    ratio: Option<f64>,
+    projection: Option<String>,
+) {
     if let Some(target) = target {
         argv.extend([
             "--target".to_owned(),
@@ -481,6 +538,9 @@ fn push_placement(argv: &mut Vec<String>, target: Option<String>, split: &str, r
         ]);
         if let Some(ratio) = ratio {
             argv.extend(["--ratio".to_owned(), ratio.to_string()]);
+        }
+        if let Some(projection) = projection {
+            argv.extend(["--projection".to_owned(), projection]);
         }
     }
 }

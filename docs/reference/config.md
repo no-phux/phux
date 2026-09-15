@@ -33,6 +33,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
 | `[voice]` | The server-side transcriber behind `TRANSCRIBE`: an argv that turns an uploaded clip into text for a paste. |
+| `[limits]` | Server-enforced ceilings that are not a per-pane spawn default: the largest L3 metadata value the server stores at one key. |
 
 ## Scalar keys
 
@@ -55,6 +56,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `keybindings.prefix` | `"C-a"` |
 | `keybindings.which-key` | `true` |
 | `keybindings.which-key-delay-ms` | `400` |
+| `limits.metadata-value-bytes` | `262144` |
 | `sidebar.enabled` | `true` |
 | `sidebar.position` | `"left"` |
 | `sidebar.width` | `0` |

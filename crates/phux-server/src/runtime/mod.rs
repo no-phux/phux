@@ -186,6 +186,11 @@ pub struct ServerConfig {
     pub window_size: phux_config::WindowSize,
     /// `[voice]`: the transcriber behind `TRANSCRIBE` (phux-ypsa).
     pub voice: phux_config::VoiceCfg,
+    /// `limits.metadata-value-bytes` (ADR-0129): largest L3 metadata value
+    /// the server stores at one key. The binary populates this from
+    /// `phux_config`; [`Self::with_default_socket`] uses the schema default
+    /// (256 KiB).
+    pub metadata_value_bytes: u32,
     /// Optional HELLO authorization engine (ADR-0072). `None` — what the
     /// `phux` binary passes today — leaves the default
     /// [`crate::policy::PermissivePolicy`] in place. This is the injection
@@ -300,6 +305,7 @@ impl ServerConfig {
             login_shell: false,
             window_size: phux_config::WindowSize::default(),
             voice: phux_config::VoiceCfg::default(),
+            metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             policy_engine: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
@@ -1121,6 +1127,9 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
     // (phux-nk07).
     state.with_mut(|s| s.set_window_size(cfg.window_size));
     state.with_mut(|s| s.set_voice(cfg.voice.clone()));
+    // Mirror `limits.metadata-value-bytes` (ADR-0129) so `SET_METADATA`
+    // enforces the configured cap instead of the schema default.
+    state.with_mut(|s| s.set_metadata_value_bytes(cfg.metadata_value_bytes));
     // Wire the policy engine from config into shared state.
     if let Some(engine) = cfg.policy_engine.clone() {
         state.with_mut(|s| s.set_policy_engine(engine));

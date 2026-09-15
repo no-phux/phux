@@ -90,20 +90,54 @@ pub(super) struct RestoreSummary {
     pub(super) schema_version: u8,
     pub(super) restored: Vec<String>,
     pub(super) skipped_existing: Vec<String>,
+    /// Sessions whose restore failed partway through. Each one was rolled
+    /// back (every pane created for it so far, killed) before moving on to
+    /// the next session (PHA-406 L18 review item 5): a failure never leaves
+    /// a half-restored session behind, and never aborts the rest of the
+    /// archive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) failed: Vec<FailedRestore>,
+    /// Non-fatal notices against an otherwise-restored session — today,
+    /// only "an archived native agent session could not be resumed; this
+    /// pane got a plain shell instead" (PHA-406 L18 review item 6).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(super) warnings: Vec<RestoreWarning>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct FailedRestore {
+    pub(super) name: String,
+    pub(super) reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(super) struct RestoreWarning {
+    pub(super) session: String,
+    pub(super) message: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct RestorePlan {
     pub(super) creates: Vec<CreateRequest>,
     pub(super) skipped_existing: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) struct CreateRequest {
     pub(super) name: String,
     pub(super) cwd: Option<String>,
     pub(super) command: Option<Vec<String>>,
     pub(super) agent_session: Option<WorkspaceAgentSession>,
+    /// `(window index, pane index)` into [`Self::windows`] of the pane whose
+    /// `cwd`/`command`/`agent_session` seeded the fields above — the one
+    /// pane the session-create call itself produces. `None` when the
+    /// session has no panes at all.
+    pub(super) seed_position: Option<(usize, usize)>,
+    /// The full archived window/pane structure (ADR-0129): every other
+    /// pane here is spawned and placed to replay the captured split tree
+    /// after the seed pane exists. Empty for a schema-1 archive or a
+    /// session with no windows.
+    pub(super) windows: Vec<WorkspaceWindow>,
 }
 
 pub(super) fn parse_archive(input: &str) -> Result<WorkspaceArchive, String> {
@@ -135,7 +169,8 @@ pub(super) fn restore_plan(
             skipped_existing.push(session.name.clone());
             continue;
         }
-        let pane = preferred_pane(session);
+        let seed_position = preferred_pane_position(session);
+        let pane = seed_position.map(|(wi, pi)| &session.windows[wi].panes[pi]);
         creates.push(CreateRequest {
             name: session.name.clone(),
             cwd: session
@@ -147,6 +182,8 @@ pub(super) fn restore_plan(
                 .clone()
                 .or_else(|| pane.and_then(|pane| pane.command.clone())),
             agent_session: pane.and_then(|pane| pane.agent_session.clone()),
+            seed_position,
+            windows: session.windows.clone(),
         });
     }
     Ok(RestorePlan {
@@ -199,32 +236,46 @@ fn validate_archive(archive: &WorkspaceArchive) -> Result<(), String> {
     Ok(())
 }
 
-fn preferred_pane(session: &WorkspaceSession) -> Option<&WorkspacePane> {
+/// `(window index, pane index)` of the pane that seeds a session-create
+/// call: the active window's active pane, else its first pane, else any
+/// window's active pane, else the very first pane in the session. `None`
+/// when the session has no panes at all.
+fn preferred_pane_position(session: &WorkspaceSession) -> Option<(usize, usize)> {
     session
         .windows
         .iter()
-        .find(|window| window.active)
-        .and_then(|window| {
+        .enumerate()
+        .find(|(_, window)| window.active)
+        .and_then(|(window_index, window)| {
             window
                 .panes
                 .iter()
-                .find(|pane| pane.active)
-                .or_else(|| window.panes.first())
+                .position(|pane| pane.active)
+                .or(if window.panes.is_empty() {
+                    None
+                } else {
+                    Some(0)
+                })
+                .map(|pane_index| (window_index, pane_index))
         })
         .or_else(|| {
-            session
-                .windows
-                .iter()
-                .find_map(|window| window.panes.iter().find(|pane| pane.active))
+            session.windows.iter().enumerate().find_map(|(wi, window)| {
+                window
+                    .panes
+                    .iter()
+                    .position(|pane| pane.active)
+                    .map(|pi| (wi, pi))
+            })
         })
-        .or_else(|| first_pane(session))
+        .or_else(|| first_pane_position(session))
 }
 
-fn first_pane(session: &WorkspaceSession) -> Option<&WorkspacePane> {
+fn first_pane_position(session: &WorkspaceSession) -> Option<(usize, usize)> {
     session
         .windows
         .iter()
-        .find_map(|window| window.panes.first())
+        .enumerate()
+        .find_map(|(wi, window)| (!window.panes.is_empty()).then_some((wi, 0)))
 }
 
 #[cfg(test)]

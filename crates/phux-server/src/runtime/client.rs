@@ -4170,6 +4170,33 @@ fn reject_set_metadata(
         );
         return true;
     }
+    // ADR-0129 / docs/spec/L3.md §2: the cap check happens before anything
+    // is stored — a value over `limits.metadata-value-bytes` is refused
+    // whole, never truncated or partially written.
+    let cap = state.with(crate::state::ServerState::metadata_value_bytes) as usize;
+    if value.len() > cap {
+        warn!(
+            ?client_id,
+            request_id,
+            %key,
+            value_len = value.len(),
+            cap,
+            "SET_METADATA: value exceeds limits.metadata-value-bytes; ignoring (no reply frame exists to tell the writer)"
+        );
+        return true;
+    }
+    // ADR-0129 resurrection guard: a layout key naming a session that has
+    // already reaped must not be recreated by a late write (the TUI's own
+    // post-close republish can lose the race with the pane's reap).
+    if state.with(|s| s.layout_key_names_a_dead_session(scope, key)) == Some(true) {
+        warn!(
+            ?client_id,
+            request_id,
+            %key,
+            "SET_METADATA: layout key names a session that is no longer live; ignoring"
+        );
+        return true;
+    }
     // Terminal scope is an ownership address, not an arbitrary namespace.
     if reject_unknown_local_terminal_scope(state, client_id, request_id, scope, key) {
         return true;
@@ -6369,6 +6396,103 @@ mod terminal_metadata_scope_tests {
             state
                 .with(|s| s.metadata().get(&missing, "phux.test/v1"))
                 .is_none()
+        );
+    }
+
+    /// ADR-0129 / docs/spec/L3.md §2: a value over `limits.metadata-value-bytes`
+    /// (256 KiB by default) is refused whole; nothing is stored, and a
+    /// within-cap write to the same key still succeeds afterward.
+    #[test]
+    fn a_metadata_value_over_the_cap_is_refused_and_nothing_is_stored() {
+        let state = SharedState::new();
+        let token = CancellationToken::new();
+        let cap = state.with(crate::state::ServerState::metadata_value_bytes) as usize;
+        let too_big = vec![b'x'; cap + 1];
+
+        handle_set_metadata(
+            &state,
+            ClientId(1),
+            1,
+            &Scope::Global,
+            "phux.test.cap/v1",
+            too_big,
+            &token,
+        );
+        assert!(
+            state
+                .with(|s| s.metadata().get(&Scope::Global, "phux.test.cap/v1"))
+                .is_none(),
+            "an over-cap write must store nothing"
+        );
+
+        let at_cap = vec![b'x'; cap];
+        handle_set_metadata(
+            &state,
+            ClientId(1),
+            2,
+            &Scope::Global,
+            "phux.test.cap/v1",
+            at_cap.clone(),
+            &token,
+        );
+        assert_eq!(
+            state.with(|s| s.metadata().get(&Scope::Global, "phux.test.cap/v1")),
+            Some(at_cap),
+            "a value exactly at the cap is stored"
+        );
+    }
+
+    /// ADR-0129 resurrection guard: `phux-tui`'s post-close layout
+    /// republish (`loop_state.rs`'s `broadcast_layout` on
+    /// `RESOURCE_CLOSED`) can land after the pane's reap has already
+    /// removed the session. That late `SET_METADATA` must not recreate the
+    /// dead session's `*.layout/v1/<id>` key — there is no reap left to
+    /// ever clean it up again.
+    #[test]
+    fn a_late_layout_write_for_a_reaped_session_is_not_stored() {
+        let state = SharedState::new();
+        let token = CancellationToken::new();
+        let (session, _window, pane) = state.with_mut(|s| s.seed_session("resurrect-test"));
+        let wire = state.with_mut(|s| s.idspace.intern_session(session));
+        let key = format!("phux.tui.layout/v1/{}", wire.get());
+        let scope = Scope::Group(crate::state::DEFAULT_GROUP_ID);
+
+        // Confirm a live write to the same key works today, before reaping.
+        handle_set_metadata(
+            &state,
+            ClientId(1),
+            1,
+            &scope,
+            &key,
+            b"live".to_vec(),
+            &token,
+        );
+        assert_eq!(
+            state.with(|s| s.metadata().get(&scope, &key)),
+            Some(b"live".to_vec())
+        );
+
+        // Reap the session to zero windows (its only pane closes).
+        state.with_mut(|s| s.reap_terminal(pane));
+        assert!(
+            state.with(|s| s.registry().session(session).is_none()),
+            "the session must actually be gone for this test to mean anything"
+        );
+
+        // The late write — same key, same bytes a naive republish would
+        // send — must not resurrect it.
+        handle_set_metadata(
+            &state,
+            ClientId(1),
+            2,
+            &scope,
+            &key,
+            b"late republish".to_vec(),
+            &token,
+        );
+        assert!(
+            state.with(|s| s.metadata().get(&scope, &key)).is_none(),
+            "a layout write naming a reaped session must not be stored"
         );
     }
 

@@ -49,7 +49,9 @@ struct WorktreeBuilder {
 pub(crate) fn run_workspace(action: &WorkspaceAction, socket: Option<PathBuf>) -> ExitCode {
     match action {
         WorkspaceAction::Inspect { path, json } => run_inspect(path, *json),
-        WorkspaceAction::Save { output } => archive::run_save(socket, output.as_ref()),
+        WorkspaceAction::Save { output, projection } => {
+            archive::run_save(socket, output.as_ref(), projection.as_deref())
+        }
         WorkspaceAction::Restore { archive } => archive::run_restore(archive, socket),
     }
 }

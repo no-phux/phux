@@ -335,6 +335,52 @@ pub async fn spawn_with_agent_session_on(
     Ok(outcome)
 }
 
+/// [`persist_record`] over a fresh connection, with the rollback dance from
+/// [`spawn_with_agent_session`].
+///
+/// Used by `phux workspace restore` to confirm a resumed native agent
+/// session's provenance write for a terminal whose spawn has already
+/// completed (unlike [`spawn_with_agent_session`], this is a follow-up write
+/// on an already-existing pane, not part of the spawn itself).
+///
+/// # Errors
+///
+/// A connect failure, or [`persist_record`]'s own failure, with the
+/// rollback kill's own outcome folded into the message.
+pub async fn confirm_agent_session_record_on(
+    socket_path: &Path,
+    terminal: &ResourceId,
+    record: &AgentSessionRecord,
+    request_id: u32,
+) -> Result<(), String> {
+    let mut conn = Connection::connect(socket_path)
+        .await
+        .map_err(|err| format!("could not confirm restored agent session: {err}"))?;
+    if let Err(err) = persist_record(&mut conn, terminal, record, request_id).await {
+        let cleanup = conn
+            .request(
+                request_id.wrapping_add(3),
+                Command::KillResource {
+                    terminal_id: terminal.clone(),
+                },
+            )
+            .await;
+        drop(conn);
+        let cleanup_note = match cleanup {
+            Ok(reply) => match reply.into_parts().0 {
+                CommandResult::Ok => "restored terminal removed".to_owned(),
+                other => format!("cleanup returned {other:?}"),
+            },
+            Err(cleanup_err) => format!("cleanup failed: {cleanup_err}"),
+        };
+        return Err(format!(
+            "restored agent session record could not be confirmed: {err}; {cleanup_note}"
+        ));
+    }
+    drop(conn);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

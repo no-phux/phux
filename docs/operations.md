@@ -642,13 +642,27 @@ phux has two different continuity mechanisms. They are intentionally
 separate:
 
 - **Restart restore:** `phux workspace save` writes a typed JSON archive
-  of the running workspace. `phux workspace restore ARCHIVE` reads that
-  archive and creates any missing session names on a running server. Each
-  restored session starts a fresh PTY process: the archived `command` is
-  used when present; otherwise phux starts the default shell in the
-  archived cwd when available. This is a restart/recreate path, not a
-  live handoff path. Restore currently recreates missing **sessions and
-  seed processes** only; it does not replay the archived split tree.
+  of the running workspace, reading each session's real split tree from
+  its L3 layout envelope (`phux.tui.layout/v1/<session-id>`, or the key
+  named by `save --projection KEY`) rather than from `GET_STATE`, which
+  never carries one; a session with nothing stored there falls back to a
+  bare one-pane-per-window projection, as every session did before this
+  worked. `phux workspace restore ARCHIVE` reads that archive and creates
+  any missing session names on a running server. Each restored session
+  starts a fresh PTY process per archived pane: the archived `command` is
+  used when present, an archived native agent session is resumed when it
+  still resolves to the plugin that owns it, and otherwise phux starts
+  the default shell in the archived cwd. This is a restart/recreate
+  path, not a live handoff path. Restore replays the archived split tree
+  — every captured pane, not only the session's seed process — into the
+  restored session's default layout envelope with fresh window
+  identities, confirmed with a read-back; a window the archive captured
+  with no split geometry still places every one of its panes, in a
+  simple chain. A session whose restore fails partway through is rolled
+  back on its own (every pane created for it, killed) and reported by
+  name in the summary; the rest of the archive still restores, and the
+  command exits non-zero only if at least one session failed
+  ([ADR-0129](./adr/0129-projections-are-named-by-key.md)).
 - **Live update handoff:** `phux upgrade` keeps existing PTYs alive
   across a server binary re-exec. `phux update` is the user-facing verb
   built on that handoff: it resolves the published release, verifies the
