@@ -108,6 +108,7 @@ pub const StateRecipes = struct {
     passive_surface: canvas.ControlVisualTokenOverrides,
     toolbar_action: canvas.ControlVisualTokenOverrides,
     quiet_action: canvas.ControlVisualTokenOverrides,
+    default_action: canvas.ControlVisualTokenOverrides,
     primary_action: canvas.ControlVisualTokenOverrides,
     tab: canvas.ControlVisualTokenOverrides,
     navigation_row: canvas.ControlVisualTokenOverrides,
@@ -143,6 +144,19 @@ pub fn stateRecipes() StateRecipes {
             .active_background = palette.selected,
             .pressed_background = palette.pressed,
             .foreground = palette.text,
+            .radius = radii.control,
+        },
+        // The SDK's default variant shares active_background between pressed
+        // and selected. Shipping CTAs are not selection-bearing, so this
+        // dedicated recipe spends that coupled channel on pointer feedback
+        // without changing explicit primary selection identity.
+        .default_action = .{
+            .background = palette.accent,
+            .hover_background = palette.accent_hover,
+            .active_background = palette.accent_pressed,
+            .pressed_background = palette.accent_pressed,
+            .foreground = palette.accent_text,
+            .border = palette.accent,
             .radius = radii.control,
         },
         .primary_action = .{
@@ -216,9 +230,7 @@ fn tokenOverrides() canvas.DesignTokenOverrides {
             .destructive = palette.destructive,
         },
         .controls = .{
-            // Shipping CTAs use the SDK's default variant, so default must
-            // retain Cockpit's filled lime emphasis.
-            .button_default = states.primary_action,
+            .button_default = states.default_action,
             .button_primary = states.primary_action,
             .button_secondary = states.toolbar_action,
             .button_outline = states.settings_row,
@@ -306,6 +318,7 @@ test "semantic state recipes render distinct actionable states" {
     try std.testing.expectEqual(palette.accent_hover, hovered);
     try std.testing.expectEqual(palette.accent_pressed, pressed);
     try std.testing.expect(!std.meta.eql(rest, hovered));
+    try std.testing.expect(!std.meta.eql(rest, pressed));
     try std.testing.expect(!std.meta.eql(hovered, pressed));
 }
 
@@ -316,9 +329,20 @@ test "default buttons preserve the shipping CTA state ladder" {
 
     try std.testing.expectEqual(palette.accent, rest);
     try std.testing.expectEqual(palette.accent_hover, hovered);
-    // The SDK's default variant routes pointer-down through active_background;
-    // unlike primary, it does not consume the dedicated pressed channel.
-    try std.testing.expectEqual(palette.accent, pressed);
+    try std.testing.expectEqual(palette.accent_pressed, pressed);
+    try std.testing.expect(!std.meta.eql(rest, hovered));
+    try std.testing.expect(!std.meta.eql(rest, pressed));
+    try std.testing.expect(!std.meta.eql(hovered, pressed));
+}
+
+test "filled action selection keeps each SDK variant's active contract" {
+    const default_selected = try renderedFill(.button, .default, .{ .selected = true }, 1);
+    const primary_selected = try renderedFill(.button, .primary, .{ .selected = true }, 1);
+
+    // Default couples selected and pressed through active_background.
+    try std.testing.expectEqual(palette.accent_pressed, default_selected);
+    // Primary has a dedicated pressed channel, so selected retains identity.
+    try std.testing.expectEqual(palette.accent, primary_selected);
 }
 
 test "navigation and tab selection share the semantic state ladder" {
