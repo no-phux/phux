@@ -17,10 +17,9 @@
 //!     Production does not read it. A lone 320x96 grid needs the whole
 //!     store, not half of it.
 //!
-//! The cell store on the current pin holds one full product grid, not two.
-//! That fact is a regression, not a forever invariant: a pin bump Metal
-//! approves will raise `maxFullPanesThatFit`. Hybrid C still refuses to
-//! treat `layout.max_panes` full grids as one envelope.
+//! The cell store on the current pin holds more than one full product
+//! grid (`maxFullPanesThatFit`). Hybrid C still refuses to treat
+//! `layout.max_panes` full grids as one envelope.
 
 const native_sdk = @import("native_sdk");
 const grid = @import("../../terminal/grid.zig");
@@ -247,16 +246,17 @@ test "a lone active pane keeps the whole cell store" {
     try testing.expectEqual(@as(usize, 1), planned.n_full);
     try testing.expectEqual(Fidelity.full, planned.fidelities[0]);
     const alloc = planned.forPane(0, 0);
-    // Leftover after one full 320x96 grid stays in unused_cells
-    // (32768 - 30720 = 2048). That is slack, not the SDK two-pane floor, and
-    // a lone full pane is not charged it: nothing later needs holding.
+    // Leftover after one full product grid stays in unused_cells
+    // (`cell_store - full_cells`). That is slack, not the SDK two-pane
+    // floor, and a lone full pane is not charged it: nothing later needs
+    // holding.
     try testing.expectEqual(cell_store - full_cells, planned.unused_cells);
     try testing.expectEqual(@as(usize, 0), alloc.cell_reserve);
     try testing.expectEqual(command_envelope, alloc.command_budget);
     try testing.expectEqual(glyph_budget, alloc.glyph_budget);
-    // The SDK two-pane leftover must not become a production floor: a
-    // 320x96 grid is 30720 cells and `widget_cell_reserve` is half the
-    // store (16384). Using it as a floor would truncate the common case.
+    // The SDK two-pane leftover must not become a production floor:
+    // `widget_cell_reserve` is half the store. Using it as a floor would
+    // truncate a full product grid.
     try testing.expect(canvas.terminal_grid.widget_cell_reserve * 2 == cell_store);
     try testing.expect(alloc.cell_reserve != canvas.terminal_grid.widget_cell_reserve);
     try testing.expect(full_cells > canvas.terminal_grid.widget_cell_reserve);
@@ -272,13 +272,14 @@ test "focused of two panes takes a full grid; the neighbour takes leftover" {
     try testing.expectEqual(@as(usize, 1), planned.n_full);
     try testing.expectEqual(@as(usize, 1), planned.n_degraded);
     try testing.expectEqual(cell_store - full_cells, planned.leftover_cells);
-    try testing.expectEqual(planned.leftover_cells, planned.degraded_cell_share);
+    try testing.expectEqual(@min(planned.leftover_cells, degraded_cell_cap), planned.degraded_cell_share);
+    try testing.expect(planned.leftover_cells > planned.degraded_cell_share);
     const focused = planned.forPane(0, 0);
     const other = planned.forPane(1, 0);
     try testing.expectEqual(Fidelity.full, focused.fidelity);
     try testing.expectEqual(Fidelity.degraded, other.fidelity);
-    try testing.expectEqual(planned.degraded_cell_share, focused.cell_reserve);
-    try testing.expectEqual(@as(usize, 0), other.cell_reserve);
+    try testing.expectEqual(planned.leftover_cells, focused.cell_reserve);
+    try testing.expectEqual(planned.unused_cells, other.cell_reserve);
     try testing.expect(focused.glyph_budget > equalCutGlyphShare(2));
     try testing.expect(focused.glyph_budget > other.glyph_budget);
 }
@@ -294,7 +295,7 @@ test "an unfocused pane that paints first still holds the focused grid" {
     const focused = planned.forPane(1, 0);
     try testing.expectEqual(Fidelity.degraded, first.fidelity);
     try testing.expectEqual(Fidelity.full, focused.fidelity);
-    try testing.expectEqual(full_cells, first.cell_reserve);
+    try testing.expectEqual(full_cells + planned.unused_cells, first.cell_reserve);
     try testing.expectEqual(@as(usize, 0), focused.cell_reserve);
 }
 
@@ -316,28 +317,27 @@ test "inactive windows degrade every pane" {
     try testing.expectEqual(planned.unused_cells, last.cell_reserve);
 }
 
-test "the current pin does not hold two full product grids, nor sixteen" {
+test "the current pin holds two full product grids, not sixteen" {
     const testing = @import("std").testing;
-    // Cockpit pkg3b / Metal hybrid C. The first assertion is the pin's
-    // measured fact; a cell-store bump Metal approves will flip it and
-    // that bump PR updates this test. The second is the forever claim:
-    // N = layout.max_panes full 320x96 grids do not share one envelope.
-    try testing.expect(grid.max_cells * 2 > cell_store);
+    // Cockpit pkg3b / Metal Hybrid C signed bump. The first assertion is
+    // the pin: two full product grids share one envelope. The second is
+    // the forever claim: N = layout.max_panes full grids do not.
+    try testing.expect(grid.max_cells * 2 < cell_store);
     try testing.expect(grid.max_cells * layout.max_panes > cell_store);
-    try testing.expectEqual(@as(usize, 1), maxFullPanesThatFit());
+    try testing.expectEqual(cell_store / grid.max_cells, maxFullPanesThatFit());
+    try testing.expect(maxFullPanesThatFit() >= 2);
     try testing.expect(maxFullPanesThatFit() < layout.max_panes);
     try testing.expectEqual(grid.max_cols * grid.max_rows, grid.max_cells);
 }
 
-test "degraded last-n on this pin keeps six trailing rows at 320, not the top 24" {
+test "degraded last-n on this pin is bound by the row cap, not leftover" {
     const testing = @import("std").testing;
     const leftover = cell_store - full_cells;
-    try testing.expectEqual(@as(usize, 6), leftover / grid.max_cols);
+    try testing.expect(leftover / grid.max_cols > degraded_rows);
     try testing.expectEqual(
-        @as(usize, 6),
+        degraded_rows,
         keepRows(.degraded, grid.max_cols, grid.max_rows, 0, full_cells),
     );
-    try testing.expect(keepRows(.degraded, grid.max_cols, grid.max_rows, 0, full_cells) < degraded_rows);
 
     const inactive = plan(.{
         .window_active = false,
