@@ -7,6 +7,7 @@
  * while browsers keep getting HTML. See host/markdown.ts.
  */
 import { routeRequest } from "./routes";
+import { handleMcpRequest } from "./mcp";
 import {
   estimateTokens,
   htmlToMarkdown,
@@ -25,6 +26,10 @@ export default {
       return Response.redirect(routed.location, routed.status);
     }
 
+    // Hosted MCP endpoint (streamable HTTP, POST /mcp).
+    const mcp = await handleMcpRequest(request, env);
+    if (mcp) return mcp;
+
     const asset = await env.ASSETS.fetch(request);
     const contentType = asset.headers.get("content-type") ?? "";
     if (!asset.ok || !contentType.includes("text/html")) {
@@ -39,9 +44,16 @@ export default {
     }
 
     // HTML responses must declare Vary: Accept so the markdown variant cached
-    // for agents is never served to a browser, and vice versa.
+    // for agents is never served to a browser, and vice versa. The Link
+    // headers advertise the machine-readable discovery surface (RFC 8288).
     const headers = new Headers(asset.headers);
     appendVary(headers, "Accept");
+    headers.set(
+      "link",
+      '</.well-known/api-catalog>; rel="api-catalog", ' +
+        '</llms.txt>; rel="alternate"; type="text/plain", ' +
+        '</.well-known/ai-catalog.json>; rel="service-desc"',
+    );
     return new Response(asset.body, {
       status: asset.status,
       statusText: asset.statusText,

@@ -22,3 +22,10 @@
   Content-Security-Policy: frame-ancestors https://phall.io
   Referrer-Policy: strict-origin-when-cross-origin
   X-Content-Type-Options: nosniff
+
+# Agent discovery documents.
+/.well-known/api-catalog
+  Content-Type: application/linkset+json
+
+/.well-known/ai-catalog.json
+  Access-Control-Allow-Origin: *

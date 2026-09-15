@@ -141,7 +141,7 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
   </section>
 </BaseLayout>
 
-<script is:inline>
+<script is:inline define:vars={{ cliInstall, cockpitInstall, releaseTag: release.tag, releaseUrl: release.url }}>
   document.querySelectorAll("[data-copy]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const value = btn.getAttribute("data-copy");
@@ -158,6 +158,65 @@ const cockpitInstall = "curl -fsSL https://phux.sh/install-cockpit | sh";
       }
     });
   });
+
+  // WebMCP: expose the site's key actions to in-browser AI agents.
+  // Experimental API — feature-detect and no-op where it doesn't exist.
+  (() => {
+    const modelContext = navigator.modelContext;
+    if (!modelContext || typeof modelContext.registerTool !== "function") return;
+    modelContext.registerTool("get_install_command", {
+      description:
+        "Get the one-line shell installer for phux (the terminal multiplexer CLI) or Cockpit (its native GUI).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          target: {
+            type: "string",
+            enum: ["cli", "cockpit"],
+            description: "Which installer to return. Defaults to the phux CLI.",
+          },
+        },
+      },
+      execute: ({ target } = {}) => ({
+        command: target === "cockpit" ? cockpitInstall : cliInstall,
+      }),
+    });
+    modelContext.registerTool("open_docs", {
+      description:
+        "Get the canonical docs.phux.sh URL for a phux docs topic (overview, quickstart, concepts, consumers, remote-access, wire, architecture, decisions).",
+      inputSchema: {
+        type: "object",
+        properties: {
+          topic: {
+            type: "string",
+            description: "Docs topic, e.g. \"quickstart\", \"wire\", \"consumers\".",
+          },
+        },
+        required: ["topic"],
+      },
+      execute: ({ topic } = {}) => {
+        const slug = String(topic || "").toLowerCase().replace(/[^a-z0-9/-]+/g, "");
+        const paths = {
+          overview: "/overview",
+          quickstart: "/quickstart/install",
+          concepts: "/concepts",
+          consumers: "/consumers",
+          agents: "/consumers/agents",
+          "remote-access": "/remote-access",
+          wire: "/wire/proto",
+          architecture: "/architecture",
+          decisions: "/decisions",
+        };
+        const path = paths[slug] ?? `/overview?search=${encodeURIComponent(slug)}`;
+        return { url: `https://docs.phux.sh${path}` };
+      },
+    });
+    modelContext.registerTool("get_latest_release", {
+      description: "Get the latest phux release tag and URL.",
+      inputSchema: { type: "object", properties: {} },
+      execute: () => ({ tag: releaseTag, url: releaseUrl }),
+    });
+  })();
 </script>
 
 <style>

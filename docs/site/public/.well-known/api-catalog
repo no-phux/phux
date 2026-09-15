@@ -1,0 +1,37 @@
+{
+  "linkset": [
+    {
+      "anchor": "https://phux.sh/mcp",
+      "service-desc": [
+        {
+          "href": "https://phux.sh/.well-known/mcp/server-card.json",
+          "type": "application/json"
+        }
+      ],
+      "service-doc": [
+        {
+          "href": "https://docs.phux.sh/consumers/agents",
+          "type": "text/html"
+        }
+      ]
+    },
+    {
+      "anchor": "https://docs.phux.sh/api/search.json",
+      "service-doc": [
+        {
+          "href": "https://docs.phux.sh/overview",
+          "type": "text/html"
+        }
+      ]
+    },
+    {
+      "anchor": "https://phux.sh/install",
+      "service-doc": [
+        {
+          "href": "https://docs.phux.sh/quickstart/install",
+          "type": "text/html"
+        }
+      ]
+    }
+  ]
+}

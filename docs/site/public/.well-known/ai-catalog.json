@@ -1,0 +1,52 @@
+{
+  "specVersion": "1.0",
+  "host": {
+    "displayName": "phux",
+    "identifier": "did:web:phux.sh"
+  },
+  "entries": [
+    {
+      "identifier": "urn:air:phux.sh:server:site-mcp",
+      "displayName": "phux site MCP server",
+      "type": "application/mcp-server-card+json",
+      "url": "https://phux.sh/.well-known/mcp/server-card.json",
+      "representativeQueries": [
+        "search the phux documentation for remote access",
+        "fetch the wire protocol reference as markdown",
+        "what is the latest phux release",
+        "how do I install phux"
+      ]
+    },
+    {
+      "identifier": "urn:air:phux.sh:skills:using-phux",
+      "displayName": "using-phux skill",
+      "type": "text/markdown",
+      "url": "https://phux.sh/.well-known/agent-skills/using-phux/SKILL.md",
+      "representativeQueries": [
+        "drive a persistent terminal with the phux CLI",
+        "attach to a terminal and send input",
+        "supervise a terminal-hosted agent session"
+      ]
+    },
+    {
+      "identifier": "urn:air:phux.sh:skills:using-phux-mcp",
+      "displayName": "using-phux-mcp skill",
+      "type": "text/markdown",
+      "url": "https://phux.sh/.well-known/agent-skills/using-phux-mcp/SKILL.md",
+      "representativeQueries": [
+        "drive phux terminals through the MCP tools",
+        "list terminals and inspect a client view over MCP"
+      ]
+    },
+    {
+      "identifier": "urn:air:phux.sh:catalog:api",
+      "displayName": "phux API catalog",
+      "type": "application/linkset+json",
+      "url": "https://phux.sh/.well-known/api-catalog",
+      "representativeQueries": [
+        "what APIs does phux.sh expose",
+        "where is the phux MCP endpoint"
+      ]
+    }
+  ]
+}

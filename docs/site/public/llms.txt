@@ -1,0 +1,41 @@
+# phux
+
+phux is a terminal multiplexer whose panes are a view. You, Cockpit, a script,
+or an agent attach to the same live terminal. When a harness emits, blocked is
+a fact on that wire. Join another machine with no phux account.
+
+This file is the agent-oriented map of the site. Every page below is also
+available as clean markdown: send `Accept: text/markdown` to any page URL.
+
+## Install
+
+```sh
+curl -fsSL https://phux.sh/install | sh        # phux CLI
+curl -fsSL https://phux.sh/install-cockpit | sh # Cockpit (native GUI)
+```
+
+## Hosted services
+
+- [MCP server](https://phux.sh/mcp): streamable-HTTP, read-only. Tools:
+  `search_docs`, `get_page` (any page as markdown), `get_install_command`,
+  `latest_release`. [Server card](https://phux.sh/.well-known/mcp/server-card.json).
+- [Agent skills](https://phux.sh/.well-known/agent-skills/index.json):
+  `using-phux`, `using-phux-mcp`.
+- Live browser demo: `wss://shell.phux.sh/session` (anonymous edge shell, or
+  authenticate with GitHub/Google for a native Linux shell).
+
+## Documentation (docs.phux.sh)
+
+- [Overview](https://docs.phux.sh/overview): what phux is and when to use it.
+- [Quickstart](https://docs.phux.sh/quickstart/install): install and first attach.
+- [Concepts](https://docs.phux.sh/concepts): terminals as objects on a wire.
+- [Consumers](https://docs.phux.sh/consumers): TUI, web, agents, scripts.
+- [Wire protocol](https://docs.phux.sh/wire/proto): the L0/L1/L2/L3 protocol reference.
+- [Architecture](https://docs.phux.sh/architecture): how the substrate fits together.
+- [Decisions (ADRs)](https://docs.phux.sh/decisions): why the design is what it is.
+
+## Project
+
+- Source: https://github.com/no-phux/phux
+- Releases: https://github.com/no-phux/phux/releases
+- License: Apache-2.0

@@ -1,5 +1,14 @@
+# phux — https://phux.sh
+#
+# This site welcomes AI agents. Every HTML page is also served as markdown:
+#   curl -H "Accept: text/markdown" https://phux.sh/
+# Machine-readable discovery: https://phux.sh/.well-known/ai-catalog.json
+
 User-agent: *
 Allow: /
+Content-Signal: ai-train=yes, search=yes, ai-input=yes
+
+Agentmap: https://phux.sh/.well-known/ai-catalog.json
 
 Sitemap: https://phux.sh/sitemap-index.xml
 Sitemap: https://docs.phux.sh/sitemap-index.xml

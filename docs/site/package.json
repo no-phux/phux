@@ -3,8 +3,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun run sync-docs && bun run fetch-release && astro dev",
-    "build": "bun run sync-docs && bun run fetch-release && astro build",
+    "dev": "bun run sync-docs && bun run sync-agent-skills && bun run fetch-release && astro dev",
+    "build": "bun run sync-docs && bun run sync-agent-skills && bun run fetch-release && astro build",
+    "sync-agent-skills": "bun run scripts/sync-agent-skills.ts",
     "preview": "astro preview",
     "check": "bun run fetch-release && astro check",
     "test": "bun test worker/src host src/components/terminal src/components/attention-demo scripts/*.test.ts",
