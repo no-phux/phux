@@ -459,6 +459,25 @@ const PANE_KILL_REAP_BUDGET: std::time::Duration = std::time::Duration::from_mil
 const NATIVE_HISTORY_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 const NATIVE_CAPTURE_LIFETIME: std::time::Duration = std::time::Duration::from_secs(30);
+/// One native checkpoint binding: one client's pump on one stream.
+///
+/// Client id (`owner`) is not unique on a pane. Two output pumps from the
+/// same client use different stream ids, and recapture of the same pair is
+/// the only case that must tombstone the prior generation (phux-dm8h).
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct NativeCursorKey {
+    owner: u64,
+    stream_id: phux_protocol::ids::StreamId,
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+impl NativeCursorKey {
+    const fn new(owner: u64, stream_id: phux_protocol::ids::StreamId) -> Self {
+        Self { owner, stream_id }
+    }
+}
+
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[derive(Debug)]
 struct NativeCursorOwner {
@@ -503,7 +522,7 @@ struct NativePublicationGeneration {
     base_seq: u64,
     replay: VecDeque<(u64, Bytes)>,
     replay_bytes: usize,
-    waiting: HashSet<u64>,
+    waiting: HashSet<NativeCursorKey>,
 }
 
 #[cfg(test)]
@@ -775,8 +794,12 @@ pub struct TerminalActor {
     input_snapshot_tx: watch::Sender<InputEncoderSnapshot>,
     snapshot_rx: mpsc::Receiver<SnapshotRequest>,
     native_requests: NativeRequestReceivers,
+    /// Native checkpoint bindings, keyed by `(owner, stream_id)` so two pumps
+    /// from the same client on this pane do not invalidate each other
+    /// (phux-dm8h). Recapture of the same pair still tombstones the prior
+    /// generation; client detach still releases every binding for that owner.
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
-    native_cursor_owners: HashMap<u64, NativeCursorOwner>,
+    native_cursor_owners: HashMap<NativeCursorKey, NativeCursorOwner>,
     /// Native pumps the last reflow tombstoned, taken by the resize path so
     /// it can address a resync to them when no everyone-resync follows
     /// (phux-p5bo).
