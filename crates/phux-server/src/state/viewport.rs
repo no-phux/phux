@@ -1,6 +1,7 @@
 use phux_core::ids::ResourceId;
 
-use super::{ClientId, ServerState};
+use super::{ClientId, HEADLESS_TERMINAL_DIMS, ServerState};
+use crate::terminal_actor::ResizeRequest;
 
 /// Derive the per-cell pixel size implied by one client's viewport report:
 /// `pixel / cells`, floored. `None` when the report carries no pixel metrics
@@ -106,5 +107,64 @@ impl ServerState {
             .filter_map(|c| Some((c.viewport_seq, viewport_cell_px(c.viewport.as_ref()?)?)))
             .max_by_key(|&(seq, _)| seq)
             .map(|(_, cell)| cell)
+    }
+
+    /// Recompute every Terminal in `session` after one attached view left.
+    ///
+    /// Remaining usable viewports still decide automatic policies. When none
+    /// remain, the Terminal returns to the documented headless geometry rather
+    /// than preserving a tiny sacrificial viewport forever. `Manual` returns
+    /// early so an explicit `phux resize` remains authoritative.
+    pub(super) fn restore_session_geometry_after_detach(
+        &mut self,
+        session: phux_core::ids::SessionId,
+    ) {
+        if self.config.window_size == phux_config::WindowSize::Manual {
+            return;
+        }
+        for terminal in self.session_terminals(session) {
+            let latest = self.latest_terminal_viewport(terminal);
+            let (cols, rows) = self
+                .resolve_terminal_geometry(terminal, latest)
+                .unwrap_or(HEADLESS_TERMINAL_DIMS);
+            let cell_px = self.resolve_terminal_cell_px(terminal);
+            if let Some(pane) = self.registry_mut().terminal_mut(terminal) {
+                pane.dims = (cols, rows);
+            }
+            let Some(Ok(handle)) = self.resource_handle(terminal).map(|h| h.terminal()) else {
+                continue;
+            };
+            let _ = handle.resize.try_send(ResizeRequest {
+                cols,
+                rows,
+                cell_px,
+                resync_clients: true,
+                resync_only: false,
+                resync_for: None,
+            });
+        }
+    }
+
+    fn session_terminals(&self, session: phux_core::ids::SessionId) -> Vec<ResourceId> {
+        self.registry()
+            .session(session)
+            .into_iter()
+            .flat_map(|session| session.windows.iter())
+            .filter_map(|window| self.registry().window(*window))
+            .flat_map(|window| window.slots.iter().copied())
+            .collect()
+    }
+
+    fn latest_terminal_viewport(
+        &self,
+        terminal: ResourceId,
+    ) -> Option<phux_protocol::wire::frame::ViewportInfo> {
+        self.subscribers_for_terminal(terminal)
+            .iter()
+            .filter_map(|client| self.clients.attached.get(client))
+            .filter_map(|client| Some((client.viewport_seq, client.viewport?)))
+            .filter(|(_, viewport)| viewport.cols > 0 && viewport.rows > 0)
+            .max_by_key(|(seq, _)| *seq)
+            .map(|(_, viewport)| viewport)
     }
 }

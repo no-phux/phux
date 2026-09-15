@@ -318,8 +318,28 @@ impl<'a> LayoutOps<'a> {
         Workspace::decode_cbor(&bytes).map_err(Into::into)
     }
 
-    /// Read, mutate, encode as v3, SET, then read back and confirm the
-    /// value.
+    /// Read this session's layout, writing `fallback` only when no value exists.
+    ///
+    /// This is the initialization seam for create-without-attach consumers:
+    /// the server keeps the layout blob opaque, while the client that owns the
+    /// projection makes a new session layout-ready before returning success.
+    /// Like other layout writes this remains last-write-wins at the metadata
+    /// layer. The confirming read must match the fallback exactly, so a
+    /// concurrent writer that wins the race surfaces as
+    /// [`LayoutOpsError::NotConfirmed`].
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, refusal, or envelope codec errors.
+    pub async fn read_or_seed(&mut self, fallback: Workspace) -> Result<Workspace, LayoutOpsError> {
+        match self.read().await {
+            Ok(workspace) => Ok(workspace),
+            Err(LayoutOpsError::MissingLayout) => self.write_and_confirm(&fallback).await,
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Read, mutate, encode as v3, SET, then read back and confirm the value.
     ///
     /// Coordination is last-write-wins at the `SET_METADATA` layer (whoever
     /// writes last simply overwrites), but this call itself is not
@@ -1205,5 +1225,68 @@ mod tests {
         );
         drop(client);
         server_task.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn read_or_seed_initializes_an_absent_layout_and_confirms_it() {
+        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
+        let mut client = Connection::from_stream(client_stream);
+        let spec = ScriptSpec::new();
+        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
+        let fallback = Workspace::single(tid(7));
+
+        let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
+            .read_or_seed(fallback.clone())
+            .await
+            .unwrap();
+        assert_eq!(confirmed, fallback);
+        drop(client);
+
+        let seen = server_task.await.unwrap();
+        assert!(matches!(
+            seen.first(),
+            Some(FrameKind::GetMetadata { request_id: 20, .. })
+        ));
+        let Some(FrameKind::SetMetadata {
+            request_id: 21,
+            key,
+            value,
+            ..
+        }) = seen.get(1)
+        else {
+            panic!("expected conditional seed SET, got {:?}", seen.get(1));
+        };
+        assert_eq!(key, &layout_key(SessionId::new(3)));
+        assert_eq!(Workspace::decode_cbor(value).unwrap(), fallback);
+        assert!(matches!(
+            seen.get(2),
+            Some(FrameKind::GetMetadata { request_id: 22, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn read_or_seed_preserves_an_existing_layout_without_writing() {
+        let (client_stream, server_stream) = tokio::net::UnixStream::pair().unwrap();
+        let mut client = Connection::from_stream(client_stream);
+        let existing = two_window_workspace();
+        let spec = ScriptSpec::new().stored_metadata(
+            Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+            &layout_key(SessionId::new(3)),
+            existing.encode_cbor().unwrap(),
+        );
+        let server_task = tokio::spawn(ScriptedServer::on_stream(server_stream, spec).run());
+
+        let confirmed = LayoutOps::new(&mut client, SessionId::new(3), 20)
+            .read_or_seed(Workspace::single(tid(99)))
+            .await
+            .unwrap();
+        assert_eq!(confirmed, existing);
+        drop(client);
+
+        let seen = server_task.await.unwrap();
+        assert!(matches!(
+            seen.as_slice(),
+            [FrameKind::GetMetadata { request_id: 20, .. }]
+        ));
     }
 }
