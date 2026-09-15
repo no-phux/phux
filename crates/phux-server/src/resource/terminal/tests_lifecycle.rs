@@ -1854,7 +1854,7 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
 
         let expected_reason = if mode == "expire" {
             actor.native_cursor_owners.insert(
-                7,
+                NativeCursorKey::new(7, phux_protocol::ids::StreamId::new(1).expect("stream")),
                 NativeCursorOwner {
                     cursor: [0; 32],
                     record_index: 0,
@@ -1881,6 +1881,7 @@ async fn releasing_an_owner_answers_pending_history_and_promotes_the_backlog() {
         } else if mode == "reattach" {
             actor.invalidate_native_owner(
                 7,
+                phux_protocol::ids::StreamId::new(1).expect("stream"),
                 phux_protocol::wire::frame::TombstoneReason::ExplicitReattach,
             );
             HistoryTombstoneReason::Released
@@ -2092,7 +2093,7 @@ fn resize_tombstone_is_ordered_after_every_queued_live_sequence() {
     let bootstrap_id = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id");
     let cursor: crate::native_state::OpaqueHistoryCursor = [1; crate::native_state::TOKEN_LEN];
     actor.native_cursor_owners.insert(
-        7,
+        NativeCursorKey::new(7, stream_id),
         NativeCursorOwner {
             cursor,
             record_index: 0,
@@ -2148,7 +2149,7 @@ async fn an_attach_time_reflow_owes_a_resync_to_the_native_pumps_it_tombstoned()
     let mut actor = bundle.actor;
     let stream_id = phux_protocol::ids::StreamId::new(3).expect("stream id");
     actor.native_cursor_owners.insert(
-        7,
+        NativeCursorKey::new(7, stream_id),
         NativeCursorOwner {
             cursor: [1; crate::native_state::TOKEN_LEN],
             record_index: 0,
@@ -2246,7 +2247,9 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
     };
 
     // The binding is gone entirely: the mid-attach resize drained it.
-    actor.native_cursor_owners.insert(7, binding());
+    actor
+        .native_cursor_owners
+        .insert(NativeCursorKey::new(7, stream_id), binding());
     actor.invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Resize);
     assert!(actor.native_cursor_owners.is_empty());
     let frame = request(&mut actor, bootstrap_id).await;
@@ -2264,7 +2267,9 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
 
     // The binding exists but names an older generation: the client paged
     // against the bootstrap it held before the resize replaced it.
-    actor.native_cursor_owners.insert(7, binding());
+    actor
+        .native_cursor_owners
+        .insert(NativeCursorKey::new(7, stream_id), binding());
     let superseded = phux_protocol::ids::BootstrapId::new(2).expect("bootstrap id");
     let frame = request(&mut actor, superseded).await;
     assert!(
@@ -2278,9 +2283,294 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
         "a superseded generation tombstones the cursor: {frame:?}"
     );
     assert!(
-        actor.native_cursor_owners.contains_key(&7),
+        actor
+            .native_cursor_owners
+            .contains_key(&NativeCursorKey::new(7, stream_id)),
         "answering a stale request must not release the live binding"
     );
+}
+
+/// phux-dm8h: two native pumps from one client on one pane must not
+/// invalidate each other. Capture used to call `invalidate_native_owner`
+/// with the client id alone, which dropped every binding for that client, so
+/// the first pump's later publication hit `InvalidHandle`
+/// (`PublicationNotActivated`).
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn capture_native_for_pump(
+    actor: &mut TerminalActor,
+    owner: u64,
+    stream_id: phux_protocol::ids::StreamId,
+    bootstrap_id: phux_protocol::ids::BootstrapId,
+) -> NativeBootstrapReply {
+    let (reply, mut response) = oneshot::channel();
+    actor.handle_native_bootstrap(NativeBootstrapRequest {
+        owner,
+        terminal_id: phux_protocol::ids::ResourceId::local(1),
+        stream_id,
+        bootstrap_id,
+        limits: phux_protocol::caps::BootstrapLimits::default(),
+        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        reply,
+    });
+    for _ in 0..64 {
+        match response.try_recv() {
+            Ok(result) => return result.expect("native capture"),
+            Err(oneshot::error::TryRecvError::Empty) => actor.cooperative_native_step(),
+            Err(oneshot::error::TryRecvError::Closed) => {
+                panic!("native bootstrap reply dropped")
+            }
+        }
+    }
+    panic!("native capture did not finish")
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+fn activate_native_for_pump(
+    actor: &mut TerminalActor,
+    owner: u64,
+    stream_id: phux_protocol::ids::StreamId,
+    bootstrap_id: phux_protocol::ids::BootstrapId,
+    cursor: crate::native_state::OpaqueHistoryCursor,
+) -> Result<NativePublicationReply, crate::native_state::NativeStateError> {
+    let (reply, mut response) = oneshot::channel();
+    actor.handle_native_publication(NativePublicationRequest {
+        owner,
+        terminal_id: phux_protocol::ids::ResourceId::local(1),
+        stream_id,
+        bootstrap_id,
+        cursor,
+        reply,
+    });
+    response
+        .try_recv()
+        .expect("publication is answered on the same turn")
+}
+
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
+    let bundle = TerminalActor::new(20, 5).expect("new actor");
+    let mut actor = bundle.actor;
+    let mut output = bundle.handle.output.subscribe();
+    let owner = 7_u64;
+    let stream_a = phux_protocol::ids::StreamId::new(1).expect("stream");
+    let stream_b = phux_protocol::ids::StreamId::new(2).expect("stream");
+    let bootstrap_a = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap");
+    let bootstrap_b = phux_protocol::ids::BootstrapId::new(2).expect("bootstrap");
+
+    let first = capture_native_for_pump(&mut actor, owner, stream_a, bootstrap_a);
+    let second = capture_native_for_pump(&mut actor, owner, stream_b, bootstrap_b);
+
+    let mut tombstones = Vec::new();
+    while let Ok(message) = output.try_recv() {
+        if let PaneOutput::Control {
+            frame: FrameKind::BootstrapTombstone { stream_id, .. },
+            ..
+        } = message
+        {
+            tombstones.push(stream_id);
+        }
+    }
+    assert!(
+        tombstones.is_empty(),
+        "a sibling pump must not tombstone the first: {tombstones:?}"
+    );
+    assert!(
+        actor
+            .native_cursor_owners
+            .contains_key(&NativeCursorKey::new(owner, stream_a))
+            && actor
+                .native_cursor_owners
+                .contains_key(&NativeCursorKey::new(owner, stream_b)),
+        "both pumps keep a live binding"
+    );
+    activate_native_for_pump(
+        &mut actor,
+        owner,
+        stream_a,
+        bootstrap_a,
+        first.publication_cursor,
+    )
+    .expect("first pump still activates publication");
+    activate_native_for_pump(
+        &mut actor,
+        owner,
+        stream_b,
+        bootstrap_b,
+        second.publication_cursor,
+    )
+    .expect("second pump activates publication");
+
+    actor.release_native_owner(owner);
+    assert!(
+        actor.native_cursor_owners.is_empty(),
+        "client detach still releases every pump for that owner"
+    );
+}
+
+/// Recapture of the same `(owner, stream_id)` still tombstones the prior
+/// generation, and must not take a sibling stream of that client with it
+/// (phux-dm8h).
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
+    let bundle = TerminalActor::new(20, 5).expect("new actor");
+    let mut actor = bundle.actor;
+    let mut output = bundle.handle.output.subscribe();
+    let owner = 7_u64;
+    let stream_a = phux_protocol::ids::StreamId::new(1).expect("stream");
+    let stream_b = phux_protocol::ids::StreamId::new(2).expect("stream");
+    let bootstrap_a = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap");
+    let bootstrap_b = phux_protocol::ids::BootstrapId::new(2).expect("bootstrap");
+    let bootstrap_a2 = phux_protocol::ids::BootstrapId::new(3).expect("bootstrap");
+
+    let first = capture_native_for_pump(&mut actor, owner, stream_a, bootstrap_a);
+    let sibling = capture_native_for_pump(&mut actor, owner, stream_b, bootstrap_b);
+    while output.try_recv().is_ok() {}
+
+    let replacement = capture_native_for_pump(&mut actor, owner, stream_a, bootstrap_a2);
+    let mut tombstoned = Vec::new();
+    while let Ok(message) = output.try_recv() {
+        if let PaneOutput::Control {
+            frame:
+                FrameKind::BootstrapTombstone {
+                    stream_id,
+                    bootstrap_id,
+                    reason,
+                    ..
+                },
+            ..
+        } = message
+        {
+            tombstoned.push((stream_id, bootstrap_id, reason));
+        }
+    }
+    assert_eq!(
+        tombstoned,
+        [(
+            stream_a,
+            bootstrap_a,
+            phux_protocol::wire::frame::TombstoneReason::ExplicitReattach
+        )],
+        "recapture tombstones only the same (owner, stream) generation"
+    );
+    assert_eq!(
+        actor
+            .native_cursor_owners
+            .get(&NativeCursorKey::new(owner, stream_a))
+            .map(|binding| binding.bootstrap_id),
+        Some(bootstrap_a2)
+    );
+    assert_eq!(
+        actor
+            .native_cursor_owners
+            .get(&NativeCursorKey::new(owner, stream_b))
+            .map(|binding| binding.bootstrap_id),
+        Some(bootstrap_b)
+    );
+    assert!(
+        activate_native_for_pump(
+            &mut actor,
+            owner,
+            stream_a,
+            bootstrap_a,
+            first.publication_cursor,
+        )
+        .is_err(),
+        "the recaptured generation cannot activate publication"
+    );
+    activate_native_for_pump(
+        &mut actor,
+        owner,
+        stream_b,
+        bootstrap_b,
+        sibling.publication_cursor,
+    )
+    .expect("sibling pump still activates");
+    activate_native_for_pump(
+        &mut actor,
+        owner,
+        stream_a,
+        bootstrap_a2,
+        replacement.publication_cursor,
+    )
+    .expect("replacement pump activates");
+}
+
+/// Two pumps of one client that join the same in-flight capture must both
+/// remain waiters, share the generation, and each activate publication
+/// (phux-dm8h). Owner-only waiter retain used to drop the first stream.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn two_same_client_pumps_can_share_one_pending_capture() {
+    let bundle = TerminalActor::new(20, 5).expect("new actor");
+    let mut actor = bundle.actor;
+    let owner = 7_u64;
+    let stream_a = phux_protocol::ids::StreamId::new(1).expect("stream");
+    let stream_b = phux_protocol::ids::StreamId::new(2).expect("stream");
+    let bootstrap_a = phux_protocol::ids::BootstrapId::new(1).expect("bootstrap");
+    let bootstrap_b = phux_protocol::ids::BootstrapId::new(2).expect("bootstrap");
+    let request = |stream_id, bootstrap_id, reply| NativeBootstrapRequest {
+        owner,
+        terminal_id: phux_protocol::ids::ResourceId::local(1),
+        stream_id,
+        bootstrap_id,
+        limits: phux_protocol::caps::BootstrapLimits::default(),
+        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        reply,
+    };
+    let (reply_a, mut response_a) = oneshot::channel();
+    actor.handle_native_bootstrap(request(stream_a, bootstrap_a, reply_a));
+    let (reply_b, mut response_b) = oneshot::channel();
+    actor.handle_native_bootstrap(request(stream_b, bootstrap_b, reply_b));
+    assert_eq!(
+        actor
+            .pending_native_bootstrap
+            .as_ref()
+            .map(|pending| pending.waiters.len()),
+        Some(2),
+        "both pumps wait on the shared capture"
+    );
+
+    let mut first = None;
+    let mut second = None;
+    for _ in 0..64 {
+        if first.is_none()
+            && let Ok(result) = response_a.try_recv()
+        {
+            first = Some(result.expect("first capture"));
+        }
+        if second.is_none()
+            && let Ok(result) = response_b.try_recv()
+        {
+            second = Some(result.expect("second capture"));
+        }
+        if first.is_some() && second.is_some() {
+            break;
+        }
+        actor.cooperative_native_step();
+    }
+    let first = first.expect("first capture finished");
+    let second = second.expect("second capture finished");
+    assert_eq!(first.publication_cursor, second.publication_cursor);
+    activate_native_for_pump(
+        &mut actor,
+        owner,
+        stream_a,
+        bootstrap_a,
+        first.publication_cursor,
+    )
+    .expect("first shared waiter activates");
+    activate_native_for_pump(
+        &mut actor,
+        owner,
+        stream_b,
+        bootstrap_b,
+        second.publication_cursor,
+    )
+    .expect("second shared waiter activates");
 }
 
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]

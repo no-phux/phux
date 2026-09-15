@@ -1,8 +1,8 @@
 //! Cockpit pkg3b / Metal hybrid C: measure paint bind points, then keep the
 //! proposal honest. These tests paint adversarial screens the same way
 //! `adversarial_isolation_tests.zig` does, at the product max grid, and
-//! compare equal-cut partitioning with Hybrid C. They do not bump the SDK
-//! pin. Numbers print only with `-Dmeasure=true`.
+//! compare equal-cut partitioning with Hybrid C. Numbers print only with
+//! `-Dmeasure=true`.
 
 const std = @import("std");
 const native_sdk = @import("native_sdk");
@@ -160,7 +160,7 @@ test "MEASURED: SDK paint tables and Hybrid C constants" {
     const cell_size = @sizeOf(canvas.Cell);
     const command_size = @sizeOf(canvas.CanvasCommand);
     measured.print(
-        "MEASURED-BASIS paint-ceiling host=linux pin=c188459a derive=zig-build-test-Dmeasure\n",
+        "MEASURED-BASIS paint-ceiling host=linux pin=ad3f0fae derive=zig-build-test-Dmeasure\n",
         .{},
     );
     measured.print(
@@ -198,30 +198,23 @@ test "MEASURED: SDK paint tables and Hybrid C constants" {
         "MEASURED sizeof: Cell={d} CanvasCommand={d} builder_cell_store_bytes={d}\n",
         .{ cell_size, command_size, cell_size * paint_budget.cell_store },
     );
-    const proposed_4x = paint_budget.cell_store * 4;
-    const proposed_2x = paint_budget.cell_store * 2;
     measured.print(
-        "MEASURED proposed cell bump: 2x={d} (builder={d} KiB, builder+retained={d} KiB, x{d} cockpit windows={d} KiB, x{d} view slots={d} KiB) 4x={d} (builder={d} KiB, builder+retained={d} KiB, x{d} cockpit windows={d} KiB, x{d} view slots={d} KiB)\n",
+        "MEASURED signed cell store: cells={d} builder={d} KiB builder+retained={d} KiB x{d} cockpit windows={d} KiB x{d} view slots={d} KiB text={d}\n",
         .{
-            proposed_2x,
-            proposed_2x * cell_size / 1024,
-            proposed_2x * cell_size * 2 / 1024,
+            paint_budget.cell_store,
+            paint_budget.cell_store * cell_size / 1024,
+            paint_budget.cell_store * cell_size * 2 / 1024,
             app.max_windows,
-            proposed_2x * cell_size * 2 * app.max_windows / 1024,
+            paint_budget.cell_store * cell_size * 2 * app.max_windows / 1024,
             native_sdk.platform.max_views,
-            proposed_2x * cell_size * 2 * native_sdk.platform.max_views / 1024,
-            proposed_4x,
-            proposed_4x * cell_size / 1024,
-            proposed_4x * cell_size * 2 / 1024,
-            app.max_windows,
-            proposed_4x * cell_size * 2 * app.max_windows / 1024,
-            native_sdk.platform.max_views,
-            proposed_4x * cell_size * 2 * native_sdk.platform.max_views / 1024,
+            paint_budget.cell_store * cell_size * 2 * native_sdk.platform.max_views / 1024,
+            paint_budget.text_store,
         },
     );
     try testing.expectEqual(grid.max_cells, grid.max_cols * grid.max_rows);
     try testing.expectEqual(@as(usize, 20), cell_size);
-    try testing.expect(paint_budget.cell_store < grid.max_cells * 2);
+    try testing.expect(paint_budget.cell_store > grid.max_cells * 2);
+    try testing.expect(paint_budget.cell_store < grid.max_cells * layout.max_panes);
     try testing.expectEqual(native_sdk.runtime.max_canvas_commands_per_view - canvas.terminal_grid.widget_command_reserve, paint_budget.command_envelope);
 }
 
@@ -402,7 +395,9 @@ test "Hybrid C painter gives the focused split more cells than equal-cut" {
     const neighbour_cells = if (neighbour) |view| view.cellCount() else 0;
     try testing.expect(neighbour_cells < paint_budget.equalCutCellShare(4));
     try testing.expect(neighbour_cells <= paint_budget.degraded_cell_cap);
-    try testing.expect(focused.cellCount() > paint_budget.equalCutCellShare(4));
+    // Equal-cut at N=4 is store/4, which now exceeds one product grid.
+    // Hybrid C still paints the focused pane as a full grid, not an equal slice.
+    try testing.expectEqual(paint_budget.full_cells, focused.cellCount());
 }
 
 fn rowMark(row: usize) u8 {
@@ -458,7 +453,7 @@ test "Hybrid C degraded pane keeps the last-N prompt, not the first-N top" {
     );
     try testing.expectEqual(keep, neighbour.rows());
     try testing.expect(keep < grid.max_rows);
-    try testing.expect(keep < paint_budget.degraded_rows);
+    try testing.expect(keep <= paint_budget.degraded_rows);
     try testing.expectEqual(@as(usize, 1), neighbour.cluster(0, 0).len);
     try testing.expectEqual(@as(usize, 1), neighbour.cluster(0, neighbour.rows() - 1).len);
     try testing.expectEqual(rowMark(grid.max_rows - keep), neighbour.cluster(0, 0)[0]);

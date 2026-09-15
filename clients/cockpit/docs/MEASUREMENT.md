@@ -87,7 +87,8 @@ derive the same tables from the pinned SDK sources under `zig-pkg/native_sdk-*`
 and leave the runnable measurement to macOS CI.
 
 The policy those numbers feed is [DECISIONS.md](DECISIONS.md) §"Paint ceilings:
-Hybrid C". Degraded panes crop last-N at `max_rows/4` (leftover may be
-smaller on this pin). The regression that N full product grids do not share
-one envelope lives in `src/cockpit/native/paint_budget.zig`.
+Hybrid C". Degraded panes crop last-N at `max_rows/4`. After the signed
+cell bump leftover after one full grid exceeds that cap, so the 24-row
+cap binds. The regression that `layout.max_panes` full product grids do
+not share one envelope lives in `src/cockpit/native/paint_budget.zig`.
 

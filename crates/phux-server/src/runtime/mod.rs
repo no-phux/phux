@@ -466,6 +466,20 @@ pub enum ServerError {
     #[error("connector: {0}")]
     Connector(#[from] crate::connector::ConnectorError),
 
+    /// Workload mode (`PHUX_WORKLOAD_MTLS`) was requested alongside a remote
+    /// entry point that cannot require a workload client certificate. The
+    /// server refuses to start rather than leave that door on bearer-only
+    /// admission (ADR-0116).
+    #[error(
+        "PHUX_WORKLOAD_MTLS is set, but {surface} cannot require a workload client certificate, so the server refuses to start; {remedy}"
+    )]
+    WorkloadModeUncovered {
+        /// The entry point that cannot be covered.
+        surface: &'static str,
+        /// How to start: remove that entry point, or leave workload mode.
+        remedy: &'static str,
+    },
+
     /// The server token store needed to authorize bridged consumers could not
     /// be loaded. A connector must fail closed rather than admit consumers
     /// without the server's own authorization.
@@ -731,6 +745,17 @@ impl ServerRuntime {
         // malformed endpoints and routable entries missing a pin/token fail
         // before the UDS is bound.
         let connector_specs = crate::connector::plan_connectors(&self.connectors)?;
+        // Workload mode (ADR-0116) fails closed on remote entry points that
+        // cannot carry a client certificate, before anything is bound.
+        #[cfg(feature = "webtransport")]
+        let webtransport = self.wt_addr.is_some() || std::env::var_os("PHUX_WT_ADDR").is_some();
+        #[cfg(not(feature = "webtransport"))]
+        let webtransport = false;
+        workload_auth::refuse_uncovered_surfaces(
+            workload_auth::workload_mode(),
+            !self.connectors.is_empty(),
+            webtransport,
+        )?;
         let connector_consumer_tokens = load_connector_consumer_tokens(&connector_specs)?;
 
         let resume_blob = read_resume_blob(self.resume_fd, &self.inherited_upgrade)?;
@@ -1693,8 +1718,25 @@ async fn build_ws_listener(
     addr: SocketAddr,
 ) -> (Option<crate::transport::WsListener>, RemoteListenerSlot) {
     let force_secure = std::env::var_os("PHUX_WS_SECURE").is_some_and(|v| !v.is_empty());
-    let secure = !addr.ip().is_loopback() || force_secure;
     let addr_s = addr.to_string();
+    // Workload mTLS (ADR-0116) is opt-in, exactly as on QUIC. It needs TLS,
+    // so a configured authority takes the secure path even on loopback:
+    // plaintext would be a side door around the client-certificate check.
+    let workload = match workload_auth::WorkloadAuth::from_env() {
+        Ok(workload) => workload,
+        Err(err) => {
+            error!(error = %err, "configured workload mTLS unavailable; WebSocket disabled");
+            return (
+                None,
+                RemoteListenerSlot::disabled(
+                    RemoteListenerTransport::Wss,
+                    Some(addr_s),
+                    ListenerDisabledReason::TlsSetupFailed,
+                ),
+            );
+        }
+    };
+    let secure = !addr.ip().is_loopback() || force_secure || workload.is_some();
 
     if !secure {
         return match crate::transport::WsListener::bind(addr).await {
@@ -1744,7 +1786,9 @@ async fn build_ws_listener(
     }
     warn_if_cert_omits_bind(&cert_path, &advertised, "wss");
     let acceptor = match crate::transport::tls::acceptor_from_pem_with_client_ca(
-        &cert_path, &key_path, None,
+        &cert_path,
+        &key_path,
+        workload.as_ref().map(|auth| &auth.ca),
     ) {
         Ok(acceptor) => acceptor,
         Err(err) => {
@@ -1784,12 +1828,22 @@ async fn build_ws_listener(
     }
     let token_count = store.len();
 
-    match crate::transport::WsListener::bind_secure(addr, acceptor, std::sync::Arc::new(store))
-        .await
+    let workload_mtls = workload.is_some();
+    match crate::transport::WsListener::bind_secure(
+        addr,
+        acceptor,
+        std::sync::Arc::new(store),
+        workload.map(|auth| auth.registry),
+    )
+    .await
     {
         Ok(ws) => {
             let bound = ws.local_addr().map_or(addr_s, |a| a.to_string());
-            info!(addr = %bound, tokens = token_count, "WebSocket listening with TLS + token auth");
+            if workload_mtls {
+                info!(addr = %bound, tokens = token_count, "WebSocket listening with TLS + token + workload mTLS authentication");
+            } else {
+                info!(addr = %bound, tokens = token_count, "WebSocket listening with TLS + token auth");
+            }
             (
                 Some(ws),
                 RemoteListenerSlot::bound(RemoteListenerTransport::Wss, bound),
@@ -1954,7 +2008,7 @@ fn build_quic_listener(
         &cert_path,
         &key_path,
         tokens,
-        workload_ca.as_deref(),
+        workload_ca.as_ref(),
         workload_registry,
     ) {
         Ok(quic) => {

@@ -71,7 +71,8 @@ impl Drop for ServerProcess {
     }
 }
 
-/// Tracks a daemonized auto-spawn by the PID reported over its live socket.
+/// Tracks a daemonized auto-spawn. Drop reaps a live socket even when the
+/// PID was never captured (phux-e4qx).
 pub struct AutoSpawnedServer {
     phux: PathBuf,
     socket: PathBuf,
@@ -83,19 +84,22 @@ impl AutoSpawnedServer {
     ///
     /// It lives here, on the type whose existence *is* the hazard —
     /// constructing one means an auto-spawned daemon can outlive the harness
-    /// (a runner killed outright, a panic before the PID was captured) —
-    /// rather than
-    /// in whichever harness happens to build a `Command`. The justfile's e2e
-    /// recipe exports the same backstop, but every hermetic harness calls
-    /// `env_clear()`, which wipes it before it can reach the daemon; that is
-    /// exactly how this lane leaked immortal servers (phux-8y3o). Any harness
-    /// that clears the environment re-arms it from here.
+    /// if the runner is killed outright (SIGKILL / a nextest hard timeout) —
+    /// rather than in whichever harness happens to build a `Command`. Drop
+    /// reaps a daemon whose socket is already live even when `capture_pid`
+    /// never ran (phux-e4qx). The justfile's e2e recipe exports the same
+    /// backstop, but every hermetic harness calls `env_clear()`, which wipes
+    /// it before it can reach the daemon; that is exactly how this lane leaked
+    /// immortal servers (phux-8y3o). Any harness that clears the environment
+    /// re-arms it from here.
     ///
     /// The key is the server's own constant, not a second spelling of it, so
     /// a rename cannot leave the backstop silently disarmed.
     pub const IDLE_BACKSTOP: (&'static str, &'static str) =
         (phux::AUTO_SPAWN_IDLE_ENV, SERVER_IDLE_LIMIT_SECS);
 
+    /// Arm a Drop guard for `socket` before the command that may daemonize.
+    /// Cleanup does not wait for [`Self::capture_pid`]; a live socket is enough.
     pub fn new(phux: impl Into<PathBuf>, socket: PathBuf) -> Self {
         Self {
             phux: phux.into(),
@@ -108,16 +112,7 @@ impl AutoSpawnedServer {
     pub fn capture_pid(&mut self) -> u32 {
         let deadline = Instant::now() + SERVER_DEADLINE;
         loop {
-            let output = Command::new(&self.phux)
-                .args(["status", "--json", "--socket"])
-                .arg(&self.socket)
-                .stdin(Stdio::null())
-                .output();
-            if let Ok(output) = output
-                && output.status.success()
-                && let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
-                && let Some(pid) = doc["pid"].as_u64().and_then(|pid| u32::try_from(pid).ok())
-            {
+            if let Some(pid) = pid_from_status(&self.phux, &self.socket) {
                 self.pid = Some(pid);
                 return pid;
             }
@@ -131,11 +126,14 @@ impl AutoSpawnedServer {
     }
 
     pub fn cleanup(&self) -> Result<(), String> {
-        let Some(pid) = self.pid else {
-            return Ok(());
-        };
+        // Discover the pid while the socket may still answer, then stop.
+        // A missing pid used to make this a no-op even when a daemon had
+        // already bound `socket` (phux-e4qx).
+        let pid = self
+            .pid
+            .or_else(|| pid_from_status(&self.phux, &self.socket));
 
-        if process_exists(pid) {
+        if pid.is_some_and(process_exists) || self.socket.exists() {
             let _ = Command::new(&self.phux)
                 .args(["kill", "--server", "--socket"])
                 .arg(&self.socket)
@@ -145,24 +143,26 @@ impl AutoSpawnedServer {
                 .status();
         }
 
-        let started = Instant::now();
-        let mut term_sent = false;
-        let mut kill_sent = false;
-        while process_exists(pid) {
-            if !term_sent && started.elapsed() >= GRACEFUL_DEADLINE {
-                signal(pid, libc::SIGTERM)?;
-                term_sent = true;
+        if let Some(pid) = pid {
+            let started = Instant::now();
+            let mut term_sent = false;
+            let mut kill_sent = false;
+            while process_exists(pid) {
+                if !term_sent && started.elapsed() >= GRACEFUL_DEADLINE {
+                    signal(pid, libc::SIGTERM)?;
+                    term_sent = true;
+                }
+                if !kill_sent && started.elapsed() >= GRACEFUL_DEADLINE * 2 {
+                    signal(pid, libc::SIGKILL)?;
+                    kill_sent = true;
+                }
+                if started.elapsed() >= SERVER_DEADLINE {
+                    return Err(format!(
+                        "server process {pid} did not exit within {SERVER_DEADLINE:?}"
+                    ));
+                }
+                std::thread::sleep(POLL);
             }
-            if !kill_sent && started.elapsed() >= GRACEFUL_DEADLINE * 2 {
-                signal(pid, libc::SIGKILL)?;
-                kill_sent = true;
-            }
-            if started.elapsed() >= SERVER_DEADLINE {
-                return Err(format!(
-                    "server process {pid} did not exit within {SERVER_DEADLINE:?}"
-                ));
-            }
-            std::thread::sleep(POLL);
         }
 
         if self.socket.exists() {
@@ -179,6 +179,25 @@ impl Drop for AutoSpawnedServer {
             eprintln!("failed to clean up auto-spawned test server: {err}");
         }
     }
+}
+
+fn pid_from_status(phux: &Path, socket: &Path) -> Option<u32> {
+    let output = Command::new(phux)
+        .args(["status", "--json", "--socket"])
+        .arg(socket)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    serde_json::from_slice::<serde_json::Value>(&output.stdout)
+        .ok()?
+        .get("pid")?
+        .as_u64()
+        .and_then(|pid| u32::try_from(pid).ok())
 }
 
 pub fn process_exists(pid: u32) -> bool {
@@ -379,6 +398,8 @@ pub fn first_index(
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::AutoSpawnedServer;
 
     /// The backstop has to be the variable the server actually reads. Pinning
@@ -399,5 +420,17 @@ mod tests {
                 .is_ok_and(|secs| (1..=86_400).contains(&secs)),
             "the backstop must be in the range the server accepts: {value}"
         );
+    }
+
+    /// An unused guard must not hang or spawn `phux` looking for a daemon
+    /// that was never started. Cleanup is a no-op only when there is no pid
+    /// *and* no socket file — not whenever the pid is unknown.
+    #[test]
+    fn unused_guard_drop_does_not_require_a_pid() {
+        let server = AutoSpawnedServer::new(
+            "/nonexistent/phux-e4qx",
+            PathBuf::from("/nonexistent/phux-e4qx-absent.sock"),
+        );
+        drop(server);
     }
 }

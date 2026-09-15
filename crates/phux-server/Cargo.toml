@@ -30,9 +30,18 @@ tokio-console = ["dep:console-subscriber"]
 # Incremental native checkpoint capture/advertisement. The compatibility
 # synthesizers remain available independently of this feature.
 native-engine = []
+# Benchmark/example tooling stays opt-in so default workspace tests do not
+# compile Criterion or DHAT merely because these targets exist.
+capture-bench = ["dep:criterion", "dep:dhat"]
+ack-allocations-example = ["dep:dhat"]
 
 
 [dependencies]
+# These tools are normal optional dependencies because Cargo enables every
+# dev-dependency while compiling tests. The target-specific features below
+# keep them out of the default test graph.
+criterion = { workspace = true, optional = true }
+dhat = { workspace = true, optional = true }
 phux-protocol = { workspace = true, features = ["server"] }
 phux-core.workspace = true
 # phux-config supplies the canonical scrollback bounds — `ScrollbackLimits`
@@ -166,8 +175,12 @@ hex = "0.4"
 # relies on. The generating itself is now phux-dial's (`provision` feature,
 # shared with phux-relay); what still needs the crate named here is
 # `TlsError::Rcgen`, which carries `rcgen::Error` in the public error surface.
-# Same version/features phux-dial declares, so it is the same type.
-rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# Same version as phux-dial declares, so it is the same type. `x509-parser`
+# (already a direct dependency below, and already enabled on rcgen elsewhere
+# in the workspace, so Cargo.lock gains no row) adds the signature-verifying
+# CSR parser and `Issuer::from_ca_cert_der` that `phux workload add-key`
+# needs to certify a workload's key under the persisted CA.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
 # Extract the SubjectPublicKeyInfo from a verified mTLS leaf so the transport
 # can map it to the workload registry's public-key-derived credential id.
 x509-parser = "0.18"
@@ -260,8 +273,6 @@ libc = "0.2"
 
 [dev-dependencies]
 insta.workspace = true
-criterion.workspace = true
-dhat.workspace = true
 # `test-util` enables `tokio::time::pause`/`advance` and the
 # `#[tokio::test(start_paused = true)]` macro arg. Required by the
 # `phux-q0e.3` tick-scheduler tests, which advance virtual time
@@ -301,7 +312,11 @@ wtransport = { version = "0.7.2", default-features = false, features = ["ring", 
 libghostty-vt = { workspace = true, features = ["allocator_api"] }
 allocator-api2 = "0.4"
 
+[[example]]
+name = "ack_allocations"
+required-features = ["ack-allocations-example"]
+
 [[bench]]
 name = "capture"
 harness = false
-required-features = ["native-engine"]
+required-features = ["native-engine", "capture-bench"]

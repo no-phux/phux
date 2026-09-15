@@ -21,6 +21,13 @@
     { "pattern": "docs.phux.sh", "custom_domain": true }
   ],
 
+  // Private analytics stays off the public network. This grants only this
+  // Worker permission to invoke phux-ops-analytics over Cloudflare's internal
+  // service-binding path; no shared ingest credential crosses repositories.
+  "services": [
+    { "binding": "ANALYTICS", "service": "phux-ops-analytics" }
+  ],
+
   // ── Durable Objects ─────────────────────────────────────────────────────────
   // TelemetryDO: hourly aggregate counters (ua class, country, agent signals).
   // No IPs, no raw URLs — aggregate-only so /api/telemetry can be public.

@@ -15,6 +15,9 @@ workspace = true
 [[bin]]
 name = "phux"
 path = "src/main.rs"
+# This binary is only a shim over the library, so it has no unit-test harness.
+# Integration tests still build it and receive `CARGO_BIN_EXE_phux`.
+test = false
 
 # Heap-profiling entry point, gated by the `dhat-heap` feature below.
 # Deliberately a SEPARATE binary from `phux` (see src/lib.rs's "Why this is
@@ -134,6 +137,11 @@ tempfile.workspace = true
 # Shared real-server integration-test cleanup uses kill(2) directly rather
 # than depending on an external `kill` executable.
 libc = "0.2"
+# The `phux workload` e2e (tests/lifecycle_e2e/workload_e2e.rs) generates a
+# client key and CSR the way an outside workload would, so the binary is
+# exercised on material it did not mint. Same version and features phux-dial
+# and phux-server already declare; no new row enters Cargo.lock.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
 
 [features]
 default = ["webtransport"]

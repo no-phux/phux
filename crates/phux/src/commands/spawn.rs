@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
-use phux_client::attach::connection::Connection;
 use phux_client::layout::SplitDir;
 use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
@@ -10,7 +9,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::agent::{AgentSessionRecord, persist_record};
+use crate::commands::agent::AgentSessionRecord;
 use crate::commands::{
     SpawnSplit, cli_runtime, json_err, parse_selector, request_command, resolve_targets,
 };
@@ -103,10 +102,9 @@ pub(crate) fn run_spawn(
 /// result. Shared by `phux spawn` and `phux launch` (phux-ark7) so both
 /// ride the identical wire path — the server injects `PHUX_TERMINAL_ID`
 /// into the spawned pane regardless of which verb requested it. The wire
-/// round trip itself is [`phux_client::spawn::spawn`]; this wrapper adds the
-/// optional agent-session provenance write (and its `KILL_RESOURCE` rollback
-/// on failure), which is CLI-only because [`AgentSessionRecord`] is a CLI
-/// type.
+/// round trip, including the optional agent-session provenance write and its
+/// `KILL_RESOURCE` rollback on failure, is
+/// [`phux_client::agent_session_record::spawn_with_agent_session_on`].
 ///
 /// On a connect/transport failure this prints the `no server` diagnostic
 /// (attributed to `verb`) and returns the failure [`ExitCode`] in `Err`, so
@@ -131,46 +129,24 @@ pub(crate) fn dispatch_spawn(
 }
 
 /// Open a connection, send `frame`, and return the correlated spawn outcome.
+///
+/// The wire round trip — the plain spawn, plus the optional agent-session
+/// provenance write and its same-connection `KILL_RESOURCE` rollback on
+/// failure — is [`phux_client::agent_session_record::spawn_with_agent_session_on`],
+/// which prints the spawn's own degradation notices itself (before calling
+/// `persist_record`, so the two interleaved prints land in the historical
+/// encounter order) rather than returning them for this wrapper to print.
 async fn dispatch_spawn_async(
     socket_path: &Path,
     frame: &FrameKind,
     agent_session: Option<&AgentSessionRecord>,
 ) -> Result<SpawnResult, AttachError> {
-    let mut conn = Connection::connect(socket_path).await?;
-    let (mut result, degradation) = phux_client::spawn::spawn(&mut conn, frame).await?;
-    for message in degradation.notices() {
-        eprintln!("phux: warning: partial results — {message}");
-    }
-    if let (Some(record), SpawnResult::Ok(terminal)) = (agent_session, &result) {
-        let request_id = match frame {
-            FrameKind::SpawnResource { request_id, .. } => *request_id,
-            _ => 1,
-        };
-        if let Err(err) =
-            persist_record(&mut conn, terminal, record, request_id.wrapping_add(1)).await
-        {
-            let cleanup = conn
-                .request(
-                    request_id.wrapping_add(4),
-                    Command::KillResource {
-                        terminal_id: terminal.clone(),
-                    },
-                )
-                .await;
-            let cleanup_note = match cleanup {
-                Ok(reply) => match reply.into_parts().0 {
-                    CommandResult::Ok => "spawned terminal removed".to_owned(),
-                    other => format!("cleanup returned {other:?}"),
-                },
-                Err(cleanup_err) => format!("cleanup failed: {cleanup_err}"),
-            };
-            result = SpawnResult::Err(SpawnError::SpawnFailed(format!(
-                "agent session record could not be confirmed: {err}; {cleanup_note}"
-            )));
-        }
-    }
-    drop(conn);
-    Ok(result)
+    phux_client::agent_session_record::spawn_with_agent_session_on(
+        socket_path,
+        frame,
+        agent_session,
+    )
+    .await
 }
 
 /// Resolve an explicit local owner, spawn into its exact server window, then

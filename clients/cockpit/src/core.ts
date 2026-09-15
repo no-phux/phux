@@ -3085,7 +3085,9 @@ function editSettingValue(model: Model, edit: TextInputEvent): Model {
 }
 
 function chooseSettingsSection(model: Model, section: number): NavigatorDecision {
-  if (!(section >= 0 && section <= 4)) return navigatorDecision(model, 0, NO_BYTES);
+  // Visible Settings groups are Appearance..About (0..5). Check for Updates
+  // still opens About with its own request; this path only selects the tab.
+  if (!(section >= 0 && section <= 5)) return navigatorDecision(model, 0, NO_BYTES);
   const selected = Math.trunc(section);
   const next = { ...model, settingsSection: selected, settingEditId: 65535,
     settingRows: settingsRows(model.appearance, model.settingsQuery, selected) };

@@ -2661,7 +2661,10 @@ const Rig = struct {
             try self.dispatch(if (state.settings) .settings_open else .settings_close);
             try self.settleAppearance();
         }
-        if (state.settings) try self.dispatch(.{ .settings_section = state.settings_section });
+        if (state.settings) {
+            try self.dispatch(.{ .settings_section = state.settings_section });
+            try std.testing.expectEqual(state.settings_section, self.app_state.model.settingsSection);
+        }
         try std.testing.expectEqual(state.tabs, self.app_state.model.tabs.len);
     }
 };
@@ -3006,6 +3009,26 @@ fn firstPaintedCatalogMessage(node: Adapter.Ui.Node) ?core.Msg {
         if (firstPaintedCatalogMessage(child)) |msg| return msg;
     }
     return null;
+}
+
+fn paintedSettingsSection(node: Adapter.Ui.Node, section: i64) ?core.Msg {
+    if (node.on_press) |msg| {
+        if (msg == .settings_section and msg.settings_section == section) return msg;
+    }
+    for (node.nodes) |child| {
+        if (paintedSettingsSection(child, section)) |found| return found;
+    }
+    return null;
+}
+
+fn paintedHasUpdateCheck(node: Adapter.Ui.Node) bool {
+    if (node.on_press) |msg| {
+        if (msg == .update_check) return true;
+    }
+    for (node.nodes) |child| {
+        if (paintedHasUpdateCheck(child)) return true;
+    }
+    return false;
 }
 
 test "navigation held painted catalog target follows metadata filtering and window movement" {
@@ -4026,8 +4049,10 @@ test "committed palette owns input even when an older model is painted" {
 
     const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
     defer std.testing.allocator.free(commands);
-    var builder = canvas.Builder.init(commands);
-    try paintChrome(&stale, &builder, .init(1100, 640), cockpit.projection.cockpitTokens(engine.model));
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    builder.initAt(commands);
+    try paintChrome(&stale, builder, .init(1100, 640), cockpit.projection.cockpitTokens(engine.model));
     try std.testing.expect(engine.input_suspended);
     const escape = onKey(.{ .phase = .key_down, .key = "Escape" }) orelse return error.TestExpectedOverlayKey;
     try std.testing.expectEqual(core.Msg.palette_close, escape);
@@ -4205,12 +4230,14 @@ test "pending attachment hides the published grid of a reused remote identity" {
     const tokens = cockpit.projection.cockpitTokens(engine.model);
     const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
     defer std.testing.allocator.free(commands);
-    var builder = canvas.Builder.init(commands);
-    try engine.paint(&builder, size, tokens);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    builder.initAt(commands);
+    try engine.paint(builder, size, tokens);
     const visible = builder.displayList().commands.len;
     engine.model.rejectAttachmentContext();
     builder.reset();
-    try engine.paint(&builder, size, tokens);
+    try engine.paint(builder, size, tokens);
     try std.testing.expect(visible > builder.displayList().commands.len);
 }
 
@@ -4374,8 +4401,10 @@ test "painting speculative placement cannot bypass a refused intent" {
     speculative.tabPlacement = .side;
     const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
     defer std.testing.allocator.free(commands);
-    var builder = canvas.Builder.init(commands);
-    try paintChrome(&speculative, &builder, .init(1100, 640), cockpit.projection.cockpitTokens(engine.model));
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    builder.initAt(commands);
+    try paintChrome(&speculative, builder, .init(1100, 640), cockpit.projection.cockpitTokens(engine.model));
     try std.testing.expectEqual(.top, engine.model.tab_placement);
     try std.testing.expectEqual(revision, engine.revision);
     try std.testing.expectEqual(sequence, engine.sequence);
@@ -4994,8 +5023,10 @@ test "MEASURED: the chrome-prefix paint of a full grid on the engine model" {
     const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
     defer std.testing.allocator.free(commands);
     // One warm paint measures the cell box and primes the painter's caches.
-    var builder = canvas.Builder.init(commands);
-    try engine.paint(&builder, size, tokens);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    builder.initAt(commands);
+    try engine.paint(builder, size, tokens);
     const first = builder.displayList().commands.len;
     try std.testing.expect(first > 0);
 
@@ -5003,7 +5034,7 @@ test "MEASURED: the chrome-prefix paint of a full grid on the engine model" {
     const started = std.Io.Clock.awake.now(std.testing.io);
     for (0..iterations) |_| {
         builder.reset();
-        try engine.paint(&builder, size, tokens);
+        try engine.paint(builder, size, tokens);
     }
     const finished = std.Io.Clock.awake.now(std.testing.io);
     const total_ns: u64 = @intCast(finished.nanoseconds - started.nanoseconds);
@@ -5500,6 +5531,37 @@ test "the settings surface shows the engine's theme catalog and saves through th
     try std.testing.expect(rig.app_state.model.themes[3].active);
 }
 
+test "the visible About settings tab reaches version and update content" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+
+    // Tab captions are child text, not semantics.label. The compiled About
+    // control is the settings_section:5 press; Check for Updates is absent
+    // until that press selects the group.
+    {
+        var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+        defer arena.deinit();
+        var ui = Adapter.Ui.init(arena.allocator());
+        const tree = mainView(&ui, &rig.app_state.model);
+        try std.testing.expect(!paintedHasUpdateCheck(tree));
+        const press = paintedSettingsSection(tree, 5) orelse return error.TestExpectedAboutButton;
+        try rig.dispatch(press);
+    }
+
+    try std.testing.expectEqual(@as(i64, 5), rig.app_state.model.settingsSection);
+    try std.testing.expect(!rig.app_state.model.updateBusy);
+    try std.testing.expectEqual(@as(usize, 1), rig.app_state.model.settingRows.len);
+    try std.testing.expectEqual(@as(i64, 14), rig.app_state.model.settingRows[0].id);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    try std.testing.expect(paintedHasUpdateCheck(mainView(&ui, &rig.app_state.model)));
+}
+
 /// An effects recorder for the native-behaviour guards: counts what the
 /// engine asked for and keeps the last clipboard text, no processes.
 const Recorder = struct {
@@ -5795,8 +5857,10 @@ test "remote presentation Clear blanks the current replica without execution inp
 fn expectSearchPaint(engine: *cockpit.Engine, needle: []const u8, status: []const u8) !void {
     const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
     defer std.testing.allocator.free(commands);
-    var builder = canvas.Builder.init(commands);
-    try engine.paint(&builder, .{ .width = 900, .height = 500 }, cockpit.projection.cockpitTokens(engine.model));
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    builder.initAt(commands);
+    try engine.paint(builder, .{ .width = 900, .height = 500 }, cockpit.projection.cockpitTokens(engine.model));
     var found_needle = false;
     var found_status = false;
     for (builder.displayList().commands) |command| switch (command) {
@@ -6799,8 +6863,10 @@ fn expectShippingWindowGeometry(rig: *Rig, index: usize, size: native_sdk.geomet
     const tokens = cockpit.projection.cockpitTokens(engine.model);
     const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
     defer std.testing.allocator.free(commands);
-    var builder = canvas.Builder.init(commands);
-    try paintChromeWindow(&rig.app_state.model, &builder, .{ .is_main = index == 0, .canvas_label = label, .window_id = frame.window_id, .size = size, .tokens = tokens });
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    builder.initAt(commands);
+    try paintChromeWindow(&rig.app_state.model, builder, .{ .is_main = index == 0, .canvas_label = label, .window_id = frame.window_id, .size = size, .tokens = tokens });
     _ = onFrame(&rig.app_state.model, frame);
     const chrome = cockpit.projection.workspaceChromeIn(engine.model, workspace, size);
     try std.testing.expectEqual(search, chrome.search.height > 0);
@@ -6872,8 +6938,10 @@ test "shipping compiled chrome leaves remote row zero visible and selectable" {
     const tokens = cockpit.projection.cockpitTokens(engine.model);
     const commands = try std.testing.allocator.alloc(canvas.CanvasCommand, cockpit.projection.chrome_command_envelope);
     defer std.testing.allocator.free(commands);
-    var builder = canvas.Builder.init(commands);
-    try paintChrome(&rig.app_state.model, &builder, size, tokens);
+    const builder = try std.testing.allocator.create(canvas.Builder);
+    defer std.testing.allocator.destroy(builder);
+    builder.initAt(commands);
+    try paintChrome(&rig.app_state.model, builder, size, tokens);
     const space = (try measureTerminalSpace(std.testing.allocator, &rig.app_state.model, 0, size, tokens)).terminal;
     const rect = cockpit.projection.paneFrameFor(engine.model, size, ref).?;
     try expectRectInside(rect, space);

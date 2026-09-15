@@ -110,38 +110,40 @@ test "the custom cursor fills only while focused and live" {
     const session = try createSession(20, 4);
     defer session.destroy();
 
-    var focused_commands: [64]canvas.CanvasCommand = undefined;
-    var focused_builder = canvas.Builder.init(&focused_commands);
-    try grid.paint(session, &focused_builder, .{
+    // Builder stores cells inline; three live stack copies overflow macOS
+    // after the 4x cell bump. Heap-allocate one and reuse it.
+    const builder = try testing.allocator.create(canvas.Builder);
+    defer testing.allocator.destroy(builder);
+    var commands: [64]canvas.CanvasCommand = undefined;
+    builder.initAt(&commands);
+    try grid.paint(session, builder, .{
         .frame = geometry.RectF.init(0, 0, 200, 100),
         .tokens = .{},
         .running = true,
         .focused = true,
         .selecting = false,
     });
-    try expectCursorPaintKind(focused_builder.displayList(), .filled);
+    try expectCursorPaintKind(builder.displayList(), .filled);
 
-    var blurred_commands: [64]canvas.CanvasCommand = undefined;
-    var blurred_builder = canvas.Builder.init(&blurred_commands);
-    try grid.paint(session, &blurred_builder, .{
+    builder.reset();
+    try grid.paint(session, builder, .{
         .frame = geometry.RectF.init(0, 0, 200, 100),
         .tokens = .{},
         .running = true,
         .focused = false,
         .selecting = false,
     });
-    try expectCursorPaintKind(blurred_builder.displayList(), .hollow);
+    try expectCursorPaintKind(builder.displayList(), .hollow);
 
-    var ended_commands: [64]canvas.CanvasCommand = undefined;
-    var ended_builder = canvas.Builder.init(&ended_commands);
-    try grid.paint(session, &ended_builder, .{
+    builder.reset();
+    try grid.paint(session, builder, .{
         .frame = geometry.RectF.init(0, 0, 200, 100),
         .tokens = .{},
         .running = false,
         .focused = true,
         .selecting = false,
     });
-    try expectCursorPaintKind(ended_builder.displayList(), .hollow);
+    try expectCursorPaintKind(builder.displayList(), .hollow);
 }
 
 test "a styled wide character's background covers both of its cells" {

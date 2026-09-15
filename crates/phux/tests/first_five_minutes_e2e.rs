@@ -433,11 +433,11 @@ fn run_journey(harness: &mut Harness) {
     );
 
     let mut first = PtyClient::naked(harness, "first-attach");
-    // Capture the daemon's PID before any UI assertion can panic:
-    // `AutoSpawnedServer::cleanup` is a no-op until the PID is known, so a
-    // failure in the waits below used to leak the daemon outright
-    // (phux-8y3o). The idle backstop armed in `apply_pty_env` covers the
-    // one residue this cannot: a runner killed before this capture lands.
+    // Remember the daemon PID now that attach has auto-spawned it. Drop reaps
+    // via the live socket even without this (phux-e4qx); capturing here still
+    // arms the SIGTERM/SIGKILL fallback without a status round-trip at Drop.
+    // The idle backstop armed in `apply_pty_env` covers the residue Drop
+    // cannot: a runner killed outright (SIGKILL / nextest hard timeout).
     harness.server.capture_pid();
     first.wait_for("the first-use title", |text| {
         text.contains("Your session is live")

@@ -42,6 +42,7 @@ import {
   classifyRequest,
   forwardEvents,
 } from "../../host/telemetry";
+import { buildEnvelope, forwardEnvelope } from "../../host/analytics";
 
 export { SessionDO, GlobalCapDO, PhuxSessionContainer, RateLimitDO };
 
@@ -54,6 +55,12 @@ export interface Env extends AuthEnv {
   // the site worker's ingest route (shared secret). No DO of our own.
   TELEMETRY_INGEST_URL?: string;
   TELEMETRY_INGEST_KEY?: string;
+  // Private ops pipeline (no-phux/ops) over a same-account service binding.
+  ANALYTICS?: { fetch(input: Request): Promise<Response> };
+  // HTTP fallback for local development and staged migration only.
+  ANALYTICS_INGEST_URL?: string;
+  ANALYTICS_INGEST_KEY?: string;
+  MEMBER_KEY?: string;
 
   SESSION_TOKEN_SECRET: string; // secret (wrangler secret put)
   SYNTHETIC_TOKEN_SECRET?: string; // shared only with the production monitor
@@ -122,6 +129,11 @@ function recordSession(
         ...classifyRequest(request, response),
         { dim: "session", key: `${mode}:${backend}` },
       ],
+    );
+    forwardEnvelope(
+      env,
+      ctx,
+      buildEnvelope(request, response, { mode, backend }),
     );
   } catch {
     // telemetry must never affect the demo door
