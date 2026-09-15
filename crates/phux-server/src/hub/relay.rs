@@ -1266,7 +1266,7 @@ impl RelaySession {
                 );
                 Some(self.encode(&FrameKind::Command {
                     request_id,
-                    command,
+                    command: link_attach_command(command, self.satellite_features),
                 }))
             }
             RelayRequest::Forward { frame } => Some(self.encode(&frame)),
@@ -1303,6 +1303,12 @@ impl RelaySession {
             } => self.subscribe_forward(subscription, &forward),
             RelayRequest::ListDirectory { path, reply } => self.enqueue_listing(path, reply),
         }
+    }
+
+    /// What the satellite advertised in its `HELLO_OK`, for the hub's own
+    /// dispatch (ADR-0127: whether the link can carry an attach's takeover).
+    pub(crate) const fn satellite_features(&self) -> ServerFeatureSet {
+        self.satellite_features
     }
 
     /// ADR-0126: a satellite that never advertised `SPAWN_IDEMPOTENCY` skips
@@ -3338,6 +3344,29 @@ pub(crate) fn satellite_route(terminal_id: &ResourceId) -> Option<(SatelliteHost
     }
 }
 
+/// The command a hub's link sends for a consumer's (ADR-0127).
+///
+/// A consumer's declared role is the hub's to hold: the link is one identity
+/// on the satellite, shared by every consumer, so a viewer mark sent there
+/// would make all of them observe-only. Only a deliberate takeover crosses,
+/// and only to a satellite that advertised `ATTACH_ROLES`, where the attach
+/// and the seize land in one command. Every other command is unchanged.
+pub(crate) fn link_attach_command(command: Command, satellite: ServerFeatureSet) -> Command {
+    let Command::AttachResource {
+        terminal_id,
+        role_policy,
+    } = command
+    else {
+        return command;
+    };
+    let role_policy = role_policy
+        .filter(|policy| policy.takes_over() && satellite.contains(ServerFeature::AttachRoles));
+    Command::AttachResource {
+        terminal_id,
+        role_policy,
+    }
+}
+
 /// If `command` targets a single satellite-owned terminal, produce the
 /// owning host and the command rewritten to the satellite's `Local` id
 /// space (ADR-0007 outbound leg). `None` for local targets, unscoped
@@ -3349,12 +3378,19 @@ pub(crate) fn satellite_route(terminal_id: &ResourceId) -> Option<(SatelliteHost
 )]
 pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
     match command {
-        Command::AttachResource { terminal_id } => {
+        Command::AttachResource {
+            terminal_id,
+            role_policy,
+        } => {
             let (host, id) = satellite_route(terminal_id)?;
+            // The consumer's declared intent rides to the hub's satellite
+            // dispatch unchanged; what the link itself sends is decided
+            // there and in `RelaySession::link_command` (ADR-0127).
             Some((
                 host,
                 Command::AttachResource {
                     terminal_id: ResourceId::local(id),
+                    role_policy: *role_policy,
                 },
             ))
         }
@@ -3607,6 +3643,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(terminal),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -3624,6 +3661,36 @@ mod tests {
     }
 
     // --- outbound command rewrite ---------------------------------------
+
+    /// ADR-0127: the link carries a deliberate takeover only to a satellite
+    /// advertising `ATTACH_ROLES`; a viewer mark and a plain `PRIMARY` never
+    /// cross, because the link's identity is shared by every hub consumer.
+    #[test]
+    fn hub_relays_role_policy_to_the_satellite_when_it_advertises_attach_roles() {
+        use phux_protocol::wire::frame::RolePolicy;
+        let attach = |role_policy| Command::AttachResource {
+            terminal_id: ResourceId::local(3),
+            role_policy,
+        };
+        let roles = ServerFeatureSet::with(&[ServerFeature::AttachRoles]);
+        let takeover = Some(RolePolicy::TAKEOVER);
+        assert_eq!(
+            link_attach_command(attach(takeover), roles),
+            attach(takeover)
+        );
+        assert_eq!(
+            link_attach_command(attach(takeover), ServerFeatureSet::new()),
+            attach(None),
+            "a satellite without the bit gets a plain attach; the hub seizes after it",
+        );
+        for held in [RolePolicy::VIEWER, RolePolicy::PRIMARY] {
+            assert_eq!(link_attach_command(attach(Some(held)), roles), attach(None));
+        }
+        let detach = Command::DetachResource {
+            terminal_id: ResourceId::local(3),
+        };
+        assert_eq!(link_attach_command(detach.clone(), roles), detach);
+    }
 
     #[test]
     fn route_to_satellite_rewrites_terminal_ids_to_local() {
@@ -3688,6 +3755,7 @@ mod tests {
         let commands = [
             Command::AttachResource {
                 terminal_id: sat.clone(),
+                role_policy: None,
             },
             Command::DetachResource {
                 terminal_id: sat.clone(),
@@ -3948,6 +4016,7 @@ mod tests {
         let wire = session.handle_request_checked(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(7),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -3984,6 +4053,7 @@ mod tests {
         let wire = session.handle_request_checked(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(8),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -6282,6 +6352,7 @@ mod tests {
         let request = RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -6495,6 +6566,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -6573,6 +6645,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
+                role_policy: None,
             },
             reply: reply_b,
             subscribe: Some(ProxySubscription {
@@ -6659,6 +6732,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {

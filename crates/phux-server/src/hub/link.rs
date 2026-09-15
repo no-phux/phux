@@ -852,6 +852,12 @@ async fn run_relay_session<C: LinkConn>(
         Err(error) => return Some(error),
     };
     session.set_journal(journal.cloned());
+    // ADR-0127: the hub's satellite dispatch reads what this satellite
+    // advertised to decide whether the link can carry an attach's takeover.
+    if let Some(journal) = journal {
+        let features = session.satellite_features();
+        journal.with_mut(|s| s.set_satellite_features(host.clone(), features));
+    }
     let (mut reader, writer) = conn.into_parts();
     let (write_tx, write_rx) = tokio::sync::mpsc::channel(LINK_WRITE_QUEUE);
     let queued_write_bytes = Rc::new(Cell::new(0usize));

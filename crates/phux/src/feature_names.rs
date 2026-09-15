@@ -33,6 +33,7 @@ const NAMES: &[(ServerFeature, &str)] = &[
     (ServerFeature::EventJournal, "event_journal"),
     (ServerFeature::RetainOnExit, "retain_on_exit"),
     (ServerFeature::SpawnIdempotency, "spawn_idempotency"),
+    (ServerFeature::AttachRoles, "attach_roles"),
 ];
 
 /// The name of `feature`. `None` only for a bit missing from the table,

@@ -408,6 +408,8 @@ ServerFeature = bitset (u32) {
                                      //   the snapshot (L1.md §1.2, §3.1, §9.1; ADR-0124)
     SPAWN_IDEMPOTENCY  = 0x04000000, // SPAWN_RESOURCE.idempotency_key, RESOURCE_SPAWNED.replayed,
                                      //   IDEMPOTENCY_CONFLICT (L1.md §3.1; ADR-0126)
+    ATTACH_ROLES       = 0x08000000, // ATTACH_RESOURCE.role_policy, ATTACH field 6, ROLE_CHANGED,
+                                     //   RESOURCE_STATE viewers (L1.md §8.1; ADR-0127)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -487,8 +489,8 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `WHOAMI = 0x40000`, `LIST_DIRECTORY_HOST = 0x80000`,
 `SSH_ORIGIN = 0x100000`, `CONDITIONAL_KILL = 0x200000`,
 `QUIC_STREAMS = 0x400000`, `OPEN_LISTENER = 0x800000`,
-`EVENT_JOURNAL = 0x1000000`, `RETAIN_ON_EXIT = 0x2000000`, and
-`SPAWN_IDEMPOTENCY = 0x4000000`; unknown
+`EVENT_JOURNAL = 0x1000000`, `RETAIN_ON_EXIT = 0x2000000`,
+`SPAWN_IDEMPOTENCY = 0x4000000`, and `ATTACH_ROLES = 0x8000000`; unknown
 feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
@@ -587,6 +589,13 @@ exit it did not watch happen.
 the bit skips the key and spawns again, so a client MUST see the bit before it
 retries a spawn whose reply it lost; without it, a retry can create a second
 resource.
+
+`ATTACH_ROLES = 0x8000000` gates the declared attach role of [L1.md](./L1.md)
+§8.1: `ATTACH_RESOURCE`'s trailing `role_policy` byte, session `ATTACH`
+field 6, `terminal_control { action: ROLE_CHANGED }`, and the `viewer` entries
+of the snapshot's `RESOURCE_STATE`. A server without the bit ignores the byte
+and the field and grants an ordinary, input-capable attach, so a client MUST
+see the bit before it declares a role.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,

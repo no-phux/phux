@@ -841,6 +841,19 @@ Remote host:
                                   so one firewall rule covers every attach. Any
                                   free port by default.
 
+Attach role:
+      --viewer                    Attach as a viewer: watch every pane, type
+                                  into none. The server refuses this attach's
+                                  input, and widening it takes a fresh attach
+                                  without the flag, which every watcher sees.
+                                  Your viewport still sizes the panes, and an
+                                  app waiting on a terminal-query reply times
+                                  out.
+      --take                      Attach and take the wheel: seize the input
+                                  lease of every pane this attach opens, in the
+                                  same step as the attach. The previous holder
+                                  stays attached. `phux give` hands it back.
+
 Recording:
       --rec <PATH>                Record this session to PATH (.cast, .gif, or
                                   .apng)

@@ -64,6 +64,9 @@ pub struct AttachedClient {
     /// most recent usable pixel report. `0` until the client announces
     /// a viewport.
     pub viewport_seq: u64,
+    /// The session attach declared `VIEWER` (ADR-0127): panes this client
+    /// spawns into the session are observe-only too.
+    pub viewer: bool,
 }
 
 /// One pane target in an ATTACH snapshot pass.
@@ -214,6 +217,7 @@ impl ServerState {
                     bootstrap_limits,
                     viewport: None,
                     viewport_seq: 0,
+                    viewer: false,
                 },
             );
             // Attaching arms tmux-model last-session self-exit (phux-60s).
@@ -381,6 +385,9 @@ impl ServerState {
     /// connection regardless of which path ended the client task.
     pub fn forget_connection(&mut self, client_id: ClientId) {
         self.detach(client_id);
+        // A `VIEWER` declaration is a per-connection tombstone (ADR-0127):
+        // it outlives `DETACH` and ends only with the connection.
+        self.clients.viewers.remove(&client_id);
         self.clients.layers.remove(&client_id);
         self.clients.client_names.remove(&client_id);
         self.clients.connection_cancellations.remove(&client_id);

@@ -109,13 +109,13 @@ use.
 
 ## Step 2: Attach to a terminal
 
-<!-- impl-status: spec-only; probe: RolePolicy -->
-> **Status: spec-only —** `role_policy` on `ATTACH` / `ATTACH_RESOURCE`. It is
-> not encoded today and the reference server keeps no role state, so a client
-> that omits it gets the same unconstrained subscription as one that would
-> ask for `PRIMARY`. Do not send it. [L1.md §8.1](./L1.md) has the contract
-> roles satisfy when they land. The frame below is the shape that is on the
-> wire.
+<!-- impl-status: shipped; probe: RolePolicy -->
+> **Status: shipped —** `role_policy` on `ATTACH` (field 6) and
+> `ATTACH_RESOURCE` (a trailing byte) declares the attach's intent: `VIEWER`
+> to watch without input, or `PRIMARY` with `DELIBERATE` takeover to attach
+> and take the wheel ([L1.md §8.1](./L1.md)). The frame below omits it, which
+> is the ordinary input-capable attach. Send it only to a server that
+> advertises `ATTACH_ROLES`.
 
 **What happens:** after HELLO, the client picks a terminal to watch. It can
 attach to an existing terminal or create one.

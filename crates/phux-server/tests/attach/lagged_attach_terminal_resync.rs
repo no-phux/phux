@@ -237,6 +237,7 @@ async fn attach_terminal_only(watcher: &mut UnixStream, pane: &ResourceId) -> Ve
             request_id: 100,
             command: Command::AttachResource {
                 terminal_id: pane.clone(),
+                role_policy: None,
             },
         },
     )

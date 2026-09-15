@@ -79,6 +79,7 @@ fn command_samples() -> Vec<(Command, &'static Rule)> {
         (
             Command::AttachResource {
                 terminal_id: terminal(),
+                role_policy: None,
             },
             &C_ATTACH_RESOURCE,
         ),
@@ -304,6 +305,7 @@ fn attach(target: AttachTarget) -> FrameKind {
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
         scrollback_limit_lines: 0,
+        role_policy: None,
     }
 }
 

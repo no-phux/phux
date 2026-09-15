@@ -494,6 +494,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::EventJournal,
         ServerFeature::SpawnIdempotency,
         ServerFeature::RetainOnExit,
+        ServerFeature::AttachRoles,
     ])
 }
 
@@ -3555,6 +3556,7 @@ where
                 viewport,
                 request_scrollback,
                 scrollback_limit_lines,
+                role_policy,
             } => {
                 match classify_attach_id(attach_id, &mut used_attach_ids, client_id) {
                     AttachIdVerdict::Fresh => {}
@@ -3608,6 +3610,7 @@ where
                     viewport,
                     request_scrollback,
                     scrollback_limit_lines,
+                    role_policy,
                     &plumbing.out_tx,
                     selection.client_caps,
                     selection.profile,
@@ -4175,8 +4178,11 @@ async fn bind_terminal_stream(
     // Remember the subscription against control BEFORE bootstrapping with
     // the stream: lifecycle fanout must resolve to control even if the
     // Terminal dies mid-bootstrap.
-    let subscription = subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx);
-    let Some((core, handle)) = subscription else {
+    // `None`: the bind carries no role; the `ATTACH_RESOURCE` that opened
+    // this Terminal already declared it (ADR-0127).
+    let subscription =
+        subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx, None);
+    let Ok(super::commands::AttachSubscription { core, handle, .. }) = subscription else {
         let mut recv = recv;
         let _ = recv.stop(0x10_u32.into());
         plumbing.drop_stream_binding(&terminal_id).await;
@@ -7047,6 +7053,7 @@ mod fatal_preflight_close_tests {
                         viewport: ViewportInfo::new(80, 24),
                         request_scrollback: false,
                         scrollback_limit_lines: 0,
+                        role_policy: None,
                     },
                 ]);
                 let (server_io, peer_io) = tokio::io::duplex(64 * 1024);

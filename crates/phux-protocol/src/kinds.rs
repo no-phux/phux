@@ -1751,6 +1751,7 @@ mod tests {
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
             scrollback_limit_lines: 0,
+            role_policy: None,
         };
         assert_eq!(row(&attach(AttachTarget::Last)), F_ATTACH.case);
         assert_eq!(

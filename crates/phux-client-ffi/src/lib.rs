@@ -579,12 +579,14 @@ fn queue_attach_frame(
         .then_some((options.pixel_width, options.pixel_height));
     let viewport = ViewportInfo::new(options.cols, options.rows)
         .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1));
+    let role_policy = client.next_attach_role();
     client.queue_frame(&FrameKind::Attach {
         attach_id: options.attach_id,
         target,
         viewport,
         request_scrollback: options.request_scrollback,
         scrollback_limit_lines: options.scrollback_limit_lines,
+        role_policy,
     })?;
     client.attach_queued = true;
     client.expected_attach_id = Some(options.attach_id);
@@ -992,6 +994,9 @@ fn apply_hello_ok(
         .features
         .contains(phux_protocol::ServerFeature::SpawnIdempotency);
     client.l3_metadata = server_caps.layers.contains(phux_protocol::Layer::L3);
+    client.attach_roles = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::AttachRoles);
     client.protocol_ready = true;
     session_rename::negotiated(client)
 }

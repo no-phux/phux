@@ -183,6 +183,7 @@ fn conditional_kill_takes_a_pane_only_its_spawner_attached() {
         let (pane, instance) = spawn_bound(&mut spawner, 1).await;
         let attach = Command::AttachResource {
             terminal_id: pane.clone(),
+            role_policy: None,
         };
         let attached = command(&mut spawner, 2, attach).await;
         assert!(

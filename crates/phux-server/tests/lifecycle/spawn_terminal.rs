@@ -213,6 +213,7 @@ fn attach_create_if_missing(name: &str) -> FrameKind {
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
         scrollback_limit_lines: 0,
+        role_policy: None,
     }
 }
 
@@ -901,6 +902,7 @@ fn terminal_resize_updates_pane_dims_observable_on_reattach() {
                 viewport: ViewportInfo::new(80, 24),
                 request_scrollback: false,
                 scrollback_limit_lines: 0,
+                role_policy: None,
             },
         )
         .await;
@@ -1283,6 +1285,7 @@ fn attach_create_seed_pane_injects_matching_terminal_id_env() {
                 viewport: ViewportInfo::new(80, 24),
                 request_scrollback: false,
                 scrollback_limit_lines: 0,
+                role_policy: None,
             },
         )
         .await;
@@ -1399,6 +1402,7 @@ fn attach_create_seed_pane_injects_server_socket_env() {
                 viewport: ViewportInfo::new(80, 24),
                 request_scrollback: false,
                 scrollback_limit_lines: 0,
+                role_policy: None,
             },
         )
         .await;
@@ -1566,6 +1570,7 @@ fn create_if_missing_seeds_pane_in_wire_cwd() {
                 viewport: ViewportInfo::new(80, 24),
                 request_scrollback: false,
                 scrollback_limit_lines: 0,
+                role_policy: None,
             },
         )
         .await;

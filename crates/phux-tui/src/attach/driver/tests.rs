@@ -1192,6 +1192,7 @@ async fn attach_negotiation_preserves_custom_caps_then_sends_attach() {
                 viewport: ViewportInfo::new(120, 40),
                 request_scrollback: true,
                 scrollback_limit_lines: 10_000,
+                role_policy: None,
             })
             .await
             .expect("ATTACH");

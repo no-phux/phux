@@ -801,6 +801,53 @@ pub unsafe extern "C" fn phux_client_queue_attach_resource(
     })
 }
 
+/// Declare the role every later `ATTACH` and `ATTACH_RESOURCE` carries.
+///
+/// ADR-0127: bit 0 `VIEWER`, bit 1 `DELIBERATE` takeover, the byte of
+/// `docs/spec/L1.md` §8.1. `0` restores the default and sends nothing.
+/// Additive; the ABI version is unchanged.
+///
+/// # Safety
+///
+/// When non-null, `client` must be a live client on its owning thread with
+/// exclusive access for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_attach_role(
+    client: *mut PhuxClient,
+    role_policy: u8,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        client.attach_role = declared_role(client, role_policy)?;
+        Ok(())
+    })
+}
+
+/// The stored form of a `phux_client_attach_role` byte: refused when a bit is
+/// reserved, when it asks a viewer to take over, or when the server has not
+/// advertised `ATTACH_ROLES`, which would ignore the byte and grant an
+/// ordinary attach.
+fn declared_role(
+    client: &Client,
+    role_policy: u8,
+) -> Result<Option<phux_protocol::wire::frame::RolePolicy>, BridgeError> {
+    use phux_protocol::wire::frame::RolePolicy;
+    let policy = RolePolicy::from_u8(role_policy);
+    if policy.to_u8() != role_policy || !policy.is_valid() {
+        return Err(BridgeError::invalid(
+            "role_policy must be 0, 1 (VIEWER), or 2 (PRIMARY with DELIBERATE takeover)",
+        ));
+    }
+    if policy == RolePolicy::PRIMARY {
+        return Ok(None);
+    }
+    if !client.protocol_ready || !client.attach_roles {
+        return Err(BridgeError::state(
+            "the server did not advertise ATTACH_ROLES; an attach role cannot be declared",
+        ));
+    }
+    Ok(Some(policy))
+}
+
 fn queue_terminal_attach(
     client: &mut Client,
     request_id: u32,
@@ -825,10 +872,12 @@ fn queue_terminal_attach(
             "terminal in the initial ATTACH inventory has closed",
         ));
     }
+    let role_policy = client.next_attach_role();
     client.queue_frame(&FrameKind::Command {
         request_id,
         command: Command::AttachResource {
             terminal_id: id.clone(),
+            role_policy,
         },
     })?;
     client.operations.dynamic.insert(id.clone());

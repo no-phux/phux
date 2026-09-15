@@ -245,8 +245,21 @@ fn terminal_control_expired_round_trips_and_an_unknown_action_is_opaque() {
         },
         None,
     ));
-    // lifecycle RUNNING, no exit, no holder, action 0x0a, no actor.
-    let control = [0u8, 0, 0, 0x0a, 0];
+    // ADR-0127's `ROLE_CHANGED = 10` is known and round-trips as itself.
+    assert_round_trip(&event(
+        Some(ResourceId::local(2)),
+        AgentEvent::TerminalControl {
+            lifecycle: ResourceLifecycle::Running,
+            exit_status: None,
+            input_holder: None,
+            action: ControlAction::RoleChanged,
+            actor: Some(phux_protocol::ids::ClientId::new(3)),
+        },
+        None,
+    ));
+    // lifecycle RUNNING, no exit, no holder, action 0x0b (unallocated), no
+    // actor.
+    let control = [0u8, 0, 0, 0x0b, 0];
     let mut agent_event = vec![0x08, 0, 0, 0, 5];
     agent_event.extend_from_slice(&control);
     let mut body = Vec::new();

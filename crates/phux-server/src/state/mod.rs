@@ -66,6 +66,7 @@ mod remote_listeners;
 mod resolve;
 mod resource_table;
 mod retained;
+mod roles;
 mod satellite_spawns;
 mod session_table;
 mod sessions;
@@ -89,6 +90,7 @@ pub use id_space::IdSpace;
 pub use journal::EventRecord;
 pub(crate) use retained::Retention;
 pub use retained::{RetainPolicy, close_reason_name, process_exit};
+pub use roles::RoleEffects;
 // Facade: the mailbox payloads live at the crate root (`crate::mailbox`) so
 // `state` and `terminal_actor` can both depend on them without depending on
 // each other. Re-exported here because `crate::state::Outbound` is the spelling

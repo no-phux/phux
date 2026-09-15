@@ -3160,6 +3160,7 @@ mod tests {
                         ViewportInfo::new(80, 24),
                         false,
                         0,
+                        None,
                         &out_tx,
                         ClientCapabilities::default(),
                         phux_protocol::caps::BootstrapProfile::SynthesizedVtRaw,
@@ -3336,6 +3337,7 @@ mod tests {
                         ViewportInfo::new(80, 24),
                         false,
                         0,
+                        None,
                         &first_out_tx,
                         ClientCapabilities::default()
                             .with_output_mode(phux_protocol::caps::OutputMode::StateSync),
@@ -3440,6 +3442,7 @@ mod tests {
                         ViewportInfo::new(80, 24),
                         false,
                         0,
+                        None,
                         &second_out_tx,
                         ClientCapabilities::default()
                             .with_output_mode(phux_protocol::caps::OutputMode::StateSync),
@@ -3884,6 +3887,7 @@ mod tests {
                         ViewportInfo::new(80, 24),
                         false,
                         0,
+                        None,
                         &out_for_task,
                         ClientCapabilities::default(),
                         BootstrapProfile::NativeState {

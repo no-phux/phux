@@ -88,6 +88,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             request_id: 2,
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(7),
+                role_policy: None,
             },
         }],
     )?;
@@ -193,6 +194,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             request_id: 2,
             command: Command::AttachResource {
                 terminal_id: satellite.clone(),
+                role_policy: None,
             },
         }],
     )?;
@@ -238,6 +240,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             request_id: 1,
             command: Command::AttachResource {
                 terminal_id: local.clone(),
+                role_policy: None,
             },
         }],
     )?;

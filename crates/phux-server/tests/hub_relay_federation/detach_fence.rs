@@ -212,6 +212,7 @@ async fn attach_live(client: &mut UnixStream, pane: &ResourceId) -> Vec<FrameKin
         7000,
         Command::AttachResource {
             terminal_id: pane.clone(),
+            role_policy: None,
         },
     )
     .await;

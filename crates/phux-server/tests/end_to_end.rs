@@ -211,6 +211,7 @@ fn zero_attach_id_is_rejected_before_attached_state() {
                 viewport: phux_protocol::wire::frame::ViewportInfo::new(80, 24),
                 request_scrollback: false,
                 scrollback_limit_lines: 0,
+                role_policy: None,
             },
         )
         .await;

@@ -208,6 +208,7 @@ async fn attach_terminal_only(watcher: &mut UnixStream, victim: &ResourceId) {
             request_id: 100,
             command: Command::AttachResource {
                 terminal_id: victim.clone(),
+                role_policy: None,
             },
         },
     )

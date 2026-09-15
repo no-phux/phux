@@ -1288,6 +1288,71 @@ fn subscribe_events_refuses_a_cursor_without_event_journal_and_queues_one_with_i
     );
 }
 
+/// ADR-0127: the role byte is validated, needs `ATTACH_ROLES`, rides the next
+/// `ATTACH_RESOURCE`, and `0` restores the byte-identical default.
+#[test]
+fn attach_role_is_validated_needs_attach_roles_and_rides_the_next_attach() {
+    use phux_protocol::wire::frame::{Command, RolePolicy};
+    let mut h = Harness::attached();
+    // SAFETY: harness owns the client.
+    unsafe {
+        assert_eq!(
+            phux_client_attach_role(h.ptr(), 3),
+            PhuxClientResult::InvalidArgument
+        );
+        assert_eq!(
+            phux_client_attach_role(h.ptr(), 4),
+            PhuxClientResult::InvalidArgument
+        );
+        assert_eq!(
+            phux_client_attach_role(h.ptr(), 1),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert_eq!(h.0.inner.attach_role, None, "nothing stored on refusal");
+    h.0.inner.attach_roles = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(phux_client_attach_role(h.ptr(), 1), PhuxClientResult::Ok);
+    }
+    let queued = h.0.inner.outgoing.len();
+    assert_eq!(h.attach(9, &ResourceId::local(9)), PhuxClientResult::Ok);
+    let (frame, remaining) = FrameKind::decode(&h.0.inner.outgoing[queued]).expect("decode");
+    assert!(remaining.is_empty());
+    assert!(
+        matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::AttachResource {
+                    role_policy: Some(RolePolicy::VIEWER),
+                    ..
+                },
+                ..
+            }
+        ),
+        "{frame:?}"
+    );
+    assert_eq!(
+        h.0.inner.attach_role,
+        Some(RolePolicy::VIEWER),
+        "a viewer stays declared"
+    );
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(phux_client_attach_role(h.ptr(), 2), PhuxClientResult::Ok);
+    }
+    assert_eq!(h.attach(10, &ResourceId::local(10)), PhuxClientResult::Ok);
+    assert_eq!(
+        h.0.inner.attach_role, None,
+        "a takeover is consumed by the attach it rides"
+    );
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(phux_client_attach_role(h.ptr(), 0), PhuxClientResult::Ok);
+    }
+    assert_eq!(h.0.inner.attach_role, None);
+}
+
 #[test]
 fn pre_attach_operations_are_rejected_and_result_output_is_sized() {
     let mut h = Harness::new();

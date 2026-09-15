@@ -47,6 +47,11 @@ deadline (ADR-0033): the server itself now enforces `ttl_ms` and releases
 the lease after `SECS` even if the holder never calls `phux give` — a
 bound any holder can ask for, CLI or a longer-lived client (the TUI's
 take-the-wheel keybinding, a `phux-client`-based agent) alike.
+An attach may also declare its intent (ADR-0127): `phux attach --viewer`
+watches and can type nothing, and `phux attach --take` attaches and takes the
+wheel in one step. `phux rec` and `phux agent log` attach as viewers on a
+server that advertises attach roles, so an observer can never type into what
+it watches.
 
 `--socket` wins, then `PHUX_SOCKET`, then the daemon default. `phux ls`
 does not auto-start a server.
@@ -271,8 +276,8 @@ It never creates, splits, moves, or focuses layout.
   for an agent.
 - **`resource show`** — one resource's record: kind, parent, lifecycle,
   the exit of a retained process, the typed process facts (pid,
-  foreground group, cwd, prompt state), the input-lease holder, tags,
-  and agent record. `resource methods` lists what the resource answers
+  foreground group, cwd, prompt state), the input-lease holder and the
+  connections watching it as viewers, tags, and agent record. `resource methods` lists what the resource answers
   on this server; listing grants nothing.
 - **`ask`** — advisory human attention. It does not move focus. The
   reference TUI presents it as `C-a q` / `C-a Q`.
@@ -667,11 +672,13 @@ workload refused the subscription or the state read gets
 `permission_denied`, exit 2.
 
 `resource show --json` is `{ schema_version: 1, resource, kind, parent,
-session, title, cwd, lifecycle, exit, input_holder, process, tags,
-agent, agent_session, unreachable }`. `exit` adds `retained_until_ms`.
+session, title, cwd, lifecycle, exit, input_holder, viewers, process,
+tags, agent, agent_session, unreachable }`. `exit` adds `retained_until_ms`.
 `process` is the `GET_TERMINAL_STATE` process facet below, `null` for a
 non-Terminal or an older server. `tags` is `null` when the read was
 refused. `input_holder` is the lease holder's connection id, or `null`.
+`viewers` lists the connection ids attached as `VIEWER` (ADR-0127),
+ascending, `[]` when none; the human form prints it only when non-empty.
 
 `resource methods --json` is `{ schema_version: 1, resource, kind,
 methods: [{ name, facet, verb, mutating, available, reason }] }`.

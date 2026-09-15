@@ -58,6 +58,8 @@ impl ResourceDetails {
             "lifecycle": super::lifecycle_name(info.lifecycle),
             "exit": info.exit.as_ref().map(super::exit_facet_json),
             "input_holder": info.input_holder.map(ClientId::get),
+            // ADR-0127: connections watching without input, ascending.
+            "viewers": info.viewers.iter().copied().map(ClientId::get).collect::<Vec<_>>(),
             "process": self.process,
             "tags": self.tags,
             "agent": self.agent,
@@ -199,7 +201,8 @@ mod tests {
                             .with_signal(Some(9))
                             .with_reason(CloseReason::Exited),
                     ))
-                    .with_input_holder(Some(ClientId::new(4))),
+                    .with_input_holder(Some(ClientId::new(4)))
+                    .with_viewers(vec![ClientId::new(5), ClientId::new(6)]),
             ])
     }
 
@@ -248,6 +251,7 @@ mod tests {
         assert_eq!(doc["exit"]["reason"], "exited");
         assert_eq!(doc["exit"]["retained_until_ms"], 20);
         assert_eq!(doc["input_holder"], 4);
+        assert_eq!(doc["viewers"], json!([5, 6]));
         assert_eq!(doc["process"]["child"]["pid"], 42);
         assert_eq!(doc["process"]["cwd"], "/repo");
         assert_eq!(doc["tags"], json!(["build"]));

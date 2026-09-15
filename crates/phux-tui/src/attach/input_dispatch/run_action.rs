@@ -1181,6 +1181,7 @@ fn open_satellite_session(
         request_id,
         command: Command::AttachResource {
             terminal_id: target,
+            role_policy: crate::attach::attach_role::pane_attach_role(),
         },
     });
 }

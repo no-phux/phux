@@ -20,6 +20,7 @@ is the seed of the recorded audit trail.
 
 Status: Accepted
 Date: 2026-06-16
+See [ADR-0127](./0127-attach-roles-are-lease-intent.md) for attach roles as declared intent on the lease.
 
 ## Context
 

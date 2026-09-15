@@ -179,8 +179,11 @@ async fn subscribe(
     let (result, primed) = conn
         .request(
             REQUEST_ATTACH,
+            // ADR-0060 observer, declared as one (ADR-0127): a viewer
+            // records everything and can type nothing.
             Command::AttachResource {
                 terminal_id: terminal_id.clone(),
+                role_policy: conn.observer_role_policy(),
             },
         )
         .await?
@@ -607,6 +610,45 @@ mod tests {
     /// written after the bug escaped.
     fn attached(cols: u16, rows: u16, replay: &[u8]) -> ScriptSpec {
         ScriptSpec::new().priming_snapshot(&terminal(), cols, rows, replay)
+    }
+
+    /// The role the recorder's `ATTACH_RESOURCE` declared.
+    fn declared_role(seen: &[FrameKind]) -> Option<phux_protocol::wire::frame::RolePolicy> {
+        seen.iter().find_map(|frame| match frame {
+            FrameKind::Command {
+                command: Command::AttachResource { role_policy, .. },
+                ..
+            } => *role_policy,
+            _ => None,
+        })
+    }
+
+    /// ADR-0127 over ADR-0060: against a server advertising `ATTACH_ROLES`
+    /// the recorder declares itself a viewer, so it can never type into the
+    /// session it records, and the capture is unchanged. Against an older
+    /// server the attach stays the ordinary one it always was.
+    #[test]
+    fn recorder_attaches_as_viewer_and_still_records() {
+        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+        let roles = ServerFeatureSet::with(&[ServerFeature::AttachRoles]);
+        let (recorded, seen) = block_on(run(
+            attached(80, 24, b"hi")
+                .push(pane_closed(Some(0)))
+                .server_features(roles),
+            None,
+        ));
+        let recorded = recorded.expect("recording");
+        assert_eq!(
+            declared_role(&seen),
+            Some(phux_protocol::wire::frame::RolePolicy::VIEWER)
+        );
+        assert_eq!(codes(&recorded), vec![EventCode::Output, EventCode::Exit]);
+
+        let (_, older) = block_on(run(
+            attached(80, 24, b"hi").push(pane_closed(Some(0))),
+            None,
+        ));
+        assert_eq!(declared_role(&older), None, "no bit, no byte");
     }
 
     #[test]

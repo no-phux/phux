@@ -150,6 +150,7 @@ fn wt_hello_attach_receives_attached_and_snapshot() {
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
             scrollback_limit_lines: 0,
+            role_policy: None,
         };
         send.write_all(&encode(&attach)).await.unwrap();
 

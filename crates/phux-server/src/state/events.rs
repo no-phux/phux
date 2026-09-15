@@ -222,7 +222,15 @@ impl EventSubscription {
     }
 
     /// Whether any of this subscription's scopes admits `entry`.
+    ///
+    /// `ROLE_CHANGED` (ADR-0127) has no older action it could be reported
+    /// as, the way `EXPIRED` reads as `RELEASED`, so a subscription that
+    /// never proved it decodes this draft is simply not offered it: a
+    /// pre-`0.9.0-draft.15` decoder would fail the whole frame on it.
     fn admits(&self, entry: &JournalEntry) -> bool {
+        if !self.journal_aware && is_role_changed(&entry.event) {
+            return false;
+        }
         self.scopes
             .iter()
             .any(|(scope, filter)| scope.covers(entry) && filter.admits(&entry.event))
@@ -452,6 +460,17 @@ fn merge_gap(a: Option<(u64, u64)>, b: Option<(u64, u64)>) -> Option<(u64, u64)>
         }
         (one, other) => one.or(other),
     }
+}
+
+/// Whether `event` is a `terminal_control { ROLE_CHANGED }` (ADR-0127).
+const fn is_role_changed(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::TerminalControl {
+            action: ControlAction::RoleChanged,
+            ..
+        }
+    )
 }
 
 /// How `event` reads to a subscriber: an `EXPIRED` lease reaches a
@@ -1128,6 +1147,41 @@ mod tests {
             2,
             "a replay pending below the eviction will report it"
         );
+    }
+
+    /// ADR-0127 against L10's per-connection head: a `ROLE_CHANGED` is
+    /// withheld from a subscription that never sent a cursor, so it must not
+    /// raise that connection's head either, or a catch-up to the head would
+    /// wait for an event it is never sent. A journal-aware subscription is
+    /// sent it, and its head counts it.
+    #[test]
+    fn a_withheld_role_changed_does_not_raise_a_legacy_connections_head() {
+        let mut state = ServerState::new();
+        let legacy = state.new_client_id();
+        let (tx, _rx) = mpsc::channel(8);
+        state.subscribe_events(legacy, None, tx);
+        let aware = state.new_client_id();
+        let (aware_tx, _aware_rx) = mpsc::channel(8);
+        state.subscribe_events_after(aware, None, u64::MAX, aware_tx);
+        let seen = record(&mut state, 1, AgentEvent::Bell);
+        let role_changed = record(
+            &mut state,
+            1,
+            AgentEvent::TerminalControl {
+                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                exit_status: None,
+                input_holder: None,
+                action: ControlAction::RoleChanged,
+                actor: None,
+            },
+        );
+
+        assert_eq!(
+            state.journal_head_for(Some(legacy)),
+            seen,
+            "the withheld ROLE_CHANGED must not raise a legacy head"
+        );
+        assert_eq!(state.journal_head_for(Some(aware)), role_changed);
     }
 
     #[test]

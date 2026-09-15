@@ -60,9 +60,15 @@ use super::{
 )]
 pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
     match command {
-        Command::AttachResource { terminal_id } => {
+        Command::AttachResource {
+            terminal_id,
+            role_policy,
+        } => {
             enc.write_u8(COMMAND_TAG_ATTACH_RESOURCE);
             encode_terminal_id(terminal_id, enc);
+            if let Some(policy) = role_policy {
+                enc.write_u8(policy.to_u8());
+            }
         }
         Command::DetachResource { terminal_id } => {
             enc.write_u8(COMMAND_TAG_DETACH_RESOURCE);
@@ -373,6 +379,14 @@ fn decode_terminal_subscription_command(
     let command = match tag {
         COMMAND_TAG_ATTACH_RESOURCE => Command::AttachResource {
             terminal_id: decode_terminal_id(dec)?,
+            // A trailing additive byte (ADR-0127), behind the same
+            // `at_body_end` guard as `GET_SCREEN`'s `cells`: a body from
+            // before roles ends after the id, which means `{ PRIMARY, NEVER }`.
+            role_policy: if dec.at_body_end() {
+                None
+            } else {
+                Some(super::RolePolicy::from_u8(dec.read_u8()?))
+            },
         },
         COMMAND_TAG_DETACH_RESOURCE => Command::DetachResource {
             terminal_id: decode_terminal_id(dec)?,

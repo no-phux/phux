@@ -108,6 +108,7 @@ pub const fn control_action_name(action: ControlAction) -> &'static str {
         ControlAction::Killed => "killed",
         ControlAction::Exited => "exited",
         ControlAction::Expired => "expired",
+        ControlAction::RoleChanged => "role_changed",
     }
 }
 

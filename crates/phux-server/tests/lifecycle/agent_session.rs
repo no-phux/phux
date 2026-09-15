@@ -353,7 +353,10 @@ async fn attach_terminal(stream: &mut UnixStream, request_id: u32, terminal_id: 
         stream,
         &FrameKind::Command {
             request_id,
-            command: Command::AttachResource { terminal_id },
+            command: Command::AttachResource {
+                terminal_id,
+                role_policy: None,
+            },
         },
     )
     .await;
@@ -704,6 +707,7 @@ fn multi_record_append_envelope_and_bootstrap_use_the_last_record_cut() {
                 request_id: 101,
                 command: Command::AttachResource {
                     terminal_id: session.clone(),
+                    role_policy: None,
                 },
             },
         )
@@ -786,6 +790,7 @@ fn bootstrap_replays_retained_records_on_attach() {
                 request_id: 200,
                 command: Command::AttachResource {
                     terminal_id: session.clone(),
+                    role_policy: None,
                 },
             },
         )
@@ -879,6 +884,7 @@ fn ring_overflow_evicts_oldest_and_reports_the_toll() {
                 request_id: 200,
                 command: Command::AttachResource {
                     terminal_id: session.clone(),
+                    role_policy: None,
                 },
             },
         )

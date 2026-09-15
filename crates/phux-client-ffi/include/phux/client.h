@@ -899,6 +899,15 @@ PhuxClientResult phux_client_queue_spawn(PhuxClient *client, const PhuxSpawnOpti
  * negotiated client that is not DETACHED. */
 PhuxClientResult phux_client_subscribe_events(PhuxClient *client, const PhuxResourceId *terminal, const uint64_t *after_seq);
 PhuxClientResult phux_client_queue_attach_resource(PhuxClient *client, const PhuxAttachResourceOptions *options);
+/* Declare the role every later ATTACH and ATTACH_RESOURCE carries (ADR-0127).
+ * Additive to ABI version 2. role_policy is the L1.md 8.1 byte: 0 the default
+ * (sends nothing), 1 VIEWER (observe-only: the subscription's input is
+ * refused), 2 PRIMARY with DELIBERATE takeover (attach and seize the input
+ * lease). Any other value is PHUX_CLIENT_INVALID_ARGUMENT. A non-zero role
+ * needs a negotiated client whose server advertised ATTACH_ROLES
+ * (0x08000000), or PHUX_CLIENT_INVALID_STATE; nothing is stored on refusal.
+ * A takeover is consumed by the next attach it rides; VIEWER stays declared. */
+PhuxClientResult phux_client_attach_role(PhuxClient *client, uint8_t role_policy);
 
 /* Withdraw a subscription, never kill durable work. Requires completed session
  * ATTACH and an admitted terminal without a pending attach/detach. Correlated

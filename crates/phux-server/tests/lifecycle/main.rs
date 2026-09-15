@@ -1,6 +1,7 @@
 //! Server socket and terminal lifecycle integration tests.
 
 mod agent_session;
+mod attach_roles;
 mod conditional_kill;
 mod keep_empty;
 mod lease_ttl;
