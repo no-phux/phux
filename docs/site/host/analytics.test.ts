@@ -81,12 +81,16 @@ function envOf(): AnalyticsEnv {
   return { MEMBER_KEY };
 }
 
-function claimUrl(memberId: string, proof: string, issuedAt?: number): string {
+function claimUrl(memberId: string, proof: string, issuedAt?: string): string {
   const token =
     issuedAt === undefined
       ? `${memberId}.${proof}`
-      : `${memberId}.${proof}.${Math.floor(issuedAt / 1000)}`;
+      : `${memberId}.${proof}.${issuedAt}`;
   return `https://phux.sh/api/claim?t=${token}`;
+}
+
+function issuedAtSeconds(time = Date.now()): string {
+  return String(Math.floor(time / 1000));
 }
 
 describe("GET /api/claim (PHA-425)", () => {
@@ -95,9 +99,10 @@ describe("GET /api/claim (PHA-425)", () => {
       MEMBER_KEY,
       "stored@example.com",
     )).slice(0, 32);
-    const proof = await claimProof(MEMBER_KEY, memberId);
+    const issuedAt = issuedAtSeconds();
+    const proof = await claimProof(MEMBER_KEY, memberId, issuedAt);
     const response = await handleClaim(
-      new Request(claimUrl(memberId, proof, Date.now())),
+      new Request(claimUrl(memberId, proof, issuedAt)),
       envOf(),
     );
     expect(response.status).toBe(302);
@@ -141,24 +146,41 @@ describe("GET /api/claim (PHA-425)", () => {
 
   test("fresh issuedAt link is accepted, expired and future links are not", async () => {
     const memberId = await memberIdForEmail(MEMBER_KEY, "person@example.com");
-    const proof = await claimProof(MEMBER_KEY, memberId);
+    const freshIssuedAt = issuedAtSeconds(Date.now() - 1000);
+    const freshProof = await claimProof(MEMBER_KEY, memberId, freshIssuedAt);
     const fresh = await handleClaim(
-      new Request(claimUrl(memberId, proof, Date.now() - 1000)),
+      new Request(claimUrl(memberId, freshProof, freshIssuedAt)),
       envOf(),
     );
     expect(fresh.status).toBe(302);
 
+    const expiredIssuedAt = issuedAtSeconds(Date.now() - CLAIM_MAX_AGE_MS - 1000);
+    const expiredProof = await claimProof(MEMBER_KEY, memberId, expiredIssuedAt);
     const expired = await handleClaim(
-      new Request(claimUrl(memberId, proof, Date.now() - CLAIM_MAX_AGE_MS - 1000)),
+      new Request(claimUrl(memberId, expiredProof, expiredIssuedAt)),
       envOf(),
     );
     expect(expired.status).toBe(403);
 
+    const futureIssuedAt = issuedAtSeconds(Date.now() + 60 * 60 * 1000);
+    const futureProof = await claimProof(MEMBER_KEY, memberId, futureIssuedAt);
     const future = await handleClaim(
-      new Request(claimUrl(memberId, proof, Date.now() + 60 * 60 * 1000)),
+      new Request(claimUrl(memberId, futureProof, futureIssuedAt)),
       envOf(),
     );
     expect(future.status).toBe(403);
+  });
+
+  test("issuedAt is cryptographically bound to the proof", async () => {
+    const memberId = await memberIdForEmail(MEMBER_KEY, "person@example.com");
+    const expiredIssuedAt = issuedAtSeconds(Date.now() - CLAIM_MAX_AGE_MS - 1000);
+    const proof = await claimProof(MEMBER_KEY, memberId, expiredIssuedAt);
+    const replacedIssuedAt = issuedAtSeconds();
+    const response = await handleClaim(
+      new Request(claimUrl(memberId, proof, replacedIssuedAt)),
+      envOf(),
+    );
+    expect(response.status).toBe(403);
   });
 
   test("malformed tokens are rejected without touching the proof path", async () => {
