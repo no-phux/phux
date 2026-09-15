@@ -44,6 +44,7 @@ kind = "codex"
 
 [launch]
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/wrap.sh", "--name", "codex", "--", "codex"]
+required_executables = ["sh"]
 working_directory = "workspace"
 "#,
     )
@@ -60,6 +61,19 @@ working_directory = "plugin-root"
 "#,
     )
     .expect("write rooted template");
+
+    // Structurally launchable, but hidden because its declared prerequisite
+    // cannot exist on a real PATH.
+    std::fs::write(
+        integrations.join("unavailable.toml"),
+        r#"
+id = "unavailable"
+[launch]
+command = ["definitely-not-a-phux-test-executable"]
+required_executables = ["definitely-not-a-phux-test-executable"]
+"#,
+    )
+    .expect("write unavailable template");
 
     // Parseable but not launchable (no [launch]).
     std::fs::write(
@@ -243,6 +257,32 @@ fn list_launchable_enumerates_only_templates_with_a_launch_command() {
         .find(|item| item.integration_id == "rooted")
         .expect("rooted listed");
     assert_eq!(rooted.agent_identity, None);
+}
+
+#[test]
+fn missing_executable_hides_an_integration_and_is_explicit_when_requested() {
+    let tmp = TempDir::new().expect("tempdir");
+    let (config, _root) = write_plugin(&tmp, true);
+    let ws = workspace(&tmp);
+
+    let listed = phux_plugin::list_launchable(&config).expect("list");
+    assert!(
+        listed
+            .iter()
+            .all(|item| item.integration_id != "unavailable")
+    );
+
+    let err = resolve_launch(&config, "unavailable", &[], &ws)
+        .expect_err("a named unavailable integration must explain its prerequisite");
+    assert!(
+        matches!(
+            err,
+            LaunchError::MissingExecutables { ref name, ref missing }
+                if name == "unavailable"
+                    && missing == &["definitely-not-a-phux-test-executable"]
+        ),
+        "got {err:?}"
+    );
 }
 
 /// A broken sibling template must not block resolving a healthy one, but a

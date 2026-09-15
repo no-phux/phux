@@ -44,6 +44,8 @@ pub const MAX_SESSION_ID_BYTES: usize = 1_024;
 const MAX_RESUME_ARGS: usize = 16;
 const MAX_RESUME_ARG_BYTES: usize = 4_096;
 const MAX_RESUME_ARGV_BYTES: usize = 16 * 1_024;
+const MAX_REQUIRED_EXECUTABLES: usize = 16;
+const MAX_EXECUTABLE_NAME_BYTES: usize = 255;
 
 /// A parsed agent integration template (`integrations/<id>.toml`).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +92,9 @@ pub struct IntegrationLaunch {
     /// May contain [`PLUGIN_ROOT_PLACEHOLDER`] elements, expanded at
     /// resolution time by [`expand_launch_argv`].
     pub command: Vec<String>,
+    /// Executable names that must be discoverable on `PATH` for this launch
+    /// to be offered. Empty means the template has no availability gate.
+    pub required_executables: Vec<String>,
     /// Directory the launched program runs in.
     pub working_directory: LaunchWorkingDirectory,
 }
@@ -307,6 +312,8 @@ struct RawLaunch {
     #[serde(default)]
     command: Vec<String>,
     #[serde(default)]
+    required_executables: Vec<String>,
+    #[serde(default)]
     working_directory: LaunchWorkingDirectory,
 }
 
@@ -404,10 +411,35 @@ fn build_launch(
             path.display()
         )));
     }
+    validate_required_executables(id, path, &raw.required_executables)?;
     Ok(IntegrationLaunch {
         command: raw.command,
+        required_executables: raw.required_executables,
         working_directory: raw.working_directory,
     })
+}
+
+fn validate_required_executables(
+    id: &str,
+    path: &Path,
+    executables: &[String],
+) -> Result<(), IntegrationError> {
+    let invalid_count = executables.len() > MAX_REQUIRED_EXECUTABLES;
+    let invalid_name = executables.iter().any(|name| {
+        name.is_empty()
+            || name.trim() != name
+            || name.len() > MAX_EXECUTABLE_NAME_BYTES
+            || name.contains(['/', '\\'])
+    });
+    if invalid_count || invalid_name {
+        return Err(IntegrationError::Invalid(format!(
+            "{}: integration {id:?} `[launch] required_executables` must contain at most \
+             {MAX_REQUIRED_EXECUTABLES} non-empty PATH executable names of at most \
+             {MAX_EXECUTABLE_NAME_BYTES} bytes",
+            path.display()
+        )));
+    }
+    Ok(())
 }
 
 fn build_session_identity(
@@ -661,6 +693,7 @@ kind = "claude"
 
 [launch]
 command = ["sh", "${PHUX_PLUGIN_ROOT}/scripts/phux-agent-wrap.sh", "--name", "claude", "--kind", "claude", "--", "claude"]
+required_executables = ["claude"]
 working_directory = "workspace"
 "#;
 
@@ -681,6 +714,7 @@ working_directory = "workspace"
         let launch = template.launch.expect("launch present");
         assert_eq!(launch.command[0], "sh");
         assert_eq!(launch.command.last().unwrap(), "claude");
+        assert_eq!(launch.required_executables, ["claude"]);
         assert_eq!(launch.working_directory, LaunchWorkingDirectory::Workspace);
         let identity = template.agent_identity.expect("agent identity present");
         assert_eq!(identity.name.as_deref(), Some("claude"));
@@ -847,6 +881,49 @@ command = ["  ", "arg"]
         )
         .expect_err("blank program");
         assert!(matches!(err, IntegrationError::Invalid(_)));
+    }
+
+    #[test]
+    fn launch_executable_requirements_are_optional_and_bare() {
+        let without = parse(
+            r#"
+id = "without"
+[launch]
+command = ["agent"]
+"#,
+        )
+        .expect("requirements are optional");
+        assert!(without.launch.unwrap().required_executables.is_empty());
+
+        for requirement in ["", " grok", "grok ", "bin/grok", "bin\\grok"] {
+            let text = format!(
+                r#"
+id = "bad-requirement"
+[launch]
+command = ["agent"]
+required_executables = [{requirement:?}]
+"#
+            );
+            assert!(
+                matches!(parse(&text), Err(IntegrationError::Invalid(_))),
+                "accepted invalid executable requirement {requirement:?}"
+            );
+        }
+
+        for requirements in [
+            format!("{:?}", vec!["grok"; MAX_REQUIRED_EXECUTABLES + 1]),
+            format!("[{:?}]", "x".repeat(MAX_EXECUTABLE_NAME_BYTES + 1)),
+        ] {
+            let text = format!(
+                r#"
+id = "oversized-requirement"
+[launch]
+command = ["agent"]
+required_executables = {requirements}
+"#
+            );
+            assert!(matches!(parse(&text), Err(IntegrationError::Invalid(_))));
+        }
     }
 
     #[test]
