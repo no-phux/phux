@@ -747,17 +747,44 @@ pub fn terminalTitleInto(model: *const Model, id: TerminalRef, out: []u8) []cons
     return remoteTitle(model, id);
 }
 
+/// The same chain for a Phux terminal, reading what the replica reports live
+/// (title, then the working-directory basename) before what the attach
+/// catalog recorded, which can only be older.
 fn remoteTitle(model: *const Model, id: TerminalRef) []const u8 {
-    if (model.remotePresentation(id)) |presentation| {
-        if (presentation.title.len != 0) return clampTitle(presentation.title);
+    const presentation = model.remotePresentation(id);
+    if (presentation) |value| {
+        if (value.title.len != 0) return clampTitle(value.title);
+        if (cwdLeaf(value.cwd)) |leaf| return clampTitle(leaf);
     }
-    const remote = model.phuxForRefConst(id) orelse return "Phux";
-    for (remote.catalogTerminals()) |*entry| {
-        if (!entry.terminal_ref.eql(id)) continue;
-        if (entry.title.len != 0) return clampTitle(entry.title.slice());
-        if (entry.cwd.len != 0) return clampTitle(entry.cwd.slice());
-    }
+    const entry = catalogEntry(model, id) orelse return "Phux";
+    if (entry.title.len != 0) return clampTitle(entry.title.slice());
+    if (cwdLeaf(entry.cwd.slice())) |leaf| return clampTitle(leaf);
     return "Phux";
+}
+
+fn catalogEntry(model: *const Model, id: TerminalRef) ?*const provider_contract.workspace.CatalogTerminal {
+    const remote = model.phuxForRefConst(id) orelse return null;
+    for (remote.catalogTerminals()) |*entry| {
+        if (entry.terminal_ref.eql(id)) return entry;
+    }
+    return null;
+}
+
+/// The name a working directory gives a tab: its basename, or `/` for the
+/// root (whose basename is empty). An empty directory names nothing.
+fn cwdLeaf(cwd: []const u8) ?[]const u8 {
+    const leaf = std.fs.path.basename(cwd);
+    if (leaf.len != 0) return leaf;
+    return if (cwd.len != 0) "/" else null;
+}
+
+/// Whether a terminal sits at a shell prompt, answered the same way for both
+/// providers: the local emulator's OSC-133 read, or a Phux terminal's last
+/// command boundary. False means "busy" or "unknown"; neither guesses.
+pub fn terminalAtPrompt(model: *const Model, id: TerminalRef) bool {
+    if (model.provider.terminalConst(id)) |pane| return pane.atPrompt();
+    const remote = model.phuxForRefConst(id) orelse return false;
+    return remote.atPrompt(id);
 }
 
 /// The coordinator whose shared workspace a tab came from.

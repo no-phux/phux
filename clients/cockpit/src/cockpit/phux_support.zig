@@ -302,6 +302,9 @@ const DisabledPhuxProvider = struct {
     pub fn presentation(_: *const DisabledPhuxProvider, _: TerminalRef) ?Presentation {
         return null;
     }
+    pub fn atPrompt(_: *const DisabledPhuxProvider, _: TerminalRef) bool {
+        return false;
+    }
     pub fn setColorPolicy(_: *const DisabledPhuxProvider, _: anytype) void {}
     pub fn lastViewport(_: *const DisabledPhuxProvider, _: TerminalRef) ?Viewport {
         return null;

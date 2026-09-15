@@ -110,6 +110,8 @@ const PeerFx = struct {
     pub fn closeChannel(_: *@This(), _: u64) void {}
     pub fn showNotification(_: *@This(), _: anytype) void {}
     pub fn ptyResize(_: *@This(), _: u64, _: u16, _: u16) void {}
+    pub fn closeWindow(_: *@This(), _: []const u8) void {}
+    pub fn quitApp(_: *@This()) void {}
 
     fn total(self: *const @This()) usize {
         var sum: usize = 0;

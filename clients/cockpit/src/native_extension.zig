@@ -5438,6 +5438,8 @@ test "shipping remote bell uses native notifications and owner fenced attention"
     const fixtures = @TypeOf(remote.*).test_support;
     const BellFx = struct {
         notifications: usize = 0,
+        pub fn closeWindow(_: *@This(), _: []const u8) void {}
+        pub fn quitApp(_: *@This()) void {}
         pub fn openChannel(_: *@This(), _: anytype) native_sdk.ChannelHandle {
             return .{};
         }

@@ -556,6 +556,7 @@ test {
     _ = @import("new_session_runtime_tests.zig");
     _ = @import("machine_runtime_tests.zig");
     _ = @import("cockpit/native/close_runtime_tests.zig");
+    _ = @import("cockpit/native/remote_status_tests.zig");
     _ = @import("cockpit/native/local_tool_launch.zig");
     _ = @import("cockpit/native/machine_browse.zig");
     _ = @import("cockpit/native/window_contexts.zig");
