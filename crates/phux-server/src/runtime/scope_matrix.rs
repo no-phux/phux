@@ -199,6 +199,7 @@ fn workload_identity(id: &str) -> ConnectionIdentity {
             registry_instance: None,
         }),
         ssh_origin: None,
+        bearer: None,
     }
 }
 

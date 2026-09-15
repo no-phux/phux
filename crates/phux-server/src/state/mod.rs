@@ -1488,6 +1488,7 @@ mod tests {
             cid,
             crate::auth::ConnectionIdentity {
                 ssh_origin: None,
+                bearer: None,
                 peer: phux_protocol::policy::PeerIdentity {
                     uid: 0,
                     pid: None,

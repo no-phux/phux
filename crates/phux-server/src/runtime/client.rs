@@ -36,8 +36,11 @@ use super::{
     handle_terminal_input, handle_terminal_reply, handle_terminal_resize, handle_viewport_resize,
     subscribe_attach_terminal,
 };
+use crate::auth::Standing;
+use crate::policy::{Goodbye, Revocation};
 use crate::state::{
-    ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, ServerInterceptedKey, SharedState, TerminalInput,
+    ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, ServerInterceptedKey, ServerState, SharedState,
+    TerminalInput,
 };
 use crate::terminal_actor::ConsumerDetachRequest;
 use crate::transport::quic::{
@@ -308,7 +311,8 @@ mod input_receipt_capacity_tests {
                 let lane = lane_owner.handle();
                 let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
                 let token = CancellationToken::new();
-                let mut command_tasks = super::super::command_tasks::CommandTasks::new();
+                let mut command_tasks =
+                    super::super::command_tasks::CommandTasks::new(token.clone());
                 let mut receipts = JoinSet::new();
                 let slots = Arc::new(tokio::sync::Semaphore::new(0));
                 let operation_id = InputOperationId::new([0x44; 16]).unwrap();
@@ -571,6 +575,7 @@ mod negotiated_feature_tests {
                         },
                         credential: None,
                         ssh_origin: None,
+                        bearer: None,
                     },
                 );
             });
@@ -1850,17 +1855,78 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     // BEFORE tearing anything down. Runs for every connection teardown,
     // but the `client-detached` hook fires only for attached clients —
     // a connection that never attached never "detaches".
-    let attached_session: Option<Option<String>> = state.with(|s| {
-        s.attached().get(&client_id).map(|client| {
-            s.registry()
-                .session(client.session)
-                .map(|session| session.name.clone())
-        })
-    });
-    let wire_client_id =
-        phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
-    let handles = state.with(|s| s.subscribed_resource_handles(client_id));
-    for handle in handles {
+    let attached_session = state.with(|s| attached_session_name(s, client_id));
+    state.with(|s| release_actor_consumers(s, client_id));
+    // The `Released` transitions name this client as their actor.
+    state.with(|s| announce_lease_releases(s, client_id, Some(wire_client(client_id))));
+    state.with(|s| release_relay_state(s, client_id));
+    state.with_mut(|s| s.detach(client_id));
+    fire_client_detached(state, client_id, attached_session);
+}
+
+/// `workload-auth.md` §7 step 2, inside the caller's state lock: the teardown
+/// [`detach_and_release_consumer_state`] performs, in one critical section,
+/// so nothing the connection held outlives the revocation that withdrew it.
+/// The lease releases name no actor, because the server released them.
+///
+/// Returns the attached session for [`fire_client_detached`], which the
+/// caller runs off-lock.
+pub(crate) fn release_revoked_consumer_state(
+    s: &mut ServerState,
+    client_id: ClientId,
+) -> Option<DetachedFrom> {
+    let attached_session = attached_session_name(s, client_id);
+    release_actor_consumers(s, client_id);
+    announce_lease_releases(s, client_id, None);
+    release_relay_state(s, client_id);
+    s.detach(client_id);
+    attached_session
+}
+
+/// docs/consumers/tui.md §9 (phux-r82.1): the client is fully detached — the
+/// `client-detached` hook point (any reason: explicit DETACH, transport
+/// drop, EOF, revocation). Skipped for connections that never attached.
+pub(crate) fn fire_client_detached(
+    state: &SharedState,
+    client_id: ClientId,
+    detached_from: Option<DetachedFrom>,
+) {
+    if let Some(from) = detached_from {
+        crate::hooks::fire_hook(
+            state,
+            crate::hooks::HookEvent::client_detached(client_id, from.session_name.as_deref()),
+        );
+    }
+}
+
+/// The session an attached client was attached to, captured before its
+/// teardown for the `client-detached` hook.
+pub(crate) struct DetachedFrom {
+    /// The session's name; `None` once the session itself is gone.
+    session_name: Option<String>,
+}
+
+/// Where the client is attached, or `None` when it never attached.
+fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<DetachedFrom> {
+    s.attached().get(&client_id).map(|client| DetachedFrom {
+        session_name: s
+            .registry()
+            .session(client.session)
+            .map(|session| session.name.clone()),
+    })
+}
+
+/// The wire form of a server-local client id.
+fn wire_client(client_id: ClientId) -> phux_protocol::ids::ClientId {
+    phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX))
+}
+
+/// Free the per-consumer state-sync entries every pane this client
+/// subscribes to allocated for it. `try_send` is non-blocking and
+/// best-effort, so this is safe under the state lock.
+fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
+    let wire_client_id = wire_client(client_id);
+    for handle in s.subscribed_resource_handles(client_id) {
         // Native history cuts are a Terminal facet lease; a resource of
         // another kind never held one.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -1889,58 +1955,57 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
             }
         }
     }
-    // Release any input leases this client held (ADR-0033) and broadcast the
-    // `Released` transition so other clients stop showing it as the holder.
-    // Gathered under-lock; the `control` sends happen off-lock. `detach`
-    // (below) clears the lease state regardless, so this is purely the
-    // observable-event half — a saturated/closed mailbox is benign.
-    let released: Vec<crate::resource::ResourceHandle> = state.with(|s| {
-        s.leases_held_by(client_id)
-            .into_iter()
-            .filter_map(|pane| s.resource_handle(pane).cloned())
-            .collect()
-    });
-    for handle in released {
+}
+
+/// Broadcast the `Released` transition for every input lease this client
+/// holds (ADR-0033), so other clients stop showing it as the holder; each
+/// pane's actor journals it (ADR-0123). `actor` is the client when it gave
+/// the lease up, `None` when the server took it back. `detach` clears the
+/// lease state regardless, so this is purely the observable-event half — a
+/// saturated or closed mailbox is benign.
+fn announce_lease_releases(
+    s: &ServerState,
+    client_id: ClientId,
+    actor: Option<phux_protocol::ids::ClientId>,
+) {
+    for pane in s.leases_held_by(client_id) {
+        let Some(handle) = s.resource_handle(pane) else {
+            continue;
+        };
         let _ = handle
             .control
             .try_send(crate::terminal_actor::ControlRequest::LeaseChanged {
                 input_holder: None,
                 action: phux_protocol::wire::frame::ControlAction::Released,
-                actor: wire_client_id,
+                actor,
             });
     }
+}
+
+/// Drop this client's federation relay state. Empty (no-op) on a non-hub
+/// server.
+fn release_relay_state(s: &ServerState, client_id: ClientId) {
     // Federation relay (phux-v45.4): drop every hub-side proxy
     // subscription this client holds on any satellite link — the
     // counterpart to the registrations the satellite-scoped
     // SUBSCRIBE_EVENTS / SUBSCRIBE_RESOURCE_EVENTS / ATTACH_RESOURCE
-    // paths performed. Empty (no-op) on a non-hub server. Undroppable
-    // (phux-v45.11 finding 1): rides the unbounded unsubscribe channel,
-    // so a saturated relay mailbox can never leave a stale subscriber
-    // that outlives its consumer.
-    for relay in state.with(crate::state::ServerState::hub_relays_all) {
+    // paths performed. Undroppable (phux-v45.11 finding 1): rides the
+    // unbounded unsubscribe channel, so a saturated relay mailbox can never
+    // leave a stale subscriber that outlives its consumer.
+    for relay in s.hub_relays_all() {
         relay.unsubscribe_client(client_id);
     }
     // Release any hub-side satellite input leases this client held
-    // (phux-v45.7, the federation mirror of the ADR-0033 release above):
-    // relay a detached RELEASE_INPUT per lease so the satellite-side
-    // lease (held by the link identity) follows the hub-side ledger,
-    // which `detach` below clears regardless.
-    for (host, terminal) in state.with(|s| s.satellite_leases_held_by(client_id)) {
-        if let Some(relay) = state.with(|s| s.hub_relay(&host)) {
+    // (phux-v45.7, the federation mirror of the ADR-0033 release): relay a
+    // detached RELEASE_INPUT per lease so the satellite-side lease (held by
+    // the link identity) follows the hub-side ledger, which `detach` clears
+    // regardless.
+    for (host, terminal) in s.satellite_leases_held_by(client_id) {
+        if let Some(relay) = s.hub_relay(&host) {
             relay.command_detached(phux_protocol::wire::frame::Command::ReleaseInput {
                 terminal_id: phux_protocol::ids::ResourceId::local(terminal),
             });
         }
-    }
-    state.with_mut(|s| s.detach(client_id));
-    // docs/consumers/tui.md §9 (phux-r82.1): the client is fully detached —
-    // the `client-detached` hook point (any reason: explicit DETACH,
-    // transport drop, EOF). Skipped for connections that never attached.
-    if let Some(session_name) = attached_session {
-        crate::hooks::fire_hook(
-            state,
-            crate::hooks::HookEvent::client_detached(client_id, session_name.as_deref()),
-        );
     }
 }
 
@@ -2593,23 +2658,30 @@ struct ClientPlumbing {
     /// task is spawned when the connection is accepted, which is strictly
     /// before the HELLO that selects the compression has been read.
     compression: Arc<AtomicU8>,
+    /// The connection's revocation signal, handed to every writer it spawns.
+    revocation: tokio::sync::watch::Receiver<Option<Goodbye>>,
 }
 
 impl ClientPlumbing {
     /// Allocate the per-client outbound mailbox and spawn the writer task that
     /// drains it. The writer drains one `Outbound` channel; closure of that one
     /// channel is the unambiguous signal for the writer to exit.
-    fn spawn<W: FrameWriter + 'static>(writer: W, client_id: ClientId) -> Self {
+    fn spawn<W: FrameWriter + 'static>(
+        writer: W,
+        client_id: ClientId,
+        revocation: tokio::sync::watch::Receiver<Option<Goodbye>>,
+    ) -> Self {
         let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
         let (writer_close, writer_close_rx) = tokio::sync::watch::channel(false);
         let mut sibling_tasks: JoinSet<()> = JoinSet::new();
         let compression = Arc::new(AtomicU8::new(Compression::None.as_u8()));
-        sibling_tasks.spawn_local(writer_task(
+        sibling_tasks.spawn_local(revocable_writer_task(
             writer,
             out_rx,
             writer_close_rx,
             Arc::clone(&compression),
             client_id,
+            RevocationWatch::control(revocation.clone()),
         ));
         Self {
             out_tx,
@@ -2619,6 +2691,7 @@ impl ClientPlumbing {
             stream_bindings: HashMap::new(),
             retired_streams: JoinSet::new(),
             compression,
+            revocation,
         }
     }
 
@@ -2666,12 +2739,13 @@ impl ClientPlumbing {
         let (writer_close, writer_close_rx) = tokio::sync::watch::channel(false);
         let mut writer_tasks: JoinSet<()> = JoinSet::new();
         let diagnostics = Some(writer.diagnostic_tracker());
-        writer_tasks.spawn_local(writer_task(
+        writer_tasks.spawn_local(revocable_writer_task(
             writer,
             rx,
             writer_close_rx,
             Arc::clone(&self.compression),
             client_id,
+            RevocationWatch::stream(self.revocation.clone()),
         ));
         let sender = tx.clone();
         let ingress_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -3010,6 +3084,22 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
             message: "authenticated peer identity missing".to_owned(),
         });
     };
+    // A bearer revoked or expired since its upgrade mints nothing: a new
+    // grant fails closed, even against a store that gives the live watcher
+    // no verdict (workload-auth §7). A workload credential is re-read from
+    // the live registry by the engine itself.
+    let bearer = state.with(|s| s.bearer_admission(client_id).cloned());
+    if bearer.is_some_and(|bearer| !matches!(bearer.standing(), Some(Standing::Active { .. }))) {
+        warn!(
+            ?client_id,
+            "HELLO denied: the admitting bearer no longer stands"
+        );
+        return Err(ConnectionClose {
+            attached_reason: None,
+            code: ErrorCode::PermissionDenied,
+            message: "policy denied: unauthorized: not authorized".to_owned(),
+        });
+    }
     let engine = state.with(|s| s.policy_engine().clone());
     // HELLO carries no scope request (workload-auth §5): the engine mints
     // the connection's grant from its verified identity alone, and the
@@ -3261,8 +3351,13 @@ where
     W: FrameWriter + 'static,
 {
     debug!(?client_id, "client task started");
+    // The revocation signal is set under the state lock when the
+    // connection's authority is withdrawn while it is live; its writers
+    // watch it (workload-auth §7).
+    let (revocation_tx, revocation_rx) = tokio::sync::watch::channel(None);
     state.with_mut(|server| {
         server.set_client_connection_cancellation(client_id, token.clone());
+        server.set_revocation_signal(client_id, revocation_tx);
     });
     // However this task ends (EOF included, not only cancellation), the
     // connection token fires, so no per-connection task (an event pump, a
@@ -3272,8 +3367,8 @@ where
     // Held in this scope so it drops with `handle_client`: the writer aborts
     // if it hasn't already exited via its own close-on-EOF path, and the
     // per-attach pumps go with it. Keeps lifecycle plumbing local.
-    let mut plumbing = ClientPlumbing::spawn(writer, client_id);
-    let mut command_tasks = super::command_tasks::CommandTasks::new();
+    let mut plumbing = ClientPlumbing::spawn(writer, client_id, revocation_rx);
+    let mut command_tasks = super::command_tasks::CommandTasks::new(token.clone());
     let mut input_receipts = JoinSet::new();
     let input_receipt_slots =
         std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_INPUT_RECEIPTS));
@@ -5777,6 +5872,179 @@ fn drain_ready_into_batch(
     None
 }
 
+/// How a writer learns that its connection's authority was withdrawn.
+#[derive(Clone, Default)]
+pub(crate) struct RevocationWatch {
+    rx: Option<tokio::sync::watch::Receiver<Option<Goodbye>>>,
+    /// Whether this writer carries the connection's control stream, the one
+    /// the goodbye frames ride. A bound Terminal stream only closes.
+    control: bool,
+}
+
+impl RevocationWatch {
+    /// The watch for the connection's control-stream writer.
+    const fn control(rx: tokio::sync::watch::Receiver<Option<Goodbye>>) -> Self {
+        Self {
+            rx: Some(rx),
+            control: true,
+        }
+    }
+
+    /// The watch for a bound Terminal stream's writer.
+    const fn stream(rx: tokio::sync::watch::Receiver<Option<Goodbye>>) -> Self {
+        Self {
+            rx: Some(rx),
+            control: false,
+        }
+    }
+
+    /// The goodbye owed, once the connection is revoked.
+    fn current(&self) -> Option<Goodbye> {
+        self.rx.as_ref().and_then(|rx| *rx.borrow())
+    }
+
+    /// Resolve once the connection is revoked; never, without a signal.
+    async fn revoked(&mut self) -> Goodbye {
+        let Some(rx) = self.rx.as_mut() else {
+            return std::future::pending().await;
+        };
+        loop {
+            let current = *rx.borrow_and_update();
+            if let Some(goodbye) = current {
+                return goodbye;
+            }
+            if rx.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+        }
+    }
+
+    /// Run one transport operation unless the connection is revoked while
+    /// it is pending. `None` means the operation was abandoned mid-way.
+    async fn unless_revoked<T>(
+        &mut self,
+        operation: impl std::future::Future<Output = io::Result<T>>,
+    ) -> Option<io::Result<T>> {
+        tokio::select! {
+            biased;
+            result = operation => Some(result),
+            _ = self.revoked() => None,
+        }
+    }
+}
+
+/// Why a writer stops taking messages.
+enum WriterStop {
+    /// The mailbox is done: close normally.
+    Closed,
+    /// The connection's authority was withdrawn.
+    Revoked(Goodbye),
+}
+
+/// The next message the generation fence admits, unless the mailbox closes
+/// or the connection is revoked first. Revocation wins a tie.
+async fn next_admitted(
+    rx: &mut tokio::sync::mpsc::Receiver<Outbound>,
+    close: &mut tokio::sync::watch::Receiver<bool>,
+    close_control_open: &mut bool,
+    generation_fence: &mut OutboundGenerationFence,
+    revocation: &mut RevocationWatch,
+) -> Result<Outbound, WriterStop> {
+    loop {
+        let next = tokio::select! {
+            biased;
+            goodbye = revocation.revoked() => return Err(WriterStop::Revoked(goodbye)),
+            next = next_outbound(rx, close, close_control_open) => next,
+        };
+        let message = next.ok_or(WriterStop::Closed)?;
+        if generation_fence.admits(&message) {
+            return Ok(message);
+        }
+    }
+}
+
+/// The frames a revoked connection is owed (`workload-auth.md` §7 step 3).
+fn goodbye_frames(revocation: Revocation) -> [FrameKind; 2] {
+    [
+        FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::PermissionDenied,
+            message: revocation.message().to_owned(),
+        },
+        FrameKind::Detached {
+            reason: Some(revocation.detach_reason()),
+            message: revocation.message().to_owned(),
+        },
+    ]
+}
+
+/// Say what a revoked connection is owed, then close (`workload-auth.md` §7
+/// steps 3 and 4). Nothing queued behind the revocation is written: the
+/// mailbox drops with this task. Each step is bounded by
+/// [`WRITER_DRAIN_TIMEOUT`], so a peer that stopped reading cannot hold the
+/// connection open.
+async fn say_goodbye<W: FrameWriter>(
+    writer: &mut W,
+    buf: &mut BytesMut,
+    goodbye: Goodbye,
+    control: bool,
+    client_id: ClientId,
+) {
+    if let (true, Goodbye::Announce(revocation)) = (control, goodbye) {
+        buf.clear();
+        let mut ends = Vec::with_capacity(2);
+        for frame in goodbye_frames(revocation) {
+            frame.encode(buf);
+            ends.push(buf.len());
+        }
+        let farewell = async {
+            writer.write_frames(buf, &ends).await?;
+            writer.flush().await
+        };
+        if !matches!(
+            tokio::time::timeout(WRITER_DRAIN_TIMEOUT, farewell).await,
+            Ok(Ok(()))
+        ) {
+            debug!(
+                ?client_id,
+                "goodbye to a revoked connection was not delivered"
+            );
+        }
+    }
+    let _ = tokio::time::timeout(WRITER_DRAIN_TIMEOUT, writer.close()).await;
+    debug!(?client_id, ?goodbye, "writer closed: authority withdrawn");
+}
+
+/// Settle one transport write or flush. `false` when the writer must stop:
+/// the step failed, or a revocation interrupted it (`outcome` is `None`);
+/// either way the transport is closed.
+async fn step_succeeded<W: FrameWriter>(
+    writer: &mut W,
+    outcome: Option<io::Result<()>>,
+    client_id: ClientId,
+    step: &'static str,
+) -> bool {
+    match outcome {
+        Some(Ok(())) => true,
+        Some(Err(err)) => {
+            debug!(?client_id, error = %err, step, "writer step failed; client task ending");
+            let _ = writer.close().await;
+            false
+        }
+        None => {
+            abandon_after_revocation(writer, client_id).await;
+            false
+        }
+    }
+}
+
+/// A write the revocation interrupted may have stopped mid-frame, so no
+/// goodbye can follow it: close within the bound.
+async fn abandon_after_revocation<W: FrameWriter>(writer: &mut W, client_id: ClientId) {
+    debug!(?client_id, "revoked mid-write; closing without a goodbye");
+    let _ = tokio::time::timeout(WRITER_DRAIN_TIMEOUT, writer.close()).await;
+}
+
 /// Take the next mailbox item, honouring the close control.
 ///
 /// Clears `close_control_open` once the control has fired or gone away, so
@@ -5834,12 +6102,36 @@ async fn finish_with_terminal_error<W: FrameWriter>(
 ///
 /// Exits when the channel closes — i.e. the client task drops its
 /// sender.
+#[cfg(test)]
 pub(crate) async fn writer_task<W: FrameWriter>(
+    writer: W,
+    rx: tokio::sync::mpsc::Receiver<Outbound>,
+    close: tokio::sync::watch::Receiver<bool>,
+    compression: Arc<AtomicU8>,
+    client_id: ClientId,
+) {
+    revocable_writer_task(
+        writer,
+        rx,
+        close,
+        compression,
+        client_id,
+        RevocationWatch::default(),
+    )
+    .await;
+}
+
+/// [`writer_task`] for a live connection, which also watches `revocation`:
+/// once the connection's authority is withdrawn, nothing still queued is
+/// written, the goodbye is, and the transport closes
+/// (`docs/spec/workload-auth.md` §7).
+async fn revocable_writer_task<W: FrameWriter>(
     mut writer: W,
     mut rx: tokio::sync::mpsc::Receiver<Outbound>,
     mut close: tokio::sync::watch::Receiver<bool>,
     compression: Arc<AtomicU8>,
     client_id: ClientId,
+    mut revocation: RevocationWatch,
 ) {
     let mut buf = BytesMut::with_capacity(1024);
     // Staging buffer for the uncompressed image of a frame being wrapped.
@@ -5854,13 +6146,27 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         ..OutboundGenerationFence::default()
     };
     'writer: loop {
-        let message = loop {
-            let Some(message) = next_outbound(&mut rx, &mut close, &mut close_control_open).await
-            else {
-                break 'writer;
-            };
-            if generation_fence.admits(&message) {
-                break message;
+        let message = match next_admitted(
+            &mut rx,
+            &mut close,
+            &mut close_control_open,
+            &mut generation_fence,
+            &mut revocation,
+        )
+        .await
+        {
+            Ok(message) => message,
+            Err(WriterStop::Closed) => break 'writer,
+            Err(WriterStop::Revoked(goodbye)) => {
+                say_goodbye(
+                    &mut writer,
+                    &mut buf,
+                    goodbye,
+                    revocation.control,
+                    client_id,
+                )
+                .await;
+                return;
             }
         };
         // Encode this message plus everything already queued behind it into
@@ -5892,11 +6198,25 @@ pub(crate) async fn writer_task<W: FrameWriter>(
                 &mut ends,
             );
         }
+        // Revoked while this batch was being gathered: none of it is owed to
+        // a peer whose authority is gone.
+        if let Some(goodbye) = revocation.current() {
+            say_goodbye(
+                &mut writer,
+                &mut buf,
+                goodbye,
+                revocation.control,
+                client_id,
+            )
+            .await;
+            return;
+        }
         let write_started = std::time::Instant::now();
         let batch_len = buf.len();
-        if let Err(err) = writer.write_frames(&buf, &ends).await {
-            debug!(?client_id, error = %err, "writer error on frame; client task ending");
-            let _ = writer.close().await;
+        let written = revocation
+            .unless_revoked(writer.write_frames(&buf, &ends))
+            .await;
+        if !step_succeeded(&mut writer, written, client_id, "write").await {
             return;
         }
         if let Some(message) = terminal_message {
@@ -5907,9 +6227,8 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         // WebSocket transport does, because one frame must still be one
         // binary message — so the batch leaves here, once, rather than
         // paying a flush per 4 KiB `RESOURCE_OUTPUT`.
-        if let Err(err) = writer.flush().await {
-            debug!(?client_id, error = %err, "writer flush failed; client task ending");
-            let _ = writer.close().await;
+        let flushed = revocation.unless_revoked(writer.flush()).await;
+        if !step_succeeded(&mut writer, flushed, client_id, "flush").await {
             return;
         }
         crate::perf::WIRE_WRITE.record_elapsed(write_started);

@@ -49,6 +49,7 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Utc};
 use phux_protocol::policy::{PeerIdentity, TransportType};
 use phux_protocol::scope::{EffectiveScopeSet, ScopeError, ScopeGrant, TerminalScopeSet};
+use phux_protocol::wire::frame::DetachReason;
 use tracing::debug;
 
 use crate::auth::AuthenticatedCredential;
@@ -66,6 +67,70 @@ pub const POLICY_TARGET: &str = "phux_server::policy";
 /// connection (`workload-auth.md` §7). Denied frames past the limit are
 /// still dropped; only the error is suppressed.
 pub const DENIAL_ERROR_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Why a live connection's authority was withdrawn (`workload-auth.md` §7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Revocation {
+    /// The credential was removed or revoked, its store stopped loading, or
+    /// the ceiling no longer contains the minted grant.
+    Revoked,
+    /// The credential reached its expiry.
+    Expired,
+}
+
+impl Revocation {
+    /// The `DETACHED` reason that ends the connection.
+    #[must_use]
+    pub const fn detach_reason(self) -> DetachReason {
+        match self {
+            Self::Revoked => DetachReason::AuthorizationRevoked,
+            Self::Expired => DetachReason::AuthorizationExpired,
+        }
+    }
+
+    /// The diagnostic text on the goodbye frames. Names no credential and
+    /// no rule.
+    #[must_use]
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::Revoked => "authorization revoked",
+            Self::Expired => "authorization expired",
+        }
+    }
+}
+
+/// What a connection's writer owes the peer once its authority is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Goodbye {
+    /// `ERROR { PERMISSION_DENIED }`, then `DETACHED` with the revocation's
+    /// reason, then close.
+    Announce(Revocation),
+    /// Close with no frame: the connection never completed HELLO, so there
+    /// is no attach for a `DETACHED` to end (`workload-auth.md` §7).
+    Silent,
+}
+
+/// The registry state a live scoped grant was last confirmed against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistryStamp {
+    /// The registry file instance.
+    pub instance: Option<String>,
+    /// The registry generation.
+    pub generation: u64,
+    /// The credential's expiry in that state.
+    pub expires_at: Option<DateTime<Utc>>,
+}
+
+/// One live connection as the revocation watcher sees it.
+#[derive(Debug, Clone)]
+pub(crate) struct WatchedConnection {
+    /// The connection.
+    pub(crate) client: crate::state::ClientId,
+    /// Its grant, as it stood when the watcher looked.
+    pub(crate) grant: ConnectionGrant,
+    /// The pairing-store admission, if a bearer token admitted it.
+    pub(crate) bearer: Option<crate::auth::BearerAdmission>,
+}
 
 /// What a connection may do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +177,9 @@ pub struct ConnectionGrant {
     pub expires_at: Option<DateTime<Utc>>,
     /// When this connection was last sent an uncorrelated denial.
     last_denial_error: Option<Instant>,
+    /// Set once the connection's authority was withdrawn while it was live;
+    /// every guard then denies everything (`workload-auth.md` §7 step 1).
+    revoked: Option<Revocation>,
 }
 
 impl ConnectionGrant {
@@ -125,6 +193,7 @@ impl ConnectionGrant {
             registry_generation: 0,
             expires_at: None,
             last_denial_error: None,
+            revoked: None,
         }
     }
 
@@ -147,6 +216,7 @@ impl ConnectionGrant {
             registry_generation: 0,
             expires_at: None,
             last_denial_error: None,
+            revoked: None,
         })
     }
 
@@ -174,6 +244,38 @@ impl ConnectionGrant {
         self.last_denial_error = Some(now);
         true
     }
+
+    /// The owner-shaped placeholder for a connection revoked before its
+    /// HELLO minted anything: it admits nothing, and a grant minted later
+    /// never replaces it.
+    #[must_use]
+    pub(crate) const fn revoked_placeholder(revocation: Revocation) -> Self {
+        let mut grant = Self::owner();
+        grant.revoked = Some(revocation);
+        grant
+    }
+
+    /// Why the connection's authority was withdrawn, once it was.
+    #[must_use]
+    pub const fn revocation(&self) -> Option<Revocation> {
+        self.revoked
+    }
+
+    /// Withdraw the grant. The first cause sticks.
+    pub(crate) const fn revoke(&mut self, revocation: Revocation) {
+        if self.revoked.is_none() {
+            self.revoked = Some(revocation);
+        }
+    }
+
+    /// Adopt a newer registry state that still contains every minted
+    /// clause: the clauses stay as minted; the stamp and the expiry follow
+    /// the registry.
+    pub(crate) fn refresh(&mut self, stamp: RegistryStamp) {
+        self.registry_instance = stamp.instance;
+        self.registry_generation = stamp.generation;
+        self.expires_at = stamp.expires_at;
+    }
 }
 
 /// The boxed future [`PolicyEngine::authorize_hello`] returns.
@@ -197,6 +299,14 @@ pub trait PolicyEngine: Send + Sync + std::fmt::Debug {
         peer_identity: &'a PeerIdentity,
         credential: Option<&'a AuthenticatedCredential>,
     ) -> GrantFuture<'a>;
+
+    /// The live workload registry this engine mints scoped grants from, so
+    /// the revocation watcher can re-judge them (`workload-auth.md` §7).
+    /// `None` for an engine that reads no registry: only expiry then ends
+    /// its grants.
+    fn workload_registry(&self) -> Option<Arc<ReloadingWorkloadRegistry>> {
+        None
+    }
 }
 
 /// The transitional engine: every admitted connection holds the owner's
@@ -273,6 +383,10 @@ impl PolicyEngine for ScopedPolicy {
         credential: Option<&'a AuthenticatedCredential>,
     ) -> GrantFuture<'a> {
         Box::pin(async move { self.decide(peer_identity, credential) })
+    }
+
+    fn workload_registry(&self) -> Option<Arc<ReloadingWorkloadRegistry>> {
+        self.registry.clone()
     }
 }
 

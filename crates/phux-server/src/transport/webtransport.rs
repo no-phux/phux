@@ -182,6 +182,13 @@ impl WtListener {
             transport: TransportType::WebTransport,
             source_addr: Some(remote.ip()),
         };
+        // Kept so the bearer's revocation ends the connection live.
+        let bearer = tokens
+            .as_ref()
+            .zip(credential.as_ref())
+            .map(|(store, credential)| {
+                crate::auth::BearerAdmission::new(Arc::clone(store), credential)
+            });
 
         // Each half keeps a clone of the session-owning `Connection`: dropping
         // the last handle tears the WebTransport session down, and the frame
@@ -202,6 +209,7 @@ impl WtListener {
                 peer: peer_identity,
                 credential,
                 ssh_origin: None,
+                bearer,
             },
         ))
     }

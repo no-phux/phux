@@ -275,8 +275,10 @@ pub enum ControlRequest {
         input_holder: Option<ClientId>,
         /// What just happened (`Acquired` / `Seized` / `Released`).
         action: ControlAction,
-        /// The client that performed the action.
-        actor: ClientId,
+        /// The client that performed the action; `None` when the server
+        /// released the lease on its own, as live revocation does
+        /// (`docs/spec/workload-auth.md` §7).
+        actor: Option<ClientId>,
     },
     /// Something other than the detector wrote this pane's `phux.agent/v1`
     /// record (an explicit `SET_METADATA` or `DELETE_METADATA`), so the

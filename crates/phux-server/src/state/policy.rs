@@ -104,13 +104,114 @@ impl ServerState {
     }
 
     /// Retain the grant the policy engine minted for this connection at
-    /// HELLO (`docs/spec/workload-auth.md` §7).
+    /// HELLO (`docs/spec/workload-auth.md` §7), and wake the revocation
+    /// watcher when the connection is one it must watch.
+    ///
+    /// A connection revoked while its HELLO was being authorized keeps its
+    /// revoked placeholder: the grant never becomes live.
     pub fn set_connection_grant(
         &mut self,
         client_id: ClientId,
         grant: crate::policy::ConnectionGrant,
     ) {
+        if self.connection_revoked(client_id) {
+            return;
+        }
+        let watched = !grant.is_owner() || self.bearer_admission(client_id).is_some();
         self.clients.grants.insert(client_id, grant);
+        if watched {
+            self.clients.revocation_wake.notify_one();
+        }
+    }
+
+    /// The pairing-store admission retained for this connection, if a
+    /// bearer token admitted it.
+    #[must_use]
+    pub(crate) fn bearer_admission(
+        &self,
+        client_id: ClientId,
+    ) -> Option<&crate::auth::BearerAdmission> {
+        self.clients
+            .peer_identities
+            .get(&client_id)
+            .and_then(|identity| identity.bearer.as_ref())
+    }
+
+    /// Whether this connection's authority was withdrawn while it was live.
+    #[must_use]
+    pub fn connection_revoked(&self, client_id: ClientId) -> bool {
+        self.connection_grant(client_id)
+            .is_some_and(|grant| grant.revocation().is_some())
+    }
+
+    /// Register the sending half of this connection's revocation signal.
+    pub(crate) fn set_revocation_signal(
+        &mut self,
+        client_id: ClientId,
+        signal: tokio::sync::watch::Sender<Option<crate::policy::Goodbye>>,
+    ) {
+        self.clients.revocation_signals.insert(client_id, signal);
+    }
+
+    /// The handle that wakes the revocation watcher.
+    #[must_use]
+    pub(crate) fn revocation_wake(&self) -> std::sync::Arc<tokio::sync::Notify> {
+        std::sync::Arc::clone(&self.clients.revocation_wake)
+    }
+
+    /// `workload-auth.md` §7 step 1: withdraw the connection's authority, so
+    /// no guard admits anything from it again, and tell its writer which
+    /// goodbye it owes. A connection with no grant yet is still in its
+    /// handshake: it gets a revoked placeholder and a silent close.
+    pub(crate) fn mark_connection_revoked(
+        &mut self,
+        client_id: ClientId,
+        revocation: crate::policy::Revocation,
+    ) {
+        use crate::policy::{ConnectionGrant, Goodbye};
+        let goodbye = if let Some(grant) = self.clients.grants.get_mut(&client_id) {
+            grant.revoke(revocation);
+            Goodbye::Announce(revocation)
+        } else {
+            self.clients
+                .grants
+                .insert(client_id, ConnectionGrant::revoked_placeholder(revocation));
+            Goodbye::Silent
+        };
+        if let Some(signal) = self.clients.revocation_signals.get(&client_id) {
+            signal.send_replace(Some(goodbye));
+        }
+    }
+
+    /// Every live connection the revocation watcher must re-judge: each
+    /// scoped grant, and each grant a pairing-store bearer admitted.
+    #[must_use]
+    pub(crate) fn watched_connections(&self) -> Vec<crate::policy::WatchedConnection> {
+        self.clients
+            .grants
+            .iter()
+            .filter(|(_, grant)| grant.revocation().is_none())
+            .filter_map(|(client, grant)| {
+                let bearer = self.bearer_admission(*client).cloned();
+                (!grant.is_owner() || bearer.is_some()).then(|| crate::policy::WatchedConnection {
+                    client: *client,
+                    grant: grant.clone(),
+                    bearer,
+                })
+            })
+            .collect()
+    }
+
+    /// Record that a live scoped grant still holds under a newer registry
+    /// state.
+    pub(crate) fn refresh_connection_grant(
+        &mut self,
+        client_id: ClientId,
+        stamp: crate::policy::RegistryStamp,
+    ) {
+        if let Some(grant) = self.clients.grants.get_mut(&client_id) {
+            grant.refresh(stamp);
+        }
     }
 
     /// The grant this connection holds; `None` before HELLO, and for a

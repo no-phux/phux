@@ -384,6 +384,7 @@ impl ServerState {
         self.clients.layers.remove(&client_id);
         self.clients.client_names.remove(&client_id);
         self.clients.connection_cancellations.remove(&client_id);
+        self.clients.revocation_signals.remove(&client_id);
         self.remove_peer_identity(client_id);
     }
 
@@ -427,6 +428,25 @@ impl ServerState {
         session: SessionId,
     ) -> Vec<(ClientId, mpsc::Sender<Outbound>)> {
         self.clients.attached_in_session(session)
+    }
+
+    /// Whether `client_id` holds an agent-event subscription.
+    #[cfg(test)]
+    pub(crate) fn has_event_subscription(&self, client_id: ClientId) -> bool {
+        self.clients.event_subscriptions.contains_key(&client_id)
+    }
+
+    /// Whether `client_id` holds an L3 metadata subscription on `(scope, key)`.
+    #[cfg(test)]
+    pub(crate) fn has_metadata_subscription(
+        &self,
+        client_id: ClientId,
+        scope: &phux_protocol::wire::frame::Scope,
+        key: &str,
+    ) -> bool {
+        self.metadata
+            .subscribers_for(scope, key)
+            .contains(&client_id)
     }
 }
 

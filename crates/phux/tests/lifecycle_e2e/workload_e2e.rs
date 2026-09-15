@@ -601,6 +601,93 @@ fn revoke_marks_the_record_and_a_new_connection_is_refused() {
     assert_eq!(listed["registry_generation"], 2);
 }
 
+/// `workload-auth.md` §8 and §9's secret sweep across a whole enrolled
+/// lifecycle, revocation included: the workload's private key never reaches
+/// the CLI's argv, environment, stdout, or stderr, nor the server's
+/// trace-level log. The mTLS profile carries no nonce or signature bytes of
+/// its own (§3), so the key is the one secret to look for. The trace filter
+/// covers phux's own crates; a dependency's trace output is not phux's
+/// diagnostic surface.
+#[test]
+#[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
+fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    init_authority(dir.path());
+    let client = client_key();
+    let needles = key_needles(&client.key_pem);
+    let cert = dir.path().join("client.pem");
+    let key = dir.path().join("client.key");
+    std::fs::write(&key, &client.key_pem).expect("write client key");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    let id = enroll(dir.path(), &client, &cert, &["*@global"]);
+
+    let port = free_udp_port();
+    std::fs::write(
+        dir.path().join("config/phux/config.toml"),
+        format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
+    )
+    .expect("write registry");
+    let quic = format!("127.0.0.1:{port}");
+    let log = dir.path().join("server.log");
+    let stderr = std::fs::File::create(dir.path().join("server.stderr")).expect("stderr file");
+    let trace =
+        "phux=trace,phux_server=trace,phux_dial=trace,phux_protocol=trace,phux_client=trace,info";
+    let server = server_command(
+        dir.path(),
+        &["--quic", &quic, "--exit-after-idle", "120"],
+        &[
+            ("PHUX_WORKLOAD_MTLS", "1"),
+            ("RUST_LOG", trace),
+            ("PHUX_LOG", log.to_str().expect("utf-8 path")),
+        ],
+    )
+    .stdout(Stdio::null())
+    .stderr(stderr)
+    .spawn()
+    .expect("spawn phux server");
+    let server = Server(server);
+
+    let identity = [
+        ("PHUX_WORKLOAD_CERT", cert.as_path()),
+        ("PHUX_WORKLOAD_KEY", key.as_path()),
+    ];
+    let whoami = ["whoami", "--remote", REMOTE, "--json"];
+    let mut outputs = vec![await_success(dir.path(), &whoami, &identity)];
+    outputs.push(phux(dir.path(), &["workload", "revoke", &id]));
+    outputs.push(phux_with(dir.path(), &whoami, b"", &identity));
+    outputs.push(phux(dir.path(), &["workload", "list", "--json"]));
+    drop(server);
+
+    for out in &outputs {
+        assert_no_key_bytes(out, &needles);
+    }
+    // The key is named by path on every invocation, never carried.
+    let passed: Vec<String> = whoami
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .chain(identity.iter().map(|(_, path)| path.display().to_string()))
+        .collect();
+    for needle in &needles {
+        assert!(
+            !passed.iter().any(|value| value.contains(needle.as_str())),
+            "key bytes reached argv or the environment"
+        );
+    }
+    let mut traced = std::fs::read_to_string(dir.path().join("server.stderr")).unwrap_or_default();
+    traced.push_str(&std::fs::read_to_string(&log).unwrap_or_default());
+    assert!(
+        traced.contains("TRACE") || traced.contains("DEBUG"),
+        "the server's trace log was captured"
+    );
+    for needle in &needles {
+        assert!(
+            !traced.contains(needle.as_str()),
+            "key bytes reached the server's trace log"
+        );
+    }
+}
+
 /// Workload mode refuses to start beside a WebTransport listener, which
 /// cannot carry a client certificate, and says how to fix it.
 #[test]

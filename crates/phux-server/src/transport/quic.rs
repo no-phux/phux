@@ -461,6 +461,7 @@ impl Incoming for QuicListener {
                 }
                 None => None,
             };
+            let bearer = bearer_admission(&self.admission, credential.as_ref());
             let credential = workload_credential.or(credential);
             let peer_identity = PeerIdentity {
                 uid: 0,
@@ -482,6 +483,7 @@ impl Incoming for QuicListener {
                     peer: peer_identity,
                     credential,
                     ssh_origin: None,
+                    bearer,
                 },
             ));
         }
@@ -514,6 +516,22 @@ async fn admit(
         QuicAdmission::Open => None,
         QuicAdmission::Store(store) => authorize_preamble(recv, store).await,
         QuicAdmission::Listener(token) => token.authenticate(&read_preamble(recv).await?),
+    }
+}
+
+/// The pairing-store admission to retain for a connection, so its bearer's
+/// revocation ends it live. A listener token needs none: it dies with its
+/// listener (ADR-0120).
+fn bearer_admission(
+    admission: &QuicAdmission,
+    credential: Option<&crate::auth::AuthenticatedCredential>,
+) -> Option<crate::auth::BearerAdmission> {
+    match (admission, credential) {
+        (QuicAdmission::Store(store), Some(credential)) => Some(crate::auth::BearerAdmission::new(
+            Arc::clone(store),
+            credential,
+        )),
+        _ => None,
     }
 }
 

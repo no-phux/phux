@@ -1771,7 +1771,9 @@ Flags:
       --overlap-seconds <SECONDS>  Seconds the previous generation remains
                                   valid. Its existing absolute expiry still
                                   wins when it is sooner; an already-expired
-                                  credential cannot be rotated.
+                                  credential cannot be rotated. Live sessions
+                                  still on the previous generation are
+                                  disconnected when the overlap ends.
                                   (default: 300)
   -h, --help                      Print help
 

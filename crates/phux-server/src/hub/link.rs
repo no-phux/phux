@@ -2059,6 +2059,76 @@ mod tests {
 
     use super::*;
 
+    /// A hub link is a bearer-admitted consumer on its satellite, so
+    /// revoking the link's token there ends the link live
+    /// (`docs/spec/workload-auth.md` §7; ADR-0116 supersedes ADR-0031's
+    /// survive-until-drop), and the redial is refused. Every hub consumer's
+    /// attach through the link goes with it. Real sockets, real time.
+    #[tokio::test(flavor = "current_thread")]
+    async fn revoking_the_links_token_on_the_satellite_drops_the_link() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let tokens = dir.path().join("satellite-tokens");
+                let secret = [0x5a; crate::auth::TOKEN_LEN];
+                crate::auth::write_test_credential(&tokens, &secret);
+                let store = std::sync::Arc::new(
+                    crate::auth::ReloadingTokenStore::load(tokens.clone()).expect("store"),
+                );
+                let listener = crate::transport::WsListener::loopback_with_tokens(store)
+                    .await
+                    .expect("bind satellite");
+                let port = listener.local_addr().expect("addr").port();
+                let satellite = crate::state::SharedState::new();
+                let satellite_root = CancellationToken::new();
+                let accept_state = satellite.clone();
+                let accept_root = satellite_root.clone();
+                tokio::task::spawn_local(async move {
+                    crate::runtime::client::accept_loop(&listener, accept_state, accept_root, None)
+                        .await
+                });
+                crate::runtime::revocation::spawn_revocation_watcher(&satellite, &satellite_root);
+
+                let token_file = dir.path().join("link.token");
+                std::fs::write(&token_file, hex::encode(secret)).expect("write link token");
+                let statuses = HubLinkStatuses::default();
+                let cancel = CancellationToken::new();
+                let host = host();
+                let (_relay, relay_rx) = relay_pair(&host);
+                tokio::task::spawn_local(run_link(
+                    host.clone(),
+                    entry(
+                        &format!("ws://127.0.0.1:{port}"),
+                        Some(token_file.to_str().expect("utf8 path")),
+                        None,
+                    ),
+                    NetLinkTransport::from_env(),
+                    statuses.clone(),
+                    relay_rx,
+                    cancel.child_token(),
+                ));
+                wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
+
+                crate::auth::revoke_credential(&tokens, "test-credential").expect("revoke");
+                wait_for_status(&statuses, &host, |s| {
+                    matches!(s, LinkStatus::Backoff { .. })
+                })
+                .await;
+                // The redial presents the revoked token and is refused.
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                assert_ne!(
+                    statuses.get(&host),
+                    Some(LinkStatus::Connected),
+                    "a revoked link token must not reconnect"
+                );
+
+                cancel.cancel();
+                satellite_root.cancel();
+            })
+            .await;
+    }
+
     fn entry(endpoint: &str, token_file: Option<&str>, cert_fingerprint: Option<&str>) -> HubEntry {
         HubEntry {
             target: super::super::parse_endpoint(endpoint).expect("valid endpoint"),

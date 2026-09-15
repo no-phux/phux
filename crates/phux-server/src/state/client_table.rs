@@ -59,12 +59,13 @@
 //! bare field it replaces, since every write still goes through `state`.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use phux_core::ids::SessionId;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, Layer, LayerSet};
 use phux_protocol::ids::ResourceId as WireResourceId;
 use phux_protocol::wire::frame::{ActorRef, FrameKind, Scope};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 
 use super::client::{AttachedClient, ClientId};
@@ -173,6 +174,14 @@ pub(super) struct ClientTable {
     /// `ServerState::forget_connection` clears it. A connection with no
     /// entry is refused everything by the dispatch guard.
     pub(super) grants: HashMap<ClientId, crate::policy::ConnectionGrant>,
+    /// Each live connection's revocation signal. Its writer watches the
+    /// receiving half and, once a goodbye is set, drops everything queued,
+    /// says the goodbye, and closes (`docs/spec/workload-auth.md` §7).
+    /// Connection-scoped: cleared only by `ServerState::forget_connection`.
+    pub(super) revocation_signals: HashMap<ClientId, watch::Sender<Option<crate::policy::Goodbye>>>,
+    /// Wakes the revocation watcher when a connection it must watch gets
+    /// its grant.
+    pub(super) revocation_wake: Arc<Notify>,
     /// Nonce-bearing session-create result keys owned by each connection.
     ///
     /// Results are one-shot and connection-scoped even though their transport
@@ -210,6 +219,8 @@ impl ClientTable {
             peer_identities: HashMap::new(),
             connection_cancellations: HashMap::new(),
             grants: HashMap::new(),
+            revocation_signals: HashMap::new(),
+            revocation_wake: Arc::new(Notify::new()),
             session_create_results: HashMap::new(),
             client_names: HashMap::new(),
             next_subscription_epoch: 0,

@@ -23,7 +23,8 @@ pub(crate) enum PairAction {
 
         /// Seconds the previous generation remains valid. Its existing
         /// absolute expiry still wins when it is sooner; an already-expired
-        /// credential cannot be rotated.
+        /// credential cannot be rotated. Live sessions still on the previous
+        /// generation are disconnected when the overlap ends.
         #[usage(
             long,
             default = "300", default_value_t = DEFAULT_ROTATION_OVERLAP_SECONDS,
@@ -659,6 +660,9 @@ fn run_credential_action(tokens: &std::path::Path, action: PairAction, json: boo
             );
             outln!(
                 "Previous generations remain valid for at most {overlap_seconds} seconds and never beyond their absolute expiry."
+            );
+            outln!(
+                "Live sessions still on a previous generation are disconnected when that overlap ends; rotate with --overlap-seconds (up to 86400) to give devices longer to pick up the new token."
             );
             outln!();
             outln!("Pairing token (a secret — give it to the device once):");

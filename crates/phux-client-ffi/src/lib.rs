@@ -3657,6 +3657,9 @@ mod tests {
             (None, DETACH_REASON_UNSTATED),
             (Some(DetachReason::Requested), 0),
             (Some(DetachReason::ServerShutdown), 1),
+            (Some(DetachReason::AuthenticationFailed), 5),
+            (Some(DetachReason::AuthorizationRevoked), 6),
+            (Some(DetachReason::AuthorizationExpired), 7),
             (Some(DetachReason::InternalError), 255),
         ] {
             let client = boxed_client();

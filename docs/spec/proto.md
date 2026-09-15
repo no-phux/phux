@@ -879,9 +879,12 @@ DetachReason = enum {
 }
 ```
 
-<!-- impl-status: spec-only; probe: MtlsWorkloadIdentity,PeerIdentityCredential -->
-> **Status: spec-only.** Detach reason values 5 through 7 land with the
-> mTLS credential-registry implementation and live revocation.
+<!-- impl-status: partial; probe: AuthorizationRevoked,AuthorizationExpired,AuthenticationFailed -->
+> **Status: partial.** Every reference consumer decodes detach reason values
+> 5 through 7. The reference server emits `AUTHORIZATION_REVOKED` and
+> `AUTHORIZATION_EXPIRED` when live revocation ends a connection
+> ([workload-auth.md](./workload-auth.md) §7). It has no post-HELLO
+> authentication outcome, so it never emits `AUTHENTICATION_FAILED`.
 
 Both fields are optional-absent, which is what makes them additive under
 §6.3: a server that predates `0.7.0-draft.7` encodes an empty `DETACHED`
@@ -912,8 +915,10 @@ version bump ([ADR-0061](../adr/0061-capabilities-add-versions-break.md)).
 <!-- impl-status: partial; probe: DetachReason -->
 > **Status: partial.** The frame, both fields, and the consumer surface
 > are shipped. The reference server states `REQUESTED` (for a client's
-> `DETACH` and for a `DETACH_CLIENTS` sweep) and `SESSION_KILLED` (when
-> the group an attach was rooted in is reaped). Server-wide cancellation gives
+> `DETACH` and for a `DETACH_CLIENTS` sweep), `SESSION_KILLED` (when
+> the group an attach was rooted in is reaped), and `AUTHORIZATION_REVOKED`
+> or `AUTHORIZATION_EXPIRED` (when live revocation ends a connection).
+> Server-wide cancellation gives
 > each connection a bounded drain through `SERVER_SHUTDOWN` before close;
 > fatal protocol paths order their final `ERROR`, `PROTOCOL_ERROR`, and close.
 > It does not emit `REPLACED`, because role takeover is unimplemented (§7.1),

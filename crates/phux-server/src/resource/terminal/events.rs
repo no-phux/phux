@@ -397,7 +397,7 @@ impl TerminalActor {
                 action,
                 actor,
             } => {
-                self.emit_terminal_control(action, input_holder, Some(actor), None);
+                self.emit_terminal_control(action, input_holder, actor, None);
             }
             ControlRequest::AgentRecordInvalidated => {
                 if let Some(detector) = self.agent_detect.as_mut() {
