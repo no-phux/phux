@@ -9,6 +9,41 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.40.0](https://github.com/no-phux/phux/compare/v0.39.0...v0.40.0) (2026-09-15)
+
+
+### Features
+
+* **client-ffi:** expose named-projection L3 get/set/delete ([#706](https://github.com/no-phux/phux/issues/706)) ([247379f](https://github.com/no-phux/phux/commit/247379fbea8ebc8a7bc3f44c3cbd2ab965e87781))
+* **cli:** phux resource show|wait|methods, retain and idempotency flags, and cursor-resumable watch ([#709](https://github.com/no-phux/phux/issues/709)) ([ae6c040](https://github.com/no-phux/phux/commit/ae6c0407092d665eac61c03391596960449157b9))
+* **mcp:** call phux-client in-process and gate cli/mcp parity ([#719](https://github.com/no-phux/phux/issues/719)) ([088ff53](https://github.com/no-phux/phux/commit/088ff5310bedc352b81534dff439d2cf285500b1))
+* **protocol:** attach roles as intent on the input lease ([#717](https://github.com/no-phux/phux/issues/717)) ([bbccc3a](https://github.com/no-phux/phux/commit/bbccc3ad88739d6c37aec985d2407dc41b92631a))
+* **server:** approvals are held signal actions, single-use and expiring ([#724](https://github.com/no-phux/phux/issues/724)) ([5b690d5](https://github.com/no-phux/phux/commit/5b690d54608af9b4408bfaa8edc68c9d57fd6a21))
+* **server:** input leases expire on their TTL and inventories show the holder ([#705](https://github.com/no-phux/phux/issues/705)) ([d7795e5](https://github.com/no-phux/phux/commit/d7795e583f4520c92e281f2f5efde5bf0e6b1e99))
+* **server:** keyed kill and signal, federated keyed input with an incarnation fence ([#721](https://github.com/no-phux/phux/issues/721)) ([f8d6e75](https://github.com/no-phux/phux/commit/f8d6e755598cdae6f81ff768e5890fdb52a5cf1e))
+* **server:** revoke workload authority live ([#704](https://github.com/no-phux/phux/issues/704)) ([5833c03](https://github.com/no-phux/phux/commit/5833c0322ff8b50efffda53527a54159ed547603))
+
+
+### Bug Fixes
+
+* **ci:** retry Cockpit DMG hdiutil on GitHub macOS runners ([#708](https://github.com/no-phux/phux/issues/708)) ([23c4071](https://github.com/no-phux/phux/commit/23c4071dd79494d2d772192e85cc100a39bc1ffe))
+* **config:** follow symlinks in the registry writer (phux-u1tq.7) ([c02cf29](https://github.com/no-phux/phux/commit/c02cf29ed41023ea3b7f3a3bd0cfdf395e04ae6e))
+* **protocol:** preserve keep-empty on explicit Close Tab ([#718](https://github.com/no-phux/phux/issues/718)) ([df8bb87](https://github.com/no-phux/phux/commit/df8bb87543e2f1d4a1f00e567ac62456cabdc20a))
+* **site:** complete hosted native pin to workspace 0.39.0 ([6cffd4b](https://github.com/no-phux/phux/commit/6cffd4b00b50412bffd4e58864df6d3055b0d310))
+* **site:** pin hosted native phux to workspace 0.39.0 ([#711](https://github.com/no-phux/phux/issues/711)) ([50c4c85](https://github.com/no-phux/phux/commit/50c4c8514cc9e7573bba8b4629a71a5720e363d8))
+* **tui:** drop unused non-native-engine driver fallback (phux-u1tq.5) ([#727](https://github.com/no-phux/phux/issues/727)) ([aaba7e4](https://github.com/no-phux/phux/commit/aaba7e40f48ccf322c23e04227e4c87b80629792))
+
+
+### Refactors
+
+* **client-ffi:** drop unused set_callbacks and list_directory exports (phux-1k7t) ([#726](https://github.com/no-phux/phux/issues/726)) ([697a039](https://github.com/no-phux/phux/commit/697a039b2a7f21bd436728909ce475f3e5d50cba))
+* **protocol:** derive ServerFeature tables from one list ([#722](https://github.com/no-phux/phux/issues/722)) ([c80445b](https://github.com/no-phux/phux/commit/c80445bbd0aba078bbd184f8fd6c6b1ea844264d))
+
+
+### Documentation
+
+* **pha-406:** close out the phase-2 program ([#725](https://github.com/no-phux/phux/issues/725)) ([36657c0](https://github.com/no-phux/phux/commit/36657c0e9c690af2776ca2fd86f2685095acd653))
+
 ## [0.39.0](https://github.com/no-phux/phux/compare/v0.38.0...v0.39.0) (2026-09-15)
 
 
