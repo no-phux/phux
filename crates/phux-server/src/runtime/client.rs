@@ -472,32 +472,9 @@ impl NegotiatedConnection {
     }
 }
 const fn runtime_server_features() -> ServerFeatureSet {
-    ServerFeatureSet::with(&[
-        ServerFeature::AcknowledgedInput,
-        ServerFeature::FileUpload,
-        ServerFeature::MoveResource,
-        ServerFeature::TerminalReply,
-        ServerFeature::Shutdown,
-        ServerFeature::SpawnInitialSize,
-        ServerFeature::ReportAgentState,
-        ServerFeature::GetPerf,
-        ServerFeature::Transcribe,
-        ServerFeature::ResourceKinds,
-        ServerFeature::ListDirectory,
-        ServerFeature::HostSessions,
-        ServerFeature::KeepEmptySessions,
-        ServerFeature::Whoami,
-        ServerFeature::ListDirectoryHost,
-        ServerFeature::SshOrigin,
-        ServerFeature::ConditionalKill,
-        ServerFeature::OpenListener,
-        ServerFeature::EventJournal,
-        ServerFeature::SpawnIdempotency,
-        ServerFeature::RetainOnExit,
-        ServerFeature::AttachRoles,
-        ServerFeature::CloseTabResources,
-        ServerFeature::KeyedSignal,
-    ])
+    // QUIC_STREAMS is transport-gated at HELLO (see negotiate_hello); every
+    // other known bit is advertised on every connection.
+    ServerFeatureSet::all().without(ServerFeature::QuicStreams)
 }
 
 #[cfg(test)]
@@ -550,6 +527,22 @@ mod negotiated_feature_tests {
         let advertised = runtime_server_features();
         assert!(advertised.contains(ServerFeature::TerminalReply));
         assert!(connection(advertised).accepts_terminal_reply());
+    }
+
+    #[test]
+    fn runtime_advertises_every_known_bit_except_quic_streams() {
+        let advertised = runtime_server_features();
+        assert!(
+            !advertised.contains(ServerFeature::QuicStreams),
+            "QUIC_STREAMS stays transport-gated at HELLO"
+        );
+        assert_eq!(
+            advertised.as_wire(),
+            ServerFeatureSet::all()
+                .without(ServerFeature::QuicStreams)
+                .as_wire()
+        );
+        assert_eq!(advertised.iter().count(), ServerFeature::ALL.len() - 1);
     }
 
     /// QUIC multi-stream is transport-gated at the HELLO advertisement, not

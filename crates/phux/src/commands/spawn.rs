@@ -78,7 +78,7 @@ pub(crate) fn unsupported_server(json: bool, missing: ServerFeature) -> ExitCode
         ServerFeature::RetainOnExit => "--retain",
         _ => "--idempotency-key",
     };
-    let name = crate::feature_names::feature_name(missing).unwrap_or("the feature");
+    let name = crate::feature_names::feature_name(missing);
     json_err::emit(
         json,
         &CliError::new(

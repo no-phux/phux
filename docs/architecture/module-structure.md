@@ -560,10 +560,10 @@ src/
                         contract, stdout-safe printing, deprecated-verb
                         shims, and the help-text inventory the refdocs
                         generator walks
-  feature_names.rs    — one `snake_case` name per `ServerFeature` bit,
-                        shared by `phux status --json .features` and
-                        `phux --capabilities --json`'s kind-catalog gates
-                        so both name a bit the same way
+  feature_names.rs    — `phux status --json .features` and
+                        `phux --capabilities --json` kind-catalog gates;
+                        names come from `ServerFeature::snake_name` in
+                        `phux-protocol` (caps.rs is the single list)
 ```
 
 The CLI's subcommand surface is wide and wired: session/window/pane
