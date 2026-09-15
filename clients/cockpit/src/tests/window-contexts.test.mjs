@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { initialModel, update } from '../core.ts';
+import { initialModel, update, windows } from '../core.ts';
 import { snapshot, windowContexts, validUtf8, MAX_WINDOWS } from '../protocol.ts';
 
 const bytes = value => new TextEncoder().encode(value);
@@ -249,6 +249,23 @@ test('closing a window clears its context on the next snapshot', () => {
   assert.equal(model.window1Context.emptyName.length, 0);
   assert.equal(model.window1EmptyOpen, false);
   assert.equal(model.emptyWindows, 0);
+});
+
+test('a late snapshot cannot resurrect a retired native window incarnation', () => {
+  let model = loaded({ secondary: [1] });
+  assert.equal(windows(model).length, 1);
+  [model] = step(model, { kind: 'window_closed', window: 1 });
+  assert.equal(windows(model).length, 0);
+
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ secondary: [1], extensions: [empty(2, 0, 'stale', 'mini')] }) });
+  assert.equal(model.window1Open, false, 'a snapshot queued before close remains fenced out');
+  assert.equal(model.window1EmptyOpen, false, 'stale Empty chrome remains fenced with its retired window');
+  assert.equal(windows(model).length, 0);
+
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes() });
+  [model] = step(model, { kind: 'snapshot_loaded', body: snapshotBytes({ secondary: [1] }) });
+  assert.equal(model.window1Open, true, 'absence acknowledges retirement and permits a later incarnation');
+  assert.equal(windows(model).length, 1);
 });
 
 test('every window template binds its own context, not the ambient primary labels', () => {

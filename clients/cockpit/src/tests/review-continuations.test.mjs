@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { initialModel, update } from '../core.ts';
+import { initialModel, update, windows } from '../core.ts';
 import { navigationScopedRequest, navigationPage } from '../protocol.ts';
 const bytes = text => new TextEncoder().encode(text);
 const step = (model, msg) => { const value = update(model, msg); return Array.isArray(value) ? value : [value, null]; };
@@ -231,6 +231,19 @@ test('late Windows receipt cannot dismiss newer Commands', () => {
   assert.equal(cmd, null);
 });
 
+test('leaving Agents for Sessions or Commands retires the inspector surface', () => {
+  for (const destination of [{ kind: 'sessions_open' }, { kind: 'commands_open' }]) {
+    let [model] = step(initialModel()[0], { kind: 'agents_open' });
+    assert.equal(model.agentsMode, true);
+    assert.equal(model.mainAgentsOpen, true);
+    [model] = step(model, destination);
+    assert.equal(model.agentsMode, false, destination.kind);
+    assert.equal(model.mainAgentsOpen, false, destination.kind);
+    assert.equal(model.mainPaletteOpen, true, destination.kind);
+    assert.equal(model.navigatorView, destination.kind === 'sessions_open' ? 1 : 4, destination.kind);
+  }
+});
+
 test('New Window and window closure retire the Settings transaction first', () => {
   for (const msg of [{ kind: 'new_window' }, { kind: 'window_closed', window: 1 }]) {
     const [waiting, cmd] = step(settings(), msg);
@@ -240,6 +253,44 @@ test('New Window and window closure retire the Settings transaction first', () =
     assert.equal(closed.settingsOpen, false);
     assert.ok(committed(departed), msg.kind);
     assert.ok(request(departed, msg.kind === 'new_window' ? 'cockpit.tab-command' : 'cockpit.snapshot'));
+  }
+});
+
+test('closing the Settings owner withdraws its native window before rollback completes', () => {
+  let [open] = step({ ...initialModel()[0], activeWindow: 1, window1Open: true }, { kind: 'settings_open' });
+  [open] = step(open, { kind: 'appearance_loaded', body: appearance(true, true) });
+  assert.equal(open.presentation.owner, 1);
+  [open] = step({ ...open, activeWindow: 0 }, { kind: 'appearance_loaded', body: appearance(true, true) });
+  assert.equal(open.presentation.owner, 1, 'ambient focus does not move an open Settings surface');
+  assert.equal(open.window1SettingsOpen, true);
+  assert.equal(open.mainSettingsOpen, false);
+  const [waiting, cmd] = step(open, { kind: 'window_closed', window: 1 });
+  assert.equal(waiting.window1Open, false);
+  assert.equal(waiting.window1SettingsOpen, false);
+  assert.equal(waiting.mainSettingsOpen, false);
+  assert.equal(windows(waiting).length, 0);
+  assert.notEqual(waiting.pendingSettingsAction, null, 'Settings cleanup still owns its rollback continuation');
+  assert.deepEqual([...request(cmd, 'cockpit.appearance').payload], [1, 6, 0]);
+  const [closed, departed] = step(waiting, { kind: 'appearance_loaded', body: appearance(false) });
+  assert.equal(closed.window1Open, false);
+  assert.equal(closed.window1SettingsOpen, false);
+  assert.equal(closed.mainSettingsOpen, false);
+  assert.equal(windows(closed).length, 0);
+  assert.equal(closed.pendingSettingsAction, null);
+  assert.ok(request(departed, 'cockpit.snapshot'));
+});
+
+test('an invalid or closed active window cannot acquire a projected surface', () => {
+  for (const activeWindow of [-1, 1, 1.5, 5]) {
+    const [observed] = step(initialModel()[0], snapshotMessage());
+    const base = { ...observed, activeWindow };
+    const [model] = step(base, { kind: 'agents_open' });
+    assert.equal(model.presentation.phase, 3, String(activeWindow));
+    assert.equal(model.mainAgentsOpen, false, String(activeWindow));
+    assert.equal(model.window1AgentsOpen, false, String(activeWindow));
+    assert.equal(model.window2AgentsOpen, false, String(activeWindow));
+    assert.equal(model.window3AgentsOpen, false, String(activeWindow));
+    assert.equal(model.window4AgentsOpen, false, String(activeWindow));
   }
 });
 
@@ -292,13 +343,17 @@ test('failed or malformed cancellation never claims that focus authority was wit
   }
 });
 
-test('malformed creation status clears awaiting and pre-Describe failure releases departure', () => {
+test('malformed creation status clears awaiting and a failed open cannot stall departure', () => {
   const [failed] = step(pendingSession(), { kind: 'new_session_loaded', body: bytes('bad') });
   assert.equal(failed.newSessionAwaiting, false);
   let [model] = step(initialModel()[0], { kind: 'new_session_open' });
-  [model] = step(model, { kind: 'commands_open' });
   [model] = step(model, { kind: 'new_session_failed', error: bytes('failed') });
-  assert.equal(model.navigatorView, 4);
+  assert.equal(model.pendingSessionAction, null);
+  [model] = step(model, { kind: 'sessions_open' });
+  assert.equal(model.creatingSession, false);
+  assert.equal(model.renameOpen, false);
+  assert.equal(model.pendingSessionAction, null);
+  assert.equal(model.navigatorView, 1);
   assert.equal(model.paletteOpen, true);
 });
 

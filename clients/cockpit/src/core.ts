@@ -9,6 +9,17 @@ import { type KeybindingPage, type KeybindingRow, initialKeybindings, keybinding
 import { type Setting, settingsRows, settingRequest, resetSettingRequest, reloadSettingsRequest } from "./settings.ts";
 import { type SelfUpdate, initialSelfUpdate, selfUpdateRequest, selfUpdateResponse } from "./self-update.ts";
 import { windowTarget, windowCommand, windowReceipt } from "./window-navigation.ts";
+import {
+  type PresentationIntent,
+  type PresentationLifecycle,
+  initialPresentation,
+  presentationOwnedBy,
+  projectPresentation,
+  reconcilePresentation,
+  retirePresentationWindow,
+  syncPresentationSnapshot,
+  windowIsDeclared,
+} from "./presentation.ts";
 import { newSessionRequest, newSessionReply } from "./new-session.ts";
 import { localToolRequest, localToolReply } from "./local-tools.ts";
 import { type MachineState, type MachineRow, initialMachines, requestMachines, machineRequest, machineStatusRequest, receiveMachines, filterMachines, moveMachine, capturedMachine } from "./machines.ts";
@@ -81,6 +92,7 @@ import {
   navigationHostFilter,
   sameBytes,
   type SnapshotAgentRow,
+  type EngineSnapshot,
 } from "./protocol.ts";
 
 /// One agent session drawn under the terminal tab it runs in. It is not a
@@ -195,6 +207,10 @@ export interface WindowChromeContext {
 }
 
 export interface Model {
+  /// The only constructible modal presentation. The legacy scalar fields
+  /// below remain public `.native` bindings and transaction gates; their
+  /// per-window visibility is derived from this window-owned lifecycle.
+  readonly presentation: PresentationLifecycle;
   readonly tabs: readonly Tab[];
   /// The run the band has room for, always holding the selected tab. The
   /// toolkit cannot bound a run by itself, and the core cannot measure a
@@ -612,6 +628,7 @@ export type Msg =
     };
 
 export const viewUnbound = [
+  "presentation",
   "pendingSessionAction", "pendingSettingsAction", "retiredSessionToken", "new_session_cancelled", "new_session_cancel_failed", "context_refused",
   "select_tab",
   "settingsAnchor",
@@ -1072,7 +1089,7 @@ function changeNavigation(model: Model, msg: Msg): Model {
   switch (msg.kind) {
     case "palette_open":
     case "agents_open":
-      if (model.paletteOpen && model.agentsMode === (msg.kind === "agents_open")) return model;
+      if (model.paletteOpen && model.navigatorView === 0 && model.agentsMode === (msg.kind === "agents_open")) return model;
       return requestNavigation(scopeOverlays({ ...model, agentsMode: msg.kind === "agents_open", paletteOpen: true, settingsOpen: false, hostOpen: false, hostAwaiting: false, paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
         navigatorView: 0, navigatorTitle: asciiBytes(msg.kind === "agents_open" ? "Inspect agents" : "Go to Terminal"),
         paletteScope: 0, paletteHost: NO_BYTES, paletteHostLabel: NO_BYTES }), 0);
@@ -1131,7 +1148,7 @@ function pageDirectory(model: Model, offset: number): DirectoryDecision {
 function openDirectory(model: Model): DirectoryDecision {
   if (model.dirOpen) return unchangedDirectory(model);
   const base = model.paletteOpen ? closePalette(model) : model;
-  const next = scopeOverlays({ ...base, dirOpen: true, hostOpen: false, hostAwaiting: false, settingsOpen: false,
+  const next = scopeOverlays({ ...base, dirOpen: true, hostOpen: false, hostAwaiting: false, settingsOpen: false, renameOpen: false,
     dirQuery: NO_BYTES, dirAnchor: 0, dirFocus: 0, dirRequest: NO_DIRECTORY_REQUEST, dirStarting: true,
     dirAwaiting: false, dirClosing: false, dirBusy: true, dirRows: NO_DIR_ROWS, dirCursor: 0, dirOffset: 0,
     dirPrevious: false, dirNext: false, dirPath: NO_BYTES, dirNotice: asciiBytes("Listing..."),
@@ -1147,7 +1164,7 @@ function closeDirectory(model: Model): DirectoryDecision {
 /// Another modal opening while the picker is up takes its slot.
 function displaceDirectory(model: Model, msg: Msg): Model {
   if (!model.dirOpen) return model;
-  if (msg.kind !== "palette_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "rename_open") return model;
+  if (msg.kind !== "palette_open" && msg.kind !== "agents_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "rename_open") return model;
   return closeDirectory(model).model;
 }
 
@@ -1204,7 +1221,7 @@ function closeRename(model: Model): RenameDecision {
 /// Another modal opening while Rename Session is up takes its slot.
 function displaceRename(model: Model, msg: Msg): Model {
   if (!model.renameOpen) return model;
-  if (msg.kind !== "palette_open" && msg.kind !== "host_open" && msg.kind !== "settings_open") return model;
+  if (msg.kind !== "palette_open" && msg.kind !== "agents_open" && msg.kind !== "host_open" && msg.kind !== "settings_open" && msg.kind !== "dir_open") return model;
   return closeRename(model).model;
 }
 
@@ -1282,12 +1299,6 @@ function renameReplyTransition(model: Model, msg: Msg): RenameDecision | null {
   if (!model.renameOpen) return renameDecision(model, NO_BYTES, false);
   return renameDecision({ ...model, renameBusy: false, renameAwaiting: false,
     renameNotice: asciiBytes("Rename unavailable. Try again.") }, NO_BYTES, false);
-}
-
-/// The Empty session state gives way to every modal.
-function emptyShown(model: Model, bit: number): boolean {
-  if (model.paletteOpen || model.hostOpen || model.dirOpen || model.renameOpen || model.settingsOpen) return false;
-  return (model.emptyWindows & bit) !== 0;
 }
 
 /// The engine's answer to New Tab or Dismiss. A refusal says why and lets
@@ -1674,86 +1685,42 @@ function withdrawAgentRows(model: Model): Model {
     window3Tabs: stampSlots(model.window3Tabs, 3, NO_AGENTS, 2), window4Tabs: stampSlots(model.window4Tabs, 4, NO_AGENTS, 2) };
 }
 
-/// Only the active native window presents the global core-owned modal. The
-/// booleans are flattened because `.native` template arguments bind fields,
-/// not comparisons; `paletteOpen`/`settingsOpen` remain the keyboard gate.
+function settingsPresentationIntent(model: Model): PresentationIntent {
+  if (model.appearanceClosing) return { kind: "settings", phase: "closing" };
+  return { kind: "settings", phase: model.appearanceBusy ? "opening" : "presented" };
+}
+
+function directoryPresentationIntent(model: Model): PresentationIntent {
+  if (model.dirStarting) return { kind: "directory", phase: "opening" };
+  return { kind: "directory", phase: model.dirClosing ? "closing" : "presented" };
+}
+
+function presentationIntent(model: Model): PresentationIntent {
+  if (model.settingsOpen) return settingsPresentationIntent(model);
+  if (model.hostOpen) return { kind: "host", phase: model.hostBusy ? "opening" : "presented" };
+  if (model.dirOpen) return directoryPresentationIntent(model);
+  if (model.renameOpen) return { kind: "rename", creation: model.creatingSession, phase: model.renameBusy ? "opening" : "presented" };
+  if (model.paletteOpen) return { kind: "navigator", view: model.navigatorView, inspector: model.agentsMode, phase: "presented" };
+  return { kind: "none" };
+}
+
+/// `.native` keeps its stable scalar bindings, but every visible value comes
+/// from one typed surface with a captured owner. Ambient focus can therefore
+/// move while a dialog is open without moving that dialog between windows.
 function scopeOverlays(model: Model): Model {
-  const active = model.activeWindow >= 0 && model.activeWindow <= 4 ? Math.trunc(model.activeWindow) : 0;
-  const scoped = {
+  let openWindows = 1;
+  if (model.window1Open) openWindows |= 2;
+  if (model.window2Open) openWindows |= 4;
+  if (model.window3Open) openWindows |= 8;
+  if (model.window4Open) openWindows |= 16;
+  const lifecycle = reconcilePresentation(model.presentation, presentationIntent(model), model.activeWindow, openWindows);
+  const projected = projectPresentation(lifecycle);
+  return {
     ...model,
+    ...projected,
+    presentation: lifecycle,
     creatingSession: model.renameOpen && model.creatingSession,
     newSessionAwaiting: model.renameOpen && model.newSessionAwaiting,
-    mainEmptyOpen: emptyShown(model, 1),
-    window1EmptyOpen: emptyShown(model, 2),
-    window2EmptyOpen: emptyShown(model, 4),
-    window3EmptyOpen: emptyShown(model, 8),
-    window4EmptyOpen: emptyShown(model, 16),
-  };
-  const navigation = scopePaletteOverlays(scoped, active);
-  const settings = scopeSettingsOverlays(navigation, active);
-  const host = scopeHostOverlays(settings, active);
-  return scopeDirectoryOverlays(scopeRenameOverlays(host, active), active);
-}
-
-function scopeRenameOverlays(model: Model, active: number): Model {
-  return {
-    ...model,
-    mainRenameOpen: model.renameOpen && active === 0,
-    window1RenameOpen: model.renameOpen && active === 1,
-    window2RenameOpen: model.renameOpen && active === 2,
-    window3RenameOpen: model.renameOpen && active === 3,
-    window4RenameOpen: model.renameOpen && active === 4,
-  };
-}
-
-function scopeDirectoryOverlays(model: Model, active: number): Model {
-  return {
-    ...model,
-    mainDirOpen: model.dirOpen && active === 0,
-    window1DirOpen: model.dirOpen && active === 1,
-    window2DirOpen: model.dirOpen && active === 2,
-    window3DirOpen: model.dirOpen && active === 3,
-    window4DirOpen: model.dirOpen && active === 4,
-  };
-}
-
-function scopePaletteOverlays(model: Model, active: number): Model {
-  const palette = model.paletteOpen && !model.agentsMode;
-  const agents = model.paletteOpen && model.agentsMode;
-  return {
-    ...model,
-    mainPaletteOpen: palette && active === 0,
-    window1PaletteOpen: palette && active === 1,
-    window2PaletteOpen: palette && active === 2,
-    window3PaletteOpen: palette && active === 3,
-    window4PaletteOpen: palette && active === 4,
-    mainAgentsOpen: agents && active === 0,
-    window1AgentsOpen: agents && active === 1,
-    window2AgentsOpen: agents && active === 2,
-    window3AgentsOpen: agents && active === 3,
-    window4AgentsOpen: agents && active === 4,
-  };
-}
-
-function scopeSettingsOverlays(model: Model, active: number): Model {
-  return {
-    ...model,
-    mainSettingsOpen: model.settingsOpen && active === 0,
-    window1SettingsOpen: model.settingsOpen && active === 1,
-    window2SettingsOpen: model.settingsOpen && active === 2,
-    window3SettingsOpen: model.settingsOpen && active === 3,
-    window4SettingsOpen: model.settingsOpen && active === 4,
-  };
-}
-
-function scopeHostOverlays(model: Model, active: number): Model {
-  return {
-    ...model,
-    mainHostOpen: model.hostOpen && active === 0,
-    window1HostOpen: model.hostOpen && active === 1,
-    window2HostOpen: model.hostOpen && active === 2,
-    window3HostOpen: model.hostOpen && active === 3,
-    window4HostOpen: model.hostOpen && active === 4,
   };
 }
 
@@ -1990,26 +1957,36 @@ function describeWindow4(): WindowDescriptor {
 /// requires an array literal of descriptor calls per return, so every
 /// combination of open slots is spelled out.
 export function windows(model: Model): readonly WindowDescriptor[] {
-  const a = model.window1Open;
-  const b = model.window2Open;
-  const c = model.window3Open;
-  const d = model.window4Open;
-  if (a && b && c && d) return [describeWindow1(), describeWindow2(), describeWindow3(), describeWindow4()];
-  if (a && b && c && !d) return [describeWindow1(), describeWindow2(), describeWindow3()];
-  if (a && b && !c && d) return [describeWindow1(), describeWindow2(), describeWindow4()];
-  if (a && b && !c && !d) return [describeWindow1(), describeWindow2()];
-  if (a && !b && c && d) return [describeWindow1(), describeWindow3(), describeWindow4()];
-  if (a && !b && c && !d) return [describeWindow1(), describeWindow3()];
-  if (a && !b && !c && d) return [describeWindow1(), describeWindow4()];
-  if (a && !b && !c && !d) return [describeWindow1()];
-  if (!a && b && c && d) return [describeWindow2(), describeWindow3(), describeWindow4()];
-  if (!a && b && c && !d) return [describeWindow2(), describeWindow3()];
-  if (!a && b && !c && d) return [describeWindow2(), describeWindow4()];
-  if (!a && b && !c && !d) return [describeWindow2()];
-  if (!a && !b && c && d) return [describeWindow3(), describeWindow4()];
-  if (!a && !b && c && !d) return [describeWindow3()];
-  if (!a && !b && !c && d) return [describeWindow4()];
-  return [];
+  if (model.window1Open) return windowsWithFirst(model);
+  return windowsWithoutFirst(model);
+}
+
+function windowsWithFirst(model: Model): readonly WindowDescriptor[] {
+  const mask = (model.window2Open ? 4 : 0) | (model.window3Open ? 2 : 0) | (model.window4Open ? 1 : 0);
+  switch (mask) {
+    case 7: return [describeWindow1(), describeWindow2(), describeWindow3(), describeWindow4()];
+    case 6: return [describeWindow1(), describeWindow2(), describeWindow3()];
+    case 5: return [describeWindow1(), describeWindow2(), describeWindow4()];
+    case 4: return [describeWindow1(), describeWindow2()];
+    case 3: return [describeWindow1(), describeWindow3(), describeWindow4()];
+    case 2: return [describeWindow1(), describeWindow3()];
+    case 1: return [describeWindow1(), describeWindow4()];
+    default: return [describeWindow1()];
+  }
+}
+
+function windowsWithoutFirst(model: Model): readonly WindowDescriptor[] {
+  const mask = (model.window2Open ? 4 : 0) | (model.window3Open ? 2 : 0) | (model.window4Open ? 1 : 0);
+  switch (mask) {
+    case 7: return [describeWindow2(), describeWindow3(), describeWindow4()];
+    case 6: return [describeWindow2(), describeWindow3()];
+    case 5: return [describeWindow2(), describeWindow4()];
+    case 4: return [describeWindow2()];
+    case 3: return [describeWindow3(), describeWindow4()];
+    case 2: return [describeWindow3()];
+    case 1: return [describeWindow4()];
+    default: return [];
+  }
 }
 
 /// The OS closed a window. Native retirement already matched the incarnation;
@@ -2128,6 +2105,7 @@ function sliceRun(tabs: readonly Tab[], runStart: number, runCount: number): rea
 export function initialModel(): [Model, Cmd<Msg>] {
   return [
     {
+      presentation: initialPresentation(),
       tabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
       visibleTabs: [{ id: 1, index: 0, slot: 0, title: asciiBytes("Terminal 1"), cwd: new Uint8Array(0), selected: true, attention: false, attentionLabel: NO_BYTES, agents: NO_AGENT_ROWS, target: NO_BYTES }],
       tabWidth: 168,
@@ -2708,7 +2686,7 @@ function refreshActions(model: Model, cursor: number): Model {
 }
 
 function openActions(model: Model): Model {
-  const next = scopeOverlays({ ...model, paletteOpen: true, navigatorView: 4,
+  const next = scopeOverlays({ ...model, paletteOpen: true, agentsMode: false, inspectedResource: NO_BYTES, navigatorView: 4,
     navigatorTitle: asciiBytes("Commands"), paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0,
     paletteRows: NO_ROWS, paletteLoading: false, settingsOpen: false, hostOpen: false, hostAwaiting: false,
     dirOpen: false, renameOpen: false });
@@ -2772,7 +2750,7 @@ function requestMachineOperation(model: Model, operation: number, target: Uint8A
 function openNavigator(model: Model, view: number): NavigatorDecision {
   const destination = view >= 1 && view <= 3 ? Math.trunc(view) : 1;
   const title = view === 1 ? asciiBytes("Sessions") : view === 2 ? asciiBytes("Machines") : asciiBytes("Windows");
-  const next = scopeOverlays({ ...model, paletteOpen: true, navigatorView: destination, navigatorTitle: title,
+  const next = scopeOverlays({ ...model, paletteOpen: true, agentsMode: false, inspectedResource: NO_BYTES, navigatorView: destination, navigatorTitle: title,
     settingsOpen: false, hostOpen: false, hostAwaiting: false, dirOpen: false, renameOpen: false,
     paletteQuery: NO_BYTES, paletteAnchor: 0, paletteFocus: 0, paletteRows: NO_ROWS,
     paletteHost: NO_BYTES, paletteHostLabel: NO_BYTES, palettePrevious: false, paletteNext: false,
@@ -3170,7 +3148,7 @@ function remoteReplyTransition(model: Model, msg: Msg): NavigatorDecision | null
 
 function remoteTransition(model: Model, msg: Msg): NavigatorDecision | null {
   if (msg.kind === "host_open") {
-    if (model.hostOpen) return navigatorDecision(model, 0, NO_BYTES);
+    if (model.hostOpen && model.toolPurpose === 0) return navigatorDecision(model, 0, NO_BYTES);
     const displaced = displaceRename(displaceDirectory(model, msg), msg);
     return navigatorDecision(openHost({ ...displaced, toolPurpose: 0 }), 9, remoteRequest(REMOTE_KIND_STATUS, NO_BYTES));
   }
@@ -3395,6 +3373,7 @@ function newSessionReplyTransition(model: Model, msg: Msg): NavigatorDecision | 
 }
 
 function openingSurface(msg: Msg): number {
+  if (msg.kind === "agents_open") return 23;
   const view = navigatorDestination(msg);
   if (view >= 1 && view <= 3) return view + 1;
   let index = 1;
@@ -3479,7 +3458,7 @@ function deferredArgument(msg: Msg): number {
 function captureDeferredAction(model: Model, msg: Msg): DeferredAction {
   const rawCode = deferredActionCode(msg);
   const rawArgument = deferredArgument(msg);
-  const code = rawCode >= 0 && rawCode <= 22 ? Math.trunc(rawCode) : 0;
+  const code = rawCode >= 0 && rawCode <= 23 ? Math.trunc(rawCode) : 0;
   const argument = rawArgument >= 0 && rawArgument <= 65535 ? Math.trunc(rawArgument) : 0;
   const target = msg.kind === "select_target" || msg.kind === "palette_pick" ? msg.target.slice() : NO_BYTES;
   return { code, argument, target, revision: model.engineRevision, window: model.activeWindow,
@@ -3488,6 +3467,7 @@ function captureDeferredAction(model: Model, msg: Msg): DeferredAction {
 
 function deferredContextRequired(action: DeferredAction): boolean {
   if (action.code <= 5) return false;
+  if (action.code === 23) return false;
   return action.code !== 11;
 }
 
@@ -3508,6 +3488,7 @@ function resumeDeferredAction(model: Model, action: DeferredAction): PreparedMes
 function deferredActionMessage(action: DeferredAction): Msg {
   if (action.code === 0) return { kind: "engine_wake" };
   if (action.code <= 10) return surfaceMessage(action.code);
+  if (action.code === 23) return { kind: "agents_open" };
   if (action.code === 11) return { kind: "settings_open" };
   if (action.code === 12) return { kind: "config_edit" };
   if (action.code === 13) return { kind: "new_window" };
@@ -3607,10 +3588,20 @@ function resumeSettingsAction(model: Model, msg: Msg): PreparedMessage {
   return resumeDeferredAction({ ...decision.model, pendingSettingsAction: null }, action);
 }
 
+/// A failed Describe never produced cancellation authority. Do not park a
+/// destination behind a continuation for which no request or reply can exist.
+function abandonFailedSessionDeparture(model: Model, msg: Msg): Model {
+  if (!model.creatingSession || model.pendingSessionAction !== null) return model;
+  if (model.renameBusy || model.newSessionAwaiting || model.newSessionToken.length !== 0) return model;
+  if (!sessionDisplacingMessage(msg)) return model;
+  return scopeOverlays({ ...model, renameOpen: false, creatingSession: false,
+    newSessionAwaiting: false, retiredSessionToken: NO_BYTES });
+}
+
 function prepareContinuations(model: Model, msg: Msg): PreparedMessage {
   const session = resumeSessionAction(model, msg);
   const settings = resumeSettingsAction(session.model, session.msg);
-  let next = settings.model;
+  let next = abandonFailedSessionDeparture(settings.model, settings.msg);
   const action = settings.msg;
   if (openingSurface(action) > 0) next = { ...next, navigatorScroll: 0, windowActionPending: false };
   if (sessionDisplacingMessage(action)) next = { ...next, windowActionPending: false };
@@ -3620,12 +3611,162 @@ function prepareContinuations(model: Model, msg: Msg): PreparedMessage {
   return { model: next, msg: action };
 }
 
+/// Native closure is an observed fact, not cancelable intent. Retire the
+/// descriptor and its owned surface before Settings/New Session start their
+/// rollback continuations; those transaction gates remain alive until their
+/// acknowledgements settle.
+function observeNativeLifecycle(model: Model, msg: Msg): Model {
+  if (msg.kind !== "window_closed") return model;
+  const owned = presentationOwnedBy(model.presentation, msg.window);
+  const presentation = retirePresentationWindow(model.presentation, msg.window);
+  const forgotten = forgetClosedWindow({ ...model, presentation }, msg.window);
+  if (!owned) return scopeOverlays(forgotten);
+  if (model.settingsOpen || model.creatingSession) return scopeOverlays(forgotten);
+  return scopeOverlays({ ...forgotten, paletteOpen: false, agentsMode: false, hostOpen: false, dirOpen: false, renameOpen: false });
+}
+
 function commandDeparture(previous: Model, next: Model): boolean {
   if (previous.settingsOpen && !next.settingsOpen) return true;
   return next.paletteOpen && next.navigatorView === 4;
 }
 
+function bytesOr(value: Uint8Array, fallback: Uint8Array): Uint8Array {
+  return value.length > 0 ? value : fallback;
+}
+
+function snapshotOverflow(hidden: number): Uint8Array {
+  return hidden > 0 ? overflowLabel(hidden) : NO_BYTES;
+}
+
+function snapshotEmptyBusy(model: Model, emptyMask: number, opening: boolean): boolean {
+  if (emptyMask === 0) return false;
+  return model.emptyBusy || opening;
+}
+
+function snapshotCursor(model: Model, projected: EngineSnapshot): number {
+  if (model.settingsOpen) return model.settingsCursor;
+  const active = projected.activeTheme;
+  if (!(active >= 0 && active <= 32 && active < projected.themes.length)) return 0;
+  return Math.trunc(active);
+}
+
+function snapshotOpenMask(w1: WindowState, w2: WindowState, w3: WindowState, w4: WindowState): number {
+  let mask = 1;
+  if (w1.open) mask |= 2;
+  if (w2.open) mask |= 4;
+  if (w3.open) mask |= 8;
+  if (w4.open) mask |= 16;
+  return mask;
+}
+
+function snapshotEmptyPicked(contexts: WindowContexts, projected: EngineSnapshot, windows: readonly WindowChromeContext[]): boolean {
+  if (!contexts.present) return projected.emptySession.picked;
+  for (const context of windows) if (context.emptyPicked) return true;
+  return false;
+}
+
+function snapshotPrimaryHost(contexts: WindowContexts, primary: WindowContext | null, fallback: Uint8Array): Uint8Array {
+  if (!contexts.present) return fallback;
+  if (primary === null || primary.host.length === 0) return asciiBytes("Machine not yet known");
+  return primary.host;
+}
+
+function snapshotConnectionStatus(model: Model, contexts: WindowContexts, primary: WindowContext | null, status: Uint8Array): Uint8Array {
+  if (contexts.present && primary === null) return asciiBytes("Connection status unavailable");
+  return remoteConnectionStatus(model, status);
+}
+
+function projectSnapshotModel(model: Model, projected: EngineSnapshot): Model | null {
+  if (!(projected.selectedTab >= 0 && projected.selectedTab <= 255)) return null;
+  if (!(projected.tabWidth >= 0 && projected.tabWidth <= 65535)) return null;
+  const selectedTab = Math.trunc(projected.selectedTab);
+  const refusedMask = projected.flags & 159;
+  const refused = (projected.flags & 8) !== 0;
+  const connection = projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255;
+  const rawCursor = snapshotCursor(model, projected);
+  const cursor = rawCursor >= 0 && rawCursor <= 32 ? Math.trunc(rawCursor) : 0;
+  const mainTabs = stampSlots(projected.tabs, 0, projected.agents, connection);
+  const mainVisible = sliceRun(mainTabs, projected.runStart, projected.runCount);
+  const w1 = windowState(1, findSection(projected.secondary, 1), projected.agents, connection);
+  const w2 = windowState(2, findSection(projected.secondary, 2), projected.agents, connection);
+  const w3 = windowState(3, findSection(projected.secondary, 3), projected.agents, connection);
+  const w4 = windowState(4, findSection(projected.secondary, 4), projected.agents, connection);
+  const legacyEmpty = projected.emptySession.windows >= 0 && projected.emptySession.windows <= 31 ? Math.trunc(projected.emptySession.windows) : 0;
+  const contexts = projected.windowContexts;
+  const rawEmptyMask = emptyMaskFromContexts(contexts, legacyEmpty);
+  const emptyMask = rawEmptyMask >= 0 && rawEmptyMask <= 31 ? Math.trunc(rawEmptyMask) : 0;
+  const activeWindow = projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0;
+  const presentation = syncPresentationSnapshot(model.presentation, snapshotOpenMask(w1, w2, w3, w4), emptyMask, activeWindow);
+  const window1Open = windowIsDeclared(presentation, 1, w1.open);
+  const window2Open = windowIsDeclared(presentation, 2, w2.open);
+  const window3Open = windowIsDeclared(presentation, 3, w3.open);
+  const window4Open = windowIsDeclared(presentation, 4, w4.open);
+  const sessionLabel = bytesOr(projected.currentSession, asciiBytes("Sessions"));
+  const hostLabel = bytesOr(projected.coordinatorEndpoint, asciiBytes("Machine not yet known"));
+  const primaryRecord = findWindowContext(contexts.records, 0);
+  const mainContext = windowChromeContext(true, 0, 1, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window1Context = windowChromeContext(window1Open, 1, 2, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window2Context = windowChromeContext(window2Open, 2, 4, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window3Context = windowChromeContext(window3Open, 3, 8, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const window4Context = windowChromeContext(window4Open, 4, 16, contexts, sessionLabel, hostLabel, projected.emptySession);
+  const contextRows = [mainContext, window1Context, window2Context, window3Context, window4Context];
+  const primaryStatus = windowConnectionStatus(true, 0, contexts, projected.connection, projected.terminalStates[0], refusedMask !== 0);
+  const hidden = projected.tabs.length - projected.runCount;
+  const emptyOpening = contexts.present ? false : projected.emptySession.opening;
+  const window1TabWidth = w1.tabWidth >= 0 && w1.tabWidth <= 65535 ? Math.trunc(w1.tabWidth) : 168;
+  const window2TabWidth = w2.tabWidth >= 0 && w2.tabWidth <= 65535 ? Math.trunc(w2.tabWidth) : 168;
+  const window3TabWidth = w3.tabWidth >= 0 && w3.tabWidth <= 65535 ? Math.trunc(w3.tabWidth) : 168;
+  const window4TabWidth = w4.tabWidth >= 0 && w4.tabWidth <= 65535 ? Math.trunc(w4.tabWidth) : 168;
+  return {
+    ...model,
+    presentation,
+    activeWindow,
+    window1Open, window1Tabs: w1.visibleTabs, window1TabWidth, window1HasOverflow: w1.hasOverflow, window1OverflowLabel: w1.overflowLabel,
+    window2Open, window2Tabs: w2.visibleTabs, window2TabWidth, window2HasOverflow: w2.hasOverflow, window2OverflowLabel: w2.overflowLabel,
+    window3Open, window3Tabs: w3.visibleTabs, window3TabWidth, window3HasOverflow: w3.hasOverflow, window3OverflowLabel: w3.overflowLabel,
+    window4Open, window4Tabs: w4.visibleTabs, window4TabWidth, window4HasOverflow: w4.hasOverflow, window4OverflowLabel: w4.overflowLabel,
+    themes: themeRows(projected.themes, projected.activeTheme, cursor), settingsCursor: cursor,
+    configExists: projected.configExists,
+    configNotice: configNotice(projected.configEnabled, projected.configProbed, projected.configExists, projected.configWritable, refused, projected.configPath),
+    tabs: mainTabs, visibleTabs: mainVisible, railRows: railRows(mainTabs),
+    agentCountLabel: joinBytes(asciiBytes("Agents "), decimalBytes(projected.agentTotal), NO_BYTES),
+    workspaceLabel: mainContext.title, mainContext, window1Context, window2Context, window3Context, window4Context,
+    coordinatorEndpoint: projected.coordinatorEndpoint,
+    machineLabel: snapshotPrimaryHost(contexts, primaryRecord, hostLabel), connectionDetail: projected.connectionDetail,
+    window1RailRows: railRows(w1.tabs), window2RailRows: railRows(w2.tabs), window3RailRows: railRows(w3.tabs), window4RailRows: railRows(w4.tabs),
+    tabWidth: projected.tabWidth >= 0 && projected.tabWidth <= 65535 ? Math.trunc(projected.tabWidth) : 168,
+    hasOverflow: hidden > 0, overflowLabel: snapshotOverflow(hidden), selectedTab,
+    tabPlacement: projected.tabPlacement === 1 ? "side" : "top",
+    engineConnected: true, engineSequence: projected.sequence, engineRevision: projected.revision,
+    canReconnect: projected.connection === 3, lastConnection: connection,
+    connectionStatus: snapshotConnectionStatus(model, contexts, primaryRecord, primaryStatus),
+    window1Status: windowConnectionStatus(window1Open, 1, contexts, projected.connection, projected.terminalStates[1], refusedMask !== 0),
+    window2Status: windowConnectionStatus(window2Open, 2, contexts, projected.connection, projected.terminalStates[2], refusedMask !== 0),
+    window3Status: windowConnectionStatus(window3Open, 3, contexts, projected.connection, projected.terminalStates[3], refusedMask !== 0),
+    window4Status: windowConnectionStatus(window4Open, 4, contexts, projected.connection, projected.terminalStates[4], refusedMask !== 0),
+    status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
+    emptyWindows: emptyMask, emptyName: projected.emptySession.name,
+    emptyDetail: joinBytes(asciiBytes("Empty session on "), projected.emptySession.host, NO_BYTES),
+    emptyPicked: snapshotEmptyPicked(contexts, projected, contextRows),
+    emptyBusy: snapshotEmptyBusy(model, emptyMask, emptyOpening),
+    emptyNotice: emptyMask === 0 ? NO_BYTES : model.emptyNotice,
+  };
+}
+
+interface LoadedSnapshotProjection {
+  readonly projected: EngineSnapshot;
+  readonly model: Model;
+}
+
+function projectLoadedSnapshot(model: Model, body: Uint8Array): LoadedSnapshotProjection | null {
+  const projected = snapshot(body);
+  if (projected === null) return null;
+  const synced = projectSnapshotModel(model, projected);
+  return synced === null ? null : { projected, model: synced };
+}
+
 export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
+  incoming = observeNativeLifecycle(incoming, msg);
   const prepared = prepareContinuations(incoming, msg);
   const fromCommands = commandDeparture(incoming, prepared.model);
   incoming = prepared.model;
@@ -3852,131 +3993,10 @@ export function update(incoming: Model, msg: Msg): Model | [Model, Cmd<Msg>] {
     case "engine_wake":
       return { ...model };
     case "snapshot_loaded": {
-      const projected = snapshot(msg.body);
-      if (projected === null) {
-        return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
-      }
-      // Bits 0..4 are the engine model's own limit and write refusals; bit 7
-      // is the seam's: the last intent named a revision the engine had left.
-      const refusedMask = projected.flags & 159;
-      const rawSelected = projected.selectedTab;
-      if (!(rawSelected >= 0 && rawSelected <= 255)) {
-        return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
-      }
-      const selectedTab = Math.trunc(rawSelected);
-      const rawWidth = projected.tabWidth;
-      if (!(rawWidth >= 0 && rawWidth <= 65535)) {
-        return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
-      }
-      const tabWidth = Math.trunc(rawWidth);
-      const hidden = projected.tabs.length - projected.runCount;
-      const active = projected.activeTheme;
-      const cursor = model.settingsOpen ? model.settingsCursor : active >= 0 && active <= 32 && active < projected.themes.length ? Math.trunc(active) : 0;
-      const refused = (projected.flags & 8) !== 0;
-      const connection = projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255;
-      const mainTabs = stampSlots(projected.tabs, 0, projected.agents, connection);
-      const mainVisible = sliceRun(mainTabs, projected.runStart, projected.runCount);
-      const w1 = windowState(1, findSection(projected.secondary, 1), projected.agents, connection);
-      const w2 = windowState(2, findSection(projected.secondary, 2), projected.agents, connection);
-      const w3 = windowState(3, findSection(projected.secondary, 3), projected.agents, connection);
-      const w4 = windowState(4, findSection(projected.secondary, 4), projected.agents, connection);
-      // The width crosses a record into an integer slot; the proof is
-      // restated at the boundary, once per slot.
-      const width1 = w1.tabWidth >= 0 && w1.tabWidth <= 65535 ? Math.trunc(w1.tabWidth) : 168;
-      const width2 = w2.tabWidth >= 0 && w2.tabWidth <= 65535 ? Math.trunc(w2.tabWidth) : 168;
-      const width3 = w3.tabWidth >= 0 && w3.tabWidth <= 65535 ? Math.trunc(w3.tabWidth) : 168;
-      const width4 = w4.tabWidth >= 0 && w4.tabWidth <= 65535 ? Math.trunc(w4.tabWidth) : 168;
-      const rawEmpty = projected.emptySession.windows;
-      const legacyEmpty = rawEmpty >= 0 && rawEmpty <= 31 ? Math.trunc(rawEmpty) : 0;
-      const contexts = projected.windowContexts;
-      const emptyMaskRaw = emptyMaskFromContexts(contexts, legacyEmpty);
-      const emptyMask = emptyMaskRaw >= 0 && emptyMaskRaw <= 31 ? Math.trunc(emptyMaskRaw) : 0;
-      const sessionLabel = projected.currentSession.length > 0 ? projected.currentSession : asciiBytes("Sessions");
-      const hostLabel = projected.coordinatorEndpoint.length > 0 ? projected.coordinatorEndpoint : asciiBytes("Machine not yet known");
-      const primaryRecord = findWindowContext(contexts.records, 0);
-      const mainContext = windowChromeContext(true, 0, 1, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const window1Context = windowChromeContext(w1.open, 1, 2, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const window2Context = windowChromeContext(w2.open, 2, 4, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const window3Context = windowChromeContext(w3.open, 3, 8, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const window4Context = windowChromeContext(w4.open, 4, 16, contexts, sessionLabel, hostLabel, projected.emptySession);
-      const refusedLocal = refusedMask !== 0;
-      const primaryStatus = windowConnectionStatus(true, 0, contexts, projected.connection, projected.terminalStates[0], refusedLocal);
-      const emptyPicked = contexts.present
-        ? mainContext.emptyPicked || window1Context.emptyPicked || window2Context.emptyPicked || window3Context.emptyPicked || window4Context.emptyPicked
-        : projected.emptySession.picked;
-      const emptyOpening = contexts.present ? false : projected.emptySession.opening;
-      const primaryHost = contexts.present
-        ? (primaryRecord !== null && primaryRecord.host.length > 0 ? primaryRecord.host : asciiBytes("Machine not yet known"))
-        : hostLabel;
-      const synced: Model = {
-        ...model,
-        activeWindow: projected.activeWindow >= 0 && projected.activeWindow <= 4 ? Math.trunc(projected.activeWindow) : 0,
-        window1Open: w1.open,
-        window1Tabs: w1.visibleTabs,
-        window1TabWidth: width1,
-        window1HasOverflow: w1.hasOverflow,
-        window1OverflowLabel: w1.overflowLabel,
-        window2Open: w2.open,
-        window2Tabs: w2.visibleTabs,
-        window2TabWidth: width2,
-        window2HasOverflow: w2.hasOverflow,
-        window2OverflowLabel: w2.overflowLabel,
-        window3Open: w3.open,
-        window3Tabs: w3.visibleTabs,
-        window3TabWidth: width3,
-        window3HasOverflow: w3.hasOverflow,
-        window3OverflowLabel: w3.overflowLabel,
-        window4Open: w4.open,
-        window4Tabs: w4.visibleTabs,
-        window4TabWidth: width4,
-        window4HasOverflow: w4.hasOverflow,
-        window4OverflowLabel: w4.overflowLabel,
-        themes: themeRows(projected.themes, active, cursor),
-        settingsCursor: cursor,
-        configExists: projected.configExists,
-        configNotice: configNotice(projected.configEnabled, projected.configProbed, projected.configExists, projected.configWritable, refused, projected.configPath),
-        tabs: mainTabs,
-        visibleTabs: mainVisible,
-        railRows: railRows(mainTabs),
-        agentCountLabel: joinBytes(asciiBytes("Agents "), decimalBytes(projected.agentTotal), NO_BYTES),
-        workspaceLabel: mainContext.title,
-        mainContext,
-        window1Context,
-        window2Context,
-        window3Context,
-        window4Context,
-        coordinatorEndpoint: projected.coordinatorEndpoint,
-        machineLabel: primaryHost,
-        connectionDetail: projected.connectionDetail,
-        window1RailRows: railRows(w1.tabs),
-        window2RailRows: railRows(w2.tabs),
-        window3RailRows: railRows(w3.tabs),
-        window4RailRows: railRows(w4.tabs),
-        tabWidth,
-        hasOverflow: hidden > 0,
-        overflowLabel: hidden > 0 ? overflowLabel(hidden) : new Uint8Array(0),
-        selectedTab,
-        tabPlacement: projected.tabPlacement === 1 ? "side" : "top",
-        engineConnected: true,
-        engineSequence: projected.sequence,
-        engineRevision: projected.revision,
-        canReconnect: projected.connection === 3,
-        lastConnection: projected.connection >= 0 && projected.connection <= 255 ? Math.trunc(projected.connection) : 255,
-        connectionStatus: contexts.present && primaryRecord === null
-          ? asciiBytes("Connection status unavailable")
-          : remoteConnectionStatus(model, primaryStatus),
-        window1Status: windowConnectionStatus(w1.open, 1, contexts, projected.connection, projected.terminalStates[1], refusedLocal),
-        window2Status: windowConnectionStatus(w2.open, 2, contexts, projected.connection, projected.terminalStates[2], refusedLocal),
-        window3Status: windowConnectionStatus(w3.open, 3, contexts, projected.connection, projected.terminalStates[3], refusedLocal),
-        window4Status: windowConnectionStatus(w4.open, 4, contexts, projected.connection, projected.terminalStates[4], refusedLocal),
-        status: refusedMask === 0 ? asciiBytes("READY") : asciiBytes("ACTION REFUSED"),
-        emptyWindows: emptyMask,
-        emptyName: projected.emptySession.name,
-        emptyDetail: joinBytes(asciiBytes("Empty session on "), projected.emptySession.host, NO_BYTES),
-        emptyPicked,
-        emptyBusy: emptyMask !== 0 && (model.emptyBusy || emptyOpening),
-        emptyNotice: emptyMask === 0 ? NO_BYTES : model.emptyNotice,
-      };
+      const loaded = projectLoadedSnapshot(model, msg.body);
+      if (loaded === null) return engineUnavailable(model, asciiBytes("BAD SNAPSHOT"));
+      const projected = loaded.projected;
+      const synced = loaded.model;
       // An open Go to Directory names a listing on the connection that just
       // moved: withdraw its rows, and list again once connected.
       const directoryMoved = model.dirOpen && model.lastConnection !== 255 && projected.connection !== model.lastConnection;
