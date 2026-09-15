@@ -47,15 +47,16 @@ schema, including argv, cwd, exit code, stderr, and duration.
 
 The manifest also declares an `agent-bench` workspace profile. It composes
 inspection/list/validation actions, static agent status records, pane roles,
-and three runnable bench actions:
+and runnable bench actions across four agent roles:
 
 - `launch-bench` creates one phux session per role and writes a role/session
   state table.
 - `list-bench` prints that state table.
 - `drive-bench` sends keys to the selected role with `phux send-keys`.
 
-The defaults are safe: roles launch as normal phux shell sessions, not real
-agent binaries. Set `PHUX_AGENT_BENCH_ROLES`, `PHUX_AGENT_BENCH_PROFILE`,
+The Codex, Claude Code, Gemini CLI, and Grok defaults are safe: roles launch as
+normal phux shell sessions, not real agent binaries. Set
+`PHUX_AGENT_BENCH_ROLES`, `PHUX_AGENT_BENCH_PROFILE`,
 `PHUX_AGENT_BENCH_STATE`, `PHUX_AGENT_BENCH_ROLE`, or `PHUX_AGENT_BENCH_KEYS`
 to customize the fixture.
 
@@ -84,17 +85,21 @@ surfaces. Panes not spawned by phux (or addressed via a federation
 The `integrations/*.toml` files are sample manifests for terminal-native
 agents that phux can launch, supervise, and report on through plugin actions.
 They are intentionally local, documented packages rather than hidden product
-magic. Codex and Claude Code are the first-party public packages; the Gemini
+magic. Codex, Claude Code, and Grok are first-party public packages; the Gemini
 and generic shell records keep the fixture broad enough to test templates:
 
 - `codex.toml`
 - `claude-code.toml`
 - `gemini-cli.toml`
+- `grok.toml`
 - `generic-shell-agent.toml`
 
 Each package declares a stable id, display name, package version, public
 status, capabilities, launch command, link-state policy, opt-in detection
-command, and session identity policy. Linking writes only plugin-local state
+command, optional executable availability requirements, and session identity
+policy. A template with `required_executables = ["grok"]` is listed only when
+every named program is executable on `PATH`; directly requesting an unavailable
+template reports the missing names. Linking writes only plugin-local state
 under `examples/plugins/agent-tools/state/integrations` by default; it does not
 install or execute the agent CLI.
 
@@ -179,9 +184,10 @@ running it via `SPAWN_RESOURCE`. Because the server injects
 self-targets with **zero extra config**:
 
 ```sh
-phux launch --list          # codex, claude-code, gemini-cli, ...
+phux launch --list          # installed providers: codex, claude-code, grok, ...
 phux launch claude-code     # opens a pane running claude through the wrapper
 phux launch codex -- --model o3   # extra args pass through to the agent
+phux launch grok            # opens interactive Grok Build when grok is on PATH
 phux launch codex --print   # resolve + print the argv without spawning
 ```
 
@@ -239,15 +245,16 @@ server and leaves nothing behind:
 cargo run -q -p phux -- config run com.phux.demo.agent-tools smoke-agent-wrap
 ```
 
-### State is not fed live (yet)
+### Lifecycle state
 
-The wrapper only observes the agent's launch/exit boundary, so it sets the
-always-honest half — `name` + `kind` — and leaves lifecycle `state` unset
-(`unknown`) unless you pass `--state` / `PHUX_AGENT_STATE`. A live
-working/blocked feed would need a continuous signal updating the same record,
-for example: the agent itself calling `phux agent set --state working|blocked`
-on its own lifecycle transitions (e.g. via a phux hook or the agent's own
-tool-call boundaries), or phux polling the ADR-0035 "asked" detector / OSC-133
-prompt boundaries and writing the state field. Either path reuses this exact
-record, so the sidebar's declared-state branch lights up the moment a state
-feed exists — no consumer changes required.
+Interactive agents set only the always-honest identity (`name` + `kind`) and
+leave lifecycle to provider screen/title rules. Grok's provider wrapper adds a
+narrow exception for modes where the process itself is exactly one turn
+(`-p` / `--single`, `--prompt-file`, or `--prompt-json`). Those modes can paint
+a blank, titleless `--no-alt-screen` viewport while processing, so the wrapper
+opens an AgentSession and emits `prompt` before execution, then `stop` on exit.
+It leaves `done` visible for a one-second grace before closing the child
+session, which also prevents a stale session when the wrapper is invoked from
+an existing shell pane. A normal interactive `grok` process never opens that
+stream; otherwise it would be incorrectly pinned `working` for the entire TUI
+lifetime.

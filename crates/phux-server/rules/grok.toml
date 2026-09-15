@@ -1,14 +1,13 @@
 # Agent-state detection manifest for Grok Build TUI (ADR-0046).
 #
-# The rules below are structural excerpts from Grok 1.0.30 observed in a
-# phux pane. Tests use compact samples for the rule contracts, so incidental
-# viewport chrome does not become a drift surface.
+# The rules below are verified against sanitized 120x40 `phux snapshot --json`
+# viewports captured from Grok 1.0.30. Fixtures retain the rendered viewport;
+# only machine-specific paths are replaced.
 #
 # The governing doctrine (ADR-0046 §D): a MISSED signal is cheap, a FALSE
-# `blocked` is not. No permission dialog was captured here: this environment's
-# Grok install ran tool calls without painting an approval prompt even with
-# `--permission-mode default`. A blocked rule matching a screen nobody captured
-# is a guess, so none is shipped.
+# `blocked` is not. Tool approval was not observed under this installation's
+# effective mode, but the startup folder-trust chooser was captured and is a
+# stable blocking surface.
 
 kind = "grok"
 name = "grok"
@@ -64,13 +63,29 @@ priority = 60
 region = "bottom-lines(14)"
 match = { line-regex = '^\s*[⠀-⣿]\s+\S.*…\s+\d' }
 
+# VERIFIED: before Grok opens a folder containing project instructions, it
+# replaces the composer with this trust chooser. Pair the question with both
+# hotkey-anchored choices and require the normal composer hint to be absent, so
+# ordinary transcript prose quoting the chooser cannot assert blocked. The
+# chooser is vertically centered, so use the viewport rather than a fixed
+# bottom window that would miss it on taller terminals.
+[[rules]]
+id = "folder-trust-dialog"
+state = "blocked"
+priority = 80
+region = "viewport"
+match = { all = [
+  { contains = "Do you trust the contents of this directory?" },
+  { line-regex = '^\s*Yes, proceed\s+y\s*$' },
+  { line-regex = '^\s*No, quit\s+n\s*$' },
+  { not = { contains = "Shift+Tab:mode" } },
+] }
+
 # --- Rules deliberately NOT written ------------------------------------------
 #
 # No `idle` rule. The composer and the opt-in banner are painted identically
 # whether or not a turn is running. `idle` is the detector's fail-safe
 # default (ADR-0046 §D).
 #
-# No `blocked` rule. A permission prompt was not captured. Grok's binary
-# contains "Allow once" / "Always allow this command" / "Reject" strings, but
-# a rule matching a screen nobody has seen is exactly the guess ADR-0046's
-# Tradeoffs record as having produced a first draft that matched nothing.
+# No tool-permission rule. This installation ran tool calls without painting
+# one, so matching its embedded strings would still be an unverified guess.

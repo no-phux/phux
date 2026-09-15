@@ -11,7 +11,8 @@
 #
 # Usage:
 #   phux-agent-wrap.sh [--name NAME] [--kind KIND] [--state STATE]
-#                      [--target TARGET] -- command [arg...]
+#                      [--target TARGET] [--stream-single-turn]
+#                      -- command [arg...]
 #
 # Everything after `--` is the real agent argv, run in the foreground so
 # its TTY / job-control semantics are untouched. On start the wrapper
@@ -56,15 +57,14 @@
 #   PHUX_AGENT_KIND                 default --kind
 #   PHUX_AGENT_STATE                default --state (see note below)
 #   PHUX_AGENT_TARGET               default --target (pane selector)
+#   PHUX_AGENT_STREAM_SINGLE_TURN   `1` to emit prompt -> stop around command
 #   PHUX_TERMINAL_ID                pane wire id; used as target `@N` when
 #                                   no explicit --target/PHUX_AGENT_TARGET
 #
-# State note: the wrapper only observes the agent's launch/exit boundary,
-# so it does NOT continuously feed a working/blocked lifecycle state. It
-# sets name+kind (the high-value, always-honest part) and leaves state
-# unset (== unknown) unless you pass --state / PHUX_AGENT_STATE. A live
-# state feed would need a separate signal source updating the same record
-# — see the README for what that would take.
+# State note: normal interactive agents still use screen/title detection.
+# `--stream-single-turn` is only for a command whose process lifetime is one
+# complete turn: it opens an AgentSession, emits `prompt` before execution,
+# then `stop` at exit. It must not be used for a long-lived interactive TUI.
 
 set -eu
 
@@ -73,9 +73,11 @@ agent_name=${PHUX_AGENT_NAME:-}
 agent_kind=${PHUX_AGENT_KIND:-}
 agent_state=${PHUX_AGENT_STATE:-}
 agent_target=${PHUX_AGENT_TARGET:-}
+stream_single_turn=${PHUX_AGENT_STREAM_SINGLE_TURN:-0}
+stream_opened=no
 
 usage() {
-  printf 'usage: %s [--name NAME] [--kind KIND] [--state STATE] [--target TARGET] -- command [arg...]\n' "$0" >&2
+  printf 'usage: %s [--name NAME] [--kind KIND] [--state STATE] [--target TARGET] [--stream-single-turn] -- command [arg...]\n' "$0" >&2
 }
 
 need_value() {
@@ -96,6 +98,7 @@ while [ "$#" -gt 0 ]; do
     --state=*) agent_state=${1#--state=}; shift ;;
     --target) need_value "$1" "$#"; agent_target=$2; shift 2 ;;
     --target=*) agent_target=${1#--target=}; shift ;;
+    --stream-single-turn) stream_single_turn=1; shift ;;
     --) shift; break ;;
     -*) usage; exit 2 ;;
     *) break ;;
@@ -131,8 +134,12 @@ fi
 # or absent server abort the agent launch or the cleanup. Positional
 # params here are local to the function, so the caller's agent argv ($@)
 # is preserved across these calls.
+try_phux() {
+  "$phux_bin" "$@" >/dev/null 2>&1
+}
+
 run_phux() {
-  "$phux_bin" "$@" >/dev/null 2>&1 || true
+  try_phux "$@" || true
 }
 
 set_record() {
@@ -159,14 +166,51 @@ clear_record() {
   run_phux agent clear "$agent_target"
 }
 
+start_stream() {
+  [ "$stream_single_turn" = 1 ] || return 0
+  [ -n "$agent_target" ] || return 0
+  provider=${agent_kind:-$agent_name}
+  if try_phux agent session open "$agent_target" --provider "$provider"; then
+    stream_opened=yes
+    run_phux agent emit "$agent_target" --type session_start
+    run_phux agent emit "$agent_target" --type prompt
+  fi
+}
+
+# Invoked indirectly through cleanup's EXIT-trap path.
+# shellcheck disable=SC2329
+finish_stream() {
+  [ "$stream_opened" = yes ] || return 0
+  # Keep `done` observable for a bounded grace before closing the child. A
+  # `session_end` would retract it immediately, defeating an edge-triggered
+  # waiter; never closing would leak a done session when this wrapper is run
+  # manually inside a long-lived shell pane.
+  run_phux agent emit "$agent_target" --type stop
+  sleep 1
+  run_phux agent session close "$agent_target"
+  stream_opened=no
+}
+
+# Invoked indirectly through the EXIT trap below.
+# shellcheck disable=SC2329
+cleanup() {
+  # A second signal during the done grace must not interrupt session close or
+  # identity cleanup. The first signal already selected this exit path.
+  trap '' INT TERM HUP QUIT
+  finish_stream
+  clear_record
+}
+
 # Clear on any exit path. Signal traps re-raise through `exit`, which then
 # runs the EXIT trap exactly once.
-trap 'clear_record' EXIT
+trap 'cleanup' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
+trap 'exit 131' QUIT
 
 set_record
+start_stream
 
 status=0
 "$@" || status=$?

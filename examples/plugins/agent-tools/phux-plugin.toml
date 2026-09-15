@@ -110,6 +110,13 @@ state = "unknown"
 attention = "normal"
 contexts = ["workspace"]
 
+[[agents]]
+id = "grok"
+label = "Grok Build"
+state = "unknown"
+attention = "normal"
+contexts = ["workspace"]
+
 [[panes]]
 id = "agent-board"
 title = "Agent Board"
@@ -129,7 +136,7 @@ id = "agent-bench"
 title = "Agent Bench"
 description = "Composes local agent integration helpers into a herdr-like workspace profile."
 contexts = ["workspace"]
-agents = ["codex", "claude-code", "gemini-cli"]
+agents = ["codex", "claude-code", "gemini-cli", "grok"]
 actions = ["inspect", "list-integrations", "validate-integrations", "status-integrations", "link-integration", "unlink-integration", "detect-agents", "launch-bench", "list-bench", "drive-bench", "smoke-integrations"]
 
 [[workspaces.panes]]
@@ -151,3 +158,8 @@ role = "claude-code"
 id = "gemini-cli"
 pane = "agent-role"
 role = "gemini-cli"
+
+[[workspaces.panes]]
+id = "grok"
+pane = "agent-role"
+role = "grok"

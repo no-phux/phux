@@ -18,6 +18,7 @@ set -eu
 
 script_dir=$(CDPATH=; cd -- "$(dirname -- "$0")" && pwd)
 wrapper=$script_dir/phux-agent-wrap.sh
+grok_wrapper=$script_dir/phux-grok-wrap.sh
 tmp=${TMPDIR:-/tmp}/phux-agent-wrap-smoke.$$
 
 cleanup() {
@@ -79,6 +80,64 @@ fi
 if ! grep -q 'agent	clear	@3' "$argv_log"; then
   printf 'FAIL: agent clear was not pinned to the launch pane (@3)\n' >&2
   printf 'argv log:\n' >&2
+  cat "$argv_log" >&2
+  exit 1
+fi
+
+# Grok's prompt-file mode paints no reliable screen or title while it works.
+# Its provider wrapper therefore opts into the generic one-turn stream.
+: > "$argv_log"
+: > "$agent_log"
+grok_status=0
+PHUX_AGENT_PHUX_BIN=$stub_phux \
+PHUX_GROK_BIN=$fake_agent \
+PHUX_TERMINAL_ID=3 \
+  sh "$grok_wrapper" --no-alt-screen --prompt-file prompt.txt || grok_status=$?
+
+if [ "$grok_status" -ne 7 ]; then
+  printf 'FAIL: Grok wrapper did not forward agent exit status (got %s, want 7)\n' "$grok_status" >&2
+  exit 1
+fi
+
+tab=$(printf '\t')
+for expected in \
+  "agent${tab}session${tab}open${tab}@3${tab}--provider${tab}grok" \
+  "agent${tab}emit${tab}@3${tab}--type${tab}session_start" \
+  "agent${tab}emit${tab}@3${tab}--type${tab}prompt" \
+  "agent${tab}emit${tab}@3${tab}--type${tab}stop" \
+  "agent${tab}session${tab}close${tab}@3" \
+  "agent${tab}clear${tab}@3"
+do
+  if ! grep -q "$expected" "$argv_log"; then
+    printf 'FAIL: one-turn Grok lifecycle missing %s\n' "$expected" >&2
+    cat "$argv_log" >&2
+    exit 1
+  fi
+done
+
+stop_line=$(grep -n "agent${tab}emit${tab}@3${tab}--type${tab}stop" "$argv_log" | cut -d: -f1)
+close_line=$(grep -n "agent${tab}session${tab}close${tab}@3" "$argv_log" | cut -d: -f1)
+clear_line=$(grep -n "agent${tab}clear${tab}@3" "$argv_log" | cut -d: -f1)
+if [ "$stop_line" -ge "$close_line" ] || [ "$close_line" -ge "$clear_line" ]; then
+  printf 'FAIL: one-turn cleanup must emit stop, close its session, then clear identity\n' >&2
+  cat "$argv_log" >&2
+  exit 1
+fi
+
+if ! grep -q 'ran --no-alt-screen --prompt-file prompt.txt' "$agent_log"; then
+  printf 'FAIL: Grok wrapper changed the provider argv\n' >&2
+  exit 1
+fi
+
+# Ordinary interactive Grok stays detector-driven. Opening a stream around a
+# long-lived TUI would pin it working for its entire process lifetime.
+: > "$argv_log"
+PHUX_AGENT_PHUX_BIN=$stub_phux \
+PHUX_GROK_BIN=$fake_agent \
+PHUX_TERMINAL_ID=3 \
+  sh "$grok_wrapper" --no-alt-screen >/dev/null 2>&1 || :
+if grep -q "agent${tab}session" "$argv_log" || grep -q "agent${tab}emit" "$argv_log"; then
+  printf 'FAIL: interactive Grok incorrectly opened a one-turn stream\n' >&2
   cat "$argv_log" >&2
   exit 1
 fi

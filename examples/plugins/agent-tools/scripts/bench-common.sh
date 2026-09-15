@@ -10,7 +10,7 @@ bench_profile=${PHUX_AGENT_BENCH_PROFILE:-agent-bench}
 bench_state_dir=${PHUX_AGENT_BENCH_STATE_DIR:-"$bench_root/state"}
 bench_state=${PHUX_AGENT_BENCH_STATE:-"$bench_state_dir/$bench_profile.tsv"}
 bench_workspace=${PHUX_AGENT_BENCH_WORKSPACE:-"$PWD"}
-bench_roles=${PHUX_AGENT_BENCH_ROLES:-"codex claude-code gemini-cli"}
+bench_roles=${PHUX_AGENT_BENCH_ROLES:-"codex claude-code gemini-cli grok"}
 phux_bin=${PHUX_BIN:-phux}
 
 phux_cmd() {

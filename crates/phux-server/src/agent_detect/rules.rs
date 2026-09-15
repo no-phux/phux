@@ -2353,23 +2353,36 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         })
     }
 
-    const GROK_IDLE_CAPTURE: &str = "grok prompt";
-    const GROK_WORKING_CAPTURE: &str = "⠋ Waiting for response… 1.1s";
-
     fn grok_idle_screen() -> Vec<String> {
-        captured(GROK_IDLE_CAPTURE)
+        lines(
+            include_str!("fixtures/grok/idle_prompt.txt")
+                .lines()
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
     }
 
     fn grok_working_screen() -> Vec<String> {
-        captured(GROK_WORKING_CAPTURE)
+        lines(
+            include_str!("fixtures/grok/working.txt")
+                .lines()
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
+    }
+
+    fn grok_blocked_screen() -> Vec<String> {
+        lines(
+            include_str!("fixtures/grok/blocked_trust.txt")
+                .lines()
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
     }
 
     #[test]
     fn grok_busy_title_is_working() {
-        for title in [
-            "⠋ - Waiting for response… - grok",
-            "⠼ - Thinking - Migrate Phux CLI to usage-rs - grok",
-        ] {
+        for title in include_str!("fixtures/grok/titles_working.txt").lines() {
             let got = grok_eval(title, &grok_idle_screen());
             assert_eq!(got.state, Some(DetectedState::Working), "{title}");
             assert_eq!(got.matched.as_deref(), Some("title-busy-spinner"));
@@ -2378,7 +2391,7 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
 
     #[test]
     fn grok_quiet_title_asserts_nothing() {
-        for title in ["grok", "Count Slowly from 1 to 80 Line by Line - grok"] {
+        for title in include_str!("fixtures/grok/titles_idle.txt").lines() {
             let got = grok_eval(title, &grok_idle_screen());
             assert_eq!(got.state, None, "idle title must not assert: {title}");
         }
@@ -2399,6 +2412,35 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
         let got = grok_eval("grok", &grok_idle_screen());
         assert_ne!(got.state, Some(DetectedState::Working));
         assert_ne!(got.state, Some(DetectedState::Blocked));
+    }
+
+    #[test]
+    fn grok_captured_folder_trust_dialog_is_blocked() {
+        let got = grok_eval("grok", &grok_blocked_screen());
+        assert_eq!(got.state, Some(DetectedState::Blocked));
+        assert_eq!(got.matched.as_deref(), Some("folder-trust-dialog"));
+
+        for screen in [grok_idle_screen(), grok_working_screen()] {
+            assert_ne!(
+                grok_eval("grok", &screen).state,
+                Some(DetectedState::Blocked)
+            );
+        }
+
+        let mut quoted = grok_idle_screen();
+        quoted.splice(
+            4..4,
+            [
+                "Do you trust the contents of this directory?".to_owned(),
+                "Yes, proceed                 y".to_owned(),
+                "No, quit                     n".to_owned(),
+            ],
+        );
+        assert_ne!(
+            grok_eval("grok", &quoted).state,
+            Some(DetectedState::Blocked),
+            "quoted chooser text above a live composer is transcript, not a blocker"
+        );
     }
 
     // --- Amp CLI ------------------------------------------------------------
@@ -2515,7 +2557,14 @@ match = { all = [ { contains = "prompt" }, { not = { contains = "pager" } } ] }
                     include_str!("fixtures/omp/blocked_tool_approval.txt"),
                 ],
             ),
-            ("grok", &[GROK_IDLE_CAPTURE, GROK_WORKING_CAPTURE]),
+            (
+                "grok",
+                &[
+                    include_str!("fixtures/grok/idle_prompt.txt"),
+                    include_str!("fixtures/grok/working.txt"),
+                    include_str!("fixtures/grok/blocked_trust.txt"),
+                ],
+            ),
             ("amp", &[AMP_IDLE_CAPTURE, AMP_WORKING_CAPTURE]),
             ("cursor-agent", &[CURSOR_AGENT_LOGIN_CAPTURE]),
         ];
