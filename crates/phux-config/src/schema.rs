@@ -79,6 +79,10 @@ pub struct Config {
     /// See `docs/consumers/tui.md` §4.2 for the user-facing caveat.
     #[serde(default)]
     pub experimental: ExperimentalCfg,
+    /// `[policy]`: the server's authorization posture
+    /// (`docs/spec/workload-auth.md` §8).
+    #[serde(default)]
+    pub policy: PolicyCfg,
     /// `[voice]`: the server-side transcriber behind `TRANSCRIBE`.
     #[serde(default)]
     pub voice: VoiceCfg,
@@ -926,6 +930,38 @@ impl ExperimentalCfg {
 pub struct ThemeCfg {
     /// Slot → color string (e.g. `"fg" -> "#cdd6f4"`).
     pub slots: BTreeMap<String, String>,
+}
+
+// ---------------------------------------------------------------------------
+// [policy]
+// ---------------------------------------------------------------------------
+
+/// `[policy]` table — which authorization posture the server runs under
+/// (`docs/spec/workload-auth.md` §8, ADR-0116).
+///
+/// Read once at server start. There is no hot reload: a posture change is a
+/// restart, because it changes which connections the server admits at all.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub struct PolicyCfg {
+    /// The closed policy mode. Unset keeps the transitional posture: every
+    /// admitted connection holds the owner's full grant, and a remote
+    /// listener is logged as a warning at startup.
+    #[serde(default)]
+    pub mode: Option<PolicyMode>,
+}
+
+/// The two closed policy modes (`docs/spec/workload-auth.md` §8).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum PolicyMode {
+    /// The owner's Unix socket only, with all six verbs at Global. A
+    /// configured remote listener refuses to start the server.
+    Local,
+    /// The owner's Unix socket keeps kernel-uid authority; every TLS
+    /// connection must present an enrolled workload certificate and holds
+    /// only its registry ceiling, enforced at dispatch.
+    Paired,
 }
 
 // ---------------------------------------------------------------------------

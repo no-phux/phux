@@ -15,6 +15,7 @@
 use std::sync::OnceLock;
 
 use phux_protocol::policy::{PeerIdentity, TransportType};
+use phux_protocol::scope::verb_name;
 use phux_protocol::wire::frame::{
     AUTH_ROUTE_BEARER_QUIC, AUTH_ROUTE_BEARER_WEBTRANSPORT, AUTH_ROUTE_BEARER_WSS,
     AUTH_ROUTE_LOOPBACK_QUIC, AUTH_ROUTE_LOOPBACK_WEBTRANSPORT, AUTH_ROUTE_LOOPBACK_WS,
@@ -24,6 +25,7 @@ use phux_protocol::wire::frame::{
 use phux_protocol::wire::ssh_origin::SshOrigin;
 
 use crate::auth::AuthenticatedCredential;
+use crate::policy::Authority;
 use crate::state::{ClientId, ServerState};
 
 /// The server's release version, reported as `server_version`.
@@ -38,6 +40,9 @@ pub(super) fn is_whoami_key(scope: &Scope, key: &str) -> bool {
 /// The encoded record for `client_id`, or `None` when the transport stamped
 /// no identity for it (every accept path does, so this is the defensive
 /// "no answer", never a guess).
+///
+/// The record carries the asking connection's own grant and nobody else's
+/// (`workload-auth.md` §6: the key answers only the asking connection).
 pub(super) fn record_for(s: &ServerState, client_id: ClientId) -> Option<Vec<u8>> {
     let peer = s.peer_identity(client_id)?;
     let record = build_record(
@@ -46,7 +51,41 @@ pub(super) fn record_for(s: &ServerState, client_id: ClientId) -> Option<Vec<u8>
         s.ssh_origin(client_id),
         serving_host(),
     );
-    serde_json::to_vec(&record).ok()
+    let grant = s
+        .connection_grant(client_id)
+        .map_or_else(Vec::new, |grant| grant_entries(&grant.authority));
+    serde_json::to_vec(&RecordWithGrant { record, grant }).ok()
+}
+
+/// The record plus `grant`, the additive field `docs/spec/L3.md` §3.9 adds
+/// in schema 1: what this connection may do, in the registry grammar.
+#[derive(serde::Serialize)]
+struct RecordWithGrant {
+    #[serde(flatten)]
+    record: WhoamiRecord,
+    grant: Vec<GrantEntry>,
+}
+
+/// One grant: its verbs (lowercase, in bit order) and its selector.
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct GrantEntry {
+    verbs: Vec<String>,
+    selector: String,
+}
+
+fn grant_entries(authority: &Authority) -> Vec<GrantEntry> {
+    authority
+        .reported_grants()
+        .iter()
+        .map(|grant| GrantEntry {
+            verbs: grant
+                .verbs
+                .iter()
+                .map(|verb| verb_name(verb).to_owned())
+                .collect(),
+            selector: grant.selector.to_string(),
+        })
+        .collect()
 }
 
 /// Record the ssh origin a HELLO carried, when its sender may make the claim.

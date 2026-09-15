@@ -121,6 +121,13 @@ const SECTIONS: &[Section] = &[
                   disappear without notice.",
     },
     Section {
+        key: "policy",
+        header: "[policy]",
+        summary: "The authorization posture read at server start: `local` \
+                  (owner socket only) or `paired` (workload mTLS, scope \
+                  ceilings enforced at dispatch).",
+    },
+    Section {
         key: "voice",
         header: "[voice]",
         summary: "The server-side transcriber behind `TRANSCRIBE`: an argv \
@@ -174,6 +181,13 @@ const TRISTATE_ROWS: &[(&str, &str)] = &[
         "experimental.predictive-echo",
         "unset — the dial decides: on when the attach leaves the machine, \
          off otherwise. `true` / `false` force it on every transport",
+    ),
+    (
+        "policy.mode",
+        "unset — transitional: every admitted connection holds the owner's \
+         full grant, and a remote listener is warned about at startup. \
+         `local` admits the owner socket only; `paired` requires an enrolled \
+         workload certificate on every TLS connection",
     ),
     (
         "voice.transcriber",

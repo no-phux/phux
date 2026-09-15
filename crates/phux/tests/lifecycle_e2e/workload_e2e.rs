@@ -254,7 +254,7 @@ fn add_key_from_stdin_enrolls_and_list_shows_the_ceiling() {
             "workload",
             "add-key",
             "--scope",
-            "observe,input@terminal:3",
+            "observe,input@host",
             "--scope",
             "inventory@global",
             "--cert-out",
@@ -286,7 +286,7 @@ fn add_key_from_stdin_enrolls_and_list_shows_the_ceiling() {
     assert_eq!(record["status"], "active");
     assert_eq!(
         record["scopes"],
-        serde_json::json!(["observe,input@terminal:3", "inventory@global"])
+        serde_json::json!(["observe,input@host", "inventory@global"])
     );
     assert!(record["expires_at"].is_i64());
     assert!(

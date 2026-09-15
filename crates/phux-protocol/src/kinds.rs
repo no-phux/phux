@@ -177,6 +177,9 @@ pub enum Exemption {
     Liveness,
     /// `DETACH` / `DETACH_RESOURCE`: tears down the caller's own bindings.
     Cleanup,
+    /// `GET_METADATA { Global, "phux.whoami/v1" }`: reads the calling
+    /// connection's own identity and grant, and nothing else.
+    SelfRead,
 }
 
 impl Exemption {
@@ -187,6 +190,7 @@ impl Exemption {
             Self::Handshake => "handshake",
             Self::Liveness => "liveness",
             Self::Cleanup => "cleanup",
+            Self::SelfRead => "self",
         }
     }
 }
@@ -237,6 +241,9 @@ pub enum Subject {
     /// The named resource's parent Terminal. A grant naming only the child
     /// does not suffice.
     ParentOfNamed,
+    /// The session a `phux.session.keep_empty/v1` value names, resolved
+    /// side-effect-free by name.
+    NamedSession,
     /// The encoded metadata [`Scope`].
     MetadataScope,
     /// The Global selector.
@@ -459,8 +466,16 @@ static F_SUBSCRIBE_EVENTS_ALL: Rule = Rule::verbs(
     &[Verb::Observe],
     Subject::ObservableTerminals,
 );
-static F_GET_METADATA: Rule =
-    Rule::verbs("`GET_METADATA`", &[Verb::Observe], Subject::MetadataScope);
+static F_WHOAMI: Rule = Rule::exempt(
+    r#"`GET_METADATA { Global, "phux.whoami/v1" }`"#,
+    Exemption::SelfRead,
+    Subject::CallingConnection,
+);
+static F_GET_METADATA: Rule = Rule::verbs(
+    "Other `GET_METADATA`",
+    &[Verb::Observe],
+    Subject::MetadataScope,
+);
 static F_SESSION_CREATE: Rule = Rule::verbs(
     r#"`SET_METADATA { Global, "phux.session.create/v1" }`"#,
     &[Verb::Create, Verb::Bind],
@@ -474,6 +489,11 @@ static F_KEEP_EMPTY_MARK: Rule = Rule::verbs(
     Subject::Global {
         owner_uds_only: false,
     },
+);
+static F_KEEP_EMPTY_CLEAR: Rule = Rule::verbs(
+    r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false`"#,
+    &[Verb::Signal],
+    Subject::NamedSession,
 );
 static F_KEEP_EMPTY_OTHER: Rule =
     Rule::deny(r#"`SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value"#);
@@ -521,7 +541,7 @@ static F_UNCLASSIFIED: Rule =
 ///
 /// [`classify_frame`] returns one of these rows for every decoded frame. It
 /// never returns the `COMMAND` row: the nested command decides.
-pub static FRAME_RULES: [&Rule; 35] = [
+pub static FRAME_RULES: [&Rule; 37] = [
     &F_HELLO,
     &F_PING,
     &F_DETACH,
@@ -544,9 +564,11 @@ pub static FRAME_RULES: [&Rule; 35] = [
     &F_MOVE_RESOURCE,
     &F_SUBSCRIBE_EVENTS_ONE,
     &F_SUBSCRIBE_EVENTS_ALL,
+    &F_WHOAMI,
     &F_GET_METADATA,
     &F_SESSION_CREATE,
     &F_KEEP_EMPTY_MARK,
+    &F_KEEP_EMPTY_CLEAR,
     &F_KEEP_EMPTY_OTHER,
     &F_CONFIG_RELOAD,
     &F_RESULT_NAMESPACE_WRITE,
@@ -767,7 +789,7 @@ pub fn frame_rule(frame: &FrameKind) -> &'static Rule {
             terminal: Some(_), ..
         } => &F_SUBSCRIBE_EVENTS_ONE,
         FrameKind::SubscribeEvents { terminal: None, .. } => &F_SUBSCRIBE_EVENTS_ALL,
-        FrameKind::GetMetadata { .. } => &F_GET_METADATA,
+        FrameKind::GetMetadata { scope, key, .. } => get_metadata_rule(scope, key),
         FrameKind::SetMetadata {
             scope, key, value, ..
         } => set_metadata_rule(scope, key, value),
@@ -947,13 +969,24 @@ fn global_set_metadata_rule(key: &str, value: &[u8]) -> &'static Rule {
     }
 }
 
-/// Only the mark itself (`name\0true`) is admitted; the value is classified
+/// Setting the mark (`name\0true`) and clearing it (`name\0false`) have rows
+/// of their own; any other value is malformed. The value is classified
 /// before any handler parses it.
 fn keep_empty_rule(value: &[u8]) -> &'static Rule {
-    if matches!(decode_session_keep_empty(value), Some((_, true))) {
-        &F_KEEP_EMPTY_MARK
+    match decode_session_keep_empty(value) {
+        Some((_, true)) => &F_KEEP_EMPTY_MARK,
+        Some((_, false)) => &F_KEEP_EMPTY_CLEAR,
+        None => &F_KEEP_EMPTY_OTHER,
+    }
+}
+
+/// Reading `phux.whoami/v1` at Global answers only the caller's own identity
+/// and grant, so it needs no verb; every other read needs `OBSERVE`.
+fn get_metadata_rule(scope: &Scope, key: &str) -> &'static Rule {
+    if matches!(scope, Scope::Global) && key == WHOAMI_KEY {
+        &F_WHOAMI
     } else {
-        &F_KEEP_EMPTY_OTHER
+        &F_GET_METADATA
     }
 }
 
@@ -1169,7 +1202,7 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
     method!(
         SESSION_KEEP_EMPTY_KEY,
         Carrier::Metadata(SESSION_KEEP_EMPTY_KEY),
-        [F_KEEP_EMPTY_MARK, F_KEEP_EMPTY_OTHER],
+        [F_KEEP_EMPTY_MARK, F_KEEP_EMPTY_CLEAR, F_KEEP_EMPTY_OTHER],
         Some(ServerFeature::KeepEmptySessions)
     ),
     // A TUI doorbell: the server stores the nonce like any value, and §6
@@ -1182,7 +1215,7 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
     method!(
         WHOAMI_KEY,
         Carrier::Metadata(WHOAMI_KEY),
-        [F_GET_METADATA],
+        [F_WHOAMI],
         Some(ServerFeature::Whoami)
     ),
 ];
@@ -1248,7 +1281,7 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
     method!(
         "GET_METADATA",
         Carrier::Frame(TYPE_GET_METADATA),
-        [F_GET_METADATA]
+        [F_GET_METADATA, F_WHOAMI]
     ),
     method!(
         "SET_METADATA",
@@ -1257,6 +1290,7 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
             F_METADATA_WRITE,
             F_SESSION_CREATE,
             F_KEEP_EMPTY_MARK,
+            F_KEEP_EMPTY_CLEAR,
             F_KEEP_EMPTY_OTHER,
             F_CONFIG_RELOAD,
             F_RESULT_NAMESPACE_WRITE,
@@ -1660,7 +1694,11 @@ mod tests {
             row(&set(Scope::Global, SESSION_KEEP_EMPTY_KEY, &mark)),
             F_KEEP_EMPTY_MARK.case
         );
-        for other in [unmark.as_slice(), b"work", b"work\0yes"] {
+        assert_eq!(
+            row(&set(Scope::Global, SESSION_KEEP_EMPTY_KEY, &unmark)),
+            F_KEEP_EMPTY_CLEAR.case
+        );
+        for other in [b"work".as_slice(), b"work\0yes".as_slice()] {
             assert_eq!(
                 row(&set(Scope::Global, SESSION_KEEP_EMPTY_KEY, other)),
                 F_KEEP_EMPTY_OTHER.case

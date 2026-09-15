@@ -107,8 +107,9 @@ fn section_6_tables() -> (Vec<SpecRow>, Vec<SpecRow>) {
 /// A §6 requirement cell in the canonical form `Rule::requirement_label`
 /// renders: verbs in bit order joined by `+`, or the exemption/deny word.
 fn canonical_requirement(cell: &str) -> String {
-    const WORDS: [(&str, &str); 5] = [
+    const WORDS: [(&str, &str); 6] = [
         ("handshake-exempt", "exempt: handshake"),
+        ("self-exempt", "exempt: self"),
         ("liveness-exempt", "exempt: liveness"),
         ("cleanup-exempt", "exempt: cleanup"),
         ("default-deny", "deny"),
@@ -142,7 +143,8 @@ const GLOBAL_OWNER_UDS: Subject = Subject::Global {
 
 /// The §6 subject phrases and the `Subject` each one means. The first
 /// prefix that matches wins, so a longer phrase precedes its own prefix.
-const SPEC_SUBJECTS: [(&str, Subject); 22] = [
+const SPEC_SUBJECTS: [(&str, Subject); 23] = [
+    ("named session", Subject::NamedSession),
     (
         "Global, and the authenticated transport MUST be the owner UDS",
         GLOBAL_OWNER_UDS,

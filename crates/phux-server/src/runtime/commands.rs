@@ -703,13 +703,21 @@ pub(crate) fn handle_terminal_resize(
 pub(crate) fn prepare_attach(
     state: &SharedState,
     client_id: ClientId,
-    session_name: &str,
+    session: phux_core::ids::SessionId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     client_caps: ClientCapabilities,
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
 ) -> Result<AttachPrepared, crate::state::AttachError> {
     state.with_mut(|s| {
+        // The caller pinned the session by id; its name is read here, in
+        // the same critical section as the attach, never earlier.
+        let session_name = s
+            .registry()
+            .session(session)
+            .map(|found| found.name.clone())
+            .ok_or_else(|| crate::state::AttachError::UnknownSession(format!("{session:?}")))?;
+        let session_name = session_name.as_str();
         let pane_count = s
             .session_by_name(session_name)
             .ok_or_else(|| crate::state::AttachError::UnknownSession(session_name.to_owned()))?

@@ -24,15 +24,23 @@ pub(super) struct WorkloadAuth {
 }
 
 impl WorkloadAuth {
-    /// `PHUX_WORKLOAD_MTLS` explicitly enables the profile, even on loopback.
-    /// The other variables select material locations and do not enable it;
-    /// provisioning those paths before opting in remains supported.
-    pub(super) fn from_env() -> Result<Option<Self>, WorkloadError> {
-        if std::env::var_os("PHUX_WORKLOAD_MTLS").is_none() {
+    /// The authority a listener needs under its posture: `None` unless the
+    /// `paired` posture requires workload mTLS (`[policy] mode = "paired"`,
+    /// or `PHUX_WORKLOAD_MTLS` with no mode). It applies even on loopback.
+    pub(super) fn for_posture(required: bool) -> Result<Option<Self>, WorkloadError> {
+        if !required {
             return Ok(None);
         }
+        Self::configured().map(Some)
+    }
+
+    /// Load the authority from its configured locations. The
+    /// `PHUX_WORKLOAD_*` path variables select locations and do not enable
+    /// anything; provisioning those paths before opting in remains
+    /// supported.
+    pub(super) fn configured() -> Result<Self, WorkloadError> {
         let paths = WorkloadPaths::from_env();
-        Self::load(&paths.ca_cert, &paths.ca_key, &paths.registry).map(Some)
+        Self::load(&paths.ca_cert, &paths.ca_key, &paths.registry)
     }
 
     fn load(cert: &Path, key: &Path, registry: &Path) -> Result<Self, WorkloadError> {

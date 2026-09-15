@@ -1176,72 +1176,32 @@ pub(crate) type AttachPrepared = (
     Vec<phux_protocol::ids::ResourceId>,
 );
 
-/// Resolve `Last` without conflating an untouched server with stale touch
-/// history. A configured seed is a fallback only in the former case.
-fn resolve_last_session_name(state: &crate::state::ServerState) -> Option<String> {
-    match state.most_recently_touched_session() {
-        Some(sid) => state
-            .registry()
-            .session(sid)
-            .map(|session| session.name.clone()),
-        None if state.has_session_touch_history() => None,
-        None => state
-            .pre_seeded_session()
-            .and_then(|name| state.session_by_name(name))
-            .map(|session| session.name.clone()),
-    }
-}
-
-/// Resolve `target` to a live session name.
+/// Resolve `target` to the session the attach joins: the one the dispatch
+/// guard authorized, pinned by id before the first await (`pinned`), or, only
+/// for a `CreateIfMissing` whose session does not exist, the one it creates.
+/// Nothing here re-resolves a name after a suspension point, so a concurrent
+/// rename cannot redirect the attach (workload-auth §5).
 ///
-/// `Last` preserves touch-order authority once any activity exists. Before
-/// the first touch it falls back to the server's configured pre-seeded
-/// session, if that session is still live; neither path creates a session.
+/// `Last` follows touch order once any activity exists, and before the first
+/// touch the server's configured pre-seeded session while it is live
+/// (`crate::policy::resolve_attach_session`); neither creates a session.
 pub(crate) async fn resolve_attach_target(
     state: &SharedState,
     target: AttachTarget,
+    pinned: Option<phux_core::ids::SessionId>,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     root_token: &CancellationToken,
     default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
-) -> Option<String> {
-    match target {
-        AttachTarget::ByName(name) => Some(name),
-        AttachTarget::ById(id) => {
-            let resolved = state
-                .with(|s| s.idspace.resolve_session(id))
-                .and_then(|sid| {
-                    state.with(|s| s.registry().session(sid).map(|sess| sess.name.clone()))
-                });
-            if resolved.is_none() {
-                send_error(
-                    out_tx,
-                    ErrorCode::SessionNotFound,
-                    &format!("session id {} not found", id.get()),
-                )
-                .await;
-            }
-            resolved
-        }
-        AttachTarget::Last => {
-            // A real touch remains authoritative, including the existing
-            // stale-touch failure behavior when that session has since died.
-            // Only a server with no touch history may select its configured
-            // pre-seeded session. That identity comes from ServerConfig and
-            // is mirrored before seeding, so native clients can send `Last`
-            // without loading or reproducing the server's config template.
-            let resolved = state.with(resolve_last_session_name);
-            if resolved.is_none() {
-                send_error(
-                    out_tx,
-                    ErrorCode::SessionNotFound,
-                    "AttachTarget::Last has no live session to resolve",
-                )
-                .await;
-            }
-            resolved
-        }
+) -> Option<phux_core::ids::SessionId> {
+    if pinned.is_some() {
+        return pinned;
+    }
+    let refusal = match target {
+        AttachTarget::ByName(name) => format!("session {name:?} not found"),
+        AttachTarget::ById(id) => format!("session id {} not found", id.get()),
+        AttachTarget::Last => "AttachTarget::Last has no live session to resolve".to_owned(),
         AttachTarget::CreateIfMissing { name, command, cwd } => {
-            resolve_create_if_missing(
+            return create_attach_session(
                 state,
                 name,
                 command,
@@ -1250,18 +1210,45 @@ pub(crate) async fn resolve_attach_target(
                 root_token,
                 default_colors,
             )
-            .await
-        }
-        _ => {
-            send_error(
-                out_tx,
-                ErrorCode::SessionNotFound,
-                "unknown AttachTarget variant",
-            )
             .await;
-            None
         }
+        _ => "unknown AttachTarget variant".to_owned(),
+    };
+    send_error(out_tx, ErrorCode::SessionNotFound, &refusal).await;
+    None
+}
+
+/// `CreateIfMissing` whose session did not exist: create it, then pin the
+/// id it was created under.
+async fn create_attach_session(
+    state: &SharedState,
+    name: String,
+    command: Option<Vec<String>>,
+    cwd: Option<String>,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    root_token: &CancellationToken,
+    default_colors: Option<phux_protocol::caps::TerminalDefaultColors>,
+) -> Option<phux_core::ids::SessionId> {
+    let name = resolve_create_if_missing(
+        state,
+        name,
+        command,
+        cwd,
+        out_tx,
+        root_token,
+        default_colors,
+    )
+    .await?;
+    let created = state.with(|s| s.find_session_by_name(&name));
+    if created.is_none() {
+        send_error(
+            out_tx,
+            ErrorCode::SessionNotFound,
+            &format!("session {name:?} not found"),
+        )
+        .await;
     }
+    created
 }
 
 /// Handle [`AttachTarget::CreateIfMissing`] (phux-k61.3, SPEC §13).
@@ -2774,13 +2761,16 @@ impl SpawnPublication<'_> {
 
 /// Is this ATTACH a replacement for the same client's existing attachment to
 /// the same session?
-fn is_same_session_reattach(state: &SharedState, client_id: ClientId, session_name: &str) -> bool {
+fn is_same_session_reattach(
+    state: &SharedState,
+    client_id: ClientId,
+    session: phux_core::ids::SessionId,
+) -> bool {
     state.with(|server| {
-        let target = server.find_session_by_name(session_name);
-        matches!(
-            (server.attached().get(&client_id), target),
-            (Some(attached), Some(target)) if attached.session == target
-        )
+        server
+            .attached()
+            .get(&client_id)
+            .is_some_and(|attached| attached.session == session)
     })
 }
 
@@ -2789,7 +2779,7 @@ fn is_same_session_reattach(state: &SharedState, client_id: ClientId, session_na
 async fn prepare_attach_or_refuse(
     state: &SharedState,
     client_id: ClientId,
-    session_name: &str,
+    session: phux_core::ids::SessionId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     client_caps: ClientCapabilities,
     negotiated_profile: BootstrapProfile,
@@ -2798,7 +2788,7 @@ async fn prepare_attach_or_refuse(
     match prepare_attach(
         state,
         client_id,
-        session_name,
+        session,
         out_tx,
         client_caps,
         negotiated_profile,
@@ -3645,6 +3635,12 @@ pub(crate) async fn handle_attach(
     // performed. `false` everywhere else.
     defer_subscription: bool,
 ) {
+    // Pin the target to the session the dispatch guard authorized. Nothing
+    // between the guard and this line awaits, so it reads the guard's
+    // snapshot. From here the attach follows the session id, never its name,
+    // so a rename that lands while it awaits cannot redirect it
+    // (workload-auth §5: one snapshot authorizes and routes).
+    let pinned = state.with(|s| crate::policy::resolve_attach_session(s, &target));
     let Some(stream_profile) = bootstrap_stream_profile(negotiated_profile) else {
         send_error(
             out_tx,
@@ -3660,9 +3656,10 @@ pub(crate) async fn handle_attach(
     // carries this so the actor primes TERMINAL_SNAPSHOT.scrollback_bytes.
     let scrollback_req: Option<u32> = request_scrollback.then_some(scrollback_limit_lines);
 
-    let Some(session_name) = resolve_attach_target(
+    let Some(session) = resolve_attach_target(
         state,
         target,
+        pinned,
         out_tx,
         root_token,
         client_caps.default_colors,
@@ -3677,13 +3674,13 @@ pub(crate) async fn handle_attach(
     // current `cwd` per pane (the sidebar's VCS branch line depends on it).
     refresh_registry_cwds(state).await;
 
-    let same_session_reattach = is_same_session_reattach(state, client_id, &session_name);
+    let same_session_reattach = is_same_session_reattach(state, client_id, session);
 
     let Some((snapshot, initial_client_id, panes_to_snapshot, closed_before_ready)) =
         prepare_attach_or_refuse(
             state,
             client_id,
-            &session_name,
+            session,
             out_tx,
             client_caps,
             negotiated_profile,
@@ -3695,6 +3692,15 @@ pub(crate) async fn handle_attach(
     };
     let wire_client_id =
         phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
+    // The name the pinned session carries now, for publication only: routing
+    // already followed the id.
+    let session_name = state
+        .with(|s| {
+            s.registry()
+                .session(session)
+                .map(|found| found.name.clone())
+        })
+        .unwrap_or_default();
     if same_session_reattach {
         detach_prior_state_sync_consumers(&panes_to_snapshot, wire_client_id, client_caps).await;
     }
@@ -4251,10 +4257,13 @@ mod tests {
         let client_id = state.with_mut(crate::state::ServerState::new_client_id);
         let (out_tx, _out_rx) = tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
 
+        let working = state
+            .with(|s| s.find_session_by_name("working"))
+            .expect("the seeded session");
         let (snapshot, _initial_client_id, bootstrapped, closed) = prepare_attach(
             &state,
             client_id,
-            "working",
+            working,
             &out_tx,
             ClientCapabilities::default(),
             BootstrapProfile::SynthesizedVtRaw,
@@ -4299,11 +4308,14 @@ mod tests {
         });
         let client_id = state.with_mut(crate::state::ServerState::new_client_id);
         let (out_tx, _out_rx) = tokio::sync::mpsc::channel(crate::state::DEFAULT_CLIENT_MAILBOX);
+        let bounded = state
+            .with(|s| s.find_session_by_name("bounded"))
+            .expect("the seeded session");
         assert!(matches!(
             prepare_attach(
                 &state,
                 client_id,
-                "bounded",
+                bounded,
                 &out_tx,
                 ClientCapabilities::default(),
                 BootstrapProfile::SynthesizedVtRaw,

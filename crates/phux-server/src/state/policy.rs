@@ -94,11 +94,69 @@ impl ServerState {
         )
     }
 
-    /// Remove a peer identity when a client *disconnects* — not when it
-    /// detaches. Peer identity is stamped by the accepting transport and
-    /// cannot be re-established on a live connection, so
-    /// [`Self::forget_connection`] is its only caller.
+    /// Remove a peer identity, and the grant minted from it, when a client
+    /// *disconnects* — not when it detaches. Peer identity is stamped by the
+    /// accepting transport and cannot be re-established on a live
+    /// connection, so [`Self::forget_connection`] is its only caller.
     pub fn remove_peer_identity(&mut self, client_id: ClientId) {
         self.clients.remove_peer_identity(client_id);
+        self.clients.grants.remove(&client_id);
+    }
+
+    /// Retain the grant the policy engine minted for this connection at
+    /// HELLO (`docs/spec/workload-auth.md` §7).
+    pub fn set_connection_grant(
+        &mut self,
+        client_id: ClientId,
+        grant: crate::policy::ConnectionGrant,
+    ) {
+        self.clients.grants.insert(client_id, grant);
+    }
+
+    /// The grant this connection holds; `None` before HELLO, and for a
+    /// connection the dispatch guard therefore refuses everything.
+    #[must_use]
+    pub fn connection_grant(&self, client_id: ClientId) -> Option<&crate::policy::ConnectionGrant> {
+        self.clients.grants.get(&client_id)
+    }
+
+    /// Whether an uncorrelated `PERMISSION_DENIED` may be sent to this
+    /// connection now: at most one per
+    /// [`crate::policy::DENIAL_ERROR_INTERVAL`]. A connection with no grant
+    /// gets none.
+    pub fn admit_denial_error(&mut self, client_id: ClientId) -> bool {
+        let now = std::time::Instant::now();
+        self.clients
+            .grants
+            .get_mut(&client_id)
+            .is_some_and(|grant| grant.admit_denial_error(now))
+    }
+
+    /// The wire id already interned for a local resource, without
+    /// allocating one: the dispatch guard reads, it never mints ids.
+    #[must_use]
+    pub(crate) fn terminal_wire_of(
+        &self,
+        terminal: phux_core::ids::ResourceId,
+    ) -> Option<phux_protocol::ids::ResourceId> {
+        self.idspace.terminal_wire(terminal).cloned()
+    }
+
+    /// Record the authorization posture the server started in. Set once at
+    /// startup.
+    pub fn set_policy_posture(&mut self, posture: crate::policy::PolicyPosture) {
+        self.config.policy_posture = posture;
+    }
+
+    /// The authorization posture the server started in.
+    #[must_use]
+    pub const fn policy_posture(&self) -> crate::policy::PolicyPosture {
+        self.config.policy_posture
+    }
+
+    /// Whether TLS listeners must require a workload client certificate.
+    #[must_use]
+    pub const fn workload_mtls_required(&self) -> bool {
+        self.config.policy_posture.requires_workload_mtls()
     }
 }

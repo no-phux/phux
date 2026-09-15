@@ -165,6 +165,14 @@ pub(super) struct ClientTable {
     /// outbound sender cannot close writers held alive by other sender clones.
     /// Cleared only by `ServerState::forget_connection`.
     pub(super) connection_cancellations: HashMap<ClientId, CancellationToken>,
+    /// The authority minted for each connection at HELLO
+    /// (`docs/spec/workload-auth.md` §5, §7), enforced at every dispatch.
+    ///
+    /// Connection-scoped: a second HELLO is a protocol error, so nothing on
+    /// a live connection re-mints it, and only
+    /// `ServerState::forget_connection` clears it. A connection with no
+    /// entry is refused everything by the dispatch guard.
+    pub(super) grants: HashMap<ClientId, crate::policy::ConnectionGrant>,
     /// Nonce-bearing session-create result keys owned by each connection.
     ///
     /// Results are one-shot and connection-scoped even though their transport
@@ -201,6 +209,7 @@ impl ClientTable {
             terminal_mailboxes: HashMap::new(),
             peer_identities: HashMap::new(),
             connection_cancellations: HashMap::new(),
+            grants: HashMap::new(),
             session_create_results: HashMap::new(),
             client_names: HashMap::new(),
             next_subscription_epoch: 0,

@@ -37,6 +37,7 @@ pub mod caps;
 pub mod ids;
 pub mod kinds;
 pub mod policy;
+pub mod scope;
 
 #[cfg(feature = "server")]
 pub mod sgr;
