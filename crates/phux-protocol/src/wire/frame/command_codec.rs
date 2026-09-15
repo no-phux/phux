@@ -606,7 +606,7 @@ fn decode_apply_input_command(
     })
 }
 
-/// Length-prefixed list: u16 count, then each tagged ResourceId. u16 is
+/// Length-prefixed list: u16 count, then each tagged `ResourceId`. u16 is
 /// ample — a single close-group never approaches 65 535 panes — and matches
 /// the count-prefix width used elsewhere (e.g.
 /// `SubscribeResourceEvents.event_types`).
