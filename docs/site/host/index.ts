@@ -35,9 +35,6 @@ export interface Env {
   TELEMETRY_INGEST_KEY?: string;
   /** Private ops pipeline via same-account Worker service binding. */
   ANALYTICS?: { fetch(input: Request): Promise<Response> };
-  /** HTTP fallback for local development and staged migration only. */
-  ANALYTICS_INGEST_URL?: string;
-  ANALYTICS_INGEST_KEY?: string;
   MEMBER_KEY?: string;
   MEMBER_CLAIM_KEY?: string;
   MEMBER_CLAIM_KEY_PREVIOUS?: string;

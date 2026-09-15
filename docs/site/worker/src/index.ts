@@ -62,9 +62,6 @@ export interface Env extends AuthEnv {
   TELEMETRY_INGEST_KEY?: string;
   // Private ops pipeline (no-phux/ops) over a same-account service binding.
   ANALYTICS?: { fetch(input: Request): Promise<Response> };
-  // HTTP fallback for local development and staged migration only.
-  ANALYTICS_INGEST_URL?: string;
-  ANALYTICS_INGEST_KEY?: string;
 
   SESSION_TOKEN_SECRET: string; // secret (wrangler secret put)
   SYNTHETIC_TOKEN_SECRET?: string; // shared only with the production monitor
