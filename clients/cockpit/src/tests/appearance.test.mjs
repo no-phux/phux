@@ -81,6 +81,20 @@ test('a failed rollback still dismisses Settings and releases the keyboard', () 
   assert.ok(cmd.cmds.some(effect => effect.name === 'cockpit.navigation'));
 });
 
+test('repeated Cancel during rollback emits one rollback request', () => {
+  let [model, cmd] = step(opened(), { kind: 'settings_close' });
+  assert.equal(model.appearanceClosing, true);
+  assert.equal(model.settingsOpen, true);
+  assert.deepEqual([...cmd.payload], [1, 6, 0]);
+  const [again, againCmd] = step(model, { kind: 'settings_close' });
+  assert.equal(again.appearanceClosing, true);
+  assert.equal(again.settingsOpen, true);
+  assert.equal(againCmd, null);
+  const [fromNav, navCmd] = step(again, { kind: 'palette_open' });
+  assert.equal(fromNav.navigationAfterSettings, true);
+  assert.equal(navCmd, null);
+});
+
 test('without a native transaction Cancel closes locally, while a failed Save keeps the preview', () => {
   let [model] = step(initialModel()[0], { kind: 'settings_open' });
   [model] = step(model, { kind: 'appearance_failed', error: bytes('engine unavailable') });

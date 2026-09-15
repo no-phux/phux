@@ -788,8 +788,8 @@ const Bridge = struct {
     }
 
     fn keybindingsEnabled(self: *Bridge) bool {
-        if (self.interaction_mode != .terminal) return false;
         const engine = self.engine orelse return false;
+        if (windowOwnsOverlay(Adapter.Host.model(), engine.model.active_window)) return false;
         return !engine.textInputOwnsKeyboard();
     }
 
@@ -1615,6 +1615,35 @@ fn windowOwnsOverlay(model: *const core.Model, window_index: usize) bool {
     };
 }
 
+fn windowOwnsSettings(model: *const core.Model, window_index: usize) bool {
+    return switch (window_index) {
+        0 => model.mainSettingsOpen,
+        1 => model.window1SettingsOpen,
+        2 => model.window2SettingsOpen,
+        3 => model.window3SettingsOpen,
+        4 => model.window4SettingsOpen,
+        else => false,
+    };
+}
+
+fn routeContainsSheet(route: []const canvas.WidgetEventRouteEntry) bool {
+    for (route) |entry| {
+        if (entry.kind == .sheet) return true;
+    }
+    return false;
+}
+
+fn settingsConsumesOutsidePointer(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
+    const index = Engine.windowIndexForCanvas(routed.view_label) orelse return false;
+    if (!windowOwnsSettings(Adapter.Host.model(), index)) return false;
+    return !routeContainsSheet(routed.route);
+}
+
+fn windowOwnsSettingsForView(view_label: []const u8) bool {
+    const index = Engine.windowIndexForCanvas(view_label) orelse return false;
+    return windowOwnsSettings(Adapter.Host.model(), index);
+}
+
 fn overlayOwnsOrigin() bool {
     if (bridge.interaction_mode == .terminal) return false;
     const origin = bridge.fallback_origin orelse return true;
@@ -1812,6 +1841,10 @@ const PointerHost = struct {
     inner: native_sdk.App = undefined,
     selection_autoscroll_timer_active: bool = false,
     maintenance_timer_active: bool = false,
+    // SDK gpu_surface_events: dismiss, then command from the already-routed
+    // outside target, then canvas_widget_pointer. Settings must consume that
+    // command; other overlays keep light-dismiss.
+    consume_settings_clickthrough: bool = false,
 
     fn wrap(self: *PointerHost, inner: native_sdk.App) native_sdk.App {
         self.* = .{ .inner = inner };
@@ -1873,9 +1906,30 @@ const PointerHost = struct {
         refreshNativeState(runtime, value);
         closeNativeWindow(value);
         routeNativeInput(runtime, admitted);
-        try self.inner.event(runtime, modalInputEvent(admitted));
+        const consume_settings_outside = self.consumeSettingsOutsideGesture(admitted);
+        if (!consume_settings_outside) try self.inner.event(runtime, modalInputEvent(admitted));
         syncWindowIds(runtime);
-        if (value == .canvas_widget_pointer) try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
+        if (value == .canvas_widget_pointer and !consume_settings_outside)
+            try self.focusTerminalAfterTabClick(runtime, value.canvas_widget_pointer);
+    }
+
+    fn consumeSettingsOutsideGesture(self: *PointerHost, value: native_sdk.Event) bool {
+        switch (value) {
+            .canvas_widget_dismiss => |dismissed| {
+                if (windowOwnsSettingsForView(dismissed.view_label)) self.consume_settings_clickthrough = true;
+                return false;
+            },
+            .command => return self.consume_settings_clickthrough,
+            .canvas_widget_pointer => |routed| return self.consume_settings_clickthrough or settingsConsumesOutsidePointer(routed),
+            .gpu_surface_input => |raw| {
+                switch (raw.kind) {
+                    .pointer_up, .pointer_cancel, .key_up => self.consume_settings_clickthrough = false,
+                    else => {},
+                }
+                return false;
+            },
+            else => return false,
+        }
     }
 
     fn refreshNativeState(runtime: *native_sdk.Runtime, value: native_sdk.Event) void {
@@ -2184,6 +2238,7 @@ fn adoptCanvasWindow(engine: *Engine, window_id: native_sdk.platform.WindowId, l
 }
 
 fn pointerMayAdoptWindow(routed: native_sdk.runtime.CanvasWidgetPointerEvent) bool {
+    if (settingsConsumesOutsidePointer(routed)) return false;
     const index = Engine.windowIndexForCanvas(routed.view_label) orelse return true;
     if (!windowOwnsOverlay(Adapter.Host.model(), index)) return true;
     const target = routed.press_target orelse return false;
@@ -3865,7 +3920,8 @@ test "rejected stored bindings suspend safely and can be reset without overwriti
     const original = engine.model.config.keybindings;
     startKeybindings(&rig.harness.runtime);
     try std.testing.expectEqual(@as(usize, 2), rig.harness.null_platform.configuredShortcuts().len);
-    bridge.interaction_mode = .settings;
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
     try bridge.syncKeybindings();
     try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.configuredShortcuts().len);
     Bridge.request(&bridge, cockpit.engine.appearance.request_name, 401, &.{ 1, 0, 0 });
@@ -6558,6 +6614,125 @@ test "overlay light-dismiss fires once and Settings rollback stays transactional
     try rig.settleAppearance();
     try std.testing.expect(!rig.app_state.model.settingsOpen);
     try std.testing.expect(!rig.app_state.model.appearance.active);
+}
+
+fn widgetFrameByLabel(model: *const core.Model, window: usize, size: native_sdk.geometry.SizeF, label: []const u8) !native_sdk.geometry.RectF {
+    var built = try measureWindow(model, window, size);
+    defer built.arena.deinit();
+    for (built.measured.nodes) |entry| {
+        if (std.mem.eql(u8, entry.widget.semantics.label, label)) return entry.frame;
+    }
+    return error.TestExpectedLabeledWidget;
+}
+
+fn dispatchPointer(rig: *Rig, kind: native_sdk.platform.GpuSurfaceInputKind, x: f32, y: f32) !void {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = kind,
+        .x = x,
+        .y = y,
+        .button = 0,
+    } });
+}
+
+fn dispatchEscape(rig: *Rig, kind: native_sdk.platform.GpuSurfaceInputKind) !void {
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+        .window_id = 1,
+        .label = canvas_label,
+        .kind = kind,
+        .key = "Escape",
+    } });
+}
+
+test "Settings outside pointer down and up dismisses once without activating chrome" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try rig.resize(.init(1100, 640));
+    const frame = try widgetFrameByLabel(&rig.app_state.model, 0, .init(1100, 640), "Sessions");
+    const x = frame.x + frame.width * 0.5;
+    const y = frame.y + frame.height * 0.5;
+    const tabs_before = bridge.engine.?.model.ws().tab_count;
+    try dispatchPointer(&rig, .pointer_down, x, y);
+    try std.testing.expect(rig.app_state.model.appearanceClosing);
+    const rollback_key = bridge.appearance_key;
+    try std.testing.expect(bridge.appearance_pending);
+    try dispatchPointer(&rig, .pointer_up, x, y);
+    try dispatchPointer(&rig, .pointer_down, x, y);
+    try dispatchPointer(&rig, .pointer_up, x, y);
+    try std.testing.expectEqual(rollback_key, bridge.appearance_key);
+    try std.testing.expect(!rig.app_state.model.paletteOpen);
+    try std.testing.expectEqual(tabs_before, bridge.engine.?.model.ws().tab_count);
+    try rig.settleAppearance();
+    try std.testing.expect(!rig.app_state.model.settingsOpen);
+}
+
+test "Settings repeated Escape emits one rollback" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try rig.resize(.init(1100, 640));
+    try dispatchEscape(&rig, .key_down);
+    try std.testing.expect(rig.app_state.model.appearanceClosing);
+    const rollback_key = bridge.appearance_key;
+    try dispatchEscape(&rig, .key_up);
+    try dispatchEscape(&rig, .key_down);
+    try dispatchEscape(&rig, .key_up);
+    try std.testing.expectEqual(rollback_key, bridge.appearance_key);
+    try std.testing.expect(rig.app_state.model.settingsOpen);
+    try rig.settleAppearance();
+    try std.testing.expect(!rig.app_state.model.settingsOpen);
+}
+
+test "Settings close controls disable while rollback is in flight" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    var closing = rig.app_state.model;
+    closing.appearanceClosing = true;
+    var built = try measureWindow(&closing, 0, .init(1100, 640));
+    defer built.arena.deinit();
+    var saw_disabled_close = false;
+    for (built.measured.nodes) |entry| {
+        if (std.mem.eql(u8, entry.widget.semantics.label, "Cancel settings") and entry.widget.state.disabled) saw_disabled_close = true;
+    }
+    try std.testing.expect(saw_disabled_close);
+}
+
+test "configured shortcuts stay armed in a non-owner window while another window presents" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    const engine = bridge.engine.?;
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.window1SettingsOpen);
+    try bridge.syncKeybindings();
+    try std.testing.expectEqual(@as(usize, 0), rig.harness.null_platform.configuredShortcuts().len);
+    engine.model.active_window = 0;
+    try bridge.syncKeybindings();
+    try std.testing.expect(rig.harness.null_platform.configuredShortcuts().len > 0);
+    const before = engine.model.wsAt(0).?.tab_count;
+    const shortcut = for (rig.harness.null_platform.configuredShortcuts()) |item| {
+        if (std.mem.eql(u8, item.key, "t") and !item.modifiers.shift) break item;
+    } else return error.TestExpectedNewTabShortcut;
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .shortcut = .{
+        .id = shortcut.id,
+        .key = shortcut.key,
+        .modifiers = shortcut.modifiers,
+        .window_id = 1,
+    } });
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try std.testing.expectEqual(before + 1, engine.model.wsAt(0).?.tab_count);
 }
 
 test "healthy canvas gives the footer space to the terminal" {

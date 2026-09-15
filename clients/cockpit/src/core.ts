@@ -2625,6 +2625,7 @@ function appearanceFailure(model: Model): AppearanceDecision {
 
 function dismissAppearance(model: Model): AppearanceDecision {
   model = { ...model, settingsReloadStage: 0 };
+  if (model.appearanceClosing) return appearanceDecision(model);
   if (!model.appearance.active && !model.appearanceBusy) return dismissLocally(model);
   return requestAppearance({ ...model, appearanceClosing: true }, 6, 0);
 }
@@ -2669,12 +2670,19 @@ function updateAppearance(model: Model, msg: Msg): AppearanceDecision | null {
 }
 
 function updateOpenAppearance(model: Model, msg: Msg): AppearanceDecision | null {
-  if (msg.kind === "settings_section") return appearanceDecision({ ...model, settingsSection: msg.section });
+  if (msg.kind === "settings_section") {
+    if (model.appearanceClosing) return appearanceDecision(model);
+    return appearanceDecision({ ...model, settingsSection: msg.section });
+  }
   if (msg.kind === "settings_close") return dismissAppearance(model);
-  if (msg.kind === "palette_open") return dismissAppearance({ ...model, navigationAfterSettings: true });
+  if (msg.kind === "palette_open") {
+    if (model.appearanceClosing) return appearanceDecision({ ...model, navigationAfterSettings: true });
+    return dismissAppearance({ ...model, navigationAfterSettings: true });
+  }
   const edited = editAppearance(model, msg);
   if (edited === null) return null;
-  return model.appearanceBusy ? appearanceDecision(model) : edited;
+  if (model.appearanceClosing || model.appearanceBusy) return appearanceDecision(model);
+  return edited;
 }
 
 function activeTabs(model: Model): readonly Tab[] {
@@ -3590,6 +3598,10 @@ function failedSessionCancellation(model: Model): NavigatorDecision {
 }
 
 function cancelSettingsForAction(model: Model, msg: Msg): NavigatorDecision {
+  if (model.appearanceClosing) {
+    return navigatorDecision({ ...model, pendingSettingsAction: captureDeferredAction(model, msg),
+      navigationAfterSettings: model.navigationAfterSettings || msg.kind === "palette_open" }, 0, NO_BYTES);
+  }
   const next: Model = { ...model, pendingSettingsAction: captureDeferredAction(model, msg), settingsReloadStage: 0, pendingToolOpen: false,
     appearanceClosing: true, appearanceBusy: true, navigationAfterSettings: msg.kind === "palette_open" };
   return navigatorDecision(next, 7, appearanceRequest(6, 0));

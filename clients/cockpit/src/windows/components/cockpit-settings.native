@@ -5,7 +5,7 @@
           <column gap="16" grow="1">
             <row cross="center" gap="8">
               <text grow="1" size="heading">Settings</text>
-              <button size="sm" variant="ghost" icon="x" label="Cancel settings" on-press="settings_close" />
+              <button size="sm" variant="ghost" icon="x" label="Cancel settings" disabled="{appearanceClosing}" on-press="settings_close" />
             </row>
             <input text="{settingsQuery}" placeholder="Search settings" autofocus="true" on-input="settings_query" label="Search settings" />
             <tabs gap="4" label="Settings groups">
@@ -114,7 +114,7 @@
               <if test="{appearance.dirty}"><text foreground="text_muted">Unsaved preview</text></if>
               <else><text foreground="text_muted">{appearance.contrastLabel}</text></else>
               <spacer grow="1" />
-              <button size="sm" variant="ghost" on-press="settings_close">Cancel</button>
+              <button size="sm" variant="ghost" disabled="{appearanceClosing}" on-press="settings_close">Cancel</button>
               <button size="sm" disabled="{appearanceBusy}" on-press="settings_commit">Save changes</button>
             </row>
           </column>
