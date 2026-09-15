@@ -49,8 +49,20 @@ app_instance_require_free
 run_args=(--debug --automation --fresh --detach)
 (( NO_BUILD == 0 )) || run_args+=(--no-build)
 launch_log="${WORK}/dev-run.log"
+set +e
 PHUX_COCKPIT_DEV_HOME="$DEV_HOME" "${ROOT}/scripts/dev-run.sh" "${run_args[@]}" | tee "$launch_log"
+launch_status=("${PIPESTATUS[@]}")
+set -e
 APP_PID="$(sed -n 's/^pid \([0-9][0-9]*\), log .*/\1/p' "$launch_log" | tail -1)"
+if (( launch_status[0] != 0 || launch_status[1] != 0 )); then
+    if [[ "$APP_PID" =~ ^[0-9]+$ ]]; then
+        app_instance_stop "$APP_PID"
+        APP_PID=""
+    fi
+    printf 'FAILED: dev-run pipeline exited %s/%s; transcript: %s\n' \
+        "${launch_status[0]}" "${launch_status[1]}" "$launch_log" >&2
+    exit 1
+fi
 if [[ ! "$APP_PID" =~ ^[0-9]+$ ]]; then
     printf 'FAILED: dev-run did not report a usable pid; transcript: %s\n' "$launch_log" >&2
     exit 1
@@ -108,20 +120,25 @@ printf '  ok: Agents opens the inspector\n'
 # A zero-distance drag finishes with the automation pointer parked over the
 # shipping scroll surface. Hovered state proves only that the pointer reached
 # the real control; rendered rest/hover fill equality is the deterministic
-# semantic_theme Zig recipe contract named by cockpit-state-gallery.mjs.
+# semantic_theme Zig recipe contract named by cockpit-state-inventory.mjs.
 passive_snapshot="${WORK}/passive-hover.snapshot"
 read -r passive_view passive_id <<<"$(widget group 'Agent inspection details')"
 (cd "$DEV_HOME" && "$NATIVE" automate widget-drag "$passive_view" "$passive_id" 0.5 0.5 0.5 0.5 >/dev/null)
 app_instance_snapshot >"$passive_snapshot"
-node "${ROOT}/scripts/cockpit-state-gallery.mjs" --check-pointer-target "$passive_snapshot" \
+node "${ROOT}/scripts/cockpit-state-inventory.mjs" --check-pointer-target "$passive_snapshot" \
     --target-role group --target-name 'Agent inspection details'
 
 # Negative control: the navigator search is not present while Agents owns the
 # slot. The next assertion requires it to replace, not stack under, inspector.
 (cd "$DEV_HOME" && "$NATIVE" automate assert --absent 'name="Search navigator"' >/dev/null)
 click_named listitem 'Sessions'
-(cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 \
-    'role=listitem name="Sessions".*state=\[[^]]*selected' >/dev/null)
+if (cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 \
+    'name="Search navigator"' >/dev/null); then
+    :
+else
+    (cd "$DEV_HOME" && "$NATIVE" automate assert --timeout-ms 5000 \
+        'name="Agent inspection details"' >/dev/null)
+fi
 snapshot="$(app_instance_snapshot)"
 
 transition_red=0

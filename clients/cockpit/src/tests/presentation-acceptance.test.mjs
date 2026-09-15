@@ -2,33 +2,39 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { initialModel, update, windows } from '../core.ts';
-import { declaredDensities, declaredSizes, inspectShippingGallery, passiveHoverRendererTest,
-  assertPointerReachedSurface } from '../../scripts/cockpit-state-gallery.mjs';
+import { declaredDensities, declaredSizes, inspectShippingStateInventory,
+  strictAcceptanceCommand, assertPointerReachedSurface } from '../../scripts/cockpit-state-inventory.mjs';
 
+// From clients/cockpit, promote every allowlisted baseline failure to a real
+// failure with:
+// PHUX_COCKPIT_ACCEPTANCE_STRICT=1 node --import ./src/tests/navigation-loader.mjs --test src/tests/presentation-acceptance.test.mjs
 const strict = process.env.PHUX_COCKPIT_ACCEPTANCE_STRICT === '1';
 const bytes = value => new TextEncoder().encode(value);
 const text = value => new TextDecoder().decode(value);
 const revision = { hi: 0, lo: 19 };
+const token = new Uint8Array([42, 0, 0, 0, 0, 0, 0, 0]);
+
 const step = (model, msg) => {
   const result = update(model, msg);
   return Array.isArray(result) ? result : [result, null];
 };
-const knownRed = (name, fn) => test(name,
-  strict ? {} : { todo: 'known red on the Wave-1 base; set PHUX_COCKPIT_ACCEPTANCE_STRICT=1 after lifecycle integration' }, fn);
+const effects = cmd => !cmd ? [] : cmd.op === 'batch' ? cmd.cmds.flatMap(effects) : [cmd];
+const request = (cmd, name) => effects(cmd).find(effect => effect.op === 'request' && effect.name === name);
+const sameBytes = (left, right) => left.length === right.length && left.every((byte, index) => byte === right[index]);
 
 const surfaces = [
-  { name: 'terminals', msg: { kind: 'palette_open' }, matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 0 },
-  { name: 'agents', msg: { kind: 'agents_open' }, matches: model => model.paletteOpen && model.agentsMode },
-  { name: 'sessions', msg: { kind: 'sessions_open' }, matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 1 },
-  { name: 'machines', msg: { kind: 'machines_open' }, matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 2 },
-  { name: 'windows', msg: { kind: 'windows_open' }, matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 3 },
-  { name: 'commands', msg: { kind: 'commands_open' }, matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 4 },
-  { name: 'new-session', msg: { kind: 'new_session_open' }, matches: model => model.renameOpen && model.creatingSession },
-  { name: 'add-machine', msg: { kind: 'add_machine_open' }, matches: model => model.hostOpen && model.toolPurpose === 1 },
-  { name: 'directory', msg: { kind: 'dir_open' }, matches: model => model.dirOpen },
-  { name: 'rename', msg: { kind: 'rename_open' }, matches: model => model.renameOpen && !model.creatingSession },
-  { name: 'connection', msg: { kind: 'host_open' }, matches: model => model.hostOpen && model.toolPurpose === 0 },
-  { name: 'settings', msg: { kind: 'settings_open' }, matches: model => model.settingsOpen },
+  { name: 'terminals', msg: { kind: 'palette_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 0 },
+  { name: 'agents', msg: { kind: 'agents_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && model.agentsMode },
+  { name: 'sessions', msg: { kind: 'sessions_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 1 },
+  { name: 'machines', msg: { kind: 'machines_open' }, request: 'cockpit.machines', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 2 },
+  { name: 'windows', msg: { kind: 'windows_open' }, request: 'cockpit.navigation', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 3 },
+  { name: 'commands', msg: { kind: 'commands_open' }, request: 'cockpit.keybindings', matches: model => model.paletteOpen && !model.agentsMode && model.navigatorView === 4 },
+  { name: 'new-session', msg: { kind: 'new_session_open' }, request: 'cockpit.new-session', matches: model => model.renameOpen && model.creatingSession },
+  { name: 'add-machine', msg: { kind: 'add_machine_open' }, request: 'cockpit.local-tools', matches: model => model.hostOpen && model.toolPurpose === 1 },
+  { name: 'directory', msg: { kind: 'dir_open' }, request: 'cockpit.directory', matches: model => model.dirOpen },
+  { name: 'rename', msg: { kind: 'rename_open' }, request: 'cockpit.session', matches: model => model.renameOpen && !model.creatingSession },
+  { name: 'connection', msg: { kind: 'host_open' }, request: 'cockpit.remote', matches: model => model.hostOpen && model.toolPurpose === 0 },
+  { name: 'settings', msg: { kind: 'settings_open' }, request: 'cockpit.appearance', matches: model => model.settingsOpen },
 ];
 
 const ownerFields = prefix => [
@@ -37,136 +43,342 @@ const ownerFields = prefix => [
 ];
 const everyOwnerField = ['main', 'window1', 'window2', 'window3', 'window4'].flatMap(ownerFields);
 
-function base(window = 0) {
-  const open = {};
-  if (window > 0) open[`window${window}Open`] = true;
-  return { ...initialModel()[0], ...open, activeWindow: window, engineConnected: true, engineRevision: revision };
+function record(kind, body) {
+  return [kind, body.length % 256, Math.floor(body.length / 256), ...body];
+}
+
+function contextsRecord(windows) {
+  const entries = windows.flatMap(window => [window, 0, 2, 0, 0]);
+  return record(5, [1, windows.length, ...entries]);
+}
+
+function snapshotBytes(secondary = []) {
+  const head = new Uint8Array(28);
+  head[0] = 1;
+  head[1] = 2;
+  head[10] = revision.lo;
+  head[23] = 2;
+  head[26] = 168;
+  const sections = secondary.flatMap(index => [index, 0, 0, 0, 0, 168, 0]);
+  const contexts = contextsRecord([0, ...secondary]);
+  return new Uint8Array([...head, 0, 255, 0, 0, secondary.length, ...sections, 0, 0, 0, 0, 0, ...contexts]);
+}
+
+function base(owner = 0) {
+  const [loaded] = step(initialModel()[0], { kind: 'snapshot_loaded', body: snapshotBytes(owner === 0 ? [] : [owner]) });
+  return { ...loaded, activeWindow: owner, engineConnected: true, engineRevision: revision };
+}
+
+function appearanceReply(active, dirty = false, outcome = 0) {
+  return new Uint8Array([1, +active, outcome, +dirty, 0, 0, 0, 0, 0, 0]);
+}
+
+function sessionReply(phase) {
+  return new Uint8Array([1, phase, ...token, 1, 0, 0, 0, 4, ...bytes('mini'), 0]);
+}
+
+function requireRequest(cmd, name, label) {
+  const emitted = request(cmd, name);
+  assert.ok(emitted, `${label} did not emit ${name}`);
+  return emitted;
 }
 
 function openSurface(model, surface) {
-  let [next] = step(model, surface.msg);
-  // Opening Settings/New Session starts a real async transaction. A failed
-  // opening reply leaves the surface available for transition testing without
-  // inventing a successful engine payload.
-  if (surface.name === 'settings' && next.appearanceBusy) [next] = step(next, { kind: 'appearance_failed', error: bytes('fixture unavailable') });
-  if (surface.name === 'new-session' && next.renameBusy) [next] = step(next, { kind: 'new_session_failed', error: bytes('fixture unavailable') });
-  return next;
-}
-
-function settleDeparture(model) {
-  let next = model;
-  for (let attempts = 0; attempts < 3; attempts += 1) {
-    if (next.pendingSettingsAction !== null) [next] = step(next, { kind: 'appearance_failed', error: bytes('fixture rollback') });
-    else if (next.pendingSessionAction !== null) [next] = step(next, { kind: 'new_session_failed', error: bytes('fixture cancellation') });
-    else break;
+  let cmd;
+  [model, cmd] = step(model, surface.msg);
+  const emitted = requireRequest(cmd, surface.request, `opening ${surface.name}`);
+  if (surface.name === 'new-session') {
+    assert.equal(emitted.payload[1], 1, 'New Session must begin with Describe');
+    [model] = step(model, { kind: emitted.okKind, body: sessionReply(0) });
+  } else if (surface.name === 'settings') {
+    assert.deepEqual([...emitted.payload], [1, 0, 0], 'Settings must begin a native appearance transaction');
+    [model] = step(model, { kind: emitted.okKind, body: appearanceReply(true, true) });
   }
-  return next;
+  assert.equal(surface.matches(model), true, `fixture could not open ${surface.name}`);
+  return model;
 }
 
 function visibleSurfaces(model) {
   return surfaces.filter(surface => surface.matches(model)).map(surface => surface.name);
 }
 
-knownRed('every surface-to-surface transition replaces the previous surface', () => {
-  const failures = [];
-  for (const source of surfaces) {
-    const before = openSurface(base(), source);
-    assert.equal(source.matches(before), true, `fixture could not open ${source.name}`);
-    for (const destination of surfaces) {
-      const after = settleDeparture(step(before, destination.msg)[0]);
-      const visible = visibleSurfaces(after);
-      if (!destination.matches(after) || visible.length !== 1) {
-        failures.push(`${source.name} -> ${destination.name}: visible=[${visible.join(', ')}], ` +
-          `palette=${after.paletteOpen}, agentsMode=${after.agentsMode}, navigatorView=${after.navigatorView}, ` +
-          `settings=${after.settingsOpen}, host=${after.hostOpen}, dir=${after.dirOpen}, ` +
-          `rename=${after.renameOpen}, creatingSession=${after.creatingSession}`);
-      }
+function presentationSignature(model) {
+  return `visible=[${visibleSurfaces(model).join(',')}];palette=${+model.paletteOpen};agents=${+model.agentsMode};` +
+    `view=${model.navigatorView};settings=${+model.settingsOpen};host=${+model.hostOpen};purpose=${model.toolPurpose};` +
+    `dir=${+model.dirOpen};rename=${+model.renameOpen};creating=${+model.creatingSession}`;
+}
+
+function completeSourceDeparture(source, destination, model, cmd) {
+  if (source.name === 'new-session') {
+    const cancel = request(cmd, 'cockpit.new-session');
+    if (!cancel) return { model, failure: `cancel=missing;${presentationSignature(model)}` };
+    assert.equal(cancel.okKind, 'new_session_cancelled');
+    if (cancel.payload[1] !== 4 || !sameBytes(cancel.payload.slice(2, 10), token)) {
+      return { model, failure: `cancel=malformed;${presentationSignature(model)}` };
     }
+    [model] = step(model, { kind: cancel.okKind, body: sessionReply(0) });
+  } else if (source.name === 'settings' && destination.name !== 'settings') {
+    const rollback = request(cmd, 'cockpit.appearance');
+    if (!rollback) return { model, failure: `rollback=missing;${presentationSignature(model)}` };
+    if (rollback.payload[1] !== 6) return { model, failure: `rollback=malformed;${presentationSignature(model)}` };
+    [model] = step(model, { kind: rollback.okKind, body: appearanceReply(false, false, 2) });
   }
-  assert.deepEqual(failures, [], `surface replacement failures:\n${failures.map(item => `  - ${item}`).join('\n')}`);
+  return { model, failure: null };
+}
+
+function transitionFailure(source, destination) {
+  const before = openSurface(base(), source);
+  let [after, cmd] = step(before, destination.msg);
+  const departure = completeSourceDeparture(source, destination, after, cmd);
+  after = departure.model;
+  if (departure.failure) return departure.failure;
+  const visible = visibleSurfaces(after);
+  return destination.matches(after) && visible.length === 1 ? null : presentationSignature(after);
+}
+
+function descriptorPresent(model, owner) {
+  const label = `phux-window-${owner}`;
+  return model[`window${owner}Open`] || windows(model).some(window => text(window.label) === label);
+}
+
+function withdrawalFailure(model, owner) {
+  const leaked = ownerFields(`window${owner}`).filter(field => model[field]);
+  return descriptorPresent(model, owner) || leaked.length > 0
+    ? `descriptor=${+descriptorPresent(model, owner)};ownerFlags=[${leaked.join(',')}]`
+    : null;
+}
+
+function openPendingSurface(surface, owner = 2) {
+  let model = base(owner);
+  let cmd;
+  [model, cmd] = step(model, surface.msg);
+  const emitted = requireRequest(cmd, surface.request, `opening pending ${surface.name}`);
+  if (surface.name === 'new-session') {
+    assert.equal(emitted.payload[1], 1);
+    [model] = step(model, { kind: emitted.okKind, body: sessionReply(0) });
+    return { model, pending: null };
+  }
+  if (surface.name === 'settings') {
+    assert.deepEqual([...emitted.payload], [1, 0, 0]);
+    [model] = step(model, { kind: emitted.okKind, body: appearanceReply(true, true) });
+    return { model, pending: null };
+  }
+  return { model, pending: emitted };
+}
+
+function recordWithdrawal(failures, stage, model, owner) {
+  const failure = withdrawalFailure(model, owner);
+  if (failure) failures.push(`${stage}:${failure}`);
+}
+
+function windowCloseFailure(surface) {
+  const owner = 2;
+  const opened = openPendingSurface(surface, owner);
+  let model;
+  let cmd;
+  [model, cmd] = step(opened.model, { kind: 'window_closed', window: owner });
+  const failures = [];
+  if (surface.name === 'settings') recordWithdrawal(failures, 'immediate', model, owner);
+  else if (surface.name !== 'new-session' && descriptorPresent(model, owner)) failures.push('immediate:descriptor=1');
+
+  if (surface.name === 'settings') {
+    const rollback = requireRequest(cmd, 'cockpit.appearance', 'Settings window close');
+    assert.equal(rollback.payload[1], 6);
+    [model, cmd] = step(model, { kind: rollback.okKind, body: appearanceReply(false, false, 2) });
+    recordWithdrawal(failures, 'after-rollback', model, owner);
+  } else if (surface.name === 'new-session') {
+    const cancel = requireRequest(cmd, 'cockpit.new-session', 'New Session window close');
+    assert.equal(cancel.okKind, 'new_session_cancelled');
+    assert.equal(cancel.payload[1], 4);
+    assert.deepEqual(cancel.payload.slice(2, 10), token);
+    [model, cmd] = step(model, { kind: cancel.okKind, body: sessionReply(0) });
+    recordWithdrawal(failures, 'after-cancel', model, owner);
+  }
+
+  const refresh = requireRequest(cmd, 'cockpit.snapshot', `${surface.name} window close refresh`);
+  [model, cmd] = step(model, { kind: refresh.okKind, body: snapshotBytes() });
+  recordWithdrawal(failures, 'after-refresh', model, owner);
+  assert.equal(request(cmd, 'cockpit.snapshot'), undefined, 'one correlated refresh must settle the close');
+
+  if (opened.pending) {
+    [model] = step(model, { kind: opened.pending.errKind, error: bytes('late opening reply') });
+    recordWithdrawal(failures, 'after-late-opening-reply', model, owner);
+  }
+  return failures.length === 0 ? null : failures.join('|');
+}
+
+function failedOpenDepartureFailure() {
+  let model;
+  let cmd;
+  [model, cmd] = step(base(), { kind: 'new_session_open' });
+  const describe = requireRequest(cmd, 'cockpit.new-session', 'failed New Session open');
+  assert.equal(describe.payload[1], 1);
+  [model] = step(model, { kind: describe.errKind, error: bytes('describe failed') });
+  [model, cmd] = step(model, { kind: 'sessions_open' });
+  const unexpected = request(cmd, 'cockpit.new-session');
+  const complete = model.pendingSessionAction === null && !model.renameOpen && surfaces[2].matches(model);
+  if (complete && !unexpected) return null;
+  return `cancelRequest=${unexpected ? unexpected.payload[1] : 'none'};pending=${model.pendingSessionAction ? model.pendingSessionAction.code : 'none'};${presentationSignature(model)}`;
+}
+
+// Filled from a protocol-valid run against baseline 1c7ae062. Keys and values
+// are exact: a changed failure signature is not silently grandfathered.
+const baselineFailures = new Map([
+  ['transition:agents->sessions', 'visible=[agents];palette=1;agents=1;view=1;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0'],
+  ['transition:agents->machines', 'visible=[agents];palette=1;agents=1;view=2;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0'],
+  ['transition:agents->windows', 'visible=[agents];palette=1;agents=1;view=3;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0'],
+  ['transition:agents->commands', 'visible=[agents];palette=1;agents=1;view=4;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0'],
+  ['transition:sessions->terminals', 'visible=[sessions];palette=1;agents=0;view=1;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0'],
+  ['transition:machines->terminals', 'visible=[machines];palette=1;agents=0;view=2;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0'],
+  ['transition:windows->terminals', 'visible=[windows];palette=1;agents=0;view=3;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0'],
+  ['transition:commands->terminals', 'visible=[commands];palette=1;agents=0;view=4;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0'],
+  ['transition:new-session->agents', 'cancel=missing;visible=[new-session];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=0;rename=1;creating=1'],
+  ['transition:add-machine->connection', 'visible=[add-machine];palette=0;agents=0;view=0;settings=0;host=1;purpose=1;dir=0;rename=0;creating=0'],
+  ['transition:directory->agents', 'visible=[directory];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=1;rename=0;creating=0'],
+  ['transition:rename->agents', 'visible=[rename];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=0;rename=1;creating=0'],
+  ['transition:rename->directory', 'visible=[directory,rename];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=1;rename=1;creating=0'],
+  ['transition:settings->agents', 'rollback=missing;visible=[settings];palette=0;agents=0;view=0;settings=1;host=0;purpose=0;dir=0;rename=0;creating=0'],
+  ['closed-owner:1:terminals', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1:agents', 'ownerFlags=[window1AgentsOpen]'],
+  ['closed-owner:1:sessions', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1:machines', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1:windows', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1:commands', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1:new-session', 'ownerFlags=[window1RenameOpen]'],
+  ['closed-owner:1:add-machine', 'ownerFlags=[window1HostOpen]'],
+  ['closed-owner:1:directory', 'ownerFlags=[window1DirOpen]'],
+  ['closed-owner:1:rename', 'ownerFlags=[window1RenameOpen]'],
+  ['closed-owner:1:connection', 'ownerFlags=[window1HostOpen]'],
+  ['closed-owner:1:settings', 'ownerFlags=[window1SettingsOpen]'],
+  ['closed-owner:4:terminals', 'ownerFlags=[window4PaletteOpen]'],
+  ['closed-owner:4:agents', 'ownerFlags=[window4AgentsOpen]'],
+  ['closed-owner:4:sessions', 'ownerFlags=[window4PaletteOpen]'],
+  ['closed-owner:4:machines', 'ownerFlags=[window4PaletteOpen]'],
+  ['closed-owner:4:windows', 'ownerFlags=[window4PaletteOpen]'],
+  ['closed-owner:4:commands', 'ownerFlags=[window4PaletteOpen]'],
+  ['closed-owner:4:new-session', 'ownerFlags=[window4RenameOpen]'],
+  ['closed-owner:4:add-machine', 'ownerFlags=[window4HostOpen]'],
+  ['closed-owner:4:directory', 'ownerFlags=[window4DirOpen]'],
+  ['closed-owner:4:rename', 'ownerFlags=[window4RenameOpen]'],
+  ['closed-owner:4:connection', 'ownerFlags=[window4HostOpen]'],
+  ['closed-owner:4:settings', 'ownerFlags=[window4SettingsOpen]'],
+  ['closed-owner:1.5:terminals', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1.5:agents', 'ownerFlags=[window1AgentsOpen]'],
+  ['closed-owner:1.5:sessions', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1.5:machines', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1.5:windows', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1.5:commands', 'ownerFlags=[window1PaletteOpen]'],
+  ['closed-owner:1.5:new-session', 'ownerFlags=[window1RenameOpen]'],
+  ['closed-owner:1.5:add-machine', 'ownerFlags=[window1HostOpen]'],
+  ['closed-owner:1.5:directory', 'ownerFlags=[window1DirOpen]'],
+  ['closed-owner:1.5:rename', 'ownerFlags=[window1RenameOpen]'],
+  ['closed-owner:1.5:connection', 'ownerFlags=[window1HostOpen]'],
+  ['closed-owner:1.5:settings', 'ownerFlags=[window1SettingsOpen]'],
+  ['window-close:settings', 'immediate:descriptor=1;ownerFlags=[window2SettingsOpen]'],
+  ['new-session:failed-open->sessions', 'cancelRequest=none;pending=2;visible=[];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0'],
+]);
+
+const classifiedCaseIds = new Set([
+  ...surfaces.flatMap(source => surfaces.map(destination => `transition:${source.name}->${destination.name}`)),
+  ...[-1, 1, 4, 5, 1.5].flatMap(owner => surfaces.map(surface => `closed-owner:${owner}:${surface.name}`)),
+  ...surfaces.map(surface => `window-close:${surface.name}`),
+  'new-session:failed-open->sessions',
+]);
+
+test('baseline allowlist contains 52 exact, exercised case signatures', () => {
+  assert.equal(baselineFailures.size, 52);
+  for (const [id, signature] of baselineFailures) {
+    assert.equal(classifiedCaseIds.has(id), true, `stale baseline allowlist key: ${id}`);
+    assert.equal(typeof signature, 'string');
+    assert.notEqual(signature.length, 0);
+  }
 });
 
-test('each surface is projected only in its captured owner window', () => {
-  for (let owner = 0; owner <= 4; owner += 1) {
-    for (const surface of surfaces) {
-      const model = openSurface(base(owner), surface);
-      assert.equal(surface.matches(model), true, `${surface.name} did not open for owner ${owner}`);
-      const openFields = everyOwnerField.filter(field => model[field]);
-      const prefix = owner === 0 ? 'main' : `window${owner}`;
-      assert.ok(openFields.length >= 1, `${surface.name} has no projected owner at window ${owner}`);
-      assert.equal(openFields.every(field => field.startsWith(prefix)), true,
-        `${surface.name} owner ${owner} leaked through ${openFields.join(', ')}`);
-    }
+function assertBaselineCase(id, failure) {
+  const expected = baselineFailures.get(id);
+  if (expected === undefined) {
+    assert.equal(failure, null, `${id} is not allowlisted`);
+    return;
   }
-});
+  assert.notEqual(failure, null, `${id} unexpectedly passed; remove it from baselineFailures and promote the contract`);
+  assert.equal(failure, expected, `${id} changed its allowlisted failure signature`);
+  if (strict) assert.fail(`${id}: ${failure}`);
+}
 
-knownRed('OS close withdraws the owner window immediately across pending operations', () => {
-  const failures = [];
+for (const source of surfaces) {
+  for (const destination of surfaces) {
+    const id = `transition:${source.name}->${destination.name}`;
+    test(id, () => assertBaselineCase(id, transitionFailure(source, destination)));
+  }
+}
+
+for (let owner = 0; owner <= 4; owner += 1) {
   for (const surface of surfaces) {
-    let model = openSurface(base(2), surface);
-    // Exercise a pending operation in every surface without fabricating an
-    // outcome. Surface-specific failure replies below are deliberately stale
-    // after close and must not resurrect the presentation.
-    if (surface.name === 'settings') model = { ...model, appearanceBusy: false };
-    const [closed] = step(model, { kind: 'window_closed', window: 2 });
-    const declared = windows(closed).map(window => text(window.label));
-    const leaked = ownerFields('window2').filter(field => closed[field]);
-    if (closed.window2Open || declared.includes('phux-window-2') || leaked.length > 0) {
-      failures.push(`${surface.name}: open=${closed.window2Open}, descriptors=[${declared.join(', ')}], ownerFlags=[${leaked.join(', ')}]`);
-    }
-    const staleReplies = [
-      { kind: 'navigation_failed', error: bytes('late') }, { kind: 'machines_failed', error: bytes('late') },
-      { kind: 'keybindings_failed', error: bytes('late') }, { kind: 'appearance_failed', error: bytes('late') },
-      { kind: 'remote_failed', error: bytes('late') }, { kind: 'directory_failed', error: bytes('late') },
-      { kind: 'session_failed', error: bytes('late') }, { kind: 'new_session_failed', error: bytes('late') },
-      { kind: 'window_action_failed', error: bytes('late') },
-    ];
-    let after = closed;
-    for (const reply of staleReplies) [after] = step(after, reply);
-    if (after.window2Open || windows(after).some(window => text(window.label) === 'phux-window-2')) {
-      failures.push(`${surface.name}: a late reply resurrected phux-window-2`);
-    }
+    const id = `owner:${owner}:${surface.name}`;
+    test(id, () => {
+      const model = openSurface(base(owner), surface);
+      const open = everyOwnerField.filter(field => model[field]);
+      const prefix = owner === 0 ? 'main' : `window${owner}`;
+      const failure = open.length > 0 && open.every(field => field.startsWith(prefix)) ? null : `ownerFlags=[${open.join(',')}]`;
+      assertBaselineCase(id, failure);
+    });
   }
-  assert.deepEqual(failures, [], `window-close lifecycle failures:\n${failures.map(item => `  - ${item}`).join('\n')}`);
-});
+}
 
-test('windows enumerates all slot combinations and invalid closes mutate none', () => {
-  for (let mask = 0; mask < 16; mask += 1) {
-    const model = { ...base(), window1Open: Boolean(mask & 1), window2Open: Boolean(mask & 2),
-      window3Open: Boolean(mask & 4), window4Open: Boolean(mask & 8) };
-    assert.deepEqual(windows(model).map(window => text(window.label)), [1, 2, 3, 4]
-      .filter(index => mask & (1 << (index - 1))).map(index => `phux-window-${index}`), `mask ${mask.toString(2).padStart(4, '0')}`);
-    for (const invalid of [-1, 0, 1.5, 5, 255]) {
-      const [after] = step(model, { kind: 'window_closed', window: invalid });
-      assert.deepEqual(windows(after).map(window => text(window.label)), windows(model).map(window => text(window.label)),
-        `invalid close ${invalid} changed mask ${mask}`);
-    }
-  }
-});
-
-knownRed('an invalid or closed active-window combination never projects a modal into that slot', () => {
-  const failures = [];
-  for (const activeWindow of [-1, 1, 4, 5, 1.5]) {
-    for (const surface of surfaces) {
+for (const activeWindow of [-1, 1, 4, 5, 1.5]) {
+  for (const surface of surfaces) {
+    const id = `closed-owner:${activeWindow}:${surface.name}`;
+    test(id, () => {
       const model = openSurface({ ...base(), activeWindow }, surface);
       const leaked = activeWindow >= 1 && activeWindow <= 4
         ? ownerFields(`window${Math.trunc(activeWindow)}`).filter(field => model[field]) : [];
-      if (leaked.length > 0) failures.push(`activeWindow=${activeWindow}, ${surface.name}: ${leaked.join(', ')}`);
-    }
+      assertBaselineCase(id, leaked.length === 0 ? null : `ownerFlags=[${leaked.join(',')}]`);
+    });
   }
-  assert.deepEqual(failures, [], `closed-slot projection failures:\n${failures.map(item => `  - ${item}`).join('\n')}`);
+}
+
+for (const surface of surfaces) {
+  const id = `window-close:${surface.name}`;
+  test(id, () => assertBaselineCase(id, windowCloseFailure(surface)));
+}
+
+test('new-session:failed-open->sessions', () => {
+  const id = 'new-session:failed-open->sessions';
+  assertBaselineCase(id, failedOpenDepartureFailure());
 });
 
-test('state gallery covers shipping controls, declared geometry, and the passive-hover acceptance split', () => {
+for (let mask = 0; mask < 16; mask += 1) {
+  test(`windows:mask:${mask.toString(2).padStart(4, '0')}`, () => {
+    const model = { ...base(), window1Open: Boolean(mask & 1), window2Open: Boolean(mask & 2),
+      window3Open: Boolean(mask & 4), window4Open: Boolean(mask & 8) };
+    assert.deepEqual(windows(model).map(window => text(window.label)), [1, 2, 3, 4]
+      .filter(index => mask & (1 << (index - 1))).map(index => `phux-window-${index}`));
+  });
+}
+
+for (const invalid of [-1, 0, 1.5, 5, 255]) {
+  test(`windows:invalid-close:${invalid}`, () => {
+    const model = { ...base(), window1Open: true, window3Open: true };
+    const [after] = step(model, { kind: 'window_closed', window: invalid });
+    assert.deepEqual(windows(after).map(window => text(window.label)), ['phux-window-1', 'phux-window-3']);
+  });
+}
+
+test('shipping state inventory names declarations and reserves rendered fixtures for native integration', () => {
   const root = new URL('../..', import.meta.url);
-  const report = inspectShippingGallery(root);
+  const report = inspectShippingStateInventory(root);
+  assert.equal(report.kind, 'shipping-state-inventory');
   assert.deepEqual(report.missing, []);
   assert.deepEqual(report.states, ['rest', 'hover', 'press', 'selected', 'focus', 'disabled', 'attention', 'loading', 'empty', 'failed', 'passive-hover']);
   assert.deepEqual(declaredSizes, [{ width: 900, height: 420 }, { width: 1100, height: 640 }, { width: 1680, height: 1000 }]);
   assert.deepEqual(declaredDensities, ['compact', 'regular', 'spacious']);
-  assert.equal(passiveHoverRendererTest,
-    'semantic_theme test "passive panel hover is visually stable without disabling hit testing"');
-  assert.equal(report.finalZigGate, `full Zig gate must include ${passiveHoverRendererTest}`);
+  assert.equal(strictAcceptanceCommand,
+    'PHUX_COCKPIT_ACCEPTANCE_STRICT=1 node --import ./src/tests/navigation-loader.mjs --test src/tests/presentation-acceptance.test.mjs');
+  assert.equal(report.strictAcceptanceCommand, strictAcceptanceCommand);
+  assert.deepEqual(report.unrenderedStates, ['rest', 'hover', 'press']);
+  assert.match(report.crossCommitZigRequirement,
+    /^full Zig gate must include semantic_theme test "passive panel hover is visually stable without disabling hit testing"$/);
+  assert.equal(report.renderedStateGallery, 'reserved for compiled native integration Wave 2');
   assert.match(report.evidenceScope.passiveHover, /pointer reachability only/);
   assert.match(report.evidenceScope.liveScreenshot, /optional only.*never use full-frame PNG equality/);
   const audit = readFileSync(new URL('../native_extension.zig', import.meta.url), 'utf8');

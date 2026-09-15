@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Executable inventory for Cockpit's presentation states. This deliberately
-// records semantic state and command emission, not glyph fidelity: Native's
-// screenshot command uses the CPU reference renderer and never sees CoreText.
+// Shipping declaration inventory for Cockpit presentation states. This is not
+// a rendered gallery: Native integration Wave 2 owns compiled state fixtures.
+// Screenshots use the CPU reference renderer and never see CoreText.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -16,16 +16,16 @@ export const declaredSizes = Object.freeze([
 
 export const declaredDensities = Object.freeze(['compact', 'regular', 'spacious']);
 
-// Each state names a shipping declaration that can render it. Keeping this
-// next to the capture tool prevents a gallery made from substitute controls
-// from passing while the product controls drift.
-export const stateGallery = Object.freeze([
+// Each item records where a shipping state belongs. Source declarations prove
+// only identity/configuration; interactive rest/hover/press rendering remains
+// deliberately unclaimed until compiled native fixtures exist.
+export const shippingStateInventory = Object.freeze([
   Object.freeze({ state: 'rest', file: 'windows/components/cockpit-window.native',
-    pattern: 'label="Inspect agents"', evidence: 'shipping ghost button at rest' }),
+    pattern: null, evidence: 'compiled native fixture reserved for integration Wave 2' }),
   Object.freeze({ state: 'hover', file: 'windows/components/cockpit-window.native',
-    pattern: 'label="Inspect agents"', evidence: 'same shipping button under pointer hover' }),
+    pattern: null, evidence: 'compiled native fixture reserved for integration Wave 2' }),
   Object.freeze({ state: 'press', file: 'windows/components/cockpit-window.native',
-    pattern: 'label="Inspect agents"', evidence: 'same shipping button while pointer is down' }),
+    pattern: null, evidence: 'compiled native fixture reserved for integration Wave 2' }),
   Object.freeze({ state: 'selected', file: 'windows/components/cockpit-window.native',
     pattern: 'selected="{navigatorView == 1}"', evidence: 'current navigator destination' }),
   Object.freeze({ state: 'focus', file: 'windows/components/cockpit-window.native',
@@ -44,7 +44,8 @@ export const stateGallery = Object.freeze([
     pattern: '<template name="cockpit-agents"', evidence: 'shipping inspector stays hit-testable; rendered fill is a Zig contract' }),
 ]);
 
-export const passiveHoverRendererTest = 'semantic_theme test "passive panel hover is visually stable without disabling hit testing"';
+const requiredPassiveHoverZigTest = 'semantic_theme test "passive panel hover is visually stable without disabling hit testing"';
+export const strictAcceptanceCommand = 'PHUX_COCKPIT_ACCEPTANCE_STRICT=1 node --import ./src/tests/navigation-loader.mjs --test src/tests/presentation-acceptance.test.mjs';
 
 export const evidenceScope = Object.freeze({
   snapshot: 'layout, semantic state, and shipping control identity',
@@ -54,15 +55,20 @@ export const evidenceScope = Object.freeze({
   excluded: 'CoreText outlines, hinting, smoothing, host blending, and display color conversion',
 });
 
-export function inspectShippingGallery(root) {
+export function inspectShippingStateInventory(root) {
   const rootPath = root instanceof URL ? fileURLToPath(root) : root;
   const missing = [];
-  for (const item of stateGallery) {
+  for (const item of shippingStateInventory) {
+    if (item.pattern === null) continue;
     const source = readFileSync(path.join(rootPath, 'src', item.file), 'utf8');
     if (!source.includes(item.pattern)) missing.push(`${item.state}: ${item.file} lacks ${JSON.stringify(item.pattern)}`);
   }
-  return { missing, states: stateGallery.map(item => item.state), sizes: declaredSizes, densities: declaredDensities,
-    evidenceScope, finalZigGate: `full Zig gate must include ${passiveHoverRendererTest}` };
+  return { kind: 'shipping-state-inventory', missing, states: shippingStateInventory.map(item => item.state),
+    unrenderedStates: shippingStateInventory.filter(item => item.pattern === null).map(item => item.state),
+    sizes: declaredSizes, densities: declaredDensities, evidenceScope,
+    renderedStateGallery: 'reserved for compiled native integration Wave 2',
+    strictAcceptanceCommand,
+    crossCommitZigRequirement: `full Zig gate must include ${requiredPassiveHoverZigTest}` };
 }
 
 function stateFlags(line) {
@@ -71,7 +77,7 @@ function stateFlags(line) {
 }
 
 // This proves only that the runtime pointer journey reached the named shipping
-// surface. Visual acceptance belongs to passiveHoverRendererTest: SDK panels
+// surface. Visual acceptance belongs to requiredPassiveHoverZigTest: SDK panels
 // intentionally remain hit-testable and hovered when hover fill equals rest.
 export function assertPointerReachedSurface(snapshot, { role = 'group', name }) {
   const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -84,8 +90,8 @@ export function assertPointerReachedSurface(snapshot, { role = 'group', name }) 
 }
 
 function usage() {
-  console.error('usage: cockpit-state-gallery.mjs [--root <cockpit-root>]');
-  console.error('       cockpit-state-gallery.mjs --check-pointer-target <snapshot.txt> --target-name <name> [--target-role <role>]');
+  console.error('usage: cockpit-state-inventory.mjs [--root <cockpit-root>]');
+  console.error('       cockpit-state-inventory.mjs --check-pointer-target <snapshot.txt> --target-name <name> [--target-role <role>]');
 }
 
 function main(argv) {
@@ -108,9 +114,9 @@ function main(argv) {
     console.log(`PASS pointer reached shipping surface ${JSON.stringify(targetName)}`);
     return 0;
   }
-  const report = inspectShippingGallery(root);
+  const report = inspectShippingStateInventory(root);
   if (report.missing.length > 0) {
-    console.error(`state gallery is incomplete:\n${report.missing.map(item => `  - ${item}`).join('\n')}`);
+    console.error(`shipping state inventory is incomplete:\n${report.missing.map(item => `  - ${item}`).join('\n')}`);
     return 1;
   }
   console.log(JSON.stringify(report, null, 2));
@@ -121,7 +127,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     process.exitCode = main(process.argv.slice(2));
   } catch (error) {
-    console.error(`state gallery failed: ${error.message}`);
+    console.error(`shipping state inventory failed: ${error.message}`);
     process.exitCode = 1;
   }
 }
