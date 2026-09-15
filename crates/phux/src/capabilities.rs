@@ -3,9 +3,84 @@
 use std::path::Path;
 use std::process::ExitCode;
 
+use phux_protocol::caps::ServerFeature;
+use phux_protocol::kinds::{self, Carrier, EventSpec, KindSpec, MethodSpec, Verb};
 use serde_json::{Value, json};
 
 const CAPABILITIES_SCHEMA_VERSION: u8 = 1;
+
+/// The build-time kind catalog (ADR-0125): the server-level and substrate
+/// methods, then one entry per resource kind. The verbs come from the same
+/// rows the workload-auth classifier reads.
+fn kinds_catalog() -> Value {
+    json!({
+        "server_methods": methods_json(kinds::SERVER_METHODS),
+        "server_events": events_json(kinds::SERVER_EVENTS),
+        "substrate": {
+            "methods": methods_json(kinds::SUBSTRATE_METHODS),
+            "events": events_json(kinds::SUBSTRATE_EVENTS),
+        },
+        "resource_kinds": kinds::KINDS.iter().map(kind_json).collect::<Vec<_>>(),
+    })
+}
+
+fn kind_json(kind: &KindSpec) -> Value {
+    json!({
+        "name": kind.name,
+        "tag": kind.kind.as_wire(),
+        "gate": kind.gate.map(gate_json),
+        "methods": methods_json(kind.methods),
+        "events": events_json(kind.events),
+        "metadata_keys": kind.metadata_keys,
+    })
+}
+
+fn methods_json(methods: &[MethodSpec]) -> Vec<Value> {
+    methods.iter().map(method_json).collect()
+}
+
+fn method_json(method: &MethodSpec) -> Value {
+    let rules: Vec<Value> = method
+        .rules
+        .iter()
+        .map(|rule| json!({ "case": rule.case, "requires": rule.requirement_label() }))
+        .collect();
+    json!({
+        "name": method.name,
+        "carrier": carrier_json(method.carrier),
+        "verbs": method.verbs().iter().map(Verb::name).collect::<Vec<_>>(),
+        "mutating": method.mutating(),
+        "owner_uds_only": method.owner_uds_only(),
+        "gate": method.gate.map(gate_json),
+        "shipped": method.shipped,
+        "rules": rules,
+    })
+}
+
+fn carrier_json(carrier: Carrier) -> Value {
+    match carrier {
+        Carrier::Frame(type_byte) => json!({ "frame": type_byte }),
+        Carrier::Command(tag) => json!({ "command": tag }),
+        Carrier::Metadata(key) => json!({ "metadata_key": key }),
+    }
+}
+
+/// A gate as `{ feature, mask }`: `feature` is the name `phux status --json`
+/// lists under `features`, and `mask` is the feature's bit value in
+/// `HELLO_OK.server_caps.features` (a mask, not a bit index).
+fn gate_json(feature: ServerFeature) -> Value {
+    json!({
+        "feature": crate::feature_names::feature_name(feature),
+        "mask": feature as u32,
+    })
+}
+
+fn events_json(events: &[EventSpec]) -> Vec<Value> {
+    events
+        .iter()
+        .map(|event| json!({ "name": event.name, "tag": event.tag }))
+        .collect()
+}
 
 fn collect_visible(prefix: &str, meta: &usage::spec::CommandMeta<'_>, paths: &mut Vec<String>) {
     for child in meta.subcommands {
@@ -81,6 +156,7 @@ fn document(meta: &usage::spec::CommandMeta<'_>, mcp: Option<&Path>) -> Value {
             "default_scope": "full"
         },
         "json_contracts": schema_contracts(),
+        "kinds": kinds_catalog(),
         "mcp": {
             "available": available,
             "command": mcp,
@@ -132,6 +208,58 @@ mod tests {
             assert_eq!(contract["schema_version"], schema, "{invocation}");
             assert_eq!(contract["kind"], kind, "{invocation}");
         }
+    }
+
+    fn named<'a>(methods: &'a Value, name: &str) -> &'a Value {
+        methods
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|method| method["name"] == name)
+            .unwrap_or_else(|| panic!("no catalog method {name}"))
+    }
+
+    /// `kinds` is the compiled catalog: every kind with its facet, and every
+    /// method with the verbs the workload-auth classifier requires.
+    #[test]
+    fn capabilities_json_lists_kinds_with_verbs() {
+        let doc = document(crate::Cli::spec().root, None);
+        let catalog = &doc["kinds"];
+        let kinds = catalog["resource_kinds"].as_array().unwrap();
+        let names: Vec<&str> = kinds
+            .iter()
+            .map(|kind| kind["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, ["TERMINAL", "AGENT_SESSION"]);
+        assert_eq!(kinds[0]["tag"], 0);
+        assert!(kinds[0]["gate"].is_null());
+        assert_eq!(kinds[1]["gate"]["feature"], "resource_kinds");
+        assert_eq!(kinds[1]["gate"]["mask"], 0x4000);
+
+        let get_screen = named(&kinds[0]["methods"], "GET_SCREEN");
+        assert_eq!(get_screen["verbs"], json!(["OBSERVE"]));
+        assert_eq!(get_screen["mutating"], false);
+        assert_eq!(get_screen["carrier"], json!({ "command": 7 }));
+
+        let shutdown = named(&catalog["server_methods"], "SHUTDOWN");
+        assert_eq!(shutdown["verbs"], json!(["SIGNAL"]));
+        assert_eq!(shutdown["mutating"], true);
+        assert_eq!(shutdown["owner_uds_only"], true);
+        assert_eq!(shutdown["gate"]["feature"], "shutdown");
+        assert_eq!(shutdown["gate"]["mask"], 0x100);
+
+        let append = named(&kinds[1]["methods"], "APPEND_RESOURCE_OUTPUT");
+        assert_eq!(append["verbs"], json!(["BIND", "INPUT"]));
+
+        let spawn = named(&catalog["substrate"]["methods"], "SPAWN_RESOURCE");
+        assert!(spawn["rules"].as_array().unwrap().len() > 1);
+        assert!(
+            catalog["substrate"]["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|event| event["name"] == "pane_closed")
+        );
     }
 
     #[test]
