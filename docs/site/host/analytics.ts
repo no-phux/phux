@@ -184,8 +184,16 @@ export function memberIdForEmail(memberKey: string, email: string): Promise<stri
   return hmacHex(memberKey, `member:${email.trim().toLowerCase()}`);
 }
 
-export function claimProof(memberKey: string, memberId: string): Promise<string> {
-  return hmacHex(memberKey, `claim:${memberId}`);
+export function claimProof(
+  memberKey: string,
+  memberId: string,
+  issuedAt?: string,
+): Promise<string> {
+  const message =
+    issuedAt === undefined
+      ? `claim:${memberId}`
+      : `claim:${memberId}:${issuedAt}`;
+  return hmacHex(memberKey, message);
 }
 
 /** POST /api/join — voluntary email capture. Never throws to the client. */
@@ -238,10 +246,9 @@ export async function handleJoin(
  *
  * Security shape (PHA-425): the proof must be the FULL 64-hex HMAC compared in
  * constant time — older links carried a 32-hex prefix and any ≥16-char prefix
- * of it was accepted. Links carrying an issuedAtSec segment expire after
- * CLAIM_MAX_AGE_MS (ops repo); segment-less legacy links stay valid because
- * rotating MEMBER_KEY invalidates everything at once and the member set stays
- * small enough for per-link revocation to be unnecessary.
+ * of it was accepted. New proofs bind the exact issuedAtSec segment and expire
+ * after CLAIM_MAX_AGE_MS. Segment-less legacy links use the old proof message
+ * deliberately; rotating MEMBER_KEY invalidates them all at once.
  */
 export async function handleClaim(
   request: Request,
@@ -258,10 +265,6 @@ export async function handleClaim(
     return new Response("bad token", { status: 400 });
   }
   if (!/^[a-f0-9]{64}$/.test(proof ?? "")) return new Response("bad proof", { status: 403 });
-  const expected = await claimProof(env.MEMBER_KEY, memberId!);
-  if (!timingSafeEqualHex(proof!, expected)) {
-    return new Response("bad proof", { status: 403 });
-  }
   if (issuedAt !== undefined) {
     if (!/^\d{10,13}$/.test(issuedAt)) return new Response("bad token", { status: 400 });
     const issuedMs = issuedAt.length === 13 ? Number(issuedAt) : Number(issuedAt) * 1000;
@@ -273,6 +276,10 @@ export async function handleClaim(
     ) {
       return new Response("claim link expired", { status: 403 });
     }
+  }
+  const expected = await claimProof(env.MEMBER_KEY, memberId!, issuedAt);
+  if (!timingSafeEqualHex(proof!, expected)) {
+    return new Response("bad proof", { status: 403 });
   }
   const headers = new Headers({ location: "/?joined=1" });
   headers.append(
