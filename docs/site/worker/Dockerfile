@@ -3,7 +3,7 @@ FROM --platform=linux/amd64 rust:1.98.1-bookworm@sha256:9a73a5088750b4c95158ab26
 
 # PHUX_VERSION must match workspace.package.version. The image RUN below
 # asserts `phux --version`, and `just toolchain-check` rejects a stale pin.
-ARG PHUX_VERSION=0.38.0
+ARG PHUX_VERSION=0.39.0
 ARG PHUX_REVISION=3c3344828d902277682ea9a57bb5e82ef360c570
 ARG PHUX_SOURCE_SHA256=f1d6a62d98034d9b1702ec28e0cc65662c2c9ff5d3ab7a22feffc566ad866882
 ARG PHUX_LOCK_SHA256=c1f3958bcb867745f531a3d74f53866874df075a2425926b4d18b4cdfd4f5a17
@@ -23,7 +23,7 @@ ADD --checksum=sha256:596a23c2d5b7468d880f694ad28ccb3b3d9ddb3557d3ac46cfa651732e
     https://github.com/phall1/libghostty-rs/archive/d2fd87aada91c9166f95203b1acca39435ba8302.tar.gz /tmp/libghostty.tar.gz
 ADD --checksum=sha256:3d5ca7cc063c993d16ddb00c5635e99e48767861ff9a1ba33f0b5ff2764ad7a5 \
     https://github.com/phall1/ghostty/archive/03c6f818eaeadf76e66dda99ab5529c9b47fa15c.tar.gz /tmp/ghostty.tar.gz
-RUN test "$PHUX_VERSION" = "0.38.0" \
+RUN test "$PHUX_VERSION" = "0.39.0" \
     && test "$PHUX_REVISION" = "3c3344828d902277682ea9a57bb5e82ef360c570" \
     && test "$PHUX_SOURCE_SHA256" = "f1d6a62d98034d9b1702ec28e0cc65662c2c9ff5d3ab7a22feffc566ad866882" \
     && test "$ZIG_VERSION" = "0.16.0" \
@@ -112,7 +112,7 @@ COPY --chmod=0755 container/phui /usr/local/bin/phui
 COPY --chmod=0644 container/bashrc /etc/phux/bashrc
 COPY --chmod=0644 container/profile /etc/profile
 
-ARG PHUX_VERSION=0.38.0
+ARG PHUX_VERSION=0.39.0
 RUN test "$(/usr/local/bin/phux --version)" = "phux $PHUX_VERSION" \
     && cp /usr/bin/socat /opt/internal/socat \
     && chown 10001:10001 /opt/internal/socat \
