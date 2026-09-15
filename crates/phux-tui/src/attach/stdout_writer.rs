@@ -383,18 +383,36 @@ fn writer_loop<W: Write>(shared: &Shared, mut out: W) {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
+    use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    /// A sink that sleeps on every write — stands in for a terminal so slow it
-    /// would wedge the select loop if `flush()` blocked on it.
-    struct SlowSink {
-        per_write: Duration,
+    struct BlockingSink {
+        control: Arc<(Mutex<BlockingSinkState>, Condvar)>,
     }
-    impl Write for SlowSink {
+
+    struct BlockingSinkState {
+        in_write: bool,
+        release: bool,
+    }
+
+    impl Write for BlockingSink {
         fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-            std::thread::sleep(self.per_write);
+            let (state, changed) = &*self.control;
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            state.in_write = true;
+            changed.notify_one();
+            while !state.release {
+                state = changed
+                    .wait(state)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            }
+            state.in_write = false;
+            drop(state);
             Ok(buf.len())
         }
+
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
@@ -402,28 +420,65 @@ mod tests {
 
     #[test]
     fn flush_does_not_block_on_a_slow_sink() {
-        // The writer thread sleeps 50ms per chunk; the select-loop-side
-        // `flush()` must still return ~instantly. This is the core of the
-        // phux-fysb fix: render never blocks on the terminal.
-        let (mut sink, handle) = spawn_writer_into(SlowSink {
-            per_write: Duration::from_millis(50),
+        let control = Arc::new((
+            Mutex::new(BlockingSinkState {
+                in_write: false,
+                release: false,
+            }),
+            Condvar::new(),
+        ));
+        let (mut sink, handle) = spawn_writer_into(BlockingSink {
+            control: Arc::clone(&control),
         });
-        let mut worst = Duration::ZERO;
-        for i in 0..20u32 {
-            sink.write_all(format!("frame-{i}\n").as_bytes())
-                .expect("write");
-            let t0 = Instant::now();
-            sink.flush().expect("flush");
-            worst = worst.max(t0.elapsed());
+
+        sink.write_all(b"first frame").expect("write");
+        sink.flush().expect("flush");
+
+        // Establish that the writer thread is inside the underlying write and
+        // cannot make progress until this test explicitly releases it.
+        {
+            let (state, changed) = &*control;
+            let (state, timeout) = changed
+                .wait_timeout_while(
+                    state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner),
+                    Duration::from_secs(2),
+                    |state| !state.in_write,
+                )
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                !timeout.timed_out(),
+                "writer never entered the blocked sink"
+            );
+            drop(state);
         }
-        // 20 frames behind a 50ms/chunk sink is ~1s of writer work, but each
-        // flush returned in well under one chunk-time. Generous bound to stay
-        // robust on a loaded CI box; the unfixed (direct-stdout) path would
-        // see flushes of ~50ms+ each.
+
+        // Exercise flush on a helper thread so a regression cannot wedge this
+        // test. On success the completion signal is immediate; the timeout is
+        // only a bounded failure path.
+        let (flushed_tx, flushed_rx) = mpsc::channel();
+        let flush_task = std::thread::spawn(move || {
+            sink.write_all(b"second frame").expect("write");
+            sink.flush().expect("flush while writer is blocked");
+            flushed_tx.send(()).expect("report completed flush");
+            sink
+        });
+        let flush_returned = flushed_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+        let (state, changed) = &*control;
+        let mut state = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let writer_stayed_blocked = state.in_write && !state.release;
+        state.release = true;
+        changed.notify_one();
+        drop(state);
+        let sink = flush_task.join().expect("flush helper");
         assert!(
-            worst < Duration::from_millis(25),
-            "flush blocked on the slow sink: worst={worst:?}"
+            flush_returned && writer_stayed_blocked,
+            "flush waited for the blocked writer to make progress"
         );
+        drop(sink);
         handle.shutdown_and_join();
     }
 

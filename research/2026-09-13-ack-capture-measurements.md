@@ -17,7 +17,7 @@ This is acceptance evidence for **phux-ghfu** in the
 ## Reproduce
 
 ```sh
-cargo run --locked -p phux-server --example ack_allocations
+cargo run --locked -p phux-server --example ack_allocations --features ack-allocations-example
 ```
 
 The example routes `RenderState` allocations through `Allocator::GLOBAL`, so

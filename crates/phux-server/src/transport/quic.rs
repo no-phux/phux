@@ -1212,6 +1212,28 @@ mod tests {
     const TEST_TOKEN: [u8; crate::auth::TOKEN_LEN] = [0x11; crate::auth::TOKEN_LEN];
     /// One complete framed message: 4-byte length prefix (body = 3) + body.
     const FRAME: [u8; 7] = [0, 0, 0, 3, 0xde, 0xad, 0xbe];
+    async fn join_bounded<S, C>(server: S, client: C) -> (S::Output, C::Output)
+    where
+        S: Future,
+        C: Future,
+    {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(server, client)
+        })
+        .await
+        .expect("paired QUIC test completes")
+    }
+    fn assert_focus_frame(merged: &[u8]) {
+        assert_eq!(
+            phux_protocol::wire::frame::FrameKind::decode(merged)
+                .expect("valid merged frame")
+                .0,
+            phux_protocol::wire::frame::FrameKind::InputFocus {
+                terminal_id: phux_protocol::ids::ResourceId::local(7),
+                event: phux_protocol::input::focus::FocusEvent::Gained,
+            }
+        );
+    }
 
     /// A self-signed cert + key in a fresh tempdir, kept alive for the test.
     fn cert_pair() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
@@ -1581,6 +1603,9 @@ mod tests {
         let listener =
             QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
         let addr = listener.local_addr().unwrap();
+        let (upgraded_tx, upgraded_rx) = tokio::sync::oneshot::channel();
+        let (pump_started_tx, pump_started_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
 
         let server = async {
             let (mut reader, _writer, _) = listener.accept().await.unwrap();
@@ -1589,6 +1614,7 @@ mod tests {
             // Upgrade: takes the event channel; twice returns None.
             let mut events = reader.take_stream_events().expect("upgrade once");
             assert!(reader.take_stream_events().is_none(), "upgrade is one-shot");
+            upgraded_tx.send(()).unwrap();
             // The bind event names the terminal and generation.
             let QuicStreamEvent::Bound {
                 terminal_id,
@@ -1618,6 +1644,7 @@ mod tests {
                 tokio_util::sync::CancellationToken::new(),
                 None,
             ));
+            pump_started_tx.send(()).unwrap();
             // Only an admitted pump can place a frame into shared dispatch.
             let merged = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())
                 .await
@@ -1634,6 +1661,7 @@ mod tests {
                 .await
                 .expect("end event arrives")
                 .expect("event channel open");
+            let _ = finished_tx.send(());
             (control, merged, terminal_id, stream_id, ended)
         };
         let client = async {
@@ -1641,11 +1669,10 @@ mod tests {
             let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
             let (mut control_send, _recv) = conn.open_bi().await.unwrap();
             control_send.write_all(&FRAME).await.unwrap();
-            // Give the server a chance to read the control frame pre-upgrade
-            // and arm the mux before the terminal stream opens.
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            upgraded_rx.await.expect("server arms mux");
             let (mut term_send, _term_recv) = conn.open_bi().await.unwrap();
             term_send.write_all(&stream_bind_bytes(7, 1)).await.unwrap();
+            pump_started_rx.await.expect("terminal pump starts");
             let mut frame = BytesMut::new();
             phux_protocol::wire::frame::FrameKind::InputFocus {
                 terminal_id: phux_protocol::ids::ResourceId::local(7),
@@ -1653,22 +1680,14 @@ mod tests {
             }
             .encode(&mut frame);
             term_send.write_all(&frame).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
             term_send.finish().unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            finished_rx.await.expect("server observes terminal finish");
         };
 
-        let ((control, merged, terminal_id, stream_id, ended), ()) = tokio::join!(server, client);
+        let ((control, merged, terminal_id, stream_id, ended), ()) =
+            join_bounded(server, client).await;
         assert_eq!(control.as_ref(), &FRAME, "control frame pre-upgrade");
-        assert_eq!(
-            phux_protocol::wire::frame::FrameKind::decode(&merged)
-                .expect("valid merged frame")
-                .0,
-            phux_protocol::wire::frame::FrameKind::InputFocus {
-                terminal_id: phux_protocol::ids::ResourceId::local(7),
-                event: phux_protocol::input::focus::FocusEvent::Gained,
-            }
-        );
+        assert_focus_frame(&merged);
         assert_eq!(terminal_id, phux_protocol::ids::ResourceId::local(7));
         assert_eq!(stream_id.get(), 1);
         match ended {
@@ -1875,29 +1894,43 @@ mod tests {
         let listener =
             QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
         let addr = listener.local_addr().unwrap();
+        let (upgraded_tx, upgraded_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
 
         let server = async {
             let (mut reader, _writer, _) = listener.accept().await.unwrap();
             // Drain the control frame, then upgrade.
             let _ = reader.read_frame().await.unwrap().unwrap();
             let mut events = reader.take_stream_events().expect("upgrade once");
-            // No bind event may arrive for the garbage stream; the accept
-            // loop stays alive for later well-formed binds (asserted by a
-            // short quiet window, then the test ends).
-            let quiet = tokio::time::timeout(Duration::from_millis(300), events.recv()).await;
-            drop(events);
-            assert!(
-                quiet.is_err(),
-                "malformed bind emits no event, got {quiet:?}"
-            );
-            drop(quiet);
+            upgraded_tx.send(()).unwrap();
+            // The reset observed by the client below proves the malformed bind
+            // was handled before this valid bind. Therefore the first event
+            // must belong to the valid stream, not the malformed one.
+            {
+                let event = tokio::time::timeout(Duration::from_secs(5), events.recv())
+                    .await
+                    .expect("valid bind arrives")
+                    .expect("event channel open");
+                match event {
+                    QuicStreamEvent::Bound {
+                        terminal_id,
+                        stream_id,
+                        ..
+                    } => {
+                        assert_eq!(terminal_id, phux_protocol::ids::ResourceId::local(7));
+                        assert_eq!(stream_id.get(), 1);
+                    }
+                    other => panic!("malformed bind emitted an event: {other:?}"),
+                }
+            }
+            let _ = finished_tx.send(());
         };
         let client = async {
             let endpoint = client_endpoint();
             let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
             let (mut control_send, _recv) = conn.open_bi().await.unwrap();
             control_send.write_all(&FRAME).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            upgraded_rx.await.expect("server arms mux");
             let (mut bad_send, mut bad_recv) = conn.open_bi().await.unwrap();
             bad_send.write_all(b"not a bind header").await.unwrap();
             // The server resets the stream: the client's read side errors.
@@ -1907,14 +1940,15 @@ mod tests {
                 matches!(err, Ok(Err(_))),
                 "reset stream errors the reader, got {err:?}"
             );
-            // Stay alive past the server's quiet window: returning here
-            // would tear the connection down, closing the event channel
-            // the server is asserting silence on.
-            tokio::time::sleep(Duration::from_millis(600)).await;
-            let _ = bad_send;
+            let (mut valid_send, _valid_recv) = conn.open_bi().await.unwrap();
+            valid_send
+                .write_all(&stream_bind_bytes(7, 1))
+                .await
+                .unwrap();
+            finished_rx.await.expect("server observes valid bind");
         };
 
-        tokio::join!(server, client);
+        join_bounded(server, client).await;
     }
 
     #[tokio::test]
@@ -1923,31 +1957,52 @@ mod tests {
         let listener =
             QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
         let addr = listener.local_addr().unwrap();
+        let (upgraded_tx, upgraded_rx) = tokio::sync::oneshot::channel();
+        let (incomplete_sent_tx, incomplete_sent_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
 
         let server = async {
             let (mut reader, _writer, _) = listener.accept().await.unwrap();
             let _ = reader.read_frame().await.unwrap().unwrap();
             let mut events = reader.take_stream_events().expect("upgrade once");
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            upgraded_tx.send(()).unwrap();
+            incomplete_sent_rx
+                .await
+                .expect("client sends incomplete bind");
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while reader
+                    .stream_events_tx
+                    .as_ref()
+                    .expect("mux event sender")
+                    .strong_count()
+                    < 3
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("incomplete bind worker starts");
             drop(reader);
             let closed = tokio::time::timeout(Duration::from_secs(2), events.recv())
                 .await
                 .expect("bind worker ownership closes event channel");
             assert!(closed.is_none());
             drop(closed);
+            let _ = finished_tx.send(());
         };
         let client = async {
             let endpoint = client_endpoint();
             let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
             let (mut control, _recv) = conn.open_bi().await.unwrap();
             control.write_all(&FRAME).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            upgraded_rx.await.expect("server arms mux");
             let (mut incomplete, _recv) = conn.open_bi().await.unwrap();
             incomplete.write_all(&[0]).await.unwrap();
-            tokio::time::sleep(Duration::from_secs(1)).await;
+            incomplete_sent_tx.send(()).unwrap();
+            finished_rx.await.expect("server drops mux");
         };
 
-        tokio::join!(server, client);
+        join_bounded(server, client).await;
     }
 
     #[tokio::test]
@@ -1956,11 +2011,15 @@ mod tests {
         let listener =
             QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
         let addr = listener.local_addr().unwrap();
+        let (upgraded_tx, upgraded_rx) = tokio::sync::oneshot::channel();
+        let (pump_started_tx, pump_started_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
 
         let server = async {
             let (mut reader, _writer, _) = listener.accept().await.unwrap();
             let _ = reader.read_frame().await.unwrap().unwrap();
             let mut events = reader.take_stream_events().expect("upgrade once");
+            upgraded_tx.send(()).unwrap();
             let QuicStreamEvent::Bound {
                 terminal_id,
                 stream_id,
@@ -1986,6 +2045,7 @@ mod tests {
                 tokio_util::sync::CancellationToken::new(),
                 None,
             ));
+            pump_started_tx.send(()).unwrap();
             let event = tokio::time::timeout(Duration::from_secs(5), async {
                 tokio::select! {
                     event = events.recv() => event,
@@ -2005,20 +2065,22 @@ mod tests {
                 }
             ));
             drop(event);
+            let _ = finished_tx.send(());
         };
         let client = async {
             let endpoint = client_endpoint();
             let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
             let (mut control, _recv) = conn.open_bi().await.unwrap();
             control.write_all(&FRAME).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            upgraded_rx.await.expect("server arms mux");
             let (mut terminal, _recv) = conn.open_bi().await.unwrap();
             terminal.write_all(&stream_bind_bytes(7, 1)).await.unwrap();
+            pump_started_rx.await.expect("terminal pump starts");
             terminal.write_all(&u32::MAX.to_be_bytes()).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            finished_rx.await.expect("server observes framing failure");
         };
 
-        tokio::join!(server, client);
+        join_bounded(server, client).await;
     }
 
     #[tokio::test]
@@ -2027,11 +2089,17 @@ mod tests {
         let listener =
             QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
         let addr = listener.local_addr().unwrap();
+        let (upgraded_tx, upgraded_rx) = tokio::sync::oneshot::channel();
+        let (pump_started_tx, pump_started_rx) = tokio::sync::oneshot::channel();
+        let (input_written_tx, input_written_rx) = tokio::sync::oneshot::channel();
+        let (retired_tx, retired_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
 
         let server = async {
             let (mut reader, _writer, _) = listener.accept().await.unwrap();
             let _ = reader.read_frame().await.unwrap().unwrap();
             let mut events = reader.take_stream_events().expect("upgrade once");
+            upgraded_tx.send(()).unwrap();
             let QuicStreamEvent::Bound {
                 terminal_id,
                 stream_id,
@@ -2058,8 +2126,22 @@ mod tests {
                 tokio_util::sync::CancellationToken::new(),
                 None,
             ));
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            pump_started_tx.send(()).unwrap();
+            input_written_rx.await.expect("client sends terminal frame");
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while reader
+                    .frames_rx
+                    .as_ref()
+                    .expect("mux frame receiver")
+                    .is_empty()
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("terminal frame reaches shared dispatch");
             active.store(false, Ordering::Release);
+            retired_tx.send(()).unwrap();
             let frame = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())
                 .await
                 .expect("control frame progresses")
@@ -2070,15 +2152,17 @@ mod tests {
                 &FRAME,
                 "retired Terminal frame was discarded"
             );
+            let _ = finished_tx.send(());
         };
         let client = async {
             let endpoint = client_endpoint();
             let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
             let (mut control, _recv) = conn.open_bi().await.unwrap();
             control.write_all(&FRAME).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            upgraded_rx.await.expect("server arms mux");
             let (mut terminal, _recv) = conn.open_bi().await.unwrap();
             terminal.write_all(&stream_bind_bytes(7, 1)).await.unwrap();
+            pump_started_rx.await.expect("terminal pump starts");
             let mut input = BytesMut::new();
             phux_protocol::wire::frame::FrameKind::InputFocus {
                 terminal_id: phux_protocol::ids::ResourceId::local(7),
@@ -2086,12 +2170,13 @@ mod tests {
             }
             .encode(&mut input);
             terminal.write_all(&input).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(500)).await;
+            input_written_tx.send(()).unwrap();
+            retired_rx.await.expect("server retires terminal stream");
             control.write_all(&FRAME).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            finished_rx.await.expect("server reads control frame");
         };
 
-        tokio::join!(server, client);
+        join_bounded(server, client).await;
     }
 
     #[tokio::test]
@@ -2100,11 +2185,18 @@ mod tests {
         let listener =
             QuicListener::from_pem("127.0.0.1:0".parse().unwrap(), &cert, &key, None).unwrap();
         let addr = listener.local_addr().unwrap();
+        let (upgraded_tx, upgraded_rx) = tokio::sync::oneshot::channel();
+        let (pumps_started_tx, pumps_started_rx) = tokio::sync::oneshot::channel();
+        let (headers_written_tx, headers_written_rx) = tokio::sync::oneshot::channel();
+        let (body_blocked_tx, body_blocked_rx) = tokio::sync::oneshot::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
 
         let server = async {
             let (mut reader, _writer, _) = listener.accept().await.unwrap();
             let _ = reader.read_frame().await.unwrap().unwrap();
             let mut events = reader.take_stream_events().expect("upgrade once");
+            upgraded_tx.send(()).unwrap();
+            let mut terminal_budget = None;
             for _ in 0..2 {
                 let QuicStreamEvent::Bound {
                     terminal_id,
@@ -2119,6 +2211,7 @@ mod tests {
                 else {
                     panic!("expected bind");
                 };
+                terminal_budget.get_or_insert_with(|| Arc::clone(&terminal_frame_bytes));
                 tokio::spawn(pump_terminal_stream(
                     recv,
                     terminal_id,
@@ -2132,31 +2225,49 @@ mod tests {
                     None,
                 ));
             }
+            pumps_started_tx.send(()).unwrap();
+            headers_written_rx
+                .await
+                .expect("client sends incomplete body headers");
+            let terminal_budget = terminal_budget.expect("terminal byte budget");
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while terminal_budget.available_permits() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("terminal pump reserves its incomplete body");
+            body_blocked_tx.send(()).unwrap();
             let control = tokio::time::timeout(Duration::from_secs(5), reader.read_frame())
                 .await
                 .expect("control is not starved")
                 .unwrap()
                 .unwrap();
             assert_eq!(control.as_ref(), &FRAME);
+            let _ = finished_tx.send(());
         };
         let client = async {
             let endpoint = client_endpoint();
             let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
             let (mut control, _recv) = conn.open_bi().await.unwrap();
             control.write_all(&FRAME).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(200)).await;
+            upgraded_rx.await.expect("server arms mux");
             let (mut first, _recv) = conn.open_bi().await.unwrap();
             let (mut second, _recv) = conn.open_bi().await.unwrap();
             first.write_all(&stream_bind_bytes(7, 1)).await.unwrap();
             second.write_all(&stream_bind_bytes(8, 1)).await.unwrap();
+            pumps_started_rx.await.expect("terminal pumps start");
             let max_header = phux_protocol::wire::frame::MAX_FRAME_LEN.to_be_bytes();
             first.write_all(&max_header).await.unwrap();
             second.write_all(&max_header).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            headers_written_tx.send(()).unwrap();
+            body_blocked_rx
+                .await
+                .expect("terminal pump blocks on incomplete body");
             control.write_all(&FRAME).await.unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            finished_rx.await.expect("server reads control frame");
         };
 
-        tokio::join!(server, client);
+        join_bounded(server, client).await;
     }
 }
