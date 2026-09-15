@@ -691,7 +691,6 @@ fn osc_progress_is_mirrored_without_event_listeners() {
     let bundle = TerminalActor::new(20, 5).expect("new");
     let mut actor = bundle.actor;
     assert!(actor.event_sink.is_none());
-    assert!(actor.core.has_no_event_subscribers());
 
     actor.source_events_from_chunk(b"\x1b]9;4;");
     assert!(

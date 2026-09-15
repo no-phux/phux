@@ -25,7 +25,10 @@ use std::path::Path;
 
 pub use write::{Edit, EditOutcome, apply_edit, write_edit};
 
-use crate::{ConfigError, ConfigProvenance, LayerSource, MAX_AGENT_LOG_BYTES, MAX_HISTORY_BYTES};
+use crate::{
+    ConfigError, ConfigProvenance, LayerSource, MAX_AGENT_LOG_BYTES, MAX_EVENT_JOURNAL_BYTES,
+    MAX_EVENT_JOURNAL_ENTRIES, MAX_HISTORY_BYTES,
+};
 
 /// A top-level `config.toml` table that holds scalar settings.
 ///
@@ -316,6 +319,10 @@ const AGENT_LOG_BYTES_MAX: i64 = MAX_AGENT_LOG_BYTES as i64;
 )]
 const METADATA_VALUE_BYTES_MIN: i64 =
     phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES as i64;
+/// Upper bound of the `defaults.event-journal-entries` integer setting.
+const EVENT_JOURNAL_ENTRIES_MAX: i64 = MAX_EVENT_JOURNAL_ENTRIES as i64;
+/// Upper bound of the `defaults.event-journal-bytes` integer setting.
+const EVENT_JOURNAL_BYTES_MAX: i64 = MAX_EVENT_JOURNAL_BYTES as i64;
 /// Cap on `keybindings.which-key-delay-ms`: one minute. See the row's
 /// detail text.
 const WHICH_KEY_DELAY_MAX_MS: i64 = 60_000;
@@ -411,6 +418,36 @@ pub const CATALOG: &[SettingSpec] = &[
                  counts a tombstone the bootstrap reports; it is never an error. Records \
                  are small, so the 4 MiB default is tens of thousands of them. 67108864 \
                  (64 MiB) is the accepted maximum; phux config check rejects more.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.event-journal-entries",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: EVENT_JOURNAL_ENTRIES_MAX,
+        },
+        summary: "Recent events the server keeps for cursor replay",
+        detail: "The server stamps every event with one sequence and keeps the most recent \
+                 ones (ADR-0123), so a watcher or waiter that reconnects with a cursor is \
+                 replayed what it missed. A cursor older than the ring is told it missed \
+                 events and re-reads state; nothing is lost silently. The oldest events go \
+                 first when this or event-journal-bytes is reached. 1048576 is the \
+                 accepted maximum; phux config check rejects more.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.event-journal-bytes",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: EVENT_JOURNAL_BYTES_MAX,
+        },
+        summary: "Estimated bytes of recent events the server keeps",
+        detail: "The memory bound beside event-journal-entries: most events are tiny, but \
+                 titles, working directories, and agent questions are not. The 1 MiB \
+                 default holds thousands of ordinary events. 67108864 (64 MiB) is the \
+                 accepted maximum; phux config check rejects more.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {

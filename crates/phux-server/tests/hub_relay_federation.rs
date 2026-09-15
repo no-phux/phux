@@ -66,6 +66,14 @@
 //!   evaluates a relayed `KILL_RESOURCE_IF` (an untouched pane dies, a stale
 //!   token or a satellite-local attach refuses), and the hub refuses one for
 //!   a pane a second hub consumer attached.
+//! * `event_restamp` (ADR-0123) — a relayed satellite `EVENT` carries the
+//!   hub's own journal `seq`, ordered between the hub's local events.
+//! * `link_gap` (ADR-0123) — a satellite's `journal_gap` on the link's own
+//!   subscription reaches the hub consumer as a `source_gap`, from a real
+//!   overflow of the satellite's link mailbox.
+//! * `consumer_filters` (ADR-0123) — hub consumers of one satellite Terminal
+//!   keep their own `SUBSCRIBE_RESOURCE_EVENTS` filters, and a lost link owes
+//!   each subscribed consumer a `journal_gap`.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -103,6 +111,15 @@ mod list_directory;
 
 #[path = "hub_relay_federation/conditional_kill.rs"]
 mod conditional_kill;
+
+#[path = "hub_relay_federation/event_restamp.rs"]
+mod event_restamp;
+
+#[path = "hub_relay_federation/link_gap.rs"]
+mod link_gap;
+
+#[path = "hub_relay_federation/consumer_filters.rs"]
+mod consumer_filters;
 
 /// Generous per-step deadline, mirroring `phux_server_testkit::WIRE_RECV_TIMEOUT`'s
 /// rationale (the hub link dials with backoff under full-parallel nextest).

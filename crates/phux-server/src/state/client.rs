@@ -351,7 +351,9 @@ impl ServerState {
         // Agent-event subscriptions follow the same lifecycle as the L3
         // metadata subscriptions above (SPEC §7.5). Drop them so the map
         // stays bounded across attach churn.
-        self.clients.event_subscriptions.remove(&client_id);
+        if let Some(sub) = self.clients.event_subscriptions.remove(&client_id) {
+            sub.retire();
+        }
         if let Some(session) = detached_session {
             self.restore_session_geometry_after_detach(session);
         }
@@ -380,6 +382,7 @@ impl ServerState {
     pub fn forget_connection(&mut self, client_id: ClientId) {
         self.detach(client_id);
         self.clients.layers.remove(&client_id);
+        self.clients.client_names.remove(&client_id);
         self.clients.connection_cancellations.remove(&client_id);
         self.remove_peer_identity(client_id);
     }

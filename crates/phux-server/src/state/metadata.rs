@@ -287,6 +287,19 @@ impl ServerState {
     /// (after L3-capability filtering) so callers can assert fanout
     /// shape in tests.
     pub fn metadata_set(&mut self, scope: &Scope, key: &str, value: Vec<u8>) -> Vec<ClientId> {
+        self.metadata_set_by(scope, key, value, None)
+    }
+
+    /// As [`Self::metadata_set`], attributing the change to the connection
+    /// whose `SET_METADATA` caused it (`METADATA_CHANGED.actor`, ADR-0123).
+    /// `None` is a server-made change.
+    pub fn metadata_set_by(
+        &mut self,
+        scope: &Scope,
+        key: &str,
+        value: Vec<u8>,
+        writer: Option<ClientId>,
+    ) -> Vec<ClientId> {
         // Broadcast first so the borrow of `value` is finished by the time
         // the K/V store consumes it on `set`. The "set before broadcast"
         // ordering is preserved by checking the prior value: if the new
@@ -299,7 +312,7 @@ impl ServerState {
         if unchanged {
             return Vec::new();
         }
-        let delivered = self.broadcast_metadata_change(scope, key, Some(&value));
+        let delivered = self.broadcast_metadata_change(scope, key, Some(&value), writer);
         // Commit the write last; `MetadataSetOutcome` is now redundant
         // here but kept on the lower-level API for direct callers.
         let _ = self.metadata.set(scope, key, value);
@@ -309,11 +322,22 @@ impl ServerState {
     /// Atomic DELETE + tombstone broadcast. Idempotent: deleting a
     /// missing key returns an empty broadcast set.
     pub fn metadata_delete(&mut self, scope: &Scope, key: &str) -> Vec<ClientId> {
+        self.metadata_delete_by(scope, key, None)
+    }
+
+    /// As [`Self::metadata_delete`], attributing the tombstone to the
+    /// connection whose `DELETE_METADATA` caused it (ADR-0123).
+    pub fn metadata_delete_by(
+        &mut self,
+        scope: &Scope,
+        key: &str,
+        writer: Option<ClientId>,
+    ) -> Vec<ClientId> {
         let existed = self.metadata.delete(scope, key);
         if !existed {
             return Vec::new();
         }
-        self.broadcast_metadata_change(scope, key, None)
+        self.broadcast_metadata_change(scope, key, None, writer)
     }
 
     /// Broadcast-only counterpart of [`Self::metadata_set`]: enqueue a
@@ -341,7 +365,21 @@ impl ServerState {
         key: ServerInterceptedKey,
         value: &[u8],
     ) -> Vec<ClientId> {
-        self.broadcast_metadata_change(scope, key.as_str(), Some(value))
+        self.metadata_broadcast_by(scope, key, value, None)
+    }
+
+    /// As [`Self::metadata_broadcast`], attributing the change to the
+    /// connection whose `SET_METADATA` on the intercepted key caused it
+    /// (`METADATA_CHANGED.actor`, ADR-0123). `None` is a server-made change.
+    #[must_use]
+    pub fn metadata_broadcast_by(
+        &self,
+        scope: &Scope,
+        key: ServerInterceptedKey,
+        value: &[u8],
+        writer: Option<ClientId>,
+    ) -> Vec<ClientId> {
+        self.broadcast_metadata_change(scope, key.as_str(), Some(value), writer)
     }
 
     /// The one fanout: resolve the subscribers of `(scope, key)` and enqueue
@@ -350,15 +388,18 @@ impl ServerState {
     /// Every caller above goes through here — SET, DELETE, and the
     /// broadcast-only path — so "who hears about a change" has a single
     /// definition and the returned set means the same thing for all three.
+    /// `writer` becomes the frame's `actor`.
     fn broadcast_metadata_change(
         &self,
         scope: &Scope,
         key: &str,
         value: Option<&[u8]>,
+        writer: Option<ClientId>,
     ) -> Vec<ClientId> {
         let subscribers = self.metadata.subscribers_for(scope, key);
+        let actor = writer.map(|client| self.clients.actor_ref(client));
         self.clients
-            .broadcast_metadata_changed(&subscribers, scope, key, value)
+            .broadcast_metadata_changed(&subscribers, scope, key, value, actor.as_ref())
     }
 
     /// Publish ownership of a one-shot session-create result.

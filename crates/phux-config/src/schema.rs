@@ -199,6 +199,33 @@ pub struct DefaultsCfg {
     #[serde(default = "default_agent_log_bytes", rename = "agent-log-bytes")]
     pub agent_log_bytes: u32,
 
+    /// Events the server's event journal retains for cursor replay.
+    ///
+    /// The server stamps every event it emits with one sequence and keeps
+    /// the most recent ones in a bounded ring (ADR-0123), so a watcher or a
+    /// waiter that reconnects with a cursor is replayed what it missed. A
+    /// cursor older than the ring is told so (a journal gap) and re-reads
+    /// state; nothing is lost silently. Whichever of this and
+    /// [`Self::event_journal_bytes`] is reached first evicts the oldest
+    /// events. The accepted ceiling is [`MAX_EVENT_JOURNAL_ENTRIES`].
+    #[serde(
+        default = "default_event_journal_entries",
+        rename = "event-journal-entries"
+    )]
+    pub event_journal_entries: u32,
+
+    /// Estimated encoded bytes the server's event journal retains.
+    ///
+    /// The memory bound beside [`Self::event_journal_entries`]: events are
+    /// small, except titles, working directories, and agent questions,
+    /// which this bound keeps from crowding the ring. The accepted ceiling
+    /// is [`MAX_EVENT_JOURNAL_BYTES`].
+    #[serde(
+        default = "default_event_journal_bytes",
+        rename = "event-journal-bytes"
+    )]
+    pub event_journal_bytes: u32,
+
     /// Whether the client enables its own outer-terminal mouse tracking
     /// on attach (ADR-0048). `true` (default) emits DECSET
     /// `?1002h?1006h` so divider drag-to-resize and click-to-focus work
@@ -282,6 +309,8 @@ impl Default for DefaultsCfg {
             history_limit: default_history_limit(),
             history_bytes: default_history_bytes(),
             agent_log_bytes: default_agent_log_bytes(),
+            event_journal_entries: default_event_journal_entries(),
+            event_journal_bytes: default_event_journal_bytes(),
             mouse: true,
             cwd_inheritance: CwdInheritance::default(),
             spawn_on_attach: None,
@@ -411,6 +440,32 @@ pub const DEFAULT_METADATA_VALUE_BYTES: u32 = 256 * 1024;
 const fn default_metadata_value_bytes() -> u32 {
     DEFAULT_METADATA_VALUE_BYTES
 }
+
+/// Largest accepted `defaults.event-journal-entries`.
+///
+/// A memory bound: a million small events is a few hundred MiB before the
+/// byte bound applies. Rejected by `phux config check` rather than silently
+/// accepted.
+pub const MAX_EVENT_JOURNAL_ENTRIES: u32 = 1024 * 1024;
+
+/// Shipped `defaults.event-journal-entries`: 4,096 events (ADR-0123).
+pub const DEFAULT_EVENT_JOURNAL_ENTRIES: u32 = 4096;
+
+const fn default_event_journal_entries() -> u32 {
+    DEFAULT_EVENT_JOURNAL_ENTRIES
+}
+
+/// Largest accepted `defaults.event-journal-bytes` (64 MiB), the same
+/// resident-memory ceiling as [`MAX_HISTORY_BYTES`].
+pub const MAX_EVENT_JOURNAL_BYTES: u32 = 64 * 1024 * 1024;
+
+/// Shipped `defaults.event-journal-bytes`: 1 MiB (ADR-0123).
+pub const DEFAULT_EVENT_JOURNAL_BYTES: u32 = 1024 * 1024;
+
+const fn default_event_journal_bytes() -> u32 {
+    DEFAULT_EVENT_JOURNAL_BYTES
+}
+
 const fn default_true() -> bool {
     true
 }

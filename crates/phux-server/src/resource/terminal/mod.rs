@@ -889,18 +889,17 @@ pub struct TerminalActor {
     pty: Option<PtyOwned>,
     /// Optional sink for agent events the actor sources from the PTY
     /// stream (SPEC §7.5, phux-y2t): `bell`, `title_changed`, `dirty`,
-    /// `idle`, and the OSC-133-sourced `command_started` / `command_finished`.
-    /// `None` for actors that no one watches (most tests); set by the
-    /// runtime's spawn path via [`Self::set_event_sink`]. The runtime
-    /// drains this channel and fans each event out to event-stream
-    /// subscribers scoped to this pane (it owns the wire `ResourceId`,
-    /// which the actor does not know).
+    /// `idle`, `cwd_changed`, the OSC-133-sourced `command_started` /
+    /// `command_finished`, and the supervisory `terminal_control`. `None`
+    /// for actors that no one watches (most tests); set by the runtime's
+    /// spawn path via [`Self::set_event_sink`]. The runtime drains it into
+    /// the server-wide event journal (it owns the wire `ResourceId`, which
+    /// the actor does not know).
     ///
-    /// `try_send` semantics: a full sink drops the event rather than
-    /// stalling the hot PTY-pump loop — the event stream is an
-    /// accelerator, not a guarantee (a dropped event just falls back to
-    /// the CLI poll floor).
-    event_sink: Option<mpsc::Sender<AgentEvent>>,
+    /// Non-blocking: a full sink drops the event rather than stalling the
+    /// hot PTY-pump loop, and counts the drop so the drain can journal a
+    /// `source_gap` (ADR-0123).
+    event_sink: Option<crate::resource::event_sink::EventSink>,
     /// Last terminal title observed (OSC 0 / OSC 2), for change detection.
     /// `title_changed` fires only when the polled title differs from this.
     ///
@@ -1015,10 +1014,6 @@ pub struct TerminalActor {
     /// The exit facet, recorded when PTY EOF reaps the child. `None` while
     /// the child runs (or when this actor has no PTY).
     exit: Option<phux_core::process::ProcessExit>,
-    /// Whether we've already emitted a Dirty event in the current output
-    /// burst. Coalesces multiple grid mutations into one event per burst
-    /// (matching the `in_output_burst` coalescing for `AgentEvent`).
-    dirty_event_emitted_this_burst: bool,
     /// Process lifecycle as the supervisory surface sees it (ADR-0033):
     /// `Running` until a `Freeze` (SIGSTOP) flips it to `Frozen`, back to
     /// `Running` on `Resume` (SIGCONT). Natural/terminal exits are reported
