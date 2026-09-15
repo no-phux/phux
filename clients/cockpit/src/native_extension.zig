@@ -4255,8 +4255,10 @@ test "shipping unrelated pointer down preserves the captured divider" {
         .label = canvas_label,
         .kind = .pointer_down,
         .pointer_id = 8,
+        // Below the 50pt header: empty titlebar chrome is a window-drag
+        // surface, so (2,2) would start a drag instead of this probe.
         .x = 2,
-        .y = 2,
+        .y = 80,
     };
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = raw });
     try std.testing.expect(engine.split_drag != null);
@@ -5097,15 +5099,14 @@ test "the markup chrome passes the layout audit at every declared size, density 
     try std.testing.expectEqual(@as(usize, 0), total);
 }
 
-/// Empty titlebar spacers are the drag surface. The header row cannot
-/// carry `window-drag`: a 16-tab strip's press exclusions overflow the
-/// null platform's 16-slot table. The 78pt traffic-light reserve is
-/// not a usable grab (the lights sit on it). A grow spacer after the
-/// tab cluster inside the strip — or in place of the strip when tabs
-/// ride the side rail — is the handle. Spacers must have height; the
-/// header is cross-centered, so an empty stack otherwise lays out at
-/// 0pt and the collector skips it.
-fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: native_sdk.geometry.SizeF, require_usable_handle: bool) !void {
+/// The shipping hidden-inset header must expose a full-width drag
+/// surface. Parking `window-drag` on leftover spacers leaves no grab
+/// once the strip is packed, and the 78pt lights reserve is not usable.
+/// Marking the header row itself overflows the sixteen-slot platform
+/// table once tabs become exclusion rects. The shipping shape is a
+/// childless drag layer under the row — empty chrome falls through,
+/// buttons stay buttons.
+fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: native_sdk.geometry.SizeF) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var ui = Adapter.Ui.init(arena.allocator());
@@ -5120,45 +5121,38 @@ fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: nativ
         nodes,
     );
 
-    var leftover: f32 = 0;
-    var drag_count: usize = 0;
-    var leading_index: ?usize = null;
+    var widest: f32 = 0;
+    var drag_index: ?usize = null;
     for (layout.nodes, 0..) |entry, index| {
         if (!canvas.widgetIsWindowDragRegion(entry.widget)) continue;
-        drag_count += 1;
-        if (entry.frame.height < 32) {
-            std.debug.print(
-                "window-drag region is too short ({d:.1}pt) in window {d}\n",
-                .{ entry.frame.height, window },
-            );
+        if (entry.frame.width > widest) {
+            widest = entry.frame.width;
+            drag_index = index;
         }
-        try std.testing.expect(entry.frame.height >= 32);
-        const leading_reserve = entry.frame.y < 60 and entry.frame.x < 16 and @abs(entry.frame.width - 78) < 0.5;
-        if (leading_reserve) {
-            leading_index = index;
-            continue;
-        }
-        if (entry.frame.width > leftover) leftover = entry.frame.width;
     }
-    try std.testing.expect(drag_count >= 1);
-    const leading = leading_index orelse return error.TestExpectedTitlebarLeadingReserve;
-    try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, leading) != null);
-    if (require_usable_handle) {
-        if (leftover < 32) {
-            std.debug.print(
-                "leftover window-drag chrome is {d:.1}pt in a {d:.0}pt window (window {d}); want a grab besides the 78pt lights reserve\n",
-                .{ leftover, size.width, window },
-            );
-        }
-        try std.testing.expect(leftover >= 32);
+    if (widest < size.width - 16) {
+        std.debug.print(
+            "widest window-drag region is {d:.1}pt in a {d:.0}pt window (window {d})\n",
+            .{ widest, size.width, window },
+        );
     }
+    try std.testing.expect(widest >= size.width - 16);
 
     var settings_index: ?usize = null;
+    var leading_index: ?usize = null;
     for (layout.nodes, 0..) |entry, index| {
         if (std.mem.eql(u8, entry.widget.semantics.label, "Settings")) settings_index = index;
+        if (entry.frame.y < 60 and entry.frame.x < 16 and @abs(entry.frame.width - 78) < 0.5) {
+            leading_index = index;
+        }
     }
     const settings = settings_index orelse return error.TestExpectedSettingsControl;
     try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, settings) == null);
+    const leading = leading_index orelse return error.TestExpectedTitlebarLeadingReserve;
+    const lead_frame = layout.nodes[leading].frame;
+    const probe = native_sdk.geometry.PointF.init(lead_frame.x + 8, lead_frame.y + lead_frame.height / 2);
+    const hit = layout.hitTestWithTokens(probe, tokens) orelse return error.TestExpectedTitlebarLeadingHit;
+    try std.testing.expectEqual(drag_index, canvas.widgetWindowDragTargetIndexFromNode(layout, hit.index));
 }
 
 test "titlebar chrome is a window-drag surface in every window and placement" {
@@ -5166,23 +5160,20 @@ test "titlebar chrome is a window-drag surface in every window and placement" {
     defer rig.stop();
     try rig.settle(0, "READY");
     const size = native_sdk.geometry.SizeF.init(1100, 640);
-    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size, true);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
 
     try rig.dispatch(.new_window);
     try rig.settle(1, "READY");
-    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size, true);
-    try expectTitlebarWindowDrag(&rig.app_state.model, 1, size, true);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 1, size);
 
     try rig.reach(.{ .label = "one tab, rail", .placement = .side });
-    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size, true);
-    try expectTitlebarWindowDrag(&rig.app_state.model, 1, size, true);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 1, size);
 
-    // A packed 16-tab strip may leave the grow spacer at ~0pt; the live
-    // reach still has to install drag regions without overflowing the
-    // 16-slot null-platform table (WindowLimitReached).
     try rig.reach(.{ .label = "full strip", .tabs = 16 });
-    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size, false);
-    try expectTitlebarWindowDrag(&rig.app_state.model, 1, size, false);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 1, size);
 }
 
 fn auditInspectorEveryWindow(model: core.Model, state: []const u8, loaded: bool) !void {
