@@ -30,11 +30,18 @@ struct Fixture {
 const ENSURE_TIMEOUT_SECS: &str = "1";
 const ENSURE_TIMEOUT_RENDERED: &str = "within 1s";
 
-/// The deadline the adoption-helper case runs under. Longer than
-/// [`ENSURE_TIMEOUT_SECS`] on purpose: that test needs the fake init tool to
-/// start and write `helper.pid` BEFORE the deadline fires, so a 1s bound would
-/// race the thing the test is trying to observe.
-const HELPER_TIMEOUT_SECS: &str = "3";
+/// Hang guard for fixture events that wait on a spawned helper: `helper.pid`
+/// appearing, ensure exiting after cancel or the shipped deadline, a
+/// cancelled descendant being reaped.
+///
+/// The idle path is milliseconds. A starved host has been observed past 5s
+/// (phux-rt87) while the same 17 tests pass alone. Matches `bounded_output`:
+/// the assertions are cleanup and reap, not speed, so the ceiling only
+/// elapses if the helper never starts or ensure never exits. The helper
+/// fixtures keep the shipped 10s `--ensure` ceiling — a 3s override raced
+/// spawn under load, so the helper never wrote `helper.pid` before the
+/// watchdog fired.
+const HANG_GUARD: Duration = Duration::from_secs(15);
 
 impl Fixture {
     fn new() -> Self {
@@ -377,7 +384,7 @@ impl Drop for HelperPid {
 }
 
 fn await_helper(fixture: &Fixture) -> HelperPid {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_GUARD;
     loop {
         if let Ok(text) = std::fs::read_to_string(fixture.dir.path().join("helper.pid"))
             && let Ok(pid) = text.trim().parse()
@@ -395,7 +402,6 @@ fn assert_helper_cleaned_up(signal: Option<rustix::process::Signal>, script: &st
     let child = fixture
         .command()
         .env("PATH", bin)
-        .env(phux::ENSURE_TIMEOUT_ENV, HELPER_TIMEOUT_SECS)
         .args(["server", "--ensure"])
         .spawn()
         .expect("ensure");
@@ -408,14 +414,11 @@ fn assert_helper_cleaned_up(signal: Option<rustix::process::Signal>, script: &st
                 .expect("nonzero");
         rustix::process::kill_process(pid, signal).expect("cancel ensure");
     }
-    let limit = if signal.is_some() {
-        Duration::from_secs(3)
-    } else {
-        // The shortened deadline above plus slack for a loaded pool.
-        Duration::from_secs(6)
-    };
-    assert!(guard.wait_for_exit(limit).is_some(), "ensure did not exit");
-    assert!(started.elapsed() < limit);
+    assert!(
+        guard.wait_for_exit(HANG_GUARD).is_some(),
+        "ensure did not exit"
+    );
+    assert!(started.elapsed() < HANG_GUARD);
     assert_eq!(
         guard
             .child_mut()
@@ -486,13 +489,13 @@ fn cancellation_cleans_up_descendants_even_after_the_helper_leader_exits() {
             .expect("pid"),
     );
     common::terminate(guard.child_mut().id());
-    assert!(guard.wait_for_exit(Duration::from_secs(3)).is_some());
+    assert!(guard.wait_for_exit(HANG_GUARD).is_some());
     assert!(
         !common::process_exists(helper.0),
         "helper must be reaped before ensure exits"
     );
     // An orphaned grandchild is reaped by init, not by the ensure process.
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + HANG_GUARD;
     while common::process_exists(descendant.0) {
         assert!(
             Instant::now() < deadline,
@@ -520,7 +523,7 @@ fn cancellation_preserves_a_coordinator_that_has_already_detached() {
     let helper = await_helper(&fixture);
     fixture.server.capture_pid();
     common::terminate(guard.child_mut().id());
-    assert!(guard.wait_for_exit(Duration::from_secs(3)).is_some());
+    assert!(guard.wait_for_exit(HANG_GUARD).is_some());
     assert!(!common::process_exists(helper.0));
     UnixStream::connect(&fixture.socket).expect("detached coordinator survives cancellation");
     assert_eq!(fixture.status()["sessions"][0]["name"], "adopted");
