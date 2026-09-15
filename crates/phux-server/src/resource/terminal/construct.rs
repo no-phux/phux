@@ -3,6 +3,7 @@
 //! installation, OSC 10/11 color-query replies, and the libghostty
 //! effect handlers.
 
+use super::process_facet::ChildFacts;
 use super::{
     CancellationToken, CanonicalTerminal, Cell, ColorQueryScanner, CommandBuilder,
     ConsumerAckRequest, ConsumerAttachRequest, ConsumerDetachRequest, DEFAULT_CELL_PX,
@@ -217,6 +218,7 @@ impl TerminalActor {
         let (screen_tx, screen_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (upgrade_tx, upgrade_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (pwd_tx, pwd_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
+        let (process_tx, process_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (resize_tx, resize_rx) = mpsc::channel(DEFAULT_INPUT_MAILBOX);
         let (consumer_attach_tx, consumer_attach_rx) =
             mpsc::channel::<ConsumerAttachRequest>(DEFAULT_INPUT_MAILBOX);
@@ -234,6 +236,7 @@ impl TerminalActor {
         );
 
         let (pty_rx, pty_tx, pty) = initialize_pty(pty_source, cols, rows)?;
+        let child_facts = ChildFacts::capture(pty.as_ref());
         Self::install_effects(&mut terminal, &size_report, pty_tx.as_ref())?;
 
         let actor = Self {
@@ -273,6 +276,7 @@ impl TerminalActor {
             screen_rx,
             upgrade_rx,
             pwd_rx,
+            process_rx,
             resize_rx,
             consumer_attach_rx,
             consumer_detach_rx,
@@ -302,8 +306,17 @@ impl TerminalActor {
             ask_retry_owed: false,
             in_output_burst: false,
             output_since_idle_tick: false,
-            last_known_cwd: RefCell::new(std::env::var("HOME").unwrap_or_default()),
+            // Seeded from the child's real starting directory (a kernel
+            // query right after spawn, when `chdir` has already happened),
+            // not `$HOME`: a `$HOME` seed swallowed the `cwd_changed` of a
+            // shell that started elsewhere and `cd`'d home. The pane still
+            // announces its starting directory once (`cwd_announced`).
+            last_known_cwd: RefCell::new(child_facts.cwd),
+            cwd_announced: Cell::new(false),
             osc133: osc133::Osc133Scanner::new(),
+            prompt: osc133::PromptTracker::default(),
+            child_start_ms: child_facts.start_ms,
+            exit: None,
             dirty_event_emitted_this_burst: false,
             lifecycle: ResourceLifecycle::Running,
             cols,
@@ -327,6 +340,7 @@ impl TerminalActor {
             set_default_colors: set_default_colors_tx,
             screen: screen_tx,
             pwd: pwd_tx,
+            process: process_tx,
             resize: resize_tx,
             cols,
             rows,

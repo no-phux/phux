@@ -588,6 +588,26 @@ idle clamp. `idle_limit` is `null` when none was applied. `passes` is
 pane exists; poll `snapshot` for the final frame unless `--close`. A
 failure creates no pane.
 
+### `GET_TERMINAL_STATE` — `process` facet (`schema_version` 1, wire only)
+
+No CLI verb emits this document yet. SDKs and MCP hosts that send the
+`GET_TERMINAL_STATE` command read it directly. The `process` object is
+`{ child, foreground, cwd, prompt, exit }`, and the Rust type is
+`phux_core::process::TerminalProcessState`:
+
+```json
+{ "child": { "pid": 4242, "start_ms": 1757800000123 },
+  "foreground": { "pgid": 4250, "start_ms": 1757800009876, "name": "vim" },
+  "cwd": "/repo", "prompt": { "state": "running", "last_exit_code": 0 },
+  "exit": null }
+```
+
+Every key is present; `null` means the server could not find out, never
+"none". Pair `pid` with `start_ms` before trusting a pid across calls.
+`prompt.state` is `unknown|at_prompt|running`, from OSC-133 marks.
+`exit.signal` reports a death by signal that `RESOURCE_CLOSED.exit_status`
+reads as `null`. Normative rules: [`../spec/L1.md`](../spec/L1.md) §6.3.
+
 ### Other `--json` verbs
 
 `config agents` is `schema_version` 2: top-level `state` / `attention`

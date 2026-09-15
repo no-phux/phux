@@ -88,7 +88,7 @@ const ADMISSION_DEADLINE: Duration = Duration::from_secs(10);
 pub(crate) struct QuicListener {
     endpoint: quinn::Endpoint,
     admission: QuicAdmission,
-    workload_registry: Option<Arc<crate::workload::WorkloadRegistry>>,
+    workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
 }
 
 /// Whom a [`QuicListener`] admits.
@@ -131,29 +131,24 @@ impl QuicListener {
         cert_path: &std::path::Path,
         key_path: &std::path::Path,
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
-        client_ca_path: Option<&std::path::Path>,
+        client_ca: Option<&rustls::pki_types::CertificateDer<'static>>,
     ) -> Result<Self, QuicBindError> {
         Self::from_pem_with_client_ca_and_registry(
-            addr,
-            cert_path,
-            key_path,
-            tokens,
-            client_ca_path,
-            None,
+            addr, cert_path, key_path, tokens, client_ca, None,
         )
     }
 
-    /// Bind a QUIC listener with mTLS and a workload registry.
+    /// Bind a QUIC listener with mTLS against the workload CA certificate
+    /// `client_ca` and a workload registry.
     pub(crate) fn from_pem_with_client_ca_and_registry(
         addr: SocketAddr,
         cert_path: &std::path::Path,
         key_path: &std::path::Path,
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
-        client_ca_path: Option<&std::path::Path>,
-        workload_registry: Option<Arc<crate::workload::WorkloadRegistry>>,
+        client_ca: Option<&rustls::pki_types::CertificateDer<'static>>,
+        workload_registry: Option<Arc<crate::workload::ReloadingWorkloadRegistry>>,
     ) -> Result<Self, QuicBindError> {
-        let tls =
-            super::tls::quic_server_config_with_client_ca(cert_path, key_path, client_ca_path)?;
+        let tls = super::tls::quic_server_config_with_client_ca(cert_path, key_path, client_ca)?;
         Ok(Self {
             endpoint: build_endpoint(addr, tls)?,
             admission: tokens.map_or(QuicAdmission::Open, QuicAdmission::Store),
@@ -161,18 +156,27 @@ impl QuicListener {
         })
     }
 
-    /// Bind a QUIC listener that admits whoever `admission` names.
+    /// Bind a QUIC listener that admits whoever `admission` names. With
+    /// `workload` (the workload CA and its live registry), the listener also
+    /// requires a client certificate that maps to an active credential,
+    /// through the same verifier and lookup as the configured listener.
     pub(crate) fn with_admission(
         addr: SocketAddr,
         cert_path: &std::path::Path,
         key_path: &std::path::Path,
         admission: QuicAdmission,
+        workload: Option<(
+            &rustls::pki_types::CertificateDer<'static>,
+            Arc<crate::workload::ReloadingWorkloadRegistry>,
+        )>,
     ) -> Result<Self, QuicBindError> {
-        let tls = super::tls::quic_server_config_with_client_ca(cert_path, key_path, None)?;
+        let (client_ca, workload_registry) =
+            workload.map_or((None, None), |(ca, registry)| (Some(ca), Some(registry)));
+        let tls = super::tls::quic_server_config_with_client_ca(cert_path, key_path, client_ca)?;
         Ok(Self {
             endpoint: build_endpoint(addr, tls)?,
             admission,
-            workload_registry: None,
+            workload_registry,
         })
     }
 
@@ -218,6 +222,20 @@ fn build_endpoint(
     server_config.transport_config(Arc::new(transport));
 
     Ok(quinn::Endpoint::server(server_config, addr)?)
+}
+
+/// The registry credential for a connection's client certificate. rustls
+/// has already verified the chain to the workload CA; this maps the leaf's
+/// public key through the registry generation current right now, so an
+/// enrollment or revocation applies to the next connection without a
+/// restart. The credential carries that generation.
+fn workload_credential(
+    conn: &quinn::Connection,
+    registry: &crate::workload::ReloadingWorkloadRegistry,
+) -> Option<crate::auth::AuthenticatedCredential> {
+    let identity = conn.peer_identity()?;
+    let certs = identity.downcast_ref::<Vec<rustls::pki_types::CertificateDer<'static>>>()?;
+    registry.lookup_certificate(certs.first()?.as_ref())
 }
 
 /// QUIC read half: reassembles length-prefixed frames off the bidi stream,
@@ -430,41 +448,16 @@ impl Incoming for QuicListener {
 
             let workload_credential = match &self.workload_registry {
                 Some(registry) => {
-                    let Some(identity) = conn.peer_identity() else {
-                        debug!(%remote, "quic mTLS peer identity missing");
-                        conn.close(AUTH_FAILED_CODE.into(), b"workload certificate required");
+                    // One refusal for every failure (no certificate, an
+                    // unexpected identity type, a key that is unenrolled,
+                    // revoked, or expired): the peer learns only that it was
+                    // refused (`workload-auth.md` §7).
+                    let Some(credential) = workload_credential(&conn, registry) else {
+                        debug!(%remote, "quic mTLS client identity refused");
+                        conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
                         continue;
                     };
-                    let Some(certs) =
-                        identity.downcast_ref::<Vec<rustls::pki_types::CertificateDer<'static>>>()
-                    else {
-                        debug!(%remote, "quic mTLS peer identity had an unexpected type");
-                        conn.close(AUTH_FAILED_CODE.into(), b"invalid workload certificate");
-                        continue;
-                    };
-                    let Some(certificate) = certs.first() else {
-                        debug!(%remote, "quic mTLS peer certificate chain was empty");
-                        conn.close(AUTH_FAILED_CODE.into(), b"workload certificate required");
-                        continue;
-                    };
-                    let Some(record) = registry.lookup_certificate(certificate.as_ref()) else {
-                        debug!(%remote, "quic mTLS certificate is not enrolled");
-                        conn.close(
-                            AUTH_FAILED_CODE.into(),
-                            b"workload certificate not enrolled",
-                        );
-                        continue;
-                    };
-                    Some(crate::auth::AuthenticatedCredential {
-                        id: record.id.clone(),
-                        principal: record.id.clone(),
-                        scopes: record.scopes.clone(),
-                        issued_at: chrono::Utc::now(),
-                        expires_at: record
-                            .expires_at
-                            .and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0)),
-                        generation: 0,
-                    })
+                    Some(credential)
                 }
                 None => None,
             };
@@ -1429,6 +1422,135 @@ mod tests {
 
     /// Encode a `STREAM_BIND` header for tests (the production encoder is
     /// `phux_protocol::wire::stream_bind::encode`, exercised here verbatim).
+    /// A CSR-enrolled workload client for `paths`: its certificate chain and
+    /// key files, and the committed credential.
+    fn enrolled_client(
+        paths: &crate::workload::WorkloadPaths,
+        dir: &std::path::Path,
+    ) -> (
+        phux_dial::TlsClientIdentity,
+        crate::workload::RegisteredCredential,
+    ) {
+        let client_key = rcgen::KeyPair::generate().unwrap();
+        let csr = rcgen::CertificateParams::new(vec!["client".to_owned()])
+            .unwrap()
+            .serialize_request(&client_key)
+            .unwrap();
+        let material =
+            crate::workload::ClientMaterial::from_pem(csr.pem().unwrap().as_bytes()).unwrap();
+        let expires = chrono::Utc::now().timestamp() + 3600;
+        let prepared = crate::workload::prepare_enrollment(paths, &material, expires).unwrap();
+        let certificate = dir.join("client.pem");
+        let private_key = dir.join("client.key");
+        std::fs::write(&certificate, prepared.issued_chain_pem().unwrap()).unwrap();
+        std::fs::write(&private_key, client_key.serialize_pem()).unwrap();
+        let registered = prepared
+            .commit(&paths.registry, vec!["*@global".to_owned()], expires)
+            .unwrap();
+        (
+            phux_dial::TlsClientIdentity::PemFiles {
+                certificate,
+                private_key,
+            },
+            registered,
+        )
+    }
+
+    /// The `OPEN_LISTENER` door (`with_admission`) in workload mode takes the
+    /// same CA verifier and live registry as the configured listener: its
+    /// one-attach token stays outer admission, a dial without a client
+    /// certificate is refused, and an enrolled certificate becomes the
+    /// connection's credential.
+    #[tokio::test]
+    async fn an_ephemeral_listener_in_workload_mode_requires_an_enrolled_certificate() {
+        let (dir, cert, key) = cert_pair();
+        let paths = crate::workload::WorkloadPaths {
+            ca_cert: dir.path().join("ca.pem"),
+            ca_key: dir.path().join("ca.key"),
+            registry: dir.path().join("workload-keys"),
+        };
+        crate::workload::init_authority(&paths.ca_cert, &paths.ca_key).unwrap();
+        let (identity, enrolled) = enrolled_client(&paths, dir.path());
+        let ca_certificate = crate::workload::authority_certificate(&paths.ca_cert).unwrap();
+        let (token, secret) = crate::auth::ListenerToken::mint().unwrap();
+        let token = Arc::new(token);
+        let door = || {
+            let registry = Arc::new(
+                crate::workload::ReloadingWorkloadRegistry::load(paths.registry.clone()).unwrap(),
+            );
+            QuicListener::with_admission(
+                "127.0.0.1:0".parse().unwrap(),
+                &cert,
+                &key,
+                QuicAdmission::Listener(Arc::clone(&token)),
+                Some((&ca_certificate, registry)),
+            )
+            .unwrap()
+        };
+
+        // No client certificate: the handshake or the stream is torn down
+        // before a single byte comes back.
+        let refusing = door();
+        let refusing_addr = refusing.local_addr().unwrap();
+        let driver = tokio::spawn(async move {
+            let _ = refusing.accept().await;
+        });
+        let anonymous = client_endpoint();
+        let refused = async {
+            let conn = anonymous
+                .connect(refusing_addr, "localhost")
+                .ok()?
+                .await
+                .ok()?;
+            let (mut send, mut recv) = conn.open_bi().await.ok()?;
+            send.write_all(&token_preamble(&secret)).await.ok()?;
+            let mut byte = [0u8; 1];
+            recv.read_exact(&mut byte).await.ok()
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_secs(10), refused)
+                .await
+                .expect("a refusal settles")
+                .is_none(),
+            "a dial without a workload certificate is refused"
+        );
+        driver.abort();
+
+        let listener = door();
+        let addr = listener.local_addr().unwrap();
+        let crypto = phux_dial::tls::client_config_with_identity(
+            &phux_dial::CertTrust::SkipVerify,
+            &identity,
+            Some(QUIC_ALPN),
+        )
+        .unwrap();
+        let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        endpoint.set_default_client_config(quinn::ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(crypto).unwrap(),
+        )));
+        let server = async {
+            let (mut reader, _writer, peer) = listener.accept().await.unwrap();
+            (reader.read_frame().await.unwrap(), peer)
+        };
+        let client = async {
+            let conn = endpoint.connect(addr, "localhost").unwrap().await.unwrap();
+            let (mut send, _recv) = conn.open_bi().await.unwrap();
+            send.write_all(&token_preamble(&secret)).await.unwrap();
+            send.write_all(&FRAME).await.unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        };
+        let ((got, peer), ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(server, client)
+        })
+        .await
+        .expect("the enrolled dial settles");
+        assert_eq!(got.unwrap().as_ref(), &FRAME);
+        let credential = peer.credential.as_ref().expect("the workload credential");
+        assert_eq!(credential.id, enrolled.id);
+        assert_eq!(credential.generation, enrolled.generation);
+        assert!(credential.registry_instance.is_some());
+    }
+
     fn stream_bind_bytes(terminal: u32, stream: u64) -> Vec<u8> {
         use phux_protocol::ids::{ResourceId, StreamId};
         use phux_protocol::wire::stream_bind::{StreamBind, encode};

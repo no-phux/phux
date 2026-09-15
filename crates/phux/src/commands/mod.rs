@@ -260,6 +260,7 @@ pub(crate) mod wait;
 mod stall_peer;
 pub(crate) mod watch;
 pub(crate) mod whoami;
+pub(crate) mod workload;
 pub(crate) mod workspace;
 pub(crate) mod worktree;
 
@@ -324,6 +325,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Host { .. } => Some("host"),
         Command::Relay { .. } => Some("relay"),
         Command::Pair { .. } => Some("pair"),
+        Command::Workload { .. } => Some("workload"),
         Command::Completion { .. } => Some("completion"),
         Command::Mcp { .. } => Some("mcp"),
         Command::Cockpit { .. } => Some("cockpit"),
@@ -1912,6 +1914,25 @@ pub(crate) enum Command {
         migrate_legacy: bool,
     },
 
+    /// Manage the mTLS workload authority
+    ///
+    /// The workload CA and the registry of client credentials it admits over
+    /// mutual TLS. `authority` prints the CA fingerprint (`--init` creates
+    /// the CA); `add-key` enrolls a client certificate or signs a CSR read
+    /// from stdin or `--file`, never from the command line; `list` and
+    /// `revoke` show and retire credentials. These write the state directory
+    /// directly and never contact a server; a running server applies each
+    /// change on its next connection, with no restart.
+    #[usage(help_heading = "Machines", display_order = 45)]
+    Workload {
+        #[usage(subcommand)]
+        action: workload::WorkloadAction,
+
+        /// Emit the result as JSON on stdout.
+        #[usage(long, global)]
+        json: bool,
+    },
+
     /// Add and manage the machines phux reaches
     ///
     /// One namespace over both machine registries. `--role remote` (the
@@ -2565,10 +2586,24 @@ pub(crate) async fn command_on(
     command: WireCommand,
 ) -> Result<CommandResult, AttachError> {
     let (result, interleaved) = conn.request(request_id, command).await?.into_parts();
-    for message in phux_client::state::degradation_notices(&interleaved) {
+    warn_interleaved_degradation(&phux_client::state::Degradation::from_interleaved(
+        &interleaved,
+    ));
+    Ok(result)
+}
+
+/// Print `degradation`'s notices exactly as [`command_on`] always has.
+///
+/// A `phux-client` function that returns its own `Degradation` (the
+/// `kill`/`detach`/`spawn`/`tags` library homes) uses this instead of
+/// `command_on`'s inline loop, so every verb prints the identical line for
+/// an uncorrelated `ERROR` interleaved ahead of its reply — a hub's
+/// per-satellite unreachability notice — regardless of which path fetched
+/// it.
+pub(crate) fn warn_interleaved_degradation(degradation: &phux_client::state::Degradation) {
+    for message in degradation.notices() {
         eprintln!("phux: warning: partial results — {message}");
     }
-    Ok(result)
 }
 
 /// One-shot: open a fresh connection, send `command`, return its result.

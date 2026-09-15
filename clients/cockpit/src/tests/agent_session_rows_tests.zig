@@ -29,6 +29,8 @@ const ChannelFx = struct {
     }
     pub fn closeChannel(_: *const @This(), _: u64) void {}
     pub fn showNotification(_: *const @This(), _: anytype) void {}
+    pub fn closeWindow(_: *const @This(), _: []const u8) void {}
+    pub fn quitApp(_: *const @This()) void {}
 };
 
 /// An engine with one attached remote terminal, from the canonical fixtures.

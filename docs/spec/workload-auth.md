@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-14
 ---
 
 # Workload authority over mTLS — authentication and scoped authority
@@ -18,7 +18,7 @@ document previously specified; the authorization half stands.)
 
 ---
 
-<!-- impl-status: partial; probe: WorkloadRegistry,enroll_client,credential_id -->
+<!-- impl-status: partial; probe: WorkloadRegistry,enroll_client,credential_id,ReloadingWorkloadRegistry,prepare_enrollment,WorkloadAction -->
 > **Status: partial.** The persisted workload CA, client enrollment,
 > credential-id derivation, and validated scope registry are implemented in
 > `phux_server::workload`. TLS handshake enforcement, scope classification,
@@ -77,6 +77,13 @@ temporary file, file sync, atomic rename, and directory sync. A missing
 CA may be created only by an explicit initialization path (first
 routable listen, or `phux workload authority --init`).
 
+Every directory above the state directory SHALL also be controlled by its
+owner or root. The reference implementation checks only the immediate
+parent and opens files by path, so a directory above it that another user
+can write could substitute the whole state directory; operators who move
+the material with `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, or
+`PHUX_WORKLOAD_KEYS` keep the same property along that path.
+
 `<state-dir>/workload-keys` is the registry of workload credentials.
 Each record contains the client certificate (or raw public key),
 derived credential id, canonical scope ceiling, absolute expiry, and
@@ -90,6 +97,16 @@ generation.
 Registry generations are live (§7). The registry is local Phux
 authority; no UI, peer ledger, or coordinator is queried during
 admission.
+
+Each registry file carries a random instance id, minted by its first
+write and kept by every later one; the generation counts writes within
+that instance, and an admitted credential is stamped with both.
+Consumers SHALL key anything derived from a snapshot on the pair
+`(instance, generation)`, never on the generation alone. A credential
+whose registry carries no instance id (a file not yet rewritten) matches
+no such key. Restoring a registry backup can move the generation
+backwards within one instance; a consumer SHALL treat any decrease, like
+any change of instance, as a new epoch rather than as stale data.
 
 ## 3. Authentication flow
 
@@ -254,6 +271,13 @@ id, and registry generation; it SHALL not be serialized as a reusable bearer
 credential.
 
 ## 6. Terminal endpoint mapping and total classification
+
+<!-- impl-status: partial; probe: classify_command -->
+> **Status: partial.** Both tables below are mirrored row for row by
+> `phux_protocol::kinds` (ADR-0125), the table `classify_frame` and
+> `classify_command` read and the one source any enforcement point must
+> consume; a test pins it to these rows in both directions. No dispatch
+> path consults the classifier yet.
 
 The terminal protocol adds no workload frame and no HELLO workload field:
 HELLO field ids 7 and 8 stay reserved and unassigned, `WORKLOAD_RESPONSE

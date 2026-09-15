@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-14
 ---
 
 # Module structure
@@ -266,10 +266,45 @@ src/
   snapshot.rs, run.rs, send_keys.rs, wait.rs, watch.rs, resize.rs,
   layout_ops.rs, ask.rs, agent_meta.rs, agent_prompt.rs, agent_wait.rs,
   agent_session.rs (`phux agent session` / `emit` / `log`),
-  vcs.rs, explain.rs, perf.rs, record.rs
+  vcs.rs, explain.rs, perf.rs, record.rs, upgrade.rs
                       — one module per agent-CLI verb's library half
                         (docs/consumers/agents.md); layout_ops, agent_meta,
-                        vcs, and perf are also read by the TUI chrome
+                        vcs, and perf are also read by the TUI chrome;
+                        upgrade.rs is UPGRADE (`phux upgrade`, ADR-0032)
+  agent_record.rs     — phux.agent/v1 read/write/index (`phux agent
+                        set`/`clear`/`ls`, ADR-0040); the record type and
+                        its encode/parse convention live in agent_meta.rs
+  agent_session_record.rs
+                      — phux.agent-session/v1 provider-native provenance:
+                        the AgentSessionRecord type, its persist/fetch-index
+                        round trips, and spawn_with_agent_session (SPAWN_RESOURCE
+                        plus the optional provenance write and its
+                        KILL_RESOURCE rollback), shared by `phux spawn` /
+                        `phux launch`. Distinct from both agent_record.rs
+                        (a different, human-declared record) and
+                        agent_session.rs below (a different, server-tracked
+                        resource kind) despite the similar names.
+  detach.rs           — DETACH_CLIENTS classification (`phux detach`)
+  kill.rs             — SHUTDOWN / KILL_RESOURCES / KILL_RESOURCE and the
+                        keep-empty clear (`phux kill`); selector resolution
+                        and the whole-session-vs-per-pane choice stay CLI-side
+  session.rs          — session-identity L3 writes: `rename` (`phux
+                        rename`), whose request id is now a caller parameter
+                        rather than hardcoded inside the write (the CLI
+                        still passes a fixed id today; this only matters
+                        once a caller composes more than one rename per
+                        connection), and create-without-attach (`phux
+                        new`/`phux new --json`/`--empty`), including the
+                        atomic-agent-session-restore capability preflight;
+                        duplicate-name rejection and CLI wording stay in
+                        `crates/phux/src/commands/new.rs`
+  signal.rs           — ACQUIRE_INPUT / RELEASE_INPUT / SIGNAL_TERMINAL
+                        command builders and their shared outcome
+                        (`phux take` / `phux give` / `phux signal`, ADR-0033)
+  spawn.rs            — SPAWN_RESOURCE, and the ownership-verify +
+                        KILL_RESOURCE rollback dance behind explicit
+                        placement (`phux spawn`, `phux launch`)
+  tags.rs             — phux.tags/v1 read/write (`phux tag`, ADR-0027)
   state.rs            — GET_STATE / GET_PERF reads and the degradation notices
   testkit.rs          — the one scripted server every client-side test
                         speaks to (feature `testkit`; phux-tui, phux-mcp,
@@ -500,7 +535,13 @@ rather than a layer with its own internal architecture worth diagramming:
   (`phux_client_list_directory`, `phux_client_directory_*`). Its `log`
   module installs the bridge's one `tracing` subscriber on standard error
   (`phux_client_log_init`), so an embedder that redirects descriptor 2 to a
-  file gets the tunnel's lifecycle beside its own lines.
+  file gets the tunnel's lifecycle beside its own lines. The bridge
+  subscribes to the connection-wide `AgentEvent` stream on every
+  `ATTACH_READY` (as a `KernelSend::SubscribeEvents` effect the kernel
+  itself emits, `phux-client-core` having no transport of its own to send
+  one from) and folds cwd/command-boundary/process-exit events into
+  `PHUX_CLIENT_STATUS_CWD` / `_COMMAND_STARTED` / `_COMMAND_FINISHED` /
+  `_EXITED` effects (PHA-406/PHA-284; `include/phux/client.h`).
 - **`phux-crash`** — vendored fatal-signal handler (see its NOTICE; the one
   Apache-2.0-only crate in the workspace). SIGSEGV/SIGBUS/SIGABRT do not
   unwind, so neither `RawModeGuard::drop` nor the panic hook runs; this

@@ -175,8 +175,12 @@ hex = "0.4"
 # relies on. The generating itself is now phux-dial's (`provision` feature,
 # shared with phux-relay); what still needs the crate named here is
 # `TlsError::Rcgen`, which carries `rcgen::Error` in the public error surface.
-# Same version/features phux-dial declares, so it is the same type.
-rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
+# Same version as phux-dial declares, so it is the same type. `x509-parser`
+# (already a direct dependency below, and already enabled on rcgen elsewhere
+# in the workspace, so Cargo.lock gains no row) adds the signature-verifying
+# CSR parser and `Issuer::from_ca_cert_der` that `phux workload add-key`
+# needs to certify a workload's key under the persisted CA.
+rcgen = { version = "0.14", default-features = false, features = ["ring", "pem", "x509-parser"] }
 # Extract the SubjectPublicKeyInfo from a verified mTLS leaf so the transport
 # can map it to the workload registry's public-key-derived credential id.
 x509-parser = "0.18"

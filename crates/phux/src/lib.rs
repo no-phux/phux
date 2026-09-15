@@ -61,6 +61,7 @@ mod companion;
 mod deprecations;
 mod environment;
 mod exit_codes;
+mod feature_names;
 mod refdocs;
 mod selector;
 mod skill;
@@ -416,6 +417,57 @@ fn removed_spelling_hint(
     }
 }
 
+/// Whether a `phux workload` invocation carries PEM or private-key material
+/// in the words before any `--`. Only that verb is refused up front: it is
+/// the one that handles key material, while other verbs legitimately carry
+/// text that looks like it (input for a pane, a secret scanner's pattern).
+fn workload_argv_carries_key_material(argv: &[std::ffi::OsString]) -> bool {
+    let words: Vec<std::borrow::Cow<'_, str>> = argv
+        .iter()
+        .take_while(|word| word.as_os_str() != "--")
+        .map(|word| word.to_string_lossy())
+        .collect();
+    let workload = words
+        .iter()
+        .find(|word| !word.starts_with('-'))
+        .is_some_and(|verb| verb == "workload");
+    workload
+        && words
+            .iter()
+            .any(|word| word.contains("-----BEGIN") || word.contains("PRIVATE KEY"))
+}
+
+/// Shortest run of base64-alphabet characters [`redact_long_base64`] hides.
+const REDACT_MIN_RUN: usize = 40;
+
+/// Replace every run of [`REDACT_MIN_RUN`] or more characters of the base64
+/// or base64url alphabet with `<redacted>`. usage-rs quotes the word it
+/// refused, and a bare base64 line of a key, or a base64url secret such as a
+/// JWK `d`, carries no PEM marker to catch (`workload-auth.md` §8).
+fn redact_long_base64(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut run = String::new();
+    for c in text.chars() {
+        if c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '-' | '_') {
+            run.push(c);
+        } else {
+            flush_base64_run(&mut out, &mut run);
+            out.push(c);
+        }
+    }
+    flush_base64_run(&mut out, &mut run);
+    out
+}
+
+fn flush_base64_run(out: &mut String, run: &mut String) {
+    if run.len() >= REDACT_MIN_RUN {
+        out.push_str("<redacted>");
+    } else {
+        out.push_str(run);
+    }
+    run.clear();
+}
+
 fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_, '_>) -> ExitCode {
     let words: Vec<String> = argv
         .iter()
@@ -433,7 +485,10 @@ fn report_parse_error(argv: &[&std::ffi::OsStr], err: usage::Error<'_, '_>) -> E
             ExitCode::SUCCESS
         }
         err => {
-            eprint!("{}", usage::render_failure(Cli::spec(), argv, &err));
+            eprint!(
+                "{}",
+                redact_long_base64(&usage::render_failure(Cli::spec(), argv, &err))
+            );
             if let Some(flag) = misplaced_scoped_flag(&err) {
                 eprintln!(
                     "hint: `{flag}` is set per verb, not on `phux` itself; place it after the verb: `phux <verb> {flag} ...`"
@@ -1327,6 +1382,7 @@ fn dispatch(
             json,
             migrate_legacy,
         }) => commands::pair::run_pair(action, tokens, cert, qr, host, name, json, migrate_legacy),
+        Some(Command::Workload { action, json }) => commands::workload::run(action, json),
         Some(Command::Completion { shell }) => commands::completion::run_completion(shell.into()),
         // Returned above, before process-global setup.
         Some(Command::Mcp { .. }) => ExitCode::FAILURE,
@@ -1355,6 +1411,20 @@ fn dispatch(
 #[must_use]
 pub fn run() -> ExitCode {
     let raw: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    // Key material never belongs on a `phux workload` command line, and argv
+    // is echoed in too many places (parse errors, paths in messages) to scrub
+    // each one, so that verb is refused before anything parses or dispatches
+    // (`workload-auth.md` §8). Other verbs keep their text: a pane's input or
+    // a secret scanner's pattern may legitimately look like key material.
+    if workload_argv_carries_key_material(&raw[1..]) {
+        eprintln!(
+            "phux: the command line was refused and is not echoed, because it appears to contain key material"
+        );
+        eprintln!(
+            "hint: pass certificates and CSRs on stdin or with --file, and keep private keys out of arguments entirely"
+        );
+        return ExitCode::from(2);
+    }
     if let Some(code) = preparse_endpoint(&raw[1..]) {
         return code;
     }
@@ -1453,6 +1523,61 @@ mod tests {
 
     fn argv(words: &[&str]) -> Vec<std::ffi::OsString> {
         words.iter().map(std::ffi::OsString::from).collect()
+    }
+
+    /// The up-front refusal is the `workload` verb's alone, and only before
+    /// `--`: other verbs carry key-looking text for panes and scanners.
+    #[test]
+    fn only_the_workload_verb_refuses_key_material_before_the_separator() {
+        let key = "-----BEGIN PRIVATE KEY-----\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg\n-----END PRIVATE KEY-----";
+        let cert_out = format!("--cert-out={key}");
+        assert!(super::workload_argv_carries_key_material(&argv(&[
+            "workload",
+            "add-key",
+            "--scope",
+            "observe@global",
+            &cert_out,
+        ])));
+        for passes in [
+            vec!["run", "--", "grep", "PRIVATE KEY", "/dev/null"],
+            vec!["send-keys", "%1", key],
+            vec!["send-keys", "%1", "workload", key],
+            vec!["workload", "add-key", "--", key],
+        ] {
+            assert!(
+                !super::workload_argv_carries_key_material(&argv(&passes)),
+                "{passes:?}"
+            );
+        }
+        let secret = "kG-fUyzXcIZ2qVoMkH7Se-XnBIgz8qr4is4e0PFiWQ0";
+        let redacted = super::redact_long_base64(&format!("error: unexpected argument '{secret}'"));
+        assert_eq!(redacted, "error: unexpected argument '<redacted>'");
+    }
+
+    /// Key material on a command line is caught by its PEM markers before
+    /// anything parses, and a bare base64 line is redacted from usage errors
+    /// without mangling the usage text around it.
+    #[test]
+    fn key_material_is_caught_on_argv_and_redacted_from_usage_errors() {
+        assert!(super::workload_argv_carries_key_material(&argv(&[
+            "workload",
+            "add-key",
+            "--cert-out=-----BEGIN EC PRIVATE KEY-----",
+        ])));
+        assert!(!super::workload_argv_carries_key_material(&argv(&[
+            "run", "--", "grep", "-r", "BEGIN",
+        ])));
+        let line = "MHcCAQEEIBDpHVEl6z9Z0t6xw5Vg3F1wVZ3n7xHqAoGCCqGSM49AwEHoUQDQgAE";
+        let rendered = format!(
+            "error: unexpected argument '{line}'\nUsage: phux workload add-key --scope <VERBS@SELECTOR>"
+        );
+        let redacted = super::redact_long_base64(&rendered);
+        assert!(!redacted.contains(line), "{redacted}");
+        assert!(redacted.contains("'<redacted>'"), "{redacted}");
+        assert!(
+            redacted.contains("phux workload add-key --scope <VERBS@SELECTOR>"),
+            "{redacted}"
+        );
     }
 
     /// `phux help <verb...>` becomes `phux <verb...> --help`; a bare `help`

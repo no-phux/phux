@@ -94,6 +94,10 @@ pub(crate) mod codes {
     /// A git workspace/worktree operation failed (not a repository, git
     /// itself failed, or its output did not parse).
     pub(crate) const WORKSPACE: &str = "workspace";
+    /// A `phux workload` operation failed: the workload CA or registry could
+    /// not be read, validated, or written, or enrollment material, a scope,
+    /// an expiry, or a credential id was refused.
+    pub(crate) const WORKLOAD: &str = "workload";
     /// `config check` could not run at all: the file was unreadable or the
     /// TOML did not parse. Exit 2, mirroring the prose path's distinct
     /// "could not check" status.

@@ -462,6 +462,58 @@ mod tests {
         );
     }
 
+    /// Every key `handle_set_metadata` intercepts has its own entry in the
+    /// workload-auth catalog (ADR-0125), and the classifier puts a write of
+    /// it on one of that entry's rows; every key `reject_set_metadata`
+    /// refuses is denied. Wiring the classifier into dispatch then cannot
+    /// leave an intercepted write on a row nobody chose for it. A new
+    /// `ServerInterceptedKey` variant fails the match below until it is
+    /// listed here.
+    #[test]
+    fn every_intercepted_key_has_a_catalog_classification() {
+        use phux_protocol::kinds::{self, Carrier, Classification};
+        use phux_protocol::wire::frame::{
+            FrameKind, RESOURCE_PANE_OCCUPANT_KEY, SESSION_CREATE_KEY,
+            SESSION_CREATE_RESULT_KEY_PREFIX, Scope, WHOAMI_KEY,
+        };
+
+        let set = |key: &str| FrameKind::SetMetadata {
+            request_id: 1,
+            scope: Scope::Global,
+            key: key.to_owned(),
+            value: b"x".to_vec(),
+        };
+        let intercepted = [
+            ServerInterceptedKey::SessionName,
+            ServerInterceptedKey::SessionKeepEmpty,
+        ]
+        .map(|key| match key {
+            ServerInterceptedKey::SessionName | ServerInterceptedKey::SessionKeepEmpty => {
+                key.as_str()
+            }
+        });
+        for key in intercepted.into_iter().chain([SESSION_CREATE_KEY]) {
+            let method = kinds::method_named(key);
+            assert!(method.is_some(), "{key} has no catalog entry");
+            let method = method.unwrap_or_else(|| unreachable!());
+            assert_eq!(method.carrier, Carrier::Metadata(key));
+            let rule = kinds::frame_rule(&set(key));
+            assert!(
+                method.rules.iter().any(|row| std::ptr::eq(*row, rule)),
+                "{key}: a Global SET lands on `{}`, which its entry does not name",
+                rule.case
+            );
+        }
+        let result = format!("{SESSION_CREATE_RESULT_KEY_PREFIX}token");
+        for key in [RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY, result.as_str()] {
+            assert_eq!(
+                kinds::classify_frame(&set(key)),
+                Classification::Deny,
+                "{key}"
+            );
+        }
+    }
+
     /// Filling a client to the cap succeeds on every distinct key; the
     /// `MAX_SUBSCRIPTIONS_PER_CLIENT + 1`th distinct key is refused, and the
     /// refusal does not mutate the store — the count stays pinned at the

@@ -1,6 +1,5 @@
 use std::process::ExitCode;
 
-use phux_protocol::wire::frame::{FrameKind, SESSION_NAME_KEY, Scope};
 use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::commands::partial;
@@ -11,10 +10,10 @@ use crate::commands::server_target::ServerSpec;
 /// Since the v0.3.0 "Option B" re-tier (ADR-0019 / ADR-0027) dissolved the
 /// L2 collection tier and removed the `RENAME_SESSION` verb, a rename is now
 /// expressed as an L3 `SET_METADATA` write of the conventional
-/// [`SESSION_NAME_KEY`] (`Scope::Global`, value `current\0new`). The server
-/// is authoritative — it intercepts that write and applies the registry
-/// rename, so attached clients reconcile the new name on their next
-/// snapshot.
+/// `SESSION_NAME_KEY` (`Scope::Global`, value `current\0new`) built by
+/// [`phux_client::session::rename`]. The server is authoritative — it
+/// intercepts that write and applies the registry rename, so attached
+/// clients reconcile the new name on their next snapshot.
 ///
 /// `SET_METADATA` is fire-and-forget (no reply frame), so existence and
 /// name-collision checks are done client-side against a fresh `GET_STATE`
@@ -65,7 +64,7 @@ pub(crate) fn run_rename(session: &str, new_name: &str, server: ServerSpec) -> E
             return ExitCode::from(2);
         }
 
-        if let Err(err) = conn.send(&rename_frame(session, new_name)).await {
+        if let Err(err) = phux_client::session::rename(&mut conn, 1, session, new_name).await {
             return target.report_unreachable(false, &err, "rename");
         }
 
@@ -103,26 +102,12 @@ fn has_session(snapshot: &SessionSnapshot, name: &str) -> bool {
     snapshot.sessions.iter().any(|s| s.name == name)
 }
 
-/// The conventional rename write: `current\0new` under [`SESSION_NAME_KEY`].
-fn rename_frame(session: &str, new_name: &str) -> FrameKind {
-    let mut value = session.as_bytes().to_vec();
-    value.push(0);
-    value.extend_from_slice(new_name.as_bytes());
-    FrameKind::SetMetadata {
-        request_id: 1,
-        scope: Scope::Global,
-        key: SESSION_NAME_KEY.to_owned(),
-        value,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use phux_protocol::wire::frame::{FrameKind, SESSION_NAME_KEY, Scope};
     use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
     use phux_protocol::{ResourceId, SessionId, WindowId};
 
-    use super::{rename_frame, rename_refusal};
+    use super::rename_refusal;
 
     fn snapshot(names: &[&str]) -> SessionSnapshot {
         SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1)).with_sessions(
@@ -150,18 +135,5 @@ mod tests {
         assert_eq!(rename_refusal(&snap, "work", "fresh"), None);
         // Renaming to the same name is not a collision with itself.
         assert_eq!(rename_refusal(&snap, "work", "work"), None);
-    }
-
-    #[test]
-    fn the_rename_write_is_current_nul_new_under_the_conventional_key() {
-        assert_eq!(
-            rename_frame("work", "play"),
-            FrameKind::SetMetadata {
-                request_id: 1,
-                scope: Scope::Global,
-                key: SESSION_NAME_KEY.to_owned(),
-                value: b"work\0play".to_vec(),
-            }
-        );
     }
 }

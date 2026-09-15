@@ -3,6 +3,7 @@
 use super::{EncodedInputRequest, TerminalActorError, WriteCompletion};
 use nix::sys::termios::{InputFlags, LocalFlags};
 use nix::unistd::{PathconfVar, fpathconf};
+use phux_core::process::ExitOutcome;
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
@@ -472,28 +473,118 @@ pub(crate) enum PtyEvent {
     Eof,
 }
 
-/// Map a `portable_pty::ExitStatus` into the `RESOURCE_CLOSED.exit_status`
-/// wire shape (phux-4li.11).
+/// Map a `portable_pty::ExitStatus` into an [`ExitOutcome`]: the exit code
+/// for `_exit(n)`, the signal number for a death by signal, neither when the
+/// cause is unknown (phux-4li.11, PHA-406).
 ///
-/// `Some(code)` for `_exit(n)`, `None` for signal-killed or
-/// unknown-cause exits. `portable_pty::ExitStatus` keeps its
-/// `signal: Option<String>` field private; the only way through the
-/// public surface to distinguish a signal-driven death from `_exit(1)`
-/// is the `Display` impl, which formats signal kills as
-/// `"Terminated by <name>"` and exits as `"Exited with code N"` /
-/// `"Success"`. Parsing the prefix is the stable contract; if upstream
-/// ever exposes `signal()` we can swap this for a structured probe
-/// without touching call sites.
-pub(crate) fn exit_status_to_wire(status: &portable_pty::ExitStatus) -> Option<i32> {
-    let rendered = status.to_string();
-    if rendered.starts_with("Terminated by") {
-        return None;
+/// Signal deaths used to be flattened to "no status" here, losing the one
+/// fact an agent needs to tell a crash from a clean exit. They are now kept:
+/// `RESOURCE_CLOSED.exit_status` still carries only [`ExitOutcome::status`],
+/// and the additive `RESOURCE_CLOSED.signal` field (4) carries the signal.
+///
+/// `portable_pty::ExitStatus::signal()` is a *name*, not a number: the
+/// `strsignal(3)` description for a `std`-spawned child ("Killed",
+/// "Killed: 9", ...) and `"signal N"` for an adopted one
+/// (`portable-pty-adopt`). [`signal_number`] maps both back.
+/// `exit_code()` is `u32`; it saturates at `i32::MAX` because the practical
+/// range is `0..=255`.
+pub(crate) fn exit_outcome(status: &portable_pty::ExitStatus) -> ExitOutcome {
+    status.signal().map_or_else(
+        || ExitOutcome::exited(i32::try_from(status.exit_code()).unwrap_or(i32::MAX)),
+        |name| ExitOutcome {
+            status: None,
+            signal: signal_number(name),
+        },
+    )
+}
+
+/// The signal number behind a `portable_pty` signal name, or `None` when the
+/// name is not a signal (`portable-pty-adopt`'s `ECHILD` sentinel) — never a
+/// guess.
+fn signal_number(name: &str) -> Option<i32> {
+    adopted_signal_number(name).or_else(|| {
+        strsignal_names()
+            .iter()
+            .find(|(described, _)| described == name)
+            .map(|(_, signal)| *signal)
+    })
+}
+
+/// `portable-pty-adopt` renders a signal death as `"signal N"`.
+fn adopted_signal_number(name: &str) -> Option<i32> {
+    name.strip_prefix("signal ")?.parse().ok()
+}
+
+/// The name `portable_pty` gives each signal number, built by running
+/// `portable_pty`'s own `From<std::process::ExitStatus>` over a synthetic
+/// "killed by signal N" wait status for every N. Inverting the library's
+/// conversion with the library's conversion guarantees the names match
+/// byte-for-byte on this platform, whatever `strsignal(3)` says here, with no
+/// FFI and no hand-kept table. Built once.
+fn strsignal_names() -> &'static [(String, i32)] {
+    use std::os::unix::process::ExitStatusExt;
+    /// Covers the classic signals and Linux's real-time range.
+    const HIGHEST_SIGNAL: i32 = 64;
+    static NAMES: std::sync::OnceLock<Vec<(String, i32)>> = std::sync::OnceLock::new();
+    NAMES.get_or_init(|| {
+        (1..=HIGHEST_SIGNAL)
+            .filter_map(|signal| {
+                // A raw wait status whose low seven bits are the signal
+                // number is "terminated by that signal" (WIFSIGNALED).
+                let status = std::process::ExitStatus::from_raw(signal);
+                let converted = portable_pty::ExitStatus::from(status);
+                converted.signal().map(|name| (name.to_owned(), signal))
+            })
+            .collect()
+    })
+}
+
+#[cfg(test)]
+mod exit_outcome_tests {
+    use std::os::unix::process::ExitStatusExt;
+
+    use super::{ExitOutcome, exit_outcome};
+
+    fn std_death_by(signal: i32) -> portable_pty::ExitStatus {
+        portable_pty::ExitStatus::from(std::process::ExitStatus::from_raw(signal))
     }
-    // Both "Success" (success() == true) and "Exited with code N" hit
-    // this branch. `exit_code()` returns u32 — coerce into i32 saturating
-    // at i32::MAX, since `RESOURCE_CLOSED.exit_status` is `Option<i32>`
-    // on the wire and the practical exit-code range is 0..=255.
-    Some(i32::try_from(status.exit_code()).unwrap_or(i32::MAX))
+
+    /// The flattening bug: a SIGKILL used to read as "no status", the same
+    /// as a daemonizer that never reaped. It is a signal, and says which.
+    #[test]
+    fn signal_death_is_reported_as_signal_not_none() {
+        assert_eq!(exit_outcome(&std_death_by(9)), ExitOutcome::signaled(9));
+        assert_eq!(exit_outcome(&std_death_by(15)), ExitOutcome::signaled(15));
+        // The adopted-child rendering maps back too.
+        assert_eq!(
+            exit_outcome(&portable_pty::ExitStatus::with_signal("signal 2")),
+            ExitOutcome::signaled(2)
+        );
+    }
+
+    #[test]
+    fn exit_codes_stay_codes() {
+        assert_eq!(
+            exit_outcome(&portable_pty::ExitStatus::with_exit_code(0)),
+            ExitOutcome::exited(0)
+        );
+        assert_eq!(
+            exit_outcome(&portable_pty::ExitStatus::with_exit_code(42)),
+            ExitOutcome::exited(42)
+        );
+    }
+
+    /// A name that is not a signal (the adopted child's `ECHILD` sentinel)
+    /// is unknown, never a fabricated code or signal.
+    #[test]
+    fn a_non_signal_name_is_unknown() {
+        assert_eq!(
+            exit_outcome(&portable_pty::ExitStatus::with_signal(
+                portable_pty_adopt::ECHILD_EXIT_SIGNAL_NAME
+            )),
+            ExitOutcome::UNKNOWN
+        );
+    }
 }
 
 /// Resolve the shell server-spawned panes run (phux-i0e8.4.1):

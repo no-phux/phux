@@ -51,10 +51,11 @@ use std::time::{Duration, Instant};
 use bytes::BytesMut;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
+use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::wire::frame::{
-    AttachTarget, CommandResult, DetachReason, FrameKind, TYPE_COMMAND_RESULT, TYPE_DETACHED,
-    TYPE_HELLO_OK, ViewportInfo,
+    AttachTarget, Command, CommandResult, CommandValue, DetachReason, FrameKind,
+    TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -420,6 +421,48 @@ pub async fn try_recv_typed(stream: &mut UnixStream) -> Option<(u8, FrameKind)> 
     let (frame, rest) = FrameKind::decode(&framed).expect("decode frame");
     assert!(rest.is_empty(), "decoder did not consume entire frame");
     Some((type_byte, frame))
+}
+
+/// Poll `GET_SCREEN` for `terminal_id` on `stream` until the server's own
+/// grid shows `needle`, or panic once `deadline` elapses.
+///
+/// This reads the pane actor's canonical `Terminal`, not any consumer's
+/// mirror, so it answers "has the pane *produced* this yet?" without reading
+/// from, or unblocking, a connection the test is deliberately stalling. Use a
+/// connection that carries no subscription, so no unsolicited output
+/// interleaves with the replies. `deadline` is a hang guard, not a timing
+/// assertion.
+pub async fn wait_for_server_screen_text(
+    stream: &mut UnixStream,
+    terminal_id: &ResourceId,
+    needle: &str,
+    deadline: Duration,
+) {
+    let start = Instant::now();
+    for request_id in 1.. {
+        assert!(
+            start.elapsed() < deadline,
+            "pane never showed {needle:?} within {deadline:?}",
+        );
+        send_frame(
+            stream,
+            &FrameKind::Command {
+                request_id,
+                command: Command::GetScreen {
+                    terminal_id: terminal_id.clone(),
+                    request_scrollback: None,
+                    cells: false,
+                },
+            },
+        )
+        .await;
+        match await_command_result(stream, request_id).await {
+            CommandResult::OkWith(CommandValue::Json(json)) if json.contains(needle) => return,
+            CommandResult::OkWith(CommandValue::Json(_)) => {}
+            other => panic!("GET_SCREEN failed: {other:?}"),
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// Encode a [`FrameKind`] into a length-prefixed wire buffer.

@@ -28,11 +28,22 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod agent_meta;
+// `phux.agent/v1` (ADR-0040) wire round trips: `phux agent set` / `clear`,
+// and the per-pane index `phux agent ls` and friends fetch. The record type
+// and its encode/parse convention live in `agent_meta`.
+pub mod agent_record;
 // The AgentSession resource: open/close/emit/log over the wire verbs the
 // server already has (ADR-0103). Sits beside `agent_wait` and above
 // `attach::connection`; the selector's `%name` production caller lives in
 // `selector` and reaches sessions through `resource`.
 pub mod agent_session;
+// Provider-native agent-session provenance (`phux.agent-session/v1`): the
+// `AgentSessionRecord` type and the wire work behind `phux spawn` / `phux
+// launch`'s optional native-session restore. Distinct from both
+// `agent_meta`/`agent_record` (a different, human-declared record) and
+// `agent_session` above (a different, server-tracked resource kind) despite
+// the similar names — see this module's doc comment.
+pub mod agent_session_record;
 // Acknowledged, idempotent input delivery to an agent (ADR-0053, ADR-0076
 // points 1-4/6/7). Sits above `attach::connection` and beside `agent_wait`,
 // whose `EdgeTracker` predicate it reuses rather than re-deriving: `prompt
@@ -52,7 +63,14 @@ pub mod attach;
 // request wrapper over `attach::connection`.
 pub mod conditional_kill;
 pub mod deadline;
+// `DETACH_CLIENTS` (`phux detach`): force-detaching clients from outside the
+// attach UI, distinct from the sending connection's own `FrameKind::Detach`.
+pub mod detach;
 pub mod explain;
+// `SHUTDOWN` / `KILL_RESOURCES` / `KILL_RESOURCE` / the keep-empty clear
+// (`phux kill`). Selector resolution and the whole-session-vs-per-pane
+// choice stay in the CLI; this module owns the wire round trips.
+pub mod kill;
 pub mod layout_ops;
 pub mod pane_move;
 pub mod perf;
@@ -64,8 +82,21 @@ pub mod resource;
 pub mod run;
 pub mod selector;
 pub mod send_keys;
+// Session-identity writes over L3 (`phux rename` today; ADR-0022 §5).
+pub mod session;
+// `ACQUIRE_INPUT` / `RELEASE_INPUT` / `SIGNAL_TERMINAL` command builders and
+// their shared outcome (`phux take` / `phux give` / `phux signal`, ADR-0033).
+pub mod signal;
 pub mod snapshot;
+// `SPAWN_RESOURCE` and the ownership-verify + `KILL_RESOURCE` rollback dance
+// behind explicit placement (`phux spawn`, `phux launch`).
+pub mod spawn;
 pub mod state;
+// `phux.tags/v1` read/write (`phux tag`, ADR-0027).
+pub mod tags;
+// `UPGRADE` (`phux upgrade`, ADR-0032): ask the server to graceful-upgrade
+// itself in place.
+pub mod upgrade;
 // The one scripted server every client-side test speaks to (phux-h5hj.3).
 // Compiled for this crate's own unit tests, and behind the `testkit` feature
 // for the downstream crates (`phux-mcp`, the `phux` binary) whose unit tests

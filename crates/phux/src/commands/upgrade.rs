@@ -2,30 +2,20 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use phux_client::attach::AttachError;
-use phux_client::attach::connection::Connection;
-use phux_protocol::wire::frame::{Command as WireCommand, CommandResult};
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, command_on, report_no_server};
+use crate::commands::server_target::ServerTarget;
+use crate::commands::{cli_runtime, report_no_server, warn_interleaved_degradation};
 
 /// What a server said when asked to graceful-upgrade.
 ///
-/// Extracted from [`run_upgrade`] so `phux update` can drive the same
-/// primitive after it has put a new binary on disk, without duplicating the
-/// wire round-trip or the "a disconnect right after the ack is success"
-/// subtlety. `phux upgrade` remains the low-level verb: it re-execs whatever
-/// is already on disk and discovers, downloads, and verifies nothing.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum UpgradeAck {
-    /// The server acked (or blinked) and is re-execing; panes survive.
-    Upgrading,
-    /// The server refused, with its reason.
-    Refused(String),
-    /// The server answered with a frame `upgrade` does not expect. Kept
-    /// apart from [`Self::Refused`] so the two keep the distinct wording
-    /// they have always had.
-    Unexpected(String),
-}
+/// Re-exported from [`phux_client::upgrade`] (the wire round trip) so `phux
+/// update` can drive the same primitive after it has put a new binary on
+/// disk, without duplicating the "a disconnect right after the ack is
+/// success" subtlety. `phux upgrade` remains the low-level verb: it re-execs
+/// whatever is already on disk and discovers, downloads, and verifies
+/// nothing.
+pub(crate) use phux_client::upgrade::UpgradeAck;
 
 /// Ask the server at `socket_path` to graceful-upgrade in place.
 ///
@@ -40,16 +30,16 @@ pub(crate) fn request_upgrade(socket_path: &Path) -> Result<UpgradeAck, AttachEr
     };
 
     rt.block_on(async move {
-        let mut conn = Connection::connect(socket_path).await?;
-        match command_on(&mut conn, 0, WireCommand::Upgrade).await {
-            // `Ok` is the pre-exec ack. A `Disconnected` immediately after is
-            // the expected blink as the old image is replaced — both mean the
+        let mut conn = ServerTarget::local(socket_path).connect().await?;
+        match phux_client::upgrade::upgrade(&mut conn, 0).await {
+            // The pre-exec ack. A `Disconnected` immediately after is the
+            // expected blink as the old image is replaced — both mean the
             // upgrade is under way.
-            Ok(CommandResult::Ok) | Err(AttachError::Disconnected) => Ok(UpgradeAck::Upgrading),
-            Ok(CommandResult::Error { message, .. }) => Ok(UpgradeAck::Refused(message)),
-            Ok(other) => Ok(UpgradeAck::Unexpected(
-                phux_client::explain::explain_unexpected("upgrade", &other),
-            )),
+            Ok((ack, degradation)) => {
+                warn_interleaved_degradation(&degradation);
+                Ok(ack)
+            }
+            Err(AttachError::Disconnected) => Ok(UpgradeAck::Upgrading),
             Err(err) => Err(err),
         }
     })

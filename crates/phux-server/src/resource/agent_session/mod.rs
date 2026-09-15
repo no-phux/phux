@@ -134,8 +134,9 @@ pub struct AgentSessionBundle {
     pub actor: AgentSessionActor,
     /// Cross-task handle registered in the resource table.
     pub handle: ResourceHandle,
-    /// Fires when the engine's run loop ends.
-    pub exit_notify: oneshot::Receiver<Option<i32>>,
+    /// Fires when the engine's run loop ends. A session has no process, so
+    /// the outcome is always unknown.
+    pub exit_notify: oneshot::Receiver<phux_core::process::ExitOutcome>,
 }
 
 /// The producer-fed agent-session engine.
@@ -267,7 +268,8 @@ impl AgentSessionActor {
                 }
             }
         }
-        self.core.notify_exit(None);
+        self.core
+            .notify_exit(phux_core::process::ExitOutcome::UNKNOWN);
     }
 
     /// The current bootstrap cut: the retained ring plus the sequence it

@@ -18,7 +18,7 @@
 //! the resync it just asked for gets overwritten before it arrives.
 //!
 //! This test drives the production `handle_client` loop over the real wire with
-//! a deliberately slow consumer, forces the lag, and asserts the two things
+//! a deliberately stalled consumer, forces the lag, and asserts the two things
 //! that separate "recovers" from "never comes back":
 //!
 //! * every `RESOURCE_OUTPUT` it receives is exactly the next `seq` its
@@ -26,6 +26,13 @@
 //!   so "no gap here" means "the real client would not have detached"; and
 //! * it ends up holding the pane's *current* screen, reached through a
 //!   replacement generation rather than a stale one.
+//!
+//! The lag is driven, not timed (phux-8kpb): the pane dumps only once the test
+//! opens a gate, the test reads nothing until the server's own grid shows the
+//! dump's last line, and the ring is shrunk to [`TEST_OUTPUT_BROADCAST`] slots,
+//! so the stalled pump has certainly been lapped. The pane then stays alive
+//! and quiet, so the resync is always answered and never overwritten. See
+//! `lagged_attach_terminal_resync.rs` for the race the timed shape had.
 //!
 //! Before the fix this fails on the first assertion, seconds into the drain.
 
@@ -35,6 +42,7 @@
 #![allow(clippy::doc_markdown, reason = "tests")]
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
@@ -42,7 +50,7 @@ use phux_protocol::wire::frame::FrameKind;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    spawn_server_with_seed_cmd, wait_for_server_screen_text, wait_for_socket,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -52,26 +60,34 @@ use tempfile::TempDir;
 /// current screen" an assertion rather than a hope.
 const TAIL_MARKER: &str = "LAGTEST_DONE";
 
-/// The seed pane's workload: paced bursts, so output is still flowing after
-/// the stall below on any machine this suite runs on. Each burst is ~0.7 MB,
-/// well past the 256-frame broadcast window, and the pacing keeps the whole
-/// run around six seconds instead of finishing before the consumer stalls.
-const BURST_CMD: &str = "for i in 1 2 3 4 5 6; do seq 1 100000; sleep 0.5; done; echo LAGTEST_DONE";
+/// Lines the pane dumps once the gate opens: ~6.9 MB, several times what the
+/// stalled consumer's mailbox, writer batch and socket buffers can hold.
+const DUMP_LINES: u32 = 1_000_000;
 
-/// How long the consumer reads nothing at all. Megabytes are produced over
-/// this window while the per-client mailbox (8 frames) and the socket buffer
-/// are both full, which is what pushes the pump off the broadcast.
-const STALL: Duration = Duration::from_secs(2);
+/// Broadcast ring used by this test, so the dump laps the stalled pump however
+/// the reader coalesces it. Production stays at 256.
+const TEST_OUTPUT_BROADCAST: usize = 4;
 
-/// Ceiling on the post-stall drain. Generous on purpose: the assertion is that
-/// the consumer converges at all, never how fast.
-const CONVERGE_DEADLINE: Duration = Duration::from_secs(90);
+/// Bound on each event-driven wait below. A hang guard, never a timing
+/// assertion: every wait ends on a specific frame or screen state.
+const HANG_GUARD: Duration = Duration::from_secs(60);
 
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
 
 /// Identity of one bootstrap generation on the wire.
 type Generation = (ResourceId, StreamId, BootstrapId);
+
+/// The seed pane's workload: wait for `gate`, dump, print the marker, then
+/// stay alive. A pane that exited would be reaped — taking the session, and
+/// any resync still owed to a fenced pump, with it.
+fn burst_cmd(gate: &Path) -> String {
+    format!(
+        "while [ ! -e '{}' ]; do sleep 0.02; done; seq 1 {DUMP_LINES}; \
+         echo {TAIL_MARKER}; exec sleep 3600",
+        gate.display(),
+    )
+}
 
 /// Per-generation live-sequence expectation, mirroring the client kernel's
 /// `expect_next_seq`: a bootstrap sets the base, and every subsequent
@@ -80,10 +96,14 @@ type Generation = (ResourceId, StreamId, BootstrapId);
 struct SequenceOracle {
     next: HashMap<Generation, u64>,
     generations: usize,
+    /// The pane the most recent bootstrap opened, so the test can ask the
+    /// server for that pane's own screen.
+    pane: Option<ResourceId>,
 }
 
 impl SequenceOracle {
     fn open(&mut self, key: Generation, base_seq: u64) {
+        self.pane = Some(key.0.clone());
         self.next.insert(key, base_seq.saturating_add(1));
         self.generations += 1;
     }
@@ -152,11 +172,13 @@ fn apply(frame: &FrameKind, oracle: &mut SequenceOracle, screen: &mut Screen) ->
 
 #[test]
 fn lagged_consumer_converges_on_a_replacement_generation() {
+    phux_server::resource::set_output_broadcast_capacity_for_test(TEST_OUTPUT_BROADCAST);
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
+        let gate = tmp.path().join("dump.gate");
         let mut cmd = CommandBuilder::new("/bin/sh");
-        cmd.args(["-c", BURST_CMD]);
+        cmd.args(["-c", &burst_cmd(&gate)]);
         let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "lag", cmd);
 
         let mut stream = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
@@ -175,10 +197,19 @@ fn lagged_consumer_converges_on_a_replacement_generation() {
                 break;
             }
         }
+        let pane = oracle
+            .pane
+            .clone()
+            .expect("the opening bootstrap names its pane");
 
-        // The stall. Nothing is read from the socket, so the writer task
-        // blocks, the mailbox fills, and the pump falls off the broadcast.
-        tokio::time::sleep(STALL).await;
+        // The stall, driven rather than timed. Nothing is read from the
+        // attached socket until the pane's server-side grid shows the end of
+        // the dump, so the writer blocks, the mailbox fills, and the rest of
+        // the dump laps the ring. The probe carries no subscription, so
+        // polling it unblocks nothing.
+        let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        std::fs::write(&gate, b"").expect("open the dump gate");
+        wait_for_server_screen_text(&mut probe, &pane, TAIL_MARKER, HANG_GUARD).await;
 
         // Resume and drain until the pane's last line is on screen. Every
         // frame is checked on the way through, so a single gapped `seq` fails
@@ -186,7 +217,7 @@ fn lagged_consumer_converges_on_a_replacement_generation() {
         let started = Instant::now();
         loop {
             assert!(
-                started.elapsed() < CONVERGE_DEADLINE,
+                started.elapsed() < HANG_GUARD,
                 "consumer never converged after the broadcast gap",
             );
             let (_, frame) = recv_typed(&mut stream).await;
@@ -206,6 +237,7 @@ fn lagged_consumer_converges_on_a_replacement_generation() {
             "consumer converged without ever taking a broadcast gap",
         );
 
+        drop(probe);
         drop(stream);
         let _ = shutdown.send(());
         let _ = server.await;

@@ -77,17 +77,42 @@ pub const DocumentSpace = provider.DocumentSpace;
 pub const DocumentPoint = provider.DocumentPoint;
 pub const Anchor = struct { opaque_id: u64 = 0 };
 pub const SearchResult = struct { start: Anchor, end: Anchor };
-pub const NoticeKind = enum { status, job };
+/// The PhuxClientCloseReason an EXITED status carries in `status_code`,
+/// sourced from client.h. Open: an unrecognised reason is not an end.
+pub const CloseReason = enum(u32) {
+    exited = c.PHUX_CLIENT_CLOSE_EXITED,
+    killed = c.PHUX_CLIENT_CLOSE_KILLED,
+    parent_closed = c.PHUX_CLIENT_CLOSE_PARENT_CLOSED,
+    server_shutdown = c.PHUX_CLIENT_CLOSE_SERVER_SHUTDOWN,
+    unknown = c.PHUX_CLIENT_CLOSE_UNKNOWN,
+    _,
+
+    /// Cockpit's rule: a shell that ENDED closes its pane. A parent or server
+    /// teardown, or an unstated cause, is not an end the pane can report.
+    pub fn endsShell(reason: CloseReason) bool {
+        return reason == .exited or reason == .killed;
+    }
+};
+/// A status the engine consumes, queued in the bounded ring: a bell, or a
+/// long command finishing. An ended shell never rides here (see Host.ended).
 pub const Notice = struct {
-    kind: NoticeKind,
     detail: u32,
     status_code: u32,
     terminal_ref: provider.TerminalRef,
+    /// The replica generation the notice is fenced by. For COMMAND_FINISHED,
+    /// whose stream/bootstrap slots carry its payload, this is the terminal's
+    /// own replica generation.
     generation: provider.Generation,
     bytes: []u8,
+    /// COMMAND_FINISHED's shell exit code; null when the shell reported none.
+    value: ?i32 = null,
 
     pub fn isBell(notice: Notice) bool {
-        return notice.kind == .status and notice.detail == c.PHUX_CLIENT_STATUS_BELL;
+        return notice.detail == c.PHUX_CLIENT_STATUS_BELL;
+    }
+
+    pub fn isCommandFinished(notice: Notice) bool {
+        return notice.detail == c.PHUX_CLIENT_STATUS_COMMAND_FINISHED;
     }
 };
 pub const SessionSummary = struct {
@@ -123,6 +148,34 @@ const CanvasStore = presentation_module.CanvasStore;
 pub const ColorPolicy = @import("grid_metadata.zig").Policy;
 pub const FrozenPresentation = @import("frozen_presentation.zig").FrozenPresentation;
 
+/// What the OSC-133 command boundaries last said about a terminal. Unknown
+/// until the first boundary arrives, and again after a disconnect that may
+/// have missed one.
+const CommandState = enum { unknown, running, at_prompt };
+
+/// A working directory longer than this clears the stored one rather than
+/// being refused: an unrenderable path is an unknown one, not a reason to
+/// disconnect, and keeping the previous directory would name the tab wrong.
+const max_cwd_bytes: usize = 4096;
+
+/// A finished command raises a notification only if it ran at least this
+/// long, measured from this client's receipt of its COMMAND_STARTED. Shorter
+/// commands are the ordinary rhythm of a shell, not something to announce.
+pub const min_command_notice_ns: u64 = 10 * std.time.ns_per_s;
+
+/// The host's clock: monotonic, or 0 if the platform clock is unavailable,
+/// which reads every command as instant and so announces none.
+fn monotonicNanos() u64 {
+    var value: std.posix.timespec = undefined;
+    if (std.posix.errno(std.posix.system.clock_gettime(.MONOTONIC, &value)) != .SUCCESS) return 0;
+    return @as(u64, @intCast(value.sec)) * std.time.ns_per_s + @as(u64, @intCast(value.nsec));
+}
+
+fn ranLongEnough(started: ?u64, now: u64) bool {
+    const from = started orelse return false;
+    return now -| from >= min_command_notice_ns;
+}
+
 const Terminal = struct {
     measured_cell: ?provider.MeasuredCell = null,
     id: RemoteId,
@@ -151,11 +204,22 @@ const Terminal = struct {
     /// The coordinator this replica belongs to (`Host.provider_id` when it
     /// was admitted): part of every ref and owner it publishes.
     provider_id: provider.ProviderId = .phux,
+    /// The last PHUX_CLIENT_STATUS_CWD. Empty until the shell reports one;
+    /// a missing report (a hub that does not relay satellite events) is
+    /// "unknown", never an error.
+    cwd: std.ArrayListUnmanaged(u8) = .empty,
+    command: CommandState = .unknown,
+    /// Host clock at this command's COMMAND_STARTED; null when none was seen.
+    command_started_ns: ?u64 = null,
+    /// The bell's latch for command completions: one notification per
+    /// replica until the terminal is attended or the app regains focus.
+    command_owner: ?provider.ReplicaOwner = null,
 
     fn deinit(terminal: *Terminal, gpa: std.mem.Allocator) void {
         terminal.canvas.deinit(gpa);
         terminal.title.deinit(gpa);
         terminal.pending_title.deinit(gpa);
+        terminal.cwd.deinit(gpa);
     }
 
     fn terminalRef(terminal: *const Terminal) provider.TerminalRef {
@@ -174,6 +238,7 @@ const Terminal = struct {
             .owner = terminal.owner(),
             .phase = terminal.phase,
             .title = terminal.title.items,
+            .cwd = terminal.cwd.items,
             .cols = terminal.cols,
             .rows = terminal.rows,
             .history_total_rows = terminal.history_total_rows,
@@ -191,7 +256,15 @@ fn markGridDirty(terminal: *Terminal, attached: bool) void {
     terminal.dirty = true;
     terminal.seen_in_attach = true;
     terminal.remove_at_barrier = false;
-    if (attached and terminal.published) terminal.phase = .frozen;
+    // An ended shell stays ended; late output is not a restart.
+    if (attached and terminal.published and terminal.phase != .ended) terminal.phase = .frozen;
+}
+
+/// client.h's Option<int32_t> convention: stream_id is 1 when a value is
+/// present, and bootstrap_id holds its bit pattern.
+fn statusValue(effect: *const c.PhuxClientEffect) ?i32 {
+    if (effect.stream_id != 1) return null;
+    return @bitCast(@as(u32, @truncate(effect.bootstrap_id)));
 }
 
 fn publishTitle(terminal: *Terminal) void {
@@ -215,6 +288,12 @@ pub const Host = struct {
     search_results: std.ArrayListUnmanaged(SearchResult) = .empty,
     search_owner: ?provider.ReplicaOwner = null,
     notices: std.ArrayListUnmanaged(Notice) = .empty,
+    /// Terminals whose shell ENDED (EXITED with an ending reason), in arrival
+    /// order, until the engine takes them. Deliberately not the bounded
+    /// notice ring: no burst of other statuses may evict an ended shell.
+    ended: std.ArrayListUnmanaged(provider.TerminalRef) = .empty,
+    /// Injectable for tests; production reads the monotonic clock.
+    now_ns: *const fn () u64 = &monotonicNanos,
     attach_barrier_seen: bool = false,
     client_generation: u64 = 1,
     operation_ledger: operations.Ledger(max_terminals) = .{},
@@ -286,6 +365,7 @@ pub const Host = struct {
         host.sessions.deinit(host.gpa);
         for (host.notices.items) |notice| host.gpa.free(notice.bytes);
         host.notices.deinit(host.gpa);
+        host.ended.deinit(host.gpa);
         host.search_results.deinit(host.gpa);
         c.phux_client_free(host.client);
         host.gpa.destroy(host);
@@ -782,6 +862,7 @@ pub const Host = struct {
         for (host.terminals.items) |*terminal| terminal.deinit(host.gpa);
         host.terminals.items.len = 0;
         host.agents.clear(host.gpa);
+        host.ended.clearRetainingCapacity();
         host.workspace_store.deinit(host.gpa);
         host.workspace_changed = true;
     }
@@ -1214,6 +1295,14 @@ pub const Host = struct {
         return terminal.phase;
     }
 
+    /// The remote answer to `atPrompt()`: true after a COMMAND_FINISHED until
+    /// the next COMMAND_STARTED. False until the first boundary, the same
+    /// honest "unknown" the local emulator gives a shell without prompt marks.
+    pub fn atPrompt(host: *const Host, ref: provider.TerminalRef) bool {
+        const terminal = host.findTerminalConst(ref) orelse return false;
+        return terminal.command == .at_prompt;
+    }
+
     pub fn bellRung(host: *const Host, ref: provider.TerminalRef) bool {
         const terminal = host.findTerminalConst(ref) orelse return false;
         const owner_value = terminal.bell_owner orelse return false;
@@ -1232,6 +1321,30 @@ pub const Host = struct {
     pub fn acknowledgeBell(host: *Host, ref: provider.TerminalRef) void {
         const terminal = host.findTerminal(ref) orelse return;
         terminal.bell_owner = null;
+    }
+
+    /// Latch one command-finished notification per current replica, the
+    /// bell's rule: false while an earlier one is still unattended.
+    pub fn latchCommandFinished(host: *Host, owner_value: provider.ReplicaOwner) bool {
+        if (!host.ownerIsCurrent(owner_value)) return false;
+        const terminal = host.findTerminal(owner_value.terminal_ref) orelse return false;
+        if (terminal.command_owner) |held| if (host.ownerIsCurrent(held)) return false;
+        terminal.command_owner = owner_value;
+        return true;
+    }
+
+    pub fn acknowledgeCommandFinished(host: *Host, ref: provider.TerminalRef) void {
+        const terminal = host.findTerminal(ref) orelse return;
+        terminal.command_owner = null;
+    }
+
+    pub fn acknowledgeAllCommandsFinished(host: *Host) void {
+        for (host.terminals.items) |*terminal| terminal.command_owner = null;
+    }
+
+    pub fn takeEnded(host: *Host) ?provider.TerminalRef {
+        if (host.ended.items.len == 0) return null;
+        return host.ended.orderedRemove(0);
     }
 
     pub fn releaseNotice(host: *Host, notice: Notice) void {
@@ -1549,11 +1662,9 @@ pub const Host = struct {
             };
             switch (effect.kind) {
                 c.PHUX_CLIENT_EFFECT_DAMAGE => try host.captureDamage(&effect),
-                c.PHUX_CLIENT_EFFECT_STATUS => {
-                    try host.captureStatus(&effect);
-                    try host.appendNotice(.status, &effect, generation);
-                },
-                c.PHUX_CLIENT_EFFECT_JOB => try host.appendNotice(.job, &effect, generation),
+                c.PHUX_CLIENT_EFFECT_STATUS => try host.captureStatusEffect(&effect, generation),
+                // Nothing consumes jobs, so none takes a slot in the ring.
+                c.PHUX_CLIENT_EFFECT_JOB => {},
                 c.PHUX_CLIENT_EFFECT_AGENT_RECORDS => try host.captureAgentRecords(&effect),
                 else => return error.Protocol,
             }
@@ -1655,7 +1766,8 @@ pub const Host = struct {
             // A removed participant may already have released its slot before
             // admission. Never recreate a replica merely to remove it again.
             const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse return;
-            terminal.phase = .tombstoned;
+            // RESOURCE_CLOSED queues EXITED ahead of this removal: keep its end.
+            if (terminal.phase != .ended) terminal.phase = .tombstoned;
             terminal.remove_at_barrier = true;
             return;
         }
@@ -1663,9 +1775,22 @@ pub const Host = struct {
         markGridDirty(terminal, host.attach_barrier_seen);
     }
 
+    /// Only notices the engine consumes enter the bounded ring: a bell here,
+    /// and a long command finishing (captureCommandFinished). Every other
+    /// status only updates the replica, so no burst of titles or directories
+    /// can evict them, and an ended shell rides `ended` instead.
+    fn captureStatusEffect(host: *Host, effect: *const c.PhuxClientEffect, generation: provider.Generation) !void {
+        try host.captureStatus(effect);
+        if (effect.detail == c.PHUX_CLIENT_STATUS_BELL) try host.appendNotice(effect, generation, null);
+    }
+
     fn captureStatus(host: *Host, effect: *const c.PhuxClientEffect) !void {
         switch (effect.detail) {
             c.PHUX_CLIENT_STATUS_TITLE => try host.captureTitle(effect),
+            c.PHUX_CLIENT_STATUS_CWD => try host.captureCwd(effect),
+            c.PHUX_CLIENT_STATUS_COMMAND_STARTED => try host.captureCommandStarted(effect),
+            c.PHUX_CLIENT_STATUS_COMMAND_FINISHED => try host.captureCommandFinished(effect),
+            c.PHUX_CLIENT_STATUS_EXITED => try host.captureExit(effect),
             c.PHUX_CLIENT_STATUS_RESYNC_REQUIRED => {
                 host.metadata_changed = true;
                 try host.markResync(effect.terminal_id);
@@ -1684,6 +1809,60 @@ pub const Host = struct {
             },
             else => {},
         }
+    }
+
+    // The event subscription is connection-wide, so the three captures below
+    // drop a status for a terminal this host holds no replica for: minting a
+    // slot per reporting terminal would spend replica capacity on panes that
+    // nobody attached.
+
+    fn captureCwd(host: *Host, effect: *const c.PhuxClientEffect) !void {
+        const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse return;
+        const payload = try effectSlice(effect.bytes);
+        const next = if (payload.len > max_cwd_bytes) "" else payload;
+        if (std.mem.eql(u8, terminal.cwd.items, next)) return;
+        try terminal.cwd.ensureTotalCapacity(host.gpa, next.len);
+        terminal.cwd.items.len = next.len;
+        @memcpy(terminal.cwd.items, next);
+        host.metadata_changed = true;
+    }
+
+    fn captureCommandStarted(host: *Host, effect: *const c.PhuxClientEffect) !void {
+        const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse return;
+        terminal.command = .running;
+        terminal.command_started_ns = host.now_ns();
+    }
+
+    /// A command that ran at least `min_command_notice_ns` since this client
+    /// saw it start queues one notice. A short command, or one whose start
+    /// was never seen, only moves the prompt state.
+    fn captureCommandFinished(host: *Host, effect: *const c.PhuxClientEffect) !void {
+        const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse return;
+        const started = terminal.command_started_ns;
+        terminal.command = .at_prompt;
+        terminal.command_started_ns = null;
+        if (!ranLongEnough(started, host.now_ns())) return;
+        // COMMAND_FINISHED's stream/bootstrap slots are its payload
+        // (client.h), so the notice is fenced by the replica's own generation.
+        try host.appendNotice(effect, terminal.generation, statusValue(effect));
+    }
+
+    /// Only a reason that says the shell ended ends the replica; a parent or
+    /// server teardown keeps today's handling, and a DETACHED never implies it.
+    fn captureExit(host: *Host, effect: *const c.PhuxClientEffect) !void {
+        const reason: CloseReason = @enumFromInt(effect.status_code);
+        if (!reason.endsShell()) return;
+        const terminal = (try host.findTerminalRaw(effect.terminal_id)) orelse return;
+        terminal.phase = .ended;
+        terminal.command = .unknown;
+        terminal.command_started_ns = null;
+        host.metadata_changed = true;
+        try host.recordEnded(terminal.terminalRef());
+    }
+
+    fn recordEnded(host: *Host, ref: provider.TerminalRef) !void {
+        for (host.ended.items) |known| if (known.eql(ref)) return;
+        try host.ended.append(host.gpa, ref);
     }
 
     fn captureTitle(host: *Host, effect: *const c.PhuxClientEffect) !void {
@@ -1716,6 +1895,10 @@ pub const Host = struct {
             terminal.remove_at_barrier = false;
             terminal.pending_title.items.len = 0;
             terminal.pending_title_set = false;
+            // A boundary may be missed while detached; the cwd stays as the
+            // last one known, like the title.
+            terminal.command = .unknown;
+            terminal.command_started_ns = null;
         }
     }
 
@@ -1764,7 +1947,8 @@ pub const Host = struct {
         terminal.history_has_more = view.history_has_more;
         terminal.history_pages_loaded = view.history_pages_loaded;
         terminal.history_unread_rows = view.history_unread_rows;
-        terminal.phase = .live;
+        // An ended shell stays ended; a late grid publication is not a restart.
+        if (terminal.phase != .ended) terminal.phase = .live;
         terminal.published = true;
         terminal.dirty = false;
         if (!was_published) delta.added_count += 1;
@@ -1789,7 +1973,7 @@ pub const Host = struct {
             try resultErrorWithContext(host.client, "release terminal top anchor", c.phux_client_anchor_release(host.client, id, view.top_anchor));
     }
 
-    fn appendNotice(host: *Host, kind: NoticeKind, effect: *const c.PhuxClientEffect, generation: provider.Generation) !void {
+    fn appendNotice(host: *Host, effect: *const c.PhuxClientEffect, generation: provider.Generation, value: ?i32) !void {
         const payload = try effectSlice(effect.bytes);
         if (payload.len > max_notice_bytes) return error.Protocol;
         const remote = try remoteFromC(effect.terminal_id);
@@ -1800,12 +1984,12 @@ pub const Host = struct {
             host.gpa.free(dropped.bytes);
         }
         try host.notices.append(host.gpa, .{
-            .kind = kind,
             .detail = effect.detail,
             .status_code = effect.status_code,
             .terminal_ref = host.refFor(remote),
             .generation = generation,
             .bytes = owned,
+            .value = value,
         });
     }
 
@@ -3439,4 +3623,156 @@ test "paste partial outgoing staging cannot replay after allocator recovery" {
 
 test "publication partial outgoing staging cannot replay after allocator recovery" {
     try expectPartialStagingCannotReplay(.publication);
+}
+
+// PHA-284: the status effects phux-client-ffi folds from the subscribed event
+// stream and RESOURCE_CLOSED, fed as canonical wire frames through the FFI.
+
+fn statusRef(id: u32) !provider.TerminalRef {
+    return .{ .provider_id = .phux, .terminal_id = .{ .phux = try provider.RemoteResourceId.fromPhux(0, id, "") } };
+}
+
+fn discardNotices(host: *Host) void {
+    while (host.takeNotice()) |notice| host.releaseNotice(notice);
+}
+
+fn attachedStatusHost(bridge: *transport.Bridge) !*Host {
+    const host = try Host.create(std.testing.allocator, bridge);
+    errdefer host.destroy();
+    try test_support.attachHost(host);
+    discardNotices(host);
+    return host;
+}
+
+test "remote CWD and COMMAND_STARTED update the replica but never the notice ring" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    const terminal = try statusRef(7);
+    try test_support.stageFixture(&bridge, "remote-cwd.bin");
+    try test_support.stageFixture(&bridge, "remote-command-started.bin");
+    const delta = try host.drainReadiness();
+    try std.testing.expect(delta.metadata_changed);
+    try std.testing.expectEqualStrings("/srv/work/cockpit-fixture", host.presentation(terminal).?.cwd);
+    try std.testing.expect(!host.atPrompt(terminal));
+    try std.testing.expect(host.takeNotice() == null);
+}
+
+var status_test_now_ns: u64 = 0;
+
+fn statusTestClock() u64 {
+    return status_test_now_ns;
+}
+
+fn stageStatusAt(host: *Host, bridge: *transport.Bridge, name: []const u8, at_ns: u64) !void {
+    status_test_now_ns = at_ns;
+    try test_support.stageFixture(bridge, name);
+    _ = try host.drainReadiness();
+}
+
+test "an overlong cwd clears the stored one instead of keeping it" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    const terminal = try statusRef(7);
+    try test_support.stageFixture(&bridge, "remote-cwd.bin");
+    _ = try host.drainReadiness();
+    try test_support.stageFixture(&bridge, "remote-cwd-overlong.bin");
+    const delta = try host.drainReadiness();
+    try std.testing.expect(delta.metadata_changed);
+    try std.testing.expectEqual(@as(usize, 0), host.presentation(terminal).?.cwd.len);
+}
+
+test "only a command that ran ten seconds raises a notice, fenced by the replica's generation" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    host.now_ns = &statusTestClock;
+    const terminal = try statusRef(7);
+    // A finish whose start was never seen moves only the prompt state.
+    try stageStatusAt(host, &bridge, "remote-command-finished.bin", 0);
+    try std.testing.expect(host.atPrompt(terminal));
+    try std.testing.expect(host.takeNotice() == null);
+    try stageStatusAt(host, &bridge, "remote-command-started.bin", 0);
+    try stageStatusAt(host, &bridge, "remote-command-finished.bin", min_command_notice_ns - 1);
+    try std.testing.expect(host.takeNotice() == null);
+    try stageStatusAt(host, &bridge, "remote-command-started.bin", 100);
+    try stageStatusAt(host, &bridge, "remote-command-finished.bin", 100 + min_command_notice_ns);
+    const notice = host.takeNotice().?;
+    defer host.releaseNotice(notice);
+    try std.testing.expect(notice.isCommandFinished());
+    try std.testing.expectEqual(@as(?i32, 2), notice.value);
+    const owner_value: provider.ReplicaOwner = .{ .terminal_ref = terminal, .generation = notice.generation, .source_context = host.context_id };
+    try std.testing.expect(host.ownerIsCurrent(owner_value));
+    try std.testing.expect(host.latchCommandFinished(owner_value));
+    try std.testing.expect(!host.latchCommandFinished(owner_value));
+    host.acknowledgeCommandFinished(terminal);
+    try std.testing.expect(host.latchCommandFinished(owner_value));
+}
+
+test "an ended replica stays ended through a later grid publication" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    const terminal = try statusRef(7);
+    var effect = std.mem.zeroes(c.PhuxClientEffect);
+    effect.kind = c.PHUX_CLIENT_EFFECT_STATUS;
+    effect.detail = c.PHUX_CLIENT_STATUS_EXITED;
+    effect.status_code = @intFromEnum(CloseReason.exited);
+    effect.terminal_id = cId(&host.findTerminal(terminal).?.id);
+    try host.captureStatusEffect(&effect, .{});
+    try test_support.stageFixture(&bridge, "remote-title.bin");
+    _ = try host.drainReadiness();
+    try std.testing.expectEqual(provider.Phase.ended, host.phase(terminal).?);
+    try std.testing.expect(host.takeEnded().?.eql(terminal));
+}
+
+test "EXITED ends the replica only for a reason that says the shell ended" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    try test_support.stageFixture(&bridge, "remote-exited.bin");
+    _ = try host.drainReadiness();
+    // Recorded apart from the lossy ring, once, for the engine to take.
+    try std.testing.expect(host.takeEnded().?.eql(try statusRef(7)));
+    try std.testing.expect(host.takeEnded() == null);
+    try std.testing.expect(host.takeNotice() == null);
+    try std.testing.expect(!host.terminalKnown(try statusRef(7)));
+
+    var unstated_bridge = transport.Bridge.init(std.testing.allocator);
+    defer unstated_bridge.deinit();
+    const unstated_host = try attachedStatusHost(&unstated_bridge);
+    defer unstated_host.destroy();
+    try test_support.stageFixture(&unstated_bridge, "initial-terminal-closed.bin");
+    _ = try unstated_host.drainReadiness();
+    try std.testing.expect(unstated_host.takeEnded() == null);
+
+    for ([_]CloseReason{ .parent_closed, .server_shutdown, .unknown, @enumFromInt(7) }) |reason| {
+        try std.testing.expect(!reason.endsShell());
+    }
+}
+
+test "unknown status codes are still dropped silently" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try attachedStatusHost(&bridge);
+    defer host.destroy();
+    const terminal = try statusRef(7);
+    var effect = std.mem.zeroes(c.PhuxClientEffect);
+    effect.kind = c.PHUX_CLIENT_EFFECT_STATUS;
+    effect.detail = 0xFFFF;
+    effect.terminal_id = cId(&host.findTerminal(terminal).?.id);
+    try host.captureStatusEffect(&effect, .{});
+    try std.testing.expect(!host.metadata_changed);
+    const value = host.presentation(terminal).?;
+    try std.testing.expectEqual(provider.Phase.live, value.phase);
+    try std.testing.expectEqual(@as(usize, 0), value.cwd.len);
+    try std.testing.expect(!host.atPrompt(terminal));
+    try std.testing.expect(host.takeNotice() == null);
+    try std.testing.expect(host.takeEnded() == null);
 }

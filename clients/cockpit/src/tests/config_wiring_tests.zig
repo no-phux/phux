@@ -108,9 +108,10 @@ test "a pane proposes no viewport until its cell box has been measured" {
         );
         try testing.expectEqual(@as(f32, 36), cell.height); // round(26 * 1.4)
 
+        const grid_rect = app.paneGridRect(pane.rect, count);
         const expected = grid.Session.clampGrid(
-            @intFromFloat(@max(2, pane.rect.width / cell.width)),
-            @intFromFloat(@max(2, pane.rect.height / cell.height)),
+            @intFromFloat(@max(2, grid_rect.width / cell.width)),
+            @intFromFloat(@max(2, grid_rect.height / cell.height)),
         );
         try testing.expectEqual(expected.x, proposal.cols);
         try testing.expectEqual(expected.y, proposal.rows);
@@ -118,8 +119,8 @@ test "a pane proposes no viewport until its cell box has been measured" {
         // And the number the OLD defaults would have produced is a genuinely
         // different one, so the equality above is not passing by coincidence.
         const stale = grid.Session.clampGrid(
-            @intFromFloat(@max(2, pane.rect.width / 8.0)),
-            @intFromFloat(@max(2, pane.rect.height / 18.0)),
+            @intFromFloat(@max(2, grid_rect.width / 8.0)),
+            @intFromFloat(@max(2, grid_rect.height / 18.0)),
         );
         try testing.expect(stale.x != proposal.cols);
     }

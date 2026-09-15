@@ -27,12 +27,15 @@ test {
 pub const window_ground_command_id: u64 = 0x0c01;
 
 pub const pane_dim_command_id_base: u64 = 0x0c10;
-/// The focused pane's accent edge: four hairlines, so exactly four ids.
+/// Rounded card fills: one id per pane, 0x0c20..0x0c2F.
+pub const pane_card_command_id_base: u64 = 0x0c20;
+/// The focused pane's floating accent ring: one id per pane, 0x0c30..0x0c3F.
 /// `pane_dim_command_id_base` spans at most `layout.max_panes` (16) ids from
 /// 0x0c10, so 0x0c30 clears it with room.
 pub const pane_focus_command_id_base: u64 = 0x0c30;
-/// The focus edge's thickness, in points.
-pub const pane_focus_edge_thickness: f32 = 1;
+/// Hairline card borders: one id per pane, 0x0c40..0x0c4F. Link-preview
+/// ids start at 0x0c50.
+pub const pane_border_command_id_base: u64 = 0x0c40;
 /// Pane-local OSC 8 target preview commands.
 pub const link_preview_ground_command_id_base: u64 = 0x0c50;
 pub const link_preview_text_command_id_base: u64 = 0x0c70;
@@ -215,15 +218,18 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
     for (panes[0..count], 0..) |pane, index| {
         if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
         const alloc = budget_plan.forPane(index, prologue);
+        const grid_rect = projection.paneGridRect(pane.rect, count);
         // Each pane owns its OWN background frame. Nothing paints outside
-        // the pane it belongs to.
+        // the pane it belongs to. The grid sits inside a constant chrome
+        // inset so a focus change cannot move a cell.
         // A window that is not the one the user is in shows no focused pane:
         // two windows both drawing a solid cursor would both claim the
         // keyboard, and only one of them has it.
         const options_focused = window_active and pane.node == focus_node;
+        try paintCard(builder, pane, index, count, grid_tokens, tokens);
         const painted = try paintPane(model, tree, builder, pane, index, tokens, .{
-            .frame = pane.rect,
-            .background_frame = pane.rect,
+            .frame = grid_rect,
+            .background_frame = grid_rect,
             .tokens = grid_tokens,
             .running = false,
             .focused = options_focused,
@@ -240,26 +246,53 @@ fn paintWindow(model: *const Model, builder: *canvas.Builder, window_index: usiz
         });
         if (!painted) continue;
 
-        try paintDim(builder, pane, index, count, window_active, focus_node);
+        try paintDim(builder, pane, index, count, window_active, focus_node, tokens);
     }
 
-    // The focused pane's edge, painted AFTER every pane and every scrim so a
-    // neighbour's dim can never lie on top of it.
+    // Card hairlines and the focused pane's floating ring, painted AFTER
+    // every pane and every scrim so a neighbour's dim can never lie on
+    // top of them. The ring lives in the gutter, never on the grid.
     //
     // The scrim alone is not enough and never was. It dims toward black, and a
     // terminal configured black — or one an application put there with OSC 11 —
     // has nothing left to take away, which is exactly the setup a terminal user
-    // is most likely to be running. The edge is the signal that survives it.
-    try paintFocusEdge(builder, panes[0..count], focus_node, tokens, window_active);
+    // is most likely to be running. The ring is the signal that survives it.
+    try paintPaneChrome(builder, panes[0..count], focus_node, tokens, window_active);
 }
 
 /// Dim only background splits in the active window. A single pane never dims.
-fn paintDim(builder: *canvas.Builder, pane: layout.Pane, index: usize, count: usize, window_active: bool, focus_node: layout.NodeId) !void {
+fn paintDim(
+    builder: *canvas.Builder,
+    pane: layout.Pane,
+    index: usize,
+    count: usize,
+    window_active: bool,
+    focus_node: layout.NodeId,
+    tokens: canvas.DesignTokens,
+) !void {
     if (count < 2 or !window_active or pane.node == focus_node) return;
-    try builder.fillRect(.{
+    try builder.fillRoundedRect(.{
         .id = pane_dim_command_id_base + index,
         .rect = pane.rect,
+        .radius = projection.paneCardRadius(tokens),
         .fill = .{ .color = dim_scrim },
+    });
+}
+
+fn paintCard(
+    builder: *canvas.Builder,
+    pane: layout.Pane,
+    index: usize,
+    count: usize,
+    grid_tokens: canvas.DesignTokens,
+    tokens: canvas.DesignTokens,
+) !void {
+    if (count < 2) return;
+    try builder.fillRoundedRect(.{
+        .id = pane_card_command_id_base + index,
+        .rect = pane.rect,
+        .radius = projection.paneCardRadius(tokens),
+        .fill = .{ .color = grid_tokens.colors.background },
     });
 }
 
@@ -289,26 +322,31 @@ fn paintLocalPane(terminal: *const Pane, builder: *canvas.Builder, index: usize,
     if (preview_target) |target| try paintLinkTargetPreview(terminal, index, base.frame, tokens, builder, target);
 }
 
-fn paintFocusEdge(builder: *canvas.Builder, panes: []const layout.Pane, focus_node: layout.NodeId, tokens: canvas.DesignTokens, window_active: bool) !void {
+fn paintPaneChrome(
+    builder: *canvas.Builder,
+    panes: []const layout.Pane,
+    focus_node: layout.NodeId,
+    tokens: canvas.DesignTokens,
+    window_active: bool,
+) !void {
     if (panes.len < 2 or !window_active) return;
-    for (panes) |pane| {
-        if (pane.node != focus_node) continue;
+    const radius = projection.paneCardRadius(tokens);
+    const hairline = @max(1, tokens.stroke.hairline);
+    for (panes, 0..) |pane, index| {
         if (pane.rect.width <= 0 or pane.rect.height <= 0) continue;
-        const t = @min(pane_focus_edge_thickness, @min(pane.rect.width, pane.rect.height) / 2);
-        const edges = [4]geometry.RectF{
-            geometry.RectF.init(pane.rect.x, pane.rect.y, pane.rect.width, t),
-            geometry.RectF.init(pane.rect.x, pane.rect.y + pane.rect.height - t, pane.rect.width, t),
-            geometry.RectF.init(pane.rect.x, pane.rect.y, t, pane.rect.height),
-            geometry.RectF.init(pane.rect.x + pane.rect.width - t, pane.rect.y, t, pane.rect.height),
-        };
-        for (edges, 0..) |edge, edge_index| {
-            try builder.fillRect(.{
-                .id = pane_focus_command_id_base + edge_index,
-                .rect = edge,
-                .fill = .{ .color = tokens.colors.accent },
-            });
-        }
-        break;
+        try builder.strokeRect(.{
+            .id = pane_border_command_id_base + index,
+            .rect = pane.rect,
+            .radius = radius,
+            .stroke = .{ .fill = .{ .color = tokens.colors.border }, .width = hairline },
+        });
+        if (pane.node != focus_node) continue;
+        try builder.strokeRect(.{
+            .id = pane_focus_command_id_base + index,
+            .rect = projection.paneFocusRingRect(pane.rect, tokens),
+            .radius = projection.paneFocusRingRadius(tokens),
+            .stroke = .{ .fill = .{ .color = tokens.colors.accent }, .width = @max(1, tokens.stroke.focus) },
+        });
     }
 }
 
@@ -325,7 +363,7 @@ fn paintFocusEdge(builder: *canvas.Builder, panes: []const layout.Pane, focus_no
 /// Dimming toward black instead makes it independent of what the pane beneath
 /// happens to be: a configured `background`, a theme, or an application's
 /// OSC 11 all darken. The one case it still cannot serve is a terminal that is
-/// already black, which is why `paintWindow` also draws an accent edge.
+/// already black, which is why `paintWindow` also draws a floating accent ring.
 ///
 /// The DEPTH is 0.15, and it is deliberately shallow. Ghostty's
 /// `unfocused-split-opacity` defaults to 0.85 — the same 15% — and that is not
@@ -333,7 +371,7 @@ fn paintFocusEdge(builder: *canvas.Builder, panes: []const layout.Pane, focus_no
 /// and a shell prompt is already full of deliberately dim colours that a heavy
 /// wash takes below legibility. The first fix for the no-op overshot to 0.42
 /// and made unfocused panes genuinely hard to read, which traded one real
-/// problem for another. The accent edge carries the signal; the scrim only has
+/// problem for another. The accent ring carries the signal; the scrim only has
 /// to whisper.
 const dim_scrim: canvas.Color = canvas.Color.rgba(0, 0, 0, 0.15);
 

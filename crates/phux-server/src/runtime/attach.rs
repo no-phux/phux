@@ -4818,6 +4818,7 @@ mod tests {
                         set_default_colors: mpsc::channel(8).0,
                         screen: mpsc::channel(8).0,
                         pwd: mpsc::channel(8).0,
+                        process: mpsc::channel(8).0,
                         resize: mpsc::channel(8).0,
                         cols: 80,
                         rows: 24,

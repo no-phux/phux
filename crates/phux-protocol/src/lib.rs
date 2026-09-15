@@ -35,6 +35,7 @@ pub mod wire;
 
 pub mod caps;
 pub mod ids;
+pub mod kinds;
 pub mod policy;
 
 #[cfg(feature = "server")]

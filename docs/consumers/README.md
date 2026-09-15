@@ -8,7 +8,7 @@ last-reviewed: 2026-09-13
 
 **TL;DR.** Pick the interface that matches the job: the TUI or Cockpit for a
 person, the CLI and MCP for a script or agent, OpenCode, Pi, or Claude when
-those hosts already run the work, the browser or iOS client when the glass
+those hosts already run the work, the browser client when the glass
 is not a tty, and recording when you want a cast. They are peers of one
 server and one terminal model.
 
@@ -29,7 +29,7 @@ server and one terminal model.
 | Run the terminal client in a browser | [The web client](./web.md) |
 | Use the native macOS app | [Cockpit](./cockpit.md) |
 | Record a pane or an attached session | [Recording](./recording.md) |
-| Pair a phone over `wss://` (contract) | [The iOS client](./ios.md) |
+| Use phux on [iOS](./ios.md) or [Android](./android.md) | Coming soon |
 
 Every interface here is a peer of the others; the TUI has no protocol-level
 standing ([ADR-0017](../adr/0017-tui-not-protocol-privileged.md)).
@@ -43,7 +43,8 @@ Gaps: [`../CONCEPTS.md`](../CONCEPTS.md#status).
 | [tui.md](./tui.md) | Reference TUI: prefix keys, layout, chrome, copy-mode, fleet overlay. |
 | [cockpit.md](./cockpit.md) | Native macOS client over `phux-client-ffi`. |
 | [web.md](./web.md) | Browser client that carries its own engine over the WebSocket wire codec. |
-| [ios.md](./ios.md) | Swift/UniFFI iOS client and the `phux pair` connect-link contract. |
+| [ios.md](./ios.md) | Coming soon. |
+| [android.md](./android.md) | Coming soon. |
 | [agents.md](./agents.md) | Agent surface: CLI verbs, JSON contracts, asks, workspace save/restore. |
 | [harness.md](./harness.md) | Producer contract: open an AgentSession, emit, never write detector state. |
 | [build-a-client.md](./build-a-client.md) | Third-party client paths: CLI, MCP, phux-protocol, FFI. |

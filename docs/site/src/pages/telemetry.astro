@@ -1,0 +1,326 @@
+---
+// Live edge traffic for phux.sh — the requests Workers see, including AI
+// crawlers and tools that never run JavaScript. Aggregate-only: no IPs, no
+// raw user agents, no cookies. Data: /api/telemetry.
+import BaseLayout from "../layouts/BaseLayout.astro";
+
+const title = "phux — live agent traffic";
+const description =
+  "Aggregate edge telemetry for phux.sh: who is hitting the domain — browsers, AI crawlers, scanners, tools — and which agent signals they use.";
+---
+
+<BaseLayout {title} {description}>
+  <section class="wrap">
+    <h1>live agent traffic</h1>
+    <p class="lede">
+      The edge sees every request — including AI crawlers and tools that
+      JavaScript analytics is blind to. These are aggregate counters only:
+      no IPs, no raw user agents, no cookies. Refreshes every 30s.
+    </p>
+
+    <section class="card privacy">
+      <h2>what we measure (and what we don't)</h2>
+      <p>
+        Anonymous visits are counted as aggregates: rough user-agent class,
+        country, and page/signal counts, with visitor identity reduced to a
+        daily-rotated hash — nothing correlates across days, no cookies are
+        set, and IPs are never stored.
+      </p>
+      <p>
+        The one identified dataset is <strong>voluntary</strong>: the
+        <a href="/#beta">join-the-beta</a> email list. Members who want
+        device-level detail (e.g. "my installs, my demo sessions") opt in by
+        clicking a personal claim link from the beta emails, which sets a
+        first-party <code>phux_mid</code> cookie. Nothing else on this site
+        is individually tracked, and the raw event store is private with a
+        90-day retention.
+      </p>
+    </section>
+
+    <div id="tiles" class="tiles" aria-live="polite"></div>
+
+    <div class="grid">
+      <section class="card">
+        <h2>agent &amp; bot classes · 24h</h2>
+        <div id="ua" class="bars"></div>
+      </section>
+      <section class="card">
+        <h2>agent signals · 24h</h2>
+        <div id="signals" class="bars"></div>
+      </section>
+      <section class="card">
+        <h2>countries · 24h</h2>
+        <div id="countries" class="bars"></div>
+      </section>
+      <section class="card">
+        <h2>hostnames · 24h</h2>
+        <div id="hosts" class="bars"></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>requests per hour · 48h</h2>
+      <svg id="spark" viewBox="0 0 960 160" preserveAspectRatio="none" role="img" aria-label="Requests per hour"></svg>
+      <div id="misses" class="misses"></div>
+    </section>
+
+    <p class="foot-note">
+      signals: <code>markdown</code> = a client negotiated
+      <code>Accept: text/markdown</code> · <code>mcp:*</code> = calls to the
+      hosted MCP endpoint · <code>well-known:*</code> = agent discovery
+      documents · <code>doc:*</code> = llms.txt / auth.md ·
+      <code>installer</code> = curl installer hits · <code>page</code> = HTML
+      page views.
+    </p>
+  </section>
+</BaseLayout>
+
+<style>
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: clamp(24px, 5vw, 64px) 20px 96px;
+  }
+  h1 {
+    font-size: clamp(28px, 4vw, 40px);
+    letter-spacing: -0.02em;
+  }
+  .lede {
+    color: var(--fg-muted, #565f89);
+    max-width: 62ch;
+    margin-bottom: 32px;
+  }
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .tile {
+    border: 1px solid var(--line, #232433);
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .tile b {
+    display: block;
+    font-size: 28px;
+    font-variant-numeric: tabular-nums;
+  }
+  .tile span {
+    font-size: 12px;
+    color: var(--fg-muted, #565f89);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 12px;
+    margin-bottom: 12px;
+  }
+  .card {
+    border: 1px solid var(--line, #232433);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 12px;
+  }
+  .card h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted, #565f89);
+    margin: 0 0 12px;
+  }
+  .privacy p {
+    margin: 0 0 10px;
+    color: var(--fg-muted, #565f89);
+    font-size: 13px;
+    max-width: 80ch;
+  }
+  .privacy strong,
+  .privacy a {
+    color: var(--fg, #c0caf5);
+  }
+  .bars {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .bar-row {
+    display: grid;
+    grid-template-columns: 180px 1fr 64px;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  .bar-row .k {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+  }
+  .bar-track {
+    height: 10px;
+    border-radius: 5px;
+    background: var(--line, #232433);
+    overflow: hidden;
+  }
+  .bar-fill {
+    height: 100%;
+    background: #7aa2f7;
+  }
+  .bar-row.ai .bar-fill {
+    background: #9ece6a;
+  }
+  .bar-row .n {
+    text-align: right;
+    color: var(--fg-muted, #565f89);
+  }
+  #spark {
+    width: 100%;
+    height: 160px;
+    display: block;
+  }
+  #spark .axis {
+    stroke: var(--line, #232433);
+  }
+  #spark .line {
+    fill: none;
+    stroke: #7aa2f7;
+    stroke-width: 2;
+  }
+  #spark .area {
+    fill: #7aa2f7;
+    opacity: 0.15;
+  }
+  .misses {
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--fg-muted, #565f89);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .foot-note {
+    margin-top: 24px;
+    font-size: 13px;
+    color: var(--fg-muted, #565f89);
+    max-width: 72ch;
+  }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px;
+  }
+</style>
+
+<script is:inline>
+  const $ = (id) => document.getElementById(id);
+
+  function aggregate(rows, sinceBucket, dims) {
+    const out = {};
+    for (const dim of dims) out[dim] = {};
+    for (const row of rows) {
+      if (row.bucket < sinceBucket || !dims.includes(row.dim)) continue;
+      out[row.dim][row.key] = (out[row.dim][row.key] ?? 0) + row.count;
+    }
+    return out;
+  }
+
+  function sortedEntries(obj) {
+    return Object.entries(obj).sort((a, b) => b[1] - a[1]);
+  }
+
+  function renderBars(id, entries, limit = 8) {
+    const el = $(id);
+    el.textContent = "";
+    const top = entries.slice(0, limit);
+    const max = top.length ? top[0][1] : 1;
+    for (const [key, count] of top) {
+      const row = document.createElement("div");
+      row.className = "bar-row" + (key.startsWith("ai:") ? " ai" : "");
+      const label = document.createElement("span");
+      label.className = "k";
+      label.textContent = key;
+      label.title = key;
+      const track = document.createElement("div");
+      track.className = "bar-track";
+      const fill = document.createElement("div");
+      fill.className = "bar-fill";
+      fill.style.width = `${Math.max(2, (count / max) * 100)}%`;
+      track.appendChild(fill);
+      const n = document.createElement("span");
+      n.className = "n";
+      n.textContent = count.toLocaleString();
+      row.append(label, track, n);
+      el.appendChild(row);
+    }
+    if (top.length === 0) el.textContent = "no data yet";
+  }
+
+  function renderSpark(rows) {
+    const byBucket = {};
+    for (const row of rows) {
+      if (row.dim !== "status") continue;
+      byBucket[row.bucket] = (byBucket[row.bucket] ?? 0) + row.count;
+    }
+    const buckets = Object.keys(byBucket).sort();
+    const svg = $("spark");
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    if (buckets.length < 2) return;
+    const W = 960;
+    const H = 160;
+    const pad = 8;
+    const max = Math.max(...buckets.map((b) => byBucket[b]));
+    const x = (i) => pad + (i / (buckets.length - 1)) * (W - 2 * pad);
+    const y = (v) => H - pad - (v / max) * (H - 2 * pad);
+    const pts = buckets.map((b, i) => `${x(i)},${y(byBucket[b])}`);
+    const axis = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    axis.setAttribute("x1", pad);
+    axis.setAttribute("x2", W - pad);
+    axis.setAttribute("y1", H - pad);
+    axis.setAttribute("y2", H - pad);
+    axis.setAttribute("class", "axis");
+    const area = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
+    area.setAttribute("points", `${pad},${H - pad} ${pts.join(" ")} ${W - pad},${H - pad}`);
+    area.setAttribute("class", "area");
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    line.setAttribute("points", pts.join(" "));
+    line.setAttribute("class", "line");
+    svg.append(axis, area, line);
+    svg.setAttribute("aria-label", `Requests per hour, peak ${max.toLocaleString()}`);
+  }
+
+  async function refresh() {
+    const res = await fetch("/api/telemetry?hours=48", { cache: "no-store" });
+    if (!res.ok) return;
+    const { rows } = await res.json();
+    const dayAgo = new Date(Date.now() - 24 * 3600_000).toISOString().slice(0, 13);
+    const day = aggregate(rows, dayAgo, ["ua", "signal", "country", "host"]);
+    const all = aggregate(rows, "0000", ["signal", "status"]);
+
+    const tiles = [
+      ["requests · 24h", Object.values(all.status).reduce((a, b) => a + b, 0)],
+      ["agent-signal hits · 24h", sortedEntries(day.signal).reduce((a, [k, v]) => a + (k === "page" ? 0 : v), 0)],
+      ["markdown negotiations · 24h", day.signal["markdown"] ?? 0],
+      ["MCP calls · 24h", day.signal["mcp"] ?? 0],
+      ["top class · 24h", sortedEntries(day.ua)[0]?.[0] ?? "—"],
+    ];
+    $("tiles").innerHTML = tiles
+      .map(([label, value]) => `<div class="tile"><b>${typeof value === "number" ? value.toLocaleString() : value}</b><span>${label}</span></div>`)
+      .join("");
+
+    renderBars("ua", sortedEntries(day.ua));
+    renderBars("signals", sortedEntries(day.signal));
+    renderBars("countries", sortedEntries(day.country));
+    renderBars("hosts", sortedEntries(day.host));
+    renderSpark(rows);
+
+    const misses = sortedEntries(aggregate(rows, dayAgo, ["miss"]).miss).slice(0, 6);
+    $("misses").textContent = misses.length
+      ? "top 404s · 24h: " + misses.map(([p, n]) => `${p} (${n})`).join("  ·  ")
+      : "";
+  }
+
+  refresh();
+  setInterval(refresh, 30_000);
+</script>

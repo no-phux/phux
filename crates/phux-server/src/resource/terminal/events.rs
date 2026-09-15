@@ -230,11 +230,7 @@ impl TerminalActor {
         // skip it (see `ingest_pty_payload`).
         let title_changed = self.refresh_title();
         let marks = self.osc133.feed(chunk);
-        for mark in &marks {
-            if let osc133::OscMark::Progress(progress) = mark {
-                self.last_progress.clone_from(progress);
-            }
-        }
+        self.observe_marks(&marks);
         if self.event_sink.is_none() && self.core.has_no_event_subscribers() {
             return;
         }
@@ -256,7 +252,9 @@ impl TerminalActor {
                     // cwd and announce a change.
                     self.check_cwd_changed();
                 }
-                osc133::OscMark::Progress(_) => {}
+                osc133::OscMark::PromptStart
+                | osc133::OscMark::InputStart
+                | osc133::OscMark::Progress(_) => {}
             }
         }
         if memchr::memchr(0x07, chunk).is_some() {
@@ -299,6 +297,18 @@ impl TerminalActor {
             if !self.dirty_event_emitted_this_burst {
                 self.broadcast_agent_event(&AgentEvent::Dirty);
                 self.dirty_event_emitted_this_burst = true;
+            }
+        }
+    }
+
+    /// Fold a chunk's OSC marks into the state every pane keeps whether or
+    /// not anyone is listening: the OSC 9;4 progress mirror the detector
+    /// reads, and the prompt machine the `process` facet reports.
+    fn observe_marks(&mut self, marks: &[osc133::OscMark]) {
+        for mark in marks {
+            self.prompt.observe(mark);
+            if let osc133::OscMark::Progress(progress) = mark {
+                self.last_progress.clone_from(progress);
             }
         }
     }
@@ -363,8 +373,9 @@ impl TerminalActor {
     /// [`AgentEvent::CwdChanged`] when it differs from the last
     /// observation. Best-effort and coalesced: no PTY / dead child /
     /// denied query all yield silence, and an unchanged directory emits
-    /// nothing. Called at OSC-133 `D` prompt boundaries and on output
-    /// settle.
+    /// nothing, except that a pane's first successful observation always
+    /// emits so its starting directory is announced once. Called at
+    /// OSC-133 `D` prompt boundaries and on output settle.
     pub(super) fn check_cwd_changed(&self) {
         let Some(pid) = self.pty.as_ref().and_then(|p| p.child.process_id()) else {
             return;
@@ -373,7 +384,12 @@ impl TerminalActor {
             return;
         };
         let cwd = cwd.to_string_lossy().into_owned();
-        if *self.last_known_cwd.borrow() == cwd {
+        // The first successful observation always announces, even when it
+        // matches the spawn seed: a consumer that learned of this pane
+        // mid-session (a TUI split) has no other source for its starting
+        // directory. Later observations are deduplicated as usual.
+        let first_observation = !self.cwd_announced.replace(true);
+        if !first_observation && *self.last_known_cwd.borrow() == cwd {
             return;
         }
         self.last_known_cwd.borrow_mut().clone_from(&cwd);

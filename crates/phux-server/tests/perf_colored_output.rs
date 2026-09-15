@@ -8,7 +8,7 @@
 //! settle of a moderately-colored burst. This gate is the dedicated
 //! wall-clock sibling for the WORST-case colored shape: an SGR change
 //! roughly every other column (built by
-//! [`phux_server_testkit::builder::colored_burst_command`]), driven against the REAL
+//! [`phux_server_testkit::builder::colored_burst_bytes`]), driven against the REAL
 //! server over the wire, with the client-applied result captured by the
 //! libghostty [`Screen`] oracle.
 //!
@@ -23,6 +23,10 @@
 //!      per-frame ceiling. This catches a regression that keeps the total
 //!      under the wall-clock ceiling only because the burst happened to be
 //!      short — it normalizes by the number of repaints actually drained.
+//!
+//! The burst is precomputed in-process and `cat`'d after attach (phux-iuxr):
+//! a nested `/bin/sh` concat loop was what flaked under CPU contention, not
+//! the product path. The ceiling still gates emit/diff/apply latency.
 //!
 //! `#[ignore]`d into the `just e2e` lane: like the other real-PTY gates it
 //! spawns a real server + PTY and asserts on load-sensitive timing, which
@@ -40,25 +44,28 @@
 
 use std::time::Duration;
 
-use phux_server_testkit::builder::{DEFAULT_IDLE_MS, E2eBuilder, colored_burst_command};
+use phux_server_testkit::builder::{
+    DEFAULT_IDLE_MS, E2eBuilder, colored_burst_bytes, colored_burst_command,
+};
 use phux_server_testkit::run_local;
 use phux_server_testkit::tracing_capture::TracingCapture;
 
 /// Burst geometry. 80x40 matches the alloc gate / `perf_latency` shape; a
 /// full-width SGR-per-cell row at this size is ~80 color runs * 40 rows =
 /// the worst-case completion-menu churn. 24 repaints is enough churn to be
-/// a real burst while keeping the shell loop well within the ceiling.
+/// a real burst.
 const COLS: u16 = 80;
 const ROWS: u16 = 40;
 const GENS: u16 = 24;
 
 /// Time-to-settle ceiling for the heavy colored burst. The colored shape
 /// is heavier than `perf_latency`'s (an SGR change per cell rather than
-/// per row) and the seed shell builds each row in a column loop, so the
-/// emit side is slower; measured on this machine (M-series, nix devshell)
-/// at low single-digit seconds end-to-end under the contended pool. The
-/// 30s ceiling is wide headroom so scheduler jitter never trips it while a
-/// genuine quadratic/stall regression (orders of magnitude) still does.
+/// per row). Emit is a `cat` of precomputed bytes (phux-iuxr), so this
+/// number gates the product path, not `/bin/sh` concat. The 30s ceiling is
+/// wide headroom so scheduler jitter never trips it while a genuine
+/// quadratic/stall regression (orders of magnitude) still does. The
+/// converge wait matches this ceiling: the previous 15s wire timeout
+/// aborted first with "never completed" under load.
 const SETTLE_CEILING: Duration = Duration::from_secs(30);
 
 /// Per-frame cost ceiling: settle-time divided by the repaints actually
@@ -75,19 +82,30 @@ const PER_FRAME_CEILING: Duration = Duration::from_secs(1);
 #[ignore = "real-PTY e2e; starves the parallel pool. Run via `just e2e`."]
 #[test]
 fn colored_burst_settles_under_ceiling() {
-    run_local(async {
+    let dir = tempfile::TempDir::new().expect("burst dir");
+    let burst = dir.path().join("burst.bin");
+    let gate = dir.path().join("gate");
+    std::fs::write(&burst, colored_burst_bytes(COLS, ROWS, GENS)).expect("write burst");
+    let cmd = colored_burst_command(&burst, &gate);
+
+    run_local(async move {
         let cap = TracingCapture::install("colored_output");
 
         E2eBuilder::new()
             .session("default")
-            .seed_cmd(colored_burst_command(COLS, ROWS, GENS))
+            .seed_cmd(cmd)
             .viewport(COLS, ROWS)
-            .run(|mut clients| async move {
+            .run(move |mut clients| async move {
+                // Attach has already finished; open the dump. Same
+                // driven-not-timed gate as the lagged-resync fixtures.
+                std::fs::write(&gate, b"").expect("open burst gate");
                 let client = &mut clients[0];
-                // Marker-gated settle: a quiet gap between SGR rows is not
-                // completion. First-byte→idle after COLORDONE (phux-4s38).
+                // Marker-gated settle: a quiet gap is not completion.
+                // Wait the ceiling, not the 15s wire default (phux-iuxr).
                 let settle = client
-                    .converge_until(DEFAULT_IDLE_MS, |s| s.contains("COLORDONE"))
+                    .converge_until_with_timeout(DEFAULT_IDLE_MS, SETTLE_CEILING, |s| {
+                        s.contains("COLORDONE")
+                    })
                     .await;
                 let screen = client.screenshot().await.snapshot_text();
                 cap.attach_screen(screen.clone());
@@ -136,4 +154,5 @@ fn colored_burst_settles_under_ceiling() {
             })
             .await;
     });
+    drop(dir);
 }

@@ -28,6 +28,50 @@ Rust/Zig is needed. Custom domains `phux.sh` (product) and `docs.phux.sh`
 worker runs first (`run_worker_first`) so a docs path on `phux.sh` 301s to
 the same path on `docs.phux.sh`, and `docs.phux.sh/` 301s to `/overview`.
 
+### Agent discovery surface
+
+The worker and `public/` together publish the machine-readable agent surface
+(maintained in-repo): markdown negotiation for every HTML page (`Accept:
+text/markdown`), a read-only MCP endpoint at `POST /mcp` (`host/mcp.ts`, card
+at `/.well-known/mcp/server-card.json`), RFC 9727 `/.well-known/api-catalog`,
+ARD `/.well-known/ai-catalog.json`, an agent-skills index rebuilt from
+`.agents/skills/` by `scripts/sync-agent-skills.ts` on every build, `llms.txt`,
+`auth.md`, Content Signals + `Agentmap` in `robots.txt`, and RFC 8288 `Link`
+headers on HTML responses.
+
+Two DNS facts live only in the Cloudflare zone (phux.sh) and are NOT managed
+by this repo: DNSSEC is enabled (registrar is Cloudflare, so the DS record is
+published automatically), and the DNS-AID records `_mcp._agents` (SVCB+HTTPS,
+pointing at the hosted MCP endpoint) and `_index._agents` (TXT, pointing at
+the ARD catalog). Recreate them if the zone is ever rebuilt.
+
+### Telemetry (`/telemetry`)
+
+`host/telemetry.ts` records passive aggregate counters (hourly buckets keyed
+by user-agent class, country, host, agent signal, status, demo session) into
+a `TelemetryDO` Durable Object. No IPs, no raw user agents, no cookies —
+edge-only, and it catches AI crawlers that JavaScript analytics is blind to.
+The public dashboard is `/telemetry`; its JSON API is `/api/telemetry`.
+Static assets and the dashboard's own polling are excluded.
+
+The demo worker has no Durable Object of its own for this: it forwards
+session events to `POST /api/telemetry/ingest` on the site worker
+(`TELEMETRY_INGEST_URL` var). Both workers share the `TELEMETRY_INGEST_KEY`
+secret (`wrangler secret put TELEMETRY_INGEST_KEY` in `docs/site` and
+`docs/site/worker`); without it on either side, telemetry silently stops —
+the demo door is never affected.
+
+### Privacy-respecting analytics (private ops repo)
+
+Beyond the public aggregates, both workers forward a minimal event envelope
+to the self-hosted pipeline in the private `no-phux/ops` repo
+(`ANALYTICS_INGEST_URL` + `ANALYTICS_INGEST_KEY` secrets; schema, storage,
+and dashboards live there). Anonymous visits are daily-rotated hashes with
+no cookies; the only identified dataset is the voluntary join-the-beta list
+(`POST /api/join`, `MEMBER_KEY` secret shared for claim-link verification),
+where members opt a device in via a personal link. All of this is disclosed
+on `/telemetry`.
+
 ### The curl installers at `/install` and `/install-cockpit`
 
 `https://phux.sh/install` and `https://phux.sh/install.sh` serve the repo's

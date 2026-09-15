@@ -75,7 +75,7 @@ second client buffer, remains authoritative while it is detached.
 Cockpit remains the first-class C consumer of the same seams. Its Zig provider
 calls `phux-client-ffi`, which is a thin native-engine adapter over
 `SessionKernel`; its remote tunnel already delegates establishment to
-`phux-dial`. Do not route that C ABI through a mobile UniFFI wrapper. Cockpit's
+`phux-dial`. Do not route that C ABI through a mobile FFI wrapper. Cockpit's
 current key, mouse, focus, and paste calls intentionally use the kernel's raw
 `KernelAction::Input` path: they are latency-sensitive, fire-and-forget input
 and therefore must not enter the acknowledged replay journal. Cockpit does not

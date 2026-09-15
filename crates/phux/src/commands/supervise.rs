@@ -2,16 +2,15 @@
 //! (ADR-0033, "take the wheel + kill").
 //!
 //! Each resolves a selector client-side to one pane (the same front door
-//! `send-keys` / `run` use) and issues a single control command over a fresh
-//! connection: `ACQUIRE_INPUT` (seize the input lease), `RELEASE_INPUT`, or
-//! `SIGNAL_TERMINAL`.
+//! `send-keys` / `run` use) and issues a single control command built by
+//! [`phux_client::signal`]: `ACQUIRE_INPUT` (seize the input lease),
+//! `RELEASE_INPUT`, or `SIGNAL_TERMINAL`.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_protocol::wire::frame::{
-    Command as WireCommand, CommandResult, InputMode, TerminalSignal,
-};
+use phux_client::signal::LeaseOutcome;
+use phux_protocol::wire::frame::TerminalSignal;
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{
@@ -49,16 +48,15 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: bool) -> ExitCode {
             Err(code) => return code,
         };
         let command = if take {
-            WireCommand::AcquireInput {
-                terminal_id,
-                mode: InputMode::Seize,
-                ttl_ms: 0,
-            }
+            phux_client::signal::take_command(terminal_id)
         } else {
-            WireCommand::ReleaseInput { terminal_id }
+            phux_client::signal::give_command(terminal_id)
         };
-        match request_command(&socket_path, command).await {
-            Ok(CommandResult::Ok) => {
+        match request_command(&socket_path, command)
+            .await
+            .map(LeaseOutcome::from_result)
+        {
+            Ok(LeaseOutcome::Ok) => {
                 if take {
                     outln!("phux: took the wheel of {target}");
                 } else {
@@ -66,11 +64,11 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: bool) -> ExitCode {
                 }
                 ExitCode::SUCCESS
             }
-            Ok(CommandResult::Error { message, .. }) => {
+            Ok(LeaseOutcome::Refused(message)) => {
                 eprintln!("phux: {verb} refused for {target}: {message}");
                 ExitCode::from(2)
             }
-            Ok(other) => {
+            Ok(LeaseOutcome::Unexpected(other)) => {
                 eprintln!(
                     "phux: {target}: {}",
                     phux_client::explain::explain_unexpected(verb, &other)
@@ -103,22 +101,20 @@ pub(crate) fn run_signal(target: &str, signal: SignalArg, socket: Option<PathBuf
             };
         match request_command(
             &socket_path,
-            WireCommand::SignalTerminal {
-                terminal_id,
-                signal: wire_signal,
-            },
+            phux_client::signal::signal_command(terminal_id, wire_signal),
         )
         .await
+        .map(LeaseOutcome::from_result)
         {
-            Ok(CommandResult::Ok) => {
+            Ok(LeaseOutcome::Ok) => {
                 outln!("phux: signalled {target} ({signal:?})");
                 ExitCode::SUCCESS
             }
-            Ok(CommandResult::Error { message, .. }) => {
+            Ok(LeaseOutcome::Refused(message)) => {
                 eprintln!("phux: signal refused for {target}: {message}");
                 ExitCode::from(2)
             }
-            Ok(other) => {
+            Ok(LeaseOutcome::Unexpected(other)) => {
                 eprintln!(
                     "phux: {target}: {}",
                     phux_client::explain::explain_unexpected("signal", &other)

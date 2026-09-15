@@ -74,6 +74,235 @@ pub(crate) fn process_argv(pid: i32) -> Option<Vec<String>> {
     platform::process_argv(pid)
 }
 
+/// The display name of a process from its argv: argv0's basename with a
+/// login-shell dash stripped (`-zsh` and `/bin/zsh` both read `zsh`).
+///
+/// This is the only piece of a queried argv that may leave the server
+/// (the same boundary as `phux.pane-occupant/v1`); the argv tail can carry
+/// secrets and never does. `None` for an empty argv or an empty name.
+#[must_use]
+pub(crate) fn argv0_name(argv: &[String]) -> Option<String> {
+    let first = argv.first()?;
+    let base = first.rsplit('/').next().unwrap_or(first);
+    let name = base.trim_start_matches('-');
+    (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// The start time of `pid`'s process in a platform-specific unit that is
+/// only ever compared for equality against another reading of the same
+/// platform: clock ticks since boot on Linux, microseconds since the Unix
+/// epoch on macOS.
+///
+/// A process group id or pid is a small integer the kernel recycles; pairing
+/// it with this value is what makes a recycled number distinguishable from
+/// the process that held it before (ADR-0046 occupant identity, and the
+/// `process` facet's pid generation).
+///
+/// Best-effort like its siblings: a dead pid, a permission error or an
+/// unsupported platform all yield `None`, never an error a caller has to
+/// handle. `None` is "no answer", never "no start time".
+#[must_use]
+pub(crate) fn process_start_time(pid: i32) -> Option<u64> {
+    if pid <= 0 {
+        return None;
+    }
+    start::start_time(pid)
+}
+
+/// The start time of `pid`'s process in Unix milliseconds.
+///
+/// macOS reports the start as a wall-clock `timeval`, so this is exact to the
+/// millisecond. Linux reports clock ticks since boot; the conversion adds the
+/// boot time from `/proc/stat` (`btime`, whole seconds), read once per server
+/// process, so the value carries up to one second of absolute error but is
+/// identical for one process on every query. `None` whenever any of the
+/// inputs is unavailable.
+#[must_use]
+pub(crate) fn process_start_ms(pid: i32) -> Option<u64> {
+    if pid <= 0 {
+        return None;
+    }
+    start::start_ms(pid)
+}
+
+/// Start-time queries. Moved here from `agent_detect::identify`, whose
+/// placement note asked for exactly this, so the `PROC_PIDTBSDINFO` FFI block
+/// exists once.
+///
+/// No new dependency: macOS reads it through the `libc` this crate already
+/// declares under a `cfg(target_os = "macos")` gate for
+/// [`crate::cwd_query`]'s `proc_pidinfo`; Linux reads `/proc` with plain
+/// `std` and asks `sysconf(_SC_CLK_TCK)` through `nix`.
+mod start {
+    /// Extract field 22 (`starttime`) from the contents of `/proc/<pid>/stat`.
+    ///
+    /// Compiled on every platform so the parser — the only part of the Linux
+    /// path with any logic in it — is unit-tested wherever the suite runs,
+    /// rather than only on a Linux CI leg.
+    ///
+    /// Field 2 (`comm`) is the executable name in parentheses, and it may
+    /// contain BOTH spaces and parentheses (`(sh -c (weird))`), so the fields
+    /// cannot simply be whitespace-split. Anchoring on the LAST `)` is the
+    /// documented way to parse this file: everything after it is fields 3
+    /// onward, whitespace-separated, so `starttime` is the 20th of them.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(
+            dead_code,
+            reason = "compiled everywhere so the parser is covered off a Linux CI leg"
+        )
+    )]
+    pub(super) fn parse_stat_starttime(stat: &str) -> Option<u64> {
+        /// `starttime` is field 22; the first field after the `)` is field 3.
+        const STARTTIME_INDEX_AFTER_COMM: usize = 22 - 3;
+        let after_comm = stat.rsplit_once(')')?.1;
+        after_comm
+            .split_whitespace()
+            .nth(STARTTIME_INDEX_AFTER_COMM)?
+            .parse::<u64>()
+            .ok()
+    }
+
+    /// The `btime` line of `/proc/stat`: boot time in whole Unix seconds.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(
+            dead_code,
+            reason = "compiled everywhere so the parser is covered off a Linux CI leg"
+        )
+    )]
+    pub(super) fn parse_btime(proc_stat: &str) -> Option<u64> {
+        proc_stat
+            .lines()
+            .find_map(|line| line.strip_prefix("btime "))
+            .and_then(|secs| secs.trim().parse::<u64>().ok())
+    }
+
+    /// Convert a start time in clock ticks since boot into Unix ms, given the
+    /// boot time in Unix seconds and the tick rate. `None` on a zero tick
+    /// rate or overflow — never a guessed value.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(
+            dead_code,
+            reason = "compiled everywhere so the conversion is covered off a Linux CI leg"
+        )
+    )]
+    pub(super) fn ticks_since_boot_to_unix_ms(
+        ticks: u64,
+        boot_secs: u64,
+        ticks_per_sec: u64,
+    ) -> Option<u64> {
+        if ticks_per_sec == 0 {
+            return None;
+        }
+        let since_boot_ms = ticks.checked_mul(1000)? / ticks_per_sec;
+        boot_secs.checked_mul(1000)?.checked_add(since_boot_ms)
+    }
+
+    /// `sysconf(_SC_CLK_TCK)`: the unit of `/proc/<pid>/stat` field 22.
+    /// Compiled on every Unix (the call exists everywhere) so the API is
+    /// type-checked off a Linux CI leg; only Linux uses it.
+    #[cfg_attr(
+        not(target_os = "linux"),
+        allow(dead_code, reason = "only Linux reports start times in clock ticks")
+    )]
+    pub(super) fn clock_ticks_per_second() -> Option<u64> {
+        nix::unistd::sysconf(nix::unistd::SysconfVar::CLK_TCK)
+            .ok()
+            .flatten()
+            .and_then(|ticks| u64::try_from(ticks).ok())
+            .filter(|ticks| *ticks > 0)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn start_time(pid: i32) -> Option<u64> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        parse_stat_starttime(&stat)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn start_ms(pid: i32) -> Option<u64> {
+        let ticks = start_time(pid)?;
+        ticks_since_boot_to_unix_ms(ticks, boot_secs()?, clock_ticks_per_second()?)
+    }
+
+    /// The boot time, read from `/proc/stat` once per server process.
+    ///
+    /// The kernel recomputes `btime` from the wall clock, so a clock step
+    /// moves it. Reading it once keeps one process's `start_ms` identical
+    /// on every query for the life of this server, which is what a pid
+    /// generation must be. A failed read is not cached; the next call
+    /// retries.
+    #[cfg(target_os = "linux")]
+    fn boot_secs() -> Option<u64> {
+        static BOOT_SECS: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+        if let Some(secs) = BOOT_SECS.get() {
+            return Some(*secs);
+        }
+        let secs = parse_btime(&std::fs::read_to_string("/proc/stat").ok()?)?;
+        Some(*BOOT_SECS.get_or_init(|| secs))
+    }
+
+    /// `proc_pidinfo(PROC_PIDTBSDINFO)` fills a `proc_bsdinfo`, whose
+    /// `pbi_start_tvsec` / `pbi_start_tvusec` are the process's start time.
+    /// The struct layout comes from `libc`, never a hand-written mirror.
+    ///
+    /// The two halves are folded into one `u64` of microseconds. Seconds
+    /// alone would be too coarse for exactly the case this exists for: a
+    /// pgid recycled within the same second is precisely the narrow window
+    /// that makes reuse possible at all.
+    #[cfg(target_os = "macos")]
+    pub(super) fn start_time(pid: i32) -> Option<u64> {
+        // SAFETY: `proc_bsdinfo` is a plain C struct of integers and char
+        // arrays; all-zero is a valid value for every field.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        let size = i32::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+        // SAFETY: `proc_pidinfo` fills at most `size` bytes into `&mut
+        // info`, which is a zeroed, correctly-aligned, owned `proc_bsdinfo`
+        // of exactly that size; `size` is that struct's own size, so the
+        // kernel cannot overrun it. `pid` is validated positive by the
+        // caller. The call only reads kernel state for `pid` and writes into
+        // our buffer. A return value short of the full struct size
+        // (including 0 on a dead pid or EPERM) means the struct was not
+        // fully populated and is treated as "no answer", exactly as
+        // `crate::cwd_query` treats its sibling call.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                std::ptr::addr_of_mut!(info).cast::<std::os::raw::c_void>(),
+                size,
+            )
+        };
+        if written < size {
+            return None;
+        }
+        Some(
+            info.pbi_start_tvsec
+                .saturating_mul(1_000_000)
+                .saturating_add(info.pbi_start_tvusec),
+        )
+    }
+
+    /// macOS already reports wall-clock microseconds.
+    #[cfg(target_os = "macos")]
+    pub(super) fn start_ms(pid: i32) -> Option<u64> {
+        start_time(pid).map(|micros| micros / 1000)
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(super) const fn start_time(_pid: i32) -> Option<u64> {
+        None
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub(super) const fn start_ms(_pid: i32) -> Option<u64> {
+        None
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod platform {
     /// `/proc/<pid>/cmdline` is the argv vector, NUL-separated, with a
@@ -247,8 +476,133 @@ mod platform {
 
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
+mod start_tests {
+    use super::start::{parse_btime, parse_stat_starttime, ticks_since_boot_to_unix_ms};
+    use super::{process_start_ms, process_start_time};
+
+    /// A real `/proc/<pid>/stat` prefix, truncated after `starttime`.
+    fn stat_line(comm: &str, starttime: u64) -> String {
+        let mut fields = vec!["S".to_owned()]; // field 3
+        // Fields 4..=21 — eighteen more before `starttime` (field 22).
+        for i in 4..=21u64 {
+            fields.push(i.to_string());
+        }
+        fields.push(starttime.to_string());
+        fields.push("999999".to_owned()); // field 23, must not be read
+        format!("1234 ({comm}) {}", fields.join(" "))
+    }
+
+    #[test]
+    fn reads_field_22_of_proc_stat() {
+        assert_eq!(
+            parse_stat_starttime(&stat_line("claude", 4_242_424)),
+            Some(4_242_424),
+        );
+    }
+
+    /// THE reason this is not a whitespace split. `comm` is attacker- (or
+    /// merely user-) controlled and carries both spaces and parentheses;
+    /// a naive parser reads a field from the middle of the process name.
+    #[test]
+    fn a_comm_containing_spaces_and_parens_does_not_shift_the_fields() {
+        assert_eq!(
+            parse_stat_starttime(&stat_line("sh -c (weird) ((", 77)),
+            Some(77),
+            "anchoring on the LAST paren is what makes this parse",
+        );
+    }
+
+    #[test]
+    fn a_truncated_or_malformed_stat_line_is_no_answer() {
+        assert_eq!(parse_stat_starttime(""), None);
+        assert_eq!(
+            parse_stat_starttime("1234 (claude) S 1 2 3"),
+            None,
+            "too few fields to reach starttime",
+        );
+        assert_eq!(parse_stat_starttime("1234 claude S"), None, "no paren");
+        let non_numeric = stat_line("claude", 5).replace(" 5 ", " notanumber ");
+        assert_eq!(
+            parse_stat_starttime(&non_numeric),
+            None,
+            "a field that is not a number is no answer, never a guess",
+        );
+    }
+
+    #[test]
+    fn btime_is_read_from_its_own_line() {
+        let proc_stat = "cpu  1 2 3\nintr 5\nbtime 1700000000\nprocesses 9\n";
+        assert_eq!(parse_btime(proc_stat), Some(1_700_000_000));
+        assert_eq!(parse_btime("cpu 1\n"), None, "no btime line");
+        assert_eq!(parse_btime("btime soon\n"), None, "non-numeric");
+    }
+
+    #[test]
+    fn ticks_convert_to_unix_ms_and_refuse_a_zero_rate() {
+        // 250 ticks at 100 Hz is 2.5 s after a boot at t = 1000 s.
+        assert_eq!(ticks_since_boot_to_unix_ms(250, 1000, 100), Some(1_002_500));
+        assert_eq!(ticks_since_boot_to_unix_ms(250, 1000, 0), None);
+        assert_eq!(ticks_since_boot_to_unix_ms(u64::MAX, 1, 100), None);
+    }
+
+    #[test]
+    fn impossible_pids_are_no_answer() {
+        for pid in [0, -1, i32::MAX] {
+            assert_eq!(process_start_time(pid), None);
+            assert_eq!(process_start_ms(pid), None);
+        }
+    }
+
+    /// The live half: this test process can read its own start time, and
+    /// reads the SAME value twice. A query that varied per call would make
+    /// every identity recheck a fabricated restart.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn process_start_ms_of_self_is_stable_and_nonzero() {
+        let pid = i32::try_from(std::process::id()).expect("pid fits i32");
+        let raw = process_start_time(pid).expect("our own start time is queryable");
+        assert!(raw > 0, "a real start time, not a placeholder");
+        assert_eq!(process_start_time(pid), Some(raw), "stable across calls");
+
+        let first = process_start_ms(pid).expect("our own start ms is queryable");
+        assert_eq!(process_start_ms(pid), Some(first), "stable across calls");
+        let now_ms = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_millis(),
+        )
+        .expect("ms fits u64");
+        // 2020-01-01, and no later than now (plus Linux's one-second
+        // `btime` granularity).
+        assert!(first > 1_577_836_800_000, "a Unix-ms value, got {first}");
+        assert!(
+            first <= now_ms + 1_000,
+            "{first} is in the future of {now_ms}"
+        );
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, reason = "tests")]
 mod tests {
-    use super::{foreground_pgid, process_argv};
+    use super::{argv0_name, foreground_pgid, process_argv};
+
+    #[test]
+    fn argv0_name_is_the_basename_without_a_login_dash() {
+        let argv = |args: &[&str]| args.iter().map(|a| (*a).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            argv0_name(&argv(&["/bin/sleep", "30"])),
+            Some("sleep".to_owned())
+        );
+        assert_eq!(argv0_name(&argv(&["-zsh"])), Some("zsh".to_owned()));
+        assert_eq!(
+            argv0_name(&argv(&["vim", "secret.txt"])),
+            Some("vim".to_owned())
+        );
+        assert_eq!(argv0_name(&[]), None);
+        assert_eq!(argv0_name(&argv(&["/usr/bin/"])), None);
+    }
 
     /// A regular file is not a tty, so it has no foreground process group.
     /// The query must degrade to `None`, not error.

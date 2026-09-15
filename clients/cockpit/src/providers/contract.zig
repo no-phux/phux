@@ -285,6 +285,9 @@ pub const Presentation = struct {
     owner: ReplicaOwner,
     phase: Phase,
     title: []const u8,
+    /// The live working directory the shell last reported, or empty when
+    /// none is known. Feeds the tab-naming chain after `title`.
+    cwd: []const u8 = "",
     cols: u16,
     rows: u16,
     history_total_rows: u64 = 0,

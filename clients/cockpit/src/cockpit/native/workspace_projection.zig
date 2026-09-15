@@ -418,6 +418,35 @@ pub const side_tab_height: f32 = tab_height;
 pub const split_divider_width: f32 = chrome_gap;
 pub const split_pane_min_width: f32 = 240;
 pub const split_pane_min_height: f32 = 80;
+/// Inner inset that keeps the terminal GRID inside a rounded card.
+/// `spacing.xs` (4) clears `radius.md` (6) × (1 − 1/√2) ≈ 1.76, so cells
+/// never enter the corner curve. Applied only when a window has two or
+/// more panes — a single pane stays full-bleed. Focus never changes this.
+pub const pane_chrome_inset: f32 = chrome_band_inset;
+
+/// The rect the grid, the PTY, and pointer cell-mapping all share. A
+/// derived inset of the layout card, not a second layout pass: `resolve`
+/// still owns split math and which-pane hit testing.
+pub fn paneGridRect(card: geometry.RectF, pane_count: usize) geometry.RectF {
+    if (pane_count < 2) return card;
+    return card.inset(geometry.InsetsF.all(pane_chrome_inset));
+}
+
+pub fn paneCardRadius(tokens: canvas.DesignTokens) canvas.Radius {
+    return canvas.Radius.all(tokens.radius.md);
+}
+
+/// The Native SDK ring-offset treatment: the card keeps its hairline and
+/// the accent ring floats `stroke.focus_offset` outside it, so focus never
+/// restyles the control or resizes the grid.
+pub fn paneFocusRingRect(card: geometry.RectF, tokens: canvas.DesignTokens) geometry.RectF {
+    return card.normalized().inflate(geometry.InsetsF.all(@max(0, tokens.stroke.focus_offset)));
+}
+
+pub fn paneFocusRingRadius(tokens: canvas.DesignTokens) canvas.Radius {
+    const offset = @max(0, tokens.stroke.focus_offset);
+    return canvas.Radius.all(tokens.radius.md + offset);
+}
 pub const webkit_parking_extent = scene.webkit_parking_extent;
 const widget_command_reserve: usize = canvas.terminal_grid.widget_command_reserve;
 pub const chrome_command_envelope: usize = native_sdk.runtime.max_canvas_commands_per_view - widget_command_reserve;
@@ -747,17 +776,44 @@ pub fn terminalTitleInto(model: *const Model, id: TerminalRef, out: []u8) []cons
     return remoteTitle(model, id);
 }
 
+/// The same chain for a Phux terminal, reading what the replica reports live
+/// (title, then the working-directory basename) before what the attach
+/// catalog recorded, which can only be older.
 fn remoteTitle(model: *const Model, id: TerminalRef) []const u8 {
-    if (model.remotePresentation(id)) |presentation| {
-        if (presentation.title.len != 0) return clampTitle(presentation.title);
+    const presentation = model.remotePresentation(id);
+    if (presentation) |value| {
+        if (value.title.len != 0) return clampTitle(value.title);
+        if (cwdLeaf(value.cwd)) |leaf| return clampTitle(leaf);
     }
-    const remote = model.phuxForRefConst(id) orelse return "Phux";
-    for (remote.catalogTerminals()) |*entry| {
-        if (!entry.terminal_ref.eql(id)) continue;
-        if (entry.title.len != 0) return clampTitle(entry.title.slice());
-        if (entry.cwd.len != 0) return clampTitle(entry.cwd.slice());
-    }
+    const entry = catalogEntry(model, id) orelse return "Phux";
+    if (entry.title.len != 0) return clampTitle(entry.title.slice());
+    if (cwdLeaf(entry.cwd.slice())) |leaf| return clampTitle(leaf);
     return "Phux";
+}
+
+fn catalogEntry(model: *const Model, id: TerminalRef) ?*const provider_contract.workspace.CatalogTerminal {
+    const remote = model.phuxForRefConst(id) orelse return null;
+    for (remote.catalogTerminals()) |*entry| {
+        if (entry.terminal_ref.eql(id)) return entry;
+    }
+    return null;
+}
+
+/// The name a working directory gives a tab: its basename, or `/` for the
+/// root (whose basename is empty). An empty directory names nothing.
+fn cwdLeaf(cwd: []const u8) ?[]const u8 {
+    const leaf = std.fs.path.basename(cwd);
+    if (leaf.len != 0) return leaf;
+    return if (cwd.len != 0) "/" else null;
+}
+
+/// Whether a terminal sits at a shell prompt, answered the same way for both
+/// providers: the local emulator's OSC-133 read, or a Phux terminal's last
+/// command boundary. False means "busy" or "unknown"; neither guesses.
+pub fn terminalAtPrompt(model: *const Model, id: TerminalRef) bool {
+    if (model.provider.terminalConst(id)) |pane| return pane.atPrompt();
+    const remote = model.phuxForRefConst(id) orelse return false;
+    return remote.atPrompt(id);
 }
 
 /// The coordinator whose shared workspace a tab came from.
@@ -1935,7 +1991,7 @@ pub fn proposedViewportsIn(
     // remote panes a proportional cell 46 percent too wide.
     const metrics = terminalCellMetricsFor(terminalTokens(model));
     for (panes[0..count]) |pane| {
-        const inner = pane.rect;
+        const inner = paneGridRect(pane.rect, count);
         if (inner.width <= 0 or inner.height <= 0) continue;
         if (model.provider.terminalConst(pane.terminal)) |terminal| {
             const session = terminal.session;
@@ -2015,7 +2071,27 @@ pub fn paneFrameFor(model: *const Model, size: geometry.SizeF, id: TerminalRef) 
     var panes: [layout.max_panes]layout.Pane = undefined;
     const count = resolvePanes(model, size, &panes);
     for (panes[0..count]) |pane| {
-        if (pane.terminal.eql(id)) return pane.rect;
+        if (pane.terminal.eql(id)) return paneGridRect(pane.rect, count);
     }
     return null;
+}
+
+test "paneGridRect is identity for a lone pane and a constant inset for splits" {
+    const testing = std.testing;
+    const card = geometry.RectF.init(10, 20, 400, 300);
+    try testing.expectEqualDeep(card, paneGridRect(card, 1));
+    const grid_rect = paneGridRect(card, 2);
+    try testing.expectEqual(card.x + pane_chrome_inset, grid_rect.x);
+    try testing.expectEqual(card.y + pane_chrome_inset, grid_rect.y);
+    try testing.expectEqual(card.width - 2 * pane_chrome_inset, grid_rect.width);
+    try testing.expectEqual(card.height - 2 * pane_chrome_inset, grid_rect.height);
+    try testing.expectEqualDeep(grid_rect, paneGridRect(card, 8));
+}
+
+test "pane chrome inset clears the rounded-corner overshoot" {
+    const testing = std.testing;
+    const tokens = baseTokens();
+    const overshoot = tokens.radius.md * (1.0 - 1.0 / std.math.sqrt(@as(f32, 2.0)));
+    try testing.expect(pane_chrome_inset > overshoot);
+    try testing.expectEqual(chrome_band_inset, pane_chrome_inset);
 }

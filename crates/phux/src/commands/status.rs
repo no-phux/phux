@@ -36,11 +36,14 @@ use std::process::ExitCode;
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
 use phux_client::state::Degradation;
-use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+use phux_protocol::caps::ServerFeatureSet;
 use phux_protocol::wire::info::{SessionInfo, SessionSnapshot};
 use phux_server::runtime::default_socket_path;
 
 use crate::commands::{cli_runtime, json_err, ls};
+// Feature bits by their `snake_case` name (the `docs/spec/proto.md` constant
+// lower-cased), from the table `--capabilities --json` shares.
+use crate::feature_names::feature_names;
 
 /// Version of the `phux status --json` document. Additive fields do not
 /// bump it.
@@ -121,40 +124,6 @@ async fn collect(socket_path: &Path) -> Result<StatusReport, AttachError> {
         &snapshot,
         &degradation,
     ))
-}
-
-/// Every advertised feature bit as its `snake_case` name, in bit order.
-///
-/// The names are the wire constants' names lower-cased (`REPORT_AGENT_STATE`
-/// -> `report_agent_state`), so a reader can match them against
-/// `docs/spec/proto.md` without a translation table. The enum is
-/// `#[non_exhaustive]`; a bit this binary does not know is not named.
-fn feature_names(features: ServerFeatureSet) -> Vec<&'static str> {
-    const NAMED: &[(ServerFeature, &str)] = &[
-        (ServerFeature::AcknowledgedInput, "acknowledged_input"),
-        (ServerFeature::FileUpload, "file_upload"),
-        (ServerFeature::MoveResource, "move_terminal"),
-        (ServerFeature::TerminalReply, "terminal_reply"),
-        (ServerFeature::Shutdown, "shutdown"),
-        (ServerFeature::SpawnInitialSize, "spawn_initial_size"),
-        (ServerFeature::ReportAgentState, "report_agent_state"),
-        (ServerFeature::GetPerf, "get_perf"),
-        (ServerFeature::Transcribe, "transcribe"),
-        (ServerFeature::ResourceKinds, "resource_kinds"),
-        (ServerFeature::ListDirectory, "list_directory"),
-        (ServerFeature::HostSessions, "host_sessions"),
-        (ServerFeature::KeepEmptySessions, "keep_empty_sessions"),
-        (ServerFeature::Whoami, "whoami"),
-        (ServerFeature::ListDirectoryHost, "list_directory_host"),
-        (ServerFeature::SshOrigin, "ssh_origin"),
-        (ServerFeature::ConditionalKill, "conditional_kill"),
-        (ServerFeature::OpenListener, "open_listener"),
-    ];
-    NAMED
-        .iter()
-        .filter(|(feature, _)| features.contains(*feature))
-        .map(|(_, name)| *name)
-        .collect()
 }
 
 /// Assemble the [`StatusReport`] from its collected parts. Split from
@@ -601,7 +570,12 @@ mod tests {
         assert!(feature_names(ServerFeatureSet::new()).is_empty());
         let all = ServerFeatureSet::from_wire(u32::MAX);
         let names = feature_names(all);
-        assert_eq!(names.len(), 18, "one name per known bit: {names:?}");
+        assert_eq!(names.len(), 22, "one name per known bit: {names:?}");
+        assert!(names.contains(&"event_journal"));
+        assert!(names.contains(&"retain_on_exit"));
+        assert!(names.contains(&"spawn_idempotency"));
+        assert!(names.contains(&"move_resource"));
+        assert!(names.contains(&"quic_streams"));
         assert!(names.contains(&"conditional_kill"));
         assert!(names.contains(&"host_sessions"));
         assert!(names.contains(&"keep_empty_sessions"));

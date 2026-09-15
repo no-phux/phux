@@ -38,6 +38,11 @@ import {
   publicFallbackReason,
   type InternalFallbackReason,
 } from "./session-info";
+import {
+  classifyRequest,
+  forwardEvents,
+} from "../../host/telemetry";
+import { buildEnvelope, forwardEnvelope } from "../../host/analytics";
 
 export { SessionDO, GlobalCapDO, PhuxSessionContainer, RateLimitDO };
 
@@ -46,6 +51,14 @@ export interface Env extends AuthEnv {
   PHUX_SESSION: DurableObjectNamespace<PhuxSessionContainer>;
   GLOBAL_CAP: DurableObjectNamespace<GlobalCapDO>;
   RATE_LIMIT: DurableObjectNamespace<RateLimitDO>;
+  // Cross-worker telemetry: demo session events are forwarded over HTTP to
+  // the site worker's ingest route (shared secret). No DO of our own.
+  TELEMETRY_INGEST_URL?: string;
+  TELEMETRY_INGEST_KEY?: string;
+  // Private ops pipeline (no-phux/ops) + member-cookie secret.
+  ANALYTICS_INGEST_URL?: string;
+  ANALYTICS_INGEST_KEY?: string;
+  MEMBER_KEY?: string;
 
   SESSION_TOKEN_SECRET: string; // secret (wrangler secret put)
   SYNTHETIC_TOKEN_SECRET?: string; // shared only with the production monitor
@@ -92,6 +105,37 @@ function circuitConfig(env: Env): CircuitConfig {
     windowMs: positiveInt(env.NATIVE_CIRCUIT_WINDOW_MS, 60_000),
     openMs: positiveInt(env.NATIVE_CIRCUIT_OPEN_MS, 60_000),
   };
+}
+
+// Record an accepted demo session (101) into the shared aggregate telemetry.
+// Events are forwarded to the site worker's ingest route; best-effort and
+// never blocks the upgrade.
+function recordSession(
+  env: Env,
+  ctx: ExecutionContext,
+  request: Request,
+  response: Response,
+  mode: string,
+  backend: string,
+): void {
+  try {
+    forwardEvents(
+      env.TELEMETRY_INGEST_URL,
+      env.TELEMETRY_INGEST_KEY,
+      ctx,
+      [
+        ...classifyRequest(request, response),
+        { dim: "session", key: `${mode}:${backend}` },
+      ],
+    );
+    forwardEnvelope(
+      env,
+      ctx,
+      buildEnvelope(request, response, { mode, backend }),
+    );
+  } catch {
+    // telemetry must never affect the demo door
+  }
 }
 
 function clientIp(request: Request): string {
@@ -261,7 +305,10 @@ export default {
         session,
         cap,
       });
-      if ("response" in result) return result.response;
+      if ("response" in result) {
+        recordSession(env, ctx, request, result.response, mode, "native");
+        return result.response;
+      }
       fallbackReason = result.fallbackReason;
     }
 
@@ -302,7 +349,18 @@ export default {
         snapshot,
         fallbackReason ? publicFallbackReason(fallbackReason) : undefined,
       );
-      return await session.fetch(fwd);
+      const response = await session.fetch(fwd);
+      if (response.status === 101) {
+        recordSession(
+          env,
+          ctx,
+          request,
+          response,
+          mode,
+          mode === "native" ? "edge-fallback" : mode,
+        );
+      }
+      return response;
     } catch (err) {
       ctx.waitUntil(cap.release(sid));
       return rejectUpgrade(CLOSE.INTERNAL, "internal error starting session");
