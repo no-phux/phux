@@ -1953,6 +1953,11 @@ pub(crate) async fn handle_spawn_terminal(
     let attribution = super::commands::SpawnAttribution {
         actor: Some(client_id),
         operation_id: resource.as_ref().and_then(|r| r.idempotency_key),
+        // ADR-0124: field 16 resolved against `defaults.retain-on-exit*`.
+        retain_secs: state.with(|s| {
+            s.retain_policy()
+                .resolve(resource.as_ref().and_then(|r| r.retain_secs))
+        }),
     };
     match crate::resource::core_kind(kind) {
         Some(crate::resource::ResourceKind::Terminal) => {}

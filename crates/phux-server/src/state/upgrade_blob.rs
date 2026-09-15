@@ -22,7 +22,8 @@ use super::ServerState;
 use crate::resource::ResourceHandle;
 use crate::terminal_actor::{PaneUpgradeHandle, TerminalActor, UpgradeHandleRequest};
 use crate::upgrade::blob::{
-    BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob, StateBlob, WindowBlob,
+    BLOB_VERSION, Counters, LayoutBlob, PaneBlob, RetainedExitBlob, SessionBlob, SplitDirBlob,
+    StateBlob, WindowBlob,
 };
 
 /// Errors rebuilding a [`ServerState`] from a [`StateBlob`].
@@ -164,12 +165,19 @@ impl ServerState {
                     ) else {
                         continue;
                     };
+                    // ADR-0124 §6: a retained pane has no process to
+                    // re-adopt, so its PTY does not cross and the new image
+                    // closes it with the exit it kept; a live pane's
+                    // retention request crosses with it.
+                    let retained = self.retained_exit(tid).map(exit_blob);
                     panes.push(pane_blob(
                         pane_wire,
                         window_wire,
                         desc,
                         &self.config.term,
-                        handoffs.get(&tid),
+                        handoffs.get(&tid).filter(|_| retained.is_none()),
+                        retained,
+                        self.retain_request(tid),
                     ));
                 }
             }
@@ -253,6 +261,8 @@ fn pane_blob(
     desc: &TerminalFacet,
     term: &str,
     handoff: Option<&PaneUpgradeHandle>,
+    retained_exit: Option<RetainedExitBlob>,
+    retain_secs: Option<u32>,
 ) -> PaneBlob {
     let (cols, rows) = handoff.as_ref().map_or(desc.dims, |h| (h.cols, h.rows));
     PaneBlob {
@@ -279,7 +289,26 @@ fn pane_blob(
         scrollback_bytes: handoff
             .map(|h| h.scrollback_bytes.clone())
             .unwrap_or_default(),
+        retained_exit,
+        retain_secs,
     }
+}
+
+/// A retained pane's exit facet as the upgrade blob carries it.
+const fn exit_blob(facet: phux_protocol::wire::info::ExitFacet) -> RetainedExitBlob {
+    RetainedExitBlob {
+        exit_status: facet.exit_status,
+        signal: facet.signal,
+        exited_at_ms: facet.exited_at_ms,
+        retained_until_ms: facet.retained_until_ms,
+    }
+}
+
+/// The exit facet a resumed image restores from the blob.
+const fn exit_facet(blob: RetainedExitBlob) -> phux_protocol::wire::info::ExitFacet {
+    phux_protocol::wire::info::ExitFacet::new(blob.exited_at_ms, blob.retained_until_ms)
+        .with_exit_status(blob.exit_status)
+        .with_signal(blob.signal)
 }
 
 /// Each rebuilt pane's core id and the one-shot exit receiver the runtime
@@ -425,6 +454,13 @@ impl ServerState {
                 exit_notify,
             } = bundle;
             self.spawn_resource_actor(core, handle, token, actor.run());
+            // ADR-0124: what the old image knew about this pane's retention.
+            if let Some(secs) = p.retain_secs {
+                self.note_retain_request(core, secs);
+            }
+            if let Some(exit) = p.retained_exit {
+                self.restore_retained_exit(core, exit_facet(exit));
+            }
             if let Some(exit_notify) = exit_notify {
                 panes.exit_watchers.push((core, exit_notify));
             }
@@ -477,6 +513,24 @@ impl ServerState {
                 sess.active = active;
             }
         }
+    }
+
+    /// Close every pane the old image retained after its process exited
+    /// (ADR-0124 §6). Each was rebuilt without a PTY only so it closes
+    /// through its exit watcher like any other resource, with
+    /// `RESOURCE_CLOSED { SERVER_SHUTDOWN }` and its `pane_closed`. Returns
+    /// how many closed.
+    pub fn close_upgrade_retained(&mut self, blob: &StateBlob) -> u32 {
+        let retained: Vec<ResourceId> = blob
+            .panes
+            .iter()
+            .filter(|pane| pane.retained_exit.is_some())
+            .filter_map(|pane| self.terminal_from_wire(&WireResourceId::local(pane.wire_id)))
+            .collect();
+        self.close_resources(
+            &retained,
+            phux_protocol::wire::frame::CloseReason::ServerShutdown,
+        )
     }
 
     /// Restore the allocators above every restored id.

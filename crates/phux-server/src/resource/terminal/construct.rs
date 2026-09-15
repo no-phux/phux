@@ -316,6 +316,7 @@ impl TerminalActor {
             osc133: osc133::Osc133Scanner::new(),
             prompt: osc133::PromptTracker::default(),
             child_start_ms: child_facts.start_ms,
+            released_child_pid: None,
             exit: None,
             lifecycle: ResourceLifecycle::Running,
             cols,

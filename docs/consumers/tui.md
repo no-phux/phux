@@ -323,6 +323,18 @@ When the last pane of a default session dies, the TUI tears down and prints one
 cooked-terminal line naming the exit. A keep-empty session stays attached and
 paints `Empty session` with the `new-window` chord.
 
+**Retained panes.** A pane whose spawner asked the server to retain it
+(`SPAWN_RESOURCE.retain_secs`, or `defaults.retain-on-exit`, ADR-0124) does not
+close when its process exits. It keeps its place in the layout and shows its
+last screen, and the bar shows `[ exited N ]` (`[ exited signal N ]` for a
+signal death) while it is focused. Keys, pastes, and mouse reports to it are
+dropped; scrolling its history and copy-mode still work. It closes like any
+other pane when the server purges it: on expiry, when the retained count bound
+evicts it, or when you kill it. The TUI's own splits and windows never ask for
+retention; with `defaults.retain-on-exit` set, every pane is retained, the seed
+pane included. A retained pane holds its grid and history (up to
+`defaults.history-bytes`) but no pseudoterminal.
+
 **Reconnect.** If the server vanishes mid-session, the TUI drops to the
 cooked screen and waits: 10 seconds, polling every 100 ms, on the local
 socket; 60 seconds with exponential backoff on `--ws` / `--quic`. A

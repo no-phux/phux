@@ -259,6 +259,31 @@ pub struct PaneBlob {
     /// Replayable scrollback history that precedes the viewport, or empty.
     #[serde(default)]
     pub scrollback_bytes: Vec<u8>,
+    /// How the pane's process ended, when it was retained after its exit
+    /// (ADR-0124). Such a pane crosses with no PTY, and the resumed image
+    /// rebuilds it only to close it with `RESOURCE_CLOSED { SERVER_SHUTDOWN }`
+    /// carrying this exit.
+    #[serde(default)]
+    pub retained_exit: Option<RetainedExitBlob>,
+    /// Seconds a still-running pane asked to be retained after its process
+    /// exits (ADR-0124), so the request survives the upgrade.
+    #[serde(default)]
+    pub retain_secs: Option<u32>,
+}
+
+/// A retained pane's exit record (ADR-0124), as the upgrade blob carries it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RetainedExitBlob {
+    /// `_exit(n)` status, when known.
+    #[serde(default)]
+    pub exit_status: Option<i32>,
+    /// The terminating signal, when known.
+    #[serde(default)]
+    pub signal: Option<i32>,
+    /// When the process exited, Unix milliseconds.
+    pub exited_at_ms: u64,
+    /// When the old image would have purged it, Unix milliseconds.
+    pub retained_until_ms: u64,
 }
 
 /// A serializable mirror of [`LayoutNode`](phux_core::window::LayoutNode),
@@ -360,6 +385,8 @@ mod tests {
                     master_fd: Some(11),
                     vt_replay_bytes: b"\x1b[2J\x1b[Hhello".to_vec(),
                     scrollback_bytes: b"old line\r\n".to_vec(),
+                    retained_exit: None,
+                    retain_secs: None,
                 },
                 PaneBlob {
                     wire_id: 2,
@@ -374,6 +401,8 @@ mod tests {
                     master_fd: Some(12),
                     vt_replay_bytes: vec![],
                     scrollback_bytes: vec![],
+                    retained_exit: None,
+                    retain_secs: None,
                 },
             ],
         }

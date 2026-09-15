@@ -292,6 +292,9 @@ impl ServerState {
         // an entry still here belonged to a resource that never got that
         // far, and it must not outlive the id it is filed under.
         self.forget_close_reason(pane);
+        // A retained pane's exit facet (ADR-0124) is filed under the id this
+        // reap retires; the purge is over.
+        self.retained.forget(pane);
         // The asked-detector is keyed by core pane id, so it clears before
         // the wire id is retired; the arbiter half is keyed by wire id and
         // clears after.

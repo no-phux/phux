@@ -69,8 +69,10 @@ impl TerminalActor {
     }
 
     fn child_pid(&self) -> Option<i32> {
-        let pid = self.pty.as_ref()?.child.process_id()?;
-        i32::try_from(pid).ok()
+        let Some(pty) = self.pty.as_ref() else {
+            return self.released_child_pid;
+        };
+        i32::try_from(pty.child.process_id()?).ok()
     }
 
     fn child_identity(&self) -> Option<ProcessIdentity> {

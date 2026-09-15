@@ -859,6 +859,11 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if self.begin_drag_to_copy(&routed, &target) {
             return Ok(StageOutcome::consumed(layout_changed));
         }
+        // ADR-0124: scrolling and copying a retained pane still work above;
+        // a mouse report has no process left to read it.
+        if crate::attach::pane_state::pane_exited(self.panes, &target) {
+            return Ok(StageOutcome::consumed(layout_changed));
+        }
         self.send_terminal_input(
             target,
             InputEvent::Mouse(scale_to_surface_pixels(routed, self.ctx.cell_px)),
@@ -1139,6 +1144,12 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::debug!("dropping input received before ATTACHED");
             return Ok(false);
         };
+        // ADR-0124: a retained pane's process exited; there is nothing to
+        // type into, and the server would refuse it anyway.
+        if crate::attach::pane_state::pane_exited(self.panes, &pane) {
+            tracing::debug!(terminal = ?pane, "dropping input: the pane's process exited");
+            return Ok(false);
+        }
         // phux-foz.1: forwarding key/paste input to a pane answers (or at
         // least engages) its pending agent question, so clear its asked
         // attention flag. Focus/mouse events don't clear — merely looking

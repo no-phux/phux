@@ -455,6 +455,38 @@ impl TerminalActor {
         self.core.notify_exit(exit);
     }
 
+    /// Let go of a retained pane's PTY once its process has exited
+    /// (ADR-0124): close the master and the writer, so an exited pane holds
+    /// no pseudoterminal and no descriptor while it waits to be purged. The
+    /// grid and history live in the engine and stay.
+    ///
+    /// EOF reaped the child when it could. One it could not (it closed its
+    /// tty but lives on, or `try_wait` failed) is handed to a reaper thread
+    /// rather than left a zombie; the recorded exit decides, not a second
+    /// `try_wait`, which could name a recycled pid.
+    pub(super) fn release_pty_after_exit(&mut self) {
+        self.pty_rx = None;
+        drop(self.pty_tx.take());
+        let Some(mut pty) = self.pty.take() else {
+            return;
+        };
+        let pid = pty.child.process_id();
+        self.released_child_pid = pid.and_then(|pid| i32::try_from(pid).ok());
+        let reaped = self
+            .exit
+            .as_ref()
+            .is_some_and(|exit| exit.status.is_some() || exit.signal.is_some());
+        if !reaped {
+            spawn_detached_reaper(pid);
+        }
+        // The reader already saw EOF and the writer's channel just closed,
+        // so both threads end on their own; dropping the handles detaches
+        // them rather than blocking this actor on a join.
+        drop(pty.reader_thread.take());
+        drop(pty.writer_thread.take());
+        drop(pty);
+    }
+
     /// Tear down the PTY: gracefully stop the child if still alive, drop
     /// the master (which sends EOF to the slave and unblocks the reader
     /// thread), and join the bridge threads. Best-effort: errors are

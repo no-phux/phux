@@ -349,6 +349,11 @@ pub enum ControlRequest {
         /// Delivery acknowledgement.
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// The pane's process exited and the pane is retained (ADR-0124): report
+    /// `Exited` in every later `TerminalControl`, stop the agent detector (it
+    /// has no process to watch), and refuse input from now on. The grid,
+    /// history, and consumers stay. No reply: the exit is a fact.
+    Retire,
 }
 
 // ---- handle -----------------------------------------------------------------

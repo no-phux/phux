@@ -92,6 +92,14 @@ impl ServerState {
                     let terminal_wire = self.intern_terminal_wire(*pid);
                     let cwd =
                         Some(terminal.cwd.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
+                    // ADR-0124: a retained pane reports how its process
+                    // ended; a live one adds nothing to the extension block.
+                    let exit = self.retained_exit(*pid);
+                    let lifecycle = if exit.is_some() {
+                        phux_protocol::wire::frame::ResourceLifecycle::Exited
+                    } else {
+                        phux_protocol::wire::frame::ResourceLifecycle::Running
+                    };
                     panes.push(
                         ResourceInfo::new(
                             terminal_wire,
@@ -100,7 +108,9 @@ impl ServerState {
                             terminal.dims.1,
                         )
                         .with_title(terminal.title.clone())
-                        .with_cwd(cwd),
+                        .with_cwd(cwd)
+                        .with_lifecycle(lifecycle)
+                        .with_exit(exit),
                     );
                 }
             }

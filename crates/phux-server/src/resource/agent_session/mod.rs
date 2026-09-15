@@ -354,7 +354,8 @@ impl AgentSessionActor {
             }
             ControlRequest::LeaseChanged { .. }
             | ControlRequest::AgentRecordInvalidated
-            | ControlRequest::BindAgentSession { .. } => {}
+            | ControlRequest::BindAgentSession { .. }
+            | ControlRequest::Retire => {}
         }
     }
 }

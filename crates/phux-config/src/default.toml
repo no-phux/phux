@@ -66,6 +66,18 @@ agent-log-bytes = 4194304
 # the accepted maxima.
 event-journal-entries = 4096
 event-journal-bytes = 1048576
+# Retain on exit (ADR-0124): keep a Terminal inspectable after its process
+# exits -- its exit status, last screen, and history -- until it expires, the
+# count bound evicts it (oldest first), or it is killed. Off by default: a
+# spawner asks for it per pane. true retains every pane that does not say, the
+# seed pane included. retain-on-exit-secs is what a default retention lasts; no
+# retention outlasts retain-on-exit-max-secs. A retained pane holds its grid and
+# history (up to history-bytes: about 512 MiB at 256 panes with the 2 MiB
+# default) but no PTY. 4096 is the accepted maximum count.
+retain-on-exit = false
+retain-on-exit-secs = 600
+retain-on-exit-max-secs = 86400
+retain-on-exit-max = 256
 # Client-side outer-terminal mouse tracking on attach (ADR-0048): divider
 # drag-to-resize and click-to-focus work without an inner program turning
 # mouse mode on. false = pass-through-only (native click-drag selection).

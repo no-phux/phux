@@ -73,6 +73,10 @@ pub(crate) struct SpawnAttribution {
     pub(crate) actor: Option<ClientId>,
     /// The spawn's idempotency key (`SPAWN_RESOURCE` field 17, ADR-0126).
     pub(crate) operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+    /// Seconds the pane is retained after its process exits (ADR-0124),
+    /// already resolved against `defaults.retain-on-exit*`; `None` closes it
+    /// at exit. Recorded in the lock that registers the pane.
+    pub(crate) retain_secs: Option<u32>,
 }
 
 /// Where a session's seed pane came from: the agent-session provenance its
@@ -315,6 +319,14 @@ fn seed_session_with_pty_and_colors_and_metadata(
     actor.set_live_session_probe(live_session_probe(state, terminal));
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
+        // ADR-0124: a spawn that did not ask gets the operator's default, so
+        // `defaults.retain-on-exit` covers seed and session-create panes too.
+        let retain = attribution
+            .retain_secs
+            .or_else(|| s.retain_policy().resolve(None));
+        if let Some(secs) = retain {
+            s.note_retain_request(terminal, secs);
+        }
         let wire = s.intern_terminal_wire(terminal);
         journal_pane_spawned(s, &wire, attribution);
         wire
@@ -474,6 +486,14 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     actor.set_live_session_probe(live_session_probe(state, terminal));
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
+        // ADR-0124: a spawn that did not ask gets the operator's default, so
+        // `defaults.retain-on-exit` covers seed and session-create panes too.
+        let retain = attribution
+            .retain_secs
+            .or_else(|| s.retain_policy().resolve(None));
+        if let Some(secs) = retain {
+            s.note_retain_request(terminal, secs);
+        }
         let wire = s.intern_terminal_wire(terminal);
         journal_pane_spawned(s, &wire, attribution);
         wire
@@ -619,6 +639,12 @@ pub(crate) fn handle_terminal_resize(
             ResolvedOwned::Local(local) => local,
         };
         let terminal = local.id;
+        // ADR-0124: a retained pane's grid is the record of how its process
+        // ended; a resize would reflow it for nobody. A no-op, not an error.
+        if s.retained_exit(terminal).is_some() {
+            debug!(?client_id, ?wire_terminal_id, "RESIZE_TERMINAL: pane exited; ignored");
+            return;
+        }
         // Clamp to the same one-cell floor `TerminalActor::handle_resize`
         // applies. libghostty has no zero-dimension grid, so a `0` on either
         // axis becomes a `1` down there regardless; recording the raw request
@@ -4096,7 +4122,8 @@ pub(crate) async fn handle_get_terminal_state(
     // already best-effort (`null` when unobtainable). An actor that cannot
     // answer at all degrades to `process: null` rather than failing the
     // whole snapshot. `shell_state` mirrors the prompt facet.
-    let process = query_process_facet(terminal).await;
+    let mut process = query_process_facet(terminal).await;
+    reconcile_process_exit(state, terminal_id, process.as_mut());
     let shell_state = process
         .as_ref()
         .and_then(|process| serde_json::to_value(process.prompt).ok());
@@ -4134,6 +4161,34 @@ pub(crate) async fn handle_get_terminal_state(
             code: ErrorCode::InternalError,
             message: format!("terminal state serialization failed: {err}"),
         },
+    }
+}
+
+/// Make `process.exit` the record `GET_STATE` reports (ADR-0124, L1 §1.1):
+/// a retained pane's exit facet replaces the engine's, and a pane whose close
+/// is still being emitted takes its `reason` from the close ledger rather
+/// than the engine's "exited", so a kill reads `killed` on both surfaces.
+fn reconcile_process_exit(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    process: Option<&mut phux_core::process::TerminalProcessState>,
+) {
+    let Some(process) = process else {
+        return;
+    };
+    let (retained, pending) = state.with(|s| {
+        let pane = s.terminal_from_wire(terminal_id);
+        (
+            pane.and_then(|pane| s.retained_process_exit(pane)),
+            pane.and_then(|pane| s.pending_close_reason(pane)),
+        )
+    });
+    if let Some(exit) = retained {
+        process.exit = Some(exit);
+        return;
+    }
+    if let (Some(exit), Some(reason)) = (process.exit.as_mut(), pending) {
+        crate::state::close_reason_name(reason).clone_into(&mut exit.reason);
     }
 }
 
@@ -4215,6 +4270,9 @@ pub(crate) fn with_route_input_destination<R>(
             Resolved::Local(local) => local,
         };
         let pane = local.id;
+        if s.retained_exit(pane).is_some() {
+            return Err(exited_input_refusal());
+        }
         if s.input_blocked(pane, client_id) {
             debug!(
                 ?client_id,
@@ -4233,6 +4291,15 @@ pub(crate) fn with_route_input_destination<R>(
             .clone();
         Ok(action(InputDestination { pane, handle }))
     })
+}
+
+/// Input to a Terminal whose process exited and which is retained read-only
+/// (ADR-0124): nothing was written, as for a pane with no PTY (L1 §6.2.1).
+fn exited_input_refusal() -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::InputNotWritten,
+        message: "the pane's process exited; it is retained read-only".to_owned(),
+    }
 }
 
 pub(crate) fn terminal_input_from_event(event: InputEvent) -> Result<TerminalInput, CommandResult> {
@@ -4466,6 +4533,17 @@ pub(crate) async fn handle_signal_terminal(
     // an `AgentSession` does not have.
     if let Err(error) = handle.terminal() {
         return wrong_resource_kind(error);
+    }
+    // ADR-0124: a retained pane's child is already reaped; there is nothing
+    // to signal. `KILL_RESOURCE` is how it is purged.
+    if state.with(|s| {
+        s.terminal_from_wire(terminal_id)
+            .is_some_and(|pane| s.retained_exit(pane).is_some())
+    }) {
+        return CommandResult::Error {
+            code: ErrorCode::InvalidCommand,
+            message: format!("{terminal_id} exited; its process cannot be signalled"),
+        };
     }
     let (reply_tx, reply_rx) = oneshot::channel();
     if handle
@@ -4960,6 +5038,15 @@ pub(crate) fn with_attached_input_destination<R>(
             }
         };
         let pane = local.id;
+        if s.retained_exit(pane).is_some() {
+            trace!(
+                ?client_id,
+                ?wire_terminal_id,
+                frame_label,
+                "input dropped: the pane's process exited (retained read-only)"
+            );
+            return None;
+        }
         if !s.subscribers_for_terminal(pane).contains(&client_id) {
             warn!(
                 ?client_id,

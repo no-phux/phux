@@ -65,6 +65,7 @@ mod reap;
 mod remote_listeners;
 mod resolve;
 mod resource_table;
+mod retained;
 mod satellite_spawns;
 mod session_table;
 mod sessions;
@@ -86,6 +87,8 @@ pub use events::{
 use hub_state::HubState;
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
+pub(crate) use retained::Retention;
+pub use retained::{RetainPolicy, close_reason_name, process_exit};
 // Facade: the mailbox payloads live at the crate root (`crate::mailbox`) so
 // `state` and `terminal_actor` can both depend on them without depending on
 // each other. Re-exported here because `crate::state::Outbound` is the spelling
@@ -283,6 +286,10 @@ pub struct ServerState {
         phux_core::ids::ResourceId,
         phux_protocol::wire::frame::CloseReason,
     >,
+    /// Retain-on-exit bookkeeping (ADR-0124): each pane's requested
+    /// retention and the exit facet of every pane retained after its
+    /// process exited. See [`retained`].
+    retained: retained::RetainedTable,
     /// Remote listener bind outcomes for `GET_STATE` / `phux doctor` (phux-kyna).
     ///
     /// Written as each configured or auto-bound transport finishes its bind

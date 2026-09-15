@@ -613,6 +613,26 @@ Every key is present; `null` means the server could not find out, never
 `exit.signal` reports a death by signal that `RESOURCE_CLOSED.exit_status`
 reads as `null`. Normative rules: [`../spec/L1.md`](../spec/L1.md) §6.3.
 
+**Retained exits.** A Terminal spawned with `SPAWN_RESOURCE.retain_secs`
+(ADR-0124; `0` asks for the server default, `defaults.retain-on-exit-secs`)
+does not close when its process exits. The server emits `terminal_control`
+with `action: exited` and the exit status, and keeps the resource: `GET_STATE`
+lists it with `lifecycle: EXITED` and an exit facet (`exit_status`, `signal`,
+`reason`, `exited_at_ms`, `retained_until_ms`), and `GET_SCREEN`,
+`GET_TERMINAL_STATE` (the same exit as `process.exit`), history, and
+`ATTACH_RESOURCE` keep answering. Input answers `INPUT_NOT_WRITTEN`;
+`SIGNAL_TERMINAL` answers `INVALID_COMMAND`. So a waiter that arrives after
+the exit reads the status instead of `TERMINAL_NOT_FOUND`: subscribe to the
+Terminal's events, then read `GET_STATE`. The resource closes with the
+ordinary `RESOURCE_CLOSED` when retention expires, when the server's retained
+count bound (`defaults.retain-on-exit-max`) evicts it, oldest first, or when
+you `KILL_RESOURCE` it (`reason: KILLED`, idempotent). A retained Terminal holds
+its grid and history until then (up to `defaults.history-bytes`, so roughly
+512 MiB at the default bound of 256 with the 2 MiB default) but no
+pseudoterminal or descriptor. Check `RETAIN_ON_EXIT`
+in `HELLO_OK` first; a server without it closes the Terminal at exit. The CLI
+flag is not in this tree yet.
+
 ### Other `--json` verbs
 
 `config agents` is `schema_version` 2: top-level `state` / `attention`

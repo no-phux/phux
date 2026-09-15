@@ -489,6 +489,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::OpenListener,
         ServerFeature::EventJournal,
         ServerFeature::SpawnIdempotency,
+        ServerFeature::RetainOnExit,
     ])
 }
 
@@ -838,6 +839,16 @@ fn pane_is_live(
         .is_some_and(|pane| s.registry().resource(pane).is_some())
 }
 
+/// Whether the pane `wire_terminal_id` names is retained after its process
+/// exited (ADR-0124).
+fn pane_exited(
+    s: &crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+) -> bool {
+    s.terminal_from_wire(wire_terminal_id)
+        .is_some_and(|pane| s.retained_exit(pane).is_some())
+}
+
 /// The connection an engine-emitted event names as its cause: the `actor`
 /// of a supervisory `terminal_control` (a take, a give, a signal). Every
 /// other engine event is server-driven.
@@ -885,6 +896,12 @@ pub(crate) fn spawn_agent_state_drain(
             // inside `with_mut` would deadlock. `None` means nothing actually
             // changed and no hook is owed.
             let hook = state.with_mut(|s| {
+                // ADR-0124: a retained pane's agent record was withdrawn at
+                // its exit; a report its detector queued before it stopped
+                // must not reassert a state for a process that is gone.
+                if pane_exited(s, &wire_terminal_id) {
+                    return None;
+                }
                 let scope = Scope::Resource(wire_terminal_id.clone());
                 // No dispatcher means no hook can run, so skip the work
                 // entirely: reading the prior record costs a metadata lookup
@@ -1313,178 +1330,371 @@ pub(crate) fn spawn_terminal_exit_watcher(
         // same as a fired EOF with unknown exit status: in both cases
         // the pane is dead and every subscribed client must be told.
         let (exit, mut events) = journal_until_exit(&state, rx, events).await;
-        // phux-emdv: gather the broadcast subscriber set AND reap the
-        // dead pane in ONE critical section, BEFORE the awaited
-        // RESOURCE_CLOSED sends. This closes the TOCTOU window that left
-        // a late attacher frozen on a dead pane: previously subscribers
-        // were gathered in one lock, the sends were awaited, and the reap
-        // happened in a SECOND lock — a client whose ATTACH landed in the
-        // gap subscribed to a pane that had already hit EOF, was never in
-        // the broadcast set, and never learned the shell exited. Reaping
-        // up-front removes the pane (and, if last, its session) from the
-        // registry, so any ATTACH that interleaves now either subscribes
-        // to the surviving panes (the dead one is gone from
-        // `attach_snapshot_panes`) or gets `SessionNotFound` — never a
-        // silent subscription to a doomed pane.
-        //
-        // `reap_terminal` clears `terminal_subscribers` for the pane
-        // (via `forget_terminal_bookkeeping`) and retires its wire id, so
-        // both MUST be captured in the same lock before the reap runs.
-        let Some(ReapAndNotify {
+        // ADR-0124: a retained pane's exit is a facet, not a close. It stays
+        // in the registry as `Exited`, readable, until a purge cancels its
+        // engine token or its retention expires; only then does it take the
+        // ordinary close path below, and that close is its `RESOURCE_CLOSED`.
+        let retained = state.with_mut(|s| retain_exited_pane(s, pane, exit, events.as_mut()));
+        let exit_hook_owed = retained.is_none();
+        if let Some(RetainedExit {
+            retention,
             wire_terminal_id,
-            reason,
-            cascaded,
-            targets,
-            server_empty,
-            served,
-            killed_clients,
-        }) = state.with_mut(|s| {
-            // ADR-0104 §2: claim this resource before touching anything. A
-            // cascading parent reaps its children inside its own lock, so a
-            // child's watcher can wake for a resource that is already gone;
-            // it must emit nothing rather than intern a fresh wire id for a
-            // corpse.
-            let reason = s.begin_resource_close(pane)?;
-            // The cascade runs in this same acquisition, before the parent
-            // is reaped, so no client observes a child whose parent has
-            // left. Each child's frame is emitted here rather than by its
-            // own watcher, which by then finds the child already claimed.
-            // Interned before the cascade so each child's close can name
-            // the parent it is leaving with, and before the reap because a
-            // retired resource has no wire id left to intern.
-            let wire_terminal_id = s.intern_terminal_wire(pane);
-            if let Some(events) = events.as_mut() {
-                journal_pending_events(s, events);
+            agent_hook,
+            control,
+        }) = retained
+        {
+            // Off the lock and awaited: a full control mailbox delays the
+            // retire rather than dropping it, so the engine never goes on
+            // reporting `Running` for an exited pane or holding its PTY.
+            if let Some(control) = control {
+                let _ = control.send(crate::resource::ControlRequest::Retire).await;
             }
-            let parent = s
-                .resource_parent(pane)
-                .map(|parent| s.intern_terminal_wire(parent));
-            let mut cascaded = Vec::new();
-            for child in s.resource_children(pane) {
-                let Some(recorded) = s.begin_resource_close(child) else {
-                    continue;
-                };
-                // A child nobody marked is leaving because its parent is;
-                // one an operator named in the same `KILL_RESOURCES` keeps
-                // the reason that kill recorded.
-                let child_reason = if recorded == CloseReason::Exited {
-                    CloseReason::ParentClosed
-                } else {
-                    recorded
-                };
-                let wire_child_id = s.intern_terminal_wire(child);
-                let child_targets = s.terminal_fanout_targets(child);
-                // ADR-0123: journaled in the lock that reaps it, children
-                // first, so a snapshot cut after this lock never shows a
-                // resource whose close a subscriber has not been sent.
-                journal_pane_closed(s, &wire_child_id, Some(&wire_terminal_id), None);
-                s.reap_terminal(child);
-                cascaded.push(CascadedClose {
-                    wire_terminal_id: wire_child_id,
-                    targets: child_targets,
-                    reason: child_reason,
-                });
-            }
-            // phux-w7z2.56: resolve every subscriber's mailbox, not just
-            // the session-attached ones. This used to filter through
-            // `attached()`, which an `ATTACH_RESOURCE`-only consumer never
-            // enters (L1 §5.1: "a session-scoped `ATTACH` is not
-            // required"), so an agent watching a single pane — and a
-            // federation hub's proxy subscription, which is exactly that
-            // shape — was silently dropped from the fanout L1 §3.1
-            // requires. It kept streaming nothing, indistinguishable from
-            // an idle pane, and the hub retained dead proxy state.
-            let targets: Vec<tokio::sync::mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
-            // ADR-0123: the `pane_closed` event takes its `seq` in the same
-            // lock that removes the pane, so "absent from a snapshot" and
-            // "its close was journaled" can never disagree. A `watch`-only
-            // client that never attached learns of the close here too.
-            journal_pane_closed(s, &wire_terminal_id, parent.as_ref(), exit.status);
-            // phux-60s: reap the dead pane, cascading to its window and
-            // session when they empty. Done here (inside the same lock
-            // that gathered subscribers) so no ATTACH can interleave
-            // between "gather" and "reap".
-            let server_empty = s.reap_terminal(pane);
-            let served = s.has_served_client();
-            // ADR-0105: a session a group kill released is gone once its last
-            // pane is reaped. Its session-attached clients are gathered here,
-            // under the same lock, and detached below rather than left on a
-            // session that no longer exists.
-            let killed_clients: Vec<_> = s
-                .take_killed_sessions()
-                .into_iter()
-                .flat_map(|session| s.attached_clients_in_session(session))
-                .collect();
-            Some(ReapAndNotify {
-                wire_terminal_id,
-                reason,
-                cascaded,
-                targets,
-                server_empty,
-                killed_clients,
-                served,
-            })
-        })
+            fire_retained_exit_hooks(&state, &wire_terminal_id, agent_hook, exit);
+            events = hold_until_purge(&state, &retention, events).await;
+        }
+        let Some(reap) = state.with_mut(|s| reap_exited_pane(s, pane, exit, events.as_mut()))
         else {
             return;
         };
+        announce_close(&state, reap, &root_token, exit_hook_owed).await;
+    });
+}
 
-        // docs/consumers/tui.md §9 (phux-r82.1): the inner process exited —
-        // the `pane-exit` hook point. Fired off-lock (the hook helper
-        // re-takes the state lock briefly to clone the dispatcher handle);
-        // `fire` itself is a non-blocking try_send.
+/// A pane kept as `Exited` after its process exited (ADR-0124), as its exit
+/// watcher holds it until the purge.
+struct RetainedExit {
+    /// What a purge cancels, and when retention expires.
+    retention: crate::state::Retention,
+    /// The pane's wire id, for the `pane-exit` hook.
+    wire_terminal_id: phux_protocol::ids::ResourceId,
+    /// The `agent-state-changed` hook the withdrawn agent record owes.
+    agent_hook: Option<crate::hooks::HookEvent>,
+    /// The engine's control mailbox, for the `Retire` sent off the lock.
+    control: Option<tokio::sync::mpsc::Sender<crate::resource::ControlRequest>>,
+}
+
+/// Keep `pane` as `Exited` when it asked to be retained and nothing is
+/// already closing it (ADR-0124 §2), all in one lock: record its exit facet,
+/// journal what it already queued and then `terminal_control { Exited }`,
+/// withdraw its `phux.agent/v1` state to `unknown` (L3 §3.7), and tell its
+/// engine to stop the detector and refuse input. No `RESOURCE_CLOSED`: the
+/// resource is still here. `None` leaves the pane to the close path.
+fn retain_exited_pane(
+    s: &mut crate::state::ServerState,
+    pane: phux_core::ids::ResourceId,
+    exit: phux_core::process::ExitOutcome,
+    events: Option<&mut PaneEvents>,
+) -> Option<RetainedExit> {
+    let retention = s.retain_exited(pane, exit, unix_now_ms())?;
+    let wire_terminal_id = s.intern_terminal_wire(pane);
+    if let Some(events) = events {
+        journal_pending_events(s, events);
+    }
+    let input_holder = s
+        .input_lease_holder(pane)
+        .map(|holder| phux_protocol::ClientId::new(u32::try_from(holder.0).unwrap_or(u32::MAX)));
+    let exited = AgentEvent::TerminalControl {
+        lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
+        exit_status: exit.status,
+        input_holder,
+        action: phux_protocol::wire::frame::ControlAction::Exited,
+        actor: None,
+    };
+    let _ = s.record_and_fanout(crate::state::EventRecord::new(
+        Some(wire_terminal_id.clone()),
+        exited,
+    ));
+    let control = s.resource_handle(pane).map(|handle| handle.control.clone());
+    let scope = phux_protocol::wire::frame::Scope::Resource(wire_terminal_id.clone());
+    let hooks_live = s.hook_dispatcher().is_some();
+    let agent_hook = drain_retract(s, &wire_terminal_id, &scope, hooks_live);
+    Some(RetainedExit {
+        retention,
+        wire_terminal_id,
+        agent_hook,
+        control,
+    })
+}
+
+/// The hooks a retained exit owes, fired off-lock: `pane-exit` now, because
+/// the process is what exited (its purge fires none), and the withdrawn agent
+/// record's `agent-state-changed`.
+fn fire_retained_exit_hooks(
+    state: &SharedState,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    agent_hook: Option<crate::hooks::HookEvent>,
+    exit: phux_core::process::ExitOutcome,
+) {
+    crate::hooks::fire_hook(
+        state,
+        crate::hooks::HookEvent::pane_exit(wire_terminal_id, exit.status),
+    );
+    if let Some(event) = agent_hook {
+        crate::hooks::fire_hook(state, event);
+    }
+}
+
+/// Hold a retained pane until its purge (ADR-0124 §4): a kill, an eviction,
+/// or a shutdown cancels its engine token, or its retention expires. Its
+/// events are still journaled meanwhile (a lease change on an exited pane is
+/// still an event). Returns the event source for the close to drain.
+async fn hold_until_purge(
+    state: &SharedState,
+    retention: &crate::state::Retention,
+    mut events: Option<PaneEvents>,
+) -> Option<PaneEvents> {
+    let expiry = tokio::time::sleep(retention.hold);
+    tokio::pin!(expiry);
+    loop {
+        tokio::select! {
+            biased;
+            () = retention.token.cancelled() => return events,
+            () = &mut expiry => return events,
+            event = next_pane_event(&mut events) => journal_held_event(state, &mut events, event),
+        }
+    }
+}
+
+/// The next event a pane's engine emits; pending forever once the source is
+/// gone, so a held pane waits only on its purge.
+async fn next_pane_event(events: &mut Option<PaneEvents>) -> Option<AgentEvent> {
+    match events.as_mut() {
+        Some(events) => events.source.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Journal one event a held pane emitted; a closed source journals its last
+/// loss and is dropped.
+fn journal_held_event(
+    state: &SharedState,
+    events: &mut Option<PaneEvents>,
+    event: Option<AgentEvent>,
+) {
+    let Some(pane_events) = events.as_mut() else {
+        return;
+    };
+    let dropped = pane_events.source.take_dropped();
+    let wire = pane_events.wire.clone();
+    if let Some(event) = event {
+        state.with_mut(|s| journal_drained_event(s, &wire, event, dropped));
+        return;
+    }
+    state.with_mut(|s| journal_source_gap(s, &wire, dropped));
+    *events = None;
+}
+
+/// Wall-clock now in Unix milliseconds; `0` for a clock before the epoch.
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| u64::try_from(since.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+/// Close a pane whose process exited (or whose retention ended), in ONE
+/// critical section that also gathers who must be told (phux-emdv).
+///
+/// This closes the TOCTOU window that left a late attacher frozen on a dead
+/// pane: previously subscribers were gathered in one lock, the sends were
+/// awaited, and the reap happened in a SECOND lock — a client whose ATTACH
+/// landed in the gap subscribed to a pane that had already hit EOF, was never
+/// in the broadcast set, and never learned the shell exited. Reaping up-front
+/// removes the pane (and, if last, its session) from the registry, so any
+/// ATTACH that interleaves now either subscribes to the surviving panes (the
+/// dead one is gone from `attach_snapshot_panes`) or gets `SessionNotFound` —
+/// never a silent subscription to a doomed pane.
+///
+/// `reap_terminal` clears `terminal_subscribers` for the pane (via
+/// `forget_terminal_bookkeeping`) and retires its wire id, so both MUST be
+/// captured in the same lock before the reap runs. `None` when another
+/// closer already reaped the pane.
+fn reap_exited_pane(
+    s: &mut crate::state::ServerState,
+    pane: phux_core::ids::ResourceId,
+    exit: phux_core::process::ExitOutcome,
+    events: Option<&mut PaneEvents>,
+) -> Option<ReapAndNotify> {
+    // ADR-0104 §2: claim this resource before touching anything. A
+    // cascading parent reaps its children inside its own lock, so a child's
+    // watcher can wake for a resource that is already gone; it must emit
+    // nothing rather than intern a fresh wire id for a corpse.
+    let reason = s.begin_resource_close(pane)?;
+    // ADR-0124: a retained pane's close reports how its process ended, the
+    // record it was kept with, even when the purge woke the watcher with no
+    // outcome of its own (a pane rebuilt by an upgrade has no process).
+    let exit = s.retained_outcome(pane).unwrap_or(exit);
+    // Interned before the cascade so each child's close can name the parent
+    // it is leaving with, and before the reap because a retired resource has
+    // no wire id left to intern.
+    let wire_terminal_id = s.intern_terminal_wire(pane);
+    if let Some(events) = events {
+        journal_pending_events(s, events);
+    }
+    let parent = s
+        .resource_parent(pane)
+        .map(|parent| s.intern_terminal_wire(parent));
+    let cascaded = cascade_children(s, pane, &wire_terminal_id);
+    // phux-w7z2.56: resolve every subscriber's mailbox, not just the
+    // session-attached ones. This used to filter through `attached()`, which
+    // an `ATTACH_RESOURCE`-only consumer never enters (L1 §5.1: "a
+    // session-scoped `ATTACH` is not required"), so an agent watching a
+    // single pane — and a federation hub's proxy subscription, which is
+    // exactly that shape — was silently dropped from the fanout L1 §3.1
+    // requires. It kept streaming nothing, indistinguishable from an idle
+    // pane, and the hub retained dead proxy state.
+    let targets: Vec<tokio::sync::mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
+    // ADR-0123: the `pane_closed` event takes its `seq` in the same lock that
+    // removes the pane, so "absent from a snapshot" and "its close was
+    // journaled" can never disagree. A `watch`-only client that never
+    // attached learns of the close here too.
+    journal_pane_closed(s, &wire_terminal_id, parent.as_ref(), exit.status);
+    // phux-60s: reap the dead pane, cascading to its window and session when
+    // they empty. Done here (inside the same lock that gathered subscribers)
+    // so no ATTACH can interleave between "gather" and "reap".
+    let server_empty = s.reap_terminal(pane);
+    let served = s.has_served_client();
+    // ADR-0105: a session a group kill released is gone once its last pane
+    // is reaped. Its session-attached clients are gathered here, under the
+    // same lock, and detached below rather than left on a session that no
+    // longer exists.
+    let killed_clients: Vec<_> = s
+        .take_killed_sessions()
+        .into_iter()
+        .flat_map(|session| s.attached_clients_in_session(session))
+        .collect();
+    Some(ReapAndNotify {
+        wire_terminal_id,
+        reason,
+        exit,
+        cascaded,
+        targets,
+        server_empty,
+        killed_clients,
+        served,
+    })
+}
+
+/// Close every resource bound to `pane` (ADR-0104 §2) in the parent's lock,
+/// before the parent is reaped, so no client observes a child whose parent
+/// has left. Each child's frame is emitted by the parent's watcher; its own
+/// watcher later finds it already claimed.
+fn cascade_children(
+    s: &mut crate::state::ServerState,
+    pane: phux_core::ids::ResourceId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+) -> Vec<CascadedClose> {
+    let mut cascaded = Vec::new();
+    for child in s.resource_children(pane) {
+        let Some(recorded) = s.begin_resource_close(child) else {
+            continue;
+        };
+        // A child nobody marked is leaving because its parent is; one an
+        // operator named in the same `KILL_RESOURCES` keeps the reason that
+        // kill recorded.
+        let child_reason = if recorded == CloseReason::Exited {
+            CloseReason::ParentClosed
+        } else {
+            recorded
+        };
+        let wire_child_id = s.intern_terminal_wire(child);
+        let child_targets = s.terminal_fanout_targets(child);
+        // A child has no process to report, unless it is a retained pane
+        // whose process already ended (ADR-0124).
+        let child_exit = s
+            .retained_outcome(child)
+            .unwrap_or(phux_core::process::ExitOutcome::UNKNOWN);
+        // ADR-0123: journaled in the lock that reaps it, children first, so
+        // a snapshot cut after this lock never shows a resource whose close a
+        // subscriber has not been sent.
+        journal_pane_closed(s, &wire_child_id, Some(wire_terminal_id), child_exit.status);
+        s.reap_terminal(child);
+        cascaded.push(CascadedClose {
+            wire_terminal_id: wire_child_id,
+            targets: child_targets,
+            reason: child_reason,
+            exit: child_exit,
+        });
+    }
+    cascaded
+}
+
+/// The off-lock half of a close: the `pane-exit` hook when the exit was not
+/// already announced, `RESOURCE_CLOSED` (children first), the detach of a
+/// released keep-empty session's clients, and the phux-60s self-exit.
+async fn announce_close(
+    state: &SharedState,
+    reap: ReapAndNotify,
+    root_token: &CancellationToken,
+    exit_hook_owed: bool,
+) {
+    let ReapAndNotify {
+        wire_terminal_id,
+        reason,
+        exit,
+        cascaded,
+        targets,
+        server_empty,
+        served,
+        killed_clients,
+    } = reap;
+    // docs/consumers/tui.md §9 (phux-r82.1): the inner process exited — the
+    // `pane-exit` hook point. Fired off-lock (the hook helper re-takes the
+    // state lock briefly to clone the dispatcher handle); `fire` itself is a
+    // non-blocking try_send. A retained pane fired it when its process
+    // exited, not now.
+    if exit_hook_owed {
         crate::hooks::fire_hook(
-            &state,
+            state,
             crate::hooks::HookEvent::pane_exit(&wire_terminal_id, exit.status),
         );
+    }
 
-        // phux-4li.11 / phux-4r1: broadcast the L1 lifecycle event
-        // RESOURCE_CLOSED to every client that was subscribed to the
-        // dying pane at reap time. The server's job ends here — it
-        // reports the fact. The detach policy ("no Terminals left in my
-        // collection ⇒ detach") is the consumer's (the TUI driver folds
-        // the pane out of its layout and detaches itself when the last
-        // pane closes); the server no longer sends `Detached` on EOF
-        // (ADR-0015 L1). The sends are awaited off-lock — `with_mut` is
-        // synchronous and must not hold the state borrow across an await.
-        // Children first: a subscriber watching both sees the session end
-        // before the pane it lived in, which is the order the tree actually
-        // came apart in. Their exit status is `None` — a session has no
-        // process to report one.
-        for child in &cascaded {
-            broadcast_terminal_closed(
-                &child.wire_terminal_id,
-                &child.targets,
-                phux_core::process::ExitOutcome::UNKNOWN,
-                child.reason,
-            )
-            .await;
-        }
-        broadcast_terminal_closed(&wire_terminal_id, &targets, exit, reason).await;
+    // phux-4li.11 / phux-4r1: broadcast the L1 lifecycle event
+    // RESOURCE_CLOSED to every client that was subscribed to the dying pane
+    // at reap time. The server's job ends here — it reports the fact. The
+    // detach policy ("no Terminals left in my collection ⇒ detach") is the
+    // consumer's (the TUI driver folds the pane out of its layout and
+    // detaches itself when the last pane closes); the server no longer sends
+    // `Detached` on EOF (ADR-0015 L1). The sends are awaited off-lock —
+    // `with_mut` is synchronous and must not hold the state borrow across an
+    // await. Children first: a subscriber watching both sees the session end
+    // before the pane it lived in, which is the order the tree actually came
+    // apart in. A child's exit status is `None` — a session has no process
+    // to report one.
+    for child in &cascaded {
+        broadcast_terminal_closed(
+            &child.wire_terminal_id,
+            &child.targets,
+            child.exit,
+            child.reason,
+        )
+        .await;
+    }
+    broadcast_terminal_closed(&wire_terminal_id, &targets, exit, reason).await;
 
-        // ADR-0105: after the closes, so a client sees its last pane go
-        // before the session that held it.
-        detach_clients_of_killed_session(&state, killed_clients);
+    // ADR-0105: after the closes, so a client sees its last pane go before
+    // the session that held it.
+    detach_clients_of_killed_session(state, killed_clients);
 
-        // phux-60s: when the last session is gone the server has nothing
-        // left to serve, so fire the root token — the tmux server-exit
-        // model. Without this the server lingers forever after every
-        // shell exits.
-        //
-        // Two guards keep this from misfiring:
-        //   * `has_served_client`: a freshly auto-spawned server whose
-        //     seed pane dies before anyone attaches must NOT vanish — the
-        //     launching `phux` is still racing to connect and will
-        //     repopulate it via `CreateIfMissing`. Only self-exit once
-        //     we've actually served someone.
-        //   * `!root_token.is_cancelled()`: a Ctrl-C shutdown cancels the
-        //     pane actor too, routing through here; don't log a spurious
-        //     "self-exit" or double-cancel during normal teardown.
-        if server_empty && served && !root_token.is_cancelled() {
-            info!("last session reaped after serving clients; server self-exit");
-            root_token.cancel();
-        }
-    });
+    // phux-60s: when the last session is gone the server has nothing left to
+    // serve, so fire the root token — the tmux server-exit model. Without
+    // this the server lingers forever after every shell exits.
+    //
+    // Two guards keep this from misfiring:
+    //   * `has_served_client`: a freshly auto-spawned server whose seed pane
+    //     dies before anyone attaches must NOT vanish — the launching `phux`
+    //     is still racing to connect and will repopulate it via
+    //     `CreateIfMissing`. Only self-exit once we've actually served
+    //     someone.
+    //   * `!root_token.is_cancelled()`: a Ctrl-C shutdown cancels the pane
+    //     actor too, routing through here; don't log a spurious "self-exit"
+    //     or double-cancel during normal teardown.
+    if server_empty && served && !root_token.is_cancelled() {
+        info!("last session reaped after serving clients; server self-exit");
+        root_token.cancel();
+    }
 }
 
 /// Everything the EOF watcher captures under one state lock before it
@@ -1502,6 +1712,9 @@ struct ReapAndNotify {
     /// Why this pane is closing, claimed from the close ledger in the same
     /// lock (ADR-0104 §4).
     reason: CloseReason,
+    /// How the pane's process ended: the watcher's outcome, or a retained
+    /// pane's recorded exit (ADR-0124).
+    exit: phux_core::process::ExitOutcome,
     /// The children this pane took with it, already reaped, each waiting
     /// only for its off-lock frame.
     cascaded: Vec<CascadedClose>,
@@ -1527,6 +1740,8 @@ struct CascadedClose {
     targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
     /// The reason its `RESOURCE_CLOSED` carries.
     reason: CloseReason,
+    /// The exit its `RESOURCE_CLOSED` carries: unknown for a session.
+    exit: phux_core::process::ExitOutcome,
 }
 
 /// Emit `RESOURCE_CLOSED { terminal_id, exit_status }` to every client
@@ -4128,6 +4343,7 @@ fn run_session_create(
                 .as_deref()
                 .and_then(crate::runtime::idempotent_create::uuid_bytes)
                 .and_then(phux_protocol::ids::IdempotencyKey::new),
+            retain_secs: None,
         },
     };
     let wire = crate::runtime::commands::create_named_session(

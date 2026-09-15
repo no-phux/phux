@@ -230,6 +230,40 @@ pub struct DefaultsCfg {
     )]
     pub event_journal_bytes: u32,
 
+    /// Whether a Terminal spawned without `retain_secs` is retained after
+    /// its process exits (ADR-0124).
+    ///
+    /// A retained Terminal stays in the inventory as exited, with its exit
+    /// status and last screen, until [`Self::retain_on_exit_secs`] pass, the
+    /// [`Self::retain_on_exit_max`] bound evicts it, or someone kills it.
+    /// `false` (default) closes a pane when its process exits unless the
+    /// spawner asked for retention.
+    #[serde(default, rename = "retain-on-exit")]
+    pub retain_on_exit: bool,
+
+    /// Seconds a retained Terminal stays after its process exits when the
+    /// spawner asked for the server default (`retain_secs = 0`) or
+    /// [`Self::retain_on_exit`] retained it. Capped by
+    /// [`Self::retain_on_exit_max_secs`].
+    #[serde(
+        default = "default_retain_on_exit_secs",
+        rename = "retain-on-exit-secs"
+    )]
+    pub retain_on_exit_secs: u32,
+
+    /// The longest any Terminal is retained after its process exits,
+    /// whatever the spawner asked for.
+    #[serde(
+        default = "default_retain_on_exit_max_secs",
+        rename = "retain-on-exit-max-secs"
+    )]
+    pub retain_on_exit_max_secs: u32,
+
+    /// How many exited Terminals the server retains at once. Retaining one
+    /// more closes the oldest. `0` retains none.
+    #[serde(default = "default_retain_on_exit_max", rename = "retain-on-exit-max")]
+    pub retain_on_exit_max: u32,
+
     /// Whether the client enables its own outer-terminal mouse tracking
     /// on attach (ADR-0048). `true` (default) emits DECSET
     /// `?1002h?1006h` so divider drag-to-resize and click-to-focus work
@@ -315,6 +349,10 @@ impl Default for DefaultsCfg {
             agent_log_bytes: default_agent_log_bytes(),
             event_journal_entries: default_event_journal_entries(),
             event_journal_bytes: default_event_journal_bytes(),
+            retain_on_exit: false,
+            retain_on_exit_secs: default_retain_on_exit_secs(),
+            retain_on_exit_max_secs: default_retain_on_exit_max_secs(),
+            retain_on_exit_max: default_retain_on_exit_max(),
             mouse: true,
             cwd_inheritance: CwdInheritance::default(),
             spawn_on_attach: None,
@@ -469,6 +507,31 @@ pub const DEFAULT_EVENT_JOURNAL_BYTES: u32 = 1024 * 1024;
 const fn default_event_journal_bytes() -> u32 {
     DEFAULT_EVENT_JOURNAL_BYTES
 }
+
+/// Shipped `defaults.retain-on-exit-secs`: ten minutes (ADR-0124).
+pub const DEFAULT_RETAIN_ON_EXIT_SECS: u32 = 600;
+
+const fn default_retain_on_exit_secs() -> u32 {
+    DEFAULT_RETAIN_ON_EXIT_SECS
+}
+
+/// Shipped `defaults.retain-on-exit-max-secs`: one day (ADR-0124).
+pub const DEFAULT_RETAIN_ON_EXIT_MAX_SECS: u32 = 86_400;
+
+const fn default_retain_on_exit_max_secs() -> u32 {
+    DEFAULT_RETAIN_ON_EXIT_MAX_SECS
+}
+
+/// Shipped `defaults.retain-on-exit-max`: 256 retained Terminals (ADR-0124).
+pub const DEFAULT_RETAIN_ON_EXIT_MAX: u32 = 256;
+
+const fn default_retain_on_exit_max() -> u32 {
+    DEFAULT_RETAIN_ON_EXIT_MAX
+}
+
+/// Largest accepted `defaults.retain-on-exit-max`. Each retained Terminal
+/// holds its grid and history, so the bound is a memory bound.
+pub const MAX_RETAIN_ON_EXIT_MAX: u32 = 4096;
 
 const fn default_true() -> bool {
     true

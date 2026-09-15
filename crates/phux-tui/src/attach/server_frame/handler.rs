@@ -458,6 +458,13 @@ fn handle_attached<W: crate::attach::RenderSink>(
             // phux-foz.4: seed the pane's cwd from the snapshot (the
             // spawn cwd); `cwd_changed` events refine it live.
             slot.cwd.clone_from(&pane.cwd);
+            // ADR-0124: a pane retained after its process exited arrives
+            // read-only, with the exit the snapshot reports.
+            slot.lifecycle = pane.lifecycle;
+            slot.exited = pane
+                .exit
+                .as_ref()
+                .map(crate::attach::pane_state::ExitMark::from_facet);
         }
     }
     // phux-p4vp: hand the per-pane cwds up to the driver so the
@@ -1696,10 +1703,11 @@ fn handle_agent_event<W: crate::attach::RenderSink>(
                 AgentEvent::TerminalControl {
                     lifecycle,
                     input_holder,
+                    exit_status,
                     ..
                 },
             ..
-        } => fold_terminal_control(ctx, &terminal, lifecycle, input_holder),
+        } => fold_terminal_control(ctx, &terminal, lifecycle, input_holder, exit_status),
         FrameKind::Event {
             terminal: Some(terminal),
             event: AgentEvent::Asked { .. },
@@ -1748,6 +1756,7 @@ fn fold_terminal_control<W: crate::attach::RenderSink>(
     terminal: &ResourceId,
     lifecycle: ResourceLifecycle,
     input_holder: Option<ClientId>,
+    exit_status: Option<i32>,
 ) -> FrameOutcome {
     let Some(slot) = ctx.panes.get_mut(terminal) else {
         // A control event for a pane we have no slot for yet (it can
@@ -1760,6 +1769,15 @@ fn fold_terminal_control<W: crate::attach::RenderSink>(
     let holder_changed = slot.input_holder != input_holder;
     slot.lifecycle = lifecycle;
     slot.input_holder = input_holder;
+    // ADR-0124: the pane's process exited and the server retained the pane.
+    // Every later control event restates `Exited`; the first one carries the
+    // status.
+    if matches!(lifecycle, ResourceLifecycle::Exited) && slot.exited.is_none() {
+        slot.exited = Some(crate::attach::pane_state::ExitMark {
+            status: exit_status,
+            signal: None,
+        });
+    }
     let announce =
         holder_changed && !initial_state && ctx.focused_resource.as_ref() == Some(terminal);
     let notices = if announce {
