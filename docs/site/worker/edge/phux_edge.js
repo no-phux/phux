@@ -93,22 +93,22 @@ if (Symbol.dispose) EdgeSession.prototype[Symbol.dispose] = EdgeSession.prototyp
 function __wbg_get_imports() {
     const import0 = {
         __proto__: null,
-        __wbg___wbindgen_throw_9c31b086c2b26051: function(arg0, arg1) {
+        __wbg___wbindgen_throw_5d9e815e6fdf150f: function(arg0, arg1) {
             throw new Error(getStringFromWasm0(arg0, arg1));
         },
-        __wbg_new_1f236d63ba0c4784: function(arg0, arg1) {
+        __wbg_new_a32a1ab6c6655abe: function(arg0, arg1) {
             const ret = new Error(getStringFromWasm0(arg0, arg1));
             return ret;
         },
-        __wbg_new_310879b66b6e95e1: function() {
+        __wbg_new_ffa92086ea89f79c: function() {
             const ret = new Array();
             return ret;
         },
-        __wbg_new_from_slice_269e35316ed2d061: function(arg0, arg1) {
+        __wbg_new_from_slice_4ee02165f9de919e: function(arg0, arg1) {
             const ret = new Uint8Array(getArrayU8FromWasm0(arg0, arg1));
             return ret;
         },
-        __wbg_push_b77c476b01548d0a: function(arg0, arg1) {
+        __wbg_push_bfdf956ba476f65b: function(arg0, arg1) {
             const ret = arg0.push(arg1);
             return ret;
         },
@@ -240,11 +240,15 @@ function __wbg_finalize_init(instance, module) {
 
 async function __wbg_load(module, imports) {
     if (typeof Response === 'function' && module instanceof Response) {
+        if (!module.ok) {
+            throw new Error(`failed to fetch Wasm: ${module.status} ${module.statusText} fetching '${module.url}'`);
+        }
+
         if (typeof WebAssembly.instantiateStreaming === 'function') {
             try {
                 return await WebAssembly.instantiateStreaming(module, imports);
             } catch (e) {
-                const validResponse = module.ok && expectedResponseType(module.type);
+                const validResponse = expectedResponseType(module.type);
 
                 if (validResponse && module.headers.get('Content-Type') !== 'application/wasm') {
                     console.warn("`WebAssembly.instantiateStreaming` failed because your server does not serve Wasm with `application/wasm` MIME type. Falling back to `WebAssembly.instantiate` which is slower. Original error:\n", e);

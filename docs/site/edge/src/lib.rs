@@ -10,9 +10,16 @@
 
 mod shell;
 
-use bytes::BytesMut;
-use phux_protocol::ids::ResourceId;
+use bytes::{Bytes, BytesMut};
+use phux_protocol::PROTOCOL_VERSION;
+use phux_protocol::caps::{
+    BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
+};
+use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
 use phux_protocol::wire::frame::FrameKind;
+#[cfg(test)]
+use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
+use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
@@ -140,20 +147,44 @@ impl EdgeSession {
 
     fn handle(&mut self, frame: FrameKind) -> Vec<Vec<u8>> {
         match frame {
-            // Attach → reply with a snapshot whose replay bytes are the shell's
-            // greeting. Adopt the client's viewport so sizes match (no resize).
-            FrameKind::Attach { viewport, .. } => {
+            FrameKind::Hello { .. } => vec![encode(&hello_ok())],
+            FrameKind::Attach {
+                attach_id,
+                viewport,
+                ..
+            } => {
                 self.cols = viewport.cols.clamp(1, MAX_VIEWPORT);
                 self.rows = viewport.rows.clamp(1, MAX_VIEWPORT);
-                vec![encode(&FrameKind::TerminalSnapshot {
-                    terminal_id: self.terminal_id.clone(),
-                    cols: self.cols,
-                    rows: self.rows,
-                    vt_replay_bytes: self.shell.greeting(),
-                    scrollback_bytes: None,
-                })]
+                self.seq = 0;
+                let greeting = Bytes::from(self.shell.greeting());
+                vec![
+                    encode(&attached(
+                        attach_id,
+                        self.terminal_id.clone(),
+                        self.cols,
+                        self.rows,
+                    )),
+                    encode(&bootstrap_begin(
+                        self.terminal_id.clone(),
+                        self.cols,
+                        self.rows,
+                    )),
+                    encode(&FrameKind::BootstrapChunk {
+                        terminal_id: self.terminal_id.clone(),
+                        stream_id: stream_id(),
+                        bootstrap_id: bootstrap_id(),
+                        chunk_seq: 0,
+                        payload: greeting,
+                    }),
+                    encode(&FrameKind::BootstrapReady {
+                        terminal_id: self.terminal_id.clone(),
+                        stream_id: stream_id(),
+                        bootstrap_id: bootstrap_id(),
+                        history_cursor: None,
+                    }),
+                    encode(&FrameKind::AttachReady { attach_id }),
+                ]
             }
-            // A keystroke → run it through the shell → stream the VT output.
             FrameKind::InputKey { event, .. } => {
                 let bytes = self.shell.input(&event);
                 if bytes.is_empty() {
@@ -162,14 +193,87 @@ impl EdgeSession {
                     self.seq += 1;
                     vec![encode(&FrameKind::ResourceOutput {
                         terminal_id: self.terminal_id.clone(),
+                        stream_id: stream_id(),
+                        bootstrap_id: bootstrap_id(),
                         seq: self.seq,
                         bytes: bytes.into(),
                     })]
                 }
             }
-            // Hello, FrameAck, mouse/focus/paste, etc. — nothing to send.
             _ => Vec::new(),
         }
+    }
+}
+
+fn stream_id() -> StreamId {
+    StreamId::new(1).expect("edge stream id is non-zero")
+}
+
+fn bootstrap_id() -> BootstrapId {
+    BootstrapId::new(1).expect("edge bootstrap id is non-zero")
+}
+
+fn hello_ok() -> FrameKind {
+    FrameKind::HelloOk {
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        server_caps: ServerCapabilities::new(),
+        server_id: b"phux-edge".to_vec(),
+        selected_profile: BootstrapProfile::SynthesizedVtRaw,
+        bootstrap_limits: BootstrapLimits::default(),
+    }
+}
+
+fn attached(attach_id: u32, terminal_id: ResourceId, cols: u16, rows: u16) -> FrameKind {
+    FrameKind::Attached {
+        attach_id,
+        snapshot: SessionSnapshot::new(SessionId::new(1), WindowId::new(1), terminal_id.clone())
+            .with_resources(vec![ResourceInfo::new(
+                terminal_id,
+                WindowId::new(1),
+                cols,
+                rows,
+            )]),
+        initial_client_id: ClientId::new(1),
+    }
+}
+
+fn bootstrap_begin(terminal_id: ResourceId, cols: u16, rows: u16) -> FrameKind {
+    FrameKind::BootstrapBegin {
+        terminal_id,
+        stream_id: stream_id(),
+        bootstrap_id: bootstrap_id(),
+        profile: BootstrapStreamProfile::SynthesizedVtRaw,
+        cols,
+        rows,
+        base_seq: 0,
+    }
+}
+
+#[cfg(test)]
+fn smoke_hello() -> FrameKind {
+    FrameKind::Hello {
+        client_name: "phux-site-smoke".to_owned(),
+        protocol_major: PROTOCOL_VERSION.major,
+        protocol_minor: PROTOCOL_VERSION.minor,
+        protocol_patch: PROTOCOL_VERSION.patch,
+        client_caps: phux_protocol::caps::ClientCapabilities::new(),
+    }
+}
+
+#[cfg(test)]
+fn smoke_attach() -> FrameKind {
+    FrameKind::Attach {
+        attach_id: 1,
+        target: AttachTarget::CreateIfMissing {
+            name: "default".to_owned(),
+            command: None,
+            cwd: None,
+        },
+        viewport: ViewportInfo::new(80, 24),
+        request_scrollback: true,
+        scrollback_limit_lines: 5_000,
     }
 }
 
@@ -182,24 +286,101 @@ fn encode(frame: &FrameKind) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EdgeSession, FrameKind};
+    use super::{EdgeSession, FrameKind, PROTOCOL_VERSION, encode, smoke_attach, smoke_hello};
+    use phux_protocol::caps::ClientCapabilities;
 
-    // The exact CreateIfMissing ATTACH emitted by the hosted phux-web client.
-    const WEB_ATTACH: &[u8] = &[
-        0, 0, 0, 34, 2, 1, 4, 10, 3, 0, 0, 0, 3, 100, 101, 118, 0, 0, 2, 4, 6, 0, 80, 0, 24, 0, 0,
-        3, 4, 1, 0, 4, 4, 4, 0, 0, 0, 0,
-    ];
+    fn decode_all(frames: &[Vec<u8>]) -> Vec<FrameKind> {
+        frames
+            .iter()
+            .map(|frame| {
+                let (decoded, rest) = FrameKind::decode(frame).expect("edge frame must decode");
+                assert!(rest.is_empty());
+                decoded
+            })
+            .collect()
+    }
 
     #[test]
-    fn hosted_web_attach_decodes_and_returns_a_snapshot() {
-        let (frame, rest) = FrameKind::decode(WEB_ATTACH).expect("web ATTACH must decode");
-        assert!(rest.is_empty());
-        let mut session = EdgeSession::new(100, 24, "native-fallback", "{}");
-        let output = session.handle(frame);
+    fn hello_returns_protocol_09_hello_ok() {
+        let mut session = EdgeSession::new(80, 24, "demo", "");
+        let output = session.handle(smoke_hello());
         assert_eq!(output.len(), 1);
-        let (response, rest) = FrameKind::decode(&output[0]).expect("snapshot must decode");
-        assert!(rest.is_empty());
-        assert!(matches!(response, FrameKind::TerminalSnapshot { .. }));
+        assert!(matches!(
+            decode_all(&output)[0],
+            FrameKind::HelloOk {
+                protocol_major: 0,
+                protocol_minor: 9,
+                protocol_patch: 0,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn attach_returns_ready_fenced_greeting() {
+        let mut session = EdgeSession::new(100, 24, "native-fallback", "{}");
+        let output = session.handle(smoke_attach());
+        assert_eq!(output.len(), 5);
+        let decoded = decode_all(&output);
+        assert!(matches!(
+            decoded[0],
+            FrameKind::Attached { attach_id: 1, .. }
+        ));
+        assert!(matches!(decoded[1], FrameKind::BootstrapBegin { .. }));
+        let FrameKind::BootstrapChunk { payload, .. } = &decoded[2] else {
+            panic!("expected bootstrap chunk");
+        };
+        let greeting = String::from_utf8_lossy(payload);
+        assert!(greeting.contains("instant edge tour"), "{greeting}");
+        assert!(matches!(decoded[3], FrameKind::BootstrapReady { .. }));
+        assert!(matches!(
+            decoded[4],
+            FrameKind::AttachReady { attach_id: 1 }
+        ));
+    }
+
+    #[test]
+    fn smoke_hello_advertises_workspace_protocol() {
+        let FrameKind::Hello {
+            protocol_major,
+            protocol_minor,
+            protocol_patch,
+            client_caps,
+            ..
+        } = smoke_hello()
+        else {
+            panic!("expected HELLO");
+        };
+        assert_eq!(
+            (protocol_major, protocol_minor, protocol_patch),
+            (
+                PROTOCOL_VERSION.major,
+                PROTOCOL_VERSION.minor,
+                PROTOCOL_VERSION.patch
+            )
+        );
+        assert_eq!(client_caps, ClientCapabilities::new());
+        assert!(!encode(&smoke_hello()).is_empty());
+        assert!(!encode(&smoke_attach()).is_empty());
+    }
+
+    #[test]
+    fn smoke_hello_and_attach_bytes_match_the_site_smoke_client() {
+        assert_eq!(
+            encode(&smoke_hello()),
+            vec![
+                0, 0, 0, 65, 1, 1, 4, 15, 112, 104, 117, 120, 45, 115, 105, 116, 101, 45, 115, 109,
+                111, 107, 101, 2, 4, 2, 0, 0, 3, 4, 2, 0, 9, 4, 4, 2, 0, 0, 5, 4, 28, 0, 1, 7, 3,
+                1, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 16, 0, 0,
+            ]
+        );
+        assert_eq!(
+            encode(&smoke_attach()),
+            vec![
+                0, 0, 0, 45, 2, 1, 4, 14, 3, 0, 0, 0, 7, 100, 101, 102, 97, 117, 108, 116, 0, 0, 2,
+                4, 6, 0, 80, 0, 24, 0, 0, 3, 4, 1, 1, 4, 4, 4, 0, 0, 19, 136, 5, 4, 4, 0, 0, 0, 1,
+            ]
+        );
     }
 
     #[test]

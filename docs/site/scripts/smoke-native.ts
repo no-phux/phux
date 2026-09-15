@@ -1,6 +1,9 @@
 import {
   ATTACH_FRAME,
   HELLO_FRAME,
+  TYPE_ERROR,
+  TYPE_HELLO_OK,
+  frameType,
   inputTextFrames,
   parseTerminalPayload,
 } from "./phux-wire";
@@ -58,6 +61,7 @@ async function connect(expected: ExpectedBackend, keepOpen = false): Promise<Web
     let terminalId: Uint8Array | undefined;
     let commandSent = false;
     let receivedSessionInfo = false;
+    let helloOk = false;
     let settled = false;
     const finish = (error?: Error) => {
       if (settled) return;
@@ -75,10 +79,6 @@ async function connect(expected: ExpectedBackend, keepOpen = false): Promise<Web
       socket.close(1000, "smoke timeout");
     }, timeoutMs);
 
-    socket.addEventListener("open", () => {
-      socket.send(HELLO_FRAME);
-      socket.send(ATTACH_FRAME);
-    });
     socket.addEventListener("message", (event) => {
       if (!receivedSessionInfo) {
         if (typeof event.data !== "string") {
@@ -122,6 +122,7 @@ async function connect(expected: ExpectedBackend, keepOpen = false): Promise<Web
           return;
         }
         receivedSessionInfo = true;
+        socket.send(HELLO_FRAME);
         return;
       }
       if (!(event.data instanceof ArrayBuffer)) {
@@ -129,7 +130,19 @@ async function connect(expected: ExpectedBackend, keepOpen = false): Promise<Web
         return;
       }
       try {
-        const payload = parseTerminalPayload(new Uint8Array(event.data));
+        const frame = new Uint8Array(event.data);
+        const type = frameType(frame);
+        if (type === TYPE_ERROR) {
+          finish(new Error(`${expected} server sent a protocol ERROR`));
+          return;
+        }
+        if (!helloOk) {
+          if (type !== TYPE_HELLO_OK) return;
+          helloOk = true;
+          socket.send(ATTACH_FRAME);
+          return;
+        }
+        const payload = parseTerminalPayload(frame);
         if (!payload) return;
         terminalId ??= payload.terminalId;
         output += new TextDecoder().decode(payload.bytes);
