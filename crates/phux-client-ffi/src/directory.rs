@@ -603,22 +603,18 @@ mod tests {
             PhuxClientResult::InvalidArgument
         );
         let invalid = [0xffu8];
-        assert_eq!(
-            unsafe {
-                phux_client_list_directory_on(
-                    client,
-                    &raw const PhuxDirectoryRequest {
-                        size: mem::size_of::<PhuxDirectoryRequest>(),
-                        version: ABI_VERSION,
-                        request_id: 1,
-                        path: PhuxBytes {
-                            data: invalid.as_ptr(),
-                            len: 1,
-                        },
-                        host: PhuxBytes::default(),
-                    },
-                )
+        let invalid_request = PhuxDirectoryRequest {
+            size: mem::size_of::<PhuxDirectoryRequest>(),
+            version: ABI_VERSION,
+            request_id: 1,
+            path: PhuxBytes {
+                data: invalid.as_ptr(),
+                len: 1,
             },
+            host: PhuxBytes::default(),
+        };
+        assert_eq!(
+            unsafe { phux_client_list_directory_on(client, &raw const invalid_request) },
             PhuxClientResult::InvalidArgument
         );
         assert_eq!(list(client, 7, "/"), PhuxClientResult::Ok);
