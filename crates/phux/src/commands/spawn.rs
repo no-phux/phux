@@ -1,12 +1,12 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
-use phux_client::layout::{SplitDir, Workspace};
-use phux_client::layout_ops::{LayoutMutation, LayoutOps};
-use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost, SessionId, WindowId};
+use phux_client::layout::SplitDir;
+use phux_protocol::ids::{GroupId, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, FrameKind, SpawnError, SpawnResult, StateScope,
+    Command, CommandResult, CommandValue, FrameKind, SpawnError, SpawnResult, StateScope,
 };
 use phux_server::runtime::default_socket_path;
 
@@ -102,7 +102,11 @@ pub(crate) fn run_spawn(
 /// Send a `SPAWN_RESOURCE` frame and return the matching `RESOURCE_SPAWNED`
 /// result. Shared by `phux spawn` and `phux launch` (phux-ark7) so both
 /// ride the identical wire path — the server injects `PHUX_TERMINAL_ID`
-/// into the spawned pane regardless of which verb requested it.
+/// into the spawned pane regardless of which verb requested it. The wire
+/// round trip itself is [`phux_client::spawn::spawn`]; this wrapper adds the
+/// optional agent-session provenance write (and its `KILL_RESOURCE` rollback
+/// on failure), which is CLI-only because [`AgentSessionRecord`] is a CLI
+/// type.
 ///
 /// On a connect/transport failure this prints the `no server` diagnostic
 /// (attributed to `verb`) and returns the failure [`ExitCode`] in `Err`, so
@@ -127,30 +131,16 @@ pub(crate) fn dispatch_spawn(
 }
 
 /// Open a connection, send `frame`, and return the correlated spawn outcome.
-///
-/// The wait used to be a hand-rolled `loop { recv() }` that matched
-/// `RESOURCE_SPAWNED` and dropped every other frame, which meant a peer
-/// answering with a correlated `ERROR` — the way `relay.rs`'s own
-/// `handle_inbound` says a satellite MAY answer a relayed spawn — wedged
-/// `phux spawn --satellite` until the transport died. It now rides
-/// [`Connection::request_spawn`], and a refusal is folded into the same
-/// `SpawnResult::Err` shape a hub already produces for exactly this case, so
-/// `report_spawn_error` renders it without a new code path.
 async fn dispatch_spawn_async(
     socket_path: &Path,
     frame: &FrameKind,
     agent_session: Option<&AgentSessionRecord>,
-) -> Result<SpawnResult, phux_client::attach::AttachError> {
+) -> Result<SpawnResult, AttachError> {
     let mut conn = Connection::connect(socket_path).await?;
-    let (answer, interleaved) = conn.request_spawn(frame).await?.into_parts();
-    for message in phux_client::state::degradation_notices(&interleaved) {
+    let (mut result, degradation) = phux_client::spawn::spawn(&mut conn, frame).await?;
+    for message in degradation.notices() {
         eprintln!("phux: warning: partial results — {message}");
     }
-    let mut result = answer.unwrap_or_else(|refusal| {
-        SpawnResult::Err(SpawnError::SpawnFailed(format!(
-            "server refused the spawn: {refusal}"
-        )))
-    });
     if let (Some(record), SpawnResult::Ok(terminal)) = (agent_session, &result) {
         let request_id = match frame {
             FrameKind::SpawnResource { request_id, .. } => *request_id,
@@ -184,8 +174,10 @@ async fn dispatch_spawn_async(
 }
 
 /// Resolve an explicit local owner, spawn into its exact server window, then
-/// insert the returned leaf through shared `LayoutOps`. If layout publication
-/// fails after spawn, kill the known new Terminal before returning failure.
+/// insert the returned leaf through shared `LayoutOps`
+/// ([`phux_client::spawn::verify_and_publish_placement`]). If layout
+/// publication fails after spawn, kill the known new Terminal before
+/// returning failure.
 #[allow(
     clippy::too_many_arguments,
     reason = "shared spawn placement keeps the complete CLI operation explicit"
@@ -212,7 +204,7 @@ pub(crate) fn dispatch_spawn_placed(
         )
         .await
         {
-            Ok(CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(s))) => s,
+            Ok(CommandResult::OkWith(CommandValue::State(s))) => s,
             Ok(other) => {
                 eprintln!(
                     "phux: {}",
@@ -223,7 +215,8 @@ pub(crate) fn dispatch_spawn_placed(
             Err(err) => return Err(json_err::report_no_server(json, &err, socket_path, verb)),
         };
         let candidates = resolve_targets(socket_path, &selector, &snapshot).await;
-        let Some(owner) = crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
+        let Some(owner) =
+            crate::selector::pick_target_pane(&candidates, &snapshot.focused_resource)
         else {
             eprintln!("phux: no such target");
             return Err(ExitCode::FAILURE);
@@ -232,7 +225,9 @@ pub(crate) fn dispatch_spawn_placed(
             eprintln!("phux: explicit spawn placement is local-only");
             return Err(ExitCode::FAILURE);
         }
-        let Some((owner_window, session)) = ownership_for_terminal(&snapshot, &owner) else {
+        let Some((owner_window, session)) =
+            phux_client::spawn::ownership_for_terminal(&snapshot, &owner)
+        else {
             eprintln!("phux: target has no local session ownership");
             return Err(ExitCode::FAILURE);
         };
@@ -248,106 +243,44 @@ pub(crate) fn dispatch_spawn_placed(
             return Ok(spawned);
         };
 
-        // Field-tagged compatibility means an older server can legally ignore
-        // owner_terminal. Verify authoritative registry ownership before
-        // publishing layout, otherwise L3 could reference a pane that belongs
-        // to another session/window.
-        let ownership_error = match request_command(
+        let dir = match split {
+            SpawnSplit::Horizontal => SplitDir::Horizontal,
+            SpawnSplit::Vertical => SplitDir::Vertical,
+        };
+        let placement = phux_client::spawn::Placement {
+            owner: owner.clone(),
+            owner_window,
+            owner_session: session,
+            new_pane: new_pane.clone(),
+        };
+        let mut notices = Vec::new();
+        let rollback = phux_client::spawn::verify_and_publish_placement(
             socket_path,
-            Command::GetState {
-                scope: StateScope::Server,
-            },
+            &placement,
+            dir,
+            ratio,
+            request_id.wrapping_add(1),
+            &mut notices,
         )
-        .await
-        {
-            Ok(CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(state))) => {
-                let owner_after = ownership_for_terminal(&state, &owner);
-                let spawned_after = ownership_for_terminal(&state, new_pane);
-                (owner_after != Some((owner_window, session))
-                    || spawned_after != Some((owner_window, session)))
-                .then_some(
-                    "server did not honor explicit spawn ownership (unsupported or ownership mismatch)"
-                        .to_owned(),
-                )
-            }
-            Ok(other) => Some(phux_client::explain::explain_unexpected(
-                "ownership verification",
-                &other,
-            )),
-            Err(err) => Some(format!("ownership verification failed: {err}")),
-        };
-        if let Some(err) = ownership_error {
-            rollback_spawned(socket_path, new_pane, verb, &err).await;
-            return Err(ExitCode::FAILURE);
+        .await;
+        for message in &notices {
+            eprintln!("phux: warning: partial results — {message}");
         }
-
-        let placement_error = match Connection::connect(socket_path).await {
-            Ok(mut layout_conn) => {
-                let dir = match split {
-                    SpawnSplit::Horizontal => SplitDir::Horizontal,
-                    SpawnSplit::Vertical => SplitDir::Vertical,
-                };
-                let placement = LayoutMutation::SplitPreservingFocus {
-                    target: owner.clone(),
-                    new_pane: new_pane.clone(),
-                    dir,
-                    ratio,
-                };
-                LayoutOps::new(&mut layout_conn, session, request_id.wrapping_add(1))
-                    .mutate_or_seed(Workspace::single(owner), placement)
-                    .await
-                    .err()
-                    .map(|err| err.to_string())
+        match rollback {
+            phux_client::spawn::RollbackOutcome::Placed => Ok(spawned),
+            phux_client::spawn::RollbackOutcome::RolledBack { reason } => {
+                eprintln!("phux: {verb} placement failed; spawned pane was removed: {reason}");
+                Err(ExitCode::FAILURE)
             }
-            Err(err) => Some(err.to_string()),
-        };
-        if let Some(err) = placement_error {
-            rollback_spawned(socket_path, new_pane, verb, &err).await;
-            return Err(ExitCode::FAILURE);
+            phux_client::spawn::RollbackOutcome::RollbackUnconfirmed {
+                reason,
+                cleanup_note,
+            } => {
+                eprintln!("phux: {verb} placement failed ({reason}); {cleanup_note}");
+                Err(ExitCode::FAILURE)
+            }
         }
-        Ok(spawned)
     })
-}
-
-async fn rollback_spawned(socket_path: &Path, pane: &ResourceId, verb: &str, reason: &str) {
-    let cleanup = request_command(
-        socket_path,
-        Command::KillResource {
-            terminal_id: pane.clone(),
-        },
-    )
-    .await;
-    match cleanup {
-        Ok(CommandResult::Ok) => {
-            eprintln!("phux: {verb} placement failed; spawned pane was removed: {reason}");
-        }
-        Ok(other) => {
-            eprintln!(
-                "phux: {verb} placement failed ({reason}); {}",
-                phux_client::explain::explain_unexpected("cleanup", &other)
-            );
-        }
-        Err(err) => {
-            eprintln!("phux: {verb} placement failed ({reason}); cleanup failed: {err}");
-        }
-    }
-}
-
-fn ownership_for_terminal(
-    snapshot: &phux_protocol::wire::info::SessionSnapshot,
-    terminal: &ResourceId,
-) -> Option<(WindowId, SessionId)> {
-    let window = snapshot
-        .resources
-        .iter()
-        .find(|pane| &pane.id == terminal)?
-        .window_id;
-    let session = snapshot
-        .windows
-        .iter()
-        .find(|candidate| candidate.id == window)?
-        .session_id;
-    Some((window, session))
 }
 
 /// Print the freshly spawned Terminal id — human line or the stable JSON
@@ -422,12 +355,11 @@ mod tests {
     use super::*;
     use bytes::BytesMut;
     use phux_client::layout::leaves;
-    use phux_client::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::PROTOCOL_VERSION;
     use phux_protocol::caps::{
         BootstrapCapabilities, ServerCapabilities, select_bootstrap_profile,
     };
-    use phux_protocol::wire::frame::{CommandValue, ErrorCode};
+    use phux_protocol::ids::{SessionId, WindowId};
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -592,7 +524,8 @@ mod tests {
                 let FrameKind::SetMetadata { value, .. } = layout.recv().await else {
                     panic!("expected layout SET");
                 };
-                let workspace = Workspace::decode_cbor(&value).expect("placed workspace");
+                let workspace =
+                    phux_client::layout::Workspace::decode_cbor(&value).expect("placed workspace");
                 assert_eq!(
                     workspace.active_window().unwrap().focus,
                     Some(ResourceId::local(1))
@@ -682,51 +615,5 @@ mod tests {
         );
         assert!(result.is_err());
         mock.join().expect("mock server");
-    }
-
-    /// Long enough that a loaded machine cannot trip it, short enough that a
-    /// genuine wedge fails this test instead of hanging the run.
-    const WEDGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
-
-    #[tokio::test]
-    async fn satellite_refusal_ends_the_spawn_instead_of_wedging_it() {
-        // phux-h5hj.12. `relay.rs`'s `handle_inbound` states the shape:
-        // "a satellite MAY answer a relayed spawn with a generic correlated
-        // ERROR instead of RESOURCE_SPAWNED". `dispatch_spawn_async` used to
-        // wait on RESOURCE_SPAWNED alone, so `phux spawn --satellite build-box`
-        // against such a peer printed nothing and never exited — the user's
-        // only way out was Ctrl-C, which looks identical to a hung server.
-        //
-        // The timeout is the assertion: on the pre-fix code this test does not
-        // fail, it hangs.
-        let temp = tempfile::TempDir::new().expect("tempdir");
-        let socket = temp.path().join("refusing.sock");
-        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
-        let spec = ScriptSpec::new().refuse_spawn(
-            ErrorCode::UnsupportedSatelliteRoute,
-            "no satellite route to build-box",
-        );
-        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
-
-        let result = tokio::time::timeout(
-            WEDGE_TIMEOUT,
-            dispatch_spawn_async(&socket, &spawn_frame(), None),
-        )
-        .await
-        .expect("a refused spawn must return; a timeout here is the wedge itself")
-        .expect("transport");
-
-        // Folded into the shape a hub already produces for this case, so the
-        // CLI's existing `report_spawn_error` renders it.
-        match result {
-            SpawnResult::Err(SpawnError::SpawnFailed(reason)) => {
-                assert!(
-                    reason.contains("no satellite route to build-box"),
-                    "the refusal must reach the operator, got {reason:?}"
-                );
-            }
-            other => panic!("a correlated ERROR is this spawn's answer, got {other:?}"),
-        }
-        server.await.expect("scripted server");
     }
 }
