@@ -1957,7 +1957,6 @@ const fn control_client_caps() -> ClientCapabilities {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
-    use phux_protocol::PROTOCOL_VERSION;
 
     fn framed(seq: u64) -> BytesMut {
         // A small, cheap-to-build frame with a distinguishing field so the

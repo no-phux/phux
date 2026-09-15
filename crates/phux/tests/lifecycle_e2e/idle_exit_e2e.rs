@@ -35,16 +35,11 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-
-use phux_protocol::PROTOCOL_VERSION;
-use phux_protocol::caps::ClientCapabilities;
-use phux_protocol::wire::frame::FrameKind;
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
