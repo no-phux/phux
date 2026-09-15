@@ -131,3 +131,32 @@ test('Workspace and Connection arrow keys never change a hidden theme', () => {
     assert.deepEqual(step(model, { kind: 'settings_move', delta: 1 }), [model, null]);
   }
 });
+
+test('About is a reachable Settings group', () => {
+  const [model] = step(opened(), { kind: 'settings_section', section: 5 });
+  assert.equal(model.settingsSection, 5);
+  assert.equal(model.settingEditId, 65535);
+});
+
+test('Settings details open one accordion at a time and keep the editor outside', () => {
+  let [model] = step(opened(), { kind: 'settings_detail', id: 0 });
+  assert.equal(model.settingsDetailId, 0);
+  [model] = step(model, { kind: 'settings_detail', id: 1 });
+  assert.equal(model.settingsDetailId, 1);
+  [model] = step(model, { kind: 'settings_select', id: 1 });
+  assert.equal(model.settingEditId, 1);
+  assert.equal(model.settingsDetailId, 1);
+  [model] = step(model, { kind: 'settings_detail', id: 1 });
+  assert.equal(model.settingsDetailId, 65535);
+  assert.equal(model.settingEditId, 1);
+});
+
+test('search reveals concealed matching details without using a search-field', () => {
+  const [hidden] = step(opened(), { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Geist Mono') } });
+  assert.deepEqual(hidden.settingRows.map(row => row.id), [0]);
+  assert.equal(hidden.settingsDetailId, 0);
+  assert.match(text(hidden.settingRows[0].applicability), /Geist Mono/);
+  const [timing] = step(opened(), { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Live preview') } });
+  assert.ok(timing.settingRows.some(row => row.id === 0));
+  assert.equal(timing.settingsDetailId, 65535);
+});

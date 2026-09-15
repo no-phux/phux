@@ -418,6 +418,9 @@ export interface Model {
   readonly settingsFocus: number;
   readonly settingRows: readonly Setting[];
   readonly settingEditId: number;
+  /// Open Settings accordion id, or 65535 when every row is collapsed.
+  readonly settingsDetailId: number;
+  readonly bindingDetailIndex: number;
   readonly settingEditValue: Uint8Array;
   readonly settingAnchor: number;
   readonly settingFocus: number;
@@ -597,12 +600,14 @@ export type Msg =
   | { readonly kind: "settings_open" }
   | { readonly kind: "settings_query"; readonly edit: TextInputEvent }
   | { readonly kind: "settings_select"; readonly id: number }
+  | { readonly kind: "settings_detail"; readonly id: number }
   | { readonly kind: "settings_value"; readonly edit: TextInputEvent }
   | { readonly kind: "settings_apply" }
   | { readonly kind: "settings_reset"; readonly id: number }
   | { readonly kind: "settings_reload" }
   | { readonly kind: "settings_edit_configuration" }
   | { readonly kind: "binding_select"; readonly index: number }
+  | { readonly kind: "binding_detail"; readonly index: number }
   | { readonly kind: "binding_edit"; readonly edit: TextInputEvent }
   | { readonly kind: "binding_apply" }
   | { readonly kind: "binding_reset"; readonly index: number }
@@ -2306,6 +2311,8 @@ export function initialModel(): [Model, Cmd<Msg>] {
       settingsFocus: 0,
       settingRows: NO_SETTING_ROWS,
       settingEditId: 65535,
+      settingsDetailId: 65535,
+      bindingDetailIndex: 65535,
       settingEditValue: NO_BYTES,
       settingAnchor: 0,
       settingFocus: 0,
@@ -2568,11 +2575,10 @@ function requestAppearance(model: Model, action: number, argument: number): Appe
 
 function openAppearance(model: Model): AppearanceDecision {
   if (model.settingsOpen) return appearanceDecision(model);
-  const next = scopeOverlays({ ...model, settingsOpen: true, paletteOpen: false, hostOpen: false, hostAwaiting: false, settingsSection: 0,
+  const next = scopeOverlays(withVisibleSettings({ ...model, settingsOpen: true, paletteOpen: false, hostOpen: false, hostAwaiting: false, settingsSection: 0,
      navigationAfterSettings: false, surfaceAfterSettings: 0, pendingToolOpen: false, configEditorConfirm: false,
      appearanceClosing: false, appearance: initialAppearance(), appearanceBusy: true,
-    settingEditId: 65535, settingsQuery: NO_BYTES, settingsNotice: NO_BYTES, settingsReloadStage: 0,
-    settingRows: settingsRows(initialAppearance(), NO_BYTES, 0) });
+    settingEditId: 65535, settingsDetailId: 65535, bindingDetailIndex: 65535, settingsQuery: NO_BYTES, settingsNotice: NO_BYTES, settingsReloadStage: 0 }));
   return { ...requestAppearance(next, 0, 0), opening: true };
 }
 
@@ -2581,9 +2587,8 @@ function loadedAppearance(model: Model, body: Uint8Array): AppearanceDecision {
   const appearance = appearanceResponse(body);
   if (appearance === null) return appearanceFailure(model);
   const cursor = appearance.theme < model.themes.length ? appearance.theme : model.settingsCursor;
-  const rows = settingsRows(appearance, model.settingsQuery, model.settingsSection);
-  const next = scopeOverlays({ ...model, appearance, appearanceBusy: false, appearanceClosing: false, settingsCursor: cursor,
-    settingRows: rows, noSettingRows: rows.length === 0,
+  const listed = withVisibleSettings({ ...model, appearance, settingsCursor: cursor });
+  const next = scopeOverlays({ ...listed, appearanceBusy: false, appearanceClosing: false,
     themes: highlightThemes(model.themes, cursor), settingsOpen: appearance.active });
   if (model.settingsReloadStage > 0) return advanceSettingsReload(next);
   if (appearance.active) return appearanceDecision({ ...next, pendingToolOpen: false });
@@ -3053,15 +3058,52 @@ function catalogNavigationTransition(incoming: Model, msg: Msg): NavigatorDecisi
   return input === null ? navigationReplyTransition(model, msg) : input;
 }
 
+function settingSearchHit(row: Setting, query: Uint8Array): boolean {
+  return containsQuery(row.label, query) || containsQuery(row.effectiveValue, query) || containsQuery(row.timing, query)
+    || containsQuery(row.defaultLabel, query) || containsQuery(row.applicability, query) || containsQuery(row.value, query);
+}
+
+function settingConcealedHit(row: Setting, query: Uint8Array): boolean {
+  if (query.length === 0) return false;
+  if (containsQuery(row.label, query) || containsQuery(row.effectiveValue, query) || containsQuery(row.timing, query)) return false;
+  return containsQuery(row.defaultLabel, query) || containsQuery(row.applicability, query) || containsQuery(row.value, query);
+}
+
+function visibleSettingRows(appearance: Appearance, query: Uint8Array, section: number): readonly Setting[] {
+  if (query.length === 0) return settingsRows(appearance, query, section);
+  const rows: Setting[] = [];
+  for (let group = 0; group <= 5; group += 1) {
+    for (const row of settingsRows(appearance, NO_BYTES, group)) {
+      if (settingSearchHit(row, query)) rows.push(row);
+    }
+  }
+  return rows;
+}
+
+function revealedSettingDetail(rows: readonly Setting[], query: Uint8Array, current: number): number {
+  if (query.length === 0) return current;
+  for (const row of rows) if (row.id === current && settingConcealedHit(row, query)) return current;
+  for (const row of rows) {
+    if (!settingConcealedHit(row, query)) continue;
+    return row.id >= 0 && row.id <= 14 ? Math.trunc(row.id) : 65535;
+  }
+  return 65535;
+}
+
+function withVisibleSettings(model: Model): Model {
+  const settingRows = visibleSettingRows(model.appearance, model.settingsQuery, model.settingsSection);
+  return { ...model, settingRows, noSettingRows: settingRows.length === 0,
+    settingsDetailId: revealedSettingDetail(settingRows, model.settingsQuery, model.settingsDetailId) };
+}
+
 function editSettingsSearch(model: Model, edit: TextInputEvent): Model {
   const state: TextEditState = { text: model.settingsQuery, selection: { anchor: model.settingsAnchor, focus: model.settingsFocus }, composition: null };
   const next = applyTextInputEvent(state, edit, 64);
   if (next === null) return model;
   const anchor = next.selection.anchor >= 0 && next.selection.anchor <= 64 ? Math.trunc(next.selection.anchor) : 0;
   const focus = next.selection.focus >= 0 && next.selection.focus <= 64 ? Math.trunc(next.selection.focus) : 0;
-  return { ...model, settingsQuery: next.text, settingsAnchor: anchor, settingsFocus: focus,
-    bindingRows: filteredBindings(model.bindings, next.text),
-    settingRows: settingsRows(model.appearance, next.text, model.settingsSection) };
+  return withVisibleSettings({ ...model, settingsQuery: next.text, settingsAnchor: anchor, settingsFocus: focus,
+    bindingRows: filteredBindings(model.bindings, next.text), bindingDetailIndex: 65535 });
 }
 
 function selectSetting(model: Model, id: number): Model {
@@ -3089,10 +3131,24 @@ function chooseSettingsSection(model: Model, section: number): NavigatorDecision
   // still opens About with its own request; this path only selects the tab.
   if (!(section >= 0 && section <= 5)) return navigatorDecision(model, 0, NO_BYTES);
   const selected = Math.trunc(section);
-  const next = { ...model, settingsSection: selected, settingEditId: 65535,
-    settingRows: settingsRows(model.appearance, model.settingsQuery, selected) };
+  const next = withVisibleSettings({ ...model, settingsSection: selected, settingEditId: 65535,
+    settingsDetailId: 65535, bindingDetailIndex: 65535 });
   if (selected === 2) return navigatorDecision({ ...next, appearanceBusy: true }, 4, keybindingRequest(0, 0, NO_BYTES));
   return navigatorDecision(next, 0, NO_BYTES);
+}
+
+function toggleSettingsDetail(model: Model, id: number): Model {
+  if (!(id >= 0 && id <= 14)) return model;
+  const selected = Math.trunc(id);
+  const settingsDetailId = model.settingsDetailId === selected ? 65535 : selected;
+  return { ...model, settingsDetailId, bindingDetailIndex: 65535 };
+}
+
+function toggleBindingDetail(model: Model, index: number): Model {
+  if (!(index >= 0 && index <= 191)) return model;
+  const selected = Math.trunc(index);
+  const bindingDetailIndex = model.bindingDetailIndex === selected ? 65535 : selected;
+  return { ...model, bindingDetailIndex, settingsDetailId: 65535 };
 }
 
 function reloadSettings(model: Model): NavigatorDecision {
@@ -3140,6 +3196,7 @@ function bindingTransition(model: Model, msg: Msg): NavigatorDecision | null {
   if (model.appearanceBusy) return null;
   switch (msg.kind) {
     case "binding_select": return navigatorDecision(selectBinding(model, msg.index), 0, NO_BYTES);
+    case "binding_detail": return navigatorDecision(toggleBindingDetail(model, msg.index), 0, NO_BYTES);
     case "binding_edit": return navigatorDecision(editBinding(model, msg.edit), 0, NO_BYTES);
     case "binding_apply": {
       if (model.bindingEditIndex > 191) return navigatorDecision(model, 0, NO_BYTES);
@@ -3155,6 +3212,7 @@ function settingsTransition(model: Model, msg: Msg): NavigatorDecision | null {
   switch (msg.kind) {
     case "settings_query": return navigatorDecision(editSettingsSearch(model, msg.edit), 0, NO_BYTES);
     case "settings_select": return navigatorDecision(selectSetting(model, msg.id), 0, NO_BYTES);
+    case "settings_detail": return navigatorDecision(toggleSettingsDetail(model, msg.id), 0, NO_BYTES);
     case "settings_value": return navigatorDecision(editSettingValue(model, msg.edit), 0, NO_BYTES);
     case "settings_section": return chooseSettingsSection(model, msg.section);
     default: return settingControlTransition(model, msg) ?? bindingTransition(model, msg);
