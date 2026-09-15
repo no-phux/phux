@@ -511,7 +511,9 @@ Text 65536 → 131072 is +64 KiB x2 x views: +640 KiB across 5 windows.
 After the 4x cell bump, leftover after one full pane is 100352. Without the
 7680 cap, three unfocused panes would each get ~33k cells and paint full,
 which contradicts the tier. The cap is what keeps "degraded" meaning
-degraded once the store can hold 2–4 full grids. Last-N crop uses the
+degraded once the store can hold 2–4 full grids. Text, glyphs, and paths
+use the same degraded-first remainder and saturate so N degraded panes
+cannot overflow the store (`plan` at N=8). Last-N crop uses the
 same row cap (`max_rows/4`).
 
 ### Last-N crop (shipped)

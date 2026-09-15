@@ -395,7 +395,9 @@ test "Hybrid C painter gives the focused split more cells than equal-cut" {
     const neighbour_cells = if (neighbour) |view| view.cellCount() else 0;
     try testing.expect(neighbour_cells < paint_budget.equalCutCellShare(4));
     try testing.expect(neighbour_cells <= paint_budget.degraded_cell_cap);
-    try testing.expect(focused.cellCount() > paint_budget.equalCutCellShare(4));
+    // Equal-cut at N=4 is store/4, which now exceeds one product grid.
+    // Hybrid C still paints the focused pane as a full grid, not an equal slice.
+    try testing.expectEqual(paint_budget.full_cells, focused.cellCount());
 }
 
 fn rowMark(row: usize) u8 {
