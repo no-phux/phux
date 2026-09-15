@@ -17,6 +17,9 @@
 
 export interface AnalyticsEnv {
   ASSETS?: { fetch(input: Request): Promise<Response> };
+  /** Preferred production path: same-account Worker service binding. */
+  ANALYTICS?: { fetch(input: Request): Promise<Response> };
+  /** HTTP fallback for local development and staged migration only. */
   ANALYTICS_INGEST_URL?: string;
   ANALYTICS_INGEST_KEY?: string;
   MEMBER_KEY?: string;
@@ -34,11 +37,13 @@ interface Envelope {
   ip: string;
   country: string;
   ua: string;
-  referrer: string;
+  referrer_host: string;
   host: string;
   method: string;
   path: string;
-  query: string;
+  utm_source: string;
+  utm_medium: string;
+  utm_campaign: string;
   status: number;
   content_type: string;
   accept: string;
@@ -59,24 +64,53 @@ export function forwardEnvelope(
   ctx: { waitUntil(p: Promise<unknown>): void } | undefined,
   envelope: Envelope,
 ): void {
-  if (!env.ANALYTICS_INGEST_URL || !env.ANALYTICS_INGEST_KEY) return;
+  if (!canForward(env)) return;
   pending.push(envelope);
   const batch = pending;
   pending = [];
-  const next = (chain ?? Promise.resolve()).then(() =>
-    fetch(env.ANALYTICS_INGEST_URL!, {
+  const next = (chain ?? Promise.resolve()).then(() => {
+    const request = new Request(
+      env.ANALYTICS ? "https://analytics.internal/ingest" : env.ANALYTICS_INGEST_URL!,
+      {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-analytics-key": env.ANALYTICS_INGEST_KEY!,
+        ...(!env.ANALYTICS && env.ANALYTICS_INGEST_KEY
+          ? { "x-analytics-key": env.ANALYTICS_INGEST_KEY }
+          : {}),
       },
       body: JSON.stringify({ events: batch }),
-    }),
-  );
+      },
+    );
+    return env.ANALYTICS ? env.ANALYTICS.fetch(request) : fetch(request);
+  });
   chain = next.catch(() => {
     // analytics must never affect a request
   });
   ctx?.waitUntil(chain);
+}
+
+function canForward(env: AnalyticsEnv): boolean {
+  return Boolean(
+    env.ANALYTICS ||
+      (env.ANALYTICS_INGEST_URL && env.ANALYTICS_INGEST_KEY),
+  );
+}
+
+function attribution(value: string | null): string {
+  return (value ?? "")
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .trim()
+    .slice(0, 80);
+}
+
+function referrerHost(value: string | null): string {
+  if (!value) return "";
+  try {
+    return new URL(value).hostname.toLowerCase().slice(0, 253);
+  } catch {
+    return "";
+  }
 }
 
 /** Classify one HTTP exchange into an envelope. */
@@ -86,6 +120,7 @@ export function buildEnvelope(
   demo?: DemoInfo,
 ): Envelope {
   const url = new URL(request.url);
+  const params = url.searchParams;
   return {
     ts: Date.now(),
     ip:
@@ -94,11 +129,17 @@ export function buildEnvelope(
       "",
     country: (request as Request & { cf?: { country?: string } }).cf?.country ?? "",
     ua: request.headers.get("user-agent") ?? "",
-    referrer: request.headers.get("referer") ?? "",
+    // Forward only the hostname. Referrer paths and queries commonly contain
+    // email addresses, OAuth codes, and other tokens that analytics does not
+    // need and must never receive (PHA-425).
+    referrer_host: referrerHost(request.headers.get("referer")),
     host: url.hostname,
     method: request.method,
     path: url.pathname,
-    query: url.search,
+    // Attribution is an explicit allowlist, never the raw query string.
+    utm_source: attribution(params.get("utm_source")),
+    utm_medium: attribution(params.get("utm_medium")),
+    utm_campaign: attribution(params.get("utm_campaign")),
     status: response.status,
     content_type: response.headers.get("content-type") ?? "",
     accept: request.headers.get("accept") ?? "",
@@ -153,7 +194,7 @@ export async function handleJoin(
   env: AnalyticsEnv,
   ctx: { waitUntil(p: Promise<unknown>): void } | undefined,
 ): Promise<Response> {
-  if (!env.MEMBER_KEY || !env.ANALYTICS_INGEST_URL || !env.ANALYTICS_INGEST_KEY) {
+  if (!env.MEMBER_KEY || !canForward(env)) {
     return Response.json({ ok: false, error: "join is not configured" }, { status: 503 });
   }
   let email = "";

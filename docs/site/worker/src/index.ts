@@ -55,7 +55,9 @@ export interface Env extends AuthEnv {
   // the site worker's ingest route (shared secret). No DO of our own.
   TELEMETRY_INGEST_URL?: string;
   TELEMETRY_INGEST_KEY?: string;
-  // Private ops pipeline (no-phux/ops) + member-cookie secret.
+  // Private ops pipeline (no-phux/ops) over a same-account service binding.
+  ANALYTICS?: { fetch(input: Request): Promise<Response> };
+  // HTTP fallback for local development and staged migration only.
   ANALYTICS_INGEST_URL?: string;
   ANALYTICS_INGEST_KEY?: string;
   MEMBER_KEY?: string;
