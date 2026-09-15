@@ -4255,10 +4255,11 @@ test "shipping unrelated pointer down preserves the captured divider" {
         .label = canvas_label,
         .kind = .pointer_down,
         .pointer_id = 8,
-        // Below the 50pt header: empty titlebar chrome is a window-drag
-        // surface, so (2,2) would start a drag instead of this probe.
+        // Titlebar padding is a window-drag surface once the header row
+        // carries window-drag; (2,2) would start a drag. Probe in the
+        // terminal space instead.
         .x = 2,
-        .y = 80,
+        .y = 100,
     };
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = raw });
     try std.testing.expect(engine.split_drag != null);
@@ -5099,13 +5100,13 @@ test "the markup chrome passes the layout audit at every declared size, density 
     try std.testing.expectEqual(@as(usize, 0), total);
 }
 
-/// The shipping hidden-inset header must expose a full-width drag
-/// surface. Parking `window-drag` on leftover spacers leaves no grab
-/// once the strip is packed, and the 78pt lights reserve is not usable.
-/// Marking the header row itself overflows the sixteen-slot platform
-/// table once tabs become exclusion rects. The shipping shape is a
-/// childless drag layer under the row — empty chrome falls through,
-/// buttons stay buttons.
+/// The shipping hidden-inset header must itself be the drag surface.
+/// Parking `window-drag` on the 78pt traffic-light spacer leaves no
+/// usable grab handle: the lights occupy that reserve, and the rest of
+/// the band is press-claiming chrome. The SDK contract is the header
+/// row — buttons inside stay buttons via press fall-through. The null
+/// platform's drag-region table must be sized to the runtime collector
+/// cap (32); a 16-slot table overflows a 16-tab strip.
 fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: native_sdk.geometry.SizeF) !void {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
@@ -5149,10 +5150,8 @@ fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: nativ
     const settings = settings_index orelse return error.TestExpectedSettingsControl;
     try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, settings) == null);
     const leading = leading_index orelse return error.TestExpectedTitlebarLeadingReserve;
-    const lead_frame = layout.nodes[leading].frame;
-    const probe = native_sdk.geometry.PointF.init(lead_frame.x + 8, lead_frame.y + lead_frame.height / 2);
-    const hit = layout.hitTestWithTokens(probe, tokens) orelse return error.TestExpectedTitlebarLeadingHit;
-    try std.testing.expectEqual(drag_index, canvas.widgetWindowDragTargetIndexFromNode(layout, hit.index));
+    try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, leading) != null);
+    try std.testing.expectEqual(drag_index, canvas.widgetWindowDragTargetIndexFromNode(layout, leading));
 }
 
 test "titlebar chrome is a window-drag surface in every window and placement" {
