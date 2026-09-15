@@ -1027,11 +1027,7 @@ test "running coordinator socket pump starts before optional slow CLI discovery"
     const probe = std.c.accept(listener, null, null);
     try std.testing.expect(probe >= 0);
     _ = std.c.close(probe);
-    const started = monotonicTime().?;
-    while (!fixture.ready()) {
-        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
-        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
-    }
+    try awaitHelperReady(&fixture, &bridge);
     try std.testing.expectEqual(@as(usize, 1), try posix.poll(&polls, 0));
     const connected = std.c.accept(listener, null, null);
     try std.testing.expect(connected >= 0);
@@ -1065,14 +1061,10 @@ test "stopping during coordinator ensure cancels and reaps helper without postin
     defer fixture.deinit();
     var bridge = transport.Bridge.init(std.testing.allocator);
     defer bridge.deinit();
-    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = fixture.socket }, .{ .cli_path = fixture.cli });
+    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = fixture.socket }, .{ .cli_path = fixture.cli, .timeout_ms = 2 * (startup.Options{}).timeout_ms });
     var stopped = false;
     defer if (!stopped) worker.stop();
-    const started = monotonicTime().?;
-    while (!fixture.ready()) {
-        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
-        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
-    }
+    try awaitHelperReady(&fixture, &bridge);
     const stopping_started = monotonicTime().?;
     worker.stop();
     stopped = true;
