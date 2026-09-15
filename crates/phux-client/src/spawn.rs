@@ -136,6 +136,49 @@ pub fn parse_idempotency_key(text: &str) -> Result<IdempotencyKey, InvalidIdempo
     IdempotencyKey::new(bytes).ok_or(InvalidIdempotencyKey)
 }
 
+/// The `phux spawn --json` result document for `terminal_id`.
+///
+/// `terminal_id` is the satellite-local id when `satellite` is non-null
+/// (address it through the hub as `satellite` + `terminal_id`), and
+/// `replayed` is `true` when a keyed retry answered an earlier spawn's pane.
+/// One builder for the CLI and the MCP `phux_spawn` tool.
+#[must_use]
+pub fn spawned_document(terminal_id: &ResourceId, replayed: bool) -> serde_json::Value {
+    let (id, host) = match terminal_id {
+        ResourceId::Local { id } => (*id, None),
+        ResourceId::Satellite { host, id } => (*id, Some(host.as_str())),
+    };
+    serde_json::json!({
+        "schema_version": 1,
+        "terminal_id": id,
+        "satellite": host,
+        "replayed": replayed,
+    })
+}
+
+/// The actionable sentence for a typed `SpawnError`, shared by `phux spawn`,
+/// `phux launch`, and the MCP `phux_spawn` tool.
+#[must_use]
+pub fn spawn_error_message(err: &SpawnError) -> String {
+    match err {
+        SpawnError::GroupNotFound => "spawn failed: server rejected the default group".to_owned(),
+        SpawnError::SpawnFailed(reason) => format!("spawn failed: {reason}"),
+        SpawnError::UnsupportedSatelliteRoute => "spawn failed: no route to that satellite \
+             (is the server running with --hub, and the name in \
+             `phux host ls --role satellite`?)"
+            .to_owned(),
+        SpawnError::SatelliteUnreachable(reason) => {
+            format!("spawn failed: satellite unreachable: {reason}")
+        }
+        // `SpawnError` is `#[non_exhaustive]`: a code with no arm here is a
+        // vocabulary this client does not have, i.e. version skew.
+        _ => format!(
+            "spawn failed: {}",
+            crate::explain::unexpected_reply("SPAWN_RESOURCE")
+        ),
+    }
+}
+
 /// The window/session a Terminal belongs to, read out of a `GET_STATE`
 /// snapshot.
 #[must_use]

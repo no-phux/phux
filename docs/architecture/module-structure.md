@@ -335,7 +335,9 @@ src/
   detach.rs           — DETACH_CLIENTS classification (`phux detach`)
   kill.rs             — SHUTDOWN / KILL_RESOURCES / KILL_RESOURCE and the
                         keep-empty clear (`phux kill`); selector resolution
-                        and the whole-session-vs-per-pane choice stay CLI-side
+                        and the whole-session-vs-per-pane choice stay with
+                        the caller (`phux kill`, and the MCP `phux_kill`
+                        composing the same primitives in-process)
   session.rs          — session-identity L3 writes: `rename` (`phux
                         rename`), whose request id is now a caller parameter
                         rather than hardcoded inside the write (the CLI
@@ -346,12 +348,22 @@ src/
                         atomic-agent-session-restore capability preflight;
                         duplicate-name rejection and CLI wording stay in
                         `crates/phux/src/commands/new.rs`
+  session_list.rs     — the `phux ls --json` document (SessionListJson)
+                        built from one GET_STATE view; `phux ls` prints it
+                        and MCP `phux_ls` returns it
   signal.rs           — ACQUIRE_INPUT / RELEASE_INPUT / SIGNAL_TERMINAL
                         command builders and their shared outcome
                         (`phux take` / `phux give` / `phux signal`, ADR-0033)
+  spatial.rs          — insert-pane / move-pane / swap-pane: selector
+                        resolution, the plan, execution (LayoutOps or the
+                        cross-session pane_move), the result document, and
+                        the refusal codes, shared by the CLI verbs and the
+                        MCP spatial tools
   spawn.rs            — SPAWN_RESOURCE, and the ownership-verify +
                         KILL_RESOURCE rollback dance behind explicit
-                        placement (`phux spawn`, `phux launch`)
+                        placement (`phux spawn`, `phux launch`); the
+                        `--json` result document and the SpawnError
+                        sentences both surfaces print
   tags.rs             — phux.tags/v1 read/write (`phux tag`, ADR-0027)
   resource.rs, resource/
                       — the `phux resource` noun (PHA-406): resource.rs
@@ -538,8 +550,10 @@ src/
                         actions.rs, widgets.rs, hooks.rs, exit_codes.rs,
                         deprecations.rs, files.rs, kinds.rs — the
                         `docs/reference/kinds.md` render of the
-                        `phux-protocol::kinds` catalog, ADR-0125) — see
-                        CONVENTIONS.md "Generated reference docs"
+                        `phux-protocol::kinds` catalog, ADR-0125; parity.rs
+                        — the `docs/reference/parity.md` render of the MCP
+                        tool table) — see CONVENTIONS.md "Generated
+                        reference docs"
   selector.rs         — CLI-side TARGET parsing entry point
   exit_codes.rs, json_err.rs, output.rs, deprecations.rs,
   help_inventory.rs   — shared exit-code table, the `--json` error
@@ -597,7 +611,14 @@ rather than a layer with its own internal architecture worth diagramming:
   trio (PHA-406), in-process over `phux_client::resource` so its documents
   cannot drift from the CLI's; `annotations.rs` derives every tool's
   `readOnlyHint`/`destructiveHint` from the `phux-protocol::kinds` catalog
-  instead of a hand-set flag per tool (ADR-0125).
+  instead of a hand-set flag per tool (ADR-0125), through
+  `src/tool_table.rs`. That file is the adapter's one table of tools: the
+  CLI verb each mirrors, whether it runs in-process or through the bounded
+  CLI residue (`cli_adapter.rs`, which refuses any tool not marked
+  residue), and what it touches. The parity gate (`tests/parity.rs`) holds
+  that table to the live catalog, the CLI grammar, and the kind table;
+  `phux`'s refdocs compile the same file to render
+  `docs/reference/parity.md`.
 - **`phux-plugin`** — the shared plugin-runtime surface (argv execution,
   timeouts, env injection) used by both the CLI's `config run` and the
   server's `hooks.rs` dispatcher.

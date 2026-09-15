@@ -137,12 +137,24 @@ The flag lives on the MCP companion rather than `phux api schema` so
 the schemas cannot drift and the main binary does not link the MCP
 stack.
 
-Name-for-name mapping onto the CLI. CLI-subprocess tools execute argv
-(never a shell), parse the canonical JSON, cap each string at 4096 bytes
-and arrays at 64 entries, cap stdout/stderr at 1 MiB / 64 KiB, and kill
-the child on cancellation or deadline. Every strict schema sets
-`additionalProperties: false`. In-process tools reuse `phux-client`
-directly.
+Name-for-name mapping onto the CLI, checked by an automated parity gate:
+[`../reference/parity.md`](../reference/parity.md) (generated) lists every
+tool, the `phux` verb it mirrors, whether it runs in-process or through
+the CLI, and its annotations. Most tools call the same `phux-client`
+function the CLI verb calls and return the same document; four
+(`phux_kill`, `phux_signal`, `phux_tag`, `phux_rename`) run in-process
+over the same wire helpers but mirror the CLI verb's orchestration in the
+adapter, which the reference marks. A small residue
+(`phux_run`, `phux_new`, `phux_launch`, `phux_workspace`, the diagnostics,
+and the agent verbs whose documents the CLI assembles) still executes the
+CLI: argv (never a shell), the canonical JSON parsed, stdout/stderr capped
+at 1 MiB / 64 KiB, the child killed on cancellation or deadline. Every
+strict schema caps each string at 4096 bytes and arrays at 64 entries and
+sets `additionalProperties: false`. A `phux_snapshot` with `tail` or
+`unwrap` is refused over 1 MiB of document, the bound the subprocess path
+had. Tool-error text is prose, not a contract; where the CLI's `--json`
+error line carried a stable `code` (`phux_spawn`, the spatial tools), the
+tool error is that same one-line document.
 
 Contract facts `--schema` descriptions do not collect:
 
@@ -162,8 +174,9 @@ Contract facts `--schema` descriptions do not collect:
 - **`phux_paste`** is one paste event. A paste inserts without
   submitting; follow with `phux_send_keys` sending `Enter`. A dropped
   untrusted payload still reports `sent: true`.
-- **`phux_detach`** talks `DETACH_CLIENTS` in-process (`phux detach` has
-  no `--json`). There is deliberately **no `phux_attach`**: a live ANSI
+- **`phux_detach`** sends `DETACH_CLIENTS` through the same library call
+  as `phux detach`, and reports the count the server acked (`phux detach`
+  has no `--json`). There is deliberately **no `phux_attach`**: a live ANSI
   stream has no request/response shape for the one-text-content-block
   `tools/call` envelope.
 - **`phux_status`**: a stopped server is an answer, not an error. Branch

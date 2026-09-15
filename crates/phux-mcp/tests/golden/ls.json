@@ -1,0 +1,75 @@
+{
+  "hosts": [
+    {
+      "host": null,
+      "local": true,
+      "reachable": true,
+      "sessions": [
+        {
+          "active_terminal": "@1",
+          "attached": false,
+          "attached_clients": 0,
+          "id": 1,
+          "name": "work",
+          "panes": 3,
+          "windows": 1
+        }
+      ],
+      "unreachable": null
+    }
+  ],
+  "hosts_complete": false,
+  "resources": [
+    {
+      "exit": null,
+      "id": "@1",
+      "kind": "terminal",
+      "lifecycle": "running",
+      "parent": null
+    },
+    {
+      "exit": null,
+      "id": "@2",
+      "kind": "terminal",
+      "lifecycle": "running",
+      "parent": null
+    },
+    {
+      "exit": null,
+      "id": "@9",
+      "kind": "agent_session",
+      "lifecycle": "running",
+      "parent": "@1"
+    },
+    {
+      "exit": {
+        "exited_at_ms": 5,
+        "reason": "exited",
+        "retained_until_ms": 10,
+        "signal": null,
+        "status": 42
+      },
+      "id": "@4",
+      "kind": "terminal",
+      "lifecycle": "exited",
+      "parent": null
+    }
+  ],
+  "schema_version": 3,
+  "sessions": [
+    {
+      "attached": false,
+      "attached_clients": 0,
+      "empty": false,
+      "keep_empty": false,
+      "name": "work",
+      "windows": 1
+    }
+  ],
+  "terminals": [
+    "@1",
+    "@2",
+    "@4"
+  ],
+  "unreachable": []
+}

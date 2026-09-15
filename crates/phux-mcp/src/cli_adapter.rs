@@ -1,7 +1,13 @@
 //! Bounded, shell-free adapter to the canonical `phux` CLI JSON surface.
 //!
-//! MCP parity tools execute the sibling `phux` binary directly with argv —
-//! never through a shell — and parse the CLI's versioned JSON. Child lifetime
+//! Only the **residue** runs here: the tools whose [`crate::tool_table`] row
+//! is [`Exec::Cli`], each with its one-line reason in that table. Every other
+//! tool calls `phux-client` in-process, and [`CliAdapter::for_residue`]
+//! refuses to build an adapter for it, so a migrated tool cannot quietly
+//! regrow a subprocess.
+//!
+//! A residue tool executes the sibling `phux` binary directly with argv —
+//! never through a shell — and parses the CLI's versioned JSON. Child lifetime
 //! is bounded, cancellation kills the child, and stdout/stderr are drained with
 //! fixed memory caps so a broken command cannot exhaust the MCP host.
 
@@ -19,6 +25,7 @@ use serde_json::Value;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 
+use crate::tool_table::{self, Exec};
 use crate::tools::ToolError;
 #[cfg(test)]
 use crate::tools::strict_object;
@@ -45,7 +52,22 @@ pub(crate) struct CliOutput {
 }
 
 impl CliAdapter {
-    pub(crate) fn discover() -> Self {
+    /// The adapter for `tool`, which must be on the CLI residue.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a tool whose [`tool_table`] row is not [`Exec::Cli`]: it runs
+    /// in-process, and reaching this is a defect, not a fallback.
+    pub(crate) fn for_residue(tool: &str) -> Result<Self, ToolError> {
+        match tool_table::row(tool).map(|row| row.exec) {
+            Some(Exec::Cli(_)) => Ok(Self::discover()),
+            _ => Err(ToolError::new(format!(
+                "internal error: {tool} runs in-process and must not spawn the phux CLI"
+            ))),
+        }
+    }
+
+    fn discover() -> Self {
         let program = std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|dir| dir.join("phux")))
@@ -169,6 +191,8 @@ impl CliAdapter {
         I: IntoIterator<Item = S>,
         S: AsRef<OsStr>,
     {
+        #[cfg(test)]
+        spawn_record::note(&self.program);
         let mut child = Command::new(&self.program)
             .args(args)
             .stdin(Stdio::null())
@@ -381,10 +405,51 @@ pub(crate) fn ratio(args: &Value) -> Result<Option<f64>, ToolError> {
     }
 }
 
+/// Test-only instrumentation: every CLI spawn this thread attempted.
+///
+/// Thread-local because a `#[tokio::test]` runs its current-thread runtime
+/// on the test's own thread, and the spawn happens synchronously on it, so
+/// parallel tests cannot see each other's spawns.
+#[cfg(test)]
+pub(crate) mod spawn_record {
+    use std::cell::RefCell;
+    use std::ffi::OsStr;
+
+    thread_local! {
+        static SPAWNED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub(super) fn note(program: &OsStr) {
+        SPAWNED.with(|spawned| {
+            spawned
+                .borrow_mut()
+                .push(program.to_string_lossy().into_owned());
+        });
+    }
+
+    /// Drain and return what this thread spawned since the last call.
+    pub(crate) fn take() -> Vec<String> {
+        SPAWNED.with(|spawned| std::mem::take(&mut *spawned.borrow_mut()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Only a residue tool gets an adapter; an in-process tool is refused
+    /// before anything could be spawned.
+    #[test]
+    fn only_residue_tools_get_a_cli_adapter() {
+        assert!(CliAdapter::for_residue("phux_run").is_ok());
+        assert!(CliAdapter::for_residue("phux_doctor").is_ok());
+        for in_process in ["phux_ls", "phux_kill", "phux_tag", "phux_snapshot"] {
+            let err = CliAdapter::for_residue(in_process).unwrap_err();
+            assert!(err.0.contains("runs in-process"), "{in_process}: {}", err.0);
+        }
+        assert!(CliAdapter::for_residue("phux_not_a_tool").is_err());
+    }
 
     #[tokio::test]
     async fn adapter_executes_argv_without_a_shell_and_parses_json() {

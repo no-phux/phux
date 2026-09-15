@@ -112,7 +112,7 @@ pub(crate) fn owns(name: &str) -> bool {
 /// Returns [`ToolError`] for an unknown name, a malformed argument, or a
 /// canonical-CLI failure that produced no document.
 pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    call_with_adapter(name, args, &CliAdapter::discover()).await
+    call_with_adapter(name, args, &CliAdapter::for_residue(name)?).await
 }
 
 async fn call_with_adapter(
