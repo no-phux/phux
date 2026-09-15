@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-15
 ---
 
 # The phux MCP adapter
@@ -183,6 +183,34 @@ Contract facts `--schema` descriptions do not collect:
   `phux_agent_emit`, `phux_agent_log`): on a server without
   `resource_kinds` in `phux_status`'s `features`, each returns
   `unsupported_server`. The adapter adds no producer of its own.
+- **`phux_resource_wait`** is always bounded: `timeout_secs` is required
+  (`1..=3600`). `outcome: "timed_out"` and `outcome: "gone"` are results,
+  not tool errors; branch on `outcome`. Pass the returned `cursor` back as
+  `after` to resume without missing an exit; `evidence_lost: true` says
+  the journal had already evicted part of that range, so a `gone` may
+  hide an exit. A direct `@N` target is used
+  as given, so a resource that already exited can still be named.
+  `phux_resource_show` and `phux_resource_methods` return the same
+  documents as the CLI's `resource show|methods --json`.
+- **`phux_spawn`** takes `retain_secs` (keep the pane inspectable after
+  exit) and `idempotency_key` (32 hex digits; a retry answers the first
+  pane with `replayed: true`); **`phux_new`** takes `idempotency_key`.
+  Each is refused with `unsupported_server` when the server lacks
+  `retain_on_exit` / `spawn_idempotency`, never silently ignored.
+- **`phux_watch`** event items carry `seq`, `ts_ms`, and `actor` on a
+  server with the event journal. `cwd_changed`, `terminal_control`,
+  `journal_gap`, and `source_gap` are named (they used to arrive as
+  `unknown`); the envelope stays `schema_version` 2.
+
+**Annotations.** Every tool carries `annotations.readOnlyHint` and
+`annotations.destructiveHint`, derived from the kind catalog rather than
+set by hand. A tool is read-only only when every method it can send is
+read-only by the catalog's conservative rule (a denied or unclassified
+row counts as a write). It is destructive when any of those methods
+needs the `SIGNAL` verb (ends a process, ejects a client) or the `INPUT`
+verb (keystrokes in a live PTY can run anything); `CREATE` and `BIND`
+writes are marked as writes but not destructive. The hints are advice
+for a host's confirmation UI; authorization still happens at the server.
 
 **Deliberate exclusions.** No MCP `take` / `give`: the CLI lease belongs
 to the short-lived subprocess connection, so advertising a persistent

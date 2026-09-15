@@ -7,6 +7,8 @@ use phux_client::session::{
     AtomicPreflightOutcome, CreateEmptyOutcome, CreateOutcome, CreateSessionError,
     CreateSessionRequest,
 };
+use phux_protocol::caps::ServerFeature;
+use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::AttachTarget;
 
 use crate::commands::server_target::{ServerSpec, ServerTarget};
@@ -51,7 +53,11 @@ pub(crate) fn run_new(
     command: Vec<String>,
     env: Vec<(String, String)>,
 ) -> ExitCode {
-    let NewMode { json, empty } = mode;
+    let NewMode {
+        json,
+        empty,
+        idempotency_key,
+    } = mode;
     let requested = match requested_session_name(name, session) {
         Ok(requested) => requested,
         Err(code) => return code,
@@ -83,17 +89,20 @@ pub(crate) fn run_new(
     if empty {
         return run_new_empty_json(&rt, &target, &name);
     }
-    run_new_json(&rt, &target, &name, cwd, command, env)
+    run_new_json(&rt, &target, &name, cwd, command, env, idempotency_key)
 }
 
-/// How `phux new` runs: headless (`--json`), and whether the session starts
-/// with no terminal (`--empty`, ADR-0105).
+/// How `phux new` runs: headless (`--json`), whether the session starts
+/// with no terminal (`--empty`, ADR-0105), and whether the create is keyed
+/// (`--idempotency-key`, ADR-0126).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct NewMode {
     /// `--json`: create without attaching and print a document.
     pub(crate) json: bool,
     /// `--empty`: create a keep-empty session with zero windows.
     pub(crate) empty: bool,
+    /// `--idempotency-key`, already parsed: the create's `request_token`.
+    pub(crate) idempotency_key: Option<IdempotencyKey>,
 }
 
 /// `phux new --empty [NAME]`: create an empty session, then attach to it. The
@@ -341,6 +350,7 @@ pub(crate) fn run_new_json(
     cwd: Option<PathBuf>,
     command: Vec<String>,
     env: Vec<(String, String)>,
+    idempotency_key: Option<IdempotencyKey>,
 ) -> ExitCode {
     // A local server must be running to host the new session; the real
     // session is then created without attaching (see `ensure_local_server`).
@@ -355,7 +365,15 @@ pub(crate) fn run_new_json(
     let env = env.into_iter().collect();
 
     match rt.block_on(create_session_via_metadata(
-        target, name, command, cwd, env, None, false, true,
+        target,
+        name,
+        command,
+        cwd,
+        env,
+        None,
+        false,
+        true,
+        idempotency_key,
     )) {
         Ok(terminal_id) => print_json_document(&new_session_json(name, terminal_id)),
         Err(code) => code,
@@ -505,6 +523,7 @@ pub(crate) async fn create_session_via_metadata(
     agent_session: Option<Vec<u8>>,
     agent_session_preflighted: bool,
     json: bool,
+    idempotency_key: Option<IdempotencyKey>,
 ) -> Result<u64, ExitCode> {
     let allow_legacy_result = agent_session.is_none();
 
@@ -513,7 +532,13 @@ pub(crate) async fn create_session_via_metadata(
         .await
         .map_err(|err| server.report_unreachable(json, &err, "new"))?;
 
-    reject_duplicate_session_name(&mut conn, server, name, json).await?;
+    // A keyed retry names a session the first attempt already created, so
+    // the client-side duplicate check would refuse the very retry the key
+    // exists for; the server answers it from its dedupe cache instead.
+    match idempotency_key {
+        Some(_) => refuse_unkeyed_server(&conn, json)?,
+        None => reject_duplicate_session_name(&mut conn, server, name, json).await?,
+    }
 
     let request = CreateSessionRequest {
         name,
@@ -521,6 +546,7 @@ pub(crate) async fn create_session_via_metadata(
         cwd: cwd.as_deref(),
         env: &env,
         agent_session: agent_session.as_deref(),
+        idempotency_key,
     };
     let mut notices = Vec::new();
     let result = phux_client::session::create_session(
@@ -557,6 +583,9 @@ pub(crate) async fn create_session_via_metadata(
         CreateOutcome::LegacyReadRefused(refusal) => {
             eprintln!("phux: create-session failed: server refused legacy read-back: {refusal}");
             Err(ExitCode::FAILURE)
+        }
+        CreateOutcome::NotRegistered if idempotency_key.is_some() => {
+            Err(report_keyed_session_not_registered(name))
         }
         CreateOutcome::NotRegistered => Err(report_session_not_registered(name)),
     }
@@ -615,6 +644,18 @@ async fn reject_duplicate_session_name(
     Ok(())
 }
 
+/// Refuse a keyed create on a server that would not honor the key: it would
+/// read the retry as a second create of a name already in use.
+fn refuse_unkeyed_server(conn: &Connection, json: bool) -> Result<(), ExitCode> {
+    if phux_client::session::keyed_create_supported(conn) {
+        return Ok(());
+    }
+    Err(crate::commands::spawn::unsupported_server(
+        json,
+        ServerFeature::SpawnIdempotency,
+    ))
+}
+
 /// Print every degradation notice a [`phux_client::session`] wire call
 /// collected, in encounter order.
 fn warn_partial_results(notices: &[String]) {
@@ -626,6 +667,21 @@ fn warn_partial_results(notices: &[String]) {
 /// The failure reported when no create result names the requested session.
 fn report_session_not_registered(name: &str) -> ExitCode {
     eprintln!("phux: create-session failed: server did not register session '{name}'");
+    ExitCode::FAILURE
+}
+
+/// A keyed create that registered nothing. The server publishes no result
+/// for a token that already belongs to a different create request (the
+/// result schema has no refusal form, ADR-0126), so this is the one place a
+/// reused key surfaces; a name already in use under a fresh key reads the
+/// same.
+fn report_keyed_session_not_registered(name: &str) -> ExitCode {
+    eprintln!("phux: create-session failed: server did not register session '{name}'");
+    eprintln!(
+        "  with --idempotency-key: the key may already belong to a different create \
+         request, or the name may be in use; reuse a key only to retry the identical \
+         create, and draw a fresh one for a new request"
+    );
     ExitCode::FAILURE
 }
 

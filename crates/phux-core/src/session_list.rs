@@ -89,6 +89,40 @@ pub struct ResourceJson {
     /// omitted, so a consumer reads "root" positively.
     #[serde(default)]
     pub parent: Option<String>,
+    /// Process lifecycle, lower-case: `running`, `frozen`, or `exited` (a
+    /// resource the server keeps after its process ended, ADR-0124).
+    /// **Additive**: a payload that predates the field reads as `running`.
+    #[serde(default = "running_lifecycle")]
+    pub lifecycle: String,
+    /// How a retained resource's process ended; `null` while it runs.
+    /// **Additive**.
+    #[serde(default)]
+    pub exit: Option<ResourceExitJson>,
+}
+
+fn running_lifecycle() -> String {
+    "running".to_owned()
+}
+
+/// How a retained resource's process ended (ADR-0124), in
+/// [`ResourceJson::exit`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResourceExitJson {
+    /// `_exit(n)` status, or `null` for a signal death or an unknown status.
+    #[serde(default)]
+    pub status: Option<i32>,
+    /// Terminating signal, or `null`.
+    #[serde(default)]
+    pub signal: Option<i32>,
+    /// Why it ended, in the `RESOURCE_CLOSED.reason` vocabulary (`exited`,
+    /// `killed`, ...), or `null` when the server stated none. Tolerate an
+    /// unknown value.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// When the process exited, Unix milliseconds.
+    pub exited_at_ms: u64,
+    /// When the server will close the resource, Unix milliseconds.
+    pub retained_until_ms: u64,
 }
 
 /// One host's group in [`SessionListJson::hosts`]: this host first, then
@@ -324,11 +358,21 @@ mod tests {
                     id: "@7".to_owned(),
                     kind: "terminal".to_owned(),
                     parent: None,
+                    lifecycle: "exited".to_owned(),
+                    exit: Some(super::ResourceExitJson {
+                        status: Some(42),
+                        signal: None,
+                        reason: Some("exited".to_owned()),
+                        exited_at_ms: 10,
+                        retained_until_ms: 20,
+                    }),
                 },
                 ResourceJson {
                     id: "@9".to_owned(),
                     kind: "agent_session".to_owned(),
                     parent: Some("@7".to_owned()),
+                    lifecycle: "running".to_owned(),
+                    exit: None,
                 },
             ]);
         let json = serde_json::to_value(&list).expect("serialize");
@@ -341,8 +385,22 @@ mod tests {
             json["resources"][0]["parent"].is_null(),
             "a root resource carries `parent: null` rather than omitting the key"
         );
+        assert_eq!(json["resources"][0]["lifecycle"], "exited");
+        assert_eq!(json["resources"][0]["exit"]["status"], 42);
         assert_eq!(json["resources"][1]["kind"], "agent_session");
         assert_eq!(json["resources"][1]["parent"], "@7");
+        assert!(
+            json["resources"][1]["exit"].is_null(),
+            "a running resource carries `exit: null`"
+        );
+
+        // A payload from a producer that predates the lifecycle fields still
+        // reads, as a running resource with no exit.
+        let old: ResourceJson =
+            serde_json::from_value(serde_json::json!({ "id": "@3", "kind": "terminal" }))
+                .expect("pre-lifecycle payloads remain deserializable");
+        assert_eq!(old.lifecycle, "running");
+        assert!(old.exit.is_none());
     }
 
     /// The per-host grouping is additive: it rides beside `sessions`, which

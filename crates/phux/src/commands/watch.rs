@@ -1,8 +1,10 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use phux_client::attach::AttachError;
+use phux_client::resource::control_action_name;
+use phux_client::resource::cursor::{Cursor, ResumeState};
 use phux_client::watch::{AgentStateUpdate, WatchEvent, WatchItem, WatchOutcome};
 use phux_protocol::wire::frame::AgentEvent;
 use phux_server::runtime::default_socket_path;
@@ -49,6 +51,30 @@ pub(crate) const WATCH_EVENT_NAMES: &[&str] = &[
     "bell",
     "command_finished",
     "command_started",
+    "cwd_changed",
+    "dirty",
+    "idle",
+    "journal_gap",
+    "pane_closed",
+    "pane_spawned",
+    "source_gap",
+    "terminal_control",
+    "title_changed",
+    "unknown",
+];
+
+/// The `--until` gate names frozen at 1.0 (ADR-0071 point 6).
+///
+/// `--until unknown` keeps matching every event outside this set: the events
+/// named later (`cwd_changed`, `terminal_control`, `journal_gap`,
+/// `source_gap`) printed as `unknown` before they had names, so a gate
+/// written then still matches them. Their own names gate on exactly one kind.
+pub(crate) const FROZEN_GATE_NAMES: &[&str] = &[
+    AGENT_STATE_EVENT,
+    "asked",
+    "bell",
+    "command_finished",
+    "command_started",
     "dirty",
     "idle",
     "pane_closed",
@@ -56,6 +82,13 @@ pub(crate) const WATCH_EVENT_NAMES: &[&str] = &[
     "title_changed",
     "unknown",
 ];
+
+/// Whether `--until NAME` is satisfied by `item` (see
+/// [`FROZEN_GATE_NAMES`]).
+pub(crate) fn gate_matches(name: &str, item: &WatchItem) -> bool {
+    let event = watch_item_event(item);
+    name == event || (name == "unknown" && !FROZEN_GATE_NAMES.contains(&event))
+}
 
 /// Arguments for [`run_watch`], mirroring the clap `Watch` variant.
 #[derive(Debug)]
@@ -66,6 +99,8 @@ pub(crate) struct WatchArgs<'a> {
     pub(crate) until: &'a [String],
     /// Seconds after which an unsatisfied watch gives up (exit 124).
     pub(crate) timeout: Option<u64>,
+    /// `--after CURSOR`: resume from a previous run's journal position.
+    pub(crate) after: Option<&'a str>,
     /// Emit NDJSON rather than the compact human form.
     pub(crate) json: bool,
     /// Server socket override.
@@ -134,6 +169,7 @@ pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
         session,
         until,
         timeout,
+        after,
         json,
         socket,
     } = args;
@@ -154,6 +190,10 @@ pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
             );
         }
     }
+    let after = match after.map(str::parse::<Cursor>).transpose() {
+        Ok(after) => after,
+        Err(err) => return crate::commands::resource::invalid_cursor(json, &err),
+    };
 
     let selector = match parse_selector(session) {
         Ok(sel) => sel,
@@ -167,60 +207,120 @@ pub(crate) fn run_watch(args: WatchArgs<'_>) -> ExitCode {
     };
 
     rt.block_on(async move {
-        let terminal_id = match resolve_target(&socket_path, &selector, "watch", json).await {
-            Ok(id) => id,
-            Err(code) => return code,
+        // A resumed `@N` needs no live inventory: the replay can reach the
+        // events of a pane that has since closed and was not retained.
+        let direct = after
+            .is_some()
+            .then(|| crate::commands::resource::direct_id(&selector))
+            .flatten();
+        let terminal_id = match direct {
+            Some(id) => id,
+            None => match resolve_target(&socket_path, &selector, "watch", json).await {
+                Ok(id) => id,
+                Err(code) => return code,
+            },
         };
 
         // Stream until the gate is satisfied, the deadline fires, EOF, or
         // Ctrl-C. `tokio::select!` races the stream against the interrupt so
         // Ctrl-C exits cleanly (exit 0 — the user asked to stop, not a
-        // failure); the deadline lives inside `watch_bounded` so it also
-        // covers the connect.
-        let stream =
-            phux_client::watch::watch_bounded(&socket_path, Some(terminal_id), deadline, |item| {
-                print_watch_item(&item, json);
-                // An empty `--until` set is the unbounded stream: nothing
-                // satisfies it, so it never stops early.
-                !until.iter().any(|name| name == watch_item_event(&item))
-            });
-        tokio::pin!(stream);
-        tokio::select! {
-            result = &mut stream => match result {
-                Ok(WatchOutcome::Stopped) => ExitCode::SUCCESS,
-                Ok(WatchOutcome::TimedOut) => {
-                    eprintln!(
-                        "phux: watch timed out after {}s{}",
-                        deadline.map_or(0, |d| d.as_secs()),
-                        describe_gate(until),
-                    );
-                    ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
-                }
-                Ok(WatchOutcome::Ended) if until.is_empty() => ExitCode::SUCCESS,
-                Ok(WatchOutcome::Ended) => json_err::emit(
-                    json,
-                    &json_err::CliError::new(
-                        codes::STREAM_ENDED,
-                        format!(
-                            "the server closed the event stream before {} arrived",
-                            gate_alternatives(until),
-                        ),
-                        "the pane's session ended or the server exited; \
-                         `phux ls` shows what is left",
-                    ),
-                    crate::exit_codes::EXIT_FAILURE,
-                ),
-                Err(err @ AttachError::Io(_)) => {
-                    json_err::report_no_server(json, &err, &socket_path, "watch")
-                }
-                Err(err) => {
-                    eprintln!("phux: watch failed: {err}");
-                    ExitCode::FAILURE
-                }
-            },
-            _ = tokio::signal::ctrl_c() => ExitCode::SUCCESS,
-        }
+        // failure); the deadline lives inside `watch_resumable` so it also
+        // covers the connect. `resume` outlives the stream, so every ending,
+        // Ctrl-C included, still reports where to resume.
+        let mut resume = ResumeState::new(after);
+        let code = {
+            let stream = phux_client::watch::watch_resumable(
+                &socket_path,
+                terminal_id,
+                &mut resume,
+                deadline,
+                |item| {
+                    print_watch_item(&item, json);
+                    // An empty `--until` set is the unbounded stream: nothing
+                    // satisfies it, so it never stops early.
+                    !until.iter().any(|name| gate_matches(name, &item))
+                },
+            );
+            tokio::pin!(stream);
+            tokio::select! {
+                result = &mut stream => watch_exit(result, until, deadline, json, &socket_path),
+                _ = tokio::signal::ctrl_c() => ExitCode::SUCCESS,
+            }
+        };
+        report_cursor(&resume, json);
+        code
     })
+}
+
+/// The exit code for a finished watch (see [`run_watch`] for the mapping).
+fn watch_exit(
+    result: Result<WatchOutcome, AttachError>,
+    until: &[String],
+    deadline: Option<Duration>,
+    json: bool,
+    socket_path: &Path,
+) -> ExitCode {
+    match result {
+        Ok(WatchOutcome::Stopped) => ExitCode::SUCCESS,
+        Ok(WatchOutcome::TimedOut) => {
+            eprintln!(
+                "phux: watch timed out after {}s{}",
+                deadline.map_or(0, |d| d.as_secs()),
+                describe_gate(until),
+            );
+            ExitCode::from(crate::exit_codes::EXIT_WAIT_TIMEOUT)
+        }
+        Ok(WatchOutcome::Ended) if until.is_empty() => ExitCode::SUCCESS,
+        Ok(WatchOutcome::Ended) => json_err::emit(
+            json,
+            &json_err::CliError::new(
+                codes::STREAM_ENDED,
+                format!(
+                    "the server closed the event stream before {} arrived",
+                    gate_alternatives(until),
+                ),
+                "the pane's session ended or the server exited; \
+                 `phux ls` shows what is left",
+            ),
+            crate::exit_codes::EXIT_FAILURE,
+        ),
+        Err(err @ AttachError::Io(_)) => {
+            json_err::report_no_server(json, &err, socket_path, "watch")
+        }
+        Err(err) => {
+            eprintln!("phux: watch failed: {err}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The last stderr line: where to resume this watch with `--after`
+/// (ADR-0123). Under `--json` it is one JSON object, like every other
+/// stderr line in that mode. A server with no event journal issues no
+/// cursor, so nothing is printed.
+fn report_cursor(resume: &ResumeState, json: bool) {
+    let cursor = resume.cursor();
+    if json {
+        if cursor.is_some() || resume.cursor_void() {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "cursor": cursor.as_ref().map(ToString::to_string),
+                    "cursor_void": resume.cursor_void(),
+                })
+            );
+        }
+        return;
+    }
+    if resume.cursor_void() {
+        eprintln!(
+            "phux: watch: the --after cursor belongs to another server run; \
+             streamed live events only"
+        );
+    }
+    if let Some(cursor) = cursor {
+        eprintln!("phux: watch cursor {cursor} (resume with --after {cursor})");
+    }
 }
 
 /// The `--until` names as one prose alternation ("asked or idle"), for the
@@ -387,129 +487,71 @@ pub(crate) fn agent_state_json(
 /// `--json` (no human framing). A serialization failure is reported to
 /// stderr and the line skipped rather than aborting the stream.
 pub(crate) fn print_watch_event(ev: &WatchEvent, json: bool) {
-    // A stable, scriptable name for each event kind (matches the spec
-    // taxonomy in §7.5.1).
-    let kind = watch_event_kind(&ev.event);
+    if json {
+        match watch_event_json(ev) {
+            Ok(s) => outln!("{s}"),
+            Err(err) => eprintln!("phux: failed to serialize event: {err}"),
+        }
+        return;
+    }
     let terminal = ev
         .terminal
         .as_ref()
         .map(crate::selector::format_terminal_id);
-
-    if json {
-        match watch_event_json(ev, kind, terminal.as_deref()) {
-            Ok(s) => outln!("{s}"),
-            Err(err) => eprintln!("phux: failed to serialize event: {err}"),
-        }
-    } else {
-        let scope = terminal.as_deref().unwrap_or("server");
-        let detail = match &ev.event {
-            AgentEvent::TitleChanged { title } => format!(" {title:?}"),
-            AgentEvent::CommandFinished { exit_code } => {
-                exit_code.map_or_else(String::new, |c| format!(" exit={c}"))
-            }
-            AgentEvent::ResourceClosed { exit_status } => {
-                exit_status.map_or_else(String::new, |c| format!(" exit={c}"))
-            }
-            AgentEvent::Asked { question, .. } => format!(" {question:?}"),
-            AgentEvent::Unknown { tag, .. } => format!(" tag={tag}"),
-            _ => String::new(),
-        };
-        outln!("{scope}\t{kind}{detail}");
-    }
+    let scope = terminal.as_deref().unwrap_or("server");
+    outln!(
+        "{scope}\t{}{}",
+        watch_event_kind(&ev.event),
+        human_detail(&ev.event)
+    );
 }
 
-const fn watch_event_kind(event: &AgentEvent) -> &'static str {
+/// The compact human suffix for one event line.
+fn human_detail(event: &AgentEvent) -> String {
     match event {
-        AgentEvent::CommandStarted => "command_started",
-        AgentEvent::CommandFinished { .. } => "command_finished",
-        AgentEvent::TitleChanged { .. } => "title_changed",
-        AgentEvent::Bell => "bell",
-        AgentEvent::ResourceSpawned { .. } => "pane_spawned",
-        AgentEvent::ResourceClosed { .. } => "pane_closed",
-        AgentEvent::Dirty => "dirty",
-        AgentEvent::Idle => "idle",
-        AgentEvent::Asked { .. } => "asked",
-        // `AgentEvent::Unknown` (a tag this client predates, preserved by
-        // the decoder) and any future `#[non_exhaustive]` variant both
-        // render generically rather than failing the stream.
-        _ => "unknown",
+        AgentEvent::TitleChanged { title } => format!(" {title:?}"),
+        AgentEvent::CommandFinished { exit_code } => exit_suffix(*exit_code),
+        AgentEvent::ResourceClosed { exit_status } => exit_suffix(*exit_status),
+        AgentEvent::Asked { question, .. } => format!(" {question:?}"),
+        AgentEvent::CwdChanged { cwd } => format!(" {cwd}"),
+        AgentEvent::TerminalControl {
+            action,
+            exit_status,
+            ..
+        } => format!(
+            " {}{}",
+            control_action_name(*action),
+            exit_suffix(*exit_status)
+        ),
+        AgentEvent::JournalGap {
+            first_missing,
+            last_missing,
+        } => format!(" missed {first_missing}..={last_missing}"),
+        AgentEvent::SourceGap { dropped } => format!(" dropped={dropped}"),
+        AgentEvent::Unknown { tag, .. } => format!(" tag={tag}"),
+        _ => String::new(),
     }
 }
 
-/// Build the `--json` line for a watch event: a single JSON object with a
-/// stable `event` name, an optional `terminal` selector, and the event's
-/// payload field (`title` / `exit_code` / `exit_status` / `tag`). Pure
-/// function over the event so the wire-to-JSON projection is unit-testable
-/// without touching stdout.
-pub(crate) fn watch_event_json(
-    ev: &WatchEvent,
-    kind: &str,
-    terminal: Option<&str>,
-) -> Result<String, serde_json::Error> {
-    let mut obj = serde_json::Map::new();
-    obj.insert("event".to_owned(), serde_json::Value::from(kind));
-    if let Some(t) = terminal {
-        obj.insert("terminal".to_owned(), serde_json::Value::from(t));
-    }
-    match &ev.event {
-        AgentEvent::TitleChanged { title } => {
-            obj.insert("title".to_owned(), serde_json::Value::from(title.clone()));
-        }
-        AgentEvent::CommandFinished { exit_code } => {
-            obj.insert(
-                "exit_code".to_owned(),
-                exit_code.map_or(serde_json::Value::Null, serde_json::Value::from),
-            );
-        }
-        AgentEvent::ResourceClosed { exit_status } => {
-            obj.insert(
-                "exit_status".to_owned(),
-                exit_status.map_or(serde_json::Value::Null, serde_json::Value::from),
-            );
-        }
-        // Additive (ADR-0102): the spawned resource's kind and parent, so a
-        // consumer can tell a new pane from a new agent session bound to one.
-        AgentEvent::ResourceSpawned { kind, parent } => {
-            obj.insert("kind".to_owned(), serde_json::Value::from(kind.as_str()));
-            obj.insert(
-                "parent".to_owned(),
-                parent.as_ref().map_or(serde_json::Value::Null, |parent| {
-                    serde_json::Value::from(crate::selector::format_terminal_id(parent))
-                }),
-            );
-        }
-        AgentEvent::Asked {
-            id,
-            question,
-            suggestions,
-            elapsed_seconds,
-        } => {
-            obj.insert("id".to_owned(), serde_json::Value::from(id.clone()));
-            obj.insert(
-                "question".to_owned(),
-                serde_json::Value::from(question.clone()),
-            );
-            obj.insert(
-                "suggestions".to_owned(),
-                serde_json::Value::Array(
-                    suggestions
-                        .iter()
-                        .cloned()
-                        .map(serde_json::Value::from)
-                        .collect(),
-                ),
-            );
-            obj.insert(
-                "elapsed_seconds".to_owned(),
-                elapsed_seconds.map_or(serde_json::Value::Null, serde_json::Value::from),
-            );
-        }
-        AgentEvent::Unknown { tag, .. } => {
-            obj.insert("tag".to_owned(), serde_json::Value::from(*tag));
-        }
-        _ => {}
-    }
-    serde_json::to_string(&serde_json::Value::Object(obj))
+fn exit_suffix(code: Option<i32>) -> String {
+    code.map_or_else(String::new, |code| format!(" exit={code}"))
+}
+
+/// The stable `event` name of an event: the value `--until` matches and the
+/// `--json` line carries. One vocabulary with MCP `phux_watch`
+/// ([`phux_client::watch::event_name`]); an event tag this binary predates
+/// renders as `unknown` rather than failing the stream.
+const fn watch_event_kind(event: &AgentEvent) -> &'static str {
+    phux_client::watch::event_name(event)
+}
+
+/// Build the `--json` line for a watch event: one JSON object with the
+/// stable `event` name, the `terminal` selector when scoped, the event's
+/// payload fields, and the journal stamp (`seq`, `ts_ms`, and `actor`) when
+/// the server journals. The projection is
+/// [`phux_client::watch::event_json`], which MCP `phux_watch` shares.
+pub(crate) fn watch_event_json(ev: &WatchEvent) -> Result<String, serde_json::Error> {
+    serde_json::to_string(&phux_client::watch::event_json(ev))
 }
 
 #[cfg(test)]
@@ -527,13 +569,17 @@ mod tests {
     /// shape the `phux watch --json` contract promises: one object with a
     /// stable `event` name, an optional `terminal` selector, and the
     /// event's payload field.
+    fn pane(selector: &str) -> phux_protocol::ids::ResourceId {
+        phux_protocol::ids::ResourceId::local(selector.trim_start_matches('@').parse().unwrap())
+    }
+
     fn json_of(event: AgentEvent, terminal: Option<&str>) -> serde_json::Value {
         let ev = WatchEvent {
-            terminal: None,
+            terminal: terminal.map(pane),
             event,
+            stamp: None,
         };
-        let kind = watch_event_kind(&ev.event);
-        let line = watch_event_json(&ev, kind, terminal).unwrap();
+        let line = watch_event_json(&ev).unwrap();
         // One line, no embedded newline — `phux watch --json` is
         // one-object-per-line.
         assert!(
@@ -755,6 +801,18 @@ mod tests {
             AgentEvent::CwdChanged {
                 cwd: "/tmp".to_owned(),
             },
+            AgentEvent::TerminalControl {
+                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
+                exit_status: Some(3),
+                input_holder: None,
+                action: phux_protocol::wire::frame::ControlAction::Exited,
+                actor: None,
+            },
+            AgentEvent::JournalGap {
+                first_missing: 4,
+                last_missing: 9,
+            },
+            AgentEvent::SourceGap { dropped: 2 },
             AgentEvent::Unknown {
                 tag: 0xFE,
                 body: Vec::new(),
@@ -801,9 +859,10 @@ mod tests {
             let ev = WatchEvent {
                 terminal: None,
                 event,
+                stamp: None,
             };
             let name = watch_item_event(&WatchItem::Event(ev.clone()));
-            let line = watch_event_json(&ev, watch_event_kind(&ev.event), None).unwrap();
+            let line = watch_event_json(&ev).unwrap();
             let parsed: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(parsed["event"], name, "gate name vs printed name: {line}");
         }
@@ -819,14 +878,13 @@ mod tests {
         assert_eq!(watch_item_event(&item), "agent_state");
     }
 
-    /// `unknown` is a real, waitable name, and today it is also where two
-    /// decodable events land: `CwdChanged` and `TerminalControl` have no
-    /// name of their own in [`watch_event_kind`], so they print as `unknown`
-    /// alongside genuinely unrecognized tags. Pinned here so that widening
-    /// the vocabulary is a deliberate, reviewed change to the frozen surface
-    /// rather than something that drifts in.
+    /// `unknown` stays a real, waitable name for a tag this binary predates.
+    /// The journal-era events (ADR-0123) have names of their own now:
+    /// `cwd_changed` and `terminal_control` used to print as `unknown`, and
+    /// `journal_gap` / `source_gap` are new. Pinned so that widening the
+    /// vocabulary stays a deliberate change to the frozen surface.
     #[test]
-    fn unrecognized_and_unnamed_events_alike_render_as_unknown() {
+    fn journal_era_events_are_named_and_unknown_tags_stay_unknown() {
         assert_eq!(
             watch_event_kind(&AgentEvent::Unknown {
                 tag: 0xFE,
@@ -838,7 +896,80 @@ mod tests {
             watch_event_kind(&AgentEvent::CwdChanged {
                 cwd: "/tmp".to_owned()
             }),
-            "unknown"
+            "cwd_changed"
+        );
+        assert_eq!(
+            watch_event_kind(&AgentEvent::SourceGap { dropped: 1 }),
+            "source_gap"
+        );
+    }
+
+    /// A journaled event's line carries `seq`, `ts_ms`, and the `actor`; an
+    /// unjournaled one carries none of them (keys absent, not null).
+    #[test]
+    fn a_stamped_line_carries_seq_ts_and_actor() {
+        use phux_protocol::ids::ClientId;
+        use phux_protocol::wire::frame::{ActorRef, EventStamp};
+
+        let actor = ActorRef::new(ClientId::new(5)).with_client_name(Some("phux-cli/1".to_owned()));
+        let ev = WatchEvent {
+            terminal: Some(pane("@3")),
+            event: AgentEvent::CwdChanged {
+                cwd: "/repo".to_owned(),
+            },
+            stamp: Some(EventStamp::new(42, 1_700).with_actor(Some(actor))),
+        };
+        let v: serde_json::Value = serde_json::from_str(&watch_event_json(&ev).unwrap()).unwrap();
+        assert_eq!(v["event"], "cwd_changed");
+        assert_eq!(v["cwd"], "/repo");
+        assert_eq!(v["seq"], 42);
+        assert_eq!(v["ts_ms"], 1_700);
+        assert_eq!(v["actor"]["client"], 5);
+        assert_eq!(v["actor"]["client_name"], "phux-cli/1");
+
+        let plain = json_of(AgentEvent::Bell, Some("@3"));
+        assert!(plain.get("seq").is_none() && plain.get("actor").is_none());
+
+        let control = json_of(
+            AgentEvent::TerminalControl {
+                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
+                exit_status: Some(7),
+                input_holder: None,
+                action: phux_protocol::wire::frame::ControlAction::Exited,
+                actor: Some(ClientId::new(2)),
+            },
+            Some("@3"),
+        );
+        assert_eq!(control["event"], "terminal_control");
+        assert_eq!(control["action"], "exited");
+        assert_eq!(control["lifecycle"], "exited");
+        assert_eq!(control["exit_status"], 7);
+        assert_eq!(control["actor_client"], 2);
+
+        let gap = json_of(
+            AgentEvent::JournalGap {
+                first_missing: 4,
+                last_missing: 9,
+            },
+            None,
+        );
+        assert_eq!(gap["first_missing"], 4);
+        assert_eq!(gap["last_missing"], 9);
+    }
+
+    #[test]
+    fn a_malformed_after_cursor_is_a_usage_error_before_any_connection() {
+        let code = super::run_watch(super::WatchArgs {
+            session: Some("@1"),
+            until: &[],
+            timeout: Some(1),
+            after: Some("nope"),
+            json: true,
+            socket: Some(std::path::PathBuf::from("/nonexistent/phux.sock")),
+        });
+        assert_eq!(
+            code,
+            std::process::ExitCode::from(crate::exit_codes::EXIT_USAGE)
         );
     }
 
@@ -852,5 +983,81 @@ mod tests {
             describe_gate(&["asked".to_owned(), "idle".to_owned()]),
             " waiting for asked or idle"
         );
+    }
+
+    /// ADR-0071 point 6 froze these gate names; the list must not drift, and
+    /// every one of them is still in the accepted vocabulary.
+    #[test]
+    fn the_frozen_gate_names_are_adr_0071_point_6() {
+        assert_eq!(
+            super::FROZEN_GATE_NAMES,
+            [
+                "agent_state",
+                "asked",
+                "bell",
+                "command_finished",
+                "command_started",
+                "dirty",
+                "idle",
+                "pane_closed",
+                "pane_spawned",
+                "title_changed",
+                "unknown",
+            ]
+        );
+        for name in super::FROZEN_GATE_NAMES {
+            assert!(WATCH_EVENT_NAMES.contains(name), "{name}");
+        }
+    }
+
+    /// `--until unknown` still matches the events named after 1.0 (they
+    /// printed as `unknown` before), while their own names gate on exactly
+    /// one kind and a frozen name never matches through `unknown`.
+    #[test]
+    fn until_unknown_keeps_matching_events_named_after_1_0() {
+        use super::gate_matches;
+
+        let item = |event: AgentEvent| {
+            WatchItem::Event(WatchEvent {
+                terminal: None,
+                event,
+                stamp: None,
+            })
+        };
+        let named_later = [
+            AgentEvent::CwdChanged {
+                cwd: "/tmp".to_owned(),
+            },
+            AgentEvent::TerminalControl {
+                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
+                exit_status: Some(0),
+                input_holder: None,
+                action: phux_protocol::wire::frame::ControlAction::Exited,
+                actor: None,
+            },
+            AgentEvent::JournalGap {
+                first_missing: 1,
+                last_missing: 2,
+            },
+            AgentEvent::SourceGap { dropped: 1 },
+        ];
+        for event in named_later {
+            let item = item(event);
+            let name = watch_item_event(&item);
+            assert!(gate_matches("unknown", &item), "`unknown` matches {name}");
+            assert!(gate_matches(name, &item), "{name} matches itself");
+            assert!(!gate_matches("bell", &item));
+        }
+        let bell = item(AgentEvent::Bell);
+        assert!(gate_matches("bell", &bell));
+        assert!(
+            !gate_matches("unknown", &bell),
+            "a frozen name never matches through `unknown`"
+        );
+        let tag = item(AgentEvent::Unknown {
+            tag: 0xFE,
+            body: Vec::new(),
+        });
+        assert!(gate_matches("unknown", &tag));
     }
 }

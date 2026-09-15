@@ -228,6 +228,27 @@ impl EventSubscription {
             .any(|(scope, filter)| scope.covers(entry) && filter.admits(&entry.event))
     }
 
+    /// The newest `seq` this subscription has been sent or is owed: what it
+    /// delivered, a gap it owes, and a pending replay's leading gap. A
+    /// satellite scope's cursor is owed a gap its ring holds nothing for.
+    fn reach(&self) -> u64 {
+        let last = |gap: Option<(u64, u64)>| gap.map_or(0, |(_, last)| last);
+        self.delivered
+            .max(last(self.gap))
+            .max(last(self.replay.and_then(|replay| replay.leading_gap)))
+    }
+
+    /// The newest evicted `seq` while this subscription's replay is still
+    /// pending below it, so a `journal_gap` reaching it will be sent; `0`
+    /// otherwise, since a later eviction is never reported to it.
+    fn owed_eviction(&self, journal: &Journal) -> u64 {
+        let evicted = journal.evicted_through();
+        match self.replay {
+            Some(replay) if replay.cursor.max(self.delivered) < evicted => evicted,
+            _ => 0,
+        }
+    }
+
     /// The frame this subscription receives for `entry`.
     fn frame_for(&self, entry: &JournalEntry) -> FrameKind {
         entry.frame_with(render_for(&entry.event, self.journal_aware))
@@ -514,6 +535,26 @@ impl ServerState {
     #[must_use]
     pub const fn journal_head(&self) -> u64 {
         self.journal.head()
+    }
+
+    /// The journal head `GET_STATE` reports to `client` (L1 §7.3): on a
+    /// connection that holds event subscriptions, every `seq` their replay
+    /// delivers, gaps included (the newest retained entry they admit, what
+    /// they were sent or are owed, and the newest evicted `seq` only while
+    /// a replay is pending below it), so the consumer's catch-up always
+    /// completes and an event journaled on another scope after the
+    /// subscribe, or the eviction it causes, never holds it open; else the
+    /// global head.
+    #[must_use]
+    pub fn journal_head_for(&self, client: Option<ClientId>) -> u64 {
+        match client.and_then(|id| self.clients.event_subscriptions.get(&id)) {
+            Some(sub) if !sub.scopes.is_empty() => self
+                .journal
+                .newest_admitted(|entry| sub.admits(entry))
+                .max(sub.reach())
+                .max(sub.owed_eviction(&self.journal)),
+            _ => self.journal.head(),
+        }
     }
 
     /// Re-bound the journal (`defaults.event-journal-entries` /
@@ -1018,6 +1059,75 @@ mod tests {
             tx,
         );
         assert_eq!(drain(&mut rx), vec![gap(1, 1)]);
+    }
+
+    /// A hub keeps no satellite events, so a satellite scope's cursor is
+    /// owed a gap the ring holds nothing for. The head covers that gap,
+    /// whether already sent or still owed behind a full mailbox, and a hub
+    /// event on another scope after the subscribe does not raise it.
+    #[test]
+    fn the_head_covers_a_satellite_cursors_gap_and_no_later_hub_event() {
+        let mut state = ServerState::new();
+        let _ = record(&mut state, 1, AgentEvent::Bell);
+        let past_cursor = record(&mut state, 1, AgentEvent::Bell);
+        let subscribe = |state: &mut ServerState, tx| {
+            let client = state.new_client_id();
+            let satellite = WireResourceId::satellite("sat", 9);
+            state.subscribe_satellite_events(client, satellite, EventFilter::all(), Some(1), tx);
+            client
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        let sent = subscribe(&mut state, tx);
+        let (full_tx, _full_rx) = mpsc::channel(1);
+        full_tx
+            .try_send(Outbound::Frame(journal_gap_frame(0, 0)))
+            .expect("room for the filler");
+        let owed = subscribe(&mut state, full_tx);
+        let later = record(&mut state, 2, AgentEvent::Bell);
+
+        assert_eq!(drain(&mut rx), vec![gap(2, past_cursor)]);
+        for client in [sent, owed] {
+            let head = state.journal_head_for(Some(client));
+            assert_eq!(head, past_cursor, "covers the gap's last_missing");
+            assert!(head < later, "a later hub event does not raise it");
+        }
+    }
+
+    /// A closed, unretained pane, a stale cursor, and a full ring: the
+    /// replay reports the eviction and ends, and another terminal's event
+    /// before the cut advances the eviction. The head stays at the gap the
+    /// subscription was sent, not the eviction it will never hear of; a
+    /// replay still pending below the eviction does count it.
+    #[test]
+    fn a_later_eviction_does_not_raise_the_head_past_the_gap_sent() {
+        let mut state = ServerState::new();
+        state.set_event_journal_bounds(2, 1 << 20);
+        for _ in 0..3 {
+            let _ = record(&mut state, 2, AgentEvent::Bell);
+        }
+        let closed = pane(7);
+        let sent = state.new_client_id();
+        let (tx, mut rx) = mpsc::channel(4);
+        state.subscribe_events_after(sent, Some(closed.clone()), 0, tx);
+        assert_eq!(drain(&mut rx), vec![gap(1, 1)]);
+        let owed = state.new_client_id();
+        let (full_tx, _full_rx) = mpsc::channel(1);
+        full_tx
+            .try_send(Outbound::Frame(journal_gap_frame(0, 0)))
+            .expect("room for the filler");
+        state.subscribe_events_after(owed, Some(closed), 0, full_tx);
+        let _ = record(&mut state, 2, AgentEvent::Bell);
+
+        assert_eq!(
+            state.journal_head_for(Some(sent)),
+            1,
+            "the gap it was sent, not the eviction since"
+        );
+        assert_eq!(
+            state.journal_head_for(Some(owed)),
+            2,
+            "a replay pending below the eviction will report it"
+        );
     }
 
     #[test]

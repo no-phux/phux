@@ -35,6 +35,7 @@
 )]
 
 mod agent_tools;
+mod annotations;
 mod ask_tool;
 mod cli_adapter;
 mod cli_tools;
@@ -42,6 +43,7 @@ mod diagnostic_tools;
 mod jsonrpc;
 mod plugin_action;
 mod plugin_workspace;
+mod resource_tools;
 mod socket;
 mod tools;
 
@@ -615,7 +617,25 @@ mod tests {
             serde_json::from_str(r#"{"jsonrpc":"2.0","id":7,"method":"tools/list"}"#).unwrap();
         let resp = handle_request(req).await.expect("tools/list replies");
         let tools = resp["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 39);
+        assert_eq!(tools.len(), 42);
+        // The resource noun (PHA-406), one bounded tool each.
+        for name in [
+            "phux_resource_show",
+            "phux_resource_wait",
+            "phux_resource_methods",
+        ] {
+            assert!(
+                tools.iter().any(|t| t["name"] == json!(name)),
+                "tools/list lost {name}"
+            );
+        }
+        // Every tool carries the catalog-derived hints.
+        assert!(
+            tools
+                .iter()
+                .all(|t| t["annotations"]["readOnlyHint"].is_boolean()
+                    && t["annotations"]["destructiveHint"].is_boolean())
+        );
         assert!(tools.iter().any(|t| t["name"] == json!("phux_ls")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_paste")));
         assert!(tools.iter().any(|t| t["name"] == json!("phux_new")));

@@ -297,6 +297,19 @@ fn session_json(s: &SessionInfo) -> SessionJson {
     }
 }
 
+/// A retained resource's exit facet as `ls --json` spells it (ADR-0124).
+fn resource_exit_json(
+    exit: &phux_protocol::wire::info::ExitFacet,
+) -> phux_core::session_list::ResourceExitJson {
+    phux_core::session_list::ResourceExitJson {
+        status: exit.exit_status,
+        signal: exit.signal,
+        reason: resource::close_reason_name(exit.reason).map(str::to_owned),
+        exited_at_ms: exit.exited_at_ms,
+        retained_until_ms: exit.retained_until_ms,
+    }
+}
+
 /// Emit the session list as the stable [`SessionListJson`] contract.
 ///
 /// Sessions are name-sorted to match [`print_sessions`], keeping the two
@@ -333,6 +346,8 @@ pub(crate) fn print_sessions_json(
                 .parent
                 .as_ref()
                 .map(crate::selector::format_terminal_id),
+            lifecycle: resource::lifecycle_name(pane.lifecycle).to_owned(),
+            exit: pane.exit.as_ref().map(resource_exit_json),
         })
         .collect();
     let list = SessionListJson::new(entries)

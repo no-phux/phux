@@ -505,6 +505,7 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         None,
         false,
         json,
+        None,
     )) {
         // The create already told us the seed pane's id; `--json` just stops
         // throwing it away.

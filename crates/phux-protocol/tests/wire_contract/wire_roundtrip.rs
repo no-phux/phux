@@ -333,12 +333,14 @@ fn arb_session_snapshot() -> impl Strategy<Value = SessionSnapshot> {
         any::<u32>(),
         any::<u32>(),
         any::<u32>(),
+        proptest::option::of(any::<u64>()),
     )
-        .prop_map(|(sessions, windows, panes, fs, fw, fp)| {
+        .prop_map(|(sessions, windows, panes, fs, fw, fp, head)| {
             SessionSnapshot::new(SessionId::new(fs), WindowId::new(fw), ResourceId::new(fp))
                 .with_sessions(sessions)
                 .with_windows(windows)
                 .with_resources(panes)
+                .with_journal_head(head)
         })
 }
 
@@ -3189,6 +3191,70 @@ fn snapshot_without_resource_facets_is_byte_stable_and_decodes_defaults() {
     );
     let (decoded, _) = FrameKind::decode(&buf).unwrap();
     assert_eq!(decoded, frame);
+}
+
+/// PHA-406 L10 review (L1 §7.3, §9.1): the journal head at the cut rides the
+/// extension block as field 2, alone or beside `RESOURCE_STATE` entries, and
+/// a snapshot without it keeps its earlier bytes.
+#[test]
+fn snapshot_journal_head_rides_the_extension_block_and_is_absent_by_default() {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+    use phux_protocol::wire::info::ExitFacet;
+
+    let encode = |snapshot: &SessionSnapshot| {
+        let mut buf = BytesMut::new();
+        FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::OkWith(CommandValue::State(snapshot.clone())),
+        }
+        .encode(&mut buf);
+        buf
+    };
+    let decode = |bytes: &[u8]| {
+        let (frame, _) = FrameKind::decode(bytes).unwrap();
+        let FrameKind::CommandResult {
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            ..
+        } = frame
+        else {
+            panic!("expected a state result, got {frame:?}");
+        };
+        snapshot
+    };
+    let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_resources(vec![ResourceInfo::new(
+            ResourceId::local(1),
+            WindowId::new(1),
+            80,
+            24,
+        )]);
+    assert_eq!(plain.journal_head(), None);
+    let plain_bytes = encode(&plain);
+
+    let headed = plain.with_journal_head(Some(4242));
+    let headed_bytes = encode(&headed);
+    assert!(headed_bytes.len() > plain_bytes.len());
+    let decoded = decode(&headed_bytes);
+    assert_eq!(decoded.journal_head(), Some(4242));
+    assert_eq!(decoded, headed);
+    assert_eq!(
+        encode(&headed.with_journal_head(None)),
+        plain_bytes,
+        "clearing the head restores the earlier bytes"
+    );
+
+    // Beside a retained resource's state, in the same block.
+    let retained = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                .with_lifecycle(phux_protocol::wire::frame::ResourceLifecycle::Exited)
+                .with_exit(Some(ExitFacet::new(5, 9).with_exit_status(Some(3)))),
+        ])
+        .with_journal_head(Some(7));
+    let decoded = decode(&encode(&retained));
+    assert_eq!(decoded, retained);
+    assert_eq!(decoded.journal_head(), Some(7));
+    assert_eq!(decoded.resources[0].exit.unwrap().exit_status, Some(3));
 }
 
 #[test]

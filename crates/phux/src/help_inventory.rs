@@ -162,6 +162,10 @@ phux report
 phux report new
 phux report show
 phux resize
+phux resource
+phux resource methods
+phux resource show
+phux resource wait
 phux run
 phux runtime-info
 phux send-keys

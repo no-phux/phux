@@ -158,6 +158,7 @@ pub(crate) fn catalog() -> Value {
                     "name": { "type": "string", "description": "Name for the new session. Required; a name already in use is rejected." },
                     "command": { "type": "array", "items": { "type": "string" }, "description": "Initial command (argv) for the seed pane. Omit or pass an empty array to use the server's default shell." },
                     "cwd": { "type": "string", "description": "Working directory for the seed pane." },
+                    "idempotency_key": { "type": "string", "minLength": 32, "maxLength": 32, "pattern": "^[0-9a-fA-F]{32}$", "description": "Make the create safe to retry: a repeat with the same 32-hex-digit key returns the first create's result instead of failing on the name. The server must advertise spawn_idempotency (phux_status features); otherwise the call is refused with unsupported_server." },
                     "socket": { "type": "string" }
                 },
                 "required": ["name"]
@@ -193,7 +194,7 @@ pub(crate) fn catalog() -> Value {
         },
         {
             "name": "phux_watch",
-            "description": "Collect server-pushed events (command_started/finished, title_changed, asked, bell, pane_spawned/closed, dirty, idle) plus agent_state changes. Omit target for every local Terminal in the fleet; the client enumerates and follows resource lifecycle events while installing one metadata subscription per Terminal. Bounded one-shot: returns after max_events or timeout_secs. An agent_state item reports one change to a pane's phux.agent/v1 record — name, kind, session, the new state, effective attention, and `from` when this call already saw a prior record; a present-and-null `state` is the tombstone (the record went away). Observing an agent reach a state here is not a completion gate — see phux_agent_wait.",
+            "description": "Collect server-pushed events (command_started/finished, title_changed, asked, bell, pane_spawned/closed, dirty, idle, cwd_changed, terminal_control, and the journal notices journal_gap/source_gap) plus agent_state changes. On a server with an event journal each event item also carries `seq`, `ts_ms`, and the `actor` that caused it. Omit target for every local Terminal in the fleet; the client enumerates and follows resource lifecycle events while installing one metadata subscription per Terminal. Bounded one-shot: returns after max_events or timeout_secs. An agent_state item reports one change to a pane's phux.agent/v1 record — name, kind, session, the new state, effective attention, and `from` when this call already saw a prior record; a present-and-null `state` is the tombstone (the record went away). Observing an agent reach a state here is not a completion gate — see phux_agent_wait.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -224,7 +225,10 @@ pub(crate) fn catalog() -> Value {
     if let Value::Array(entries) = &mut tools {
         entries.extend(crate::agent_tools::schemas());
         entries.extend(crate::diagnostic_tools::schemas());
+        entries.extend(crate::resource_tools::schemas());
     }
+    // Hints derived from the kind catalog, never hand-set (ADR-0125).
+    crate::annotations::annotate(&mut tools);
     tools
 }
 
@@ -258,6 +262,9 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
         agent if crate::agent_tools::owns(agent) => crate::agent_tools::call(agent, args).await,
         diagnostic if crate::diagnostic_tools::owns(diagnostic) => {
             crate::diagnostic_tools::call(diagnostic, args).await
+        }
+        resource if crate::resource_tools::owns(resource) => {
+            crate::resource_tools::call(resource, args).await
         }
         other => Err(ToolError::new(format!("unknown tool: {other}"))),
     }
@@ -503,11 +510,18 @@ async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
 /// path never auto-names), while `command` and `cwd` are optional. The CLI owns
 /// server startup and the returned `{session, terminal_id}` JSON contract.
 async fn phux_new(args: &Value) -> Result<Value, ToolError> {
-    strict_object(args, &["name", "command", "cwd", "socket"], &["name"])?;
+    strict_object(
+        args,
+        &["name", "command", "cwd", "idempotency_key", "socket"],
+        &["name"],
+    )?;
     let name = crate::cli_adapter::bounded_string(args, "name", true)?.unwrap_or_default();
     let mut argv = vec!["new".to_owned(), "-s".to_owned(), name, "--json".to_owned()];
     if let Some(cwd) = crate::cli_adapter::bounded_string(args, "cwd", false)? {
         argv.extend(["-c".to_owned(), cwd]);
+    }
+    if let Some(key) = crate::cli_adapter::bounded_string(args, "idempotency_key", false)? {
+        argv.extend(["--idempotency-key".to_owned(), key]);
     }
     crate::cli_adapter::push_socket(&mut argv, args)?;
     let command = crate::cli_adapter::bounded_strings(args, "command", false)?;
@@ -731,59 +745,17 @@ fn agent_state_json(update: &phux_client::watch::AgentStateUpdate) -> Value {
 }
 
 /// Project one [`phux_client::watch::WatchEvent`] to the stable JSON shape the
-/// CLI's `phux watch --json` emits (a `event` name plus the payload field).
+/// CLI's `phux watch --json` emits: the `event` name, the `terminal`, the
+/// payload fields, and the journal stamp (`seq`, `ts_ms`, `actor`) when the
+/// server journals. One projection for both surfaces
+/// ([`phux_client::watch::event_json`]).
+///
+/// `schema_version` stays 2: the journal fields are added keys, and the
+/// newly named events (`cwd_changed`, `terminal_control`, `journal_gap`,
+/// `source_gap`) used to arrive as `unknown`, a value every consumer of this
+/// document already had to tolerate.
 fn agent_event_json(ev: &phux_client::watch::WatchEvent) -> Value {
-    use phux_protocol::wire::frame::AgentEvent;
-    let (kind, mut obj) = match &ev.event {
-        AgentEvent::CommandStarted => ("command_started", json!({})),
-        AgentEvent::CommandFinished { exit_code } => {
-            ("command_finished", json!({ "exit_code": exit_code }))
-        }
-        AgentEvent::TitleChanged { title } => ("title_changed", json!({ "title": title })),
-        AgentEvent::Bell => ("bell", json!({})),
-        // Additive (ADR-0102): the spawned resource's kind and parent, so a
-        // consumer can tell a new pane from a new agent session.
-        AgentEvent::ResourceSpawned { kind, parent } => (
-            "pane_spawned",
-            json!({
-                "kind": kind.as_str(),
-                "parent": parent.as_ref().map(selector::format_terminal_id),
-            }),
-        ),
-        AgentEvent::ResourceClosed { exit_status } => {
-            ("pane_closed", json!({ "exit_status": exit_status }))
-        }
-        AgentEvent::Dirty => ("dirty", json!({})),
-        AgentEvent::Idle => ("idle", json!({})),
-        AgentEvent::Asked {
-            id,
-            question,
-            suggestions,
-            elapsed_seconds,
-        } => (
-            "asked",
-            json!({
-                "id": id,
-                "question": question,
-                "suggestions": suggestions,
-                "elapsed_seconds": elapsed_seconds,
-            }),
-        ),
-        AgentEvent::Unknown { tag, .. } => ("unknown", json!({ "tag": tag })),
-        // `AgentEvent` is `#[non_exhaustive]`: a future minor may add a kind
-        // this build predates. Surface it generically rather than failing.
-        _ => ("unknown", json!({})),
-    };
-    if let Value::Object(map) = &mut obj {
-        map.insert("event".to_owned(), Value::from(kind));
-        if let Some(t) = &ev.terminal {
-            map.insert(
-                "terminal".to_owned(),
-                Value::from(selector::format_terminal_id(t)),
-            );
-        }
-    }
-    obj
+    phux_client::watch::event_json(ev)
 }
 
 // -----------------------------------------------------------------------------
@@ -858,7 +830,7 @@ fn required_target(args: &Value) -> Result<Selector, ToolError> {
 ///
 /// Returns [`ToolError`] when the selector matches no pane, saying which of
 /// the two reasons it was.
-async fn resolve_one(
+pub(crate) async fn resolve_one(
     socket: &std::path::Path,
     selector: &Selector,
     view: &StateView,
@@ -892,7 +864,7 @@ fn pane_value(id: &ResourceId) -> Value {
 }
 
 /// Read an optional string argument from a tool's params object.
-fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
+pub(crate) fn str_arg<'a>(args: &'a Value, key: &str) -> Option<&'a str> {
     args.get(key).and_then(Value::as_str)
 }
 
@@ -1026,6 +998,9 @@ mod tests {
                 "phux_status",
                 "phux_doctor",
                 "phux_whoami",
+                "phux_resource_show",
+                "phux_resource_wait",
+                "phux_resource_methods",
             ]
         );
         for tool in arr {
@@ -1347,6 +1322,7 @@ mod tests {
         let event = WatchItem::Event(phux_client::watch::WatchEvent {
             terminal: None,
             event: phux_protocol::wire::frame::AgentEvent::Bell,
+            stamp: None,
         });
         assert_eq!(watch_item_json(&event)["event"], json!("bell"));
         assert_eq!(
@@ -1363,6 +1339,7 @@ mod tests {
         use phux_protocol::wire::frame::AgentEvent;
 
         let ev = WatchEvent {
+            stamp: None,
             terminal: None,
             event: AgentEvent::CommandFinished {
                 exit_code: Some(42),
@@ -1373,12 +1350,14 @@ mod tests {
         assert_eq!(v["exit_code"], json!(42));
 
         let bell = WatchEvent {
+            stamp: None,
             terminal: None,
             event: AgentEvent::Bell,
         };
         assert_eq!(agent_event_json(&bell)["event"], json!("bell"));
 
         let titled = WatchEvent {
+            stamp: None,
             terminal: None,
             event: AgentEvent::TitleChanged {
                 title: "vim".to_owned(),
@@ -1389,6 +1368,7 @@ mod tests {
         assert_eq!(tv["title"], json!("vim"));
 
         let satellite = WatchEvent {
+            stamp: None,
             terminal: Some(ResourceId::satellite("devbox", 7)),
             event: AgentEvent::Dirty,
         };
@@ -1400,6 +1380,7 @@ mod tests {
         );
 
         let asked = WatchEvent {
+            stamp: None,
             terminal: None,
             event: AgentEvent::Asked {
                 id: "q1".to_owned(),
