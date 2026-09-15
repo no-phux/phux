@@ -927,11 +927,19 @@ impl Session {
                 })
                 .0
             }
-            FrameKind::ResourceClosed { terminal_id, .. } => {
+            FrameKind::ResourceClosed {
+                terminal_id,
+                exit_status,
+                reason,
+                signal,
+            } => {
                 let was_focused = self.focused_terminal.as_ref() == Some(&terminal_id);
                 let was_agent = self.is_agent_session(&terminal_id);
                 let (mut outcome, applied) = self.apply_kernel(KernelInput::ResourceClosed {
                     terminal_id: &terminal_id,
+                    exit_status,
+                    signal,
+                    reason,
                 });
                 if applied && was_focused {
                     self.focused_terminal = self.first_published_terminal();
@@ -1056,6 +1064,12 @@ impl Session {
                         );
                     }
                 }
+                // PHA-406 status effects (cwd/command/exit) and the
+                // connection-wide SUBSCRIBE_EVENTS the kernel now sends to
+                // receive them are not consumed here yet; `Status` is
+                // already ignored below, and this keeps the web client's
+                // wire traffic unchanged until it wants them.
+                KernelEffect::Send(KernelSend::SubscribeEvents { .. }) => {}
                 KernelEffect::Damage(damage) => {
                     if focused == Some(&damage.terminal_id) || focused.is_none() {
                         outcome.render = true;

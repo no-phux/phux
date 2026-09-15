@@ -215,6 +215,9 @@ impl Operations {
             | KernelSend::PtyWrite { terminal_id, .. }
             | KernelSend::FrameAck { terminal_id, .. } => terminal_id,
             KernelSend::HistoryRequest { key, .. } => &key.terminal_id,
+            // Connection-wide, not per-terminal: nothing to fence against a
+            // pending detach, so it always sends immediately.
+            KernelSend::SubscribeEvents { .. } => return false,
         };
         if !self.detaching(id) {
             return false;

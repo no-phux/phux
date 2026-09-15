@@ -500,7 +500,13 @@ rather than a layer with its own internal architecture worth diagramming:
   (`phux_client_list_directory`, `phux_client_directory_*`). Its `log`
   module installs the bridge's one `tracing` subscriber on standard error
   (`phux_client_log_init`), so an embedder that redirects descriptor 2 to a
-  file gets the tunnel's lifecycle beside its own lines.
+  file gets the tunnel's lifecycle beside its own lines. The bridge
+  subscribes to the connection-wide `AgentEvent` stream on every
+  `ATTACH_READY` (as a `KernelSend::SubscribeEvents` effect the kernel
+  itself emits, `phux-client-core` having no transport of its own to send
+  one from) and folds cwd/command-boundary/process-exit events into
+  `PHUX_CLIENT_STATUS_CWD` / `_COMMAND_STARTED` / `_COMMAND_FINISHED` /
+  `_EXITED` effects (PHA-406/PHA-284; `include/phux/client.h`).
 - **`phux-crash`** — vendored fatal-signal handler (see its NOTICE; the one
   Apache-2.0-only crate in the workspace). SIGSEGV/SIGBUS/SIGABRT do not
   unwind, so neither `RawModeGuard::drop` nor the panic hook runs; this

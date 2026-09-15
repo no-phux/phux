@@ -10,6 +10,11 @@ extern "C" {
 #endif
 
 #define PHUX_CLIENT_ABI_VERSION 2u
+/* Additive members of an open enum (PhuxClientStatusKind, PhuxClientDamageKind,
+ * PhuxClientAgentRecordsKind, and similarly documented "additive" kinds) do
+ * not bump this version: a host must already tolerate a member it does not
+ * recognise by skipping that effect. Only a struct layout or function
+ * signature change bumps PHUX_CLIENT_ABI_VERSION. */
 #define PHUX_CLIENT_MAX_OUTBOUND_BYTES (64u * 1024u)
 #define PHUX_CLIENT_RELEASE_CARGO_PROFILE "ffi-release"
 #define PHUX_CLIENT_CELL_BOLD (1u << 0)
@@ -561,6 +566,40 @@ typedef enum PhuxClientDamageKind {
     PHUX_CLIENT_DAMAGE_REMOVED = 3
 } PhuxClientDamageKind;
 
+/**
+ * PHUX_CLIENT_STATUS_CWD/_COMMAND_STARTED/_COMMAND_FINISHED/_EXITED carry the
+ * subscribed terminal-process facts of PHA-406/PHA-284: the bridge
+ * subscribes with SUBSCRIBE_EVENTS after every ATTACH_READY (a repeat
+ * subscribe is a documented wire no-op), and folds the resulting cwd_changed
+ * / command_started / command_finished / terminal_control{Exited} events,
+ * plus a plain RESOURCE_CLOSED teardown, into these effects. They are
+ * additive PhuxClientStatusKind members: a host that does not recognise one
+ * must skip it like any other effect kind it does not handle, and adding
+ * them does not bump PHUX_CLIENT_ABI_VERSION (see its definition above).
+ * Unlike every other effect kind that uses them, stream_id and bootstrap_id
+ * on CWD/COMMAND_STARTED/COMMAND_FINISHED/EXITED are not a replica
+ * generation: CWD and COMMAND_STARTED leave both at their zero default, and
+ * COMMAND_FINISHED/EXITED repurpose them as a presence flag and payload bit
+ * pattern (below). Do not key a per-generation cache (render pool, history
+ * cache, ...) on them for these four kinds the way a caller keys one on
+ * DAMAGE/JOB/AGENT_RECORDS' stream_id/bootstrap_id elsewhere in this API.
+ *
+ * CWD: bytes is the new working directory (absolute, lossy UTF-8).
+ *
+ * COMMAND_STARTED: no payload.
+ *
+ * COMMAND_FINISHED and EXITED share one Option<int32_t> encoding for their
+ * numeric payload, because PhuxClientEffect has no dedicated "has a value"
+ * field: stream_id is 1 when the value is present and 0 when it is absent
+ * (both fields' shared default), and bootstrap_id then holds the value's
+ * uint32_t bit pattern, recovered as (int32_t)(uint32_t)bootstrap_id.
+ * COMMAND_FINISHED's value is the shell's OSC-133 D exit code.
+ *
+ * EXITED's value is the process exit code; status_code is a
+ * PhuxClientCloseReason wire value (below); first_row carries the
+ * terminating signal number when one is known and nonzero, or 0 when the
+ * process exited without one or the cause is unknown.
+ */
 typedef enum PhuxClientStatusKind {
     PHUX_CLIENT_STATUS_BELL = 1,
     PHUX_CLIENT_STATUS_TITLE = 2,
@@ -568,8 +607,28 @@ typedef enum PhuxClientStatusKind {
     PHUX_CLIENT_STATUS_SERVER_ERROR = 4,
     PHUX_CLIENT_STATUS_DETACHED = 5,
     PHUX_CLIENT_STATUS_HISTORY = 6,
-    PHUX_CLIENT_STATUS_HISTORY_UNAVAILABLE = 7
+    PHUX_CLIENT_STATUS_HISTORY_UNAVAILABLE = 7,
+    PHUX_CLIENT_STATUS_CWD = 8,
+    PHUX_CLIENT_STATUS_COMMAND_STARTED = 9,
+    PHUX_CLIENT_STATUS_COMMAND_FINISHED = 10,
+    PHUX_CLIENT_STATUS_EXITED = 11
 } PhuxClientStatusKind;
+/**
+ * status_code on a PHUX_CLIENT_STATUS_EXITED effect: the resource's
+ * CloseReason wire value (`docs/spec/L1.md`, RESOURCE_CLOSED), named to
+ * match `phux_protocol::wire::frame::CloseReason` exactly. UNKNOWN is also
+ * what an absent reason field decodes as — an older peer, or a cause this
+ * build does not recognise — so do not treat it as EXITED: a resource can
+ * close for a real, stated reason this build has no name for yet.
+ * Additive like every enum here: it does not bump PHUX_CLIENT_ABI_VERSION.
+ */
+typedef enum PhuxClientCloseReason {
+    PHUX_CLIENT_CLOSE_EXITED = 0,
+    PHUX_CLIENT_CLOSE_KILLED = 1,
+    PHUX_CLIENT_CLOSE_PARENT_CLOSED = 2,
+    PHUX_CLIENT_CLOSE_SERVER_SHUTDOWN = 3,
+    PHUX_CLIENT_CLOSE_UNKNOWN = 255
+} PhuxClientCloseReason;
 /**
  * status_code on a PHUX_CLIENT_STATUS_DETACHED effect: the DETACHED frame's
  * DetachReason wire value (proto.md 7.2), or PHUX_CLIENT_DETACH_REASON_UNSTATED
@@ -612,8 +671,10 @@ typedef enum PhuxClientHistoryUnavailableCode {
 /**
  * status_code is a stable TombstoneReason wire value for RESYNC_REQUIRED,
  * PhuxClientHistoryLoadCode for HISTORY, PhuxClientHistoryUnavailableCode for
- * HISTORY_UNAVAILABLE, PhuxClientDetachReason for DETACHED, and zero
- * otherwise.
+ * HISTORY_UNAVAILABLE, PhuxClientDetachReason for DETACHED,
+ * PhuxClientCloseReason for EXITED, and zero otherwise (including CWD,
+ * COMMAND_STARTED, and COMMAND_FINISHED, whose own payload is documented on
+ * PhuxClientStatusKind above).
  */
 
 /** Borrowed effect. bytes contains title/error detail when defined by kind. Emulator PTY replies never appear here: when HELLO_OK advertises TERMINAL_REPLY they are queued as exact outgoing INPUT_TERMINAL_REPLY frames; without that feature, feed_frame returns PHUX_CLIENT_ENGINE_ERROR and queues no reply. */
