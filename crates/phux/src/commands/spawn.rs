@@ -379,16 +379,12 @@ pub(crate) fn dispatch_spawn_placed(
 }
 
 /// Print the freshly spawned Terminal id — human line or the stable JSON
-/// document (`terminal_id` is the satellite-local id when `satellite` is
-/// non-null; address it through the hub as `satellite`+`terminal_id`).
+/// document ([`phux_client::spawn::spawned_document`], the builder the MCP
+/// `phux_spawn` tool also returns).
 fn print_spawned(terminal_id: &ResourceId, replayed: bool, json: bool) -> ExitCode {
-    let (id, host) = match terminal_id {
-        ResourceId::Local { id } => (*id, None),
-        ResourceId::Satellite { host, id } => (*id, Some(host.as_str())),
-    };
     if json {
-        let payload = spawned_json(id, host, replayed);
-        match serde_json::to_string_pretty(&payload) {
+        let payload = phux_client::spawn::spawned_document(terminal_id, replayed);
+        return match serde_json::to_string_pretty(&payload) {
             Ok(s) => {
                 outln!("{s}");
                 ExitCode::SUCCESS
@@ -397,55 +393,22 @@ fn print_spawned(terminal_id: &ResourceId, replayed: bool, json: bool) -> ExitCo
                 eprintln!("phux: failed to serialize spawn result as JSON: {err}");
                 ExitCode::FAILURE
             }
-        }
-    } else {
-        let selector = host.map_or_else(|| format!("@{id}"), |host| format!("{host}/@{id}"));
-        let verb = if replayed {
-            "Found pane (an earlier spawn with this key)"
-        } else {
-            "Created pane"
         };
-        outln!("{verb} {selector}. Next: `phux snapshot {selector}`.");
-        ExitCode::SUCCESS
     }
+    let selector = crate::selector::format_terminal_id(terminal_id);
+    let verb = if replayed {
+        "Found pane (an earlier spawn with this key)"
+    } else {
+        "Created pane"
+    };
+    outln!("{verb} {selector}. Next: `phux snapshot {selector}`.");
+    ExitCode::SUCCESS
 }
 
-/// The `phux spawn --json` result document. Pure, so the shape (including
-/// `schema_version`) is unit-testable without a server. `replayed` is
-/// additive: `true` when a keyed retry answered an earlier spawn's pane.
-fn spawned_json(id: u32, host: Option<&str>, replayed: bool) -> serde_json::Value {
-    serde_json::json!({
-        "schema_version": 1,
-        "terminal_id": id,
-        "satellite": host,
-        "replayed": replayed,
-    })
-}
-
-/// Map the typed `SpawnError` to an actionable stderr diagnostic.
+/// Map the typed `SpawnError` to an actionable stderr diagnostic
+/// ([`phux_client::spawn::spawn_error_message`]).
 pub(crate) fn report_spawn_error(err: &SpawnError) {
-    match err {
-        SpawnError::GroupNotFound => {
-            eprintln!("phux: spawn failed: server rejected the default group");
-        }
-        SpawnError::SpawnFailed(reason) => eprintln!("phux: spawn failed: {reason}"),
-        SpawnError::UnsupportedSatelliteRoute => {
-            eprintln!(
-                "phux: spawn failed: no route to that satellite \
-                 (is the server running with --hub, and the name in \
-                 `phux host ls --role satellite`?)"
-            );
-        }
-        SpawnError::SatelliteUnreachable(reason) => {
-            eprintln!("phux: spawn failed: satellite unreachable: {reason}");
-        }
-        // `SpawnError` is `#[non_exhaustive]`: a code with no arm here is a
-        // vocabulary this client does not have, i.e. version skew.
-        _ => eprintln!(
-            "phux: spawn failed: {}",
-            phux_client::explain::unexpected_reply("SPAWN_RESOURCE")
-        ),
-    }
+    eprintln!("phux: {}", phux_client::spawn::spawn_error_message(err));
 }
 
 #[cfg(test)]
@@ -648,15 +611,16 @@ mod tests {
     /// `phux spawn --json` pins `schema_version` 1 plus the two documented
     /// fields (§4.11) for both a local and a satellite-routed spawn.
     #[test]
-    fn spawned_json_pins_the_contract_shape() {
-        let doc = spawned_json(7, None, false);
+    fn spawned_document_pins_the_contract_shape() {
+        let doc = phux_client::spawn::spawned_document(&ResourceId::local(7), false);
         assert_eq!(doc["schema_version"], 1);
         assert_eq!(doc["terminal_id"], 7);
         assert!(doc["satellite"].is_null());
         assert_eq!(doc["replayed"], false);
         assert_eq!(doc.as_object().map(serde_json::Map::len), Some(4));
 
-        let doc = spawned_json(3, Some("edge"), true);
+        let doc = phux_client::spawn::spawned_document(&ResourceId::satellite("edge", 3), true);
+        assert_eq!(doc["terminal_id"], 3);
         assert_eq!(doc["satellite"], "edge");
         assert_eq!(doc["replayed"], true);
     }

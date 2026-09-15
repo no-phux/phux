@@ -1,0 +1,9 @@
+{
+  "direction": "vertical",
+  "new_terminal_id": 2,
+  "operation": "insert-pane",
+  "ratio": 0.30000001192092896,
+  "schema_version": 1,
+  "session_id": 1,
+  "target_terminal_id": 1
+}

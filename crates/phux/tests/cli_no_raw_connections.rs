@@ -89,18 +89,6 @@ const ALLOWLIST: &[(&str, usize, &str)] = &[
          fully delegated (L21b).",
     ),
     (
-        "spatial.rs",
-        3,
-        "not migrated in this pass. The `GET_STATE` site was in this lane's \
-         goal, but `phux_client::state::get_state_on` classifies a \
-         `CommandResult::Error` refusal differently \
-         (`AttachError::Refused`) than `read_snapshot`'s current \
-         `AttachError::Protocol(explain_unexpected(..))`, which would change \
-         a refusal's exact error text; left for a follow-up that also owns \
-         that reconciliation. `spatial.rs` is also L18's file — minimal \
-         hunks only.",
-    ),
-    (
         "play.rs",
         1,
         "not in this lane's write scope (`phux play`'s own \

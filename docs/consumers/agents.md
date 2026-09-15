@@ -1008,7 +1008,9 @@ look, not what it will find.
 
 - [`mcp.md`](./mcp.md) — JSON-RPC stdio adapter over the same verbs.
   `phux mcp --schema` is the tool catalog; `phux mcp --skill` is the
-  operating guide.
+  operating guide. Every verb indexed in §7 has an MCP tool or a listed
+  reason it has none, enforced by a parity gate; the mapping is
+  [`../reference/parity.md`](../reference/parity.md).
 - [`sdk.md`](./sdk.md) — `phux-client` is workspace-internal; there is
   no crates.io SDK. Native embedders use `phux-client-ffi`.
 - Host adapters: [`opencode.md`](./opencode.md), [`pi.md`](./pi.md),

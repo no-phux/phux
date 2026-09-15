@@ -17,9 +17,12 @@
 //! tools each freeze only their own shape, and a verb added later adds a tool
 //! rather than widening a union.
 //!
-//! Every tool here executes the canonical `phux` CLI with argv (never a
-//! shell) through [`crate::cli_adapter`], with the same caps the rest of the
-//! parity surface uses.
+//! `phux_agent_set` and `phux_agent_clear` run in-process over
+//! `phux_client::agent_record`, the home `phux agent set` / `clear` call.
+//! Every other tool here is on the CLI residue (each reason is in
+//! `crate::tool_table`) and executes the canonical `phux` CLI with argv
+//! (never a shell) through [`crate::cli_adapter`], with the same caps the
+//! rest of the parity surface uses.
 //!
 //! ## What this family deliberately does NOT contain
 //!
@@ -58,13 +61,17 @@
     reason = "argv and parsed args are deliberately adjacent in thin CLI wrappers"
 )]
 
+use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
+use phux_client::attach::connection::Connection;
+use phux_client::selector::{self, Selector, format_terminal_id};
+use phux_protocol::ids::ResourceId;
 use serde_json::{Value, json};
 
 use crate::cli_adapter::{
     CliAdapter, DEFAULT_CALL_TIMEOUT, bounded_string, bounded_strings, enum_string, push_socket,
 };
 use crate::cli_tools::{push_option, schema, string_schema};
-use crate::tools::{ToolError, strict_object};
+use crate::tools::{ToolError, resolve_one, socket_arg, strict_object};
 
 /// Lifecycle states a `phux.agent/v1` record can declare (L3 §3.7).
 const DECLARED_STATES: &[&str] = &["unknown", "idle", "working", "blocked", "done"];
@@ -151,7 +158,11 @@ pub(crate) fn owns(name: &str) -> bool {
 /// Returns [`ToolError`] for an unknown name, a malformed argument, or a
 /// canonical-CLI failure.
 pub(crate) async fn call(name: &str, args: &Value) -> Result<Value, ToolError> {
-    call_with_adapter(name, args, &CliAdapter::discover()).await
+    match name {
+        "phux_agent_set" => set(args).await,
+        "phux_agent_clear" => clear(args).await,
+        residue => call_with_adapter(residue, args, &CliAdapter::for_residue(residue)?).await,
+    }
 }
 
 async fn call_with_adapter(
@@ -163,8 +174,6 @@ async fn call_with_adapter(
         "phux_agent_list" => list(args, adapter).await,
         "phux_agent_show" => projection(args, "show", adapter).await,
         "phux_agent_explain" => projection(args, "explain", adapter).await,
-        "phux_agent_set" => set(args, adapter).await,
-        "phux_agent_clear" => clear(args, adapter).await,
         "phux_agent_wait" => wait(args, adapter).await,
         "phux_agent_send_keys" => send_keys(args, adapter).await,
         "phux_agent_prompt" => prompt(args, adapter).await,
@@ -269,7 +278,9 @@ fn clear_schema() -> Value {
     )
 }
 
-async fn set(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
+/// `phux_agent_set` — write the whole `phux.agent/v1` record (last writer
+/// wins) and return it as the server confirmed it, in-process.
+async fn set(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
         &[
@@ -283,40 +294,99 @@ async fn set(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
         ],
         &["name"],
     )?;
-    if args.get("state").is_some() {
-        let _ = enum_string(args, "state", DECLARED_STATES, None)?;
+    let record = declared_record(args)?;
+    let socket = socket_arg(args)?;
+    let (mut conn, pane) = target_pane(&socket, args).await?;
+    // The trailing GET inside `set_record` is load-bearing: SET_METADATA has
+    // no reply frame, so the confirmed value is what the server read back.
+    let (answer, _) = phux_client::agent_record::set_record(&mut conn, 100, &pane, &record).await?;
+    drop(conn);
+    match answer {
+        Ok(Some(confirmed)) => record_document("set", &pane, Some(&confirmed)),
+        Ok(None) => Err(ToolError::new("agent record did not persist")),
+        Err(refusal) => Err(ToolError::new(format!(
+            "agent record could not be confirmed: {refusal}"
+        ))),
     }
-    if args.get("attention").is_some() {
-        let _ = enum_string(args, "attention", ATTENTION_LEVELS, None)?;
-    }
-    let name = bounded_string(args, "name", true)?.unwrap_or_default();
-    let mut argv = vec![
-        "agent".to_owned(),
-        "set".to_owned(),
-        "--name".to_owned(),
-        name,
-    ];
-    for (key, flag) in [
-        ("kind", "--kind"),
-        ("state", "--state"),
-        ("attention", "--attention"),
-        ("session", "--session"),
-    ] {
-        push_option(&mut argv, flag, bounded_string(args, key, false)?);
-    }
-    push_socket(&mut argv, args)?;
-    push_target(&mut argv, args)?;
-    let output = adapter.run(argv, DEFAULT_CALL_TIMEOUT).await?;
-    parse_agent_record("set", &output.stdout)
 }
 
-async fn clear(args: &Value, adapter: &CliAdapter) -> Result<Value, ToolError> {
+/// The record `set` declares, validated the way `phux agent set` validates
+/// its flags.
+fn declared_record(args: &Value) -> Result<AgentRecord, ToolError> {
+    let state = args
+        .get("state")
+        .map(|_| enum_string(args, "state", DECLARED_STATES, None))
+        .transpose()?;
+    let attention = args
+        .get("attention")
+        .map(|_| enum_string(args, "attention", ATTENTION_LEVELS, None))
+        .transpose()?;
+    let name = bounded_string(args, "name", true)?.unwrap_or_default();
+    if name.trim().is_empty() {
+        return Err(ToolError::new("`name` must not be empty"));
+    }
+    Ok(AgentRecord {
+        name: name.trim().to_owned(),
+        kind: bounded_string(args, "kind", false)?,
+        state: state.map(AgentMetaState::from).unwrap_or_default(),
+        attention: attention.map(AgentAttention::from),
+        session: bounded_string(args, "session", false)?,
+    })
+}
+
+/// `phux_agent_clear` — delete the record and confirm it is gone.
+async fn clear(args: &Value) -> Result<Value, ToolError> {
     strict_object(args, &["target", "socket"], &[])?;
-    let mut argv = vec!["agent".to_owned(), "clear".to_owned()];
-    push_socket(&mut argv, args)?;
-    push_target(&mut argv, args)?;
-    let output = adapter.run(argv, DEFAULT_CALL_TIMEOUT).await?;
-    parse_agent_record("clear", &output.stdout)
+    let socket = socket_arg(args)?;
+    let (mut conn, pane) = target_pane(&socket, args).await?;
+    let (answer, _) = phux_client::agent_record::clear_record(&mut conn, 100, &pane).await?;
+    drop(conn);
+    match answer {
+        Ok(None) => record_document("clear", &pane, None),
+        Ok(Some(_)) => Err(ToolError::new("agent record was not cleared")),
+        Err(refusal) => Err(ToolError::new(format!(
+            "agent clear could not be confirmed: {refusal}"
+        ))),
+    }
+}
+
+/// Connect and resolve the optional `target` (the focused pane when absent)
+/// against that connection's own snapshot, as `phux agent set` / `clear` do.
+async fn target_pane(
+    socket: &std::path::Path,
+    args: &Value,
+) -> Result<(Connection, ResourceId), ToolError> {
+    let selector = bounded_string(args, "target", false)?
+        .map(|raw| {
+            selector::parse(&raw)
+                .map_err(|err| ToolError::new(format!("invalid target '{raw}': {err}")))
+        })
+        .transpose()?
+        .unwrap_or(Selector::Current);
+    let mut conn = Connection::connect(socket).await?;
+    let view = phux_client::state::get_state_on(&mut conn).await?;
+    let pane = resolve_one(socket, &selector, &view).await?;
+    Ok((conn, pane))
+}
+
+/// The versioned `{schema_version, action, terminal, record}` document;
+/// `record` is `null` for a cleared record.
+fn record_document(
+    action: &str,
+    pane: &ResourceId,
+    record: Option<&AgentRecord>,
+) -> Result<Value, ToolError> {
+    let record = match record {
+        None => Value::Null,
+        Some(record) => serde_json::from_slice(&record.encode())
+            .map_err(|err| ToolError::new(format!("agent record is malformed JSON: {err}")))?,
+    };
+    Ok(json!({
+        "schema_version": 1,
+        "action": action,
+        "terminal": format_terminal_id(pane),
+        "record": record,
+    }))
 }
 
 // -----------------------------------------------------------------------------
@@ -977,27 +1047,6 @@ fn push_target(argv: &mut Vec<String>, args: &Value) -> Result<(), ToolError> {
     Ok(())
 }
 
-/// Parse the `TERMINAL<TAB>RECORD` line `phux agent set` / `clear` prints
-/// into a versioned document. `-` means "no record" (the cleared case).
-fn parse_agent_record(action: &str, stdout: &str) -> Result<Value, ToolError> {
-    let line = stdout.trim();
-    let (terminal, record) = line
-        .split_once('\t')
-        .ok_or_else(|| ToolError::new("phux agent returned malformed output"))?;
-    let record = if record == "-" {
-        Value::Null
-    } else {
-        serde_json::from_str(record)
-            .map_err(|err| ToolError::new(format!("phux agent returned malformed JSON: {err}")))?
-    };
-    Ok(json!({
-        "schema_version": 1,
-        "action": action,
-        "terminal": terminal,
-        "record": record,
-    }))
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -1188,50 +1237,6 @@ esac
             &["agent", "explain", "--json"],
         )
         .await;
-
-        let set = assert_argv(
-            &adapter,
-            &log,
-            "phux_agent_set",
-            json!({
-                "target": "@5", "name": "bot", "kind": "codex",
-                "state": "working", "attention": "high", "session": "s", "socket": "/sock"
-            }),
-            &[
-                "agent",
-                "set",
-                "--name",
-                "bot",
-                "--kind",
-                "codex",
-                "--state",
-                "working",
-                "--attention",
-                "high",
-                "--session",
-                "s",
-                "--socket",
-                "/sock",
-                "--",
-                "@5",
-            ],
-        )
-        .await;
-        assert_eq!(set["record"]["name"], "bot");
-        assert_eq!(set["action"], "set");
-
-        let cleared = assert_argv(
-            &adapter,
-            &log,
-            "phux_agent_clear",
-            json!({ "target": "@5" }),
-            &["agent", "clear", "--", "@5"],
-        )
-        .await;
-        assert!(
-            cleared["record"].is_null(),
-            "a cleared record is null, not absent",
-        );
 
         assert_argv(
             &adapter,
@@ -1482,10 +1487,11 @@ esac
             // The multiplexer's old shape is not silently accepted.
             ("phux_agent_list", json!({ "action": "list" })),
         ] {
-            assert!(
-                call_with_adapter(name, &args, &adapter).await.is_err(),
-                "{name} accepted {args}",
-            );
+            let result = match name {
+                "phux_agent_set" => set(&args).await,
+                _ => call_with_adapter(name, &args, &adapter).await,
+            };
+            assert!(result.is_err(), "{name} accepted {args}");
         }
     }
 
@@ -1606,14 +1612,5 @@ esac
         assert!(parse_closed_line("@9\tgone").is_err());
         assert!(parse_closed_line("closed").is_err());
         assert!(parse_closed_line("").is_err());
-    }
-
-    #[test]
-    fn the_record_parser_is_strict() {
-        let set = parse_agent_record("set", "@2\t{\"name\":\"codex\"}\n").unwrap();
-        assert_eq!(set["record"]["name"], "codex");
-        assert_eq!(set["schema_version"], 1);
-        assert!(parse_agent_record("set", "bad").is_err());
-        assert!(parse_agent_record("set", "@2\tnot-json").is_err());
     }
 }

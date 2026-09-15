@@ -31,6 +31,7 @@ pub(crate) mod exit_codes;
 pub(crate) mod files;
 pub(crate) mod hooks;
 pub(crate) mod kinds;
+pub(crate) mod parity;
 pub(crate) mod widgets;
 
 /// The `last-reviewed` date stamped into every generated page's frontmatter.
@@ -110,6 +111,7 @@ pub(crate) fn pages() -> Vec<Page> {
         files::page(),
         deprecations::page(),
         kinds::page(),
+        parity::page(),
     ];
     let mut pages = Vec::with_capacity(content.len() + 1);
     pages.push(index_page(&content));

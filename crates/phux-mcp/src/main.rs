@@ -40,11 +40,16 @@ mod ask_tool;
 mod cli_adapter;
 mod cli_tools;
 mod diagnostic_tools;
+#[cfg(test)]
+mod goldens;
 mod jsonrpc;
+mod kill_tool;
+mod pane_tools;
 mod plugin_action;
 mod plugin_workspace;
 mod resource_tools;
 mod socket;
+mod tool_table;
 mod tools;
 
 use std::collections::HashMap;

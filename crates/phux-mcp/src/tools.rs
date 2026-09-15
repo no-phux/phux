@@ -1,9 +1,10 @@
 //! The phux tool catalog and `tools/call` dispatch.
 //!
-//! Each tool is a thin wrapper over the `phux-client` agent surface
-//! (`snapshot`, `send_keys`, `run`, `wait`) or a direct control-plane
-//! command (`GET_STATE`). MCP is a thin adapter over the same structured
-//! surface the CLI uses — not a separate core (ADR-0022 §5).
+//! Each tool is a thin wrapper over a `phux-client` library home, called
+//! in-process. MCP is a thin adapter over the same structured surface the
+//! CLI uses — not a separate core (ADR-0022 §5). The few tools that still
+//! run the canonical CLI are the residue named in `crate::tool_table`, each
+//! with its reason.
 //!
 //! A tool either returns a JSON `Value` (serialized into the MCP
 //! `content[0].text` field) or a [`ToolError`] carrying a readable message
@@ -15,17 +16,19 @@
     reason = "argv and parsed args are deliberately adjacent in canonical CLI adapters"
 )]
 
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::Connection;
+use phux_client::detach::DetachOutcome;
 use phux_client::selector::{self, Selector};
+use phux_client::snapshot::{PROJECTED_DOCUMENT_MAX_BYTES, ScreenState};
 use phux_client::state::{self, StateView};
 use phux_client::wait::{Condition, DEFAULT_IDLE_DWELL, DEFAULT_POLL_INTERVAL, WaitOutcome};
 use phux_client::watch::WatchItem;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::paste::PasteTrust;
-use phux_protocol::wire::frame::{Command as WireCommand, CommandResult, CommandValue};
 use serde_json::{Value, json};
 
 use crate::socket;
@@ -270,70 +273,110 @@ pub(crate) async fn dispatch(name: &str, args: &Value) -> Result<Value, ToolErro
     }
 }
 
-/// `phux_ls` — execute and parse canonical `phux ls --json`.
+/// `phux_ls` — the `phux ls --json` document, built in-process by
+/// [`phux_client::session_list::document`], the builder the CLI prints.
+/// Like the CLI it never auto-starts a server, and a partial listing is a
+/// result whose `unreachable` list says what could not be seen.
 async fn phux_ls(args: &Value) -> Result<Value, ToolError> {
     strict_object(args, &["socket"], &[])?;
-    let mut argv = vec!["ls".to_owned(), "--json".to_owned()];
-    crate::cli_adapter::push_socket(&mut argv, args)?;
-    crate::cli_adapter::CliAdapter::discover()
-        .run_json(argv, crate::cli_adapter::DEFAULT_CALL_TIMEOUT)
-        .await
+    let socket = socket_arg(args)?;
+    let view = state::get_state(&socket).await?;
+    let hosts_complete = view.host_sessions_complete();
+    let (snapshot, degradation) = view.into_parts();
+    let list = phux_client::session_list::document(&snapshot, &degradation, hosts_complete);
+    serde_json::to_value(&list)
+        .map_err(|err| ToolError::new(format!("failed to serialize session list: {err}")))
 }
 
-/// `phux_snapshot` — read a pane as structured data.
+/// `phux_snapshot` — read a pane as structured data, in-process.
 ///
 /// `scrollback` is tri-state, matching `phux snapshot --scrollback`:
 /// absent ⇒ viewport only; `0` ⇒ all retained history; `N` ⇒ the
 /// most-recent `N` rows. `cells` adds per-cell OSC-133 marks + styles.
-/// `tail` and `unwrap` are the ADR-0077 read modifiers.
-///
-/// The read modifiers are the only reason this tool has two paths. They are
-/// **client-side projections** of the same `GET_SCREEN` reply, and the
-/// projection is subtle — unwrap-then-window ordering, the viewport floor,
-/// re-basing `soft_wrap.scrollback` indices after a clip, `truncated_reason`
-/// — so this delegates to the canonical `phux snapshot --json` rather than
-/// keeping a second copy of it here. ADR-0022 §5: MCP is a thin adapter over
-/// the surface the CLI uses, not a separate core. Without a modifier the
-/// direct in-process read stays, because a subprocess for the common read
-/// would be a real cost for no gain; the emitted document is the same
-/// `ScreenState` either way.
+/// `tail` and `unwrap` are the ADR-0077 read modifiers: client-side
+/// projections of the same `GET_SCREEN` reply, applied by
+/// [`phux_client::snapshot::project`] — the one implementation `phux
+/// snapshot --tail/--unwrap` also calls, so the two return the same
+/// document.
 async fn phux_snapshot(args: &Value) -> Result<Value, ToolError> {
     let socket = socket::resolve(str_arg(args, "socket"));
     let selector = parse_target(args)?;
-    let scrollback = u32_arg(args, "scrollback");
-    let cells = bool_arg(args, "cells").unwrap_or(false);
-    let tail = u32_arg(args, "tail");
-    let unwrap = bool_arg(args, "unwrap").unwrap_or(false);
-    let format = snapshot_format_arg(args)?;
-
-    if unwrap && cells {
-        return Err(ToolError::new(
-            "`unwrap` cannot be combined with `cells`: cell coordinates are grid \
-             coordinates and do not survive the join",
-        ));
-    }
-    if format.is_some() && cells {
-        return Err(ToolError::new(
-            "`format` cannot be combined with `cells`: a rendered capture carries \
-             no per-cell projection",
-        ));
-    }
-    if tail.is_some() || unwrap {
-        return snapshot_projected(args, scrollback, cells, tail, unwrap, format).await;
-    }
-
+    let read = SnapshotRead::parse(args)?;
     let view = state::get_state(&socket).await?;
     let terminal_id = resolve_one(&socket, &selector, &view).await?;
     let screen = phux_client::snapshot::get_screen_scrollback_format(
         &socket,
         terminal_id,
-        scrollback,
-        cells,
-        format.map_or(0, format_wire_byte),
+        read.history(),
+        read.cells,
+        read.format_byte(),
     )
     .await?;
-    serde_json::to_value(&screen)
-        .map_err(|err| ToolError::new(format!("failed to serialize screen: {err}")))
+    read.document(screen)
+}
+
+/// One validated `phux_snapshot` request.
+struct SnapshotRead<'a> {
+    scrollback: Option<u32>,
+    cells: bool,
+    tail: Option<u32>,
+    unwrap: bool,
+    format: Option<&'a str>,
+}
+
+impl<'a> SnapshotRead<'a> {
+    fn parse(args: &'a Value) -> Result<Self, ToolError> {
+        let read = Self {
+            scrollback: u32_arg(args, "scrollback"),
+            cells: bool_arg(args, "cells").unwrap_or(false),
+            tail: u32_arg(args, "tail"),
+            unwrap: bool_arg(args, "unwrap").unwrap_or(false),
+            format: snapshot_format_arg(args)?,
+        };
+        if read.unwrap && read.cells {
+            return Err(ToolError::new(
+                "`unwrap` cannot be combined with `cells`: cell coordinates are grid \
+                 coordinates and do not survive the join",
+            ));
+        }
+        if read.format.is_some() && read.cells {
+            return Err(ToolError::new(
+                "`format` cannot be combined with `cells`: a rendered capture carries \
+                 no per-cell projection",
+            ));
+        }
+        Ok(read)
+    }
+
+    /// The history window to request: `tail` asks for history too.
+    const fn history(&self) -> Option<u32> {
+        phux_client::snapshot::history_request(self.scrollback, self.tail)
+    }
+
+    /// `GET_SCREEN`'s format byte; with `format`, `unwrap` asks the server's
+    /// Formatter to join soft-wrapped rows (its high bit).
+    fn format_byte(&self) -> u8 {
+        let unwrap = if self.unwrap {
+            phux_client::snapshot::SCREEN_FORMAT_UNWRAP
+        } else {
+            0
+        };
+        self.format
+            .map_or(0, |format| format_wire_byte(format) | unwrap)
+    }
+
+    /// The document: projected by the modifiers, and bounded when a
+    /// modifier ran, at the 1 MiB the CLI subprocess's stdout used to cap
+    /// this read at before it moved in-process.
+    fn document(&self, screen: ScreenState) -> Result<Value, ToolError> {
+        let screen = phux_client::snapshot::project(screen, self.unwrap, self.tail);
+        if self.tail.is_none() && !self.unwrap {
+            return serde_json::to_value(&screen)
+                .map_err(|err| ToolError::new(format!("failed to serialize screen: {err}")));
+        }
+        phux_client::snapshot::bounded_document(&screen, PROJECTED_DOCUMENT_MAX_BYTES)
+            .map_err(|err| ToolError::new(err.to_string()))
+    }
 }
 
 /// Read and validate the `format` argument: `None` when absent, otherwise
@@ -355,45 +398,6 @@ fn format_wire_byte(format: &str) -> u8 {
     } else {
         phux_client::snapshot::SCREEN_FORMAT_VT
     }
-}
-
-/// The `tail`/`unwrap`/`format` half of [`phux_snapshot`], executed as
-/// canonical `phux snapshot --json` so the ADR-0077 projection (and now
-/// the D9 rendering) has exactly one implementation.
-async fn snapshot_projected(
-    args: &Value,
-    scrollback: Option<u32>,
-    cells: bool,
-    tail: Option<u32>,
-    unwrap: bool,
-    format: Option<&str>,
-) -> Result<Value, ToolError> {
-    let mut argv = vec!["snapshot".to_owned(), "--json".to_owned()];
-    if let Some(scrollback) = scrollback {
-        argv.extend(["--scrollback".to_owned(), scrollback.to_string()]);
-    }
-    if cells {
-        argv.push("--cells".to_owned());
-    }
-    if let Some(format) = format {
-        argv.extend(["--format".to_owned(), format.to_owned()]);
-    }
-    if let Some(tail) = tail {
-        argv.extend(["--tail".to_owned(), tail.to_string()]);
-    }
-    if unwrap {
-        argv.push("--unwrap".to_owned());
-    }
-    crate::cli_adapter::push_socket(&mut argv, args)?;
-    // `--` before the selector: it is caller-supplied text, and a value
-    // beginning with `-` must reach the selector parser as a bad selector
-    // rather than be read as a flag.
-    if let Some(target) = crate::cli_adapter::bounded_string(args, "target", false)? {
-        argv.extend(["--".to_owned(), target]);
-    }
-    crate::cli_adapter::CliAdapter::discover()
-        .run_json(argv, crate::cli_adapter::DEFAULT_CALL_TIMEOUT)
-        .await
 }
 
 /// `phux_send_keys` — send input to the pane named by the selector.
@@ -467,7 +471,7 @@ async fn phux_run(args: &Value) -> Result<Value, ToolError> {
     // `phux run` mirrors the command's exit code, so a failing command is a
     // successful tool call reporting a nonzero `exit_code` — the case an agent
     // most needs the document for. Anything else would hand back only stderr.
-    crate::cli_adapter::CliAdapter::discover()
+    crate::cli_adapter::CliAdapter::for_residue("phux_run")?
         .run_json_mirrored_exit(argv, Duration::from_secs(timeout_secs.saturating_add(5)))
         .await
 }
@@ -508,7 +512,8 @@ async fn phux_wait(args: &Value) -> Result<Value, ToolError> {
 ///
 /// Mirrors canonical `phux new --json`: `name` is required (the create-only
 /// path never auto-names), while `command` and `cwd` are optional. The CLI owns
-/// server startup and the returned `{session, terminal_id}` JSON contract.
+/// server startup and the returned `{session, terminal_id}` JSON contract, so
+/// this stays on the residue (`crate::tool_table`).
 async fn phux_new(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
@@ -529,51 +534,49 @@ async fn phux_new(args: &Value) -> Result<Value, ToolError> {
         argv.push("--".to_owned());
         argv.extend(command);
     }
-    crate::cli_adapter::CliAdapter::discover()
+    crate::cli_adapter::CliAdapter::for_residue("phux_new")?
         .run_json(argv, crate::cli_adapter::DEFAULT_CALL_TIMEOUT)
         .await
 }
 
 /// `phux_kill` — tear down the Terminal(s) a selector resolves to.
 ///
-/// Executes canonical `phux kill`, preserving its tag-aware resolution,
-/// whole-session atomic teardown, per-pane fallback, and clean-disconnect
-/// handling instead of maintaining a second MCP implementation.
+/// In-process ([`crate::kill_tool`]), with `phux kill`'s tag-aware
+/// resolution, whole-session atomic teardown, empty-session clear, per-pane
+/// fallback, and clean-disconnect handling.
 async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
         &["target", "confirm", "socket"],
         &["target", "confirm"],
     )?;
+    // L17 replaces this hand-written confirm with one table-driven check.
     if args.get("confirm") != Some(&Value::Bool(true)) {
         return Err(ToolError::new(
             "phux_kill is destructive; pass `confirm: true`",
         ));
     }
     let target = crate::cli_adapter::bounded_string(args, "target", true)?.unwrap_or_default();
-    let mut argv = vec!["kill".to_owned(), target.clone()];
-    crate::cli_adapter::push_socket(&mut argv, args)?;
-    crate::cli_adapter::CliAdapter::discover()
-        .run(argv, crate::cli_adapter::DEFAULT_CALL_TIMEOUT)
-        .await?;
+    let socket = socket_arg(args)?;
+    let selector = selector::parse(&target)
+        .map_err(|err| ToolError::new(format!("invalid target '{target}': {err}")))?;
+    crate::kill_tool::kill_selected(&socket, &selector, &target).await?;
     Ok(json!({ "schema_version": 1, "killed": true, "target": target }))
 }
 
 /// `phux_detach` — force-detach clients from *outside* the attach UI.
 ///
-/// Direct `DETACH_CLIENTS` over the wire (`phux_client::attach::connection`)
-/// rather than a `phux detach` subprocess: the CLI verb has no `--json`, and
-/// the one fact this tool exists to report — how many clients were actually
-/// disconnected — only rides the wire reply
-/// (`phux_protocol::wire::frame::Command::DetachClients`'s doc comment:
-/// `OkWith(Json(count))`, unconditionally; the server never refuses this
-/// command). This is the bounded, request/response half of "attach or
-/// detach" (bead phux-fwwa): unlike `phux attach`, it does not open a live
-/// terminal stream, so it fits the one-text-content-block `tools/call`
-/// envelope the way `phux_agent_*`'s header comment says a raw ANSI stream
-/// cannot.
+/// `DETACH_CLIENTS` through [`phux_client::detach::detach_clients`], the
+/// home `phux detach` also calls. The CLI verb has no `--json`, and the one
+/// fact this tool exists to report — how many clients were actually
+/// disconnected — only rides the wire reply (`OkWith(Json(count))`). This is
+/// the bounded, request/response half of "attach or detach" (bead
+/// phux-fwwa): unlike `phux attach`, it does not open a live terminal
+/// stream, so it fits the one-text-content-block `tools/call` envelope the
+/// way `phux_agent_*`'s header comment says a raw ANSI stream cannot.
 async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
     strict_object(args, &["session", "confirm", "socket"], &["confirm"])?;
+    // L17 replaces this hand-written confirm with one table-driven check.
     if args.get("confirm") != Some(&Value::Bool(true)) {
         return Err(ToolError::new(
             "phux_detach forcibly disconnects attached clients; pass `confirm: true`",
@@ -582,26 +585,27 @@ async fn phux_detach(args: &Value) -> Result<Value, ToolError> {
     let socket = socket::resolve(str_arg(args, "socket"));
     let session = crate::cli_adapter::bounded_string(args, "session", false)?;
     let mut conn = Connection::connect(&socket).await?;
-    let (result, _interleaved) = conn
-        .request(
-            1,
-            WireCommand::DetachClients {
-                session: session.clone(),
-            },
-        )
-        .await?
-        .into_parts();
+    let outcome = phux_client::detach::detach_clients(&mut conn, 1, session.clone()).await;
     drop(conn);
-    match result {
-        CommandResult::OkWith(CommandValue::Json(count)) => {
-            let detached = count.trim().parse::<u64>().map_err(|_| {
-                ToolError::new(format!("phux detach returned a malformed count: {count:?}"))
-            })?;
+    match outcome {
+        Ok((DetachOutcome::Detached(detached), _)) => {
             Ok(json!({ "schema_version": 1, "detached": detached, "session": session }))
         }
-        other => Err(ToolError::new(phux_client::explain::explain_unexpected(
-            "detach", &other,
+        Ok((DetachOutcome::Malformed(count), _)) => Err(ToolError::new(format!(
+            "phux detach returned a malformed count: {count:?}"
         ))),
+        Ok((DetachOutcome::Refused(message), _)) => {
+            Err(ToolError::new(format!("detach refused: {message}")))
+        }
+        Ok((DetachOutcome::Unexpected(other), _)) => Err(ToolError::new(
+            phux_client::explain::explain_unexpected("detach", &other),
+        )),
+        // Detaching never tears the server down, so a disconnect before the
+        // reply is a failure to confirm, not an implicit success.
+        Err(AttachError::Disconnected) => {
+            Err(ToolError::new("connection closed before the detach reply"))
+        }
+        Err(err) => Err(err.into()),
     }
 }
 
@@ -835,11 +839,35 @@ pub(crate) async fn resolve_one(
     selector: &Selector,
     view: &StateView,
 ) -> Result<ResourceId, ToolError> {
+    resolve_with(socket, selector, view, false).await
+}
+
+/// [`resolve_one`] for a tool that delivers into the pane (`signal`): a
+/// `%name` whose record has the withdrawn shape is refused (ADR-0075
+/// point 5) rather than resolved, exactly as the CLI's input verbs refuse it.
+///
+/// # Errors
+///
+/// As [`resolve_one`].
+pub(crate) async fn resolve_one_for_input(
+    socket: &std::path::Path,
+    selector: &Selector,
+    view: &StateView,
+) -> Result<ResourceId, ToolError> {
+    resolve_with(socket, selector, view, true).await
+}
+
+async fn resolve_with(
+    socket: &std::path::Path,
+    selector: &Selector,
+    view: &StateView,
+    for_input: bool,
+) -> Result<ResourceId, ToolError> {
     let snapshot = view.snapshot();
     // `%name` never reaches `pick_target_pane` (ADR-0075 point 3): it
     // resolves to exactly one agent or refuses with the reason.
     if let Selector::Agent(name) = selector {
-        return state::resolve_agent_target(socket, name, snapshot, false)
+        return state::resolve_agent_target(socket, name, snapshot, for_input)
             .await
             .map(|target| target.terminal)
             .map_err(|err| ToolError::new(err.to_string()));
@@ -856,6 +884,71 @@ pub(crate) async fn resolve_one(
             ))
         }
     })
+}
+
+/// The socket an in-process tool dials: the explicit `socket` argument,
+/// which must be a string (as the CLI's `--socket` was), else the shared
+/// default (`$PHUX_SOCKET`, then the daemon default).
+///
+/// # Errors
+///
+/// A present `socket` that is not a string.
+pub(crate) fn socket_arg(args: &Value) -> Result<PathBuf, ToolError> {
+    match args.get("socket") {
+        None => Ok(socket::resolve(None)),
+        Some(Value::String(path)) => Ok(socket::resolve(Some(path))),
+        Some(_) => Err(ToolError::new("`socket` must be a string")),
+    }
+}
+
+/// A refusal as the CLI's `--json` error contract prints it: one line,
+/// `{"error":{"code","message"},"exit_code","remedy","schema_version":1}`.
+///
+/// Used by the in-process tools whose former CLI path ran under `--json`
+/// (spawn, the spatial edits), so their tool errors keep carrying the
+/// stable `code` a caller branches on.
+pub(crate) fn contract_error(
+    code: &str,
+    message: impl Into<String>,
+    remedy: &str,
+    exit_code: u8,
+) -> ToolError {
+    let document = json!({
+        "schema_version": 1,
+        "error": { "code": code, "message": message.into() },
+        "remedy": remedy,
+        "exit_code": exit_code,
+    });
+    ToolError::new(document.to_string())
+}
+
+/// A transport failure on the `--json` error contract, with the codes the
+/// CLI uses for one: `no_server`, `server_disconnected`, or `transport`.
+pub(crate) fn transport_error(err: &AttachError, socket: &Path, verb: &str) -> ToolError {
+    const DOCTOR: &str = "run `phux doctor` for a health check";
+    match err {
+        AttachError::Io(io)
+            if matches!(
+                io.kind(),
+                std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::NotFound
+            ) =>
+        {
+            contract_error(
+                "no_server",
+                format!("no server running at {}", socket.display()),
+                "start one with `phux` (attaches, auto-starting a server) or `phux server`; \
+                 run `phux doctor` for a health check",
+                1,
+            )
+        }
+        AttachError::Disconnected => contract_error(
+            "server_disconnected",
+            format!("server closed the connection during {verb}"),
+            DOCTOR,
+            1,
+        ),
+        other => contract_error("transport", format!("{verb} failed: {other}"), DOCTOR, 1),
+    }
 }
 
 /// A JSON rendering of a `ResourceId` using the canonical direct selector.
@@ -915,7 +1008,9 @@ mod tests {
     use phux_client::state::Degradation;
     use phux_client::testkit::{ScriptSpec, ScriptedServer};
     use phux_protocol::ids::{SessionId, WindowId};
-    use phux_protocol::wire::frame::{ErrorCode, FrameKind, RESOURCE_TAGS_KEY, Scope};
+    use phux_protocol::wire::frame::{
+        Command as WireCommand, ErrorCode, FrameKind, RESOURCE_TAGS_KEY, Scope,
+    };
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
     use tokio::net::UnixListener;
 

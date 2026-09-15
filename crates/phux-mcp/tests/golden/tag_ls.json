@@ -1,0 +1,17 @@
+{
+  "action": "ls",
+  "schema_version": 1,
+  "terminals": [
+    {
+      "tags": [
+        "build",
+        "ci"
+      ],
+      "terminal": "@1"
+    },
+    {
+      "tags": [],
+      "terminal": "@2"
+    }
+  ]
+}

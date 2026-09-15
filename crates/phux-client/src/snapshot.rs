@@ -265,6 +265,148 @@ fn decode_screen_reply(result: CommandResult) -> Result<ScreenState, AttachError
     }
 }
 
+/// The history window a read asks the server for (ADR-0077).
+///
+/// An explicit `scrollback` wins when both are given: it is the explicit
+/// statement about history, and `tail` then clamps whatever came back.
+/// Otherwise `tail N` asks for `N` history rows — a superset of what the
+/// window keeps, since the viewport also counts toward `N` — and `tail 0`
+/// asks for all retained history, which [`project`] then clamps to
+/// [`ROW_WINDOW_MAX`].
+#[must_use]
+pub const fn history_request(scrollback: Option<u32>, tail: Option<u32>) -> Option<u32> {
+    match scrollback {
+        Some(rows) => Some(rows),
+        None => tail,
+    }
+}
+
+/// Apply the client-side ADR-0077 read modifiers to a `GET_SCREEN` reply.
+///
+/// One implementation for `phux snapshot --tail/--unwrap` and the MCP
+/// `phux_snapshot` tool, so the two surfaces return the same document.
+///
+/// Order is deliberate: unwrapping first, then the row window. Unwrapping
+/// changes how many rows there are, so a window applied before it would
+/// count painted rows and report a different number than it returned.
+#[must_use]
+pub fn project(mut screen: ScreenState, unwrap: bool, tail: Option<u32>) -> ScreenState {
+    if unwrap {
+        let (history, viewport) = screen.unwrapped_split();
+        screen.scrollback = history;
+        screen.lines = viewport;
+        // Nothing in the returned projection continues onto the next row
+        // any more. Keep it `Some` — present-and-empty is "reported, none",
+        // and dropping to `None` would read as "server said nothing".
+        screen.soft_wrap = Some(SoftWrap::default());
+    }
+    match tail {
+        Some(want) => window_history(screen, want),
+        None => screen,
+    }
+}
+
+/// Clip `screen`'s history to a `want`-row window over the rendered rows.
+///
+/// The window counts rendered rows, history and viewport together, but a
+/// `ScreenState` describes a grid and a grid is never returned in part:
+/// `rows`, `cursor`, and `cells` are all grid coordinates. So the viewport
+/// is a floor and only history is clipped. A window narrower than the
+/// viewport therefore returns more rows than asked for, never fewer, and
+/// truncation still reports what it dropped.
+fn window_history(mut screen: ScreenState, want: u32) -> ScreenState {
+    let ceiling = usize::try_from(ROW_WINDOW_MAX).unwrap_or(usize::MAX);
+    let want = if want == ROW_WINDOW_ALL {
+        ceiling
+    } else {
+        usize::try_from(want).unwrap_or(usize::MAX).min(ceiling)
+    };
+    let keep = want.saturating_sub(screen.lines.len());
+    let before = screen.scrollback.len();
+    let clipped = if keep == 0 {
+        screen.scrollback.clear();
+        before > 0
+    } else {
+        let (kept, clipped) = row_window(
+            std::mem::take(&mut screen.scrollback),
+            u32::try_from(keep).unwrap_or(u32::MAX),
+        );
+        screen.scrollback = kept;
+        clipped
+    };
+
+    // History indices in `soft_wrap.scrollback` are relative to the
+    // returned array, so dropping D rows off the front shifts them by D. A
+    // wrap that pointed into a dropped row simply goes away: the surviving
+    // first row may be a continuation of something no longer present, which
+    // is exactly what `truncated` is telling the caller.
+    let dropped = u32::try_from(before - screen.scrollback.len()).unwrap_or(u32::MAX);
+    if dropped > 0
+        && let Some(wrap) = screen.soft_wrap.as_mut()
+    {
+        wrap.scrollback = wrap
+            .scrollback
+            .iter()
+            .filter_map(|index| index.checked_sub(dropped))
+            .collect();
+    }
+
+    if clipped {
+        screen.truncated = true;
+        screen.truncated_reason = Some(TRUNCATED_ROW_WINDOW.to_owned());
+    }
+    screen
+}
+
+/// The ceiling on a projected snapshot document: 1 MiB of pretty JSON.
+///
+/// For a consumer with no streaming channel of its own; the bound the MCP
+/// adapter enforced on the `phux snapshot --json` subprocess's stdout before
+/// `phux_snapshot` read in-process.
+pub const PROJECTED_DOCUMENT_MAX_BYTES: usize = 1024 * 1024;
+
+/// Why [`bounded_document`] refused a screen.
+#[derive(Debug, thiserror::Error)]
+pub enum SnapshotDocumentError {
+    /// The pretty-printed document is over the caller's ceiling.
+    #[error(
+        "the snapshot document is {size} bytes, over the {limit}-byte ceiling; \
+         request fewer rows with `tail` or a smaller `scrollback`"
+    )]
+    TooLarge {
+        /// The document's size, counting the trailing newline.
+        size: usize,
+        /// The ceiling it exceeded.
+        limit: usize,
+    },
+    /// The screen did not serialize.
+    #[error("failed to serialize screen: {0}")]
+    Serialize(#[from] serde_json::Error),
+}
+
+/// `screen` as a JSON document, refused when its pretty-printed form (plus
+/// the trailing newline a CLI prints) would exceed `limit` bytes.
+///
+/// The measure is the one the CLI's stdout had, so a caller that used to
+/// read `phux snapshot --json` under a byte cap keeps the same bound.
+///
+/// # Errors
+///
+/// [`SnapshotDocumentError::TooLarge`] over the ceiling, or
+/// [`SnapshotDocumentError::Serialize`].
+pub fn bounded_document(
+    screen: &ScreenState,
+    limit: usize,
+) -> Result<serde_json::Value, SnapshotDocumentError> {
+    let size = serde_json::to_string_pretty(screen)?
+        .len()
+        .saturating_add(1);
+    if size > limit {
+        return Err(SnapshotDocumentError::TooLarge { size, limit });
+    }
+    Ok(serde_json::to_value(screen)?)
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
@@ -273,9 +415,128 @@ mod tests {
     use phux_protocol::ResourceId;
 
     use super::{
-        SCREEN_FORMAT_HTML, SCREEN_FORMAT_NONE, format_unsupported_message,
-        get_screen_scrollback_format,
+        PROJECTED_DOCUMENT_MAX_BYTES, ROW_WINDOW_ALL, SCREEN_FORMAT_HTML, SCREEN_FORMAT_NONE,
+        ScreenState, SnapshotDocumentError, SoftWrap, TRUNCATED_ROW_WINDOW, bounded_document,
+        format_unsupported_message, get_screen_scrollback_format, history_request, project,
     };
+
+    fn screen(scrollback: &[&str], lines: &[&str], wrapped_lines: &[u32]) -> ScreenState {
+        ScreenState {
+            pane: 1,
+            cols: 10,
+            rows: u16::try_from(lines.len()).unwrap_or(0),
+            lines: lines.iter().map(|s| (*s).to_owned()).collect(),
+            scrollback: scrollback.iter().map(|s| (*s).to_owned()).collect(),
+            soft_wrap: Some(SoftWrap {
+                lines: wrapped_lines.to_vec(),
+                scrollback: Vec::new(),
+            }),
+            ..ScreenState::default()
+        }
+    }
+
+    /// `tail N` asks the server for `N` history rows; an explicit
+    /// `scrollback` wins over it.
+    #[test]
+    fn history_request_prefers_an_explicit_scrollback() {
+        assert_eq!(history_request(None, None), None);
+        assert_eq!(history_request(None, Some(80)), Some(80));
+        assert_eq!(history_request(None, Some(0)), Some(0));
+        assert_eq!(history_request(Some(5), Some(80)), Some(5));
+    }
+
+    /// `unwrap` joins wrapped rows and reports that nothing in the returned
+    /// projection continues — `Some(empty)`, never `None`.
+    #[test]
+    fn unwrap_joins_rows_and_keeps_reporting_wrap_info() {
+        let out = project(screen(&[], &["the quick", "brown fox"], &[0]), true, None);
+        assert_eq!(out.lines, vec!["the quickbrown fox".to_owned()]);
+        assert_eq!(out.soft_wrap, Some(SoftWrap::default()));
+        assert!(
+            out.has_soft_wrap_info(),
+            "an unwrapped projection still reported wrap info",
+        );
+        assert!(!out.truncated);
+    }
+
+    /// The row window counts the viewport and clips only history, and it
+    /// says so.
+    #[test]
+    fn tail_clips_history_and_reports_truncation() {
+        let base = screen(&["h1", "h2", "h3"], &["v1", "v2"], &[]);
+
+        let out = project(base.clone(), false, Some(4));
+        assert_eq!(
+            out.scrollback,
+            vec!["h2".to_owned(), "h3".to_owned()],
+            "a window of 4 is 2 viewport rows + the 2 most-recent history rows",
+        );
+        assert_eq!(out.lines, vec!["v1".to_owned(), "v2".to_owned()]);
+        assert!(out.truncated);
+        assert_eq!(out.truncated_reason.as_deref(), Some(TRUNCATED_ROW_WINDOW));
+
+        let out = project(base.clone(), false, Some(5));
+        assert_eq!(out.scrollback.len(), 3, "a window that fits clips nothing");
+        assert!(!out.truncated);
+        assert!(out.truncated_reason.is_none());
+
+        let out = project(base.clone(), false, Some(ROW_WINDOW_ALL));
+        assert_eq!(out.scrollback.len(), 3);
+        assert!(!out.truncated);
+
+        // A window narrower than the viewport: the grid is a floor, so the
+        // viewport survives whole and only history goes.
+        let out = project(base, false, Some(1));
+        assert!(out.scrollback.is_empty());
+        assert_eq!(out.lines.len(), 2, "the viewport is never returned in part");
+        assert!(out.truncated);
+    }
+
+    /// Clipping history shifts the history wrap indices, which are relative
+    /// to the returned array.
+    #[test]
+    fn tail_shifts_history_wrap_indices() {
+        let mut base = screen(&["h1", "h2", "h3"], &["v1"], &[]);
+        base.soft_wrap = Some(SoftWrap {
+            lines: Vec::new(),
+            scrollback: vec![0, 2],
+        });
+        let out = project(base, false, Some(3));
+        assert_eq!(out.scrollback, vec!["h2".to_owned(), "h3".to_owned()]);
+        let wrap = out.soft_wrap.expect("wrap info survives the window");
+        assert_eq!(
+            wrap.scrollback,
+            vec![1],
+            "index 2 became 1; index 0 pointed at a dropped row and went away",
+        );
+    }
+
+    /// Nothing requested, nothing changed: the projection is the identity.
+    #[test]
+    fn no_modifiers_leaves_the_reply_untouched() {
+        let base = screen(&["h1"], &["v1"], &[0]);
+        assert_eq!(project(base.clone(), false, None), base);
+    }
+
+    /// The document bound measures the pretty-printed bytes a CLI would have
+    /// printed, and refuses over the ceiling instead of truncating.
+    #[test]
+    fn bounded_document_refuses_over_the_ceiling() {
+        let small = screen(&[], &["v1"], &[]);
+        let value = bounded_document(&small, PROJECTED_DOCUMENT_MAX_BYTES).expect("fits");
+        assert_eq!(value, serde_json::to_value(&small).expect("value"));
+
+        let exact = serde_json::to_string_pretty(&small).expect("pretty").len() + 1;
+        assert!(
+            bounded_document(&small, exact).is_ok(),
+            "the ceiling is inclusive"
+        );
+        let refused = bounded_document(&small, exact - 1).expect_err("one byte over");
+        assert!(
+            matches!(refused, SnapshotDocumentError::TooLarge { size, limit } if size == exact && limit == exact - 1),
+            "{refused:?}"
+        );
+    }
     use crate::attach::AttachError;
     use crate::testkit::{self, ScriptSpec};
 
