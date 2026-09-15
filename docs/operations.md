@@ -790,6 +790,53 @@ responsibility, like socket permissions: with a self-signed certificate,
 verifying the `phux pair` fingerprint on the device's first connect is
 what closes the trust-on-first-use MITM window.
 
+#### Workload mTLS (`phux workload`)
+
+Setting `PHUX_WORKLOAD_MTLS` on the server adds a client-certificate check
+to every QUIC listener (the configured one and each `phux attach --ssh`
+door) and to the WSS listener
+([ADR-0116](adr/0116-workload-auth-is-mtls.md),
+[workload-auth.md](spec/workload-auth.md)). A connection must then present a
+certificate issued by the server's workload CA whose public key is enrolled
+and neither revoked nor expired. Where the listener asks for a pairing token,
+the token is still checked first, as outer admission only. With the variable
+set, a loopback WebSocket listener serves TLS too, because plaintext cannot
+carry the certificate check, and the server refuses to start with a
+WebTransport listener (`--webtransport`, `PHUX_WT_ADDR`) or a relay connector
+(`[[connector]]`): a browser session presents no client certificate, and a
+relay terminates TLS, so neither can carry one to this server. Unset, every
+listener and connector behaves exactly as described above.
+
+```sh
+phux workload authority --init            # create the CA; prints only its fingerprint
+phux workload add-key --scope 'observe,input@terminal:3' \
+    --cert-out client.pem < client.csr    # sign a CSR read from stdin
+phux workload list                        # ids, scopes, expiry, revocation
+phux workload revoke sha256:...           # refuse it from the next connection
+```
+
+The workload keeps its private key. `add-key` accepts only a certificate this
+CA issued or a certificate signing request, read from stdin or `--file` and
+never from the command line, and refuses input that contains a private key.
+The client presents its pair through `PHUX_WORKLOAD_CERT` and
+`PHUX_WORKLOAD_KEY`, which name files and never hold key bytes. The CA key
+(`<state-dir>/workload-ca.key`), the CA certificate, and the registry
+(`<state-dir>/workload-keys`) are owner-only files, replaced under a lock by
+atomic rename; `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, and
+`PHUX_WORKLOAD_KEYS` move them. Every directory above them must be
+controlled by its owner (or root) as well: only the immediate directory is
+checked, and the files are opened by path. A running server re-reads the registry when
+it changes, so enrollment and revocation apply to the next connection with no
+restart. The registry records a random instance id beside its generation,
+and an admitted connection's credential carries both: only the pair names
+one registry state. A malformed, insecure, or missing registry admits no
+workload credential; the server never falls back to an older generation. A
+transient read failure refuses only the connection it happened on. Revocation
+does not yet end an established connection, and scope ceilings are recorded
+and validated but not yet enforced at dispatch
+([workload-auth.md](spec/workload-auth.md) §6, §7). `phux doctor` reports the
+CA fingerprint and the registry generation.
+
 #### On-demand listeners (`phux attach --ssh`)
 
 `phux attach --ssh HOST` opens a routable QUIC port without any of the setup

@@ -14,3 +14,4 @@ mod remote_target_e2e;
 mod ssh_bootstrap_e2e;
 mod upgrade_e2e;
 mod whoami_e2e;
+mod workload_e2e;

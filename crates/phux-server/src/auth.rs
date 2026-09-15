@@ -83,6 +83,7 @@ impl ListenerToken {
             issued_at: self.issued_at,
             expires_at: None,
             generation: 1,
+            registry_instance: None,
         })
     }
 }
@@ -186,8 +187,15 @@ pub struct AuthenticatedCredential {
     pub issued_at: DateTime<Utc>,
     /// Optional time after which new authentication fails.
     pub expires_at: Option<DateTime<Utc>>,
-    /// Monotonic generation within the credential identifier.
+    /// Monotonic generation within the credential identifier. For a workload
+    /// credential, the generation of the registry snapshot that admitted it.
     pub generation: u64,
+    /// For a workload credential, the random instance id of the registry
+    /// file that admitted it; `None` for bearer credentials and for registry
+    /// files not yet rewritten. A generation is meaningful only within one
+    /// instance: key anything derived from it on `(registry_instance,
+    /// generation)`, never on the generation alone.
+    pub registry_instance: Option<String>,
 }
 
 /// Transport-derived identity plus the credential attestation captured at
@@ -341,6 +349,7 @@ impl TokenStore {
                     issued_at: record.issued_at,
                     expires_at: record.expires_at,
                     generation: record.generation,
+                    registry_instance: None,
                 });
             }
         }

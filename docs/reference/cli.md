@@ -62,6 +62,7 @@ Machines:
   service       Keep a server running across logout and reboot
   pair          Mint, rotate, or revoke remote credentials
   relay         Run a standalone relay, or enroll a route with it
+  workload      Manage the mTLS workload authority
 
 Maintain:
   status        Report the running server: pid, uptime, clients
@@ -3289,6 +3290,124 @@ Flags:
 Global flags:
       --socket <PATH>             Server socket to dial (default:
                                   `$PHUX_SOCKET`)
+```
+
+## `phux workload`
+
+```text
+Manage the mTLS workload authority
+
+The workload CA and the registry of client credentials it admits over mutual
+TLS. `authority` prints the CA fingerprint (`--init` creates the CA); `add-key`
+enrolls a client certificate or signs a CSR read from stdin or `--file`, never
+from the command line; `list` and `revoke` show and retire credentials. These
+write the state directory directly and never contact a server; a running server
+applies each change on its next connection, with no restart.
+
+Usage: phux workload [--json] <SUBCOMMAND>
+
+Commands:
+  add-key    Enroll a client certificate, or sign a CSR into one.
+  authority  Print the workload CA fingerprint.
+  list       List enrolled credentials.
+  revoke     Revoke a credential for new connections.
+  help       Print this message or the help of the given subcommand(s)
+
+Flags:
+      --json           Emit the result as JSON on stdout.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux workload add-key`
+
+```text
+Enroll a client certificate, or sign a CSR into one.
+
+Reads one PEM client certificate issued by this authority, or one PEM
+certificate signing request, from stdin or from `--file`. Key material is never
+taken from the command line, and input that contains a private key is refused. A
+CSR is signed into a client certificate written to the new file `--cert-out`
+names.
+
+Usage: phux workload add-key [FLAGS]
+
+Flags:
+      --file <PATH>             Read the certificate or CSR from this file
+                                instead of stdin.
+      --scope <VERBS@SELECTOR>  Scope ceiling as
+                                `<verb>[,<verb>...]@<selector>`, where a verb is
+                                inventory, observe, create, bind, input, signal,
+                                or `*`, and a selector is global, host,
+                                host:NAME, group:ID, terminal:ID, or
+                                terminal:HOST/ID. Repeatable; at least one is
+                                required.
+      --expires-in <SECONDS>    Seconds until the credential expires (at most 20
+                                years).
+                                (default: 7776000)
+      --cert-out <PATH>         New file to write the certificate issued for a
+                                CSR to. Required with a CSR; never overwrites an
+                                existing file.
+  -h, --help                    Print help
+
+Global flags:
+      --socket <PATH>           Server socket to dial (default: `$PHUX_SOCKET`)
+      --json                    Emit the result as JSON on stdout.
+```
+
+## `phux workload authority`
+
+```text
+Print the workload CA fingerprint.
+
+Prints only the `sha256:` fingerprint clients pin. `--init` creates the CA first
+when none exists; an existing CA is never replaced.
+
+Usage: phux workload authority [--init]
+
+Flags:
+      --init           Create the CA if it does not exist yet.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload list`
+
+```text
+List enrolled credentials.
+
+Usage: phux workload list [--public-keys]
+
+Flags:
+      --public-keys    Also print each credential's public key (hex DER).
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
+```
+
+## `phux workload revoke`
+
+```text
+Revoke a credential for new connections.
+
+Usage: phux workload revoke <CREDENTIAL_ID>
+
+Arguments:
+  <CREDENTIAL_ID>  Credential id (`sha256:...`) printed by `add-key` or `list`.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --json           Emit the result as JSON on stdout.
 ```
 
 ## `phux workspace`

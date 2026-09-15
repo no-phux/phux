@@ -356,6 +356,7 @@ mod tests {
             issued_at: Utc::now(),
             expires_at: None,
             generation: 1,
+            registry_instance: None,
         }
     }
 

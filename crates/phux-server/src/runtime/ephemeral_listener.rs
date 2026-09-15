@@ -55,6 +55,20 @@ pub(super) struct OpenRequest {
     pub(super) linger_secs: u32,
 }
 
+/// Workload mode (ADR-0116) covers this door too: the same client verifier
+/// and live registry as the configured QUIC listener. A configured authority
+/// that cannot load refuses the door rather than opening it bearer-only.
+fn workload_authority() -> Result<Option<super::workload_auth::WorkloadAuth>, CommandResult> {
+    super::workload_auth::WorkloadAuth::from_env().map_err(|err| {
+        warn!(error = %err, "OPEN_LISTENER refused: configured workload mTLS is unavailable");
+        refusal(
+            ErrorCode::InternalError,
+            "OPEN_LISTENER: workload mTLS is configured but its authority could not be loaded; see the server log"
+                .to_owned(),
+        )
+    })
+}
+
 /// Handle `OPEN_LISTENER`: open a QUIC listener for one remote attach and
 /// report how to reach it.
 ///
@@ -107,6 +121,10 @@ pub(super) fn handle_open_listener(
         }
     };
     let token = Arc::new(token);
+    let workload = match workload_authority() {
+        Ok(workload) => workload,
+        Err(refused) => return refused,
+    };
 
     let listener = match bind_listener(request.port_range, |addr| {
         QuicListener::with_admission(
@@ -114,6 +132,9 @@ pub(super) fn handle_open_listener(
             &cert,
             &key,
             QuicAdmission::Listener(Arc::clone(&token)),
+            workload
+                .as_ref()
+                .map(|auth| (&auth.ca, Arc::clone(&auth.registry))),
         )
     }) {
         Ok(listener) => listener,

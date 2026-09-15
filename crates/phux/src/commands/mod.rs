@@ -260,6 +260,7 @@ pub(crate) mod wait;
 mod stall_peer;
 pub(crate) mod watch;
 pub(crate) mod whoami;
+pub(crate) mod workload;
 pub(crate) mod workspace;
 pub(crate) mod worktree;
 
@@ -324,6 +325,7 @@ pub(crate) const fn socketless_verb(command: &Command) -> Option<&'static str> {
         Command::Host { .. } => Some("host"),
         Command::Relay { .. } => Some("relay"),
         Command::Pair { .. } => Some("pair"),
+        Command::Workload { .. } => Some("workload"),
         Command::Completion { .. } => Some("completion"),
         Command::Mcp { .. } => Some("mcp"),
         Command::Cockpit { .. } => Some("cockpit"),
@@ -1910,6 +1912,25 @@ pub(crate) enum Command {
         /// Conversion preserves each bearer secret but stores only its verifier.
         #[usage(long)]
         migrate_legacy: bool,
+    },
+
+    /// Manage the mTLS workload authority
+    ///
+    /// The workload CA and the registry of client credentials it admits over
+    /// mutual TLS. `authority` prints the CA fingerprint (`--init` creates
+    /// the CA); `add-key` enrolls a client certificate or signs a CSR read
+    /// from stdin or `--file`, never from the command line; `list` and
+    /// `revoke` show and retire credentials. These write the state directory
+    /// directly and never contact a server; a running server applies each
+    /// change on its next connection, with no restart.
+    #[usage(help_heading = "Machines", display_order = 45)]
+    Workload {
+        #[usage(subcommand)]
+        action: workload::WorkloadAction,
+
+        /// Emit the result as JSON on stdout.
+        #[usage(long, global)]
+        json: bool,
     },
 
     /// Add and manage the machines phux reaches
