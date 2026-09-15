@@ -8,7 +8,7 @@
 use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
 
 /// The name of `feature` — [`ServerFeature::snake_name`].
-pub(crate) fn feature_name(feature: ServerFeature) -> &'static str {
+pub(crate) const fn feature_name(feature: ServerFeature) -> &'static str {
     feature.snake_name()
 }
 
