@@ -31,10 +31,11 @@ edge portfolio shell over the same WebSocket request instead of a close or queue
 ```
 
 The production `demo`/`portfolio` path is **free**: the phux _server_ runs as WASM inside the Durable
-Object, so there's no container (no Workers Paid). Edge WASM and the native
-container both speak the phux wire. The committed browser artifact is the
-protocol-0.5 hosted-client backport; the native image tracks the workspace phux
-pin in `worker/Dockerfile`.
+Object, so there's no container (no Workers Paid). Edge WASM, the native
+container, and the committed `phux-web` artifact all speak workspace protocol
+0.9 (`phux-protocol` 0.37.0). Rebuild `src/lib/phux-web/` with
+`bun run build:client` and `worker/edge/` with `bun run build:edge` together
+when the wire changes.
 
 Idle edge sockets use Durable Object WebSocket hibernation. The object persists
 only a versioned logical shell checkpoint (viewport, sequence, partial demo
@@ -59,8 +60,9 @@ Every hosted socket begins with one deployment envelope, followed by the
 - **WS BINARY frame = one length-prefixed phux `FrameKind`, both directions** —
   the exact codec native phux uses. The browser runs `phux-web` (real
   `phux-protocol` + libghostty-vt engine); the DO runs `phux-edge` (real
-  `phux-protocol` + a curated shell that emits VT bytes). `TerminalSnapshot` /
-  `ResourceOutput` carry VT bytes; the client's engine renders them.
+  `phux-protocol` + a curated shell that emits VT bytes). `HELLO` /
+  `HELLO_OK` negotiate protocol 0.9; `ATTACH` is READY-fenced; `BootstrapChunk`
+  and `RESOURCE_OUTPUT` carry VT bytes; the client's engine renders them.
 - After that envelope, the Worker/DO never reframes binary data. The edge DO _is_
   the server (decode frame → shell → encode frame); the native container DO
   relays binary frames byte-for-byte.

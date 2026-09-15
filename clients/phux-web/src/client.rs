@@ -196,6 +196,44 @@ pub async fn run(
     run_websocket(ws_url, None, canvas, cols, rows, false, &vt).await
 }
 
+/// Connect over WebSocket for the hosted live-demo Worker.
+///
+/// The first message must be the text `phux.session.v1` envelope. HELLO waits
+/// until that preamble arrives; later binary messages are the phux wire.
+///
+/// # Errors
+/// Fails if the engine, canvas, or WebSocket cannot be initialized, or if the
+/// hosted preamble is missing or invalid.
+pub async fn run_hosted(
+    ws_url: &str,
+    canvas: HtmlCanvasElement,
+    cols: u16,
+    rows: u16,
+    callback: js_sys::Function,
+) -> Result<Client, JsValue> {
+    let vt = load_vt().await?;
+    let deadline = AttemptDeadline::new()?;
+    let ws = websocket(ws_url, None)?;
+    let mut attempt = WebSocketAttempt::new(ws);
+    attempt.socket().set_binary_type(BinaryType::Arraybuffer);
+
+    let app_socket = attempt.socket().clone();
+    let tx = WireTx::Ws(WsTx::new(app_socket.clone()));
+    let (app, ready) = build_app(&vt, tx, canvas, cols, rows, false)?;
+    let app_attempt = AppEstablishment::new(Rc::clone(&app));
+    attempt.transfer_to_app();
+    install_transport_failure_hook(&app);
+
+    install_hosted_websocket_handlers(&app, &app_socket, callback);
+    await_protocol_ready(&app, ready, deadline.remaining_ms()).await?;
+    ensure_app_live(&app)?;
+
+    install_keyboard(&app)?;
+    install_cursor_blink(&app)?;
+
+    Ok(app_attempt.complete())
+}
+
 /// Connect over WebSocket while explicitly advertising synthesized
 /// compatibility profiles only.
 ///
@@ -447,6 +485,11 @@ impl Client {
     #[must_use]
     pub fn is_failed(&self) -> bool {
         self.app.borrow().session.is_failed()
+    }
+
+    /// Close the transport and drop browser handlers and timers.
+    pub fn close(&self) {
+        self.app.borrow_mut().dispose();
     }
 
     /// Privacy-safe terminal failure reason, if this connection ended.
@@ -1103,6 +1146,45 @@ fn install_websocket_handlers(app: &Rc<RefCell<App>>, ws: &WebSocket) {
     }
 }
 
+fn install_hosted_websocket_handlers(
+    app: &Rc<RefCell<App>>,
+    ws: &WebSocket,
+    callback: js_sys::Function,
+) {
+    let callback = Rc::new(callback);
+    let hello_sent = Rc::new(Cell::new(false));
+    let preamble_done = Rc::new(Cell::new(false));
+    let onopen = Closure::new(|| {});
+    let onmessage = hosted_message_callback(
+        app,
+        Rc::clone(&callback),
+        Rc::clone(&hello_sent),
+        Rc::clone(&preamble_done),
+    );
+    let onerror = hosted_error_callback(app, Rc::clone(&callback));
+    let onclose = hosted_close_callback(app, callback);
+
+    ws.set_onopen(Some(onopen.as_ref().unchecked_ref()));
+    ws.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
+    ws.set_onerror(Some(onerror.as_ref().unchecked_ref()));
+    ws.set_onclose(Some(onclose.as_ref().unchecked_ref()));
+    let old = app
+        .borrow()
+        .bindings
+        .borrow_mut()
+        .websocket
+        .replace(WebSocketBindings {
+            socket: ws.clone(),
+            onopen,
+            onmessage,
+            onerror,
+            onclose,
+        });
+    if let Some(old) = old {
+        old.dispose();
+    }
+}
+
 fn websocket_open_callback(
     app: &Rc<RefCell<App>>,
     hello_sent: Rc<Cell<bool>>,
@@ -1134,6 +1216,145 @@ fn websocket_message_callback(app: &Rc<RefCell<App>>) -> Closure<dyn FnMut(Messa
             Err(message) => close_with_protocol_error(&app, &message),
         }
     })
+}
+
+fn hosted_message_callback(
+    app: &Rc<RefCell<App>>,
+    callback: Rc<js_sys::Function>,
+    hello_sent: Rc<Cell<bool>>,
+    preamble_done: Rc<Cell<bool>>,
+) -> Closure<dyn FnMut(MessageEvent)> {
+    let weak = Rc::downgrade(app);
+    Closure::new(move |event: MessageEvent| {
+        let Some(app) = weak.upgrade() else {
+            return;
+        };
+        if app.borrow().session.is_failed() {
+            return;
+        }
+        if let Some(text) = event.data().as_string() {
+            if preamble_done.replace(true) {
+                emit_hosted_error(&callback, "protocol");
+                close_with_protocol_error(&app, "unexpected text frame after hosted preamble");
+                return;
+            }
+            match js_sys::JSON::parse(&text) {
+                Ok(value) => {
+                    emit_hosted(&callback, &value);
+                    if !hello_sent.replace(true) {
+                        send_handshake(&app);
+                    }
+                }
+                Err(_) => {
+                    emit_hosted_error(&callback, "client");
+                    close_with_protocol_error(&app, "hosted session preamble was not JSON");
+                }
+            }
+            return;
+        }
+        if !preamble_done.get() {
+            emit_hosted_error(&callback, "protocol");
+            close_with_protocol_error(&app, "hosted session preamble missing");
+            return;
+        }
+        let framed = js_sys::Uint8Array::new(&event.data()).to_vec();
+        match decode_server_frame(&app, &framed) {
+            Ok(frame) => {
+                let _ = handle_frame(&app, frame);
+            }
+            Err(message) => {
+                emit_hosted_error(&callback, "protocol");
+                close_with_protocol_error(&app, &message);
+            }
+        }
+    })
+}
+
+fn hosted_error_callback(
+    app: &Rc<RefCell<App>>,
+    callback: Rc<js_sys::Function>,
+) -> Closure<dyn FnMut(web_sys::Event)> {
+    let weak = Rc::downgrade(app);
+    Closure::new(move |_| {
+        emit_hosted_error(&callback, "transport");
+        if let Some(app) = weak.upgrade() {
+            close_with_transport_error(&app, "WebSocket transport error");
+        }
+    })
+}
+
+fn hosted_close_callback(
+    app: &Rc<RefCell<App>>,
+    callback: Rc<js_sys::Function>,
+) -> Closure<dyn FnMut(web_sys::Event)> {
+    let weak = Rc::downgrade(app);
+    Closure::new(move |event: web_sys::Event| {
+        let close = event.dyn_into::<web_sys::CloseEvent>();
+        let (code, was_clean) = close
+            .ok()
+            .map_or((1006, false), |event| (event.code(), event.was_clean()));
+        emit_hosted_close(&callback, code, was_clean);
+        if let Some(app) = weak.upgrade() {
+            close_with_transport_error(&app, "WebSocket closed by peer");
+        }
+    })
+}
+
+fn emit_hosted(callback: &js_sys::Function, value: &JsValue) {
+    let _ = callback.call1(&JsValue::NULL, value);
+}
+
+fn emit_hosted_error(callback: &js_sys::Function, category: &str) {
+    let event = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &event,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("error"),
+    );
+    let _ = js_sys::Reflect::set(
+        &event,
+        &JsValue::from_str("category"),
+        &JsValue::from_str(category),
+    );
+    emit_hosted(callback, &event);
+}
+
+fn emit_hosted_close(callback: &js_sys::Function, code: u16, was_clean: bool) {
+    let event = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(
+        &event,
+        &JsValue::from_str("type"),
+        &JsValue::from_str("close"),
+    );
+    let _ = js_sys::Reflect::set(&event, &JsValue::from_str("code"), &JsValue::from(code));
+    let _ = js_sys::Reflect::set(
+        &event,
+        &JsValue::from_str("category"),
+        &JsValue::from_str(hosted_close_category(code)),
+    );
+    let _ = js_sys::Reflect::set(
+        &event,
+        &JsValue::from_str("wasClean"),
+        &JsValue::from(was_clean),
+    );
+    emit_hosted(callback, &event);
+}
+
+fn hosted_close_category(code: u16) -> &'static str {
+    match code {
+        1000 => "normal",
+        1001 => "going-away",
+        1002 | 1003 | 1007 => "protocol",
+        1008 | 4003 => "bad-request",
+        1011 | 4011 => "server",
+        1013 => "unavailable",
+        4001 => "capacity",
+        4002 => "rate-limited",
+        4004 => "idle",
+        4005 => "expired",
+        4007 => "unauthorized",
+        _ => "network",
+    }
 }
 
 fn websocket_failure_callback(

@@ -235,8 +235,7 @@ dependencies = [
 
 [[package]]
 name = "phux-protocol"
-version = "0.28.0"
-source = "git+https://github.com/no-phux/phux.git?branch=main#27928a418858dfb9deb0f122919ec3a002fae441"
+version = "0.37.0"
 dependencies = [
  "bitflags",
  "bytes",
@@ -244,6 +243,7 @@ dependencies = [
  "flate2",
  "int-enum",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 

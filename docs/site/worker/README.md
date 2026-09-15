@@ -25,9 +25,9 @@ mode=native → PhuxSessionContainer (src/native-session.ts), one random instanc
       No secrets or credentials; Cloudflare `enableInternet = false` blocks egress.
 ```
 
-The bytes are the **real phux wire** (`phux-protocol`). EdgeSession decodes
-`ATTACH` → replies a `TerminalSnapshot` (the shell's greeting), and `InputKey` →
-runs the keystroke through the curated shell → `ResourceOutput` (VT bytes). See
+The bytes are the **real phux wire** (`phux-protocol` 0.9). EdgeSession answers
+`HELLO` with `HELLO_OK`, then `ATTACH` with READY-fenced bootstrap (greeting in
+`BootstrapChunk`) and `InputKey` with `ResourceOutput` (VT bytes). See
 `../INFRA.md`.
 
 ## Files

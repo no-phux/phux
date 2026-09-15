@@ -31,6 +31,39 @@ pub async fn start(ws_url: String, canvas_id: String, cols: u16, rows: u16) -> R
     Ok(())
 }
 
+/// A hosted session controller returned to JavaScript.
+#[wasm_bindgen]
+pub struct HostedClient {
+    client: client::Client,
+}
+
+#[wasm_bindgen]
+impl HostedClient {
+    /// Close the socket and synchronously remove all browser handlers and timers.
+    pub fn close(&self) {
+        self.client.close();
+    }
+}
+
+/// Hosted JS entry point. Unlike [`start`], this requires the hosted session
+/// control preamble before accepting binary phux wire frames and reports safe,
+/// structured lifecycle events through `callback`.
+///
+/// # Errors
+/// Fails if the canvas element is missing or the connection can't be set up.
+#[wasm_bindgen]
+pub async fn start_hosted(
+    ws_url: String,
+    canvas_id: String,
+    cols: u16,
+    rows: u16,
+    callback: js_sys::Function,
+) -> Result<HostedClient, JsValue> {
+    let canvas = canvas_by_id(&canvas_id)?;
+    let client = client::run_hosted(&ws_url, canvas, cols, rows, callback).await?;
+    Ok(HostedClient { client })
+}
+
 /// JS entry point for the WebTransport-first path: try HTTP/3-over-QUIC at
 /// `wt_url` (an `https://` session URL; append `?token=<hex>` for a
 /// token-authenticated listener) and fall back to the WebSocket at `ws_url`
