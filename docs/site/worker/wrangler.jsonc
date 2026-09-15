@@ -30,6 +30,12 @@
     "enabled": true
   },
 
+  // Private analytics stays off the public network. The target Worker is
+  // deployed independently from no-phux/ops and must exist first.
+  "services": [
+    { "binding": "ANALYTICS", "service": "phux-ops-analytics" }
+  ],
+
   // The SessionDO imports the phux-edge WASM module (edge/pkg/*_bg.wasm).
   "rules": [{ "type": "CompiledWasm", "globs": ["**/*.wasm"], "fallthrough": true }],
 

@@ -1,7 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   CLAIM_MAX_AGE_MS,
+  buildEnvelope,
   claimProof,
+  forwardEnvelope,
   handleClaim,
   memberIdForEmail,
   timingSafeEqualHex,
@@ -9,6 +11,71 @@ import {
 } from "./analytics";
 
 const MEMBER_KEY = "test-member-key";
+
+describe("private analytics envelope (PHA-425)", () => {
+  test("allowlists UTM fields and never forwards query or referrer secrets", () => {
+    const envelope = buildEnvelope(
+      new Request(
+        "https://phux.sh/?utm_source=hn&utm_medium=post&utm_campaign=launch&email=person%40example.com&token=oauth-secret",
+        {
+          headers: {
+            referer:
+              "https://example.com/account?code=provider-code&email=other%40example.com",
+          },
+        },
+      ),
+      new Response(null, { status: 200 }),
+    );
+
+    expect(envelope.utm_source).toBe("hn");
+    expect(envelope.utm_medium).toBe("post");
+    expect(envelope.utm_campaign).toBe("launch");
+    expect(envelope.referrer_host).toBe("example.com");
+    const serialized = JSON.stringify(envelope);
+    for (const secret of [
+      "person@example.com",
+      "other@example.com",
+      "oauth-secret",
+      "provider-code",
+      "query",
+    ]) {
+      expect(serialized).not.toContain(secret);
+    }
+  });
+
+  test("bounds and strips control characters from attribution values", () => {
+    const source = `  launch\u0000${"x".repeat(100)}  `;
+    const envelope = buildEnvelope(
+      new Request(`https://phux.sh/?utm_source=${encodeURIComponent(source)}`),
+      new Response(),
+    );
+    expect(envelope.utm_source).not.toContain("\u0000");
+    expect(envelope.utm_source.length).toBe(80);
+  });
+
+  test("uses the service binding without a shared ingest credential", async () => {
+    let forwarded: Request | null = null;
+    const completions: Promise<unknown>[] = [];
+    const env: AnalyticsEnv = {
+      ANALYTICS: {
+        fetch: async (request) => {
+          forwarded = request;
+          return new Response(null, { status: 204 });
+        },
+      },
+    };
+    forwardEnvelope(
+      env,
+      { waitUntil: (promise) => completions.push(promise) },
+      buildEnvelope(new Request("https://phux.sh/"), new Response()),
+    );
+    await Promise.all(completions);
+
+    expect(forwarded).not.toBeNull();
+    expect(new URL(forwarded!.url).hostname).toBe("analytics.internal");
+    expect(forwarded!.headers.has("x-analytics-key")).toBe(false);
+  });
+});
 
 function envOf(): AnalyticsEnv {
   return { MEMBER_KEY };
@@ -23,6 +90,20 @@ function claimUrl(memberId: string, proof: string, issuedAt?: number): string {
 }
 
 describe("GET /api/claim (PHA-425)", () => {
+  test("accepts the private store's stable 32-hex member IDs", async () => {
+    const memberId = (await memberIdForEmail(
+      MEMBER_KEY,
+      "stored@example.com",
+    )).slice(0, 32);
+    const proof = await claimProof(MEMBER_KEY, memberId);
+    const response = await handleClaim(
+      new Request(claimUrl(memberId, proof, Date.now())),
+      envOf(),
+    );
+    expect(response.status).toBe(302);
+    expect(response.headers.get("set-cookie")).toContain(`phux_mid=${memberId}`);
+  });
+
   test("full proof sets the opt-in cookie and redirects", async () => {
     const memberId = await memberIdForEmail(MEMBER_KEY, "person@example.com");
     const proof = await claimProof(MEMBER_KEY, memberId);
