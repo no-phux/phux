@@ -73,10 +73,17 @@ plain terminal close — into typed `PhuxClientEffect` status kinds:
 `_EXITED` (`include/phux/client.h` in `phux-client-ffi`). The subscription
 is scoped to every Terminal local to the server phux-client-ffi is
 connected to; on a federation hub it does not reach a satellite's panes,
-which need their own explicit per-terminal subscription. Cockpit does not
-consume these yet — it still reads a pane's working directory from the
-attach catalog (`workspace_bridge.zig`) — wiring them into the app is
-PHA-284, a separate change.
+which need their own explicit per-terminal subscription. Cockpit consumes
+them on the remote provider (PHA-284). The live working directory's basename
+(`/` for the root) names an untitled tab ahead of the attach catalog.
+`EXITED` with reason `Exited` or `Killed` closes the pane; any other reason
+keeps today's handling. A window that loses its last pane this way shows
+Empty session when its session is keep-empty (ADR-0114). Otherwise the window
+closes, and closing the last window quits. The result is the same whichever
+of the close and the workspace snapshot arrives first. The command
+boundaries answer `atPrompt()`. A command that ran at least ten seconds posts
+a notification under the bell's gate and latch. A missing status, such as a
+satellite pane behind a hub, reads as unknown, never as an error.
 
 ## Clipboard (OSC 52)
 

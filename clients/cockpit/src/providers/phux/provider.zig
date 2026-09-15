@@ -831,6 +831,26 @@ pub const PhuxProvider = struct {
         return self.host.bellRung(ref);
     }
 
+    pub fn atPrompt(self: *const PhuxProvider, ref: provider.TerminalRef) bool {
+        return self.host.atPrompt(ref);
+    }
+
+    pub fn takeEnded(self: *PhuxProvider) ?provider.TerminalRef {
+        return self.host.takeEnded();
+    }
+
+    pub fn latchCommandFinished(self: *PhuxProvider, owner_value: provider.ReplicaOwner) bool {
+        return self.host.latchCommandFinished(owner_value);
+    }
+
+    pub fn acknowledgeCommandFinished(self: *PhuxProvider, ref: provider.TerminalRef) void {
+        self.host.acknowledgeCommandFinished(ref);
+    }
+
+    pub fn acknowledgeAllCommandsFinished(self: *PhuxProvider) void {
+        self.host.acknowledgeAllCommandsFinished();
+    }
+
     pub fn ringBell(self: *PhuxProvider, owner_value: provider.ReplicaOwner) bool {
         return self.host.ringBell(owner_value);
     }

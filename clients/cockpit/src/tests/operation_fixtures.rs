@@ -2,10 +2,13 @@
 //! Regenerate with clients/cockpit/scripts/generate-operation-fixtures.sh.
 use bytes::{Bytes, BytesMut};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, FrameKind, SpawnError, SpawnResult,
+    AgentEvent, CloseReason, Command, CommandResult, CommandValue, ErrorCode, FrameKind,
+    SpawnError, SpawnResult,
 };
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 use phux_protocol::{
     BootstrapId, BootstrapStreamProfile, GroupId, SatelliteHost, StreamId, ResourceId,
+    SessionId, WindowId,
 };
 use std::{error::Error, path::Path};
 
@@ -156,6 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             signal: None,
         }],
     )?;
+    write_status_fixtures(dir)?;
     for (name, host, owner) in [
         ("spawn-owner-request.bin", None, Some(ResourceId::local(7))),
         (
@@ -256,6 +260,97 @@ fn main() -> Result<(), Box<dyn Error>> {
         }],
     )?;
     Ok(())
+}
+
+/// PHA-284: the subscribed terminal-process facts phux-client-ffi folds into
+/// PHUX_CLIENT_STATUS_CWD/_COMMAND_STARTED/_COMMAND_FINISHED/_EXITED, each
+/// scoped to the attached fixture terminal (local 7).
+fn write_status_fixtures(dir: &Path) -> Result<(), Box<dyn Error>> {
+    let event = |event| {
+        vec![FrameKind::Event {
+            terminal: Some(ResourceId::local(7)),
+            event,
+            // Unjournaled: the fixture server does not advertise EVENT_JOURNAL.
+            stamp: None,
+        }]
+    };
+    let closed = |exit_status, reason| {
+        vec![FrameKind::ResourceClosed {
+            terminal_id: ResourceId::local(7),
+            exit_status,
+            reason,
+            signal: None,
+        }]
+    };
+    let cwd = AgentEvent::CwdChanged {
+        cwd: "/srv/work/cockpit-fixture".to_owned(),
+    };
+    write(dir, "remote-cwd.bin", event(cwd))?;
+    write(dir, "remote-command-started.bin", event(AgentEvent::CommandStarted))?;
+    let finished = AgentEvent::CommandFinished { exit_code: Some(2) };
+    write(dir, "remote-command-finished.bin", event(finished))?;
+    write(dir, "remote-exited.bin", closed(Some(0), CloseReason::Exited))?;
+    write(dir, "remote-killed.bin", closed(None, CloseReason::Killed))?;
+    let root = AgentEvent::CwdChanged { cwd: "/".to_owned() };
+    write(dir, "remote-cwd-root.bin", event(root))?;
+    let overlong = AgentEvent::CwdChanged {
+        cwd: format!("/{}", "x".repeat(5000)),
+    };
+    write(dir, "remote-cwd-overlong.bin", event(overlong))?;
+    let titles = (1..=100)
+        .map(|seq| FrameKind::ResourceOutput {
+            terminal_id: ResourceId::local(7),
+            stream_id: StreamId::new(7).unwrap(),
+            bootstrap_id: BootstrapId::new(1).unwrap(),
+            seq,
+            bytes: Bytes::from(format!("\x1b]2;burst-{seq}\x07")),
+        })
+        .collect();
+    write(dir, "remote-title-burst.bin", titles)?;
+    write_status_workspace_fixtures(dir)
+}
+
+/// Workspace reads around terminal 7's end, correlated as a client's first
+/// refresh after attach (internal requests 2 and 3); tests re-correlate them.
+/// No layout metadata, so the registry is the fallback topology.
+fn write_status_workspace_fixtures(dir: &Path) -> Result<(), Box<dyn Error>> {
+    let sessions = |keep_empty: bool| {
+        vec![SessionInfo::new(SessionId::new(1), "fixture").with_keep_empty(keep_empty)]
+    };
+    let live = |keep_empty: bool| {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(7))
+            .with_sessions(sessions(keep_empty))
+            .with_windows(vec![WindowInfo::new(
+                WindowId::new(1),
+                SessionId::new(1),
+                "registry",
+            )])
+            .with_resources(vec![ResourceInfo::new(
+                ResourceId::local(7),
+                WindowId::new(1),
+                80,
+                24,
+            )])
+    };
+    // The session after its last terminal ended: no windows, no resources.
+    let ended = |keep_empty: bool| {
+        SessionSnapshot::new(SessionId::new(1), WindowId::new(0), ResourceId::local(0))
+            .with_sessions(sessions(keep_empty))
+    };
+    let state = |snapshot: SessionSnapshot| {
+        vec![FrameKind::CommandResult {
+            request_id: 0x8000_0002,
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+        }]
+    };
+    write(dir, "status-keep-empty-state.bin", state(live(true)))?;
+    write(dir, "status-keep-empty-ended-state.bin", state(ended(true)))?;
+    write(dir, "status-ended-state.bin", state(ended(false)))?;
+    let metadata = FrameKind::MetadataValue {
+        request_id: 0x8000_0003,
+        value: None,
+    };
+    write(dir, "status-no-layout-metadata.bin", vec![metadata])
 }
 
 fn search_resize() -> Vec<FrameKind> {

@@ -178,6 +178,8 @@ const PeerFx = struct {
         self.notifications += 1;
     }
     pub fn ptyResize(_: *@This(), _: u64, _: u16, _: u16) void {}
+    pub fn closeWindow(_: *@This(), _: []const u8) void {}
+    pub fn quitApp(_: *@This()) void {}
 };
 
 fn leafSnapshot(session: u32, revision: u64, windows: []const shared.Window, nodes: []const shared.Node) shared.Snapshot {

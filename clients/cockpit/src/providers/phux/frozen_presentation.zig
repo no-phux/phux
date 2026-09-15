@@ -14,8 +14,11 @@ pub const FrozenPresentation = struct {
         var owned = try source.clone(gpa);
         errdefer owned.deinit(gpa);
         const title = try gpa.dupe(u8, value.title);
+        errdefer gpa.free(title);
+        const cwd = try gpa.dupe(u8, value.cwd);
         self.* = .{ .gpa = gpa, .canvas = owned, .value = value };
         self.value.title = title;
+        self.value.cwd = cwd;
         self.value.phase = .frozen;
         self.value.grid = self.canvas.grid(false);
         return self;
@@ -25,6 +28,7 @@ pub const FrozenPresentation = struct {
         const gpa = self.gpa;
         self.canvas.deinit(gpa);
         gpa.free(self.value.title);
+        gpa.free(self.value.cwd);
         gpa.destroy(self);
     }
 };

@@ -243,6 +243,9 @@ pub const Engine = struct {
     creation: durable_creation.Creation = .{},
     session_handoff: ?u64 = null,
     last_workspace_refresh: ?std.Io.Timestamp = null,
+    /// Windows a workspace snapshot emptied, for an ended shell whose pane the
+    /// snapshot removed before its EXITED arrived (workspace_lifecycle).
+    snapshot_emptied: lifecycle.EmptiedWindows = .{},
     remote_pointer: @import("shipping_pointer.zig").State = .{},
     /// Go to Directory's listed host, fixed when the picker opens.
     directory_origin: @import("directory_picker.zig").Origin = .{},
@@ -467,8 +470,15 @@ pub const Engine = struct {
         const remote = self.model.phux() orelse return false;
         const delta = remote.drainReadiness() catch return self.failPhux(fx);
         if (delta.detached) return self.failPhux(fx);
-        const changed = self.applyReadiness(delta);
+        // Ended shells are placed before this drain's snapshot is projected,
+        // so their windows settle the same whichever arrived first.
+        var ended: lifecycle.EndedPanes = .{};
+        ended.take(self.model, remote);
+        const occupied = lifecycle.EmptiedWindows.occupied(self.model);
+        const projected = self.applyReadiness(delta);
+        self.snapshot_emptied.observe(self.model, occupied);
         remote_commands.resumeReady(self.model);
+        const changed = ended.retire(self.model, fx, &self.snapshot_emptied) or projected;
         // A settled go-to-directory listing moves nothing in the snapshot,
         // but the picker reads it on the invalidation this announces.
         // A rename moves the header and the switcher, and settles the panel.
@@ -507,30 +517,64 @@ pub const Engine = struct {
         return self.drainNotices(fx, self.model.phux() orelse return false);
     }
 
-    /// One coordinator's bells, each checked against that coordinator's own
-    /// current owner.
+    /// One coordinator's notices: bells and long command completions, each
+    /// checked against that coordinator's own current owner.
     fn drainNotices(self: *Engine, fx: anytype, remote: *support.PhuxProvider) bool {
         if (comptime !support.phux_enabled) return false;
         var changed = false;
         // Host admission is bounded to max_notices; every owned payload is freed.
         while (remote.takeNotice()) |notice| {
             defer remote.releaseNotice(notice);
-            if (!notice.isBell()) continue;
-            const owner: support.ReplicaOwner = .{ .terminal_ref = notice.terminal_ref, .generation = notice.generation, .source_context = remote.host.context_id };
-            if (!self.model.ownerIsCurrent(owner)) continue;
-            if (!remote.ringBell(owner)) continue;
-            changed = true;
-            self.notifyRemoteBell(fx, owner.terminal_ref);
+            changed = self.applyRemoteNotice(fx, remote, notice) or changed;
         }
         return changed;
     }
 
-    fn notifyRemoteBell(self: *Engine, fx: anytype, ref: TerminalRef) void {
+    fn applyRemoteNotice(self: *Engine, fx: anytype, remote: *support.PhuxProvider, notice: anytype) bool {
+        if (notice.isBell()) return self.ringRemoteBell(fx, remote, notice);
+        if (notice.isCommandFinished()) return self.announceCommandFinished(fx, remote, notice);
+        return false;
+    }
+
+    fn noticeOwner(remote: *const support.PhuxProvider, notice: anytype) support.ReplicaOwner {
+        return .{ .terminal_ref = notice.terminal_ref, .generation = notice.generation, .source_context = remote.host.context_id };
+    }
+
+    fn ringRemoteBell(self: *Engine, fx: anytype, remote: *support.PhuxProvider, notice: anytype) bool {
+        const owner = noticeOwner(remote, notice);
+        if (!self.model.ownerIsCurrent(owner)) return false;
+        if (!remote.ringBell(owner)) return false;
+        self.notifyRemote(fx, owner.terminal_ref, "Terminal bell");
+        return true;
+    }
+
+    /// A long command finishing posts the bell's notification under the
+    /// bell's gate (the app is not focused) and a per-terminal latch (one
+    /// until the pane is viewed or the app regains focus). The host already
+    /// dropped commands shorter than min_command_notice_ns. Nothing the
+    /// snapshot shows changes.
+    fn announceCommandFinished(self: *Engine, fx: anytype, remote: *support.PhuxProvider, notice: anytype) bool {
+        if (self.model.focused) return false;
+        const owner = noticeOwner(remote, notice);
+        if (!self.model.ownerIsCurrent(owner)) return false;
+        if (!remote.latchCommandFinished(owner)) return false;
+        var body_storage: [48]u8 = undefined;
+        self.notifyRemote(fx, owner.terminal_ref, commandFinishedBody(notice.value, &body_storage));
+        return false;
+    }
+
+    fn notifyRemote(self: *Engine, fx: anytype, ref: TerminalRef, body: []const u8) void {
         if (self.model.focused) return;
         var title_storage: [projection.max_terminal_title_bytes]u8 = undefined;
         const title = projection.terminalTitleInto(self.model, ref, &title_storage);
         if (!self.model.recordNotification(title)) return;
-        fx.showNotification(.{ .title = title, .subtitle = "Phux Cockpit", .body = "Terminal bell" });
+        fx.showNotification(.{ .title = title, .subtitle = "Phux Cockpit", .body = body });
+    }
+
+    fn commandFinishedBody(exit_code: ?i32, storage: []u8) []const u8 {
+        const code = exit_code orelse return "Command finished";
+        if (code == 0) return "Command finished";
+        return std.fmt.bufPrint(storage, "Command exited with status {d}", .{code}) catch "Command finished";
     }
 
     fn failPhux(self: *Engine, fx: anytype) bool {
@@ -3452,6 +3496,7 @@ pub const Engine = struct {
         const model = self.model;
         if (model.focused == focused) return;
         model.focused = focused;
+        if (focused) self.acknowledgeCommandsFinished();
         if (!focused) {
             self.cancelSplitDrag();
             self.last_click_count = 0;
@@ -3461,6 +3506,20 @@ pub const Engine = struct {
             for (&model.held_terminal_keys) |*held| held.* = .{};
         }
         self.syncRemoteFocus();
+    }
+
+    /// Regaining focus attends every finished command the user was told of.
+    fn acknowledgeCommandsFinished(self: *Engine) void {
+        if (comptime !support.phux_enabled) return;
+        const remote = self.model.phux() orelse return;
+        remote.acknowledgeAllCommandsFinished();
+    }
+
+    /// The pane in front is attended: its bell and finished command both.
+    fn acknowledgeAttended(self: *Engine, ref: TerminalRef) void {
+        const remote = self.model.phuxForRef(ref) orelse return;
+        remote.acknowledgeBell(ref);
+        remote.acknowledgeCommandFinished(ref);
     }
 
     fn syncRemoteFocus(self: *Engine) void {
@@ -3481,7 +3540,7 @@ pub const Engine = struct {
     fn currentRemoteFocusOwner(self: *Engine) ?support.ReplicaOwner {
         const ref = if (self.input_suspended) null else update_module.remoteFocusTarget(self.model);
         if (comptime support.phux_enabled) {
-            if (ref) |value| if (self.model.phuxForRef(value)) |remote| remote.acknowledgeBell(value);
+            if (ref) |value| self.acknowledgeAttended(value);
         }
         return if (ref) |value| self.model.terminalOwner(value) else null;
     }
