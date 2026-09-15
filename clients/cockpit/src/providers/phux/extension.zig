@@ -976,28 +976,22 @@ test "Unix worker ensures selected coordinator before attempting its socket" {
     defer fixture.deinit();
     var bridge = transport.Bridge.init(std.testing.allocator);
     defer bridge.deinit();
-    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = fixture.socket }, .{ .cli_path = fixture.cli });
+    // Helper-ready is a scheduling wait for Python under CI load. Keep the
+    // worker's fail-safe past that wait so EnsureTimedOut cannot look like
+    // an early connect. The ensure-before-connect invariant is the null
+    // disconnect checks, not the spawn deadline.
+    const worker = try Worker.startWithOptions(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = fixture.socket }, .{
+        .cli_path = fixture.cli,
+        .timeout_ms = 2 * (startup.Options{}).timeout_ms,
+    });
     defer worker.stop();
-    const started = monotonicTime().?;
-    var reason: ?transport.DisconnectReason = null;
-    while (!fixture.ready() and reason == null) {
-        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
-        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
-        reason = bridge.incoming.takeDisconnect();
-    }
+    try awaitHelperReady(&fixture, &bridge);
     // The selected socket does not exist. Connecting before ensure finishes
     // would already have posted a disconnect; the live worker must still wait.
-    try std.testing.expect(fixture.ready());
-    try std.testing.expectEqual(null, reason);
     try std.testing.expectEqual(null, bridge.incoming.takeDisconnect());
     try fixture.checkArguments();
     try fixture.release("0");
-    while (reason == null) {
-        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < 5 * std.time.ns_per_s);
-        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
-        reason = bridge.incoming.takeDisconnect();
-    }
-    try std.testing.expectEqual(transport.DisconnectReason.socket_lost, reason.?);
+    try std.testing.expectEqual(transport.DisconnectReason.socket_lost, try awaitDisconnect(&bridge));
     try fixture.expectExitCode("0");
 }
 
@@ -1087,6 +1081,19 @@ test "stopping during coordinator ensure cancels and reaps helper without postin
     try std.testing.expectEqual(null, bridge.incoming.takeDisconnect());
     try fixture.checkArguments();
     try fixture.expectReaped();
+}
+
+/// Pid-file wait is scheduling for the helper process, not the
+/// ensure-before-connect invariant. Bound it by the worker's default ensure
+/// budget so hosted Python startup cannot lose to a tighter test clock. An
+/// early disconnect still fails immediately: that is connect-before-ensure.
+fn awaitHelperReady(fixture: *startup.TestFixture, bridge: *transport.Bridge) !void {
+    const started = monotonicTime().?;
+    while (!fixture.ready()) {
+        try std.testing.expectEqual(null, bridge.incoming.takeDisconnect());
+        try std.testing.expect(elapsedNanos(started, monotonicTime().?) < @as(i128, (startup.Options{}).timeout_ms) * std.time.ns_per_ms);
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(1), .awake);
+    }
 }
 
 fn awaitDisconnect(bridge: *transport.Bridge) !transport.DisconnectReason {
