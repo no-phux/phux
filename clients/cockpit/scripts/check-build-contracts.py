@@ -146,6 +146,10 @@ class BuildContracts(unittest.TestCase):
         self.assertIsNotNone(create)
         self.assertNotIn("-quiet", create.group(0))
         self.assertIn("${HDIUTIL:-/usr/bin/hdiutil}", package)
+        # GitHub macOS runners have /bin/sync; invoking /usr/bin/sync aborted
+        # packaging before hdiutil_retry could run (#708 follow-up).
+        self.assertNotRegex(package, r"(?m)^\s*/usr/bin/sync\b")
+        self.assertIn("command -v sync", package)
 
         helper = re.search(r"^hdiutil_retry\(\) \{.*?\n\}\n", package, re.M | re.S)
         self.assertIsNotNone(helper)

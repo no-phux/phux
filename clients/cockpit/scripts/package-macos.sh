@@ -290,7 +290,10 @@ mkdir -p -- "${STAGING}"
 /usr/bin/ditto "${APP}" "${STAGING}/Phux Cockpit.app"
 ln -s /Applications "${STAGING}/Applications"
 printf 'creating disk image %s\n' "${DMG}"
-/usr/bin/sync
+# GitHub macOS images have /bin/sync, not /usr/bin/sync. Skip if absent.
+if command -v sync >/dev/null 2>&1; then
+    sync
+fi
 hdiutil_retry create \
     -ov \
     -fs HFS+ \
