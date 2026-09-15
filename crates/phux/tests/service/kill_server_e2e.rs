@@ -44,7 +44,7 @@ fn wait_until_accepting(socket: &Path) -> bool {
     false
 }
 
-fn start_server(socket: &Path, session: &str) -> common::AutoSpawnedServer {
+fn spawn_session(socket: &Path, session: &str) {
     let out = Command::new(PHUX)
         .args(["new", "--session", session, "--json", "--socket"])
         .arg(socket)
@@ -56,9 +56,31 @@ fn start_server(socket: &Path, session: &str) -> common::AutoSpawnedServer {
         String::from_utf8_lossy(&out.stderr)
     );
     assert!(wait_until_accepting(socket), "server must be up");
+}
+
+fn start_server(socket: &Path, session: &str) -> common::AutoSpawnedServer {
+    // Arm before spawn: a panic in `phux new` or `wait_until_accepting` must
+    // still Drop a guard that can reap via the live socket (phux-e4qx).
     let mut server = common::AutoSpawnedServer::new(PHUX, socket.to_owned());
+    spawn_session(socket, session);
     server.capture_pid();
     server
+}
+
+fn status_pid(socket: &Path) -> u32 {
+    let output = Command::new(PHUX)
+        .args(["status", "--json", "--socket"])
+        .arg(socket)
+        .output()
+        .expect("run phux status --json");
+    assert!(
+        output.status.success(),
+        "status --json must succeed.\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let doc: serde_json::Value = serde_json::from_slice(&output.stdout).expect("status emits JSON");
+    u32::try_from(doc["pid"].as_u64().expect("status JSON names server pid"))
+        .expect("server pid fits u32")
 }
 
 /// The contract: the server stops, and the socket is gone when the command
@@ -182,5 +204,54 @@ fn kill_requires_exactly_one_of_target_or_server() {
     assert!(
         !both.status.success(),
         "`--server` and a selector are different operations and must not combine"
+    );
+}
+
+/// phux-e4qx: Drop must reap a live daemon even when `capture_pid` never ran.
+#[test]
+fn drop_reaps_a_daemon_whose_pid_was_never_captured() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("phux.sock");
+    let server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+    spawn_session(&socket, "uncaptured");
+
+    let pid = status_pid(&socket);
+    assert!(
+        common::process_exists(pid),
+        "precondition: the daemon must be alive before Drop"
+    );
+
+    drop(server);
+
+    assert!(
+        !common::process_exists(pid),
+        "Drop must reap the daemon even when capture_pid never ran"
+    );
+    assert!(
+        std::os::unix::net::UnixStream::connect(&socket).is_err(),
+        "the socket must not still be live after Drop"
+    );
+}
+
+/// Acceptance for phux-e4qx: a forced panic after spawn, before `capture_pid`,
+/// must not leave an orphan in `ps`.
+#[test]
+fn panic_unwind_reaps_a_daemon_whose_pid_was_never_captured() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let socket = dir.path().join("phux.sock");
+    let pid = std::cell::Cell::new(None);
+
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _server = common::AutoSpawnedServer::new(PHUX, socket.clone());
+        spawn_session(&socket, "panic-reap");
+        pid.set(Some(status_pid(&socket)));
+        panic!("forced phux-e4qx unwind");
+    }));
+    assert!(outcome.is_err(), "the forced panic must have unwound");
+
+    let pid = pid.get().expect("daemon pid observed before panic");
+    assert!(
+        !common::process_exists(pid),
+        "unwinding Drop must reap the uncaptured daemon; {pid} is still in ps"
     );
 }
