@@ -285,10 +285,10 @@ fn build_server_config(
             u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES)
                 .unwrap_or(u32::MAX),
         ),
-        // Permissive HELLO authorization (ADR-0072): the local trust model
-        // is "same OS user, kernel-enforced". phux-pjc5 installs the
-        // scope-enforcing engine here for paired/remote deployments.
+        // The runtime picks the engine from `policy_mode` (workload-auth
+        // §8); no override. `run_server` sets the mode from `[policy]`.
         policy_engine: None,
+        policy_mode: None,
         hook_catalog,
         // Ephemeral lifetime (ADR-0063). Absent by default: the multiplexer
         // contract — live until the last pane is gone — is what a human
@@ -438,7 +438,7 @@ pub(crate) fn run_server(
         return ExitCode::FAILURE;
     }
 
-    let cfg = build_server_config(
+    let mut cfg = build_server_config(
         session,
         &socket_path,
         config.defaults,
@@ -448,6 +448,9 @@ pub(crate) fn run_server(
         seed_command,
         exit_after_idle,
     );
+    // `[policy] mode` decides which connections the server admits and what
+    // they may do (workload-auth §8); a contradicted mode refuses to start.
+    cfg.policy_mode = config.policy.mode;
 
     let rt = match build_runtime() {
         Ok(rt) => rt,

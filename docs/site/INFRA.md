@@ -31,9 +31,11 @@ edge portfolio shell over the same WebSocket request instead of a close or queue
 ```
 
 The production `demo`/`portfolio` path is **free**: the phux _server_ runs as WASM inside the Durable
-Object, so there's no container (no Workers Paid). The browser client is
-unchanged — it speaks the same phux wire whether the server is real native phux,
-a jailed container, or this edge WASM server.
+Object, so there's no container (no Workers Paid). Edge WASM, the native
+container, and the committed `phux-web` artifact all speak workspace protocol
+0.9 (`phux-protocol` 0.38.0). Rebuild `src/lib/phux-web/` with
+`bun run build:client` and `worker/edge/` with `bun run build:edge` together
+when the wire changes.
 
 Idle edge sockets use Durable Object WebSocket hibernation. The object persists
 only a versioned logical shell checkpoint (viewport, sequence, partial demo
@@ -58,8 +60,9 @@ Every hosted socket begins with one deployment envelope, followed by the
 - **WS BINARY frame = one length-prefixed phux `FrameKind`, both directions** —
   the exact codec native phux uses. The browser runs `phux-web` (real
   `phux-protocol` + libghostty-vt engine); the DO runs `phux-edge` (real
-  `phux-protocol` + a curated shell that emits VT bytes). `TerminalSnapshot` /
-  `ResourceOutput` carry VT bytes; the client's engine renders them.
+  `phux-protocol` + a curated shell that emits VT bytes). `HELLO` /
+  `HELLO_OK` negotiate protocol 0.9; `ATTACH` is READY-fenced; `BootstrapChunk`
+  and `RESOURCE_OUTPUT` carry VT bytes; the client's engine renders them.
 - After that envelope, the Worker/DO never reframes binary data. The edge DO _is_
   the server (decode frame → shell → encode frame); the native container DO
   relays binary frames byte-for-byte.
@@ -108,10 +111,13 @@ there's no process to break out of.
 ## The native shell
 
 `worker/Dockerfile` builds a reproducible linux/amd64 image from digest-pinned
-Debian, Rust, and Bun bases. Phux 0.0.3 is pinned to commit
-`1f2501f979be972886a1adb805bb598b9189e2f9`; its source archive and lockfile are
-verified, and Rust plus libghostty's Zig build target the conservative x86-64
-GNU/Linux baseline. Ghui 0.10.0 is pinned to commit
+Debian, Rust, and Bun bases. Phux is pinned by `PHUX_VERSION` (must match the
+workspace crate version) and `PHUX_REVISION` (the GitHub source archive); the
+final image asserts `phux --version` equals that version, and
+`just toolchain-check` rejects a pin that lags the workspace. Source, lockfile,
+Zig, libghostty-rs, and Ghostty archives are checksum-verified, and Rust plus
+libghostty target the conservative x86-64 GNU/Linux baseline
+(`LIBGHOSTTY_VT_SYS_CPU=baseline`). Ghui 0.10.0 is pinned to commit
 `81ddf0a00b73e522394181278ec78cce133b57d0` with its source and lockfile
 verified. The phui standalone uses Bun's conservative x64 baseline target. The PTY is
 genuine interactive Bash. `phui` runs the actual standalone binary with fixed

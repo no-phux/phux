@@ -52,8 +52,8 @@ pub use schema::{
     DEFAULT_EVENT_JOURNAL_BYTES, DEFAULT_EVENT_JOURNAL_ENTRIES, DEFAULT_HISTORY_BYTES,
     DEFAULT_METADATA_VALUE_BYTES, DefaultsCfg, ExperimentalCfg, HookEntry, KeybindingsCfg,
     LimitsCfg, MAX_AGENT_LOG_BYTES, MAX_EVENT_JOURNAL_BYTES, MAX_EVENT_JOURNAL_ENTRIES,
-    MAX_HISTORY_BYTES, ParamAction, ScrollbackLimits, SidebarCfg, SidebarPosition, StatusCfg,
-    StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
+    MAX_HISTORY_BYTES, ParamAction, PolicyCfg, PolicyMode, ScrollbackLimits, SidebarCfg,
+    SidebarPosition, StatusCfg, StatusPosition, ThemeCfg, VoiceCfg, Widget, WidgetSpec, WindowSize,
 };
 pub use session_name::{NameRng, RANDOM_NAME_PLACEHOLDER, random_name, template_has_random_name};
 pub use settings::{

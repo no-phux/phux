@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-15
 ---
 
 # Operations
@@ -806,7 +806,8 @@ what closes the trust-on-first-use MITM window.
 
 #### Workload mTLS (`phux workload`)
 
-Setting `PHUX_WORKLOAD_MTLS` on the server adds a client-certificate check
+Setting `[policy] mode = "paired"` (or `PHUX_WORKLOAD_MTLS` with no mode) on
+the server adds a client-certificate check
 to every QUIC listener (the configured one and each `phux attach --ssh`
 door) and to the WSS listener
 ([ADR-0116](adr/0116-workload-auth-is-mtls.md),
@@ -823,7 +824,7 @@ listener and connector behaves exactly as described above.
 
 ```sh
 phux workload authority --init            # create the CA; prints only its fingerprint
-phux workload add-key --scope 'observe,input@terminal:3' \
+phux workload add-key --scope 'observe,input@host' \
     --cert-out client.pem < client.csr    # sign a CSR read from stdin
 phux workload list                        # ids, scopes, expiry, revocation
 phux workload revoke sha256:...           # refuse it from the next connection
@@ -845,11 +846,50 @@ restart. The registry records a random instance id beside its generation,
 and an admitted connection's credential carries both: only the pair names
 one registry state. A malformed, insecure, or missing registry admits no
 workload credential; the server never falls back to an older generation. A
-transient read failure refuses only the connection it happened on. Revocation
-does not yet end an established connection, and scope ceilings are recorded
-and validated but not yet enforced at dispatch
-([workload-auth.md](spec/workload-auth.md) §6, §7). `phux doctor` reports the
+transient read failure refuses only the connection it happened on. A
+workload connection holds its registry scopes and the server enforces them
+on every frame and command (next section). Revocation and expiry refuse the
+next connection; they do not yet end an established one
+([workload-auth.md](spec/workload-auth.md) §7). `phux doctor` reports the
 CA fingerprint and the registry generation.
+
+#### Policy mode (`[policy] mode`)
+
+`[policy] mode` in `config.toml` picks the server's authorization posture.
+The server reads it once at start
+([workload-auth.md](spec/workload-auth.md) §8):
+
+- **Unset**, the default, keeps today's behaviour: every connection the
+  server admits holds the owner's full grant. With a remote listener or
+  relay connector configured, the server logs one warning at startup,
+  because a pairing token then admits a consumer with command-execution
+  authority.
+- **`local`** admits the owner's Unix socket only, from the serving user's
+  uid. A configured remote listener (`--listen`, `--quic`, `--webtransport`,
+  their environment variables, or a `[[connector]]`) refuses to start the
+  server, the overlay listener is never auto-bound, `phux attach --ssh`'s
+  on-demand listener is refused, and any other connection is refused at
+  HELLO.
+- **`paired`** turns on the workload mTLS check above; `PHUX_WORKLOAD_MTLS`
+  with no mode means the same. The owner's Unix socket keeps full
+  authority. Every TLS connection must present an enrolled certificate and
+  holds exactly its registry scopes, such as `observe,input@host` or `inventory@global`. A
+  frame or command outside them is refused with `PERMISSION_DENIED`, and the
+  connection stays up. The scopes come from the registry at HELLO, never
+  from a pairing token. A paired server refuses to start without usable
+  workload authority material, or beside a WebTransport listener or relay
+  connector.
+
+The `phux.whoami/v1` record carries the grant the asking connection holds,
+and any connection may read its own.
+
+Under `local` and `paired` the owner socket means the serving user's uid: a
+peer running as another user, root included (`sudo phux ...`), is refused at
+HELLO. Without a mode this is unchanged, and such a peer is admitted as
+before. Registry scopes name `global`, `host`, or `host:<name>` only:
+session and Terminal ids restart with the server, so `phux workload
+add-key` refuses `group:` and `terminal:` selectors until stable identities
+exist.
 
 #### On-demand listeners (`phux attach --ssh`)
 

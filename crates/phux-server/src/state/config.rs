@@ -133,6 +133,11 @@ pub(super) struct ServerConfig {
     /// [`crate::policy::PermissivePolicy`]; the runtime overwrites it only
     /// when [`crate::runtime::ServerConfig::policy_engine`] is `Some`.
     pub(super) policy_engine: std::sync::Arc<dyn crate::policy::PolicyEngine>,
+    /// The authorization posture the server started in
+    /// (`docs/spec/workload-auth.md` §8): whether TLS listeners require an
+    /// enrolled workload certificate, and whether any remote door may open.
+    /// Set once at startup.
+    pub(super) policy_posture: crate::policy::PolicyPosture,
     /// Whether an `AttachTarget::CreateIfMissing` that fires seeds a real
     /// PTY pane. Mirrors [`crate::runtime::ServerConfig::seed_with_pty`] so
     /// the attach-time creation path matches the server's startup
@@ -175,6 +180,9 @@ impl Default for ServerConfig {
             server_socket_path: None,
             window_size: phux_config::WindowSize::default(),
             policy_engine: std::sync::Arc::new(crate::policy::PermissivePolicy::INSTANCE),
+            policy_posture: crate::policy::PolicyPosture::Transitional {
+                remote_listener: false,
+            },
             attach_create_seeds_pty: false,
             attach_create_seed_command: None,
             pre_seeded_session: None,

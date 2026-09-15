@@ -43,12 +43,12 @@ use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind};
 use sha2::{Digest, Sha256};
 use tokio::sync::oneshot;
 
+use crate::runtime::operation_dedupe::{
+    CachedOutcome, Claim, OperationDedupe, OperationDomain, OperationKey, Waiter,
+};
 use crate::terminal_actor::{WriteCompletion, WriteCompletionSink};
 
-pub(super) const DEDUPE_MAX_ENTRIES: usize = 65_536;
-pub(super) const DEDUPE_RETENTION: Duration = Duration::from_mins(10);
 pub(super) const ACKNOWLEDGED_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
-const MAX_PENDING_RETRY_WAITERS: usize = 64;
 
 // ---------------------------------------------------------------------------
 // Admission
@@ -118,20 +118,6 @@ impl Drop for AcknowledgedReservation {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
-struct CachedOperation {
-    digest: [u8; 32],
-    state: CachedOperationState,
-    inserted_at: Instant,
-}
-
-#[derive(Debug)]
-enum CachedOperationState {
-    Pending(Vec<oneshot::Sender<CommandResult>>),
-    Retryable,
-    Final(CommandResult),
-}
-
-#[derive(Debug)]
 pub(super) enum CacheClaim {
     Owner,
     Pending(oneshot::Receiver<CommandResult>),
@@ -141,114 +127,22 @@ pub(super) enum CacheClaim {
     Full,
 }
 
-#[derive(Debug, Default)]
-struct OperationCache {
-    entries: HashMap<InputOperationId, CachedOperation>,
-    expiry: std::collections::VecDeque<(Instant, InputOperationId)>,
-}
-
-impl OperationCache {
-    fn prune_expired(&mut self, now: Instant) {
-        while self.expiry.front().is_some_and(|(inserted_at, _)| {
-            now.saturating_duration_since(*inserted_at) >= DEDUPE_RETENTION
-        }) {
-            let Some((inserted_at, operation_id)) = self.expiry.pop_front() else {
-                break;
-            };
-            if self
-                .entries
-                .get(&operation_id)
-                .is_some_and(|entry| entry.inserted_at == inserted_at)
-            {
-                self.entries.remove(&operation_id);
-            }
-        }
-    }
-
-    fn is_full(&self) -> bool {
-        self.entries.len() >= DEDUPE_MAX_ENTRIES
-    }
-
-    fn claim_at(
-        &mut self,
-        operation_id: InputOperationId,
-        digest: [u8; 32],
-        admitted_at: Instant,
-    ) -> CacheClaim {
-        self.prune_expired(admitted_at);
-        if let Some(cached) = self.entries.get_mut(&operation_id) {
-            if cached.digest != digest {
-                return CacheClaim::Conflict;
-            }
-            return match &mut cached.state {
-                CachedOperationState::Pending(waiters) => {
-                    if waiters.len() >= MAX_PENDING_RETRY_WAITERS {
-                        return CacheClaim::PendingUncertain;
-                    }
-                    let (reply, result) = oneshot::channel();
-                    waiters.push(reply);
-                    CacheClaim::Pending(result)
-                }
-                CachedOperationState::Retryable => {
-                    cached.state = CachedOperationState::Pending(Vec::new());
-                    CacheClaim::Owner
-                }
-                CachedOperationState::Final(result) => CacheClaim::Final(result.clone()),
-            };
-        }
-        if self.is_full() {
-            return CacheClaim::Full;
-        }
-        self.entries.insert(
-            operation_id,
-            CachedOperation {
-                digest,
-                state: CachedOperationState::Pending(Vec::new()),
-                inserted_at: admitted_at,
-            },
-        );
-        self.expiry.push_back((admitted_at, operation_id));
-        CacheClaim::Owner
-    }
-
-    fn set_final(
-        &mut self,
-        operation_id: InputOperationId,
-        result: CommandResult,
-    ) -> Vec<oneshot::Sender<CommandResult>> {
-        let Some(cached) = self.entries.get_mut(&operation_id) else {
-            return Vec::new();
-        };
-        match std::mem::replace(&mut cached.state, CachedOperationState::Final(result)) {
-            CachedOperationState::Pending(waiters) => waiters,
-            CachedOperationState::Retryable | CachedOperationState::Final(_) => Vec::new(),
-        }
-    }
-
-    fn set_retryable(
-        &mut self,
-        operation_id: InputOperationId,
-    ) -> Vec<oneshot::Sender<CommandResult>> {
-        let Some(cached) = self.entries.get_mut(&operation_id) else {
-            return Vec::new();
-        };
-        match std::mem::replace(&mut cached.state, CachedOperationState::Retryable) {
-            CachedOperationState::Pending(waiters) => waiters,
-            CachedOperationState::Retryable | CachedOperationState::Final(_) => Vec::new(),
-        }
-    }
-}
-
-/// The dedupe record, shared between the lane thread (which binds ids) and the
-/// completion waiter (which writes final results).
+/// The `APPLY_INPUT` view of the server's shared dedupe record
+/// ([`OperationDedupe`], ADR-0126), shared between the lane thread (which
+/// binds ids) and the completion waiter (which writes final results). The
+/// record's bounds, expiry, and state machine are the ones this lane always
+/// had; this facade only maps them onto `CommandResult`.
 #[derive(Clone, Debug, Default)]
-pub(super) struct SharedOperationCache(Arc<Mutex<OperationCache>>);
+pub(super) struct SharedOperationCache(OperationDedupe);
 
 impl SharedOperationCache {
-    fn lock(&self) -> std::sync::MutexGuard<'_, OperationCache> {
-        self.0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    /// View `dedupe` as the input lane's record.
+    pub(super) const fn new(dedupe: OperationDedupe) -> Self {
+        Self(dedupe)
+    }
+
+    const fn key(operation_id: InputOperationId) -> OperationKey {
+        OperationKey::new(OperationDomain::Input, *operation_id.as_bytes())
     }
 
     pub(super) fn claim_at(
@@ -257,22 +151,45 @@ impl SharedOperationCache {
         digest: [u8; 32],
         admitted_at: Instant,
     ) -> CacheClaim {
-        self.lock().claim_at(operation_id, digest, admitted_at)
+        match self
+            .0
+            .claim_at(Self::key(operation_id), digest, admitted_at, join_input)
+        {
+            Claim::Owner => CacheClaim::Owner,
+            Claim::Pending(result) => CacheClaim::Pending(result),
+            Claim::PendingUncertain => CacheClaim::PendingUncertain,
+            Claim::Final(CachedOutcome::Input(result)) => CacheClaim::Final(result),
+            // The input domain only ever records input results.
+            Claim::Final(_) | Claim::Conflict => CacheClaim::Conflict,
+            Claim::Full => CacheClaim::Full,
+        }
     }
 
     pub(super) fn set_final(&self, operation_id: InputOperationId, result: &CommandResult) {
-        let waiters = self.lock().set_final(operation_id, result.clone());
-        for waiter in waiters {
-            let _ = waiter.send(result.clone());
-        }
+        self.0.set_final(
+            Self::key(operation_id),
+            &CachedOutcome::Input(result.clone()),
+        );
     }
 
     pub(super) fn set_retryable(&self, operation_id: InputOperationId, result: &CommandResult) {
-        let waiters = self.lock().set_retryable(operation_id);
-        for waiter in waiters {
-            let _ = waiter.send(result.clone());
-        }
+        self.0.set_retryable(
+            Self::key(operation_id),
+            &CachedOutcome::Input(result.clone()),
+        );
     }
+}
+
+/// A same-id retry joining an unresolved operation: it receives the result
+/// the operation resolves with.
+fn join_input() -> (Waiter, oneshot::Receiver<CommandResult>) {
+    let (reply, result) = oneshot::channel();
+    let waiter: Waiter = Box::new(move |outcome: &CachedOutcome| {
+        if let CachedOutcome::Input(outcome) = outcome {
+            let _ = reply.send(outcome.clone());
+        }
+    });
+    (waiter, result)
 }
 
 pub(super) fn operation_digest(
@@ -732,95 +649,43 @@ mod tests {
         drop(other);
     }
 
+    /// The facade keeps the lane's reading of the shared record: a pending
+    /// retry receives the owner's final result, a refusal before handoff
+    /// reaches the waiters without being cached, and a repeat after it owns
+    /// the operation again. The record's own bounds are pinned in
+    /// `runtime::operation_dedupe`.
     #[test]
-    fn operation_cache_prunes_only_expired_prefix_and_treats_over_capacity_as_full() {
-        let start = Instant::now();
-        let first = operation_id_from_u64(1);
-        let second = operation_id_from_u64(2);
-        let mut cache = OperationCache::default();
+    fn facade_maps_the_shared_record_onto_command_results() {
+        let cache = SharedOperationCache::default();
+        let id = operation_id(21);
+        let now = Instant::now();
         assert!(matches!(
-            cache.claim_at(first, [1; 32], start),
+            cache.claim_at(id, [0x21; 32], now),
             CacheClaim::Owner
         ));
-        drop(cache.set_final(first, CommandResult::Ok));
+        let CacheClaim::Pending(mut waiter) = cache.claim_at(id, [0x21; 32], now) else {
+            panic!("a same-id retry joins the unresolved operation");
+        };
+        let refusal = not_written();
+        cache.set_retryable(id, &refusal);
+        assert_eq!(waiter.try_recv().expect("refusal delivered"), refusal);
         assert!(matches!(
-            cache.claim_at(second, [2; 32], start + Duration::from_secs(1)),
+            cache.claim_at(id, [0x21; 32], now),
             CacheClaim::Owner
         ));
-        drop(cache.set_final(second, CommandResult::Ok));
-        cache.prune_expired(start + DEDUPE_RETENTION);
-        assert!(!cache.entries.contains_key(&first));
-        assert!(cache.entries.contains_key(&second));
-        assert_eq!(cache.expiry.len(), 1);
-
-        for value in 3..=u64::try_from(DEDUPE_MAX_ENTRIES + 1).unwrap() {
-            assert!(matches!(
-                cache.claim_at(
-                    operation_id_from_u64(value),
-                    [0; 32],
-                    start + Duration::from_secs(1),
-                ),
-                CacheClaim::Owner
-            ));
-        }
-        assert_eq!(cache.entries.len(), DEDUPE_MAX_ENTRIES);
-        assert!(cache.is_full(), "capacity check must use >=");
+        cache.set_final(id, &CommandResult::Ok);
         assert!(matches!(
-            cache.claim_at(
-                operation_id_from_u64(u64::try_from(DEDUPE_MAX_ENTRIES + 2).unwrap()),
-                [0; 32],
-                start + Duration::from_secs(1),
-            ),
-            CacheClaim::Full
+            cache.claim_at(id, [0x21; 32], now),
+            CacheClaim::Final(CommandResult::Ok)
         ));
-        assert_eq!(cache.entries.len(), DEDUPE_MAX_ENTRIES);
-    }
-
-    #[test]
-    fn cache_uses_admission_time_for_retry_at_expiry_boundary() {
-        let start = Instant::now();
-        let id = operation_id(18);
-        let digest = [0x18; 32];
-        let mut cache = OperationCache::default();
         assert!(matches!(
-            cache.claim_at(id, digest, start),
+            cache.claim_at(id, [0x22; 32], now),
+            CacheClaim::Conflict
+        ));
+        assert!(matches!(
+            cache.claim_at(operation_id_from_u64(22), [0x22; 32], now),
             CacheClaim::Owner
         ));
-        drop(cache.set_final(id, CommandResult::Ok));
-
-        let admitted_before_expiry = start
-            + DEDUPE_RETENTION
-                .checked_sub(Duration::from_nanos(1))
-                .expect("retention exceeds one nanosecond");
-        let processed_after_expiry = start + DEDUPE_RETENTION + Duration::from_secs(1);
-        assert!(processed_after_expiry > start + DEDUPE_RETENTION);
-        let binding = cache.claim_at(id, digest, admitted_before_expiry);
-        cache.prune_expired(processed_after_expiry);
-        assert!(matches!(binding, CacheClaim::Final(CommandResult::Ok)));
-        assert!(cache.expiry.is_empty());
-    }
-
-    #[test]
-    fn pending_retry_waiters_are_bounded_with_an_uncertain_outcome() {
-        let id = operation_id(20);
-        let digest = [0x20; 32];
-        let mut cache = OperationCache::default();
-        assert!(matches!(
-            cache.claim_at(id, digest, Instant::now()),
-            CacheClaim::Owner
-        ));
-        let mut waiters = Vec::new();
-        for _ in 0..MAX_PENDING_RETRY_WAITERS {
-            let CacheClaim::Pending(waiter) = cache.claim_at(id, digest, Instant::now()) else {
-                panic!("pending retry should join within the bound");
-            };
-            waiters.push(waiter);
-        }
-        assert!(matches!(
-            cache.claim_at(id, digest, Instant::now()),
-            CacheClaim::PendingUncertain
-        ));
-        assert_eq!(waiters.len(), MAX_PENDING_RETRY_WAITERS);
     }
 
     /// Deadlines are assigned in registration order, so the waiter's ordered

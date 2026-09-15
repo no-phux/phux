@@ -19,14 +19,15 @@ SessionDO  (src/session.ts)   one per session, a plain Durable Object
        Verifies the token; self-closes on idle / hard-max; releases its cap slot.
 
 mode=native → PhuxSessionContainer (src/native-session.ts), one random instance
-   └─ worker/Dockerfile: baseline-built phux 0.0.3 → loopback WS → socat on 0.0.0.0:8080
+   └─ worker/Dockerfile: pinned workspace phux (ARG PHUX_VERSION + PHUX_REVISION,
+      checksummed source, `phux --version` must match) → loopback WS → socat on 0.0.0.0:8080
       Separate HTTP readiness on port 8082; no probe bytes reach the WS server.
       No secrets or credentials; Cloudflare `enableInternet = false` blocks egress.
 ```
 
-The bytes are the **real phux wire** (`phux-protocol`). EdgeSession decodes
-`ATTACH` → replies a `TerminalSnapshot` (the shell's greeting), and `InputKey` →
-runs the keystroke through the curated shell → `ResourceOutput` (VT bytes). See
+The bytes are the **real phux wire** (`phux-protocol` 0.9). EdgeSession answers
+`HELLO` with `HELLO_OK`, then `ATTACH` with READY-fenced bootstrap (greeting in
+`BootstrapChunk`) and `InputKey` with `ResourceOutput` (VT bytes). See
 `../INFRA.md`.
 
 ## Files
@@ -40,7 +41,7 @@ runs the keystroke through the curated shell → `ResourceOutput` (VT bytes). Se
 | `src/token.ts`      | short-lived HMAC-SHA256 session token mint/verify                                                 |
 | `src/native-session.ts` | native container lifecycle, hard expiry, cap release, destruction                         |
 | `src/native-routing.ts` | native mode parsing, reservation TTL, sanitized upstream request                          |
-| `Dockerfile` / `container/` | pinned non-root native image and real interactive Bash profile                         |
+| `Dockerfile` / `container/` | pinned non-root native image (`PHUX_VERSION` / `PHUX_REVISION`) and Bash profile      |
 | `edge/`             | the built phux-edge WASM artifact (committed; source in `../edge/`, rebuild `bun run build:edge`) |
 
 ## Lifecycle / guardrails (server-side)
@@ -59,6 +60,17 @@ runs the keystroke through the curated shell → `ResourceOutput` (VT bytes). Se
   60s open, and one half-open probe. Capacity rejection does not count.
 - `NATIVE_ENABLED=false` is a deploy-time kill switch. `/healthz` reports only
   aggregate counts and circuit state; there is no public control endpoint.
+
+## Native image pin
+
+`Dockerfile` builds phux from a checksummed GitHub archive (`PHUX_REVISION`)
+and records the crate version as `PHUX_VERSION`. The final image fails if
+`phux --version` is not exactly `phux $PHUX_VERSION`. `just toolchain-check`
+and `bun test worker/src` require `PHUX_VERSION` to match
+`workspace.package.version`, Zig/libghostty pins to match the repo manifests,
+and the `--version` assertion to stay in the Dockerfile. Bump the revision,
+archive checksums, and lockfile hashes together when shipping a new pin;
+Zig/libghostty/Ghostty ARGs must stay coherent with that phux revision.
 
 ## Deploy
 

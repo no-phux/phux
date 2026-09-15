@@ -174,7 +174,7 @@ fn a_signed_csr_is_a_client_certificate_the_handshake_verifier_accepts() {
     let registered = prepared
         .commit(
             &fx.paths.registry,
-            scopes(&["observe,input@terminal:3"]),
+            scopes(&["observe,input@host"]),
             in_an_hour(),
         )
         .unwrap();
@@ -182,7 +182,7 @@ fn a_signed_csr_is_a_client_certificate_the_handshake_verifier_accepts() {
     assert_eq!(registered.generation, 1);
     let registry = WorkloadRegistry::load(&fx.paths.registry).unwrap();
     let credential = registry.lookup_certificate(leaf.as_ref()).unwrap();
-    assert_eq!(credential.scopes, ["observe,input@terminal:3"]);
+    assert_eq!(credential.scopes, ["observe,input@host"]);
     assert_eq!(credential.authenticated(&registry).generation, 1);
 }
 
@@ -328,7 +328,7 @@ fn reload_observes_a_new_generation_and_a_malformed_file_yields_the_empty_snapsh
         1
     );
 
-    let (second, _) = enroll(&fx.paths, &["input@terminal:1"]);
+    let (second, _) = enroll(&fx.paths, &["input@host:devbox"]);
     assert_eq!(reloading.current().generation(), 2);
     assert_eq!(
         reloading
@@ -547,7 +547,7 @@ fn a_transient_read_failure_is_not_cached() {
     let fx = fixture();
     enroll(&fx.paths, &["observe@global"]);
     let reloading = ReloadingWorkloadRegistry::load(fx.paths.registry.clone()).unwrap();
-    let (second, _) = enroll(&fx.paths, &["input@terminal:1"]);
+    let (second, _) = enroll(&fx.paths, &["input@host:devbox"]);
     store::fault::fail_next_read();
     assert!(
         reloading.current().is_empty(),

@@ -32,10 +32,10 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_edgesession_free: (a: number, b: number) => void;
-    readonly edgesession_new: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly edgesession_checkpoint: (a: number) => [number, number];
-    readonly edgesession_restore: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
+    readonly edgesession_new: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly edgesession_on_message: (a: number, b: number, c: number) => any;
+    readonly edgesession_restore: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number];
     readonly __wbindgen_externrefs: WebAssembly.Table;
     readonly __wbindgen_free: (a: number, b: number, c: number) => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;

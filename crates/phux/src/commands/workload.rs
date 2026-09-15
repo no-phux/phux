@@ -436,7 +436,10 @@ fn cli_error(error: &WorkloadError) -> CliError {
             "generate a CSR beside the key (`openssl req -new -key KEY -subj /CN=workload`) and pipe that"
         }
         WorkloadError::InvalidScope { .. } | WorkloadError::NoScopes => {
-            "pass --scope VERBS@SELECTOR, for example --scope observe,input@terminal:3"
+            "pass --scope VERBS@SELECTOR, for example --scope observe,input@host"
+        }
+        WorkloadError::UnstableSelector { .. } => {
+            "persist a global, host, or host:<name> selector; session and Terminal ids restart with the server"
         }
         WorkloadError::Insecure { .. } | WorkloadError::PartialPair { .. } => {
             "workload authority files are owner-only regular files in a directory only their owner can write"

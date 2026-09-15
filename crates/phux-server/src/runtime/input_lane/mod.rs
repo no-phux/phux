@@ -983,7 +983,9 @@ fn spawn_input_lane_with_completion_timeout(
 ) -> std::io::Result<InputLane> {
     let (tx, mut rx) = mpsc::channel::<RoutedInput>(INPUT_LANE_CAPACITY);
     let admission = Arc::new(AcknowledgedAdmission::default());
-    let cache = SharedOperationCache::default();
+    // The server's one dedupe record (ADR-0126): spawn keys and
+    // session-create tokens share its bounds with operation ids.
+    let cache = SharedOperationCache::new(state.with(|s| s.operation_dedupe().clone()));
     let lane_cache = cache.clone();
     let waiter = CompletionWaiter::spawn(cache.clone())?;
     let waiter_handle = waiter.handle();

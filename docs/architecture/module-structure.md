@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-14
+last-reviewed: 2026-09-15
 ---
 
 # Module structure
@@ -31,6 +31,11 @@ src/
   caps.rs             — HELLO/HELLO_OK capability negotiation (features,
                         bootstrap profiles and codecs, ADR-0070)
   policy.rs           — shared ALPN / transport-policy constants
+  kinds.rs            — the kind catalog and the closed verb
+                        classification of every client frame (ADR-0125)
+  scope.rs            — workload scope grants: selectors, the canonical
+                        TerminalScopeSet / effective-set bytes, and the
+                        registry grammar (workload-auth.md §5)
   sgr.rs              — SGR color/style wire atoms
   kitty_replay.rs      — kitty-keyboard-protocol replay helpers
   input/              — INPUT_* event types (docs/spec/input.md)
@@ -107,7 +112,10 @@ src/
     (AgentSession spawn and `APPEND_RESOURCE_OUTPUT`), directory.rs (the
     LIST_DIRECTORY host query), pump.rs, resume.rs, upgrade.rs, upload.rs,
     voice.rs, whoami.rs (the read-only phux.whoami/v1 key),
-    ephemeral_listener.rs (OPEN_LISTENER: a QUIC listener for one attach)
+    ephemeral_listener.rs (OPEN_LISTENER: a QUIC listener for one attach),
+    operation_dedupe.rs (the one bounded dedupe record shared by
+    APPLY_INPUT ids, spawn keys, and session-create tokens; ADR-0126),
+    idempotent_create.rs (keyed SPAWN_RESOURCE and session create on it)
     input_lane/       — the dedicated input-encoding thread (ADR-0044) and
                         the acknowledged-input journal (ADR-0053)
   state/              — ServerState: sessions, windows, resources, leases,
@@ -201,8 +209,12 @@ src/
                       — start-history crash-loop reporting, the ADR-0096
                         metric statics, and the (unwired) ADR-0078
                         viewport-alignment core
+  policy.rs, policy/enforce.rs
+                      — the per-connection grant minted at HELLO and the
+                        dispatch guard every frame, command, and QUIC
+                        stream bind passes (workload-auth.md §6-§8)
   auth.rs, connector.rs, cwd_query.rs, proc_query.rs, id_bridge.rs,
-  policy.rs, search.rs, extract.rs, telemetry.rs
+  search.rs, extract.rs, telemetry.rs
     — auth token checks, outbound connector dialing, kernel cwd/process
       introspection, core<->wire id translation, tracing setup
 ```

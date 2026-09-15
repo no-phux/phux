@@ -32,6 +32,7 @@ The configuration surface of `~/.config/phux/config.toml`. The loader layers you
 | `[[remote]]` | Remote phux servers this machine attaches to, written by `phux host add` and resolved by `phux attach <name>` (ADR-0055, ADR-0122). |
 | `[theme]` | Free-form color slots (`slot = "color"`) consumed by the renderer. |
 | `[experimental]` | Opt-in unstable knobs; anything here may change or disappear without notice. |
+| `[policy]` | The authorization posture read at server start: `local` (owner socket only) or `paired` (workload mTLS, scope ceilings enforced at dispatch). |
 | `[voice]` | The server-side transcriber behind `TRANSCRIBE`: an argv that turns an uploaded clip into text for a paste. |
 | `[limits]` | Server-enforced ceilings that are not a per-pane spawn default: the largest L3 metadata value the server stores at one key. |
 
@@ -59,6 +60,7 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `keybindings.which-key` | `true` |
 | `keybindings.which-key-delay-ms` | `400` |
 | `limits.metadata-value-bytes` | `262144` |
+| `policy.mode` | unset — transitional: every admitted connection holds the owner's full grant, and a remote listener is warned about at startup. `local` admits the owner socket only; `paired` requires an enrolled workload certificate on every TLS connection |
 | `sidebar.enabled` | `true` |
 | `sidebar.position` | `"left"` |
 | `sidebar.width` | `0` |
@@ -626,4 +628,22 @@ right = [
 # compact-cols = 64
 # compact-rows = 18
 # min-pane-cols = 40
+
+# Authorization posture (docs/spec/workload-auth.md section 8). Read once
+# at server start; a change needs a restart.
+#
+# Unset is the transitional posture: every connection the server admits
+# holds the owner's full grant, and a remote listener is logged as a
+# warning at startup.
+#
+# `local`: the owner's Unix socket only. A configured remote listener
+# (`--listen`, `--quic`, `--webtransport`, their environment variables,
+# or a `[[connector]]`) refuses to start the server.
+#
+# `paired`: the owner's Unix socket keeps full authority; every TLS
+# connection must present a workload certificate enrolled with
+# `phux workload add-key` and holds only its registry ceiling.
+#
+# [policy]
+# mode = "paired"
 ```

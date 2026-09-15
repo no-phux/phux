@@ -561,8 +561,8 @@ consumer can tell "not here" from "not supported".
 
 <!-- impl-status: partial; probe: EVENT_JOURNAL,RETAIN_ON_EXIT,SPAWN_IDEMPOTENCY -->
 > **Status: partial.** The reference codec carries every field the three
-> bits below gate. The reference server advertises `EVENT_JOURNAL`; it does
-> not yet advertise `RETAIN_ON_EXIT` or `SPAWN_IDEMPOTENCY`.
+> bits below gate. The reference server advertises `EVENT_JOURNAL` and
+> `SPAWN_IDEMPOTENCY`; it does not yet advertise `RETAIN_ON_EXIT`.
 
 `EVENT_JOURNAL = 0x1000000` gates the journaled event contract of
 [L1.md](./L1.md) §7: the `EVENT` stamp (fields 3-6), `SUBSCRIBE_EVENTS`

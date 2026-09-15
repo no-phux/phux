@@ -33,8 +33,8 @@ use super::input_lane::{InputLaneHandle, RoutedInput};
 use super::{
     STALE_PROBE_TIMEOUT, ServerError, SpawnRequest, bootstrap_attach_terminal, handle_attach,
     handle_command, handle_detach_terminal, handle_frame_ack, handle_move_terminal,
-    handle_spawn_terminal, handle_terminal_input, handle_terminal_reply, handle_terminal_resize,
-    handle_viewport_resize, subscribe_attach_terminal,
+    handle_terminal_input, handle_terminal_reply, handle_terminal_resize, handle_viewport_resize,
+    subscribe_attach_terminal,
 };
 use crate::state::{
     ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, ServerInterceptedKey, SharedState, TerminalInput,
@@ -141,6 +141,19 @@ impl CommandDispatch<'_> {
 
     async fn run_inner(mut self, request_id: u32, command: Command) -> Option<WireResourceId> {
         let command_started = std::time::Instant::now();
+        // workload-auth §6: the command guard, above the input lane, the bulk
+        // worker, and every handler and satellite relay below.
+        if super::dispatch_guard::refuse_command(
+            self.state,
+            self.client_id,
+            request_id,
+            &command,
+            self.out_tx,
+        )
+        .await
+        {
+            return None;
+        }
         let defer_subscription = self
             .selection
             .server_features
@@ -475,6 +488,7 @@ const fn runtime_server_features() -> ServerFeatureSet {
         ServerFeature::ConditionalKill,
         ServerFeature::OpenListener,
         ServerFeature::EventJournal,
+        ServerFeature::SpawnIdempotency,
     ])
 }
 
@@ -2582,6 +2596,17 @@ fn decode_client_frame(
     framed: &BytesMut,
     negotiated: Option<&NegotiatedConnection>,
 ) -> Result<FrameKind, ConnectionClose> {
+    // FRAME_COMPRESSED is server-to-client only (proto.md §6.4). The decoder
+    // would inflate it and classify the inner frame, so the envelope is
+    // refused before decode: the type byte follows the u32 length header.
+    if framed.get(4) == Some(&phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED) {
+        warn!("client sent FRAME_COMPRESSED; closing");
+        return Err(ConnectionClose {
+            attached_reason: Some("client-sent FRAME_COMPRESSED"),
+            code: ErrorCode::MalformedMessage,
+            message: "FRAME_COMPRESSED is server-to-client only".to_owned(),
+        });
+    }
     let decoded = negotiated.map_or_else(
         || FrameKind::decode(framed),
         |selection| FrameKind::decode_with_limits(framed, selection.limits),
@@ -2755,7 +2780,11 @@ async fn negotiate_hello(
 /// the accepting transport. A missing registry entry is never equivalent to a
 /// local root peer.
 async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(), ConnectionClose> {
-    let Some(peer) = state.with(|s| s.peer_identity(client_id).cloned()) else {
+    let identity = state.with(|s| {
+        let peer = s.peer_identity(client_id).cloned()?;
+        Some((peer, s.authenticated_credential(client_id).cloned()))
+    });
+    let Some((peer, credential)) = identity else {
         warn!(
             ?client_id,
             "HELLO denied: authenticated peer identity missing"
@@ -2767,22 +2796,14 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
         });
     };
     let engine = state.with(|s| s.policy_engine().clone());
-    // Placeholder requested-capability set: HELLO carries no
-    // capability request on the wire, so there is nothing to
-    // derive one from yet. phux-pjc5 replaces this with the
-    // scopes minted from the peer's paired credential, and
-    // starts enforcing the granted set the engine returns —
-    // which is why the return value is discarded today
-    // (ADR-0072).
-    let requested_caps = vec![phux_protocol::policy::Capability {
-        layer: phux_protocol::caps::Layer::L1,
-        ops: vec![],
-        terminals: None,
-        groups: None,
-        expires_at: None,
-    }];
-    match engine.authorize_hello(&peer, requested_caps).await {
-        Ok(_granted) => Ok(()),
+    // HELLO carries no scope request (workload-auth §5): the engine mints
+    // the connection's grant from its verified identity alone, and the
+    // grant is retained for the dispatch guard.
+    match engine.authorize_hello(&peer, credential.as_ref()).await {
+        Ok(grant) => {
+            state.with_mut(|s| s.set_connection_grant(client_id, grant));
+            Ok(())
+        }
         Err(err) => {
             warn!(?client_id, error = %err, "HELLO denied by policy");
             Err(ConnectionClose {
@@ -3157,6 +3178,19 @@ where
                 }
             };
 
+        // workload-auth §6: the frame guard, before any routing or handler.
+        if super::dispatch_guard::refuse_frame(
+            &state,
+            client_id,
+            &frame,
+            negotiated.is_some(),
+            &plumbing.out_tx,
+        )
+        .await
+        {
+            continue;
+        }
+
         match frame {
             FrameKind::Hello {
                 client_name,
@@ -3518,7 +3552,7 @@ where
                 let Some(selection) = negotiated.as_ref() else {
                     continue;
                 };
-                handle_spawn_terminal(
+                crate::runtime::idempotent_create::handle_spawn_resource(
                     &state,
                     client_id,
                     request_id,
@@ -3788,6 +3822,14 @@ async fn bind_terminal_stream(
     selection: &NegotiatedConnection,
     token: &CancellationToken,
 ) {
+    // workload-auth §6: OBSERVE on the bound Terminal, before membership is
+    // consulted, so an unauthorized bind learns nothing about the Terminal.
+    if super::dispatch_guard::refuse_stream_bind(state, client_id, &terminal_id, &plumbing.out_tx)
+        .await
+    {
+        refuse_terminal_stream(send, recv);
+        return;
+    }
     // Authorization is subscription membership: the Terminal names a pane in
     // the client's attached session or an ATTACH_RESOURCE registration.
     // Session ATTACH registers membership without content (deferred), so
@@ -4075,12 +4117,17 @@ fn run_session_create(
         return crate::runtime::commands::create_empty_session(state, &request.name).map(|()| None);
     }
     // The seed pane's `pane_spawned` names the connection whose create
-    // write made it (ADR-0123).
+    // write made it (ADR-0123), and the create's token as its operation
+    // (ADR-0126).
     let origin = crate::runtime::commands::SeedOrigin {
         agent_session: request.agent_session,
         attribution: crate::runtime::commands::SpawnAttribution {
             actor: Some(writer),
-            operation_id: None,
+            operation_id: request
+                .request_token
+                .as_deref()
+                .and_then(crate::runtime::idempotent_create::uuid_bytes)
+                .and_then(phux_protocol::ids::IdempotencyKey::new),
         },
     };
     let wire = crate::runtime::commands::create_named_session(
@@ -4274,6 +4321,36 @@ fn publish_session_create_result(
     });
 }
 
+/// The digest a create's token is bound to: every field of the request but
+/// the token (ADR-0126). `env` is a sorted map, so the encoding is canonical.
+fn session_create_digest(request: &SessionCreateRequest) -> [u8; 32] {
+    use sha2::Digest as _;
+
+    let canonical = serde_json::json!({
+        "name": request.name,
+        "command": request.command,
+        "cwd": request.cwd,
+        "env": request.env,
+        "agent_session": request.agent_session,
+        "keep_empty": request.keep_empty,
+        "empty": request.empty,
+    });
+    sha2::Sha256::digest(canonical.to_string().as_bytes()).into()
+}
+
+/// Answer a repeated create with the original result, published again for
+/// the repeating connection, which becomes its only owner: the connection
+/// that sent the original may be the one whose loss caused the repeat.
+fn replay_session_create_result(
+    state: &SharedState,
+    client_id: ClientId,
+    result_key: String,
+    payload: &serde_json::Value,
+) {
+    state.with_mut(|s| s.disown_session_create_result(&result_key));
+    publish_session_create_result(state, client_id, result_key, payload, true);
+}
+
 fn valid_session_create_token(token: &str) -> bool {
     token.len() == 36
         && token.bytes().enumerate().all(|(index, byte)| {
@@ -4297,6 +4374,8 @@ fn handle_session_create_metadata(
     value: &[u8],
     root_token: &tokio_util::sync::CancellationToken,
 ) {
+    use crate::runtime::idempotent_create::SessionCreateAdmission;
+
     let Some(request) = parse_session_create_request(value) else {
         warn!(
             ?client_id,
@@ -4312,6 +4391,61 @@ fn handle_session_create_metadata(
         );
         return;
     }
+    // ADR-0126: the request token is the create's idempotency key.
+    let token = request
+        .request_token
+        .as_deref()
+        .and_then(crate::runtime::idempotent_create::uuid_bytes);
+    let claim = match crate::runtime::idempotent_create::admit_session_create(
+        state,
+        token,
+        session_create_digest(&request),
+    ) {
+        SessionCreateAdmission::Unkeyed => None,
+        SessionCreateAdmission::Owner(claim) => Some(claim),
+        SessionCreateAdmission::Replay(mut payload) => {
+            // Dedupe is case-insensitive, but each connection reads its own
+            // spelling of the token: the repeat is answered in its spelling.
+            payload["request_token"] = serde_json::Value::from(request.request_token.clone());
+            let result_key = session_create_result_key(request.request_token.as_deref());
+            replay_session_create_result(state, client_id, result_key, &payload);
+            debug!(
+                ?client_id,
+                request_id, "SET_METADATA(session-create): repeat replayed the original result"
+            );
+            return;
+        }
+        SessionCreateAdmission::Refused(reason) => {
+            warn!(
+                ?client_id,
+                request_id, reason, "SET_METADATA(session-create): refused; ignoring"
+            );
+            return;
+        }
+    };
+    run_and_publish_session_create(
+        state,
+        client_id,
+        request_id,
+        request,
+        claim.as_ref(),
+        root_token,
+    );
+    // Dropping an unbound claim releases the token: a failed create binds
+    // nothing, and its repeat creates again.
+    drop(claim);
+}
+
+/// Run an admitted create and publish its result. A keyed create binds the
+/// result to its token before publishing, so a repeat answers the same one.
+fn run_and_publish_session_create(
+    state: &SharedState,
+    client_id: ClientId,
+    request_id: u32,
+    request: SessionCreateRequest,
+    claim: Option<&crate::runtime::operation_dedupe::OperationClaim>,
+    root_token: &tokio_util::sync::CancellationToken,
+) {
     let name = request.name.clone();
     let request_token = request.request_token.clone();
     let result_key = session_create_result_key(request_token.as_deref());
@@ -4332,6 +4466,11 @@ fn handle_session_create_metadata(
         });
         let payload =
             session_create_payload(&name, session_id, wire.as_ref(), request_token.as_deref());
+        if let Some(claim) = claim {
+            claim.bind(
+                &crate::runtime::operation_dedupe::CachedOutcome::SessionCreate(payload.clone()),
+            );
+        }
         publish_session_create_result(
             state,
             client_id,

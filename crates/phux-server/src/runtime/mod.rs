@@ -50,7 +50,9 @@ mod command_tasks;
 pub mod commands;
 mod directory;
 mod ephemeral_listener;
+pub mod idempotent_create;
 pub mod input_lane;
+pub mod operation_dedupe;
 /// Shared per-generation state both pane output pumps enforce.
 mod pump;
 pub mod resource_commands;
@@ -59,6 +61,10 @@ mod upgrade;
 mod upload;
 mod voice;
 mod whoami;
+
+mod dispatch_guard;
+#[cfg(test)]
+mod scope_matrix;
 mod workload_auth;
 
 pub(crate) use attach::*;
@@ -200,12 +206,19 @@ pub struct ServerConfig {
     /// `phux_config`; [`Self::with_default_socket`] uses the schema default
     /// (256 KiB).
     pub metadata_value_bytes: u32,
-    /// Optional HELLO authorization engine (ADR-0072). `None` — what the
-    /// `phux` binary passes today — leaves the default
-    /// [`crate::policy::PermissivePolicy`] in place. This is the injection
-    /// point phux-pjc5 will use to install a scope-enforcing engine; see
-    /// [`crate::policy`] for why the seam is kept while permissive.
+    /// Optional HELLO authorization engine override (ADR-0072). `None` —
+    /// what the `phux` binary passes — lets [`Self::policy_mode`] choose:
+    /// [`crate::policy::PermissivePolicy`] for the transitional posture,
+    /// [`crate::policy::ScopedPolicy`] for `local` and `paired`. Tests and
+    /// embedders inject an engine here.
     pub policy_engine: Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>,
+    /// `[policy] mode` (`docs/spec/workload-auth.md` §8). `None` is the
+    /// transitional posture: every admitted connection holds the owner's
+    /// grant, and a remote listener is warned about at startup. `local`
+    /// admits the owner socket only and refuses to start beside a remote
+    /// listener; `paired` requires an enrolled workload certificate on every
+    /// TLS connection and enforces its scope ceiling at dispatch.
+    pub policy_mode: Option<phux_config::PolicyMode>,
     /// Event-hook catalog (`docs/consumers/tui.md` §9, phux-r82.1): config
     /// `[[hooks.<name>]]` entries plus enabled plugin manifests'
     /// `[[events]]`, resolved by [`crate::hooks::HookCatalog::from_config`].
@@ -318,6 +331,7 @@ impl ServerConfig {
             voice: phux_config::VoiceCfg::default(),
             metadata_value_bytes: phux_config::DEFAULT_METADATA_VALUE_BYTES,
             policy_engine: None,
+            policy_mode: None,
             hook_catalog: crate::hooks::HookCatalog::default(),
             exit_after_idle: None,
         }
@@ -497,6 +511,16 @@ pub enum ServerError {
         remedy: &'static str,
     },
 
+    /// A `[policy]` mode the rest of the configuration contradicts
+    /// (`docs/spec/workload-auth.md` §8).
+    #[error("policy: {0}")]
+    Policy(#[from] crate::policy::PostureError),
+
+    /// The `paired` posture with missing, malformed, or unsafe workload
+    /// authority material (`docs/spec/workload-auth.md` §8).
+    #[error("policy: paired mode needs usable workload authority material: {0}")]
+    PolicyMaterial(#[source] crate::workload::WorkloadError),
+
     /// The server token store needed to authorize bridged consumers could not
     /// be loaded. A connector must fail closed rather than admit consumers
     /// without the server's own authorization.
@@ -523,7 +547,7 @@ pub struct ServerRuntime {
     /// `None` falls back to the `PHUX_QUIC_ADDR` environment variable. The
     /// `phux server --quic <ADDR>` flag populates this; QUIC is always TLS-
     /// encrypted, and binding off-loopback requires a paired bearer token
-    /// (see [`build_quic_listener`]).
+    /// (see [`build_quic_listener_for`]).
     quic_addr: Option<SocketAddr>,
     /// Optional WebTransport listen address (in addition to the always-on
     /// UDS). `None` falls back to the `PHUX_WT_ADDR` environment variable.
@@ -768,10 +792,16 @@ impl ServerRuntime {
         let webtransport = self.wt_addr.is_some() || std::env::var_os("PHUX_WT_ADDR").is_some();
         #[cfg(not(feature = "webtransport"))]
         let webtransport = false;
-        workload_auth::refuse_uncovered_surfaces(
-            workload_auth::workload_mode(),
-            !self.connectors.is_empty(),
+        // The authorization posture (workload-auth §8) is a startup gate too:
+        // a contradicted `local` mode, `paired` without usable authority
+        // material, or workload mode beside an entry point that cannot carry
+        // a client certificate refuses to start.
+        let (posture, posture_engine) = startup_policy(
+            &self.cfg,
+            self.ws_addr,
+            self.quic_addr,
             webtransport,
+            !self.connectors.is_empty(),
         )?;
         let connector_consumer_tokens = load_connector_consumer_tokens(&connector_specs)?;
 
@@ -797,6 +827,7 @@ impl ServerRuntime {
         });
 
         mirror_config_into_state(&self.cfg, &socket_path, &state);
+        install_policy_posture(&state, posture, posture_engine);
 
         // The LocalSet hosts per-client tasks and per-pane actors —
         // both `!Send`. `LocalSet::run_until` drives the set to the
@@ -920,11 +951,7 @@ impl ServerRuntime {
                 // environment lookup and the profile name), and the *answer*
                 // is what travels — never a detection result. `overlay_detect`
                 // moves as a function pointer, uncalled.
-                let auto_overlay_gate = auto_overlay_ports.any()
-                    && auto_overlay_gate_open(
-                        std::env::var_os(DISABLE_AUTO_LISTEN_ENV).is_some(),
-                        phux_config::instance::is_default_profile(),
-                    );
+                let auto_overlay_gate = auto_overlay_allowed(auto_overlay_ports, &state);
 
                 let mut accepts =
                     configured.accept_loops(&listener, &state, &root_token, &input_lane_handle);
@@ -1154,6 +1181,132 @@ fn mirror_config_into_state(cfg: &ServerConfig, socket_path: &Path, state: &Shar
     }
 }
 
+/// The engine a posture calls for; `None` keeps the state's current engine.
+type PostureEngine = Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>;
+
+/// Resolve the startup posture from `[policy] mode`, `PHUX_WORKLOAD_MTLS`,
+/// and the configured entry points, refuse the contradictions
+/// (`docs/spec/workload-auth.md` §8), and build the engine it calls for.
+fn startup_policy(
+    cfg: &ServerConfig,
+    ws_addr: Option<SocketAddr>,
+    quic_addr: Option<SocketAddr>,
+    webtransport: bool,
+    connectors: bool,
+) -> Result<(crate::policy::PolicyPosture, PostureEngine), ServerError> {
+    let remote = remote_listener_configured(ws_addr, quic_addr, webtransport, connectors);
+    let posture = crate::policy::PolicyPosture::resolve(
+        cfg.policy_mode,
+        workload_auth::workload_mode(),
+        remote,
+    )?;
+    workload_auth::refuse_uncovered_surfaces(
+        posture.requires_workload_mtls(),
+        connectors,
+        webtransport,
+    )?;
+    let engine = posture_policy_engine(cfg, posture)?;
+    Ok((posture, engine))
+}
+
+/// The engine the posture calls for, or `None` when the state's default
+/// ([`crate::policy::PermissivePolicy`]) already is it or the embedder
+/// injected one through [`ServerConfig::policy_engine`].
+///
+/// `paired` loads the workload authority here, before anything binds, so
+/// missing, malformed, or unsafe material refuses to start
+/// (`docs/spec/workload-auth.md` §8).
+fn posture_policy_engine(
+    cfg: &ServerConfig,
+    posture: crate::policy::PolicyPosture,
+) -> Result<Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>, ServerError> {
+    use crate::policy::{PolicyPosture, ScopedPolicy};
+
+    if cfg.policy_engine.is_some() {
+        return Ok(None);
+    }
+    let engine: std::sync::Arc<dyn crate::policy::PolicyEngine> = match posture {
+        PolicyPosture::Transitional { .. } => return Ok(None),
+        PolicyPosture::Local => std::sync::Arc::new(ScopedPolicy::local()),
+        PolicyPosture::Paired => {
+            let authority =
+                workload_auth::WorkloadAuth::configured().map_err(ServerError::PolicyMaterial)?;
+            std::sync::Arc::new(ScopedPolicy::paired(authority.registry))
+        }
+    };
+    Ok(Some(engine))
+}
+
+/// Whether a remote entry point is configured: a WebSocket, QUIC, or
+/// WebTransport listener (flag or environment) or a relay connector. The
+/// `local` posture refuses to start beside one, and the transitional posture
+/// warns about it (`docs/spec/workload-auth.md` §8).
+fn remote_listener_configured(
+    ws_addr: Option<SocketAddr>,
+    quic_addr: Option<SocketAddr>,
+    webtransport: bool,
+    connectors: bool,
+) -> bool {
+    let ws = ws_addr
+        .or_else(|| env_socket_addr("PHUX_WS_ADDR"))
+        .is_some();
+    let quic = quic_addr
+        .or_else(|| env_socket_addr("PHUX_QUIC_ADDR"))
+        .is_some();
+    ws || quic || webtransport || connectors
+}
+
+/// [`build_quic_listener_for`] under the environment's workload opt-in, for
+/// the tests that drive a listener without a runtime.
+#[cfg(test)]
+fn build_quic_listener(
+    addr: SocketAddr,
+) -> (
+    Option<crate::transport::quic::QuicListener>,
+    RemoteListenerSlot,
+) {
+    build_quic_listener_for(addr, workload_auth::workload_mode())
+}
+
+/// Mirror the posture into shared state: whether TLS listeners require a
+/// workload certificate, and the engine that mints each connection's grant.
+fn install_policy_posture(
+    state: &SharedState,
+    posture: crate::policy::PolicyPosture,
+    engine: Option<std::sync::Arc<dyn crate::policy::PolicyEngine>>,
+) {
+    state.with_mut(|s| {
+        s.set_policy_posture(posture);
+        if let Some(engine) = engine {
+            s.set_policy_engine(engine);
+        }
+    });
+    if posture.warns_remote_owner_grant() {
+        warn!(
+            target: crate::policy::POLICY_TARGET,
+            "no [policy] mode is configured and a remote listener or relay connector is: \
+             remote consumers hold the owner's full grant (transitional posture, \
+             docs/spec/workload-auth.md section 8); set [policy] mode = \"paired\" to \
+             require enrolled workload certificates and enforce their scope ceilings"
+        );
+    }
+}
+
+/// Whether the auto-bound overlay listener may run: some overlay port is
+/// unclaimed, its gate is open, and the posture admits a remote door, which
+/// `[policy] mode = "local"` never does (`docs/spec/workload-auth.md` §8).
+fn auto_overlay_allowed(ports: AutoOverlayPorts, state: &SharedState) -> bool {
+    let local_only = state
+        .with(crate::state::ServerState::policy_posture)
+        .is_local();
+    ports.any()
+        && !local_only
+        && auto_overlay_gate_open(
+            std::env::var_os(DISABLE_AUTO_LISTEN_ENV).is_some(),
+            phux_config::instance::is_default_profile(),
+        )
+}
+
 /// Fold the external shutdown future into the root token. `spawn_local` (not
 /// `tokio::spawn`) because the runtime is current-thread with no worker pool.
 fn spawn_shutdown_folder<F>(shutdown: F, root_token: &CancellationToken)
@@ -1348,10 +1501,11 @@ impl ConfiguredListeners {
         // Opt-in via `phux server --listen <ADDR>` or the `PHUX_WS_ADDR`
         // environment variable (e.g. "127.0.0.1:8787"); UDS is always
         // on. The flag wins when both are set.
+        let workload_mtls = state.with(crate::state::ServerState::workload_mtls_required);
         let ws_addr = ws_override.or_else(|| env_socket_addr("PHUX_WS_ADDR"));
         let ws = match ws_addr {
             Some(addr) => {
-                let (listener, slot) = build_ws_listener(addr).await;
+                let (listener, slot) = build_ws_listener(addr, workload_mtls).await;
                 state.with_mut(|s| s.record_remote_listener(slot));
                 listener
             }
@@ -1362,7 +1516,7 @@ impl ConfiguredListeners {
         // QUIC carries the identical frames over a TLS 1.3 stream.
         let quic_addr = quic_override.or_else(|| env_socket_addr("PHUX_QUIC_ADDR"));
         let quic = quic_addr.and_then(|addr| {
-            let (listener, slot) = build_quic_listener(addr);
+            let (listener, slot) = build_quic_listener_for(addr, workload_mtls);
             state.with_mut(|s| s.record_remote_listener(slot));
             listener
         });
@@ -1594,16 +1748,19 @@ async fn serve_auto_overlay_listeners(
         }
     };
 
+    let workload_mtls = state.with(crate::state::ServerState::workload_mtls_required);
     let ws_listener = match detected.filter(|_| ports.ws) {
         Some(ip) => {
-            let (listener, slot) = build_ws_listener(SocketAddr::new(ip, DEFAULT_WS_PORT)).await;
+            let (listener, slot) =
+                build_ws_listener(SocketAddr::new(ip, DEFAULT_WS_PORT), workload_mtls).await;
             state.with_mut(|s| s.record_remote_listener(slot));
             listener
         }
         None => None,
     };
     let quic_listener = detected.filter(|_| ports.quic).and_then(|ip| {
-        let (listener, slot) = build_quic_listener(SocketAddr::new(ip, DEFAULT_QUIC_PORT));
+        let (listener, slot) =
+            build_quic_listener_for(SocketAddr::new(ip, DEFAULT_QUIC_PORT), workload_mtls);
         state.with_mut(|s| s.record_remote_listener(slot));
         listener
     });
@@ -1629,6 +1786,17 @@ async fn serve_auto_overlay_listeners(
         debug!("no auto-bound overlay listener; nothing detected or nothing to bind");
         root_token.cancelled().await;
         return Ok(());
+    }
+    if state
+        .with(crate::state::ServerState::policy_posture)
+        .is_transitional()
+    {
+        warn!(
+            target: crate::policy::POLICY_TARGET,
+            "an overlay listener bound with no [policy] mode configured: remote consumers \
+             hold the owner's full grant (transitional posture, docs/spec/workload-auth.md \
+             section 8); set [policy] mode = \"paired\" to enforce workload scopes"
+        );
     }
 
     // Same joining discipline as the startup accept set: the first fatal
@@ -1744,13 +1912,15 @@ fn unlink_socket_if_ours(path: &Path, bound: Option<(u64, u64)>) {
 )]
 async fn build_ws_listener(
     addr: SocketAddr,
+    workload_mtls: bool,
 ) -> (Option<crate::transport::WsListener>, RemoteListenerSlot) {
     let force_secure = std::env::var_os("PHUX_WS_SECURE").is_some_and(|v| !v.is_empty());
     let addr_s = addr.to_string();
-    // Workload mTLS (ADR-0116) is opt-in, exactly as on QUIC. It needs TLS,
-    // so a configured authority takes the secure path even on loopback:
-    // plaintext would be a side door around the client-certificate check.
-    let workload = match workload_auth::WorkloadAuth::from_env() {
+    // Workload mTLS (ADR-0116) follows the `paired` posture, exactly as on
+    // QUIC. It needs TLS, so a configured authority takes the secure path
+    // even on loopback: plaintext would be a side door around the
+    // client-certificate check.
+    let workload = match workload_auth::WorkloadAuth::for_posture(workload_mtls) {
         Ok(workload) => workload,
         Err(err) => {
             error!(error = %err, "configured workload mTLS unavailable; WebSocket disabled");
@@ -1982,8 +2152,9 @@ fn quic_certificate(addr: SocketAddr) -> Option<(PathBuf, PathBuf)> {
 /// * **Routable address (or `PHUX_WS_SECURE=1`) → TLS + bearer-token preamble.**
 ///   Off-loopback is treated as exposing the server, so a paired token is
 ///   required exactly as for a remote WebSocket consumer (ADR-0031).
-fn build_quic_listener(
+fn build_quic_listener_for(
     addr: SocketAddr,
+    workload_mtls: bool,
 ) -> (
     Option<crate::transport::quic::QuicListener>,
     RemoteListenerSlot,
@@ -2015,7 +2186,7 @@ fn build_quic_listener(
     };
     let token_count = tokens.as_ref().map_or(0, |s| s.len());
 
-    let workload_auth = match workload_auth::WorkloadAuth::from_env() {
+    let workload_auth = match workload_auth::WorkloadAuth::for_posture(workload_mtls) {
         Ok(auth) => auth,
         Err(err) => {
             error!(error = %err, "configured workload mTLS unavailable; QUIC disabled");

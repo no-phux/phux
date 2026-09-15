@@ -442,6 +442,13 @@ impl ServerState {
     /// Consume a one-shot session-create result and forget its owner.
     pub fn consume_session_create_result(&mut self, key: &str) {
         let _ = self.metadata_delete(&phux_protocol::wire::frame::Scope::Global, key);
+        self.disown_session_create_result(key);
+    }
+
+    /// Forget every owner of the one-shot result at `key`, keeping the
+    /// value (ADR-0126: a replayed create hands it to the repeating
+    /// connection).
+    pub fn disown_session_create_result(&mut self, key: &str) {
         for keys in self.clients.session_create_results.values_mut() {
             keys.retain(|candidate| candidate != key);
         }

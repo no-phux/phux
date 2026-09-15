@@ -222,10 +222,10 @@ uploading it with `wrangler secret put`, verifying a complete login, and only
 then revoking the old value. Rotating `AUTH_COOKIE_SECRET` intentionally signs
 every user out; upload the replacement and verify both providers immediately.
 
-The committed browser artifact is deliberately pinned to the protocol-0.5
-hosted-client backport. `scripts/build-client.sh` rejects any other Phux checkout
-so a protocol-0.8 client cannot accidentally be deployed against the pinned
-native server.
+The committed browser artifact is built from in-repo `clients/phux-web` at
+workspace protocol 0.9, the same wire the native image pin (`PHUX_VERSION` in
+`worker/Dockerfile`) and `phux-edge` speak. `scripts/build-client.sh` rebuilds
+it from this checkout.
 
 ### Optional read-only GitHub App for portfolio discovery
 
