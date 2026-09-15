@@ -11,16 +11,16 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use phux_client::agent_meta::{
-    AgentAttention, AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record,
-};
-use phux_client::attach::connection::{Answer, Connection};
+use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
+use phux_client::attach::connection::Connection;
 use phux_protocol::ids::ResourceId;
-use phux_protocol::wire::frame::{FrameKind, Scope};
 use phux_protocol::wire::info::SessionSnapshot;
 use phux_server::runtime::default_socket_path;
 
-use crate::commands::{cli_runtime, partial, report_no_server, resolve_targets};
+use crate::commands::server_target::ServerTarget;
+use crate::commands::{
+    cli_runtime, partial, report_no_server, resolve_targets, warn_interleaved_degradation,
+};
 
 /// `phux agent set [TARGET] --name ... [--kind] [--state] [--attention]
 /// [--session]` — declare the target pane's agent identity by writing the
@@ -52,19 +52,15 @@ pub(super) fn run_agent_set(
     };
     with_target_pane(target, socket, "agent set", move |conn, pane| {
         Box::pin(async move {
-            conn.send(&FrameKind::SetMetadata {
-                request_id: 100,
-                scope: Scope::Resource(pane.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-                value: record.encode(),
-            })
-            .await?;
-            // The trailing GET is load-bearing (same as `phux tag`):
-            // SET_METADATA has no reply frame, so without a round-trip the
-            // process could exit before the server reads the SET. Frames
-            // are ordered on the one connection, so the reply proves the
-            // write landed; we print that confirmed value.
-            match get_record(conn, &pane, 101).await? {
+            // The trailing GET inside `set_record` is load-bearing (same as
+            // `phux tag`): SET_METADATA has no reply frame, so without a
+            // round-trip the process could exit before the server reads the
+            // SET. Frames are ordered on the one connection, so the reply
+            // proves the write landed; we print that confirmed value.
+            let (answer, degradation) =
+                phux_client::agent_record::set_record(conn, 100, &pane, &record).await?;
+            warn_interleaved_degradation(&degradation);
+            match answer {
                 Ok(Some(rec)) => outln!("{}", render_record(&pane, Some(&rec))),
                 Ok(None) => eprintln!("phux: agent record did not persist"),
                 // Not the same statement: the server declined to read the key
@@ -83,14 +79,11 @@ pub(super) fn run_agent_set(
 pub(super) fn run_agent_clear(target: Option<&str>, socket: Option<PathBuf>) -> ExitCode {
     with_target_pane(target, socket, "agent clear", move |conn, pane| {
         Box::pin(async move {
-            conn.send(&FrameKind::DeleteMetadata {
-                request_id: 100,
-                scope: Scope::Resource(pane.clone()),
-                key: RESOURCE_AGENT_KEY.to_owned(),
-            })
-            .await?;
             // Same load-bearing confirmation round-trip as `set`.
-            match get_record(conn, &pane, 101).await? {
+            let (answer, degradation) =
+                phux_client::agent_record::clear_record(conn, 100, &pane).await?;
+            warn_interleaved_degradation(&degradation);
+            match answer {
                 Ok(None) => outln!("{}", render_record(&pane, None)),
                 Ok(Some(_)) => eprintln!("phux: agent record was not cleared"),
                 Err(refusal) => {
@@ -128,7 +121,7 @@ where
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let mut conn = match Connection::connect(&socket_path).await {
+        let mut conn = match ServerTarget::local(&socket_path).connect().await {
             Ok(conn) => conn,
             Err(err) => return report_no_server(&err, &socket_path, verb),
         };
@@ -171,33 +164,6 @@ where
     })
 }
 
-/// One `GET_METADATA` round-trip for `pane`'s agent record on `conn`.
-///
-/// Returns an [`Answer`] rather than a bare `Option` so a refusal cannot be
-/// mistaken for "this pane has no record". The wait that used to be here
-/// matched `METADATA_VALUE` and dropped everything else, so a server that
-/// refused with a correlated ERROR (`proto.md` §9) hung `phux agent set`
-/// *after* its write — the confirmation never arrived and the verb never
-/// returned.
-async fn get_record(
-    conn: &mut Connection,
-    pane: &ResourceId,
-    request_id: u32,
-) -> Result<Answer<Option<AgentRecord>>, phux_client::attach::AttachError> {
-    let (answer, interleaved) = conn
-        .request_metadata(
-            request_id,
-            Scope::Resource(pane.clone()),
-            RESOURCE_AGENT_KEY.to_owned(),
-        )
-        .await?
-        .into_parts();
-    for message in phux_client::state::degradation_notices(&interleaved) {
-        eprintln!("phux: warning: partial results — {message}");
-    }
-    Ok(answer.map(|value| value.as_deref().and_then(parse_agent_record)))
-}
-
 /// `SELECTOR<TAB>record-json` (or `SELECTOR<TAB>-` for a cleared record) —
 /// one line, machine-splittable, mirroring `phux tag`'s confirmation output.
 fn render_record(pane: &ResourceId, record: Option<&AgentRecord>) -> String {
@@ -233,33 +199,10 @@ pub(crate) async fn fetch_agent_index(
     socket_path: &std::path::Path,
     snapshot: &SessionSnapshot,
 ) -> std::collections::HashMap<ResourceId, AgentRecord> {
-    let mut index = std::collections::HashMap::new();
-    if snapshot.resources.is_empty() {
-        return index;
-    }
-    let Ok(mut conn) = Connection::connect(socket_path).await else {
-        return index;
-    };
-    for (offset, pane) in snapshot.resources.iter().enumerate() {
-        let request_id = u32::try_from(offset).unwrap_or(u32::MAX).saturating_add(1);
-        let Ok(reply) = conn
-            .request_metadata(
-                request_id,
-                Scope::Resource(pane.id.clone()),
-                RESOURCE_AGENT_KEY.to_owned(),
-            )
-            .await
-        else {
-            return index;
-        };
-        let (answer, interleaved) = reply.into_parts();
-        for message in phux_client::state::degradation_notices(&interleaved) {
-            eprintln!("phux: warning: partial results — {message}");
-        }
-        if let Ok(Some(record)) = answer.map(|value| value.as_deref().and_then(parse_agent_record))
-        {
-            index.insert(pane.id.clone(), record);
-        }
+    let mut notices = Vec::new();
+    let index = phux_client::agent_record::fetch_index(socket_path, snapshot, &mut notices).await;
+    for message in &notices {
+        eprintln!("phux: warning: partial results — {message}");
     }
     index
 }
