@@ -408,7 +408,7 @@ Metal's policy, closed here:
 ### What the signed pin holds
 
 Product grid: `session.max_cols=320`, `max_rows=96`, `max_cells=30720`.
-SDK pin `phall1/native` @ `3cd794ea78f59a36c0837d884a95c6d257777824`
+SDK pin `phall1/native` @ `ad3f0fae36a7d1380c459c6b23ed12d83cad6a7a`
 (Metal Hybrid C signed bump; native PR
 [phall1/native#13](https://github.com/phall1/native/pull/13)):
 
@@ -472,7 +472,7 @@ neighbour at N=2 keeps 24 trailing rows, not leftover-limited 6.
 per shell, `max_effect_ptys`). It is not a paint bind. Linux hosts cannot
 run Cockpit `zig build` (the graph is macOS-only). The paint tables above
 are the pinned SDK sources (`src/runtime/canvas_limits.zig`,
-`terminal_grid.zig`) at `3cd794ea`. Runnable measurement is
+`terminal_grid.zig`) at `ad3f0fae`. Runnable measurement is
 `scripts/measure-paint-ceiling.sh` on macOS
 (`zig build test -Dplatform=null -Dmeasure=true`). Linux source
 arithmetic is not enough for this pin move.

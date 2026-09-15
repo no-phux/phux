@@ -12,7 +12,7 @@ ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 . "${ROOT}/scripts/lib/measure.sh"
 
 measure_basis paint-ceiling \
-    "zig build test -Dplatform=null -Dmeasure=true (pin 3cd794ea, Hybrid C signed)" \
+    "zig build test -Dplatform=null -Dmeasure=true (pin ad3f0fae, Hybrid C signed)" \
     "./scripts/measure-paint-ceiling.sh"
 
 if [[ "$(uname -s)" != Darwin ]]; then

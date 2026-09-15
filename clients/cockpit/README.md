@@ -407,7 +407,7 @@ actually looking at.
   the same build commands. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@3cd794ea`](https://github.com/phall1/native/commit/3cd794ea78f59a36c0837d884a95c6d257777824),
+[`phall1/native@ad3f0fae`](https://github.com/phall1/native/commit/ad3f0fae36a7d1380c459c6b23ed12d83cad6a7a),
 the fork's upstream-v0.10.1 Cockpit lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
 wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,

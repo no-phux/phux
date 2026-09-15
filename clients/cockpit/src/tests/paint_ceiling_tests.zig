@@ -160,7 +160,7 @@ test "MEASURED: SDK paint tables and Hybrid C constants" {
     const cell_size = @sizeOf(canvas.Cell);
     const command_size = @sizeOf(canvas.CanvasCommand);
     measured.print(
-        "MEASURED-BASIS paint-ceiling host=linux pin=3cd794ea derive=zig-build-test-Dmeasure\n",
+        "MEASURED-BASIS paint-ceiling host=linux pin=ad3f0fae derive=zig-build-test-Dmeasure\n",
         .{},
     );
     measured.print(
