@@ -81,6 +81,40 @@ grep -Fq "wasm-bindgen-cli --version $bindgen_version" "$ROOT/docs/SETUP.md" || 
 grep -Eq "rust:${rust_version}-bookworm@sha256:[0-9a-f]{64}" "$ROOT/docs/site/worker/Dockerfile" || fail "site builder must use Rust $rust_version"
 grep -Eq "oven/bun:${bun_version}@sha256:[0-9a-f]{64}" "$ROOT/docs/site/worker/Dockerfile" || fail "site builder must use Bun $bun_version"
 
+site_dockerfile="$ROOT/docs/site/worker/Dockerfile"
+zig_linux_sha="$(zig_digest x86_64-linux)"
+[[ -n "$zig_linux_sha" ]] || fail "zig-toolchain.json must pin x86_64-linux"
+grep -Fq "zig-x86_64-linux-${zig_version}.tar.xz" "$site_dockerfile" ||
+    fail "site builder must fetch Zig $zig_version"
+grep -Fq "$zig_linux_sha" "$site_dockerfile" ||
+    fail "site builder must pin Zig $zig_version x86_64-linux digest $zig_linux_sha"
+grep -Fq "ARG ZIG_VERSION=$zig_version" "$site_dockerfile" ||
+    fail "site builder ARG ZIG_VERSION must be $zig_version"
+grep -Fq "LIBGHOSTTY_VT_SYS_CPU=baseline" "$site_dockerfile" ||
+    fail "site builder must set LIBGHOSTTY_VT_SYS_CPU=baseline"
+
+phux_version="$(awk '
+    /^\[workspace.package\]/ { in_pkg=1; next }
+    in_pkg && /^\[/ { exit }
+    in_pkg && /^version = "/ {
+        gsub(/"/, "", $3)
+        print $3
+        exit
+    }
+' "$ROOT/Cargo.toml")"
+[[ "$phux_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "workspace.package.version is missing"
+grep -Fq "ARG PHUX_VERSION=$phux_version" "$site_dockerfile" ||
+    fail "site builder ARG PHUX_VERSION must be workspace version $phux_version"
+grep -Fq 'test "$(/usr/local/bin/phux --version)" = "phux $PHUX_VERSION"' "$site_dockerfile" ||
+    fail "site builder must assert installed phux --version matches PHUX_VERSION"
+
+libghostty_rev="$(sed -n -E 's/.*libghostty-rs\.git", rev = "([0-9a-f]{40})".*/\1/p' "$ROOT/Cargo.toml")"
+[[ "$libghostty_rev" =~ ^[0-9a-f]{40}$ ]] || fail "workspace libghostty-vt rev is missing"
+grep -Fq "ARG LIBGHOSTTY_REVISION=$libghostty_rev" "$site_dockerfile" ||
+    fail "site builder ARG LIBGHOSTTY_REVISION must be $libghostty_rev"
+grep -Fq "https://github.com/phall1/libghostty-rs/archive/${libghostty_rev}.tar.gz" "$site_dockerfile" ||
+    fail "site builder must fetch libghostty-rs $libghostty_rev"
+
 while IFS=: read -r file line; do
     version="$(printf '%s\n' "$line" | sed -n -E 's/.*node-version: ([0-9]+).*/\1/p')"
     [[ "$version" == "$node_version" ]] || fail "$file Node version must be $node_version"

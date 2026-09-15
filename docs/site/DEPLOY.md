@@ -224,8 +224,8 @@ every user out; upload the replacement and verify both providers immediately.
 
 The committed browser artifact is deliberately pinned to the protocol-0.5
 hosted-client backport. `scripts/build-client.sh` rejects any other Phux checkout
-so a protocol-0.8 client cannot accidentally be deployed against the pinned
-native server.
+so that artifact cannot be replaced without a coordinated rebuild. The native
+container image tracks the workspace phux pin in `worker/Dockerfile`.
 
 ### Optional read-only GitHub App for portfolio discovery
 
