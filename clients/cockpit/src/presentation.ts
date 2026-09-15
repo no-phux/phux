@@ -271,7 +271,6 @@ function ownerCanPresent(lifecycle: PresentationLifecycle, owner: number, openWi
   if (!wholeBetween(openWindows, 1, 31)) return false;
   if ((lifecycle.retiredWindows & windowBit(owner)) !== 0) return false;
   if (owner === 0) return true;
-  if (!lifecycle.snapshotObserved) return true;
   return (openWindows & windowBit(owner)) !== 0;
 }
 

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { initialModel, update, commandMsg } from '../core.ts';
+import { initialModel, update, commandMsg, windows } from '../core.ts';
 import { directoryRequest, directoryPage, directoryRowLabel, directoryTitle, DIR_HERE, DIR_UP } from '../directory.ts';
 
 const bytes = value => new TextEncoder().encode(value);
@@ -45,9 +45,13 @@ function assertDirectoryRequest(cmd, payload) {
   assert.deepEqual(found.payload, payload);
 }
 function snapshotBytes(activeWindow = 0) {
-  const out = new Uint8Array(33);
+  const out = new Uint8Array(activeWindow === 0 ? 33 : 40);
   out[0] = 1; out[1] = 2; out[10] = 7; out[18] = activeWindow; out[23] = 2;
   out[26] = 168; out[29] = 255;
+  if (activeWindow > 0) {
+    out[32] = 1;
+    out.set([activeWindow, 0, 0, 0, 0, 168, 0], 33);
+  }
   return out;
 }
 const invalidation = () => {
@@ -150,6 +154,8 @@ test('opening takes the modal slot, asks the engine to start, and is scoped to t
   assert.equal(model.hostOpen, true);
 
   [model] = step(initialModel()[0], { kind: 'snapshot_loaded', body: snapshotBytes(2) });
+  assert.equal(windows(model).length, 1);
+  assert.equal(text(windows(model)[0].label), 'phux-window-2');
   [model] = step(model, { kind: 'dir_open' });
   assert.equal(model.mainDirOpen, false);
   assert.equal(model.window2DirOpen, true);

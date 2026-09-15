@@ -359,7 +359,8 @@ test('identity rows distinguish split parents and jump using the exact fenced pa
 
 test('complete agent inspector pages beyond snapshot cap with real identity and evidence in every window', () => {
   for (let window = 0; window < 5; window++) {
-    let model = { ...initialModel()[0], engineRevision: revision, engineConnected: true, activeWindow: window };
+    let model = { ...initialModel()[0], engineRevision: revision, engineConnected: true, activeWindow: window,
+      window1Open: window === 1, window2Open: window === 2, window3Open: window === 3, window4Open: window === 4 };
     let cmd;
     [model, cmd] = step(model, { kind: 'agents_open' });
     assert.equal(model[window === 0 ? 'mainAgentsOpen' : `window${window}AgentsOpen`], true);

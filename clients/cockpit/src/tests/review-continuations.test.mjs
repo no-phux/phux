@@ -340,6 +340,15 @@ test('an invalid or closed active window cannot acquire a projected surface', ()
   }
 });
 
+test('a pre-snapshot secondary owner without an open window fails closed', () => {
+  const malformed = { ...initialModel()[0], activeWindow: 1 };
+  const [model] = step(malformed, { kind: 'agents_open' });
+  assert.equal(model.presentation.phase, 3);
+  assert.equal(model.mainAgentsOpen, false);
+  assert.equal(model.window1AgentsOpen, false);
+  assert.equal(windows(model).length, 0);
+});
+
 test('malformed presentation records fail closed at exported update and windows seams', () => {
   const valid = initialModel()[0];
   const malformed = [
