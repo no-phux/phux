@@ -5097,6 +5097,79 @@ test "the markup chrome passes the layout audit at every declared size, density 
     try std.testing.expectEqual(@as(usize, 0), total);
 }
 
+/// The shipping hidden-inset header must itself be the drag surface.
+/// Parking `window-drag` on the 78pt traffic-light spacer leaves no
+/// usable grab handle: the lights occupy that reserve, and the rest of
+/// the band is press-claiming chrome. The SDK contract is the header
+/// row — buttons inside stay buttons via press fall-through.
+fn expectTitlebarWindowDrag(model: *const core.Model, window: usize, size: native_sdk.geometry.SizeF) !void {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var ui = Adapter.Ui.init(arena.allocator());
+    const tokens = cockpit.projection.cockpitTokens(bridge.engine.?.model);
+    const node = chromeViewAt(&ui, model, window);
+    const tree = try ui.finalizeWithTokens(node, tokens);
+    const nodes = try arena.allocator().alloc(canvas.WidgetLayoutNode, canvas.max_layout_audit_nodes);
+    const layout = try canvas.layoutWidgetTreeWithTokens(
+        tree.root,
+        native_sdk.geometry.RectF.init(0, 0, size.width, size.height),
+        tokens,
+        nodes,
+    );
+
+    var widest: f32 = 0;
+    var drag_index: ?usize = null;
+    for (layout.nodes, 0..) |entry, index| {
+        if (!canvas.widgetIsWindowDragRegion(entry.widget)) continue;
+        if (entry.frame.width > widest) {
+            widest = entry.frame.width;
+            drag_index = index;
+        }
+    }
+    if (widest < size.width - 16) {
+        std.debug.print(
+            "widest window-drag region is {d:.1}pt in a {d:.0}pt window (window {d})\n",
+            .{ widest, size.width, window },
+        );
+    }
+    try std.testing.expect(widest >= size.width - 16);
+
+    var settings_index: ?usize = null;
+    var leading_index: ?usize = null;
+    for (layout.nodes, 0..) |entry, index| {
+        if (std.mem.eql(u8, entry.widget.semantics.label, "Settings")) settings_index = index;
+        if (entry.frame.y < 60 and entry.frame.x < 16 and @abs(entry.frame.width - 78) < 0.5) {
+            leading_index = index;
+        }
+    }
+    const settings = settings_index orelse return error.TestExpectedSettingsControl;
+    try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, settings) == null);
+    const leading = leading_index orelse return error.TestExpectedTitlebarLeadingReserve;
+    try std.testing.expect(canvas.widgetWindowDragTargetIndexFromNode(layout, leading) != null);
+    try std.testing.expectEqual(drag_index, canvas.widgetWindowDragTargetIndexFromNode(layout, leading));
+}
+
+test "titlebar chrome is a window-drag surface in every window and placement" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    const size = native_sdk.geometry.SizeF.init(1100, 640);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
+
+    try rig.dispatch(.new_window);
+    try rig.settle(1, "READY");
+    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 1, size);
+
+    try rig.reach(.{ .label = "one tab, rail", .placement = .side });
+    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 1, size);
+
+    try rig.reach(.{ .label = "full strip", .tabs = 16 });
+    try expectTitlebarWindowDrag(&rig.app_state.model, 0, size);
+    try expectTitlebarWindowDrag(&rig.app_state.model, 1, size);
+}
+
 fn auditInspectorEveryWindow(model: core.Model, state: []const u8, loaded: bool) !void {
     const fields = .{ "mainAgentsOpen", "window1AgentsOpen", "window2AgentsOpen", "window3AgentsOpen", "window4AgentsOpen" };
     inline for (fields, 0..) |field, window| {
