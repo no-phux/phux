@@ -17,7 +17,9 @@
     { "pattern": "shell.phux.sh", "custom_domain": true },
     // Browser OAuth must not navigate to shell.phux.sh: Cloudflare 403s some
     // document requests to that hostname before they reach this Worker.
-    { "pattern": "phux.sh/auth*", "zone_name": "phux.sh" }
+    // Only /auth/ paths belong here — narrowing keeps /auth.md (the site's
+    // agent-auth document) on the static site worker.
+    { "pattern": "phux.sh/auth/*", "zone_name": "phux.sh" }
   ],
 
   // The modern DO + WebSocket surface require a recent compat date.
