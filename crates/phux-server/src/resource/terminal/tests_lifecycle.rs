@@ -2291,9 +2291,10 @@ async fn a_cursor_invalidated_by_resize_is_tombstoned_never_faulted() {
 }
 
 /// phux-dm8h: two native pumps from one client on one pane must not
-/// invalidate each other. Capture used to call `invalidate_native_owner(owner)`
-/// which dropped every binding for that client, so the first pump's later
-/// publication hit `InvalidHandle` (`PublicationNotActivated`).
+/// invalidate each other. Capture used to call `invalidate_native_owner`
+/// with the client id alone, which dropped every binding for that client, so
+/// the first pump's later publication hit `InvalidHandle`
+/// (`PublicationNotActivated`).
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 fn capture_native_for_pump(
     actor: &mut TerminalActor,
@@ -2408,8 +2409,9 @@ async fn two_native_pumps_from_one_client_do_not_tombstone_each_other() {
     );
 }
 
-/// Same-(owner, stream_id) recapture still tombstones the prior generation,
-/// and must not take a sibling stream of that client with it (phux-dm8h).
+/// Recapture of the same `(owner, stream_id)` still tombstones the prior
+/// generation, and must not take a sibling stream of that client with it
+/// (phux-dm8h).
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
@@ -2451,7 +2453,7 @@ async fn recapturing_the_same_owner_stream_tombstones_only_that_binding() {
             bootstrap_a,
             phux_protocol::wire::frame::TombstoneReason::ExplicitReattach
         )],
-        "recapture tombstones only the same (owner, stream_id) generation"
+        "recapture tombstones only the same (owner, stream) generation"
     );
     assert_eq!(
         actor
