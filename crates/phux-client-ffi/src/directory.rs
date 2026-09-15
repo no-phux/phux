@@ -222,26 +222,6 @@ fn list_directory(
     Ok(())
 }
 
-/// Queue `LIST_DIRECTORY` for `path` (empty or `~` for the serving user's
-/// home, `~/rest`, or absolute) on the serving host, replacing any previous
-/// listing.
-///
-/// # Safety
-/// Client is live and exclusively accessed on its owning thread; a nonempty
-/// `path` span is readable for the call.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_list_directory(
-    client: *mut PhuxClient,
-    request_id: u32,
-    path: PhuxBytes,
-) -> PhuxClientResult {
-    with_client_mut(client, |client| {
-        // SAFETY: forwards the caller's readable-span contract.
-        let path = request_path(unsafe { bytes_in(path.data, path.len) }?)?;
-        list_directory(client, request_id, path, None)
-    })
-}
-
 /// One `LIST_DIRECTORY` request, with an optional satellite host.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -250,7 +230,7 @@ pub struct PhuxDirectoryRequest {
     pub version: u32,
     pub request_id: u32,
     pub path: PhuxBytes,
-    /// Empty: the serving host, exactly `phux_client_list_directory`.
+    /// Empty: the serving host (no host field on the frame).
     pub host: PhuxBytes,
 }
 
@@ -428,16 +408,7 @@ mod tests {
     }
 
     fn list(client: *mut PhuxClient, request_id: u32, path: &str) -> PhuxClientResult {
-        unsafe {
-            phux_client_list_directory(
-                client,
-                request_id,
-                PhuxBytes {
-                    data: path.as_ptr(),
-                    len: path.len(),
-                },
-            )
-        }
+        list_on(client, request_id, path, b"")
     }
 
     fn feed(client: *mut PhuxClient, frame: &FrameKind) -> PhuxClientResult {
@@ -634,12 +605,17 @@ mod tests {
         let invalid = [0xffu8];
         assert_eq!(
             unsafe {
-                phux_client_list_directory(
+                phux_client_list_directory_on(
                     client,
-                    1,
-                    PhuxBytes {
-                        data: invalid.as_ptr(),
-                        len: 1,
+                    &raw const PhuxDirectoryRequest {
+                        size: mem::size_of::<PhuxDirectoryRequest>(),
+                        version: ABI_VERSION,
+                        request_id: 1,
+                        path: PhuxBytes {
+                            data: invalid.as_ptr(),
+                            len: 1,
+                        },
+                        host: PhuxBytes::default(),
                     },
                 )
             },
@@ -734,7 +710,7 @@ mod tests {
         assert_eq!(unsafe { (*client).inner.outgoing.len() }, 0);
         assert_eq!(info(client).status, STATUS_NONE);
         // The refusal consumed no request ID, and an empty host is still the
-        // serving host's own listing, byte-identical to the older call.
+        // serving host's own listing.
         assert_eq!(list_on(client, 1, "/", b""), PhuxClientResult::Ok);
         assert_eq!(
             only_queued(client),

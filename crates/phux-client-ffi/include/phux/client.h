@@ -379,29 +379,6 @@ typedef struct PhuxClientOptions {
     size_t history_prefetch_rows;
 } PhuxClientOptions;
 
-typedef void (*PhuxClientAttachedCallback)(void *userdata);
-typedef void (*PhuxClientFailureCallback)(
-    void *userdata,
-    PhuxClientResult result,
-    PhuxBytes message
-);
-
-/**
- * Optional lifecycle callbacks, copied by phux_client_set_callbacks.
- * Callbacks run synchronously on the owning thread only after kernel mutation
- * and effect staging finish. They are strictly non-reentrant: every FFI call
- * made from a callback is rejected (void free is ignored; scalar getters
- * return their failure sentinel). message is borrowed only for the duration
- * of on_failure. NULL callbacks disable that notification.
- */
-typedef struct PhuxClientCallbacks {
-    size_t size;
-    uint32_t version;
-    void *userdata;
-    PhuxClientAttachedCallback on_attached;
-    PhuxClientFailureCallback on_failure;
-} PhuxClientCallbacks;
-
 /**
  * Session selector for phux_client_queue_attach.
  *
@@ -882,7 +859,6 @@ PhuxClientResult phux_client_log_init(PhuxBytes filter);
  * not exceed PHUX_CLIENT_MAX_OUTBOUND_BYTES.
  */
 PhuxClientResult phux_client_new(const PhuxClientOptions *options, PhuxClient **out_client);
-PhuxClientResult phux_client_set_callbacks(PhuxClient *client, const PhuxClientCallbacks *callbacks);
 void phux_client_free(PhuxClient *client);
 PhuxClientState phux_client_state(const PhuxClient *client);
 PhuxClientResult phux_client_last_error(const PhuxClient *client, PhuxBytes *out_error);
@@ -1232,8 +1208,6 @@ typedef struct PhuxDirectoryEntry {
     PhuxBytes name;
 } PhuxDirectoryEntry;
 
-PhuxClientResult phux_client_list_directory(PhuxClient *client, uint32_t request_id, PhuxBytes path);
-
 /* A satellite's directories (docs/spec/L3.md section 4.1). Additive to ABI
  * version 2. Attached to a federation hub, a satellite pane's directories
  * live on the satellite; LIST_DIRECTORY.host names it and the hub relays the
@@ -1245,13 +1219,14 @@ PhuxClientResult phux_client_list_directory(PhuxClient *client, uint32_t request
  * with an empty host, and says whose directories it shows.
  *
  * Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
- * request_id and path are exactly as for phux_client_list_directory. host is
- * the satellite name as a satellite-tagged PhuxResourceId carries it: UTF-8
- * without NUL, at most 255 bytes; empty is the serving host, and the frame is
- * then byte-identical to phux_client_list_directory's. A relayed refusal
- * (unknown or unreachable satellite, a satellite without LIST_DIRECTORY, the
- * relay deadline) arrives as an ordinary REFUSED/OTHER listing whose message
- * names the host. */
+ * request_id shares the strictly increasing host request space. path is UTF-8
+ * without NUL, at most 4096 bytes: empty or "~" for the serving user's home,
+ * "~/rest", or an absolute path. host is the satellite name as a
+ * satellite-tagged PhuxResourceId carries it: UTF-8 without NUL, at most 255
+ * bytes; empty is the serving host (no host field on the frame). A relayed
+ * refusal (unknown or unreachable satellite, a satellite without
+ * LIST_DIRECTORY, the relay deadline) arrives as an ordinary REFUSED/OTHER
+ * listing whose message names the host. */
 typedef struct PhuxDirectoryRequest {
     size_t size;
     uint32_t version;

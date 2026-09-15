@@ -349,35 +349,6 @@ fn client_limits(options: &PhuxClientOptions) -> Result<Limits, BridgeError> {
     })
 }
 
-/// Replaces the client's lifecycle callbacks, or clears them when `callbacks` is null.
-///
-/// # Safety
-///
-/// When non-null, `client` must be a live client on its owning thread with
-/// exclusive access for the call. `callbacks` may be null to clear callbacks;
-/// otherwise it must be readable for the call. Configured callback functions
-/// and their `userdata` must remain valid whenever the callbacks can run.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_set_callbacks(
-    client: *mut PhuxClient,
-    callbacks: *const PhuxClientCallbacks,
-) -> PhuxClientResult {
-    with_client_mut(client, |client| {
-        if callbacks.is_null() {
-            client.callbacks = PhuxClientCallbacks::default();
-            return Ok(());
-        }
-        let callbacks = unsafe { &*callbacks };
-        check_struct(
-            callbacks.size,
-            mem::size_of::<PhuxClientCallbacks>(),
-            callbacks.version,
-        )?;
-        client.callbacks = *callbacks;
-        Ok(())
-    })
-}
-
 /// Destroys a client.
 ///
 /// # Safety
