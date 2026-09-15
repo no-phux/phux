@@ -72,6 +72,9 @@ MEASURE_FIRST_FRAME=0
 BUILD_DURATION_NS="skipped"
 LAUNCH_STARTED_NS=0
 FRONT_PID=""
+DEV_APP_PID=""
+DEV_APP_OWNED=0
+DETACH_SUCCEEDED=0
 
 wall_ns() {
     /usr/bin/python3 -c 'import time; print(time.time_ns())'
@@ -246,6 +249,7 @@ fi
 EXECUTABLE="$(dev_app_stage "${ROOT}/zig-out/package/phux-cockpit.app" "$STAGED_APP")"
 
 read -r staged_id staged_executable staged_name <<<"$(dev_app_identity "$STAGED_APP")"
+# shellcheck disable=SC2034 # consumed by app-instance.sh after sourcing
 APP_INSTANCE_NAME="$staged_executable"
 printf '\n'
 printf 'running:  %s\n' "$STAGED_APP"
@@ -278,26 +282,28 @@ if [[ "$MEASURE_FIRST_FRAME" == "1" ]]; then
     LAUNCH_STARTED_NS="$(wall_ns)"
     launch_env+=(NATIVE_SDK_WINDOW_TIMING=1 NATIVE_SDK_GPU_DRAW_TRACE=1)
 fi
-dev_app_launch "$EXECUTABLE" "$DEV_HOME" "$CONFIG" "$LOG" "${launch_env[@]}"
-printf 'pid %s, log %s\n' "$DEV_APP_PID" "$LOG"
-
 cleanup() {
     if [[ -n "$FRONT_PID" ]]; then
         kill -KILL "$FRONT_PID" 2>/dev/null || true
         wait "$FRONT_PID" 2>/dev/null || true
     fi
-    [[ "$DETACH" == "1" ]] && return 0
-    kill "$DEV_APP_PID" 2>/dev/null || true
+    if [[ "$DEV_APP_OWNED" == "1" && "$DETACH_SUCCEEDED" != "1" ]]; then
+        kill "$DEV_APP_PID" 2>/dev/null || true
+        wait "$DEV_APP_PID" 2>/dev/null || true
+        DEV_APP_OWNED=0
+    fi
 }
 trap cleanup EXIT
+
+dev_app_launch "$EXECUTABLE" "$DEV_HOME" "$CONFIG" "$LOG" "${launch_env[@]}"
+DEV_APP_OWNED=1
+printf 'pid %s, log %s\n' "$DEV_APP_PID" "$LOG"
 
 # Fail here rather than leaving a half-started app: if the name does not resolve
 # to exactly this pid, every later `pgrep -x` and every System Events activation
 # in this session is already ambiguous.
 dev_app_wait_named "$staged_executable" "$DEV_APP_PID"
 if [[ "$MEASURE_FIRST_FRAME" == "1" ]] && ! measure_first_frame; then
-    # A failed detached measurement must not leave the failed subject running.
-    DETACH=0
     exit 1
 fi
 
@@ -330,11 +336,13 @@ fi
 
 if [[ "$DETACH" == "1" ]]; then
     printf 'detached. kill %s to stop it.\n' "$DEV_APP_PID"
+    DETACH_SUCCEEDED=1
     exit 0
 fi
 
 printf 'attached. ctrl-c to quit.\n'
 status=0
 wait "$DEV_APP_PID" || status=$?
+DEV_APP_OWNED=0
 printf 'app exited (status %s). log: %s\n' "$status" "$LOG"
 exit "$status"

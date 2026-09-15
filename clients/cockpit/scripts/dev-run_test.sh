@@ -51,7 +51,7 @@ dev_app_launch() {
 }
 
 dev_app_wait_named() {
-    return 0
+    [[ "${FIXTURE_WAIT_NAMED_RESULT:-success}" == "success" ]]
 }
 LIB
 : >"${WORK}/fixture/scripts/lib/app-instance.sh"
@@ -73,6 +73,39 @@ export PHUX_COCKPIT_DEV_HOME="${WORK}/home"
 export PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS=1
 PATH="${WORK}/bin:${PATH}"
 export PATH
+
+assert_app_stopped() {
+    local context="$1" app_pid
+    app_pid="$(cat "${WORK}/app.pid")"
+    if kill -0 "$app_pid" 2>/dev/null; then
+        printf 'FAIL: %s left app process %s running\n' "$context" "$app_pid" >&2
+        exit 1
+    fi
+}
+
+# Historical RED on 2c3af11f: --detach made the EXIT trap preserve the app
+# before post-launch validation had succeeded. A failed process-name ownership
+# check therefore returned nonzero while leaking the launched process.
+if FIXTURE_WAIT_NAMED_RESULT=fail \
+    "${WORK}/fixture/scripts/dev-run.sh" --no-build --detach \
+    >"${WORK}/wait-named-failure.output" 2>&1; then
+    printf 'FAIL: dev-run succeeded after dev_app_wait_named failed\n' >&2
+    exit 1
+fi
+assert_app_stopped 'failed process-name validation'
+
+# The timeout is intentionally validated after launch. A malformed value must
+# still clean the process up rather than turning --detach into unconditional
+# permission to retain it.
+if PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS=invalid \
+    "${WORK}/fixture/scripts/dev-run.sh" --no-build --detach \
+    >"${WORK}/invalid-timeout.output" 2>&1; then
+    printf 'FAIL: dev-run accepted an invalid front timeout\n' >&2
+    exit 1
+fi
+grep -Fq 'PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS must be a positive integer' \
+    "${WORK}/invalid-timeout.output"
+assert_app_stopped 'invalid post-launch timeout'
 
 # Historical RED on ae6dc1a2: the mock System Events request never returned,
 # so the launcher was still alive after this test's three-second ceiling even
