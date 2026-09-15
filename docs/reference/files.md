@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, contributors
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-09-15
 ---
 
 # phux file locations reference
@@ -64,6 +64,6 @@ $XDG_STATE_HOME/<profile-dir>/
 - `remote-tokens` is the versioned verifier-only credential store the server reads and `phux pair`, `phux pair rotate`, and `phux pair revoke` update under the sibling `.remote-tokens.lock`. Writers first lock the owner-controlled, non-group/world-writable parent directory, then no-follow open and validate the owner-only regular lock file, preventing lock-path replacement from splitting concurrent writers. Store commits use a synced temporary file and atomic rename. The store must be a regular, non-symlink file owned by the effective user with no group/world permissions; an integrity failure denies authentication. `PHUX_WS_TOKENS` moves it without weakening those checks. Legacy anonymous token lines require the idempotent `phux pair --migrate-legacy` conversion.
 - `reports/` holds local bug-report bundles written by the TUI `report-bug` action (`C-a B`) and by `phux report new`. Each subdirectory is one report (session, pane, version, log tails, optional screen dump, and a `report.md` an agent can open). `latest` points at the newest; `phux report` lists them and `phux report show` prints one.
 
-## Design intent (not yet implemented)
+## Decided: not built
 
-A `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery remain design intent; neither path exists today. Workspace archives are written only where `phux workspace save` is pointed.
+A `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery are decided: not built (ADR-0130). Neither path exists today; a crash loses every pane's scrollback. The `EVENT` stream is a separate, memory-bounded journal (ADR-0123) that carries no PTY bytes. Workspace archives are written only where `phux workspace save` is pointed.

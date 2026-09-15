@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-15
 ---
 
 # Process model
@@ -93,4 +93,4 @@ task that owns the metadata write. No new process, no new thread.
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery | The server keeps session state only in memory. Those paths are not written. | [ADR-0003](../adr/0003-server-process-model.md), [ADR-0092](../adr/0092-durable-work-coordinator-authority.md) | phux-p91i |
+| `server.pid` file and a `journal/` directory of per-pane PTY output for crash recovery | Decided: not built ([ADR-0130](../adr/0130-on-disk-pty-journal-is-not-built.md)). Neither path exists; the `EVENT` stream is a separate, memory-bounded journal ([ADR-0123](../adr/0123-events-are-journaled.md)) that carries no PTY bytes. | [ADR-0003](../adr/0003-server-process-model.md), [ADR-0092](../adr/0092-durable-work-coordinator-authority.md), [ADR-0130](../adr/0130-on-disk-pty-journal-is-not-built.md) | phux-p91i |
