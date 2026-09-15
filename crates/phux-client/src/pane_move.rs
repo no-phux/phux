@@ -988,4 +988,44 @@ mod tests {
         assert_eq!(resolved_source.as_deref(), Some("a.layout/v1/1"));
         assert_eq!(resolved_destination.as_deref(), Some("b.layout/v1/2"));
     }
+
+    #[tokio::test]
+    async fn a_scoped_denial_refuses_the_move_instead_of_wedging_it() {
+        // A paired server refuses an out-of-scope MOVE_RESOURCE with the
+        // move's own reply, RESOURCE_MOVED carrying MoveFailed ("permission
+        // denied", workload-auth §7). The move must end on it.
+        let source = workspace("origin", split(1, 2), 1);
+        let destination = workspace("target", LayoutNode::Leaf(tid(3)), 3);
+        let spec = ScriptSpec::new()
+            .server_features(move_features())
+            .states([snapshot(false, true), snapshot(true, true)])
+            .move_result(MoveResult::Err(MoveError::MoveFailed(
+                "permission denied".to_owned(),
+            )))
+            .stored_metadata(
+                Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+                &layout_key(SessionId::new(1)),
+                source.encode_cbor().unwrap(),
+            )
+            .stored_metadata(
+                Scope::Group(DEFAULT_LAYOUT_GROUP_ID),
+                &layout_key(SessionId::new(2)),
+                destination.encode_cbor().unwrap(),
+            );
+        let (_dir, mut conn, server) = serve(spec).await;
+
+        let refused = tokio::time::timeout(
+            std::time::Duration::from_secs(20),
+            move_pane(&mut conn, tid(1), tid(3), SplitDir::Horizontal, 0.5, &[]),
+        )
+        .await
+        .expect("a denied move must return; a timeout here is the wedge itself");
+        match refused {
+            Err(PaneMoveError::MoveRefused(message)) => assert_eq!(message, "permission denied"),
+            Err(other) => panic!("expected the move's own refusal, got {other}"),
+            Ok(_) => panic!("a denied move must not succeed"),
+        }
+        drop(conn);
+        server.await.unwrap();
+    }
 }

@@ -21,12 +21,12 @@
 
 mod material;
 mod reload;
-mod scope;
 mod store;
 
 pub use material::{ClientMaterial, MAX_MATERIAL_BYTES, MaterialError};
+pub use phux_protocol::scope::ScopeGrammarError;
+use phux_protocol::scope::{EffectiveScopeSet, ScopeGrant, Selector, TerminalScopeSet};
 pub use reload::ReloadingWorkloadRegistry;
-pub use scope::{ScopeGrammarError, validate_scope};
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -100,6 +100,15 @@ pub enum WorkloadError {
         /// The rule it broke.
         reason: ScopeGrammarError,
     },
+    /// A persisted scope names a session (`group:`) or Terminal
+    /// (`terminal:`) id, which restarts with the server. `index` is 1-based.
+    #[error(
+        "workload scope {index}: group: and terminal: selectors name ids that restart with the server, so a registry cannot hold them"
+    )]
+    UnstableSelector {
+        /// Position of the scope among those supplied, counting from 1.
+        index: usize,
+    },
     /// A credential was supplied with no scope at all.
     #[error("a workload credential needs at least one scope")]
     NoScopes,
@@ -172,7 +181,8 @@ pub struct WorkloadCredential {
     pub id: String,
     /// Raw public key (DER `SubjectPublicKeyInfo`), lowercase hex on disk.
     pub public_key: Vec<u8>,
-    /// Scope strings in the registry grammar ([`validate_scope`]).
+    /// Scope strings in the registry grammar
+    /// ([`phux_protocol::scope::ScopeGrant::parse`]); see [`Self::ceiling`].
     pub scopes: Vec<String>,
     /// Absolute Unix expiry, if any.
     pub expires_at: Option<i64>,
@@ -185,6 +195,16 @@ impl WorkloadCredential {
     #[must_use]
     pub fn is_active_at(&self, now: i64) -> bool {
         self.revoked_at.is_none() && self.expires_at.is_none_or(|expires| expires > now)
+    }
+
+    /// The scope ceiling as one canonical set (`workload-auth.md` §5).
+    ///
+    /// # Errors
+    ///
+    /// As [`validate_scopes`]. A record in a loaded snapshot always parses,
+    /// because loading validated it.
+    pub fn ceiling(&self) -> Result<TerminalScopeSet, WorkloadError> {
+        parse_ceiling(&self.scopes)
     }
 
     /// The connection attestation for a TLS peer admitted under this
@@ -533,22 +553,62 @@ fn credential_from_record(record: &RegistryRecord) -> Result<WorkloadCredential,
     })
 }
 
-/// Every scope must parse, and there must be at least one.
+/// Every scope must parse, there must be at least one, and together they
+/// must fit one canonical set. One bad string refuses the whole record:
+/// there is no partial grant.
 ///
 /// # Errors
 ///
-/// [`WorkloadError::NoScopes`] or the first [`WorkloadError::InvalidScope`].
+/// [`WorkloadError::NoScopes`], the first [`WorkloadError::InvalidScope`],
+/// or [`WorkloadError::Malformed`] for more than 64 distinct selectors.
 pub fn validate_scopes(scopes: &[String]) -> Result<(), WorkloadError> {
+    parse_ceiling(scopes).map(drop)
+}
+
+fn parse_ceiling(scopes: &[String]) -> Result<TerminalScopeSet, WorkloadError> {
     if scopes.is_empty() {
         return Err(WorkloadError::NoScopes);
     }
-    for (index, scope) in scopes.iter().enumerate() {
-        validate_scope(scope).map_err(|reason| WorkloadError::InvalidScope {
-            index: index + 1,
-            reason,
-        })?;
-    }
-    Ok(())
+    let ceiling = TerminalScopeSet::parse_all(scopes).map_err(|(index, rule)| {
+        rule.map_or_else(
+            || {
+                WorkloadError::Malformed(
+                    "a scope ceiling names more than 64 distinct selectors".to_owned(),
+                )
+            },
+            |reason| WorkloadError::InvalidScope {
+                index: index + 1,
+                reason,
+            },
+        )
+    })?;
+    refuse_restartable_ids(scopes)?;
+    // Admission mints exactly this effective set (workload-auth §5.1), so a
+    // ceiling it cannot hold is refused here, at enrollment and load, rather
+    // than at every HELLO.
+    EffectiveScopeSet::unattenuated(&ceiling).map_err(|_| {
+        WorkloadError::Malformed("a scope ceiling encodes larger than section 5 allows".to_owned())
+    })?;
+    Ok(ceiling)
+}
+
+/// Refuse `group:` and `terminal:` selectors in a persisted ceiling: the ids
+/// they name restart with the server, so a registry record would come to name
+/// a different session or Terminal (workload-auth §5.1).
+fn refuse_restartable_ids(scopes: &[String]) -> Result<(), WorkloadError> {
+    let restartable = |scope: &String| {
+        ScopeGrant::parse(scope).is_ok_and(|grant| names_restartable_id(&grant.selector))
+    };
+    scopes.iter().position(restartable).map_or(Ok(()), |index| {
+        Err(WorkloadError::UnstableSelector { index: index + 1 })
+    })
+}
+
+const fn names_restartable_id(selector: &Selector) -> bool {
+    matches!(
+        selector,
+        Selector::Group(_) | Selector::TerminalLocal(_) | Selector::TerminalSatellite(..)
+    )
 }
 
 /// An expiry must lie after now and within [`MAX_EXPIRY_SECONDS`].

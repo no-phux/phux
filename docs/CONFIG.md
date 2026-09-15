@@ -85,8 +85,8 @@ for the attach-side reload.
 A few settings are read once at attach and still need a client restart
 (detach and re-attach, or relaunch `phux`): `[experimental]` flags,
 `[sidebar]` geometry, and `defaults.mouse`. `[defaults]` (except mouse),
-`[voice]`, and `[[hooks.*]]` are owned by the server and take effect on
-the next server start.
+`[voice]`, `[policy]`, and `[[hooks.*]]` are owned by the server and take
+effect on the next server start.
 
 Reload is explicit, never automatic: the file is not watched, because
 watch-reload introduces papercuts ("saved-mid-edit, now my keybindings

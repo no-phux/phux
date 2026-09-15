@@ -58,8 +58,11 @@ pub(super) struct OpenRequest {
 /// Workload mode (ADR-0116) covers this door too: the same client verifier
 /// and live registry as the configured QUIC listener. A configured authority
 /// that cannot load refuses the door rather than opening it bearer-only.
-fn workload_authority() -> Result<Option<super::workload_auth::WorkloadAuth>, CommandResult> {
-    super::workload_auth::WorkloadAuth::from_env().map_err(|err| {
+fn workload_authority(
+    state: &SharedState,
+) -> Result<Option<super::workload_auth::WorkloadAuth>, CommandResult> {
+    let required = state.with(crate::state::ServerState::workload_mtls_required);
+    super::workload_auth::WorkloadAuth::for_posture(required).map_err(|err| {
         warn!(error = %err, "OPEN_LISTENER refused: configured workload mTLS is unavailable");
         refusal(
             ErrorCode::InternalError,
@@ -82,12 +85,8 @@ pub(super) fn handle_open_listener(
     input_lane: Option<&InputLaneHandle>,
     root_token: &CancellationToken,
 ) -> CommandResult {
-    if !from_local_socket(state, client_id) {
-        warn!(?client_id, "OPEN_LISTENER refused: local socket only");
-        return refusal(
-            ErrorCode::PermissionDenied,
-            "OPEN_LISTENER is accepted on the local socket only".to_owned(),
-        );
+    if let Some(refused) = door_refusal(state, client_id) {
+        return refused;
     }
     if let Err(message) = validate(&request) {
         return refusal(ErrorCode::InvalidCommand, message);
@@ -121,7 +120,7 @@ pub(super) fn handle_open_listener(
         }
     };
     let token = Arc::new(token);
-    let workload = match workload_authority() {
+    let workload = match workload_authority(state) {
         Ok(workload) => workload,
         Err(refused) => return refused,
     };
@@ -186,6 +185,30 @@ pub(super) fn handle_open_listener(
         "linger_secs": linger.as_secs(),
     });
     CommandResult::OkWith(CommandValue::Json(document.to_string()))
+}
+
+/// Why this door may not open, if it may not: only the owner's socket asks,
+/// and never under `[policy] mode = "local"`, which admits no remote door
+/// (`docs/spec/workload-auth.md` §8).
+fn door_refusal(state: &SharedState, client_id: ClientId) -> Option<CommandResult> {
+    if !from_local_socket(state, client_id) {
+        warn!(?client_id, "OPEN_LISTENER refused: local socket only");
+        return Some(refusal(
+            ErrorCode::PermissionDenied,
+            "OPEN_LISTENER is accepted on the local socket only".to_owned(),
+        ));
+    }
+    if state
+        .with(crate::state::ServerState::policy_posture)
+        .is_local()
+    {
+        warn!(?client_id, "OPEN_LISTENER refused: [policy] mode is local");
+        return Some(refusal(
+            ErrorCode::PermissionDenied,
+            "OPEN_LISTENER is unavailable under [policy] mode = \"local\"".to_owned(),
+        ));
+    }
+    None
 }
 
 /// Whether `client_id` reached the server over its Unix socket.

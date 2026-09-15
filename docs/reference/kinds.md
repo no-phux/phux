@@ -38,9 +38,9 @@ Addressed to the server or the connection rather than to one resource.
 | `GET_PERF` | command `0x18` | OBSERVE, BIND | yes | `get_perf` | shipped |
 | `phux.session.create/v1` | metadata key | CREATE, BIND | yes | none | shipped |
 | `phux.session.name/v1` | metadata key | BIND | yes | none | shipped |
-| `phux.session.keep_empty/v1` | metadata key | CREATE, BIND | yes | `keep_empty_sessions` | shipped |
+| `phux.session.keep_empty/v1` | metadata key | CREATE, BIND, SIGNAL | yes | `keep_empty_sessions` | shipped |
 | `phux.config.reload/v1` | metadata key | SIGNAL | yes | none | shipped |
-| `phux.whoami/v1` | metadata key | OBSERVE | no | `whoami` | shipped |
+| `phux.whoami/v1` | metadata key | exempt: self | no | `whoami` | shipped |
 
 ## Server events
 
@@ -179,9 +179,11 @@ Every client-originated frame lands on exactly one row.
 | `MOVE_RESOURCE` | BIND | `MovedAndOwnerTerminals` |
 | `SUBSCRIBE_EVENTS { terminal: Some }` | OBSERVE | `NamedTerminal` |
 | `SUBSCRIBE_EVENTS { terminal: None }` | OBSERVE | `ObservableTerminals` |
-| `GET_METADATA` | OBSERVE | `MetadataScope` |
+| `GET_METADATA { Global, "phux.whoami/v1" }` | exempt: self | `CallingConnection` |
+| Other `GET_METADATA` | OBSERVE | `MetadataScope` |
 | `SET_METADATA { Global, "phux.session.create/v1" }` | CREATE+BIND | `Global { owner_uds_only: false }` |
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0true` | CREATE+BIND | `Global { owner_uds_only: false }` |
+| `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false` | SIGNAL | `NamedSession` |
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value | deny | `None` |
 | `SET_METADATA { Global, "phux.config.reload/v1" }` | SIGNAL | `Global { owner_uds_only: false }` |
 | `SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results | deny | `None` |

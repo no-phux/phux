@@ -141,6 +141,19 @@ impl CommandDispatch<'_> {
 
     async fn run_inner(mut self, request_id: u32, command: Command) -> Option<WireResourceId> {
         let command_started = std::time::Instant::now();
+        // workload-auth §6: the command guard, above the input lane, the bulk
+        // worker, and every handler and satellite relay below.
+        if super::dispatch_guard::refuse_command(
+            self.state,
+            self.client_id,
+            request_id,
+            &command,
+            self.out_tx,
+        )
+        .await
+        {
+            return None;
+        }
         let defer_subscription = self
             .selection
             .server_features
@@ -2583,6 +2596,17 @@ fn decode_client_frame(
     framed: &BytesMut,
     negotiated: Option<&NegotiatedConnection>,
 ) -> Result<FrameKind, ConnectionClose> {
+    // FRAME_COMPRESSED is server-to-client only (proto.md §6.4). The decoder
+    // would inflate it and classify the inner frame, so the envelope is
+    // refused before decode: the type byte follows the u32 length header.
+    if framed.get(4) == Some(&phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED) {
+        warn!("client sent FRAME_COMPRESSED; closing");
+        return Err(ConnectionClose {
+            attached_reason: Some("client-sent FRAME_COMPRESSED"),
+            code: ErrorCode::MalformedMessage,
+            message: "FRAME_COMPRESSED is server-to-client only".to_owned(),
+        });
+    }
     let decoded = negotiated.map_or_else(
         || FrameKind::decode(framed),
         |selection| FrameKind::decode_with_limits(framed, selection.limits),
@@ -2756,7 +2780,11 @@ async fn negotiate_hello(
 /// the accepting transport. A missing registry entry is never equivalent to a
 /// local root peer.
 async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(), ConnectionClose> {
-    let Some(peer) = state.with(|s| s.peer_identity(client_id).cloned()) else {
+    let identity = state.with(|s| {
+        let peer = s.peer_identity(client_id).cloned()?;
+        Some((peer, s.authenticated_credential(client_id).cloned()))
+    });
+    let Some((peer, credential)) = identity else {
         warn!(
             ?client_id,
             "HELLO denied: authenticated peer identity missing"
@@ -2768,22 +2796,14 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
         });
     };
     let engine = state.with(|s| s.policy_engine().clone());
-    // Placeholder requested-capability set: HELLO carries no
-    // capability request on the wire, so there is nothing to
-    // derive one from yet. phux-pjc5 replaces this with the
-    // scopes minted from the peer's paired credential, and
-    // starts enforcing the granted set the engine returns —
-    // which is why the return value is discarded today
-    // (ADR-0072).
-    let requested_caps = vec![phux_protocol::policy::Capability {
-        layer: phux_protocol::caps::Layer::L1,
-        ops: vec![],
-        terminals: None,
-        groups: None,
-        expires_at: None,
-    }];
-    match engine.authorize_hello(&peer, requested_caps).await {
-        Ok(_granted) => Ok(()),
+    // HELLO carries no scope request (workload-auth §5): the engine mints
+    // the connection's grant from its verified identity alone, and the
+    // grant is retained for the dispatch guard.
+    match engine.authorize_hello(&peer, credential.as_ref()).await {
+        Ok(grant) => {
+            state.with_mut(|s| s.set_connection_grant(client_id, grant));
+            Ok(())
+        }
         Err(err) => {
             warn!(?client_id, error = %err, "HELLO denied by policy");
             Err(ConnectionClose {
@@ -3157,6 +3177,19 @@ where
                     return Ok(());
                 }
             };
+
+        // workload-auth §6: the frame guard, before any routing or handler.
+        if super::dispatch_guard::refuse_frame(
+            &state,
+            client_id,
+            &frame,
+            negotiated.is_some(),
+            &plumbing.out_tx,
+        )
+        .await
+        {
+            continue;
+        }
 
         match frame {
             FrameKind::Hello {
@@ -3789,6 +3822,14 @@ async fn bind_terminal_stream(
     selection: &NegotiatedConnection,
     token: &CancellationToken,
 ) {
+    // workload-auth §6: OBSERVE on the bound Terminal, before membership is
+    // consulted, so an unauthorized bind learns nothing about the Terminal.
+    if super::dispatch_guard::refuse_stream_bind(state, client_id, &terminal_id, &plumbing.out_tx)
+        .await
+    {
+        refuse_terminal_stream(send, recv);
+        return;
+    }
     // Authorization is subscription membership: the Terminal names a pane in
     // the client's attached session or an ATTACH_RESOURCE registration.
     // Session ATTACH registers membership without content (deferred), so

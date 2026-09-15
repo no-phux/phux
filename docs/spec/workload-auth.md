@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-14
+last-reviewed: 2026-09-15
 ---
 
 # Workload authority over mTLS — authentication and scoped authority
@@ -18,12 +18,19 @@ document previously specified; the authorization half stands.)
 
 ---
 
-<!-- impl-status: partial; probe: WorkloadRegistry,enroll_client,credential_id,ReloadingWorkloadRegistry,prepare_enrollment,WorkloadAction -->
+<!-- impl-status: partial; probe: WorkloadRegistry,enroll_client,credential_id,ReloadingWorkloadRegistry,prepare_enrollment,WorkloadAction,ScopedPolicy,enforce -->
 > **Status: partial.** The persisted workload CA, client enrollment,
-> credential-id derivation, and validated scope registry are implemented in
-> `phux_server::workload`. TLS handshake enforcement, scope classification,
-> and live revocation remain follow-up work; the current `PolicyEngine` default
-> is still permissive until those seams are wired.
+> credential-id derivation, and the scope registry are implemented in
+> `phux_server::workload`; the §5 scope types and registry grammar in
+> `phux_protocol::scope`; and the `paired` grant and the dispatch guard in
+> `phux_server::policy` (`ScopedPolicy`, `enforce`). The owner's socket is a
+> Unix-socket peer whose kernel uid is the serving uid. Live revocation (§7)
+> is follow-up work: a revoked credential is refused at its next HELLO, and
+> an expired grant admits nothing from the moment it expires, but neither
+> ends an established connection yet. Work admitted before a change keeps
+> running: a queued bulk `PUT_FILE` or `TRANSCRIBE` and an input-lane
+> receipt were authorized when queued, and an existing subscription keeps
+> streaming.
 
 ## 1. Profile boundary
 
@@ -270,14 +277,62 @@ grant is bound to the authenticated connection, server incarnation, credential
 id, and registry generation; it SHALL not be serialized as a reusable bearer
 credential.
 
+### 5.1 Registry string grammar (informative)
+
+The registry file and `phux workload add-key --scope` spell one grant as
+`<verb>[,<verb>...]@<selector>`. A verb is `inventory`, `observe`,
+`create`, `bind`, `input`, or `signal`, each at most once, or the single
+wildcard `*` (all six, never combined with a name). A selector is `global`,
+`host` (the serving host), `host:<name>`, `group:<id>`, `terminal:<id>`, or
+`terminal:<host>/<id>`. An `<id>` is a canonical unsigned 32-bit decimal (no
+sign, no leading zero), a `<host>` obeys the rules above, and the last `/`
+splits a satellite Terminal's host from its id.
+
+In the reference server a Group is a session and `group:<id>` names its wire
+session id, the one `ATTACHED` reports. `GroupId`, the `SPAWN_RESOURCE`
+payload group and the `Scope::Group` metadata key, is an opaque key only the
+local host as a whole contains.
+
+One record's strings form one `TerminalScopeSet`: equal selectors merge, and
+one string that does not parse makes the record, and so the registry
+snapshot, malformed. No partial grant is minted. The grammar is a spelling
+of the canonical bytes above, not a second authority.
+
+A persisted registry record SHALL NOT name a `group:` or `terminal:`
+selector. The reference server's session and Terminal ids restart at 1
+with every server process, so an id written into the registry would come
+to name a different session or Terminal after a restart. `phux workload
+add-key` refuses them, and a registry file holding one is malformed (the
+empty snapshot of §7). Persisted ceilings name `global`, `host`, or
+`host:<name>` until stable identities exist, which is future work. The
+selectors stay valid in the canonical encoding above, for a requested
+attenuation that lives only as long as its connection.
+
+HELLO carries no scope request, so the requested set is the ceiling. With
+no requested attenuation the server mints one clause `(g, g, verbs)` per
+ceiling grant. That grants exactly what the full self-intersection grants:
+an off-diagonal clause covers only subjects both its selectors contain,
+which the diagonal clause for either selector already covers with at least
+the same verbs.
+
 ## 6. Terminal endpoint mapping and total classification
 
-<!-- impl-status: partial; probe: classify_command -->
+<!-- impl-status: partial; probe: classify_command,ScopedPolicy,enforce -->
 > **Status: partial.** Both tables below are mirrored row for row by
 > `phux_protocol::kinds` (ADR-0125), the table `classify_frame` and
-> `classify_command` read and the one source any enforcement point must
-> consume; a test pins it to these rows in both directions. No dispatch
-> path consults the classifier yet.
+> `classify_command` read; a test pins it to these rows in both directions.
+> The reference server enforces it for `paired` workload grants at three
+> points that share one `enforce`: the client frame loop after decode, the
+> top of command dispatch (above the input lane and every satellite relay),
+> and QUIC `STREAM_BIND` (`OBSERVE` on the bound Terminal). Where the table
+> allows a filtered result, the guard fails closed instead of filtering:
+> `SUBSCRIBE_EVENTS { terminal: None }` and `GET_STATE { SERVER }` need
+> their verb on Global, and `ATTACH` needs its verbs on the resolved Group,
+> which contains every member. An unowned local `SPAWN_RESOURCE` needs
+> `CREATE` on the local host, because the server, not the payload `GroupId`,
+> picks its session. The owner's grant (`local`, the §8 transitional
+> posture, and the owner socket under `paired`) admits every frame, leaving
+> the handlers' own checks as its only limit.
 
 The terminal protocol adds no workload frame and no HELLO workload field:
 HELLO field ids 7 and 8 stay reserved and unassigned, `WORKLOAD_RESPONSE
@@ -316,9 +371,11 @@ Terminal, current Group, owning Host, or Global selector according to §5.
 | `MOVE_RESOURCE` | `BIND` | both moved and destination-owner Terminals |
 | `SUBSCRIBE_EVENTS { terminal: Some }` | `OBSERVE` | named Terminal |
 | `SUBSCRIBE_EVENTS { terminal: None }` | `OBSERVE` | installs a filtered subscription over all observable Terminals; server-global events require Global |
-| `GET_METADATA` | `OBSERVE` | encoded metadata Scope; `{ Global, "phux.whoami/v1" }` answers only the asking connection's own identity |
+| `GET_METADATA { Global, "phux.whoami/v1" }` | self-exempt | calling connection only: the record describes the asking connection's own identity and grant, never another's |
+| Other `GET_METADATA` | `OBSERVE` | encoded metadata Scope |
 | `SET_METADATA { Global, "phux.session.create/v1" }` | `CREATE` and `BIND` | Global; BIND alone MUST NOT create a process |
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0true` | `CREATE` and `BIND` | Global; the mark keeps a session, and so the server, alive with zero processes (ADR-0105) |
+| `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false` | `SIGNAL` | named session, resolved side-effect-free; an absent name resolves to no Group a narrower grant holds. Clearing the mark of a windowless session removes it, so this is `SIGNAL` on that session, like `DETACH_CLIENTS { session: Some }` |
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value | default-deny | malformed; the value is classified before the handler parses it |
 | `SET_METADATA { Global, "phux.config.reload/v1" }` | `SIGNAL` | Global |
 | `SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results | default-deny | server-owned result namespace is non-writable |
@@ -469,6 +526,23 @@ or non-UDS listener with mode unset is a startup error. `local` with a
 non-UDS listener is a startup error. `paired` with missing, malformed, or unsafe
 CA or registry material is a startup error. Runtime corruption after a
 successful start applies the empty-snapshot revocation rule in §7.
+
+<!-- impl-status: partial; probe: PolicyPosture,warns_remote_owner_grant -->
+> **Status: partial (2026-09-15).** The reference server reads the mode from
+> `[policy] mode`, enforces `local`, `paired`, and their startup errors, and
+> treats `PHUX_WORKLOAD_MTLS` with no mode as `paired`. It keeps one
+> transitional posture the table above does not name: no mode beside a
+> non-UDS listener or relay connector starts, logs a warning once, and gives
+> every admitted connection the owner's full grant, as before enforcement
+> existed. Paired phones and `phux host add` remotes keep working until
+> workload mTLS covers WebSocket consumers, WebTransport, and mobile
+> enrollment (PHA-406 decision H1); the posture ends, and this marker goes,
+> when that follow-up lands. Under `local` the server never auto-binds the
+> overlay listener and refuses `OPEN_LISTENER`. Two further gaps: a
+> configured CA or registry path with no mode is ignored rather than
+> refused, and SSH-stdio under
+> `paired` is not refused, because `phux stdio-bridge` reaches the server as
+> a same-uid Unix-socket peer and its ssh origin is an unauthenticated label.
 
 TLS, certificate verification, an SSH login, a bearer token, or UDS
 peer credentials remain necessary transport evidence where their transports

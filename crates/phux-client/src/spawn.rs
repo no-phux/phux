@@ -433,4 +433,36 @@ mod tests {
             None
         );
     }
+
+    #[tokio::test]
+    async fn a_scoped_denial_ends_the_spawn_with_its_own_refusal() {
+        // A paired server refuses an out-of-scope SPAWN_RESOURCE with the
+        // spawn's own reply, RESOURCE_SPAWNED carrying SpawnFailed
+        // ("permission denied", workload-auth §7). The wait must end on it.
+        let temp = tempfile::TempDir::new().expect("tempdir");
+        let socket = temp.path().join("scoped.sock");
+        let listener = tokio::net::UnixListener::bind(&socket).expect("bind");
+        let spec = crate::testkit::ScriptSpec::new().spawn_result(SpawnResult::Err(
+            SpawnError::SpawnFailed("permission denied".to_owned()),
+        ));
+        let server =
+            tokio::spawn(
+                async move { crate::testkit::ScriptedServer::accept(&listener, spec).await },
+            );
+
+        let (result, _degradation) =
+            tokio::time::timeout(WEDGE_TIMEOUT, spawn_on(&socket, &spawn_frame()))
+                .await
+                .expect("a denied spawn must return; a timeout here is the wedge itself")
+                .expect("transport");
+
+        assert!(
+            matches!(
+                &result,
+                SpawnResult::Err(SpawnError::SpawnFailed(reason)) if reason == "permission denied"
+            ),
+            "the denial must reach the operator, got {result:?}"
+        );
+        server.await.expect("scripted server");
+    }
 }

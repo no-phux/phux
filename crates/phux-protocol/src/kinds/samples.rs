@@ -440,6 +440,14 @@ fn metadata_samples() -> Vec<(FrameKind, &'static Rule)> {
                 scope: Scope::Global,
                 key: WHOAMI_KEY.to_owned(),
             },
+            &F_WHOAMI,
+        ),
+        (
+            FrameKind::GetMetadata {
+                request_id: 1,
+                scope: Scope::Global,
+                key: RESOURCE_AGENT_KEY.to_owned(),
+            },
             &F_GET_METADATA,
         ),
         (
@@ -456,7 +464,7 @@ fn metadata_samples() -> Vec<(FrameKind, &'static Rule)> {
         ),
         (
             set(Scope::Global, SESSION_KEEP_EMPTY_KEY, &unmark),
-            &F_KEEP_EMPTY_OTHER,
+            &F_KEEP_EMPTY_CLEAR,
         ),
         (
             set(Scope::Global, SESSION_KEEP_EMPTY_KEY, b"work"),
