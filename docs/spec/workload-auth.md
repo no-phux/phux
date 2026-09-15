@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: stable
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-14
 ---
 
 # Workload authority over mTLS — authentication and scoped authority
@@ -254,6 +254,13 @@ id, and registry generation; it SHALL not be serialized as a reusable bearer
 credential.
 
 ## 6. Terminal endpoint mapping and total classification
+
+<!-- impl-status: partial; probe: classify_command -->
+> **Status: partial.** Both tables below are mirrored row for row by
+> `phux_protocol::kinds` (ADR-0125), the table `classify_frame` and
+> `classify_command` read and the one source any enforcement point must
+> consume; a test pins it to these rows in both directions. No dispatch
+> path consults the classifier yet.
 
 The terminal protocol adds no workload frame and no HELLO workload field:
 HELLO field ids 7 and 8 stay reserved and unassigned, `WORKLOAD_RESPONSE

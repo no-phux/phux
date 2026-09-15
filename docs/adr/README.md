@@ -169,6 +169,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0122](./0122-host-add-is-the-front-door.md) | `phux host add HOST` is the front door to a machine | Accepted (supersedes in part [0066](./0066-host-namespace.md); amends [0093](./0093-remote-target-as-a-resolution-ladder.md)) |
 | [0123](./0123-events-are-journaled.md) | Events are journaled, resumable, and never dropped silently | Accepted (builds on [0033](./0033-input-authority-and-process-signals.md), [0053](./0053-acknowledged-idempotent-input.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0124](./0124-retain-on-exit.md) | Retain on exit: exit is a facet, close is a purge | Accepted (builds on [0104](./0104-parent-bindings-are-l1-lifecycle.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
+| [0125](./0125-kind-catalog-is-generated-metadata.md) | The kind catalog is generated metadata, not wire | Accepted (builds on [0098](./0098-workload-proof-and-closed-scope-authority.md), [0102](./0102-resources-the-server-serves-kinds.md)) |
 | [0126](./0126-idempotent-create.md) | Creates are idempotent under a client key | Accepted (builds on [0053](./0053-acknowledged-idempotent-input.md); amends [0071](./0071-what-phux-1-0-commits-to.md)) |
 
 ## When to write an ADR
