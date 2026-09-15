@@ -156,6 +156,12 @@ class BuildContracts(unittest.TestCase):
         self.assertIn("_ring_core_0_17_14__p256_mul_mont", checker)
         self.assertIn("_ring_core_0_17_14__p256_sqr_mont", checker)
         self.assertIn("zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all", workflow)
+        node_test = "node --import ./src/tests/navigation-loader.mjs --test ./src/tests/*.test.mjs"
+        justfile = (REPO_ROOT / "justfile").read_text()
+        self.assertIn("cockpit-node-test:", justfile)
+        self.assertIn(node_test, justfile)
+        self.assertIn(node_test, workflow)
+        self.assertIn("npm ci --ignore-scripts --no-audit --no-fund", workflow)
         self.assertEqual(len(re.findall(r"zig-build\.sh test", workflow)), 1)
         self.assertNotIn("Test the app graph without the Phux provider", workflow)
         self.assertNotIn("cockpit-rust-artifacts", workflow)

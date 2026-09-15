@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-09
+last-reviewed: 2026-09-15
 ---
 
 # Contributor setup
@@ -71,7 +71,7 @@ the shell, Cargo, and npm commands below also work directly.
 | Server, TUI, CLI, engine-dependent protocol helpers, FFI | Rust, Zig, platform packages | `just doctor native`, then `just crate-check phux-server` (choose the affected crate) |
 | Agent integrations | Node/npm | `just integration-check pi` (or `opencode`, `claude`) |
 | Browser client | Rust WASM target, Node, WASM tools (engine binary is committed) | `just doctor web`; see [Browser client](#browser-client) |
-| Cockpit app | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test` |
+| Cockpit app | Apple-silicon Mac, SDK, Zig, Node, Rust FFI, Python | `just doctor cockpit`, then `just cockpit-test` / `just cockpit-node-test` |
 | Full root validation | Native prerequisites plus gate tools | `just doctor ci`, then `just ci-full` |
 
 `bash scripts/doctor.sh <area>` works before installing `just`. It checks tool
@@ -290,6 +290,7 @@ Use the native Rust/Zig/macOS setup above, Node 24, and Python 3. From the root:
 brew install python
 bash scripts/doctor.sh cockpit
 just cockpit-test
+just cockpit-node-test  # Node TS tests; npm ci --ignore-scripts in clients/cockpit first
 just cockpit-test-no-phux  # the default app graph, without the Phux provider
 just cockpit-build
 just cockpit-dev
