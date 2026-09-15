@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::{mem, ptr};
 
-use phux_protocol::ids::ServerInstance;
+use phux_protocol::ids::{IdempotencyKey, ServerInstance};
 use phux_protocol::wire::frame::{
     Command, CommandResult, FrameKind, KillPrecondition, SpawnError, SpawnResource, SpawnResult,
 };
@@ -34,6 +34,11 @@ pub const MAX_SPAWN_BYTES: usize = 64 * 1024;
 pub const MAX_OPERATION_MESSAGE_BYTES: usize = 4096;
 
 /// A durable creation request. Null owner, empty satellite/cwd, and zero argc mean absent.
+///
+/// `has_retain_secs` / `retain_secs` and `idempotency_key` are trailing-additive
+/// at ABI version 2. A host that still passes the geometry-only size is accepted
+/// and treated as both fields absent, so Cockpit Hybrid C keeps compiling and
+/// linking without a version bump.
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct PhuxSpawnOptions {
@@ -47,6 +52,12 @@ pub struct PhuxSpawnOptions {
     pub cwd: PhuxBytes,
     pub cols: u16,
     pub rows: u16,
+    /// When true, `retain_secs` is sent as `SPAWN_RESOURCE` field 16 (ADR-0124).
+    pub has_retain_secs: bool,
+    /// Seconds to keep an exited Terminal. `0` asks for the server default.
+    pub retain_secs: u32,
+    /// 16-byte spawn key (ADR-0126). All-zero means absent.
+    pub idempotency_key: [u8; 16],
 }
 
 impl Default for PhuxSpawnOptions {
@@ -62,8 +73,52 @@ impl Default for PhuxSpawnOptions {
             cwd: PhuxBytes::default(),
             cols: 80,
             rows: 24,
+            has_retain_secs: false,
+            retain_secs: 0,
+            idempotency_key: [0; 16],
         }
     }
+}
+
+/// Size of the geometry-only spawn record (ABI 2 before retain/idempotency).
+fn spawn_options_min_size() -> usize {
+    let rows_end = mem::offset_of!(PhuxSpawnOptions, rows) + mem::size_of::<u16>();
+    rows_end.next_multiple_of(mem::align_of::<PhuxSpawnOptions>())
+}
+
+/// Copy a possibly-shorter host record into the current layout.
+///
+/// # Safety
+/// `ptr` is either null (rejected) or readable for the `size` it declares.
+unsafe fn spawn_options_in(ptr: *const PhuxSpawnOptions) -> Result<PhuxSpawnOptions, BridgeError> {
+    if ptr.is_null() {
+        return Err(BridgeError::invalid("options is null"));
+    }
+    // SAFETY: `size` is the first field; the caller promised a readable options record.
+    let declared = unsafe { ptr::read(ptr.cast::<usize>()) };
+    if declared < spawn_options_min_size() {
+        return Err(BridgeError::invalid("FFI struct is smaller than required"));
+    }
+    check_struct(declared, spawn_options_min_size(), {
+        // SAFETY: `version` sits immediately after `size` and `declared` covers it.
+        unsafe { ptr::read(ptr.byte_add(mem::size_of::<usize>()).cast::<u32>()) }
+    })?;
+    let mut options = PhuxSpawnOptions::default();
+    let copy_len = declared.min(mem::size_of::<PhuxSpawnOptions>());
+    // SAFETY: `copy_len` is within both the host record and the local struct.
+    unsafe {
+        ptr::copy_nonoverlapping(
+            ptr.cast::<u8>(),
+            ptr::from_mut(&mut options).cast::<u8>(),
+            copy_len,
+        );
+    }
+    if declared < mem::size_of::<PhuxSpawnOptions>() {
+        options.has_retain_secs = false;
+        options.retain_secs = 0;
+        options.idempotency_key = [0; 16];
+    }
+    Ok(options)
 }
 
 /// Explicit subscription request; admission is installed before its queued frame is observable.
@@ -409,11 +464,6 @@ unsafe fn spawn_frame(
     options: &PhuxSpawnOptions,
     bind_instance: bool,
 ) -> Result<FrameKind, BridgeError> {
-    check_struct(
-        options.size,
-        mem::size_of::<PhuxSpawnOptions>(),
-        options.version,
-    )?;
     if options.cols == 0 || options.rows == 0 {
         return Err(BridgeError::invalid("spawn geometry must be nonzero"));
     }
@@ -426,6 +476,19 @@ unsafe fn spawn_frame(
     let command = unsafe { command_in(options, &mut budget) }?;
     // SAFETY: caller's options contract covers the optional owner pointer.
     let owner_terminal = unsafe { owner_in(options.owner_terminal, &satellite, &mut budget) }?;
+    let retain_secs = options.has_retain_secs.then_some(options.retain_secs);
+    let idempotency_key = if options.idempotency_key.iter().all(|&byte| byte == 0) {
+        None
+    } else {
+        Some(
+            IdempotencyKey::new(options.idempotency_key)
+                .ok_or_else(|| BridgeError::invalid("idempotency_key must be 16 nonzero bytes"))?,
+        )
+    };
+    let resource = SpawnResource::default()
+        .with_bind_instance(bind_instance)
+        .with_retain_secs(retain_secs)
+        .with_idempotency_key(idempotency_key);
     Ok(FrameKind::SpawnResource {
         request_id: options.request_id,
         group: GroupId::new(1),
@@ -437,9 +500,8 @@ unsafe fn spawn_frame(
         owner_terminal,
         agent_session: None,
         initial_size: Some((options.cols, options.rows)),
-        // Field 15 only when asked: an unbound spawn stays byte-identical.
-        resource: bind_instance
-            .then(|| Box::new(SpawnResource::default().with_bind_instance(true))),
+        // Field 15–17 only when asked: a plain spawn stays byte-identical.
+        resource: (!resource.is_default()).then(|| Box::new(resource)),
     })
 }
 
@@ -508,6 +570,70 @@ pub unsafe extern "C" fn phux_client_queue_spawn_bound(
     })
 }
 
+/// Arm or send `SUBSCRIBE_EVENTS` with an optional journal cursor (ADR-0123).
+///
+/// `terminal` null is the connection-wide scope the automatic post-`ATTACH_READY`
+/// subscribe uses. `after_seq` null is live-only; a non-null pointer is the
+/// cursor and is stored for the automatic subscribe as well. A cursor requires
+/// `EVENT_JOURNAL`. Before attach, the call only stores the cursor; after
+/// attach it queues the frame immediately.
+///
+/// # Safety
+/// Client is live and exclusively accessed on its owning thread. `terminal`,
+/// when non-null, is a readable ID; `after_seq`, when non-null, is a readable
+/// `u64`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_subscribe_events(
+    client: *mut PhuxClient,
+    terminal: *const PhuxResourceId,
+    after_seq: *const u64,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        if client.detached {
+            return Err(BridgeError::state(
+                "SUBSCRIBE_EVENTS is not valid on a detached client",
+            ));
+        }
+        if !client.protocol_ready {
+            return Err(BridgeError::state(
+                "SUBSCRIBE_EVENTS needs a negotiated connection",
+            ));
+        }
+        let after_seq = if after_seq.is_null() {
+            None
+        } else {
+            // SAFETY: caller supplies a readable u64.
+            Some(unsafe { ptr::read(after_seq) })
+        };
+        if after_seq.is_some() && !client.event_journal {
+            return Err(BridgeError::state(
+                "the server did not advertise EVENT_JOURNAL; a journal cursor cannot be sent",
+            ));
+        }
+        let terminal = if !client.attached || terminal.is_null() {
+            None
+        } else {
+            // SAFETY: caller supplies a readable ID and its host span.
+            let id = unsafe { terminal_id_in(terminal) }?;
+            valid_terminal(&id)?;
+            Some(id)
+        };
+        client.event_after_seq = after_seq;
+        if !client.attached {
+            return Ok(());
+        }
+        if client.outgoing.len() >= MAX_OPERATIONS {
+            return Err(BridgeError::state(
+                "outgoing queue is full; drain outgoing frames before adding operations",
+            ));
+        }
+        client.queue_frame(&FrameKind::SubscribeEvents {
+            terminal,
+            after_seq,
+        })
+    })
+}
+
 unsafe fn queue_spawn(
     client: &mut Client,
     options: *const PhuxSpawnOptions,
@@ -515,10 +641,21 @@ unsafe fn queue_spawn(
 ) -> Result<(), BridgeError> {
     client.ensure_attached()?;
     // SAFETY: caller supplies readable options when non-null.
-    let options =
-        unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
+    let options = unsafe { spawn_options_in(options) }?;
+    let retain_secs = options.has_retain_secs.then_some(options.retain_secs);
+    let has_idempotency_key = options.idempotency_key.iter().any(|&byte| byte != 0);
+    if retain_secs.is_some() && !client.retain_on_exit {
+        return Err(BridgeError::state(
+            "the server did not advertise RETAIN_ON_EXIT; retain_secs cannot be sent",
+        ));
+    }
+    if has_idempotency_key && !client.spawn_idempotency {
+        return Err(BridgeError::state(
+            "the server did not advertise SPAWN_IDEMPOTENCY; a spawn cannot carry a key",
+        ));
+    }
     // SAFETY: forwards the options contract.
-    let frame = unsafe { spawn_frame(options, bind_instance) }?;
+    let frame = unsafe { spawn_frame(&options, bind_instance) }?;
     ensure_queue_capacity(client, options.request_id)?;
     client.operations.check_admission_capacity()?;
     let FrameKind::SpawnResource { satellite, .. } = &frame else {

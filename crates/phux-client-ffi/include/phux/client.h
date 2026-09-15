@@ -457,6 +457,13 @@ typedef struct PhuxAttachOptions {
  * Text across argv/cwd/route/owner host is bounded by MAX_SPAWN_BYTES (both host
  * spans count when an owner is present). Both geometry axes must be nonzero.
  * Geometry is an initial hint; older servers and satellite relays may ignore it.
+ * has_retain_secs / retain_secs and idempotency_key are trailing-additive at
+ * ABI version 2 (ADR-0124, ADR-0126). A host that still passes the geometry-only
+ * size is accepted and treated as both absent. has_retain_secs false means
+ * absent (today's close-at-exit); true sends retain_secs, including 0 for the
+ * server default. Requires RETAIN_ON_EXIT or PHUX_CLIENT_INVALID_STATE, nothing
+ * queued. idempotency_key is 16 bytes; all-zero means absent. A nonzero key
+ * requires SPAWN_IDEMPOTENCY or PHUX_CLIENT_INVALID_STATE, nothing queued.
  */
 typedef struct PhuxSpawnOptions {
     size_t size;
@@ -469,6 +476,9 @@ typedef struct PhuxSpawnOptions {
     PhuxBytes cwd;
     uint16_t cols;
     uint16_t rows;
+    bool has_retain_secs;
+    uint32_t retain_secs;
+    uint8_t idempotency_key[16];
 } PhuxSpawnOptions;
 
 /** Explicitly admits this ID before bootstrap can arrive, including before the
@@ -572,7 +582,9 @@ typedef enum PhuxClientDamageKind {
  * subscribes with SUBSCRIBE_EVENTS after every ATTACH_READY (a repeat
  * subscribe is a documented wire no-op), and folds the resulting cwd_changed
  * / command_started / command_finished / terminal_control{Exited} events,
- * plus a plain RESOURCE_CLOSED teardown, into these effects. They are
+ * plus a plain RESOURCE_CLOSED teardown, into these effects. A host that
+ * called phux_client_subscribe_events with after_seq before ATTACH_READY
+ * sends that journal cursor on the automatic subscribe (ADR-0123). They are
  * additive PhuxClientStatusKind members: a host that does not recognise one
  * must skip it like any other effect kind it does not handle, and adding
  * them does not bump PHUX_CLIENT_ABI_VERSION (see its definition above).
@@ -874,6 +886,15 @@ PhuxClientResult phux_client_last_error(const PhuxClient *client, PhuxBytes *out
 PhuxClientResult phux_client_queue_hello(PhuxClient *client, PhuxBytes client_name);
 PhuxClientResult phux_client_queue_attach(PhuxClient *client, const PhuxAttachOptions *options);
 PhuxClientResult phux_client_queue_spawn(PhuxClient *client, const PhuxSpawnOptions *options);
+/* Arm or send SUBSCRIBE_EVENTS with an optional journal cursor (ADR-0123).
+ * Additive to ABI version 2. terminal NULL is the connection-wide scope the
+ * automatic post-ATTACH_READY subscribe uses. after_seq NULL is live-only; a
+ * non-NULL pointer is the cursor and is stored for that automatic subscribe
+ * as well. A cursor requires EVENT_JOURNAL (0x01000000) or
+ * PHUX_CLIENT_INVALID_STATE, nothing queued. Before ATTACH the call only
+ * stores the cursor; after ATTACH it queues the frame immediately. Needs a
+ * negotiated client that is not DETACHED. */
+PhuxClientResult phux_client_subscribe_events(PhuxClient *client, const PhuxResourceId *terminal, const uint64_t *after_seq);
 PhuxClientResult phux_client_queue_attach_resource(PhuxClient *client, const PhuxAttachResourceOptions *options);
 
 /* Withdraw a subscription, never kill durable work. Requires completed session
@@ -1215,7 +1236,8 @@ PhuxClientResult phux_client_session_query_status(const PhuxClient *client, uint
 /* ---------------------------------------------------- conditional kill
  *
  * ADR-0109, docs/spec/L1.md sections 3.1 and 5.2.1. Additive to ABI version
- * 2: PhuxSpawnOptions and PhuxOperationResult are unchanged. All of it
+ * 2: bind_instance stays a separate function, and PhuxOperationResult is
+ * unchanged. All of it
  * requires HELLO_OK to have advertised CONDITIONAL_KILL (0x00200000);
  * otherwise PHUX_CLIENT_INVALID_STATE, nothing queued, no request ID
  * consumed.

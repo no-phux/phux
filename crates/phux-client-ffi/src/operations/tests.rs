@@ -1180,6 +1180,115 @@ fn spawn_options_are_encoded_exactly_and_validation_is_transactional() {
 }
 
 #[test]
+fn spawn_options_retain_secs_and_idempotency_key_reach_the_wire() {
+    let mut h = Harness::attached();
+    let key = [0x5A; 16];
+    let options = PhuxSpawnOptions {
+        request_id: 20,
+        has_retain_secs: true,
+        retain_secs: 600,
+        idempotency_key: key,
+        ..PhuxSpawnOptions::default()
+    };
+    // SAFETY: harness owns the client; the options outlive each call.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn(h.ptr(), &raw const options),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert!(
+        h.0.inner.outgoing.is_empty(),
+        "nothing queued without RETAIN_ON_EXIT / SPAWN_IDEMPOTENCY"
+    );
+    h.0.inner.retain_on_exit = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn(h.ptr(), &raw const options),
+            PhuxClientResult::InvalidState
+        );
+    }
+    h.0.inner.spawn_idempotency = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn(h.ptr(), &raw const options),
+            PhuxClientResult::Ok
+        );
+    }
+    let (frame, remaining) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("decode");
+    assert!(remaining.is_empty());
+    let FrameKind::SpawnResource {
+        resource: Some(resource),
+        ..
+    } = frame
+    else {
+        panic!("expected SPAWN_RESOURCE with a resource block: {frame:?}");
+    };
+    assert_eq!(resource.retain_secs, Some(600));
+    assert_eq!(resource.idempotency_key.map(|k| *k.as_bytes()), Some(key));
+    assert!(!resource.bind_instance);
+}
+
+#[test]
+fn spawn_options_legacy_size_omits_trailing_retain_and_idempotency_fields() {
+    let mut h = Harness::attached();
+    h.0.inner.retain_on_exit = true;
+    h.0.inner.spawn_idempotency = true;
+    let mut options = PhuxSpawnOptions {
+        request_id: 21,
+        has_retain_secs: true,
+        retain_secs: 30,
+        idempotency_key: [0x5A; 16],
+        ..PhuxSpawnOptions::default()
+    };
+    let rows_end = mem::offset_of!(PhuxSpawnOptions, rows) + mem::size_of::<u16>();
+    options.size = rows_end.next_multiple_of(mem::align_of::<PhuxSpawnOptions>());
+    // SAFETY: the host record is the geometry-only size; trailing fields are not part of it.
+    assert_eq!(
+        unsafe { phux_client_queue_spawn(h.ptr(), &raw const options) },
+        PhuxClientResult::Ok
+    );
+    let (frame, _) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("decode");
+    assert!(
+        matches!(frame, FrameKind::SpawnResource { resource: None, .. }),
+        "geometry-only size must not send fields 16/17: {frame:?}"
+    );
+}
+
+#[test]
+fn subscribe_events_refuses_a_cursor_without_event_journal_and_queues_one_with_it() {
+    let mut h = Harness::attached();
+    let after_seq = 41u64;
+    // SAFETY: harness owns the client; the cursor outlives the call.
+    unsafe {
+        assert_eq!(
+            phux_client_subscribe_events(h.ptr(), ptr::null(), &raw const after_seq),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert!(h.0.inner.outgoing.is_empty());
+    h.0.inner.event_journal = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_subscribe_events(h.ptr(), ptr::null(), &raw const after_seq),
+            PhuxClientResult::Ok
+        );
+    }
+    let (frame, remaining) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("decode");
+    assert!(remaining.is_empty());
+    assert_eq!(
+        frame,
+        FrameKind::SubscribeEvents {
+            terminal: None,
+            after_seq: Some(41),
+        }
+    );
+}
+
+#[test]
 fn pre_attach_operations_are_rejected_and_result_output_is_sized() {
     let mut h = Harness::new();
     assert_eq!(h.spawn(1), PhuxClientResult::InvalidState);

@@ -308,6 +308,19 @@ pub(crate) struct Client {
     /// `HELLO_OK` advertised `CONDITIONAL_KILL` (ADR-0109): a spawn may ask
     /// for its instance binding, and `KILL_RESOURCE_IF` is understood.
     pub conditional_kill: bool,
+    /// `HELLO_OK` advertised `EVENT_JOURNAL` (ADR-0123): `SUBSCRIBE_EVENTS`
+    /// may carry `after_seq`.
+    pub event_journal: bool,
+    /// `HELLO_OK` advertised `RETAIN_ON_EXIT` (ADR-0124): a spawn may ask
+    /// to keep an exited Terminal.
+    pub retain_on_exit: bool,
+    /// `HELLO_OK` advertised `SPAWN_IDEMPOTENCY` (ADR-0126): a spawn may
+    /// carry a retry key.
+    pub spawn_idempotency: bool,
+    /// Journal cursor for the next `SUBSCRIBE_EVENTS` this client sends,
+    /// including the automatic post-`ATTACH_READY` subscribe. `None` is
+    /// live-only.
+    pub event_after_seq: Option<u64>,
     /// The one retained go-to-directory listing.
     pub directory: crate::directory::DirectoryState,
     /// The outstanding `GET_STATE` of a client that lists without attaching.
@@ -373,6 +386,10 @@ impl Client {
             list_directory_host: false,
             keep_empty_sessions: false,
             conditional_kill: false,
+            event_journal: false,
+            retain_on_exit: false,
+            spawn_idempotency: false,
+            event_after_seq: None,
             directory: crate::directory::DirectoryState::default(),
             session_query: crate::session_query::SessionQuery::default(),
             session_creates: crate::session_create::SessionCreates::default(),
@@ -871,13 +888,16 @@ impl Client {
                     max_rows,
                 })?;
             }
-            KernelSend::SubscribeEvents { terminal } => {
-                // `after_seq` (ADR-0123, the journal cursor) is a separate
-                // lane's concern; `None` is the live-only subscription
-                // every client without journal replay sends.
+            KernelSend::SubscribeEvents {
+                terminal,
+                after_seq,
+            } => {
+                let after_seq = after_seq
+                    .or(self.event_after_seq)
+                    .filter(|_| self.event_journal);
                 self.queue_frame(&FrameKind::SubscribeEvents {
                     terminal,
-                    after_seq: None,
+                    after_seq,
                 })?;
             }
         }

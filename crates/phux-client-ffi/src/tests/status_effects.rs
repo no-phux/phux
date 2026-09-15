@@ -3,6 +3,7 @@
 //! effects (`docs/consumers/cockpit.md` "Status effects").
 use super::*;
 use phux_protocol::wire::frame::{AgentEvent, CloseReason};
+use std::ptr;
 
 /// After every attach completes, the bridge asks the server for the events
 /// its status effects depend on — without this, `cwd_changed` /
@@ -33,6 +34,108 @@ fn ffi_client_subscribes_to_events_after_attach() {
         "ATTACH_READY must be followed by SUBSCRIBE_EVENTS{{terminal: None}}: {sent:?}"
     );
     unsafe { phux_client_free(client) };
+}
+
+/// A host that arms a journal cursor before ATTACH_READY gets `after_seq` on
+/// the automatic subscribe, so a reconnect can resume instead of going live-only.
+#[test]
+fn ffi_client_subscribes_from_after_seq_when_armed_before_attach() {
+    let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
+    let agent = phux_protocol::ResourceId::local(MIXED_AGENT);
+    let snapshot = mixed_kind_snapshot(&terminal, &agent);
+    let stream_id = phux_protocol::StreamId::new(1).expect("stream");
+    let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+    let client = boxed_client();
+    let after_seq = 41u64;
+    unsafe {
+        (*client).inner.protocol_ready = true;
+        (*client).inner.event_journal = true;
+        (*client).inner.attach_queued = true;
+        (*client).inner.expected_attach_id = Some(7);
+        (*client).inner.selected_profile = Some(phux_protocol::BootstrapProfile::SynthesizedVtRaw);
+        assert_eq!(
+            phux_client_subscribe_events(client, ptr::null(), &raw const after_seq),
+            PhuxClientResult::Ok
+        );
+    }
+    for frame in [
+        FrameKind::Attached {
+            attach_id: 7,
+            snapshot,
+            initial_client_id: phux_protocol::ClientId::new(9),
+        },
+        FrameKind::BootstrapBegin {
+            terminal_id: terminal.clone(),
+            stream_id,
+            bootstrap_id,
+            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 80,
+            rows: 24,
+            base_seq: 0,
+        },
+        FrameKind::BootstrapReady {
+            terminal_id: terminal,
+            stream_id,
+            bootstrap_id,
+            history_cursor: None,
+        },
+        FrameKind::AttachReady { attach_id: 7 },
+    ] {
+        assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+    }
+    let sent: Vec<FrameKind> = unsafe {
+        (0..phux_client_outgoing_count(client))
+            .map(|index| {
+                let mut bytes = PhuxBytes::default();
+                assert_eq!(
+                    phux_client_outgoing_get(client, index, &raw mut bytes),
+                    PhuxClientResult::Ok
+                );
+                FrameKind::decode(span_bytes(bytes)).unwrap().0
+            })
+            .collect()
+    };
+    assert!(
+        sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::SubscribeEvents {
+                terminal: None,
+                after_seq: Some(41)
+            }
+        )),
+        "armed after_seq must reach SUBSCRIBE_EVENTS: {sent:?}"
+    );
+    unsafe { phux_client_free(client) };
+}
+
+/// An already-attached client can re-subscribe with a cursor without re-attaching.
+#[test]
+fn ffi_client_subscribe_events_queues_after_seq_while_attached() {
+    let client = attached_mixed_client();
+    unsafe {
+        (*client).inner.event_journal = true;
+        (*client).inner.outgoing.clear();
+        let after_seq = u64::MAX;
+        assert_eq!(
+            phux_client_subscribe_events(client, ptr::null(), &raw const after_seq),
+            PhuxClientResult::Ok
+        );
+        let mut bytes = PhuxBytes::default();
+        assert_eq!(
+            phux_client_outgoing_get(client, 0, &raw mut bytes),
+            PhuxClientResult::Ok
+        );
+        let (frame, remaining) = FrameKind::decode(span_bytes(bytes)).unwrap();
+        assert!(remaining.is_empty());
+        assert_eq!(
+            frame,
+            FrameKind::SubscribeEvents {
+                terminal: None,
+                after_seq: Some(u64::MAX),
+            }
+        );
+        phux_client_free(client);
+    }
 }
 
 /// An effect's fields copied out of the client's transient effect storage,
