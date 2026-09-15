@@ -4,10 +4,10 @@ stability: evolving
 last-reviewed: 2026-09-15
 ---
 
-# iOS client
+# Android client
 
 **TL;DR.** Coming soon.
 
 ---
 
-Coming soon. An Android client is coming as well.
+Coming soon.
