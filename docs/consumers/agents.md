@@ -42,7 +42,11 @@ a process with no TTY would otherwise report. Layout verbs
 (`insert-pane`, `move-pane`, `swap-pane`) change persisted topology, not
 client-local focus. CLI and MCP cannot take or give an input lease that
 outlives the calling process; MCP therefore exposes no `take` / `give`
-tools ([`mcp.md`](./mcp.md)).
+tools ([`mcp.md`](./mcp.md)). `phux take --ttl SECS` is a second, orthogonal
+deadline (ADR-0033): the server itself now enforces `ttl_ms` and releases
+the lease after `SECS` even if the holder never calls `phux give` — a
+bound any holder can ask for, CLI or a longer-lived client (the TUI's
+take-the-wheel keybinding, a `phux-client`-based agent) alike.
 
 `--socket` wins, then `PHUX_SOCKET`, then the daemon default. `phux ls`
 does not auto-start a server.

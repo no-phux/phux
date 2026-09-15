@@ -35,12 +35,16 @@ impl LeaseOutcome {
 
 /// The `ACQUIRE_INPUT { Seize }` command that seizes `terminal_id`'s input
 /// lease (`phux take`): preempts any current holder.
+///
+/// `ttl_ms` is ADR-0033's lease TTL — `0` means "held until released or the
+/// connection drops" (today's default); any other value arms the
+/// server-side expiry timer (`phux take --ttl SECS`).
 #[must_use]
-pub const fn take_command(terminal_id: ResourceId) -> Command {
+pub const fn take_command(terminal_id: ResourceId, ttl_ms: u32) -> Command {
     Command::AcquireInput {
         terminal_id,
         mode: InputMode::Seize,
-        ttl_ms: 0,
+        ttl_ms,
     }
 }
 
@@ -70,11 +74,19 @@ mod tests {
     fn commands_carry_the_right_shape() {
         let id = ResourceId::local(3);
         assert_eq!(
-            take_command(id.clone()),
+            take_command(id.clone(), 0),
             Command::AcquireInput {
                 terminal_id: id.clone(),
                 mode: InputMode::Seize,
                 ttl_ms: 0,
+            }
+        );
+        assert_eq!(
+            take_command(id.clone(), 30_000),
+            Command::AcquireInput {
+                terminal_id: id.clone(),
+                mode: InputMode::Seize,
+                ttl_ms: 30_000,
             }
         );
         assert_eq!(

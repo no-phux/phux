@@ -100,6 +100,14 @@ impl ServerState {
                     } else {
                         phux_protocol::wire::frame::ResourceLifecycle::Running
                     };
+                    // ADR-0033: who currently has the wheel, if anyone —
+                    // this lane's half of "inventories show the holder"
+                    // (L1 §1.1).
+                    let input_holder = self.input_lease_holder(*pid).map(|holder| {
+                        phux_protocol::ids::ClientId::new(
+                            u32::try_from(holder.0).unwrap_or(u32::MAX),
+                        )
+                    });
                     panes.push(
                         ResourceInfo::new(
                             terminal_wire,
@@ -110,7 +118,8 @@ impl ServerState {
                         .with_title(terminal.title.clone())
                         .with_cwd(cwd)
                         .with_lifecycle(lifecycle)
-                        .with_exit(exit),
+                        .with_exit(exit)
+                        .with_input_holder(input_holder),
                     );
                 }
             }

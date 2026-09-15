@@ -74,7 +74,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, SatelliteHost, StreamId};
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, DirectoryErrorCode, DirectoryListingError,
+    AgentEvent, Command, CommandResult, ControlAction, DirectoryErrorCode, DirectoryListingError,
     DirectoryListingResult, ErrorCode, FrameKind, HistoryTombstoneReason, SpawnError, SpawnResult,
     TombstoneReason,
 };
@@ -1785,6 +1785,7 @@ impl RelaySession {
             return;
         };
         satellite_gap_as_source_gap(&mut event);
+        self.mirror_satellite_lease_state(id, &event, stamp.as_deref().map(|s| s.seq));
         if let (Some(journal), Some(scope)) = (self.journal.clone(), terminal.clone()) {
             let _ = journal.with_mut(|s| s.record_relayed_event(scope, event, stamp.as_deref()));
             return;
@@ -1795,6 +1796,49 @@ impl RelaySession {
             stamp: None,
         };
         self.fan_out(id, &unstamped);
+    }
+
+    /// Mirror a satellite-originated lease transition into the hub's own
+    /// ledger (ADR-0033's `ttl_ms`, this lane: "the satellite owns the
+    /// timer, the hub reflects the satellite's `Expired`/`Released`").
+    ///
+    /// The satellite is the source of truth for whether its lease is
+    /// free — its own TTL timer or its own `RELEASE_INPUT` handling
+    /// already decided that before emitting this event. Without this the
+    /// hub's `satellite` ledger would keep naming a holder after the
+    /// satellite dropped it, wrongly denying the next hub consumer's
+    /// Cooperative `ACQUIRE_INPUT`.
+    ///
+    /// `is_end` tells `ServerState::mirror_satellite_lease_event` which
+    /// role this event plays: Acquired/Seized (`false`) never changes who
+    /// the ledger names by itself — the hub's own `ACQUIRE_INPUT` relay
+    /// already installs the new holder from the correlated reply
+    /// (`commands::relay_satellite_acquire_input`), which can race this
+    /// event and must win — but it still clears a pending acquire's mark
+    /// and records `seq` as ordering evidence. Released/Expired (`true`)
+    /// is what can actually evict a holder, and is the one that gets
+    /// ignored while an acquire's reply is still waiting for the stream to
+    /// catch up, or when `seq` is not newer than the last Acquired/Seized
+    /// recorded (review round 2, medium finding: reply and event delivery
+    /// share one link but are not ordered against each other, so a stale
+    /// report about a lease a *later* acquire already superseded must not
+    /// clear the new holder).
+    fn mirror_satellite_lease_state(&self, id: u32, event: &AgentEvent, seq: Option<u64>) {
+        let Some(journal) = &self.journal else {
+            return;
+        };
+        let is_end = match event {
+            AgentEvent::TerminalControl {
+                action: ControlAction::Acquired | ControlAction::Seized,
+                ..
+            } => false,
+            AgentEvent::TerminalControl {
+                action: ControlAction::Expired | ControlAction::Released,
+                ..
+            } => true,
+            _ => return,
+        };
+        journal.with_mut(|s| s.mirror_satellite_lease_event(&self.host, id, is_end, seq));
     }
 
     /// Report a satellite's `journal_gap` on the link's own subscription.
@@ -4854,6 +4898,164 @@ mod tests {
             "events are delivered once, by the registry, not by the relay"
         );
         assert_eq!(journal.with(crate::state::ServerState::journal_head), 3);
+    }
+
+    // --- session: lease TTL mirror (ADR-0033, "the satellite owns the
+    // timer, the hub reflects Expired/Released") -------------------------
+
+    /// An `EXPIRED` (or `RELEASED`) `terminal_control` arriving from the
+    /// satellite is the ground truth that its lease is free; the hub must
+    /// stop gating other hub consumers against the holder it evicts.
+    #[test]
+    fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
+        for action in [ControlAction::Expired, ControlAction::Released] {
+            let journal = crate::state::SharedState::new();
+            let holder = journal.with_mut(crate::state::ServerState::new_client_id);
+            let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
+            journal.with_mut(|s| {
+                s.set_satellite_lease(host(), 9, holder, mailbox_tx.clone());
+            });
+            assert_eq!(
+                journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+                Some(holder),
+                "{action:?}: precondition"
+            );
+            let mut session = RelaySession::new(host(), BootstrapLimits::default());
+            session.set_journal(Some(journal.clone()));
+            session
+                .handle_inbound(&encode(&FrameKind::Event {
+                    terminal: Some(ResourceId::local(9)),
+                    event: AgentEvent::TerminalControl {
+                        lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                        exit_status: None,
+                        input_holder: None,
+                        action,
+                        actor: None,
+                    },
+                    stamp: None,
+                }))
+                .expect("valid satellite frame");
+            assert_eq!(
+                journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+                None,
+                "{action:?}: the hub ledger must follow the satellite"
+            );
+        }
+    }
+
+    /// A `SEIZED` from the satellite names a new holder, not a free lease —
+    /// the mirror must not touch the ledger for it (the SEIZE path already
+    /// updates it explicitly, from the acquiring consumer's own request).
+    #[test]
+    fn a_satellite_seize_does_not_clear_the_hubs_satellite_lease() {
+        let journal = crate::state::SharedState::new();
+        let holder = journal.with_mut(crate::state::ServerState::new_client_id);
+        let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
+        journal.with_mut(|s| {
+            s.set_satellite_lease(host(), 9, holder, mailbox_tx);
+        });
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        session.set_journal(Some(journal.clone()));
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(ResourceId::local(9)),
+                event: AgentEvent::TerminalControl {
+                    lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                    exit_status: None,
+                    input_holder: Some(phux_protocol::ids::ClientId::new(99)),
+                    action: ControlAction::Seized,
+                    actor: None,
+                },
+                stamp: None,
+            }))
+            .expect("valid satellite frame");
+        assert_eq!(
+            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            Some(holder),
+            "a SEIZED mirror must not evict the hub ledger"
+        );
+    }
+
+    /// Review round 2's medium finding, reproduced: a hub consumer's
+    /// `ACQUIRE_INPUT` reply bypasses the event pump and can resolve
+    /// before an *earlier* Released/Expired for the terminal's *prior*
+    /// holder has finished arriving over the link's event stream. The
+    /// stale event must not evict the holder the reply just installed.
+    #[test]
+    fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
+        let journal = crate::state::SharedState::new();
+        let a = journal.with_mut(crate::state::ServerState::new_client_id);
+        let b = journal.with_mut(crate::state::ServerState::new_client_id);
+        let (a_tx, _a_rx) = mpsc::channel(1);
+        let (b_tx, _b_rx) = mpsc::channel(1);
+
+        // A held the lease.
+        journal.with_mut(|s| {
+            s.set_satellite_lease(host(), 9, a, a_tx);
+        });
+
+        // B's ACQUIRE_INPUT relay starts (this is what
+        // `commands::relay_satellite_acquire_input` does before awaiting
+        // the satellite's reply)...
+        journal.with_mut(|s| s.mark_satellite_lease_acquire_pending(host(), 9));
+        // ...and its reply resolves OK first, well ahead of the event
+        // pump (the correlated reply path bypasses it entirely). The
+        // pending mark is deliberately left set — only the event mirror
+        // below clears it.
+        journal.with_mut(|s| {
+            s.set_satellite_lease(host(), 9, b, b_tx);
+        });
+        assert_eq!(
+            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            Some(b),
+            "precondition: the reply already installed B"
+        );
+
+        // A's Released — emitted by the satellite *before* B's acquire
+        // even happened, but delayed in the event pump — finally arrives.
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        session.set_journal(Some(journal.clone()));
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(ResourceId::local(9)),
+                event: AgentEvent::TerminalControl {
+                    lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                    exit_status: None,
+                    input_holder: None,
+                    action: ControlAction::Released,
+                    actor: None,
+                },
+                stamp: None,
+            }))
+            .expect("valid satellite frame");
+
+        assert_eq!(
+            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            Some(b),
+            "a stale Released arriving after a newer reply must not evict the holder it installed"
+        );
+
+        // The pending mark was consumed by that one stale event; a
+        // *second*, unrelated Released now applies normally (self-healing
+        // — the window does not stay open forever).
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(ResourceId::local(9)),
+                event: AgentEvent::TerminalControl {
+                    lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                    exit_status: None,
+                    input_holder: None,
+                    action: ControlAction::Released,
+                    actor: None,
+                },
+                stamp: None,
+            }))
+            .expect("valid satellite frame");
+        assert_eq!(
+            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            None,
+            "a later, non-racing Released is honored normally"
+        );
     }
 
     /// L1 §7.1 / ADR-0123: the link subscribes with journal semantics (and

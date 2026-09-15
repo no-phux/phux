@@ -3072,12 +3072,17 @@ agent's `send-keys`) are locked out. Use it to grab control of a pane an agent
 is driving. Release with `phux give`. TARGET is a selector (see the top-level
 help).
 
-Usage: phux take <TARGET>
+Usage: phux take [--ttl <SECS>] <TARGET>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
 
 Flags:
+      --ttl <SECS>     Auto-release after this many seconds — the server, not
+                       this process, enforces it, so it survives this command
+                       exiting. Omit to hold the lease until `phux give` or a
+                       disconnect, today's default. The wire's `ttl_ms` is a
+                       `u32`, so this caps at 4294967 (about 49.7 days).
   -h, --help           Print help
 
 Global flags:

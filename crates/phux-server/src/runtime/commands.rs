@@ -3152,6 +3152,21 @@ async fn relay_satellite_acquire_input(
             message: format!("input lease held by client {}", holder.0),
         };
     }
+    // Mark this terminal's lease pending *before* awaiting the relay
+    // (review round 2, medium finding: reply and event delivery share one
+    // link but are not ordered against each other, so a stale
+    // Released/Expired mirrored from an *earlier* lease on this terminal
+    // could otherwise overtake this acquire's own reply and clear the
+    // ledger entry this call is about to install). The reply below does
+    // NOT clear this mark on success — it bypasses the event pump
+    // entirely, so it cannot itself prove the stream has caught up. The
+    // mirror in `hub::relay::RelaySession::mirror_satellite_lease_state`
+    // clears it on the first event it sees for this terminal afterward
+    // instead, swallowing that event if it turns out to be exactly the
+    // stale report this window exists to catch.
+    target
+        .state
+        .with_mut(|s| s.mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal));
     // Cooperative-over-free/self OR a SEIZE takeover. Relay
     // to the satellite (the link identity's lease keeps
     // excluding the satellite's own local clients), then
@@ -3164,8 +3179,16 @@ async fn relay_satellite_acquire_input(
     // dropped at the hub lease gate.
     let result = relay.command(command.clone()).await;
     if matches!(result, CommandResult::Error { .. }) {
+        // A refused/failed acquire never installs a lease: stop ignoring
+        // Released/Expired for this terminal, or a genuinely free lease
+        // would stay wrongly pinned forever.
+        target
+            .state
+            .with_mut(|s| s.clear_satellite_lease_acquire_pending(target.host, target.terminal));
         return result;
     }
+    // Deliberately NOT clearing the pending mark here: see the comment
+    // above where it was set. `mirror_satellite_lease_event` clears it.
     let evicted = target.state.with_mut(|s| {
         s.set_satellite_lease(
             target.host.clone(),
@@ -4435,22 +4458,29 @@ enum AcquireOutcome {
         handle: Box<ResourceHandle>,
         /// `Acquired` (was free / self) or `Seized` (preempted another).
         action: ControlAction,
+        /// The internal id, for arming the TTL timer below.
+        core: phux_core::ids::ResourceId,
+        /// The generation `ServerState::refresh_input_lease_expiry` just
+        /// recorded, paired with the `ttl_ms` that produced it — `None`
+        /// when the caller asked for no TTL (`0`, today's behaviour).
+        expiry: Option<(u32, u64)>,
     },
 }
 
 /// Handle `ACQUIRE_INPUT` (ADR-0033, "take the wheel"): assert an exclusive
 /// input lease over a pane. `Cooperative` mode fails with `InputLeaseHeld`
 /// when another client holds it; `Seize` preempts. On grant, broadcasts a
-/// `TerminalControl` event so every subscriber re-renders who has the wheel.
-///
-/// `ttl_ms` is advisory in this server: the lease is held until the holder
-/// releases it or its connection drops (see [`crate::state::ServerState::detach`]).
+/// `TerminalControl` event so every subscriber re-renders who has the
+/// wheel, and — this lane — arms `ttl_ms` (`0` = never, today's
+/// behaviour): a server timer that releases the lease and broadcasts
+/// `Expired` unless something else changes it first (see
+/// `spawn_input_lease_expiry`).
 pub(crate) async fn handle_acquire_input(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
     mode: InputMode,
-    _ttl_ms: u32,
+    ttl_ms: u32,
 ) -> CommandResult {
     // No satellite guard here (phux-v45.11 finding 5): `route_to_satellite`
     // intercepts every satellite-tagged ACQUIRE_INPUT in `handle_command`
@@ -4479,9 +4509,20 @@ pub(crate) async fn handle_acquire_input(
             Some(holder) if holder != client_id => ControlAction::Seized,
             _ => ControlAction::Acquired,
         };
+        // Every grant — a fresh acquire, a Seize, or the same client
+        // re-acquiring — re-arms the TTL at the newly requested `ttl_ms`,
+        // superseding whatever the pane's prior expiry tracking was
+        // (`refresh_input_lease_expiry` always invalidates it first). A
+        // Seize resetting the TTL to the new holder's value falls out of
+        // this without a separate case.
+        let expiry = s
+            .refresh_input_lease_expiry(core, ttl_ms != 0)
+            .map(|generation| (ttl_ms, generation));
         AcquireOutcome::Granted {
             handle: Box::new(handle),
             action,
+            core,
+            expiry,
         }
     });
     match outcome {
@@ -4494,7 +4535,12 @@ pub(crate) async fn handle_acquire_input(
             code: ErrorCode::InputLeaseHeld,
             message: format!("input lease held by client {}", holder.0),
         },
-        AcquireOutcome::Granted { handle, action } => {
+        AcquireOutcome::Granted {
+            handle,
+            action,
+            core,
+            expiry,
+        } => {
             let _ = handle
                 .control
                 .send(ControlRequest::LeaseChanged {
@@ -4503,8 +4549,155 @@ pub(crate) async fn handle_acquire_input(
                     actor: Some(wire_client_id(client_id)),
                 })
                 .await;
+            if let Some((ttl_ms, generation)) = expiry {
+                spawn_input_lease_expiry(state, core, generation, ttl_ms);
+            }
             CommandResult::Ok
         }
+    }
+}
+
+/// Schedule the timer that expires `terminal`'s input lease after `ttl_ms`
+/// (ADR-0033's `ttl_ms`, no longer advisory in this lane).
+///
+/// Spawned with `spawn_local`: the whole server runs on one `LocalSet`
+/// (ADR-0014), and this is called from a per-client command task already
+/// running on it. The task always wakes on schedule; whether it *does*
+/// anything depends on `generation` still matching what
+/// [`crate::state::ServerState::refresh_input_lease_expiry`] last recorded
+/// for `terminal` when the sleep resolves. Any acquire, release, or
+/// disconnect teardown for that pane between now and then bumps that
+/// generation and aborts this task outright (see `state::lease_table`), so
+/// a superseded timer does not linger sleeping out a TTL nobody cares
+/// about any more (review round 2: repeated re-arms, e.g. a Cooperative
+/// re-acquire or a hub consumer relaying `ttl_ms`, used to accumulate one
+/// live task per grant). The generation check below is the belt to that
+/// abort's suspenders: it covers the brief window between this task
+/// spawning and its handle being attached (below), during which an abort
+/// cannot reach it yet — the same "trust reality over the sleep, checked
+/// under the lock" discipline `spawn_idle_exit_watchdog` uses. Together
+/// they keep a TTL racing a release/seize/disconnect to exactly one
+/// `terminal_control`: only the generation that is still current when the
+/// lock is taken ever acts, and every other copy is dead well before then.
+fn spawn_input_lease_expiry(
+    state: &SharedState,
+    terminal: phux_core::ids::ResourceId,
+    generation: u64,
+    ttl_ms: u32,
+) {
+    // A clone for the spawned task; `state` itself is still needed below,
+    // after the spawn, to attach this task's abort handle.
+    let task_state = state.clone();
+    #[cfg(test)]
+    let counter = state.with(crate::state::ServerState::input_lease_expiry_task_counter);
+    let join = tokio::task::spawn_local(async move {
+        #[cfg(test)]
+        let _live = LiveExpiryTaskGuard::new(counter);
+        tokio::time::sleep(std::time::Duration::from_millis(u64::from(ttl_ms))).await;
+        let expired = task_state.with_mut(|s| {
+            if !s.input_lease_expiry_is_current(terminal, generation) {
+                return None;
+            }
+            // Not `refresh_input_lease_expiry`: that aborts, and this is
+            // the timer aborting *itself* on its own legitimate firing —
+            // unsafe this late (see `clear_input_lease_expiry`'s doc).
+            s.clear_input_lease_expiry(terminal);
+            let holder = s.input_lease_holder(terminal)?;
+            s.release_input_lease(terminal, holder);
+            s.resource_handle(terminal).cloned()
+        });
+        let Some(handle) = expired else {
+            return;
+        };
+        let _ = handle
+            .control
+            .send(ControlRequest::LeaseChanged {
+                input_holder: None,
+                action: ControlAction::Expired,
+                actor: None,
+            })
+            .await;
+    });
+    // Hand the ledger this task's abort handle so a later
+    // acquire/release/disconnect for this pane can kill it outright
+    // instead of leaving it to sleep out its full `ttl_ms` as dead weight.
+    // `false` means something already superseded `generation` in the gap
+    // between minting it and getting here: this task is already stale by
+    // the check above, so abort it now rather than at its own deadline.
+    let abort = join.abort_handle();
+    let attached =
+        state.with_mut(|s| s.attach_input_lease_expiry_abort(terminal, generation, abort.clone()));
+    if !attached {
+        abort.abort();
+    }
+}
+
+/// Live-timer-task counter guard for [`spawn_input_lease_expiry`]'s
+/// regression test (`lease_expiry_task_tests` below): increments on
+/// construction, decrements on drop — including a drop forced by
+/// `AbortHandle::abort()`, since that drops the task's future (and every
+/// local it is holding) at its next `Pending` poll. Exists only under
+/// `cfg(test)`; production builds never allocate or touch the counter.
+#[cfg(test)]
+struct LiveExpiryTaskGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(test)]
+impl LiveExpiryTaskGuard {
+    fn new(counter: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+#[cfg(test)]
+impl Drop for LiveExpiryTaskGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod lease_expiry_task_tests {
+    use super::*;
+
+    /// Review round 2's medium finding: every armed grant spawned a fresh
+    /// timer task, and a superseded one kept sleeping until its own
+    /// deadline instead of being cancelled — repeated re-arms (a
+    /// Cooperative re-acquire, or a hub consumer relaying `ttl_ms` to a
+    /// satellite) would accumulate one live task per grant, for as long as
+    /// the longest `ttl_ms` any of them asked for. `refresh_input_lease_
+    /// expiry` now aborts the entry it is about to supersede, so no more
+    /// than one timer task should ever be alive for a pane's lease.
+    #[tokio::test(flavor = "current_thread")]
+    async fn rearming_a_lease_repeatedly_leaves_at_most_one_live_timer_task() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let core = state.with_mut(|s| s.seed_session("default")).2;
+                let counter =
+                    state.with(crate::state::ServerState::input_lease_expiry_task_counter);
+
+                for _ in 0..20 {
+                    let generation = state
+                        .with_mut(|s| s.refresh_input_lease_expiry(core, true))
+                        .expect("scheduled");
+                    spawn_input_lease_expiry(&state, core, generation, 60_000);
+                    // Give the freshly spawned task a tick to run to its
+                    // first await (registering its abort handle) and any
+                    // just-aborted predecessor a tick to unwind and drop
+                    // its guard, before the next re-arm supersedes it.
+                    tokio::task::yield_now().await;
+                    tokio::task::yield_now().await;
+                }
+
+                assert!(
+                    counter.load(std::sync::atomic::Ordering::SeqCst) <= 1,
+                    "20 re-arms must not leave more than one live timer task, got {}",
+                    counter.load(std::sync::atomic::Ordering::SeqCst)
+                );
+            })
+            .await;
     }
 }
 
@@ -4534,7 +4727,15 @@ pub(crate) async fn handle_release_input(
         if let Err(error) = handle.terminal() {
             return Released::WrongKind(error);
         }
-        Released::Ok(handle, s.release_input_lease(core, client_id))
+        let did_release = s.release_input_lease(core, client_id);
+        if did_release {
+            // Cancel this pane's TTL along with the lease itself (this
+            // lane): the timer a prior ACQUIRE_INPUT armed no longer names
+            // a live lease, and a stale wake must find that out rather
+            // than expire a pane that is already `Open`.
+            s.refresh_input_lease_expiry(core, false);
+        }
+        Released::Ok(handle, did_release)
     });
     match released {
         Released::NotFound => CommandResult::Error {

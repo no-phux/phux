@@ -1217,7 +1217,7 @@ fn dispatch(
             geometry,
             json,
         }) => commands::resize::run_resize(&target, geometry, json.json, socket),
-        Some(Command::Take { target }) => commands::supervise::run_take(&target, socket),
+        Some(Command::Take { target, ttl }) => commands::supervise::run_take(&target, ttl, socket),
         Some(Command::Give { target }) => commands::supervise::run_give(&target, socket),
         Some(Command::Signal { target, signal }) => {
             commands::supervise::run_signal(&target, signal, socket)
@@ -2848,6 +2848,35 @@ mod tests {
                 "{verb} --ratio 0.25 must parse"
             );
         }
+    }
+
+    /// Review round 2's low finding: `phux take --ttl` above
+    /// `u32::MAX / 1000` seconds used to be silently clamped to
+    /// `u32::MAX` milliseconds, so the success line printed a different
+    /// value than what was asked for. It is now a usage error at parse
+    /// time, like `--ratio` above, instead of a silent runtime clamp.
+    #[test]
+    fn take_ttl_above_u32_ms_range_validates_at_parse_time() {
+        assert!(
+            crate::parse_cli(["phux", "take", "@1", "--ttl", "4294968"]).is_err(),
+            "4294968s * 1000 overflows u32 ms and must fail at clap"
+        );
+        assert!(
+            crate::parse_cli(["phux", "take", "@1", "--ttl", "4294967295"]).is_err(),
+            "a wildly out-of-range value must fail at clap"
+        );
+        assert!(
+            crate::parse_cli(["phux", "take", "@1", "--ttl", "4294967"]).is_ok(),
+            "the exact u32-ms boundary (4294967 * 1000 <= u32::MAX) must parse"
+        );
+        assert!(
+            crate::parse_cli(["phux", "take", "@1", "--ttl", "0"]).is_ok(),
+            "0 (explicit no-TTL) must still parse"
+        );
+        assert!(
+            crate::parse_cli(["phux", "take", "@1"]).is_ok(),
+            "omitting --ttl entirely must still parse"
+        );
     }
 
     /// `insert-pane` / `move-pane` help advertises `--split` and hides the

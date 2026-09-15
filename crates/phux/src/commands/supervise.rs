@@ -17,21 +17,35 @@ use crate::commands::{
     SignalArg, parse_selector, report_no_server, request_command, resolve_target_for_input,
 };
 
-/// `phux take TARGET` — seize the input lease over the resolved pane so only
-/// this client's input reaches the PTY (ADR-0033). Uses `Seize` mode, so it
-/// preempts any current holder.
-pub(crate) fn run_take(target: &str, socket: Option<PathBuf>) -> ExitCode {
-    run_lease(target, socket, true)
+/// `phux take TARGET [--ttl SECS]` — seize the input lease over the
+/// resolved pane so only this client's input reaches the PTY (ADR-0033).
+/// Uses `Seize` mode, so it preempts any current holder. `ttl` arms the
+/// server-side expiry timer this lane adds: the lease auto-releases after
+/// that many seconds even if this process has long since exited.
+pub(crate) fn run_take(target: &str, ttl: Option<u32>, socket: Option<PathBuf>) -> ExitCode {
+    run_lease(target, socket, Some(ttl_ms(ttl)))
 }
 
 /// `phux give TARGET` — release the input lease over the resolved pane,
 /// returning it to open input (ADR-0033). Idempotent.
 pub(crate) fn run_give(target: &str, socket: Option<PathBuf>) -> ExitCode {
-    run_lease(target, socket, false)
+    run_lease(target, socket, None)
 }
 
-fn run_lease(target: &str, socket: Option<PathBuf>, take: bool) -> ExitCode {
-    let verb = if take { "take" } else { "give" };
+/// Seconds to the wire's `ttl_ms`: `None` (no `--ttl`) is `0`, "never" —
+/// today's default. `--ttl`'s clap-level `validate` already refuses a
+/// value that would overflow `u32` milliseconds (exit 2, before this ever
+/// runs); `saturating_mul` is defense in depth, not the primary guard —
+/// silently clamping an out-of-range value here, rather than rejecting it
+/// up front, was review round 2's low finding.
+fn ttl_ms(ttl: Option<u32>) -> u32 {
+    ttl.unwrap_or(0).saturating_mul(1000)
+}
+
+/// `take` is `Some(ttl_ms)`; `give` is `None`, distinguishing the two verbs
+/// for the shared resolve-then-request body below.
+fn run_lease(target: &str, socket: Option<PathBuf>, take: Option<u32>) -> ExitCode {
+    let verb = if take.is_some() { "take" } else { "give" };
     let selector = match parse_selector(Some(target)) {
         Ok(sel) => sel,
         Err(code) => return code,
@@ -47,8 +61,8 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: bool) -> ExitCode {
             Ok(id) => id,
             Err(code) => return code,
         };
-        let command = if take {
-            phux_client::signal::take_command(terminal_id)
+        let command = if let Some(ttl_ms) = take {
+            phux_client::signal::take_command(terminal_id, ttl_ms)
         } else {
             phux_client::signal::give_command(terminal_id)
         };
@@ -57,10 +71,13 @@ fn run_lease(target: &str, socket: Option<PathBuf>, take: bool) -> ExitCode {
             .map(LeaseOutcome::from_result)
         {
             Ok(LeaseOutcome::Ok) => {
-                if take {
-                    outln!("phux: took the wheel of {target}");
-                } else {
-                    outln!("phux: released the wheel of {target}");
+                match take {
+                    Some(0) => outln!("phux: took the wheel of {target}"),
+                    Some(ttl_ms) => outln!(
+                        "phux: took the wheel of {target} (expires in {}s)",
+                        ttl_ms / 1000
+                    ),
+                    None => outln!("phux: released the wheel of {target}"),
                 }
                 ExitCode::SUCCESS
             }
