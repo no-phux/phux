@@ -41,7 +41,7 @@ The server holds the terminals. The TUI, CLI, web, and Cockpit attach to those s
 A resource is a server-owned, addressable thing. Every resource has:
 
 - a kind and a stable id;
-- a lifecycle: spawned, then closed with a reason (`Exited`, `Killed`, `ParentClosed`, `ServerShutdown`);
+- a lifecycle: spawned, then running, optionally exited-but-retained, then closed with a reason (`Exited`, `Killed`, `ParentClosed`, `ServerShutdown`). A Terminal spawned with `retain_secs` (ADR-0124) keeps its exit status and last grid readable after its process ends — `phux resource show`/`wait` reads it — until a TTL, a count bound, or an explicit `kill` purges it with the ordinary close;
 - an ordered, opaque output stream with a codec, and a bootstrap a consumer loads before live bytes;
 - a kind-defined input channel;
 - a tagged event stream;
@@ -93,9 +93,8 @@ Target-versus-shipped gaps as of the last review. Each row names the ADR that ow
 
 | Gap | Today | Owner | Tracked |
 |---|---|---|---|
-| Retained exits | The codec carries `retain_secs` and the snapshot exit facet. The reference server does not advertise `RETAIN_ON_EXIT` and closes every Terminal at exit. | [ADR-0124](adr/0124-retain-on-exit.md) | PHA-406 |
 | On-disk output journal and crash recovery | The server keeps every resource in memory. Nothing is journaled and there is no recovery flag. | [ADR-0092](adr/0092-durable-work-coordinator-authority.md) | phux-p91i |
-| Workload authentication enforcement | Paired mode requests a client certificate and enforces the scope matrix at dispatch. Unset mode beside a remote listener still admits with the owner's full grant, and a revoked or expired credential is refused at the next HELLO, not on the live connection. | [ADR-0116](adr/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
+| Workload authentication enforcement | Paired mode requests a client certificate and enforces the scope matrix at dispatch; a revoked or expired credential now loses authority on the live connection, not just at the next HELLO. Unset mode beside a remote listener still admits every connection with the owner's full grant — a warned transitional posture, not the startup error the spec's target table asks for — and a configured CA or registry path with no mode is ignored rather than refused. | [ADR-0116](adr/0116-workload-auth-is-mtls.md) | phux-cockpit-p1q.11.2 |
 
 ## Where to go next
 
