@@ -248,14 +248,22 @@ fn credential_bearing_endpoint_is_neither_displayed_nor_dialed() {
 }
 
 #[test]
-fn symlink_forget_is_refused_without_changing_target() {
+fn symlink_forget_follows_the_link_and_keeps_it() {
     let (dir, registry) = fixture("[[remote]]\nname='x'\nendpoint='ssh://x'\n");
     let link = dir.path().join("link.toml");
     std::os::unix::fs::symlink(&registry.path, &link).expect("symlink");
-    let linked = PhuxMachineRegistry::open(link, 10, 65536);
+    let linked = PhuxMachineRegistry::open(link.clone(), 10, 65536);
     assert_eq!(linked.rows.len(), 1);
-    assert!(linked.forget(0).is_err());
-    assert!(registry.validate(0).is_ok());
+    linked.forget(0).expect("follow symlink");
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("link meta")
+            .file_type()
+            .is_symlink(),
+        "the config path must stay a symlink"
+    );
+    let raw = std::fs::read_to_string(&registry.path).expect("read target");
+    assert!(!raw.contains("[[remote]]"));
 }
 
 #[test]

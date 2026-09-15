@@ -315,14 +315,16 @@ fn invalid_endpoint_fails_without_stdout() {
 
 #[test]
 #[cfg(unix)]
-fn lifecycle_refuses_to_overwrite_symlinked_config() {
+fn lifecycle_writes_through_a_symlinked_config() {
     let tmp = TempDir::new().expect("tempdir");
     let xdg = tmp.path().join("xdg");
     let config_dir = xdg.join("phux");
     std::fs::create_dir_all(&config_dir).expect("create config dir");
-    let victim = tmp.path().join("victim.toml");
-    std::fs::write(&victim, "do-not-touch").expect("write victim");
-    std::os::unix::fs::symlink(&victim, config_dir.join("config.toml")).expect("symlink config");
+    let real = tmp.path().join("dotfiles").join("phux.toml");
+    std::fs::create_dir_all(real.parent().unwrap()).expect("dotfiles dir");
+    std::fs::write(&real, "# keep\n").expect("write target");
+    let link = config_dir.join("config.toml");
+    std::os::unix::fs::symlink(&real, &link).expect("symlink config");
 
     let (code, stdout, stderr) = run_with_xdg(
         &[
@@ -337,11 +339,20 @@ fn lifecycle_refuses_to_overwrite_symlinked_config() {
         &xdg,
     );
 
-    assert_ne!(code, 0, "symlinked config should be refused");
-    assert!(stdout.is_empty());
-    assert!(stderr.contains("must not be a symlink"));
     assert_eq!(
-        std::fs::read_to_string(victim).expect("read victim"),
-        "do-not-touch"
+        code, 0,
+        "symlinked config should be written; stderr={stderr}"
     );
+    assert!(stdout.contains("devbox"), "stdout={stdout}");
+    assert!(
+        std::fs::symlink_metadata(&link)
+            .expect("link meta")
+            .file_type()
+            .is_symlink(),
+        "the config path must stay a symlink"
+    );
+    let target = std::fs::read_to_string(&real).expect("read target");
+    assert!(target.contains("# keep"), "comment must survive");
+    assert!(target.contains("devbox"));
+    assert!(target.contains("ssh://devbox"));
 }
