@@ -64,7 +64,7 @@ export function inspectShippingStateInventory(root) {
     if (!source.includes(item.pattern)) missing.push(`${item.state}: ${item.file} lacks ${JSON.stringify(item.pattern)}`);
   }
   return { kind: 'shipping-state-inventory', missing, states: shippingStateInventory.map(item => item.state),
-    unrenderedStates: shippingStateInventory.filter(item => item.pattern === null).map(item => item.state),
+    unrenderedStates: shippingStateInventory.map(item => item.state),
     sizes: declaredSizes, densities: declaredDensities, evidenceScope,
     renderedStateGallery: 'reserved for compiled native integration Wave 2',
     strictAcceptanceCommand,

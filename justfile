@@ -128,12 +128,21 @@ cockpit-build: cockpit-artifacts
 [group('cockpit')]
 [doc('Cockpit TypeScript graph, native engine regressions, and contract checks.')]
 [working-directory('clients/cockpit')]
-cockpit-test: cockpit-ffi cockpit-build-contracts
+cockpit-test: cockpit-ffi cockpit-build-contracts cockpit-node-test
     ./scripts/check-release-version.sh
     ./scripts/check-sdk-pin.sh
     ./scripts/lib/zon_test.sh
     ./scripts/lib/measure_test.sh
     ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
+
+# Node's default TypeScript stripping cannot load @native-sdk/core from
+# node_modules. Keep the required loader and dependency install in one command
+# shared by local acceptance and cockpit-ci.
+[group('cockpit')]
+[doc('Cockpit TypeScript model, interaction, and presentation tests.')]
+[working-directory('clients/cockpit')]
+cockpit-node-test:
+    ./scripts/cockpit-node-test.sh
 
 # Optional full run of the default app graph (DisabledPhuxProvider). CI
 # typechecks that graph inside `just cockpit-test` instead of re-running tests.

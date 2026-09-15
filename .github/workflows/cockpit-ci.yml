@@ -67,6 +67,10 @@ jobs:
       - name: Check native Cockpit prerequisites
         run: bash scripts/doctor.sh cockpit
 
+      - name: Test Cockpit model and presentation contracts
+        working-directory: clients/cockpit
+        run: ./scripts/cockpit-node-test.sh
+
       # rust-cache keys on Cargo.lock itself; the shared key keeps this
       # macOS ffi-release cache disjoint from ci.yml's Linux check/test
       # profiles. Save only from main pushes — GitHub's Actions cache is a

@@ -28,19 +28,47 @@ done
 
 WORK="$(mktemp -d "${TMPDIR:-/private/tmp}/cockpit-presentation.XXXXXX")"
 DEV_HOME="${WORK}/dev-home"
+launch_log="${WORK}/dev-run.log"
 APP_PID=""
+STOPPED_PID=""
+CLEANUP_DONE=0
+
+reported_pid() {
+    [[ -f "$launch_log" ]] || return 0
+    sed -n 's/^pid \([0-9][0-9]*\), log .*/\1/p' "$launch_log" | tail -1
+}
+
+stop_owned_pid() {
+    local pid="$1"
+    [[ "$pid" =~ ^[0-9]+$ && "$pid" != "$STOPPED_PID" ]] || return 0
+    if app_instance_pids | grep -Fxq "$pid"; then
+        app_instance_stop "$pid"
+        STOPPED_PID="$pid"
+    fi
+}
+
 # shellcheck disable=SC2329 # invoked by the EXIT trap below
 cleanup() {
-    if [[ -n "$APP_PID" && "$KEEP" == 0 ]]; then
-        app_instance_stop "$APP_PID"
+    local status=$? pid="$APP_PID"
+    (( CLEANUP_DONE == 0 )) || return "$status"
+    CLEANUP_DONE=1
+    trap - INT TERM EXIT
+    if [[ -z "$pid" ]]; then
+        pid="$(reported_pid)"
+    fi
+    if [[ "$KEEP" == 0 ]]; then
+        stop_owned_pid "$pid"
     fi
     if [[ "$KEEP" == 0 ]]; then
         rm -rf -- "$WORK"
     else
-        printf 'retained isolated run: %s (pid %s)\n' "$WORK" "$APP_PID"
+        printf 'retained isolated run: %s (pid %s)\n' "$WORK" "$pid"
     fi
+    return "$status"
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # The dev executable has a distinct process name and bundle id. The private
 # cwd supplies its own automation dropbox; config and workspace state also live
@@ -48,17 +76,13 @@ trap cleanup EXIT
 app_instance_require_free
 run_args=(--debug --automation --fresh --detach)
 (( NO_BUILD == 0 )) || run_args+=(--no-build)
-launch_log="${WORK}/dev-run.log"
 set +e
 PHUX_COCKPIT_DEV_HOME="$DEV_HOME" "${ROOT}/scripts/dev-run.sh" "${run_args[@]}" | tee "$launch_log"
 launch_status=("${PIPESTATUS[@]}")
 set -e
-APP_PID="$(sed -n 's/^pid \([0-9][0-9]*\), log .*/\1/p' "$launch_log" | tail -1)"
+APP_PID="$(reported_pid)"
 if (( launch_status[0] != 0 || launch_status[1] != 0 )); then
-    if [[ "$APP_PID" =~ ^[0-9]+$ ]]; then
-        app_instance_stop "$APP_PID"
-        APP_PID=""
-    fi
+    stop_owned_pid "$APP_PID"
     printf 'FAILED: dev-run pipeline exited %s/%s; transcript: %s\n' \
         "${launch_status[0]}" "${launch_status[1]}" "$launch_log" >&2
     exit 1
