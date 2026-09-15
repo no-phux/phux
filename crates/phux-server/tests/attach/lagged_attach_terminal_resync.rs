@@ -15,6 +15,19 @@
 //! the guarantee is the same guarantee; only the subscription verb differs.
 //! Before the fix this fails on the first one, seconds into the drain.
 //!
+//! The lag is driven, not timed (phux-8kpb). The pane dumps only once the test
+//! opens a gate, and the test stops reading until the server's own grid shows
+//! the dump's last line. By then every frame of a dump far larger than the
+//! consumer's buffering has been published onto a ring of
+//! [`TEST_OUTPUT_BROADCAST`] slots, so the stalled pump has certainly been
+//! lapped. The pane then stays alive and quiet, so the resync the pump asks
+//! for is always answered and never overwritten. The previous shape — paced
+//! bursts against a fixed two-second stall, with the pane exiting straight
+//! after its marker — made both halves a race under CPU load: a slow runner
+//! could reach the end of the stall before the ring overflowed, or see the
+//! pane exit (and its resync die with it) while the pump was still fenced,
+//! leaving the consumer waiting on a frame that never came.
+//!
 //! One trap this test fell into once, worth naming: the bootstrap arrives
 //! *interleaved ahead of* the `COMMAND_RESULT` that answers `ATTACH_RESOURCE`,
 //! so a helper that loops discarding everything but the result swallows the
@@ -32,6 +45,7 @@
 #![allow(clippy::doc_markdown, reason = "tests")]
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, StreamId};
@@ -39,7 +53,7 @@ use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult}
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    spawn_server_with_seed_cmd, wait_for_server_screen_text, wait_for_socket,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -48,13 +62,11 @@ use tokio::net::UnixStream;
 /// What the bursting pane prints when it is finished.
 const TAIL_MARKER: &str = "LAGTEST_DONE";
 
-/// Paced bursts, so output is still flowing after the stall below. Each burst
-/// is ~0.7 MB. That is *not* 256 distinct broadcast frames: the actor
-/// coalesces a PTY dump into ~48 KiB payloads, so one burst is a handful of
-/// large frames and a fast runner never overflows the production 256-slot
-/// ring during [`STALL`]. The test shrinks the ring with
-/// [`phux_server::resource::set_output_broadcast_capacity_for_test`] instead.
-const BURST_CMD: &str = "for i in 1 2 3 4 5 6; do seq 1 100000; sleep 0.5; done; echo LAGTEST_DONE";
+/// Lines the pane dumps once the gate opens: ~6.9 MB. The stalled consumer
+/// can soak up at most its mailbox, the writer's coalesced batch and the
+/// socket buffers — about 2 MB of the actor's <= 48 KiB frames — so the rest
+/// of the dump laps the ring many times over, however the reader coalesces.
+const DUMP_LINES: u32 = 1_000_000;
 
 /// Broadcast ring used by this test. Four slots overflow as soon as the
 /// stalled pump is a handful of coalesced frames behind — the same shape as
@@ -62,17 +74,26 @@ const BURST_CMD: &str = "for i in 1 2 3 4 5 6; do seq 1 100000; sleep 0.5; done;
 /// window.
 const TEST_OUTPUT_BROADCAST: usize = 4;
 
-/// How long the consumer reads nothing at all.
-const STALL: Duration = Duration::from_secs(2);
-
-/// Ceiling on the post-stall drain; the assertion is convergence, not speed.
-const CONVERGE_DEADLINE: Duration = Duration::from_secs(90);
+/// Bound on each event-driven wait below. A hang guard, never a timing
+/// assertion: every wait ends on a specific frame or screen state.
+const HANG_GUARD: Duration = Duration::from_secs(60);
 
 const COLS: u16 = 80;
 const ROWS: u16 = 24;
 
 /// Identity of one bootstrap generation on the wire.
 type Generation = (ResourceId, StreamId, BootstrapId);
+
+/// The pane's workload: wait for `gate`, dump, print the marker, then stay
+/// alive. Staying alive is load-bearing: a pane that exits is reaped, and a
+/// resync still owed to a fenced pump dies with it.
+fn burst_cmd(gate: &Path) -> String {
+    format!(
+        "while [ ! -e '{}' ]; do sleep 0.02; done; seq 1 {DUMP_LINES}; \
+         echo {TAIL_MARKER}; exec sleep 3600",
+        gate.display(),
+    )
+}
 
 /// Per-generation live-sequence expectation, mirroring the client kernel's
 /// `expect_next_seq`.
@@ -83,9 +104,6 @@ struct SequenceOracle {
     /// this 1, so a replacement published in answer to a gap is what takes it
     /// past that — which is why the assertion at the end reads `> 1`.
     generations: usize,
-    /// Live frames seen, so the test knows the pump is running before it
-    /// stalls.
-    live_frames: usize,
 }
 
 impl SequenceOracle {
@@ -99,7 +117,6 @@ impl SequenceOracle {
     /// sequence. Output for a generation no bootstrap opened is not a case to
     /// accommodate — it is the `UnknownGeneration` the kernel rejects.
     fn observe(&mut self, key: &Generation, seq: u64) {
-        self.live_frames += 1;
         let expected = self.next.get_mut(key).unwrap_or_else(|| {
             panic!(
                 "RESOURCE_OUTPUT seq={seq} names a generation no BOOTSTRAP_BEGIN opened; \
@@ -163,19 +180,14 @@ fn apply(frame: &FrameKind, oracle: &mut SequenceOracle, screen: &mut Screen) ->
 /// Spawn the bursting pane on the session-attached `owner` connection.
 ///
 /// A second pane rather than the seed pane, so the seed keeps the session
-/// alive for the whole run and the burst pane's exit cannot trip the
-/// last-pane self-exit while the watcher is still reading.
-async fn spawn_burst_pane(owner: &mut UnixStream) -> ResourceId {
+/// alive for the whole run independently of the burst pane.
+async fn spawn_burst_pane(owner: &mut UnixStream, cmd: String) -> ResourceId {
     send_frame(
         owner,
         &FrameKind::SpawnResource {
             request_id: 1,
             group: GroupId::new(1),
-            command: Some(vec![
-                "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                BURST_CMD.to_owned(),
-            ]),
+            command: Some(vec!["/bin/sh".to_owned(), "-c".to_owned(), cmd]),
             cwd: None,
             env: None,
             term: None,
@@ -241,13 +253,14 @@ fn lagged_attach_terminal_consumer_converges_on_a_replacement_generation() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket = tmp.path().join("phux.sock");
+        let gate = tmp.path().join("dump.gate");
         let mut seed = CommandBuilder::new("/bin/sh");
         seed.args(["-c", "while :; do sleep 3600; done"]);
         let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "lag", seed);
 
         let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         send_frame(&mut owner, &attach_by_name("lag")).await;
-        let pane = spawn_burst_pane(&mut owner).await;
+        let pane = spawn_burst_pane(&mut owner, burst_cmd(&gate)).await;
 
         let mut watcher = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         let opening = attach_terminal_only(&mut watcher, &pane).await;
@@ -269,25 +282,19 @@ fn lagged_attach_terminal_consumer_converges_on_a_replacement_generation() {
              (ADR-0007 s4); got {opening:?}",
         );
 
-        // Drain until the pane is actually streaming, so the pump is live
-        // before the stall.
-        while oracle.live_frames == 0 {
-            let (_type_byte, frame) = recv_typed(&mut watcher).await;
-            if let Applied::Fatal(what) = apply(&frame, &mut oracle, &mut screen) {
-                panic!("subscription died before the stall: {what}");
-            }
-        }
-
-        // The stall. Nothing is read from the watcher's socket, so its writer
-        // task blocks, its mailbox fills, and — because this process's
-        // broadcast ring is [`TEST_OUTPUT_BROADCAST`] slots — the next few
-        // coalesced PTY frames overwrite it. Production stays at 256.
-        tokio::time::sleep(STALL).await;
+        // The stall, driven rather than timed. Nothing is read from the
+        // watcher's socket from here until the pane's server-side grid shows
+        // the end of the dump, so its writer blocks, its mailbox fills, and
+        // the rest of the dump laps the [`TEST_OUTPUT_BROADCAST`]-slot ring.
+        // The probe carries no subscription, so polling it unblocks nothing.
+        let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        std::fs::write(&gate, b"").expect("open the dump gate");
+        wait_for_server_screen_text(&mut probe, &pane, TAIL_MARKER, HANG_GUARD).await;
 
         let started = Instant::now();
         loop {
             assert!(
-                started.elapsed() < CONVERGE_DEADLINE,
+                started.elapsed() < HANG_GUARD,
                 "ATTACH_RESOURCE consumer never converged after the broadcast gap",
             );
             let (_type_byte, frame) = recv_typed(&mut watcher).await;
@@ -305,6 +312,7 @@ fn lagged_attach_terminal_consumer_converges_on_a_replacement_generation() {
              so this run never actually lagged — the test proves nothing",
         );
 
+        drop(probe);
         drop(watcher);
         drop(owner);
         let _ = shutdown.send(());
