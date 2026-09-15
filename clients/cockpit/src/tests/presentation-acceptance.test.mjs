@@ -5,10 +5,9 @@ import { initialModel, update, windows } from '../core.ts';
 import { declaredDensities, declaredSizes, inspectShippingStateInventory,
   strictAcceptanceCommand, assertPointerReachedSurface } from '../../scripts/cockpit-state-inventory.mjs';
 
-// From clients/cockpit, promote every allowlisted baseline failure to a real
-// failure with:
+// Every case is mandatory. The historical strict entry point remains a stable
+// documented command and must pass the same matrix:
 // PHUX_COCKPIT_ACCEPTANCE_STRICT=1 node --import ./src/tests/navigation-loader.mjs --test src/tests/presentation-acceptance.test.mjs
-const strict = process.env.PHUX_COCKPIT_ACCEPTANCE_STRICT === '1';
 const bytes = value => new TextEncoder().encode(value);
 const text = value => new TextDecoder().decode(value);
 const revision = { hi: 0, lo: 19 };
@@ -236,117 +235,21 @@ function failedOpenDepartureFailure() {
   return `cancelRequest=${unexpected ? unexpected.payload[1] : 'none'};pending=${model.pendingSessionAction ? model.pendingSessionAction.code : 'none'};${presentationSignature(model)}`;
 }
 
-// Filled from a protocol-valid run against baseline 1c7ae062. Keys and values
-// are exact: a changed failure signature is not silently grandfathered.
-const baselineFailures = new Map([
-  ['transition:agents->sessions', 'visible=[agents];palette=1;agents=1;view=1;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[mainAgentsOpen]'],
-  ['transition:agents->machines', 'visible=[agents];palette=1;agents=1;view=2;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[mainAgentsOpen]'],
-  ['transition:agents->windows', 'visible=[agents];palette=1;agents=1;view=3;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[mainAgentsOpen]'],
-  ['transition:agents->commands', 'visible=[agents];palette=1;agents=1;view=4;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[mainAgentsOpen]'],
-  ['transition:sessions->terminals', 'visible=[sessions];palette=1;agents=0;view=1;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[mainPaletteOpen]'],
-  ['transition:machines->terminals', 'visible=[machines];palette=1;agents=0;view=2;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[mainPaletteOpen]'],
-  ['transition:windows->terminals', 'visible=[windows];palette=1;agents=0;view=3;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[mainPaletteOpen]'],
-  ['transition:commands->terminals', 'visible=[commands];palette=1;agents=0;view=4;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[mainPaletteOpen]'],
-  ['transition:new-session->agents', 'cancel=missing;visible=[new-session];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=0;rename=1;creating=1;ownerFields=[mainRenameOpen]'],
-  ['transition:add-machine->connection', 'visible=[add-machine];palette=0;agents=0;view=0;settings=0;host=1;purpose=1;dir=0;rename=0;creating=0;ownerFields=[mainHostOpen]'],
-  ['transition:directory->agents', 'visible=[directory];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=1;rename=0;creating=0;ownerFields=[mainDirOpen]'],
-  ['transition:rename->agents', 'visible=[rename];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=0;rename=1;creating=0;ownerFields=[mainRenameOpen]'],
-  ['transition:rename->directory', 'visible=[directory,rename];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=1;rename=1;creating=0;ownerFields=[mainDirOpen,mainRenameOpen]'],
-  ['transition:settings->agents', 'rollback=missing;visible=[settings];palette=0;agents=0;view=0;settings=1;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[mainSettingsOpen]'],
-  ['closed-owner:1:terminals', 'ownerFlags=[window1PaletteOpen]'],
-  ['closed-owner:1:agents', 'ownerFlags=[window1AgentsOpen]'],
-  ['closed-owner:1:sessions', 'ownerFlags=[window1PaletteOpen]'],
-  ['closed-owner:1:machines', 'ownerFlags=[window1PaletteOpen]'],
-  ['closed-owner:1:windows', 'ownerFlags=[window1PaletteOpen]'],
-  ['closed-owner:1:commands', 'ownerFlags=[window1PaletteOpen]'],
-  ['closed-owner:1:new-session', 'ownerFlags=[window1RenameOpen]'],
-  ['closed-owner:1:add-machine', 'ownerFlags=[window1HostOpen]'],
-  ['closed-owner:1:directory', 'ownerFlags=[window1DirOpen]'],
-  ['closed-owner:1:rename', 'ownerFlags=[window1RenameOpen]'],
-  ['closed-owner:1:connection', 'ownerFlags=[window1HostOpen]'],
-  ['closed-owner:1:settings', 'ownerFlags=[window1SettingsOpen]'],
-  ['closed-owner:2:terminals', 'ownerFlags=[window2PaletteOpen]'],
-  ['closed-owner:2:agents', 'ownerFlags=[window2AgentsOpen]'],
-  ['closed-owner:2:sessions', 'ownerFlags=[window2PaletteOpen]'],
-  ['closed-owner:2:machines', 'ownerFlags=[window2PaletteOpen]'],
-  ['closed-owner:2:windows', 'ownerFlags=[window2PaletteOpen]'],
-  ['closed-owner:2:commands', 'ownerFlags=[window2PaletteOpen]'],
-  ['closed-owner:2:new-session', 'ownerFlags=[window2RenameOpen]'],
-  ['closed-owner:2:add-machine', 'ownerFlags=[window2HostOpen]'],
-  ['closed-owner:2:directory', 'ownerFlags=[window2DirOpen]'],
-  ['closed-owner:2:rename', 'ownerFlags=[window2RenameOpen]'],
-  ['closed-owner:2:connection', 'ownerFlags=[window2HostOpen]'],
-  ['closed-owner:2:settings', 'ownerFlags=[window2SettingsOpen]'],
-  ['closed-owner:3:terminals', 'ownerFlags=[window3PaletteOpen]'],
-  ['closed-owner:3:agents', 'ownerFlags=[window3AgentsOpen]'],
-  ['closed-owner:3:sessions', 'ownerFlags=[window3PaletteOpen]'],
-  ['closed-owner:3:machines', 'ownerFlags=[window3PaletteOpen]'],
-  ['closed-owner:3:windows', 'ownerFlags=[window3PaletteOpen]'],
-  ['closed-owner:3:commands', 'ownerFlags=[window3PaletteOpen]'],
-  ['closed-owner:3:new-session', 'ownerFlags=[window3RenameOpen]'],
-  ['closed-owner:3:add-machine', 'ownerFlags=[window3HostOpen]'],
-  ['closed-owner:3:directory', 'ownerFlags=[window3DirOpen]'],
-  ['closed-owner:3:rename', 'ownerFlags=[window3RenameOpen]'],
-  ['closed-owner:3:connection', 'ownerFlags=[window3HostOpen]'],
-  ['closed-owner:3:settings', 'ownerFlags=[window3SettingsOpen]'],
-  ['closed-owner:4:terminals', 'ownerFlags=[window4PaletteOpen]'],
-  ['closed-owner:4:agents', 'ownerFlags=[window4AgentsOpen]'],
-  ['closed-owner:4:sessions', 'ownerFlags=[window4PaletteOpen]'],
-  ['closed-owner:4:machines', 'ownerFlags=[window4PaletteOpen]'],
-  ['closed-owner:4:windows', 'ownerFlags=[window4PaletteOpen]'],
-  ['closed-owner:4:commands', 'ownerFlags=[window4PaletteOpen]'],
-  ['closed-owner:4:new-session', 'ownerFlags=[window4RenameOpen]'],
-  ['closed-owner:4:add-machine', 'ownerFlags=[window4HostOpen]'],
-  ['closed-owner:4:directory', 'ownerFlags=[window4DirOpen]'],
-  ['closed-owner:4:rename', 'ownerFlags=[window4RenameOpen]'],
-  ['closed-owner:4:connection', 'ownerFlags=[window4HostOpen]'],
-  ['closed-owner:4:settings', 'ownerFlags=[window4SettingsOpen]'],
-  ['window-close:terminals', 'immediate:descriptor=0;ownerFlags=[window2PaletteOpen]'],
-  ['window-close:agents', 'immediate:descriptor=0;ownerFlags=[window2AgentsOpen]'],
-  ['window-close:sessions', 'immediate:descriptor=0;ownerFlags=[window2PaletteOpen]'],
-  ['window-close:machines', 'immediate:descriptor=0;ownerFlags=[window2PaletteOpen]'],
-  ['window-close:windows', 'immediate:descriptor=0;ownerFlags=[window2PaletteOpen]'],
-  ['window-close:commands', 'immediate:descriptor=0;ownerFlags=[window2PaletteOpen]'],
-  ['window-close:new-session', 'immediate:descriptor=1;ownerFlags=[]'],
-  ['window-close:add-machine', 'immediate:descriptor=0;ownerFlags=[window2HostOpen]'],
-  ['window-close:directory', 'immediate:descriptor=0;ownerFlags=[window2DirOpen]'],
-  ['window-close:rename', 'immediate:descriptor=0;ownerFlags=[window2RenameOpen]'],
-  ['window-close:connection', 'immediate:descriptor=0;ownerFlags=[window2HostOpen]'],
-  ['window-close:settings', 'immediate:descriptor=1;ownerFlags=[window2SettingsOpen]'],
-  ['new-session:failed-open->sessions', 'cancelRequest=none;pending=2;visible=[];palette=0;agents=0;view=0;settings=0;host=0;purpose=0;dir=0;rename=0;creating=0;ownerFields=[]'],
-]);
-
-const classifiedCaseIds = new Set([
-  ...surfaces.flatMap(source => surfaces.map(destination => `transition:${source.name}->${destination.name}`)),
-  ...[1, 2, 3, 4].flatMap(owner => surfaces.map(surface => `closed-owner:${owner}:${surface.name}`)),
-  ...surfaces.map(surface => `window-close:${surface.name}`),
-  'new-session:failed-open->sessions',
-]);
-
-test('baseline allowlist contains only exact, exercised case signatures', () => {
-  assert.equal(baselineFailures.size, 75);
-  for (const [id, signature] of baselineFailures) {
-    assert.equal(classifiedCaseIds.has(id), true, `stale baseline allowlist key: ${id}`);
-    assert.equal(typeof signature, 'string');
-    assert.notEqual(signature.length, 0);
-  }
-});
-
-function assertBaselineCase(id, failure) {
-  const expected = baselineFailures.get(id);
-  if (expected === undefined) {
-    assert.equal(failure, null, `${id} is not allowlisted`);
-    return;
-  }
-  assert.notEqual(failure, null, `${id} unexpectedly passed; remove it from baselineFailures and promote the contract`);
-  assert.equal(failure, expected, `${id} changed its allowlisted failure signature`);
-  if (strict) assert.fail(`${id}: ${failure}`);
+function assertAcceptanceCase(id, failure) {
+  assert.equal(baselineExemptions.has(id), false, `${id} must not be exempted`);
+  assert.equal(failure, null, `${id}: ${failure}`);
 }
+
+const baselineExemptions = new Set();
+
+test('acceptance matrix has no baseline exemptions', () => {
+  assert.equal(baselineExemptions.size, 0);
+});
 
 for (const source of surfaces) {
   for (const destination of surfaces) {
     const id = `transition:${source.name}->${destination.name}`;
-    test(id, () => assertBaselineCase(id, transitionFailure(source, destination)));
+    test(id, () => assertAcceptanceCase(id, transitionFailure(source, destination)));
   }
 }
 
@@ -358,7 +261,7 @@ for (let owner = 0; owner <= 4; owner += 1) {
       const open = everyOwnerField.filter(field => model[field]);
       const prefix = owner === 0 ? 'main' : `window${owner}`;
       const failure = open.length > 0 && open.every(field => field.startsWith(prefix)) ? null : `ownerFlags=[${open.join(',')}]`;
-      assertBaselineCase(id, failure);
+      assertAcceptanceCase(id, failure);
     });
   }
 }
@@ -370,19 +273,19 @@ for (const activeWindow of [1, 2, 3, 4]) {
       const model = openSurface({ ...base(), activeWindow }, surface);
       const leaked = activeWindow >= 1 && activeWindow <= 4
         ? ownerFields(`window${Math.trunc(activeWindow)}`).filter(field => model[field]) : [];
-      assertBaselineCase(id, leaked.length === 0 ? null : `ownerFlags=[${leaked.join(',')}]`);
+      assertAcceptanceCase(id, leaked.length === 0 ? null : `ownerFlags=[${leaked.join(',')}]`);
     });
   }
 }
 
 for (const surface of surfaces) {
   const id = `window-close:${surface.name}`;
-  test(id, () => assertBaselineCase(id, windowCloseFailure(surface)));
+  test(id, () => assertAcceptanceCase(id, windowCloseFailure(surface)));
 }
 
 test('new-session:failed-open->sessions', () => {
   const id = 'new-session:failed-open->sessions';
-  assertBaselineCase(id, failedOpenDepartureFailure());
+  assertAcceptanceCase(id, failedOpenDepartureFailure());
 });
 
 for (let mask = 0; mask < 16; mask += 1) {
