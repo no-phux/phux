@@ -3,6 +3,34 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.25.0](https://github.com/no-phux/phux/compare/cockpit-v0.24.0...cockpit-v0.25.0) (2026-09-15)
+
+
+### Features
+
+* **cockpit:** check for updates and reinstall from the running app ([#660](https://github.com/no-phux/phux/issues/660)) ([38cab11](https://github.com/no-phux/phux/commit/38cab11244165a3520cda5b27c73cef029e9af08))
+* **cockpit:** consume cwd, command, and exit statuses on the remote path ([#664](https://github.com/no-phux/phux/issues/664)) ([aea32ed](https://github.com/no-phux/phux/commit/aea32ed83cf937fde95bcf7539fab91f602b1330))
+* **cockpit:** hybrid-c paint budgets and pkg3b ceiling proposal ([#654](https://github.com/no-phux/phux/issues/654)) ([226753a](https://github.com/no-phux/phux/commit/226753a50d33121b67cfb216d8824fbe0d9ea50a))
+* **cockpit:** last-n crop for degraded hybrid-c panes ([#656](https://github.com/no-phux/phux/issues/656)) ([354b91f](https://github.com/no-phux/phux/commit/354b91ffa011f92e87e16e2bd60b484ed91465c3))
+* **cockpit:** pin native Hybrid C cell and text ceilings ([#671](https://github.com/no-phux/phux/issues/671)) ([9d07708](https://github.com/no-phux/phux/commit/9d0770836d0f8ab60cd4c12f79a858e2f9149153))
+* **protocol:** journaled event envelope, retain-on-exit and idempotent-create shapes ([#661](https://github.com/no-phux/phux/issues/661)) ([f466020](https://github.com/no-phux/phux/commit/f466020eed43b2da7bf1c2be3b1590798fbda0d9))
+
+
+### Bug Fixes
+
+* **cockpit:** accept Settings About section from the visible tab ([#676](https://github.com/no-phux/phux/issues/676)) ([f2b2b69](https://github.com/no-phux/phux/commit/f2b2b69096d194b81701c408913a66b687c6da91))
+* **cockpit:** align configured-launch docs and tests with dropped local seed ([#688](https://github.com/no-phux/phux/issues/688)) ([ceb8aba](https://github.com/no-phux/phux/commit/ceb8aba5a1a4e821c9cc8715850836ba17d78fc0))
+* **cockpit:** align stale paint-budget assertions with shipped last-N ([cbbbbe6](https://github.com/no-phux/phux/commit/cbbbbe6c76168e344f0d81f8f449c43f436e50bd))
+* **cockpit:** deflake unix-worker ensure-before-socket test ([#684](https://github.com/no-phux/phux/issues/684)) ([63e7cfc](https://github.com/no-phux/phux/commit/63e7cfc56a81d1ae3be0641c3446bc11c066923c))
+* **cockpit:** float rounded split-pane chrome off the grid ([#669](https://github.com/no-phux/phux/issues/669)) ([1ac476f](https://github.com/no-phux/phux/commit/1ac476f7d9bf66ce5989d7039e9f073604bca812))
+* **cockpit:** flush workspace read while remote bootstrap is still arriving ([#658](https://github.com/no-phux/phux/issues/658)) ([5e63be6](https://github.com/no-phux/phux/commit/5e63be62698afcff58065bf2baa61048fba24307))
+
+
+### Documentation
+
+* **cockpit:** lock shell/engine split and refuse framework terminal store ([#650](https://github.com/no-phux/phux/issues/650)) ([97ff7e0](https://github.com/no-phux/phux/commit/97ff7e076c076c4dc3d5456a3ac110d342b734c7))
+* **cockpit:** lock VT path off the 4096 effect channel ([#652](https://github.com/no-phux/phux/issues/652)) ([6479869](https://github.com/no-phux/phux/commit/6479869d9fe13cd6ecaa64327b5b52b80740b164))
+
 ## [0.24.0](https://github.com/no-phux/phux/compare/cockpit-v0.23.3...cockpit-v0.24.0) (2026-09-14)
 
 

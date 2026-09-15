@@ -9,6 +9,66 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.38.0](https://github.com/no-phux/phux/compare/v0.37.0...v0.38.0) (2026-09-15)
+
+
+### Features
+
+* **client-ffi:** cwd, command, and exit status effects ([#662](https://github.com/no-phux/phux/issues/662)) ([7093116](https://github.com/no-phux/phux/commit/7093116a955103cbd1a606e1fcfa2694c6a1625f))
+* **cockpit:** check for updates and reinstall from the running app ([#660](https://github.com/no-phux/phux/issues/660)) ([38cab11](https://github.com/no-phux/phux/commit/38cab11244165a3520cda5b27c73cef029e9af08))
+* **cockpit:** consume cwd, command, and exit statuses on the remote path ([#664](https://github.com/no-phux/phux/issues/664)) ([aea32ed](https://github.com/no-phux/phux/commit/aea32ed83cf937fde95bcf7539fab91f602b1330))
+* **grok:** add first-class launch and lifecycle detection ([#682](https://github.com/no-phux/phux/issues/682)) ([2f0b591](https://github.com/no-phux/phux/commit/2f0b5914839b322d184ea5035a9644dd93fe7ab7))
+* **layout:** named projections by metadata key and archive split-tree restore ([#683](https://github.com/no-phux/phux/issues/683)) ([7c767cf](https://github.com/no-phux/phux/commit/7c767cf4c55d83c15a5f9149df0231ff819d5b88))
+* **protocol:** generated kind catalog with closed verb classification ([#663](https://github.com/no-phux/phux/issues/663)) ([7b5f6d2](https://github.com/no-phux/phux/commit/7b5f6d27f12c52eaa7323dab1a1716f9d5f9ca33))
+* **protocol:** journaled event envelope, retain-on-exit and idempotent-create shapes ([#661](https://github.com/no-phux/phux/issues/661)) ([f466020](https://github.com/no-phux/phux/commit/f466020eed43b2da7bf1c2be3b1590798fbda0d9))
+* **server:** enforce the closed verb classification at dispatch ([#691](https://github.com/no-phux/phux/issues/691)) ([690dbc3](https://github.com/no-phux/phux/commit/690dbc3346e30c63fc7ab7c6154e269428a52db1))
+* **server:** idempotent keyed spawn and session create ([#690](https://github.com/no-phux/phux/issues/690)) ([6e52842](https://github.com/no-phux/phux/commit/6e52842b6eea612692abedaf82f687a88619d5dc))
+* **server:** journaled events with cursor replay, explicit gaps, and one fan-out ([#686](https://github.com/no-phux/phux/issues/686)) ([caaee91](https://github.com/no-phux/phux/commit/caaee917ed3fa59060482f53af072fade53e4f7c))
+* **server:** typed terminal process facet with pid generation and prompt state ([#667](https://github.com/no-phux/phux/issues/667)) ([2a8c83c](https://github.com/no-phux/phux/commit/2a8c83c77329e452046c707563f141428cdc0574))
+* **site:** forward privacy-respecting analytics + join-the-beta ([4387a80](https://github.com/no-phux/phux/commit/4387a801a37013315e91a2fd8deed6897a4ce2f1))
+* **site:** host a read-only MCP endpoint for agents ([f5be389](https://github.com/no-phux/phux/commit/f5be38920ef748502a52e953d0077573fe7caeb2))
+* **site:** move private analytics ingest onto a service binding ([#680](https://github.com/no-phux/phux/issues/680)) ([f03721c](https://github.com/no-phux/phux/commit/f03721caaa7cacffa928a6356154bf9ac016b030))
+* **site:** negotiate markdown for agent requests ([f66d083](https://github.com/no-phux/phux/commit/f66d0837d90391f4cc3a8d3fed57631fb0133a8f))
+* **site:** passive edge telemetry with a public /telemetry dashboard ([b84936e](https://github.com/no-phux/phux/commit/b84936e69a7c7be14e40f4dfa6fac1dbb6f8083e))
+* **site:** publish the agent discovery surface ([74b36d8](https://github.com/no-phux/phux/commit/74b36d80c5251ff362f114ddcfbb1bf1cc4e29e0))
+* **workload:** phux workload CLI, atomic hot-reloaded registry, WSS mTLS parity ([#670](https://github.com/no-phux/phux/issues/670)) ([37eea2f](https://github.com/no-phux/phux/commit/37eea2f76ac9887c89fb9e577535babeb2f69c76))
+
+
+### Bug Fixes
+
+* **ci:** patch rustls advisory and pin e2e pane shell ([4eefd4e](https://github.com/no-phux/phux/commit/4eefd4e7149d9b62451a2c3b93c5e5e8667bb1ae))
+* **dial:** surface websocket probe activity ([e864326](https://github.com/no-phux/phux/commit/e8643264ec3b39821e4e49409dd935a287919742))
+* **server:** key native checkpoint bindings by owner and stream ([#679](https://github.com/no-phux/phux/issues/679)) ([b2fedee](https://github.com/no-phux/phux/commit/b2fedee6da09f0590f7960cdebcefd9a482d11ee))
+* **server:** make lagged ATTACH_RESOURCE resync test deterministic ([#649](https://github.com/no-phux/phux/issues/649)) ([229ce55](https://github.com/no-phux/phux/commit/229ce558cd654405067421a1c9618c8338f81147))
+* **sessions:** keep headless layouts usable ([#685](https://github.com/no-phux/phux/issues/685)) ([a715a25](https://github.com/no-phux/phux/commit/a715a2527679baa33a1260109854c200ef0a9b10))
+* **site:** bind claim expiry into bearer proofs ([#681](https://github.com/no-phux/phux/issues/681)) ([f344b93](https://github.com/no-phux/phux/commit/f344b93ae2cb55a5d131b72c148d8bfa544b314d))
+* **site:** constant-time full-length claim proofs with link expiry ([#678](https://github.com/no-phux/phux/issues/678)) ([3108659](https://github.com/no-phux/phux/commit/3108659ee334a2336b0c3997891dc763d82f78ee))
+* **site:** drop analytics HTTP ingest fallback ([#687](https://github.com/no-phux/phux/issues/687)) ([ec6f908](https://github.com/no-phux/phux/commit/ec6f9085bddd301335401beb1b35c2a08651cada))
+* **site:** narrow demo worker auth route to /auth/* ([df77612](https://github.com/no-phux/phux/commit/df776122f6c86a6c1b2c2d026d25aba33b5b9b08))
+* **site:** negotiate real MCP protocol versions ([#677](https://github.com/no-phux/phux/issues/677)) ([b8e079a](https://github.com/no-phux/phux/commit/b8e079a3a9d44b82aab2ff61e070479800e4d000))
+* **site:** pin hosted native phux to workspace 0.37.0 ([#689](https://github.com/no-phux/phux/issues/689)) ([60b63a9](https://github.com/no-phux/phux/commit/60b63a9fef14c4188f102cb8daf76585ef1eca84))
+* **site:** smoke docs and member routes after deploy ([9f522d9](https://github.com/no-phux/phux/commit/9f522d92e59fe8352755671b4219c9ed168a3d16))
+
+
+### Performance
+
+* **ci:** reduce test-suite wall time ([#675](https://github.com/no-phux/phux/issues/675)) ([4811e3c](https://github.com/no-phux/phux/commit/4811e3c0783cf914435cd68c5a39c1f2c97c3170))
+
+
+### Refactors
+
+* **site:** adopt Effect v4 for analytics ([f2eed8b](https://github.com/no-phux/phux/commit/f2eed8b2472f4c27d92f5a41ad460d5690a93969))
+
+
+### Documentation
+
+* **agents:** projection scoping, fallback hierarchy, and live-state authority ([efe9afb](https://github.com/no-phux/phux/commit/efe9afbfa40f0fcff97dcefda3f618a0a58d69c9))
+* **consumers:** stub Android page, note it on iOS, drop UniFFI detail ([925147c](https://github.com/no-phux/phux/commit/925147c54c7fb62ee937533bff867dfb5fbe571c))
+* **ios:** merge latest origin/main into docs/ios-coming-soon ([fac7979](https://github.com/no-phux/phux/commit/fac79798c431ed71e60b80d8286663ceee1c736a))
+* **ios:** replace iOS details with coming-soon stub ([7ddae60](https://github.com/no-phux/phux/commit/7ddae601ce63949c2e8206b47fbb6348e20269b7))
+* **reference:** regenerate CLI docs after the 0.37.0 bump ([#653](https://github.com/no-phux/phux/issues/653)) ([a6d7b8e](https://github.com/no-phux/phux/commit/a6d7b8e620b6a92e93315cc1f11e5f5bbc44f2fc))
+* **site:** record the agent discovery surface and zone-only DNS state ([fa976a1](https://github.com/no-phux/phux/commit/fa976a1fca23f4e5152d833aa7500730f5c91f15))
+
 ## [0.37.0](https://github.com/no-phux/phux/compare/v0.36.0...v0.37.0) (2026-09-14)
 
 
