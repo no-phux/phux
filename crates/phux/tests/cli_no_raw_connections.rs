@@ -46,14 +46,16 @@ use std::path::{Path, PathBuf};
 const ALLOWLIST: &[(&str, usize, &str)] = &[
     (
         "mod.rs",
-        27,
+        28,
         "owns the shared `command_on`/`request_command` helpers every verb \
          (migrated or not) calls through — the one generic connect + request \
          round trip, not a per-verb hand-roll — plus `verb_remote` and \
          `socketless_verb`, which match on *this crate's own* `Command` (the \
          clap subcommand enum, `pub(crate) enum Command` below `Cli`), a \
          same-named but unrelated type to `phux_protocol`'s wire `Command`. \
-         Both contribute to the `Command::` count below.",
+         Both contribute to the `Command::` count below; the 28th hit is \
+         `socketless_verb`'s `Command::Workload` arm (CLI enum, not a wire \
+         frame — `phux workload` writes the state directory and never dials).",
     ),
     (
         "server_target.rs",
