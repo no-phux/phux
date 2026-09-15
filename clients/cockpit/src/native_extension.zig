@@ -2340,6 +2340,10 @@ const Rig = struct {
                 &config,
             )) orelse return error.TestExpectedPhuxProvider;
             cockpit.attachPhuxProvider(bridge.engine.?.model, remote);
+            // Shipping createFromInitialized drops the local seed once Phux is
+            // configured. The harness attaches the provider after Engine.create,
+            // so non-replay launches apply the same reset before boot.
+            if (!replaying) Engine.initializeSharedPresentation(bridge.engine.?.model);
         }
         bridge.shells = replaying;
         var options: Adapter.Options = .{
@@ -2562,7 +2566,7 @@ test "the core boots from the engine's snapshot, not from its own defaults" {
     try std.testing.expectEqual(@as(i64, 1), model.engineRevision.lo);
 }
 
-test "configured Phux attachment starts native provider lifecycle without replacing the ephemeral local terminal" {
+test "configured Phux attachment starts native provider lifecycle without a local seed terminal" {
     if (comptime !cockpit.phux_enabled) return error.SkipZigTest;
     var rig = try Rig.startWithPhux(true);
     defer rig.stop();
@@ -2581,11 +2585,11 @@ test "configured Phux attachment starts native provider lifecycle without replac
     // Installing the global pointer monitor may be refused by the test host's
     // process permissions; its model state still exists and the production
     // start path attempts the native channel without exposing it to TS.
-    // Attaching durable Phux work is discovery, not implicit focus or an
-    // attempt to make the direct local PTY durable. Until ATTACH_READY admits
-    // a remote identity, the initial terminal remains the local provider's.
-    try std.testing.expectEqual(.local, engine.model.focusedTerminalRef().?.provider_id);
-    try std.testing.expectEqual(@as(usize, 1), engine.model.provider.activeCount());
+    // A configured launch drops the local seed and waits for coordinator-owned
+    // work; ATTACH_READY is what admits a remote identity into the empty
+    // workspace.
+    try std.testing.expect(engine.model.focusedTerminalRef() == null);
+    try std.testing.expectEqual(@as(usize, 0), engine.model.provider.activeCount());
     try std.testing.expectEqual(@as(usize, 0), engine.model.remote_inventory_count);
 }
 

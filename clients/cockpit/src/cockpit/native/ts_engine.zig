@@ -343,10 +343,13 @@ pub const Engine = struct {
         return engine;
     }
 
-    fn initializeSharedPresentation(model: *Model) void {
-        // Configuration chooses either Phux-backed work or the explicit local
-        // scratch path. Old local layout files cannot restore competing remote
-        // topology, or start hidden scratch PTYs behind a shared workspace.
+    /// Drop local seed terminals and bind the empty workspace to the configured
+    /// Phux attachment. createFromInitialized and connectConfiguredLocal both
+    /// use this: configuration chooses Phux-backed work or the explicit local
+    /// scratch path, not both.
+    pub fn initializeSharedPresentation(model: *Model) void {
+        // Old local layout files cannot restore competing remote topology, or
+        // start hidden scratch PTYs behind a shared workspace.
         var refs: [max_terminals]TerminalRef = undefined;
         const count = model.provider.terminalRefs(&refs);
         for (refs[0..count]) |ref| _ = model.provider.destroyTerminal(ref);
