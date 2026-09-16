@@ -19,18 +19,12 @@
 #
 # WHY IT MAY REFUSE TO RUN
 # ------------------------
-# The dump only fires from the GPU composite pass, and at the pinned SDK that
-# pass refuses any command kind outside its known-kind list -- a list without
-# `cell_grid`. A Cockpit terminal frame is nothing but `cell_grid`, so every
-# packet present is refused, the runtime falls back to its own CPU reference
-# renderer, and the dump never runs: composite mode does not capture the real
-# rasterizer, it REPLACES it. This script asserts `gpu_present_path=packet`
-# and stops when it sees `pixels`, because a capture taken in that state is a
-# picture of the reference renderer wearing the GPU path's name.
-#
-# docs/sdk-patches/composite-cell-grid.patch is the SDK-side fix. Apply it to a
-# sandbox copy of the pin and build against that; docs/sdk-patches/README.md
-# has the recipe.
+# The dump only fires from the opt-in GPU composite pass. This script asserts
+# `gpu_present_path=packet` and stops when it sees `pixels`, because a capture
+# taken after packet refusal is a picture of the CPU reference renderer wearing
+# the GPU path's name. The pinned SDK admits Cockpit's `cell_grid` commands and
+# supports `NATIVE_SDK_GPU_SHOT_EVERY=1`; a refusal now indicates a real
+# regression rather than a sandbox patch that still needs applying.
 set -euo pipefail
 
 ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -172,7 +166,7 @@ if [[ "$path" != "packet" ]]; then
     printf 'gpu_present_path=%s means every packet present was refused and the\n' "${path:-none}" >&2
     printf 'engine fell back to its own CPU reference renderer. Whatever the\n' >&2
     printf 'composite pass would dump is that renderer, not CoreText.\n' >&2
-    printf 'Fix: docs/sdk-patches/composite-cell-grid.patch (see that README).\n' >&2
+    printf 'The pinned SDK should support this frame; inspect the packet refusal before capturing.\n' >&2
     exit 1
 fi
 

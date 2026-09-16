@@ -177,9 +177,17 @@
         // AppKit cell-grid backgrounds partition shared device-pixel
         // boundaries without changing fractional glyph advances, preventing
         // surface-colored seams between explicit terminal backgrounds.
+        //
+        // The macOS composite pass now admits terminal cell_grid commands
+        // instead of refusing them into the CPU pixel fallback, and
+        // NATIVE_SDK_GPU_SHOT_EVERY lets the real-frame capture harness dump
+        // settled content without waiting for thirty content-changing
+        // presents. Composite mode remains opt-in. These changes are
+        // backported onto Cockpit's existing v0.10.1 lineage so a Metal fix
+        // does not silently import an unrelated ScriptC compiler migration.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/5d2c7450c1e81d4bd72f581ebccdb769b3cd9c0e.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQp2ctQJ13T4MoYyMowCWlkT3X6l85KJQMg1RMarY",
+            .url = "https://github.com/phall1/native/archive/f62651b152b18c229b763b27867735b4d9d10743.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQl-otQKvddb0sMGxkPLoFHLEejc9A4iM0Tc7I5u8",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream
