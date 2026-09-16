@@ -29,7 +29,7 @@ fi
 
 (
   cd "$PHUX_DIR/clients/phux-web"
-  wasm-pack build --target web --release --out-dir pkg
+  wasm-pack build --target web --release --out-dir pkg --locked
 )
 
 mkdir -p "$OUT"

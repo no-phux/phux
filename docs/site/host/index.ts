@@ -168,9 +168,20 @@ async function telemetryApi(request: Request, env: Env): Promise<Response> {
   });
 }
 
+function ingestKeyMatches(secret: string | undefined, provided: string | null): boolean {
+  if (!secret) return false;
+  const candidate = provided ?? "";
+  let difference = candidate.length ^ secret.length;
+  const length = Math.max(candidate.length, secret.length);
+  for (let index = 0; index < length; index++) {
+    difference |= (candidate.charCodeAt(index) || 0) ^ (secret.charCodeAt(index) || 0);
+  }
+  return difference === 0;
+}
+
 async function telemetryIngest(request: Request, env: Env): Promise<Response> {
   if (request.method !== "POST") return new Response("post only", { status: 405 });
-  if (!env.TELEMETRY_INGEST_KEY || request.headers.get("x-telemetry-key") !== env.TELEMETRY_INGEST_KEY) {
+  if (!ingestKeyMatches(env.TELEMETRY_INGEST_KEY, request.headers.get("x-telemetry-key"))) {
     return new Response("unauthorized", { status: 403 });
   }
   let body: { events?: unknown };

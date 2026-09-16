@@ -98,6 +98,11 @@ const TOOLS: ToolDef[] = [
           return "Only phux.sh and docs.phux.sh pages can be fetched.";
         }
         pathname = url.pathname;
+        // `https://phux.sh//evil.example/x` has hostname phux.sh and pathname
+        // `//evil.example/x`; re-parsing that pathname is scheme-relative.
+        if (!pathname.startsWith("/") || pathname.startsWith("//")) {
+          return "Only phux.sh and docs.phux.sh pages can be fetched.";
+        }
       } catch {
         return `Could not parse path: ${raw}`;
       }

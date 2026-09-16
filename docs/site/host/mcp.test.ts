@@ -176,6 +176,37 @@ describe("MCP JSON-RPC", () => {
     expect(body.result.content[0].text).toContain("Only phux.sh");
   });
 
+  test("get_page refuses scheme-relative pathnames on an allowlisted host", async () => {
+    const seen: string[] = [];
+    const env = {
+      ASSETS: {
+        fetch: async (input: Request) => {
+          seen.push(new URL(input.url).href);
+          return new Response("not found", { status: 404 });
+        },
+      },
+    };
+    const response = (await handleMcpRequest(
+      new Request("https://phux.sh/mcp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "tools/call",
+          params: {
+            name: "get_page",
+            arguments: { path: "https://phux.sh//evil.example/x" },
+          },
+        }),
+      }),
+      env,
+    ))!;
+    const body = await response.json();
+    expect(body.result.content[0].text).toContain("Only phux.sh");
+    expect(seen).toEqual([]);
+  });
+
   test("get_install_command and latest_release", async () => {
     const install = await rpc("tools/call", {
       name: "get_install_command",
