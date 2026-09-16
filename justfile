@@ -132,6 +132,7 @@ cockpit-test: cockpit-ffi cockpit-build-contracts cockpit-node-test
     ./scripts/check-release-version.sh
     ./scripts/check-sdk-pin.sh
     ./scripts/check-sdk-pin_test.sh
+    ./scripts/dev-run_test.sh
     ./scripts/lib/zon_test.sh
     ./scripts/lib/measure_test.sh
     ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all

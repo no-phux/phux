@@ -130,6 +130,7 @@ jobs:
           ./scripts/check-release-fallback.sh
           ./scripts/check-sdk-pin.sh
           ./scripts/check-sdk-pin_test.sh
+          ./scripts/dev-run_test.sh
           python3 ./scripts/check-build-contracts.py
           ./scripts/lib/zon_test.sh
           ./scripts/lib/measure_test.sh

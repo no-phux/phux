@@ -36,8 +36,9 @@ function appearanceReply() {
 }
 
 function openedSettings() {
-  const model = step(initialModel()[0], { kind: 'settings_open' })[0];
-  return step(model, { kind: 'appearance_loaded', body: appearanceReply() })[0];
+  let model = step(initialModel()[0], { kind: 'settings_open' })[0];
+  model = step(model, { kind: 'appearance_loaded', body: appearanceReply() })[0];
+  return step(model, { kind: 'keybindings_loaded', body: new Uint8Array([1, 0, 0, 0]) })[0];
 }
 
 test('Check for Updates opens About and requests the installer driver', () => {

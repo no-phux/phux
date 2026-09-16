@@ -10,7 +10,7 @@
             <input text="{settingsQuery}" placeholder="Search settings" autofocus="true" on-input="settings_query" label="Search settings" />
             <toggle-group label="Settings groups">
               <for each="settingsSections" key="index" as="section">
-                <toggle-button size="sm" selected="{settingsSection == section.index}" on-toggle="settings_section:{section.index}">{section.label}</toggle-button>
+                <toggle-button size="sm" selected="{settingsSection == section.index}" disabled="{appearanceBusy}" on-toggle="settings_section:{section.index}">{section.label}</toggle-button>
               </for>
             </toggle-group>
             <if test="{configEditorConfirm}">
@@ -48,11 +48,13 @@
                             <text foreground="text_muted">Default: {binding.defaultBinding}</text>
                           </column>
                         </accordion>
-                        <if test="{bindingEditIndex == binding.index}">
-                          <row gap="8">
-                            <input grow="1" text="{bindingEditValue}" label="Keyboard shortcut" on-input="binding_edit" on-submit="binding_apply" />
-                            <button size="sm" disabled="{appearanceBusy}" on-press="binding_apply">Preview</button>
-                          </row>
+                        <if test="{settingsFooterSave}">
+                          <if test="{bindingEditIndex == binding.index}">
+                            <row gap="8">
+                              <input grow="1" text="{bindingEditValue}" label="Keyboard shortcut" on-input="binding_edit" on-submit="binding_apply" />
+                              <button size="sm" disabled="{appearanceBusy}" on-press="binding_apply">Preview</button>
+                            </row>
+                          </if>
                         </if>
                         <separator />
                       </column>

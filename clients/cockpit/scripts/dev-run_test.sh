@@ -70,7 +70,7 @@ export FIXTURE_APP_PID_FILE="${WORK}/app.pid"
 export FIXTURE_EXECUTABLE="${WORK}/bin/fake-app"
 export FIXTURE_OSASCRIPT_PID_FILE="${WORK}/osascript.pid"
 export PHUX_COCKPIT_DEV_HOME="${WORK}/home"
-export PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS=1
+export PHUX_COCKPIT_FRONT_TIMEOUT_SECONDS=2
 PATH="${WORK}/bin:${PATH}"
 export PATH
 
@@ -115,7 +115,7 @@ assert_app_stopped 'invalid post-launch timeout'
 RUNNER_PID=$!
 printf '%s\n' "$RUNNER_PID" >"${WORK}/runner.pid"
 
-for ((attempt = 0; attempt < 60; attempt++)); do
+for ((attempt = 0; attempt < 100; attempt++)); do
     kill -0 "$RUNNER_PID" 2>/dev/null || break
     /bin/sleep 0.05
 done
@@ -130,7 +130,7 @@ wait "$RUNNER_PID"
 RUNNER_PID=""
 rm -f -- "${WORK}/runner.pid"
 
-grep -Fq 'note: could not front the window in 1s' "${WORK}/output"
+grep -Fq 'note: could not front the window in 2s' "${WORK}/output"
 grep -Fq 'detached. kill ' "${WORK}/output"
 
 app_pid="$(cat "${WORK}/app.pid")"
@@ -139,6 +139,10 @@ if ! kill -0 "$app_pid" 2>/dev/null; then
     exit 1
 fi
 
+if [[ ! -f "${WORK}/osascript.pid" ]]; then
+    printf 'FAIL: fronting helper was not observed before the bounded launcher returned\n' >&2
+    exit 1
+fi
 osascript_pid="$(cat "${WORK}/osascript.pid")"
 if kill -0 "$osascript_pid" 2>/dev/null; then
     printf 'FAIL: timed-out osascript process %s was left running\n' "$osascript_pid" >&2

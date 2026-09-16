@@ -265,6 +265,12 @@ class BuildContracts(unittest.TestCase):
         self.assertIn("node --import ./src/tests/navigation-loader.mjs --test", helper)
         self.assertIn("./src/tests/*.test.mjs ./src/keybindings.test.ts", helper)
 
+    def test_detached_launcher_regressions_gate_local_and_ci(self):
+        justfile = (REPO_ROOT / "justfile").read_text()
+        workflow = (REPO_ROOT / ".github/workflows/cockpit-ci.yml").read_text()
+        self.assertEqual(justfile.count("./scripts/dev-run_test.sh"), 1)
+        self.assertEqual(workflow.count("./scripts/dev-run_test.sh"), 1)
+
     def test_live_journey_cleanup_is_signal_safe_and_stops_only_owned_pid_once(self):
         with tempfile.TemporaryDirectory(prefix="cockpit-live-cleanup-") as directory:
             root = Path(directory)

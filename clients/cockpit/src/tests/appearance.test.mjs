@@ -16,8 +16,9 @@ function reply({ active = true, outcome = 0, dirty = false, theme = 0, cursor = 
   return new Uint8Array([1, +active, outcome, +dirty, theme, cursor, placement, 0, font.length, contrast.length, ...font, ...contrast]);
 }
 function opened() {
-  const model = step(initialModel()[0], { kind: 'settings_open' })[0];
-  return step(model, { kind: 'appearance_loaded', body: reply() })[0];
+  let model = step(initialModel()[0], { kind: 'settings_open' })[0];
+  model = step(model, { kind: 'appearance_loaded', body: reply() })[0];
+  return step(model, { kind: 'keybindings_loaded', body: new Uint8Array([1, 0, 0, 0]) })[0];
 }
 function keybindingReply(binding = 'Cmd+Shift+t', defaultBinding = 'Cmd+t') {
   const command = bytes('terminal.new');
@@ -176,8 +177,12 @@ test('Settings search sanitizes an invalid detail identity at the model boundary
   assert.equal(model.settingsDetailId, 65535);
 });
 
-test('keyboard search reveals a concealed default chord across Settings groups', () => {
-  const [loaded] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+test('fresh Settings loads chords so global search reveals a concealed default', () => {
+  let [loading, cmd] = step(initialModel()[0], { kind: 'settings_open' });
+  assert.equal(cmd.cmds.at(-1).name, 'cockpit.appearance');
+  [loading, cmd] = step(loading, { kind: 'appearance_loaded', body: reply() });
+  assert.equal(cmd.name, 'cockpit.keybindings');
+  const [loaded] = step(loading, { kind: 'keybindings_loaded', body: keybindingReply() });
   assert.equal(loaded.showBindingRows, false);
   const [matched] = step(loaded, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Cmd+t') } });
   assert.equal(matched.showBindingRows, true);
@@ -185,9 +190,63 @@ test('keyboard search reveals a concealed default chord across Settings groups',
   assert.equal(matched.bindingDetailIndex, 0);
 });
 
+test('late keybinding discovery cannot release a newer appearance preview', () => {
+  let [model] = step(initialModel()[0], { kind: 'settings_open' });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  assert.equal(model.bindingsPending, true);
+  [model] = step(model, { kind: 'settings_font', direction: 1 });
+  assert.equal(model.appearanceBusy, true);
+  assert.equal(model.bindingsOwnsBusy, false);
+  [model] = step(model, { kind: 'keybindings_loaded', body: new Uint8Array([1, 0, 0, 0]) });
+  assert.equal(model.appearanceBusy, true);
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  assert.equal(model.appearanceBusy, false);
+});
+
+test('keybinding failure cannot release a newer Settings rollback', () => {
+  let [model] = step(initialModel()[0], { kind: 'settings_open' });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  [model] = step(model, { kind: 'settings_close' });
+  assert.equal(model.appearanceClosing, true);
+  [model] = step(model, { kind: 'keybindings_failed', error: bytes('registry unavailable') });
+  assert.equal(model.appearanceClosing, true);
+  assert.equal(model.appearanceBusy, true);
+});
+
+test('Keyboard cannot take the busy gate from appearance or discovery', () => {
+  let [model] = step(initialModel()[0], { kind: 'settings_open' });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  const [discovering, discoverCmd] = step(model, { kind: 'settings_section', section: 2 });
+  assert.deepEqual(discovering, model);
+  assert.equal(discoverCmd, null);
+  [model] = step(model, { kind: 'settings_font', direction: 1 });
+  const [previewing, previewCmd] = step(model, { kind: 'settings_section', section: 2 });
+  assert.deepEqual(previewing, model);
+  assert.equal(previewCmd, null);
+});
+
+test('reopening Settings withdraws stale binding authority during discovery', () => {
+  let model = opened();
+  [model] = step(model, { kind: 'keybindings_loaded', body: keybindingReply() });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  assert.equal(model.bindings.rows.length, 1);
+  [model] = step(model, { kind: 'settings_close' });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply({ active: false, outcome: 2 }) });
+  [model] = step(model, { kind: 'settings_open' });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  assert.equal(model.bindingsPending, true);
+  assert.equal(model.bindings.rows.length, 0);
+  assert.equal(model.bindingRows.length, 0);
+  const [ignored, cmd] = step(model, { kind: 'binding_reset', index: 0 });
+  assert.deepEqual(ignored, model);
+  assert.equal(cmd, null);
+});
+
 test('Settings groups cannot retain keyboard rows or share the connection accordion identity', () => {
-  const [loaded] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
-  const [keyboard] = step(loaded, { kind: 'settings_section', section: 2 });
+  let [loaded] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+  [loaded] = step(loaded, { kind: 'appearance_loaded', body: reply() });
+  let [keyboard] = step(loaded, { kind: 'settings_section', section: 2 });
+  [keyboard] = step(keyboard, { kind: 'keybindings_loaded', body: keybindingReply() });
   assert.equal(keyboard.showBindingRows, true);
   const [connection] = step(keyboard, { kind: 'settings_section', section: 4 });
   assert.equal(connection.showBindingRows, false);
@@ -230,9 +289,24 @@ test('global search results stay disclosure-only in read-only Settings groups', 
   assert.equal(setting.settingEditId, 65535);
 
   [model] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
   [model] = step(model, { kind: 'settings_section', section: 5 });
+  assert.equal(model.settingsSection, 5);
   [model] = step(model, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Cmd+t') } });
   assert.equal(model.showBindingRows, true);
   const [binding] = step(model, { kind: 'binding_select', index: 0 });
   assert.equal(binding.bindingEditIndex, 65535);
+});
+
+test('switching to a read-only group clears and conceals a keyboard editor', () => {
+  let [model] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+  [model] = step(model, { kind: 'appearance_loaded', body: reply() });
+  [model] = step(model, { kind: 'settings_section', section: 2 });
+  [model] = step(model, { kind: 'keybindings_loaded', body: keybindingReply() });
+  [model] = step(model, { kind: 'binding_select', index: 0 });
+  assert.equal(model.bindingEditIndex, 0);
+  [model] = step(model, { kind: 'settings_section', section: 4 });
+  assert.equal(model.bindingEditIndex, 65535);
+  const markup = readFileSync(new URL('../windows/components/cockpit-settings.native', import.meta.url), 'utf8');
+  assert.match(markup, /if test="\{settingsFooterSave\}">\s*<if test="\{bindingEditIndex == binding.index\}"/);
 });

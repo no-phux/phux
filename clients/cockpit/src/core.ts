@@ -261,6 +261,9 @@ export interface Model {
   readonly navigatorTitle: Uint8Array;
   readonly actionRows: readonly ActionRow[];
   readonly bindings: KeybindingPage;
+  readonly bindingsLoaded: boolean;
+  readonly bindingsPending: boolean;
+  readonly bindingsOwnsBusy: boolean;
   readonly pendingSessionAction: DeferredAction | null;
   readonly pendingSettingsAction: DeferredAction | null;
   readonly retiredSessionToken: Uint8Array;
@@ -2210,6 +2213,9 @@ export function initialModel(): [Model, Cmd<Msg>] {
       navigatorTitle: asciiBytes("Go to Terminal"),
       actionRows: NO_ACTION_ROWS,
       bindings: initialKeybindings(),
+      bindingsLoaded: false,
+      bindingsPending: false,
+      bindingsOwnsBusy: false,
       commandContextTarget: NO_BYTES,
       commandContextWindow: 0,
       machines: initialMachines(),
@@ -2546,6 +2552,7 @@ interface AppearanceDecision {
   readonly opening: boolean;
   readonly closed: boolean;
   readonly navigate: boolean;
+  readonly loadBindings: boolean;
 }
 
 interface UpdateDecision {
@@ -2601,11 +2608,11 @@ function handleSelfUpdate(model: Model, msg: Msg): UpdateDecision | null {
 }
 
 function appearanceDecision(model: Model): AppearanceDecision {
-  return { model, request: NO_BYTES, opening: false, closed: false, navigate: false };
+  return { model, request: NO_BYTES, opening: false, closed: false, navigate: false, loadBindings: false };
 }
 
 function requestAppearance(model: Model, action: number, argument: number): AppearanceDecision {
-  return { ...appearanceDecision({ ...model, appearanceBusy: true }), request: appearanceRequest(action, argument) };
+  return { ...appearanceDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }), request: appearanceRequest(action, argument) };
 }
 
 function openAppearance(model: Model): AppearanceDecision {
@@ -2613,8 +2620,9 @@ function openAppearance(model: Model): AppearanceDecision {
   const opening = { ...model, settingsOpen: true, paletteOpen: false, hostOpen: false, hostAwaiting: false, settingsSection: 0,
      navigationAfterSettings: false, surfaceAfterSettings: 0, pendingToolOpen: false, configEditorConfirm: false,
      appearanceClosing: false, appearance: initialAppearance(), appearanceBusy: true,
+     bindings: initialKeybindings(), bindingsLoaded: false, bindingsPending: false, bindingsOwnsBusy: false,
     settingEditId: 65535, settingsDetailId: 65535, bindingDetailIndex: 65535, settingsQuery: NO_BYTES, settingsNotice: NO_BYTES, settingsReloadStage: 0 };
-  const next = applySettingsChrome(scopeOverlays(withVisibleSettings(withVisibleBindings(opening, model.bindings))));
+  const next = applySettingsChrome(scopeOverlays(withVisibleSettings(withVisibleBindings(opening, opening.bindings))));
   return { ...requestAppearance(next, 0, 0), opening: true };
 }
 
@@ -2627,6 +2635,9 @@ function loadedAppearance(model: Model, body: Uint8Array): AppearanceDecision {
   const next = applySettingsChrome(scopeOverlays({ ...listed, appearanceBusy: false, appearanceClosing: false,
     themes: highlightThemes(model.themes, cursor), settingsOpen: appearance.active }));
   if (model.settingsReloadStage > 0) return advanceSettingsReload(next);
+  if (appearance.active && !model.bindingsLoaded && !model.bindingsPending) {
+    return { ...appearanceDecision({ ...next, bindingsPending: true }), loadBindings: true };
+  }
   if (appearance.active) return appearanceDecision({ ...next, pendingToolOpen: false });
   if (model.navigationAfterSettings) return openNavigationAfterAppearance(next);
   return { ...appearanceDecision(next), closed: true };
@@ -2638,7 +2649,7 @@ function openNavigationAfterAppearance(model: Model): AppearanceDecision {
 }
 
 function advanceSettingsReload(model: Model): AppearanceDecision {
-  const next = scopeOverlays({ ...model, settingsOpen: true, appearanceBusy: true });
+  const next = scopeOverlays({ ...model, settingsOpen: true, appearanceBusy: true, bindingsOwnsBusy: false });
   if (model.settingsReloadStage === 1) return { ...appearanceDecision({ ...next, settingsReloadStage: 2 }), request: reloadSettingsRequest() };
   return requestAppearance({ ...next, settingsReloadStage: 0, settingsNotice: model.appearance.notice }, 0, 0);
 }
@@ -2953,17 +2964,22 @@ function retainMachineInvalidation(model: Model): Model {
 function loadedKeybindings(model: Model, body: Uint8Array): NavigatorDecision {
   const bindings = keybindingResponse(body);
   if (bindings === null) return failedKeybindings(model);
+  const described = model.bindingsPending;
   const listed = withVisibleBindings(model, bindings);
-  if (model.appearanceClosing || model.settingsReloadStage > 0) return navigatorDecision({ ...listed,
-    settingsNotice: bindings.notice }, 0, NO_BYTES);
-  const next = { ...listed, appearanceBusy: false, settingsNotice: bindings.notice };
-  if (model.settingsOpen) return navigatorDecision({ ...next, appearanceBusy: true }, 7, appearanceRequest(0, 0));
+  const appearanceBusy = model.bindingsOwnsBusy ? false : model.appearanceBusy;
+  const next = { ...listed, appearanceBusy, bindingsLoaded: true, bindingsPending: false,
+    bindingsOwnsBusy: false, settingsNotice: bindings.notice };
+  if (model.appearanceClosing || model.settingsReloadStage > 0) return navigatorDecision(next, 0, NO_BYTES);
+  if (model.settingsOpen && (!described || bindings.rejected)) {
+    return navigatorDecision({ ...next, appearanceBusy: true, bindingsOwnsBusy: false }, 7, appearanceRequest(0, 0));
+  }
   return navigatorDecision(refreshActions(next, model.paletteCursor), 0, NO_BYTES);
 }
 
 function failedKeybindings(model: Model): NavigatorDecision {
   const notice = asciiBytes("Keyboard shortcuts unavailable. Reopen Keyboard to retry.");
-  return navigatorDecision({ ...model, appearanceBusy: false, settingsNotice: notice }, 0, NO_BYTES);
+  return navigatorDecision({ ...model, appearanceBusy: model.bindingsOwnsBusy ? false : model.appearanceBusy,
+    bindingsLoaded: true, bindingsPending: false, bindingsOwnsBusy: false, settingsNotice: notice }, 0, NO_BYTES);
 }
 
 function filteredBindings(bindings: KeybindingPage, query: Uint8Array): readonly KeybindingRow[] {
@@ -3204,10 +3220,13 @@ function chooseSettingsSection(model: Model, section: number): NavigatorDecision
   // Visible Settings groups are Appearance..About (0..5). Check for Updates
   // still opens About with its own request; this path only selects the tab.
   if (!(section >= 0 && section <= 5)) return navigatorDecision(model, 0, NO_BYTES);
+  if (model.appearanceBusy || model.appearanceClosing) return navigatorDecision(model, 0, NO_BYTES);
+  if (section === 2 && model.bindingsPending) return navigatorDecision(model, 0, NO_BYTES);
   const selected = Math.trunc(section);
-  const next = withVisibleSettings(withVisibleBindings({ ...model, settingsSection: selected, settingEditId: 65535,
+  const next = withVisibleSettings(withVisibleBindings({ ...model, settingsSection: selected, settingEditId: 65535, bindingEditIndex: 65535,
     settingsDetailId: 65535, bindingDetailIndex: 65535 }, model.bindings));
-  if (selected === 2) return navigatorDecision({ ...next, appearanceBusy: true }, 4, keybindingRequest(0, 0, NO_BYTES));
+  if (selected === 2) return navigatorDecision({ ...next, appearanceBusy: true, bindingsLoaded: false,
+    bindingsPending: true, bindingsOwnsBusy: true }, 4, keybindingRequest(0, 0, NO_BYTES));
   return navigatorDecision(next, 0, NO_BYTES);
 }
 
@@ -3228,18 +3247,19 @@ function toggleBindingDetail(model: Model, index: number): Model {
 function reloadSettings(model: Model): NavigatorDecision {
   if (model.appearanceBusy) return navigatorDecision(model, 0, NO_BYTES);
   if (model.appearance.dirty) return navigatorDecision({ ...model, settingsNotice: asciiBytes("Save or cancel the preview before reloading the configuration file.") }, 0, NO_BYTES);
-  return navigatorDecision({ ...model, appearanceBusy: true, settingsReloadStage: 1 }, 7, appearanceRequest(6, 0));
+  return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false,
+    settingsReloadStage: 1 }, 7, appearanceRequest(6, 0));
 }
 
 function settingControlTransition(model: Model, msg: Msg): NavigatorDecision | null {
   switch (msg.kind) {
     case "settings_apply": {
       if (model.appearanceBusy || model.settingEditId > 10) return navigatorDecision(model, 0, NO_BYTES);
-      return navigatorDecision({ ...model, appearanceBusy: true }, 7, settingRequest(model.settingEditId, model.settingEditValue));
+      return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }, 7, settingRequest(model.settingEditId, model.settingEditValue));
     }
     case "settings_reset": {
       if (model.appearanceBusy || msg.id > 10) return navigatorDecision(model, 0, NO_BYTES);
-      return navigatorDecision({ ...model, appearanceBusy: true }, 7, resetSettingRequest(msg.id));
+      return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: false }, 7, resetSettingRequest(msg.id));
     }
     case "settings_reload": return reloadSettings(model);
     default: return null;
@@ -3267,16 +3287,16 @@ function editBinding(model: Model, edit: TextInputEvent): Model {
 }
 
 function bindingTransition(model: Model, msg: Msg): NavigatorDecision | null {
-  if (model.appearanceBusy) return null;
+  if (model.appearanceBusy || model.bindingsPending) return null;
   switch (msg.kind) {
     case "binding_select": return navigatorDecision(selectBinding(model, msg.index), 0, NO_BYTES);
     case "binding_detail": return navigatorDecision(toggleBindingDetail(model, msg.index), 0, NO_BYTES);
     case "binding_edit": return navigatorDecision(editBinding(model, msg.edit), 0, NO_BYTES);
     case "binding_apply": {
       if (model.bindingEditIndex > 191) return navigatorDecision(model, 0, NO_BYTES);
-      return navigatorDecision({ ...model, appearanceBusy: true }, 4, keybindingRequest(1, model.bindingEditIndex, model.bindingEditValue));
+      return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: true }, 4, keybindingRequest(1, model.bindingEditIndex, model.bindingEditValue));
     }
-    case "binding_reset": return navigatorDecision({ ...model, appearanceBusy: true }, 4, keybindingRequest(2, msg.index, NO_BYTES));
+    case "binding_reset": return navigatorDecision({ ...model, appearanceBusy: true, bindingsOwnsBusy: true }, 4, keybindingRequest(2, msg.index, NO_BYTES));
     default: return null;
   }
 }
@@ -3507,12 +3527,15 @@ function editFriendlyName(model: Model, edit: TextInputEvent): Model {
 function configEditorTransition(model: Model, msg: Msg): NavigatorDecision | null {
   if (msg.kind === "settings_cancel_edit") return navigatorDecision({ ...model, configEditorConfirm: false, pendingToolOpen: false }, 0, NO_BYTES);
   if (model.settingsOpen && model.appearanceBusy) return null;
-  if (msg.kind === "settings_save_edit") return navigatorDecision({ ...model, configEditorConfirm: false, pendingToolOpen: true, appearanceBusy: true }, 7, appearanceRequest(7, 0));
-  if (msg.kind === "settings_discard_edit") return navigatorDecision({ ...model, configEditorConfirm: false, pendingToolOpen: true, appearanceBusy: true }, 7, appearanceRequest(6, 0));
+  if (msg.kind === "settings_save_edit") return navigatorDecision({ ...model, configEditorConfirm: false,
+    pendingToolOpen: true, appearanceBusy: true, bindingsOwnsBusy: false }, 7, appearanceRequest(7, 0));
+  if (msg.kind === "settings_discard_edit") return navigatorDecision({ ...model, configEditorConfirm: false,
+    pendingToolOpen: true, appearanceBusy: true, bindingsOwnsBusy: false }, 7, appearanceRequest(6, 0));
   if (msg.kind !== "config_edit" && msg.kind !== "settings_edit_configuration") return null;
   if (!model.settingsOpen) return describeLocalTool(model, 2);
   if (model.appearance.dirty) return navigatorDecision({ ...model, configEditorConfirm: true }, 0, NO_BYTES);
-  return navigatorDecision({ ...model, pendingToolOpen: true, appearanceBusy: true }, 7, appearanceRequest(6, 0));
+  return navigatorDecision({ ...model, pendingToolOpen: true, appearanceBusy: true,
+    bindingsOwnsBusy: false }, 7, appearanceRequest(6, 0));
 }
 
 function localToolsTransition(model: Model, msg: Msg): NavigatorDecision | null {
@@ -3770,7 +3793,8 @@ function cancelSettingsForAction(model: Model, msg: Msg): NavigatorDecision {
       navigationAfterSettings: model.navigationAfterSettings || msg.kind === "palette_open" }, 0, NO_BYTES);
   }
   const next: Model = { ...model, pendingSettingsAction: captureDeferredAction(model, msg), settingsReloadStage: 0, pendingToolOpen: false,
-    appearanceClosing: true, appearanceBusy: true, navigationAfterSettings: msg.kind === "palette_open" };
+    appearanceClosing: true, appearanceBusy: true, bindingsOwnsBusy: false,
+    navigationAfterSettings: msg.kind === "palette_open" };
   return navigatorDecision(next, 7, appearanceRequest(6, 0));
 }
 
@@ -4270,6 +4294,11 @@ function committedThenTwoRequestsPlan(model: Model, first: PlannedRequest, secon
   return { ...baseUpdatePlan(model, UPDATE_EFFECT_COMMITTED_TWO_REQUESTS), firstRequest: first, secondRequest: second };
 }
 
+function describeKeybindingsRequest(): PlannedRequest {
+  return plannedRequest("cockpit.keybindings", keybindingRequest(0, 0, NO_BYTES),
+    "cockpit-keybindings", "keybindings_loaded", "keybindings_failed");
+}
+
 function appearanceUpdate(model: Model, decision: AppearanceDecision): UpdatePlan {
   const next = decision.model;
   if (decision.closed && model.pendingToolOpen) {
@@ -4282,6 +4311,7 @@ function appearanceUpdate(model: Model, decision: AppearanceDecision): UpdatePla
   if (decision.navigate) return committedRequestPlan(next,
     plannedRequest("cockpit.navigation", navigationRequestFor(next), "cockpit-navigation", "navigation_loaded", "navigation_failed"));
   if (decision.closed) return hostPlan(next, "cockpit.committed", NO_BYTES);
+  if (decision.loadBindings) return requestPlan(next, describeKeybindingsRequest());
   if (decision.request.length === 0) return modelPlan(next);
   return requestPlan(next,
     plannedRequest("cockpit.appearance", decision.request, "cockpit-appearance", "appearance_loaded", "appearance_failed"));
