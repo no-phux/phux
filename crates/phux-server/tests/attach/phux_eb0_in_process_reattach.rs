@@ -57,6 +57,7 @@ fn create_if_missing_with_command(name: &str, command: Option<Vec<String>>) -> F
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
         scrollback_limit_lines: 0,
+        role_policy: None,
     }
 }
 

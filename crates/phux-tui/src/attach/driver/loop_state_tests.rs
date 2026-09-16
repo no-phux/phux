@@ -659,7 +659,7 @@ async fn kills_sent(client: &mut Connection, server: &mut Connection) -> Vec<(u3
         .await
         .into_iter()
         .filter_map(|(request_id, command)| match command {
-            Command::KillResource { terminal_id } => Some((request_id, terminal_id)),
+            Command::KillResource { terminal_id, .. } => Some((request_id, terminal_id)),
             _ => None,
         })
         .collect()
@@ -1069,6 +1069,7 @@ fn conditional_edge_kill() -> Command {
         precondition: phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
             edge_token(),
         ),
+        operation_id: None,
     }
 }
 
@@ -1076,6 +1077,7 @@ fn conditional_edge_kill() -> Command {
 fn plain_edge_kill() -> Command {
     Command::KillResource {
         terminal_id: spawned_edge_pane(),
+        operation_id: None,
     }
 }
 

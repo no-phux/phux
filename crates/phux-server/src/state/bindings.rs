@@ -135,6 +135,15 @@ impl ServerState {
     /// Forget a reaped resource's recorded close reason.
     pub(super) fn forget_close_reason(&mut self, resource: ResourceId) {
         self.close_reasons.remove(&resource);
+        self.close_attributions.remove(&resource);
+    }
+
+    /// Take the attribution a kill recorded for `resource`, for its
+    /// `pane_closed`; the default (nobody, no key) when none did.
+    pub fn take_close_attribution(&mut self, resource: ResourceId) -> super::CloseAttribution {
+        self.close_attributions
+            .remove(&resource)
+            .unwrap_or_default()
     }
 
     /// Close `targets` and every resource bound to one of them, in a single
@@ -150,6 +159,17 @@ impl ServerState {
     /// reason this recorded, which keeps one teardown path for kills,
     /// cascades, and a shell's own exit.
     pub fn close_resources(&mut self, targets: &[ResourceId], reason: CloseReason) -> u32 {
+        self.close_resources_attributed(targets, reason, super::CloseAttribution::default())
+    }
+
+    /// [`Self::close_resources`], stamping every closed resource's
+    /// `pane_closed` with `attribution`: the kill's connection and key.
+    pub fn close_resources_attributed(
+        &mut self,
+        targets: &[ResourceId],
+        reason: CloseReason,
+        attribution: super::CloseAttribution,
+    ) -> u32 {
         let mut closing: Vec<(ResourceId, CloseReason)> = Vec::new();
         for target in targets {
             if self.sessions.registry.resource(*target).is_none() {
@@ -170,6 +190,11 @@ impl ServerState {
         let closed = u32::try_from(closing.len()).unwrap_or(u32::MAX);
         for (resource, reason) in closing {
             self.mark_resource_closing(resource, reason);
+            if attribution != super::CloseAttribution::default() {
+                self.close_attributions
+                    .entry(resource)
+                    .or_insert(attribution);
+            }
             self.detach_resource_actor(resource);
         }
         closed

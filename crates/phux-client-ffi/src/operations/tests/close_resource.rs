@@ -98,7 +98,8 @@ fn satellite_close_preserves_bound_instance_and_authoritative_refusal() {
                 precondition: KillPrecondition {
                     instance: Some(ServerInstance::new([7; 16])),
                     conditions: phux_protocol::wire::frame::KillConditions::NONE
-                }
+                },
+                operation_id: None,
             }
         }
     );
@@ -255,7 +256,8 @@ fn batch_close_validates_every_owner_before_one_atomic_command() {
         FrameKind::Command {
             request_id: 2,
             command: Command::KillResources {
-                ids: vec![ResourceId::local(1), ResourceId::local(9)]
+                ids: vec![ResourceId::local(1), ResourceId::local(9)],
+                operation_id: None,
             }
         }
     );
@@ -283,6 +285,42 @@ fn batch_close_validates_every_owner_before_one_atomic_command() {
     }
     assert_eq!((result(&mut h, 1).kind, result(&mut h, 1).status), (6, 3));
     assert!(h.0.inner.outgoing.is_empty());
+}
+
+#[test]
+fn tab_close_batch_encodes_close_tab_resources() {
+    let mut h = Harness::attached();
+    h.0.inner.outgoing.clear();
+    // SAFETY: harness owns client.
+    unsafe {
+        assert_eq!(phux_client_operation_clear(h.ptr()), PhuxClientResult::Ok);
+    }
+    let ids = [terminal_id_out(&ResourceId::local(1))];
+    // SAFETY: owned client and readable ID records.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_close_tab_resources(h.ptr(), 4, ids.as_ptr(), ids.len()),
+            PhuxClientResult::Ok
+        );
+    }
+    assert_eq!(
+        FrameKind::decode(&h.0.inner.outgoing[0]).unwrap().0,
+        FrameKind::Command {
+            request_id: 4,
+            command: Command::CloseTabResources {
+                ids: vec![ResourceId::local(1)]
+            }
+        }
+    );
+    let mut supported = false;
+    // SAFETY: writable bool outlives the call.
+    unsafe {
+        assert_eq!(
+            phux_client_close_tab_resources_supported(h.ptr(), &raw mut supported),
+            PhuxClientResult::Ok
+        );
+    }
+    assert!(!supported);
 }
 
 fn close(h: &mut Harness, request: u32, id: u32) -> PhuxClientResult {
@@ -469,7 +507,8 @@ fn explicit_close_requires_live_owned_attachment_and_keeps_state_until_server_cl
         FrameKind::Command {
             request_id: 1,
             command: Command::KillResource {
-                terminal_id: ResourceId::local(1)
+                terminal_id: ResourceId::local(1),
+                operation_id: None,
             }
         }
     );
@@ -626,7 +665,8 @@ fn explicit_close_uses_retained_instance_without_abandonment_conditions() {
                 precondition: KillPrecondition {
                     instance: Some(token),
                     conditions: phux_protocol::wire::frame::KillConditions::NONE
-                }
+                },
+                operation_id: None,
             }
         }
     );

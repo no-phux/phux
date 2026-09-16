@@ -290,7 +290,6 @@ fn validate_token_file(path: &Path) -> Result<PathBuf, String> {
 /// Insert a new entry, or replace an existing one with the same name.
 pub(crate) fn add_or_update(new: &NewRemote) -> Result<(), String> {
     let config_path = config_loader::config_path();
-    toml_registry::reject_symlink(&config_path)?;
     let mut doc = toml_registry::edit_document(&config_path)?;
 
     let existing = load_registry()?
@@ -310,7 +309,6 @@ pub(crate) fn add_or_update(new: &NewRemote) -> Result<(), String> {
 /// Remove the captured entry under the shared read/modify/publish lock.
 pub(crate) fn remove_entry(entry: &RemoteEntry) -> Result<(), String> {
     let config_path = config_loader::config_path();
-    toml_registry::reject_symlink(&config_path)?;
     let mut doc = toml_registry::edit_document(&config_path)?;
     doc.remove_machine(KEY, &entry.name, &entry.endpoint)?;
     doc.commit()

@@ -36,8 +36,11 @@ use super::{
     handle_terminal_input, handle_terminal_reply, handle_terminal_resize, handle_viewport_resize,
     subscribe_attach_terminal,
 };
+use crate::auth::Standing;
+use crate::policy::{Goodbye, Revocation};
 use crate::state::{
-    ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, ServerInterceptedKey, SharedState, TerminalInput,
+    ClientId, DEFAULT_CLIENT_MAILBOX, Outbound, ServerInterceptedKey, ServerState, SharedState,
+    TerminalInput,
 };
 use crate::terminal_actor::ConsumerDetachRequest;
 use crate::transport::quic::{
@@ -109,6 +112,31 @@ fn validate_dispatch_frame(
     Ok(frame)
 }
 
+/// Where an admitted command is dispatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Route {
+    /// The input lane: acknowledged or routed input to a local Terminal.
+    InputLane,
+    /// The connection's bulk worker, retaining this many payload bytes.
+    Bulk(usize),
+    /// The command handler.
+    Handler,
+}
+
+/// The route an admitted command takes. An approved held command asks the
+/// same question (ADR-0128), so it routes as it would have unheld.
+pub(super) fn route(command: &Command, has_input_lane: bool) -> Route {
+    let local_input = matches!(
+        command,
+        Command::ApplyInput { terminal_id, .. } | Command::RouteInput { terminal_id, .. }
+            if matches!(terminal_id, WireResourceId::Local { .. })
+    );
+    if has_input_lane && local_input {
+        return Route::InputLane;
+    }
+    super::command_tasks::CommandTasks::retained_bytes(command).map_or(Route::Handler, Route::Bulk)
+}
+
 struct CommandDispatch<'a> {
     state: &'a SharedState,
     client_id: ClientId,
@@ -120,6 +148,9 @@ struct CommandDispatch<'a> {
     command_tasks: &'a mut super::command_tasks::CommandTasks,
     input_receipts: &'a mut JoinSet<()>,
     input_receipt_slots: &'a std::sync::Arc<tokio::sync::Semaphore>,
+    /// The waiters of this connection's held commands (ADR-0128). Aborted
+    /// with the connection, which withdraws their approvals.
+    held_commands: &'a mut JoinSet<()>,
 }
 
 enum CommandDispatchOutcome {
@@ -143,7 +174,7 @@ impl CommandDispatch<'_> {
         let command_started = std::time::Instant::now();
         // workload-auth §6: the command guard, above the input lane, the bulk
         // worker, and every handler and satellite relay below.
-        if super::dispatch_guard::refuse_command(
+        match super::dispatch_guard::guard_command(
             self.state,
             self.client_id,
             request_id,
@@ -152,7 +183,12 @@ impl CommandDispatch<'_> {
         )
         .await
         {
-            return None;
+            super::dispatch_guard::Guarded::Admitted => {}
+            super::dispatch_guard::Guarded::Refused => return None,
+            super::dispatch_guard::Guarded::Held => {
+                self.hold(request_id, command).await;
+                return None;
+            }
         }
         let defer_subscription = self
             .selection
@@ -165,27 +201,24 @@ impl CommandDispatch<'_> {
             })
             .flatten();
 
-        if let Some(lane) = self.input_lane
-            && matches!(
-                &command,
-                Command::ApplyInput { terminal_id, .. } | Command::RouteInput { terminal_id, .. }
-                    if matches!(terminal_id, WireResourceId::Local { .. })
-            )
-        {
-            super::commands::note_local_use(self.state, self.client_id, &command);
-            self.submit_input(lane, request_id, command).await;
-            return None;
-        }
-        if let Some(retained) = super::command_tasks::CommandTasks::retained_bytes(&command) {
-            self.submit_bulk(
-                request_id,
-                command,
-                retained,
-                command_started,
-                defer_subscription,
-            )
-            .await;
-            return None;
+        match (route(&command, self.input_lane.is_some()), self.input_lane) {
+            (Route::InputLane, Some(lane)) => {
+                super::commands::note_local_use(self.state, self.client_id, &command);
+                self.submit_input(lane, request_id, command).await;
+                return None;
+            }
+            (Route::Bulk(retained), _) => {
+                self.submit_bulk(
+                    request_id,
+                    command,
+                    retained,
+                    command_started,
+                    defer_subscription,
+                )
+                .await;
+                return None;
+            }
+            _ => {}
         }
         handle_command(
             self.state,
@@ -204,6 +237,27 @@ impl CommandDispatch<'_> {
         .await;
         crate::perf::CMD_HANDLE.record_elapsed(command_started);
         detached_stream
+    }
+
+    /// Hold a command the guard held (ADR-0128). Its waiter runs it later
+    /// in this connection's context, exactly as this dispatch would have.
+    async fn hold(&mut self, request_id: u32, command: Command) {
+        let ctx = super::approvals::HeldContext {
+            state: self.state.clone(),
+            client_id: self.client_id,
+            out_tx: self.out_tx.clone(),
+            client_caps: self.selection.client_caps,
+            profile: self.selection.profile,
+            limits: self.selection.limits,
+            input_lane: self.input_lane.cloned(),
+            token: self.token.clone(),
+            root_token: self.root_token.clone(),
+            defer_subscription: self
+                .selection
+                .server_features
+                .contains(ServerFeature::QuicStreams),
+        };
+        super::approvals::hold_command(ctx, self.held_commands, request_id, command).await;
     }
 
     async fn submit_input(&mut self, lane: &InputLaneHandle, request_id: u32, command: Command) {
@@ -308,7 +362,8 @@ mod input_receipt_capacity_tests {
                 let lane = lane_owner.handle();
                 let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(1);
                 let token = CancellationToken::new();
-                let mut command_tasks = super::super::command_tasks::CommandTasks::new();
+                let mut command_tasks =
+                    super::super::command_tasks::CommandTasks::new(token.clone());
                 let mut receipts = JoinSet::new();
                 let slots = Arc::new(tokio::sync::Semaphore::new(0));
                 let operation_id = InputOperationId::new([0x44; 16]).unwrap();
@@ -329,6 +384,7 @@ mod input_receipt_capacity_tests {
                     command_tasks: &mut command_tasks,
                     input_receipts: &mut receipts,
                     input_receipt_slots: &slots,
+                    held_commands: &mut JoinSet::new(),
                 }
                 .submit_input(
                     &lane,
@@ -468,28 +524,9 @@ impl NegotiatedConnection {
     }
 }
 const fn runtime_server_features() -> ServerFeatureSet {
-    ServerFeatureSet::with(&[
-        ServerFeature::AcknowledgedInput,
-        ServerFeature::FileUpload,
-        ServerFeature::MoveResource,
-        ServerFeature::TerminalReply,
-        ServerFeature::Shutdown,
-        ServerFeature::SpawnInitialSize,
-        ServerFeature::ReportAgentState,
-        ServerFeature::GetPerf,
-        ServerFeature::Transcribe,
-        ServerFeature::ResourceKinds,
-        ServerFeature::ListDirectory,
-        ServerFeature::HostSessions,
-        ServerFeature::KeepEmptySessions,
-        ServerFeature::Whoami,
-        ServerFeature::ListDirectoryHost,
-        ServerFeature::SshOrigin,
-        ServerFeature::ConditionalKill,
-        ServerFeature::OpenListener,
-        ServerFeature::EventJournal,
-        ServerFeature::SpawnIdempotency,
-    ])
+    // QUIC_STREAMS is transport-gated at HELLO (see negotiate_hello); every
+    // other known bit is advertised on every connection.
+    ServerFeatureSet::all().without(ServerFeature::QuicStreams)
 }
 
 #[cfg(test)]
@@ -544,6 +581,22 @@ mod negotiated_feature_tests {
         assert!(connection(advertised).accepts_terminal_reply());
     }
 
+    #[test]
+    fn runtime_advertises_every_known_bit_except_quic_streams() {
+        let advertised = runtime_server_features();
+        assert!(
+            !advertised.contains(ServerFeature::QuicStreams),
+            "QUIC_STREAMS stays transport-gated at HELLO"
+        );
+        assert_eq!(
+            advertised.as_wire(),
+            ServerFeatureSet::all()
+                .without(ServerFeature::QuicStreams)
+                .as_wire()
+        );
+        assert_eq!(advertised.iter().count(), ServerFeature::ALL.len() - 1);
+    }
+
     /// QUIC multi-stream is transport-gated at the HELLO advertisement, not
     /// merely at stream-accept time: a client that sees the bit knows a
     /// second stream will be accepted, and every other transport never sees
@@ -570,6 +623,7 @@ mod negotiated_feature_tests {
                         },
                         credential: None,
                         ssh_origin: None,
+                        bearer: None,
                     },
                 );
             });
@@ -658,13 +712,13 @@ mod pane_event_drain_tests {
         let mut s = crate::state::ServerState::new();
         let (_session, _window, pane) = s.seed_session("drain");
         let wire = s.intern_terminal_wire(pane);
-        journal_drained_event(&mut s, &wire, AgentEvent::Bell, 0);
+        journal_drained_event(&mut s, &wire, AgentEvent::Bell.into(), 0);
         let live = s.journal_head();
         assert_eq!(live, 1, "a live pane's event is journaled");
         let _ = reap_pane_journaling_close(&mut s, pane);
         let closed = s.journal_head();
         assert_eq!(closed, live + 1, "the close");
-        journal_drained_event(&mut s, &wire, AgentEvent::Bell, 2);
+        journal_drained_event(&mut s, &wire, AgentEvent::Bell.into(), 2);
         assert_eq!(s.journal_head(), closed, "nothing follows pane_closed");
     }
 }
@@ -779,7 +833,13 @@ pub(crate) fn reap_pane_journaling_close(
     let parent = s
         .resource_parent(pane)
         .map(|parent| s.intern_terminal_wire(parent));
-    journal_pane_closed(s, &wire, parent.as_ref(), None);
+    journal_pane_closed(
+        s,
+        &wire,
+        parent.as_ref(),
+        None,
+        crate::state::CloseAttribution::default(),
+    );
     s.reap_terminal(pane)
 }
 
@@ -799,15 +859,20 @@ fn journal_pending_events(s: &mut crate::state::ServerState, events: &mut PaneEv
 fn journal_drained_event(
     s: &mut crate::state::ServerState,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
-    event: AgentEvent,
+    emitted: crate::resource::event_sink::Emitted,
     dropped: u64,
 ) {
     if !pane_is_live(s, wire_terminal_id) {
         return;
     }
+    let crate::resource::event_sink::Emitted {
+        event,
+        operation_id,
+    } = emitted;
     let actor = control_actor(&event);
-    let record =
-        crate::state::EventRecord::new(Some(wire_terminal_id.clone()), event).with_actor(actor);
+    let record = crate::state::EventRecord::new(Some(wire_terminal_id.clone()), event)
+        .with_actor(actor)
+        .with_operation_id(operation_id);
     let _ = s.record_and_fanout(record);
     journal_source_gap(s, wire_terminal_id, dropped);
 }
@@ -836,6 +901,16 @@ fn pane_is_live(
 ) -> bool {
     s.terminal_from_wire(wire_terminal_id)
         .is_some_and(|pane| s.registry().resource(pane).is_some())
+}
+
+/// Whether the pane `wire_terminal_id` names is retained after its process
+/// exited (ADR-0124).
+fn pane_exited(
+    s: &crate::state::ServerState,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+) -> bool {
+    s.terminal_from_wire(wire_terminal_id)
+        .is_some_and(|pane| s.retained_exit(pane).is_some())
 }
 
 /// The connection an engine-emitted event names as its cause: the `actor`
@@ -885,6 +960,12 @@ pub(crate) fn spawn_agent_state_drain(
             // inside `with_mut` would deadlock. `None` means nothing actually
             // changed and no hook is owed.
             let hook = state.with_mut(|s| {
+                // ADR-0124: a retained pane's agent record was withdrawn at
+                // its exit; a report its detector queued before it stopped
+                // must not reassert a state for a process that is gone.
+                if pane_exited(s, &wire_terminal_id) {
+                    return None;
+                }
                 let scope = Scope::Resource(wire_terminal_id.clone());
                 // No dispatcher means no hook can run, so skip the work
                 // entirely: reading the prior record costs a metadata lookup
@@ -1313,178 +1394,387 @@ pub(crate) fn spawn_terminal_exit_watcher(
         // same as a fired EOF with unknown exit status: in both cases
         // the pane is dead and every subscribed client must be told.
         let (exit, mut events) = journal_until_exit(&state, rx, events).await;
-        // phux-emdv: gather the broadcast subscriber set AND reap the
-        // dead pane in ONE critical section, BEFORE the awaited
-        // RESOURCE_CLOSED sends. This closes the TOCTOU window that left
-        // a late attacher frozen on a dead pane: previously subscribers
-        // were gathered in one lock, the sends were awaited, and the reap
-        // happened in a SECOND lock — a client whose ATTACH landed in the
-        // gap subscribed to a pane that had already hit EOF, was never in
-        // the broadcast set, and never learned the shell exited. Reaping
-        // up-front removes the pane (and, if last, its session) from the
-        // registry, so any ATTACH that interleaves now either subscribes
-        // to the surviving panes (the dead one is gone from
-        // `attach_snapshot_panes`) or gets `SessionNotFound` — never a
-        // silent subscription to a doomed pane.
-        //
-        // `reap_terminal` clears `terminal_subscribers` for the pane
-        // (via `forget_terminal_bookkeeping`) and retires its wire id, so
-        // both MUST be captured in the same lock before the reap runs.
-        let Some(ReapAndNotify {
+        // ADR-0124: a retained pane's exit is a facet, not a close. It stays
+        // in the registry as `Exited`, readable, until a purge cancels its
+        // engine token or its retention expires; only then does it take the
+        // ordinary close path below, and that close is its `RESOURCE_CLOSED`.
+        let retained = state.with_mut(|s| retain_exited_pane(s, pane, exit, events.as_mut()));
+        let exit_hook_owed = retained.is_none();
+        if let Some(RetainedExit {
+            retention,
             wire_terminal_id,
-            reason,
-            cascaded,
-            targets,
-            server_empty,
-            served,
-            killed_clients,
-        }) = state.with_mut(|s| {
-            // ADR-0104 §2: claim this resource before touching anything. A
-            // cascading parent reaps its children inside its own lock, so a
-            // child's watcher can wake for a resource that is already gone;
-            // it must emit nothing rather than intern a fresh wire id for a
-            // corpse.
-            let reason = s.begin_resource_close(pane)?;
-            // The cascade runs in this same acquisition, before the parent
-            // is reaped, so no client observes a child whose parent has
-            // left. Each child's frame is emitted here rather than by its
-            // own watcher, which by then finds the child already claimed.
-            // Interned before the cascade so each child's close can name
-            // the parent it is leaving with, and before the reap because a
-            // retired resource has no wire id left to intern.
-            let wire_terminal_id = s.intern_terminal_wire(pane);
-            if let Some(events) = events.as_mut() {
-                journal_pending_events(s, events);
+            agent_hook,
+            control,
+        }) = retained
+        {
+            // Off the lock and awaited: a full control mailbox delays the
+            // retire rather than dropping it, so the engine never goes on
+            // reporting `Running` for an exited pane or holding its PTY.
+            if let Some(control) = control {
+                let _ = control.send(crate::resource::ControlRequest::Retire).await;
             }
-            let parent = s
-                .resource_parent(pane)
-                .map(|parent| s.intern_terminal_wire(parent));
-            let mut cascaded = Vec::new();
-            for child in s.resource_children(pane) {
-                let Some(recorded) = s.begin_resource_close(child) else {
-                    continue;
-                };
-                // A child nobody marked is leaving because its parent is;
-                // one an operator named in the same `KILL_RESOURCES` keeps
-                // the reason that kill recorded.
-                let child_reason = if recorded == CloseReason::Exited {
-                    CloseReason::ParentClosed
-                } else {
-                    recorded
-                };
-                let wire_child_id = s.intern_terminal_wire(child);
-                let child_targets = s.terminal_fanout_targets(child);
-                // ADR-0123: journaled in the lock that reaps it, children
-                // first, so a snapshot cut after this lock never shows a
-                // resource whose close a subscriber has not been sent.
-                journal_pane_closed(s, &wire_child_id, Some(&wire_terminal_id), None);
-                s.reap_terminal(child);
-                cascaded.push(CascadedClose {
-                    wire_terminal_id: wire_child_id,
-                    targets: child_targets,
-                    reason: child_reason,
-                });
-            }
-            // phux-w7z2.56: resolve every subscriber's mailbox, not just
-            // the session-attached ones. This used to filter through
-            // `attached()`, which an `ATTACH_RESOURCE`-only consumer never
-            // enters (L1 §5.1: "a session-scoped `ATTACH` is not
-            // required"), so an agent watching a single pane — and a
-            // federation hub's proxy subscription, which is exactly that
-            // shape — was silently dropped from the fanout L1 §3.1
-            // requires. It kept streaming nothing, indistinguishable from
-            // an idle pane, and the hub retained dead proxy state.
-            let targets: Vec<tokio::sync::mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
-            // ADR-0123: the `pane_closed` event takes its `seq` in the same
-            // lock that removes the pane, so "absent from a snapshot" and
-            // "its close was journaled" can never disagree. A `watch`-only
-            // client that never attached learns of the close here too.
-            journal_pane_closed(s, &wire_terminal_id, parent.as_ref(), exit.status);
-            // phux-60s: reap the dead pane, cascading to its window and
-            // session when they empty. Done here (inside the same lock
-            // that gathered subscribers) so no ATTACH can interleave
-            // between "gather" and "reap".
-            let server_empty = s.reap_terminal(pane);
-            let served = s.has_served_client();
-            // ADR-0105: a session a group kill released is gone once its last
-            // pane is reaped. Its session-attached clients are gathered here,
-            // under the same lock, and detached below rather than left on a
-            // session that no longer exists.
-            let killed_clients: Vec<_> = s
-                .take_killed_sessions()
-                .into_iter()
-                .flat_map(|session| s.attached_clients_in_session(session))
-                .collect();
-            Some(ReapAndNotify {
-                wire_terminal_id,
-                reason,
-                cascaded,
-                targets,
-                server_empty,
-                killed_clients,
-                served,
-            })
-        })
+            fire_retained_exit_hooks(&state, &wire_terminal_id, agent_hook, exit);
+            events = hold_until_purge(&state, &retention, events).await;
+        }
+        let Some(reap) = state.with_mut(|s| reap_exited_pane(s, pane, exit, events.as_mut()))
         else {
             return;
         };
+        announce_close(&state, reap, &root_token, exit_hook_owed).await;
+    });
+}
 
-        // docs/consumers/tui.md §9 (phux-r82.1): the inner process exited —
-        // the `pane-exit` hook point. Fired off-lock (the hook helper
-        // re-takes the state lock briefly to clone the dispatcher handle);
-        // `fire` itself is a non-blocking try_send.
+/// A pane kept as `Exited` after its process exited (ADR-0124), as its exit
+/// watcher holds it until the purge.
+struct RetainedExit {
+    /// What a purge cancels, and when retention expires.
+    retention: crate::state::Retention,
+    /// The pane's wire id, for the `pane-exit` hook.
+    wire_terminal_id: phux_protocol::ids::ResourceId,
+    /// The `agent-state-changed` hook the withdrawn agent record owes.
+    agent_hook: Option<crate::hooks::HookEvent>,
+    /// The engine's control mailbox, for the `Retire` sent off the lock.
+    control: Option<tokio::sync::mpsc::Sender<crate::resource::ControlRequest>>,
+}
+
+/// Keep `pane` as `Exited` when it asked to be retained and nothing is
+/// already closing it (ADR-0124 §2), all in one lock: record its exit facet,
+/// journal what it already queued and then `terminal_control { Exited }`,
+/// withdraw its `phux.agent/v1` state to `unknown` (L3 §3.7), and tell its
+/// engine to stop the detector and refuse input. No `RESOURCE_CLOSED`: the
+/// resource is still here. `None` leaves the pane to the close path.
+fn retain_exited_pane(
+    s: &mut crate::state::ServerState,
+    pane: phux_core::ids::ResourceId,
+    exit: phux_core::process::ExitOutcome,
+    events: Option<&mut PaneEvents>,
+) -> Option<RetainedExit> {
+    let retention = s.retain_exited(pane, exit, unix_now_ms())?;
+    let wire_terminal_id = s.intern_terminal_wire(pane);
+    if let Some(events) = events {
+        journal_pending_events(s, events);
+    }
+    let input_holder = s
+        .input_lease_holder(pane)
+        .map(|holder| phux_protocol::ClientId::new(u32::try_from(holder.0).unwrap_or(u32::MAX)));
+    let exited = AgentEvent::TerminalControl {
+        lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Exited,
+        exit_status: exit.status,
+        input_holder,
+        action: phux_protocol::wire::frame::ControlAction::Exited,
+        actor: None,
+    };
+    let _ = s.record_and_fanout(crate::state::EventRecord::new(
+        Some(wire_terminal_id.clone()),
+        exited,
+    ));
+    let control = s.resource_handle(pane).map(|handle| handle.control.clone());
+    let scope = phux_protocol::wire::frame::Scope::Resource(wire_terminal_id.clone());
+    let hooks_live = s.hook_dispatcher().is_some();
+    let agent_hook = drain_retract(s, &wire_terminal_id, &scope, hooks_live);
+    Some(RetainedExit {
+        retention,
+        wire_terminal_id,
+        agent_hook,
+        control,
+    })
+}
+
+/// The hooks a retained exit owes, fired off-lock: `pane-exit` now, because
+/// the process is what exited (its purge fires none), and the withdrawn agent
+/// record's `agent-state-changed`.
+fn fire_retained_exit_hooks(
+    state: &SharedState,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+    agent_hook: Option<crate::hooks::HookEvent>,
+    exit: phux_core::process::ExitOutcome,
+) {
+    crate::hooks::fire_hook(
+        state,
+        crate::hooks::HookEvent::pane_exit(wire_terminal_id, exit.status),
+    );
+    if let Some(event) = agent_hook {
+        crate::hooks::fire_hook(state, event);
+    }
+}
+
+/// Hold a retained pane until its purge (ADR-0124 §4): a kill, an eviction,
+/// or a shutdown cancels its engine token, or its retention expires. Its
+/// events are still journaled meanwhile (a lease change on an exited pane is
+/// still an event). Returns the event source for the close to drain.
+async fn hold_until_purge(
+    state: &SharedState,
+    retention: &crate::state::Retention,
+    mut events: Option<PaneEvents>,
+) -> Option<PaneEvents> {
+    let expiry = tokio::time::sleep(retention.hold);
+    tokio::pin!(expiry);
+    loop {
+        tokio::select! {
+            biased;
+            () = retention.token.cancelled() => return events,
+            () = &mut expiry => return events,
+            event = next_pane_event(&mut events) => journal_held_event(state, &mut events, event),
+        }
+    }
+}
+
+/// The next event a pane's engine emits; pending forever once the source is
+/// gone, so a held pane waits only on its purge.
+async fn next_pane_event(
+    events: &mut Option<PaneEvents>,
+) -> Option<crate::resource::event_sink::Emitted> {
+    match events.as_mut() {
+        Some(events) => events.source.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Journal one event a held pane emitted; a closed source journals its last
+/// loss and is dropped.
+fn journal_held_event(
+    state: &SharedState,
+    events: &mut Option<PaneEvents>,
+    event: Option<crate::resource::event_sink::Emitted>,
+) {
+    let Some(pane_events) = events.as_mut() else {
+        return;
+    };
+    let dropped = pane_events.source.take_dropped();
+    let wire = pane_events.wire.clone();
+    if let Some(event) = event {
+        state.with_mut(|s| journal_drained_event(s, &wire, event, dropped));
+        return;
+    }
+    state.with_mut(|s| journal_source_gap(s, &wire, dropped));
+    *events = None;
+}
+
+/// Wall-clock now in Unix milliseconds; `0` for a clock before the epoch.
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| u64::try_from(since.as_millis()).ok())
+        .unwrap_or(0)
+}
+
+/// Close a pane whose process exited (or whose retention ended), in ONE
+/// critical section that also gathers who must be told (phux-emdv).
+///
+/// This closes the TOCTOU window that left a late attacher frozen on a dead
+/// pane: previously subscribers were gathered in one lock, the sends were
+/// awaited, and the reap happened in a SECOND lock — a client whose ATTACH
+/// landed in the gap subscribed to a pane that had already hit EOF, was never
+/// in the broadcast set, and never learned the shell exited. Reaping up-front
+/// removes the pane (and, if last, its session) from the registry, so any
+/// ATTACH that interleaves now either subscribes to the surviving panes (the
+/// dead one is gone from `attach_snapshot_panes`) or gets `SessionNotFound` —
+/// never a silent subscription to a doomed pane.
+///
+/// `reap_terminal` clears `terminal_subscribers` for the pane (via
+/// `forget_terminal_bookkeeping`) and retires its wire id, so both MUST be
+/// captured in the same lock before the reap runs. `None` when another
+/// closer already reaped the pane.
+fn reap_exited_pane(
+    s: &mut crate::state::ServerState,
+    pane: phux_core::ids::ResourceId,
+    exit: phux_core::process::ExitOutcome,
+    events: Option<&mut PaneEvents>,
+) -> Option<ReapAndNotify> {
+    // ADR-0104 §2: claim this resource before touching anything. A
+    // cascading parent reaps its children inside its own lock, so a child's
+    // watcher can wake for a resource that is already gone; it must emit
+    // nothing rather than intern a fresh wire id for a corpse.
+    let reason = s.begin_resource_close(pane)?;
+    // ADR-0124: a retained pane's close reports how its process ended, the
+    // record it was kept with, even when the purge woke the watcher with no
+    // outcome of its own (a pane rebuilt by an upgrade has no process).
+    let exit = s.retained_outcome(pane).unwrap_or(exit);
+    // Interned before the cascade so each child's close can name the parent
+    // it is leaving with, and before the reap because a retired resource has
+    // no wire id left to intern.
+    let wire_terminal_id = s.intern_terminal_wire(pane);
+    if let Some(events) = events {
+        journal_pending_events(s, events);
+    }
+    let parent = s
+        .resource_parent(pane)
+        .map(|parent| s.intern_terminal_wire(parent));
+    let cascaded = cascade_children(s, pane, &wire_terminal_id);
+    // phux-w7z2.56: resolve every subscriber's mailbox, not just the
+    // session-attached ones. This used to filter through `attached()`, which
+    // an `ATTACH_RESOURCE`-only consumer never enters (L1 §5.1: "a
+    // session-scoped `ATTACH` is not required"), so an agent watching a
+    // single pane — and a federation hub's proxy subscription, which is
+    // exactly that shape — was silently dropped from the fanout L1 §3.1
+    // requires. It kept streaming nothing, indistinguishable from an idle
+    // pane, and the hub retained dead proxy state.
+    let targets: Vec<tokio::sync::mpsc::Sender<Outbound>> = s.terminal_fanout_targets(pane);
+    // ADR-0123: the `pane_closed` event takes its `seq` in the same lock that
+    // removes the pane, so "absent from a snapshot" and "its close was
+    // journaled" can never disagree. A `watch`-only client that never
+    // attached learns of the close here too.
+    let attribution = s.take_close_attribution(pane);
+    journal_pane_closed(
+        s,
+        &wire_terminal_id,
+        parent.as_ref(),
+        exit.status,
+        attribution,
+    );
+    // phux-60s: reap the dead pane, cascading to its window and session when
+    // they empty. Done here (inside the same lock that gathered subscribers)
+    // so no ATTACH can interleave between "gather" and "reap".
+    let server_empty = s.reap_terminal(pane);
+    let served = s.has_served_client();
+    // ADR-0105: a session a group kill released is gone once its last pane
+    // is reaped. Its session-attached clients are gathered here, under the
+    // same lock, and detached below rather than left on a session that no
+    // longer exists.
+    let killed_clients: Vec<_> = s
+        .take_killed_sessions()
+        .into_iter()
+        .flat_map(|session| s.attached_clients_in_session(session))
+        .collect();
+    Some(ReapAndNotify {
+        wire_terminal_id,
+        reason,
+        exit,
+        cascaded,
+        targets,
+        server_empty,
+        killed_clients,
+        served,
+    })
+}
+
+/// Close every resource bound to `pane` (ADR-0104 §2) in the parent's lock,
+/// before the parent is reaped, so no client observes a child whose parent
+/// has left. Each child's frame is emitted by the parent's watcher; its own
+/// watcher later finds it already claimed.
+fn cascade_children(
+    s: &mut crate::state::ServerState,
+    pane: phux_core::ids::ResourceId,
+    wire_terminal_id: &phux_protocol::ids::ResourceId,
+) -> Vec<CascadedClose> {
+    let mut cascaded = Vec::new();
+    for child in s.resource_children(pane) {
+        let Some(recorded) = s.begin_resource_close(child) else {
+            continue;
+        };
+        // A child nobody marked is leaving because its parent is; one an
+        // operator named in the same `KILL_RESOURCES` keeps the reason that
+        // kill recorded.
+        let child_reason = if recorded == CloseReason::Exited {
+            CloseReason::ParentClosed
+        } else {
+            recorded
+        };
+        let wire_child_id = s.intern_terminal_wire(child);
+        let child_targets = s.terminal_fanout_targets(child);
+        // A child has no process to report, unless it is a retained pane
+        // whose process already ended (ADR-0124).
+        let child_exit = s
+            .retained_outcome(child)
+            .unwrap_or(phux_core::process::ExitOutcome::UNKNOWN);
+        // ADR-0123: journaled in the lock that reaps it, children first, so
+        // a snapshot cut after this lock never shows a resource whose close a
+        // subscriber has not been sent.
+        let attribution = s.take_close_attribution(child);
+        journal_pane_closed(
+            s,
+            &wire_child_id,
+            Some(wire_terminal_id),
+            child_exit.status,
+            attribution,
+        );
+        s.reap_terminal(child);
+        cascaded.push(CascadedClose {
+            wire_terminal_id: wire_child_id,
+            targets: child_targets,
+            reason: child_reason,
+            exit: child_exit,
+        });
+    }
+    cascaded
+}
+
+/// The off-lock half of a close: the `pane-exit` hook when the exit was not
+/// already announced, `RESOURCE_CLOSED` (children first), the detach of a
+/// released keep-empty session's clients, and the phux-60s self-exit.
+async fn announce_close(
+    state: &SharedState,
+    reap: ReapAndNotify,
+    root_token: &CancellationToken,
+    exit_hook_owed: bool,
+) {
+    let ReapAndNotify {
+        wire_terminal_id,
+        reason,
+        exit,
+        cascaded,
+        targets,
+        server_empty,
+        served,
+        killed_clients,
+    } = reap;
+    // docs/consumers/tui.md §9 (phux-r82.1): the inner process exited — the
+    // `pane-exit` hook point. Fired off-lock (the hook helper re-takes the
+    // state lock briefly to clone the dispatcher handle); `fire` itself is a
+    // non-blocking try_send. A retained pane fired it when its process
+    // exited, not now.
+    if exit_hook_owed {
         crate::hooks::fire_hook(
-            &state,
+            state,
             crate::hooks::HookEvent::pane_exit(&wire_terminal_id, exit.status),
         );
+    }
 
-        // phux-4li.11 / phux-4r1: broadcast the L1 lifecycle event
-        // RESOURCE_CLOSED to every client that was subscribed to the
-        // dying pane at reap time. The server's job ends here — it
-        // reports the fact. The detach policy ("no Terminals left in my
-        // collection ⇒ detach") is the consumer's (the TUI driver folds
-        // the pane out of its layout and detaches itself when the last
-        // pane closes); the server no longer sends `Detached` on EOF
-        // (ADR-0015 L1). The sends are awaited off-lock — `with_mut` is
-        // synchronous and must not hold the state borrow across an await.
-        // Children first: a subscriber watching both sees the session end
-        // before the pane it lived in, which is the order the tree actually
-        // came apart in. Their exit status is `None` — a session has no
-        // process to report one.
-        for child in &cascaded {
-            broadcast_terminal_closed(
-                &child.wire_terminal_id,
-                &child.targets,
-                phux_core::process::ExitOutcome::UNKNOWN,
-                child.reason,
-            )
-            .await;
-        }
-        broadcast_terminal_closed(&wire_terminal_id, &targets, exit, reason).await;
+    // phux-4li.11 / phux-4r1: broadcast the L1 lifecycle event
+    // RESOURCE_CLOSED to every client that was subscribed to the dying pane
+    // at reap time. The server's job ends here — it reports the fact. The
+    // detach policy ("no Terminals left in my collection ⇒ detach") is the
+    // consumer's (the TUI driver folds the pane out of its layout and
+    // detaches itself when the last pane closes); the server no longer sends
+    // `Detached` on EOF (ADR-0015 L1). The sends are awaited off-lock —
+    // `with_mut` is synchronous and must not hold the state borrow across an
+    // await. Children first: a subscriber watching both sees the session end
+    // before the pane it lived in, which is the order the tree actually came
+    // apart in. A child's exit status is `None` — a session has no process
+    // to report one.
+    for child in &cascaded {
+        broadcast_terminal_closed(
+            &child.wire_terminal_id,
+            &child.targets,
+            child.exit,
+            child.reason,
+        )
+        .await;
+    }
+    broadcast_terminal_closed(&wire_terminal_id, &targets, exit, reason).await;
 
-        // ADR-0105: after the closes, so a client sees its last pane go
-        // before the session that held it.
-        detach_clients_of_killed_session(&state, killed_clients);
+    // ADR-0105: after the closes, so a client sees its last pane go before
+    // the session that held it.
+    detach_clients_of_killed_session(state, killed_clients);
 
-        // phux-60s: when the last session is gone the server has nothing
-        // left to serve, so fire the root token — the tmux server-exit
-        // model. Without this the server lingers forever after every
-        // shell exits.
-        //
-        // Two guards keep this from misfiring:
-        //   * `has_served_client`: a freshly auto-spawned server whose
-        //     seed pane dies before anyone attaches must NOT vanish — the
-        //     launching `phux` is still racing to connect and will
-        //     repopulate it via `CreateIfMissing`. Only self-exit once
-        //     we've actually served someone.
-        //   * `!root_token.is_cancelled()`: a Ctrl-C shutdown cancels the
-        //     pane actor too, routing through here; don't log a spurious
-        //     "self-exit" or double-cancel during normal teardown.
-        if server_empty && served && !root_token.is_cancelled() {
-            info!("last session reaped after serving clients; server self-exit");
-            root_token.cancel();
-        }
-    });
+    // phux-60s: when the last session is gone the server has nothing left to
+    // serve, so fire the root token — the tmux server-exit model. Without
+    // this the server lingers forever after every shell exits.
+    //
+    // Two guards keep this from misfiring:
+    //   * `has_served_client`: a freshly auto-spawned server whose seed pane
+    //     dies before anyone attaches must NOT vanish — the launching `phux`
+    //     is still racing to connect and will repopulate it via
+    //     `CreateIfMissing`. Only self-exit once we've actually served
+    //     someone.
+    //   * `!root_token.is_cancelled()`: a Ctrl-C shutdown cancels the pane
+    //     actor too, routing through here; don't log a spurious "self-exit"
+    //     or double-cancel during normal teardown.
+    if server_empty && served && !root_token.is_cancelled() {
+        info!("last session reaped after serving clients; server self-exit");
+        root_token.cancel();
+    }
 }
 
 /// Everything the EOF watcher captures under one state lock before it
@@ -1502,6 +1792,9 @@ struct ReapAndNotify {
     /// Why this pane is closing, claimed from the close ledger in the same
     /// lock (ADR-0104 §4).
     reason: CloseReason,
+    /// How the pane's process ended: the watcher's outcome, or a retained
+    /// pane's recorded exit (ADR-0124).
+    exit: phux_core::process::ExitOutcome,
     /// The children this pane took with it, already reaped, each waiting
     /// only for its off-lock frame.
     cascaded: Vec<CascadedClose>,
@@ -1527,6 +1820,8 @@ struct CascadedClose {
     targets: Vec<tokio::sync::mpsc::Sender<Outbound>>,
     /// The reason its `RESOURCE_CLOSED` carries.
     reason: CloseReason,
+    /// The exit its `RESOURCE_CLOSED` carries: unknown for a session.
+    exit: phux_core::process::ExitOutcome,
 }
 
 /// Emit `RESOURCE_CLOSED { terminal_id, exit_status }` to every client
@@ -1590,17 +1885,25 @@ pub(crate) async fn broadcast_terminal_closed(
 /// consumer following a pane is following the sessions inside it, and it
 /// learned of them from a `pane_spawned` addressed the same way. Its
 /// `exit_status` is `None`, since a session has no process to report one.
-fn journal_pane_closed(
+pub(super) fn journal_pane_closed(
     s: &mut crate::state::ServerState,
     wire_terminal_id: &phux_protocol::ids::ResourceId,
     parent: Option<&phux_protocol::ids::ResourceId>,
     exit_status: Option<i32>,
+    attribution: crate::state::CloseAttribution,
 ) {
+    // Nothing follows a close (L1 §7): a held action naming this Terminal
+    // is withdrawn, and journaled, first (ADR-0128).
+    s.withdraw_approvals_naming(wire_terminal_id);
+    // A kill names the connection that sent it and, when keyed, its
+    // `operation_id` (L1 §5.1.1, §7.3); a natural exit names neither.
     let record = crate::state::EventRecord::new(
         Some(wire_terminal_id.clone()),
         AgentEvent::ResourceClosed { exit_status },
     )
-    .with_parent(parent.cloned());
+    .with_parent(parent.cloned())
+    .with_actor(attribution.actor)
+    .with_operation_id(attribution.operation_id);
     let _ = s.record_and_fanout(record);
 }
 
@@ -1635,17 +1938,81 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
     // BEFORE tearing anything down. Runs for every connection teardown,
     // but the `client-detached` hook fires only for attached clients —
     // a connection that never attached never "detaches".
-    let attached_session: Option<Option<String>> = state.with(|s| {
-        s.attached().get(&client_id).map(|client| {
-            s.registry()
-                .session(client.session)
-                .map(|session| session.name.clone())
-        })
-    });
-    let wire_client_id =
-        phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX));
-    let handles = state.with(|s| s.subscribed_resource_handles(client_id));
-    for handle in handles {
+    let attached_session = state.with(|s| attached_session_name(s, client_id));
+    state.with(|s| release_actor_consumers(s, client_id));
+    // The `Released` transitions name this client as their actor.
+    state.with(|s| announce_lease_releases(s, client_id, Some(wire_client(client_id))));
+    state.with(|s| release_relay_state(s, client_id));
+    state.with_mut(|s| s.detach(client_id));
+    fire_client_detached(state, client_id, attached_session);
+}
+
+/// `workload-auth.md` §7 step 2, inside the caller's state lock: the teardown
+/// [`detach_and_release_consumer_state`] performs, in one critical section,
+/// so nothing the connection held outlives the revocation that withdrew it.
+/// The lease releases name no actor, because the server released them.
+///
+/// Returns the attached session for [`fire_client_detached`], which the
+/// caller runs off-lock.
+pub(crate) fn release_revoked_consumer_state(
+    s: &mut ServerState,
+    client_id: ClientId,
+) -> Option<DetachedFrom> {
+    let attached_session = attached_session_name(s, client_id);
+    // A revoked connection's held actions are withdrawn in the same
+    // critical section: nothing it held can be approved (ADR-0128).
+    let _ = s.withdraw_approvals(client_id);
+    release_actor_consumers(s, client_id);
+    announce_lease_releases(s, client_id, None);
+    release_relay_state(s, client_id);
+    s.detach(client_id);
+    attached_session
+}
+
+/// docs/consumers/tui.md §9 (phux-r82.1): the client is fully detached — the
+/// `client-detached` hook point (any reason: explicit DETACH, transport
+/// drop, EOF, revocation). Skipped for connections that never attached.
+pub(crate) fn fire_client_detached(
+    state: &SharedState,
+    client_id: ClientId,
+    detached_from: Option<DetachedFrom>,
+) {
+    if let Some(from) = detached_from {
+        crate::hooks::fire_hook(
+            state,
+            crate::hooks::HookEvent::client_detached(client_id, from.session_name.as_deref()),
+        );
+    }
+}
+
+/// The session an attached client was attached to, captured before its
+/// teardown for the `client-detached` hook.
+pub(crate) struct DetachedFrom {
+    /// The session's name; `None` once the session itself is gone.
+    session_name: Option<String>,
+}
+
+/// Where the client is attached, or `None` when it never attached.
+fn attached_session_name(s: &ServerState, client_id: ClientId) -> Option<DetachedFrom> {
+    s.attached().get(&client_id).map(|client| DetachedFrom {
+        session_name: s
+            .registry()
+            .session(client.session)
+            .map(|session| session.name.clone()),
+    })
+}
+
+/// The wire form of a server-local client id.
+fn wire_client(client_id: ClientId) -> phux_protocol::ids::ClientId {
+    phux_protocol::ids::ClientId::new(u32::try_from(client_id.0).unwrap_or(u32::MAX))
+}
+
+/// Free the per-consumer state-sync entries every pane this client
+/// subscribes to allocated for it. `try_send` is non-blocking and
+/// best-effort, so this is safe under the state lock.
+fn release_actor_consumers(s: &ServerState, client_id: ClientId) {
+    let wire_client_id = wire_client(client_id);
+    for handle in s.subscribed_resource_handles(client_id) {
         // Native history cuts are a Terminal facet lease; a resource of
         // another kind never held one.
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
@@ -1674,58 +2041,57 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
             }
         }
     }
-    // Release any input leases this client held (ADR-0033) and broadcast the
-    // `Released` transition so other clients stop showing it as the holder.
-    // Gathered under-lock; the `control` sends happen off-lock. `detach`
-    // (below) clears the lease state regardless, so this is purely the
-    // observable-event half — a saturated/closed mailbox is benign.
-    let released: Vec<crate::resource::ResourceHandle> = state.with(|s| {
-        s.leases_held_by(client_id)
-            .into_iter()
-            .filter_map(|pane| s.resource_handle(pane).cloned())
-            .collect()
-    });
-    for handle in released {
+}
+
+/// Broadcast the `Released` transition for every input lease this client
+/// holds (ADR-0033), so other clients stop showing it as the holder; each
+/// pane's actor journals it (ADR-0123). `actor` is the client when it gave
+/// the lease up, `None` when the server took it back. `detach` clears the
+/// lease state regardless, so this is purely the observable-event half — a
+/// saturated or closed mailbox is benign.
+fn announce_lease_releases(
+    s: &ServerState,
+    client_id: ClientId,
+    actor: Option<phux_protocol::ids::ClientId>,
+) {
+    for pane in s.leases_held_by(client_id) {
+        let Some(handle) = s.resource_handle(pane) else {
+            continue;
+        };
         let _ = handle
             .control
             .try_send(crate::terminal_actor::ControlRequest::LeaseChanged {
                 input_holder: None,
                 action: phux_protocol::wire::frame::ControlAction::Released,
-                actor: wire_client_id,
+                actor,
             });
     }
+}
+
+/// Drop this client's federation relay state. Empty (no-op) on a non-hub
+/// server.
+fn release_relay_state(s: &ServerState, client_id: ClientId) {
     // Federation relay (phux-v45.4): drop every hub-side proxy
     // subscription this client holds on any satellite link — the
     // counterpart to the registrations the satellite-scoped
     // SUBSCRIBE_EVENTS / SUBSCRIBE_RESOURCE_EVENTS / ATTACH_RESOURCE
-    // paths performed. Empty (no-op) on a non-hub server. Undroppable
-    // (phux-v45.11 finding 1): rides the unbounded unsubscribe channel,
-    // so a saturated relay mailbox can never leave a stale subscriber
-    // that outlives its consumer.
-    for relay in state.with(crate::state::ServerState::hub_relays_all) {
+    // paths performed. Undroppable (phux-v45.11 finding 1): rides the
+    // unbounded unsubscribe channel, so a saturated relay mailbox can never
+    // leave a stale subscriber that outlives its consumer.
+    for relay in s.hub_relays_all() {
         relay.unsubscribe_client(client_id);
     }
     // Release any hub-side satellite input leases this client held
-    // (phux-v45.7, the federation mirror of the ADR-0033 release above):
-    // relay a detached RELEASE_INPUT per lease so the satellite-side
-    // lease (held by the link identity) follows the hub-side ledger,
-    // which `detach` below clears regardless.
-    for (host, terminal) in state.with(|s| s.satellite_leases_held_by(client_id)) {
-        if let Some(relay) = state.with(|s| s.hub_relay(&host)) {
+    // (phux-v45.7, the federation mirror of the ADR-0033 release): relay a
+    // detached RELEASE_INPUT per lease so the satellite-side lease (held by
+    // the link identity) follows the hub-side ledger, which `detach` clears
+    // regardless.
+    for (host, terminal) in s.satellite_leases_held_by(client_id) {
+        if let Some(relay) = s.hub_relay(&host) {
             relay.command_detached(phux_protocol::wire::frame::Command::ReleaseInput {
                 terminal_id: phux_protocol::ids::ResourceId::local(terminal),
             });
         }
-    }
-    state.with_mut(|s| s.detach(client_id));
-    // docs/consumers/tui.md §9 (phux-r82.1): the client is fully detached —
-    // the `client-detached` hook point (any reason: explicit DETACH,
-    // transport drop, EOF). Skipped for connections that never attached.
-    if let Some(session_name) = attached_session {
-        crate::hooks::fire_hook(
-            state,
-            crate::hooks::HookEvent::client_detached(client_id, session_name.as_deref()),
-        );
     }
 }
 
@@ -1747,6 +2113,8 @@ pub(crate) fn detach_and_release_consumer_state(state: &SharedState, client_id: 
 /// every transport funnels through on its way out — the in-loop teardown
 /// sites all `return` into it.
 pub(crate) fn release_connection_state(state: &SharedState, client_id: ClientId) {
+    // A closing connection withdraws the actions it holds (ADR-0128).
+    super::approvals::withdraw(state, client_id);
     detach_and_release_consumer_state(state, client_id);
     state.with_mut(|s| s.forget_connection(client_id));
 }
@@ -2378,23 +2746,30 @@ struct ClientPlumbing {
     /// task is spawned when the connection is accepted, which is strictly
     /// before the HELLO that selects the compression has been read.
     compression: Arc<AtomicU8>,
+    /// The connection's revocation signal, handed to every writer it spawns.
+    revocation: tokio::sync::watch::Receiver<Option<Goodbye>>,
 }
 
 impl ClientPlumbing {
     /// Allocate the per-client outbound mailbox and spawn the writer task that
     /// drains it. The writer drains one `Outbound` channel; closure of that one
     /// channel is the unambiguous signal for the writer to exit.
-    fn spawn<W: FrameWriter + 'static>(writer: W, client_id: ClientId) -> Self {
+    fn spawn<W: FrameWriter + 'static>(
+        writer: W,
+        client_id: ClientId,
+        revocation: tokio::sync::watch::Receiver<Option<Goodbye>>,
+    ) -> Self {
         let (out_tx, out_rx) = tokio::sync::mpsc::channel::<Outbound>(DEFAULT_CLIENT_MAILBOX);
         let (writer_close, writer_close_rx) = tokio::sync::watch::channel(false);
         let mut sibling_tasks: JoinSet<()> = JoinSet::new();
         let compression = Arc::new(AtomicU8::new(Compression::None.as_u8()));
-        sibling_tasks.spawn_local(writer_task(
+        sibling_tasks.spawn_local(revocable_writer_task(
             writer,
             out_rx,
             writer_close_rx,
             Arc::clone(&compression),
             client_id,
+            RevocationWatch::control(revocation.clone()),
         ));
         Self {
             out_tx,
@@ -2404,6 +2779,7 @@ impl ClientPlumbing {
             stream_bindings: HashMap::new(),
             retired_streams: JoinSet::new(),
             compression,
+            revocation,
         }
     }
 
@@ -2451,12 +2827,13 @@ impl ClientPlumbing {
         let (writer_close, writer_close_rx) = tokio::sync::watch::channel(false);
         let mut writer_tasks: JoinSet<()> = JoinSet::new();
         let diagnostics = Some(writer.diagnostic_tracker());
-        writer_tasks.spawn_local(writer_task(
+        writer_tasks.spawn_local(revocable_writer_task(
             writer,
             rx,
             writer_close_rx,
             Arc::clone(&self.compression),
             client_id,
+            RevocationWatch::stream(self.revocation.clone()),
         ));
         let sender = tx.clone();
         let ingress_active = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -2795,6 +3172,22 @@ async fn authorize_hello(state: &SharedState, client_id: ClientId) -> Result<(),
             message: "authenticated peer identity missing".to_owned(),
         });
     };
+    // A bearer revoked or expired since its upgrade mints nothing: a new
+    // grant fails closed, even against a store that gives the live watcher
+    // no verdict (workload-auth §7). A workload credential is re-read from
+    // the live registry by the engine itself.
+    let bearer = state.with(|s| s.bearer_admission(client_id).cloned());
+    if bearer.is_some_and(|bearer| !matches!(bearer.standing(), Some(Standing::Active { .. }))) {
+        warn!(
+            ?client_id,
+            "HELLO denied: the admitting bearer no longer stands"
+        );
+        return Err(ConnectionClose {
+            attached_reason: None,
+            code: ErrorCode::PermissionDenied,
+            message: "policy denied: unauthorized: not authorized".to_owned(),
+        });
+    }
     let engine = state.with(|s| s.policy_engine().clone());
     // HELLO carries no scope request (workload-auth §5): the engine mints
     // the connection's grant from its verified identity alone, and the
@@ -3046,8 +3439,13 @@ where
     W: FrameWriter + 'static,
 {
     debug!(?client_id, "client task started");
+    // The revocation signal is set under the state lock when the
+    // connection's authority is withdrawn while it is live; its writers
+    // watch it (workload-auth §7).
+    let (revocation_tx, revocation_rx) = tokio::sync::watch::channel(None);
     state.with_mut(|server| {
         server.set_client_connection_cancellation(client_id, token.clone());
+        server.set_revocation_signal(client_id, revocation_tx);
     });
     // However this task ends (EOF included, not only cancellation), the
     // connection token fires, so no per-connection task (an event pump, a
@@ -3057,9 +3455,10 @@ where
     // Held in this scope so it drops with `handle_client`: the writer aborts
     // if it hasn't already exited via its own close-on-EOF path, and the
     // per-attach pumps go with it. Keeps lifecycle plumbing local.
-    let mut plumbing = ClientPlumbing::spawn(writer, client_id);
-    let mut command_tasks = super::command_tasks::CommandTasks::new();
+    let mut plumbing = ClientPlumbing::spawn(writer, client_id, revocation_rx);
+    let mut command_tasks = super::command_tasks::CommandTasks::new(token.clone());
     let mut input_receipts = JoinSet::new();
+    let mut held_commands = JoinSet::new();
     let input_receipt_slots =
         std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_INPUT_RECEIPTS));
     // An attach id names one immutable aggregate generation for the life of
@@ -3097,6 +3496,10 @@ where
             biased;
             () = token.cancelled() => {
                 debug!(?client_id, "client task cancelled");
+                // A closing connection withdraws its holds before any await
+                // (ADR-0128): no decision can land in the teardown window.
+                super::approvals::withdraw(&state, client_id);
+                held_commands.shutdown().await;
                 input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing
@@ -3106,6 +3509,10 @@ where
             }
             () = wait_initial_hello(hello_deadline.as_mut(), negotiated.is_none()) => {
                 warn!(?client_id, "client did not complete HELLO before deadline; closing");
+                // A closing connection withdraws its holds before any await
+                // (ADR-0128): no decision can land in the teardown window.
+                super::approvals::withdraw(&state, client_id);
+                held_commands.shutdown().await;
                 input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(ConnectionClose {
@@ -3119,6 +3526,10 @@ where
                 Ok(Some(framed)) => (framed, reader.frame_origin()),
                 Ok(None) => {
                     debug!("client disconnected (eof)");
+                    // A closing connection withdraws its holds before any await
+                    // (ADR-0128): no decision can land in the teardown window.
+                    super::approvals::withdraw(&state, client_id);
+                    held_commands.shutdown().await;
                     input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     return Ok(());
@@ -3126,10 +3537,18 @@ where
                 Err(err) => {
                     let Some(close) = framing_violation_close(&err, client_id) else {
                         debug!(error = %err, "client read error; closing");
+                        // A closing connection withdraws its holds before any await
+                        // (ADR-0128): no decision can land in the teardown window.
+                        super::approvals::withdraw(&state, client_id);
+                        held_commands.shutdown().await;
                         input_receipts.shutdown().await;
                         command_tasks.shutdown().await;
                         return Ok(());
                     };
+                    // A closing connection withdraws its holds before any await
+                    // (ADR-0128): no decision can land in the teardown window.
+                    super::approvals::withdraw(&state, client_id);
+                    held_commands.shutdown().await;
                     input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
@@ -3138,6 +3557,10 @@ where
             },
             () = command_tasks.stopped() => {
                 warn!(?client_id, "bulk command worker stopped unexpectedly; closing");
+                // A closing connection withdraws its holds before any await
+                // (ADR-0128): no decision can land in the teardown window.
+                super::approvals::withdraw(&state, client_id);
+                held_commands.shutdown().await;
                 input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(ConnectionClose {
@@ -3148,6 +3571,7 @@ where
                 return Ok(());
             }
             Some(_) = input_receipts.join_next(), if !input_receipts.is_empty() => continue,
+            Some(_) = held_commands.join_next(), if !held_commands.is_empty() => continue,
             event = async {
                 match stream_events.as_mut() {
                     Some(rx) => rx.recv().await,
@@ -3171,6 +3595,10 @@ where
             match validate_dispatch_frame(&framed, negotiated.as_ref(), frame_origin, client_id) {
                 Ok(frame) => frame,
                 Err(close) => {
+                    // A closing connection withdraws its holds before any await
+                    // (ADR-0128): no decision can land in the teardown window.
+                    super::approvals::withdraw(&state, client_id);
+                    held_commands.shutdown().await;
                     input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
@@ -3217,6 +3645,10 @@ where
                 )
                 .await
                 {
+                    // A closing connection withdraws its holds before any await
+                    // (ADR-0128): no decision can land in the teardown window.
+                    super::approvals::withdraw(&state, client_id);
+                    held_commands.shutdown().await;
                     input_receipts.shutdown().await;
                     command_tasks.shutdown().await;
                     plumbing.close(close, &state, client_id).await;
@@ -3245,6 +3677,7 @@ where
                 viewport,
                 request_scrollback,
                 scrollback_limit_lines,
+                role_policy,
             } => {
                 match classify_attach_id(attach_id, &mut used_attach_ids, client_id) {
                     AttachIdVerdict::Fresh => {}
@@ -3266,6 +3699,10 @@ where
                             code: ErrorCode::MalformedMessage,
                             message: "ATTACH attach_id must be nonzero".to_owned(),
                         };
+                        // A closing connection withdraws its holds before any await
+                        // (ADR-0128): no decision can land in the teardown window.
+                        super::approvals::withdraw(&state, client_id);
+                        held_commands.shutdown().await;
                         input_receipts.shutdown().await;
                         command_tasks.shutdown().await;
                         plumbing.close(close, &state, client_id).await;
@@ -3298,6 +3735,7 @@ where
                     viewport,
                     request_scrollback,
                     scrollback_limit_lines,
+                    role_policy,
                     &plumbing.out_tx,
                     selection.client_caps,
                     selection.profile,
@@ -3490,6 +3928,22 @@ where
                 scope,
                 key,
                 value,
+            } if super::approvals::is_decision(&scope, &key) => {
+                super::approvals::decide(
+                    &state,
+                    client_id,
+                    request_id,
+                    &key,
+                    &value,
+                    &plumbing.out_tx,
+                )
+                .await;
+            }
+            FrameKind::SetMetadata {
+                request_id,
+                scope,
+                key,
+                value,
             } => {
                 handle_set_metadata(
                     &state,
@@ -3617,6 +4071,7 @@ where
                     command_tasks: &mut command_tasks,
                     input_receipts: &mut input_receipts,
                     input_receipt_slots: &input_receipt_slots,
+                    held_commands: &mut held_commands,
                 })
                 .run(request_id, command)
                 .await;
@@ -3629,6 +4084,10 @@ where
                     }
                     CommandDispatchOutcome::Completed(None) => {}
                     CommandDispatchOutcome::Cancelled => {
+                        // A closing connection withdraws its holds before any await
+                        // (ADR-0128): no decision can land in the teardown window.
+                        super::approvals::withdraw(&state, client_id);
+                        held_commands.shutdown().await;
                         input_receipts.shutdown().await;
                         command_tasks.shutdown().await;
                         plumbing
@@ -3647,6 +4106,10 @@ where
                         "frame is not valid from a client in the negotiated phase: {other:?}"
                     ),
                 };
+                // A closing connection withdraws its holds before any await
+                // (ADR-0128): no decision can land in the teardown window.
+                super::approvals::withdraw(&state, client_id);
+                held_commands.shutdown().await;
                 input_receipts.shutdown().await;
                 command_tasks.shutdown().await;
                 plumbing.close(close, &state, client_id).await;
@@ -3865,8 +4328,11 @@ async fn bind_terminal_stream(
     // Remember the subscription against control BEFORE bootstrapping with
     // the stream: lifecycle fanout must resolve to control even if the
     // Terminal dies mid-bootstrap.
-    let subscription = subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx);
-    let Some((core, handle)) = subscription else {
+    // `None`: the bind carries no role; the `ATTACH_RESOURCE` that opened
+    // this Terminal already declared it (ADR-0127).
+    let subscription =
+        subscribe_attach_terminal(state, client_id, &terminal_id, &plumbing.out_tx, None);
+    let Ok(super::commands::AttachSubscription { core, handle, .. }) = subscription else {
         let mut recv = recv;
         let _ = recv.stop(0x10_u32.into());
         plumbing.drop_stream_binding(&terminal_id).await;
@@ -4070,12 +4536,13 @@ fn read_metadata_value(
 
 /// Keys only the server writes. A client `SET_METADATA` or `DELETE_METADATA`
 /// of one is a logged no-op in any scope: the pane-occupant record is the
-/// server's observation of a pane, and the whoami record is computed per
-/// connection and never stored.
+/// server's observation of a pane, the whoami record is computed per
+/// connection and never stored, and an approval record is the server's
+/// account of a held action (ADR-0128).
 fn is_server_owned_key(key: &str) -> bool {
-    use phux_protocol::wire::frame::{RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY};
+    use phux_protocol::wire::frame::{APPROVAL_KEY_PREFIX, RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY};
 
-    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY
+    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY || key.starts_with(APPROVAL_KEY_PREFIX)
 }
 
 #[derive(serde::Deserialize)]
@@ -4128,6 +4595,7 @@ fn run_session_create(
                 .as_deref()
                 .and_then(crate::runtime::idempotent_create::uuid_bytes)
                 .and_then(phux_protocol::ids::IdempotencyKey::new),
+            retain_secs: None,
         },
     };
     let wire = crate::runtime::commands::create_named_session(
@@ -4847,9 +5315,9 @@ pub(crate) async fn handle_list_metadata(
 /// Routing is the eventual answer, but it is not this change. It needs a
 /// return leg that re-tags `Scope::Resource(Local(id))` to
 /// `Scope::Resource(Satellite { host, id })`, a decision about what `Global`
-/// and `Group` scopes even mean across a federation boundary, and — to be
-/// worth having — the federated `APPLY_INPUT` that would let a caller act on
-/// what it observed (phux-2en, post-1.0). A refusal is upgradeable to
+/// and `Group` scopes even mean across a federation boundary. The federated
+/// `APPLY_INPUT` that lets a caller act on what it observed now exists (L1
+/// §9.1), so routing is worth having when it comes. A refusal is upgradeable to
 /// routing without breaking a single consumer: today's `ERROR` becomes
 /// tomorrow's `METADATA_CHANGED`, and nothing that works now stops working.
 ///
@@ -5561,6 +6029,179 @@ fn drain_ready_into_batch(
     None
 }
 
+/// How a writer learns that its connection's authority was withdrawn.
+#[derive(Clone, Default)]
+pub(crate) struct RevocationWatch {
+    rx: Option<tokio::sync::watch::Receiver<Option<Goodbye>>>,
+    /// Whether this writer carries the connection's control stream, the one
+    /// the goodbye frames ride. A bound Terminal stream only closes.
+    control: bool,
+}
+
+impl RevocationWatch {
+    /// The watch for the connection's control-stream writer.
+    const fn control(rx: tokio::sync::watch::Receiver<Option<Goodbye>>) -> Self {
+        Self {
+            rx: Some(rx),
+            control: true,
+        }
+    }
+
+    /// The watch for a bound Terminal stream's writer.
+    const fn stream(rx: tokio::sync::watch::Receiver<Option<Goodbye>>) -> Self {
+        Self {
+            rx: Some(rx),
+            control: false,
+        }
+    }
+
+    /// The goodbye owed, once the connection is revoked.
+    fn current(&self) -> Option<Goodbye> {
+        self.rx.as_ref().and_then(|rx| *rx.borrow())
+    }
+
+    /// Resolve once the connection is revoked; never, without a signal.
+    async fn revoked(&mut self) -> Goodbye {
+        let Some(rx) = self.rx.as_mut() else {
+            return std::future::pending().await;
+        };
+        loop {
+            let current = *rx.borrow_and_update();
+            if let Some(goodbye) = current {
+                return goodbye;
+            }
+            if rx.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+        }
+    }
+
+    /// Run one transport operation unless the connection is revoked while
+    /// it is pending. `None` means the operation was abandoned mid-way.
+    async fn unless_revoked<T>(
+        &mut self,
+        operation: impl std::future::Future<Output = io::Result<T>>,
+    ) -> Option<io::Result<T>> {
+        tokio::select! {
+            biased;
+            result = operation => Some(result),
+            _ = self.revoked() => None,
+        }
+    }
+}
+
+/// Why a writer stops taking messages.
+enum WriterStop {
+    /// The mailbox is done: close normally.
+    Closed,
+    /// The connection's authority was withdrawn.
+    Revoked(Goodbye),
+}
+
+/// The next message the generation fence admits, unless the mailbox closes
+/// or the connection is revoked first. Revocation wins a tie.
+async fn next_admitted(
+    rx: &mut tokio::sync::mpsc::Receiver<Outbound>,
+    close: &mut tokio::sync::watch::Receiver<bool>,
+    close_control_open: &mut bool,
+    generation_fence: &mut OutboundGenerationFence,
+    revocation: &mut RevocationWatch,
+) -> Result<Outbound, WriterStop> {
+    loop {
+        let next = tokio::select! {
+            biased;
+            goodbye = revocation.revoked() => return Err(WriterStop::Revoked(goodbye)),
+            next = next_outbound(rx, close, close_control_open) => next,
+        };
+        let message = next.ok_or(WriterStop::Closed)?;
+        if generation_fence.admits(&message) {
+            return Ok(message);
+        }
+    }
+}
+
+/// The frames a revoked connection is owed (`workload-auth.md` §7 step 3).
+fn goodbye_frames(revocation: Revocation) -> [FrameKind; 2] {
+    [
+        FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::PermissionDenied,
+            message: revocation.message().to_owned(),
+        },
+        FrameKind::Detached {
+            reason: Some(revocation.detach_reason()),
+            message: revocation.message().to_owned(),
+        },
+    ]
+}
+
+/// Say what a revoked connection is owed, then close (`workload-auth.md` §7
+/// steps 3 and 4). Nothing queued behind the revocation is written: the
+/// mailbox drops with this task. Each step is bounded by
+/// [`WRITER_DRAIN_TIMEOUT`], so a peer that stopped reading cannot hold the
+/// connection open.
+async fn say_goodbye<W: FrameWriter>(
+    writer: &mut W,
+    buf: &mut BytesMut,
+    goodbye: Goodbye,
+    control: bool,
+    client_id: ClientId,
+) {
+    if let (true, Goodbye::Announce(revocation)) = (control, goodbye) {
+        buf.clear();
+        let mut ends = Vec::with_capacity(2);
+        for frame in goodbye_frames(revocation) {
+            frame.encode(buf);
+            ends.push(buf.len());
+        }
+        let farewell = async {
+            writer.write_frames(buf, &ends).await?;
+            writer.flush().await
+        };
+        if !matches!(
+            tokio::time::timeout(WRITER_DRAIN_TIMEOUT, farewell).await,
+            Ok(Ok(()))
+        ) {
+            debug!(
+                ?client_id,
+                "goodbye to a revoked connection was not delivered"
+            );
+        }
+    }
+    let _ = tokio::time::timeout(WRITER_DRAIN_TIMEOUT, writer.close()).await;
+    debug!(?client_id, ?goodbye, "writer closed: authority withdrawn");
+}
+
+/// Settle one transport write or flush. `false` when the writer must stop:
+/// the step failed, or a revocation interrupted it (`outcome` is `None`);
+/// either way the transport is closed.
+async fn step_succeeded<W: FrameWriter>(
+    writer: &mut W,
+    outcome: Option<io::Result<()>>,
+    client_id: ClientId,
+    step: &'static str,
+) -> bool {
+    match outcome {
+        Some(Ok(())) => true,
+        Some(Err(err)) => {
+            debug!(?client_id, error = %err, step, "writer step failed; client task ending");
+            let _ = writer.close().await;
+            false
+        }
+        None => {
+            abandon_after_revocation(writer, client_id).await;
+            false
+        }
+    }
+}
+
+/// A write the revocation interrupted may have stopped mid-frame, so no
+/// goodbye can follow it: close within the bound.
+async fn abandon_after_revocation<W: FrameWriter>(writer: &mut W, client_id: ClientId) {
+    debug!(?client_id, "revoked mid-write; closing without a goodbye");
+    let _ = tokio::time::timeout(WRITER_DRAIN_TIMEOUT, writer.close()).await;
+}
+
 /// Take the next mailbox item, honouring the close control.
 ///
 /// Clears `close_control_open` once the control has fired or gone away, so
@@ -5618,12 +6259,36 @@ async fn finish_with_terminal_error<W: FrameWriter>(
 ///
 /// Exits when the channel closes — i.e. the client task drops its
 /// sender.
+#[cfg(test)]
 pub(crate) async fn writer_task<W: FrameWriter>(
+    writer: W,
+    rx: tokio::sync::mpsc::Receiver<Outbound>,
+    close: tokio::sync::watch::Receiver<bool>,
+    compression: Arc<AtomicU8>,
+    client_id: ClientId,
+) {
+    revocable_writer_task(
+        writer,
+        rx,
+        close,
+        compression,
+        client_id,
+        RevocationWatch::default(),
+    )
+    .await;
+}
+
+/// [`writer_task`] for a live connection, which also watches `revocation`:
+/// once the connection's authority is withdrawn, nothing still queued is
+/// written, the goodbye is, and the transport closes
+/// (`docs/spec/workload-auth.md` §7).
+async fn revocable_writer_task<W: FrameWriter>(
     mut writer: W,
     mut rx: tokio::sync::mpsc::Receiver<Outbound>,
     mut close: tokio::sync::watch::Receiver<bool>,
     compression: Arc<AtomicU8>,
     client_id: ClientId,
+    mut revocation: RevocationWatch,
 ) {
     let mut buf = BytesMut::with_capacity(1024);
     // Staging buffer for the uncompressed image of a frame being wrapped.
@@ -5638,13 +6303,27 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         ..OutboundGenerationFence::default()
     };
     'writer: loop {
-        let message = loop {
-            let Some(message) = next_outbound(&mut rx, &mut close, &mut close_control_open).await
-            else {
-                break 'writer;
-            };
-            if generation_fence.admits(&message) {
-                break message;
+        let message = match next_admitted(
+            &mut rx,
+            &mut close,
+            &mut close_control_open,
+            &mut generation_fence,
+            &mut revocation,
+        )
+        .await
+        {
+            Ok(message) => message,
+            Err(WriterStop::Closed) => break 'writer,
+            Err(WriterStop::Revoked(goodbye)) => {
+                say_goodbye(
+                    &mut writer,
+                    &mut buf,
+                    goodbye,
+                    revocation.control,
+                    client_id,
+                )
+                .await;
+                return;
             }
         };
         // Encode this message plus everything already queued behind it into
@@ -5676,11 +6355,25 @@ pub(crate) async fn writer_task<W: FrameWriter>(
                 &mut ends,
             );
         }
+        // Revoked while this batch was being gathered: none of it is owed to
+        // a peer whose authority is gone.
+        if let Some(goodbye) = revocation.current() {
+            say_goodbye(
+                &mut writer,
+                &mut buf,
+                goodbye,
+                revocation.control,
+                client_id,
+            )
+            .await;
+            return;
+        }
         let write_started = std::time::Instant::now();
         let batch_len = buf.len();
-        if let Err(err) = writer.write_frames(&buf, &ends).await {
-            debug!(?client_id, error = %err, "writer error on frame; client task ending");
-            let _ = writer.close().await;
+        let written = revocation
+            .unless_revoked(writer.write_frames(&buf, &ends))
+            .await;
+        if !step_succeeded(&mut writer, written, client_id, "write").await {
             return;
         }
         if let Some(message) = terminal_message {
@@ -5691,9 +6384,8 @@ pub(crate) async fn writer_task<W: FrameWriter>(
         // WebSocket transport does, because one frame must still be one
         // binary message — so the batch leaves here, once, rather than
         // paying a flush per 4 KiB `RESOURCE_OUTPUT`.
-        if let Err(err) = writer.flush().await {
-            debug!(?client_id, error = %err, "writer flush failed; client task ending");
-            let _ = writer.close().await;
+        let flushed = revocation.unless_revoked(writer.flush()).await;
+        if !step_succeeded(&mut writer, flushed, client_id, "flush").await {
             return;
         }
         crate::perf::WIRE_WRITE.record_elapsed(write_started);
@@ -6512,6 +7204,7 @@ mod fatal_preflight_close_tests {
                         viewport: ViewportInfo::new(80, 24),
                         request_scrollback: false,
                         scrollback_limit_lines: 0,
+                        role_policy: None,
                     },
                 ]);
                 let (server_io, peer_io) = tokio::io::duplex(64 * 1024);

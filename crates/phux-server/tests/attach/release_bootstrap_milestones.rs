@@ -82,6 +82,7 @@ fn attach_frame_at(id: u32, history: bool, viewport: ViewportInfo) -> FrameKind 
         viewport,
         request_scrollback: history,
         scrollback_limit_lines: if history { 50_000 } else { 0 },
+        role_policy: None,
     }
 }
 

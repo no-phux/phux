@@ -247,6 +247,90 @@ impl core::fmt::Debug for FileUploadId {
     }
 }
 
+/// Server-minted identifier of one held action awaiting approval (ADR-0128).
+///
+/// It is the `<id>` of `phux.approval/v1/<id>` and
+/// `phux.approval.decide/v1/<id>`, and the body of the `approval_requested`
+/// and `approval_decided` events.
+///
+/// The all-zero value is reserved and cannot be constructed. Its text form
+/// is 32 lowercase hex digits. It names a request, not an authority: the
+/// decision is authorized by the decider's grant, never by knowing the id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ApprovalId([u8; 16]);
+
+impl ApprovalId {
+    /// Construct a non-zero approval id.
+    #[must_use]
+    pub const fn new(bytes: [u8; 16]) -> Option<Self> {
+        match InputOperationId::new(bytes) {
+            Some(_) => Some(Self(bytes)),
+            None => None,
+        }
+    }
+
+    /// Borrow the 16-byte wire representation.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 16] {
+        &self.0
+    }
+
+    /// The approval a decision key names: the text after
+    /// [`APPROVAL_DECIDE_KEY_PREFIX`](crate::wire::frame::APPROVAL_DECIDE_KEY_PREFIX),
+    /// when it is a canonical id.
+    #[must_use]
+    pub fn from_decide_key(key: &str) -> Option<Self> {
+        key.strip_prefix(crate::wire::frame::APPROVAL_DECIDE_KEY_PREFIX)
+            .and_then(Self::parse)
+    }
+
+    /// The server-owned record key of this approval,
+    /// `phux.approval/v1/<id>`.
+    #[must_use]
+    pub fn record_key(&self) -> String {
+        format!("{}{self}", crate::wire::frame::APPROVAL_KEY_PREFIX)
+    }
+
+    /// The key a decision on this approval is written to,
+    /// `phux.approval.decide/v1/<id>`.
+    #[must_use]
+    pub fn decide_key(&self) -> String {
+        format!("{}{self}", crate::wire::frame::APPROVAL_DECIDE_KEY_PREFIX)
+    }
+
+    /// Parse the text form: exactly 32 lowercase hex digits, not all zero.
+    #[must_use]
+    pub fn parse(text: &str) -> Option<Self> {
+        let digits = text.as_bytes();
+        if digits.len() != 32 {
+            return None;
+        }
+        let mut bytes = [0_u8; 16];
+        for (byte, pair) in bytes.iter_mut().zip(digits.as_chunks::<2>().0) {
+            *byte = (lower_hex_value(pair[0])? << 4) | lower_hex_value(pair[1])?;
+        }
+        Self::new(bytes)
+    }
+}
+
+/// The value of one lowercase hex digit.
+const fn lower_hex_value(digit: u8) -> Option<u8> {
+    match digit {
+        b'0'..=b'9' => Some(digit - b'0'),
+        b'a'..=b'f' => Some(digit - b'a' + 10),
+        _ => None,
+    }
+}
+
+impl core::fmt::Display for ApprovalId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for byte in self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
 /// The server's resource id space, named by 16 random bytes
 /// (`docs/spec/L1.md` §3.1, ADR-0109).
 ///

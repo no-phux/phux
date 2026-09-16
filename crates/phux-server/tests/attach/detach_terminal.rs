@@ -159,6 +159,7 @@ async fn explicit_attach(
             request_id,
             command: Command::AttachResource {
                 terminal_id: pane.clone(),
+                role_policy: None,
             },
         },
     )
@@ -224,6 +225,7 @@ async fn write_and_observe(control: &mut UnixStream, pane: &ResourceId, marker: 
                     terminal_id: pane.clone(),
                     request_scrollback: None,
                     cells: false,
+                    format: 0,
                 },
                 false,
             )

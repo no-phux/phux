@@ -559,8 +559,97 @@ fn tag_round_trips_and_drives_the_hash_selector() {
 
     // `#tag` drives a mutating verb: kill every Terminal tagged `build`.
     assert_eq!(
-        run_status(&server, &["kill", "#build"]),
+        run_status(&server, &["kill", "--yes", "#build"]),
         0,
         "`phux kill #build` should tear down the tagged Terminal",
+    );
+}
+
+/// `phux snapshot --format html|vt` end to end: the real binary against a
+/// real server, through libghostty-vt's own Formatter (D9, fallback rung
+/// three — `docs/consumers/agents.md`). HTML must carry the pane's styled
+/// text as a markup document; VT must write a non-empty raw byte capture;
+/// `--json` must keep emitting the whole `ScreenState` document with
+/// `rendered` populated instead of the raw capture.
+#[test]
+#[ignore = "spawns a real phux server; starves in the full parallel pool. Run via `just e2e`."]
+fn snapshot_format_html_writes_a_document() {
+    let server = ServerGuard::start();
+    // `%s%s ... SNAPSHOT_FORMAT _MARK` (two shell words, space-separated)
+    // rather than the marker typed verbatim: the raw typed command line
+    // is echoed to the pane the instant it's typed, before Enter is even
+    // processed, so a marker present in the *source* text can make `wait
+    // --until` match on the still-unexecuted command line rather than its
+    // output. `printf` concatenates the two words with no space, so
+    // "SNAPSHOT_FORMAT_MARK" (no space) only ever appears in the actual
+    // executed output.
+    assert_eq!(
+        run_status(
+            &server,
+            &[
+                "send-keys",
+                SESSION,
+                "printf '\\033[1;31m%s%s\\033[0m' SNAPSHOT_FORMAT _MARK",
+                "Enter",
+            ],
+        ),
+        0,
+        "send-keys should deliver the styled marker",
+    );
+    assert_eq!(
+        run_status(
+            &server,
+            &[
+                "wait",
+                SESSION,
+                "--until",
+                "SNAPSHOT_FORMAT_MARK",
+                "--timeout",
+                "5",
+            ],
+        ),
+        0,
+        "the marker should appear before snapshotting",
+    );
+
+    let html = run_stdout(&server, &["snapshot", "--format", "html", SESSION]);
+    assert!(
+        html.contains("SNAPSHOT_FORMAT_MARK"),
+        "the HTML capture must carry the pane's text, got: {html}",
+    );
+    assert!(
+        html.contains('<'),
+        "`--format html` must write a markup document, got: {html}",
+    );
+
+    let vt = run_stdout(&server, &["snapshot", "--format", "vt", SESSION]);
+    assert!(
+        !vt.is_empty(),
+        "`--format vt` must write a non-empty raw VT capture",
+    );
+    assert!(
+        vt.contains("SNAPSHOT_FORMAT_MARK"),
+        "the VT capture must carry the pane's text, got: {vt:?}",
+    );
+    // The marker was written bold-red (`\033[1;31m`); a faithful VT
+    // capture must re-emit an SGR escape (`ESC [ ... m`) to reproduce
+    // that styling, not just the plain characters.
+    assert!(
+        vt.as_bytes().windows(2).any(|pair| pair == [0x1b, b'[']) && vt.contains('m'),
+        "the VT capture must carry at least one SGR escape sequence, got: {vt:?}",
+    );
+
+    let json = run_stdout(
+        &server,
+        &["snapshot", "--json", "--format", "html", SESSION],
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&json).expect("--json --format html must emit valid JSON");
+    assert_eq!(doc["rendered"]["format"], "html", "document: {doc}");
+    assert!(
+        doc["rendered"]["data"]
+            .as_str()
+            .is_some_and(|data| data.contains("SNAPSHOT_FORMAT_MARK")),
+        "document: {doc}",
     );
 }

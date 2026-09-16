@@ -177,7 +177,7 @@ fn requires(method: &MethodSpec) -> String {
 }
 
 fn gate(gate: Option<ServerFeature>) -> String {
-    let name = gate.and_then(crate::feature_names::feature_name);
+    let name = gate.map(crate::feature_names::feature_name);
     name.map_or_else(|| "none".to_owned(), |name| format!("`{name}`"))
 }
 

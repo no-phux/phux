@@ -16,6 +16,13 @@
 //! - the human registry grammar `"<verb>[,<verb>...]@<selector>"` the
 //!   `workload-keys` file and `phux workload add-key --scope` carry.
 //!
+//! The grammar can also mark `signal` as *held* (`?signal`, ADR-0128): the
+//! grant carries `SIGNAL`, but each `SIGNAL` command it admits waits for a
+//! decision by a connection holding un-held `SIGNAL` on the same subject. A
+//! hold is server-local policy bound to the grant. It is not part of the
+//! canonical image, so a decoded set carries no hold and the grant is never
+//! serialized (§5: the effective grant is not a reusable credential).
+//!
 //! Nothing here consults server state. Whether a selector contains a subject
 //! depends on the live topology (a Terminal's current Group), so the server
 //! passes a containment predicate to [`EffectiveScopeSet::admits`]. The verbs
@@ -58,6 +65,12 @@ const VERB_NAMES: [(&str, Verb); 6] = [
 
 /// The wildcard verb: all six, and only on its own.
 const ALL_VERBS: &str = "*";
+
+/// The prefix that marks a verb as held for approval (ADR-0128).
+const HELD_PREFIX: char = '?';
+
+/// The only verb a grant may hold: approvals are held `SIGNAL` actions.
+const HOLDABLE: Verbs = Verbs::of(&[Verb::Signal]);
 
 // -----------------------------------------------------------------------------
 // Errors.
@@ -118,8 +131,11 @@ pub enum ScopeGrammarError {
     #[error("a scope must have the form <verb>[,<verb>...]@<selector>")]
     Shape,
     /// A verb outside the closed set.
-    #[error("a scope names a verb outside inventory|observe|create|bind|input|signal|*")]
+    #[error("a scope names a verb outside inventory|observe|create|bind|input|signal|?signal|*")]
     UnknownVerb,
+    /// `?` on a verb other than `signal`: only `SIGNAL` actions are held.
+    #[error("a scope may hold only `?signal`")]
+    UnholdableVerb,
     /// A verb listed twice, or `*` combined with named verbs.
     #[error("a scope repeats a verb or combines `*` with named verbs")]
     RedundantVerb,
@@ -193,34 +209,70 @@ const fn checked_verbs(bits: u8) -> Result<Verbs, ScopeError> {
     }
 }
 
-fn parse_verbs(text: &str) -> Result<Verbs, ScopeGrammarError> {
+/// The verbs a grant's verb list names, and which of them are held.
+fn parse_verbs(text: &str) -> Result<(Verbs, Verbs), ScopeGrammarError> {
     if text == ALL_VERBS {
-        return Ok(all_verbs());
+        return Ok((all_verbs(), Verbs::EMPTY));
     }
     let mut verbs = Verbs::EMPTY;
-    for name in text.split(',') {
-        if name == ALL_VERBS {
-            return Err(ScopeGrammarError::RedundantVerb);
-        }
-        let verb = VERB_NAMES
-            .iter()
-            .find(|(known, _)| *known == name)
-            .map(|(_, verb)| *verb)
-            .ok_or(ScopeGrammarError::UnknownVerb)?;
+    let mut held = Verbs::EMPTY;
+    for token in text.split(',') {
+        let (name, holds) = token
+            .strip_prefix(HELD_PREFIX)
+            .map_or((token, false), |name| (name, true));
+        let verb = parse_verb_name(name)?;
         if verbs.contains(verb) {
             return Err(ScopeGrammarError::RedundantVerb);
         }
-        verbs = verbs.union(Verbs::of(&[verb]));
+        let one = Verbs::of(&[verb]);
+        if holds && !HOLDABLE.contains(verb) {
+            return Err(ScopeGrammarError::UnholdableVerb);
+        }
+        verbs = verbs.union(one);
+        if holds {
+            held = held.union(one);
+        }
     }
-    Ok(verbs)
+    Ok((verbs, held))
 }
 
-fn write_verbs(f: &mut fmt::Formatter<'_>, verbs: Verbs) -> fmt::Result {
-    if verbs == all_verbs() {
+/// One named verb. `*` is only valid as the whole verb list.
+fn parse_verb_name(name: &str) -> Result<Verb, ScopeGrammarError> {
+    if name == ALL_VERBS {
+        return Err(ScopeGrammarError::RedundantVerb);
+    }
+    VERB_NAMES
+        .iter()
+        .find(|(known, _)| *known == name)
+        .map(|(_, verb)| *verb)
+        .ok_or(ScopeGrammarError::UnknownVerb)
+}
+
+fn write_verbs(f: &mut fmt::Formatter<'_>, verbs: Verbs, held: Verbs) -> fmt::Result {
+    if verbs == all_verbs() && held.is_empty() {
         return f.write_str(ALL_VERBS);
     }
-    let names: Vec<&str> = verbs.iter().map(verb_name).collect();
+    let names: Vec<String> = verbs
+        .iter()
+        .map(|verb| {
+            let marker = if held.contains(verb) { "?" } else { "" };
+            format!("{marker}{}", verb_name(verb))
+        })
+        .collect();
     f.write_str(&names.join(","))
+}
+
+/// The verbs of `verbs` that are not held.
+fn unheld(verbs: Verbs, held: Verbs) -> Verbs {
+    verbs_from_bits(verbs.bits() & !held.bits()).unwrap_or(Verbs::EMPTY)
+}
+
+/// The holds of two merged grants or clauses. A verb one of them carries
+/// un-held stays un-held: merging is a union of authority, and a hold only
+/// ever restricts.
+fn merged_held(a: (Verbs, Verbs), b: (Verbs, Verbs)) -> Verbs {
+    let free = unheld(a.0, a.1).union(unheld(b.0, b.1));
+    unheld(a.0.union(b.0), free)
 }
 
 // -----------------------------------------------------------------------------
@@ -468,6 +520,10 @@ pub struct ScopeGrant {
     pub verbs: Verbs,
     /// Whose resources it covers.
     pub selector: Selector,
+    /// The verbs of [`Self::verbs`] held for approval (`?signal`,
+    /// ADR-0128). Only `SIGNAL` may be held. Not part of the canonical
+    /// image: a decoded grant holds nothing.
+    pub held: Verbs,
 }
 
 impl ScopeGrant {
@@ -478,17 +534,28 @@ impl ScopeGrant {
     /// The first [`ScopeGrammarError`] rule the string breaks.
     pub fn parse(text: &str) -> Result<Self, ScopeGrammarError> {
         let (verbs, selector) = text.split_once('@').ok_or(ScopeGrammarError::Shape)?;
-        let verbs = parse_verbs(verbs)?;
+        let (verbs, held) = parse_verbs(verbs)?;
         Ok(Self {
             verbs,
             selector: Selector::parse(selector)?,
+            held,
         })
+    }
+
+    /// A grant of `verbs` on `selector` with nothing held.
+    #[must_use]
+    pub const fn new(verbs: Verbs, selector: Selector) -> Self {
+        Self {
+            verbs,
+            selector,
+            held: Verbs::EMPTY,
+        }
     }
 }
 
 impl fmt::Display for ScopeGrant {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write_verbs(f, self.verbs)?;
+        write_verbs(f, self.verbs, self.held)?;
         write!(f, "@{}", self.selector)
     }
 }
@@ -543,10 +610,7 @@ impl TerminalScopeSet {
     #[must_use]
     pub fn all_global() -> Self {
         Self {
-            grants: vec![ScopeGrant {
-                verbs: all_verbs(),
-                selector: Selector::Global,
-            }],
+            grants: vec![ScopeGrant::new(all_verbs(), Selector::Global)],
         }
     }
 
@@ -604,13 +668,16 @@ fn read_grant(
     check_order(previous, &raw)?;
     let selector = Selector::decode(&raw)?;
     let verbs = checked_verbs(reader.u8()?)?;
-    Ok((ScopeGrant { verbs, selector }, raw))
+    Ok((ScopeGrant::new(verbs, selector), raw))
 }
 
 fn merge_grant(keyed: &mut Vec<(Vec<u8>, ScopeGrant)>, grant: ScopeGrant) {
     let key = grant.selector.to_bytes();
     match keyed.iter_mut().find(|(existing, _)| *existing == key) {
-        Some((_, existing)) => existing.verbs = existing.verbs.union(grant.verbs),
+        Some((_, existing)) => {
+            existing.held = merged_held((existing.verbs, existing.held), (grant.verbs, grant.held));
+            existing.verbs = existing.verbs.union(grant.verbs);
+        }
         None => keyed.push((key, grant)),
     }
 }
@@ -641,6 +708,9 @@ pub struct EffectiveClause {
     pub ceiling: Selector,
     /// The verbs both carry.
     pub verbs: Verbs,
+    /// The verbs of [`Self::verbs`] held for approval: held when either
+    /// side holds it (ADR-0128). Not part of the canonical image.
+    pub held: Verbs,
 }
 
 /// The requested set intersected with a ceiling, as conjunctive clauses
@@ -706,6 +776,7 @@ impl EffectiveScopeSet {
                 requested: grant.selector.clone(),
                 ceiling: grant.selector.clone(),
                 verbs: grant.verbs,
+                held: grant.held,
             })
             .collect();
         let set = Self { clauses };
@@ -729,10 +800,47 @@ impl EffectiveScopeSet {
 
     /// Whether some clause carries `verb` and both of its selectors contain
     /// the subject, as `contains` decides against the live topology.
+    ///
+    /// A held verb is admitted here: the question is whether the grant
+    /// reaches the subject at all. [`Self::admits_unheld`] asks whether it
+    /// reaches it without a decision (ADR-0128).
     pub fn admits(&self, verb: Verb, contains: impl Fn(&Selector) -> bool) -> bool {
         self.clauses.iter().any(|clause| {
             clause.verbs.contains(verb) && contains(&clause.requested) && contains(&clause.ceiling)
         })
+    }
+
+    /// Whether some clause carries `verb` un-held and both of its selectors
+    /// contain the subject: the verb needs no approval there.
+    pub fn admits_unheld(&self, verb: Verb, contains: impl Fn(&Selector) -> bool) -> bool {
+        self.clauses.iter().any(|clause| {
+            unheld(clause.verbs, clause.held).contains(verb)
+                && contains(&clause.requested)
+                && contains(&clause.ceiling)
+        })
+    }
+
+    /// Whether any clause holds a verb for approval.
+    #[must_use]
+    pub fn holds_any(&self) -> bool {
+        self.clauses.iter().any(|clause| !clause.held.is_empty())
+    }
+
+    /// The same clauses with every held verb removed: what the grant admits
+    /// without a decision. A clause left with no verb is dropped.
+    #[must_use]
+    pub fn without_holds(&self) -> Self {
+        let clauses = self
+            .clauses
+            .iter()
+            .map(|clause| EffectiveClause {
+                verbs: unheld(clause.verbs, clause.held),
+                held: Verbs::EMPTY,
+                ..clause.clone()
+            })
+            .filter(|clause| !clause.verbs.is_empty())
+            .collect();
+        Self { clauses }
     }
 
     /// Whether any clause carries `verb`, whatever its selectors.
@@ -794,6 +902,7 @@ fn read_clause(
         requested: Selector::decode(&requested_raw)?,
         ceiling: Selector::decode(&ceiling_raw)?,
         verbs: checked_verbs(reader.u8()?)?,
+        held: Verbs::EMPTY,
     };
     Ok((clause, key))
 }
@@ -807,6 +916,7 @@ fn clause_for(want: &ScopeGrant, cap: &ScopeGrant) -> Option<EffectiveClause> {
         requested: want.selector.clone(),
         ceiling: cap.selector.clone(),
         verbs,
+        held: intersect_verbs(verbs, want.held.union(cap.held)),
     })
 }
 
@@ -819,7 +929,11 @@ type KeyedClauses = Vec<(ClauseKey, EffectiveClause)>;
 fn merge_clause(keyed: &mut KeyedClauses, clause: EffectiveClause) {
     let key = (clause.requested.to_bytes(), clause.ceiling.to_bytes());
     match keyed.iter_mut().find(|(existing, _)| *existing == key) {
-        Some((_, existing)) => existing.verbs = existing.verbs.union(clause.verbs),
+        Some((_, existing)) => {
+            existing.held =
+                merged_held((existing.verbs, existing.held), (clause.verbs, clause.held));
+            existing.verbs = existing.verbs.union(clause.verbs);
+        }
         None => keyed.push((key, clause)),
     }
 }

@@ -855,6 +855,16 @@ impl Connection {
         self.negotiated_bootstrap
     }
 
+    /// The role an observer attaches with (ADR-0127): `VIEWER` when the
+    /// server advertises `ATTACH_ROLES`, so a recorder or a log follower can
+    /// never type into what it watches; `None`, an ordinary attach, on an
+    /// older server, which would ignore the byte anyway.
+    #[must_use]
+    pub fn observer_role_policy(&self) -> Option<phux_protocol::wire::frame::RolePolicy> {
+        self.advertises(ServerFeature::AttachRoles)
+            .then_some(phux_protocol::wire::frame::RolePolicy::VIEWER)
+    }
+
     /// Whether this connection's `HELLO_OK` advertised `feature`; `false` on
     /// the unnegotiated test seam, which proved nothing.
     fn advertises(&self, feature: ServerFeature) -> bool {
@@ -1248,6 +1258,34 @@ impl Connection {
                 FrameKind::MetadataValue { request_id, value } => {
                     Some((*request_id, value.clone()))
                 }
+                _ => None,
+            })
+            .await?;
+        Ok(Reply {
+            result,
+            interleaved,
+        })
+    }
+
+    /// Send one `LIST_METADATA` and wait for its `METADATA_KEYS`, keeping
+    /// every frame the peer interleaved ahead of it. A refusal is an
+    /// [`Answer`] `Err`, as for [`Self::request_metadata`].
+    ///
+    /// # Errors
+    ///
+    /// Propagates transport and decode failures from [`Self::send`] /
+    /// [`Self::recv`].
+    pub async fn request_metadata_keys(
+        &mut self,
+        request_id: u32,
+        scope: Scope,
+    ) -> Result<Reply<Answer<Vec<String>>>, AttachError> {
+        self.send(&FrameKind::ListMetadata { request_id, scope })
+            .await?;
+        let mut interleaved = Vec::new();
+        let result = self
+            .await_answer(request_id, &mut interleaved, |frame| match frame {
+                FrameKind::MetadataKeys { request_id, keys } => Some((*request_id, keys.clone())),
                 _ => None,
             })
             .await?;

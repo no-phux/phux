@@ -89,6 +89,7 @@ their own one-byte tag inside it. Allocated tags:
 | `0x1a` | `APPEND_RESOURCE_OUTPUT`    | [L1.md §5.5](./L1.md) | shipped |
 | `0x1b` | `KILL_RESOURCE_IF`          | [L1.md §5.2.1](./L1.md) | shipped |
 | `0x1c` | `OPEN_LISTENER`             | [L1.md §5.6](./L1.md) | shipped |
+| `0x1d` | `CLOSE_TAB_RESOURCES`       | [L1.md §5.2.2](./L1.md) | shipped |
 
 `KILL_RESOURCES` at tag `0x09` reuses the slot freed by the removed
 `CREATE_SESSION` command. Per
@@ -119,6 +120,8 @@ proposal and is never reused. `CODEC_UNAVAILABLE = 6` is allocated by ADR-0070.
 and `OVERFLOW = 211` are allocated by the resource model
 ([proto.md §9](./proto.md); [L1.md §1.1, §5.5](./L1.md)).
 `PRECONDITION_FAILED = 212` is allocated by ADR-0109 ([L1.md §5.2.1](./L1.md)).
+`INCARNATION_CHANGED = 213` is allocated by the federation incarnation fence
+([L1.md §9.1](./L1.md)).
 
 `KILL_RESOURCE_IF` condition bits ([L1.md §5.2.1](./L1.md)) allocate upward
 from `0x01`: `0x01 UNATTACHED_SINCE_SPAWN` is taken. A decoder keeps a bit it

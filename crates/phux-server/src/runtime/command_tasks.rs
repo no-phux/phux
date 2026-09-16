@@ -9,6 +9,7 @@ use std::sync::{Arc, OnceLock};
 use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 use tokio::task::JoinSet;
+use tokio_util::sync::CancellationToken;
 
 const CONNECTION_JOBS: usize = 4;
 const CONNECTION_BYTES: usize = 16 * 1024 * 1024;
@@ -65,20 +66,29 @@ pub(super) struct CommandTasks {
 }
 
 impl CommandTasks {
-    pub(super) fn new() -> Self {
+    /// A worker for one connection. `cancel` is the connection's token: once
+    /// it fires, the job in flight stops at its next await and no queued job
+    /// starts, so a revoked connection's queued `PUT_FILE` or `TRANSCRIBE`
+    /// never runs (`docs/spec/workload-auth.md` §7 step 2).
+    pub(super) fn new(cancel: CancellationToken) -> Self {
         Self::with_budget(
             GLOBAL_BUDGET
                 .get_or_init(|| Budget::new(16, 32 * 1024 * 1024))
                 .clone(),
+            cancel,
         )
     }
 
-    fn with_budget(global: Budget) -> Self {
+    fn with_budget(global: Budget, cancel: CancellationToken) -> Self {
         let (tx, mut rx) = mpsc::channel::<Work>(CONNECTION_JOBS);
         let mut worker = JoinSet::new();
         worker.spawn_local(async move {
             while let Some(mut work) = rx.recv().await {
-                work.future.as_mut().await;
+                tokio::select! {
+                    biased;
+                    () = cancel.cancelled() => return,
+                    () = work.future.as_mut() => {}
+                }
                 // Drop completed command captures before accepting another job.
                 drop(work);
             }
@@ -159,7 +169,8 @@ mod tests {
     async fn queued_commands_keep_order_and_control_can_run() {
         tokio::task::LocalSet::new()
             .run_until(async {
-                let mut tasks = CommandTasks::with_budget(Budget::new(4, 1024));
+                let mut tasks =
+                    CommandTasks::with_budget(Budget::new(4, 1024), CancellationToken::new());
                 let (release_tx, release_rx) = tokio::sync::oneshot::channel();
                 let first_finished = Rc::new(Cell::new(false));
                 let first = first_finished.clone();
@@ -197,7 +208,7 @@ mod tests {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let budget = Budget::new(4, 100);
-                let mut tasks = CommandTasks::with_budget(budget.clone());
+                let mut tasks = CommandTasks::with_budget(budget.clone(), CancellationToken::new());
                 let payload = Rc::new(());
                 for _ in 0..4 {
                     let retained = payload.clone();
@@ -225,12 +236,47 @@ mod tests {
             .await;
     }
 
+    /// workload-auth §7 step 2: once the connection token fires (live
+    /// revocation cancels it), a queued `PUT_FILE` or `TRANSCRIBE` never
+    /// starts, even when the job ahead of it would have finished.
+    #[tokio::test]
+    async fn cancellation_stops_queued_work_before_it_runs() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let cancel = CancellationToken::new();
+                let mut tasks = CommandTasks::with_budget(Budget::new(4, 1024), cancel.clone());
+                let (release_tx, release_rx) = tokio::sync::oneshot::channel::<()>();
+                tasks
+                    .try_submit(1, async move {
+                        let _ = release_rx.await;
+                    })
+                    .unwrap();
+                let ran = Rc::new(Cell::new(false));
+                let queued = ran.clone();
+                tasks
+                    .try_submit(1, async move {
+                        queued.set(true);
+                    })
+                    .unwrap();
+                tokio::task::yield_now().await;
+                cancel.cancel();
+                drop(release_tx);
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+                assert!(!ran.get(), "a job queued behind cancellation never runs");
+                tasks.shutdown().await;
+                drop(tasks);
+            })
+            .await;
+    }
+
     #[tokio::test]
     async fn byte_refusal_rolls_back_job_admission_without_polling() {
         tokio::task::LocalSet::new()
             .run_until(async {
                 let budget = Budget::new(4, 100);
-                let mut tasks = CommandTasks::with_budget(budget.clone());
+                let mut tasks = CommandTasks::with_budget(budget.clone(), CancellationToken::new());
                 assert!(
                     tasks
                         .try_submit(101, async { panic!("refused work ran") })

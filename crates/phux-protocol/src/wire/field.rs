@@ -121,6 +121,8 @@ pub mod attach {
     pub const SCROLLBACK_LIMIT_LINES: u32 = 4;
     /// Client-chosen attach correlation id (`u32`).
     pub const ATTACH_ID: u32 = 5;
+    /// `role_policy: u8` (ADR-0127); absent = `{ PRIMARY, NEVER }`.
+    pub const ROLE_POLICY: u32 = 6;
 }
 
 /// `INPUT_KEY` body fields (`docs/spec/input.md` §2).
@@ -651,6 +653,10 @@ pub mod snapshot_extension {
     /// followed by the field-tagged [`resource_state`](super::resource_state)
     /// fields. Repeated, one per resource with non-default state.
     pub const RESOURCE_STATE: u32 = 1;
+    /// The newest event-journal `seq` when the snapshot was cut (`u64`),
+    /// written once by a server that advertises `EVENT_JOURNAL`
+    /// (`docs/spec/L1.md` §7.3).
+    pub const JOURNAL_HEAD: u32 = 2;
 }
 
 /// Fields inside one `snapshot_extension::RESOURCE_STATE` value, after its
@@ -663,6 +669,9 @@ pub mod resource_state {
     pub const EXIT: u32 = 2;
     /// `ClientId` (`u32`) of the input-lease holder; absent = open.
     pub const INPUT_HOLDER: u32 = 3;
+    /// `ClientId` (`u32`) of one `VIEWER` subscriber (ADR-0127), repeated
+    /// once per viewer; absent = none.
+    pub const VIEWER: u32 = 4;
 }
 
 /// `AgentEvent::Asked` body fields (`docs/spec/L1.md` §7.5).

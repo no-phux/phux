@@ -796,10 +796,25 @@ including when `PHUX_WS_TOKENS` selects a custom path. Integrity failures
 deny authentication rather than retaining a stale credential. The store
 retains only a verifier plus credential id, principal, terminal-only
 scope, lifecycle timestamps, and rotation generation; bearer secrets are
-never persisted. Pairing, rotation, and revocation take effect at the
-next connection attempt, with no restart. An already-established session
-is not re-authorized and survives revocation until it drops. Rotation
-defaults to a 300-second overlap. Certificate lifecycle is an operator
+never persisted. Pairing, rotation, and revocation take effect with no
+restart, and revocation and expiry also end an established session: while a
+bearer-admitted connection is live the server re-reads its store (every
+250 ms, one `stat` per poll) and closes each connection whose credential
+generation was revoked, removed, or expired, with `ERROR { PERMISSION_DENIED }`
+and `DETACHED { AUTHORIZATION_REVOKED | AUTHORIZATION_EXPIRED }`
+([ADR-0116](adr/0116-workload-auth-is-mtls.md) supersedes ADR-0031's
+survive-until-drop; [workload-auth.md](spec/workload-auth.md) §7). Only a
+positive verdict from a store that loaded cleanly and holds credentials ends a
+live session: its generation revoked, expired, or absent. A missing, empty,
+truncated, insecure, or unreadable store refuses new connections at once but
+never ends a live one; the server warns once a minute, naming the condition
+and its fix. A federation hub's link to a satellite is such a session, so
+revoking the link's token drops every hub consumer's attach through it.
+Rotation defaults to a 300-second overlap, and a live session still on the
+previous generation is disconnected when the overlap ends, so a leaked old
+token cannot outlive it; `phux pair rotate` says so, and
+`--overlap-seconds` (up to 86400) gives devices longer to pick up the new
+token. Certificate lifecycle is an operator
 responsibility, like socket permissions: with a self-signed certificate,
 verifying the `phux pair` fingerprint on the device's first connect is
 what closes the trust-on-first-use MITM window.
@@ -827,7 +842,7 @@ phux workload authority --init            # create the CA; prints only its finge
 phux workload add-key --scope 'observe,input@host' \
     --cert-out client.pem < client.csr    # sign a CSR read from stdin
 phux workload list                        # ids, scopes, expiry, revocation
-phux workload revoke sha256:...           # refuse it from the next connection
+phux workload revoke sha256:...           # refuse it and end its live connections
 ```
 
 The workload keeps its private key. `add-key` accepts only a certificate this
@@ -841,15 +856,21 @@ atomic rename; `PHUX_WORKLOAD_CA`, `PHUX_WORKLOAD_CA_KEY`, and
 `PHUX_WORKLOAD_KEYS` move them. Every directory above them must be
 controlled by its owner (or root) as well: only the immediate directory is
 checked, and the files are opened by path. A running server re-reads the registry when
-it changes, so enrollment and revocation apply to the next connection with no
-restart. The registry records a random instance id beside its generation,
+it changes, so enrollment and revocation apply with no restart. The registry records a random instance id beside its generation,
 and an admitted connection's credential carries both: only the pair names
 one registry state. A malformed, insecure, or missing registry admits no
 workload credential; the server never falls back to an older generation. A
 transient read failure refuses only the connection it happened on. A
 workload connection holds its registry scopes and the server enforces them
-on every frame and command (next section). Revocation and expiry refuse the
-next connection; they do not yet end an established one
+on every frame and command (next section). Revocation, expiry, and a ceiling
+change that no longer contains a live connection's grant end that connection
+too, within one registry poll (250 ms) or at the expiry instant: its input
+leases and subscriptions are released, it receives
+`ERROR { PERMISSION_DENIED }` then `DETACHED { AUTHORIZATION_REVOKED |
+AUTHORIZATION_EXPIRED }`, and the transport closes. Its Terminals keep
+running. A missing, insecure, or malformed registry ends every workload
+connection once it has stayed so for five seconds, so a write caught mid-way
+ends none; until a valid one is written, no workload connection is admitted
 ([workload-auth.md](spec/workload-auth.md) §7). `phux doctor` reports the
 CA fingerprint and the registry generation.
 

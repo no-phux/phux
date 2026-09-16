@@ -42,7 +42,16 @@ a process with no TTY would otherwise report. Layout verbs
 (`insert-pane`, `move-pane`, `swap-pane`) change persisted topology, not
 client-local focus. CLI and MCP cannot take or give an input lease that
 outlives the calling process; MCP therefore exposes no `take` / `give`
-tools ([`mcp.md`](./mcp.md)).
+tools ([`mcp.md`](./mcp.md)). `phux take --ttl SECS` is a second, orthogonal
+deadline (ADR-0033): the server itself now enforces `ttl_ms` and releases
+the lease after `SECS` even if the holder never calls `phux give` — a
+bound any holder can ask for, CLI or a longer-lived client (the TUI's
+take-the-wheel keybinding, a `phux-client`-based agent) alike.
+An attach may also declare its intent (ADR-0127): `phux attach --viewer`
+watches and can type nothing, and `phux attach --take` attaches and takes the
+wheel in one step. `phux rec` and `phux agent log` attach as viewers on a
+server that advertises attach roles, so an observer can never type into what
+it watches.
 
 `--socket` wins, then `PHUX_SOCKET`, then the daemon default. `phux ls`
 does not auto-start a server.
@@ -98,6 +107,24 @@ agent TUI — where there is no sentinel to harvest.
 ```sh
 phux run --json --timeout 120 build "cargo test"
 ```
+
+For a process whose **end** you need (a build, a test run, a one-shot
+job), spawn it retained and wait on its exit. `phux resource wait` is
+race-free: an exit that happens while the wait starts is never missed,
+and a process that already exited is still read, because the retained
+pane keeps its status:
+
+```sh
+pane=$(phux spawn --json --retain=600 -- make test | jq -r '"@\(.terminal_id)"')
+phux resource wait --json --timeout 900 "$pane"
+phux snapshot --json --scrollback 200 "$pane"
+```
+
+Exit `0` is an observed exit (`exit.status`, or `exit.signal` for a
+death by signal); `1` is `gone` (the resource closed unretained before
+the wait, or never existed); `124` is the timeout. Keep the printed
+`cursor`: after a disconnect, `--after CURSOR` replays a close the
+server still journals. `phux kill --yes "$pane"` purges a retained pane early.
 
 A paste **inserts**; it does not **submit**. Bracketed paste (DEC mode
 2004) delivers one block; paste-aware shells and REPLs buffer it until a
@@ -237,7 +264,21 @@ It never creates, splits, moves, or focuses layout.
   subscription on the resolved pane, not a fleet-wide stream.
   `command_started` / `command_finished` come from OSC 133 `C` / `D` in
   the raw PTY bytes; a shell with no integration never emits them, and
-  `idle` is only as quiet as the prompt.
+  `idle` is only as quiet as the prompt. On a server with the event
+  journal (`event_journal` in `phux status --json`) the last stderr line
+  is the cursor this run reached; `--after CURSOR` resumes from it, and
+  events the journal still holds are replayed before live ones.
+- **`resource wait`** — block until one resource's process ends, then
+  report how (exit 0), `gone` (exit 1), or the timeout (exit 124). A
+  direct `@N` target is used as given, so a pane that already closed can
+  still be named. Subscribe-then-read on one connection makes it
+  race-free; it is the completion gate for a process, as `agent wait` is
+  for an agent.
+- **`resource show`** — one resource's record: kind, parent, lifecycle,
+  the exit of a retained process, the typed process facts (pid,
+  foreground group, cwd, prompt state), the input-lease holder and the
+  connections watching it as viewers, tags, and agent record. `resource methods` lists what the resource answers
+  on this server; listing grants nothing.
 - **`ask`** — advisory human attention. It does not move focus. The
   reference TUI presents it as `C-a q` / `C-a Q`.
 
@@ -325,8 +366,10 @@ object (exceptions noted). `--json` is the long flag; there is no `-j`.
   ],
   "terminals": ["@3"],
   "resources": [
-    { "id": "@3", "kind": "terminal", "parent": null },
-    { "id": "@9", "kind": "agent_session", "parent": "@3" }
+    { "id": "@3", "kind": "terminal", "parent": null,
+      "lifecycle": "running", "exit": null },
+    { "id": "@9", "kind": "agent_session", "parent": "@3",
+      "lifecycle": "running", "exit": null }
   ],
   "hosts": [],
   "hosts_complete": true,
@@ -339,7 +382,11 @@ object (exceptions noted). `--json` is the long flag; there is no `-j`.
 `unreachable == []`, never on diagnostic substrings. An absent key is a
 pre-v3 binary. `terminals` is the Terminal-kind inventory. `resources`
 is additive: omit it on an older server; `kind` is `terminal` or
-`agent_session` (unknown kinds render as `unknown`). `keep_empty` /
+`agent_session` (unknown kinds render as `unknown`). `lifecycle`
+(`running`, `frozen`, or `exited`) and `exit` are additive: `exited`
+with an `exit` object `{ status, signal, reason, exited_at_ms,
+retained_until_ms }` is a pane spawned with `--retain` whose process
+ended; read an absent key as `running` / `null`. `keep_empty` /
 `empty` are additive; read an absent key as `false`. `sessions` lists
 this host only. `hosts` is the fleet grouped by machine; read it as
 complete only when `hosts_complete` is `true` (the server advertises
@@ -365,7 +412,9 @@ listed with `reachable: false` and no sessions.
   "soft_wrap": { "lines": [], "scrollback": [] },
   "truncated": false,
   "truncated_reason": null,
-  "title": "phux"
+  "title": "phux",
+  "rendered": null,
+  "rendered_error": null
 }
 ```
 
@@ -384,7 +433,26 @@ array: `{ col, row, semantic?, style }`. `semantic` is `Input` or
 booleans plus `fg` / `bg`, each a tagged `CellColor` (`default`,
 `palette` `{ index }`, or `rgb` `{ r, g, b }`) so "terminal default"
 is distinct from "explicitly black". The right half of a double-width
-glyph is skipped.
+glyph is skipped. `--format html|vt` fills `rendered`:
+`{ format: "html" | "vt", data }`, rendered through the server's own
+libghostty-vt Formatter, its history window capped at 10000 rows and its
+byte size checked before allocation (over 8 MiB refuses the whole read with
+a `resource_exhausted`-class error, naming the budget) — `data` is UTF-8
+text for `"html"`, standard base64 for `"vt"` (VT output is not guaranteed
+valid UTF-8). `--unwrap` with `--format` asks the Formatter itself to join
+soft-wrapped rows, rather than the client-side `unwrap` this surface uses
+otherwise. When a rendering is requested, `lines`/`scrollback`/`soft_wrap`
+are omitted from the reply (the capture already carries that text) and
+`truncated` reads `false`. `rendered` is `null` when no rendering was
+requested, or when one was requested but the CLI/MCP call itself failed
+(see below); `rendered_error` names a same-server render failure that the
+plain projection survived. **No server negotiation gates `--format`**: a
+server predating it silently answers as if it were absent, so the CLI/MCP
+layer detects a missing `rendered` after a non-`None` request and reports a
+typed failure (`phux snapshot`: exit 2; MCP: a tool error) instead of quietly
+returning success with no capture. Text output writes `data` straight to
+stdout instead of the boxed view (VT decoded to raw bytes); `--json` keeps
+the whole document.
 
 ### `run` — `RunResult` (no `schema_version`)
 
@@ -413,18 +481,42 @@ headless geometry; automatic window-size policies return to that geometry
 after the last view detaches, while `manual` holds an explicit `phux resize`.
 `--empty --json` has `"terminal_id": null` plus
 `empty` / `keep_empty`. Terminal-facet verbs against an empty session
-fail immediately with `no_such_target`.
+fail immediately with `no_such_target`. `--idempotency-key HEX32`
+(32 hex digits, drawn once per request and reused on every retry) makes
+the create safe to retry: a repeat answers the first create's result
+instead of failing on the name. It needs `spawn_idempotency` in
+`phux status --json` `features`; otherwise it is refused before any
+write with `unsupported_server`, exit 2.
 
 ### `spawn` / `launch` / spatial
 
 ```json
-{ "schema_version": 1, "terminal_id": 7, "satellite": null }
+{ "schema_version": 1, "terminal_id": 7, "satellite": null, "replayed": false }
 ```
 
 `satellite` is the registry name when routed with `--satellite`; then
-`terminal_id` is the id *on that satellite*. Launch adds `integration`,
+`terminal_id` is the id *on that satellite*. `spawn --retain[=SECS]`
+keeps the pane inspectable after its process exits (bare `--retain`:
+the server's default), until the time passes or `phux kill`; write
+`--retain=SECS` when a command follows. `spawn --idempotency-key HEX32`
+makes a retry answer the first pane with `replayed: true` instead of
+spawning another; the same key with a different request is
+`idempotency_conflict`, exit 2. Each flag needs its feature
+(`retain_on_exit`, `spawn_idempotency`); without it the spawn is refused
+before sending with `unsupported_server`, exit 2, never silently
+ignored. Launch adds `integration`,
 `plugin`, and the resolved `argv`. `--list` / `--print` are separate
 documents; placement does not add a second success shape.
+
+`kill` and `signal` take `--idempotency-key HEX32` too, for a supervisor
+that must not act twice: a retry under the same key answers the first
+result instead of killing or signalling again, and a keyed `kill @N` is
+sent as written, so a retry after the pane is already gone still gets the
+first answer. Both need `keyed_signal` in `features`; without it they are
+refused before sending with `unsupported_server`, exit 2. Through a hub, a
+keyed retry whose satellite restarted in between is refused with
+`INCARNATION_CHANGED` and nothing reaches the satellite: read state and
+decide afresh under a new key.
 
 Spatial edits emit `schema_version` 1 with `operation` and `session_id`.
 `direction` is the CLI divider (`vertical` = side-by-side,
@@ -540,6 +632,77 @@ omits it or the shell has no OSC-133); `agent_state.{name,kind,session,
 state,attention,from}` — `from` is the state last seen *in this watch
 run*, absent on the first record; `attention` is derived from `state`; a
 deleted record emits `state: null` rather than dropping the line.
+`cwd_changed.cwd`; `terminal_control.{lifecycle,action,exit_status,
+input_holder,actor_client}` (`action: exited` is a retained pane's
+process ending); `journal_gap.{first_missing,last_missing}` (this watch
+missed that range: re-read level state); `source_gap.dropped` (events
+lost before they were journaled); `approval_requested.id` and
+`approval_decided.{id,outcome}` (`approved`, `denied`, `expired`,
+`withdrawn`; ADR-0128: the id names the `phux.approval/v1/<id>` record
+`phux approvals` lists). On a journaling server every event
+line also carries `seq`, `ts_ms`, and `actor` (`{ client,
+credential_id, client_name }`) when present; a `journal_gap` line has
+none. After the stream ends, the last stderr line is the cursor: under
+`--json` one object `{ "cursor": "SERVER_ID:SEQ", "cursor_void":
+false }`; `cursor_void: true` means the `--after` cursor came from
+another server run and the stream started live. `--until unknown` still
+matches every event outside the gate names frozen at 1.0 (`agent_state`,
+`asked`, `bell`, `command_finished`, `command_started`, `dirty`, `idle`,
+`pane_closed`, `pane_spawned`, `title_changed`, `unknown`), including
+`cwd_changed`, `terminal_control`, `journal_gap`, and `source_gap`, which
+printed as `unknown` before they had names; an existing `--until unknown`
+gate keeps working, and the new names gate on exactly one kind.
+
+### `resource show` / `resource wait` / `resource methods`
+
+```json
+{ "schema_version": 1, "resource": "@7", "outcome": "exited",
+  "exit": { "status": 42, "signal": null, "reason": "exited",
+            "exited_at_ms": 1757800000123 },
+  "retained": true, "waited_ms": 1834, "cursor": "9f1c...:118",
+  "evidence_lost": false }
+```
+
+That is `resource wait --json`. `outcome` is `exited`, `gone`, or
+`timed_out`; the document is printed on **stdout for all three** (exit
+0, 1, 124), so branch on `outcome`. `exit` is `null` unless `exited`;
+inside it any fact the client could not learn is `null` (a close seen
+only as an event carries no `reason`). `retained` says the resource is
+still listed. `cursor` is `null` on a server without the event journal.
+A malformed `--after` is `invalid_cursor`, exit 2; an absence in a
+partial fleet view is `partial_view`, exit 3, never `gone`. A resumed
+wait does not answer `gone` until the replay has reached the server's
+journal head at the snapshot cut, so a close still being replayed is
+reported as the exit it was. That head is the connection's own (the
+newest event its subscription admits), so other panes' events never
+keep a resumed wait on a gone pane waiting. `evidence_lost: true` means
+the replay reported a range the journal had already evicted: a close in
+that range was never seen, so a `gone` may hide an exit (resume sooner,
+or retain the pane). A wait that saw no event returns that head
+as its `cursor`, so a resume replays nothing already accounted for, and
+an error exit names the cursor it reached in its remedy. A scoped
+workload refused the subscription or the state read gets
+`permission_denied`, exit 2.
+
+`resource show --json` is `{ schema_version: 1, resource, kind, parent,
+session, title, cwd, lifecycle, exit, input_holder, viewers, process,
+tags, agent, agent_session, unreachable }`. `exit` adds `retained_until_ms`.
+`process` is the `GET_TERMINAL_STATE` process facet below, `null` for a
+non-Terminal or an older server. `tags` is `null` when the read was
+refused. `input_holder` is the lease holder's connection id, or `null`.
+`viewers` lists the connection ids attached as `VIEWER` (ADR-0127),
+ascending, `[]` when none; the human form prints it only when non-empty.
+
+`resource methods --json` is `{ schema_version: 1, resource, kind,
+methods: [{ name, facet, verb, mutating, dangerous, available, reason }] }`.
+`dangerous` is the catalog's mark (ADR-0128): sending the method can end a
+process, eject a client, or release a held action, so the CLI asks for
+`--yes` and MCP for `confirm: true`.
+`facet` is `substrate` or the kind that owns the method; `verb` is the
+closed verb label (`OBSERVE`, `BIND+OBSERVE`, `none`); `reason` is
+`null` when available, else `feature_unadvertised`, `wrong_kind`,
+`transport`, or `unimplemented`. Discovery grants nothing:
+authorization happens when the method is sent.
 
 ### `resize`
 
@@ -595,8 +758,9 @@ failure creates no pane.
 
 ### `GET_TERMINAL_STATE` — `process` facet (`schema_version` 1, wire only)
 
-No CLI verb emits this document yet. SDKs and MCP hosts that send the
-`GET_TERMINAL_STATE` command read it directly. The `process` object is
+`phux resource show --json` embeds the `process` object; SDKs that send
+the `GET_TERMINAL_STATE` command read the whole document. The `process`
+object is
 `{ child, foreground, cwd, prompt, exit }`, and the Rust type is
 `phux_core::process::TerminalProcessState`:
 
@@ -612,6 +776,28 @@ Every key is present; `null` means the server could not find out, never
 `prompt.state` is `unknown|at_prompt|running`, from OSC-133 marks.
 `exit.signal` reports a death by signal that `RESOURCE_CLOSED.exit_status`
 reads as `null`. Normative rules: [`../spec/L1.md`](../spec/L1.md) §6.3.
+
+**Retained exits.** A Terminal spawned with `SPAWN_RESOURCE.retain_secs`
+(ADR-0124; `0` asks for the server default, `defaults.retain-on-exit-secs`)
+does not close when its process exits. The server emits `terminal_control`
+with `action: exited` and the exit status, and keeps the resource: `GET_STATE`
+lists it with `lifecycle: EXITED` and an exit facet (`exit_status`, `signal`,
+`reason`, `exited_at_ms`, `retained_until_ms`), and `GET_SCREEN`,
+`GET_TERMINAL_STATE` (the same exit as `process.exit`), history, and
+`ATTACH_RESOURCE` keep answering. Input answers `INPUT_NOT_WRITTEN`;
+`SIGNAL_TERMINAL` answers `INVALID_COMMAND`. So a waiter that arrives after
+the exit reads the status instead of `TERMINAL_NOT_FOUND`: subscribe to the
+Terminal's events, then read `GET_STATE`. The resource closes with the
+ordinary `RESOURCE_CLOSED` when retention expires, when the server's retained
+count bound (`defaults.retain-on-exit-max`) evicts it, oldest first, or when
+you `KILL_RESOURCE` it (`reason: KILLED`, idempotent). A retained Terminal holds
+its grid and history until then (up to `defaults.history-bytes`, so roughly
+512 MiB at the default bound of 256 with the 2 MiB default) but no
+pseudoterminal or descriptor. Check `RETAIN_ON_EXIT`
+in `HELLO_OK` first; a server without it closes the Terminal at exit. From the
+CLI: `phux spawn --retain[=SECS]` sets the field (refused with
+`unsupported_server` when the bit is absent), and `phux resource wait` is that
+waiter.
 
 ### Other `--json` verbs
 
@@ -666,7 +852,12 @@ Mirroring that `--help` does not collect in one place:
 | `agent send-keys` / `prompt` / `answer` | `0` kernel-queue receipt; `2` pre-write refusal; `1` transport or `delivery_unknown`. |
 | `agent session open\|close` / `emit` / `log` | `2` for `wrong_resource_kind`, `unsupported_server`, `not_producer`, `record_invalid`, `overflow`. A closed session is `no_such_target` (exit 1), not a refusal. `log` has no 124. |
 | `resize` | `0` only when the server holds the requested size. |
+| `resource wait` | `0` exited (now or earlier, while retained); `1` `gone`; `124` timeout; `2` usage (`invalid_cursor`) or a scope that cannot observe the resource (`permission_denied`, answered at once rather than at the deadline); `3` absent from a partial fleet. The document is on stdout for `0`, `1`, and `124`. |
+| `resource show` / `resource methods` | `1` `no_such_target`; `3` when the miss is against an incomplete fleet. |
+| `spawn` / `new` with `--retain` / `--idempotency-key` | `2` for `unsupported_server` (feature not advertised; nothing sent), `invalid_idempotency_key`, and `idempotency_conflict` (spawn only). A keyed `new` whose key already belongs to another create request registers nothing and exits `1`: a create result has no refusal form. |
 | `kill` / `tag` / `agent show\|set\|clear` | `3` when the miss is against an incomplete fleet. |
+| `kill` / `signal interrupt\|terminate\|kill` / `detach` / `approve` | `2` without `--yes` when stdin is not a terminal: nothing was sent (ADR-0128). Scripts and agents pass `--yes`. `kill --server` never asks. |
+| `approvals` / `approve` / `deny` | `2` for a malformed id, a refused decision (not pending, or no un-held `signal` on the held subject), or `server_too_old`; `1` when the server is unreachable. |
 
 **Exit `3`.** A federation hub that cannot reach a satellite still
 answers `GET_STATE` with those panes missing. A miss then has two
@@ -787,7 +978,13 @@ from raw bytes, and prefer the higher rung:
    viewport or scrollback window — not a typed fact about the process
    behind it. Matching text is fuzzier than checking a typed field, and a
    truncated or soft-wrapped read can misrepresent a line the process
-   never emitted that way.
+   never emitted that way. `snapshot --format html|vt` (`../spec/L1.md`
+   §6.1) rides the same rung: the server renders the capture through its
+   own libghostty-vt Formatter (never reimplemented, per CONTRIBUTING)
+   into HTML with inline styles or re-playable VT escape sequences, for a
+   consumer that wants styling or an exact byte-for-byte replay rather
+   than the plain-text/JSON projection — still a rendered projection, not
+   a typed fact.
 4. **Synthetic input.** `send-keys`, `paste`, and their wire form
    (`ROUTE_INPUT` fire-and-forget, `APPLY_INPUT` acknowledged). This is
    the fallback of last resort: acknowledgment proves kernel tty-queue
@@ -829,7 +1026,9 @@ look, not what it will find.
 
 - [`mcp.md`](./mcp.md) — JSON-RPC stdio adapter over the same verbs.
   `phux mcp --schema` is the tool catalog; `phux mcp --skill` is the
-  operating guide.
+  operating guide. Every verb indexed in §7 has an MCP tool or a listed
+  reason it has none, enforced by a parity gate; the mapping is
+  [`../reference/parity.md`](../reference/parity.md).
 - [`sdk.md`](./sdk.md) — `phux-client` is workspace-internal; there is
   no crates.io SDK. Native embedders use `phux-client-ffi`.
 - Host adapters: [`opencode.md`](./opencode.md), [`pi.md`](./pi.md),

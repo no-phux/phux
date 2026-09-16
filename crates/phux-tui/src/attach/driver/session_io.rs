@@ -4,8 +4,6 @@
 
 use std::io::{self};
 
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::{
     BootstrapLimits, ClientCapabilities, Layer, LayerSet, ServerFeature, detect_color_support,
 };
@@ -182,12 +180,9 @@ pub(super) fn attach_client_caps(
     //
     // phux-4li.5: declare L3 (`Layer::L3`) so the server forwards
     // `MetadataChanged` events for the `phux.tui.layout/v1` key.
-    #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     let bootstrap = phux_client_core::engine::ghostty::native_bootstrap_capabilities(
         BootstrapLimits::default(),
     );
-    #[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-    let bootstrap = BootstrapCapabilities::new().with_limits(BootstrapLimits::default());
     let mut client_caps = ClientCapabilities::new()
         .with_bootstrap(bootstrap)
         .with_color_support(detect_color_support())
@@ -217,6 +212,8 @@ pub(super) async fn send_attach(
     target: AttachTarget,
 ) -> Result<u32, AttachError> {
     let viewport = current_viewport()?;
+    // ADR-0127: `--viewer` / `--take`, or nothing for the default.
+    let role_policy = crate::attach::attach_role::attach_role_for(conn)?;
     let attach_id = conn.next_attach_id();
     conn.send(&FrameKind::Attach {
         attach_id,
@@ -227,6 +224,7 @@ pub(super) async fn send_attach(
         // with the rest of `phux-config`.
         request_scrollback: true,
         scrollback_limit_lines: 10_000,
+        role_policy,
     })
     .await?;
     Ok(attach_id)

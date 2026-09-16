@@ -199,6 +199,7 @@ fn workload_identity(id: &str) -> ConnectionIdentity {
             registry_instance: None,
         }),
         ssh_origin: None,
+        bearer: None,
     }
 }
 
@@ -236,6 +237,7 @@ fn get_screen(request_id: u32, terminal_id: WireResourceId) -> FrameKind {
             terminal_id,
             request_scrollback: None,
             cells: false,
+            format: 0,
         },
     )
 }
@@ -490,6 +492,7 @@ async fn relayed_command_is_authorized_on_the_hub_before_forwarding() {
                 5,
                 Command::KillResource {
                     terminal_id: WireResourceId::satellite("devbox", 5),
+                    operation_id: None,
                 },
             );
             for (scope, want) in [

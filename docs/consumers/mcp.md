@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-15
 ---
 
 # The phux MCP adapter
@@ -137,12 +137,24 @@ The flag lives on the MCP companion rather than `phux api schema` so
 the schemas cannot drift and the main binary does not link the MCP
 stack.
 
-Name-for-name mapping onto the CLI. CLI-subprocess tools execute argv
-(never a shell), parse the canonical JSON, cap each string at 4096 bytes
-and arrays at 64 entries, cap stdout/stderr at 1 MiB / 64 KiB, and kill
-the child on cancellation or deadline. Every strict schema sets
-`additionalProperties: false`. In-process tools reuse `phux-client`
-directly.
+Name-for-name mapping onto the CLI, checked by an automated parity gate:
+[`../reference/parity.md`](../reference/parity.md) (generated) lists every
+tool, the `phux` verb it mirrors, whether it runs in-process or through
+the CLI, and its annotations. Most tools call the same `phux-client`
+function the CLI verb calls and return the same document; four
+(`phux_kill`, `phux_signal`, `phux_tag`, `phux_rename`) run in-process
+over the same wire helpers but mirror the CLI verb's orchestration in the
+adapter, which the reference marks. A small residue
+(`phux_run`, `phux_new`, `phux_launch`, `phux_workspace`, the diagnostics,
+and the agent verbs whose documents the CLI assembles) still executes the
+CLI: argv (never a shell), the canonical JSON parsed, stdout/stderr capped
+at 1 MiB / 64 KiB, the child killed on cancellation or deadline. Every
+strict schema caps each string at 4096 bytes and arrays at 64 entries and
+sets `additionalProperties: false`. A `phux_snapshot` with `tail` or
+`unwrap` is refused over 1 MiB of document, the bound the subprocess path
+had. Tool-error text is prose, not a contract; where the CLI's `--json`
+error line carried a stable `code` (`phux_spawn`, the spatial tools), the
+tool error is that same one-line document.
 
 Contract facts `--schema` descriptions do not collect:
 
@@ -162,8 +174,9 @@ Contract facts `--schema` descriptions do not collect:
 - **`phux_paste`** is one paste event. A paste inserts without
   submitting; follow with `phux_send_keys` sending `Enter`. A dropped
   untrusted payload still reports `sent: true`.
-- **`phux_detach`** talks `DETACH_CLIENTS` in-process (`phux detach` has
-  no `--json`). There is deliberately **no `phux_attach`**: a live ANSI
+- **`phux_detach`** sends `DETACH_CLIENTS` through the same library call
+  as `phux detach`, and reports the count the server acked (`phux detach`
+  has no `--json`). There is deliberately **no `phux_attach`**: a live ANSI
   stream has no request/response shape for the one-text-content-block
   `tools/call` envelope.
 - **`phux_status`**: a stopped server is an answer, not an error. Branch
@@ -183,6 +196,35 @@ Contract facts `--schema` descriptions do not collect:
   `phux_agent_emit`, `phux_agent_log`): on a server without
   `resource_kinds` in `phux_status`'s `features`, each returns
   `unsupported_server`. The adapter adds no producer of its own.
+- **`phux_resource_wait`** is always bounded: `timeout_secs` is required
+  (`1..=3600`). `outcome: "timed_out"` and `outcome: "gone"` are results,
+  not tool errors; branch on `outcome`. Pass the returned `cursor` back as
+  `after` to resume without missing an exit; `evidence_lost: true` says
+  the journal had already evicted part of that range, so a `gone` may
+  hide an exit. A direct `@N` target is used
+  as given, so a resource that already exited can still be named.
+  `phux_resource_show` and `phux_resource_methods` return the same
+  documents as the CLI's `resource show|methods --json`.
+- **`phux_spawn`** takes `retain_secs` (keep the pane inspectable after
+  exit) and `idempotency_key` (32 hex digits; a retry answers the first
+  pane with `replayed: true`); **`phux_new`** takes `idempotency_key`.
+  Each is refused with `unsupported_server` when the server lacks
+  `retain_on_exit` / `spawn_idempotency`, never silently ignored.
+- **`phux_watch`** event items carry `seq`, `ts_ms`, and `actor` on a
+  server with the event journal. `cwd_changed`, `terminal_control`,
+  `journal_gap`, and `source_gap` are named (they used to arrive as
+  `unknown`); the envelope stays `schema_version` 2.
+
+**Annotations.** Every tool carries `annotations.readOnlyHint` and
+`annotations.destructiveHint`, derived from the kind catalog rather than
+set by hand. A tool is read-only only when every method it can send is
+read-only by the catalog's conservative rule (a denied or unclassified
+row counts as a write). It is destructive when any of those methods is
+marked `dangerous` in the catalog (it can end a process, eject a client,
+stop the server, or release a held action; ADR-0128) or needs the `INPUT`
+verb (keystrokes in a live PTY can run anything); `CREATE` and `BIND`
+writes are marked as writes but not destructive. The hints are advice
+for a host's confirmation UI; authorization still happens at the server.
 
 **Deliberate exclusions.** No MCP `take` / `give`: the CLI lease belongs
 to the short-lived subprocess connection, so advertising a persistent
@@ -192,9 +234,19 @@ interactive/daemon/operator lifecycles; `pair` and satellite registry
 mutation handle credentials; plugin installation and config editing
 mutate local trust. Those stay outside the model-facing set.
 
-`phux_kill` and `phux_detach` require `confirm: true`. `phux_signal`
-requires it for interrupt/terminate/kill. Before `phux_kill`, a caller
-must display the resolved target and obtain explicit human confirmation.
+`confirm: true` is one check derived from the same catalog mark:
+`phux_kill` and `phux_detach` always require it, `phux_signal` requires it
+for interrupt/terminate/kill (`freeze` and `resume` are the reversible
+brake), and `phux_approve` requires it to approve (a denial releases
+nothing). Before `phux_kill`, a caller must display the resolved target and
+obtain explicit human confirmation.
+
+**Approvals (ADR-0128).** When this server holds an agent's kill, signal, or
+forced detach for approval (its workload grant spells `?signal`), the tool
+call waits for the decision. `phux_approvals` lists what is held (the
+document `phux approvals --json` prints), and `phux_approve` decides one by
+`id` with `decision: approve|deny`. Deciding needs un-held `signal` on the
+held subject, so the agent whose action is held cannot approve it.
 
 No tool in the orchestration sequence moves a human's local focus,
 stores remote credentials, grants a persistent input lease, or schedules

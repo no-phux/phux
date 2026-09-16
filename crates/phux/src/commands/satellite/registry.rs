@@ -65,7 +65,6 @@ pub(crate) fn load_registry() -> Result<Vec<SatelliteEntry>, String> {
 
 pub(crate) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String> {
     let config_path = config_loader::config_path();
-    toml_registry::reject_symlink(&config_path)?;
     let mut doc = toml_registry::edit_document(&config_path)?;
     let mut updated = false;
     for entry in load_registry()? {
@@ -91,7 +90,6 @@ pub(crate) fn add_or_update(new: &NewSatellite) -> Result<SatelliteEntry, String
 
 pub(crate) fn remove_entry(entry: &SatelliteEntry) -> Result<(), String> {
     let config_path = config_loader::config_path();
-    toml_registry::reject_symlink(&config_path)?;
     let mut doc = toml_registry::edit_document(&config_path)?;
     doc.remove_machine(KEY, &entry.name, &entry.endpoint)?;
     doc.commit()

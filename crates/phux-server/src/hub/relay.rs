@@ -74,7 +74,7 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, SatelliteHost, StreamId};
 use phux_protocol::wire::frame::{
-    AgentEvent, Command, CommandResult, DirectoryErrorCode, DirectoryListingError,
+    AgentEvent, Command, CommandResult, ControlAction, DirectoryErrorCode, DirectoryListingError,
     DirectoryListingResult, ErrorCode, FrameKind, HistoryTombstoneReason, SpawnError, SpawnResult,
     TombstoneReason,
 };
@@ -349,6 +349,19 @@ pub(crate) enum RelayRequest {
         /// Resolved with the listing or a typed refusal.
         reply: oneshot::Sender<DirectoryListingResult>,
     },
+    /// Relay a keyed `COMMAND` (an `APPLY_INPUT`, or a kill or signal
+    /// carrying an `operation_id`) from hub consumer `actor`, ids already
+    /// satellite-local (L1 §9.1). Like [`Self::Command`], but the session
+    /// forwards it only to a satellite that evaluates it and never across a
+    /// satellite restart, and it records `actor` for the events it causes.
+    Keyed {
+        /// The command to forward, ids already satellite-local.
+        command: Command,
+        /// The hub consumer that sent it.
+        actor: ClientId,
+        /// Resolved with the satellite's result or the hub's refusal.
+        reply: oneshot::Sender<CommandResult>,
+    },
 }
 
 /// The receiving half of one satellite's relay: the bounded request
@@ -364,6 +377,9 @@ pub(crate) struct RelayMailbox {
     /// `EVENT` (ADR-0123). `None` in link tests that exercise delivery
     /// alone; such a relay forwards the satellite's stamp untouched.
     pub(crate) journal: Option<crate::state::SharedState>,
+    /// This satellite's incarnation fence (L1 §9.1), shared by every
+    /// session the link supervisor runs, so it outlives a reconnect.
+    pub(crate) operations: super::operation_fence::OperationFence,
 }
 
 /// The `dropped` count a satellite's link-level `journal_gap` stands for:
@@ -435,6 +451,7 @@ impl RelayHandle {
                 requests: rx,
                 unsubscribes: unsub_rx,
                 journal: None,
+                operations: super::operation_fence::OperationFence::default(),
             },
         )
     }
@@ -485,6 +502,27 @@ impl RelayHandle {
         self.command_inner(command, Some(subscription)).await
     }
 
+    /// Relay `command` from hub consumer `actor`. A keyed command (an
+    /// `APPLY_INPUT`, or a kill or signal carrying an `operation_id`) goes
+    /// through the satellite's capability check and incarnation fence and
+    /// records `actor` for the events it causes (L1 §9.1); any other
+    /// command relays exactly as [`Self::command`].
+    pub(crate) async fn command_from(&self, command: Command, actor: ClientId) -> CommandResult {
+        if super::operation_fence::fenced_key(&command).is_none() {
+            return self.command(command).await;
+        }
+        let (reply, rx) = oneshot::channel();
+        self.send_and_await(
+            RelayRequest::Keyed {
+                command,
+                actor,
+                reply,
+            },
+            rx,
+        )
+        .await
+    }
+
     async fn command_inner(
         &self,
         command: Command,
@@ -497,11 +535,25 @@ impl RelayHandle {
             sub
         });
         let (reply, rx) = oneshot::channel();
-        match self.tx.try_send(RelayRequest::Command {
-            command,
-            reply,
-            subscribe,
-        }) {
+        self.send_and_await(
+            RelayRequest::Command {
+                command,
+                reply,
+                subscribe,
+            },
+            rx,
+        )
+        .await
+    }
+
+    /// Enqueue a correlated relay request and await its reply, failing fast
+    /// on a saturated or dead link and bounded by [`RELAY_COMMAND_TIMEOUT`].
+    async fn send_and_await(
+        &self,
+        request: RelayRequest,
+        rx: oneshot::Receiver<CommandResult>,
+    ) -> CommandResult {
+        match self.tx.try_send(request) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
                 return CommandResult::Error {
@@ -797,7 +849,7 @@ pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) 
         // A command's atomic `subscribe` rider registers nothing here:
         // the request never reached a session, so failing the oneshot is
         // the whole story (the consumer sees the typed error reply).
-        RelayRequest::Command { reply, .. } => {
+        RelayRequest::Command { reply, .. } | RelayRequest::Keyed { reply, .. } => {
             let _ = reply.send(CommandResult::Error {
                 code: ErrorCode::SatelliteUnreachable,
                 message: format!("satellite {host} is unreachable: {why}"),
@@ -1131,6 +1183,11 @@ pub(crate) struct RelaySession {
     /// The hub's state, whose journal re-stamps relayed events
     /// ([`Self::restamp_event`]). `None` forwards the satellite's stamp.
     journal: Option<crate::state::SharedState>,
+    /// The satellite's `HELLO_OK.server_id` on this connection.
+    incarnation: super::operation_fence::Incarnation,
+    /// The satellite's incarnation fence and operation-to-consumer record,
+    /// shared with the link's other sessions (L1 §9.1).
+    operations: super::operation_fence::OperationFence,
 }
 
 impl RelaySession {
@@ -1176,12 +1233,30 @@ impl RelaySession {
             inflight_generation_frames: 0,
             encode_buf: BytesMut::with_capacity(1024),
             journal: None,
+            incarnation: None,
+            operations: super::operation_fence::OperationFence::default(),
         }
     }
 
     /// Re-stamp relayed events from `journal`, the hub's own state.
     pub(crate) fn set_journal(&mut self, journal: Option<crate::state::SharedState>) {
         self.journal = journal;
+    }
+
+    /// Record the incarnation this connection's satellite announced.
+    pub(crate) const fn set_incarnation(
+        &mut self,
+        incarnation: super::operation_fence::Incarnation,
+    ) {
+        self.incarnation = incarnation;
+    }
+
+    /// Share the link's incarnation fence, which outlives this connection.
+    pub(crate) fn set_operation_fence(
+        &mut self,
+        operations: super::operation_fence::OperationFence,
+    ) {
+        self.operations = operations;
     }
 
     /// A first explicit attach must start after any automatically published
@@ -1232,11 +1307,8 @@ impl RelaySession {
                 reply,
                 subscribe,
             } => {
-                if let Some(message) = self.conditional_kill_rejection(&command) {
-                    let _ = reply.send(CommandResult::Error {
-                        code: ErrorCode::PreconditionFailed,
-                        message,
-                    });
+                if let Some(refusal) = self.command_rejection(&command) {
+                    let _ = reply.send(refusal);
                     return None;
                 }
                 if let Some(sub) = subscribe.as_ref()
@@ -1262,6 +1334,31 @@ impl RelaySession {
                     PendingCommand {
                         reply,
                         subscription,
+                    },
+                );
+                Some(self.encode(&FrameKind::Command {
+                    request_id,
+                    command: link_attach_command(command, self.satellite_features),
+                }))
+            }
+            RelayRequest::Keyed {
+                command,
+                actor,
+                reply,
+            } => {
+                if let Some(refusal) = self
+                    .command_rejection(&command)
+                    .or_else(|| self.fence_rejection(&command, actor))
+                {
+                    let _ = reply.send(refusal);
+                    return None;
+                }
+                let request_id = self.allocate_request_id();
+                self.pending.insert(
+                    request_id,
+                    PendingCommand {
+                        reply,
+                        subscription: None,
                     },
                 );
                 Some(self.encode(&FrameKind::Command {
@@ -1305,6 +1402,12 @@ impl RelaySession {
         }
     }
 
+    /// What the satellite advertised in its `HELLO_OK`, for the hub's own
+    /// dispatch (ADR-0127: whether the link can carry an attach's takeover).
+    pub(crate) const fn satellite_features(&self) -> ServerFeatureSet {
+        self.satellite_features
+    }
+
     /// ADR-0126: a satellite that never advertised `SPAWN_IDEMPOTENCY` skips
     /// the key, so a retried keyed spawn would create a second resource
     /// there. The hub refuses the keyed spawn instead. `None` for an unkeyed
@@ -1325,6 +1428,76 @@ impl RelaySession {
             "satellite {} lacks SPAWN_IDEMPOTENCY; nothing was spawned",
             self.host
         )))
+    }
+
+    /// The typed refusal for a command this satellite cannot evaluate, sent
+    /// without touching the link: a conditional kill it cannot decode
+    /// (ADR-0109), or a keyed operation it would run without dedupe.
+    fn command_rejection(&self, command: &Command) -> Option<CommandResult> {
+        if let Some(message) = self.conditional_kill_rejection(command) {
+            return Some(CommandResult::Error {
+                code: ErrorCode::PreconditionFailed,
+                message,
+            });
+        }
+        self.keyed_capability_rejection(command)
+    }
+
+    /// L1 §9.1: a keyed operation reaches only a satellite that owns its
+    /// dedupe. `APPLY_INPUT` needs `ACKNOWLEDGED_INPUT`; a kill or signal
+    /// carrying an `operation_id` needs `KEYED_SIGNAL`, since an older
+    /// satellite ignores the trailing key and would run a retry again. The
+    /// refusal is the unchanged `UNSUPPORTED_SATELLITE_ROUTE`.
+    fn keyed_capability_rejection(&self, command: &Command) -> Option<CommandResult> {
+        let (needed, name) = match command {
+            Command::ApplyInput { .. } => (ServerFeature::AcknowledgedInput, "ACKNOWLEDGED_INPUT"),
+            _ if command.idempotency_key().is_some() => {
+                (ServerFeature::KeyedSignal, "KEYED_SIGNAL")
+            }
+            _ => return None,
+        };
+        if self.satellite_features.contains(needed) {
+            return None;
+        }
+        Some(CommandResult::Error {
+            code: ErrorCode::UnsupportedSatelliteRoute,
+            message: format!(
+                "satellite {} lacks {name}, so it cannot deduplicate this operation; \
+                 nothing was forwarded",
+                self.host
+            ),
+        })
+    }
+
+    /// L1 §9.1: the incarnation fence. An operation id this hub already
+    /// forwarded to an earlier incarnation of the satellite is refused with
+    /// `INCARNATION_CHANGED`, never forwarded: the satellite's dedupe record
+    /// died with that process (ADR-0053 item 5). A new id is recorded, with
+    /// `actor`, for the events it causes.
+    fn fence_rejection(&self, command: &Command, actor: ClientId) -> Option<CommandResult> {
+        use super::operation_fence::{FenceVerdict, fenced_key};
+        let key = fenced_key(command)?;
+        match self
+            .operations
+            .admit(key, self.incarnation, actor, std::time::Instant::now())
+        {
+            FenceVerdict::Forward => None,
+            FenceVerdict::IncarnationChanged => Some(CommandResult::Error {
+                code: ErrorCode::IncarnationChanged,
+                message: format!(
+                    "satellite {} restarted since this operation id was first forwarded; \
+                     nothing was forwarded",
+                    self.host
+                ),
+            }),
+            FenceVerdict::Full => Some(CommandResult::Error {
+                code: ErrorCode::ResourceExhausted,
+                message: format!(
+                    "the hub's operation record for satellite {} is full; retry later",
+                    self.host
+                ),
+            }),
+        }
     }
 
     /// ADR-0109: a satellite that never advertised `CONDITIONAL_KILL` cannot
@@ -1785,8 +1958,16 @@ impl RelaySession {
             return;
         };
         satellite_gap_as_source_gap(&mut event);
+        self.mirror_satellite_lease_state(id, &event, stamp.as_deref().map(|s| s.seq));
         if let (Some(journal), Some(scope)) = (self.journal.clone(), terminal.clone()) {
-            let _ = journal.with_mut(|s| s.record_relayed_event(scope, event, stamp.as_deref()));
+            // L1 §9.1: an event a keyed operation caused names the hub
+            // consumer that sent the operation, found by its `operation_id`.
+            let actor = stamp
+                .as_deref()
+                .and_then(|stamp| stamp.operation_id.as_ref())
+                .and_then(|key| self.operations.actor_for_event(key));
+            let _ = journal
+                .with_mut(|s| s.record_relayed_event_as(scope, event, stamp.as_deref(), actor));
             return;
         }
         let unstamped = FrameKind::Event {
@@ -1795,6 +1976,49 @@ impl RelaySession {
             stamp: None,
         };
         self.fan_out(id, &unstamped);
+    }
+
+    /// Mirror a satellite-originated lease transition into the hub's own
+    /// ledger (ADR-0033's `ttl_ms`, this lane: "the satellite owns the
+    /// timer, the hub reflects the satellite's `Expired`/`Released`").
+    ///
+    /// The satellite is the source of truth for whether its lease is
+    /// free — its own TTL timer or its own `RELEASE_INPUT` handling
+    /// already decided that before emitting this event. Without this the
+    /// hub's `satellite` ledger would keep naming a holder after the
+    /// satellite dropped it, wrongly denying the next hub consumer's
+    /// Cooperative `ACQUIRE_INPUT`.
+    ///
+    /// `is_end` tells `ServerState::mirror_satellite_lease_event` which
+    /// role this event plays: Acquired/Seized (`false`) never changes who
+    /// the ledger names by itself — the hub's own `ACQUIRE_INPUT` relay
+    /// already installs the new holder from the correlated reply
+    /// (`commands::relay_satellite_acquire_input`), which can race this
+    /// event and must win — but it still clears a pending acquire's mark
+    /// and records `seq` as ordering evidence. Released/Expired (`true`)
+    /// is what can actually evict a holder, and is the one that gets
+    /// ignored while an acquire's reply is still waiting for the stream to
+    /// catch up, or when `seq` is not newer than the last Acquired/Seized
+    /// recorded (review round 2, medium finding: reply and event delivery
+    /// share one link but are not ordered against each other, so a stale
+    /// report about a lease a *later* acquire already superseded must not
+    /// clear the new holder).
+    fn mirror_satellite_lease_state(&self, id: u32, event: &AgentEvent, seq: Option<u64>) {
+        let Some(journal) = &self.journal else {
+            return;
+        };
+        let is_end = match event {
+            AgentEvent::TerminalControl {
+                action: ControlAction::Acquired | ControlAction::Seized,
+                ..
+            } => false,
+            AgentEvent::TerminalControl {
+                action: ControlAction::Expired | ControlAction::Released,
+                ..
+            } => true,
+            _ => return,
+        };
+        journal.with_mut(|s| s.mirror_satellite_lease_event(&self.host, id, is_end, seq));
     }
 
     /// Report a satellite's `journal_gap` on the link's own subscription.
@@ -3227,21 +3451,28 @@ impl RelaySession {
 /// The kill verbs' outbound rewrite: `KILL_RESOURCE` and `KILL_RESOURCE_IF`
 /// both move to the satellite's `Local` id space. The precondition crosses
 /// the link unchanged, and the satellite evaluates it against its own
-/// instance and provenance (ADR-0109). `None` for any other command.
+/// instance and provenance (ADR-0109). A keyed kill's `operation_id`
+/// crosses verbatim too: the satellite that kills owns its dedupe (L1
+/// §9.1). `None` for any other command.
 fn route_kill_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
     match command {
-        Command::KillResource { terminal_id } => {
+        Command::KillResource {
+            terminal_id,
+            operation_id,
+        } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
                 host,
                 Command::KillResource {
                     terminal_id: ResourceId::local(id),
+                    operation_id: *operation_id,
                 },
             ))
         }
         Command::KillResourceIf {
             terminal_id,
             precondition,
+            operation_id,
         } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
@@ -3249,11 +3480,35 @@ fn route_kill_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)
                 Command::KillResourceIf {
                     terminal_id: ResourceId::local(id),
                     precondition: *precondition,
+                    operation_id: *operation_id,
                 },
             ))
         }
         _ => None,
     }
+}
+
+/// `APPLY_INPUT`'s outbound rewrite (L1 §9.1): the batch and its operation
+/// id cross verbatim, with the id moved to the satellite's `Local` space.
+/// The satellite that writes the batch owns its dedupe.
+fn route_input_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
+    let Command::ApplyInput {
+        operation_id,
+        terminal_id,
+        events,
+    } = command
+    else {
+        return None;
+    };
+    let (host, id) = satellite_route(terminal_id)?;
+    Some((
+        host,
+        Command::ApplyInput {
+            operation_id: *operation_id,
+            terminal_id: ResourceId::local(id),
+            events: events.clone(),
+        },
+    ))
 }
 
 /// Re-tag a satellite's spawn reply for the consumer (phux-v45.6): the
@@ -3294,6 +3549,29 @@ pub(crate) fn satellite_route(terminal_id: &ResourceId) -> Option<(SatelliteHost
     }
 }
 
+/// The command a hub's link sends for a consumer's (ADR-0127).
+///
+/// A consumer's declared role is the hub's to hold: the link is one identity
+/// on the satellite, shared by every consumer, so a viewer mark sent there
+/// would make all of them observe-only. Only a deliberate takeover crosses,
+/// and only to a satellite that advertised `ATTACH_ROLES`, where the attach
+/// and the seize land in one command. Every other command is unchanged.
+pub(crate) fn link_attach_command(command: Command, satellite: ServerFeatureSet) -> Command {
+    let Command::AttachResource {
+        terminal_id,
+        role_policy,
+    } = command
+    else {
+        return command;
+    };
+    let role_policy = role_policy
+        .filter(|policy| policy.takes_over() && satellite.contains(ServerFeature::AttachRoles));
+    Command::AttachResource {
+        terminal_id,
+        role_policy,
+    }
+}
+
 /// If `command` targets a single satellite-owned terminal, produce the
 /// owning host and the command rewritten to the satellite's `Local` id
 /// space (ADR-0007 outbound leg). `None` for local targets, unscoped
@@ -3305,12 +3583,19 @@ pub(crate) fn satellite_route(terminal_id: &ResourceId) -> Option<(SatelliteHost
 )]
 pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Command)> {
     match command {
-        Command::AttachResource { terminal_id } => {
+        Command::AttachResource {
+            terminal_id,
+            role_policy,
+        } => {
             let (host, id) = satellite_route(terminal_id)?;
+            // The consumer's declared intent rides to the hub's satellite
+            // dispatch unchanged; what the link itself sends is decided
+            // there and in `RelaySession::link_command` (ADR-0127).
             Some((
                 host,
                 Command::AttachResource {
                     terminal_id: ResourceId::local(id),
+                    role_policy: *role_policy,
                 },
             ))
         }
@@ -3326,10 +3611,12 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
         Command::KillResource { .. } | Command::KillResourceIf { .. } => {
             route_kill_to_satellite(command)
         }
+        Command::ApplyInput { .. } => route_input_to_satellite(command),
         Command::GetScreen {
             terminal_id,
             request_scrollback,
             cells,
+            format,
         } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
@@ -3338,6 +3625,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                     terminal_id: ResourceId::local(id),
                     request_scrollback: *request_scrollback,
                     cells: *cells,
+                    format: *format,
                 },
             ))
         }
@@ -3406,6 +3694,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
         Command::SignalTerminal {
             terminal_id,
             signal,
+            operation_id,
         } => {
             let (host, id) = satellite_route(terminal_id)?;
             Some((
@@ -3413,6 +3702,7 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                 Command::SignalTerminal {
                     terminal_id: ResourceId::local(id),
                     signal: *signal,
+                    operation_id: *operation_id,
                 },
             ))
         }
@@ -3468,8 +3758,9 @@ pub(crate) fn route_to_satellite(command: &Command) -> Option<(SatelliteHost, Co
                 },
             ))
         }
-        // GET_STATE / UPGRADE are hub-local; KILL_RESOURCES partitions its
-        // mixed batch in `handle_kill_terminals`; forward-compat commands
+        // GET_STATE / UPGRADE are hub-local; KILL_RESOURCES and
+        // CLOSE_TAB_RESOURCES partition mixed batches in
+        // `handle_kill_terminals` / `handle_close_tab_resources`; forward-compat commands
         // this hub does not know cannot be routed (their terminal scope is
         // unreadable) and fall through to the local INVALID_COMMAND path.
         _ => None,
@@ -3561,6 +3852,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(terminal),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -3579,12 +3871,43 @@ mod tests {
 
     // --- outbound command rewrite ---------------------------------------
 
+    /// ADR-0127: the link carries a deliberate takeover only to a satellite
+    /// advertising `ATTACH_ROLES`; a viewer mark and a plain `PRIMARY` never
+    /// cross, because the link's identity is shared by every hub consumer.
+    #[test]
+    fn hub_relays_role_policy_to_the_satellite_when_it_advertises_attach_roles() {
+        use phux_protocol::wire::frame::RolePolicy;
+        let attach = |role_policy| Command::AttachResource {
+            terminal_id: ResourceId::local(3),
+            role_policy,
+        };
+        let roles = ServerFeatureSet::with(&[ServerFeature::AttachRoles]);
+        let takeover = Some(RolePolicy::TAKEOVER);
+        assert_eq!(
+            link_attach_command(attach(takeover), roles),
+            attach(takeover)
+        );
+        assert_eq!(
+            link_attach_command(attach(takeover), ServerFeatureSet::new()),
+            attach(None),
+            "a satellite without the bit gets a plain attach; the hub seizes after it",
+        );
+        for held in [RolePolicy::VIEWER, RolePolicy::PRIMARY] {
+            assert_eq!(link_attach_command(attach(Some(held)), roles), attach(None));
+        }
+        let detach = Command::DetachResource {
+            terminal_id: ResourceId::local(3),
+        };
+        assert_eq!(link_attach_command(detach.clone(), roles), detach);
+    }
+
     #[test]
     fn route_to_satellite_rewrites_terminal_ids_to_local() {
         let command = Command::GetScreen {
             terminal_id: ResourceId::satellite("devbox", 7),
             request_scrollback: Some(10),
             cells: true,
+            format: 0,
         };
         let (routed_host, rewritten) = route_to_satellite(&command).expect("satellite target");
         assert_eq!(routed_host, host());
@@ -3594,6 +3917,7 @@ mod tests {
                 terminal_id: ResourceId::local(7),
                 request_scrollback: Some(10),
                 cells: true,
+                format: 0,
             }
         );
     }
@@ -3605,6 +3929,7 @@ mod tests {
                 terminal_id: ResourceId::local(7),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             })
             .is_none()
         );
@@ -3615,18 +3940,17 @@ mod tests {
             .is_none()
         );
         assert!(route_to_satellite(&Command::Upgrade).is_none());
-        assert!(
-            route_to_satellite(&Command::ApplyInput {
-                operation_id: phux_protocol::InputOperationId::new([1; 16]).expect("id"),
-                terminal_id: ResourceId::satellite("devbox", 7),
-                events: vec![],
-            })
-            .is_none(),
-            "APPLY_INPUT is local-only and must never touch a satellite link"
-        );
-        // Mixed batches partition in handle_kill_terminals, not here.
+        // Mixed batches partition in handle_kill_terminals /
+        // handle_close_tab_resources, not here.
         assert!(
             route_to_satellite(&Command::KillResources {
+                ids: vec![ResourceId::satellite("devbox", 1)],
+                operation_id: None,
+            })
+            .is_none()
+        );
+        assert!(
+            route_to_satellite(&Command::CloseTabResources {
                 ids: vec![ResourceId::satellite("devbox", 1)],
             })
             .is_none()
@@ -3639,12 +3963,14 @@ mod tests {
         let commands = [
             Command::AttachResource {
                 terminal_id: sat.clone(),
+                role_policy: None,
             },
             Command::DetachResource {
                 terminal_id: sat.clone(),
             },
             Command::KillResource {
                 terminal_id: sat.clone(),
+                operation_id: None,
             },
             Command::GetTerminalState {
                 terminal_id: sat.clone(),
@@ -3666,6 +3992,7 @@ mod tests {
             Command::SignalTerminal {
                 terminal_id: sat.clone(),
                 signal: phux_protocol::wire::frame::TerminalSignal::Interrupt,
+                operation_id: None,
             },
             Command::ReportAsked {
                 terminal_id: sat.clone(),
@@ -3678,11 +4005,19 @@ mod tests {
                 terminal_id: sat.clone(),
                 state: phux_protocol::wire::frame::ReportedAgentState::Done,
             },
+            // L1 §9.1: APPLY_INPUT crosses to the satellite that owns its
+            // dedupe (it was local-only before KEYED_SIGNAL).
+            Command::ApplyInput {
+                operation_id: phux_protocol::InputOperationId::new([1; 16]).expect("id"),
+                terminal_id: sat.clone(),
+                events: vec![],
+            },
             Command::KillResourceIf {
                 terminal_id: sat,
                 precondition: phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
                     phux_protocol::ids::ServerInstance::new([3; 16]),
                 ),
+                operation_id: None,
             },
         ];
         for command in commands {
@@ -3899,6 +4234,7 @@ mod tests {
         let wire = session.handle_request_checked(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(7),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -3935,6 +4271,7 @@ mod tests {
         let wire = session.handle_request_checked(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(8),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -4597,6 +4934,7 @@ mod tests {
             precondition: phux_protocol::wire::frame::KillPrecondition::spawned_and_unattached(
                 phux_protocol::ids::ServerInstance::new([3; 16]),
             ),
+            operation_id: None,
         };
         let mut older = RelaySession::new(host(), BootstrapLimits::default());
         let (reply, mut rx) = oneshot::channel();
@@ -4638,6 +4976,226 @@ mod tests {
         assert_eq!(relayed, command, "the precondition crosses unchanged");
     }
 
+    // --- keyed operations and the incarnation fence (L1 §9.1) -----------
+
+    fn keyed_session(
+        features: &[ServerFeature],
+        incarnation: [u8; 16],
+        fence: &super::super::operation_fence::OperationFence,
+    ) -> RelaySession {
+        let mut session = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::with(features),
+        );
+        session.set_incarnation(Some(incarnation));
+        session.set_operation_fence(fence.clone());
+        session
+    }
+
+    fn apply_input_to(terminal_id: ResourceId) -> Command {
+        Command::ApplyInput {
+            operation_id: phux_protocol::InputOperationId::new([6; 16]).expect("id"),
+            terminal_id,
+            events: vec![],
+        }
+    }
+
+    fn keyed_kill(byte: u8) -> Command {
+        Command::KillResource {
+            terminal_id: ResourceId::local(9),
+            operation_id: phux_protocol::ids::IdempotencyKey::new([byte; 16]),
+        }
+    }
+
+    /// Hand `command` to `session` as consumer `actor`'s keyed request:
+    /// the wire bytes it put on the link, if any, and its reply.
+    fn send_keyed(
+        session: &mut RelaySession,
+        command: Command,
+        actor: ClientId,
+    ) -> (Option<Vec<u8>>, oneshot::Receiver<CommandResult>) {
+        let (reply, rx) = oneshot::channel();
+        let wire = session.handle_request_checked(RelayRequest::Keyed {
+            command,
+            actor,
+            reply,
+        });
+        (wire, rx)
+    }
+
+    fn forwarded(wire: Option<Vec<u8>>) -> Command {
+        let FrameKind::Command { command, .. } = decode(&wire.expect("forwarded to the satellite"))
+        else {
+            panic!("expected COMMAND on the wire");
+        };
+        command
+    }
+
+    #[test]
+    fn hub_forwards_keyed_apply_input_to_a_satellite_that_advertises_the_bit() {
+        let (target, command) =
+            route_to_satellite(&apply_input_to(ResourceId::satellite(host(), 9)))
+                .expect("APPLY_INPUT routes to its satellite");
+        assert_eq!(target, host());
+        assert_eq!(
+            command,
+            apply_input_to(ResourceId::local(9)),
+            "the batch and its operation id cross verbatim"
+        );
+        let fence = super::super::operation_fence::OperationFence::default();
+        let mut session = keyed_session(
+            &[ServerFeature::AcknowledgedInput, ServerFeature::KeyedSignal],
+            [1; 16],
+            &fence,
+        );
+        let (wire, _rx) = send_keyed(&mut session, command.clone(), ClientId(4));
+        assert_eq!(forwarded(wire), command);
+        let (wire, _rx) = send_keyed(&mut session, keyed_kill(3), ClientId(4));
+        assert_eq!(
+            forwarded(wire),
+            keyed_kill(3),
+            "a keyed kill crosses with its key; the satellite dedupes it"
+        );
+    }
+
+    #[test]
+    fn hub_refuses_keyed_ops_to_a_satellite_without_the_bit_with_unsupported_satellite_route() {
+        let fence = super::super::operation_fence::OperationFence::default();
+        let mut older = keyed_session(&[], [1; 16], &fence);
+        for command in [apply_input_to(ResourceId::local(9)), keyed_kill(3)] {
+            let (wire, mut rx) = send_keyed(&mut older, command, ClientId(4));
+            assert!(
+                wire.is_none(),
+                "an older satellite never sees the operation"
+            );
+            assert!(matches!(
+                rx.try_recv().expect("typed refusal"),
+                CommandResult::Error {
+                    code: ErrorCode::UnsupportedSatelliteRoute,
+                    ..
+                }
+            ));
+        }
+        assert!(older.pending.is_empty());
+        let key = phux_protocol::ids::IdempotencyKey::new([3; 16]).expect("key");
+        assert_eq!(
+            fence.actor_for_event(&key),
+            None,
+            "a refused operation leaves nothing in the fence"
+        );
+        let unkeyed = Command::KillResource {
+            terminal_id: ResourceId::local(9),
+            operation_id: None,
+        };
+        let (reply, _rx) = oneshot::channel();
+        assert!(
+            older
+                .handle_request_checked(RelayRequest::Command {
+                    command: unkeyed,
+                    reply,
+                    subscribe: None,
+                })
+                .is_some(),
+            "an unkeyed kill still relays to an older satellite"
+        );
+    }
+
+    #[test]
+    fn satellite_restart_between_attempts_yields_incarnation_changed_and_no_forward() {
+        let fence = super::super::operation_fence::OperationFence::default();
+        let features = [ServerFeature::AcknowledgedInput, ServerFeature::KeyedSignal];
+        let mut before = keyed_session(&features, [1; 16], &fence);
+        let (wire, _rx) = send_keyed(&mut before, keyed_kill(5), ClientId(4));
+        assert!(wire.is_some(), "the first attempt reaches the satellite");
+        let (wire, _rx) = send_keyed(
+            &mut before,
+            apply_input_to(ResourceId::local(9)),
+            ClientId(4),
+        );
+        assert!(wire.is_some());
+
+        // The link reconnects to a restarted satellite: a new session, the
+        // same fence, a new HELLO_OK.server_id.
+        let mut after = keyed_session(&features, [2; 16], &fence);
+        for retry in [keyed_kill(5), apply_input_to(ResourceId::local(9))] {
+            let (wire, mut rx) = send_keyed(&mut after, retry, ClientId(4));
+            assert!(
+                wire.is_none(),
+                "a retry across the restart is not forwarded"
+            );
+            assert!(matches!(
+                rx.try_recv().expect("typed refusal"),
+                CommandResult::Error {
+                    code: ErrorCode::IncarnationChanged,
+                    ..
+                }
+            ));
+        }
+        assert!(after.pending.is_empty());
+        let (wire, _rx) = send_keyed(&mut after, keyed_kill(6), ClientId(4));
+        assert!(wire.is_some(), "a new id is new to the restarted satellite");
+    }
+
+    #[test]
+    fn hub_restamps_a_satellite_pane_closed_with_the_consumers_actor_by_operation_id() {
+        let journal = crate::state::SharedState::new();
+        let consumer = journal.with_mut(crate::state::ServerState::new_client_id);
+        let (registry_tx, mut registry_rx) = mpsc::channel(8);
+        journal.with_mut(|s| {
+            s.subscribe_satellite_events(
+                consumer,
+                ResourceId::satellite("devbox", 9),
+                crate::state::EventFilter::all(),
+                None,
+                registry_tx,
+            );
+        });
+        let fence = super::super::operation_fence::OperationFence::default();
+        let mut session = keyed_session(&[ServerFeature::KeyedSignal], [1; 16], &fence);
+        session.set_journal(Some(journal));
+        let (proxy_tx, _proxy_rx) = mpsc::channel(8);
+        subscribe(&mut session, 9, consumer, proxy_tx);
+        let (wire, _rx) = send_keyed(&mut session, keyed_kill(7), consumer);
+        assert!(wire.is_some());
+
+        let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
+        let other = phux_protocol::ids::IdempotencyKey::new([8; 16]);
+        for operation_id in [key, other] {
+            let stamp = phux_protocol::wire::frame::EventStamp::new(40, 1_234)
+                .with_operation_id(operation_id);
+            session
+                .handle_inbound(&encode(&FrameKind::Event {
+                    terminal: Some(ResourceId::local(9)),
+                    event: AgentEvent::ResourceClosed { exit_status: None },
+                    stamp: Some(Box::new(stamp)),
+                }))
+                .expect("valid satellite frame");
+        }
+        let stamps: Vec<_> = std::iter::from_fn(|| registry_rx.try_recv().ok())
+            .map(|out| match out {
+                Outbound::Frame(FrameKind::Event { stamp, .. }) => {
+                    stamp.expect("stamped by the hub")
+                }
+                other => panic!("expected an EVENT, got {other:?}"),
+            })
+            .collect();
+        let [ours, theirs] = stamps.as_slice() else {
+            panic!("two relayed pane_closed events: {stamps:?}");
+        };
+        assert_eq!(ours.operation_id, key, "the key crosses the hub");
+        assert!(
+            ours.actor.is_some(),
+            "the event names the consumer that sent the keyed kill, not the link"
+        );
+        assert_eq!(theirs.operation_id, other);
+        assert_eq!(
+            theirs.actor, None,
+            "an operation this hub never forwarded names no actor"
+        );
+    }
+
     #[test]
     fn instance_only_close_preserves_satellite_fence_and_correlates_refusal() {
         use phux_protocol::wire::frame::{KillConditions, KillPrecondition};
@@ -4648,6 +5206,7 @@ mod tests {
         let (target, command) = route_kill_to_satellite(&Command::KillResourceIf {
             terminal_id: ResourceId::satellite(host(), 9),
             precondition,
+            operation_id: None,
         })
         .expect("satellite route");
         assert_eq!(target, host());
@@ -4676,7 +5235,8 @@ mod tests {
             command,
             Command::KillResourceIf {
                 terminal_id: ResourceId::local(9),
-                precondition
+                precondition,
+                operation_id: None,
             }
         );
         let refusal = CommandResult::Error {
@@ -4849,6 +5409,164 @@ mod tests {
             "events are delivered once, by the registry, not by the relay"
         );
         assert_eq!(journal.with(crate::state::ServerState::journal_head), 3);
+    }
+
+    // --- session: lease TTL mirror (ADR-0033, "the satellite owns the
+    // timer, the hub reflects Expired/Released") -------------------------
+
+    /// An `EXPIRED` (or `RELEASED`) `terminal_control` arriving from the
+    /// satellite is the ground truth that its lease is free; the hub must
+    /// stop gating other hub consumers against the holder it evicts.
+    #[test]
+    fn a_satellite_expiry_or_release_clears_the_hubs_satellite_lease() {
+        for action in [ControlAction::Expired, ControlAction::Released] {
+            let journal = crate::state::SharedState::new();
+            let holder = journal.with_mut(crate::state::ServerState::new_client_id);
+            let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
+            journal.with_mut(|s| {
+                s.set_satellite_lease(host(), 9, holder, mailbox_tx.clone());
+            });
+            assert_eq!(
+                journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+                Some(holder),
+                "{action:?}: precondition"
+            );
+            let mut session = RelaySession::new(host(), BootstrapLimits::default());
+            session.set_journal(Some(journal.clone()));
+            session
+                .handle_inbound(&encode(&FrameKind::Event {
+                    terminal: Some(ResourceId::local(9)),
+                    event: AgentEvent::TerminalControl {
+                        lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                        exit_status: None,
+                        input_holder: None,
+                        action,
+                        actor: None,
+                    },
+                    stamp: None,
+                }))
+                .expect("valid satellite frame");
+            assert_eq!(
+                journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+                None,
+                "{action:?}: the hub ledger must follow the satellite"
+            );
+        }
+    }
+
+    /// A `SEIZED` from the satellite names a new holder, not a free lease —
+    /// the mirror must not touch the ledger for it (the SEIZE path already
+    /// updates it explicitly, from the acquiring consumer's own request).
+    #[test]
+    fn a_satellite_seize_does_not_clear_the_hubs_satellite_lease() {
+        let journal = crate::state::SharedState::new();
+        let holder = journal.with_mut(crate::state::ServerState::new_client_id);
+        let (mailbox_tx, _mailbox_rx) = mpsc::channel(1);
+        journal.with_mut(|s| {
+            s.set_satellite_lease(host(), 9, holder, mailbox_tx);
+        });
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        session.set_journal(Some(journal.clone()));
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(ResourceId::local(9)),
+                event: AgentEvent::TerminalControl {
+                    lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                    exit_status: None,
+                    input_holder: Some(phux_protocol::ids::ClientId::new(99)),
+                    action: ControlAction::Seized,
+                    actor: None,
+                },
+                stamp: None,
+            }))
+            .expect("valid satellite frame");
+        assert_eq!(
+            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            Some(holder),
+            "a SEIZED mirror must not evict the hub ledger"
+        );
+    }
+
+    /// Review round 2's medium finding, reproduced: a hub consumer's
+    /// `ACQUIRE_INPUT` reply bypasses the event pump and can resolve
+    /// before an *earlier* Released/Expired for the terminal's *prior*
+    /// holder has finished arriving over the link's event stream. The
+    /// stale event must not evict the holder the reply just installed.
+    #[test]
+    fn a_stale_released_arriving_after_a_newer_acquires_reply_does_not_evict_it() {
+        let journal = crate::state::SharedState::new();
+        let a = journal.with_mut(crate::state::ServerState::new_client_id);
+        let b = journal.with_mut(crate::state::ServerState::new_client_id);
+        let (a_tx, _a_rx) = mpsc::channel(1);
+        let (b_tx, _b_rx) = mpsc::channel(1);
+
+        // A held the lease.
+        journal.with_mut(|s| {
+            s.set_satellite_lease(host(), 9, a, a_tx);
+        });
+
+        // B's ACQUIRE_INPUT relay starts (this is what
+        // `commands::relay_satellite_acquire_input` does before awaiting
+        // the satellite's reply)...
+        journal.with_mut(|s| s.mark_satellite_lease_acquire_pending(host(), 9));
+        // ...and its reply resolves OK first, well ahead of the event
+        // pump (the correlated reply path bypasses it entirely). The
+        // pending mark is deliberately left set — only the event mirror
+        // below clears it.
+        journal.with_mut(|s| {
+            s.set_satellite_lease(host(), 9, b, b_tx);
+        });
+        assert_eq!(
+            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            Some(b),
+            "precondition: the reply already installed B"
+        );
+
+        // A's Released — emitted by the satellite *before* B's acquire
+        // even happened, but delayed in the event pump — finally arrives.
+        let mut session = RelaySession::new(host(), BootstrapLimits::default());
+        session.set_journal(Some(journal.clone()));
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(ResourceId::local(9)),
+                event: AgentEvent::TerminalControl {
+                    lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                    exit_status: None,
+                    input_holder: None,
+                    action: ControlAction::Released,
+                    actor: None,
+                },
+                stamp: None,
+            }))
+            .expect("valid satellite frame");
+
+        assert_eq!(
+            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            Some(b),
+            "a stale Released arriving after a newer reply must not evict the holder it installed"
+        );
+
+        // The pending mark was consumed by that one stale event; a
+        // *second*, unrelated Released now applies normally (self-healing
+        // — the window does not stay open forever).
+        session
+            .handle_inbound(&encode(&FrameKind::Event {
+                terminal: Some(ResourceId::local(9)),
+                event: AgentEvent::TerminalControl {
+                    lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                    exit_status: None,
+                    input_holder: None,
+                    action: ControlAction::Released,
+                    actor: None,
+                },
+                stamp: None,
+            }))
+            .expect("valid satellite frame");
+        assert_eq!(
+            journal.with(|s| s.satellite_lease_holder(&host(), 9)),
+            None,
+            "a later, non-racing Released is honored normally"
+        );
     }
 
     /// L1 §7.1 / ADR-0123: the link subscribes with journal semantics (and
@@ -6075,6 +6793,7 @@ mod tests {
         let request = RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -6288,6 +7007,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {
@@ -6366,6 +7086,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
+                role_policy: None,
             },
             reply: reply_b,
             subscribe: Some(ProxySubscription {
@@ -6452,6 +7173,7 @@ mod tests {
         let wire = session.handle_request(RelayRequest::Command {
             command: Command::AttachResource {
                 terminal_id: ResourceId::local(9),
+                role_policy: None,
             },
             reply,
             subscribe: Some(ProxySubscription {

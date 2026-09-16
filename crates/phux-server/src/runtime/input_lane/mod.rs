@@ -301,6 +301,12 @@ impl InputLaneHandle {
         terminal_id: phux_protocol::ids::ResourceId,
         events: Vec<InputEvent>,
     ) -> InputReceipt {
+        // A satellite target is the hub's to forward (`handle_command` routes
+        // it before the lane, L1 §9.1). One that reaches the lane anyway is
+        // refused before admission, so the refusal binds no id.
+        if terminal_id.local_id().is_none() {
+            return ready_receipt(unsupported_satellite_route());
+        }
         let (digest, events) = operation_digest(operation_id, &terminal_id, events);
         match self
             .cache
@@ -765,6 +771,14 @@ fn process_headless(
     }) {
         Ok(Ok(_)) => CommandResult::Ok,
         Ok(Err(result)) | Err(result) => result,
+    }
+}
+
+fn unsupported_satellite_route() -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::UnsupportedSatelliteRoute,
+        message: "APPLY_INPUT to a satellite is forwarded by a federation hub, not run here"
+            .to_owned(),
     }
 }
 
@@ -2240,6 +2254,47 @@ mod tests {
                     tokio::time::timeout(NOTHING_FURTHER_WINDOW, fx.writer_rx.recv())
                         .await
                         .is_err()
+                );
+                fx.token.cancel();
+            })
+            .await;
+    }
+
+    /// L1 §9.1: a satellite target is refused before admission, so the
+    /// refusal binds no id: the same id is new afterwards, under any payload.
+    #[tokio::test(flavor = "current_thread")]
+    async fn refused_satellite_apply_input_no_longer_consumes_a_cache_slot() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let fx = spawn_fixture();
+                let lane = spawn_input_lane(fx.state.clone()).expect("spawn lane");
+                let handle = lane.handle();
+                let refused = handle
+                    .apply_input(
+                        fx.client_a,
+                        operation_id(21),
+                        phux_protocol::ResourceId::satellite("peer", 1),
+                        vec![InputEvent::Paste(paste_event(b"x"))],
+                    )
+                    .await;
+                assert!(matches!(
+                    refused,
+                    CommandResult::Error {
+                        code: ErrorCode::UnsupportedSatelliteRoute,
+                        ..
+                    }
+                ));
+                assert!(
+                    matches!(
+                        handle.cache.claim_at(
+                            operation_id(21),
+                            [0xee; 32],
+                            std::time::Instant::now()
+                        ),
+                        CacheClaim::Owner
+                    ),
+                    "a refused satellite batch must leave its id unbound"
                 );
                 fx.token.cancel();
             })

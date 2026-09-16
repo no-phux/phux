@@ -47,6 +47,26 @@ impl ServerState {
         self.hub.relay(host)
     }
 
+    /// Record what `host` advertised on its current link (ADR-0127), from
+    /// the link's relay session when it negotiates.
+    pub(crate) fn set_satellite_features(
+        &mut self,
+        host: phux_protocol::ids::SatelliteHost,
+        features: phux_protocol::caps::ServerFeatureSet,
+    ) {
+        self.hub.set_satellite_features(host, features);
+    }
+
+    /// Whether `host` advertised `feature` on its current link (ADR-0127).
+    #[must_use]
+    pub(crate) fn satellite_advertises(
+        &self,
+        host: &phux_protocol::ids::SatelliteHost,
+        feature: phux_protocol::caps::ServerFeature,
+    ) -> bool {
+        self.hub.satellite_features(host).contains(feature)
+    }
+
     /// Every satellite relay handle (detach fan-out); empty off-hub.
     #[must_use]
     pub(crate) fn hub_relays_all(&self) -> Vec<crate::hub::relay::RelayHandle> {

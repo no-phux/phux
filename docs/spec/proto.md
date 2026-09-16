@@ -408,6 +408,17 @@ ServerFeature = bitset (u32) {
                                      //   the snapshot (L1.md §1.2, §3.1, §9.1; ADR-0124)
     SPAWN_IDEMPOTENCY  = 0x04000000, // SPAWN_RESOURCE.idempotency_key, RESOURCE_SPAWNED.replayed,
                                      //   IDEMPOTENCY_CONFLICT (L1.md §3.1; ADR-0126)
+    ATTACH_ROLES       = 0x08000000, // ATTACH_RESOURCE.role_policy, ATTACH field 6, ROLE_CHANGED,
+                                     //   RESOURCE_STATE viewers (L1.md §8.1; ADR-0127)
+    CLOSE_TAB_RESOURCES = 0x10000000, // CLOSE_TAB_RESOURCES: atomic close that
+                                     //   preserves keep-empty (L1.md §5.2.2)
+    KEYED_SIGNAL       = 0x20000000, // trailing operation_id on KILL_RESOURCE, KILL_RESOURCE_IF,
+                                     //   KILL_RESOURCES, SIGNAL_TERMINAL; federated keyed ops and
+                                     //   APPLY_INPUT, INCARNATION_CHANGED (L1.md §5.1.1, §9.1)
+    APPROVALS          = 0x40000000, // held SIGNAL actions: ?signal grants, phux.approval/v1/<id>,
+                                     //   phux.approval.decide/v1/<id>, approval_requested /
+                                     //   approval_decided (workload-auth.md §6.1; L3.md §3.10;
+                                     //   ADR-0128)
 }
 
 EngineFeatureSet = bitset (u32) {
@@ -487,8 +498,10 @@ empty feature set. `ACKNOWLEDGED_INPUT = 0x10`, `FILE_UPLOAD = 0x20`,
 `WHOAMI = 0x40000`, `LIST_DIRECTORY_HOST = 0x80000`,
 `SSH_ORIGIN = 0x100000`, `CONDITIONAL_KILL = 0x200000`,
 `QUIC_STREAMS = 0x400000`, `OPEN_LISTENER = 0x800000`,
-`EVENT_JOURNAL = 0x1000000`, `RETAIN_ON_EXIT = 0x2000000`, and
-`SPAWN_IDEMPOTENCY = 0x4000000`; unknown
+`EVENT_JOURNAL = 0x1000000`, `RETAIN_ON_EXIT = 0x2000000`,
+`SPAWN_IDEMPOTENCY = 0x4000000`, `ATTACH_ROLES = 0x8000000`,
+`CLOSE_TAB_RESOURCES = 0x10000000`, `KEYED_SIGNAL = 0x20000000`, and
+`APPROVALS = 0x40000000`; unknown
 feature bits are ignored. A client MUST use the corresponding frame only when its feature is
 advertised. In particular, the absence of `TERMINAL_REPLY` in an
 otherwise valid `HELLO_OK` is authoritative: that server does not accept
@@ -559,10 +572,10 @@ attach, not that this connection may ask. A server refuses the command on any
 transport but its Unix socket, and advertises the bit on every transport so a
 consumer can tell "not here" from "not supported".
 
-<!-- impl-status: partial; probe: EVENT_JOURNAL,RETAIN_ON_EXIT,SPAWN_IDEMPOTENCY -->
-> **Status: partial.** The reference codec carries every field the three
-> bits below gate. The reference server advertises `EVENT_JOURNAL` and
-> `SPAWN_IDEMPOTENCY`; it does not yet advertise `RETAIN_ON_EXIT`.
+<!-- impl-status: shipped; probe: EVENT_JOURNAL,RETAIN_ON_EXIT,SPAWN_IDEMPOTENCY -->
+> **Status: shipped.** The reference codec carries every field the three
+> bits below gate, and the reference server advertises `EVENT_JOURNAL`,
+> `RETAIN_ON_EXIT`, and `SPAWN_IDEMPOTENCY`.
 
 `EVENT_JOURNAL = 0x1000000` gates the journaled event contract of
 [L1.md](./L1.md) §7: the `EVENT` stamp (fields 3-6), `SUBSCRIBE_EVENTS`
@@ -587,6 +600,39 @@ exit it did not watch happen.
 the bit skips the key and spawns again, so a client MUST see the bit before it
 retries a spawn whose reply it lost; without it, a retry can create a second
 resource.
+
+`ATTACH_ROLES = 0x8000000` gates the declared attach role of [L1.md](./L1.md)
+§8.1: `ATTACH_RESOURCE`'s trailing `role_policy` byte, session `ATTACH`
+field 6, `terminal_control { action: ROLE_CHANGED }`, and the `viewer` entries
+of the snapshot's `RESOURCE_STATE`. A server without the bit ignores the byte
+and the field and grants an ordinary, input-capable attach, so a client MUST
+see the bit before it declares a role.
+
+<!-- impl-status: shipped; probe: KeyedSignal -->
+> **Status: shipped.** The reference server advertises `KEYED_SIGNAL`, and as
+> a federation hub it forwards keyed operations and `APPLY_INPUT` behind the
+> incarnation fence.
+
+`KEYED_SIGNAL = 0x20000000` gates the trailing `operation_id` of
+`KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and `SIGNAL_TERMINAL`
+([L1.md](./L1.md) §5.1.1) and the `operation_id` stamp on the events they
+cause. A server without the bit ignores the trailing bytes and runs the
+command again, so a client MUST see the bit before it retries a keyed command
+whose reply it lost. On a federation hub the bit also means the hub forwards
+a keyed operation, and an `APPLY_INPUT`, to a satellite that evaluates it and
+answers `INCARNATION_CHANGED` instead of forwarding a retry across that
+satellite's restart ([L1.md](./L1.md) §9.1).
+
+`APPROVALS = 0x40000000` gates server-held approvals
+([workload-auth.md](./workload-auth.md) §6.1, ADR-0128): a `SIGNAL` command
+from a grant that holds `?signal` is held, its `COMMAND_RESULT` deferred,
+until a connection holding un-held `SIGNAL` on the same subject writes
+`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }`. The pending
+`phux.approval/v1/<id>` records ([L3.md](./L3.md) §3.10) and the
+`approval_requested` / `approval_decided` events ([L1.md](./L1.md) §7.1) come
+with it. A server without the bit stores a decide key as an ordinary value,
+so a client MUST see the bit before writing a decision. The bits between
+`ATTACH_ROLES` and `APPROVALS` are allocated to other drafts, not free.
 
 Color/image/keyboard/hyperlink rewriting applies only to synthesized
 compatibility profiles. For `NativeState`, `BOOTSTRAP_CHUNK`,
@@ -879,9 +925,12 @@ DetachReason = enum {
 }
 ```
 
-<!-- impl-status: spec-only; probe: MtlsWorkloadIdentity,PeerIdentityCredential -->
-> **Status: spec-only.** Detach reason values 5 through 7 land with the
-> mTLS credential-registry implementation and live revocation.
+<!-- impl-status: partial; probe: AuthorizationRevoked,AuthorizationExpired,AuthenticationFailed -->
+> **Status: partial.** Every reference consumer decodes detach reason values
+> 5 through 7. The reference server emits `AUTHORIZATION_REVOKED` and
+> `AUTHORIZATION_EXPIRED` when live revocation ends a connection
+> ([workload-auth.md](./workload-auth.md) §7). It has no post-HELLO
+> authentication outcome, so it never emits `AUTHENTICATION_FAILED`.
 
 Both fields are optional-absent, which is what makes them additive under
 §6.3: a server that predates `0.7.0-draft.7` encodes an empty `DETACHED`
@@ -912,8 +961,10 @@ version bump ([ADR-0061](../adr/0061-capabilities-add-versions-break.md)).
 <!-- impl-status: partial; probe: DetachReason -->
 > **Status: partial.** The frame, both fields, and the consumer surface
 > are shipped. The reference server states `REQUESTED` (for a client's
-> `DETACH` and for a `DETACH_CLIENTS` sweep) and `SESSION_KILLED` (when
-> the group an attach was rooted in is reaped). Server-wide cancellation gives
+> `DETACH` and for a `DETACH_CLIENTS` sweep), `SESSION_KILLED` (when
+> the group an attach was rooted in is reaped), and `AUTHORIZATION_REVOKED`
+> or `AUTHORIZATION_EXPIRED` (when live revocation ends a connection).
+> Server-wide cancellation gives
 > each connection a bounded drain through `SERVER_SHUTDOWN` before close;
 > fatal protocol paths order their final `ERROR`, `PROTOCOL_ERROR`, and close.
 > It does not emit `REPLACED`, because role takeover is unimplemented (§7.1),
@@ -1093,6 +1144,10 @@ ErrorCode = enum {
     PRECONDITION_FAILED  = 212,  // L1.md §5.2.1: a KILL_RESOURCE_IF condition
                                  //   is false, unknown, or one a hub cannot
                                  //   vouch for; nothing was killed
+    INCARNATION_CHANGED  = 213,  // L1.md §9.1: a hub refused a keyed
+                                 //   operation's retry without forwarding it,
+                                 //   because the satellite restarted since
+                                 //   the hub first forwarded that id
 
     INTERNAL_ERROR       = 65535,
 }
@@ -1128,7 +1183,7 @@ What a code does tell a receiver is its scope: how far to degrade.
 | Scope | Codes | What the receiver keeps |
 |---|---|---|
 | Terminal | `UNKNOWN_MESSAGE_TYPE`, `MALFORMED_MESSAGE`, `CODEC_UNAVAILABLE`, `TERMINAL_NOT_FOUND`, `WRONG_RESOURCE_KIND`, `UNSUPPORTED_SATELLITE_ROUTE`, `SATELLITE_UNREACHABLE`, `RESOURCE_EXHAUSTED`, `INTERNAL_ERROR` | every other Terminal, the layout, and the attach |
-| Request | `NOT_ATTACHED`, `ALREADY_ATTACHED`, `SESSION_NOT_FOUND`, `WINDOW_NOT_FOUND`, `CLIENT_NOT_FOUND`, `UNSAFE_PASTE`, `INPUT_LEASE_HELD`, `INPUT_DELIVERY_UNKNOWN`, `CANONICAL_LIMIT_EXCEEDED`, `INPUT_NOT_WRITTEN`, `NOT_PRODUCER`, `RECORD_INVALID`, `OVERFLOW`, `PRECONDITION_FAILED`, authenticated operation `PERMISSION_DENIED` | all projected state; the correlated request owns the outcome |
+| Request | `NOT_ATTACHED`, `ALREADY_ATTACHED`, `SESSION_NOT_FOUND`, `WINDOW_NOT_FOUND`, `CLIENT_NOT_FOUND`, `UNSAFE_PASTE`, `INPUT_LEASE_HELD`, `INPUT_DELIVERY_UNKNOWN`, `CANONICAL_LIMIT_EXCEEDED`, `INPUT_NOT_WRITTEN`, `NOT_PRODUCER`, `RECORD_INVALID`, `OVERFLOW`, `PRECONDITION_FAILED`, `INCARNATION_CHANGED`, authenticated operation `PERMISSION_DENIED` | all projected state; the correlated request owns the outcome |
 | Connection | `VERSION_INCOMPATIBLE`, `FRAME_TOO_LARGE`, `INVALID_COMMAND`, admission/revocation/expiry `PERMISSION_DENIED` | nothing beyond the frames still in flight |
 
 `Connection` scope means the consumer SHOULD expect the server to close the

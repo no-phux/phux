@@ -1310,7 +1310,10 @@ fn dual_ready_orders_and_fragmentation_hold_first_damage() {
         assert_eq!(
             effects.as_slice(),
             &[
-                KernelEffect::Send(KernelSend::SubscribeEvents { terminal: None }),
+                KernelEffect::Send(KernelSend::SubscribeEvents {
+                    terminal: None,
+                    after_seq: None,
+                }),
                 KernelEffect::Damage(KernelDamage {
                     terminal_id: terminal_id.clone(),
                     kind: KernelDamageKind::Full,
@@ -2351,7 +2354,10 @@ fn two_pane_attach_barrier_accepts_one_ready_and_one_close() {
     assert_eq!(
         effects.as_slice(),
         &[
-            KernelEffect::Send(KernelSend::SubscribeEvents { terminal: None }),
+            KernelEffect::Send(KernelSend::SubscribeEvents {
+                terminal: None,
+                after_seq: None,
+            }),
             KernelEffect::Damage(KernelDamage {
                 terminal_id: ready_terminal.clone(),
                 kind: KernelDamageKind::Full,
@@ -3389,7 +3395,10 @@ fn replacement_attach_close_flushes_pending_removal_at_barrier() {
     assert_eq!(
         effects.as_slice(),
         &[
-            KernelEffect::Send(KernelSend::SubscribeEvents { terminal: None }),
+            KernelEffect::Send(KernelSend::SubscribeEvents {
+                terminal: None,
+                after_seq: None,
+            }),
             KernelEffect::Damage(KernelDamage {
                 terminal_id,
                 kind: KernelDamageKind::Removed,

@@ -113,10 +113,12 @@ fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeE
         .withdrawn
         .remove(&resource.id);
     let request_id = client.workspace.reserve_internal()?;
+    let role_policy = client.next_attach_role();
     client.queue_frame(&FrameKind::Command {
         request_id,
         command: Command::AttachResource {
             terminal_id: resource.id.clone(),
+            role_policy,
         },
     })?;
     client

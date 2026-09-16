@@ -9,8 +9,10 @@
 //! `crates/phux/src/commands/kill.rs`.
 
 use phux_protocol::ResourceId;
+use phux_protocol::caps::ServerFeature;
+use phux_protocol::ids::IdempotencyKey;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope,
     encode_session_keep_empty,
 };
 
@@ -88,14 +90,79 @@ pub enum KillOutcome {
 
 impl KillOutcome {
     /// Classify a `KILL_RESOURCE`/`KILL_RESOURCES` `COMMAND_RESULT`.
+    ///
+    /// A `KILL_RESOURCES` that named a satellite id is answered with one
+    /// outcome per id (`docs/spec/L1.md` §5.2): every id killed is
+    /// [`Self::Killed`], and any id a host refused or could not be reached
+    /// for makes it [`Self::Refused`] naming each such id.
     #[must_use]
     pub fn from_result(result: CommandResult) -> Self {
         match result {
             CommandResult::Ok => Self::Killed,
             CommandResult::Error { message, .. } => Self::Refused(message),
+            CommandResult::OkWith(CommandValue::Json(document)) => {
+                match merged_kill_failures(&document) {
+                    Some(failures) if failures.is_empty() => Self::Killed,
+                    Some(failures) => Self::Refused(format!("not killed: {}", failures.join("; "))),
+                    None => Self::Unexpected(CommandResult::OkWith(CommandValue::Json(document))),
+                }
+            }
             other => Self::Unexpected(other),
         }
     }
+}
+
+/// The failures a per-id `KILL_RESOURCES` outcome lists, one `"id: reason"`
+/// each; `None` when `document` is not such an outcome.
+fn merged_kill_failures(document: &str) -> Option<Vec<String>> {
+    let value: serde_json::Value = serde_json::from_str(document).ok()?;
+    value.get("schema_version")?;
+    let failed = value.get("failed")?.as_array()?;
+    Some(
+        failed
+            .iter()
+            .map(|entry| {
+                let id = entry
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?");
+                let message = entry
+                    .get("message")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("refused");
+                format!("{id}: {message}")
+            })
+            .collect(),
+    )
+}
+
+/// Why a keyed kill or signal was not answered.
+#[derive(Debug, thiserror::Error)]
+pub enum KeyedError {
+    /// The server does not advertise `KEYED_SIGNAL`, so it would ignore the
+    /// key and run a retry again. Nothing was sent.
+    #[error(
+        "the server does not advertise KEYED_SIGNAL, so it would run a keyed retry again; \
+         nothing was sent"
+    )]
+    Unsupported,
+    /// Transport and decode failures from [`Connection::request`].
+    #[error(transparent)]
+    Attach(#[from] AttachError),
+}
+
+/// Whether the server behind `conn` honors a keyed kill or signal.
+///
+/// That is `KEYED_SIGNAL` (`docs/spec/L1.md` §5.1.1). An older server ignores
+/// the key and runs a retry again, so a caller refuses a keyed request to it
+/// rather than send one.
+#[must_use]
+pub fn keyed_signal_supported(conn: &Connection) -> bool {
+    conn.negotiated_bootstrap().is_some_and(|negotiated| {
+        negotiated
+            .server_features
+            .contains(ServerFeature::KeyedSignal)
+    })
 }
 
 /// Kill every Terminal in `ids` in one round trip — the atomic multi-terminal
@@ -113,10 +180,57 @@ pub async fn kill_resources(
     request_id: u32,
     ids: Vec<ResourceId>,
 ) -> Result<(KillOutcome, Degradation), AttachError> {
-    let (result, interleaved) = conn
-        .request(request_id, Command::KillResources { ids })
-        .await?
-        .into_parts();
+    request_kill(
+        conn,
+        request_id,
+        Command::KillResources {
+            ids,
+            operation_id: None,
+        },
+    )
+    .await
+}
+
+/// [`kill_resources`] under an idempotency key (`phux kill --idempotency-key`).
+///
+/// A repeat with the same key and ids answers the first result and kills
+/// nothing, and the reply names an outcome per id (`docs/spec/L1.md` §5.1.1,
+/// §5.2).
+///
+/// # Errors
+///
+/// [`KeyedError::Unsupported`], with nothing sent, when the server does not
+/// advertise `KEYED_SIGNAL`; transport and decode failures otherwise.
+pub async fn kill_resources_keyed(
+    conn: &mut Connection,
+    request_id: u32,
+    ids: Vec<ResourceId>,
+    operation_id: IdempotencyKey,
+) -> Result<(KillOutcome, Degradation), KeyedError> {
+    require_keyed_signal(conn)?;
+    let command = Command::KillResources {
+        ids,
+        operation_id: Some(operation_id),
+    };
+    Ok(request_kill(conn, request_id, command).await?)
+}
+
+/// Refuse a keyed request to a server that would run its retry again.
+fn require_keyed_signal(conn: &Connection) -> Result<(), KeyedError> {
+    if keyed_signal_supported(conn) {
+        Ok(())
+    } else {
+        Err(KeyedError::Unsupported)
+    }
+}
+
+/// Send one kill command and classify its reply.
+async fn request_kill(
+    conn: &mut Connection,
+    request_id: u32,
+    command: Command,
+) -> Result<(KillOutcome, Degradation), AttachError> {
+    let (result, interleaved) = conn.request(request_id, command).await?.into_parts();
     Ok((
         KillOutcome::from_result(result),
         Degradation::from_interleaved(&interleaved),
@@ -136,14 +250,38 @@ pub async fn kill_resource(
     request_id: u32,
     terminal_id: ResourceId,
 ) -> Result<(KillOutcome, Degradation), AttachError> {
-    let (result, interleaved) = conn
-        .request(request_id, Command::KillResource { terminal_id })
-        .await?
-        .into_parts();
-    Ok((
-        KillOutcome::from_result(result),
-        Degradation::from_interleaved(&interleaved),
-    ))
+    request_kill(
+        conn,
+        request_id,
+        Command::KillResource {
+            terminal_id,
+            operation_id: None,
+        },
+    )
+    .await
+}
+
+/// [`kill_resource`] under an idempotency key (`phux kill --idempotency-key`).
+///
+/// A repeat with the same key and target answers the first result and kills
+/// nothing (`docs/spec/L1.md` §5.1.1).
+///
+/// # Errors
+///
+/// [`KeyedError::Unsupported`], with nothing sent, when the server does not
+/// advertise `KEYED_SIGNAL`; transport and decode failures otherwise.
+pub async fn kill_resource_keyed(
+    conn: &mut Connection,
+    request_id: u32,
+    terminal_id: ResourceId,
+    operation_id: IdempotencyKey,
+) -> Result<(KillOutcome, Degradation), KeyedError> {
+    require_keyed_signal(conn)?;
+    let command = Command::KillResource {
+        terminal_id,
+        operation_id: Some(operation_id),
+    };
+    Ok(request_kill(conn, request_id, command).await?)
 }
 
 /// Clear a session's keep-empty mark (ADR-0105).
@@ -190,6 +328,25 @@ mod tests {
                 code: ErrorCode::PermissionDenied,
                 message: "no".to_owned(),
             }
+        );
+    }
+
+    /// A per-id `KILL_RESOURCES` outcome is `Killed` only when no id failed,
+    /// and a refusal names each id that did.
+    #[test]
+    fn a_merged_kill_outcome_names_every_id_that_was_not_killed() {
+        let all = r#"{"schema_version":1,"killed":["@1","devbox/@2"],"not_found":[],"failed":[]}"#;
+        assert_eq!(
+            KillOutcome::from_result(CommandResult::OkWith(CommandValue::Json(all.to_owned()))),
+            KillOutcome::Killed
+        );
+        let partial = r#"{"schema_version":1,"killed":["@1"],"not_found":[],
+            "failed":[{"id":"devbox/@2","code":107,"message":"link is down"}]}"#;
+        assert_eq!(
+            KillOutcome::from_result(CommandResult::OkWith(CommandValue::Json(
+                partial.to_owned()
+            ))),
+            KillOutcome::Refused("not killed: devbox/@2: link is down".to_owned())
         );
     }
 
@@ -250,7 +407,7 @@ mod tests {
             seen.iter().any(|frame| matches!(
                 frame,
                 FrameKind::Command {
-                    command: Command::KillResources { ids: seen_ids },
+                    command: Command::KillResources { ids: seen_ids, .. },
                     ..
                 } if *seen_ids == ids
             )),
@@ -260,7 +417,7 @@ mod tests {
             seen.iter().any(|frame| matches!(
                 frame,
                 FrameKind::Command {
-                    command: Command::KillResource { terminal_id },
+                    command: Command::KillResource { terminal_id, .. },
                     ..
                 } if *terminal_id == ResourceId::local(3)
             )),
@@ -273,6 +430,58 @@ mod tests {
                     if key == SESSION_KEEP_EMPTY_KEY
             )),
             "expected the keep-empty SET_METADATA; sent {seen:?}"
+        );
+    }
+
+    /// A keyed kill is refused, with nothing sent, by a server that does not
+    /// advertise `KEYED_SIGNAL`; one that does receives the key.
+    #[tokio::test]
+    async fn a_keyed_kill_needs_keyed_signal_and_carries_its_key() {
+        use crate::attach::connection::Connection;
+        use crate::testkit::{ScriptSpec, ScriptedServer};
+        use phux_protocol::caps::ServerFeatureSet;
+
+        async fn run(spec: ScriptSpec) -> (Result<(), KeyedError>, Vec<FrameKind>) {
+            let dir = tempfile::tempdir().expect("temp dir");
+            let socket = dir.path().join("phux.sock");
+            let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+            listener.set_nonblocking(true).expect("nonblocking");
+            let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+            let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+            let mut conn = Connection::connect(&socket).await.expect("connect");
+            let key = IdempotencyKey::new([7; 16]).expect("non-zero");
+            let sent = kill_resource_keyed(&mut conn, 1, ResourceId::local(3), key)
+                .await
+                .map(|_| ());
+            drop(conn);
+            (sent, server.await.expect("scripted server task"))
+        }
+
+        let (sent, seen) = run(ScriptSpec::new()).await;
+        assert!(matches!(sent, Err(KeyedError::Unsupported)));
+        assert!(
+            !seen
+                .iter()
+                .any(|frame| matches!(frame, FrameKind::Command { .. })),
+            "nothing was sent to a server without the bit: {seen:?}"
+        );
+
+        let (sent, seen) = run(ScriptSpec::new()
+            .server_features(ServerFeatureSet::with(&[ServerFeature::KeyedSignal])))
+        .await;
+        assert!(sent.is_ok());
+        assert!(
+            seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::Command {
+                    command: Command::KillResource {
+                        operation_id: Some(_),
+                        ..
+                    },
+                    ..
+                }
+            )),
+            "the keyed kill carries its key: {seen:?}"
         );
     }
 

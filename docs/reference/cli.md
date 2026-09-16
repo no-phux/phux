@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, contributors
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-09-15
 ---
 
 # phux CLI reference
@@ -19,7 +19,7 @@ Each section below is the verbatim `--help` text for one invocation path, render
 ## `phux`
 
 ```text
-phux 0.37.0
+phux 0.39.0
 A terminal multiplexer you can drive by hand or script.
 
 Run `phux` alone to attach to your session; every other verb is headless.
@@ -47,6 +47,7 @@ Panes:
   insert-pane   Insert an existing pane into a layout
   move-pane     Move a pane beside another, across sessions too
   swap-pane     Swap two panes in a layout
+  resource      Inspect a resource or wait for its process to exit
 
 Agents:
   agent         See and drive the agents running in panes
@@ -55,6 +56,9 @@ Agents:
   take          Take exclusive input control of a pane
   give          Give back input control taken with `take`
   signal        Send a signal to a pane's process group
+  approvals     List actions held for approval
+  approve       Approve a held action
+  deny          Deny a held action
 
 Machines:
   host          Add and manage the machines phux reaches [aliases: machine]
@@ -704,6 +708,50 @@ Global flags:
       --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux approvals`
+
+```text
+List actions held for approval
+
+A workload whose grant holds `?signal` has its kills, signals, and forced
+detaches held by the server until someone holding un-held `signal` on the same
+subject approves or denies them. This lists what is waiting: the id, who asked,
+the held method, its subjects, and the time left before it expires.
+
+Usage: phux approvals [--json]
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux approve`
+
+```text
+Approve a held action
+
+Releases the held action ID once: the server runs it as the workload that asked,
+under that workload's own grant, and answers that workload. Asks on a terminal;
+pass `--yes` when stdin is not one.
+
+Usage: phux approve [--yes] <ID>
+
+Arguments:
+  <ID>  The approval id `phux approvals` lists.
+
+Flags:
+      --yes            Approve without asking.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux ask`
 
 ```text
@@ -839,6 +887,19 @@ Remote host:
                                   in this inclusive range, e.g. `60000-61000`,
                                   so one firewall rule covers every attach. Any
                                   free port by default.
+
+Attach role:
+      --viewer                    Attach as a viewer: watch every pane, type
+                                  into none. The server refuses this attach's
+                                  input, and widening it takes a fresh attach
+                                  without the flag, which every watcher sees.
+                                  Your viewport still sizes the panes, and an
+                                  app waiting on a terminal-query reply times
+                                  out.
+      --take                      Attach and take the wheel: seize the input
+                                  lease of every pane this attach opens, in the
+                                  same step as the attach. The previous holder
+                                  stays attached. `phux give` hands it back.
 
 Recording:
       --rec <PATH>                Record this session to PATH (.cast, .gif, or
@@ -1140,6 +1201,26 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux deny`
+
+```text
+Deny a held action
+
+Refuses the held action ID: the workload that asked gets a permission-denied
+answer and nothing runs.
+
+Usage: phux deny <ID>
+
+Arguments:
+  <ID>  The approval id `phux approvals` lists.
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux detach`
 
 ```text
@@ -1150,13 +1231,18 @@ client attached to that session; with no argument, detaches every attached
 client on the server. Each target client's TUI exits cleanly. Useful for
 scripting or reclaiming a session that's attached (or wedged) elsewhere.
 
-Usage: phux detach [--remote <[USER@]HOST[:PORT]>] [SESSION]
+Usage: phux detach [--yes] [--remote <[USER@]HOST[:PORT]>] [SESSION]
 
 Arguments:
   [SESSION]  Session to detach clients from. Omit to detach every attached
              client on the server.
 
 Flags:
+      --yes                       Detach without asking.
+
+                                  Without it, `phux detach` asks on a terminal,
+                                  and when stdin is not one it refuses with exit
+                                  2 having sent nothing.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -1408,7 +1494,7 @@ each.
 socket only: the server accepts that stop on its local socket alone, so
 `--server` cannot combine with `--remote`.
 
-Usage: phux kill [--server] [--remote <[USER@]HOST[:PORT]>] [TARGET]
+Usage: phux kill [FLAGS] [TARGET]
 
 Arguments:
   [TARGET]  What to kill (selector).
@@ -1422,6 +1508,18 @@ Flags:
                                   Note that the next `phux attach`/`new` will
                                   auto-spawn a fresh server: this stops the
                                   current one, it does not disable phux.
+      --idempotency-key <HEX32>   Make the kill safe to retry: a repeat with the
+                                  same key (32 hex digits) answers the first
+                                  kill's result and kills nothing. An `@N`
+                                  target is sent as written, so a retry after
+                                  the pane is gone still gets the first answer.
+                                  The server must advertise `keyed_signal`.
+      --yes                       Kill without asking.
+
+                                  Without it, `phux kill TARGET` asks on a
+                                  terminal, and when stdin is not one it refuses
+                                  with exit 2 having sent nothing. `--server`
+                                  never asks.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -1658,6 +1756,10 @@ Flags:
   -e, --env <KEY=VALUE>           Environment assignment for the seed process.
                                   Repeat for multiple variables. Headless
                                   `--json` mode only.
+      --idempotency-key <HEX32>   Make the create safe to retry: a repeat with
+                                  the same key (32 hex digits) answers the first
+                                  create's result instead of failing on the
+                                  name. Headless `--json` mode only.
       --remote <[USER@]HOST[:PORT]>  Run against the phux server on another
                                   machine instead of the local socket,
                                   ssh-style: `--remote me@mini`. Same target
@@ -1771,7 +1873,9 @@ Flags:
       --overlap-seconds <SECONDS>  Seconds the previous generation remains
                                   valid. Its existing absolute expiry still
                                   wins when it is sooner; an already-expired
-                                  credential cannot be rotated.
+                                  credential cannot be rotated. Live sessions
+                                  still on the previous generation are
+                                  disconnected when the overlap ends.
                                   (default: 300)
   -h, --help                      Print help
 
@@ -2392,6 +2496,114 @@ Global flags:
       --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
+## `phux resource`
+
+```text
+Inspect a resource or wait for its process to exit
+
+`show` reads one resource: kind, parent, lifecycle, how a retained process
+exited, its process facts, input holder, tags, and agent record. `wait` blocks
+until the resource's process ends (exit 0), reports a resource that is already
+gone (exit 1), or gives up at `--timeout` (exit 124), and prints a cursor that
+resumes it. `methods` lists what the resource answers on this server. None of
+them attaches or resizes.
+
+Usage: phux resource <SUBCOMMAND>
+
+Commands:
+  methods  List the methods a resource answers on this server.
+  show     Show one resource: kind, lifecycle, exit, process, tags, agent.
+  wait     Wait until a resource's process exits.
+  help     Print this message or the help of the given subcommand(s)
+
+Flags:
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux resource methods`
+
+```text
+List the methods a resource answers on this server.
+
+Each method's verb, whether it changes state, and whether it is available here:
+a method another kind owns, or one that needs a feature this server does not
+advertise, is listed with the reason. Listing a method grants nothing.
+
+Usage: phux resource methods [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector. A direct id (`@N`, `host/@N`) is read as given.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux resource show`
+
+```text
+Show one resource: kind, lifecycle, exit, process, tags, agent.
+
+Prints `key: value` lines, or with `--json` the stable document. Read-only:
+never attaches or resizes.
+
+Usage: phux resource show [--json] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector. A direct id (`@N`, `host/@N`) is read as given.
+
+Flags:
+      --json           Emit stable, versioned JSON on stdout instead of the
+                       human view. On failure, stdout stays empty and stderr
+                       carries one JSON error object.
+  -h, --help           Print help
+
+Global flags:
+      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
+## `phux resource wait`
+
+```text
+Wait until a resource's process exits.
+
+Exit 0 when it exited (now or earlier, while the server still holds it), 1 when
+it is gone (it closed unretained, or never existed), 124 at `--timeout`, 2 for a
+bad argument. Race-free: an exit that happens while the wait starts is never
+missed. With `--json` the document carries the outcome, the exit status or
+signal, and a `cursor`; pass that cursor to `--after` to resume after a
+disconnect.
+
+Usage: phux resource wait [FLAGS] <TARGET>
+
+Arguments:
+  <TARGET>  Target selector. A direct id (`@N`) is used as given, so a resource
+            that already exited can still be waited on.
+
+Flags:
+      --timeout <SECS>  Give up after this many seconds (exit 124), counted from
+                        the start of the command. Default: wait forever.
+      --after <CURSOR>  Resume from the cursor a previous `resource wait` or
+                        `watch` printed: a close the server still holds is
+                        replayed instead of read as gone. A cursor from another
+                        server run is ignored.
+      --json            Emit stable, versioned JSON on stdout instead of the
+                        human view. On failure, stdout stays empty and stderr
+                        carries one JSON error object.
+  -h, --help            Print help
+
+Global flags:
+      --socket <PATH>   Server socket to dial (default: `$PHUX_SOCKET`)
+```
+
 ## `phux run`
 
 ```text
@@ -2756,7 +2968,7 @@ Examples:
 phux signal build freeze
 phux signal . kill
 
-Usage: phux signal <TARGET> <SIGNAL>
+Usage: phux signal [--idempotency-key <HEX32>] [--yes] <TARGET> <SIGNAL>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
@@ -2764,10 +2976,21 @@ Arguments:
             [possible values: interrupt, freeze, resume, terminate, kill]
 
 Flags:
-  -h, --help           Print help
+      --idempotency-key <HEX32>  Make the signal safe to retry: a repeat with
+                                 the same key (32 hex digits) answers the first
+                                 signal's result and delivers nothing. The
+                                 server must advertise `keyed_signal`.
+      --yes                      Deliver `interrupt`, `terminate`, or `kill`
+                                 without asking.
+
+                                 Without it those three ask on a terminal, and
+                                 when stdin is not one they refuse with exit 2
+                                 having sent nothing. `freeze` and `resume`, the
+                                 reversible brake, never ask.
+  -h, --help                     Print help
 
 Global flags:
-      --socket <PATH>  Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux skill`
@@ -2841,11 +3064,16 @@ Flags:
                         viewport, then the viewport). Bare `--tail` returns 80;
                         `--tail 0` returns all, capped at 10000. The viewport is
                         a floor — a grid is never returned in part — and
-                        `truncated` reports any dropped rows.
+                        `truncated` reports any dropped rows. With `--format`,
+                        this instead bounds how far back the rendered capture
+                        reaches (same wire request as `--scrollback N`); the
+                        server applies the same 10000-row cap regardless.
       --unwrap          Join soft-wrapped rows into logical lines (rows as
                         written, not as painted). Cannot be combined with
                         `--cells`: cell coordinates are grid coordinates and do
-                        not survive the join.
+                        not survive the join. With `--format`, this instead asks
+                        the SERVER's Formatter to join soft-wrapped rows in the
+                        rendered capture.
       --rendered        Emit the CLIENT's composited multi-pane view — the
                         assembled frame (layout tiling + dividers + status bar)
                         as the human's glass shows it — as dense structured
@@ -2854,6 +3082,15 @@ Flags:
                         Mutually exclusive with `--cells` / `--scrollback` /
                         `--tail` / `--unwrap`; sizes the composite via `--cols`
                         / `--rows`.
+      --format <FMT>    Render through the SERVER's libghostty-vt Formatter
+                        instead of the lines/cells JSON: `html` for
+                        inline-styled markup, `vt` for re-playable VT escape
+                        sequences. Text output writes the capture verbatim to
+                        stdout (HTML as UTF-8, VT as its raw decoded byte
+                        stream); `--json` instead emits the whole `ScreenState`
+                        document with the `rendered` field populated. Mutually
+                        exclusive with `--cells` and `--rendered`.
+                        [possible values: html, vt]
       --cols <COLS>     Composited viewport width for `--rendered` (no TTY to
                         measure).
                         (default: 80)
@@ -2884,30 +3121,42 @@ Arguments:
               follow `--`: `phux spawn -- htop`.
 
 Flags:
-      --satellite <NAME>  Route the spawn to a configured federation satellite
-                          (a name from `phux host ls --role satellite`, on a
-                          server running `--hub`).
-      --target <TARGET>   Existing local pane beside which to place the new
-                          pane.
-      --split <SPLIT>     Split axis for explicit placement (requires
-                          `--target`).
-                          [possible values: horizontal, h, vertical, v]
-                          (default: horizontal)
-      --ratio <RATIO>     Fraction of the split retained by TARGET (requires
-                          `--target`).
-                          (default: 0.5)
-      --projection <KEY>  Named projection to place into instead of the shared
-                          default (requires `--target`). Must be
-                          `<prefix>.layout/v1/<session-id>` for TARGET's
-                          session.
-  -c, --cwd <CWD>         Working directory for the new pane.
-      --json              Emit stable, versioned JSON on stdout instead of the
-                          human view. On failure, stdout stays empty and stderr
-                          carries one JSON error object.
-  -h, --help              Print help
+      --satellite <NAME>         Route the spawn to a configured federation
+                                 satellite (a name from `phux host ls --role
+                                 satellite`, on a server running `--hub`).
+      --target <TARGET>          Existing local pane beside which to place the
+                                 new pane.
+      --split <SPLIT>            Split axis for explicit placement (requires
+                                 `--target`).
+                                 [possible values: horizontal, h, vertical, v]
+                                 (default: horizontal)
+      --ratio <RATIO>            Fraction of the split retained by TARGET
+                                 (requires `--target`).
+                                 (default: 0.5)
+      --projection <KEY>         Named projection to place into instead of the
+                                 shared default (requires `--target`). Must be
+                                 `<prefix>.layout/v1/<session-id>` for TARGET's
+                                 session.
+  -c, --cwd <CWD>                Working directory for the new pane.
+      --retain [SECS]            Keep the pane inspectable after its process
+                                 exits, for SECS seconds (bare `--retain`: the
+                                 server's default). Its screen, history, and
+                                 exit status stay readable through `phux
+                                 resource show` and `phux resource wait` until
+                                 then, or until `phux kill`. Write
+                                 `--retain=SECS` when a command follows.
+      --idempotency-key <HEX32>  Make the spawn safe to retry: a repeat with the
+                                 same key (32 hex digits) and the same request
+                                 answers the first pane instead of spawning
+                                 another. Draw one key per spawn and reuse it on
+                                 retry.
+      --json                     Emit stable, versioned JSON on stdout instead
+                                 of the human view. On failure, stdout stays
+                                 empty and stderr carries one JSON error object.
+  -h, --help                     Print help
 
 Global flags:
-      --socket <PATH>     Server socket to dial (default: `$PHUX_SOCKET`)
+      --socket <PATH>            Server socket to dial (default: `$PHUX_SOCKET`)
 ```
 
 ## `phux status`
@@ -3056,12 +3305,17 @@ agent's `send-keys`) are locked out. Use it to grab control of a pane an agent
 is driving. Release with `phux give`. TARGET is a selector (see the top-level
 help).
 
-Usage: phux take <TARGET>
+Usage: phux take [--ttl <SECS>] <TARGET>
 
 Arguments:
   <TARGET>  Target selector (resolves to one pane).
 
 Flags:
+      --ttl <SECS>     Auto-release after this many seconds — the server, not
+                       this process, enforces it, so it survives this command
+                       exiting. Omit to hold the lease until `phux give` or a
+                       disconnect, today's default. The wire's `ttl_ms` is a
+                       `u32`, so this caps at 4294967 (about 49.7 days).
   -h, --help           Print help
 
 Global flags:
@@ -3260,13 +3514,24 @@ Flags:
                         Repeatable; any one of them satisfies the watch. The
                         vocabulary is the one this stream prints: `agent_state`,
                         `asked`, `bell`, `command_finished`, `command_started`,
-                        `dirty`, `idle`, `pane_closed`, `pane_spawned`,
-                        `title_changed`, `unknown`. An unrecognized name is a
-                        usage error (exit 2) reported before the watch starts,
-                        never a watch that quietly never matches.
+                        `cwd_changed`, `dirty`, `idle`, `journal_gap`,
+                        `pane_closed`, `pane_spawned`, `source_gap`,
+                        `terminal_control`, `title_changed`, `unknown`.
+                        `unknown` also matches `cwd_changed`,
+                        `terminal_control`, `journal_gap`, and `source_gap`,
+                        which printed as `unknown` before they had names, so an
+                        existing `--until unknown` keeps working. An
+                        unrecognized name is a usage error (exit 2) reported
+                        before the watch starts, never a watch that quietly
+                        never matches.
       --timeout <SECS>  Give up after this many seconds (exit 124). Applies with
                         or without `--until`. Default: stream until EOF or
                         Ctrl-C.
+      --after <CURSOR>  Resume from the cursor a previous run printed: events
+                        the server still holds since then are replayed before
+                        live ones. A cursor from another server run is ignored,
+                        and said so. The cursor this run reached is the last
+                        line on stderr.
       --json            Emit stable, versioned JSON on stdout instead of the
                         human view. On failure, stdout stays empty and stderr
                         carries one JSON error object.

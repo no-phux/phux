@@ -7,8 +7,10 @@
 <import src="cockpit-chrome-recipes.native" />
 <template name="cockpit-window" args="tabs rail width cue status title detail emptyopen emptyname emptydetail emptypicked">
   <column grow="1">
-    <row height="50" gap="8" cross="center" background="surface">
-      <spacer width="78" window-drag="true" />
+    <!-- Hidden-inset chrome: press-claiming children remain controls while
+         empty chrome and gaps provide a practical window-drag surface. -->
+    <row height="50" gap="8" cross="center" background="surface" window-drag="true">
+      <spacer width="78" />
       <if test="{tabPlacement == 'top'}">
         <tabs grow="1" gap="4" label="Terminal tabs">
           <for each="tabs" key="id" as="tab">

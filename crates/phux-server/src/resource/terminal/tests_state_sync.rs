@@ -612,7 +612,10 @@ fn an_open_output_burst_arms_the_state_tick() {
     actor.vt_write_for_test(b"hello");
     actor.source_events_from_chunk(b"hello");
     assert!(
-        matches!(event_rx.try_recv(), Ok(AgentEvent::Dirty)),
+        matches!(
+            event_rx.try_recv().map(|emitted| emitted.event),
+            Ok(AgentEvent::Dirty)
+        ),
         "the burst opened",
     );
     assert!(
@@ -626,7 +629,10 @@ fn an_open_output_burst_arms_the_state_tick() {
     assert!(actor.state_tick_armed(), "burst still open");
     actor.service_state_tick_for_test();
     assert!(
-        matches!(event_rx.try_recv(), Ok(AgentEvent::Idle)),
+        matches!(
+            event_rx.try_recv().map(|emitted| emitted.event),
+            Ok(AgentEvent::Idle)
+        ),
         "the settling idle still fires",
     );
     assert!(
@@ -655,7 +661,10 @@ fn raw_only_consumer_gets_repeatable_dirty_idle_cycles() {
         actor.vt_write_for_test(chunk);
         actor.source_events_from_chunk(chunk);
         assert!(
-            matches!(event_rx.try_recv(), Ok(AgentEvent::Dirty)),
+            matches!(
+                event_rx.try_recv().map(|emitted| emitted.event),
+                Ok(AgentEvent::Dirty)
+            ),
             "each output burst must begin with dirty",
         );
 
@@ -671,7 +680,10 @@ fn raw_only_consumer_gets_repeatable_dirty_idle_cycles() {
         actor.maybe_emit_idle();
         actor.tick_emit();
         assert!(
-            matches!(event_rx.try_recv(), Ok(AgentEvent::Idle)),
+            matches!(
+                event_rx.try_recv().map(|emitted| emitted.event),
+                Ok(AgentEvent::Idle)
+            ),
             "quiet tick must close the burst with idle",
         );
     }

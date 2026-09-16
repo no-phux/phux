@@ -267,6 +267,16 @@ fn build_server_config(
         agent_log_bytes: defaults.agent_log_bytes,
         event_journal_entries: defaults.event_journal_entries,
         event_journal_bytes: defaults.event_journal_bytes,
+        retain: phux_server::state::RetainPolicy {
+            by_default: defaults.retain_on_exit,
+            default_secs: defaults.retain_on_exit_secs,
+            max_secs: defaults.retain_on_exit_max_secs,
+            // `phux config check` flags a larger value; a config that ships
+            // one anyway is clamped here rather than holding that many grids.
+            max_count: defaults
+                .retain_on_exit_max
+                .min(phux_config::MAX_RETAIN_ON_EXIT_MAX),
+        },
         cwd_inheritance: defaults.cwd_inheritance,
         term: defaults.term,
         shell,
@@ -285,6 +295,17 @@ fn build_server_config(
             u32::try_from(phux_protocol::wire::frame::MAX_AGENT_SESSION_RECORD_BYTES)
                 .unwrap_or(u32::MAX),
         ),
+        // `phux config check` flags an out-of-range approval bound; a config
+        // that ships one anyway is clamped here (the runtime floors the TTL).
+        approval_ttl_secs: defaults
+            .approval_ttl_secs
+            .min(phux_config::MAX_APPROVAL_TTL_SECS),
+        approval_max_pending: defaults
+            .approval_max_pending
+            .min(phux_config::MAX_APPROVAL_MAX_PENDING),
+        approval_max_pending_total: defaults
+            .approval_max_pending_total
+            .min(phux_config::MAX_APPROVAL_MAX_PENDING_TOTAL),
         // The runtime picks the engine from `policy_mode` (workload-auth
         // §8); no override. `run_server` sets the mode from `[policy]`.
         policy_engine: None,

@@ -452,6 +452,7 @@ pub async fn wait_for_server_screen_text(
                     terminal_id: terminal_id.clone(),
                     request_scrollback: None,
                     cells: false,
+                    format: 0,
                 },
             },
         )
@@ -608,6 +609,7 @@ pub fn attach_by_name_with_id(name: &str, attach_id: u32) -> FrameKind {
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
         scrollback_limit_lines: 0,
+        role_policy: None,
     }
 }
 

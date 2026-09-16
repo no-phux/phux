@@ -5,6 +5,7 @@
     reason = "retain each suite's common-module tests and state when consolidating binaries"
 )]
 
+mod attach_roles_e2e;
 mod fleet_sidebar_e2e;
 mod resize_e2e;
 mod spatial_e2e;

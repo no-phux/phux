@@ -26,7 +26,7 @@ mod store;
 pub use material::{ClientMaterial, MAX_MATERIAL_BYTES, MaterialError};
 pub use phux_protocol::scope::ScopeGrammarError;
 use phux_protocol::scope::{EffectiveScopeSet, ScopeGrant, Selector, TerminalScopeSet};
-pub use reload::ReloadingWorkloadRegistry;
+pub use reload::{BrokenRegistry, RegistryObservation, ReloadingWorkloadRegistry};
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};

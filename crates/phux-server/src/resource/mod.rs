@@ -273,10 +273,13 @@ pub enum ControlRequest {
     LeaseChanged {
         /// The client now holding the lease, or `None` if released to `Open`.
         input_holder: Option<ClientId>,
-        /// What just happened (`Acquired` / `Seized` / `Released`).
+        /// What just happened (`Acquired` / `Seized` / `Released` /
+        /// `Expired`).
         action: ControlAction,
-        /// The client that performed the action.
-        actor: ClientId,
+        /// The client that performed the action; `None` when the server
+        /// released the lease on its own — a TTL expiry (ADR-0033's
+        /// `ttl_ms`) or live revocation (`docs/spec/workload-auth.md` §7).
+        actor: Option<ClientId>,
     },
     /// Something other than the detector wrote this pane's `phux.agent/v1`
     /// record (an explicit `SET_METADATA` or `DELETE_METADATA`), so the
@@ -346,9 +349,17 @@ pub enum ControlRequest {
         input_holder: Option<ClientId>,
         /// The client requesting the signal.
         by: ClientId,
+        /// The signal's `operation_id` (L1 §5.1.1), carried onto the
+        /// `terminal_control` it causes.
+        operation_id: Option<phux_protocol::ids::IdempotencyKey>,
         /// Delivery acknowledgement.
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// The pane's process exited and the pane is retained (ADR-0124): report
+    /// `Exited` in every later `TerminalControl`, stop the agent detector (it
+    /// has no process to watch), and refuse input from now on. The grid,
+    /// history, and consumers stay. No reply: the exit is a fact.
+    Retire,
 }
 
 // ---- handle -----------------------------------------------------------------

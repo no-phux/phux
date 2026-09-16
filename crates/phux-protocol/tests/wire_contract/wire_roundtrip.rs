@@ -333,12 +333,14 @@ fn arb_session_snapshot() -> impl Strategy<Value = SessionSnapshot> {
         any::<u32>(),
         any::<u32>(),
         any::<u32>(),
+        proptest::option::of(any::<u64>()),
     )
-        .prop_map(|(sessions, windows, panes, fs, fw, fp)| {
+        .prop_map(|(sessions, windows, panes, fs, fw, fp, head)| {
             SessionSnapshot::new(SessionId::new(fs), WindowId::new(fw), ResourceId::new(fp))
                 .with_sessions(sessions)
                 .with_windows(windows)
                 .with_resources(panes)
+                .with_journal_head(head)
         })
 }
 
@@ -390,6 +392,9 @@ fn arb_detach_reason() -> impl Strategy<Value = Option<DetachReason>> {
         Just(Some(DetachReason::SessionKilled)),
         Just(Some(DetachReason::Replaced)),
         Just(Some(DetachReason::ProtocolError)),
+        Just(Some(DetachReason::AuthenticationFailed)),
+        Just(Some(DetachReason::AuthorizationRevoked)),
+        Just(Some(DetachReason::AuthorizationExpired)),
         Just(Some(DetachReason::InternalError)),
     ]
 }
@@ -979,6 +984,7 @@ proptest! {
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
             scrollback_limit_lines: 0,
+            role_policy: None,
         };
         let mut buf = BytesMut::new();
         frame.encode(&mut buf);
@@ -993,6 +999,7 @@ proptest! {
         viewport in arb_viewport_info(),
         request_scrollback in any::<bool>(),
         scrollback_limit_lines in any::<u32>(),
+        role_byte in proptest::option::of(any::<u8>()),
     ) {
         let frame = FrameKind::Attach {
             attach_id: 1,
@@ -1000,6 +1007,7 @@ proptest! {
             viewport,
             request_scrollback,
             scrollback_limit_lines,
+            role_policy: role_byte.map(phux_protocol::wire::frame::RolePolicy::from_u8),
         };
         assert_round_trip(&frame);
     }
@@ -1811,7 +1819,7 @@ proptest! {
     ) {
         assert_round_trip(&FrameKind::Command {
             request_id,
-            command: Command::KillResource { terminal_id },
+            command: Command::KillResource { terminal_id, operation_id: None },
         });
     }
 
@@ -1831,7 +1839,7 @@ proptest! {
         };
         assert_round_trip(&FrameKind::Command {
             request_id,
-            command: Command::KillResourceIf { terminal_id, precondition },
+            command: Command::KillResourceIf { terminal_id, precondition, operation_id: None },
         });
     }
 
@@ -1937,6 +1945,7 @@ fn command_attach_detach_terminal_round_trip() {
         for command in [
             Command::AttachResource {
                 terminal_id: terminal_id.clone(),
+                role_policy: None,
             },
             Command::DetachResource {
                 terminal_id: terminal_id.clone(),
@@ -1980,6 +1989,7 @@ fn command_signal_terminal_round_trips() {
             command: Command::SignalTerminal {
                 terminal_id: ResourceId::local(3),
                 signal,
+                operation_id: None,
             },
         });
     }
@@ -1988,23 +1998,63 @@ fn command_signal_terminal_round_trips() {
 #[test]
 fn command_get_screen_round_trips() {
     // GET_SCREEN (tag 0x07): ResourceId + a trailing optional<u32>
-    // `request_scrollback` (phux-o1v) + a trailing bool `cells` (phux-8yl).
-    // The reply is OK_WITH(JSON(..)) — covered by the generic
-    // CommandValue::Json roundtrip. Exercise every scrollback state crossed
-    // with both `cells` values so the presence byte + value + cells bool
-    // round-trip.
+    // `request_scrollback` (phux-o1v) + a trailing bool `cells` (phux-8yl)
+    // + a trailing u8 `format` (D9). The reply is OK_WITH(JSON(..)) —
+    // covered by the generic CommandValue::Json roundtrip. Exercise every
+    // scrollback state crossed with both `cells` values and every defined
+    // `format` value so the presence byte + value + cells bool + format
+    // byte all round-trip.
     for request_scrollback in [None, Some(0), Some(42)] {
         for cells in [false, true] {
-            assert_round_trip(&FrameKind::Command {
-                request_id: 11,
-                command: Command::GetScreen {
-                    terminal_id: ResourceId::local(5),
-                    request_scrollback,
-                    cells,
-                },
-            });
+            for format in [0, 1, 2] {
+                assert_round_trip(&FrameKind::Command {
+                    request_id: 11,
+                    command: Command::GetScreen {
+                        terminal_id: ResourceId::local(5),
+                        request_scrollback,
+                        cells,
+                        format,
+                    },
+                });
+            }
         }
     }
+}
+
+#[test]
+fn get_screen_without_format_is_byte_identical() {
+    // Backward-compat (D9): a GET_SCREEN frame encoded after `cells`
+    // landed but before `format` existed has a body that ends after
+    // `cells`. A current decoder must read the missing `format` as `0`
+    // (no rendering), not error on EOF — the same `at_body_end` guard
+    // `cells` itself relies on for the pre-`cells` shape below.
+    let expected = FrameKind::Command {
+        request_id: 7,
+        command: Command::GetScreen {
+            terminal_id: ResourceId::local(9),
+            request_scrollback: Some(3),
+            cells: true,
+            format: 0,
+        },
+    };
+
+    // Command::GetScreen positional value, minus the trailing format byte.
+    let mut get_screen = vec![0x07u8]; // COMMAND_TAG_GET_SCREEN
+    get_screen.push(0x00); // RESOURCE_ID_TAG_LOCAL
+    get_screen.extend_from_slice(&9u32.to_be_bytes());
+    get_screen.push(0x01); // request_scrollback = Some
+    get_screen.extend_from_slice(&3u32.to_be_bytes());
+    get_screen.push(0x01); // cells = true
+    // no format byte
+
+    let mut fields = Vec::new();
+    tlv_field(&mut fields, 1, &7u32.to_be_bytes()); // field::command::REQUEST_ID
+    tlv_field(&mut fields, 2, &get_screen); // field::command::COMMAND
+    let buf = framed_tlv(0x31, &fields);
+
+    let (decoded, tail) = FrameKind::decode(&buf).unwrap();
+    assert_eq!(decoded, expected, "absent format byte must decode as 0");
+    assert!(tail.is_empty());
 }
 
 #[test]
@@ -2024,6 +2074,7 @@ fn command_get_screen_decodes_pre_cells_body_as_false() {
             terminal_id: ResourceId::local(9),
             request_scrollback: Some(3),
             cells: false,
+            format: 0,
         },
     };
 
@@ -2068,6 +2119,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
             terminal_id: ResourceId::local(2),
             request_scrollback: None,
             cells: true,
+            format: 0,
         },
     };
     let mut second_buf = BytesMut::new();
@@ -2085,6 +2137,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
                 terminal_id: ResourceId::local(1),
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
         },
         "first frame's absent cells must default false, not steal frame 2's byte",
@@ -2354,7 +2407,29 @@ fn command_kill_terminals_round_trips() {
     ] {
         assert_round_trip(&FrameKind::Command {
             request_id: 31,
-            command: Command::KillResources { ids },
+            command: Command::KillResources {
+                ids,
+                operation_id: None,
+            },
+        });
+    }
+}
+
+#[test]
+fn command_close_tab_resources_round_trips() {
+    // CLOSE_TAB_RESOURCES (tag 0x1d): same body as KILL_RESOURCES.
+    for ids in [
+        Vec::new(),
+        vec![ResourceId::local(7)],
+        vec![
+            ResourceId::local(1),
+            ResourceId::local(2),
+            ResourceId::satellite("peer-a", 9),
+        ],
+    ] {
+        assert_round_trip(&FrameKind::Command {
+            request_id: 32,
+            command: Command::CloseTabResources { ids },
         });
     }
 }
@@ -2383,6 +2458,9 @@ fn detached_reason_and_message_round_trip() {
         Some(DetachReason::SessionKilled),
         Some(DetachReason::Replaced),
         Some(DetachReason::ProtocolError),
+        Some(DetachReason::AuthenticationFailed),
+        Some(DetachReason::AuthorizationRevoked),
+        Some(DetachReason::AuthorizationExpired),
         Some(DetachReason::InternalError),
     ] {
         for message in [String::new(), "the server is stopping".to_owned()] {
@@ -2459,8 +2537,18 @@ fn detach_reason_wire_values_match_spec() {
     assert_eq!(DetachReason::SessionKilled.as_wire(), 2);
     assert_eq!(DetachReason::Replaced.as_wire(), 3);
     assert_eq!(DetachReason::ProtocolError.as_wire(), 4);
+    assert_eq!(DetachReason::AuthenticationFailed.as_wire(), 5);
+    assert_eq!(DetachReason::AuthorizationRevoked.as_wire(), 6);
+    assert_eq!(DetachReason::AuthorizationExpired.as_wire(), 7);
     assert_eq!(DetachReason::InternalError.as_wire(), 255);
-    for unallocated in [5u8, 6, 42, 254] {
+    for known in [5u8, 6, 7] {
+        assert_eq!(
+            DetachReason::from_wire(known).map(DetachReason::as_wire),
+            Some(known),
+            "workload-auth §7 reasons decode"
+        );
+    }
+    for unallocated in [8u8, 42, 254] {
         assert_eq!(DetachReason::from_wire(unallocated), None);
     }
 }
@@ -2716,7 +2804,7 @@ fn event_asked_decodes_as_unknown_for_an_older_decoder() {
     // verbatim) rather than failing the frame parse. This pins the additive
     // forward-compat contract.
     let body_bytes = [0x01u8, 0x02, 0x03];
-    let mut agent_event = vec![0x0du8]; // a tag this version does not know
+    let mut agent_event = vec![0x0fu8]; // a tag this version does not know
     agent_event.extend_from_slice(&u32::try_from(body_bytes.len()).unwrap().to_be_bytes());
     agent_event.extend_from_slice(&body_bytes);
     let mut fields = Vec::new();
@@ -2729,7 +2817,7 @@ fn event_asked_decodes_as_unknown_for_an_older_decoder() {
         FrameKind::Event {
             terminal: None,
             event: AgentEvent::Unknown {
-                tag: 0x0d,
+                tag: 0x0f,
                 body: body_bytes.to_vec(),
             },
             stamp: None,
@@ -3132,6 +3220,70 @@ fn snapshot_without_resource_facets_is_byte_stable_and_decodes_defaults() {
     assert_eq!(decoded, frame);
 }
 
+/// PHA-406 L10 review (L1 §7.3, §9.1): the journal head at the cut rides the
+/// extension block as field 2, alone or beside `RESOURCE_STATE` entries, and
+/// a snapshot without it keeps its earlier bytes.
+#[test]
+fn snapshot_journal_head_rides_the_extension_block_and_is_absent_by_default() {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+    use phux_protocol::wire::info::ExitFacet;
+
+    let encode = |snapshot: &SessionSnapshot| {
+        let mut buf = BytesMut::new();
+        FrameKind::CommandResult {
+            request_id: 1,
+            result: CommandResult::OkWith(CommandValue::State(snapshot.clone())),
+        }
+        .encode(&mut buf);
+        buf
+    };
+    let decode = |bytes: &[u8]| {
+        let (frame, _) = FrameKind::decode(bytes).unwrap();
+        let FrameKind::CommandResult {
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            ..
+        } = frame
+        else {
+            panic!("expected a state result, got {frame:?}");
+        };
+        snapshot
+    };
+    let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_resources(vec![ResourceInfo::new(
+            ResourceId::local(1),
+            WindowId::new(1),
+            80,
+            24,
+        )]);
+    assert_eq!(plain.journal_head(), None);
+    let plain_bytes = encode(&plain);
+
+    let headed = plain.with_journal_head(Some(4242));
+    let headed_bytes = encode(&headed);
+    assert!(headed_bytes.len() > plain_bytes.len());
+    let decoded = decode(&headed_bytes);
+    assert_eq!(decoded.journal_head(), Some(4242));
+    assert_eq!(decoded, headed);
+    assert_eq!(
+        encode(&headed.with_journal_head(None)),
+        plain_bytes,
+        "clearing the head restores the earlier bytes"
+    );
+
+    // Beside a retained resource's state, in the same block.
+    let retained = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                .with_lifecycle(phux_protocol::wire::frame::ResourceLifecycle::Exited)
+                .with_exit(Some(ExitFacet::new(5, 9).with_exit_status(Some(3)))),
+        ])
+        .with_journal_head(Some(7));
+    let decoded = decode(&encode(&retained));
+    assert_eq!(decoded, retained);
+    assert_eq!(decoded.journal_head(), Some(7));
+    assert_eq!(decoded.resources[0].exit.unwrap().exit_status, Some(3));
+}
+
 #[test]
 fn snapshot_resource_facets_join_by_id_and_ignore_unknown_rows() {
     // Hand-roll a snapshot: one pane, then a trailing facet list with a row
@@ -3521,4 +3673,28 @@ fn unknown_session_facet_flag_bits_are_ignored() {
         panic!("expected a GET_STATE reply");
     };
     assert!(state.sessions[0].keep_empty);
+}
+
+/// ADR-0127: a session `ATTACH` with no role is byte-for-byte the frame
+/// from before roles; field 6 is written only for `Some`.
+#[test]
+fn session_attach_without_a_role_matches_its_golden_bytes() {
+    use std::fmt::Write as _;
+    const GOLDEN: &str =
+        "00000028020104090100000004776f726b020406005000180000030401010404040000271005040400000007";
+    let frame = FrameKind::Attach {
+        attach_id: 7,
+        target: phux_protocol::wire::frame::AttachTarget::ByName("work".to_owned()),
+        viewport: ViewportInfo::new(80, 24),
+        request_scrollback: true,
+        scrollback_limit_lines: 10_000,
+        role_policy: None,
+    };
+    let mut buf = BytesMut::new();
+    frame.encode(&mut buf);
+    let mut hex = String::new();
+    for byte in &buf {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    assert_eq!(hex, GOLDEN);
 }

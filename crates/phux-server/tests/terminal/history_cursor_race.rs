@@ -155,6 +155,7 @@ async fn attach(stream: &mut UnixStream, attach_id: u32) {
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: true,
             scrollback_limit_lines: 50_000,
+            role_policy: None,
         },
     )
     .await;

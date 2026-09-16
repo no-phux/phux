@@ -143,7 +143,7 @@ const GLOBAL_OWNER_UDS: Subject = Subject::Global {
 
 /// The §6 subject phrases and the `Subject` each one means. The first
 /// prefix that matches wins, so a longer phrase precedes its own prefix.
-const SPEC_SUBJECTS: [(&str, Subject); 23] = [
+const SPEC_SUBJECTS: [(&str, Subject); 24] = [
     ("named session", Subject::NamedSession),
     (
         "Global, and the authenticated transport MUST be the owner UDS",
@@ -189,6 +189,7 @@ const SPEC_SUBJECTS: [(&str, Subject); 23] = [
         Subject::ParentOfNamed,
     ),
     ("encoded metadata Scope", Subject::MetadataScope),
+    ("the held action's subject", Subject::HeldAction),
     ("calling connection", Subject::CallingConnection),
     ("valid only in", Subject::None),
     ("no state access", Subject::None),

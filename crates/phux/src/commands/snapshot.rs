@@ -2,15 +2,14 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use base64::Engine as _;
 use phux_client::attach::AttachError;
-use phux_client::snapshot::{
-    ROW_WINDOW_ALL, RenderedFrame, ScreenState, SoftWrap, TRUNCATED_ROW_WINDOW, row_window,
-};
+use phux_client::snapshot::{RenderedFrame, ScreenState};
 use phux_protocol::wire::frame::AttachTarget;
 use phux_server::runtime::default_socket_path;
 use phux_tui::attach::run_headless_rendered;
 
-use crate::commands::{cli_runtime, json_err, parse_selector, resolve_target};
+use crate::commands::{SnapshotFormat, cli_runtime, json_err, parse_selector, resolve_target};
 
 /// Options for the structured pane read (ADR-0022 §2, ADR-0077).
 ///
@@ -28,6 +27,9 @@ pub(crate) struct ReadOpts {
     pub tail: Option<u32>,
     /// Join soft-wrapped rows into logical lines (ADR-0077 §2).
     pub unwrap: bool,
+    /// Render through the server's libghostty-vt Formatter instead of the
+    /// lines/cells JSON (`--format html|vt`, D9).
+    pub format: Option<SnapshotFormat>,
 }
 
 /// Options for the composited `--rendered` view (`phux-l5xa`). Bundled so the
@@ -55,9 +57,15 @@ pub(crate) struct RenderedOpts {
 /// branch ATTACHES rather than reading side-effect-free.
 ///
 /// `--tail` / `--unwrap` ([`ReadOpts`], ADR-0077) are **client-side
-/// projections** of the same reply: there is no new wire field, and the
-/// server's own read stays exactly the side-effect-free `GET_SCREEN` it
-/// already was.
+/// projections** of the plain `lines`/`scrollback` reply: there is no new
+/// wire field for `--tail`, and the server's own read stays exactly the
+/// side-effect-free `GET_SCREEN` it already was. With `--format`
+/// (D9), the server omits `lines`/`scrollback` from the reply (review
+/// item 2(c)), so those projections have nothing to act on; `--tail N`
+/// still reaches the server as `request_scrollback` (bounding what the
+/// *rendered* capture covers, same as `--scrollback N`), and `--unwrap`
+/// rides `format`'s high bit so the engine's own Formatter joins
+/// soft-wrapped capture rows instead.
 pub(crate) fn run_snapshot(
     session: Option<&str>,
     json: bool,
@@ -84,6 +92,7 @@ pub(crate) fn run_snapshot(
     let cells = read.cells;
     let unwrap = read.unwrap;
     let tail = read.tail;
+    let format = read.format;
 
     rt.block_on(async move {
         let terminal_id = match resolve_target(&socket_path, &selector, "snapshot", json).await {
@@ -93,18 +102,39 @@ pub(crate) fn run_snapshot(
 
         // Read the screen — side-effect-free, safe to poll. `scrollback`
         // maps straight onto the wire request: None/Some(0=all)/Some(n);
-        // `cells` requests the per-cell semantic/style projection.
-        let screen = match phux_client::snapshot::get_screen_scrollback(
+        // `cells` requests the per-cell semantic/style projection; `format`
+        // additionally asks the server to render through libghostty-vt's
+        // Formatter (D9), with `--unwrap` riding its high bit.
+        let format_byte = format.map_or(0, |f| {
+            let mut byte = f.wire_byte();
+            if unwrap {
+                byte |= phux_client::snapshot::SCREEN_FORMAT_UNWRAP;
+            }
+            byte
+        });
+        let screen = match phux_client::snapshot::get_screen_scrollback_format(
             &socket_path,
             terminal_id,
             request_scrollback,
             cells,
+            format_byte,
         )
         .await
         {
             Ok(screen) => screen,
             Err(err @ AttachError::Io(_)) => {
                 return json_err::report_no_server(json, &err, &socket_path, "snapshot");
+            }
+            Err(AttachError::FormatUnsupported(message)) => {
+                return json_err::emit(
+                    json,
+                    &json_err::CliError::new(
+                        json_err::codes::FORMAT_UNSUPPORTED,
+                        message,
+                        "retry without --format, or upgrade the phux server",
+                    ),
+                    2,
+                );
             }
             Err(err) => {
                 eprintln!("phux: snapshot failed: {err}");
@@ -124,6 +154,8 @@ pub(crate) fn run_snapshot(
                     ExitCode::FAILURE
                 }
             }
+        } else if format.is_some() {
+            print_rendered_capture(&screen)
         } else if unwrap {
             print_screen_rows(&screen);
             ExitCode::SUCCESS
@@ -134,85 +166,39 @@ pub(crate) fn run_snapshot(
     })
 }
 
-/// The history window to ask the server for.
-///
-/// `--scrollback` wins when both are given: it is the explicit statement
-/// about history, and `--tail` then clamps whatever came back. Otherwise
-/// `--tail N` asks for `N` history rows — a superset of what the window
-/// keeps, since the viewport also counts toward `N` — and `--tail 0` asks
-/// for all retained history, which [`project`] then clamps to
-/// `ROW_WINDOW_MAX`.
-fn history_request(read: &ReadOpts) -> Option<u32> {
-    read.scrollback.or(read.tail)
+/// `--format html|vt`: write the server's rendered capture straight to
+/// stdout — HTML as UTF-8 text, VT as the raw decoded byte stream — rather
+/// than through `outln!`, which would insert a newline the capture does
+/// not own. `--json` bypasses this entirely and emits the whole
+/// `ScreenState` document instead, `rendered` field included.
+fn print_rendered_capture(screen: &ScreenState) -> ExitCode {
+    let Some(rendered) = screen.rendered.as_ref() else {
+        eprintln!("phux: snapshot: server returned no rendered capture");
+        return ExitCode::FAILURE;
+    };
+    if rendered.format == phux_client::snapshot::RENDERED_FORMAT_VT {
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&rendered.data) else {
+            eprintln!("phux: snapshot: malformed base64 in rendered VT capture");
+            return ExitCode::FAILURE;
+        };
+        crate::output::bytes(&bytes);
+    } else {
+        crate::output::bytes(rendered.data.as_bytes());
+    }
+    ExitCode::SUCCESS
 }
 
-/// Apply the client-side ADR-0077 projections to a reply.
-///
-/// Order is deliberate: unwrapping first, then the row window. Unwrapping
-/// changes how many rows there are, so a window applied before it would
-/// count painted rows and report a different number than it returned.
-fn project(mut screen: ScreenState, unwrap: bool, tail: Option<u32>) -> ScreenState {
-    if unwrap {
-        let (history, viewport) = screen.unwrapped_split();
-        screen.scrollback = history;
-        screen.lines = viewport;
-        // Nothing in the returned projection continues onto the next row
-        // any more. Keep it `Some` — present-and-empty is "reported, none",
-        // and dropping to `None` would read as "server said nothing".
-        screen.soft_wrap = Some(SoftWrap::default());
-    }
+/// The history window to ask the server for
+/// ([`phux_client::snapshot::history_request`]).
+const fn history_request(read: &ReadOpts) -> Option<u32> {
+    phux_client::snapshot::history_request(read.scrollback, read.tail)
+}
 
-    let Some(want) = tail else {
-        return screen;
-    };
-
-    // The window counts rendered rows, history and viewport together, but a
-    // `ScreenState` describes a grid and a grid is never returned in part:
-    // `rows`, `cursor`, and `cells` are all grid coordinates. So the
-    // viewport is a floor and only history is clipped. A window narrower
-    // than the viewport therefore returns more rows than asked for, never
-    // fewer, and truncation still reports what it dropped.
-    let ceiling = usize::try_from(phux_client::snapshot::ROW_WINDOW_MAX).unwrap_or(usize::MAX);
-    let want = if want == ROW_WINDOW_ALL {
-        ceiling
-    } else {
-        usize::try_from(want).unwrap_or(usize::MAX).min(ceiling)
-    };
-    let keep = want.saturating_sub(screen.lines.len());
-    let before = screen.scrollback.len();
-    let clipped = if keep == 0 {
-        screen.scrollback.clear();
-        before > 0
-    } else {
-        let (kept, clipped) = row_window(
-            std::mem::take(&mut screen.scrollback),
-            u32::try_from(keep).unwrap_or(u32::MAX),
-        );
-        screen.scrollback = kept;
-        clipped
-    };
-
-    // History indices in `soft_wrap.scrollback` are relative to the
-    // returned array, so dropping D rows off the front shifts them by D. A
-    // wrap that pointed into a dropped row simply goes away: the surviving
-    // first row may be a continuation of something no longer present, which
-    // is exactly what `truncated` is telling the caller.
-    let dropped = u32::try_from(before - screen.scrollback.len()).unwrap_or(u32::MAX);
-    if dropped > 0
-        && let Some(wrap) = screen.soft_wrap.as_mut()
-    {
-        wrap.scrollback = wrap
-            .scrollback
-            .iter()
-            .filter_map(|index| index.checked_sub(dropped))
-            .collect();
-    }
-
-    if clipped {
-        screen.truncated = true;
-        screen.truncated_reason = Some(TRUNCATED_ROW_WINDOW.to_owned());
-    }
-    screen
+/// Apply the client-side ADR-0077 projections to a reply: the one
+/// implementation the MCP `phux_snapshot` tool also calls
+/// ([`phux_client::snapshot::project`]).
+fn project(screen: ScreenState, unwrap: bool, tail: Option<u32>) -> ScreenState {
+    phux_client::snapshot::project(screen, unwrap, tail)
 }
 
 /// `--rendered`: attach headless, compose the client's multi-pane frame, and
@@ -348,108 +334,25 @@ fn footer(screen: &ScreenState) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
 
-    fn opts(scrollback: Option<u32>, tail: Option<u32>, unwrap: bool) -> ReadOpts {
-        ReadOpts {
+    /// The CLI flags reach the library's history rule unchanged: `--tail N`
+    /// asks for `N` history rows, and an explicit `--scrollback` wins. The
+    /// projection itself is pinned beside its one implementation in
+    /// `phux_client::snapshot`.
+    #[test]
+    fn history_request_prefers_an_explicit_scrollback() {
+        let opts = |scrollback, tail| ReadOpts {
             scrollback,
             cells: false,
             tail,
-            unwrap,
-        }
-    }
-
-    fn screen(scrollback: &[&str], lines: &[&str], wrapped_lines: &[u32]) -> ScreenState {
-        ScreenState {
-            pane: 1,
-            cols: 10,
-            rows: u16::try_from(lines.len()).unwrap_or(0),
-            lines: lines.iter().map(|s| (*s).to_owned()).collect(),
-            scrollback: scrollback.iter().map(|s| (*s).to_owned()).collect(),
-            soft_wrap: Some(SoftWrap {
-                lines: wrapped_lines.to_vec(),
-                scrollback: Vec::new(),
-            }),
-            ..ScreenState::default()
-        }
-    }
-
-    /// `--tail N` asks the server for `N` history rows; an explicit
-    /// `--scrollback` wins over it.
-    #[test]
-    fn history_request_prefers_an_explicit_scrollback() {
-        assert_eq!(history_request(&opts(None, None, false)), None);
-        assert_eq!(history_request(&opts(None, Some(80), false)), Some(80));
-        assert_eq!(history_request(&opts(None, Some(0), false)), Some(0));
-        assert_eq!(history_request(&opts(Some(5), Some(80), false)), Some(5));
-    }
-
-    /// `--unwrap` joins wrapped rows and reports that nothing in the
-    /// returned projection continues — `Some(empty)`, never `None`.
-    #[test]
-    fn unwrap_joins_rows_and_keeps_reporting_wrap_info() {
-        let out = project(screen(&[], &["the quick", "brown fox"], &[0]), true, None);
-        assert_eq!(out.lines, vec!["the quickbrown fox".to_owned()]);
-        assert_eq!(out.soft_wrap, Some(SoftWrap::default()));
-        assert!(
-            out.has_soft_wrap_info(),
-            "an unwrapped projection still reported wrap info",
-        );
-        assert!(!out.truncated);
-    }
-
-    /// The row window counts the viewport and clips only history, and it
-    /// says so.
-    #[test]
-    fn tail_clips_history_and_reports_truncation() {
-        let base = screen(&["h1", "h2", "h3"], &["v1", "v2"], &[]);
-
-        let out = project(base.clone(), false, Some(4));
-        assert_eq!(
-            out.scrollback,
-            vec!["h2".to_owned(), "h3".to_owned()],
-            "a window of 4 is 2 viewport rows + the 2 most-recent history rows",
-        );
-        assert_eq!(out.lines, vec!["v1".to_owned(), "v2".to_owned()]);
-        assert!(out.truncated);
-        assert_eq!(out.truncated_reason.as_deref(), Some(TRUNCATED_ROW_WINDOW));
-
-        let out = project(base.clone(), false, Some(5));
-        assert_eq!(out.scrollback.len(), 3, "a window that fits clips nothing");
-        assert!(!out.truncated);
-        assert!(out.truncated_reason.is_none());
-
-        let out = project(base.clone(), false, Some(ROW_WINDOW_ALL));
-        assert_eq!(out.scrollback.len(), 3);
-        assert!(!out.truncated);
-
-        // A window narrower than the viewport: the grid is a floor, so the
-        // viewport survives whole and only history goes.
-        let out = project(base, false, Some(1));
-        assert!(out.scrollback.is_empty());
-        assert_eq!(out.lines.len(), 2, "the viewport is never returned in part");
-        assert!(out.truncated);
-    }
-
-    /// Clipping history shifts the history wrap indices, which are relative
-    /// to the returned array.
-    #[test]
-    fn tail_shifts_history_wrap_indices() {
-        let mut base = screen(&["h1", "h2", "h3"], &["v1"], &[]);
-        base.soft_wrap = Some(SoftWrap {
-            lines: Vec::new(),
-            scrollback: vec![0, 2],
-        });
-        let out = project(base, false, Some(3));
-        assert_eq!(out.scrollback, vec!["h2".to_owned(), "h3".to_owned()]);
-        let wrap = out.soft_wrap.expect("wrap info survives the window");
-        assert_eq!(
-            wrap.scrollback,
-            vec![1],
-            "index 2 became 1; index 0 pointed at a dropped row and went away",
-        );
+            unwrap: false,
+            format: None,
+        };
+        assert_eq!(history_request(&opts(None, None)), None);
+        assert_eq!(history_request(&opts(None, Some(80))), Some(80));
+        assert_eq!(history_request(&opts(Some(5), Some(80))), Some(5));
     }
 
     /// clap's `default_missing_value` must be a string literal, so bare
@@ -467,12 +370,5 @@ mod tests {
             10_000,
             "the --tail help text spells this as 10000",
         );
-    }
-
-    /// Nothing requested, nothing changed: the projection is the identity.
-    #[test]
-    fn no_modifiers_leaves_the_reply_untouched() {
-        let base = screen(&["h1"], &["v1"], &[0]);
-        assert_eq!(project(base.clone(), false, None), base);
     }
 }

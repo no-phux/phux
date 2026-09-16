@@ -379,29 +379,6 @@ typedef struct PhuxClientOptions {
     size_t history_prefetch_rows;
 } PhuxClientOptions;
 
-typedef void (*PhuxClientAttachedCallback)(void *userdata);
-typedef void (*PhuxClientFailureCallback)(
-    void *userdata,
-    PhuxClientResult result,
-    PhuxBytes message
-);
-
-/**
- * Optional lifecycle callbacks, copied by phux_client_set_callbacks.
- * Callbacks run synchronously on the owning thread only after kernel mutation
- * and effect staging finish. They are strictly non-reentrant: every FFI call
- * made from a callback is rejected (void free is ignored; scalar getters
- * return their failure sentinel). message is borrowed only for the duration
- * of on_failure. NULL callbacks disable that notification.
- */
-typedef struct PhuxClientCallbacks {
-    size_t size;
-    uint32_t version;
-    void *userdata;
-    PhuxClientAttachedCallback on_attached;
-    PhuxClientFailureCallback on_failure;
-} PhuxClientCallbacks;
-
 /**
  * Session selector for phux_client_queue_attach.
  *
@@ -457,6 +434,13 @@ typedef struct PhuxAttachOptions {
  * Text across argv/cwd/route/owner host is bounded by MAX_SPAWN_BYTES (both host
  * spans count when an owner is present). Both geometry axes must be nonzero.
  * Geometry is an initial hint; older servers and satellite relays may ignore it.
+ * has_retain_secs / retain_secs and idempotency_key are trailing-additive at
+ * ABI version 2 (ADR-0124, ADR-0126). A host that still passes the geometry-only
+ * size is accepted and treated as both absent. has_retain_secs false means
+ * absent (today's close-at-exit); true sends retain_secs, including 0 for the
+ * server default. Requires RETAIN_ON_EXIT or PHUX_CLIENT_INVALID_STATE, nothing
+ * queued. idempotency_key is 16 bytes; all-zero means absent. A nonzero key
+ * requires SPAWN_IDEMPOTENCY or PHUX_CLIENT_INVALID_STATE, nothing queued.
  */
 typedef struct PhuxSpawnOptions {
     size_t size;
@@ -469,6 +453,9 @@ typedef struct PhuxSpawnOptions {
     PhuxBytes cwd;
     uint16_t cols;
     uint16_t rows;
+    bool has_retain_secs;
+    uint32_t retain_secs;
+    uint8_t idempotency_key[16];
 } PhuxSpawnOptions;
 
 /** Explicitly admits this ID before bootstrap can arrive, including before the
@@ -572,7 +559,9 @@ typedef enum PhuxClientDamageKind {
  * subscribes with SUBSCRIBE_EVENTS after every ATTACH_READY (a repeat
  * subscribe is a documented wire no-op), and folds the resulting cwd_changed
  * / command_started / command_finished / terminal_control{Exited} events,
- * plus a plain RESOURCE_CLOSED teardown, into these effects. They are
+ * plus a plain RESOURCE_CLOSED teardown, into these effects. A host that
+ * called phux_client_subscribe_events with after_seq before ATTACH_READY
+ * sends that journal cursor on the automatic subscribe (ADR-0123). They are
  * additive PhuxClientStatusKind members: a host that does not recognise one
  * must skip it like any other effect kind it does not handle, and adding
  * them does not bump PHUX_CLIENT_ABI_VERSION (see its definition above).
@@ -642,6 +631,9 @@ typedef enum PhuxClientDetachReason {
     PHUX_CLIENT_DETACH_SESSION_KILLED = 2,
     PHUX_CLIENT_DETACH_REPLACED = 3,
     PHUX_CLIENT_DETACH_PROTOCOL_ERROR = 4,
+    PHUX_CLIENT_DETACH_AUTHENTICATION_FAILED = 5,
+    PHUX_CLIENT_DETACH_AUTHORIZATION_REVOKED = 6,
+    PHUX_CLIENT_DETACH_AUTHORIZATION_EXPIRED = 7,
     PHUX_CLIENT_DETACH_INTERNAL_ERROR = 255,
     PHUX_CLIENT_DETACH_REASON_UNSTATED = 0xFFFF
 } PhuxClientDetachReason;
@@ -867,14 +859,31 @@ PhuxClientResult phux_client_log_init(PhuxBytes filter);
  * not exceed PHUX_CLIENT_MAX_OUTBOUND_BYTES.
  */
 PhuxClientResult phux_client_new(const PhuxClientOptions *options, PhuxClient **out_client);
-PhuxClientResult phux_client_set_callbacks(PhuxClient *client, const PhuxClientCallbacks *callbacks);
 void phux_client_free(PhuxClient *client);
 PhuxClientState phux_client_state(const PhuxClient *client);
 PhuxClientResult phux_client_last_error(const PhuxClient *client, PhuxBytes *out_error);
 PhuxClientResult phux_client_queue_hello(PhuxClient *client, PhuxBytes client_name);
 PhuxClientResult phux_client_queue_attach(PhuxClient *client, const PhuxAttachOptions *options);
 PhuxClientResult phux_client_queue_spawn(PhuxClient *client, const PhuxSpawnOptions *options);
+/* Arm or send SUBSCRIBE_EVENTS with an optional journal cursor (ADR-0123).
+ * Additive to ABI version 2. terminal NULL is the connection-wide scope the
+ * automatic post-ATTACH_READY subscribe uses. after_seq NULL is live-only; a
+ * non-NULL pointer is the cursor and is stored for that automatic subscribe
+ * as well. A cursor requires EVENT_JOURNAL (0x01000000) or
+ * PHUX_CLIENT_INVALID_STATE, nothing queued. Before ATTACH the call only
+ * stores the cursor; after ATTACH it queues the frame immediately. Needs a
+ * negotiated client that is not DETACHED. */
+PhuxClientResult phux_client_subscribe_events(PhuxClient *client, const PhuxResourceId *terminal, const uint64_t *after_seq);
 PhuxClientResult phux_client_queue_attach_resource(PhuxClient *client, const PhuxAttachResourceOptions *options);
+/* Declare the role every later ATTACH and ATTACH_RESOURCE carries (ADR-0127).
+ * Additive to ABI version 2. role_policy is the L1.md 8.1 byte: 0 the default
+ * (sends nothing), 1 VIEWER (observe-only: the subscription's input is
+ * refused), 2 PRIMARY with DELIBERATE takeover (attach and seize the input
+ * lease). Any other value is PHUX_CLIENT_INVALID_ARGUMENT. A non-zero role
+ * needs a negotiated client whose server advertised ATTACH_ROLES
+ * (0x08000000), or PHUX_CLIENT_INVALID_STATE; nothing is stored on refusal.
+ * A takeover is consumed by the next attach it rides; VIEWER stays declared. */
+PhuxClientResult phux_client_attach_role(PhuxClient *client, uint8_t role_policy);
 
 /* Withdraw a subscription, never kill durable work. Requires completed session
  * ATTACH and an admitted terminal without a pending attach/detach. Correlated
@@ -975,8 +984,8 @@ typedef struct PhuxWorkspaceMutation {
     uint32_t path_len;
     uint64_t path_bits;
 } PhuxWorkspaceMutation;
-/* Host request IDs across spawn/subscribe/refresh/mutate must strictly increase,
- * 1..0x7fffffff. The bridge reserves the upper half for internal correlation.
+/* Host request IDs across spawn/subscribe/refresh/mutate/named-projection
+ * must strictly increase, 1..0x7fffffff. The bridge reserves the upper half for internal correlation.
  * One refresh OR mutation may be pending. Poll <=1s and before palette display.
  * Refresh never changes the actual attached session or allocates emulators.
  * Mutation is whole-value LWW SET followed by GET confirmation, NOT CAS:
@@ -988,6 +997,56 @@ PhuxClientResult phux_client_workspace_info(const PhuxClient *client, PhuxWorksp
 PhuxClientResult phux_client_workspace_window_get(const PhuxClient *client, size_t index, PhuxWorkspaceWindow *out_window);
 PhuxClientResult phux_client_workspace_node_get(const PhuxClient *client, size_t index, PhuxWorkspaceNode *out_node);
 PhuxClientResult phux_client_catalog_terminal_get(const PhuxClient *client, size_t index, PhuxCatalogTerminal *out_terminal);
+
+/* Named projections (ADR-0129, docs/spec/L3.md section 3.5). Additive to ABI
+ * version 2. A projection is not a resource: it is the L3 metadata key
+ * <prefix>.layout/v1/<session-id> (canonical decimal session id, nonempty
+ * prefix that does not itself contain .layout/v1/). Scope is Group 1. Values
+ * are opaque bytes (the section 3.2 CBOR envelope when the writer is a layout
+ * consumer). GET/SET/DELETE map to those L3 verbs. SET and DELETE have no
+ * success reply, so the bridge queues a confirming GET on a reserved internal
+ * id (last-write-wins, not CAS). Requires HELLO_OK layers to include L3;
+ * otherwise PHUX_CLIENT_INVALID_STATE, nothing queued, no request ID consumed.
+ * Needs a negotiated client, attached or not. One op may be pending. Request
+ * IDs share the strictly increasing host space with spawn/subscribe/refresh.
+ * A value over 256 KiB is refused before queueing. Disconnecting while
+ * PENDING yields UNKNOWN_OUTCOME. Spans from info are borrowed until the next
+ * mutable client call. */
+typedef enum PhuxProjectionStatus {
+    PHUX_PROJECTION_NONE = 0,
+    PHUX_PROJECTION_PENDING = 1,
+    PHUX_PROJECTION_OK = 2,
+    PHUX_PROJECTION_REFUSED = 3,
+    PHUX_PROJECTION_UNKNOWN_OUTCOME = 4
+} PhuxProjectionStatus;
+typedef enum PhuxProjectionOp {
+    PHUX_PROJECTION_OP_NONE = 0,
+    PHUX_PROJECTION_OP_GET = 1,
+    PHUX_PROJECTION_OP_SET = 2,
+    PHUX_PROJECTION_OP_DELETE = 3
+} PhuxProjectionOp;
+/** Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
+ * present is true when a value is held: GET of an absent key and a confirmed
+ * DELETE report OK with present false. REFUSED keeps any confirming-read
+ * bytes for diagnosis. */
+typedef struct PhuxProjectionInfo {
+    size_t size;
+    uint32_t version;
+    uint32_t request_id;
+    uint32_t status;
+    uint32_t op;
+    uint32_t session_id;
+    bool present;
+    PhuxBytes key;
+    PhuxBytes value;
+    PhuxBytes message;
+} PhuxProjectionInfo;
+PhuxClientResult phux_client_projection_supported(const PhuxClient *client, bool *out_supported);
+PhuxClientResult phux_client_projection_get(PhuxClient *client, uint32_t request_id, PhuxBytes key);
+PhuxClientResult phux_client_projection_set(PhuxClient *client, uint32_t request_id, PhuxBytes key, PhuxBytes value);
+PhuxClientResult phux_client_projection_delete(PhuxClient *client, uint32_t request_id, PhuxBytes key);
+PhuxClientResult phux_client_projection_info(const PhuxClient *client, PhuxProjectionInfo *out_info);
+
 size_t phux_client_outgoing_count(const PhuxClient *client);
 PhuxClientResult phux_client_outgoing_get(const PhuxClient *client, size_t index, PhuxBytes *out_frame);
 PhuxClientResult phux_client_outgoing_clear(PhuxClient *client);
@@ -1149,8 +1208,6 @@ typedef struct PhuxDirectoryEntry {
     PhuxBytes name;
 } PhuxDirectoryEntry;
 
-PhuxClientResult phux_client_list_directory(PhuxClient *client, uint32_t request_id, PhuxBytes path);
-
 /* A satellite's directories (docs/spec/L3.md section 4.1). Additive to ABI
  * version 2. Attached to a federation hub, a satellite pane's directories
  * live on the satellite; LIST_DIRECTORY.host names it and the hub relays the
@@ -1162,13 +1219,14 @@ PhuxClientResult phux_client_list_directory(PhuxClient *client, uint32_t request
  * with an empty host, and says whose directories it shows.
  *
  * Initialize size = sizeof(struct), version = PHUX_CLIENT_ABI_VERSION.
- * request_id and path are exactly as for phux_client_list_directory. host is
- * the satellite name as a satellite-tagged PhuxResourceId carries it: UTF-8
- * without NUL, at most 255 bytes; empty is the serving host, and the frame is
- * then byte-identical to phux_client_list_directory's. A relayed refusal
- * (unknown or unreachable satellite, a satellite without LIST_DIRECTORY, the
- * relay deadline) arrives as an ordinary REFUSED/OTHER listing whose message
- * names the host. */
+ * request_id shares the strictly increasing host request space. path is UTF-8
+ * without NUL, at most 4096 bytes: empty or "~" for the serving user's home,
+ * "~/rest", or an absolute path. host is the satellite name as a
+ * satellite-tagged PhuxResourceId carries it: UTF-8 without NUL, at most 255
+ * bytes; empty is the serving host (no host field on the frame). A relayed
+ * refusal (unknown or unreachable satellite, a satellite without
+ * LIST_DIRECTORY, the relay deadline) arrives as an ordinary REFUSED/OTHER
+ * listing whose message names the host. */
 typedef struct PhuxDirectoryRequest {
     size_t size;
     uint32_t version;
@@ -1215,7 +1273,8 @@ PhuxClientResult phux_client_session_query_status(const PhuxClient *client, uint
 /* ---------------------------------------------------- conditional kill
  *
  * ADR-0109, docs/spec/L1.md sections 3.1 and 5.2.1. Additive to ABI version
- * 2: PhuxSpawnOptions and PhuxOperationResult are unchanged. All of it
+ * 2: bind_instance stays a separate function, and PhuxOperationResult is
+ * unchanged. All of it
  * requires HELLO_OK to have advertised CONDITIONAL_KILL (0x00200000);
  * otherwise PHUX_CLIENT_INVALID_STATE, nothing queued, no request ID
  * consumed.
@@ -1270,6 +1329,14 @@ PhuxClientResult phux_client_queue_close_resource(PhuxClient *client, uint32_t r
  * disconnect then produces UNKNOWN_OUTCOME, not success. The wire
  * batch has no instance precondition; never move it to another connection. */
 PhuxClientResult phux_client_queue_close_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
+
+/* Same validations, fence, and kind-6 completion as queue_close_resources, but
+ * the wire command is CLOSE_TAB_RESOURCES (L1 §5.2.2): a full-coverage batch
+ * leaves a keep-empty named session empty instead of reaping it. End Session
+ * and phux kill SESSION keep queue_close_resources / KILL_RESOURCES. */
+PhuxClientResult phux_client_queue_close_tab_resources(PhuxClient *client, uint32_t request_id, const PhuxResourceId *terminal_ids, size_t count);
+/** *out_supported: HELLO_OK advertised CLOSE_TAB_RESOURCES. */
+PhuxClientResult phux_client_close_tab_resources_supported(const PhuxClient *client, bool *out_supported);
 /** *out_supported: HELLO_OK advertised CONDITIONAL_KILL. */
 PhuxClientResult phux_client_conditional_kill_supported(const PhuxClient *client, bool *out_supported);
 

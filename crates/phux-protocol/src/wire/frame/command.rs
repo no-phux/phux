@@ -240,6 +240,13 @@ pub enum ControlAction {
     /// subscription and reports the same transition as `Released` to any
     /// other (`docs/spec/L1.md` §7.1).
     Expired = 9,
+    /// The actor re-attached the Terminal with a different declared role
+    /// (ADR-0127): a `VIEWER` widened to `PRIMARY`, or the reverse. Like
+    /// `Expired`, a pre-`0.9.0-draft.15` decoder fails the frame on it, so
+    /// a server sends it only to a journal-aware subscription and withholds
+    /// it from any other; a later decoder that predates it reads
+    /// `Unknown { tag: 0x08 }`.
+    RoleChanged = 10,
 }
 
 impl ControlAction {
@@ -263,7 +270,60 @@ impl ControlAction {
             7 => Some(Self::Killed),
             8 => Some(Self::Exited),
             9 => Some(Self::Expired),
+            10 => Some(Self::RoleChanged),
             _ => None,
+        }
+    }
+}
+
+/// How a held action's approval ended (ADR-0128), carried by
+/// [`AgentEvent::ApprovalDecided`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ApprovalOutcome {
+    /// A connection holding un-held `SIGNAL` on the subject approved it; the
+    /// held command then ran once, under the requester's grant.
+    Approved = 0,
+    /// A connection holding un-held `SIGNAL` on the subject denied it; the
+    /// requester got `PERMISSION_DENIED`.
+    Denied = 1,
+    /// Nobody decided within the approval TTL; the requester got
+    /// `PERMISSION_DENIED { "approval expired" }`.
+    Expired = 2,
+    /// The action was withdrawn while held, and nothing ran. Two cases: a
+    /// Terminal it names was reaped, and the requester is answered
+    /// `PERMISSION_DENIED { "terminal gone" }`; or the requester disconnected
+    /// or its authority was revoked, and nobody is answered, because the
+    /// requester is gone.
+    Withdrawn = 3,
+}
+
+impl ApprovalOutcome {
+    /// Wire byte for this outcome.
+    #[must_use]
+    pub const fn to_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// Decode from the wire byte; `None` for unknown values.
+    #[must_use]
+    pub const fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Approved),
+            1 => Some(Self::Denied),
+            2 => Some(Self::Expired),
+            3 => Some(Self::Withdrawn),
+            _ => None,
+        }
+    }
+
+    /// The stable lowercase name consumers print.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::Expired => "expired",
+            Self::Withdrawn => "withdrawn",
         }
     }
 }
@@ -293,8 +353,7 @@ pub enum Command {
     /// Re-attaching replaces the generation without duplicating the stream.
     /// It does NOT resize the Terminal (no viewport rides the command);
     /// callers that want their geometry applied follow with
-    /// `RESIZE_TERMINAL`. The catalog's `role_policy` field is not yet
-    /// encoded; absence means `{ PRIMARY, takeover: NEVER }` (SPEC §8.1).
+    /// `RESIZE_TERMINAL`.
     /// Reply: `COMMAND_RESULT { Ok }` (the snapshot MAY precede it, per
     /// SPEC §5 command/stream interleaving), or
     /// `Error { TerminalNotFound }`. This is the verb a federation hub
@@ -302,6 +361,12 @@ pub enum Command {
     AttachResource {
         /// The Terminal whose content stream to subscribe to.
         terminal_id: ResourceId,
+        /// The declared attach intent (ADR-0127, SPEC §8.1), one trailing
+        /// byte. `None` writes no byte and means `{ PRIMARY, NEVER }`, so an
+        /// attach without it is byte-identical to one from before roles.
+        /// Send `Some` only to a server advertising `ATTACH_ROLES`: an older
+        /// one ignores the byte and grants an ordinary attach.
+        role_policy: Option<super::RolePolicy>,
     },
     /// Drop the caller's per-Terminal subscriptions on `terminal_id`
     /// (SPEC §5.1 `DETACH_RESOURCE`, phux-v45.7): the output stream wired
@@ -320,6 +385,14 @@ pub enum Command {
     KillResource {
         /// The Terminal to terminate.
         terminal_id: ResourceId,
+        /// Idempotency key of this kill (`docs/spec/L1.md` §5.1.1), a
+        /// trailing `bytes16` read only when bytes remain, so an unkeyed
+        /// body keeps its earlier bytes. A repeat with the same key and
+        /// target answers the first result and kills nothing. Send it only
+        /// to a server that advertises
+        /// [`ServerFeature::KeyedSignal`](crate::caps::ServerFeature::KeyedSignal):
+        /// an older one ignores the trailing bytes and kills again.
+        operation_id: Option<crate::ids::IdempotencyKey>,
     },
     /// Request a snapshot of server state in `scope`. The reply rides on
     /// `COMMAND_RESULT { Ok_With(State(..)) }`. Backs `phux ls` and the
@@ -354,6 +427,28 @@ pub enum Command {
         /// (which ended after `request_scrollback`) finds no byte and
         /// defaults it to `false`, so the field is wire-additive.
         cells: bool,
+        /// Which rendering, if any, the reply's additive `ScreenState.
+        /// rendered` field should carry (D9, fallback rung three: below
+        /// typed commands and semantic streams, above synthetic input —
+        /// `docs/consumers/agents.md`). Two parts, see
+        /// [`GET_SCREEN_FORMAT_SELECTOR_MASK`] /
+        /// [`GET_SCREEN_FORMAT_UNWRAP`]: the low 7 bits select the
+        /// rendering (`0` today's default, no rendering, `rendered`
+        /// absent; `1` libghostty-vt's own Formatter as HTML; `2` as VT
+        /// escape sequences — the server never reimplements extraction,
+        /// per CONTRIBUTING; any other selector is refused with
+        /// `INVALID_COMMAND`), and the high bit requests the Formatter's
+        /// own soft-wrapped-line join (ignored when the selector is `0`).
+        /// A pre-D9 peer's decoder stops reading this body after `cells`
+        /// and never sees this byte at all, so it silently answers as if
+        /// `format: 0` were asked — the client detects that from the
+        /// reply's absent `rendered` field
+        /// (`phux_client::snapshot::get_screen_scrollback_format`), since
+        /// no feature bit gates a byte an old peer cannot know exists.
+        /// Encoded as a trailing `u8` byte *after* `cells`; a decoder
+        /// reading a pre-D9 body (which ended after `cells`) finds no
+        /// byte and defaults it to `0`, so the field is wire-additive.
+        format: u8,
     },
     /// Deliver an already-built input `event` to `terminal_id` without an
     /// attach, subscription, or resize. The write counterpart to the
@@ -399,6 +494,9 @@ pub enum Command {
         /// skipped silently; the op succeeds as long as it is structurally
         /// valid.
         ids: Vec<ResourceId>,
+        /// Idempotency key of the whole batch, trailing like
+        /// [`Command::KillResource::operation_id`].
+        operation_id: Option<crate::ids::IdempotencyKey>,
     },
     /// Force-detach clients from *outside* the attach UI — backs `phux detach`.
     /// `session = Some(name)` detaches every client attached to that session;
@@ -507,6 +605,10 @@ pub enum Command {
         terminal_id: ResourceId,
         /// The signal to deliver.
         signal: TerminalSignal,
+        /// Idempotency key of this signal, trailing like
+        /// [`Command::KillResource::operation_id`]: a repeat answers the
+        /// first result and delivers nothing.
+        operation_id: Option<crate::ids::IdempotencyKey>,
     },
     /// Write one acknowledged chunk of a file into the target host's
     /// server-owned upload sandbox (ADR-0059). `terminal_id` selects the host
@@ -610,6 +712,9 @@ pub enum Command {
         terminal_id: ResourceId,
         /// What must hold for the kill to proceed.
         precondition: KillPrecondition,
+        /// Idempotency key of this kill, trailing after the condition bits
+        /// like [`Command::KillResource::operation_id`].
+        operation_id: Option<crate::ids::IdempotencyKey>,
     },
     /// Open a listener for one remote attach (`docs/spec/L1.md` §5.6,
     /// ADR-0120). The server binds `transport` on the wildcard address, on a
@@ -638,7 +743,51 @@ pub enum Command {
         /// `0` asks for the server default.
         linger_secs: u32,
     },
+    /// Atomically terminate every Terminal in `ids` under the server's
+    /// single state lock, like [`Self::KillResources`], without releasing
+    /// keep-empty on a fully covered session (`docs/spec/L1.md` §5.2.2).
+    /// Explicit Close Tab uses this so a keep-empty named session stays
+    /// listed and empty; `phux kill SESSION` / End Session keep
+    /// [`Self::KillResources`]. Gated on
+    /// [`ServerFeature::CloseTabResources`](crate::caps::ServerFeature::CloseTabResources).
+    CloseTabResources {
+        /// The Terminals to terminate. Unknown / already-dead ids are
+        /// skipped silently; the op succeeds as long as it is structurally
+        /// valid.
+        ids: Vec<ResourceId>,
+    },
 }
+
+impl Command {
+    /// The idempotency key a keyed supervisory command carries:
+    /// `KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`, or
+    /// `SIGNAL_TERMINAL` with its trailing `operation_id`
+    /// (`docs/spec/L1.md` §5.1.1). `None` for every other command, and for
+    /// an unkeyed one.
+    #[must_use]
+    pub const fn idempotency_key(&self) -> Option<&crate::ids::IdempotencyKey> {
+        match self {
+            Self::KillResource { operation_id, .. }
+            | Self::KillResourceIf { operation_id, .. }
+            | Self::KillResources { operation_id, .. }
+            | Self::SignalTerminal { operation_id, .. } => operation_id.as_ref(),
+            _ => None,
+        }
+    }
+}
+
+/// [`Command::GetScreen::format`]'s low 7 bits: which rendering to
+/// produce (D9). `0` none, `1` HTML, `2` VT; `3..=127` are undefined and
+/// refused with `INVALID_COMMAND`.
+pub const GET_SCREEN_FORMAT_SELECTOR_MASK: u8 = 0x7F;
+
+/// [`Command::GetScreen::format`]'s high bit.
+///
+/// Also join soft-wrapped capture rows via the engine Formatter's own
+/// unwrap (`phux snapshot --format html|vt --unwrap`, D9). Combine with
+/// the selector bits (`format | GET_SCREEN_FORMAT_UNWRAP`); ignored when
+/// the selector is `0` (no rendering requested).
+pub const GET_SCREEN_FORMAT_UNWRAP: u8 = 0x80;
 
 /// The transport a [`Command::OpenListener`] asks for (`u8` on the wire).
 ///
@@ -954,6 +1103,28 @@ pub enum AgentEvent {
     SourceGap {
         /// How many events were lost at the source.
         dropped: u64,
+    },
+    /// A `SIGNAL` action was held for approval rather than run (ADR-0128).
+    ///
+    /// The details (requester, method, subjects, expiry) are the server-owned
+    /// `phux.approval/v1/<id>` record; the event carries only the id.
+    /// Journaled with the requester as `actor`. Positional body: `id` as 16
+    /// raw bytes. A decoder that predates tag `0x0d` reads it as
+    /// [`AgentEvent::Unknown`].
+    ApprovalRequested {
+        /// The held action's approval id.
+        id: crate::ids::ApprovalId,
+    },
+    /// A held action's approval ended (ADR-0128). Journaled with the
+    /// approver as `actor` for an approval or a denial, and with no actor
+    /// for an expiry or a withdrawal. Positional body: `id` as 16 raw bytes,
+    /// then `outcome: u8`. An outcome byte this build does not know makes
+    /// the whole event [`AgentEvent::Unknown`].
+    ApprovalDecided {
+        /// The held action's approval id.
+        id: crate::ids::ApprovalId,
+        /// How the approval ended.
+        outcome: ApprovalOutcome,
     },
     /// An event whose `tag` this protocol version does not recognise.
     ///

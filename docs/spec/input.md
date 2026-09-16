@@ -471,9 +471,10 @@ delivered without an attach via `ROUTE_INPUT` or the acknowledged `APPLY_INPUT`
 batch ([L1.md §5.1](./L1.md)). `INPUT_TERMINAL_REPLY` cannot: it is meaningful
 only for an attached emulator processing that Terminal's output. The current
 one-server-per-user trust model authenticates the caller at the transport
-boundary. Per-connection `PRIMARY` / `VIEWER` roles are specified in
-[L1.md §8.1](./L1.md) and are spec-only; every live subscription behaves as
-an unconstrained primary.
+boundary, and a workload grant bounds it per Terminal
+([workload-auth.md §6](./workload-auth.md)). A subscription declared `VIEWER`
+([L1.md §8.1](./L1.md)) is refused every one of these for that Terminal,
+whatever its grant admits.
 
 ---
 

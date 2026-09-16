@@ -25,6 +25,7 @@ use phux_protocol::wire::frame::{
     AttachTarget, Command, FrameKind, Scope, decode_session_keep_empty,
 };
 
+use super::hold::Admission;
 use super::{Authority, ConnectionGrant, POLICY_TARGET};
 use crate::state::{ClientId, ServerState};
 
@@ -40,8 +41,8 @@ const BIND: Verbs = Verbs::of(&[Verb::Bind]);
 pub struct Denial {
     /// The verbs the refused operation needed; empty for a default-deny row.
     pub verbs: Verbs,
-    /// `terminal`, `group`, `host`, `global`, `unclassified`, `ungranted`, or
-    /// `expired`.
+    /// `terminal`, `group`, `host`, `global`, `approval`, `unclassified`,
+    /// `ungranted`, `expired`, `revoked`, `viewer`, or `held`.
     pub subject: &'static str,
 }
 
@@ -64,6 +65,19 @@ impl Denial {
         verbs: Verbs::EMPTY,
         subject: "expired",
     };
+
+    /// A connection whose authority was withdrawn while it was live.
+    const REVOKED: Self = Self {
+        verbs: Verbs::EMPTY,
+        subject: "revoked",
+    };
+
+    /// Input to a Terminal the connection subscribed as a `VIEWER`
+    /// (ADR-0127).
+    const VIEWER: Self = Self {
+        verbs: Verbs::of(&[Verb::Input]),
+        subject: "viewer",
+    };
 }
 
 /// What the guard is asked to admit.
@@ -77,18 +91,20 @@ pub enum Request<'a> {
     StreamBind(&'a WireResourceId),
 }
 
-/// Guard one decoded frame for `client`.
+/// Guard one decoded frame for `client`. A frame is never held: a held
+/// `SIGNAL` on one is refused (ADR-0128).
 pub fn authorize_frame(s: &ServerState, client: ClientId, frame: &FrameKind) -> Result<(), Denial> {
-    authorize(s, client, Request::Frame(frame))
+    authorize(s, client, Request::Frame(frame)).map(drop)
 }
 
 /// Guard one nested command for `client`, before any handler, input-lane
-/// route, or satellite relay.
+/// route, or satellite relay: run it, or hold it for a decision
+/// (ADR-0128).
 pub fn authorize_command(
     s: &ServerState,
     client: ClientId,
     command: &Command,
-) -> Result<(), Denial> {
+) -> Result<Admission, Denial> {
     authorize(s, client, Request::Command(command))
 }
 
@@ -98,15 +114,53 @@ pub fn authorize_stream_bind(
     client: ClientId,
     terminal: &WireResourceId,
 ) -> Result<(), Denial> {
-    authorize(s, client, Request::StreamBind(terminal))
+    authorize(s, client, Request::StreamBind(terminal)).map(drop)
 }
 
-fn authorize(s: &ServerState, client: ClientId, request: Request<'_>) -> Result<(), Denial> {
+fn authorize(s: &ServerState, client: ClientId, request: Request<'_>) -> Result<Admission, Denial> {
     let Some(grant) = s.connection_grant(client) else {
         tracing::debug!(target: POLICY_TARGET, ?client, "operation denied: no grant was minted");
         return Err(Denial::UNGRANTED);
     };
-    enforce(s, client, grant, request).inspect_err(|denial| trace_denial(grant, *denial))
+    enforce(s, client, grant, request)
+        .and_then(|()| refuse_viewer_input(s, client, request))
+        .and_then(|()| super::hold::refuse_viewer_decision(s, client, request))
+        .and_then(|()| super::hold::admission(s, client, grant, request))
+        .inspect_err(|denial| trace_denial(grant, *denial))
+}
+
+/// A `VIEWER` subscription is observe-only (ADR-0127): a request that needs
+/// `INPUT` on a Terminal the connection subscribed as a viewer, or asks for
+/// its lease, is refused whatever the grant admits, through the same
+/// refusal paths a scope denial takes. The role is intent the connection
+/// declared; widening it takes a fresh `ATTACH_RESOURCE { PRIMARY }`, which
+/// is journaled.
+fn refuse_viewer_input(
+    s: &ServerState,
+    client: ClientId,
+    request: Request<'_>,
+) -> Result<(), Denial> {
+    let request = unwrap_command(request);
+    let Some(terminal) = named_terminal(request) else {
+        return Ok(());
+    };
+    if is_input_request(request) && s.is_viewer(client, terminal) {
+        return Err(Denial::VIEWER);
+    }
+    Ok(())
+}
+
+/// `ACQUIRE_INPUT`, or any row that needs `INPUT` on a named Terminal:
+/// `INPUT_*`, `ROUTE_INPUT`, `APPLY_INPUT`, `PUT_FILE`, `TRANSCRIBE`.
+fn is_input_request(request: Request<'_>) -> bool {
+    if matches!(request, Request::Command(Command::AcquireInput { .. })) {
+        return true;
+    }
+    matches!(
+        classify(request),
+        Classification::Allow { verbs, subject: Subject::NamedTerminal }
+            if verbs.iter().any(|verb| verb == Verb::Input)
+    )
 }
 
 /// Decide `request` for `client` under `grant`, reading `s` as the snapshot
@@ -127,6 +181,13 @@ pub fn enforce(
     grant: &ConnectionGrant,
     request: Request<'_>,
 ) -> Result<(), Denial> {
+    // A revoked connection admits nothing, whatever shape its authority had
+    // (workload-auth §7 step 1). Checked before the owner's shortcut: a
+    // bearer-admitted connection holds the owner's grant in the transitional
+    // posture, and its revocation must still stop it.
+    if grant.revocation().is_some() {
+        return Err(Denial::REVOKED);
+    }
     let Authority::Scoped { effective, .. } = &grant.authority else {
         return Ok(());
     };
@@ -163,14 +224,14 @@ pub fn enforce(
 
 /// A `COMMAND` frame is classified, and its subject resolved, by the nested
 /// command.
-const fn unwrap_command(request: Request<'_>) -> Request<'_> {
+pub(super) const fn unwrap_command(request: Request<'_>) -> Request<'_> {
     match request {
         Request::Frame(FrameKind::Command { command, .. }) => Request::Command(command),
         other => other,
     }
 }
 
-fn classify(request: Request<'_>) -> Classification {
+pub(super) fn classify(request: Request<'_>) -> Classification {
     match request {
         Request::Frame(frame) => classify_frame(frame),
         Request::Command(command) => classify_command(command),
@@ -196,7 +257,7 @@ fn trace_denial(grant: &ConnectionGrant, denial: Denial) {
 // Needs: one verb set on one resolved subject; every need must pass.
 // -----------------------------------------------------------------------------
 
-struct Need {
+pub(super) struct Need {
     verbs: Verbs,
     point: Point,
 }
@@ -209,7 +270,7 @@ impl Need {
 
 /// Whether every verb of every need is granted on its subject by some clause
 /// whose two selectors both contain it.
-fn covers_all(effective: &EffectiveScopeSet, needs: &[Need]) -> bool {
+pub(super) fn covers_all(effective: &EffectiveScopeSet, needs: &[Need]) -> bool {
     needs.iter().all(|need| {
         need.verbs
             .iter()
@@ -219,7 +280,7 @@ fn covers_all(effective: &EffectiveScopeSet, needs: &[Need]) -> bool {
 
 /// The needs one §6 row places on `request`, or `None` when the subject
 /// cannot be resolved: that is a refusal, never a skip.
-fn needs_for(
+pub(super) fn needs_for(
     s: &ServerState,
     client: ClientId,
     subject: Subject,
@@ -251,6 +312,7 @@ fn needs_for(
             .and_then(|id| parent_subject(s, id))
             .map(one),
         Subject::MetadataScope => metadata_scope(request).map(|scope| one(scope_subject(s, scope))),
+        Subject::HeldAction => super::hold::held_action_needs(s, request),
         // The filtered result `ObservableTerminals` and `InventoryMatches`
         // allow is not built: they require Global, which the unfiltered
         // result is.
@@ -287,6 +349,7 @@ const fn subject_kind(subject: Subject) -> &'static str {
         | Subject::InventoryMatches
         | Subject::MetadataScope
         | Subject::Global { .. } => "global",
+        Subject::HeldAction => "approval",
         Subject::None | Subject::CallingConnection => "unclassified",
     }
 }
@@ -482,7 +545,7 @@ fn terminal_in(selector: &Selector, terminal: &TerminalPoint) -> bool {
 // -----------------------------------------------------------------------------
 
 /// The Terminal a "named Terminal" row names.
-const fn named_terminal(request: Request<'_>) -> Option<&WireResourceId> {
+pub(super) const fn named_terminal(request: Request<'_>) -> Option<&WireResourceId> {
     match request {
         Request::Frame(frame) => frame_terminal(frame),
         Request::Command(command) => command_terminal(command),
@@ -507,7 +570,7 @@ const fn frame_terminal(frame: &FrameKind) -> Option<&WireResourceId> {
 
 const fn command_terminal(command: &Command) -> Option<&WireResourceId> {
     match command {
-        Command::AttachResource { terminal_id }
+        Command::AttachResource { terminal_id, .. }
         | Command::DetachResource { terminal_id }
         | Command::KillResource { terminal_id, .. }
         | Command::KillResourceIf { terminal_id, .. }
@@ -528,13 +591,14 @@ const fn command_terminal(command: &Command) -> Option<&WireResourceId> {
     }
 }
 
-/// `KILL_RESOURCES`: every named Terminal, all-or-nothing. Zero targets is a
-/// no-op, so it needs nothing.
+/// `KILL_RESOURCES` / `CLOSE_TAB_RESOURCES`: every named Terminal, all-or-nothing.
+/// Zero targets is a no-op, so it needs nothing.
 fn every_named(s: &ServerState, verbs: Verbs, request: Request<'_>) -> Vec<Need> {
-    let Request::Command(Command::KillResources { ids }) = request else {
+    let Request::Command(command) = request else {
         return Vec::new();
     };
-    ids.iter()
+    super::batch_terminals(command)
+        .iter()
         .map(|id| Need::new(verbs, terminal_subject(s, id)))
         .collect()
 }

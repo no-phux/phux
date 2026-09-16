@@ -56,6 +56,7 @@ pub mod agent_prompt;
 // transition", which is a different contract from `wait`'s screen-level
 // conditions and must not be confused with them.
 pub mod agent_wait;
+pub mod approvals;
 pub mod ask;
 pub mod attach;
 // Conditional kills (ADR-0109): bind a spawn to the server's instance token
@@ -84,10 +85,15 @@ pub mod selector;
 pub mod send_keys;
 // Session-identity writes over L3 (`phux rename` today; ADR-0022 §5).
 pub mod session;
+// The `phux ls --json` document, shared by the CLI and the MCP `phux_ls`.
+pub mod session_list;
 // `ACQUIRE_INPUT` / `RELEASE_INPUT` / `SIGNAL_TERMINAL` command builders and
 // their shared outcome (`phux take` / `phux give` / `phux signal`, ADR-0033).
 pub mod signal;
 pub mod snapshot;
+// `insert-pane` / `move-pane` / `swap-pane`: resolution, plan, execution,
+// and refusal codes, shared by the CLI verbs and the MCP spatial tools.
+pub mod spatial;
 // `SPAWN_RESOURCE` and the ownership-verify + `KILL_RESOURCE` rollback dance
 // behind explicit placement (`phux spawn`, `phux launch`).
 pub mod spawn;

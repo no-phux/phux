@@ -630,6 +630,9 @@ pub(crate) struct NegotiatedBootstrap {
     /// Features the satellite advertised in `HELLO_OK`; the relay consults
     /// them before relaying a frame an older satellite would drop.
     server_features: phux_protocol::caps::ServerFeatureSet,
+    /// The satellite's incarnation, its `HELLO_OK.server_id`, which the
+    /// hub's incarnation fence compares a keyed retry against (L1 §9.1).
+    server_id: Option<[u8; 16]>,
 }
 /// An established hub link: a duplex of complete encoded phux frames
 /// (length prefix included, the `FrameKind::encode`/`decode` unit) the
@@ -648,6 +651,13 @@ pub(crate) trait LinkConn {
 
     /// Features the satellite advertised in its `HELLO_OK`.
     fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String>;
+
+    /// The satellite's incarnation, its `HELLO_OK.server_id` (L1 §9.1).
+    /// `None` when the transport cannot say, which fences as a single
+    /// incarnation.
+    fn satellite_incarnation(&self) -> Option<[u8; 16]> {
+        None
+    }
 }
 
 pub(crate) trait LinkReader {
@@ -701,6 +711,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
         requests: mut relay_rx,
         unsubscribes: mut unsub_rx,
         journal,
+        operations,
     } = mailbox;
     let spec = match plan_link(&entry) {
         Ok(spec) => spec,
@@ -776,6 +787,7 @@ pub(crate) async fn run_link<T: LinkTransport>(
                     &mut unsub_rx,
                     &cancel,
                     journal.as_ref(),
+                    &operations,
                 );
                 match session.await {
                     Some(reason) => {
@@ -846,12 +858,20 @@ async fn run_relay_session<C: LinkConn>(
     unsub_rx: &mut tokio::sync::mpsc::UnboundedReceiver<super::relay::Unsubscribe>,
     cancel: &CancellationToken,
     journal: Option<&crate::state::SharedState>,
+    operations: &super::operation_fence::OperationFence,
 ) -> Option<String> {
     let mut session = match negotiated_relay_session(host, &conn) {
         Ok(session) => session,
         Err(error) => return Some(error),
     };
     session.set_journal(journal.cloned());
+    // ADR-0127: the hub's satellite dispatch reads what this satellite
+    // advertised to decide whether the link can carry an attach's takeover.
+    if let Some(journal) = journal {
+        let features = session.satellite_features();
+        journal.with_mut(|s| s.set_satellite_features(host.clone(), features));
+    }
+    session.set_operation_fence(operations.clone());
     let (mut reader, writer) = conn.into_parts();
     let (write_tx, write_rx) = tokio::sync::mpsc::channel(LINK_WRITE_QUEUE);
     let queued_write_bytes = Rc::new(Cell::new(0usize));
@@ -938,12 +958,10 @@ fn negotiated_relay_session<C: LinkConn>(
     let limits = conn.bootstrap_limits()?;
     let features = conn.server_features()?;
     info!(satellite = %host, ?profile, "hub relay using negotiated bootstrap profile");
-    Ok(super::relay::RelaySession::new_negotiated(
-        host.clone(),
-        limits,
-        profile,
-        features,
-    ))
+    let mut session =
+        super::relay::RelaySession::new_negotiated(host.clone(), limits, profile, features);
+    session.set_incarnation(conn.satellite_incarnation());
+    Ok(session)
 }
 
 #[allow(
@@ -1191,6 +1209,7 @@ async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
             server_caps,
             selected_profile,
             bootstrap_limits,
+            server_id,
             ..
         } => {
             validate_link_hello_ok(
@@ -1205,6 +1224,7 @@ async fn negotiate_link<C: LinkConn + LinkReader + LinkWriter>(
                 profile: selected_profile,
                 limits: bootstrap_limits,
                 server_features: server_caps.features,
+                server_id: <[u8; 16]>::try_from(server_id.as_slice()).ok(),
             })
         }
         FrameKind::Error { code, message, .. } => {
@@ -1636,6 +1656,12 @@ impl LinkConn for NetLinkConn {
     fn server_features(&self) -> Result<phux_protocol::caps::ServerFeatureSet, String> {
         self.negotiated().map(|selection| selection.server_features)
     }
+
+    fn satellite_incarnation(&self) -> Option<[u8; 16]> {
+        self.negotiated()
+            .ok()
+            .and_then(|selection| selection.server_id)
+    }
 }
 
 impl LinkWriter for NetLinkConn {
@@ -2058,6 +2084,76 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+
+    /// A hub link is a bearer-admitted consumer on its satellite, so
+    /// revoking the link's token there ends the link live
+    /// (`docs/spec/workload-auth.md` §7; ADR-0116 supersedes ADR-0031's
+    /// survive-until-drop), and the redial is refused. Every hub consumer's
+    /// attach through the link goes with it. Real sockets, real time.
+    #[tokio::test(flavor = "current_thread")]
+    async fn revoking_the_links_token_on_the_satellite_drops_the_link() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let tokens = dir.path().join("satellite-tokens");
+                let secret = [0x5a; crate::auth::TOKEN_LEN];
+                crate::auth::write_test_credential(&tokens, &secret);
+                let store = std::sync::Arc::new(
+                    crate::auth::ReloadingTokenStore::load(tokens.clone()).expect("store"),
+                );
+                let listener = crate::transport::WsListener::loopback_with_tokens(store)
+                    .await
+                    .expect("bind satellite");
+                let port = listener.local_addr().expect("addr").port();
+                let satellite = crate::state::SharedState::new();
+                let satellite_root = CancellationToken::new();
+                let accept_state = satellite.clone();
+                let accept_root = satellite_root.clone();
+                tokio::task::spawn_local(async move {
+                    crate::runtime::client::accept_loop(&listener, accept_state, accept_root, None)
+                        .await
+                });
+                crate::runtime::revocation::spawn_revocation_watcher(&satellite, &satellite_root);
+
+                let token_file = dir.path().join("link.token");
+                std::fs::write(&token_file, hex::encode(secret)).expect("write link token");
+                let statuses = HubLinkStatuses::default();
+                let cancel = CancellationToken::new();
+                let host = host();
+                let (_relay, relay_rx) = relay_pair(&host);
+                tokio::task::spawn_local(run_link(
+                    host.clone(),
+                    entry(
+                        &format!("ws://127.0.0.1:{port}"),
+                        Some(token_file.to_str().expect("utf8 path")),
+                        None,
+                    ),
+                    NetLinkTransport::from_env(),
+                    statuses.clone(),
+                    relay_rx,
+                    cancel.child_token(),
+                ));
+                wait_for_status(&statuses, &host, |s| *s == LinkStatus::Connected).await;
+
+                crate::auth::revoke_credential(&tokens, "test-credential").expect("revoke");
+                wait_for_status(&statuses, &host, |s| {
+                    matches!(s, LinkStatus::Backoff { .. })
+                })
+                .await;
+                // The redial presents the revoked token and is refused.
+                tokio::time::sleep(Duration::from_millis(1500)).await;
+                assert_ne!(
+                    statuses.get(&host),
+                    Some(LinkStatus::Connected),
+                    "a revoked link token must not reconnect"
+                );
+
+                cancel.cancel();
+                satellite_root.cancel();
+            })
+            .await;
+    }
 
     fn entry(endpoint: &str, token_file: Option<&str>, cert_fingerprint: Option<&str>) -> HubEntry {
         HubEntry {
@@ -2631,6 +2727,7 @@ mod tests {
                         &mut unsubscribes,
                         &session_cancel,
                         None,
+                        &super::super::operation_fence::OperationFence::default(),
                     )
                     .await
                 });
@@ -2713,6 +2810,7 @@ mod tests {
                         &mut unsubscribes,
                         &CancellationToken::new(),
                         None,
+                        &super::super::operation_fence::OperationFence::default(),
                     )
                     .await
                 });

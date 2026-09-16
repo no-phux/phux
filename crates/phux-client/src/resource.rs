@@ -8,9 +8,109 @@
 //! `phux ls`, `phux agent list`, and the session verbs cannot disagree.
 
 use phux_protocol::ids::{ResourceId, ResourceKind};
-use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
+use phux_protocol::wire::frame::{CloseReason, ControlAction, ResourceLifecycle};
+use phux_protocol::wire::info::{ExitFacet, ResourceInfo, SessionSnapshot};
 
 use crate::agent_session::AgentSessionError;
+use crate::attach::AttachError;
+use crate::attach::connection::Connection;
+
+// The `phux resource` verbs (PHA-406): a cursor-resumable wait on a
+// resource's exit (D2), one resource's inspection record, and the kind
+// catalog intersected with what the server negotiated (D4).
+pub mod cursor;
+pub mod methods;
+pub mod show;
+pub mod wait;
+
+/// Why one resource could not be read.
+#[derive(Debug, thiserror::Error)]
+pub enum LookupError {
+    /// The connection or a request failed.
+    #[error(transparent)]
+    Attach(#[from] AttachError),
+    /// The resource is not in the server's inventory. `unreachable` is
+    /// non-empty when the view was partial (a federation satellite did not
+    /// answer), in which case the absence is not proof it is gone.
+    #[error("no such resource: {}", crate::selector::format_terminal_id(.resource))]
+    NotFound {
+        /// The resource that was looked up.
+        resource: ResourceId,
+        /// The hub's per-satellite degradation notices, if any.
+        unreachable: Vec<String>,
+    },
+}
+
+/// Read the server's inventory on `conn` and return `resource`'s entry, the
+/// snapshot it came from, and any degradation notices.
+pub(crate) async fn lookup_on(
+    conn: &mut Connection,
+    resource: &ResourceId,
+) -> Result<(ResourceInfo, SessionSnapshot, Vec<String>), LookupError> {
+    let (snapshot, degradation) = crate::state::get_state_on(conn).await?.into_parts();
+    let notices = degradation.notices().to_vec();
+    match find(&snapshot, resource).cloned() {
+        Some(info) => Ok((info, snapshot, notices)),
+        None => Err(LookupError::NotFound {
+            resource: resource.clone(),
+            unreachable: notices,
+        }),
+    }
+}
+
+/// The exit facet as the `--json` documents spell it.
+#[must_use]
+pub fn exit_facet_json(exit: &ExitFacet) -> serde_json::Value {
+    serde_json::json!({
+        "status": exit.exit_status,
+        "signal": exit.signal,
+        "reason": close_reason_name(exit.reason),
+        "exited_at_ms": exit.exited_at_ms,
+        "retained_until_ms": exit.retained_until_ms,
+    })
+}
+
+/// The `snake_case` name of a lifecycle, as the `--json` documents spell it.
+#[must_use]
+pub const fn lifecycle_name(lifecycle: ResourceLifecycle) -> &'static str {
+    match lifecycle {
+        ResourceLifecycle::Running => "running",
+        ResourceLifecycle::Frozen => "frozen",
+        ResourceLifecycle::Exited => "exited",
+    }
+}
+
+/// The `snake_case` name of a close reason (the `RESOURCE_CLOSED.reason`
+/// vocabulary), or `None` when the server stated none.
+#[must_use]
+pub const fn close_reason_name(reason: CloseReason) -> Option<&'static str> {
+    match reason {
+        CloseReason::Exited => Some("exited"),
+        CloseReason::Killed => Some("killed"),
+        CloseReason::ParentClosed => Some("parent_closed"),
+        CloseReason::ServerShutdown => Some("server_shutdown"),
+        // `Unknown`, and any reason a newer protocol adds: stated as none.
+        _ => None,
+    }
+}
+
+/// The `snake_case` name of a supervisory action (`terminal_control`).
+#[must_use]
+pub const fn control_action_name(action: ControlAction) -> &'static str {
+    match action {
+        ControlAction::Acquired => "acquired",
+        ControlAction::Seized => "seized",
+        ControlAction::Released => "released",
+        ControlAction::Interrupted => "interrupted",
+        ControlAction::Frozen => "frozen",
+        ControlAction::Resumed => "resumed",
+        ControlAction::Terminated => "terminated",
+        ControlAction::Killed => "killed",
+        ControlAction::Exited => "exited",
+        ControlAction::Expired => "expired",
+        ControlAction::RoleChanged => "role_changed",
+    }
+}
 
 /// The `snake_case` name of the Terminal kind, as `phux ls --json` spells it.
 pub const TERMINAL: &str = "terminal";

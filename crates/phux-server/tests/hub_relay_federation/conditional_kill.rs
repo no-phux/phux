@@ -131,6 +131,7 @@ async fn kill_if(
     let kill = Command::KillResourceIf {
         terminal_id: pane.clone(),
         precondition: KillPrecondition::spawned_and_unattached(instance),
+        operation_id: None,
     };
     command(stream, request_id, kill).await
 }
@@ -180,6 +181,7 @@ fn a_relayed_conditional_kill_is_evaluated_on_the_satellite() {
                 instance: Some(stale),
                 conditions: phux_protocol::wire::frame::KillConditions::NONE,
             },
+            operation_id: None,
         };
         let message = refusal_message(command(&mut t.hub, 8009, instance_only).await);
         assert!(
@@ -229,6 +231,7 @@ fn another_hub_consumer_attaching_refuses_the_kill_at_the_hub() {
         let mut other = wait_for_socket(&t.hub_path, STEP_DEADLINE).await;
         let attach = Command::AttachResource {
             terminal_id: pane.clone(),
+            role_policy: None,
         };
         let attached = command(&mut other, 8101, attach).await;
         assert!(

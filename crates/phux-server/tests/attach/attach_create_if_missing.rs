@@ -67,6 +67,7 @@ fn create_if_missing_frame(name: &str) -> FrameKind {
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
         scrollback_limit_lines: 0,
+        role_policy: None,
     }
 }
 
@@ -89,6 +90,7 @@ fn create_if_missing_with_cwd_frame(name: &str, cwd: &str) -> FrameKind {
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
         scrollback_limit_lines: 0,
+        role_policy: None,
     }
 }
 

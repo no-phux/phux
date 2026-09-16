@@ -568,6 +568,7 @@ async fn connect(client: usize, socket: &Path) -> Result<(UnixStream, Generation
             viewport: ViewportInfo::new(200, 60),
             request_scrollback: true,
             scrollback_limit_lines: HISTORY_LINES,
+            role_policy: None,
         },
     )
     .await;

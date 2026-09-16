@@ -365,6 +365,7 @@ async fn get_screen_via_hub(
                 terminal_id,
                 request_scrollback: None,
                 cells: false,
+                format: 0,
             },
         },
     )
@@ -1130,6 +1131,7 @@ async fn attach_terminal_until_ok(hub: &mut UnixStream, sat_id: &ResourceId) -> 
             request_id,
             Command::AttachResource {
                 terminal_id: sat_id.clone(),
+                role_policy: None,
             },
         )
         .await;

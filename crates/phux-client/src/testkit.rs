@@ -187,6 +187,17 @@ pub struct ScriptSpec {
     /// How many more `ROUTE_INPUT`s to acknowledge before going silent;
     /// `None` acknowledges every one. See [`ScriptSpec::wedge_input_after`].
     input_acks_left: Option<usize>,
+    /// When set, every `GET_STATE` is refused with a *correlated* `ERROR`.
+    /// See [`ScriptSpec::refuse_state`].
+    state_error: Option<(ErrorCode, String)>,
+    /// Batches pushed right after successive `GET_STATE` acks. See
+    /// [`ScriptSpec::push_after_state`].
+    after_state: std::collections::VecDeque<Vec<FrameKind>>,
+    /// The `HELLO_OK.server_id` the scripted server names itself with.
+    server_id: Vec<u8>,
+    /// The `GET_TERMINAL_STATE` JSON a `GET_TERMINAL_STATE` is answered
+    /// with. See [`ScriptSpec::terminal_state`].
+    terminal_state: Option<String>,
     /// Pushed once the client's `SUBSCRIBE_EVENTS` registers.
     script: Vec<FrameKind>,
     /// phux-k0cw: frames released only when the client subscribes to that
@@ -218,6 +229,10 @@ impl fmt::Debug for ScriptSpec {
             .field("wedge_screen_reads", &self.wedge_screen_reads)
             .field("screen", &self.screen)
             .field("input_acks_left", &self.input_acks_left)
+            .field("state_error", &self.state_error)
+            .field("after_state", &self.after_state)
+            .field("server_id", &self.server_id)
+            .field("terminal_state", &self.terminal_state)
             .field("script", &self.script)
             .field("end", &self.end)
             .finish()
@@ -328,6 +343,40 @@ impl ScriptSpec {
     #[must_use]
     pub const fn server_features(mut self, features: ServerFeatureSet) -> Self {
         self.server_features = features;
+        self
+    }
+
+    /// The `HELLO_OK.server_id` the scripted server names itself with: the
+    /// incarnation a journal cursor belongs to (ADR-0123). Empty by default,
+    /// which names no incarnation, so no cursor is issued.
+    #[must_use]
+    pub fn server_id(mut self, server_id: Vec<u8>) -> Self {
+        self.server_id = server_id;
+        self
+    }
+
+    /// Frames pushed right after the next `GET_STATE` ack: one batch per
+    /// call, consumed by successive acks in order.
+    ///
+    /// The reference server fans an `EVENT` out to a subscribed connection
+    /// whenever it happens (`broadcast_event`), so an event can follow any
+    /// ack. This models the one ordering a subscribe-then-read client must
+    /// handle after its read: an event that happened after the snapshot was
+    /// cut.
+    #[must_use]
+    pub fn push_after_state(mut self, frames: Vec<FrameKind>) -> Self {
+        self.after_state.push_back(frames);
+        self
+    }
+
+    /// The JSON a `GET_TERMINAL_STATE` is answered with.
+    ///
+    /// `handle_get_terminal_state` answers `OK_WITH(JSON(..))` and pushes
+    /// nothing ahead of the ack. Without this the harness answers a bare
+    /// `Ok`, which a client rightly reads as "no process facet".
+    #[must_use]
+    pub fn terminal_state(mut self, json: &serde_json::Value) -> Self {
+        self.terminal_state = Some(json.to_string());
         self
     }
 
@@ -450,6 +499,14 @@ impl ScriptSpec {
     #[must_use]
     pub fn move_result(mut self, result: MoveResult) -> Self {
         self.move_result = Some(result);
+        self
+    }
+
+    /// Refuse every `GET_STATE` with a *correlated* `ERROR`: a scoped
+    /// workload's inventory read that dispatch denies (workload-auth §7).
+    #[must_use]
+    pub fn refuse_state(mut self, code: ErrorCode, message: &str) -> Self {
+        self.state_error = Some((code, message.to_owned()));
         self
     }
 
@@ -765,7 +822,7 @@ fn reference_reply(frame: &FrameKind, spec: &mut ScriptSpec) -> Vec<FrameKind> {
                 protocol_minor: PROTOCOL_VERSION.minor,
                 protocol_patch: PROTOCOL_VERSION.patch,
                 server_caps: ServerCapabilities::new().with_features(spec.server_features),
-                server_id: Vec::new(),
+                server_id: spec.server_id.clone(),
                 selected_profile,
                 bootstrap_limits,
             }]
@@ -919,10 +976,29 @@ fn command_reply(request_id: u32, command: &Command, spec: &mut ScriptSpec) -> V
         }
         Command::GetState { .. } => {
             let snapshot = spec.states.pop_front().or_else(|| spec.state.clone());
-            let result = snapshot.map_or(CommandResult::Ok, |snapshot| {
-                CommandResult::OkWith(CommandValue::State(snapshot))
-            });
+            let result = match (&spec.state_error, snapshot) {
+                (Some((code, message)), _) => CommandResult::Error {
+                    code: *code,
+                    message: message.clone(),
+                },
+                (None, snapshot) => snapshot.map_or(CommandResult::Ok, |snapshot| {
+                    CommandResult::OkWith(CommandValue::State(snapshot))
+                }),
+            };
             out.push(FrameKind::CommandResult { request_id, result });
+            // An event that happened after the snapshot was cut: see
+            // `ScriptSpec::push_after_state`.
+            if let Some(batch) = spec.after_state.pop_front() {
+                out.extend(batch);
+            }
+        }
+        // `handle_get_terminal_state` answers `OK_WITH(JSON(..))`.
+        Command::GetTerminalState { .. } if spec.terminal_state.is_some() => {
+            let json = spec.terminal_state.clone().unwrap_or_default();
+            out.push(FrameKind::CommandResult {
+                request_id,
+                result: CommandResult::OkWith(CommandValue::Json(json)),
+            });
         }
         // `handle_detach_clients` (`crates/phux-server/src/runtime/commands.rs`)
         // always answers `OkWith(Json(count))`, never a bare `Ok` — modeled

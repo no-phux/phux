@@ -41,6 +41,7 @@ use phux_protocol::ids::GroupId;
 
 mod agent;
 mod agent_tracking;
+mod approvals;
 mod bindings;
 mod client;
 mod client_table;
@@ -65,6 +66,8 @@ mod reap;
 mod remote_listeners;
 mod resolve;
 mod resource_table;
+mod retained;
+mod roles;
 mod satellite_spawns;
 mod session_table;
 mod sessions;
@@ -75,6 +78,7 @@ mod viewport;
 mod wire_ids;
 
 use agent_tracking::AgentState;
+pub use approvals::{Decision, HoldRefusal, OpenedApproval, PendingApproval};
 pub use client::{AttachError, AttachSnapshotPane, AttachedClient, ClientId};
 use client_table::ClientTable;
 pub use conditional_kill::KillIfRefusal;
@@ -86,6 +90,9 @@ pub use events::{
 use hub_state::HubState;
 pub use id_space::IdSpace;
 pub use journal::EventRecord;
+pub(crate) use retained::Retention;
+pub use retained::{RetainPolicy, close_reason_name, process_exit};
+pub use roles::RoleEffects;
 // Facade: the mailbox payloads live at the crate root (`crate::mailbox`) so
 // `state` and `terminal_actor` can both depend on them without depending on
 // each other. Re-exported here because `crate::state::Outbound` is the spelling
@@ -146,6 +153,16 @@ impl core::fmt::Debug for ServerIncarnation {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("ServerIncarnation(<redacted>)")
     }
+}
+
+/// The connection and keyed operation behind a kill, stamped on the
+/// `pane_closed` of every resource it closes (`docs/spec/L1.md` §7.3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CloseAttribution {
+    /// The connection that sent the kill.
+    pub actor: Option<ClientId>,
+    /// The kill's `operation_id`, when it carried one (L1 §5.1.1).
+    pub operation_id: Option<phux_protocol::ids::IdempotencyKey>,
 }
 
 /// Single owner of all server-side state.
@@ -283,6 +300,14 @@ pub struct ServerState {
         phux_core::ids::ResourceId,
         phux_protocol::wire::frame::CloseReason,
     >,
+    /// Who and which keyed operation closed a resource a kill named, for its
+    /// `pane_closed` stamp (`docs/spec/L1.md` §7.3). Bounded like
+    /// [`Self::close_reasons`]: an entry lives from the kill to the reap.
+    close_attributions: std::collections::HashMap<phux_core::ids::ResourceId, CloseAttribution>,
+    /// Retain-on-exit bookkeeping (ADR-0124): each pane's requested
+    /// retention and the exit facet of every pane retained after its
+    /// process exited. See [`retained`].
+    retained: retained::RetainedTable,
     /// Remote listener bind outcomes for `GET_STATE` / `phux doctor` (phux-kyna).
     ///
     /// Written as each configured or auto-bound transport finishes its bind
@@ -294,6 +319,9 @@ pub struct ServerState {
     /// bounds. It holds its own lock, so the input lane reaches it without
     /// this one.
     operation_dedupe: crate::runtime::operation_dedupe::OperationDedupe,
+    /// Held `SIGNAL` actions awaiting a decision (ADR-0128): the pending
+    /// table and its bounds. See [`approvals`].
+    approvals: approvals::ApprovalTable,
 }
 
 impl Default for ServerState {
@@ -1481,6 +1509,7 @@ mod tests {
             cid,
             crate::auth::ConnectionIdentity {
                 ssh_origin: None,
+                bearer: None,
                 peer: phux_protocol::policy::PeerIdentity {
                     uid: 0,
                     pid: None,

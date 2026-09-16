@@ -505,6 +505,7 @@ fn bind_session(req: Binding<'_>) -> ExitCode {
         None,
         false,
         json,
+        None,
     )) {
         // The create already told us the seed pane's id; `--json` just stops
         // throwing it away.
@@ -769,9 +770,14 @@ fn kill_bound_session(
         return Ok(false);
     }
 
+    // `phux worktree rm` names this worktree, and removing it means ending
+    // the session bound to it: the verb itself is the consent the dangerous
+    // kill needs (ADR-0128), so it does not ask again.
     if super::kill::run_kill(
         name,
+        None,
         super::server_target::ServerSpec::local(socket.map(Path::to_path_buf)),
+        |_| Ok(()),
     ) != ExitCode::SUCCESS
     {
         return Err(Refusal::workspace(

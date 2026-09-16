@@ -107,7 +107,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    const fn with_state(state: u32) -> Self {
+    pub(crate) const fn with_state(state: u32) -> Self {
         Self {
             state: AtomicU32::new(state),
             message: OnceLock::new(),
@@ -119,6 +119,11 @@ impl Shared {
             self.state.load(Ordering::Acquire),
             REMOTE_TUNNEL_FAILED | REMOTE_TUNNEL_CLOSED
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn state(&self) -> u32 {
+        self.state.load(Ordering::Acquire)
     }
 
     pub(crate) fn connected(&self) {

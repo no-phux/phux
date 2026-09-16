@@ -407,8 +407,8 @@ actually looking at.
   the same build commands. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@905891de`](https://github.com/phall1/native/commit/905891de27b0138112d422af6b1ee2c60ee3eef9),
-the fork's Cockpit v0.10.3 lineage: terminal interaction, viewport, and
+[`phall1/native@06e64d28`](https://github.com/phall1/native/commit/06e64d28054d9994cc56d4e24a89694636fc31b6),
+the fork's Cockpit v0.10.4 lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
 wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
 per-window `ChromeContext` on `build_window` and `web_panes`, `fx.openUrl`, the
@@ -417,7 +417,8 @@ axis-aware native split dividers, scoped post-present display-list refresh
 batching, symlink-safe whole-file writes that retain file-access confinement,
 the native macOS app-updater surface, the Metal Hybrid C signed cell (4x) and
 text (2x) paint ceilings, balanced wide-model Corewire decode guards, bounded
-32-entry nested markup-recipe scopes, and ScriptC 0.1.1.
+32-entry nested markup-recipe scopes, a matching 32-slot null-platform
+window-drag mirror, and ScriptC 0.1.1.
 The pin is a tarball SHA rather than a branch, so a push to the fork can never
 break a checkout of Cockpit — see [docs/SDK_PIN.md](docs/SDK_PIN.md) for how the
 fork and this repo stay in contract, and what to run before moving the pin.

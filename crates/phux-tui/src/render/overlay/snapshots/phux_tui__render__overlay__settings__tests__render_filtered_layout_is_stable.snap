@@ -7,10 +7,10 @@ expression: "render_text(&page, 100, 24)"
           ┌────────────────────────────────── Settings ──────────────────────────────────┐
           │> accent                                            ~/.config/phux/config.toml│
           │                                                                              │
-          │ Defaults       3 │ • theme.accent                         ██ #ff0000      you█
+          │ Defaults       6 │ • theme.accent                         ██ #ff0000      you█
           │ Keybindings      │   theme.title                          ██ #bef264  default█
           │ Status bar       │   theme.action                           ██ reset  default█
-          │ Sidebar          │   defaults.cwd-inheritance        inherit-focused  default█
+          │ Sidebar          │   defaults.cwd-inheritance        inherit-focused  default│
           │ Chrome           │   voice.transcriber                         unset  default│
           │ Theme          3 │   defaults.spawn-on-attach                  unset  default│
           │──────────────────────────────────────────────────────────────────────────────│

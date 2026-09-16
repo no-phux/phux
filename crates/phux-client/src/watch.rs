@@ -26,12 +26,15 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::time::Duration;
 
-use phux_protocol::ids::{ResourceId, ResourceKind};
-use phux_protocol::wire::frame::{AgentEvent, FrameKind, Scope};
+use phux_protocol::ids::{ClientId, ResourceId, ResourceKind};
+use phux_protocol::wire::frame::{AgentEvent, EventStamp, FrameKind, Scope};
+use serde_json::{Map, Value, json};
 
 use crate::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
+use crate::resource::cursor::ResumeState;
+use crate::selector::format_terminal_id;
 use crate::state::get_state_on_with_interleaved;
 
 /// One streamed agent event plus the Terminal it concerns.
@@ -46,6 +49,155 @@ pub struct WatchEvent {
     pub terminal: Option<ResourceId>,
     /// The event payload.
     pub event: AgentEvent,
+    /// The journal stamp (ADR-0123): `seq`, `ts_ms`, and the `actor` that
+    /// caused it. `None` from a server without `EVENT_JOURNAL`, and on a
+    /// `journal_gap` notice, which is addressed to one subscription and
+    /// never journaled.
+    pub stamp: Option<EventStamp>,
+}
+
+impl WatchEvent {
+    /// Unwrap one `EVENT` frame's fields.
+    fn from_frame(
+        terminal: Option<ResourceId>,
+        event: AgentEvent,
+        stamp: Option<Box<EventStamp>>,
+    ) -> Self {
+        Self {
+            terminal,
+            event,
+            stamp: stamp.map(|stamp| *stamp),
+        }
+    }
+}
+
+/// The stable `event` name of `event`: the vocabulary `phux watch --json`
+/// prints and `--until` accepts, and the name MCP `phux_watch` uses.
+///
+/// A tag this build predates, and any future `#[non_exhaustive]` variant,
+/// is `unknown` rather than a failure of the stream.
+#[must_use]
+pub const fn event_name(event: &AgentEvent) -> &'static str {
+    match event {
+        AgentEvent::CommandStarted => "command_started",
+        AgentEvent::CommandFinished { .. } => "command_finished",
+        AgentEvent::TitleChanged { .. } => "title_changed",
+        AgentEvent::Bell => "bell",
+        AgentEvent::ResourceSpawned { .. } => "pane_spawned",
+        AgentEvent::ResourceClosed { .. } => "pane_closed",
+        AgentEvent::Dirty => "dirty",
+        AgentEvent::Idle => "idle",
+        AgentEvent::Asked { .. } => "asked",
+        AgentEvent::TerminalControl { .. } => "terminal_control",
+        AgentEvent::CwdChanged { .. } => "cwd_changed",
+        AgentEvent::JournalGap { .. } => "journal_gap",
+        AgentEvent::SourceGap { .. } => "source_gap",
+        AgentEvent::ApprovalRequested { .. } => "approval_requested",
+        AgentEvent::ApprovalDecided { .. } => "approval_decided",
+        _ => "unknown",
+    }
+}
+
+/// One watch event as a JSON object.
+///
+/// The object `phux watch --json` prints on a line and MCP `phux_watch`
+/// returns: `event`, `terminal` when scoped, the event's payload fields,
+/// then the journal stamp (`seq`, `ts_ms`, and `actor` when present).
+#[must_use]
+pub fn event_json(ev: &WatchEvent) -> Value {
+    let mut obj = Map::new();
+    obj.insert("event".to_owned(), Value::from(event_name(&ev.event)));
+    if let Some(terminal) = &ev.terminal {
+        obj.insert(
+            "terminal".to_owned(),
+            Value::from(format_terminal_id(terminal)),
+        );
+    }
+    if let Value::Object(payload) = payload_json(&ev.event) {
+        obj.extend(payload);
+    }
+    if let Some(stamp) = &ev.stamp {
+        insert_stamp(&mut obj, stamp);
+    }
+    Value::Object(obj)
+}
+
+/// The payload fields of `event`, as a JSON object.
+fn payload_json(event: &AgentEvent) -> Value {
+    match event {
+        AgentEvent::TitleChanged { title } => json!({ "title": title }),
+        AgentEvent::CommandFinished { exit_code } => json!({ "exit_code": exit_code }),
+        AgentEvent::ResourceClosed { exit_status } => json!({ "exit_status": exit_status }),
+        // Additive (ADR-0102): the spawned resource's kind and parent, so a
+        // consumer can tell a new pane from a new agent session bound to one.
+        AgentEvent::ResourceSpawned { kind, parent } => json!({
+            "kind": kind.as_str(),
+            "parent": parent.as_ref().map(format_terminal_id),
+        }),
+        AgentEvent::Asked {
+            id,
+            question,
+            suggestions,
+            elapsed_seconds,
+        } => json!({
+            "id": id,
+            "question": question,
+            "suggestions": suggestions,
+            "elapsed_seconds": elapsed_seconds,
+        }),
+        AgentEvent::TerminalControl { .. } => terminal_control_json(event),
+        AgentEvent::CwdChanged { cwd } => json!({ "cwd": cwd }),
+        AgentEvent::JournalGap {
+            first_missing,
+            last_missing,
+        } => json!({ "first_missing": first_missing, "last_missing": last_missing }),
+        AgentEvent::SourceGap { dropped } => json!({ "dropped": dropped }),
+        // ADR-0128: the id names the `phux.approval/v1/<id>` record, which
+        // holds the details while the action is pending.
+        AgentEvent::ApprovalRequested { id } => json!({ "id": id.to_string() }),
+        AgentEvent::ApprovalDecided { id, outcome } => {
+            json!({ "id": id.to_string(), "outcome": outcome.as_str() })
+        }
+        AgentEvent::Unknown { tag, .. } => json!({ "tag": tag }),
+        _ => json!({}),
+    }
+}
+
+/// `terminal_control`'s payload. Its own connection id rides as
+/// `actor_client`, so it cannot collide with the journal stamp's `actor`.
+fn terminal_control_json(event: &AgentEvent) -> Value {
+    let AgentEvent::TerminalControl {
+        lifecycle,
+        exit_status,
+        input_holder,
+        action,
+        actor,
+    } = event
+    else {
+        return json!({});
+    };
+    json!({
+        "lifecycle": crate::resource::lifecycle_name(*lifecycle),
+        "action": crate::resource::control_action_name(*action),
+        "exit_status": exit_status,
+        "input_holder": input_holder.map(ClientId::get),
+        "actor_client": actor.map(ClientId::get),
+    })
+}
+
+fn insert_stamp(obj: &mut Map<String, Value>, stamp: &EventStamp) {
+    obj.insert("seq".to_owned(), Value::from(stamp.seq));
+    obj.insert("ts_ms".to_owned(), Value::from(stamp.ts_ms));
+    if let Some(actor) = &stamp.actor {
+        obj.insert(
+            "actor".to_owned(),
+            json!({
+                "client": actor.client.get(),
+                "credential_id": actor.credential_id,
+                "client_name": actor.client_name,
+            }),
+        );
+    }
 }
 
 /// One observed change to a Terminal's `phux.agent/v1` record
@@ -277,12 +429,16 @@ where
                     }
                 }
                 let FrameKind::Event {
-                    terminal, event, ..
+                    terminal,
+                    event,
+                    stamp,
                 } = frame
                 else {
                     unreachable!();
                 };
-                if !sink(WatchItem::Event(WatchEvent { terminal, event })) {
+                if !sink(WatchItem::Event(WatchEvent::from_frame(
+                    terminal, event, stamp,
+                ))) {
                     return Ok(());
                 }
             }
@@ -339,19 +495,31 @@ pub async fn subscribe(
     terminal: Option<ResourceId>,
 ) -> Result<Connection, AttachError> {
     let mut conn = Connection::connect(socket).await?;
+    send_subscriptions(&mut conn, terminal, None).await?;
+    Ok(conn)
+}
+
+/// Register the watch subscriptions on `conn`: events for `terminal` (from
+/// journal sequence `after_seq` when resuming), plus its `phux.agent/v1`
+/// record.
+async fn send_subscriptions(
+    conn: &mut Connection,
+    terminal: Option<ResourceId>,
+    after_seq: Option<u64>,
+) -> Result<(), AttachError> {
     conn.send(&FrameKind::SubscribeEvents {
         terminal: terminal.clone(),
-        after_seq: None,
+        after_seq,
     })
     .await?;
-    if let Some(id) = &terminal {
+    if let Some(id) = terminal {
         conn.send(&FrameKind::SubscribeMetadata {
-            scope: Scope::Resource(id.clone()),
+            scope: Scope::Resource(id),
             key: RESOURCE_AGENT_KEY.to_owned(),
         })
         .await?;
     }
-    Ok(conn)
+    Ok(())
 }
 
 /// Stream [`WatchItem`]s off an already-[`subscribe`]d connection, invoking
@@ -375,9 +543,13 @@ where
     loop {
         match conn.recv().await {
             Ok(FrameKind::Event {
-                terminal, event, ..
+                terminal,
+                event,
+                stamp,
             }) => {
-                if !sink(WatchItem::Event(WatchEvent { terminal, event })) {
+                if !sink(WatchItem::Event(WatchEvent::from_frame(
+                    terminal, event, stamp,
+                ))) {
                     return Ok(());
                 }
             }
@@ -509,6 +681,104 @@ where
     })
 }
 
+/// A Terminal-scoped [`watch_bounded`] that resumes from a journal cursor and
+/// records the cursor it reaches (ADR-0123).
+///
+/// `resume` carries the caller's cursor in and the reached position out. It
+/// lives outside this future on purpose: a caller that races the watch
+/// against Ctrl-C drops the future and still reads `resume.cursor()` to print
+/// where the stream stopped. The subscription replays from the cursor when it
+/// belongs to this server incarnation; otherwise the watch starts live and
+/// `resume.cursor_void()` says so.
+///
+/// # Errors
+///
+/// Returns [`AttachError`] on connect/transport/protocol failure. A clean
+/// EOF is not an error: it is [`WatchOutcome::Ended`].
+pub async fn watch_resumable<F>(
+    socket: &Path,
+    terminal: ResourceId,
+    resume: &mut ResumeState,
+    timeout: Option<Duration>,
+    mut sink: F,
+) -> Result<WatchOutcome, AttachError>
+where
+    F: FnMut(WatchItem) -> bool,
+{
+    let mut stopped = false;
+    let stream = stream_resumable(socket, terminal, resume, |item| {
+        let keep_going = sink(item);
+        stopped |= !keep_going;
+        keep_going
+    });
+    let expired = run_within(timeout, stream).await?;
+    Ok(watch_outcome(expired, stopped))
+}
+
+/// Connect, subscribe from `resume`'s cursor, and stream items into `sink`,
+/// noting each stamped event's journal sequence in `resume`.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the connection is the subscription: it lives exactly as long as the stream"
+)]
+async fn stream_resumable<F>(
+    socket: &Path,
+    terminal: ResourceId,
+    resume: &mut ResumeState,
+    mut sink: F,
+) -> Result<(), AttachError>
+where
+    F: FnMut(WatchItem) -> bool,
+{
+    let mut conn = Connection::connect(socket).await?;
+    let after_seq = resume.bind(&conn);
+    send_subscriptions(&mut conn, Some(terminal), after_seq).await?;
+    stream_items(&mut conn, |item| {
+        if let Some(seq) = event_seq(&item) {
+            resume.note(seq);
+        }
+        sink(item)
+    })
+    .await
+}
+
+/// The journal sequence of a stamped event item.
+const fn event_seq(item: &WatchItem) -> Option<u64> {
+    match item {
+        WatchItem::Event(WatchEvent {
+            stamp: Some(stamp), ..
+        }) => Some(stamp.seq),
+        _ => None,
+    }
+}
+
+/// Run `stream` under an optional deadline: `Ok(true)` when the deadline
+/// fired first, `Ok(false)` when the stream finished.
+async fn run_within(
+    timeout: Option<Duration>,
+    stream: impl Future<Output = Result<(), AttachError>>,
+) -> Result<bool, AttachError> {
+    let Some(limit) = timeout else {
+        return stream.await.map(|()| false);
+    };
+    match tokio::time::timeout(limit, stream).await {
+        Ok(result) => result.map(|()| false),
+        // Dropping the stream drops the connection and its subscription.
+        Err(_elapsed) => Ok(true),
+    }
+}
+
+/// Which of the three endings a bounded run reached.
+const fn watch_outcome(expired: bool, stopped: bool) -> WatchOutcome {
+    if expired {
+        WatchOutcome::TimedOut
+    } else if stopped {
+        WatchOutcome::Stopped
+    } else {
+        WatchOutcome::Ended
+    }
+}
+
 /// Bounded one-shot over [`watch_events`]: collect events until `max_events`
 /// are seen, `timeout` elapses, or the server closes — then return them.
 ///
@@ -605,6 +875,7 @@ mod tests {
         let expected = WatchEvent {
             terminal: Some(pane.clone()),
             event: AgentEvent::Dirty,
+            stamp: None,
         };
         let server = tokio::spawn(async move {
             ScriptedServer::accept(
@@ -1210,5 +1481,95 @@ mod tests {
             WatchItem::AgentState(update)
                 if update.terminal.as_ref() == Some(&ResourceId::local(8))
         )));
+    }
+
+    // -- watch_resumable --------------------------------------------------
+
+    fn stamped(pane: &ResourceId, event: AgentEvent, seq: u64) -> FrameKind {
+        FrameKind::Event {
+            terminal: Some(pane.clone()),
+            event,
+            stamp: Some(Box::new(EventStamp::new(seq, 1_000 + seq))),
+        }
+    }
+
+    async fn drive_resumable(
+        resume: &mut ResumeState,
+        script: Vec<FrameKind>,
+    ) -> (WatchOutcome, Vec<WatchItem>, Vec<FrameKind>) {
+        use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = UnixListener::bind(&socket).expect("bind scripted server");
+        let spec = ScriptSpec::new()
+            .server_features(ServerFeatureSet::with(&[ServerFeature::EventJournal]))
+            .server_id(vec![0x01, 0x02])
+            .extend(script)
+            .end(EndOfScript::HangUp);
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let mut items = Vec::new();
+        let outcome = watch_resumable(&socket, ResourceId::local(7), resume, None, |item| {
+            items.push(item);
+            true
+        })
+        .await
+        .expect("scripted transport");
+        let seen = server.await.expect("scripted server task");
+        (outcome, items, seen)
+    }
+
+    /// The cursor goes in as `after_seq`, every stamped event carries its
+    /// `seq` to the item, and the reached position comes back out.
+    #[tokio::test]
+    async fn a_resumable_watch_replays_from_its_cursor_and_advances_it() {
+        use crate::resource::cursor::Cursor;
+
+        let pane = ResourceId::local(7);
+        let mut resume = ResumeState::new(Cursor::new(vec![0x01, 0x02], 5));
+        let (outcome, items, seen) = drive_resumable(
+            &mut resume,
+            vec![
+                stamped(&pane, AgentEvent::Bell, 6),
+                stamped(&pane, AgentEvent::Dirty, 9),
+            ],
+        )
+        .await;
+        assert_eq!(outcome, WatchOutcome::Ended);
+        assert!(seen.iter().any(|frame| matches!(
+            frame,
+            FrameKind::SubscribeEvents {
+                after_seq: Some(5),
+                ..
+            }
+        )));
+        assert_eq!(items.len(), 2);
+        let WatchItem::Event(first) = &items[0] else {
+            panic!("expected an event, got {:?}", items[0]);
+        };
+        assert_eq!(first.stamp.as_ref().map(|stamp| stamp.seq), Some(6));
+        assert!(!resume.cursor_void());
+        assert_eq!(resume.cursor().expect("cursor").to_string(), "0102:9");
+    }
+
+    /// A cursor from another incarnation is not sent; the watch starts live
+    /// and says so.
+    #[tokio::test]
+    async fn a_resumable_watch_voids_a_foreign_cursor() {
+        use crate::resource::cursor::Cursor;
+
+        let mut resume = ResumeState::new(Cursor::new(vec![0xff], 5));
+        let (_outcome, _items, seen) = drive_resumable(&mut resume, Vec::new()).await;
+        // Not sent; the watch starts with journal semantics and no replay, so
+        // an `expired` lease reads as `expired` rather than `released`.
+        assert!(seen.iter().any(|frame| matches!(
+            frame,
+            FrameKind::SubscribeEvents {
+                after_seq: Some(crate::resource::cursor::NO_REPLAY),
+                ..
+            }
+        )));
+        assert!(resume.cursor_void());
+        assert_eq!(resume.cursor().expect("fresh cursor").to_string(), "0102:0");
     }
 }

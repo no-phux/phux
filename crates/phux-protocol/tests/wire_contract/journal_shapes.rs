@@ -12,13 +12,13 @@
 
 use bytes::BytesMut;
 use phux_protocol::ids::{
-    ClientId, GroupId, IdempotencyKey, ResourceId, ResourceKind, ServerInstance, SessionId,
-    WindowId,
+    ApprovalId, ClientId, GroupId, IdempotencyKey, ResourceId, ResourceKind, ServerInstance,
+    SessionId, WindowId,
 };
 use phux_protocol::wire::decode::Decoder;
 use phux_protocol::wire::frame::{
-    ActorRef, AgentEvent, CloseReason, CommandResult, CommandValue, ControlAction, EventStamp,
-    FrameKind, ResourceLifecycle, Scope, SpawnError, SpawnResource, SpawnResult,
+    ActorRef, AgentEvent, ApprovalOutcome, CloseReason, CommandResult, CommandValue, ControlAction,
+    EventStamp, FrameKind, ResourceLifecycle, Scope, SpawnError, SpawnResource, SpawnResult,
 };
 use phux_protocol::wire::info::{ExitFacet, ResourceInfo, SessionSnapshot};
 use phux_protocol::wire::{DecodeError, frame::TYPE_EVENT};
@@ -215,8 +215,8 @@ fn agent_event_journal_gap_and_source_gap_roundtrip_and_unknown_tag_still_skips(
     )));
     assert_eq!(fs[0].1[0], 0x0c, "source_gap is tag 0x0c");
 
-    // 0x0d is the next unallocated tag: still skipped by its length.
-    let agent_event = [0x0d, 0, 0, 0, 2, 0xaa, 0xbb];
+    // 0x0f is the next unallocated tag: still skipped by its length.
+    let agent_event = [0x0f, 0, 0, 0, 2, 0xaa, 0xbb];
     let mut body = Vec::new();
     tlv_field(&mut body, 2, &agent_event);
     assert_eq!(
@@ -224,7 +224,7 @@ fn agent_event_journal_gap_and_source_gap_roundtrip_and_unknown_tag_still_skips(
         event(
             None,
             AgentEvent::Unknown {
-                tag: 0x0d,
+                tag: 0x0f,
                 body: vec![0xaa, 0xbb],
             },
             None,
@@ -245,8 +245,21 @@ fn terminal_control_expired_round_trips_and_an_unknown_action_is_opaque() {
         },
         None,
     ));
-    // lifecycle RUNNING, no exit, no holder, action 0x0a, no actor.
-    let control = [0u8, 0, 0, 0x0a, 0];
+    // ADR-0127's `ROLE_CHANGED = 10` is known and round-trips as itself.
+    assert_round_trip(&event(
+        Some(ResourceId::local(2)),
+        AgentEvent::TerminalControl {
+            lifecycle: ResourceLifecycle::Running,
+            exit_status: None,
+            input_holder: None,
+            action: ControlAction::RoleChanged,
+            actor: Some(phux_protocol::ids::ClientId::new(3)),
+        },
+        None,
+    ));
+    // lifecycle RUNNING, no exit, no holder, action 0x0b (unallocated), no
+    // actor.
+    let control = [0u8, 0, 0, 0x0b, 0];
     let mut agent_event = vec![0x08, 0, 0, 0, 5];
     agent_event.extend_from_slice(&control);
     let mut body = Vec::new();
@@ -459,4 +472,76 @@ fn metadata_changed_actor_roundtrips() {
     assert_eq!(drop_ids(&with, &[4]), encode(&changed(None)));
     let older = refield(&with, |id| Some(if id == 4 { 50 } else { id }));
     assert_eq!(decode(&older).unwrap(), changed(None));
+}
+
+/// ADR-0128's events: `approval_requested = 0x0d { id }` and
+/// `approval_decided = 0x0e { id, outcome }`, positional. A decoder that
+/// predates them reads `Unknown` by length; an outcome byte this build does
+/// not know, or a zero id, makes the event opaque rather than failing the
+/// frame.
+#[test]
+fn approval_events_round_trip_and_an_unknown_outcome_is_opaque() {
+    let id = ApprovalId::new([0x11; 16]).unwrap();
+    assert_eq!(id.to_string(), "11".repeat(16));
+    assert_eq!(ApprovalId::parse(&id.to_string()), Some(id));
+    for text in [
+        "",
+        "00000000000000000000000000000000",
+        &"1".repeat(31),
+        &"A".repeat(32),
+    ] {
+        assert_eq!(ApprovalId::parse(text), None, "{text:?}");
+    }
+    assert_round_trip(&event(
+        Some(ResourceId::local(3)),
+        AgentEvent::ApprovalRequested { id },
+        Some(EventStamp::new(7, 8).with_actor(Some(actor()))),
+    ));
+    for outcome in [
+        ApprovalOutcome::Approved,
+        ApprovalOutcome::Denied,
+        ApprovalOutcome::Expired,
+        ApprovalOutcome::Withdrawn,
+    ] {
+        assert_round_trip(&event(
+            None,
+            AgentEvent::ApprovalDecided { id, outcome },
+            None,
+        ));
+    }
+    let (_, fs) = fields(&encode(&event(
+        None,
+        AgentEvent::ApprovalRequested { id },
+        None,
+    )));
+    assert_eq!(fs[0].1[..5], [0x0d, 0, 0, 0, 16], "tag 0x0d, 16-byte body");
+
+    let mut decided = vec![0x0e, 0, 0, 0, 17];
+    decided.extend_from_slice(&[0x11; 16]);
+    decided.push(9);
+    let mut body = Vec::new();
+    tlv_field(&mut body, 2, &decided);
+    assert_eq!(
+        decode(&framed_tlv(TYPE_EVENT, &body)).unwrap(),
+        event(
+            None,
+            AgentEvent::Unknown {
+                tag: 0x0e,
+                body: decided[5..].to_vec(),
+            },
+            None,
+        )
+    );
+    let zero = [
+        0x0d, 0, 0, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    let mut body = Vec::new();
+    tlv_field(&mut body, 2, &zero);
+    assert!(matches!(
+        decode(&framed_tlv(TYPE_EVENT, &body)).unwrap(),
+        FrameKind::Event {
+            event: AgentEvent::Unknown { tag: 0x0d, .. },
+            ..
+        }
+    ));
 }

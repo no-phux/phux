@@ -308,6 +308,32 @@ pub(crate) struct Client {
     /// `HELLO_OK` advertised `CONDITIONAL_KILL` (ADR-0109): a spawn may ask
     /// for its instance binding, and `KILL_RESOURCE_IF` is understood.
     pub conditional_kill: bool,
+    /// `HELLO_OK` advertised `EVENT_JOURNAL` (ADR-0123): `SUBSCRIBE_EVENTS`
+    /// may carry `after_seq`.
+    pub event_journal: bool,
+    /// `HELLO_OK` advertised `RETAIN_ON_EXIT` (ADR-0124): a spawn may ask
+    /// to keep an exited Terminal.
+    pub retain_on_exit: bool,
+    /// `HELLO_OK` advertised `SPAWN_IDEMPOTENCY` (ADR-0126): a spawn may
+    /// carry a retry key.
+    pub spawn_idempotency: bool,
+    /// `HELLO_OK` advertised `CLOSE_TAB_RESOURCES` (L1 §5.2.2): an atomic
+    /// close batch that preserves keep-empty.
+    pub close_tab_resources: bool,
+    /// `HELLO_OK` advertised L3 metadata (`docs/spec/L3.md`). Named
+    /// projection get/set/delete need this layer; there is no extra
+    /// `ServerFeature` bit.
+    pub l3_metadata: bool,
+    /// `HELLO_OK` advertised `ATTACH_ROLES` (ADR-0127): an attach may
+    /// declare a role.
+    pub attach_roles: bool,
+    /// The role every later `ATTACH` and `ATTACH_RESOURCE` declares, set by
+    /// `phux_client_attach_role`. `None` is the default and sends nothing.
+    pub attach_role: Option<phux_protocol::wire::frame::RolePolicy>,
+    /// Journal cursor for the next `SUBSCRIBE_EVENTS` this client sends,
+    /// including the automatic post-`ATTACH_READY` subscribe. `None` is
+    /// live-only.
+    pub event_after_seq: Option<u64>,
     /// The one retained go-to-directory listing.
     pub directory: crate::directory::DirectoryState,
     /// The outstanding `GET_STATE` of a client that lists without attaching.
@@ -315,10 +341,24 @@ pub(crate) struct Client {
     pub session_creates: crate::session_create::SessionCreates,
     /// The latest session rename and the rename key's subscription.
     pub session_rename: crate::session_rename::SessionRename,
+    /// The outstanding named-projection L3 get/set/delete (ADR-0129).
+    pub projection: crate::projection::Projection,
     pub detached: bool,
 }
 
 impl Client {
+    /// The role the next attach declares (ADR-0127). A takeover is one
+    /// deliberate act, so it is consumed here and later attaches (a
+    /// workspace's auto-attached panes, a re-attach) declare the default;
+    /// `VIEWER` stays declared until changed.
+    pub(crate) fn next_attach_role(&mut self) -> Option<phux_protocol::wire::frame::RolePolicy> {
+        let role = self.attach_role;
+        if role.is_some_and(phux_protocol::wire::frame::RolePolicy::takes_over) {
+            self.attach_role = None;
+        }
+        role
+    }
+
     pub(crate) fn new(limits: Limits) -> Self {
         let history_config = HistoryCacheConfig {
             max_bytes: limits.history_cache_bytes,
@@ -373,10 +413,19 @@ impl Client {
             list_directory_host: false,
             keep_empty_sessions: false,
             conditional_kill: false,
+            event_journal: false,
+            retain_on_exit: false,
+            spawn_idempotency: false,
+            close_tab_resources: false,
+            l3_metadata: false,
+            attach_roles: false,
+            attach_role: None,
+            event_after_seq: None,
             directory: crate::directory::DirectoryState::default(),
             session_query: crate::session_query::SessionQuery::default(),
             session_creates: crate::session_create::SessionCreates::default(),
             session_rename: crate::session_rename::SessionRename::default(),
+            projection: crate::projection::Projection::default(),
             detached: false,
         }
     }
@@ -494,6 +543,7 @@ impl Client {
         self.session_query.disconnect();
         self.session_creates.disconnect();
         self.session_rename.disconnect();
+        self.projection.disconnect();
         self.outgoing.clear();
         self.session.release_active_attach();
         self.effects.clear();
@@ -871,13 +921,16 @@ impl Client {
                     max_rows,
                 })?;
             }
-            KernelSend::SubscribeEvents { terminal } => {
-                // `after_seq` (ADR-0123, the journal cursor) is a separate
-                // lane's concern; `None` is the live-only subscription
-                // every client without journal replay sends.
+            KernelSend::SubscribeEvents {
+                terminal,
+                after_seq,
+            } => {
+                let after_seq = after_seq
+                    .or(self.event_after_seq)
+                    .filter(|_| self.event_journal);
                 self.queue_frame(&FrameKind::SubscribeEvents {
                     terminal,
-                    after_seq: None,
+                    after_seq,
                 })?;
             }
         }

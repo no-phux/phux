@@ -9,6 +9,28 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.39.0](https://github.com/no-phux/phux/compare/v0.38.0...v0.39.0) (2026-09-15)
+
+
+### Features
+
+* **client-ffi:** plumb after_seq, retain_secs, and spawn idempotency_key ([#698](https://github.com/no-phux/phux/issues/698)) ([e81eb1c](https://github.com/no-phux/phux/commit/e81eb1cc6a129f171037eed8a73910ceaba69811))
+* **protocol:** snapshot capture as HTML or VT via the engine formatter ([#695](https://github.com/no-phux/phux/issues/695)) ([20e57ea](https://github.com/no-phux/phux/commit/20e57eaf64a7ab0fe2a18b51600502952a15c0dd))
+* **server:** retain exited terminals for inspection until purge ([#693](https://github.com/no-phux/phux/issues/693)) ([869c81c](https://github.com/no-phux/phux/commit/869c81cec52a964d1bca293b26ed6c763df22403))
+
+
+### Bug Fixes
+
+* **install:** trap HUP and recover lock-acquisition races ([#692](https://github.com/no-phux/phux/issues/692)) ([9d96c3e](https://github.com/no-phux/phux/commit/9d96c3eefb6b65696053e87349bcad2e3645e447))
+* **site:** align hosted native smoke and wasm with protocol 0.9 ([#694](https://github.com/no-phux/phux/issues/694)) ([38cba9c](https://github.com/no-phux/phux/commit/38cba9c273a52cdb24fcf969ab8605cbb2a5b69a))
+* **site:** pin hosted native phux to workspace 0.38.0 ([#700](https://github.com/no-phux/phux/issues/700)) ([740c376](https://github.com/no-phux/phux/commit/740c3763b45eef2e1caeb854ef114d91780066b6))
+
+
+### Documentation
+
+* **concepts:** drop shipped ffi and journal status gaps ([#697](https://github.com/no-phux/phux/issues/697)) ([b765228](https://github.com/no-phux/phux/commit/b765228d8868c9294e791c9a2679079b94bd00c4))
+* **spec:** align L3.md §3.1 session keys with shipped 0.3.0+ ([b6abad9](https://github.com/no-phux/phux/commit/b6abad93672c4e9fd6db4a3ae753e794bd31609a))
+
 ## [0.38.0](https://github.com/no-phux/phux/compare/v0.37.0...v0.38.0) (2026-09-15)
 
 

@@ -324,6 +324,7 @@ async fn restore_one_session(
         agent_session_bytes,
         agent_session_preflighted,
         false,
+        None,
     )
     .await
     .map_err(|_| "could not create the seed pane (see the diagnostic above)".to_owned())?;
@@ -406,6 +407,7 @@ async fn rollback_session(socket_path: &Path, created: &[ResourceId]) {
         socket_path,
         Command::KillResources {
             ids: created.to_vec(),
+            operation_id: None,
         },
     )
     .await

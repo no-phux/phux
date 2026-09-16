@@ -601,6 +601,93 @@ fn revoke_marks_the_record_and_a_new_connection_is_refused() {
     assert_eq!(listed["registry_generation"], 2);
 }
 
+/// `workload-auth.md` §8 and §9's secret sweep across a whole enrolled
+/// lifecycle, revocation included: the workload's private key never reaches
+/// the CLI's argv, environment, stdout, or stderr, nor the server's
+/// trace-level log. The mTLS profile carries no nonce or signature bytes of
+/// its own (§3), so the key is the one secret to look for. The trace filter
+/// covers phux's own crates; a dependency's trace output is not phux's
+/// diagnostic surface.
+#[test]
+#[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
+fn no_key_nonce_or_signature_bytes_in_argv_env_stdout_stderr_or_trace() {
+    let dir = TempDir::new().expect("tempdir");
+    prepare_dirs(dir.path());
+    init_authority(dir.path());
+    let client = client_key();
+    let needles = key_needles(&client.key_pem);
+    let cert = dir.path().join("client.pem");
+    let key = dir.path().join("client.key");
+    std::fs::write(&key, &client.key_pem).expect("write client key");
+    std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+    let id = enroll(dir.path(), &client, &cert, &["*@global"]);
+
+    let port = free_udp_port();
+    std::fs::write(
+        dir.path().join("config/phux/config.toml"),
+        format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
+    )
+    .expect("write registry");
+    let quic = format!("127.0.0.1:{port}");
+    let log = dir.path().join("server.log");
+    let stderr = std::fs::File::create(dir.path().join("server.stderr")).expect("stderr file");
+    let trace =
+        "phux=trace,phux_server=trace,phux_dial=trace,phux_protocol=trace,phux_client=trace,info";
+    let server = server_command(
+        dir.path(),
+        &["--quic", &quic, "--exit-after-idle", "120"],
+        &[
+            ("PHUX_WORKLOAD_MTLS", "1"),
+            ("RUST_LOG", trace),
+            ("PHUX_LOG", log.to_str().expect("utf-8 path")),
+        ],
+    )
+    .stdout(Stdio::null())
+    .stderr(stderr)
+    .spawn()
+    .expect("spawn phux server");
+    let server = Server(server);
+
+    let identity = [
+        ("PHUX_WORKLOAD_CERT", cert.as_path()),
+        ("PHUX_WORKLOAD_KEY", key.as_path()),
+    ];
+    let whoami = ["whoami", "--remote", REMOTE, "--json"];
+    let mut outputs = vec![await_success(dir.path(), &whoami, &identity)];
+    outputs.push(phux(dir.path(), &["workload", "revoke", &id]));
+    outputs.push(phux_with(dir.path(), &whoami, b"", &identity));
+    outputs.push(phux(dir.path(), &["workload", "list", "--json"]));
+    drop(server);
+
+    for out in &outputs {
+        assert_no_key_bytes(out, &needles);
+    }
+    // The key is named by path on every invocation, never carried.
+    let passed: Vec<String> = whoami
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .chain(identity.iter().map(|(_, path)| path.display().to_string()))
+        .collect();
+    for needle in &needles {
+        assert!(
+            !passed.iter().any(|value| value.contains(needle.as_str())),
+            "key bytes reached argv or the environment"
+        );
+    }
+    let mut traced = std::fs::read_to_string(dir.path().join("server.stderr")).unwrap_or_default();
+    traced.push_str(&std::fs::read_to_string(&log).unwrap_or_default());
+    assert!(
+        traced.contains("TRACE") || traced.contains("DEBUG"),
+        "the server's trace log was captured"
+    );
+    for needle in &needles {
+        assert!(
+            !traced.contains(needle.as_str()),
+            "key bytes reached the server's trace log"
+        );
+    }
+}
+
 /// Workload mode refuses to start beside a WebTransport listener, which
 /// cannot carry a client certificate, and says how to fix it.
 #[test]
@@ -625,4 +712,222 @@ fn workload_mode_refuses_to_start_with_webtransport() {
         stderr.contains("PHUX_WORKLOAD_MTLS") && stderr.contains("WebTransport"),
         "the refusal names the setting and the entry point: {stderr}"
     );
+}
+
+/// Poll `child` until it exits or `deadline` passes, then collect it.
+fn wait_exit(mut child: Child, deadline: Duration) -> Output {
+    let start = Instant::now();
+    while child.try_wait().expect("poll child").is_none() {
+        if start.elapsed() > deadline {
+            let _ = child.kill();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child.wait_with_output().expect("collect child")
+}
+
+/// A paired server, the owner's socket, and one enrolled workload whose
+/// grant holds `?signal` (ADR-0128).
+struct HeldWorld {
+    dir: TempDir,
+    _server: Server,
+    cert: PathBuf,
+    key: PathBuf,
+    credential: String,
+}
+
+impl HeldWorld {
+    fn start() -> Self {
+        let dir = TempDir::new().expect("tempdir");
+        prepare_dirs(dir.path());
+        init_authority(dir.path());
+        let client = client_key();
+        let cert = dir.path().join("client.pem");
+        let key = dir.path().join("client.key");
+        std::fs::write(&key, &client.key_pem).expect("write client key");
+        std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600)).expect("chmod");
+        let credential = enroll(
+            dir.path(),
+            &client,
+            &cert,
+            &["inventory,observe,?signal@global"],
+        );
+        let port = free_udp_port();
+        std::fs::write(
+            dir.path().join("config/phux/config.toml"),
+            format!("[[remote]]\nname = \"{REMOTE}\"\nendpoint = \"quic://127.0.0.1:{port}\"\n"),
+        )
+        .expect("write registry");
+        let quic = format!("127.0.0.1:{port}");
+        let server = start_server(
+            dir.path(),
+            &["--quic", &quic],
+            &[("PHUX_WORKLOAD_MTLS", "1")],
+        );
+        let world = Self {
+            dir,
+            _server: server,
+            cert,
+            key,
+            credential,
+        };
+        let whoami = ["whoami", "--remote", REMOTE, "--json"];
+        await_success(world.dir.path(), &whoami, &world.identity());
+        world
+    }
+
+    fn identity(&self) -> [(&'static str, &Path); 2] {
+        [
+            ("PHUX_WORKLOAD_CERT", self.cert.as_path()),
+            ("PHUX_WORKLOAD_KEY", self.key.as_path()),
+        ]
+    }
+
+    fn socket(&self) -> String {
+        self.dir.path().join("s.sock").display().to_string()
+    }
+
+    /// `phux ARGS --socket S` on the owner's socket, stdin not a terminal.
+    fn owner(&self, args: &[&str]) -> Output {
+        let socket = self.socket();
+        let mut all = args.to_vec();
+        all.extend(["--socket", &socket]);
+        phux(self.dir.path(), &all)
+    }
+
+    /// `phux ARGS` in the background, as the owner or as the workload.
+    fn spawn(&self, args: &[&str], as_workload: bool) -> Child {
+        let mut command = common::phux_cmd(PHUX);
+        command
+            .envs(hermetic_env(self.dir.path()))
+            .current_dir(self.dir.path())
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if as_workload {
+            command.envs(self.identity());
+        }
+        command.spawn().expect("spawn phux")
+    }
+
+    /// The first pending approval, once one exists.
+    fn first_approval(&self) -> serde_json::Value {
+        let start = Instant::now();
+        loop {
+            let listed = json_doc(&self.owner(&["approvals", "--json"]));
+            if let Some(first) = listed["approvals"].as_array().and_then(|all| all.first()) {
+                return first.clone();
+            }
+            assert!(start.elapsed() < READY_DEADLINE, "nothing was ever held");
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// The NDJSON event named `name` in `watched`'s stdout.
+fn watched_event(watched: &Output, name: &str) -> serde_json::Value {
+    let found = text(&watched.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|event| event["event"] == name);
+    assert!(
+        found.is_some(),
+        "`phux watch` rendered no {name}: {}",
+        text(&watched.stdout)
+    );
+    found.expect("checked above")
+}
+
+/// ADR-0128 end to end. A workload whose grant holds `?signal` has its kill
+/// held by the server; the owner lists it with `phux approvals`, approves
+/// it, and the kill runs once, as the workload, whose `phux kill` then
+/// succeeds. `phux watch`, started before the hold and resuming from a
+/// cursor so it cannot miss either, renders `approval_requested` and
+/// `approval_decided`. On the way, a dangerous verb without `--yes` on a
+/// non-terminal stdin exits 2 and sends nothing.
+#[test]
+#[ignore = "spawns a real server with a workload-mTLS QUIC listener; runs in the e2e lane"]
+fn approvals_list_approve_and_watch_render_both_events() {
+    let world = HeldWorld::start();
+    let created = world.owner(&["new", "-s", "work", "--json"]);
+    assert!(created.status.success(), "{}", text(&created.stderr));
+    let terminal = json_doc(&created)["terminal_id"]
+        .as_u64()
+        .expect("terminal_id");
+    let pane = format!("@{terminal}");
+    let waited = world.owner(&["resource", "wait", &pane, "--timeout", "1", "--json"]);
+    let cursor = json_doc(&waited)["cursor"]
+        .as_str()
+        .expect("a cursor")
+        .to_owned();
+
+    // No --yes and no terminal to ask: exit 2, nothing sent.
+    let unconfirmed = world.owner(&["kill", &pane]);
+    assert_eq!(
+        unconfirmed.status.code(),
+        Some(2),
+        "{}",
+        text(&unconfirmed.stderr)
+    );
+    assert!(text(&unconfirmed.stderr).contains("--yes"));
+    assert!(
+        world
+            .owner(&["resource", "show", &pane, "--json"])
+            .status
+            .success()
+    );
+
+    let socket = world.socket();
+    let watch = world.spawn(
+        &[
+            "watch",
+            &pane,
+            "--json",
+            "--after",
+            &cursor,
+            "--until",
+            "approval_decided",
+            "--timeout",
+            "60",
+            "--socket",
+            &socket,
+        ],
+        false,
+    );
+    let held_kill = world.spawn(&["kill", "--yes", "--remote", REMOTE, &pane], true);
+
+    let approval = world.first_approval();
+    assert_eq!(approval["method"], "KILL_RESOURCE", "{approval}");
+    let subject = format!("terminal:{terminal}");
+    assert_eq!(approval["subjects"], serde_json::json!([subject]));
+    assert_eq!(
+        approval["requester"]["credential_id"],
+        world.credential.as_str()
+    );
+    let id = approval["id"].as_str().expect("id").to_owned();
+    let still_there = world.owner(&["resource", "show", &pane, "--json"]);
+    assert!(still_there.status.success(), "a held kill has not run");
+
+    let approved = world.owner(&["approve", "--yes", &id]);
+    assert!(approved.status.success(), "{}", text(&approved.stderr));
+    let killed = wait_exit(held_kill, READY_DEADLINE);
+    assert!(
+        killed.status.success(),
+        "the approved kill completes: {}",
+        text(&killed.stderr)
+    );
+    let listed = json_doc(&world.owner(&["approvals", "--json"]));
+    assert_eq!(listed["approvals"], serde_json::json!([]));
+
+    let watched = wait_exit(watch, READY_DEADLINE);
+    assert!(watched.status.success(), "{}", text(&watched.stderr));
+    assert_eq!(
+        watched_event(&watched, "approval_requested")["id"],
+        id.as_str()
+    );
+    let decided = watched_event(&watched, "approval_decided");
+    assert_eq!(decided["id"], id.as_str());
+    assert_eq!(decided["outcome"], "approved");
 }

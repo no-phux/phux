@@ -427,6 +427,33 @@ pub const MAX_AGENT_SESSION_RECORD_BYTES: usize = 4 * 1024;
 /// `phux config reload` and the TUI `reload-config` action.
 pub const CONFIG_RELOAD_KEY: &str = "phux.config.reload/v1";
 
+/// `Global`-scope key family of the server-owned approval records (ADR-0128).
+///
+/// `phux.approval/v1/<id>` holds one held action's JSON description
+/// (`docs/spec/L3.md` §3.10) while it awaits a decision, and is deleted when
+/// the action is decided, expires, or is withdrawn. No client may set or
+/// delete a key in this family.
+pub const APPROVAL_KEY_PREFIX: &str = "phux.approval/v1/";
+
+/// `Global`-scope key family a decision is written to (ADR-0128).
+///
+/// `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value
+/// `approve` or `deny`. The server intercepts the write, classifies it as
+/// `SIGNAL` on the held action's subject, and stores nothing.
+pub const APPROVAL_DECIDE_KEY_PREFIX: &str = "phux.approval.decide/v1/";
+
+/// A decision's value: release the held action once.
+pub const APPROVAL_APPROVE: &[u8] = b"approve";
+
+/// A decision's value: refuse the held action.
+pub const APPROVAL_DENY: &[u8] = b"deny";
+
+/// Whether `value` is a decision a decide key accepts.
+#[must_use]
+pub fn is_approval_decision(value: &[u8]) -> bool {
+    value == APPROVAL_APPROVE || value == APPROVAL_DENY
+}
+
 wire_tags! { Message;
 /// Discriminant for `METADATA_VALUE` (server to client, `docs/spec/L3.md` §1).
 ///
@@ -679,6 +706,12 @@ pub(crate) const EVENT_TAG_JOURNAL_GAP: u8 = 0x0b;
 /// Wire tag for [`AgentEvent::SourceGap`] (ADR-0123): the scoped resource
 /// produced events the server dropped before it could journal them.
 pub(crate) const EVENT_TAG_SOURCE_GAP: u8 = 0x0c;
+/// Wire tag for [`AgentEvent::ApprovalRequested`] (ADR-0128): a `SIGNAL`
+/// action was held for approval.
+pub(crate) const EVENT_TAG_APPROVAL_REQUESTED: u8 = 0x0d;
+/// Wire tag for [`AgentEvent::ApprovalDecided`] (ADR-0128): a held action
+/// was approved, denied, expired, or withdrawn.
+pub(crate) const EVENT_TAG_APPROVAL_DECIDED: u8 = 0x0e;
 }
 
 /// Wire tag for one [`Command`] variant inside the `COMMAND` envelope
@@ -714,6 +747,7 @@ enum CommandTag {
     AppendResourceOutput = 0x1a,
     KillResourceIf = 0x1b,
     OpenListener = 0x1c,
+    CloseTabResources = 0x1d,
 }
 
 // Wire tags for the `Command` tagged union (SPEC §5.1). Tags follow the
@@ -842,6 +876,11 @@ pub(crate) const COMMAND_TAG_KILL_RESOURCE_IF: u8 = CommandTag::KillResourceIf a
 /// `KILL_RESOURCE_IF`; gated on `ServerFeature::OpenListener` (ADR-0120).
 /// Accepted on the Unix socket only: it opens a new door into the server.
 pub(crate) const COMMAND_TAG_OPEN_LISTENER: u8 = CommandTag::OpenListener as u8;
+/// Wire tag for [`Command::CloseTabResources`]. Appended after
+/// `OPEN_LISTENER`; gated on `ServerFeature::CloseTabResources`. Same body
+/// as `KILL_RESOURCES`, but a full-coverage batch does not release
+/// keep-empty (ADR-0105, ADR-0114). Tag `0x0a` stays reserved.
+pub(crate) const COMMAND_TAG_CLOSE_TAB_RESOURCES: u8 = CommandTag::CloseTabResources as u8;
 }
 
 // Wire tags for the `InputEvent` tagged union (ROUTE_INPUT arg). These
@@ -908,11 +947,13 @@ mod command_codec;
 mod directory;
 mod kind;
 mod payload;
+mod role;
 mod status;
 mod whoami;
 
 pub use command::{
-    AgentEvent, Command, CommandResult, CommandValue, ControlAction, FileUploadAck, InputMode,
+    AgentEvent, ApprovalOutcome, Command, CommandResult, CommandValue, ControlAction,
+    FileUploadAck, GET_SCREEN_FORMAT_SELECTOR_MASK, GET_SCREEN_FORMAT_UNWRAP, InputMode,
     KillConditions, KillPrecondition, ListenerTransport, ReportedAgentState, ResourceEventType,
     ResourceLifecycle, StateScope, TerminalSignal,
 };
@@ -925,6 +966,7 @@ pub use payload::{
     ActorRef, AttachTarget, EventStamp, MoveError, MoveResult, Scope, SpawnError, SpawnResource,
     SpawnResult, ViewportInfo,
 };
+pub use role::{RolePolicy, TakeoverPolicy, TerminalRole};
 pub use status::{
     CloseReason, DetachReason, ErrorCode, ErrorScope, HistoryRejectionReason,
     HistoryTombstoneReason, TombstoneReason,

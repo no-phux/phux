@@ -24,6 +24,7 @@
 //! reads the registry at all (see [`resolve_hub_table`]).
 
 pub mod link;
+pub mod operation_fence;
 pub mod relay;
 
 use std::collections::BTreeMap;

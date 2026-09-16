@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, contributors
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-09-15
 ---
 
 # phux kind catalog reference
@@ -40,6 +40,7 @@ Addressed to the server or the connection rather than to one resource.
 | `phux.session.name/v1` | metadata key | BIND | yes | none | shipped |
 | `phux.session.keep_empty/v1` | metadata key | CREATE, BIND, SIGNAL | yes | `keep_empty_sessions` | shipped |
 | `phux.config.reload/v1` | metadata key | SIGNAL | yes | none | shipped |
+| `phux.approval.decide/v1/` | metadata key | SIGNAL | yes | `approvals` | shipped |
 | `phux.whoami/v1` | metadata key | exempt: self | no | `whoami` | shipped |
 
 ## Server events
@@ -47,6 +48,8 @@ Addressed to the server or the connection rather than to one resource.
 | Event | Tag |
 |---|---|
 | `journal_gap` | `0x0b` |
+| `approval_requested` | `0x0d` |
+| `approval_decided` | `0x0e` |
 
 ## Substrate methods
 
@@ -60,6 +63,7 @@ Answered by every resource kind.
 | `KILL_RESOURCE` | command `0x03` | SIGNAL | yes | none | shipped |
 | `KILL_RESOURCE_IF` | command `0x1b` | SIGNAL | yes | `conditional_kill` | shipped |
 | `KILL_RESOURCES` | command `0x09` | SIGNAL | yes | none | shipped |
+| `CLOSE_TAB_RESOURCES` | command `0x1d` | SIGNAL | yes | `close_tab_resources` | shipped |
 | `SUBSCRIBE_RESOURCE_EVENTS` | command `0x0d` | OBSERVE | no | none | shipped |
 | `SUBSCRIBE_EVENTS` | frame `0x41` | OBSERVE | no | none | shipped |
 | `GET_STATE` | command `0x05` | INVENTORY | no | none | shipped |
@@ -186,9 +190,11 @@ Every client-originated frame lands on exactly one row.
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with value `name\0false` | SIGNAL | `NamedSession` |
 | `SET_METADATA { Global, "phux.session.keep_empty/v1" }` with any other value | deny | `None` |
 | `SET_METADATA { Global, "phux.config.reload/v1" }` | SIGNAL | `Global { owner_uds_only: false }` |
+| `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value `approve` or `deny` | SIGNAL | `HeldAction` |
+| `SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with a malformed id or any other value | deny | `None` |
 | `SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results | deny | `None` |
 | `SUBSCRIBE_METADATA` targeting that result namespace | deny | `None` |
-| `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1` or `phux.whoami/v1`, or `DELETE_METADATA` targeting `phux.config.reload/v1` or `phux.session.keep_empty/v1` | deny | `None` |
+| `SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, `phux.whoami/v1`, or a `phux.approval/v1/<id>` record, or `DELETE_METADATA` targeting `phux.config.reload/v1`, `phux.session.keep_empty/v1`, or a `phux.approval.decide/v1/<id>` key | deny | `None` |
 | Other `SET_METADATA`, `DELETE_METADATA` | BIND | `MetadataScope` |
 | `LIST_METADATA` | INVENTORY | `MetadataScope` |
 | `LIST_DIRECTORY` | INVENTORY | `Global { owner_uds_only: false }` |
@@ -209,6 +215,7 @@ Every command nested in `COMMAND` lands on exactly one row; the envelope alone g
 | `GET_SCREEN` | OBSERVE | `NamedTerminal` |
 | `ROUTE_INPUT`, `APPLY_INPUT` | INPUT | `NamedTerminal` |
 | `KILL_RESOURCES` | SIGNAL | `EveryNamedTerminal` |
+| `CLOSE_TAB_RESOURCES` | SIGNAL | `EveryNamedTerminal` |
 | `RESIZE_TERMINAL` (unallocated) | deny | `None` |
 | `GET_STATE { SERVER }` | INVENTORY | `InventoryMatches` |
 | `RUN_HOOK` (unallocated) | deny | `None` |

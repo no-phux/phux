@@ -367,7 +367,10 @@ components do not mirror the Rust workspace version.
 **Do not hand-edit the version.** release-please derives it from the
 conventional-commit log and writes it into `[workspace.package].version` on the
 release PR (via a TOML jsonpath updater configured in
-`release-please-config.json`). The `sync-lockfile` job then runs
+`release-please-config.json`). The same extra-files list rewrites annotated
+`PHUX_VERSION` literals in `docs/site/worker/Dockerfile`; without that, the
+hosted native pin lags the workspace and `just toolchain-check` fails on main
+(#700, #711). The `sync-lockfile` job then runs
 `cargo update --workspace` in the root and standalone browser workspace on the
 same PR so both lockfiles record the new internal package versions while
 retaining external pins; release-please cannot update those lockfiles itself.

@@ -7,8 +7,9 @@
 //! hence `toml_edit` rather than a serialize round-trip.
 //!
 //! The document-level discipline is identical for both and lives here once:
-//! refuse a symlinked config (a registry write must not be redirected into a
-//! file the operator did not mean to edit), and replace the config
+//! follow a symlinked config to its target (a dotfiles checkout keeps
+//! pointing at the real file; the target's mode survives — the same policy
+//! as [`crate::settings::write_edit`], ADR-0101), and replace the config
 //! atomically via a temp file plus rename, so an interrupted write cannot
 //! leave a truncated config that fails to parse on the next start.
 //!
@@ -62,7 +63,7 @@ impl std::ops::DerefMut for RegistryEdit {
 impl RegistryEdit {
     /// Publish this edit while retaining its lock through the rename.
     /// # Errors
-    /// Refuses observed external changes, symlinks and filesystem failures.
+    /// Refuses observed external changes and filesystem failures.
     pub fn commit(self) -> Result<(), String> {
         publish_document(&self.path, &self.document, Some(&self.original))
     }
@@ -96,7 +97,7 @@ impl RegistryEdit {
 
 /// Begin a shared registry mutation, acquiring its lock before reading anything.
 /// # Errors
-/// Refuses busy writers, symlinks, malformed documents and filesystem errors.
+/// Refuses busy writers, malformed documents and filesystem errors.
 pub fn edit_document(path: &Path) -> Result<RegistryEdit, String> {
     let lock = lock_registry(path)?;
     let original = read_text(path)?;
@@ -112,7 +113,6 @@ pub fn edit_document(path: &Path) -> Result<RegistryEdit, String> {
 }
 
 fn lock_registry(path: &Path) -> Result<std::fs::File, String> {
-    reject_symlink(path)?;
     let parent = path
         .parent()
         .ok_or_else(|| "registry has no parent directory".to_owned())?;
@@ -149,7 +149,7 @@ fn read_text(path: &Path) -> Result<String, String> {
 /// keys (`remote` or `satellites`), never a combined inventory row offset.
 ///
 /// # Errors
-/// Refuses changed, malformed, symlinked, missing, ambiguous or inherited entries.
+/// Refuses changed, malformed, missing, ambiguous or inherited entries.
 pub fn forget_machine(
     path: &Path,
     expected: &str,
@@ -180,6 +180,9 @@ pub fn read_document(config_path: &Path) -> Result<DocumentMut, String> {
 /// Replace `config.toml` atomically: write a sibling temp file, fsync, then
 /// rename over the target. A crash mid-write leaves the old config intact.
 ///
+/// A symlink is followed so the rename lands on the real file (preserving
+/// the link and the target's mode), matching [`crate::settings::write_edit`].
+///
 /// This is an unconditional replacement. Read/modify callers use [`edit_document`]
 /// to retain the lock from their read through publication.
 pub fn write_document(config_path: &Path, doc: &DocumentMut) -> Result<(), String> {
@@ -192,13 +195,19 @@ fn publish_document(
     doc: &DocumentMut,
     expected: Option<&str>,
 ) -> Result<(), String> {
-    reject_symlink(config_path)?;
-    let parent = config_path
+    // Follow the symlink: renaming over the link itself would replace it
+    // with a regular file. Canonicalizing writes the target, keeps the
+    // link, and (via write_temp_file) copies the target's mode — the
+    // same policy as `settings::write_edit` (ADR-0101). Refusing here
+    // used to break dotfiles checkouts that the settings page already
+    // edited through.
+    let target = std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
+    let parent = target
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", config_path.display()))?;
     std::fs::create_dir_all(parent)
         .map_err(|err| format!("could not create {}: {err}", parent.display()))?;
-    let file_name = config_path
+    let file_name = target
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| format!("{} has no file name", config_path.display()))?;
@@ -207,12 +216,12 @@ fn publish_document(
         std::process::id(),
         temp_nonce()
     ));
-    let write_result = write_temp_file(&tmp_path, doc.to_string().as_bytes())
+    let write_result = write_temp_file(&tmp_path, doc.to_string().as_bytes(), &target)
         .and_then(|()| verify_expected(config_path, expected))
         .and_then(|()| {
             #[cfg(test)]
             before_publish_hook();
-            std::fs::rename(&tmp_path, config_path).map_err(|err| err.to_string())
+            std::fs::rename(&tmp_path, &target).map_err(|err| err.to_string())
         });
     if let Err(err) = write_result {
         let _ = std::fs::remove_file(&tmp_path);
@@ -227,7 +236,6 @@ fn verify_expected(path: &Path, expected: Option<&str>) -> Result<(), String> {
     let Some(expected) = expected else {
         return Ok(());
     };
-    reject_symlink(path)?;
     if read_text(path)? != expected {
         return Err("machine registry changed; refresh Machines".to_owned());
     }
@@ -256,19 +264,6 @@ pub fn table_mut<'doc>(
     tables_mut(doc, key)?
         .get_mut(index)
         .ok_or_else(|| format!("`{key}` registry index {index} disappeared"))
-}
-
-/// Refuse to write through a symlink: a registry write must land in the file
-/// the operator's config path names, not wherever a link points.
-pub fn reject_symlink(path: &Path) -> Result<(), String> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            Err(format!("{} must not be a symlink", path.display()))
-        }
-        Ok(_) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(format!("could not inspect {}: {err}", path.display())),
-    }
 }
 
 /// A SHA-256 certificate pin: exactly 64 hex digits once the `AB:CD:...`
@@ -302,14 +297,19 @@ fn temp_nonce() -> u128 {
         .map_or(0, |duration| duration.as_nanos())
 }
 
-/// Create the temp file exclusively and fsync it, so the rename that follows
-/// publishes bytes that are actually on disk.
-fn write_temp_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
+/// Create the temp file exclusively, copy `target`'s mode when it exists,
+/// and fsync, so the rename that follows publishes bytes that are actually
+/// on disk without resetting the target's permissions.
+fn write_temp_file(path: &Path, bytes: &[u8], target: &Path) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(path)
         .map_err(|err| err.to_string())?;
+    if let Ok(metadata) = std::fs::metadata(target) {
+        file.set_permissions(metadata.permissions())
+            .map_err(|err| err.to_string())?;
+    }
     file.write_all(bytes).map_err(|err| err.to_string())?;
     file.sync_all().map_err(|err| err.to_string())
 }
@@ -412,17 +412,43 @@ mod tests {
         assert!(doc.as_table().is_empty());
     }
 
+    #[cfg(unix)]
     #[test]
-    fn write_refuses_a_symlinked_config() {
+    fn write_follows_a_symlinked_config_and_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         let dir = tempfile::tempdir().expect("tempdir");
-        let real = dir.path().join("real.toml");
-        std::fs::write(&real, "").expect("seed");
+        let real = dir.path().join("dotfiles").join("phux.toml");
+        std::fs::create_dir_all(real.parent().unwrap()).expect("dotfiles dir");
+        std::fs::write(&real, "# keep\n").expect("seed");
+        std::fs::set_permissions(&real, std::fs::Permissions::from_mode(0o600)).expect("mode");
         let link = dir.path().join("config.toml");
         std::os::unix::fs::symlink(&real, &link).expect("symlink");
 
-        let err = write_document(&link, &read_document(&real).expect("parse"))
-            .expect_err("symlink must be refused");
-        assert!(err.contains("must not be a symlink"), "got {err}");
+        let mut doc = read_document(&link).expect("parse");
+        tables_mut(&mut doc, "remote")
+            .expect("array")
+            .push(toml_edit::Table::new());
+        write_document(&link, &doc).expect("write through symlink");
+
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .expect("link meta")
+                .file_type()
+                .is_symlink(),
+            "the config path must stay a symlink"
+        );
+        let back = std::fs::read_to_string(&real).expect("read target");
+        assert!(back.contains("# keep"), "comment must survive");
+        assert!(back.contains("[[remote]]"));
+        assert_eq!(
+            std::fs::metadata(&real)
+                .expect("target meta")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[test]

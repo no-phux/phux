@@ -92,6 +92,33 @@ impl ServerState {
                     let terminal_wire = self.intern_terminal_wire(*pid);
                     let cwd =
                         Some(terminal.cwd.to_string_lossy().into_owned()).filter(|s| !s.is_empty());
+                    // ADR-0124: a retained pane reports how its process
+                    // ended; a live one adds nothing to the extension block.
+                    let exit = self.retained_exit(*pid);
+                    let lifecycle = if exit.is_some() {
+                        phux_protocol::wire::frame::ResourceLifecycle::Exited
+                    } else {
+                        phux_protocol::wire::frame::ResourceLifecycle::Running
+                    };
+                    // ADR-0033: who currently has the wheel, if anyone —
+                    // this lane's half of "inventories show the holder"
+                    // (L1 §1.1).
+                    let input_holder = self.input_lease_holder(*pid).map(|holder| {
+                        phux_protocol::ids::ClientId::new(
+                            u32::try_from(holder.0).unwrap_or(u32::MAX),
+                        )
+                    });
+                    // ADR-0127: who watches without input, beside who holds
+                    // the wheel.
+                    let viewers = self
+                        .terminal_viewers(&terminal_wire)
+                        .into_iter()
+                        .map(|viewer| {
+                            phux_protocol::ids::ClientId::new(
+                                u32::try_from(viewer.0).unwrap_or(u32::MAX),
+                            )
+                        })
+                        .collect();
                     panes.push(
                         ResourceInfo::new(
                             terminal_wire,
@@ -100,7 +127,11 @@ impl ServerState {
                             terminal.dims.1,
                         )
                         .with_title(terminal.title.clone())
-                        .with_cwd(cwd),
+                        .with_cwd(cwd)
+                        .with_lifecycle(lifecycle)
+                        .with_exit(exit)
+                        .with_input_holder(input_holder)
+                        .with_viewers(viewers),
                     );
                 }
             }

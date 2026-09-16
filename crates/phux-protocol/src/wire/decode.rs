@@ -713,8 +713,15 @@ impl<'a> Decoder<'a> {
         let mut request_scrollback = false;
         let mut scrollback_limit_lines = 0u32;
         let mut attach_id = None;
+        let mut role_policy = None;
         while let Some((id, value)) = self.read_field()? {
             match id {
+                field::attach::ROLE_POLICY => {
+                    role_policy = Some(crate::wire::frame::RolePolicy::from_u8(sub!(
+                        value,
+                        |d: &mut Decoder<'_>| d.read_u8()
+                    )));
+                }
                 field::attach::TARGET => target = Some(sub!(value, decode_attach_target)),
                 field::attach::VIEWPORT => {
                     viewport = Some(sub!(value, decode_viewport_info));
@@ -737,6 +744,7 @@ impl<'a> Decoder<'a> {
             viewport: viewport.ok_or(DecodeError::UnexpectedEof)?,
             request_scrollback,
             scrollback_limit_lines,
+            role_policy,
         })
     }
 

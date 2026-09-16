@@ -1,0 +1,7 @@
+---
+source: crates/phux-tui/src/attach/driver/tests.rs
+expression: frame
+---
+ 0:nvim  C-a  s Sessions · Space Commands  switch
+──────────────────────────────────────────────────
+PANE-BASE

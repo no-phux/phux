@@ -126,6 +126,13 @@ pub enum ErrorCode {
     /// message says which. Every case has the same recovery: leave the
     /// resource alone.
     PreconditionFailed = 212,
+    /// A federation hub refused a keyed operation's retry without forwarding
+    /// it: the satellite that owns the target restarted since the hub first
+    /// forwarded that operation id, so the satellite's dedupe record is gone
+    /// and a replay could run the operation twice (ADR-0053 item 5 through a
+    /// hub, `docs/spec/L1.md` §9.1). Recovery is the consumer's own
+    /// incarnation rule: read level state and decide afresh, under a new id.
+    IncarnationChanged = 213,
 
     /// Catch-all for unexpected server-side failures. Carries
     /// `u16::MAX = 65535` on the wire.
@@ -198,7 +205,8 @@ impl ErrorCode {
             | Self::NotProducer
             | Self::RecordInvalid
             | Self::Overflow
-            | Self::PreconditionFailed => ErrorScope::Request,
+            | Self::PreconditionFailed
+            | Self::IncarnationChanged => ErrorScope::Request,
             Self::TerminalNotFound
             | Self::WrongResourceKind
             | Self::UnsupportedSatelliteRoute
@@ -242,6 +250,7 @@ impl ErrorCode {
             210 => Self::RecordInvalid,
             211 => Self::Overflow,
             212 => Self::PreconditionFailed,
+            213 => Self::IncarnationChanged,
             65535 => Self::InternalError,
             _ => return None,
         })
@@ -315,6 +324,15 @@ pub enum DetachReason {
     /// The peer violated the protocol; the sender is closing the transport.
     /// A fatal `ERROR` MUST be followed by `DETACHED` carrying this reason.
     ProtocolError = 4,
+    /// A post-HELLO authentication outcome failed (`workload-auth.md` §7).
+    /// A pre-HELLO TLS refusal carries no frame, so it never states this.
+    AuthenticationFailed = 5,
+    /// The credential behind the connection's authority was revoked, or its
+    /// ceiling no longer contains the minted grant (`workload-auth.md` §7).
+    AuthorizationRevoked = 6,
+    /// The credential behind the connection's authority reached its expiry
+    /// (`workload-auth.md` §7).
+    AuthorizationExpired = 7,
     /// The server hit an unrecoverable internal fault.
     InternalError = 255,
 }
@@ -343,6 +361,9 @@ impl DetachReason {
             2 => Self::SessionKilled,
             3 => Self::Replaced,
             4 => Self::ProtocolError,
+            5 => Self::AuthenticationFailed,
+            6 => Self::AuthorizationRevoked,
+            7 => Self::AuthorizationExpired,
             255 => Self::InternalError,
             _ => return None,
         })
@@ -358,6 +379,9 @@ impl DetachReason {
             Self::SessionKilled => "the session was killed",
             Self::Replaced => "another client took over this attach",
             Self::ProtocolError => "the connection violated the protocol",
+            Self::AuthenticationFailed => "authentication failed",
+            Self::AuthorizationRevoked => "this connection's authorization was revoked",
+            Self::AuthorizationExpired => "this connection's authorization expired",
             Self::InternalError => "the server hit an internal error",
         }
     }
@@ -568,6 +592,7 @@ mod tests {
         ErrorCode::RecordInvalid,
         ErrorCode::Overflow,
         ErrorCode::PreconditionFailed,
+        ErrorCode::IncarnationChanged,
         ErrorCode::InternalError,
     ];
 
@@ -620,5 +645,6 @@ mod tests {
         assert_eq!(ErrorCode::RecordInvalid.scope(), ErrorScope::Request);
         assert_eq!(ErrorCode::Overflow.scope(), ErrorScope::Request);
         assert_eq!(ErrorCode::PreconditionFailed.scope(), ErrorScope::Request);
+        assert_eq!(ErrorCode::IncarnationChanged.scope(), ErrorScope::Request);
     }
 }

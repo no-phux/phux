@@ -440,6 +440,9 @@ pub struct ResourceInfo {
     /// The connection holding the input lease; `None` while the Terminal is
     /// open to every attached client (ADR-0033).
     pub input_holder: Option<ClientId>,
+    /// Connections subscribed as `VIEWER` (ADR-0127), ascending; empty when
+    /// none is. Rides `RESOURCE_STATE` field 4, repeated once per viewer.
+    pub viewers: Vec<ClientId>,
 }
 
 impl ResourceInfo {
@@ -463,6 +466,7 @@ impl ResourceInfo {
             lifecycle: ResourceLifecycle::Running,
             exit: None,
             input_holder: None,
+            viewers: Vec::new(),
         }
     }
 
@@ -483,6 +487,7 @@ impl ResourceInfo {
             lifecycle: ResourceLifecycle::Running,
             exit: None,
             input_holder: None,
+            viewers: Vec::new(),
         }
     }
 
@@ -542,6 +547,13 @@ impl ResourceInfo {
         self
     }
 
+    /// Builder setter for [`Self::viewers`].
+    #[must_use]
+    pub fn with_viewers(mut self, viewers: Vec<ClientId>) -> Self {
+        self.viewers = viewers;
+        self
+    }
+
     /// Whether this entry carries anything beyond the Terminal-era
     /// positional prefix, i.e. whether the snapshot's trailing resource
     /// facet list needs a row for it.
@@ -550,12 +562,13 @@ impl ResourceInfo {
     }
 
     /// Whether the snapshot extension block needs a `RESOURCE_STATE` entry
-    /// for this resource: it is not plainly running, or someone holds its
-    /// input lease.
+    /// for this resource: it is not plainly running, someone holds its
+    /// input lease, or someone watches it as a viewer.
     const fn has_resource_state(&self) -> bool {
         !matches!(self.lifecycle, ResourceLifecycle::Running)
             || self.exit.is_some()
             || self.input_holder.is_some()
+            || !self.viewers.is_empty()
     }
 }
 
@@ -820,10 +833,18 @@ pub struct SessionSnapshot {
 
 /// Trailing additive payload for [`SessionSnapshot`]: hosts inventory plus
 /// the remote-listeners report, sharing one optional allocation.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 struct SessionSnapshotTrail {
     hosts: Box<[HostInventory]>,
     listeners: Option<crate::wire::listeners::RemoteListenersReport>,
+    /// The journal head at the cut (extension block field 2, L1 §7.3).
+    journal_head: Option<u64>,
+}
+
+impl SessionSnapshotTrail {
+    fn is_empty(&self) -> bool {
+        self.hosts.is_empty() && self.listeners.is_none() && self.journal_head.is_none()
+    }
 }
 
 impl SessionSnapshot {
@@ -883,30 +904,42 @@ impl SessionSnapshot {
     }
 
     fn set_hosts(&mut self, hosts: Vec<HostInventory>) {
-        let listeners = self
-            .trail
-            .as_ref()
-            .and_then(|trail| trail.listeners.clone());
-        self.trail = match (boxed_hosts(hosts), listeners) {
-            (None, None) => None,
-            (hosts, listeners) => Some(Box::new(SessionSnapshotTrail {
-                hosts: hosts.unwrap_or_default(),
-                listeners,
-            })),
-        };
+        self.edit_trail(|trail| trail.hosts = boxed_hosts(hosts).unwrap_or_default());
     }
 
     fn set_listeners(&mut self, listeners: Option<crate::wire::listeners::RemoteListenersReport>) {
-        let hosts = self
-            .trail
-            .as_ref()
-            .map(|trail| trail.hosts.clone())
-            .unwrap_or_default();
-        self.trail = if hosts.is_empty() && listeners.is_none() {
-            None
-        } else {
-            Some(Box::new(SessionSnapshotTrail { hosts, listeners }))
-        };
+        self.edit_trail(|trail| trail.listeners = listeners);
+    }
+
+    fn set_journal_head(&mut self, journal_head: Option<u64>) {
+        self.edit_trail(|trail| trail.journal_head = journal_head);
+    }
+
+    /// Apply `edit` to the trail, allocating it when absent and dropping it
+    /// when the edit leaves it empty, so a snapshot with nothing trailing
+    /// compares equal however it was built.
+    fn edit_trail(&mut self, edit: impl FnOnce(&mut SessionSnapshotTrail)) {
+        let mut trail = self.trail.take().map(|trail| *trail).unwrap_or_default();
+        edit(&mut trail);
+        self.trail = (!trail.is_empty()).then(|| Box::new(trail));
+    }
+
+    /// The newest event-journal `seq` when the snapshot was cut (L1 §7.3),
+    /// or `None` from a peer that does not advertise `EVENT_JOURNAL`.
+    ///
+    /// A consumer that subscribed with a cursor on the same connection
+    /// before reading the snapshot has not necessarily seen every event up
+    /// to it yet: the replay is pumped as the connection takes it.
+    #[must_use]
+    pub fn journal_head(&self) -> Option<u64> {
+        self.trail.as_ref().and_then(|trail| trail.journal_head)
+    }
+
+    /// Builder setter for [`Self::journal_head`].
+    #[must_use]
+    pub fn with_journal_head(mut self, journal_head: Option<u64>) -> Self {
+        self.set_journal_head(journal_head);
+        self
     }
 
     /// Builder setter for [`Self::sessions`].
@@ -1140,6 +1173,7 @@ pub(super) fn decode_terminal_info(dec: &mut Decoder<'_>) -> Result<ResourceInfo
         lifecycle: ResourceLifecycle::Running,
         exit: None,
         input_holder: None,
+        viewers: Vec::new(),
     })
 }
 
@@ -1229,7 +1263,7 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
     enc.write_u32_be(snap.focused_session.get());
     enc.write_u32_be(snap.focused_window.get());
     encode_terminal_id(&snap.focused_resource, enc);
-    let extension = encode_snapshot_extension(&snap.resources);
+    let extension = encode_snapshot_extension(&snap.resources, snap.journal_head());
     let extension_follows = !extension.is_empty();
     let session_rows = snap.sessions.iter().filter(|s| s.keep_empty).count();
     let listeners_follow = snap.listeners().is_some() || extension_follows;
@@ -1245,15 +1279,21 @@ pub(super) fn encode_session_snapshot(snap: &SessionSnapshot, enc: &mut Encoder<
 }
 
 /// Build the snapshot extension block (see [`SessionSnapshot`]): one
-/// `RESOURCE_STATE` field per resource with non-default state. Empty when
-/// every resource is plainly running and unheld, in which case nothing is
+/// `RESOURCE_STATE` field per resource with non-default state, then the
+/// journal head when there is one. Empty when every resource is plainly
+/// running and unheld and no head is named, in which case nothing is
 /// written and the snapshot keeps its pre-extension bytes.
-fn encode_snapshot_extension(resources: &[ResourceInfo]) -> BytesMut {
+fn encode_snapshot_extension(resources: &[ResourceInfo], journal_head: Option<u64>) -> BytesMut {
     let mut block = BytesMut::new();
     let mut enc = Encoder::new(&mut block);
     for info in resources.iter().filter(|r| r.has_resource_state()) {
         enc.write_field_with(field::snapshot_extension::RESOURCE_STATE, |e| {
             encode_resource_state(info, e);
+        });
+    }
+    if let Some(head) = journal_head {
+        enc.write_field_with(field::snapshot_extension::JOURNAL_HEAD, |e| {
+            e.write_u64_be(head);
         });
     }
     block
@@ -1272,6 +1312,11 @@ fn encode_resource_state(info: &ResourceInfo, enc: &mut Encoder<'_>) {
     if let Some(holder) = info.input_holder {
         enc.write_field_with(field::resource_state::INPUT_HOLDER, |e| {
             encode_client_id(holder, e);
+        });
+    }
+    for viewer in &info.viewers {
+        enc.write_field_with(field::resource_state::VIEWER, |e| {
+            encode_client_id(*viewer, e);
         });
     }
 }
@@ -1299,22 +1344,28 @@ fn decode_exit_facet(dec: &mut Decoder<'_>) -> Result<ExitFacet, DecodeError> {
 }
 
 /// Read the snapshot extension block if bytes remain, applying each
-/// `RESOURCE_STATE` to its `resources` entry by id. Unknown field ids, in
-/// the block or inside an entry, are skipped by length.
+/// `RESOURCE_STATE` to its `resources` entry by id, and return the journal
+/// head it names. Unknown field ids, in the block or inside an entry, are
+/// skipped by length.
 fn decode_snapshot_extension(
     dec: &mut Decoder<'_>,
     resources: &mut [ResourceInfo],
-) -> Result<(), DecodeError> {
+) -> Result<Option<u64>, DecodeError> {
     if dec.at_body_end() {
-        return Ok(());
+        return Ok(None);
     }
+    let mut journal_head = None;
     let mut block = Decoder::new(dec.read_bytes()?);
     while let Some((id, value)) = block.read_field()? {
-        if id == field::snapshot_extension::RESOURCE_STATE {
-            apply_resource_state(value, resources)?;
+        match id {
+            field::snapshot_extension::RESOURCE_STATE => apply_resource_state(value, resources)?,
+            field::snapshot_extension::JOURNAL_HEAD => {
+                journal_head = Some(Decoder::new(value).read_u64_be()?);
+            }
+            _ => {}
         }
     }
-    Ok(())
+    Ok(journal_head)
 }
 
 /// Decode one `RESOURCE_STATE` value and join it onto its entry. A value
@@ -1327,9 +1378,11 @@ fn apply_resource_state(value: &[u8], resources: &mut [ResourceInfo]) -> Result<
     let mut lifecycle = ResourceLifecycle::Running;
     let mut exit = None;
     let mut input_holder = None;
+    let mut viewers = Vec::new();
     while let Some((field_id, v)) = dec.read_field()? {
         let mut v = Decoder::new(v);
         match field_id {
+            field::resource_state::VIEWER => viewers.push(decode_client_id(&mut v)?),
             field::resource_state::LIFECYCLE => {
                 lifecycle = ResourceLifecycle::from_u8(v.read_u8()?).unwrap_or_default();
             }
@@ -1342,6 +1395,7 @@ fn apply_resource_state(value: &[u8], resources: &mut [ResourceInfo]) -> Result<
         info.lifecycle = lifecycle;
         info.exit = exit;
         info.input_holder = input_holder;
+        info.viewers = viewers;
     }
     Ok(())
 }
@@ -1522,7 +1576,7 @@ pub(super) fn decode_session_snapshot(
     let hosts = decode_host_inventory(dec)?;
     decode_session_facets(dec, &mut sessions)?;
     let listeners = decode_listeners(dec)?;
-    decode_snapshot_extension(dec, &mut resources)?;
+    let journal_head = decode_snapshot_extension(dec, &mut resources)?;
     let mut snapshot = SessionSnapshot {
         sessions,
         windows,
@@ -1537,6 +1591,9 @@ pub(super) fn decode_session_snapshot(
     }
     if let Some(listeners) = listeners {
         snapshot.set_listeners(Some(listeners));
+    }
+    if journal_head.is_some() {
+        snapshot.set_journal_head(journal_head);
     }
     Ok(snapshot)
 }

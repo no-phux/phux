@@ -67,6 +67,8 @@ jobs:
       - name: Check native Cockpit prerequisites
         run: bash scripts/doctor.sh cockpit
 
+      # Node 24 will not strip @native-sdk/core .ts under node_modules; the
+      # navigation-loader does. The helper is also the canonical local gate.
       - name: Test Cockpit model and presentation contracts
         working-directory: clients/cockpit
         run: ./scripts/cockpit-node-test.sh
@@ -157,6 +159,8 @@ jobs:
 
       # The null-platform tests do not compile the AppKit executable. Keep one
       # real production build on PRs while reserving archive/DMG work for main.
+      # package-macos.sh owns the main-path shipping compile; skipping this
+      # step on push is required (one compile owner), not a missing artifact.
       - name: Build the production macOS app
         if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         working-directory: clients/cockpit

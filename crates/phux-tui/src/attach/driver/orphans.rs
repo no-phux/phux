@@ -112,7 +112,10 @@ impl StrayKill {
     /// The command that kills `pane` this way.
     fn command(self, pane: ResourceId) -> Command {
         match self {
-            Self::Unconditional => Command::KillResource { terminal_id: pane },
+            Self::Unconditional => Command::KillResource {
+                terminal_id: pane,
+                operation_id: None,
+            },
             Self::Conditional(instance) => BoundResource { id: pane, instance }.kill_command(),
         }
     }
@@ -168,6 +171,7 @@ impl OrphanKills {
             .map(|pane| {
                 let command = Command::KillResource {
                     terminal_id: pane.clone(),
+                    operation_id: None,
                 };
                 self.track(pane, command, next_request_id)
             })

@@ -149,6 +149,11 @@ pub enum FrameKind {
         ///
         /// The server caps its own retention at `min(server_cap, this)`.
         scrollback_limit_lines: u32,
+        /// Declared attach intent for every Terminal the attach subscribes
+        /// (field 6, ADR-0127). `None` writes no field and means
+        /// `{ PRIMARY, NEVER }`, byte-identical to an attach from before
+        /// roles. Send `Some` only to a server advertising `ATTACH_ROLES`.
+        role_policy: Option<super::RolePolicy>,
     },
 
     /// `DETACH` — client signals clean departure (`docs/spec/proto.md` §7.2).
@@ -1114,14 +1119,22 @@ impl FrameKind {
                 viewport,
                 request_scrollback,
                 scrollback_limit_lines,
-            } => Self::encode_attach(
-                enc,
-                *attach_id,
-                target,
-                viewport,
-                *request_scrollback,
-                *scrollback_limit_lines,
-            ),
+                role_policy,
+            } => {
+                Self::encode_attach(
+                    enc,
+                    *attach_id,
+                    target,
+                    viewport,
+                    *request_scrollback,
+                    *scrollback_limit_lines,
+                );
+                if let Some(policy) = role_policy {
+                    enc.write_field_with(field::attach::ROLE_POLICY, |e| {
+                        e.write_u8(policy.to_u8());
+                    });
+                }
+            }
             // `Detach` is a unit variant: type byte only, no fields.
             Self::Detach => {}
             Self::Detached { reason, message } => Self::encode_detached(enc, *reason, message),

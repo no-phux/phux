@@ -55,6 +55,8 @@ struct World {
     alpha_window: WindowId,
     beta_window: WindowId,
     alpha_group: u32,
+    /// A held kill of `alpha`, pending, so a decision on it resolves.
+    approval: phux_protocol::ids::ApprovalId,
 }
 
 fn world() -> World {
@@ -67,6 +69,16 @@ fn world() -> World {
     state.idspace.intern_session(beta_session);
     let (tx, _rx) = tokio::sync::mpsc::channel(8);
     state.attach_default_caps(CLIENT, "alpha", tx).unwrap();
+    let approval = state
+        .open_approval(
+            ClientId(99),
+            &Command::KillResource {
+                terminal_id: alpha.clone(),
+                operation_id: None,
+            },
+        )
+        .unwrap()
+        .id;
     World {
         state,
         alpha,
@@ -75,6 +87,7 @@ fn world() -> World {
         alpha_window,
         beta_window,
         alpha_group,
+        approval,
     }
 }
 
@@ -106,6 +119,7 @@ fn get_screen(terminal_id: WireResourceId) -> Command {
         terminal_id,
         request_scrollback: None,
         cells: false,
+        format: 0,
     }
 }
 
@@ -116,6 +130,7 @@ fn attach(target: AttachTarget) -> FrameKind {
         viewport: ViewportInfo::new(80, 24),
         request_scrollback: false,
         scrollback_limit_lines: 0,
+        role_policy: None,
     }
 }
 
@@ -306,6 +321,8 @@ fn samples(world: &World) -> Vec<FrameKind> {
         ),
         set(Scope::Global, SESSION_KEEP_EMPTY_KEY, b"alpha"),
         set(Scope::Global, CONFIG_RELOAD_KEY, b"1"),
+        set(Scope::Global, &world.approval.decide_key(), b"approve"),
+        set(Scope::Global, &world.approval.decide_key(), b"maybe"),
         set(Scope::Global, "phux.session.created/v1", b"x"),
         FrameKind::SubscribeMetadata {
             scope: Scope::Global,
@@ -329,16 +346,19 @@ fn samples(world: &World) -> Vec<FrameKind> {
         FrameKind::Pong { nonce: 1 },
         command(Command::AttachResource {
             terminal_id: t.clone(),
+            role_policy: None,
         }),
         command(Command::DetachResource {
             terminal_id: t.clone(),
         }),
         command(Command::KillResource {
             terminal_id: t.clone(),
+            operation_id: None,
         }),
         command(Command::KillResourceIf {
             terminal_id: t.clone(),
             precondition: KillPrecondition::default(),
+            operation_id: None,
         }),
         command(get_screen(t.clone())),
         command(Command::RouteInput {
@@ -351,6 +371,10 @@ fn samples(world: &World) -> Vec<FrameKind> {
             events: vec![focus],
         }),
         command(Command::KillResources {
+            ids: vec![t.clone()],
+            operation_id: None,
+        }),
+        command(Command::CloseTabResources {
             ids: vec![t.clone()],
         }),
         command(Command::GetState {
@@ -374,6 +398,7 @@ fn samples(world: &World) -> Vec<FrameKind> {
         command(Command::SignalTerminal {
             terminal_id: t.clone(),
             signal: TerminalSignal::Interrupt,
+            operation_id: None,
         }),
         command(Command::ReportAgentState {
             terminal_id: t.clone(),

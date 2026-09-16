@@ -1953,6 +1953,11 @@ pub(crate) async fn handle_spawn_terminal(
     let attribution = super::commands::SpawnAttribution {
         actor: Some(client_id),
         operation_id: resource.as_ref().and_then(|r| r.idempotency_key),
+        // ADR-0124: field 16 resolved against `defaults.retain-on-exit*`.
+        retain_secs: state.with(|s| {
+            s.retain_policy()
+                .resolve(resource.as_ref().and_then(|r| r.retain_secs))
+        }),
     };
     match crate::resource::core_kind(kind) {
         Some(crate::resource::ResourceKind::Terminal) => {}
@@ -2434,6 +2439,9 @@ fn subscribe_spawning_client(
             // carries this client's sender, so terminal-scoped fanout
             // resolves it without a second copy (phux-w7z2.56).
             s.subscribe_terminal(client_id, core_terminal_id, None);
+            // ADR-0127: a session attached as `VIEWER` watches its own
+            // spawns too.
+            s.mark_if_viewer_session(client_id, &wire_terminal_id);
         }
         s.resource_handle(core_terminal_id)
             .cloned()
@@ -2776,6 +2784,41 @@ fn is_same_session_reattach(
 
 /// Run [`prepare_attach`] and translate each refusal into the `ERROR` frame the
 /// client sees. `None` once the attach has been refused.
+/// Apply a session `ATTACH`'s declared role (ADR-0127) to every Terminal the
+/// attach returned, in one critical section, then broadcast what it changed
+/// through each Terminal's engine. A re-attach to the same session with a
+/// different role is a journaled change on every Terminal it flips.
+async fn apply_session_role(
+    state: &SharedState,
+    client_id: ClientId,
+    panes: &[crate::state::AttachSnapshotPane],
+    role: phux_protocol::wire::frame::RolePolicy,
+    was_subscribed: bool,
+) {
+    let changes: Vec<_> = state.with_mut(|s| {
+        s.set_attached_viewer(client_id, role.is_viewer());
+        panes
+            .iter()
+            .map(|pane| {
+                let effects = s.apply_attach_role(
+                    client_id,
+                    &pane.wire_terminal_id,
+                    Some(pane.terminal_id),
+                    role,
+                    was_subscribed,
+                );
+                (effects, s.input_lease_holder(pane.terminal_id))
+            })
+            .collect()
+    });
+    for (pane, (effects, holder)) in panes.iter().zip(changes) {
+        if !effects.is_empty() {
+            super::commands::announce_role_effects_on(&pane.handle, client_id, effects, holder)
+                .await;
+        }
+    }
+}
+
 async fn prepare_attach_or_refuse(
     state: &SharedState,
     client_id: ClientId,
@@ -3619,6 +3662,8 @@ pub(crate) async fn handle_attach(
     viewport: phux_protocol::wire::frame::ViewportInfo,
     request_scrollback: bool,
     scrollback_limit_lines: u32,
+    // ADR-0127: the declared intent for every Terminal this attach returns.
+    role_policy: Option<phux_protocol::wire::frame::RolePolicy>,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
     client_caps: ClientCapabilities,
     negotiated_profile: BootstrapProfile,
@@ -3635,6 +3680,18 @@ pub(crate) async fn handle_attach(
     // performed. `false` everywhere else.
     defer_subscription: bool,
 ) {
+    // L1 §8.1: a viewer cannot take over. Refused before anything resolves,
+    // so no Terminal's role changes.
+    let role = role_policy.unwrap_or_default();
+    if !role.is_valid() {
+        send_error(
+            out_tx,
+            ErrorCode::MalformedMessage,
+            "ATTACH role_policy { VIEWER, DELIBERATE } is invalid: a viewer cannot take over",
+        )
+        .await;
+        return;
+    }
     // Pin the target to the session the dispatch guard authorized. Nothing
     // between the guard and this line awaits, so it reads the guard's
     // snapshot. From here the attach follows the session id, never its name,
@@ -3738,9 +3795,22 @@ pub(crate) async fn handle_attach(
             stream_id: stream_id_from(u64::from(attach_id)),
             bootstrap_id: initial_bootstrap_id(),
         };
-        publication
+        // The per-pane subscriptions come at STREAM_BIND, which carries no
+        // role, so the session's declared role applies here, once the attach
+        // has published (ADR-0127).
+        if publication
             .publish(snapshot, initial_client_id, Vec::new(), &session_name)
+            .await
+        {
+            apply_session_role(
+                state,
+                client_id,
+                &panes_to_snapshot,
+                role,
+                same_session_reattach,
+            )
             .await;
+        }
         return;
     }
 
@@ -3797,6 +3867,10 @@ pub(crate) async fn handle_attach(
         scrollback: scrollback_req,
         chunk_bytes: aggregate_chunk_bytes,
     };
+    // ADR-0127: roles apply once the attach has published, so a refused
+    // attach neither marks nor seizes anything. This client's own input is
+    // not read until this handler returns.
+    let role_panes = panes_to_snapshot.clone();
     if let Err(reason) = capture
         .capture_panes(&mut staging, panes_to_snapshot, closed_before_ready)
         .await
@@ -3829,6 +3903,7 @@ pub(crate) async fn handle_attach(
     {
         return;
     }
+    apply_session_role(state, client_id, &role_panes, role, same_session_reattach).await;
     let _ = live_gate_tx.send(true);
     publication.release_gates(staging.gates).await;
 }
@@ -4937,6 +5012,99 @@ mod tests {
             .expect("native publication reply");
     }
 
+    /// ADR-0127 (security review): a QUIC Terminal-stream reset tears the
+    /// subscription down through `handle_detach_terminal`, which must keep the
+    /// viewer tombstone, or the connection could shed it and then send
+    /// subscription-free input.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_terminal_stream_reset_keeps_the_viewer_tombstone() {
+        let state = crate::state::SharedState::new();
+        let (_session, _window, pane) = state.with_mut(|s| s.seed_session("roles"));
+        let wire = state.with_mut(|s| s.intern_terminal_wire(pane));
+        let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+        state.with_mut(|s| {
+            let _ = s.apply_attach_role(
+                client_id,
+                &wire,
+                Some(pane),
+                phux_protocol::wire::frame::RolePolicy::VIEWER,
+                false,
+            );
+        });
+        let _ = crate::runtime::commands::handle_detach_terminal(&state, client_id, &wire).await;
+        assert!(
+            state.with(|s| s.is_viewer(client_id, &wire)),
+            "a stream reset must not shed the viewer tombstone"
+        );
+    }
+
+    /// ADR-0127 (review round 2): the QUIC multi-stream `ATTACH` defers every
+    /// per-pane subscription to `STREAM_BIND`, which carries no role, so the
+    /// session's declared role must apply in the deferred branch itself.
+    #[tokio::test(flavor = "current_thread")]
+    async fn deferred_session_attach_applies_the_declared_role() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = crate::state::SharedState::new();
+                let (_session, _window, pane) = state.with_mut(|s| s.seed_session("roles"));
+                let (core, channels) = crate::resource::ResourceCore::new(
+                    crate::resource::ResourceKind::Terminal,
+                    None,
+                    CancellationToken::new(),
+                    8,
+                );
+                drop(core);
+                let handle = crate::resource::ResourceHandle {
+                    kind: crate::resource::ResourceKind::Terminal,
+                    parent: None,
+                    output: channels.output,
+                    consumer_attach: tokio::sync::mpsc::channel(8).0,
+                    consumer_detach: tokio::sync::mpsc::channel(8).0,
+                    consumer_ack: tokio::sync::mpsc::channel(8).0,
+                    upgrade: tokio::sync::mpsc::channel(8).0,
+                    control: channels.control,
+                    facet: crate::resource::ResourceFacetHandle::Terminal(
+                        crate::terminal_actor::TerminalHandle::detached_for_test(80, 24),
+                    ),
+                };
+                let wire = state.with_mut(|s| {
+                    let _ = s.register_resource_handle(pane, handle, CancellationToken::new());
+                    s.intern_terminal_wire(pane)
+                });
+                let (out_tx, _out_rx) = tokio::sync::mpsc::channel::<crate::state::Outbound>(
+                    crate::state::DEFAULT_CLIENT_MAILBOX,
+                );
+                let client_id = state.with_mut(crate::state::ServerState::new_client_id);
+                let token = CancellationToken::new();
+                let mut output_pumps = tokio::task::JoinSet::new();
+                handle_attach(
+                    &state,
+                    client_id,
+                    1,
+                    AttachTarget::ByName("roles".to_owned()),
+                    phux_protocol::wire::frame::ViewportInfo::new(80, 24),
+                    false,
+                    0,
+                    Some(phux_protocol::wire::frame::RolePolicy::VIEWER),
+                    &out_tx,
+                    ClientCapabilities::default(),
+                    BootstrapProfile::SynthesizedVtRaw,
+                    BootstrapLimits::default(),
+                    &token,
+                    &mut output_pumps,
+                    &token,
+                    true,
+                )
+                .await;
+                assert!(
+                    state.with(|s| s.is_viewer(client_id, &wire)),
+                    "a deferred (QUIC multi-stream) session ATTACH must still mark its viewer"
+                );
+            })
+            .await;
+    }
+
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn native_profile() -> BootstrapProfile {
         BootstrapProfile::NativeState {
@@ -4978,6 +5146,7 @@ mod tests {
                     phux_protocol::wire::frame::ViewportInfo::new(80, 24),
                     false,
                     0,
+                    None,
                     &out_tx,
                     ClientCapabilities::default(),
                     native_profile(),
@@ -5016,6 +5185,10 @@ mod tests {
 
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     #[tokio::test(flavor = "current_thread")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear scripted attach, replacement, and failure sequence; the role argument tipped it over"
+    )]
     async fn replacement_native_capacity_failure_closes_but_preserves_terminal_state() {
         let local = tokio::task::LocalSet::new();
         local
@@ -5047,6 +5220,7 @@ mod tests {
                     phux_protocol::wire::frame::ViewportInfo::new(80, 24),
                     false,
                     0,
+                    None,
                     &out_tx,
                     ClientCapabilities::default(),
                     native_profile(),
@@ -5078,6 +5252,7 @@ mod tests {
                     phux_protocol::wire::frame::ViewportInfo::new(80, 24),
                     false,
                     0,
+                    None,
                     &out_tx,
                     ClientCapabilities::default(),
                     native_profile(),

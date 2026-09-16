@@ -66,11 +66,14 @@ struct RecordWithGrant {
     grant: Vec<GrantEntry>,
 }
 
-/// One grant: its verbs (lowercase, in bit order) and its selector.
+/// One grant: its verbs (lowercase, in bit order), its selector, and the
+/// verbs it holds for approval (ADR-0128), absent when it holds none.
 #[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 struct GrantEntry {
     verbs: Vec<String>,
     selector: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    held: Vec<String>,
 }
 
 fn grant_entries(authority: &Authority) -> Vec<GrantEntry> {
@@ -84,6 +87,11 @@ fn grant_entries(authority: &Authority) -> Vec<GrantEntry> {
                 .map(|verb| verb_name(verb).to_owned())
                 .collect(),
             selector: grant.selector.to_string(),
+            held: grant
+                .held
+                .iter()
+                .map(|verb| verb_name(verb).to_owned())
+                .collect(),
         })
         .collect()
 }

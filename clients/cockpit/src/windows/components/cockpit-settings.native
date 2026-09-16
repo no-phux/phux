@@ -38,8 +38,10 @@
                             <text>{binding.label}</text>
                             <text foreground="text_muted">{binding.binding}</text>
                           </column>
-                          <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="binding_select:{binding.index}">Edit</button>
-                          <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="binding_reset:{binding.index}">Reset</button>
+                          <if test="{settingsFooterSave}">
+                            <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="binding_select:{binding.index}">Edit</button>
+                            <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="binding_reset:{binding.index}">Reset</button>
+                          </if>
                         </row>
                         <accordion text="Details" label="{binding.label}" selected="{bindingDetailIndex == binding.index}" on-toggle="binding_detail:{binding.index}">
                           <column gap="8">
@@ -66,9 +68,11 @@
                         <text wrap="true">{setting.effectiveValue}</text>
                         <text foreground="text_muted">{setting.timing}</text>
                       </column>
-                      <if test="{setting.editable}">
-                        <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="settings_select:{setting.id}">Edit</button>
-                        <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reset:{setting.id}">Reset</button>
+                      <if test="{settingsFooterSave}">
+                        <if test="{setting.editable}">
+                          <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="settings_select:{setting.id}">Edit</button>
+                          <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reset:{setting.id}">Reset</button>
+                        </if>
                       </if>
                     </row>
                     <accordion text="Details" label="{setting.label}" selected="{settingsDetailId == setting.id}" on-toggle="settings_detail:{setting.id}">
@@ -77,11 +81,6 @@
                         <text wrap="true" foreground="text_muted">{setting.applicability}</text>
                         <text foreground="text_muted">{setting.timing}</text>
                         <row gap="8"><text foreground="text_muted">Configured</text><text wrap="true">{setting.value}</text></row>
-                        <if test="{setting.id == 12}">
-                          <text wrap="true">{workspaceLabel}</text>
-                          <text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text>
-                          <text wrap="true" foreground="text_muted">{connectionDetail}</text>
-                        </if>
                       </column>
                     </accordion>
                     <if test="{settingEditId == setting.id}">
@@ -102,6 +101,18 @@
                     </for>
                   </grid>
                   <if test="{appearance.overrides}"><text wrap="true" foreground="warning">Explicit foreground or background overrides this theme. Edit Configuration to change those keys.</text></if>
+                  <text wrap="true" foreground="text_muted">{confignotice}</text>
+                  <row gap="8">
+                    <button size="sm" variant="outline" on-press="settings_edit_configuration">Edit Configuration</button>
+                    <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reload">Reload Configuration</button>
+                  </row>
+                </if>
+                <if test="{settingsSection == 4}">
+                  <text wrap="true">{workspaceLabel}</text>
+                  <if test="{coordinatorEndpoint}"><text wrap="true" foreground="text_muted">{coordinatorEndpoint}</text></if>
+                  <if test="{connectionDetail}"><text wrap="true" foreground="text_muted">{connectionDetail}</text></if>
+                  <button size="sm" on-press="sessions_open">Sessions</button>
+                  <text wrap="true" foreground="text_muted">Shell and history for phux panes live on the serving machine. Change them with phux config or TUI Settings there.</text>
                 </if>
                 <if test="{settingsSection == 5}">
                   <text>Phux Cockpit</text>
@@ -114,22 +125,23 @@
                     <if test="{updateCanInstall}"><button size="sm" disabled="{updateBusy}" on-press="update_install">Install</button></if>
                   </row>
                 </if>
-                <text wrap="true" foreground="text_muted">{confignotice}</text>
-                <row gap="8">
-                  <button size="sm" variant="outline" on-press="settings_edit_configuration">Edit Configuration</button>
-                  <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reload">Reload Configuration</button>
-                </row>
               </column>
             </scroll>
             <if test="{appearance.notice}"><text wrap="true" foreground="warning">{appearance.notice}</text></if>
             <if test="{settingsNotice}"><text wrap="true" foreground="warning">{settingsNotice}</text></if>
             <separator />
             <row gap="8" cross="center">
-              <if test="{appearance.dirty}"><text foreground="text_muted">Unsaved preview</text></if>
-              <else><text foreground="text_muted">{appearance.contrastLabel}</text></else>
-              <spacer grow="1" />
-              <button size="sm" variant="ghost" disabled="{appearanceClosing}" on-press="settings_close">Cancel</button>
-              <button size="sm" disabled="{appearanceBusy}" on-press="settings_commit">Save changes</button>
+              <if test="{settingsFooterSave}">
+                <if test="{appearance.dirty}"><text foreground="text_muted">Unsaved preview</text></if>
+                <else><text foreground="text_muted">{appearance.contrastLabel}</text></else>
+                <spacer grow="1" />
+                <button size="sm" variant="ghost" disabled="{appearanceClosing}" on-press="settings_close">Cancel</button>
+                <button size="sm" disabled="{appearanceBusy}" on-press="settings_commit">Save changes</button>
+              </if>
+              <else>
+                <spacer grow="1" />
+                <button size="sm" variant="ghost" disabled="{appearanceClosing}" on-press="settings_close">Done</button>
+              </else>
             </row>
           </column>
       </sheet>

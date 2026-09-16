@@ -570,10 +570,26 @@ mod tests {
         assert!(feature_names(ServerFeatureSet::new()).is_empty());
         let all = ServerFeatureSet::from_wire(u32::MAX);
         let names = feature_names(all);
-        assert_eq!(names.len(), 22, "one name per known bit: {names:?}");
+        assert_eq!(
+            names.len(),
+            ServerFeature::ALL.len(),
+            "one name per known bit: {names:?}"
+        );
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "each ServerFeature must have exactly one name: {names:?}"
+        );
+        assert!(names.contains(&"approvals"));
+        assert!(names.contains(&"attach_roles"));
+        assert!(names.contains(&"keyed_signal"));
         assert!(names.contains(&"event_journal"));
         assert!(names.contains(&"retain_on_exit"));
         assert!(names.contains(&"spawn_idempotency"));
+        assert!(names.contains(&"close_tab_resources"));
         assert!(names.contains(&"move_resource"));
         assert!(names.contains(&"quic_streams"));
         assert!(names.contains(&"conditional_kill"));

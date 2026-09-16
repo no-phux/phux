@@ -101,7 +101,7 @@ fn subscription_for(client: *mut PhuxClient, id: &ResourceId) -> u32 {
     match &frames[0] {
         FrameKind::Command {
             request_id,
-            command: Command::AttachResource { terminal_id },
+            command: Command::AttachResource { terminal_id, .. },
         } => {
             assert_eq!(terminal_id, id);
             *request_id

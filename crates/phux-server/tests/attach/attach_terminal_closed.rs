@@ -208,6 +208,7 @@ async fn attach_terminal_only(watcher: &mut UnixStream, victim: &ResourceId) {
             request_id: 100,
             command: Command::AttachResource {
                 terminal_id: victim.clone(),
+                role_policy: None,
             },
         },
     )
@@ -265,6 +266,7 @@ fn attach_terminal_only_consumer_receives_terminal_closed() {
                 request_id: 2,
                 command: Command::KillResource {
                     terminal_id: victim.clone(),
+                    operation_id: None,
                 },
             },
         )

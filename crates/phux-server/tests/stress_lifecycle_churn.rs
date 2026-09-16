@@ -167,6 +167,7 @@ fn attach_racing_pty_eof_does_not_panic() {
                     viewport: ViewportInfo::new(80, 24),
                     request_scrollback: false,
                     scrollback_limit_lines: 0,
+                    role_policy: None,
                 },
             )
             .await;

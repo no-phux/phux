@@ -181,7 +181,7 @@ fn ls_json_states_completeness_positively() {
 
 #[test]
 fn kill_reports_a_real_miss_as_a_plain_miss() {
-    let output = run_verb(whole_fleet(), &["kill", "@999"]);
+    let output = run_verb(whole_fleet(), &["kill", "--yes", "@999"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(
         stderr_of(&output).contains("no such target: @999"),
@@ -191,7 +191,7 @@ fn kill_reports_a_real_miss_as_a_plain_miss() {
 
 #[test]
 fn kill_refuses_to_call_an_unsearchable_pane_absent() {
-    let output = run_verb(partial_fleet(), &["kill", "@999"]);
+    let output = run_verb(partial_fleet(), &["kill", "--yes", "@999"]);
     assert_eq!(
         output.status.code(),
         Some(3),

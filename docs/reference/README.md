@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, contributors
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-09-15
 ---
 
 # phux reference
@@ -28,3 +28,4 @@ Every file in this directory is rendered from the compiled `phux` binary by `jus
 | [files.md](files.md) | The symbolic path rule for every file phux reads or writes: socket, config, logs, TLS material, tokens, bug reports. |
 | [deprecations.md](deprecations.md) | Every deprecated spelling, its replacement, and its removal release. |
 | [kinds.md](kinds.md) | Every resource kind, its methods and events, and the verb each frame and command needs. |
+| [parity.md](parity.md) | Every MCP tool, the CLI verb it mirrors, how it runs, and its annotations. |

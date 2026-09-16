@@ -10,7 +10,8 @@ pub fn add(b: *std.Build, provider: *std.Build.Module) void {
     root.addImport("phux_provider", provider);
     root.addImport("provider_contract", provider.import_table.get("provider_contract").?);
     const probe = b.addTest(.{ .name = "everyday-remote-provider", .root_module = root });
-    // Same ring P-256 dead_strip hole as the app: this probe dials QUIC.
+    // Same ring P-256 dead_strip hole as the app: this probe dials QUIC
+    // and must keep both mul and sqr helpers (Cockpit 0.23.3 SIGILL).
     probe.link_gc_sections = false;
     const install = b.addInstallArtifact(probe, .{});
     b.step("everyday-remote-provider", "Build headless enrolled-server provider probe").dependOn(&install.step);

@@ -450,6 +450,7 @@ export interface Model {
   readonly updateStatus: Uint8Array;
   readonly updateRemedy: Uint8Array;
   readonly settingsSection: number;
+  readonly settingsFooterSave: boolean;
   readonly settingsSections: readonly SettingsChoice[];
   readonly cursorChoices: readonly SettingsChoice[];
   readonly placementChoices: readonly SettingsChoice[];
@@ -2369,8 +2370,9 @@ export function initialModel(): [Model, Cmd<Msg>] {
       updateStatus: initialSelfUpdate().message,
       updateRemedy: NO_BYTES,
       settingsSection: 0,
+      settingsFooterSave: true,
       settingsSections: [
-        { index: 0, label: asciiBytes("Appearance") }, { index: 1, label: asciiBytes("Terminal") }, { index: 2, label: asciiBytes("Keyboard") }, { index: 3, label: asciiBytes("Window") }, { index: 4, label: asciiBytes("Advanced") }, { index: 5, label: asciiBytes("About") },
+        { index: 0, label: asciiBytes("Appearance") }, { index: 1, label: asciiBytes("Terminal") }, { index: 2, label: asciiBytes("Keyboard") }, { index: 3, label: asciiBytes("Window") }, { index: 4, label: asciiBytes("Connection") }, { index: 5, label: asciiBytes("About") },
       ],
       cursorChoices: [
         { index: 0, label: asciiBytes("Block") }, { index: 1, label: asciiBytes("Bar") }, { index: 2, label: asciiBytes("Underline") },
@@ -2562,6 +2564,12 @@ function updateDecision(model: Model): UpdateDecision {
   return { model, request: NO_BYTES, appearanceRequest: NO_BYTES, opening: false };
 }
 
+function showUpdateInSettings(model: Model, status: Uint8Array): Model {
+  const about = { ...model, settingsSection: 5, settingEditId: 65535, settingsDetailId: 65535,
+    bindingDetailIndex: 65535, updateBusy: true, updateStatus: status };
+  return applySettingsChrome(withVisibleSettings(withVisibleBindings(about, model.bindings)));
+}
+
 function handleSelfUpdate(model: Model, msg: Msg): UpdateDecision | null {
   if (msg.kind === "update_loaded") {
     const parsed = selfUpdateResponse(msg.body);
@@ -2584,11 +2592,11 @@ function handleSelfUpdate(model: Model, msg: Msg): UpdateDecision | null {
   if (model.updateBusy) return updateDecision(model);
   const checking = asciiBytes("Checking for updates...");
   if (model.settingsOpen) {
-    return { model: { ...model, settingsSection: 5, updateBusy: true, updateStatus: checking },
+    return { model: showUpdateInSettings(model, checking),
       request: selfUpdateRequest(false), appearanceRequest: NO_BYTES, opening: false };
   }
-  const opened = openAppearance({ ...model, settingsSection: 5 });
-  return { model: { ...opened.model, settingsSection: 5, updateBusy: true, updateStatus: checking },
+  const opened = openAppearance(model);
+  return { model: showUpdateInSettings(opened.model, checking),
     request: selfUpdateRequest(false), appearanceRequest: opened.request, opening: true };
 }
 
@@ -2606,7 +2614,7 @@ function openAppearance(model: Model): AppearanceDecision {
      navigationAfterSettings: false, surfaceAfterSettings: 0, pendingToolOpen: false, configEditorConfirm: false,
      appearanceClosing: false, appearance: initialAppearance(), appearanceBusy: true,
     settingEditId: 65535, settingsDetailId: 65535, bindingDetailIndex: 65535, settingsQuery: NO_BYTES, settingsNotice: NO_BYTES, settingsReloadStage: 0 };
-  const next = scopeOverlays(withVisibleSettings(withVisibleBindings(opening, model.bindings)));
+  const next = applySettingsChrome(scopeOverlays(withVisibleSettings(withVisibleBindings(opening, model.bindings))));
   return { ...requestAppearance(next, 0, 0), opening: true };
 }
 
@@ -2616,8 +2624,8 @@ function loadedAppearance(model: Model, body: Uint8Array): AppearanceDecision {
   if (appearance === null) return appearanceFailure(model);
   const cursor = appearance.theme < model.themes.length ? appearance.theme : model.settingsCursor;
   const listed = withVisibleSettings({ ...model, appearance, settingsCursor: cursor });
-  const next = scopeOverlays({ ...listed, appearanceBusy: false, appearanceClosing: false,
-    themes: highlightThemes(model.themes, cursor), settingsOpen: appearance.active });
+  const next = applySettingsChrome(scopeOverlays({ ...listed, appearanceBusy: false, appearanceClosing: false,
+    themes: highlightThemes(model.themes, cursor), settingsOpen: appearance.active }));
   if (model.settingsReloadStage > 0) return advanceSettingsReload(next);
   if (appearance.active) return appearanceDecision({ ...next, pendingToolOpen: false });
   if (model.navigationAfterSettings) return openNavigationAfterAppearance(next);
@@ -2814,9 +2822,16 @@ interface NavigatorDecision {
   readonly request: Uint8Array;
 }
 
+function applySettingsChrome(model: Model): Model {
+  // Connection and About are status surfaces: no generic empty-row copy, no Save.
+  const generic = model.settingsSection !== 2 && model.settingsSection !== 4 && model.settingsSection !== 5;
+  return { ...model, noSettingRows: generic && model.settingRows.length === 0,
+    settingsFooterSave: model.settingsSection >= 0 && model.settingsSection <= 3 };
+}
+
 function navigatorDecision(model: Model, effect: number, request: Uint8Array): NavigatorDecision {
-  return { model: { ...model, machineRows: model.machines.visible,
-    noBindingRows: model.bindingRows.length === 0, noSettingRows: model.settingRows.length === 0 }, effect, request };
+  return { model: applySettingsChrome({ ...model, machineRows: model.machines.visible,
+    noBindingRows: model.bindingRows.length === 0 }), effect, request };
 }
 
 function requestMachineOperation(model: Model, operation: number, target: Uint8Array): NavigatorDecision {
@@ -3165,6 +3180,7 @@ function editSettingsSearch(model: Model, edit: TextInputEvent): Model {
 }
 
 function selectSetting(model: Model, id: number): Model {
+  if (!model.settingsFooterSave) return model;
   for (const row of model.settingRows) {
     if (row.id !== id || !row.editable) continue;
     const selected = id >= 0 && id <= 10 ? Math.trunc(id) : 65535;
@@ -3265,15 +3281,48 @@ function bindingTransition(model: Model, msg: Msg): NavigatorDecision | null {
   }
 }
 
+function mutatesSettingValue(msg: Msg): boolean {
+  return msg.kind === "settings_select" || msg.kind === "settings_value" || msg.kind === "settings_apply"
+    || msg.kind === "settings_reset";
+}
+
+function mutatesAppearancePreview(msg: Msg): boolean {
+  return msg.kind === "settings_pick" || msg.kind === "settings_move" || msg.kind === "settings_font"
+    || msg.kind === "settings_cursor" || msg.kind === "settings_placement" || msg.kind === "settings_commit"
+    || msg.kind === "toggle_tab_placement";
+}
+
+function mutatesConfigEditor(msg: Msg): boolean {
+  return msg.kind === "settings_edit_configuration" || msg.kind === "settings_reload" || msg.kind === "settings_save_edit"
+    || msg.kind === "settings_discard_edit" || msg.kind === "settings_cancel_edit";
+}
+
+function mutatesBinding(msg: Msg): boolean {
+  return msg.kind === "binding_select" || msg.kind === "binding_edit" || msg.kind === "binding_apply"
+    || msg.kind === "binding_reset";
+}
+
+function mutatesEditableSettings(msg: Msg): boolean {
+  return mutatesSettingValue(msg) || mutatesAppearancePreview(msg) || mutatesConfigEditor(msg) || mutatesBinding(msg);
+}
+
+function editableSettingsTransition(model: Model, msg: Msg): NavigatorDecision | null {
+  if (msg.kind === "settings_select") return navigatorDecision(selectSetting(model, msg.id), 0, NO_BYTES);
+  if (msg.kind === "settings_value") return navigatorDecision(editSettingValue(model, msg.edit), 0, NO_BYTES);
+  return settingControlTransition(model, msg) ?? bindingTransition(model, msg);
+}
+
 function settingsTransition(model: Model, msg: Msg): NavigatorDecision | null {
   if (!model.settingsOpen) return null;
   switch (msg.kind) {
     case "settings_query": return navigatorDecision(editSettingsSearch(model, msg.edit), 0, NO_BYTES);
-    case "settings_select": return navigatorDecision(selectSetting(model, msg.id), 0, NO_BYTES);
     case "settings_detail": return navigatorDecision(toggleSettingsDetail(model, msg.id), 0, NO_BYTES);
-    case "settings_value": return navigatorDecision(editSettingValue(model, msg.edit), 0, NO_BYTES);
+    case "binding_detail": return model.appearanceBusy ? null : navigatorDecision(toggleBindingDetail(model, msg.index), 0, NO_BYTES);
     case "settings_section": return chooseSettingsSection(model, msg.section);
-    default: return settingControlTransition(model, msg) ?? bindingTransition(model, msg);
+    default: {
+      if (!model.settingsFooterSave && mutatesEditableSettings(msg)) return navigatorDecision(model, 0, NO_BYTES);
+      return editableSettingsTransition(model, msg);
+    }
   }
 }
 

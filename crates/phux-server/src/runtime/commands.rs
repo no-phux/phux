@@ -3,6 +3,7 @@
 use bytes::Bytes;
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, ClientCapabilities};
 use phux_protocol::input::InputEvent;
+use phux_protocol::wire::frame::RolePolicy;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, ControlAction, DetachReason, ErrorCode,
     FrameKind, InputMode, ResourceLifecycle, StateScope, TerminalSignal, ViewportInfo,
@@ -18,13 +19,14 @@ use super::{AttachPrepared, spawn_agent_state_drain, spawn_terminal_exit_watcher
 use crate::agent_asked::{AskedPayload, AskedSource};
 use crate::resource::{ResourceHandle, WrongResourceKind};
 use crate::runtime::pump::{self, PumpGeneration};
+use crate::state::RoleEffects;
 use crate::state::{
     ClientId, Outbound, RelayRoute, Resolved, ResolvedOwned, ServerInterceptedKey, SharedState,
     TerminalInput,
 };
 use crate::terminal_actor::{
-    ConsumerAckRequest, ControlRequest, EncodedInputRequest, ResizeRequest, ScreenRequest,
-    TerminalActor, TerminalHandle,
+    ConsumerAckRequest, ControlRequest, EncodedInputRequest, ResizeRequest, ScreenReply,
+    ScreenRequest, TerminalActor, TerminalHandle,
 };
 
 /// The command-result shape of a Terminal-only request aimed at a resource
@@ -73,6 +75,10 @@ pub(crate) struct SpawnAttribution {
     pub(crate) actor: Option<ClientId>,
     /// The spawn's idempotency key (`SPAWN_RESOURCE` field 17, ADR-0126).
     pub(crate) operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+    /// Seconds the pane is retained after its process exits (ADR-0124),
+    /// already resolved against `defaults.retain-on-exit*`; `None` closes it
+    /// at exit. Recorded in the lock that registers the pane.
+    pub(crate) retain_secs: Option<u32>,
 }
 
 /// Where a session's seed pane came from: the agent-session provenance its
@@ -315,6 +321,14 @@ fn seed_session_with_pty_and_colors_and_metadata(
     actor.set_live_session_probe(live_session_probe(state, terminal));
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
+        // ADR-0124: a spawn that did not ask gets the operator's default, so
+        // `defaults.retain-on-exit` covers seed and session-create panes too.
+        let retain = attribution
+            .retain_secs
+            .or_else(|| s.retain_policy().resolve(None));
+        if let Some(secs) = retain {
+            s.note_retain_request(terminal, secs);
+        }
         let wire = s.intern_terminal_wire(terminal);
         journal_pane_spawned(s, &wire, attribution);
         wire
@@ -474,6 +488,14 @@ pub(crate) fn spawn_pane_with_pty_and_colors(
     actor.set_live_session_probe(live_session_probe(state, terminal));
     let wire_terminal_id = state.with_mut(|s| {
         let _ = s.spawn_resource_actor(terminal, handle, terminal_token, actor.run());
+        // ADR-0124: a spawn that did not ask gets the operator's default, so
+        // `defaults.retain-on-exit` covers seed and session-create panes too.
+        let retain = attribution
+            .retain_secs
+            .or_else(|| s.retain_policy().resolve(None));
+        if let Some(secs) = retain {
+            s.note_retain_request(terminal, secs);
+        }
         let wire = s.intern_terminal_wire(terminal);
         journal_pane_spawned(s, &wire, attribution);
         wire
@@ -619,6 +641,12 @@ pub(crate) fn handle_terminal_resize(
             ResolvedOwned::Local(local) => local,
         };
         let terminal = local.id;
+        // ADR-0124: a retained pane's grid is the record of how its process
+        // ended; a resize would reflow it for nobody. A no-op, not an error.
+        if s.retained_exit(terminal).is_some() {
+            debug!(?client_id, ?wire_terminal_id, "RESIZE_TERMINAL: pane exited; ignored");
+            return;
+        }
         // Clamp to the same one-cell floor `TerminalActor::handle_resize`
         // applies. libghostty has no zero-dimension grid, so a `0` on either
         // axis becomes a `1` down there regardless; recording the raw request
@@ -802,6 +830,7 @@ pub(crate) const fn command_kind(command: &Command) -> &'static str {
         Command::KillResourceIf { .. } => "kill_resource_if",
         Command::OpenListener { .. } => "open_listener",
         Command::KillResources { .. } => "kill_terminals",
+        Command::CloseTabResources { .. } => "close_tab_resources",
         Command::DetachClients { .. } => "detach_clients",
         Command::GetState { .. } => "get_state",
         Command::GetScreen { .. } => "get_screen",
@@ -919,6 +948,18 @@ pub(crate) async fn handle_command(
         other => other,
     };
 
+    // ADR-0127: `{ VIEWER, DELIBERATE }` is refused before anything is
+    // subscribed or relayed, local and satellite alike.
+    if let Some(result) = refuse_invalid_role_policy(&command) {
+        let _ = out_tx
+            .send(Outbound::Frame(FrameKind::CommandResult {
+                request_id,
+                result,
+            }))
+            .await;
+        return;
+    }
+
     // ADR-0109: a verb that drives or reads a resource another connection
     // spawned counts as attaching it; noted before the verb runs.
     note_local_use(state, client_id, &command);
@@ -942,20 +983,37 @@ pub(crate) async fn handle_command(
         return;
     }
 
+    // `docs/spec/L1.md` §5.1.1: a keyed supervisory command is admitted
+    // here, after routing, so one bound for a satellite never takes a slot
+    // on this server: the satellite that runs it owns its dedupe.
+    let claim = match super::keyed_ops::admit(state, &command).await {
+        super::keyed_ops::KeyedAdmission::Unkeyed => None,
+        super::keyed_ops::KeyedAdmission::Owner(claim) => Some(claim),
+        super::keyed_ops::KeyedAdmission::Answer(result) => {
+            let _ = out_tx
+                .send(Outbound::Frame(FrameKind::CommandResult {
+                    request_id,
+                    result,
+                }))
+                .await;
+            return;
+        }
+    };
+
     let result = match command {
-        Command::AttachResource { terminal_id } => {
+        Command::AttachResource {
+            terminal_id,
+            role_policy,
+        } => {
+            // Absent is `{ PRIMARY, NEVER }` (ADR-0127); an invalid policy
+            // was refused before routing.
+            let role = role_policy.unwrap_or_default();
             if defer_subscription {
                 // Multi-stream: register the subscription against the
                 // control mailbox and stop. The content stream — pump,
                 // bootstrap, live output — starts at STREAM_BIND with the
                 // stream's mailbox (see `bootstrap_attach_terminal`).
-                match subscribe_attach_terminal(state, client_id, &terminal_id, out_tx) {
-                    Some(_) => CommandResult::Ok,
-                    None => CommandResult::Error {
-                        code: ErrorCode::TerminalNotFound,
-                        message: format!("no such terminal: {terminal_id:?}"),
-                    },
-                }
+                subscribe_deferred_attach(state, client_id, &terminal_id, out_tx, role).await
             } else {
                 handle_attach_terminal(
                     state,
@@ -966,6 +1024,7 @@ pub(crate) async fn handle_command(
                     bootstrap_profile,
                     bootstrap_limits,
                     connection_token,
+                    role,
                 )
                 .await
             }
@@ -973,7 +1032,9 @@ pub(crate) async fn handle_command(
         Command::DetachResource { terminal_id } => {
             handle_detach_terminal(state, client_id, &terminal_id).await
         }
-        Command::GetState { scope } => handle_get_state_federated(state, &scope, out_tx).await,
+        Command::GetState { scope } => {
+            handle_get_state_federated(state, client_id, &scope, out_tx).await
+        }
         Command::GetPerf { reset } => handle_get_perf(state, reset),
         Command::Transcribe {
             upload_id,
@@ -986,7 +1047,8 @@ pub(crate) async fn handle_command(
             terminal_id,
             request_scrollback,
             cells,
-        } => handle_get_screen(state, &terminal_id, request_scrollback, cells).await,
+            format,
+        } => handle_get_screen(state, &terminal_id, request_scrollback, cells, format).await,
         Command::RouteInput { terminal_id, event } => match input_lane {
             Some(lane) => lane.route_command(client_id, terminal_id, event).await,
             None => handle_route_input(state, client_id, &terminal_id, event),
@@ -1005,13 +1067,29 @@ pub(crate) async fn handle_command(
                 message: "acknowledged input lane unavailable".to_owned(),
             },
         },
-        Command::KillResources { ids } => handle_kill_terminals(state, &ids),
+        Command::KillResources { ids, operation_id } => {
+            handle_kill_terminals(state, client_id, &ids, operation_id).await
+        }
+        Command::CloseTabResources { ids } => handle_close_tab_resources(state, &ids),
         Command::DetachClients { session } => handle_detach_clients(state, session.as_deref()),
-        Command::KillResource { terminal_id } => handle_kill_terminal(state, &terminal_id),
+        Command::KillResource {
+            terminal_id,
+            operation_id,
+        } => handle_kill_terminal(
+            state,
+            &terminal_id,
+            kill_attribution(client_id, operation_id),
+        ),
         Command::KillResourceIf {
             terminal_id,
             precondition,
-        } => handle_kill_resource_if(state, &terminal_id, &precondition),
+            operation_id,
+        } => handle_kill_resource_if(
+            state,
+            &terminal_id,
+            &precondition,
+            kill_attribution(client_id, operation_id),
+        ),
         Command::OpenListener {
             transport,
             port_range,
@@ -1055,7 +1133,18 @@ pub(crate) async fn handle_command(
         Command::SignalTerminal {
             terminal_id,
             signal,
-        } => handle_signal_terminal(state, client_id, &terminal_id, signal).await,
+            operation_id,
+        } => {
+            handle_signal_terminal(
+                state,
+                client_id,
+                &terminal_id,
+                signal,
+                operation_id,
+                claim.as_ref(),
+            )
+            .await
+        }
         Command::PutFile {
             upload_id,
             terminal_id,
@@ -1115,6 +1204,7 @@ pub(crate) async fn handle_command(
             message: "command not supported by this server".to_owned(),
         },
     };
+    super::keyed_ops::settle(claim, &result);
     debug!(
         ?client_id,
         request_id, "COMMAND dispatched; sending COMMAND_RESULT"
@@ -1135,9 +1225,22 @@ pub(crate) async fn handle_command(
 /// the last session empties. So `KILL_RESOURCE` reuses the exact teardown
 /// a natural shell exit takes — no separate kill plumbing, and the async
 /// `RESOURCE_CLOSED` still fires.
+/// The attribution a kill stamps on the `pane_closed` of everything it
+/// closes: the sending connection and, when keyed, its `operation_id`.
+const fn kill_attribution(
+    client_id: ClientId,
+    operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+) -> crate::state::CloseAttribution {
+    crate::state::CloseAttribution {
+        actor: Some(client_id),
+        operation_id,
+    }
+}
+
 fn handle_kill_terminal(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
+    attribution: crate::state::CloseAttribution,
 ) -> CommandResult {
     state
         .with(|s| s.terminal_from_wire(terminal_id))
@@ -1151,7 +1254,11 @@ fn handle_kill_terminal(
                 // in one acquisition of the lock, so no client observes a
                 // child whose parent is gone.
                 state.with_mut(|s| {
-                    s.close_resources(&[core_id], phux_protocol::wire::frame::CloseReason::Killed)
+                    s.close_resources_attributed(
+                        &[core_id],
+                        phux_protocol::wire::frame::CloseReason::Killed,
+                        attribution,
+                    )
                 });
                 CommandResult::Ok
             },
@@ -1166,8 +1273,10 @@ fn handle_kill_resource_if(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     precondition: &phux_protocol::wire::frame::KillPrecondition,
+    attribution: crate::state::CloseAttribution,
 ) -> CommandResult {
-    match state.with_mut(|s| s.kill_resource_if(terminal_id, precondition)) {
+    match state.with_mut(|s| s.kill_resource_if_attributed(terminal_id, precondition, attribution))
+    {
         Ok(()) => CommandResult::Ok,
         Err(refusal) => kill_if_refusal(terminal_id, refusal),
     }
@@ -1221,17 +1330,24 @@ async fn handle_attach_terminal(
     bootstrap_profile: BootstrapProfile,
     bootstrap_limits: BootstrapLimits,
     connection_token: &CancellationToken,
+    role: RolePolicy,
 ) -> CommandResult {
     // Profile validation lives in `bootstrap_attach_terminal` (it runs
     // after subscribe so the bind path shares it); a bad profile fails
     // there and this path drops the subscription it just registered.
-    let Some((core, handle)) = subscribe_attach_terminal(state, client_id, terminal_id, out_tx)
-    else {
-        return CommandResult::Error {
-            code: ErrorCode::TerminalNotFound,
-            message: format!("no such terminal: {terminal_id:?}"),
+    let subscription =
+        match subscribe_attach_terminal(state, client_id, terminal_id, out_tx, Some(role)) {
+            Ok(subscription) => subscription,
+            Err(refusal) => return refusal,
         };
-    };
+    announce_role_effects(&subscription, client_id).await;
+    let AttachSubscription {
+        core,
+        handle,
+        effects,
+        was_viewer,
+        ..
+    } = subscription;
 
     let stream_id = crate::runtime::attach::stream_id_from(client_id.0);
     match bootstrap_attach_terminal(
@@ -1253,8 +1369,40 @@ async fn handle_attach_terminal(
         Err(failure) => {
             // The COMMAND path owns its subscription: a failed bootstrap
             // drops it (the pre-refactor behavior). The STREAM_BIND path
-            // keeps it — see `bootstrap_attach_terminal`.
-            state.with_mut(|s| s.unsubscribe_terminal(client_id, core));
+            // keeps it — see `bootstrap_attach_terminal`. A lease this
+            // attach seized is handed back, and a widening it made is undone
+            // (ADR-0127): a failed attach must neither leave an unsubscribed
+            // client holding the wheel nor shed a viewer tombstone. A
+            // declared `VIEWER` stays declared.
+            let restore = was_viewer && !role.is_viewer();
+            let (released, holder) = state.with_mut(|s| {
+                s.unsubscribe_terminal(client_id, core);
+                if restore {
+                    s.set_viewer_mark(client_id, terminal_id, true);
+                }
+                let released = s.undo_attach_takeover(client_id, core, effects);
+                (released, s.input_lease_holder(core))
+            });
+            if restore && effects.role_changed {
+                let _ = handle
+                    .control
+                    .send(ControlRequest::LeaseChanged {
+                        input_holder: holder.map(wire_client_id),
+                        action: ControlAction::RoleChanged,
+                        actor: Some(wire_client_id(client_id)),
+                    })
+                    .await;
+            }
+            if released {
+                let _ = handle
+                    .control
+                    .send(ControlRequest::LeaseChanged {
+                        input_holder: None,
+                        action: ControlAction::Released,
+                        actor: Some(wire_client_id(client_id)),
+                    })
+                    .await;
+            }
             CommandResult::Error {
                 code: failure.code,
                 message: failure.message,
@@ -1411,17 +1559,133 @@ pub(crate) async fn bootstrap_attach_terminal(
 /// The `STREAM_BIND` path subscribes with the *control* mailbox and
 /// bootstraps with the stream's: lifecycle fanout and bind authorization
 /// resolve through the remembered mailbox, content through the passed one.
+///
+/// `role` is the attach's declared intent (ADR-0127), applied in this same
+/// critical section: the observe-only mark, and for a deliberate takeover the
+/// lease seizure, land with the subscription or not at all. `None` leaves the
+/// connection's role untouched — the `STREAM_BIND` of a Terminal whose
+/// `ATTACH_RESOURCE` already declared it.
 pub(crate) fn subscribe_attach_terminal(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
-) -> Option<(phux_core::ids::ResourceId, ResourceHandle)> {
+    role: Option<RolePolicy>,
+) -> Result<AttachSubscription, CommandResult> {
+    let not_found = || CommandResult::Error {
+        code: ErrorCode::TerminalNotFound,
+        message: format!("no such terminal: {terminal_id:?}"),
+    };
     state.with_mut(|s| {
-        let core = s.terminal_from_wire(terminal_id)?;
-        let handle = s.resource_handle(core).cloned()?;
+        let core = s.terminal_from_wire(terminal_id).ok_or_else(not_found)?;
+        let handle = s.resource_handle(core).cloned().ok_or_else(not_found)?;
+        // The lease is a Terminal-facet concept (L1 §1.1), so a takeover of
+        // any other kind is refused the way `ACQUIRE_INPUT` refuses it.
+        if role.is_some_and(RolePolicy::takes_over)
+            && let Err(error) = handle.terminal()
+        {
+            return Err(wrong_resource_kind(error));
+        }
+        let was_subscribed = s.subscribers_for_terminal(core).contains(&client_id);
+        let was_viewer = s.is_viewer(client_id, terminal_id);
         s.subscribe_terminal(client_id, core, Some(out_tx.clone()));
-        Some((core, handle))
+        let effects = role.map_or_else(RoleEffects::default, |policy| {
+            s.apply_attach_role(client_id, terminal_id, Some(core), policy, was_subscribed)
+        });
+        Ok(AttachSubscription {
+            core,
+            handle,
+            effects,
+            was_viewer,
+            holder: s.input_lease_holder(core),
+        })
+    })
+}
+
+/// What [`subscribe_attach_terminal`] registered, and what its declared role
+/// changed (ADR-0127).
+pub(crate) struct AttachSubscription {
+    /// The subscribed Terminal.
+    pub(crate) core: phux_core::ids::ResourceId,
+    /// Its engine handle.
+    pub(crate) handle: ResourceHandle,
+    /// What the role changed; empty when no role was applied.
+    pub(crate) effects: RoleEffects,
+    /// Whether the connection had declared `VIEWER` on this Terminal
+    /// before this attach, so a failed widening can put the tombstone back.
+    pub(crate) was_viewer: bool,
+    /// The lease holder once the role applied, which every broadcast names.
+    pub(crate) holder: Option<ClientId>,
+}
+
+/// Broadcast what an attach's declared role changed (ADR-0127) through the
+/// pane's engine, the path `ACQUIRE_INPUT` uses, so journaling and lifecycle
+/// stamping stay the engine's: `ROLE_CHANGED` first, then the lease
+/// transition, each naming the attaching connection as the actor. A
+/// deliberate takeover therefore reaches every subscriber as one `SEIZED`.
+pub(crate) async fn announce_role_effects(subscription: &AttachSubscription, client_id: ClientId) {
+    announce_role_effects_on(
+        &subscription.handle,
+        client_id,
+        subscription.effects,
+        subscription.holder,
+    )
+    .await;
+}
+
+/// [`announce_role_effects`] for a caller holding the parts rather than an
+/// [`AttachSubscription`] (the session `ATTACH` sweep).
+pub(crate) async fn announce_role_effects_on(
+    handle: &ResourceHandle,
+    client_id: ClientId,
+    effects: RoleEffects,
+    holder: Option<ClientId>,
+) {
+    let changed = effects.role_changed.then_some(ControlAction::RoleChanged);
+    for action in [changed, effects.lease].into_iter().flatten() {
+        let _ = handle
+            .control
+            .send(ControlRequest::LeaseChanged {
+                input_holder: holder.map(wire_client_id),
+                action,
+                actor: Some(wire_client_id(client_id)),
+            })
+            .await;
+    }
+}
+
+/// The QUIC multi-stream `ATTACH_RESOURCE`: subscribe and apply the role
+/// against the control mailbox, announce what the role changed, and stop.
+async fn subscribe_deferred_attach(
+    state: &SharedState,
+    client_id: ClientId,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    role: RolePolicy,
+) -> CommandResult {
+    match subscribe_attach_terminal(state, client_id, terminal_id, out_tx, Some(role)) {
+        Ok(subscription) => {
+            announce_role_effects(&subscription, client_id).await;
+            CommandResult::Ok
+        }
+        Err(refusal) => refusal,
+    }
+}
+
+/// `{ VIEWER, DELIBERATE }` on `ATTACH_RESOURCE` is `INVALID_COMMAND`
+/// (L1 §8.1): a viewer cannot take the wheel.
+fn refuse_invalid_role_policy(command: &Command) -> Option<CommandResult> {
+    let Command::AttachResource {
+        role_policy: Some(policy),
+        ..
+    } = command
+    else {
+        return None;
+    };
+    (!policy.is_valid()).then(|| CommandResult::Error {
+        code: ErrorCode::InvalidCommand,
+        message: "role_policy { VIEWER, DELIBERATE } is invalid: a viewer cannot take over"
+            .to_owned(),
     })
 }
 
@@ -2503,6 +2767,8 @@ pub(crate) async fn handle_detach_terminal(
 
     let handle = state.with_mut(|s| {
         s.unsubscribe_terminal_events(client_id, terminal_id);
+        // A declared `VIEWER` is a tombstone that outlives the subscription
+        // (ADR-0127): detaching, or a Terminal stream's reset, never widens.
         let core = s.terminal_from_wire(terminal_id)?;
         s.unsubscribe_terminal(client_id, core);
         Some((core, s.resource_handle(core).cloned()))
@@ -2704,8 +2970,22 @@ async fn handle_satellite_command(
             ),
         },
         Some(relay) => match &command {
-            Command::SubscribeResourceEvents { terminal_id, .. }
-            | Command::AttachResource { terminal_id } => {
+            Command::AttachResource {
+                terminal_id,
+                role_policy,
+            } => {
+                relay_satellite_attach(
+                    &SatelliteLeaseTarget::new(state, host, client_id, terminal_id),
+                    &relay,
+                    &command,
+                    role_policy.unwrap_or_default(),
+                    out_tx,
+                    bootstrap_profile,
+                    bootstrap_limits,
+                )
+                .await
+            }
+            Command::SubscribeResourceEvents { terminal_id, .. } => {
                 let change =
                     register_satellite_event_filter(state, client_id, host, &command, out_tx);
                 let result = relay_stream_establishing(
@@ -2745,7 +3025,9 @@ async fn handle_satellite_command(
                 )
                 .await
             }
-            Command::RouteInput { terminal_id, .. } => {
+            // L1 §9.1: `APPLY_INPUT` crosses the same lease gate as
+            // `ROUTE_INPUT`, then the satellite owns its dedupe.
+            Command::RouteInput { terminal_id, .. } | Command::ApplyInput { terminal_id, .. } => {
                 relay_satellite_route_input(
                     &SatelliteLeaseTarget::new(state, host, client_id, terminal_id),
                     &relay,
@@ -2753,14 +3035,10 @@ async fn handle_satellite_command(
                 )
                 .await
             }
-            Command::KillResourceIf {
-                terminal_id,
-                precondition,
-            } => {
-                relay_conditional_kill(state, &relay, host, terminal_id, precondition, &command)
-                    .await
+            Command::KillResourceIf { .. } => {
+                relay_conditional_kill(state, &relay, host, &command, client_id).await
             }
-            _ => relay.command(command.clone()).await,
+            _ => relay.command_from(command.clone(), client_id).await,
         },
     };
     reply_satellite_command(
@@ -2784,7 +3062,7 @@ async fn handle_satellite_command(
 /// lease, an upload, a transcription, a signal, and a screen read.
 const fn used_resource(command: &Command) -> Option<&phux_protocol::ids::ResourceId> {
     match command {
-        Command::AttachResource { terminal_id }
+        Command::AttachResource { terminal_id, .. }
         | Command::RouteInput { terminal_id, .. }
         | Command::ApplyInput { terminal_id, .. }
         | Command::AcquireInput { terminal_id, .. }
@@ -2833,10 +3111,20 @@ async fn relay_conditional_kill(
     state: &SharedState,
     relay: &crate::hub::relay::RelayHandle,
     host: &phux_protocol::ids::SatelliteHost,
-    terminal_id: &phux_protocol::ids::ResourceId,
-    precondition: &phux_protocol::wire::frame::KillPrecondition,
     command: &Command,
+    client_id: ClientId,
 ) -> CommandResult {
+    let Command::KillResourceIf {
+        terminal_id,
+        precondition,
+        ..
+    } = command
+    else {
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "a conditional-kill relay was handed another command".to_owned(),
+        };
+    };
     if !hub_vouches_for_kill(state, host, terminal_id, precondition) {
         return CommandResult::Error {
             code: ErrorCode::PreconditionFailed,
@@ -2847,7 +3135,7 @@ async fn relay_conditional_kill(
             ),
         };
     }
-    relay.command(command.clone()).await
+    relay.command_from(command.clone(), client_id).await
 }
 
 /// `true` unless the kill asks for `UNATTACHED_SINCE_SPAWN` and the hub's
@@ -2892,7 +3180,7 @@ async fn reply_satellite_command(
     connection_token: &CancellationToken,
 ) {
     if !matches!(result, CommandResult::Error { .. })
-        && let Command::AttachResource { terminal_id } = command
+        && let Command::AttachResource { terminal_id, .. } = command
         && let Some(id) = terminal_id.local_id()
     {
         state.with_mut(|s| {
@@ -3125,6 +3413,21 @@ async fn relay_satellite_acquire_input(
             message: format!("input lease held by client {}", holder.0),
         };
     }
+    // Mark this terminal's lease pending *before* awaiting the relay
+    // (review round 2, medium finding: reply and event delivery share one
+    // link but are not ordered against each other, so a stale
+    // Released/Expired mirrored from an *earlier* lease on this terminal
+    // could otherwise overtake this acquire's own reply and clear the
+    // ledger entry this call is about to install). The reply below does
+    // NOT clear this mark on success — it bypasses the event pump
+    // entirely, so it cannot itself prove the stream has caught up. The
+    // mirror in `hub::relay::RelaySession::mirror_satellite_lease_state`
+    // clears it on the first event it sees for this terminal afterward
+    // instead, swallowing that event if it turns out to be exactly the
+    // stale report this window exists to catch.
+    target
+        .state
+        .with_mut(|s| s.mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal));
     // Cooperative-over-free/self OR a SEIZE takeover. Relay
     // to the satellite (the link identity's lease keeps
     // excluding the satellite's own local clients), then
@@ -3136,9 +3439,30 @@ async fn relay_satellite_acquire_input(
     // it holds the wheel while its relayed INPUT_* is silently
     // dropped at the hub lease gate.
     let result = relay.command(command.clone()).await;
+    settle_satellite_seize(target, &result, out_tx);
+    result
+}
+
+/// Settle a hub-ledger acquire once its relay has answered, for
+/// `ACQUIRE_INPUT` and a deliberate-takeover attach (ADR-0127) alike. The
+/// caller marked the terminal pending before relaying.
+fn settle_satellite_seize(
+    target: &SatelliteLeaseTarget<'_>,
+    result: &CommandResult,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+) {
     if matches!(result, CommandResult::Error { .. }) {
-        return result;
+        // A refused/failed acquire never installs a lease: stop ignoring
+        // Released/Expired for this terminal, or a genuinely free lease
+        // would stay wrongly pinned forever.
+        target
+            .state
+            .with_mut(|s| s.clear_satellite_lease_acquire_pending(target.host, target.terminal));
+        return;
     }
+    // Deliberately NOT clearing the pending mark here: see the comment in
+    // `relay_satellite_acquire_input` where it is set.
+    // `mirror_satellite_lease_event` clears it.
     let evicted = target.state.with_mut(|s| {
         s.set_satellite_lease(
             target.host.clone(),
@@ -3150,7 +3474,164 @@ async fn relay_satellite_acquire_input(
     if let Some(evicted) = evicted {
         notify_satellite_lease_seized(target.host, target.terminal, target.client_id, &evicted);
     }
+}
+
+/// `ATTACH_RESOURCE` for a satellite Terminal on a hub (ADR-0127).
+///
+/// Every hub consumer reaches the satellite through the link's one identity,
+/// so the consumer's declared role is the hub's to hold: a viewer mark keyed
+/// by the satellite-tagged id, which the dispatch guard enforces before any
+/// relay, and a deliberate takeover as a hub-ledger seize under the same
+/// pending-mark discipline as `ACQUIRE_INPUT`. The link carries the takeover
+/// only to a satellite advertising `ATTACH_ROLES`, where the attach and the
+/// seize land in one command ([`crate::hub::relay::link_attach_command`]);
+/// any other satellite gets a plain attach followed by a relayed
+/// `ACQUIRE_INPUT { SEIZE }`, the degraded two-command path. If that seize
+/// fails, the attach stands and the seize's refusal is the reply.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the lease target, relay, routed command, and declared role plus the negotiated bootstrap context the stream-establishing relay needs"
+)]
+async fn relay_satellite_attach(
+    target: &SatelliteLeaseTarget<'_>,
+    relay: &crate::hub::relay::RelayHandle,
+    command: &Command,
+    role: RolePolicy,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    bootstrap_profile: BootstrapProfile,
+    bootstrap_limits: BootstrapLimits,
+) -> CommandResult {
+    let state = target.state;
+    let local = phux_protocol::ids::ResourceId::local(target.terminal);
+    let wire = phux_protocol::ids::ResourceId::satellite(target.host.clone(), target.terminal);
+    // A narrowing applies before the relay, in the lock, so no input slips
+    // through while it is in flight; a widening applies only once the
+    // satellite has accepted the attach (ADR-0127).
+    let (was_attached, narrowed) = state.with_mut(|s| {
+        let was_attached =
+            s.has_satellite_proxy_attach(target.client_id, target.host, target.terminal);
+        let narrowed = role
+            .is_viewer()
+            .then(|| s.apply_attach_role(target.client_id, &wire, None, role, was_attached));
+        (was_attached, narrowed)
+    });
+    let seize = role.takes_over();
+    if seize {
+        state.with_mut(|s| {
+            s.mark_satellite_lease_acquire_pending(target.host.clone(), target.terminal);
+        });
+    }
+    let attached = relay_stream_establishing(
+        relay,
+        command,
+        &local,
+        target.client_id,
+        out_tx,
+        bootstrap_profile,
+        bootstrap_limits,
+        state.with(|s| s.client_connection_cancellation(target.client_id)),
+    )
+    .await;
+    if matches!(attached, CommandResult::Error { .. }) {
+        // A refused attach leaves the mark as it is: a narrowing stays
+        // declared, and a widening never happened, so nothing is journaled.
+        if seize {
+            settle_satellite_seize(target, &attached, out_tx);
+        }
+        return attached;
+    }
+    // The attach stands, so its proxy registration is recorded here, even
+    // when a degraded seize after it is refused.
+    state.with_mut(|s| {
+        s.register_satellite_proxy_attach(target.client_id, target.host.clone(), target.terminal);
+    });
+    let effects = narrowed.unwrap_or_else(|| {
+        state.with_mut(|s| s.apply_attach_role(target.client_id, &wire, None, role, was_attached))
+    });
+    if effects.role_changed {
+        journal_satellite_role_change(target, wire);
+    }
+    if role.is_viewer() {
+        release_satellite_lease_for_viewer(target, relay).await;
+    }
+    if seize {
+        return seize_after_satellite_attach(target, relay, attached, out_tx).await;
+    }
+    attached
+}
+
+/// Finish a deliberate takeover whose attach the satellite accepted: a
+/// satellite advertising `ATTACH_ROLES` already seized with the attach;
+/// any other gets the relayed `ACQUIRE_INPUT { SEIZE }`. The hub ledger
+/// records the new holder either way.
+async fn seize_after_satellite_attach(
+    target: &SatelliteLeaseTarget<'_>,
+    relay: &crate::hub::relay::RelayHandle,
+    attached: CommandResult,
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+) -> CommandResult {
+    let result = if satellite_seizes_on_attach(target) {
+        attached
+    } else {
+        relay
+            .command(Command::AcquireInput {
+                terminal_id: phux_protocol::ids::ResourceId::local(target.terminal),
+                mode: InputMode::Seize,
+                ttl_ms: 0,
+            })
+            .await
+    };
+    settle_satellite_seize(target, &result, out_tx);
     result
+}
+
+/// A hub consumer that narrows to `VIEWER` gives back the satellite lease it
+/// holds (L1 §8.1), through the ordinary release relay so the satellite and
+/// the hub ledger converge.
+async fn release_satellite_lease_for_viewer(
+    target: &SatelliteLeaseTarget<'_>,
+    relay: &crate::hub::relay::RelayHandle,
+) {
+    if target.holder() != Some(target.client_id) {
+        return;
+    }
+    let release = Command::ReleaseInput {
+        terminal_id: phux_protocol::ids::ResourceId::local(target.terminal),
+    };
+    let _ = relay_satellite_release_input(target, relay, &release).await;
+}
+
+/// Whether the link carried the takeover with the attach: the satellite
+/// advertised `ATTACH_ROLES`.
+fn satellite_seizes_on_attach(target: &SatelliteLeaseTarget<'_>) -> bool {
+    target.state.with(|s| {
+        s.satellite_advertises(target.host, phux_protocol::caps::ServerFeature::AttachRoles)
+    })
+}
+
+/// Journal a hub consumer's role flip on a satellite Terminal (ADR-0127)
+/// hub-side: the satellite never sees the role, so only the hub can report
+/// it.
+fn journal_satellite_role_change(
+    target: &SatelliteLeaseTarget<'_>,
+    wire: phux_protocol::ids::ResourceId,
+) {
+    target.state.with_mut(|s| {
+        let event = AgentEvent::TerminalControl {
+            // The hub keeps no satellite lifecycle (see
+            // `notify_satellite_lease_seized`); `Running` is its default.
+            lifecycle: ResourceLifecycle::Running,
+            exit_status: None,
+            input_holder: s
+                .satellite_lease_holder(target.host, target.terminal)
+                .map(wire_client_id),
+            action: ControlAction::RoleChanged,
+            actor: Some(wire_client_id(target.client_id)),
+        };
+        let _ = s.record_and_fanout(
+            crate::state::EventRecord::new(Some(wire), event).with_actor(Some(target.client_id)),
+        );
+    });
 }
 
 /// Resolve `RELEASE_INPUT` against the hub-side lease before relaying it.
@@ -3191,7 +3672,7 @@ async fn relay_satellite_route_input(
             message: "input lease held by another client".to_owned(),
         };
     }
-    relay.command(command.clone()).await
+    relay.command_from(command.clone(), target.client_id).await
 }
 
 /// Notify the hub consumer evicted by a SEIZE takeover over a satellite
@@ -3289,112 +3770,223 @@ fn relay_satellite_frame(
     true
 }
 
-/// Build the `Ok` reply for `KILL_RESOURCES` — the atomic multi-terminal
-/// teardown the v0.3.0 "Option B" re-tier left in place of the dissolved
-/// L2 `KILL_COLLECTION` verb (ADR-0019 / ADR-0027).
+/// Handle `KILL_RESOURCES` (L1 §5.2): tear down every local id in one
+/// acquisition of the state lock, then relay each satellite's part to its
+/// host and await every answer.
 ///
-/// Tears down every Terminal in `ids` inside **one** `with_mut` lock scope,
-/// so the removals are atomic with respect to every other command: no peer
-/// can observe a half-killed group on this server. (Cross-host atomicity is
-/// out of scope, as it would be under any tiering.) Each removal cancels the
-/// pane actor via [`crate::state::ServerState::detach_resource_actor`];
-/// cancellation drops the actor's `exit_notify`, which the per-pane EOF
-/// watcher treats like PTY EOF — it broadcasts `RESOURCE_CLOSED` and reaps
-/// the pane, cascading to session removal and (when the last session
-/// empties) server self-exit. So this reuses the exact teardown a per-pane
-/// `KILL_RESOURCE` (or a natural shell exit) takes, but resolves the whole
-/// group in one pass.
-///
-/// Idempotent: an `id` that is unknown or already-dead is skipped silently
-/// rather than failing the batch, so a caller racing a natural pane exit
-/// still succeeds. Satellite-routed ids (phux-v45.4) are partitioned by
-/// host and forwarded as per-satellite `KILL_RESOURCES` batches over the
-/// hub links, detached — the satellite applies the same idempotent
-/// semantics, and a down link degrades to the silent skip the contract
-/// already allows. The reply is `Ok` the moment the local actors are
-/// cancelled and the relays are queued; the `RESOURCE_CLOSED` frames follow
-/// asynchronously as the panes reap (SPEC §5). The op is structurally
-/// infallible — an empty `ids` list is a no-op that still acks `Ok`.
-pub(crate) fn handle_kill_terminals(
+/// An unkeyed batch answers `OK`, as it always has, because an older client
+/// reads any other success shape as unexpected: the local teardown is atomic,
+/// an unknown or already-dead id is a silent skip, and a satellite part that
+/// failed is logged. A keyed batch (L1 §5.1.1) answers `OkWith(Json)` with one
+/// outcome per id. A client sends a key only after seeing `KEYED_SIGNAL`, so
+/// it knows that shape. Each satellite's part carries the batch's key, so a
+/// keyed batch is keyed at every hop and the satellite's own outcomes are
+/// merged; a non-hub server reports its satellite ids as failed with
+/// `UNSUPPORTED_SATELLITE_ROUTE`.
+pub(crate) async fn handle_kill_terminals(
+    state: &SharedState,
+    client_id: ClientId,
+    ids: &[phux_protocol::ids::ResourceId],
+    operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+) -> CommandResult {
+    let partitions = satellite_partitions(ids);
+    let attribution = kill_attribution(client_id, operation_id);
+    let (killed, not_found) = kill_local_batch(state, ids, attribution, false);
+    let relayed = futures_util::future::join_all(
+        partitions
+            .into_iter()
+            .map(|(host, ids)| relay_kill_partition(state, client_id, host, ids, operation_id)),
+    )
+    .await;
+    if operation_id.is_none() {
+        warn_failed_partitions(&relayed);
+        return CommandResult::Ok;
+    }
+    let mut results = super::keyed_ops::KillResults::default();
+    for id in &killed {
+        results.killed(id);
+    }
+    for id in &not_found {
+        results.not_found(id);
+    }
+    for partition in &relayed {
+        results.merge_host(&partition.host, &partition.ids, &partition.result);
+    }
+    results.into_result()
+}
+
+/// `CLOSE_TAB_RESOURCES`: the same atomic local close as
+/// [`handle_kill_terminals`], without releasing keep-empty on a fully
+/// covered session (L1 §5.2.2, ADR-0114). It is unkeyed and answers `OK`:
+/// satellite ids go to their hosts as detached batches of the same command,
+/// which is idempotent and tolerates skips, so the hub neither awaits nor
+/// merges their answers, and a server with no route to a host skips its ids.
+pub(crate) fn handle_close_tab_resources(
     state: &SharedState,
     ids: &[phux_protocol::ids::ResourceId],
 ) -> CommandResult {
-    // Satellite partition first (phux-v45.4): group `Satellite { host, id }`
-    // entries per host and forward each group as one satellite-local
-    // KILL_RESOURCES over the hub link. Detached relay: the batch op is
-    // idempotent and tolerates skips, so the hub does not await or merge
-    // per-satellite results. Non-hub servers (no relay) keep the silent
-    // skip these ids always had here.
-    let mut by_host: std::collections::BTreeMap<
-        phux_protocol::ids::SatelliteHost,
-        Vec<phux_protocol::ids::ResourceId>,
-    > = std::collections::BTreeMap::new();
+    relay_close_tab_partitions(state, ids);
+    let _ = kill_local_batch(state, ids, crate::state::CloseAttribution::default(), true);
+    CommandResult::Ok
+}
+
+/// A batch's satellite ids grouped by host, each kept as the caller wrote it.
+type KillPartitions = std::collections::BTreeMap<
+    phux_protocol::ids::SatelliteHost,
+    Vec<phux_protocol::ids::ResourceId>,
+>;
+
+fn satellite_partitions(ids: &[phux_protocol::ids::ResourceId]) -> KillPartitions {
+    let mut by_host = KillPartitions::new();
     for wire_id in ids {
-        if let Some((host, id)) = crate::hub::relay::satellite_route(wire_id) {
-            by_host
-                .entry(host)
-                .or_default()
-                .push(phux_protocol::ids::ResourceId::local(id));
+        if let Some((host, _)) = crate::hub::relay::satellite_route(wire_id) {
+            by_host.entry(host).or_default().push(wire_id.clone());
         }
     }
-    for (host, local_ids) in by_host {
+    by_host
+}
+
+/// Close the local ids of a batch in one acquisition of the lock, so no
+/// other command observes a half-closed group on this server, and return
+/// which local ids named a live resource and which named nothing.
+///
+/// `preserve_keep_empty` is `CLOSE_TAB_RESOURCES`: a batch naming every pane
+/// of a keep-empty session leaves it empty instead of releasing its mark.
+fn kill_local_batch(
+    state: &SharedState,
+    ids: &[phux_protocol::ids::ResourceId],
+    attribution: crate::state::CloseAttribution,
+    preserve_keep_empty: bool,
+) -> (
+    Vec<phux_protocol::ids::ResourceId>,
+    Vec<phux_protocol::ids::ResourceId>,
+) {
+    let label = if preserve_keep_empty {
+        "CLOSE_TAB_RESOURCES"
+    } else {
+        "KILL_RESOURCES"
+    };
+    state.with_mut(|s| {
+        let mut targets = Vec::with_capacity(ids.len());
+        let (mut killed, mut not_found) = (Vec::new(), Vec::new());
+        for wire_id in ids.iter().filter(|id| id.local_id().is_some()) {
+            if let Some(core_id) = s.terminal_from_wire(wire_id) {
+                targets.push(core_id);
+                killed.push(wire_id.clone());
+            } else {
+                debug!(?wire_id, "{label}: unknown / dead id; skipping");
+                not_found.push(wire_id.clone());
+            }
+        }
+        // ADR-0105: a KILL_RESOURCES batch naming every pane of a
+        // keep-empty session is a group teardown, so the session's mark is
+        // released and the ordinary cascade removes it as its panes are
+        // reaped. CLOSE_TAB_RESOURCES skips that release (ADR-0114).
+        if !preserve_keep_empty {
+            for name in s.release_keep_empty_covered_by(&targets) {
+                let _ = s.metadata_broadcast(
+                    &phux_protocol::wire::frame::Scope::Global,
+                    ServerInterceptedKey::SessionKeepEmpty,
+                    &phux_protocol::wire::frame::encode_session_keep_empty(&name, false),
+                );
+            }
+        }
+        // The closure — targets plus everything bound to one of them — is
+        // computed and closed in this one borrow (ADR-0104 §2). An id named
+        // twice, or named alongside its own parent, is closed exactly once.
+        let closed = s.close_resources_attributed(
+            &targets,
+            phux_protocol::wire::frame::CloseReason::Killed,
+            attribution,
+        );
+        debug!(
+            requested = ids.len(),
+            closed, "{label}: torn down local ids atomically"
+        );
+        (killed, not_found)
+    })
+}
+
+/// `CLOSE_TAB_RESOURCES`'s satellite ids, forwarded detached to each host as
+/// that host's own batch of the same command.
+fn relay_close_tab_partitions(state: &SharedState, ids: &[phux_protocol::ids::ResourceId]) {
+    for (host, wire_ids) in satellite_partitions(ids) {
+        let local_ids = wire_ids
+            .iter()
+            .filter_map(crate::hub::relay::satellite_route)
+            .map(|(_, id)| phux_protocol::ids::ResourceId::local(id))
+            .collect::<Vec<_>>();
         match state.with(|s| s.hub_relay(&host)) {
             Some(relay) => {
                 debug!(
                     satellite = %host,
                     count = local_ids.len(),
-                    "KILL_RESOURCES: relaying satellite partition"
+                    "CLOSE_TAB_RESOURCES: relaying satellite partition"
                 );
-                relay.command_detached(Command::KillResources { ids: local_ids });
+                relay.command_detached(Command::CloseTabResources { ids: local_ids });
             }
             None => {
                 debug!(
                     satellite = %host,
-                    "KILL_RESOURCES: no route to satellite; skipping its ids"
+                    "CLOSE_TAB_RESOURCES: no route to satellite; skipping its ids"
                 );
             }
         }
     }
+}
 
-    // Single lock scope: resolve every wire id to its core pane and cancel
-    // its actor before releasing the lock. All-or-nothing for a local
-    // server — no other command interleaves between the first and last
-    // removal. `detach_resource_actor` is idempotent (cancelling an
-    // already-cancelled token is a no-op), so an id racing a natural exit
-    // and an unknown id both collapse to a silent skip (satellite ids were
-    // partitioned above and resolve to no local pane here).
-    let killed = state.with_mut(|s| {
-        let mut targets = Vec::with_capacity(ids.len());
-        for wire_id in ids {
-            if let Some(core_id) = s.terminal_from_wire(wire_id) {
-                targets.push(core_id);
-            } else {
-                debug!(?wire_id, "KILL_RESOURCES: unknown / dead id; skipping");
-            }
-        }
-        // ADR-0105: a batch naming every pane of a keep-empty session is a
-        // group teardown, so the session's mark is released and the ordinary
-        // cascade removes it as its panes are reaped. The release is
-        // broadcast in this same borrow, ahead of any RESOURCE_CLOSED, so an
-        // attached TUI stops treating the session as keep-empty before its
-        // last pane's close arrives.
-        for name in s.release_keep_empty_covered_by(&targets) {
-            let _ = s.metadata_broadcast(
-                &phux_protocol::wire::frame::Scope::Global,
-                ServerInterceptedKey::SessionKeepEmpty,
-                &phux_protocol::wire::frame::encode_session_keep_empty(&name, false),
+/// One satellite's part of a batch and its host's answer.
+struct KillPartition {
+    host: phux_protocol::ids::SatelliteHost,
+    ids: Vec<phux_protocol::ids::ResourceId>,
+    result: CommandResult,
+}
+
+/// Relay one satellite's part of a batch as that satellite's own
+/// `KILL_RESOURCES`, under the batch's key. A server with no route to `host`
+/// answers for it.
+async fn relay_kill_partition(
+    state: &SharedState,
+    client_id: ClientId,
+    host: phux_protocol::ids::SatelliteHost,
+    ids: Vec<phux_protocol::ids::ResourceId>,
+    operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+) -> KillPartition {
+    let local_ids = ids
+        .iter()
+        .filter_map(crate::hub::relay::satellite_route)
+        .map(|(_, id)| phux_protocol::ids::ResourceId::local(id))
+        .collect();
+    let command = Command::KillResources {
+        ids: local_ids,
+        operation_id,
+    };
+    let result = match state.with(|s| s.hub_relay(&host)) {
+        Some(relay) => relay.command_from(command, client_id).await,
+        None => CommandResult::Error {
+            code: ErrorCode::UnsupportedSatelliteRoute,
+            message: format!(
+                "no satellite route to {host}: this server is not a federation hub for that host"
+            ),
+        },
+    };
+    KillPartition { host, ids, result }
+}
+
+/// An unkeyed batch keeps its `OK` reply, so a satellite part that failed is
+/// said here instead.
+fn warn_failed_partitions(relayed: &[KillPartition]) {
+    for partition in relayed {
+        if let CommandResult::Error { code, message } = &partition.result {
+            tracing::warn!(
+                satellite = %partition.host,
+                ?code,
+                count = partition.ids.len(),
+                %message,
+                "KILL_RESOURCES: a satellite part was not killed; the unkeyed reply stays OK"
             );
         }
-        // The closure — targets plus everything bound to one of them — is
-        // computed and closed in this one borrow (ADR-0104 §2). An id named
-        // twice, or named alongside its own parent, is closed exactly once.
-        s.close_resources(&targets, phux_protocol::wire::frame::CloseReason::Killed)
-    });
-    debug!(
-        requested = ids.len(),
-        killed, "KILL_RESOURCES: torn down group atomically"
-    );
-    CommandResult::Ok
+    }
 }
 
 /// Force-detach clients from *outside* the attach UI (`phux detach`).
@@ -3567,7 +4159,7 @@ pub(crate) fn create_empty_session(state: &SharedState, name: &str) -> Result<()
 pub(crate) fn handle_get_perf(state: &SharedState, reset: bool) -> CommandResult {
     let (sessions, panes) =
         state.with_mut(|s| (s.registry().session_count(), s.registry().terminal_count()));
-    let clients = match handle_get_state(state, &StateScope::Server) {
+    let clients = match handle_get_state(state, None, &StateScope::Server) {
         CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot
             .sessions
             .iter()
@@ -3587,7 +4179,11 @@ pub(crate) fn handle_get_perf(state: &SharedState, reset: bool) -> CommandResult
     CommandResult::OkWith(CommandValue::Json(report.to_json()))
 }
 
-pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> CommandResult {
+pub(crate) fn handle_get_state(
+    state: &SharedState,
+    viewer: Option<ClientId>,
+    scope: &StateScope,
+) -> CommandResult {
     match scope {
         StateScope::Server => {
             let snapshot = state.with_mut(|s| {
@@ -3604,7 +4200,14 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
                 if snapshot.listeners().is_none() && s.has_remote_listener_report() {
                     snapshot = snapshot.with_listeners(s.remote_listeners().clone());
                 }
-                snapshot
+                // The journal head at the cut (L1 §7.3), read under the lock
+                // the snapshot is built in, so a consumer knows how far a
+                // cursor replay must reach before it trusts an absence. It is
+                // the viewer's: the newest seq its subscriptions admit, so
+                // other scopes' events never hold its catch-up open. This
+                // server always advertises EVENT_JOURNAL; a hub's head is its
+                // own journal's, the space its consumers' cursors live in.
+                snapshot.with_journal_head(Some(s.journal_head_for(viewer)))
             });
             CommandResult::OkWith(CommandValue::State(snapshot))
         }
@@ -3659,10 +4262,11 @@ pub(crate) fn handle_get_state(state: &SharedState, scope: &StateScope) -> Comma
 /// [`retag_satellite_resource_id`].
 pub(crate) async fn handle_get_state_federated(
     state: &SharedState,
+    viewer: ClientId,
     scope: &StateScope,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) -> CommandResult {
-    let local = handle_get_state(state, scope);
+    let local = handle_get_state(state, Some(viewer), scope);
     if !matches!(scope, StateScope::Server) {
         return local;
     }
@@ -3866,6 +4470,15 @@ fn retag_satellite_resource_id(
     }
 }
 
+/// Highest `GET_SCREEN.format` selector this build renders (D9): `1`
+/// HTML, `2` VT — the low 7 bits of the wire byte
+/// ([`phux_protocol::wire::frame::GET_SCREEN_FORMAT_SELECTOR_MASK`]).
+/// Anything above it is refused with `INVALID_COMMAND` by
+/// [`handle_get_screen`] before the request reaches the pane actor. The
+/// high bit ([`phux_protocol::wire::frame::GET_SCREEN_FORMAT_UNWRAP`]) is
+/// not a selector and is not checked here.
+const MAX_SCREEN_FORMAT: u8 = 2;
+
 /// Build the `OK_WITH(JSON(..))` reply for `GET_SCREEN`.
 ///
 /// Resolves the wire id to its pane actor, then asks the actor to project
@@ -3873,12 +4486,28 @@ fn retag_satellite_resource_id(
 /// serialized as JSON — the stable agent-surface contract (ADR-0022 §2).
 /// This is side-effect-free: it neither attaches nor resizes, so polling
 /// it (the `phux wait`/`run` floor) never disturbs the live pane.
+///
+/// `format` additionally requests a libghostty-vt Formatter rendering into
+/// `ScreenState.rendered` (D9): its low 7 bits select `0` none, `1` HTML,
+/// `2` VT. A selector this build does not define is refused with
+/// `INVALID_COMMAND` — the server never guesses at an unknown rendering.
+/// A rendering that would exceed the server's per-read byte budget is
+/// refused with `RESOURCE_EXHAUSTED` instead of a truncated or silently
+/// empty capture (review item 2(b)).
 pub(crate) async fn handle_get_screen(
     state: &SharedState,
     terminal_id: &phux_protocol::ids::ResourceId,
     request_scrollback: Option<u32>,
     cells: bool,
+    format: u8,
 ) -> CommandResult {
+    let selector = format & phux_protocol::wire::frame::GET_SCREEN_FORMAT_SELECTOR_MASK;
+    if selector > MAX_SCREEN_FORMAT {
+        return CommandResult::Error {
+            code: ErrorCode::InvalidCommand,
+            message: format!("unknown GET_SCREEN format: {format}"),
+        };
+    }
     // Clone the (Send) handle out of the lock; the actor reply is awaited
     // outside the critical section.
     let handle = state.with(|s| {
@@ -3903,6 +4532,7 @@ pub(crate) async fn handle_get_screen(
             pane,
             scrollback: request_scrollback,
             cells,
+            format,
             reply: reply_tx,
         })
         .await
@@ -3918,16 +4548,31 @@ pub(crate) async fn handle_get_screen(
             code: ErrorCode::InternalError,
             message: "pane actor dropped the GET_SCREEN reply".to_owned(),
         },
-        |screen| {
-            serde_json::to_string(&screen).map_or_else(
-                |err| CommandResult::Error {
-                    code: ErrorCode::InternalError,
-                    message: format!("screen serialization failed: {err}"),
-                },
-                |json| CommandResult::OkWith(CommandValue::Json(json)),
-            )
-        },
+        screen_reply_result,
     )
+}
+
+/// Turn a [`ScreenReply`] into the `GET_SCREEN` `CommandResult`.
+fn screen_reply_result(reply: ScreenReply) -> CommandResult {
+    match reply {
+        ScreenReply::TooLarge {
+            required_bytes,
+            budget_bytes,
+        } => CommandResult::Error {
+            code: ErrorCode::ResourceExhausted,
+            message: format!(
+                "rendered capture would be {required_bytes} bytes, over the \
+                 {budget_bytes}-byte budget; retry with a narrower --tail/--scrollback"
+            ),
+        },
+        ScreenReply::Projection(screen) => serde_json::to_string(&screen).map_or_else(
+            |err| CommandResult::Error {
+                code: ErrorCode::InternalError,
+                message: format!("screen serialization failed: {err}"),
+            },
+            |json| CommandResult::OkWith(CommandValue::Json(json)),
+        ),
+    }
 }
 
 /// Build the `Ok_With(Json(TerminalState))` reply for `GET_TERMINAL_STATE`.
@@ -4007,6 +4652,7 @@ pub(crate) async fn handle_get_terminal_state(
                 None
             },
             cells: true, // Always request cells for semantic info (styles, OSC-133 marks)
+            format: 0, // GET_TERMINAL_STATE has no rendered-capture surface (D9 is GET_SCREEN-only)
             reply: reply_tx,
         })
         .await
@@ -4018,10 +4664,20 @@ pub(crate) async fn handle_get_terminal_state(
         };
     }
 
-    let Ok(screen_state) = reply_rx.await else {
+    let Ok(reply) = reply_rx.await else {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor dropped the GET_TERMINAL_STATE reply".to_owned(),
+        };
+    };
+    // `format: 0` above never triggers a `ScreenReply::TooLarge` refusal
+    // (review item 2(b) only ever applies to a requested rendering); this
+    // arm exists so an enum a future format-aware caller could reach
+    // fails loudly here instead of via a non-exhaustive match.
+    let ScreenReply::Projection(screen_state) = reply else {
+        return CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "unexpected oversized-capture refusal for GET_TERMINAL_STATE".to_owned(),
         };
     };
 
@@ -4096,7 +4752,8 @@ pub(crate) async fn handle_get_terminal_state(
     // already best-effort (`null` when unobtainable). An actor that cannot
     // answer at all degrades to `process: null` rather than failing the
     // whole snapshot. `shell_state` mirrors the prompt facet.
-    let process = query_process_facet(terminal).await;
+    let mut process = query_process_facet(terminal).await;
+    reconcile_process_exit(state, terminal_id, process.as_mut());
     let shell_state = process
         .as_ref()
         .and_then(|process| serde_json::to_value(process.prompt).ok());
@@ -4134,6 +4791,34 @@ pub(crate) async fn handle_get_terminal_state(
             code: ErrorCode::InternalError,
             message: format!("terminal state serialization failed: {err}"),
         },
+    }
+}
+
+/// Make `process.exit` the record `GET_STATE` reports (ADR-0124, L1 §1.1):
+/// a retained pane's exit facet replaces the engine's, and a pane whose close
+/// is still being emitted takes its `reason` from the close ledger rather
+/// than the engine's "exited", so a kill reads `killed` on both surfaces.
+fn reconcile_process_exit(
+    state: &SharedState,
+    terminal_id: &phux_protocol::ids::ResourceId,
+    process: Option<&mut phux_core::process::TerminalProcessState>,
+) {
+    let Some(process) = process else {
+        return;
+    };
+    let (retained, pending) = state.with(|s| {
+        let pane = s.terminal_from_wire(terminal_id);
+        (
+            pane.and_then(|pane| s.retained_process_exit(pane)),
+            pane.and_then(|pane| s.pending_close_reason(pane)),
+        )
+    });
+    if let Some(exit) = retained {
+        process.exit = Some(exit);
+        return;
+    }
+    if let (Some(exit), Some(reason)) = (process.exit.as_mut(), pending) {
+        crate::state::close_reason_name(reason).clone_into(&mut exit.reason);
     }
 }
 
@@ -4199,6 +4884,15 @@ pub(crate) fn with_route_input_destination<R>(
     action: impl FnOnce(InputDestination) -> R,
 ) -> Result<R, CommandResult> {
     state.with(|s| {
+        // Input queued on the lane before a revocation is still pending
+        // authority the revoked connection held: none of it is delivered
+        // (workload-auth §7 step 2).
+        if s.connection_revoked(client_id) {
+            return Err(CommandResult::Error {
+                code: ErrorCode::PermissionDenied,
+                message: "permission denied".to_owned(),
+            });
+        }
         let local = match s.resolve_resource(terminal_id) {
             Resolved::Remote(_) => {
                 return Err(CommandResult::Error {
@@ -4215,6 +4909,9 @@ pub(crate) fn with_route_input_destination<R>(
             Resolved::Local(local) => local,
         };
         let pane = local.id;
+        if s.retained_exit(pane).is_some() {
+            return Err(exited_input_refusal());
+        }
         if s.input_blocked(pane, client_id) {
             debug!(
                 ?client_id,
@@ -4233,6 +4930,15 @@ pub(crate) fn with_route_input_destination<R>(
             .clone();
         Ok(action(InputDestination { pane, handle }))
     })
+}
+
+/// Input to a Terminal whose process exited and which is retained read-only
+/// (ADR-0124): nothing was written, as for a pane with no PTY (L1 §6.2.1).
+fn exited_input_refusal() -> CommandResult {
+    CommandResult::Error {
+        code: ErrorCode::InputNotWritten,
+        message: "the pane's process exited; it is retained read-only".to_owned(),
+    }
 }
 
 pub(crate) fn terminal_input_from_event(event: InputEvent) -> Result<TerminalInput, CommandResult> {
@@ -4306,22 +5012,29 @@ enum AcquireOutcome {
         handle: Box<ResourceHandle>,
         /// `Acquired` (was free / self) or `Seized` (preempted another).
         action: ControlAction,
+        /// The internal id, for arming the TTL timer below.
+        core: phux_core::ids::ResourceId,
+        /// The generation `ServerState::refresh_input_lease_expiry` just
+        /// recorded, paired with the `ttl_ms` that produced it — `None`
+        /// when the caller asked for no TTL (`0`, today's behaviour).
+        expiry: Option<(u32, u64)>,
     },
 }
 
 /// Handle `ACQUIRE_INPUT` (ADR-0033, "take the wheel"): assert an exclusive
 /// input lease over a pane. `Cooperative` mode fails with `InputLeaseHeld`
 /// when another client holds it; `Seize` preempts. On grant, broadcasts a
-/// `TerminalControl` event so every subscriber re-renders who has the wheel.
-///
-/// `ttl_ms` is advisory in this server: the lease is held until the holder
-/// releases it or its connection drops (see [`crate::state::ServerState::detach`]).
+/// `TerminalControl` event so every subscriber re-renders who has the
+/// wheel, and — this lane — arms `ttl_ms` (`0` = never, today's
+/// behaviour): a server timer that releases the lease and broadcasts
+/// `Expired` unless something else changes it first (see
+/// `spawn_input_lease_expiry`).
 pub(crate) async fn handle_acquire_input(
     state: &SharedState,
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
     mode: InputMode,
-    _ttl_ms: u32,
+    ttl_ms: u32,
 ) -> CommandResult {
     // No satellite guard here (phux-v45.11 finding 5): `route_to_satellite`
     // intercepts every satellite-tagged ACQUIRE_INPUT in `handle_command`
@@ -4350,9 +5063,20 @@ pub(crate) async fn handle_acquire_input(
             Some(holder) if holder != client_id => ControlAction::Seized,
             _ => ControlAction::Acquired,
         };
+        // Every grant — a fresh acquire, a Seize, or the same client
+        // re-acquiring — re-arms the TTL at the newly requested `ttl_ms`,
+        // superseding whatever the pane's prior expiry tracking was
+        // (`refresh_input_lease_expiry` always invalidates it first). A
+        // Seize resetting the TTL to the new holder's value falls out of
+        // this without a separate case.
+        let expiry = s
+            .refresh_input_lease_expiry(core, ttl_ms != 0)
+            .map(|generation| (ttl_ms, generation));
         AcquireOutcome::Granted {
             handle: Box::new(handle),
             action,
+            core,
+            expiry,
         }
     });
     match outcome {
@@ -4365,17 +5089,169 @@ pub(crate) async fn handle_acquire_input(
             code: ErrorCode::InputLeaseHeld,
             message: format!("input lease held by client {}", holder.0),
         },
-        AcquireOutcome::Granted { handle, action } => {
+        AcquireOutcome::Granted {
+            handle,
+            action,
+            core,
+            expiry,
+        } => {
             let _ = handle
                 .control
                 .send(ControlRequest::LeaseChanged {
                     input_holder: Some(wire_client_id(client_id)),
                     action,
-                    actor: wire_client_id(client_id),
+                    actor: Some(wire_client_id(client_id)),
                 })
                 .await;
+            if let Some((ttl_ms, generation)) = expiry {
+                spawn_input_lease_expiry(state, core, generation, ttl_ms);
+            }
             CommandResult::Ok
         }
+    }
+}
+
+/// Schedule the timer that expires `terminal`'s input lease after `ttl_ms`
+/// (ADR-0033's `ttl_ms`, no longer advisory in this lane).
+///
+/// Spawned with `spawn_local`: the whole server runs on one `LocalSet`
+/// (ADR-0014), and this is called from a per-client command task already
+/// running on it. The task always wakes on schedule; whether it *does*
+/// anything depends on `generation` still matching what
+/// [`crate::state::ServerState::refresh_input_lease_expiry`] last recorded
+/// for `terminal` when the sleep resolves. Any acquire, release, or
+/// disconnect teardown for that pane between now and then bumps that
+/// generation and aborts this task outright (see `state::lease_table`), so
+/// a superseded timer does not linger sleeping out a TTL nobody cares
+/// about any more (review round 2: repeated re-arms, e.g. a Cooperative
+/// re-acquire or a hub consumer relaying `ttl_ms`, used to accumulate one
+/// live task per grant). The generation check below is the belt to that
+/// abort's suspenders: it covers the brief window between this task
+/// spawning and its handle being attached (below), during which an abort
+/// cannot reach it yet — the same "trust reality over the sleep, checked
+/// under the lock" discipline `spawn_idle_exit_watchdog` uses. Together
+/// they keep a TTL racing a release/seize/disconnect to exactly one
+/// `terminal_control`: only the generation that is still current when the
+/// lock is taken ever acts, and every other copy is dead well before then.
+fn spawn_input_lease_expiry(
+    state: &SharedState,
+    terminal: phux_core::ids::ResourceId,
+    generation: u64,
+    ttl_ms: u32,
+) {
+    // A clone for the spawned task; `state` itself is still needed below,
+    // after the spawn, to attach this task's abort handle.
+    let task_state = state.clone();
+    #[cfg(test)]
+    let counter = state.with(crate::state::ServerState::input_lease_expiry_task_counter);
+    let join = tokio::task::spawn_local(async move {
+        #[cfg(test)]
+        let _live = LiveExpiryTaskGuard::new(counter);
+        tokio::time::sleep(std::time::Duration::from_millis(u64::from(ttl_ms))).await;
+        let expired = task_state.with_mut(|s| {
+            if !s.input_lease_expiry_is_current(terminal, generation) {
+                return None;
+            }
+            // Not `refresh_input_lease_expiry`: that aborts, and this is
+            // the timer aborting *itself* on its own legitimate firing —
+            // unsafe this late (see `clear_input_lease_expiry`'s doc).
+            s.clear_input_lease_expiry(terminal);
+            let holder = s.input_lease_holder(terminal)?;
+            s.release_input_lease(terminal, holder);
+            s.resource_handle(terminal).cloned()
+        });
+        let Some(handle) = expired else {
+            return;
+        };
+        let _ = handle
+            .control
+            .send(ControlRequest::LeaseChanged {
+                input_holder: None,
+                action: ControlAction::Expired,
+                actor: None,
+            })
+            .await;
+    });
+    // Hand the ledger this task's abort handle so a later
+    // acquire/release/disconnect for this pane can kill it outright
+    // instead of leaving it to sleep out its full `ttl_ms` as dead weight.
+    // `false` means something already superseded `generation` in the gap
+    // between minting it and getting here: this task is already stale by
+    // the check above, so abort it now rather than at its own deadline.
+    let abort = join.abort_handle();
+    let attached =
+        state.with_mut(|s| s.attach_input_lease_expiry_abort(terminal, generation, abort.clone()));
+    if !attached {
+        abort.abort();
+    }
+}
+
+/// Live-timer-task counter guard for [`spawn_input_lease_expiry`]'s
+/// regression test (`lease_expiry_task_tests` below): increments on
+/// construction, decrements on drop — including a drop forced by
+/// `AbortHandle::abort()`, since that drops the task's future (and every
+/// local it is holding) at its next `Pending` poll. Exists only under
+/// `cfg(test)`; production builds never allocate or touch the counter.
+#[cfg(test)]
+struct LiveExpiryTaskGuard(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+#[cfg(test)]
+impl LiveExpiryTaskGuard {
+    fn new(counter: std::sync::Arc<std::sync::atomic::AtomicUsize>) -> Self {
+        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+#[cfg(test)]
+impl Drop for LiveExpiryTaskGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+#[cfg(test)]
+mod lease_expiry_task_tests {
+    use super::*;
+
+    /// Review round 2's medium finding: every armed grant spawned a fresh
+    /// timer task, and a superseded one kept sleeping until its own
+    /// deadline instead of being cancelled — repeated re-arms (a
+    /// Cooperative re-acquire, or a hub consumer relaying `ttl_ms` to a
+    /// satellite) would accumulate one live task per grant, for as long as
+    /// the longest `ttl_ms` any of them asked for. `refresh_input_lease_
+    /// expiry` now aborts the entry it is about to supersede, so no more
+    /// than one timer task should ever be alive for a pane's lease.
+    #[tokio::test(flavor = "current_thread")]
+    async fn rearming_a_lease_repeatedly_leaves_at_most_one_live_timer_task() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let core = state.with_mut(|s| s.seed_session("default")).2;
+                let counter =
+                    state.with(crate::state::ServerState::input_lease_expiry_task_counter);
+
+                for _ in 0..20 {
+                    let generation = state
+                        .with_mut(|s| s.refresh_input_lease_expiry(core, true))
+                        .expect("scheduled");
+                    spawn_input_lease_expiry(&state, core, generation, 60_000);
+                    // Give the freshly spawned task a tick to run to its
+                    // first await (registering its abort handle) and any
+                    // just-aborted predecessor a tick to unwind and drop
+                    // its guard, before the next re-arm supersedes it.
+                    tokio::task::yield_now().await;
+                    tokio::task::yield_now().await;
+                }
+
+                assert!(
+                    counter.load(std::sync::atomic::Ordering::SeqCst) <= 1,
+                    "20 re-arms must not leave more than one live timer task, got {}",
+                    counter.load(std::sync::atomic::Ordering::SeqCst)
+                );
+            })
+            .await;
     }
 }
 
@@ -4405,7 +5281,15 @@ pub(crate) async fn handle_release_input(
         if let Err(error) = handle.terminal() {
             return Released::WrongKind(error);
         }
-        Released::Ok(handle, s.release_input_lease(core, client_id))
+        let did_release = s.release_input_lease(core, client_id);
+        if did_release {
+            // Cancel this pane's TTL along with the lease itself (this
+            // lane): the timer a prior ACQUIRE_INPUT armed no longer names
+            // a live lease, and a stale wake must find that out rather
+            // than expire a pane that is already `Open`.
+            s.refresh_input_lease_expiry(core, false);
+        }
+        Released::Ok(handle, did_release)
     });
     match released {
         Released::NotFound => CommandResult::Error {
@@ -4420,7 +5304,7 @@ pub(crate) async fn handle_release_input(
                     .send(ControlRequest::LeaseChanged {
                         input_holder: None,
                         action: ControlAction::Released,
-                        actor: wire_client_id(client_id),
+                        actor: Some(wire_client_id(client_id)),
                     })
                     .await;
             }
@@ -4438,6 +5322,8 @@ pub(crate) async fn handle_signal_terminal(
     client_id: ClientId,
     terminal_id: &phux_protocol::ids::ResourceId,
     signal: TerminalSignal,
+    operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+    commit: Option<&super::operation_dedupe::OperationClaim>,
 ) -> CommandResult {
     let resolved = state.with(|s| {
         let resolved = s.resolve_resource(terminal_id).into_owned();
@@ -4467,24 +5353,32 @@ pub(crate) async fn handle_signal_terminal(
     if let Err(error) = handle.terminal() {
         return wrong_resource_kind(error);
     }
+    // ADR-0124: a retained pane's child is already reaped; there is nothing
+    // to signal. `KILL_RESOURCE` is how it is purged.
+    if state.with(|s| {
+        s.terminal_from_wire(terminal_id)
+            .is_some_and(|pane| s.retained_exit(pane).is_some())
+    }) {
+        return CommandResult::Error {
+            code: ErrorCode::InvalidCommand,
+            message: format!("{terminal_id} exited; its process cannot be signalled"),
+        };
+    }
     let (reply_tx, reply_rx) = oneshot::channel();
-    if handle
-        .control
-        .send(ControlRequest::Signal {
-            signal,
-            input_holder,
-            by: wire_client_id(client_id),
-            reply: reply_tx,
-        })
-        .await
-        .is_err()
-    {
+    let request = ControlRequest::Signal {
+        signal,
+        input_holder,
+        by: wire_client_id(client_id),
+        operation_id,
+        reply: reply_tx,
+    };
+    if !commit_signal(&handle.control, request, commit).await {
         return CommandResult::Error {
             code: ErrorCode::InternalError,
             message: "pane actor unavailable for SIGNAL_TERMINAL".to_owned(),
         };
     }
-    match reply_rx.await {
+    let result = match reply_rx.await {
         Ok(Ok(())) => CommandResult::Ok,
         Ok(Err(msg)) => CommandResult::Error {
             code: ErrorCode::InternalError,
@@ -4494,7 +5388,45 @@ pub(crate) async fn handle_signal_terminal(
             code: ErrorCode::InternalError,
             message: "pane actor dropped SIGNAL_TERMINAL reply".to_owned(),
         },
+    };
+    record_signal_failure(commit, &result);
+    result
+}
+
+/// A queued signal whose actor reported failure, or dropped its reply, was
+/// not delivered. Replace the success its key was committed with on
+/// queueing, so a retry answers that failure instead of a false `OK`
+/// (L1 §5.1.1). A delivered signal keeps the committed success.
+fn record_signal_failure(
+    commit: Option<&super::operation_dedupe::OperationClaim>,
+    result: &CommandResult,
+) {
+    if let (Some(claim), CommandResult::Error { .. }) = (commit, result) {
+        claim.bind(&super::operation_dedupe::CachedOutcome::Signal(
+            result.clone(),
+        ));
     }
+}
+
+/// Queue a signal on its pane's actor and commit its key the moment it is
+/// queued (L1 §5.1.1). The actor delivers a queued signal whether or not
+/// this handler lives to read the reply, so a connection cancelled between
+/// the send and the reply must not release the key for a second delivery.
+/// `false` when the actor is gone and nothing was queued.
+async fn commit_signal(
+    control: &tokio::sync::mpsc::Sender<ControlRequest>,
+    request: ControlRequest,
+    commit: Option<&super::operation_dedupe::OperationClaim>,
+) -> bool {
+    if control.send(request).await.is_err() {
+        return false;
+    }
+    if let Some(claim) = commit {
+        claim.bind(&super::operation_dedupe::CachedOutcome::Signal(
+            CommandResult::Ok,
+        ));
+    }
+    true
 }
 
 /// Feed integration-hook lifecycle evidence into a pane (ADR-0085), by the
@@ -4947,6 +5879,15 @@ pub(crate) fn with_attached_input_destination<R>(
     action: impl FnOnce(InputDestination) -> R,
 ) -> Option<R> {
     state.with_mut(|s| {
+        // Input queued on the lane before a revocation is not delivered
+        // after it (workload-auth §7 step 2).
+        if s.connection_revoked(client_id) {
+            trace!(
+                ?client_id,
+                frame_label, "input from a revoked connection dropped"
+            );
+            return None;
+        }
         let local = match s.resolve_resource(wire_terminal_id).into_owned() {
             ResolvedOwned::Local(local) => local,
             ResolvedOwned::Remote(_) | ResolvedOwned::Unknown => {
@@ -4960,6 +5901,15 @@ pub(crate) fn with_attached_input_destination<R>(
             }
         };
         let pane = local.id;
+        if s.retained_exit(pane).is_some() {
+            trace!(
+                ?client_id,
+                ?wire_terminal_id,
+                frame_label,
+                "input dropped: the pane's process exited (retained read-only)"
+            );
+            return None;
+        }
         if !s.subscribers_for_terminal(pane).contains(&client_id) {
             warn!(
                 ?client_id,
@@ -5712,5 +6662,209 @@ mod host_inventory_tests {
             ]);
         let row = satellite_host_inventory(&SatelliteHost::from("edge"), &sat);
         assert_eq!(row.sessions[0].active_resource, None);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic, reason = "tests")]
+mod kill_merge_tests {
+    use super::*;
+    use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
+    use crate::runtime::keyed_ops::{KeyedAdmission, admit};
+    use phux_protocol::ids::{IdempotencyKey, ResourceId, SatelliteHost};
+    use phux_protocol::wire::frame::CommandValue;
+
+    /// A hub whose satellite `up` has a live link, answered by the test, and
+    /// whose satellite `down` has none.
+    fn hub() -> (SharedState, ClientId, RelayMailbox) {
+        let state = SharedState::new();
+        let client = state.with_mut(crate::state::ServerState::new_client_id);
+        let relays = HubRelays::default();
+        let (up, up_mailbox) = RelayHandle::new(SatelliteHost::new("up"));
+        let (down, down_mailbox) = RelayHandle::new(SatelliteHost::new("down"));
+        drop(down_mailbox);
+        relays.insert(up);
+        relays.insert(down);
+        state.with_mut(|s| s.set_hub_relays(relays));
+        (state, client, up_mailbox)
+    }
+
+    fn outcomes(result: CommandResult) -> serde_json::Value {
+        let CommandResult::OkWith(CommandValue::Json(document)) = result else {
+            panic!("a keyed batch answers per-id outcomes, got {result:?}");
+        };
+        serde_json::from_str(&document).expect("json")
+    }
+
+    /// L1 §5.2: a keyed batch split across hosts awaits every host, and is
+    /// keyed at every hop: the satellite's own per-id outcome is merged, so a
+    /// stale satellite id is `not_found`, not `killed`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn kill_resources_across_hosts_merges_results_instead_of_fire_and_forget() {
+        let (state, client, mut up) = hub();
+        let satellite = tokio::spawn(async move {
+            let Some(RelayRequest::Keyed { command, reply, .. }) = up.requests.recv().await else {
+                panic!("the keyed batch reaches the satellite's link");
+            };
+            let _ = reply.send(CommandResult::OkWith(CommandValue::Json(
+                r#"{"schema_version":1,"killed":["@3"],"not_found":["@5"],"failed":[]}"#.to_owned(),
+            )));
+            command
+        });
+
+        let key = IdempotencyKey::new([9; 16]);
+        let ids = [
+            ResourceId::local(77),
+            ResourceId::satellite("up", 3),
+            ResourceId::satellite("up", 5),
+            ResourceId::satellite("down", 4),
+        ];
+        let result = handle_kill_terminals(&state, client, &ids, key).await;
+        assert_eq!(
+            satellite.await.expect("satellite task"),
+            Command::KillResources {
+                ids: vec![ResourceId::local(3), ResourceId::local(5)],
+                operation_id: key,
+            },
+            "each host gets its own ids, under the batch's key"
+        );
+        let document = outcomes(result);
+        assert_eq!(document["killed"], serde_json::json!(["up/@3"]));
+        assert_eq!(
+            document["not_found"],
+            serde_json::json!(["@77", "up/@5"]),
+            "a stale satellite id is not reported killed"
+        );
+        assert_eq!(document["failed"][0]["id"], "down/@4");
+        assert_eq!(
+            document["failed"][0]["code"],
+            ErrorCode::SatelliteUnreachable.as_wire()
+        );
+
+        assert_eq!(
+            outcomes(
+                handle_kill_terminals(
+                    &state,
+                    client,
+                    &[ResourceId::local(78)],
+                    IdempotencyKey::new([10; 16]),
+                )
+                .await
+            )["not_found"],
+            serde_json::json!(["@78"]),
+            "what a satellite answers a keyed batch naming a stale id"
+        );
+    }
+
+    /// An unkeyed batch keeps the reply every older client understands: it
+    /// awaits every host, and answers `OK` even when one could not be reached.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unkeyed_cross_host_batch_keeps_its_ok_reply() {
+        let (state, client, mut up) = hub();
+        let satellite = tokio::spawn(async move {
+            let Some(RelayRequest::Command { command, reply, .. }) = up.requests.recv().await
+            else {
+                panic!("the unkeyed batch relays as a plain command");
+            };
+            let _ = reply.send(CommandResult::Ok);
+            command
+        });
+        let ids = [
+            ResourceId::satellite("up", 3),
+            ResourceId::satellite("down", 4),
+        ];
+        assert_eq!(
+            handle_kill_terminals(&state, client, &ids, None).await,
+            CommandResult::Ok
+        );
+        assert_eq!(
+            satellite.await.expect("satellite task"),
+            Command::KillResources {
+                ids: vec![ResourceId::local(3)],
+                operation_id: None,
+            }
+        );
+    }
+
+    /// L1 §5.1.1: a keyed signal is committed once it is queued on the
+    /// actor. A connection cancelled before the reply does not release the
+    /// key, so the retry answers the first result and nothing is delivered
+    /// twice.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_keyed_signal_cancelled_before_its_reply_is_delivered_once() {
+        let state = SharedState::new();
+        let key = IdempotencyKey::new([4; 16]);
+        let command = Command::SignalTerminal {
+            terminal_id: ResourceId::local(3),
+            signal: TerminalSignal::Interrupt,
+            operation_id: key,
+        };
+        let KeyedAdmission::Owner(claim) = admit(&state, &command).await else {
+            panic!("the first attempt owns the key");
+        };
+        let (control, mut actor) = tokio::sync::mpsc::channel(4);
+        let (reply, reply_rx) = oneshot::channel();
+        let request = ControlRequest::Signal {
+            signal: TerminalSignal::Interrupt,
+            input_holder: None,
+            by: phux_protocol::ClientId::new(1),
+            operation_id: key,
+            reply,
+        };
+        assert!(commit_signal(&control, request, Some(&claim)).await);
+        // The connection is cancelled (revoked, say) before the actor answers.
+        drop(reply_rx);
+        drop(claim);
+        assert!(
+            matches!(
+                admit(&state, &command).await,
+                KeyedAdmission::Answer(CommandResult::Ok)
+            ),
+            "the retry answers the committed signal instead of sending it again"
+        );
+        assert!(actor.try_recv().is_ok(), "the first attempt was queued");
+        assert!(actor.try_recv().is_err(), "and nothing else was");
+    }
+
+    /// A keyed signal committed on queueing whose delivery then failed
+    /// answers that failure on retry, never the committed `OK`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_keyed_signal_that_was_not_delivered_answers_its_failure_on_retry() {
+        let state = SharedState::new();
+        let key = IdempotencyKey::new([5; 16]);
+        let command = Command::SignalTerminal {
+            terminal_id: ResourceId::local(3),
+            signal: TerminalSignal::Interrupt,
+            operation_id: key,
+        };
+        let KeyedAdmission::Owner(claim) = admit(&state, &command).await else {
+            panic!("the first attempt owns the key");
+        };
+        let (control, _actor) = tokio::sync::mpsc::channel(4);
+        let (reply, _reply_rx) = oneshot::channel();
+        let request = ControlRequest::Signal {
+            signal: TerminalSignal::Interrupt,
+            input_holder: None,
+            by: phux_protocol::ClientId::new(1),
+            operation_id: key,
+            reply,
+        };
+        assert!(commit_signal(&control, request, Some(&claim)).await);
+        let failure = CommandResult::Error {
+            code: ErrorCode::InternalError,
+            message: "no PTY child to signal".to_owned(),
+        };
+        record_signal_failure(Some(&claim), &failure);
+        crate::runtime::keyed_ops::settle(Some(claim), &failure);
+        assert!(
+            matches!(
+                admit(&state, &command).await,
+                KeyedAdmission::Answer(CommandResult::Error {
+                    code: ErrorCode::InternalError,
+                    ..
+                })
+            ),
+            "the retry answers the failure, not a false OK"
+        );
     }
 }

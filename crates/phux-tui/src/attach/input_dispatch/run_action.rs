@@ -400,6 +400,7 @@ fn signal_terminal(
         command: Command::SignalTerminal {
             terminal_id: focused_id,
             signal,
+            operation_id: None,
         },
     });
 }
@@ -1181,6 +1182,7 @@ fn open_satellite_session(
         request_id,
         command: Command::AttachResource {
             terminal_id: target,
+            role_policy: crate::attach::attach_role::pane_attach_role(),
         },
     });
 }

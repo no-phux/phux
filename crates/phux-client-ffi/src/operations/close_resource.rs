@@ -69,6 +69,67 @@ pub unsafe extern "C" fn phux_client_queue_close_resources(
     terminal_ids: *const PhuxResourceId,
     count: usize,
 ) -> PhuxClientResult {
+    // SAFETY: same readable-array contract as documented on this symbol.
+    unsafe {
+        queue_close_batch(client, request_id, terminal_ids, count, |ids| {
+            Command::KillResources {
+                ids,
+                operation_id: None,
+            }
+        })
+    }
+}
+
+/// Queue one all-or-nothing local `CLOSE_TAB_RESOURCES` after the same owner
+/// checks as [`phux_client_queue_close_resources`].
+///
+/// The batch result is still kind 6. Keep-empty on a fully covered session
+/// is preserved (L1 §5.2.2). Satellite IDs are refused for the same reason
+/// as `queue_close_resources`. Success still requires command Ok and
+/// `RESOURCE_CLOSED` for every captured ID.
+///
+/// # Safety
+/// As for `phux_client_queue_close_resources`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_queue_close_tab_resources(
+    client: *mut PhuxClient,
+    request_id: u32,
+    terminal_ids: *const PhuxResourceId,
+    count: usize,
+) -> PhuxClientResult {
+    // SAFETY: same readable-array contract as documented on this symbol.
+    unsafe {
+        queue_close_batch(client, request_id, terminal_ids, count, |ids| {
+            Command::CloseTabResources { ids }
+        })
+    }
+}
+
+/// Whether `HELLO_OK` advertised `CLOSE_TAB_RESOURCES`.
+///
+/// # Safety
+/// Client is live and unmodified for the call; `out_supported` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_close_tab_resources_supported(
+    client: *const PhuxClient,
+    out_supported: *mut bool,
+) -> PhuxClientResult {
+    super::with_client_ref(client, |client| {
+        // SAFETY: caller supplies a writable output when non-null.
+        let out = unsafe { out_supported.as_mut() }
+            .ok_or_else(|| BridgeError::invalid("supported output is null"))?;
+        *out = client.close_tab_resources;
+        Ok(())
+    })
+}
+
+unsafe fn queue_close_batch(
+    client: *mut PhuxClient,
+    request_id: u32,
+    terminal_ids: *const PhuxResourceId,
+    count: usize,
+    command: impl FnOnce(Vec<ResourceId>) -> Command,
+) -> PhuxClientResult {
     with_client_mut(client, |client| {
         client.ensure_attached()?;
         ensure_queue_capacity(client, request_id)?;
@@ -76,7 +137,7 @@ pub unsafe extern "C" fn phux_client_queue_close_resources(
         let ids = unsafe { close_ids_in(client, terminal_ids, count) }?;
         client.queue_frame(&FrameKind::Command {
             request_id,
-            command: Command::KillResources { ids: ids.clone() },
+            command: command(ids.clone()),
         })?;
         client
             .operations
@@ -161,9 +222,11 @@ fn close_command(client: &Client, id: &ResourceId) -> Result<Command, BridgeErro
                 instance: Some(*instance),
                 conditions: KillConditions::NONE,
             },
+            operation_id: None,
         }),
         (ResourceId::Local { .. }, None) => Ok(Command::KillResource {
             terminal_id: id.clone(),
+            operation_id: None,
         }),
         (ResourceId::Satellite { .. }, None) => Err(BridgeError::state(
             "satellite close requires an instance-bound resource; no safe incarnation fence",

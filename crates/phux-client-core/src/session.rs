@@ -374,6 +374,11 @@ pub enum KernelSend {
         /// through the hub (`docs/spec/L1.md` §7.5,
         /// `phux-server::runtime::client::handle_subscribe_events`).
         terminal: Option<ResourceId>,
+        /// Journal cursor (`SUBSCRIBE_EVENTS.after_seq`, ADR-0123). `None`
+        /// is the live-only subscription every client without a resume
+        /// cursor sends. The kernel emits `None` on attach; a host that is
+        /// catching up supplies a cursor on the FFI subscribe path.
+        after_seq: Option<u64>,
     },
 }
 
@@ -2283,6 +2288,7 @@ impl<E: EngineAdapter> SessionKernel<E> {
         attach.released = true;
         effects.push(KernelEffect::Send(KernelSend::SubscribeEvents {
             terminal: None,
+            after_seq: None,
         }));
         for participant in &attach.terminals {
             if participant.pending_removal {

@@ -300,6 +300,7 @@ pub async fn spawn_with_agent_session(
                     request_id.wrapping_add(4),
                     Command::KillResource {
                         terminal_id: terminal.clone(),
+                        operation_id: None,
                     },
                 )
                 .await;
@@ -362,6 +363,7 @@ pub async fn confirm_agent_session_record_on(
                 request_id.wrapping_add(3),
                 Command::KillResource {
                     terminal_id: terminal.clone(),
+                    operation_id: None,
                 },
             )
             .await;
@@ -488,7 +490,7 @@ mod tests {
             seen.iter().any(|frame| matches!(
                 frame,
                 FrameKind::Command {
-                    command: Command::KillResource { terminal_id },
+                    command: Command::KillResource { terminal_id, .. },
                     ..
                 } if *terminal_id == ResourceId::local(9)
             )),

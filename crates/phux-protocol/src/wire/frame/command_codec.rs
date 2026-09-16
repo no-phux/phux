@@ -3,7 +3,7 @@
 
 use bytes::BytesMut;
 
-use crate::ids::{ClientId, FileUploadId, GroupId, InputOperationId, ResourceKind};
+use crate::ids::{ClientId, FileUploadId, GroupId, IdempotencyKey, InputOperationId, ResourceKind};
 use crate::input::InputEvent;
 use crate::wire::decode::Decoder;
 use crate::wire::encode::Encoder;
@@ -15,29 +15,30 @@ use crate::wire::info::{
 
 use super::codec::encode_optional_u32;
 use super::{
-    AgentEvent, COMMAND_RESULT_TAG_ERROR, COMMAND_RESULT_TAG_OK, COMMAND_RESULT_TAG_OK_WITH,
-    COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT, COMMAND_TAG_APPLY_INPUT,
-    COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE,
-    COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE,
-    COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF,
-    COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PUT_FILE,
-    COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED,
-    COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL,
-    COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE,
-    COMMAND_VALUE_TAG_BYTES, COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID,
-    COMMAND_VALUE_TAG_JSON, COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command,
-    CommandResult, CommandValue, ControlAction, EVENT_TAG_ASKED, EVENT_TAG_BELL,
-    EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY,
-    EVENT_TAG_IDLE, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED,
-    EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, ErrorCode,
-    FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY, INPUT_EVENT_TAG_MOUSE,
-    INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition, ListenerTransport,
-    MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
-    MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType, ResourceLifecycle,
-    STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event, decode_key_event,
-    decode_mouse_event, decode_optional_u32, decode_paste_event, decode_terminal_id,
-    encode_focus_event, encode_key_event, encode_mouse_event, encode_paste_event,
-    encode_terminal_id,
+    AgentEvent, ApprovalOutcome, COMMAND_RESULT_TAG_ERROR, COMMAND_RESULT_TAG_OK,
+    COMMAND_RESULT_TAG_OK_WITH, COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT,
+    COMMAND_TAG_APPLY_INPUT, COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_CLOSE_TAB_RESOURCES,
+    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_PERF,
+    COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
+    COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES,
+    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT,
+    COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT,
+    COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS,
+    COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE, COMMAND_VALUE_TAG_BYTES,
+    COMMAND_VALUE_TAG_FILE_UPLOAD, COMMAND_VALUE_TAG_GROUP_ID, COMMAND_VALUE_TAG_JSON,
+    COMMAND_VALUE_TAG_RESOURCE_ID, COMMAND_VALUE_TAG_STATE, Command, CommandResult, CommandValue,
+    ControlAction, EVENT_TAG_APPROVAL_DECIDED, EVENT_TAG_APPROVAL_REQUESTED, EVENT_TAG_ASKED,
+    EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
+    EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
+    EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_SOURCE_GAP, EVENT_TAG_TERMINAL_CONTROL,
+    EVENT_TAG_TITLE_CHANGED, ErrorCode, FileUploadAck, INPUT_EVENT_TAG_FOCUS, INPUT_EVENT_TAG_KEY,
+    INPUT_EVENT_TAG_MOUSE, INPUT_EVENT_TAG_PASTE, InputMode, KillConditions, KillPrecondition,
+    ListenerTransport, MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS,
+    MAX_FILE_UPLOAD_CHUNK, MAX_FILE_UPLOAD_SIZE, ReportedAgentState, ResourceEventType,
+    ResourceLifecycle, STATE_SCOPE_TAG_SERVER, StateScope, TerminalSignal, decode_focus_event,
+    decode_key_event, decode_mouse_event, decode_optional_u32, decode_paste_event,
+    decode_terminal_id, encode_focus_event, encode_key_event, encode_mouse_event,
+    encode_paste_event, encode_terminal_id,
 };
 
 // -----------------------------------------------------------------------------
@@ -60,25 +61,37 @@ use super::{
 )]
 pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) {
     match command {
-        Command::AttachResource { terminal_id } => {
+        Command::AttachResource {
+            terminal_id,
+            role_policy,
+        } => {
             enc.write_u8(COMMAND_TAG_ATTACH_RESOURCE);
             encode_terminal_id(terminal_id, enc);
+            if let Some(policy) = role_policy {
+                enc.write_u8(policy.to_u8());
+            }
         }
         Command::DetachResource { terminal_id } => {
             enc.write_u8(COMMAND_TAG_DETACH_RESOURCE);
             encode_terminal_id(terminal_id, enc);
         }
-        Command::KillResource { terminal_id } => {
+        Command::KillResource {
+            terminal_id,
+            operation_id,
+        } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCE);
             encode_terminal_id(terminal_id, enc);
+            encode_trailing_key(operation_id.as_ref(), enc);
         }
         Command::KillResourceIf {
             terminal_id,
             precondition,
+            operation_id,
         } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCE_IF);
             encode_terminal_id(terminal_id, enc);
             encode_kill_precondition(precondition, enc);
+            encode_trailing_key(operation_id.as_ref(), enc);
         }
         Command::GetState { scope } => {
             enc.write_u8(COMMAND_TAG_GET_STATE);
@@ -88,11 +101,13 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
             terminal_id,
             request_scrollback,
             cells,
+            format,
         } => {
             enc.write_u8(COMMAND_TAG_GET_SCREEN);
             encode_terminal_id(terminal_id, enc);
             encode_optional_u32(*request_scrollback, enc);
             enc.write_u8(u8::from(*cells));
+            enc.write_u8(*format);
         }
         Command::RouteInput { terminal_id, event } => {
             enc.write_u8(COMMAND_TAG_ROUTE_INPUT);
@@ -114,16 +129,14 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
                 encode_input_event(event, enc);
             }
         }
-        Command::KillResources { ids } => {
+        Command::KillResources { ids, operation_id } => {
             enc.write_u8(COMMAND_TAG_KILL_RESOURCES);
-            // Length-prefixed list: u16 count, then each tagged ResourceId.
-            // u16 is ample — a single kill-group never approaches 65 535
-            // panes — and matches the count-prefix width used elsewhere
-            // (e.g. `SubscribeResourceEvents.event_types`).
-            enc.write_u16_be(u16::try_from(ids.len()).unwrap_or(u16::MAX));
-            for id in ids {
-                encode_terminal_id(id, enc);
-            }
+            encode_resource_ids(ids, enc);
+            encode_trailing_key(operation_id.as_ref(), enc);
+        }
+        Command::CloseTabResources { ids } => {
+            enc.write_u8(COMMAND_TAG_CLOSE_TAB_RESOURCES);
+            encode_resource_ids(ids, enc);
         }
         Command::DetachClients { session } => {
             enc.write_u8(COMMAND_TAG_DETACH_CLIENTS);
@@ -208,10 +221,12 @@ pub(in crate::wire) fn encode_command(command: &Command, enc: &mut Encoder<'_>) 
         Command::SignalTerminal {
             terminal_id,
             signal,
+            operation_id,
         } => {
             enc.write_u8(COMMAND_TAG_SIGNAL_TERMINAL);
             encode_terminal_id(terminal_id, enc);
             enc.write_u8(signal.to_u8());
+            encode_trailing_key(operation_id.as_ref(), enc);
         }
         Command::PutFile {
             upload_id,
@@ -371,20 +386,57 @@ fn decode_terminal_subscription_command(
     let command = match tag {
         COMMAND_TAG_ATTACH_RESOURCE => Command::AttachResource {
             terminal_id: decode_terminal_id(dec)?,
+            // A trailing additive byte (ADR-0127), behind the same
+            // `at_body_end` guard as `GET_SCREEN`'s `cells`: a body from
+            // before roles ends after the id, which means `{ PRIMARY, NEVER }`.
+            role_policy: if dec.at_body_end() {
+                None
+            } else {
+                Some(super::RolePolicy::from_u8(dec.read_u8()?))
+            },
         },
         COMMAND_TAG_DETACH_RESOURCE => Command::DetachResource {
             terminal_id: decode_terminal_id(dec)?,
         },
         COMMAND_TAG_KILL_RESOURCE => Command::KillResource {
             terminal_id: decode_terminal_id(dec)?,
+            operation_id: decode_trailing_key(dec)?,
         },
         COMMAND_TAG_KILL_RESOURCE_IF => Command::KillResourceIf {
             terminal_id: decode_terminal_id(dec)?,
             precondition: decode_kill_precondition(dec)?,
+            operation_id: decode_trailing_key(dec)?,
         },
         _ => return Ok(None),
     };
     Ok(Some(command))
+}
+
+/// Write the trailing `operation_id: bytes16` of a keyed supervisory command
+/// (`docs/spec/L1.md` §5.1.1), or nothing for an unkeyed one, so an unkeyed
+/// body is byte-identical to what an encoder before the field wrote.
+fn encode_trailing_key(key: Option<&IdempotencyKey>, enc: &mut Encoder<'_>) {
+    if let Some(key) = key {
+        for byte in key.as_bytes() {
+            enc.write_u8(*byte);
+        }
+    }
+}
+
+/// Read the trailing `operation_id` only when bytes remain in the command
+/// body, the `GET_SCREEN` rule: a body that ends before it is unkeyed. A
+/// present key must be 16 non-zero bytes.
+fn decode_trailing_key(dec: &mut Decoder<'_>) -> Result<Option<IdempotencyKey>, DecodeError> {
+    if dec.at_body_end() {
+        return Ok(None);
+    }
+    let mut bytes = [0; 16];
+    for byte in &mut bytes {
+        *byte = dec.read_u8()?;
+    }
+    IdempotencyKey::new(bytes)
+        .map(Some)
+        .ok_or(DecodeError::InvalidIdempotencyKey)
 }
 
 /// Write a `KILL_RESOURCE_IF` precondition: an `Option` tag, the 16 instance
@@ -500,7 +552,13 @@ fn decode_session_command(tag: u8, dec: &mut Decoder<'_>) -> Result<Option<Comma
         COMMAND_TAG_GET_STATE => Command::GetState {
             scope: decode_state_scope(dec)?,
         },
-        COMMAND_TAG_KILL_RESOURCES => decode_kill_terminals_command(dec)?,
+        COMMAND_TAG_KILL_RESOURCES => Command::KillResources {
+            ids: decode_resource_ids(dec)?,
+            operation_id: decode_trailing_key(dec)?,
+        },
+        COMMAND_TAG_CLOSE_TAB_RESOURCES => Command::CloseTabResources {
+            ids: decode_resource_ids(dec)?,
+        },
         COMMAND_TAG_DETACH_CLIENTS => decode_detach_clients_command(dec)?,
         COMMAND_TAG_UPGRADE => Command::Upgrade,
         COMMAND_TAG_SHUTDOWN => Command::Shutdown,
@@ -545,10 +603,15 @@ fn decode_get_screen_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeErr
     } else {
         dec.read_u8()? != 0
     };
+    // `format` is a second trailing additive byte, following the same
+    // `at_body_end` guard as `cells` immediately above it: a pre-D9 body
+    // ends after `cells`, so an absent byte means `0` (no rendering).
+    let format = if dec.at_body_end() { 0 } else { dec.read_u8()? };
     Ok(Command::GetScreen {
         terminal_id,
         request_scrollback,
         cells,
+        format,
     })
 }
 
@@ -583,13 +646,24 @@ fn decode_apply_input_command(
     })
 }
 
-fn decode_kill_terminals_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
+/// Length-prefixed list: u16 count, then each tagged `ResourceId`. u16 is
+/// ample — a single close-group never approaches 65 535 panes — and matches
+/// the count-prefix width used elsewhere (e.g.
+/// `SubscribeResourceEvents.event_types`).
+fn encode_resource_ids(ids: &[crate::ids::ResourceId], enc: &mut Encoder<'_>) {
+    enc.write_u16_be(u16::try_from(ids.len()).unwrap_or(u16::MAX));
+    for id in ids {
+        encode_terminal_id(id, enc);
+    }
+}
+
+fn decode_resource_ids(dec: &mut Decoder<'_>) -> Result<Vec<crate::ids::ResourceId>, DecodeError> {
     let count = dec.read_u16_be()? as usize;
     let mut ids = Vec::with_capacity(count);
     for _ in 0..count {
         ids.push(decode_terminal_id(dec)?);
     }
-    Ok(Command::KillResources { ids })
+    Ok(ids)
 }
 
 fn decode_detach_clients_command(dec: &mut Decoder<'_>) -> Result<Command, DecodeError> {
@@ -650,6 +724,7 @@ fn decode_signal_terminal_command(dec: &mut Decoder<'_>) -> Result<Command, Deco
     Ok(Command::SignalTerminal {
         terminal_id,
         signal,
+        operation_id: decode_trailing_key(dec)?,
     })
 }
 
@@ -1055,6 +1130,15 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
                 write_u64_field(&mut body_enc, field::event_source_gap::DROPPED, *dropped);
                 EVENT_TAG_SOURCE_GAP
             }
+            AgentEvent::ApprovalRequested { id } => {
+                write_approval_id(id, &mut body_enc);
+                EVENT_TAG_APPROVAL_REQUESTED
+            }
+            AgentEvent::ApprovalDecided { id, outcome } => {
+                write_approval_id(id, &mut body_enc);
+                body_enc.write_u8(outcome.to_u8());
+                EVENT_TAG_APPROVAL_DECIDED
+            }
             // `Unknown` is decoder-only: an encoder that reaches here has
             // round-tripped an event this version did not understand.
             // Re-emit the captured body verbatim so a relay (a hub
@@ -1069,6 +1153,34 @@ pub(in crate::wire) fn encode_agent_event(event: &AgentEvent, enc: &mut Encoder<
     }
     enc.write_u8(tag);
     enc.write_bytes(&body);
+}
+
+/// Write an approval id as its 16 raw bytes (ADR-0128).
+fn write_approval_id(id: &crate::ids::ApprovalId, enc: &mut Encoder<'_>) {
+    for byte in id.as_bytes() {
+        enc.write_u8(*byte);
+    }
+}
+
+/// Decode an `approval_requested` or `approval_decided` body: 16 id bytes,
+/// then, for a decision, the outcome byte. `Ok(None)` for a zero id or an
+/// unknown outcome; a truncated body is still an error.
+fn decode_approval_event(
+    tag: u8,
+    dec: &mut Decoder<'_>,
+) -> Result<Option<AgentEvent>, DecodeError> {
+    let mut bytes = [0; 16];
+    for byte in &mut bytes {
+        *byte = dec.read_u8()?;
+    }
+    let id = crate::ids::ApprovalId::new(bytes);
+    if tag == EVENT_TAG_APPROVAL_REQUESTED {
+        return Ok(id.map(|id| AgentEvent::ApprovalRequested { id }));
+    }
+    let outcome = ApprovalOutcome::from_u8(dec.read_u8()?);
+    Ok(id
+        .zip(outcome)
+        .map(|(id, outcome)| AgentEvent::ApprovalDecided { id, outcome }))
 }
 
 /// Write one field-tagged `u64` inside an event body.
@@ -1139,6 +1251,14 @@ pub(in crate::wire) fn decode_agent_event(
         },
         EVENT_TAG_JOURNAL_GAP => decode_journal_gap_event(&mut body_dec)?,
         EVENT_TAG_SOURCE_GAP => decode_source_gap_event(&mut body_dec)?,
+        // A zero id or an outcome this build does not know makes the event
+        // opaque rather than failing the frame, as for `terminal_control`.
+        EVENT_TAG_APPROVAL_REQUESTED | EVENT_TAG_APPROVAL_DECIDED => {
+            decode_approval_event(tag, &mut body_dec)?.unwrap_or_else(|| AgentEvent::Unknown {
+                tag,
+                body: body.to_vec(),
+            })
+        }
         // Unknown event tag: preserve the body verbatim and skip. This is
         // the forward-compat path — a v0.2.x server may add event kinds an
         // older client does not know.

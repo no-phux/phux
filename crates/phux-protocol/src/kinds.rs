@@ -24,26 +24,31 @@
 use crate::caps::ServerFeature;
 use crate::ids::{ResourceId, ResourceKind, SatelliteHost};
 use crate::wire::frame::{
+    APPROVAL_DECIDE_KEY_PREFIX, APPROVAL_DENY, APPROVAL_KEY_PREFIX, EVENT_TAG_APPROVAL_DECIDED,
+    EVENT_TAG_APPROVAL_REQUESTED, TerminalSignal, is_approval_decision,
+};
+use crate::wire::frame::{
     AttachTarget, COMMAND_TAG_ACQUIRE_INPUT, COMMAND_TAG_APPEND_RESOURCE_OUTPUT,
-    COMMAND_TAG_APPLY_INPUT, COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_DETACH_CLIENTS,
-    COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_PERF, COMMAND_TAG_GET_SCREEN,
-    COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE, COMMAND_TAG_KILL_RESOURCE,
-    COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES, COMMAND_TAG_OPEN_LISTENER,
-    COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT, COMMAND_TAG_REPORT_AGENT_STATE,
-    COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT, COMMAND_TAG_SHUTDOWN,
-    COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS, COMMAND_TAG_TRANSCRIBE,
-    COMMAND_TAG_UPGRADE, CONFIG_RELOAD_KEY, Command, EVENT_TAG_ASKED, EVENT_TAG_BELL,
-    EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED, EVENT_TAG_DIRTY,
-    EVENT_TAG_IDLE, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED, EVENT_TAG_RESOURCE_SPAWNED,
-    EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, FrameKind, RESOURCE_AGENT_KEY,
-    RESOURCE_AGENT_SESSION_KEY, RESOURCE_LINK_KEY, RESOURCE_PANE_OCCUPANT_KEY, RESOURCE_TAGS_KEY,
-    SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY, SESSION_CREATE_RESULT_KEY_PREFIX,
-    SESSION_KEEP_EMPTY_KEY, Scope, SpawnResource, StateScope, TYPE_ATTACH, TYPE_COMMAND,
-    TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_FRAME_ACK, TYPE_GET_METADATA, TYPE_HELLO,
-    TYPE_HISTORY_REQUEST, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY, TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE,
-    TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY, TYPE_LIST_METADATA, TYPE_MOVE_RESOURCE,
-    TYPE_PING, TYPE_RESIZE_TERMINAL, TYPE_SET_METADATA, TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS,
-    TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE, WHOAMI_KEY, decode_session_keep_empty,
+    COMMAND_TAG_APPLY_INPUT, COMMAND_TAG_ATTACH_RESOURCE, COMMAND_TAG_CLOSE_TAB_RESOURCES,
+    COMMAND_TAG_DETACH_CLIENTS, COMMAND_TAG_DETACH_RESOURCE, COMMAND_TAG_GET_PERF,
+    COMMAND_TAG_GET_SCREEN, COMMAND_TAG_GET_STATE, COMMAND_TAG_GET_TERMINAL_STATE,
+    COMMAND_TAG_KILL_RESOURCE, COMMAND_TAG_KILL_RESOURCE_IF, COMMAND_TAG_KILL_RESOURCES,
+    COMMAND_TAG_OPEN_LISTENER, COMMAND_TAG_PUT_FILE, COMMAND_TAG_RELEASE_INPUT,
+    COMMAND_TAG_REPORT_AGENT_STATE, COMMAND_TAG_REPORT_ASKED, COMMAND_TAG_ROUTE_INPUT,
+    COMMAND_TAG_SHUTDOWN, COMMAND_TAG_SIGNAL_TERMINAL, COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS,
+    COMMAND_TAG_TRANSCRIBE, COMMAND_TAG_UPGRADE, CONFIG_RELOAD_KEY, Command, EVENT_TAG_ASKED,
+    EVENT_TAG_BELL, EVENT_TAG_COMMAND_FINISHED, EVENT_TAG_COMMAND_STARTED, EVENT_TAG_CWD_CHANGED,
+    EVENT_TAG_DIRTY, EVENT_TAG_IDLE, EVENT_TAG_JOURNAL_GAP, EVENT_TAG_RESOURCE_CLOSED,
+    EVENT_TAG_RESOURCE_SPAWNED, EVENT_TAG_TERMINAL_CONTROL, EVENT_TAG_TITLE_CHANGED, FrameKind,
+    RESOURCE_AGENT_KEY, RESOURCE_AGENT_SESSION_KEY, RESOURCE_LINK_KEY, RESOURCE_PANE_OCCUPANT_KEY,
+    RESOURCE_TAGS_KEY, SESSION_CREATE_KEY, SESSION_CREATE_RESULT_KEY,
+    SESSION_CREATE_RESULT_KEY_PREFIX, SESSION_KEEP_EMPTY_KEY, Scope, SpawnResource, StateScope,
+    TYPE_ATTACH, TYPE_COMMAND, TYPE_DELETE_METADATA, TYPE_DETACH, TYPE_FRAME_ACK,
+    TYPE_GET_METADATA, TYPE_HELLO, TYPE_HISTORY_REQUEST, TYPE_INPUT_FOCUS, TYPE_INPUT_KEY,
+    TYPE_INPUT_MOUSE, TYPE_INPUT_PASTE, TYPE_INPUT_TERMINAL_REPLY, TYPE_LIST_DIRECTORY,
+    TYPE_LIST_METADATA, TYPE_MOVE_RESOURCE, TYPE_PING, TYPE_RESIZE_TERMINAL, TYPE_SET_METADATA,
+    TYPE_SPAWN_RESOURCE, TYPE_SUBSCRIBE_EVENTS, TYPE_SUBSCRIBE_METADATA, TYPE_VIEWPORT_RESIZE,
+    WHOAMI_KEY, decode_session_keep_empty,
 };
 use crate::wire::frame::{EVENT_TAG_SOURCE_GAP, SESSION_NAME_KEY};
 
@@ -246,6 +251,12 @@ pub enum Subject {
     NamedSession,
     /// The encoded metadata [`Scope`].
     MetadataScope,
+    /// The held action a `phux.approval.decide/v1/<id>` key names
+    /// (ADR-0128): every subject the held command needs, resolved
+    /// side-effect-free under the current topology from the pending
+    /// approval. An id with no pending approval resolves to nothing, so it
+    /// is refused like an absent target.
+    HeldAction,
     /// The Global selector.
     Global {
         /// The transport predicate: the authenticated transport must also be
@@ -504,13 +515,21 @@ static F_CONFIG_RELOAD: Rule = Rule::verbs(
         owner_uds_only: false,
     },
 );
+static F_APPROVAL_DECIDE: Rule = Rule::verbs(
+    r#"`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with value `approve` or `deny`"#,
+    &[Verb::Signal],
+    Subject::HeldAction,
+);
+static F_APPROVAL_DECIDE_OTHER: Rule = Rule::deny(
+    r#"`SET_METADATA { Global, "phux.approval.decide/v1/<id>" }` with a malformed id or any other value"#,
+);
 static F_RESULT_NAMESPACE_WRITE: Rule = Rule::deny(
     "`SET_METADATA` or `DELETE_METADATA` targeting `phux.session.created/v1` or its slash-prefixed results",
 );
 static F_RESULT_NAMESPACE_SUBSCRIBE: Rule =
     Rule::deny("`SUBSCRIBE_METADATA` targeting that result namespace");
 static F_SERVER_OWNED_WRITE: Rule = Rule::deny(
-    "`SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1` or `phux.whoami/v1`, or `DELETE_METADATA` targeting `phux.config.reload/v1` or `phux.session.keep_empty/v1`",
+    "`SET_METADATA` or `DELETE_METADATA` targeting `phux.pane-occupant/v1`, `phux.whoami/v1`, or a `phux.approval/v1/<id>` record, or `DELETE_METADATA` targeting `phux.config.reload/v1`, `phux.session.keep_empty/v1`, or a `phux.approval.decide/v1/<id>` key",
 );
 static F_METADATA_WRITE: Rule = Rule::verbs(
     "Other `SET_METADATA`, `DELETE_METADATA`",
@@ -541,7 +560,7 @@ static F_UNCLASSIFIED: Rule =
 ///
 /// [`classify_frame`] returns one of these rows for every decoded frame. It
 /// never returns the `COMMAND` row: the nested command decides.
-pub static FRAME_RULES: [&Rule; 37] = [
+pub static FRAME_RULES: [&Rule; 39] = [
     &F_HELLO,
     &F_PING,
     &F_DETACH,
@@ -571,6 +590,8 @@ pub static FRAME_RULES: [&Rule; 37] = [
     &F_KEEP_EMPTY_CLEAR,
     &F_KEEP_EMPTY_OTHER,
     &F_CONFIG_RELOAD,
+    &F_APPROVAL_DECIDE,
+    &F_APPROVAL_DECIDE_OTHER,
     &F_RESULT_NAMESPACE_WRITE,
     &F_RESULT_NAMESPACE_SUBSCRIBE,
     &F_SERVER_OWNED_WRITE,
@@ -611,6 +632,11 @@ static C_INPUT: Rule = Rule::verbs(
 );
 static C_KILL_RESOURCES: Rule = Rule::verbs(
     "`KILL_RESOURCES`",
+    &[Verb::Signal],
+    Subject::EveryNamedTerminal,
+);
+static C_CLOSE_TAB_RESOURCES: Rule = Rule::verbs(
+    "`CLOSE_TAB_RESOURCES`",
     &[Verb::Signal],
     Subject::EveryNamedTerminal,
 );
@@ -702,7 +728,7 @@ static C_UNCLASSIFIED: Rule = Rule::deny("Unknown, retired, or otherwise unclass
 /// The nested-command table of workload-auth §6, in spec row order.
 ///
 /// [`classify_command`] returns one of these rows for every decoded command.
-pub static COMMAND_RULES: [&Rule; 27] = [
+pub static COMMAND_RULES: [&Rule; 28] = [
     &C_SPAWN,
     &C_ATTACH_RESOURCE,
     &C_DETACH_RESOURCE,
@@ -711,6 +737,7 @@ pub static COMMAND_RULES: [&Rule; 27] = [
     &C_GET_SCREEN,
     &C_INPUT,
     &C_KILL_RESOURCES,
+    &C_CLOSE_TAB_RESOURCES,
     &C_RESIZE_TERMINAL,
     &C_GET_STATE,
     &C_RUN_HOOK,
@@ -840,6 +867,7 @@ pub fn command_rule(command: &Command) -> &'static Rule {
         Command::GetScreen { .. } => &C_GET_SCREEN,
         Command::RouteInput { .. } | Command::ApplyInput { .. } => &C_INPUT,
         Command::KillResources { .. } => &C_KILL_RESOURCES,
+        Command::CloseTabResources { .. } => &C_CLOSE_TAB_RESOURCES,
         Command::GetState {
             scope: StateScope::Server,
         } => &C_GET_STATE,
@@ -936,14 +964,17 @@ fn is_session_create_result(key: &str) -> bool {
     key == SESSION_CREATE_RESULT_KEY || key.starts_with(SESSION_CREATE_RESULT_KEY_PREFIX)
 }
 
-/// Keys the server owns and no client may set or delete.
+/// Keys the server owns and no client may set or delete, in any scope: the
+/// pane occupant, whoami, and the approval records (ADR-0128).
 fn is_read_only_server_key(key: &str) -> bool {
-    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY
+    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY || key.starts_with(APPROVAL_KEY_PREFIX)
 }
 
 /// Keys the server applies on write, which are therefore never deletable.
 fn is_server_applied_key(key: &str) -> bool {
-    key == CONFIG_RELOAD_KEY || key == SESSION_KEEP_EMPTY_KEY
+    key == CONFIG_RELOAD_KEY
+        || key == SESSION_KEEP_EMPTY_KEY
+        || key.starts_with(APPROVAL_DECIDE_KEY_PREFIX)
 }
 
 fn set_metadata_rule(scope: &Scope, key: &str, value: &[u8]) -> &'static Rule {
@@ -965,7 +996,18 @@ fn global_set_metadata_rule(key: &str, value: &[u8]) -> &'static Rule {
         SESSION_CREATE_KEY => &F_SESSION_CREATE,
         SESSION_KEEP_EMPTY_KEY => keep_empty_rule(value),
         CONFIG_RELOAD_KEY => &F_CONFIG_RELOAD,
+        _ if key.starts_with(APPROVAL_DECIDE_KEY_PREFIX) => approval_decide_rule(key, value),
         _ => &F_METADATA_WRITE,
+    }
+}
+
+/// A decision names a canonical approval id and carries `approve` or
+/// `deny`; anything else is malformed, refused before a handler parses it.
+fn approval_decide_rule(key: &str, value: &[u8]) -> &'static Rule {
+    if crate::ids::ApprovalId::from_decide_key(key).is_some() && is_approval_decision(value) {
+        &F_APPROVAL_DECIDE
+    } else {
+        &F_APPROVAL_DECIDE_OTHER
     }
 }
 
@@ -1044,6 +1086,13 @@ pub struct MethodSpec {
     /// Whether the codec and reference server implement it. `false` marks a
     /// spec-only allocation.
     pub shipped: bool,
+    /// Whether an instance can end a process, eject a client, stop or
+    /// re-exec the server, open a door into it, or release a held action
+    /// (ADR-0128). A consumer confirms before sending one: the MCP
+    /// `destructiveHint` and `confirm` argument and the CLI `--yes` flag all
+    /// derive from this. Payload-level exceptions are
+    /// [`command_is_dangerous`] and [`frame_is_dangerous`].
+    pub dangerous: bool,
 }
 
 impl MethodSpec {
@@ -1126,11 +1175,20 @@ macro_rules! method {
             rules: &[$(&$rule),+],
             gate: $gate,
             shipped: true,
+            dangerous: false,
         }
     };
     ($name:expr, $carrier:expr, [$($rule:ident),+ $(,)?]) => {
         method!($name, $carrier, [$($rule),+], None)
     };
+}
+
+/// `method` marked [`MethodSpec::dangerous`].
+const fn dangerous(method: MethodSpec) -> MethodSpec {
+    MethodSpec {
+        dangerous: true,
+        ..method
+    }
 }
 
 /// Methods addressed to the server or the connection, not to one resource.
@@ -1159,28 +1217,28 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
         [F_LIST_DIRECTORY],
         Some(ServerFeature::ListDirectory)
     ),
-    method!(
+    dangerous(method!(
         "UPGRADE",
         Carrier::Command(COMMAND_TAG_UPGRADE),
         [C_UPGRADE]
-    ),
-    method!(
+    )),
+    dangerous(method!(
         "SHUTDOWN",
         Carrier::Command(COMMAND_TAG_SHUTDOWN),
         [C_SHUTDOWN],
         Some(ServerFeature::Shutdown)
-    ),
-    method!(
+    )),
+    dangerous(method!(
         "OPEN_LISTENER",
         Carrier::Command(COMMAND_TAG_OPEN_LISTENER),
         [C_OPEN_LISTENER],
         Some(ServerFeature::OpenListener)
-    ),
-    method!(
+    )),
+    dangerous(method!(
         "DETACH_CLIENTS",
         Carrier::Command(COMMAND_TAG_DETACH_CLIENTS),
         [C_DETACH_CLIENTS_SESSION, C_DETACH_CLIENTS_ALL]
-    ),
+    )),
     method!(
         "GET_PERF",
         Carrier::Command(COMMAND_TAG_GET_PERF),
@@ -1207,11 +1265,20 @@ pub static SERVER_METHODS: &[MethodSpec] = &[
     ),
     // A TUI doorbell: the server stores the nonce like any value, and §6
     // classifies the write as SIGNAL because it makes consumers reload.
-    method!(
+    dangerous(method!(
         CONFIG_RELOAD_KEY,
         Carrier::Metadata(CONFIG_RELOAD_KEY),
         [F_CONFIG_RELOAD]
-    ),
+    )),
+    // A decision is server-intercepted and stored nowhere. Approving one
+    // releases a held SIGNAL action, so it is dangerous; denying releases
+    // nothing (`frame_is_dangerous`).
+    dangerous(method!(
+        APPROVAL_DECIDE_KEY_PREFIX,
+        Carrier::Metadata(APPROVAL_DECIDE_KEY_PREFIX),
+        [F_APPROVAL_DECIDE, F_APPROVAL_DECIDE_OTHER],
+        Some(ServerFeature::Approvals)
+    )),
     method!(
         WHOAMI_KEY,
         Carrier::Metadata(WHOAMI_KEY),
@@ -1247,22 +1314,28 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
         Carrier::Command(COMMAND_TAG_DETACH_RESOURCE),
         [C_DETACH_RESOURCE]
     ),
-    method!(
+    dangerous(method!(
         "KILL_RESOURCE",
         Carrier::Command(COMMAND_TAG_KILL_RESOURCE),
         [C_KILL_RESOURCE]
-    ),
-    method!(
+    )),
+    dangerous(method!(
         "KILL_RESOURCE_IF",
         Carrier::Command(COMMAND_TAG_KILL_RESOURCE_IF),
         [C_KILL_RESOURCE_IF],
         Some(ServerFeature::ConditionalKill)
-    ),
-    method!(
+    )),
+    dangerous(method!(
         "KILL_RESOURCES",
         Carrier::Command(COMMAND_TAG_KILL_RESOURCES),
         [C_KILL_RESOURCES]
-    ),
+    )),
+    dangerous(method!(
+        "CLOSE_TAB_RESOURCES",
+        Carrier::Command(COMMAND_TAG_CLOSE_TAB_RESOURCES),
+        [C_CLOSE_TAB_RESOURCES],
+        Some(ServerFeature::CloseTabResources)
+    )),
     method!(
         "SUBSCRIBE_RESOURCE_EVENTS",
         Carrier::Command(COMMAND_TAG_SUBSCRIBE_RESOURCE_EVENTS),
@@ -1293,6 +1366,8 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
             F_KEEP_EMPTY_CLEAR,
             F_KEEP_EMPTY_OTHER,
             F_CONFIG_RELOAD,
+            F_APPROVAL_DECIDE,
+            F_APPROVAL_DECIDE_OTHER,
             F_RESULT_NAMESPACE_WRITE,
             F_SERVER_OWNED_WRITE,
         ]
@@ -1318,14 +1393,25 @@ pub static SUBSTRATE_METHODS: &[MethodSpec] = &[
     ),
 ];
 
-/// Events addressed to one subscription rather than about a resource.
+/// Events about the server or one subscription rather than one resource.
 ///
 /// `journal_gap` tells a subscriber which journal `seq` range it missed; it
-/// is never journaled itself (L1 §7.3).
-pub static SERVER_EVENTS: &[EventSpec] = &[EventSpec {
-    name: "journal_gap",
-    tag: EVENT_TAG_JOURNAL_GAP,
-}];
+/// is never journaled itself (L1 §7.3). `approval_requested` and
+/// `approval_decided` report a held `SIGNAL` action (ADR-0128).
+pub static SERVER_EVENTS: &[EventSpec] = &[
+    EventSpec {
+        name: "journal_gap",
+        tag: EVENT_TAG_JOURNAL_GAP,
+    },
+    EventSpec {
+        name: "approval_requested",
+        tag: EVENT_TAG_APPROVAL_REQUESTED,
+    },
+    EventSpec {
+        name: "approval_decided",
+        tag: EVENT_TAG_APPROVAL_DECIDED,
+    },
+];
 
 /// The events every kind shares: its own spawn and close, and `source_gap`
 /// when the resource produced events faster than the server could journal
@@ -1362,6 +1448,7 @@ pub static KINDS: [KindSpec; 2] = [
                 rules: &[&F_INPUT],
                 gate: None,
                 shipped: false,
+                dangerous: false,
             },
             method!(
                 "INPUT_TERMINAL_REPLY",
@@ -1429,11 +1516,11 @@ pub static KINDS: [KindSpec; 2] = [
                 Carrier::Command(COMMAND_TAG_RELEASE_INPUT),
                 [C_INPUT_LEASE]
             ),
-            method!(
+            dangerous(method!(
                 "SIGNAL_TERMINAL",
                 Carrier::Command(COMMAND_TAG_SIGNAL_TERMINAL),
                 [C_SIGNAL_TERMINAL]
-            ),
+            )),
             method!(
                 "REPORT_ASKED",
                 Carrier::Command(COMMAND_TAG_REPORT_ASKED),
@@ -1535,6 +1622,40 @@ pub fn frame_method(type_byte: u8) -> Option<&'static MethodSpec> {
 #[must_use]
 pub fn method_named(name: &str) -> Option<&'static MethodSpec> {
     methods().find(|method| method.name == name)
+}
+
+/// Whether some dangerous method lists `rule` among its rows.
+fn rule_is_dangerous(rule: &Rule) -> bool {
+    methods()
+        .filter(|method| method.dangerous)
+        .any(|method| method.rules.iter().any(|row| core::ptr::eq(*row, rule)))
+}
+
+/// Whether this instance of a nested command is dangerous (ADR-0128): its
+/// method is [`MethodSpec::dangerous`], except `SIGNAL_TERMINAL` with
+/// `freeze` or `resume`, the reversible brake.
+#[must_use]
+pub fn command_is_dangerous(command: &Command) -> bool {
+    let reversible = matches!(
+        command,
+        Command::SignalTerminal {
+            signal: TerminalSignal::Freeze | TerminalSignal::Resume,
+            ..
+        }
+    );
+    !reversible && rule_is_dangerous(command_rule(command))
+}
+
+/// Whether this instance of a client frame is dangerous (ADR-0128): its
+/// row belongs to a [`MethodSpec::dangerous`] method, except a decision to
+/// `deny`, which releases nothing.
+#[must_use]
+pub fn frame_is_dangerous(frame: &FrameKind) -> bool {
+    if let FrameKind::Command { command, .. } = frame {
+        return command_is_dangerous(command);
+    }
+    let denial = matches!(frame, FrameKind::SetMetadata { value, .. } if value == APPROVAL_DENY);
+    !denial && rule_is_dangerous(frame_rule(frame))
 }
 
 /// The catalog entry for `kind`, or `None` for a kind this build does not
@@ -1751,6 +1872,7 @@ mod tests {
             viewport: ViewportInfo::new(80, 24),
             request_scrollback: false,
             scrollback_limit_lines: 0,
+            role_policy: None,
         };
         assert_eq!(row(&attach(AttachTarget::Last)), F_ATTACH.case);
         assert_eq!(

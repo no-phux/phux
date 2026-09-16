@@ -31,6 +31,7 @@ pub(crate) mod exit_codes;
 pub(crate) mod files;
 pub(crate) mod hooks;
 pub(crate) mod kinds;
+pub(crate) mod parity;
 pub(crate) mod widgets;
 
 /// The `last-reviewed` date stamped into every generated page's frontmatter.
@@ -39,7 +40,7 @@ pub(crate) mod widgets;
 /// regeneration must be byte-idempotent, and a date that moved on every run
 /// would churn the tree without any content change. Bump it when a
 /// generator change meaningfully alters what the pages say.
-pub(crate) const GENERATED_LAST_REVIEWED: &str = "2026-08-02";
+pub(crate) const GENERATED_LAST_REVIEWED: &str = "2026-09-15";
 
 /// The reader-facing warning embedded in every generated page, right after
 /// the TL;DR (the docs gate requires the TL;DR to be the first content, so
@@ -110,6 +111,7 @@ pub(crate) fn pages() -> Vec<Page> {
         files::page(),
         deprecations::page(),
         kinds::page(),
+        parity::page(),
     ];
     let mut pages = Vec::with_capacity(content.len() + 1);
     pages.push(index_page(&content));

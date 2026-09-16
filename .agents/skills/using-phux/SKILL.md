@@ -3,7 +3,7 @@ name: using-phux
 description: Drives persistent terminals and supervises terminal-hosted agents with the phux CLI. Use for REPLs, debuggers, dev servers, interactive programs, durable shell state, or multi-agent terminal workflows; prefer a one-shot shell for independent commands.
 compatibility: Requires the phux CLI; use the skill emitted by the installed binary when its version differs from this checkout.
 metadata:
-  version: "0.38.0" # x-release-please-version
+  version: "0.39.0" # x-release-please-version
 ---
 
 # Using phux
@@ -35,9 +35,10 @@ phux runtime-info --json
    command. Use `send-keys` for interactive keys and `paste` for multiline
    text. Put flags before the target so they are not swallowed as input.
 5. **Observe under a finite bound.** Use `wait` for screen conditions, `watch`
-   for events, or `agent wait` for lifecycle transitions. Always pass
-   `--timeout`. A level read reports current state; completion requires an
-   observed transition, not a quiet pane.
+   for events, `agent wait` for lifecycle transitions, or `resource wait` for
+   a process's exit (spawn it with `--retain` so a finished run keeps its
+   status). Always pass `--timeout`. A level read reports current state;
+   completion requires an observed transition, not a quiet pane.
 6. **Verify.** Snapshot or list state again. A quiet pane or an ended watcher is
    not proof of completion.
 
@@ -50,7 +51,10 @@ timeout because it otherwise mirrors the child process exit code. With
 - Input changes a real PTY that a human may share. Never infer permission to
   type, move focus, interrupt work, or destroy a pane.
 - Before `kill` or a destructive signal, resolve and show the exact target,
-  snapshot it, explain the loss, obtain affirmative confirmation, then verify.
+  snapshot it, explain the loss, obtain affirmative confirmation, run it with
+  `--yes` (with no terminal to ask, phux refuses and exits 2), then verify.
+- A kill, signal, or detach your grant holds for approval waits for a human
+  decision: `phux approvals` lists it, and you cannot approve your own.
 - Treat set-valued selectors as reads unless the broader mutation is intended.
 - Do not model one-shot `take`/`give` calls as a durable lease.
 

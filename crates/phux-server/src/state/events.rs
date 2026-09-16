@@ -106,6 +106,8 @@ const fn bypasses_type_filter(event: &AgentEvent) -> bool {
             | AgentEvent::ResourceSpawned { .. }
             | AgentEvent::ResourceClosed { .. }
             | AgentEvent::SourceGap { .. }
+            | AgentEvent::ApprovalRequested { .. }
+            | AgentEvent::ApprovalDecided { .. }
     )
 }
 
@@ -222,10 +224,39 @@ impl EventSubscription {
     }
 
     /// Whether any of this subscription's scopes admits `entry`.
+    ///
+    /// `ROLE_CHANGED` (ADR-0127) has no older action it could be reported
+    /// as, the way `EXPIRED` reads as `RELEASED`, so a subscription that
+    /// never proved it decodes this draft is simply not offered it: a
+    /// pre-`0.9.0-draft.15` decoder would fail the whole frame on it.
     fn admits(&self, entry: &JournalEntry) -> bool {
+        if !self.journal_aware && is_role_changed(&entry.event) {
+            return false;
+        }
         self.scopes
             .iter()
             .any(|(scope, filter)| scope.covers(entry) && filter.admits(&entry.event))
+    }
+
+    /// The newest `seq` this subscription has been sent or is owed: what it
+    /// delivered, a gap it owes, and a pending replay's leading gap. A
+    /// satellite scope's cursor is owed a gap its ring holds nothing for.
+    fn reach(&self) -> u64 {
+        let last = |gap: Option<(u64, u64)>| gap.map_or(0, |(_, last)| last);
+        self.delivered
+            .max(last(self.gap))
+            .max(last(self.replay.and_then(|replay| replay.leading_gap)))
+    }
+
+    /// The newest evicted `seq` while this subscription's replay is still
+    /// pending below it, so a `journal_gap` reaching it will be sent; `0`
+    /// otherwise, since a later eviction is never reported to it.
+    fn owed_eviction(&self, journal: &Journal) -> u64 {
+        let evicted = journal.evicted_through();
+        match self.replay {
+            Some(replay) if replay.cursor.max(self.delivered) < evicted => evicted,
+            _ => 0,
+        }
     }
 
     /// The frame this subscription receives for `entry`.
@@ -433,6 +464,17 @@ fn merge_gap(a: Option<(u64, u64)>, b: Option<(u64, u64)>) -> Option<(u64, u64)>
     }
 }
 
+/// Whether `event` is a `terminal_control { ROLE_CHANGED }` (ADR-0127).
+const fn is_role_changed(event: &AgentEvent) -> bool {
+    matches!(
+        event,
+        AgentEvent::TerminalControl {
+            action: ControlAction::RoleChanged,
+            ..
+        }
+    )
+}
+
 /// How `event` reads to a subscriber: an `EXPIRED` lease reaches a
 /// subscription that never sent a cursor as `RELEASED` with no actor,
 /// because a decoder from before this draft fails the frame on the new
@@ -492,18 +534,34 @@ impl ServerState {
     /// The satellite's time and operation cross the hub; its actor does
     /// not, because it names a connection on the satellite. The actor of a
     /// relayed event is the hub's link, which has no client id here, so the
-    /// event carries none. The event is not retained: a cursor on a
-    /// satellite scope is answered with a gap
-    /// ([`Self::subscribe_satellite_events`]).
+    /// event carries none, unless the hub knows which of its consumers sent
+    /// the keyed operation that caused it ([`Self::record_relayed_event_as`]).
+    /// The event is not retained: a cursor on a satellite scope is answered
+    /// with a gap ([`Self::subscribe_satellite_events`]).
     pub fn record_relayed_event(
         &mut self,
         terminal: WireResourceId,
         event: AgentEvent,
         satellite: Option<&EventStamp>,
     ) -> Option<u64> {
+        self.record_relayed_event_as(terminal, event, satellite, None)
+    }
+
+    /// [`Self::record_relayed_event`], attributed to `actor`: the hub
+    /// consumer whose keyed operation the satellite's stamp names by its
+    /// `operation_id` (`docs/spec/L1.md` §9.1).
+    pub fn record_relayed_event_as(
+        &mut self,
+        terminal: WireResourceId,
+        event: AgentEvent,
+        satellite: Option<&EventStamp>,
+        actor: Option<super::ClientId>,
+    ) -> Option<u64> {
         let seq = self.journal.allocate_seq()?;
         let ts_ms = satellite.map_or_else(now_unix_ms, |stamp| stamp.ts_ms);
+        let actor = actor.map(|client| self.clients.actor_ref(client));
         let stamp = EventStamp::new(seq, ts_ms)
+            .with_actor(actor)
             .with_operation_id(satellite.and_then(|stamp| stamp.operation_id));
         let entry = JournalEntry::relayed(terminal, event, stamp);
         self.clients.offer_event(&entry);
@@ -514,6 +572,26 @@ impl ServerState {
     #[must_use]
     pub const fn journal_head(&self) -> u64 {
         self.journal.head()
+    }
+
+    /// The journal head `GET_STATE` reports to `client` (L1 §7.3): on a
+    /// connection that holds event subscriptions, every `seq` their replay
+    /// delivers, gaps included (the newest retained entry they admit, what
+    /// they were sent or are owed, and the newest evicted `seq` only while
+    /// a replay is pending below it), so the consumer's catch-up always
+    /// completes and an event journaled on another scope after the
+    /// subscribe, or the eviction it causes, never holds it open; else the
+    /// global head.
+    #[must_use]
+    pub fn journal_head_for(&self, client: Option<ClientId>) -> u64 {
+        match client.and_then(|id| self.clients.event_subscriptions.get(&id)) {
+            Some(sub) if !sub.scopes.is_empty() => self
+                .journal
+                .newest_admitted(|entry| sub.admits(entry))
+                .max(sub.reach())
+                .max(sub.owed_eviction(&self.journal)),
+            _ => self.journal.head(),
+        }
     }
 
     /// Re-bound the journal (`defaults.event-journal-entries` /
@@ -1018,6 +1096,110 @@ mod tests {
             tx,
         );
         assert_eq!(drain(&mut rx), vec![gap(1, 1)]);
+    }
+
+    /// A hub keeps no satellite events, so a satellite scope's cursor is
+    /// owed a gap the ring holds nothing for. The head covers that gap,
+    /// whether already sent or still owed behind a full mailbox, and a hub
+    /// event on another scope after the subscribe does not raise it.
+    #[test]
+    fn the_head_covers_a_satellite_cursors_gap_and_no_later_hub_event() {
+        let mut state = ServerState::new();
+        let _ = record(&mut state, 1, AgentEvent::Bell);
+        let past_cursor = record(&mut state, 1, AgentEvent::Bell);
+        let subscribe = |state: &mut ServerState, tx| {
+            let client = state.new_client_id();
+            let satellite = WireResourceId::satellite("sat", 9);
+            state.subscribe_satellite_events(client, satellite, EventFilter::all(), Some(1), tx);
+            client
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        let sent = subscribe(&mut state, tx);
+        let (full_tx, _full_rx) = mpsc::channel(1);
+        full_tx
+            .try_send(Outbound::Frame(journal_gap_frame(0, 0)))
+            .expect("room for the filler");
+        let owed = subscribe(&mut state, full_tx);
+        let later = record(&mut state, 2, AgentEvent::Bell);
+
+        assert_eq!(drain(&mut rx), vec![gap(2, past_cursor)]);
+        for client in [sent, owed] {
+            let head = state.journal_head_for(Some(client));
+            assert_eq!(head, past_cursor, "covers the gap's last_missing");
+            assert!(head < later, "a later hub event does not raise it");
+        }
+    }
+
+    /// A closed, unretained pane, a stale cursor, and a full ring: the
+    /// replay reports the eviction and ends, and another terminal's event
+    /// before the cut advances the eviction. The head stays at the gap the
+    /// subscription was sent, not the eviction it will never hear of; a
+    /// replay still pending below the eviction does count it.
+    #[test]
+    fn a_later_eviction_does_not_raise_the_head_past_the_gap_sent() {
+        let mut state = ServerState::new();
+        state.set_event_journal_bounds(2, 1 << 20);
+        for _ in 0..3 {
+            let _ = record(&mut state, 2, AgentEvent::Bell);
+        }
+        let closed = pane(7);
+        let sent = state.new_client_id();
+        let (tx, mut rx) = mpsc::channel(4);
+        state.subscribe_events_after(sent, Some(closed.clone()), 0, tx);
+        assert_eq!(drain(&mut rx), vec![gap(1, 1)]);
+        let owed = state.new_client_id();
+        let (full_tx, _full_rx) = mpsc::channel(1);
+        full_tx
+            .try_send(Outbound::Frame(journal_gap_frame(0, 0)))
+            .expect("room for the filler");
+        state.subscribe_events_after(owed, Some(closed), 0, full_tx);
+        let _ = record(&mut state, 2, AgentEvent::Bell);
+
+        assert_eq!(
+            state.journal_head_for(Some(sent)),
+            1,
+            "the gap it was sent, not the eviction since"
+        );
+        assert_eq!(
+            state.journal_head_for(Some(owed)),
+            2,
+            "a replay pending below the eviction will report it"
+        );
+    }
+
+    /// ADR-0127 against L10's per-connection head: a `ROLE_CHANGED` is
+    /// withheld from a subscription that never sent a cursor, so it must not
+    /// raise that connection's head either, or a catch-up to the head would
+    /// wait for an event it is never sent. A journal-aware subscription is
+    /// sent it, and its head counts it.
+    #[test]
+    fn a_withheld_role_changed_does_not_raise_a_legacy_connections_head() {
+        let mut state = ServerState::new();
+        let legacy = state.new_client_id();
+        let (tx, _rx) = mpsc::channel(8);
+        state.subscribe_events(legacy, None, tx);
+        let aware = state.new_client_id();
+        let (aware_tx, _aware_rx) = mpsc::channel(8);
+        state.subscribe_events_after(aware, None, u64::MAX, aware_tx);
+        let seen = record(&mut state, 1, AgentEvent::Bell);
+        let role_changed = record(
+            &mut state,
+            1,
+            AgentEvent::TerminalControl {
+                lifecycle: phux_protocol::wire::frame::ResourceLifecycle::Running,
+                exit_status: None,
+                input_holder: None,
+                action: ControlAction::RoleChanged,
+                actor: None,
+            },
+        );
+
+        assert_eq!(
+            state.journal_head_for(Some(legacy)),
+            seen,
+            "the withheld ROLE_CHANGED must not raise a legacy head"
+        );
+        assert_eq!(state.journal_head_for(Some(aware)), role_changed);
     }
 
     #[test]

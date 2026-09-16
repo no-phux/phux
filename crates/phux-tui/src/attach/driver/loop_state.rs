@@ -22,8 +22,6 @@ use phux_client_core::engine::ghostty::GhosttyAdapter;
 use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKernel};
 use phux_protocol::ResourceKind;
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost, SessionId};
 use phux_protocol::wire::frame::{AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, Scope};
@@ -2820,6 +2818,7 @@ impl SessionLoop {
                     request_id,
                     command: Command::AttachResource {
                         terminal_id: terminal_id.clone(),
+                        role_policy: crate::attach::attach_role::pane_attach_role(),
                     },
                 },
             )
@@ -2857,6 +2856,7 @@ impl SessionLoop {
                     request_id,
                     command: Command::AttachResource {
                         terminal_id: terminal_id.clone(),
+                        role_policy: crate::attach::attach_role::pane_attach_role(),
                     },
                 },
             )

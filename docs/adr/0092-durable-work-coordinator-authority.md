@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-08-18
+last-reviewed: 2026-09-15
 ---
 
 # 0092 - The coordinator owns durable work
@@ -14,6 +14,7 @@ consumers that issue commands and project coordinator state.
 
 Status: Proposed
 Date: 2026-08-18
+See [ADR-0130](./0130-on-disk-pty-journal-is-not-built.md) for the on-disk PTY journal named "design intent" below: decided, not built.
 
 ## Context
 

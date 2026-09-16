@@ -866,8 +866,23 @@ struct AttachInvocation {
     ssh: Option<String>,
     remote_phux: String,
     udp_ports: Option<String>,
+    viewer: bool,
+    take: bool,
     rec: commands::RecOpts,
     socket: Option<std::path::PathBuf>,
+}
+
+/// The attach role `--viewer` / `--take` declare (ADR-0127); the parser
+/// already refuses both at once.
+const fn declared_attach_role(viewer: bool, take: bool) -> phux_protocol::wire::frame::RolePolicy {
+    use phux_protocol::wire::frame::RolePolicy;
+    if viewer {
+        RolePolicy::VIEWER
+    } else if take {
+        RolePolicy::TAKEOVER
+    } else {
+        RolePolicy::PRIMARY
+    }
 }
 
 /// Run `phux attach`: resolve the recording plan, then dial whichever
@@ -886,9 +901,14 @@ fn run_attach(invocation: AttachInvocation) -> ExitCode {
         ssh,
         remote_phux,
         udp_ports,
+        viewer,
+        take,
         rec,
         socket,
     } = invocation;
+    // Every ATTACH this process sends carries it, whichever transport the
+    // flags below pick, so a reconnect keeps the role too.
+    phux_tui::attach::set_attach_role(declared_attach_role(viewer, take));
 
     // `phux attach` owns its own `--rec`; the root copy is reserved
     // for the naked invocation below.
@@ -1044,6 +1064,8 @@ fn dispatch(
             ssh,
             remote_phux,
             udp_ports,
+            viewer,
+            take,
             rec,
         }) => run_attach(AttachInvocation {
             session,
@@ -1058,6 +1080,8 @@ fn dispatch(
             ssh,
             remote_phux,
             udp_ports,
+            viewer,
+            take,
             rec,
             socket,
         }),
@@ -1110,18 +1134,26 @@ fn dispatch(
             cwd,
             json,
             env,
+            idempotency_key,
             remote,
             empty,
             command,
-        }) => commands::new::run_new(
-            name,
-            session,
-            cwd,
-            remote.with_socket(socket),
-            commands::new::NewMode { json, empty },
-            command,
-            env.into_iter().map(|item| (item.key, item.value)).collect(),
-        ),
+        }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), json) {
+            Ok(idempotency_key) => commands::new::run_new(
+                name,
+                session,
+                cwd,
+                remote.with_socket(socket),
+                commands::new::NewMode {
+                    json,
+                    empty,
+                    idempotency_key,
+                },
+                command,
+                env.into_iter().map(|item| (item.key, item.value)).collect(),
+            ),
+            Err(code) => code,
+        },
         Some(Command::Spawn {
             satellite,
             target,
@@ -1129,19 +1161,28 @@ fn dispatch(
             ratio,
             projection,
             cwd,
+            retain,
+            idempotency_key,
             json,
             command,
-        }) => commands::spawn::run_spawn(
-            satellite,
-            target,
-            split,
-            ratio,
-            projection.as_deref(),
-            cwd,
-            json.json,
-            socket,
-            command,
-        ),
+        }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), json.json) {
+            Ok(idempotency_key) => commands::spawn::run_spawn(
+                satellite,
+                target,
+                split,
+                ratio,
+                projection.as_deref(),
+                cwd,
+                json.json,
+                socket,
+                command,
+                commands::spawn::SpawnDurability {
+                    retain_secs: retain,
+                    idempotency_key,
+                },
+            ),
+            Err(code) => code,
+        },
         Some(Command::Launch {
             integration,
             list,
@@ -1169,11 +1210,18 @@ fn dispatch(
         Some(Command::Kill {
             target,
             server,
+            idempotency_key,
+            yes,
             remote,
-        }) => commands::kill::run(target, server, remote.with_socket(socket)),
-        Some(Command::Detach { session, remote }) => {
-            commands::detach::run_detach(session, remote.with_socket(socket))
-        }
+        }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
+            Ok(key) => commands::kill::run(target, server, key, yes, remote.with_socket(socket)),
+            Err(code) => code,
+        },
+        Some(Command::Detach {
+            session,
+            yes,
+            remote,
+        }) => commands::detach::run_detach(session, yes, remote.with_socket(socket)),
         Some(Command::InsertPane {
             target,
             new_pane,
@@ -1217,11 +1265,20 @@ fn dispatch(
             geometry,
             json,
         }) => commands::resize::run_resize(&target, geometry, json.json, socket),
-        Some(Command::Take { target }) => commands::supervise::run_take(&target, socket),
+        Some(Command::Take { target, ttl }) => commands::supervise::run_take(&target, ttl, socket),
         Some(Command::Give { target }) => commands::supervise::run_give(&target, socket),
-        Some(Command::Signal { target, signal }) => {
-            commands::supervise::run_signal(&target, signal, socket)
-        }
+        Some(Command::Signal {
+            target,
+            signal,
+            idempotency_key,
+            yes,
+        }) => match commands::spawn::parse_key_arg(idempotency_key.as_deref(), false) {
+            Ok(key) => commands::supervise::run_signal(&target, signal, key, yes, socket),
+            Err(code) => code,
+        },
+        Some(Command::Approvals { json }) => commands::approvals::run_approvals(json.json, socket),
+        Some(Command::Approve { id, yes }) => commands::approvals::run_approve(&id, yes, socket),
+        Some(Command::Deny { id }) => commands::approvals::run_deny(&id, socket),
         Some(Command::Update { opts }) => commands::update::run_update(&opts, socket),
         Some(Command::Channel { channel, json }) => {
             commands::channel::run(channel, json.json, socket)
@@ -1241,6 +1298,7 @@ fn dispatch(
             tail,
             unwrap,
             rendered,
+            format,
             cols,
             rows,
         }) => commands::snapshot::run_snapshot(
@@ -1251,6 +1309,7 @@ fn dispatch(
                 cells,
                 tail,
                 unwrap,
+                format,
             },
             &commands::snapshot::RenderedOpts {
                 rendered,
@@ -1291,14 +1350,17 @@ fn dispatch(
             session,
             until,
             timeout,
+            after,
             json,
         }) => commands::watch::run_watch(commands::watch::WatchArgs {
             session: session.as_deref(),
             until: &until,
             timeout,
+            after: after.as_deref(),
             json: json.json,
             socket,
         }),
+        Some(Command::Resource { action }) => commands::resource::run_resource(&action, socket),
         Some(Command::Rec {
             target,
             out,
@@ -2846,6 +2908,58 @@ mod tests {
                 "{verb} --ratio 0.25 must parse"
             );
         }
+    }
+
+    /// Review round 2's low finding: `phux take --ttl` above
+    /// `u32::MAX / 1000` seconds used to be silently clamped to
+    /// `u32::MAX` milliseconds, so the success line printed a different
+    /// value than what was asked for. It is now a usage error at parse
+    /// time, like `--ratio` above, instead of a silent runtime clamp.
+    #[test]
+    fn take_ttl_above_u32_ms_range_validates_at_parse_time() {
+        assert!(
+            crate::parse_cli(["phux", "take", "@1", "--ttl", "4294968"]).is_err(),
+            "4294968s * 1000 overflows u32 ms and must fail at clap"
+        );
+        assert!(
+            crate::parse_cli(["phux", "take", "@1", "--ttl", "4294967295"]).is_err(),
+            "a wildly out-of-range value must fail at clap"
+        );
+        assert!(
+            crate::parse_cli(["phux", "take", "@1", "--ttl", "4294967"]).is_ok(),
+            "the exact u32-ms boundary (4294967 * 1000 <= u32::MAX) must parse"
+        );
+        assert!(
+            crate::parse_cli(["phux", "take", "@1", "--ttl", "0"]).is_ok(),
+            "0 (explicit no-TTL) must still parse"
+        );
+        assert!(
+            crate::parse_cli(["phux", "take", "@1"]).is_ok(),
+            "omitting --ttl entirely must still parse"
+        );
+    }
+
+    /// ADR-0127: `--viewer` and `--take` parse on `attach`, refuse each
+    /// other at clap, and map onto the declared role every ATTACH carries.
+    #[test]
+    fn attach_viewer_and_take_parse_refuse_each_other_and_map_to_roles() {
+        use phux_protocol::wire::frame::RolePolicy;
+        assert!(crate::parse_cli(["phux", "attach", "--viewer"]).is_ok());
+        assert!(crate::parse_cli(["phux", "attach", "--take", "work"]).is_ok());
+        assert!(
+            crate::parse_cli(["phux", "attach", "--viewer", "--take"]).is_err(),
+            "a viewer cannot take over: the flags conflict at parse time"
+        );
+        assert_eq!(crate::declared_attach_role(true, false), RolePolicy::VIEWER);
+        assert_eq!(
+            crate::declared_attach_role(false, true),
+            RolePolicy::TAKEOVER
+        );
+        assert_eq!(
+            crate::declared_attach_role(false, false),
+            RolePolicy::PRIMARY,
+            "no flag is the default attach, which writes no role byte"
+        );
     }
 
     /// `insert-pane` / `move-pane` help advertises `--split` and hides the

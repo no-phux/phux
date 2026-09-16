@@ -147,6 +147,7 @@ fn a_conditional_kill_needs_the_feature_and_is_correlated_on_a_connection_that_n
             command: Command::KillResourceIf {
                 terminal_id: ResourceId::local(9),
                 precondition: KillPrecondition::spawned_and_unattached(ServerInstance::new(token)),
+                operation_id: None,
             },
         }
     );
@@ -1177,6 +1178,180 @@ fn spawn_options_are_encoded_exactly_and_validation_is_transactional() {
         assert_eq!(h.0.inner.outgoing.len(), 1);
     }
     assert_eq!(h.spawn(8), PhuxClientResult::Ok);
+}
+
+#[test]
+fn spawn_options_retain_secs_and_idempotency_key_reach_the_wire() {
+    let mut h = Harness::attached();
+    let key = [0x5A; 16];
+    let options = PhuxSpawnOptions {
+        request_id: 20,
+        has_retain_secs: true,
+        retain_secs: 600,
+        idempotency_key: key,
+        ..PhuxSpawnOptions::default()
+    };
+    // SAFETY: harness owns the client; the options outlive each call.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn(h.ptr(), &raw const options),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert!(
+        h.0.inner.outgoing.is_empty(),
+        "nothing queued without RETAIN_ON_EXIT / SPAWN_IDEMPOTENCY"
+    );
+    h.0.inner.retain_on_exit = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn(h.ptr(), &raw const options),
+            PhuxClientResult::InvalidState
+        );
+    }
+    h.0.inner.spawn_idempotency = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_queue_spawn(h.ptr(), &raw const options),
+            PhuxClientResult::Ok
+        );
+    }
+    let (frame, remaining) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("decode");
+    assert!(remaining.is_empty());
+    let FrameKind::SpawnResource {
+        resource: Some(resource),
+        ..
+    } = frame
+    else {
+        panic!("expected SPAWN_RESOURCE with a resource block: {frame:?}");
+    };
+    assert_eq!(resource.retain_secs, Some(600));
+    assert_eq!(resource.idempotency_key.map(|k| *k.as_bytes()), Some(key));
+    assert!(!resource.bind_instance);
+}
+
+#[test]
+fn spawn_options_legacy_size_omits_trailing_retain_and_idempotency_fields() {
+    let mut h = Harness::attached();
+    h.0.inner.retain_on_exit = true;
+    h.0.inner.spawn_idempotency = true;
+    let mut options = PhuxSpawnOptions {
+        request_id: 21,
+        has_retain_secs: true,
+        retain_secs: 30,
+        idempotency_key: [0x5A; 16],
+        ..PhuxSpawnOptions::default()
+    };
+    let rows_end = mem::offset_of!(PhuxSpawnOptions, rows) + mem::size_of::<u16>();
+    options.size = rows_end.next_multiple_of(mem::align_of::<PhuxSpawnOptions>());
+    // SAFETY: the host record is the geometry-only size; trailing fields are not part of it.
+    assert_eq!(
+        unsafe { phux_client_queue_spawn(h.ptr(), &raw const options) },
+        PhuxClientResult::Ok
+    );
+    let (frame, _) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("decode");
+    assert!(
+        matches!(frame, FrameKind::SpawnResource { resource: None, .. }),
+        "geometry-only size must not send fields 16/17: {frame:?}"
+    );
+}
+
+#[test]
+fn subscribe_events_refuses_a_cursor_without_event_journal_and_queues_one_with_it() {
+    let mut h = Harness::attached();
+    let after_seq = 41u64;
+    // SAFETY: harness owns the client; the cursor outlives the call.
+    unsafe {
+        assert_eq!(
+            phux_client_subscribe_events(h.ptr(), ptr::null(), &raw const after_seq),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert!(h.0.inner.outgoing.is_empty());
+    h.0.inner.event_journal = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(
+            phux_client_subscribe_events(h.ptr(), ptr::null(), &raw const after_seq),
+            PhuxClientResult::Ok
+        );
+    }
+    let (frame, remaining) = FrameKind::decode(&h.0.inner.outgoing[0]).expect("decode");
+    assert!(remaining.is_empty());
+    assert_eq!(
+        frame,
+        FrameKind::SubscribeEvents {
+            terminal: None,
+            after_seq: Some(41),
+        }
+    );
+}
+
+/// ADR-0127: the role byte is validated, needs `ATTACH_ROLES`, rides the next
+/// `ATTACH_RESOURCE`, and `0` restores the byte-identical default.
+#[test]
+fn attach_role_is_validated_needs_attach_roles_and_rides_the_next_attach() {
+    use phux_protocol::wire::frame::{Command, RolePolicy};
+    let mut h = Harness::attached();
+    // SAFETY: harness owns the client.
+    unsafe {
+        assert_eq!(
+            phux_client_attach_role(h.ptr(), 3),
+            PhuxClientResult::InvalidArgument
+        );
+        assert_eq!(
+            phux_client_attach_role(h.ptr(), 4),
+            PhuxClientResult::InvalidArgument
+        );
+        assert_eq!(
+            phux_client_attach_role(h.ptr(), 1),
+            PhuxClientResult::InvalidState
+        );
+    }
+    assert_eq!(h.0.inner.attach_role, None, "nothing stored on refusal");
+    h.0.inner.attach_roles = true;
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(phux_client_attach_role(h.ptr(), 1), PhuxClientResult::Ok);
+    }
+    let queued = h.0.inner.outgoing.len();
+    assert_eq!(h.attach(9, &ResourceId::local(9)), PhuxClientResult::Ok);
+    let (frame, remaining) = FrameKind::decode(&h.0.inner.outgoing[queued]).expect("decode");
+    assert!(remaining.is_empty());
+    assert!(
+        matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::AttachResource {
+                    role_policy: Some(RolePolicy::VIEWER),
+                    ..
+                },
+                ..
+            }
+        ),
+        "{frame:?}"
+    );
+    assert_eq!(
+        h.0.inner.attach_role,
+        Some(RolePolicy::VIEWER),
+        "a viewer stays declared"
+    );
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(phux_client_attach_role(h.ptr(), 2), PhuxClientResult::Ok);
+    }
+    assert_eq!(h.attach(10, &ResourceId::local(10)), PhuxClientResult::Ok);
+    assert_eq!(
+        h.0.inner.attach_role, None,
+        "a takeover is consumed by the attach it rides"
+    );
+    // SAFETY: as above.
+    unsafe {
+        assert_eq!(phux_client_attach_role(h.ptr(), 0), PhuxClientResult::Ok);
+    }
+    assert_eq!(h.0.inner.attach_role, None);
 }
 
 #[test]

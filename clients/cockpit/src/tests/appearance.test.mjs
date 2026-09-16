@@ -135,7 +135,7 @@ test('the placement menu command previews through the appearance transaction', (
 });
 
 test('Workspace and Connection arrow keys never change a hidden theme', () => {
-  for (const section of [1, 2]) {
+  for (const section of [1, 2, 4]) {
     const model = step(opened(), { kind: 'settings_section', section })[0];
     assert.deepEqual(step(model, { kind: 'settings_move', delta: 1 }), [model, null]);
   }
@@ -191,11 +191,48 @@ test('Settings groups cannot retain keyboard rows or share the connection accord
   assert.equal(keyboard.showBindingRows, true);
   const [connection] = step(keyboard, { kind: 'settings_section', section: 4 });
   assert.equal(connection.showBindingRows, false);
-  assert.deepEqual(connection.settingRows.map(row => row.id), [12, 13]);
+  assert.deepEqual(connection.settingRows.map(row => row.id), []);
 
   const markup = readFileSync(new URL('../windows/components/cockpit-settings.native', import.meta.url), 'utf8');
   assert.equal(markup.match(/on-toggle="settings_detail:12"/g)?.length ?? 0, 0);
-  assert.equal(markup.match(/setting\.id == 12/g)?.length ?? 0, 1);
+  assert.equal(markup.match(/setting\.id == 12/g)?.length ?? 0, 0);
   assert.match(markup, /accordion text="Details" label="\{setting\.label\}"/);
   assert.match(markup, /accordion text="Details" label="\{binding\.label\}"/);
+  assert.match(markup, /if test="\{settingsFooterSave\}"/);
+});
+
+test('Connection and About are read-only while editable groups keep Save', () => {
+  const openedSettings = opened();
+  assert.equal(text(openedSettings.settingsSections[4].label), 'Connection');
+  assert.equal(openedSettings.settingsFooterSave, true);
+  const [connection] = step(openedSettings, { kind: 'settings_section', section: 4 });
+  assert.equal(connection.settingsFooterSave, false);
+  assert.equal(connection.noSettingRows, false);
+  const [about] = step(openedSettings, { kind: 'settings_section', section: 5 });
+  assert.equal(about.settingsFooterSave, false);
+  const [keyboard] = step(openedSettings, { kind: 'settings_section', section: 2 });
+  assert.equal(keyboard.settingsFooterSave, true);
+  const dirty = step(openedSettings, { kind: 'appearance_loaded', body: reply({ dirty: true }) })[0];
+  const [dirtyConnection] = step(dirty, { kind: 'settings_section', section: 4 });
+  assert.equal(dirtyConnection.appearance.dirty, true);
+  assert.equal(dirtyConnection.settingsFooterSave, false);
+  const [fromConnection, cmd] = step(connection, { kind: 'sessions_open' });
+  assert.equal(fromConnection.settingsOpen, true);
+  assert.equal(fromConnection.paletteOpen, false);
+  assert.deepEqual([...cmd.payload], [1, 6, 0]);
+});
+
+test('global search results stay disclosure-only in read-only Settings groups', () => {
+  let [model] = step(opened(), { kind: 'settings_section', section: 4 });
+  [model] = step(model, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Geist Mono') } });
+  assert.deepEqual(model.settingRows.map(row => row.id), [0]);
+  const [setting] = step(model, { kind: 'settings_select', id: 0 });
+  assert.equal(setting.settingEditId, 65535);
+
+  [model] = step(opened(), { kind: 'keybindings_loaded', body: keybindingReply() });
+  [model] = step(model, { kind: 'settings_section', section: 5 });
+  [model] = step(model, { kind: 'settings_query', edit: { kind: 'insert_text', text: bytes('Cmd+t') } });
+  assert.equal(model.showBindingRows, true);
+  const [binding] = step(model, { kind: 'binding_select', index: 0 });
+  assert.equal(binding.bindingEditIndex, 65535);
 });

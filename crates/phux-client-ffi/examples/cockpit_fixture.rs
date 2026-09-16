@@ -440,16 +440,23 @@ fn directory_listing() -> FrameKind {
 /// Request `/work` through the C ABI and read the fixture reply back.
 fn verify_directory(hello: &[u8], attached: &[u8], listing: &[u8]) {
     use phux_client_ffi::{
-        PhuxDirectoryEntry, PhuxDirectoryListingInfo, phux_client_directory_entry_get,
-        phux_client_directory_info, phux_client_list_directory,
+        PhuxDirectoryEntry, PhuxDirectoryListingInfo, PhuxDirectoryRequest,
+        phux_client_directory_entry_get, phux_client_directory_info, phux_client_list_directory_on,
     };
     let client = Client::new();
     client.negotiate_and_attach(hello, attached);
     // SAFETY: live same-thread handle, valid spans, and writable outputs; the
     // borrowed name is copied before any further mutable call.
     unsafe {
+        let request = PhuxDirectoryRequest {
+            size: size_of::<PhuxDirectoryRequest>(),
+            version: ABI_VERSION,
+            request_id: 1,
+            path: span(b"/work"),
+            host: PhuxBytes::default(),
+        };
         assert_eq!(
-            phux_client_list_directory(client.0, 1, span(b"/work")),
+            phux_client_list_directory_on(client.0, &raw const request),
             PhuxClientResult::Ok
         );
         assert!(matches!(client.take_outgoing(),

@@ -403,6 +403,121 @@ fn subscribe_with_after_seq_replays_missed_events_in_order_then_goes_live() {
     });
 }
 
+/// A `GET_STATE` answer names the journal head at its cut (L1 §7.3): the
+/// newest `seq` stamped before the snapshot. A server-wide subscriber sees
+/// every journaled event before the answer, so the head is the largest
+/// `seq` that subscriber has seen by then.
+#[test]
+fn get_state_reports_the_journal_head_at_the_snapshot_cut() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let (shutdown, server) = spawn_server_with(socket.clone(), Some("demo"), |_| {});
+        let (mut a, _) = connect(&socket, "producer").await;
+        let pane = attach_pane(&mut a, "demo").await;
+        let mut seen = subscribe(&mut a, 1, None, None).await;
+        let (_, asked) = command(&mut a, 2, report_asked(&pane, "q1")).await;
+        seen.extend(asked);
+        let (result, before_cut) = command(
+            &mut a,
+            3,
+            Command::GetState {
+                scope: StateScope::Server,
+            },
+        )
+        .await;
+        seen.extend(before_cut);
+        let CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(snapshot)) =
+            result
+        else {
+            panic!("GET_STATE failed: {result:?}");
+        };
+        let newest = seen
+            .iter()
+            .filter(|event| event.stamp.is_some())
+            .map(Seen::seq)
+            .max()
+            .expect("the asked event was journaled");
+        assert!(seen.iter().any(|event| event.asked_id() == Some("q1")));
+        assert_eq!(
+            snapshot.journal_head(),
+            Some(newest),
+            "the head is the newest seq stamped before the cut"
+        );
+
+        drop(a);
+        join_after_shutdown(shutdown, server).await;
+    });
+}
+
+fn journal_head_of(result: CommandResult) -> u64 {
+    let CommandResult::OkWith(phux_protocol::wire::frame::CommandValue::State(snapshot)) = result
+    else {
+        panic!("GET_STATE failed: {result:?}");
+    };
+    snapshot
+        .journal_head()
+        .expect("an EVENT_JOURNAL server writes the head")
+}
+
+/// L1 §7.3: the head is per connection. A connection watching one terminal
+/// gets the newest `seq` its subscription admits, so events on another
+/// terminal never hold its catch-up open; a connection without
+/// subscriptions gets the newest `seq` assigned.
+#[test]
+fn the_journal_head_reflects_only_what_the_connection_admits() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let (shutdown, server) = spawn_server_with(socket.clone(), Some("demo"), |_| {});
+        let (mut a, _) = connect(&socket, "producer").await;
+        let pane = attach_pane(&mut a, "demo").await;
+        let (mut b, _) = connect(&socket, "watcher").await;
+        let mut watched = subscribe(&mut b, 1, Some(pane.clone()), None).await;
+        ask(&mut a, 2, &pane, "q1").await;
+        watched.push(next_event(&mut b, |seen| seen.asked_id() == Some("q1")).await);
+        let (other, _) = spawn_pane_id(&mut a, 3).await;
+        ask(&mut a, 4, &other, "q2").await;
+
+        let get_state = || Command::GetState {
+            scope: StateScope::Server,
+        };
+        let (result, before_cut) = command(&mut b, 2, get_state()).await;
+        watched.extend(before_cut);
+        let watcher_head = journal_head_of(result);
+        let (mut c, _) = connect(&socket, "bystander").await;
+        let global_head = journal_head_of(command(&mut c, 1, get_state()).await.0);
+        let q2 = journal_contents(&socket)
+            .await
+            .iter()
+            .find(|seen| seen.asked_id() == Some("q2"))
+            .map(Seen::seq)
+            .expect("q2 was journaled");
+
+        let newest_watched = watched
+            .iter()
+            .filter(|seen| seen.stamp.is_some())
+            .map(Seen::seq)
+            .max()
+            .expect("the watcher saw q1");
+        assert_eq!(
+            watcher_head, newest_watched,
+            "the head is the newest seq the watcher's subscription admits"
+        );
+        assert!(
+            watcher_head < q2,
+            "another terminal's event does not raise it"
+        );
+        assert!(
+            global_head >= q2,
+            "no subscription: the newest seq assigned"
+        );
+
+        drop((a, b, c));
+        join_after_shutdown(shutdown, server).await;
+    });
+}
+
 #[test]
 fn subscribe_with_a_stale_cursor_receives_journal_gap_first() {
     run_local(async {

@@ -33,6 +33,7 @@
 pub mod action_registry;
 pub mod actions;
 mod agent_rows;
+mod attach_role;
 // phux-wrnm: what is on each right-click menu (ADR-0058). The overlay that
 // renders one lives in `render::overlay::menu`.
 mod context_menu;
@@ -92,6 +93,9 @@ pub use driver::{
     connect_for_attach, run_headless_rendered, run_recorded_connection, run_recorded_dial,
     run_with_predict_connection, run_with_predict_dial, run_with_stdout, write_terminal_reset,
 };
+
+// ADR-0127: the CLI declares `--viewer` / `--take` once, before it dials.
+pub use attach_role::set_attach_role;
 
 // Multi-pane composition lives in `phux-client-core` (phux-0fv, ADR-0020):
 // the pure layout-tree -> pane-rects + divider-cells compute is ratatui-free

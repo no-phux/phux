@@ -12,6 +12,7 @@ mod grid_metadata;
 mod log;
 mod operations;
 mod pointer;
+mod projection;
 mod remote;
 mod session_create;
 mod session_query;
@@ -48,6 +49,7 @@ pub use pointer::{
     PhuxSelectionGestureEvent, PhuxSelectionGestureResult, phux_client_selection_gesture,
     phux_client_terminal_mouse_mode,
 };
+pub use projection::*;
 pub use remote::registry::*;
 pub use remote::*;
 pub use session_create::*;
@@ -347,35 +349,6 @@ fn client_limits(options: &PhuxClientOptions) -> Result<Limits, BridgeError> {
     })
 }
 
-/// Replaces the client's lifecycle callbacks, or clears them when `callbacks` is null.
-///
-/// # Safety
-///
-/// When non-null, `client` must be a live client on its owning thread with
-/// exclusive access for the call. `callbacks` may be null to clear callbacks;
-/// otherwise it must be readable for the call. Configured callback functions
-/// and their `userdata` must remain valid whenever the callbacks can run.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn phux_client_set_callbacks(
-    client: *mut PhuxClient,
-    callbacks: *const PhuxClientCallbacks,
-) -> PhuxClientResult {
-    with_client_mut(client, |client| {
-        if callbacks.is_null() {
-            client.callbacks = PhuxClientCallbacks::default();
-            return Ok(());
-        }
-        let callbacks = unsafe { &*callbacks };
-        check_struct(
-            callbacks.size,
-            mem::size_of::<PhuxClientCallbacks>(),
-            callbacks.version,
-        )?;
-        client.callbacks = *callbacks;
-        Ok(())
-    })
-}
-
 /// Destroys a client.
 ///
 /// # Safety
@@ -577,12 +550,14 @@ fn queue_attach_frame(
         .then_some((options.pixel_width, options.pixel_height));
     let viewport = ViewportInfo::new(options.cols, options.rows)
         .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1));
+    let role_policy = client.next_attach_role();
     client.queue_frame(&FrameKind::Attach {
         attach_id: options.attach_id,
         target,
         viewport,
         request_scrollback: options.request_scrollback,
         scrollback_limit_lines: options.scrollback_limit_lines,
+        role_policy,
     })?;
     client.attach_queued = true;
     client.expected_attach_id = Some(options.attach_id);
@@ -692,6 +667,9 @@ fn dispatch_frame(
         return Ok(());
     };
     let Some(frame) = session_rename::dispatch(client, frame)? else {
+        return Ok(());
+    };
+    let Some(frame) = projection::dispatch(client, frame) else {
         return Ok(());
     };
     if workspace::resources::dispatch(client, &frame)? {
@@ -977,6 +955,22 @@ fn apply_hello_ok(
     client.conditional_kill = server_caps
         .features
         .contains(phux_protocol::ServerFeature::ConditionalKill);
+    client.event_journal = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::EventJournal);
+    client.retain_on_exit = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::RetainOnExit);
+    client.spawn_idempotency = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::SpawnIdempotency);
+    client.close_tab_resources = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::CloseTabResources);
+    client.l3_metadata = server_caps.layers.contains(phux_protocol::Layer::L3);
+    client.attach_roles = server_caps
+        .features
+        .contains(phux_protocol::ServerFeature::AttachRoles);
     client.protocol_ready = true;
     session_rename::negotiated(client)
 }
@@ -3648,6 +3642,9 @@ mod tests {
             (None, DETACH_REASON_UNSTATED),
             (Some(DetachReason::Requested), 0),
             (Some(DetachReason::ServerShutdown), 1),
+            (Some(DetachReason::AuthenticationFailed), 5),
+            (Some(DetachReason::AuthorizationRevoked), 6),
+            (Some(DetachReason::AuthorizationExpired), 7),
             (Some(DetachReason::InternalError), 255),
         ] {
             let client = boxed_client();

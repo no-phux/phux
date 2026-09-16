@@ -217,7 +217,7 @@ fn child_and_scrollback_survive_graceful_upgrade() {
     // so the server intentionally stays alive after becoming empty; the
     // authoritative session list is the reap assertion here.
     assert_eq!(
-        server.status(&["kill", SESSION]),
+        server.status(&["kill", "--yes", SESSION]),
         0,
         "the resumed session should accept a kill"
     );

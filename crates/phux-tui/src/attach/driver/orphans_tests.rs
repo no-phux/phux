@@ -96,13 +96,15 @@ fn one_kill_per_orphan_under_fresh_request_ids() {
             FrameKind::Command {
                 request_id: 40,
                 command: Command::KillResource {
-                    terminal_id: edge(9)
+                    terminal_id: edge(9),
+                    operation_id: None,
                 },
             },
             FrameKind::Command {
                 request_id: 41,
                 command: Command::KillResource {
-                    terminal_id: edge(10)
+                    terminal_id: edge(10),
+                    operation_id: None,
                 },
             },
         ]
@@ -439,12 +441,14 @@ fn a_switch_stray_is_retried_conditionally_only_when_bound_and_supported() {
         command: Command::KillResourceIf {
             terminal_id: edge(9),
             precondition: KillPrecondition::spawned_and_unattached(token()),
+            operation_id: None,
         },
     };
     let plain = FrameKind::Command {
         request_id: 1,
         command: Command::KillResource {
             terminal_id: edge(9),
+            operation_id: None,
         },
     };
     for (pane, supported, expected) in [

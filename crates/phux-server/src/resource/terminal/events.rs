@@ -32,6 +32,27 @@ impl TerminalActor {
         }
     }
 
+    /// Emit a signal's `terminal_control`, attributed to the client that
+    /// sent it and to its `operation_id` when keyed (L1 §5.1.1, §7.3).
+    pub(super) fn emit_signal_control(
+        &self,
+        action: ControlAction,
+        input_holder: Option<phux_protocol::ClientId>,
+        by: phux_protocol::ClientId,
+        operation_id: Option<phux_protocol::ids::IdempotencyKey>,
+    ) {
+        let event = AgentEvent::TerminalControl {
+            lifecycle: self.lifecycle,
+            exit_status: None,
+            input_holder,
+            action,
+            actor: Some(by),
+        };
+        if let Some(sink) = self.event_sink.as_ref() {
+            sink.emit_keyed(event, operation_id);
+        }
+    }
+
     /// Wire the agent-state detector's sink (ADR-0046). The actor's detector
     /// timer emits edge-filtered [`AgentDetectEvent`]s here; the runtime's
     /// `spawn_agent_state_drain` owns `ServerState` and performs the
@@ -397,7 +418,7 @@ impl TerminalActor {
                 action,
                 actor,
             } => {
-                self.emit_terminal_control(action, input_holder, Some(actor), None);
+                self.emit_terminal_control(action, input_holder, actor, None);
             }
             ControlRequest::AgentRecordInvalidated => {
                 if let Some(detector) = self.agent_detect.as_mut() {
@@ -441,6 +462,7 @@ impl TerminalActor {
                 let _ = reply.send(self.apply_hook_state(hook_state(state)));
             }
             ControlRequest::BindAgentSession { append } => self.bind_agent_session(append),
+            ControlRequest::Retire => self.retire_after_exit(),
             ControlRequest::SynthesizeAgentStateRecord { state, reply } => {
                 let _ = reply.send(self.synthesize_state_record(hook_state(state)));
             }
@@ -448,6 +470,7 @@ impl TerminalActor {
                 signal,
                 input_holder,
                 by,
+                operation_id,
                 reply,
             } => {
                 let result = self.deliver_signal(signal);
@@ -469,7 +492,7 @@ impl TerminalActor {
                         TerminalSignal::Terminate => ControlAction::Terminated,
                         TerminalSignal::Kill => ControlAction::Killed,
                     };
-                    self.emit_terminal_control(action, input_holder, Some(by), None);
+                    self.emit_signal_control(action, input_holder, by, operation_id);
                 }
                 let _ = reply.send(result);
             }
@@ -578,6 +601,18 @@ impl TerminalActor {
         // ordinary derivation still runs behind it.
         self.agent_dirty_since_detect = true;
         Ok(())
+    }
+
+    /// The pane's process exited and the pane is retained (ADR-0124). Later
+    /// `TerminalControl` broadcasts report `Exited`, the detector stops (its
+    /// foreground poll has no process to find), and the PTY is let go, so
+    /// input that reaches this actor anyway is reported as not written and a
+    /// retained pane holds no pseudoterminal. The grid, history, and every
+    /// consumer stay: inspection is the point.
+    pub(super) fn retire_after_exit(&mut self) {
+        self.lifecycle = ResourceLifecycle::Exited;
+        self.agent_detect = None;
+        self.release_pty_after_exit();
     }
 
     /// Emit an [`AgentEvent::TerminalControl`] (ADR-0033) carrying this

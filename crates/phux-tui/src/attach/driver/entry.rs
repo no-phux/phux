@@ -9,8 +9,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::caps::OutputMode;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use tracing::Instrument as _;

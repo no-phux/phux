@@ -1,7 +1,7 @@
 ---
 audience: humans, agents, contributors
 stability: evolving
-last-reviewed: 2026-08-02
+last-reviewed: 2026-09-15
 ---
 
 # phux config reference
@@ -46,12 +46,19 @@ Every scalar knob with its shipped default, serialized from the schema itself, p
 | `chrome.compact-rows` | `18` |
 | `chrome.min-pane-cols` | `40` |
 | `defaults.agent-log-bytes` | `4194304` |
+| `defaults.approval-max-pending` | `64` |
+| `defaults.approval-max-pending-total` | `1024` |
+| `defaults.approval-ttl-secs` | `120` |
 | `defaults.cwd-inheritance` | `"inherit-focused"` |
 | `defaults.event-journal-bytes` | `1048576` |
 | `defaults.event-journal-entries` | `4096` |
 | `defaults.history-bytes` | `2097152` |
 | `defaults.history-limit` | `50000` |
 | `defaults.mouse` | `true` |
+| `defaults.retain-on-exit` | `false` |
+| `defaults.retain-on-exit-max` | `256` |
+| `defaults.retain-on-exit-max-secs` | `86400` |
+| `defaults.retain-on-exit-secs` | `600` |
 | `defaults.session-name-template` | `"${cwd-basename}"` |
 | `defaults.term` | `"xterm-256color"` |
 | `defaults.window-size` | `"smallest"` |
@@ -141,6 +148,18 @@ agent-log-bytes = 4194304
 # the accepted maxima.
 event-journal-entries = 4096
 event-journal-bytes = 1048576
+# Retain on exit (ADR-0124): keep a Terminal inspectable after its process
+# exits -- its exit status, last screen, and history -- until it expires, the
+# count bound evicts it (oldest first), or it is killed. Off by default: a
+# spawner asks for it per pane. true retains every pane that does not say, the
+# seed pane included. retain-on-exit-secs is what a default retention lasts; no
+# retention outlasts retain-on-exit-max-secs. A retained pane holds its grid and
+# history (up to history-bytes: about 512 MiB at 256 panes with the 2 MiB
+# default) but no PTY. 4096 is the accepted maximum count.
+retain-on-exit = false
+retain-on-exit-secs = 600
+retain-on-exit-max-secs = 86400
+retain-on-exit-max = 256
 # Client-side outer-terminal mouse tracking on attach (ADR-0048): divider
 # drag-to-resize and click-to-focus work without an inner program turning
 # mouse mode on. false = pass-through-only (native click-drag selection).

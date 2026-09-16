@@ -45,6 +45,11 @@ pub(crate) enum OperationDomain {
     Spawn,
     /// `phux.session.create/v1.request_token` (ADR-0126).
     SessionCreate,
+    /// The trailing `operation_id` of the supervisory verbs, one namespace
+    /// for all four (`KILL_RESOURCE`, `KILL_RESOURCE_IF`, `KILL_RESOURCES`,
+    /// `SIGNAL_TERMINAL`), so a key names one operation whichever verb it
+    /// rode (`docs/spec/L1.md` §5.1.1).
+    Signal,
 }
 
 /// One namespaced operation id. Debug output is redacted: an id correlates
@@ -79,6 +84,8 @@ pub(crate) enum CachedOutcome {
     },
     /// A session create's published result document.
     SessionCreate(serde_json::Value),
+    /// A keyed kill's or signal's result.
+    Signal(CommandResult),
 }
 
 /// A repeat parked on an unresolved operation. Called once with the outcome

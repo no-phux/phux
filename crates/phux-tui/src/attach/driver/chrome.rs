@@ -3,8 +3,6 @@
 
 use std::collections::HashMap;
 
-#[cfg(not(all(feature = "native-engine", not(target_arch = "wasm32"))))]
-use phux_protocol::caps::BootstrapCapabilities;
 use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::ResourceLifecycle;
 
@@ -27,6 +25,11 @@ fn supervisory_badge(
     own_client_id: Option<ClientId>,
 ) -> Option<String> {
     let slot = panes.get(focused_resource?)?;
+    // ADR-0124: a retained pane's process is gone; how it ended is the whole
+    // story, and no lease or brake applies to it any more.
+    if let Some(mark) = slot.exited {
+        return Some(format!("[ {} ]", mark.label()));
+    }
     let frozen = matches!(slot.lifecycle, ResourceLifecycle::Frozen);
     format_supervisory_badge(frozen, slot.input_holder, own_client_id)
 }
@@ -346,6 +349,41 @@ pub(super) fn mark_focused_seen(
 mod tests {
     use super::*;
     use crate::attach::pane_state::{clear_attention_on_input, published_test_state};
+
+    /// ADR-0124: a retained pane keeps its published replica (the last grid
+    /// the server sent) after its process exits, the focused-pane badge says
+    /// how it ended, and the input gate the dispatcher consults refuses it.
+    #[test]
+    fn a_retained_pane_renders_its_last_grid_with_an_exit_mark_and_refuses_input() {
+        use crate::attach::pane_state::{ExitMark, pane_exited, published_terminal};
+        let id = ResourceId::local(1);
+        let (kernel, _effects, mut panes) =
+            published_test_state(&[(&id, 20, 4, b"final screen\r\n")]);
+        assert!(!pane_exited(&panes, &id), "a live pane takes input");
+        panes.get_mut(&id).expect("slot").exited = Some(ExitMark {
+            status: Some(3),
+            signal: None,
+        });
+        assert!(
+            published_terminal(&kernel, &id).is_some(),
+            "the last grid is still published for the renderer"
+        );
+        assert_eq!(
+            supervisory_badge(&panes, Some(&id), Some(ClientId::new(7))).as_deref(),
+            Some("[ exited 3 ]")
+        );
+        assert!(pane_exited(&panes, &id), "input to it is refused");
+        let signalled = ExitMark {
+            status: None,
+            signal: Some(9),
+        };
+        assert_eq!(signalled.label(), "exited signal 9");
+        let unknown = ExitMark {
+            status: None,
+            signal: None,
+        };
+        assert_eq!(unknown.label(), "exited");
+    }
 
     #[test]
     fn supervisory_badge_formats_every_state() {

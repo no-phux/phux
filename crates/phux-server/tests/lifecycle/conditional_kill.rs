@@ -101,6 +101,7 @@ async fn kill_if(
     let kill = Command::KillResourceIf {
         terminal_id: pane.clone(),
         precondition: KillPrecondition::spawned_and_unattached(instance),
+        operation_id: None,
     };
     command(stream, request_id, kill).await
 }
@@ -110,6 +111,7 @@ async fn get_screen(stream: &mut UnixStream, request_id: u32, pane: &ResourceId)
         terminal_id: pane.clone(),
         request_scrollback: None,
         cells: false,
+        format: 0,
     };
     command(stream, request_id, screen).await
 }
@@ -182,6 +184,7 @@ fn conditional_kill_takes_a_pane_only_its_spawner_attached() {
         let (pane, instance) = spawn_bound(&mut spawner, 1).await;
         let attach = Command::AttachResource {
             terminal_id: pane.clone(),
+            role_policy: None,
         };
         let attached = command(&mut spawner, 2, attach).await;
         assert!(
@@ -308,6 +311,7 @@ fn the_attachment_condition_without_an_instance_is_refused() {
                 instance: None,
                 conditions: phux_protocol::wire::frame::KillConditions::UNATTACHED_SINCE_SPAWN,
             },
+            operation_id: None,
         };
         assert_refused(&command(&mut spawner, 2, no_token).await);
         assert_alive(&get_screen(&mut spawner, 3, &pane).await);

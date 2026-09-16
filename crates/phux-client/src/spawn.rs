@@ -9,7 +9,8 @@
 
 use std::path::Path;
 
-use phux_protocol::ids::{ResourceId, SessionId, WindowId};
+use phux_protocol::caps::{ServerFeature, ServerFeatureSet};
+use phux_protocol::ids::{IdempotencyKey, ResourceId, SessionId, WindowId};
 use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, FrameKind, SpawnError, SpawnResult, StateScope,
 };
@@ -64,6 +65,118 @@ pub async fn spawn_on(
     let outcome = spawn(&mut conn, frame).await?;
     drop(conn);
     Ok(outcome)
+}
+
+/// The additive feature `frame` relies on that `features` lacks.
+///
+/// A spawn that asks for retention (`retain_secs`, ADR-0124) needs
+/// `RETAIN_ON_EXIT`; a keyed spawn (`idempotency_key`, ADR-0126) needs
+/// `SPAWN_IDEMPOTENCY`. A server without the bit skips the field by length
+/// and silently does something else (closes the pane at exit, spawns a
+/// second pane on a retry), so the caller refuses before sending.
+#[must_use]
+pub fn missing_spawn_feature(
+    frame: &FrameKind,
+    features: ServerFeatureSet,
+) -> Option<ServerFeature> {
+    let FrameKind::SpawnResource {
+        resource: Some(resource),
+        ..
+    } = frame
+    else {
+        return None;
+    };
+    [
+        (resource.retain_secs.is_some(), ServerFeature::RetainOnExit),
+        (
+            resource.idempotency_key.is_some(),
+            ServerFeature::SpawnIdempotency,
+        ),
+    ]
+    .into_iter()
+    .find(|(asked, feature)| *asked && !features.contains(*feature))
+    .map(|(_, feature)| feature)
+}
+
+/// The additive features the server at `socket_path` advertises in
+/// `HELLO_OK`.
+///
+/// # Errors
+///
+/// Transport failures from [`Connection::connect`].
+pub async fn server_features(socket_path: &Path) -> Result<ServerFeatureSet, AttachError> {
+    let conn = Connection::connect(socket_path).await?;
+    Ok(conn
+        .negotiated_bootstrap()
+        .map_or_else(ServerFeatureSet::new, |negotiated| {
+            negotiated.server_features
+        }))
+}
+
+/// Why a string is not an idempotency key.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("an idempotency key is 32 hex digits (16 bytes), not all zero")]
+pub struct InvalidIdempotencyKey;
+
+/// Parse an idempotency key (ADR-0126): 32 hex digits, not all zero. Draw
+/// one from a CSPRNG per logical operation and reuse it on every retry.
+///
+/// # Errors
+///
+/// [`InvalidIdempotencyKey`] for any other text.
+pub fn parse_idempotency_key(text: &str) -> Result<IdempotencyKey, InvalidIdempotencyKey> {
+    if text.len() != 32 || !text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(InvalidIdempotencyKey);
+    }
+    let mut bytes = [0_u8; 16];
+    for (index, byte) in bytes.iter_mut().enumerate() {
+        let at = index * 2;
+        *byte = u8::from_str_radix(&text[at..at + 2], 16).map_err(|_| InvalidIdempotencyKey)?;
+    }
+    IdempotencyKey::new(bytes).ok_or(InvalidIdempotencyKey)
+}
+
+/// The `phux spawn --json` result document for `terminal_id`.
+///
+/// `terminal_id` is the satellite-local id when `satellite` is non-null
+/// (address it through the hub as `satellite` + `terminal_id`), and
+/// `replayed` is `true` when a keyed retry answered an earlier spawn's pane.
+/// One builder for the CLI and the MCP `phux_spawn` tool.
+#[must_use]
+pub fn spawned_document(terminal_id: &ResourceId, replayed: bool) -> serde_json::Value {
+    let (id, host) = match terminal_id {
+        ResourceId::Local { id } => (*id, None),
+        ResourceId::Satellite { host, id } => (*id, Some(host.as_str())),
+    };
+    serde_json::json!({
+        "schema_version": 1,
+        "terminal_id": id,
+        "satellite": host,
+        "replayed": replayed,
+    })
+}
+
+/// The actionable sentence for a typed `SpawnError`, shared by `phux spawn`,
+/// `phux launch`, and the MCP `phux_spawn` tool.
+#[must_use]
+pub fn spawn_error_message(err: &SpawnError) -> String {
+    match err {
+        SpawnError::GroupNotFound => "spawn failed: server rejected the default group".to_owned(),
+        SpawnError::SpawnFailed(reason) => format!("spawn failed: {reason}"),
+        SpawnError::UnsupportedSatelliteRoute => "spawn failed: no route to that satellite \
+             (is the server running with --hub, and the name in \
+             `phux host ls --role satellite`?)"
+            .to_owned(),
+        SpawnError::SatelliteUnreachable(reason) => {
+            format!("spawn failed: satellite unreachable: {reason}")
+        }
+        // `SpawnError` is `#[non_exhaustive]`: a code with no arm here is a
+        // vocabulary this client does not have, i.e. version skew.
+        _ => format!(
+            "spawn failed: {}",
+            crate::explain::unexpected_reply("SPAWN_RESOURCE")
+        ),
+    }
 }
 
 /// The window/session a Terminal belongs to, read out of a `GET_STATE`
@@ -328,6 +441,7 @@ async fn rollback(socket_path: &Path, pane: &ResourceId) -> (Vec<String>, Cleanu
             1,
             Command::KillResource {
                 terminal_id: pane.clone(),
+                operation_id: None,
             },
         )
         .await

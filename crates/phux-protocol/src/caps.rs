@@ -925,114 +925,94 @@ impl Default for LayerSet {
     }
 }
 
-/// Wire bit advertising acknowledged, idempotent input batches.
-pub const ACKNOWLEDGED_INPUT: u32 = 0x0000_0010;
-/// Wire bit advertising chunked, acknowledged `Command::PutFile` uploads.
-pub const FILE_UPLOAD: u32 = 0x0000_0020;
-/// Wire bit advertising the `MOVE_RESOURCE` re-parent frame (ADR-0056).
-pub const MOVE_RESOURCE: u32 = 0x0000_0040;
-/// Wire bit advertising opaque client terminal-emulator PTY replies.
-pub const TERMINAL_REPLY: u32 = 0x0000_0080;
-/// Wire bit advertising the `SHUTDOWN` command (phux-pimp).
-pub const SHUTDOWN: u32 = 0x0000_0100;
-/// Wire bit advertising `SPAWN_RESOURCE.initial_size` (phux-a5xj).
-pub const SPAWN_INITIAL_SIZE: u32 = 0x0000_0200;
-/// Wire bit advertising hook-sourced agent-state evidence.
-pub const REPORT_AGENT_STATE: u32 = 0x0000_0400;
-/// Wire bit advertising the `GET_PERF` telemetry snapshot command.
-pub const GET_PERF: u32 = 0x0000_0800;
-/// Wire bit advertising the `TRANSCRIBE` voice passthrough command.
-///
-/// `0x1000` is retired-unshipped (the phux-workload/v1 `WORKLOAD_AUTH` bit
-/// was specified but never implemented, ADR-0116) and skipped: it is not
-/// advertised and MUST NOT be reused without a version bump.
-pub const TRANSCRIBE: u32 = 0x0000_2000;
-/// Wire bit advertising non-Terminal `ResourceKind`s.
-///
-/// Covers `SPAWN_RESOURCE` fields 11-14, `RESOURCE_CLOSED.reason`, the
-/// snapshot resource facets, the `APPEND_RESOURCE_OUTPUT` command, and the
-/// `AgentEventsJsonlV1` codec.
-pub const RESOURCE_KINDS: u32 = 0x0000_4000;
-/// Wire bit advertising the `LIST_DIRECTORY` host query (`docs/spec/L3.md` §4).
-pub const LIST_DIRECTORY: u32 = 0x0000_8000;
-/// Wire bit advertising the `GET_STATE` host-session inventory: the trailing
-/// `SessionSnapshot.hosts` list a federation hub fills with each satellite's
-/// sessions (`docs/spec/L1.md` §9.1).
-pub const HOST_SESSIONS: u32 = 0x0001_0000;
-/// Wire bit advertising keep-empty sessions (ADR-0105).
-///
-/// Covers the `keep_empty` / `empty` fields of `phux.session.create/v1`, the
-/// `phux.session.keep_empty/v1` key, and the snapshot's session facets
-/// (`docs/spec/L3.md` §3.1).
-pub const KEEP_EMPTY_SESSIONS: u32 = 0x0002_0000;
+// -----------------------------------------------------------------------------
+// ServerFeature — one declarative list. The consts, enum, known-bits mask,
+// and names are generated from it so a new bit cannot land in only one copy.
+// -----------------------------------------------------------------------------
 
-/// Wire bit advertising the read-only `phux.whoami/v1` Global metadata key
-/// (`docs/spec/L3.md` §3.9, ADR-0106).
-pub const WHOAMI: u32 = 0x0004_0000;
+macro_rules! define_server_features {
+    ($(
+        $(#[$doc:meta])*
+        $variant:ident = $const_name:ident = $bits:expr
+    ),* $(,)?) => {
+        $(
+            #[doc = concat!("Wire bit for [`ServerFeature::", stringify!($variant), "`].")]
+            pub const $const_name: u32 = $bits;
+        )*
 
-/// Wire bit advertising `LIST_DIRECTORY.host` (`docs/spec/L3.md` §4.1).
-///
-/// The server answers a listing for a named satellite, relayed through the
-/// hub, or refuses it with a typed `DIRECTORY_LISTING`. `0x2_0000` is left
-/// for an in-flight draft.
-pub const LIST_DIRECTORY_HOST: u32 = 0x0008_0000;
+        /// An additive server-owned protocol feature.
+        #[repr(u32)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[non_exhaustive]
+        pub enum ServerFeature {
+            $(
+                $(#[$doc])*
+                $variant = $const_name,
+            )*
+        }
 
-/// Wire bit advertising that the server honors the HELLO `ssh_origin` field.
-///
-/// `phux stdio-bridge` stamps the field, and the server reports such a
-/// connection's whoami route as `ssh-stdio` (`docs/spec/L3.md` §3.9).
-pub const SSH_ORIGIN: u32 = 0x0010_0000;
+        impl ServerFeature {
+            /// Every known feature, in declaration (bit) order.
+            ///
+            /// The known-bits mask and the wire / snake-case names are derived
+            /// from this same list.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),*];
 
-/// Wire bit advertising conditional kills (`docs/spec/L1.md` §5.2.1,
-/// ADR-0109): `KILL_RESOURCE_IF`, `SPAWN_RESOURCE.bind_instance`, and
-/// `RESOURCE_SPAWNED.instance`.
-pub const CONDITIONAL_KILL: u32 = 0x0020_0000;
+            /// The `docs/spec/proto.md` §6.2 constant, e.g. `"ACKNOWLEDGED_INPUT"`.
+            #[must_use]
+            pub const fn wire_name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => stringify!($const_name),)*
+                }
+            }
 
-/// Wire bit advertising QUIC multi-stream.
-///
-/// A negotiating QUIC connection carries one control stream plus one
-/// client-opened bidi stream per attached Terminal (`docs/spec/proto.md`
-/// §4.2, ADR-0115). QUIC-only; never advertised on (or affecting) UDS,
-/// ssh-stdio, WebSocket, or WebTransport.
-pub const QUIC_STREAMS: u32 = 0x0040_0000;
+            /// [`Self::wire_name`] lower-cased, e.g. `"acknowledged_input"`.
+            ///
+            /// This is the name `phux status --json` lists under `features` and
+            /// `phux --capabilities --json` uses for kind-catalog gates.
+            #[must_use]
+            pub const fn snake_name(self) -> &'static str {
+                match self {
+                    $(Self::$variant => {
+                        const WIRE: &str = stringify!($const_name);
+                        const N: usize = WIRE.len();
+                        const BYTES: &[u8] = &{
+                            let src = WIRE.as_bytes();
+                            let mut out = [0u8; N];
+                            let mut i = 0;
+                            while i < N {
+                                out[i] = src[i].to_ascii_lowercase();
+                                i += 1;
+                            }
+                            out
+                        };
+                        match core::str::from_utf8(BYTES) {
+                            Ok(s) => s,
+                            Err(_) => panic!("feature wire name is ASCII"),
+                        }
+                    })*
+                }
+            }
+        }
+    };
+}
 
-/// Wire bit advertising on-demand listeners (`docs/spec/L1.md` §5.6,
-/// ADR-0120): `OPEN_LISTENER`, which `phux attach --ssh` drives over ssh.
-pub const OPEN_LISTENER: u32 = 0x0080_0000;
-
-/// Wire bit advertising the journaled event envelope (ADR-0123): `EVENT`
-/// fields 3-6, `SUBSCRIBE_EVENTS.after_seq`, the `journal_gap` /
-/// `source_gap` events, and `METADATA_CHANGED.actor`.
-pub const EVENT_JOURNAL: u32 = 0x0100_0000;
-
-/// Wire bit advertising retain-on-exit (ADR-0124): `SPAWN_RESOURCE`
-/// field 16 and the snapshot's retained-resource state.
-pub const RETAIN_ON_EXIT: u32 = 0x0200_0000;
-
-/// Wire bit advertising idempotent create (ADR-0126): `SPAWN_RESOURCE`
-/// field 17, `RESOURCE_SPAWNED.replayed`, and `IDEMPOTENCY_CONFLICT`.
-pub const SPAWN_IDEMPOTENCY: u32 = 0x0400_0000;
-
-/// An additive server-owned protocol feature.
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum ServerFeature {
+define_server_features! {
     /// The server accepts idempotent `Command::ApplyInput` batches.
-    AcknowledgedInput = ACKNOWLEDGED_INPUT,
+    AcknowledgedInput = ACKNOWLEDGED_INPUT = 0x0000_0010,
     /// The server accepts sandboxed, chunked `Command::PutFile` uploads.
-    FileUpload = FILE_UPLOAD,
+    FileUpload = FILE_UPLOAD = 0x0000_0020,
     /// The server accepts `MOVE_RESOURCE` cross-window re-parents
     /// (ADR-0056). A client MUST see this bit before sending the frame;
     /// an older server would silently drop the unknown discriminant.
-    MoveResource = MOVE_RESOURCE,
+    MoveResource = MOVE_RESOURCE = 0x0000_0040,
     /// The server accepts opaque terminal-emulator replies for attached PTYs.
-    TerminalReply = TERMINAL_REPLY,
+    TerminalReply = TERMINAL_REPLY = 0x0000_0080,
     /// The server accepts `SHUTDOWN`, a local-only request to stop the
     /// server process itself (phux-pimp). A client MUST see this bit before
     /// sending the command; an older server would silently drop the unknown
     /// tag, which is indistinguishable from a stop that did not happen.
-    Shutdown = SHUTDOWN,
+    Shutdown = SHUTDOWN = 0x0000_0100,
     /// The server honors `SPAWN_RESOURCE.initial_size` (phux-a5xj) — it
     /// creates the pane's grid and PTY at the requested size instead of at
     /// its own default. Unlike the frame-gating bits above, sending the
@@ -1041,15 +1021,19 @@ pub enum ServerFeature {
     /// before the field existed. The bit exists so a layout-owning client
     /// can tell whether the geometry it just asked for was honored, and
     /// therefore whether its follow-up `RESIZE_TERMINAL` is redundant.
-    SpawnInitialSize = SPAWN_INITIAL_SIZE,
+    SpawnInitialSize = SPAWN_INITIAL_SIZE = 0x0000_0200,
     /// The server accepts `REPORT_AGENT_STATE` hook evidence.
-    ReportAgentState = REPORT_AGENT_STATE,
+    ReportAgentState = REPORT_AGENT_STATE = 0x0000_0400,
     /// The server answers `GET_PERF` with its in-process performance
     /// telemetry as a JSON `COMMAND_RESULT`.
-    GetPerf = GET_PERF,
+    GetPerf = GET_PERF = 0x0000_0800,
     /// The server answers `TRANSCRIBE` by running its configured
     /// transcriber on a finished upload and pasting the text.
-    Transcribe = TRANSCRIBE,
+    ///
+    /// `0x1000` is retired-unshipped (the phux-workload/v1 `WORKLOAD_AUTH`
+    /// bit was specified but never implemented, ADR-0116) and skipped: it
+    /// is not advertised and MUST NOT be reused without a version bump.
+    Transcribe = TRANSCRIBE = 0x0000_2000,
     /// The server serves more than one `ResourceKind`: it accepts
     /// `SPAWN_RESOURCE` with `kind = AgentSession` plus its `parent` /
     /// `provider` / `native_id` fields, feeds such a resource through
@@ -1060,12 +1044,12 @@ pub enum ServerFeature {
     /// additive, so sending them unadvertised degrades rather than breaks
     /// (an older server spawns a Terminal and ignores the facets); the bit
     /// is what tells a client the kind it asked for is the kind it got.
-    ResourceKinds = RESOURCE_KINDS,
+    ResourceKinds = RESOURCE_KINDS = 0x0000_4000,
     /// The server answers `LIST_DIRECTORY` with the child directories of a
     /// path on its own host (`docs/spec/L3.md` §4). A client MUST see this
     /// bit before sending the frame; an older server drops the unknown
     /// discriminant and the request would wait forever.
-    ListDirectory = LIST_DIRECTORY,
+    ListDirectory = LIST_DIRECTORY = 0x0000_8000,
     /// The server's `GET_STATE { scope: SERVER }` snapshot carries the
     /// trailing host-session inventory (`SessionSnapshot.hosts`): on a
     /// federation hub, one row per configured satellite with that host's
@@ -1074,21 +1058,21 @@ pub enum ServerFeature {
     /// list, which is the complete answer. The list is trailing-additive,
     /// so a server may send it unasked; the bit is what lets a client read
     /// an empty list as "no satellites" rather than "an older hub".
-    HostSessions = HOST_SESSIONS,
+    HostSessions = HOST_SESSIONS = 0x0001_0000,
     /// The server keeps sessions that are marked keep-empty (ADR-0105): it
     /// honors `keep_empty` and `empty` in `phux.session.create/v1`, applies
     /// `phux.session.keep_empty/v1`, reports the mark in the snapshot's
     /// session facets, and accepts an attach to a session with no windows.
     /// A client MUST see this bit before sending `empty: true`: an older
     /// server ignores the unknown JSON field and seeds a shell.
-    KeepEmptySessions = KEEP_EMPTY_SESSIONS,
+    KeepEmptySessions = KEEP_EMPTY_SESSIONS = 0x0002_0000,
     /// The server answers `GET_METADATA { Global, "phux.whoami/v1" }` with
     /// the identity of the asking connection: its principal, auth route,
     /// peer uid, and the serving OS user and host (`docs/spec/L3.md` §3.9,
     /// ADR-0106). An older server holds no such key and answers an absent
     /// value, which a client cannot tell from "no identity"; the bit is what
     /// makes the absence meaningful.
-    Whoami = WHOAMI,
+    Whoami = WHOAMI = 0x0004_0000,
     /// The server understands `LIST_DIRECTORY.host` (`docs/spec/L3.md`
     /// §4.1). A federation hub relays a request naming one of its
     /// satellites over that satellite's link and answers with the
@@ -1098,7 +1082,7 @@ pub enum ServerFeature {
     /// skips the unknown field by length and lists its own host, so a
     /// client MUST see the bit before trusting that a listing came from the
     /// host it named.
-    ListDirectoryHost = LIST_DIRECTORY_HOST,
+    ListDirectoryHost = LIST_DIRECTORY_HOST = 0x0008_0000,
     /// The server honors the HELLO `ssh_origin` field (field 9) that
     /// `phux stdio-bridge` stamps on the HELLO it relays. It accepts the field
     /// only from a Unix-socket peer running as the serving uid, and it only
@@ -1108,7 +1092,7 @@ pub enum ServerFeature {
     /// skips the unknown id by length. The bit is what lets a whoami reader
     /// trust that `uds` from this server means no bridge announced ssh
     /// (`docs/spec/L3.md` §3.9).
-    SshOrigin = SSH_ORIGIN,
+    SshOrigin = SSH_ORIGIN = 0x0010_0000,
     /// The server evaluates `KILL_RESOURCE_IF` (ADR-0109): it kills a
     /// resource only when the caller's instance token still names its id
     /// space and, if asked, no connection but the spawning one has attached
@@ -1116,20 +1100,20 @@ pub enum ServerFeature {
     /// also answers a `SPAWN_RESOURCE` that sets `bind_instance` with the
     /// token in `RESOURCE_SPAWNED.instance`. A client MUST see this bit
     /// before sending the command: an older server cannot decode the tag.
-    ConditionalKill = CONDITIONAL_KILL,
+    ConditionalKill = CONDITIONAL_KILL = 0x0020_0000,
     /// The connection may use QUIC multi-stream (ADR-0115): one control
     /// stream plus one client-opened bidi stream per attached Terminal,
     /// each Terminal stream carrying that Terminal's output, bootstrap,
     /// history, and input. A client MUST NOT open a second QUIC stream
     /// without this bit; without it the single-stream shape is the whole
     /// contract. QUIC-only.
-    QuicStreams = QUIC_STREAMS,
+    QuicStreams = QUIC_STREAMS = 0x0040_0000,
     /// The server accepts `OPEN_LISTENER` on its Unix socket (ADR-0120): it
     /// binds a QUIC listener on demand that admits only a token minted for
     /// it, and closes it once nobody has used it for the requested linger.
     /// A client MUST see this bit before sending the command: an older
     /// server cannot decode the tag.
-    OpenListener = OPEN_LISTENER,
+    OpenListener = OPEN_LISTENER = 0x0080_0000,
     /// The server stamps every journaled `EVENT` with a server-wide `seq`,
     /// `ts_ms`, `actor`, and (for a keyed operation) `operation_id`; keeps a
     /// bounded journal a `SUBSCRIBE_EVENTS { after_seq }` replays from; and
@@ -1137,19 +1121,53 @@ pub enum ServerFeature {
     /// instead (ADR-0123). Every shape is skip-by-length additive, so an
     /// older client sees the events it always saw; the bit is what makes a
     /// cursor and the absence of a gap meaningful.
-    EventJournal = EVENT_JOURNAL,
+    EventJournal = EVENT_JOURNAL = 0x0100_0000,
     /// The server honors `SPAWN_RESOURCE.retain_secs` (field 16): a retained
     /// Terminal that exits stays in the inventory as `Exited` with an exit
     /// facet until it expires or is killed (ADR-0124). A server without the
     /// bit skips the field and closes the resource at exit, so a client MUST
     /// see the bit before relying on a retained exit.
-    RetainOnExit = RETAIN_ON_EXIT,
+    RetainOnExit = RETAIN_ON_EXIT = 0x0200_0000,
     /// The server honors `SPAWN_RESOURCE.idempotency_key` (field 17): a
     /// repeat with the same key and payload answers the original id with
     /// `replayed`, and a different payload answers `IDEMPOTENCY_CONFLICT`
     /// (ADR-0126). A server without the bit skips the field and spawns
     /// again, so a client MUST see the bit before retrying a spawn blind.
-    SpawnIdempotency = SPAWN_IDEMPOTENCY,
+    SpawnIdempotency = SPAWN_IDEMPOTENCY = 0x0400_0000,
+    /// The server honors a declared attach role (ADR-0127): a `VIEWER`
+    /// subscription's input is refused, and `{ PRIMARY, DELIBERATE }`
+    /// attaches and seizes the input lease in one step. A server without
+    /// the bit ignores the byte and grants an ordinary attach, so a client
+    /// MUST see the bit before relying on either.
+    AttachRoles = ATTACH_ROLES = 0x0800_0000,
+    /// The server accepts `CLOSE_TAB_RESOURCES`: the same atomic local
+    /// close as `KILL_RESOURCES`, but a batch that names every pane of a
+    /// keep-empty session leaves that session empty instead of releasing
+    /// the mark (ADR-0105, ADR-0114). A client MUST see this bit before
+    /// sending the command: an older server cannot decode the tag.
+    CloseTabResources = CLOSE_TAB_RESOURCES = 0x1000_0000,
+    /// The server honors the trailing `operation_id` of `KILL_RESOURCE`,
+    /// `KILL_RESOURCE_IF`, `KILL_RESOURCES`, and `SIGNAL_TERMINAL`: a repeat
+    /// with the same key and command answers the first result and runs
+    /// nothing, a different command under the key is refused, and the events
+    /// the operation causes carry the key. As a federation hub it forwards
+    /// keyed operations and `APPLY_INPUT` to a satellite that evaluates them,
+    /// and answers `INCARNATION_CHANGED` instead of forwarding a retry across
+    /// a satellite restart. A server without the bit ignores the trailing
+    /// bytes and runs the command again, so a client MUST see the bit before
+    /// it retries a keyed command blind.
+    KeyedSignal = KEYED_SIGNAL = 0x2000_0000,
+    /// The server holds a `SIGNAL` command from a `?signal` grant for a
+    /// decision instead of running it (ADR-0128): it writes a
+    /// `phux.approval/v1/<id>` record, defers the requester's
+    /// `COMMAND_RESULT`, and runs the command once, under the requester's
+    /// grant, when a connection holding un-held `SIGNAL` on the subject
+    /// approves it. The bit also covers the intercepted
+    /// `phux.approval.decide/v1/<id>` key and the `approval_requested` /
+    /// `approval_decided` events. A client MUST see the bit before writing a
+    /// decision, because an older server stores the decide key as an
+    /// ordinary value.
+    Approvals = APPROVALS = 0x4000_0000,
 }
 
 /// Bit-field of additive server-owned protocol features.
@@ -1157,33 +1175,30 @@ pub enum ServerFeature {
 pub struct ServerFeatureSet(u32);
 
 impl ServerFeatureSet {
-    const KNOWN: u32 = (ServerFeature::AcknowledgedInput as u32)
-        | (ServerFeature::FileUpload as u32)
-        | (ServerFeature::MoveResource as u32)
-        | (ServerFeature::TerminalReply as u32)
-        | (ServerFeature::Shutdown as u32)
-        | (ServerFeature::SpawnInitialSize as u32)
-        | (ServerFeature::ReportAgentState as u32)
-        | (ServerFeature::GetPerf as u32)
-        | (ServerFeature::Transcribe as u32)
-        | (ServerFeature::ResourceKinds as u32)
-        | (ServerFeature::ListDirectory as u32)
-        | (ServerFeature::HostSessions as u32)
-        | (ServerFeature::KeepEmptySessions as u32)
-        | (ServerFeature::Whoami as u32)
-        | (ServerFeature::ListDirectoryHost as u32)
-        | (ServerFeature::SshOrigin as u32)
-        | (ServerFeature::ConditionalKill as u32)
-        | (ServerFeature::QuicStreams as u32)
-        | (ServerFeature::OpenListener as u32)
-        | (ServerFeature::EventJournal as u32)
-        | (ServerFeature::RetainOnExit as u32)
-        | (ServerFeature::SpawnIdempotency as u32);
+    const KNOWN: u32 = {
+        let mut bits = 0;
+        let mut i = 0;
+        while i < ServerFeature::ALL.len() {
+            bits |= ServerFeature::ALL[i] as u32;
+            i += 1;
+        }
+        bits
+    };
 
     /// Empty set for servers that advertise no additive features.
     #[must_use]
     pub const fn new() -> Self {
         Self(0)
+    }
+
+    /// Every known feature.
+    ///
+    /// Transport-gated bits (today [`ServerFeature::QuicStreams`]) belong
+    /// here so the decoder can name them; a server that must not advertise
+    /// them on a given connection clears them with [`Self::without`].
+    #[must_use]
+    pub const fn all() -> Self {
+        Self(Self::KNOWN)
     }
 
     /// Build a set containing all listed features.
@@ -1196,6 +1211,12 @@ impl ServerFeatureSet {
             i += 1;
         }
         Self(bits)
+    }
+
+    /// Copy of this set with `feature` cleared.
+    #[must_use]
+    pub const fn without(self, feature: ServerFeature) -> Self {
+        Self(self.0 & !(feature as u32))
     }
 
     /// Test whether `feature` is advertised.
@@ -1220,6 +1241,14 @@ impl ServerFeatureSet {
     #[must_use]
     pub const fn from_wire(bits: u32) -> Self {
         Self(bits & Self::KNOWN)
+    }
+
+    /// Known features in this set, in declaration order.
+    pub fn iter(self) -> impl Iterator<Item = ServerFeature> {
+        ServerFeature::ALL
+            .iter()
+            .copied()
+            .filter(move |feature| self.contains(*feature))
     }
 }
 
@@ -1959,90 +1988,35 @@ mod tests {
         assert_eq!(ServerFeatureSet::from_wire(set.as_wire() | future), set);
     }
 
-    /// Every advertised bit, its wire name, and its value. Adding a feature
-    /// means adding its row here, which is what keeps the uniqueness proof
-    /// and the proto.md check below complete.
-    const ALL_SERVER_FEATURES: &[(ServerFeature, &str, u32)] = &[
-        (
-            ServerFeature::AcknowledgedInput,
-            "ACKNOWLEDGED_INPUT",
-            ACKNOWLEDGED_INPUT,
-        ),
-        (ServerFeature::FileUpload, "FILE_UPLOAD", FILE_UPLOAD),
-        (ServerFeature::MoveResource, "MOVE_RESOURCE", MOVE_RESOURCE),
-        (
-            ServerFeature::TerminalReply,
-            "TERMINAL_REPLY",
-            TERMINAL_REPLY,
-        ),
-        (ServerFeature::Shutdown, "SHUTDOWN", SHUTDOWN),
-        (
-            ServerFeature::SpawnInitialSize,
-            "SPAWN_INITIAL_SIZE",
-            SPAWN_INITIAL_SIZE,
-        ),
-        (
-            ServerFeature::ReportAgentState,
-            "REPORT_AGENT_STATE",
-            REPORT_AGENT_STATE,
-        ),
-        (ServerFeature::GetPerf, "GET_PERF", GET_PERF),
-        (ServerFeature::Transcribe, "TRANSCRIBE", TRANSCRIBE),
-        (
-            ServerFeature::ResourceKinds,
-            "RESOURCE_KINDS",
-            RESOURCE_KINDS,
-        ),
-        (
-            ServerFeature::ListDirectory,
-            "LIST_DIRECTORY",
-            LIST_DIRECTORY,
-        ),
-        (ServerFeature::HostSessions, "HOST_SESSIONS", HOST_SESSIONS),
-        (
-            ServerFeature::KeepEmptySessions,
-            "KEEP_EMPTY_SESSIONS",
-            KEEP_EMPTY_SESSIONS,
-        ),
-        (ServerFeature::Whoami, "WHOAMI", WHOAMI),
-        (
-            ServerFeature::ListDirectoryHost,
-            "LIST_DIRECTORY_HOST",
-            LIST_DIRECTORY_HOST,
-        ),
-        (ServerFeature::SshOrigin, "SSH_ORIGIN", SSH_ORIGIN),
-        (
-            ServerFeature::ConditionalKill,
-            "CONDITIONAL_KILL",
-            CONDITIONAL_KILL,
-        ),
-        (ServerFeature::QuicStreams, "QUIC_STREAMS", QUIC_STREAMS),
-        (ServerFeature::OpenListener, "OPEN_LISTENER", OPEN_LISTENER),
-        (ServerFeature::EventJournal, "EVENT_JOURNAL", EVENT_JOURNAL),
-        (
-            ServerFeature::RetainOnExit,
-            "RETAIN_ON_EXIT",
-            RETAIN_ON_EXIT,
-        ),
-        (
-            ServerFeature::SpawnIdempotency,
-            "SPAWN_IDEMPOTENCY",
-            SPAWN_IDEMPOTENCY,
-        ),
-    ];
-
-    /// Each feature is one distinct bit, the known mask is exactly their
-    /// union, and each bit appears in `docs/spec/proto.md` §6.2 by name and
-    /// value in both the bitset block and the `ServerCapabilities` sentence.
+    /// Every variant has exactly one name, each bit is unique, the known
+    /// mask is their union, and each bit appears in `docs/spec/proto.md`
+    /// §6.2 by name and value in both the bitset block and the
+    /// `ServerCapabilities` sentence.
     #[test]
-    fn server_feature_bits_are_unique_and_documented() {
+    fn every_server_feature_has_one_name_and_a_unique_bit() {
         let proto = include_str!("../../../docs/spec/proto.md");
         let mut union = 0_u32;
-        for &(feature, name, bits) in ALL_SERVER_FEATURES {
-            assert_eq!(feature as u32, bits, "{name} disagrees with its const");
+        let mut names = Vec::new();
+        let mut snakes = Vec::new();
+        for &feature in ServerFeature::ALL {
+            let name = feature.wire_name();
+            let snake = feature.snake_name();
+            let bits = feature as u32;
             assert_eq!(bits.count_ones(), 1, "{name} must be a single bit");
             assert_eq!(union & bits, 0, "{name} reuses an allocated bit");
             union |= bits;
+            assert_eq!(
+                snake,
+                name.to_ascii_lowercase(),
+                "{name} snake_case is not its constant lower-cased"
+            );
+            assert!(!names.contains(&name), "{name} is declared more than once");
+            assert!(
+                !snakes.contains(&snake),
+                "{snake} is declared more than once"
+            );
+            names.push(name);
+            snakes.push(snake);
             let block = format!("{name} ");
             let block_value = format!("0x{bits:08X}");
             let prose = format!("`{name} = 0x{bits:X}`");
@@ -2057,9 +2031,15 @@ mod tests {
                 "proto.md §6.2 ServerCapabilities sentence lacks {prose}"
             );
         }
+        assert_eq!(names.len(), ServerFeature::ALL.len());
+        assert_eq!(snakes.len(), ServerFeature::ALL.len());
+        assert_eq!(ServerFeatureSet::all().as_wire(), union);
         assert_eq!(ServerFeatureSet::from_wire(u32::MAX).as_wire(), union);
         assert_eq!(EVENT_JOURNAL, 0x0100_0000);
         assert_eq!(RETAIN_ON_EXIT, 0x0200_0000);
         assert_eq!(SPAWN_IDEMPOTENCY, 0x0400_0000);
+        assert_eq!(ATTACH_ROLES, 0x0800_0000);
+        assert_eq!(CLOSE_TAB_RESOURCES, 0x1000_0000);
+        assert_eq!(KEYED_SIGNAL, 0x2000_0000);
     }
 }

@@ -27,7 +27,7 @@ pub use write::{Edit, EditOutcome, apply_edit, write_edit};
 
 use crate::{
     ConfigError, ConfigProvenance, LayerSource, MAX_AGENT_LOG_BYTES, MAX_EVENT_JOURNAL_BYTES,
-    MAX_EVENT_JOURNAL_ENTRIES, MAX_HISTORY_BYTES,
+    MAX_EVENT_JOURNAL_ENTRIES, MAX_HISTORY_BYTES, MAX_RETAIN_ON_EXIT_MAX,
 };
 
 /// A top-level `config.toml` table that holds scalar settings.
@@ -307,6 +307,9 @@ const HISTORY_BYTES_MAX: i64 = MAX_HISTORY_BYTES as i64;
 
 /// Upper bound of the `defaults.agent-log-bytes` integer setting.
 const AGENT_LOG_BYTES_MAX: i64 = MAX_AGENT_LOG_BYTES as i64;
+const APPROVAL_TTL_MAX: i64 = crate::MAX_APPROVAL_TTL_SECS as i64;
+const APPROVAL_MAX_PENDING_MAX: i64 = crate::MAX_APPROVAL_MAX_PENDING as i64;
+const APPROVAL_MAX_PENDING_TOTAL_MAX: i64 = crate::MAX_APPROVAL_MAX_PENDING_TOTAL as i64;
 /// Floor of `limits.metadata-value-bytes`: the built-in agent-session
 /// record write is checked against `MAX_AGENT_SESSION_RECORD_BYTES` only
 /// *after* the generic cap (`crates/phux-server/src/runtime/client.rs`'s
@@ -323,6 +326,10 @@ const METADATA_VALUE_BYTES_MIN: i64 =
 const EVENT_JOURNAL_ENTRIES_MAX: i64 = MAX_EVENT_JOURNAL_ENTRIES as i64;
 /// Upper bound of the `defaults.event-journal-bytes` integer setting.
 const EVENT_JOURNAL_BYTES_MAX: i64 = MAX_EVENT_JOURNAL_BYTES as i64;
+/// Upper bound of the `defaults.retain-on-exit-max` integer setting.
+const RETAIN_ON_EXIT_MAX_MAX: i64 = MAX_RETAIN_ON_EXIT_MAX as i64;
+/// Upper bound of the two `defaults.retain-on-exit*-secs` settings: a u32.
+const RETAIN_ON_EXIT_SECS_MAX: i64 = u32::MAX as i64;
 /// Cap on `keybindings.which-key-delay-ms`: one minute. See the row's
 /// detail text.
 const WHICH_KEY_DELAY_MAX_MS: i64 = 60_000;
@@ -448,6 +455,96 @@ pub const CATALOG: &[SettingSpec] = &[
                  titles, working directories, and agent questions are not. The 1 MiB \
                  default holds thousands of ordinary events. 67108864 (64 MiB) is the \
                  accepted maximum; phux config check rejects more.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.retain-on-exit",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Bool,
+        summary: "Keep every pane inspectable after its process exits",
+        detail: "A retained pane stays listed as exited, with its exit status, last screen, \
+                 and history, until retain-on-exit-secs pass, retain-on-exit-max evicts it, \
+                 or it is killed (ADR-0124). false retains only panes whose spawner asked; \
+                 true retains every pane that does not say, seed panes included. The reference TUI shows a \
+                 retained pane's last screen with an exited mark and refuses input to it.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.retain-on-exit-secs",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: RETAIN_ON_EXIT_SECS_MAX,
+        },
+        summary: "Seconds a retained pane stays after its process exits",
+        detail: "What a spawn that asked for the server default, or one retained by \
+                 retain-on-exit, gets. Capped by retain-on-exit-max-secs.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.retain-on-exit-max-secs",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: RETAIN_ON_EXIT_SECS_MAX,
+        },
+        summary: "The longest any pane is retained after its process exits",
+        detail: "A spawner may ask for any retention; the server caps it here.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.retain-on-exit-max",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: RETAIN_ON_EXIT_MAX_MAX,
+        },
+        summary: "How many exited panes the server retains at once",
+        detail: "Retaining one more closes the oldest. Each retained pane holds its grid \
+                 and history until it is purged, up to history-bytes each: about 512 MiB \
+                 at the default 256 with the 2 MiB default history. It holds no PTY or \
+                 descriptor. 0 retains none; 4096 is the accepted maximum; phux config \
+                 check rejects more and the server clamps to it.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.approval-ttl-secs",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 1,
+            max: APPROVAL_TTL_MAX,
+        },
+        summary: "Seconds a held action waits for a decision before it expires",
+        detail: "Only a workload grant spelled ?signal holds anything, so this is inert \
+                 until one exists. A held command that nobody approves or denies in time \
+                 is refused as expired and never runs. 86400 (one day) is the accepted \
+                 maximum; phux config check rejects 0 and anything larger.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.approval-max-pending",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: APPROVAL_MAX_PENDING_MAX,
+        },
+        summary: "How many actions one connection may hold for approval at once",
+        detail: "One more is refused as resource exhausted rather than held. 0 refuses \
+                 every hold. 1024 is the accepted maximum; phux config check rejects \
+                 more and the server clamps to it.",
+        applies: Applies::NextSpawn,
+    },
+    SettingSpec {
+        key: "defaults.approval-max-pending-total",
+        section: SettingSection::Defaults,
+        kind: SettingKind::Integer {
+            min: 0,
+            max: APPROVAL_MAX_PENDING_TOTAL_MAX,
+        },
+        summary: "How many actions the whole server may hold for approval at once",
+        detail: "The server-wide bound beside the per-connection one: one more hold is \
+                 refused as resource exhausted rather than held. 65536 is the accepted \
+                 maximum; phux config check rejects more and the server clamps to it.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {

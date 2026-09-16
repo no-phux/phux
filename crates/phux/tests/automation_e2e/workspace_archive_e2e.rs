@@ -382,8 +382,13 @@ fn workspace_save_reconciles_a_dead_layout_leaf_and_a_headless_spawn() {
         .as_u64()
         .expect("spawn --json names the placed pane");
     let placed_selector = format!("@{placed_id}");
-    let (code, _, stderr) =
-        ServerGuard::run(&["kill", "--socket", &source_socket, &placed_selector]);
+    let (code, _, stderr) = ServerGuard::run(&[
+        "kill",
+        "--yes",
+        "--socket",
+        &source_socket,
+        &placed_selector,
+    ]);
     assert_eq!(code, 0, "kill the placed pane before save: {stderr}");
     wait_for_terminal_absent(&source_socket, &placed_selector);
 
@@ -774,7 +779,7 @@ fn native_agent_session_is_replayed_after_pane_restart_and_rejects_stale_ownersh
         &launched_selector,
     ]);
     assert_eq!(code, 0, "fresh agent did not start: {stderr}");
-    let (code, _, stderr) = ServerGuard::run(&["kill", "--socket", &source_socket, "@1"]);
+    let (code, _, stderr) = ServerGuard::run(&["kill", "--yes", "--socket", &source_socket, "@1"]);
     assert_eq!(
         code, 0,
         "remove the pre-agent seed pane before save: {stderr}"

@@ -49,47 +49,18 @@ pub(crate) mod codes {
     pub(crate) const PARTIAL_VIEW: &str = "partial_view";
     /// A selector that does not parse under the target grammar.
     pub(crate) const INVALID_SELECTOR: &str = "invalid_selector";
-    /// A split ratio outside the open interval (0, 1).
-    pub(crate) const INVALID_RATIO: &str = "invalid_ratio";
-    /// A selector matched no panes (spatial edits require exactly one).
-    pub(crate) const SELECTOR_MISS: &str = "selector_miss";
+    // The spatial edits' refusal codes (`invalid_ratio`, `selector_miss`,
+    // `same_pane`, `cross_session`, `layout_missing`, `projection_arity`,
+    // ...) live beside their one implementation in
+    // `phux_client::spatial::codes`, shared with the MCP spatial tools.
     /// A selector matched several panes where exactly one is required.
     pub(crate) const SELECTOR_NOT_SINGLE: &str = "selector_not_single";
     /// A spatial edit selector resolved to a satellite pane (local-only).
     pub(crate) const SATELLITE_TARGET: &str = "satellite_target";
-    /// Two pane selectors that must differ resolved to the same pane.
-    pub(crate) const SAME_PANE: &str = "same_pane";
-    /// The panes of one spatial operation span more than one session.
-    pub(crate) const CROSS_SESSION: &str = "cross_session";
-    /// A pane whose owning session cannot be determined from the snapshot.
-    pub(crate) const UNKNOWN_TERMINAL_SESSION: &str = "unknown_terminal_session";
-    /// The session has no persisted layout to edit.
-    pub(crate) const LAYOUT_MISSING: &str = "layout_missing";
-    /// A selected pane is not present in the session's persisted layout.
-    pub(crate) const PANE_NOT_IN_LAYOUT: &str = "pane_not_in_layout";
-    /// The pane being inserted is already present in the persisted layout.
-    pub(crate) const PANE_ALREADY_IN_LAYOUT: &str = "pane_already_in_layout";
     /// The server rejected a layout mutation for another reason.
     pub(crate) const LAYOUT_REJECTED: &str = "layout_rejected";
     /// The server predates cross-session moves (no `MOVE_RESOURCE` support).
     pub(crate) const SERVER_TOO_OLD: &str = "server_too_old";
-    /// The server refused a cross-session `MOVE_RESOURCE` request.
-    pub(crate) const MOVE_REFUSED: &str = "move_refused";
-    /// A cross-session move committed but the post-move state read failed.
-    pub(crate) const POST_MOVE_STATE_FAILED: &str = "post_move_state_failed";
-    /// The destination pane changed windows while the move was in flight.
-    pub(crate) const DESTINATION_CHANGED: &str = "destination_changed";
-    /// The destination layout write after a cross-session move failed.
-    pub(crate) const DESTINATION_LAYOUT_FAILED: &str = "destination_layout_failed";
-    /// The source layout cleanup after a cross-session move failed.
-    pub(crate) const SOURCE_LAYOUT_FAILED: &str = "source_layout_failed";
-    /// A `--projection` value does not name a valid `<prefix>.layout/v1/<session>`
-    /// key for the session the operation addresses (ADR-0129).
-    pub(crate) const PROJECTION_INVALID: &str = "projection_invalid";
-    /// `--projection` was passed the wrong number of times for the
-    /// operation: more than one for a single-session edit, or exactly one
-    /// for a cross-session move (which touches two distinct envelopes).
-    pub(crate) const PROJECTION_ARITY: &str = "projection_arity";
     /// A local config-registry operation failed: a `[[plugins]]` /
     /// `[[remote]]` / `[[satellites]]` entry could not be read, validated,
     /// or written (phux-i0e8.8.3).
@@ -288,12 +259,26 @@ pub(crate) mod codes {
     /// The server refused to spawn the `AgentSession` for another reason.
     /// Exit 1.
     pub(crate) const AGENT_SESSION_REFUSED: &str = "agent_session_refused";
+    /// An `--after` value is not a cursor (`SERVER_ID_HEX:SEQ`). Exit 2,
+    /// before any connection.
+    pub(crate) const INVALID_CURSOR: &str = "invalid_cursor";
+    /// An `--idempotency-key` is not 32 hex digits, or is all zero. Exit 2,
+    /// before any connection.
+    pub(crate) const INVALID_IDEMPOTENCY_KEY: &str = "invalid_idempotency_key";
+    /// The idempotency key was already used for a different request inside
+    /// the server's horizon, so nothing was spawned. Exit 2.
+    pub(crate) const IDEMPOTENCY_CONFLICT: &str = "idempotency_conflict";
     /// A result document could not be serialized as JSON.
     pub(crate) const JSON_SERIALIZE: &str = "json_serialize";
     /// A local state-directory write failed (a bug-report bundle).
     pub(crate) const IO: &str = "io";
     /// A client-side invariant this binary should never break.
     pub(crate) const INTERNAL_ERROR: &str = "internal_error";
+    /// `snapshot --format html|vt` got an `Ok` reply with no rendered
+    /// capture: either the server predates `--format` (its `GET_SCREEN`
+    /// decoder silently drops the trailing byte, D9) or a D9-or-later
+    /// server's render failed on its own engine. Exit 2.
+    pub(crate) const FORMAT_UNSUPPORTED: &str = "format_unsupported";
 }
 
 /// One CLI failure, carrying everything both output channels need: a stable

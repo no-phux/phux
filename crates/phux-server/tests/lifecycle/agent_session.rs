@@ -353,7 +353,10 @@ async fn attach_terminal(stream: &mut UnixStream, request_id: u32, terminal_id: 
         stream,
         &FrameKind::Command {
             request_id,
-            command: Command::AttachResource { terminal_id },
+            command: Command::AttachResource {
+                terminal_id,
+                role_policy: None,
+            },
         },
     )
     .await;
@@ -704,6 +707,7 @@ fn multi_record_append_envelope_and_bootstrap_use_the_last_record_cut() {
                 request_id: 101,
                 command: Command::AttachResource {
                     terminal_id: session.clone(),
+                    role_policy: None,
                 },
             },
         )
@@ -786,6 +790,7 @@ fn bootstrap_replays_retained_records_on_attach() {
                 request_id: 200,
                 command: Command::AttachResource {
                     terminal_id: session.clone(),
+                    role_policy: None,
                 },
             },
         )
@@ -879,6 +884,7 @@ fn ring_overflow_evicts_oldest_and_reports_the_toll() {
                 request_id: 200,
                 command: Command::AttachResource {
                     terminal_id: session.clone(),
+                    role_policy: None,
                 },
             },
         )
@@ -989,6 +995,7 @@ fn wrong_kind_refusals() {
                     terminal_id: session.clone(),
                     request_scrollback: None,
                     cells: false,
+                    format: 0,
                 },
             },
         )
@@ -1064,6 +1071,7 @@ fn wrong_kind_refusals() {
                 command: Command::SignalTerminal {
                     terminal_id: session.clone(),
                     signal: phux_protocol::wire::frame::TerminalSignal::Interrupt,
+                    operation_id: None,
                 },
             },
         )
@@ -1197,6 +1205,7 @@ fn a_childs_spawn_and_close_reach_the_parents_event_watchers() {
                 request_id: 3,
                 command: Command::KillResource {
                     terminal_id: session.clone(),
+                    operation_id: None,
                 },
             },
         )
@@ -1245,6 +1254,7 @@ fn kill_parent_cascades_child_with_parent_closed() {
                 request_id: 3,
                 command: Command::KillResource {
                     terminal_id: parent.clone(),
+                    operation_id: None,
                 },
             },
         )
@@ -1351,6 +1361,7 @@ fn kill_terminals_mixed_set_closes_once_each() {
                 request_id: 4,
                 command: Command::KillResources {
                     ids: vec![parent.clone(), session.clone(), unrelated.clone()],
+                    operation_id: None,
                 },
             },
         )
