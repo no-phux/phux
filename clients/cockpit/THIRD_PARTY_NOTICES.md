@@ -7,7 +7,7 @@ Phux Cockpit includes software from the following projects.
 Native SDK is licensed under the Apache License, Version 2.0. A complete copy
 of that license is distributed as `LICENSE.txt` with the application.
 
-Pinned source: https://github.com/phall1/native/tree/2d689c766df5c919561b366ee2b5a0c7c2e027c1
+Pinned source: https://github.com/phall1/native/tree/f62651b152b18c229b763b27867735b4d9d10743
 
 Upstream: https://github.com/vercel-labs/native
 

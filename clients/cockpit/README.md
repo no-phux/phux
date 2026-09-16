@@ -407,10 +407,11 @@ actually looking at.
   the same build commands. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
-[`phall1/native@2d689c76`](https://github.com/phall1/native/commit/2d689c766df5c919561b366ee2b5a0c7c2e027c1),
+[`phall1/native@f62651b1`](https://github.com/phall1/native/commit/f62651b152b18c229b763b27867735b4d9d10743),
 the fork's upstream-v0.10.1 Cockpit lineage: terminal interaction, viewport, and
 font seams, the packed `cell_grid` canvas command with its AppKit decoder and
 wire format v7, macOS glyph smoothing, bounded cell-grid draw-resource caching,
+device-pixel-partitioned terminal backgrounds without fractional-edge seams,
 per-window `ChromeContext` on `build_window` and `web_panes`, `fx.openUrl`, the
 `native_extension` hook that keeps the TypeScript-core graph's engine native,
 axis-aware native split dividers, scoped post-present display-list refresh
