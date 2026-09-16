@@ -640,7 +640,14 @@ function readSnapshotTrailer(bytes: Uint8Array, at: number, secondary: readonly 
 }
 
 function targetTabs(tabs: readonly SnapshotTab[], contexts: Uint8Array, window: number): readonly SnapshotTab[] {
-  return tabs.map((tab) => ({ ...tab, target: tabTarget(contexts, window, tab.id) }));
+  return tabs.map((tab) => ({ id: tab.id, index: tab.index, title: tab.title, cwd: tab.cwd,
+    selected: tab.selected, attention: tab.attention, target: tabTarget(contexts, window, tab.id) }));
+}
+
+function targetWindow(window: SecondaryWindow, contexts: Uint8Array): SecondaryWindow {
+  return { index: window.index, selectedTab: window.selectedTab, runStart: window.runStart,
+    runCount: window.runCount, tabWidth: window.tabWidth,
+    tabs: targetTabs(window.tabs, contexts, window.index) };
 }
 
 /// Retain the native lifetime bytes from THIS projection in the painted event.
@@ -678,7 +685,7 @@ export function snapshot(bytes: Uint8Array): EngineSnapshot | null {
     currentSession: extensions.navigation.currentSession,
     coordinatorEndpoint: extensions.navigation.coordinatorEndpoint,
     connectionDetail: extensions.navigation.connectionDetail,
-    secondary: secondary.windows.map((window) => ({ ...window, tabs: targetTabs(window.tabs, extensions.contexts, window.index) })),
+    secondary: secondary.windows.map((window) => targetWindow(window, extensions.contexts)),
     terminalStates: secondary.terminalStates,
     themes: catalog.themes,
     activeTheme: settings.activeTheme,

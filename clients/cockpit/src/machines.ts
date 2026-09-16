@@ -136,15 +136,6 @@ function machineFields(bytes: Uint8Array, at: number): MachineFields | null {
   return { values, end };
 }
 
-function machineCapabilities(row: MachineRow): MachineRow {
-  const busy = row.state === 1 || row.state === 3;
-  return { ...row, canDisconnect: row.role !== 0 && row.connected,
-    canForget: row.role !== 0 && !row.connected && !busy,
-    height: row.message.length > 0 ? 128 : 96,
-    disabled: row.route >= 3 || busy,
-    action: row.route >= 3 ? asciiBytes("Edit Configuration to repair this route") : row.action };
-}
-
 function machineRecord(bytes: Uint8Array, at: number, generation: number): MachineRecord | null {
   if (at + 7 > bytes.length) return null;
   const rawIndex = u32(bytes, at);
@@ -161,13 +152,21 @@ function machineRecord(bytes: Uint8Array, at: number, generation: number): Machi
   const parsed = machineFields(bytes, at + 7);
   if (parsed === null) return null;
   const fields = parsed.values;
+  const name = fields[0] === undefined ? EMPTY : fields[0];
+  const endpoint = fields[1] === undefined ? EMPTY : fields[1];
+  const session = fields[2] === undefined ? EMPTY : fields[2];
+  const message = fields[3] === undefined ? EMPTY : fields[3];
   const target = new Uint8Array(8);
   putU32(target, 0, generation); putU32(target, 4, index);
-  const row: MachineRow = { index, role, route, state, name: fields[0], endpoint: fields[1], session: fields[2], message: fields[3],
-    target, status: statusLabel(state), action: actionLabel(state), highlighted: false, connected: state === 2,
-    canDisconnect: false, height: 96,
-    canForget: false, disabled: false };
-  return { row: machineCapabilities(row), end: parsed.end };
+  const connected = state === 2;
+  const busy = state === 1 || state === 3;
+  const row: MachineRow = { index, role, route, state, name, endpoint, session, message,
+    target, status: statusLabel(state),
+    action: route >= 3 ? asciiBytes("Edit Configuration to repair this route") : actionLabel(state),
+    highlighted: false, connected, canDisconnect: role !== 0 && connected,
+    height: message.length > 0 ? 128 : 96, canForget: role !== 0 && !connected && !busy,
+    disabled: route >= 3 || busy };
+  return { row, end: parsed.end };
 }
 
 export function machinePage(bytes: Uint8Array): MachinePage | null {
@@ -199,7 +198,11 @@ export function filterMachines(state: MachineState, query: Uint8Array): MachineS
     if (!machineMatches(row, query)) continue;
     const highlighted = sameBytes(row.target, state.selected);
     if (highlighted) selected = row.target;
-    visible.push({ ...row, highlighted });
+    visible.push({ index: row.index, role: row.role, route: row.route, state: row.state,
+      name: row.name, endpoint: row.endpoint, session: row.session, message: row.message,
+      status: row.status, action: row.action, target: row.target, highlighted,
+      connected: row.connected, canDisconnect: row.canDisconnect, height: row.height,
+      canForget: row.canForget, disabled: row.disabled });
   }
   return { ...state, visible, selected };
 }

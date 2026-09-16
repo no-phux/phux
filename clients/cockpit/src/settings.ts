@@ -48,7 +48,12 @@ function folded(byte: number): number {
 function contains(text: Uint8Array, query: Uint8Array): boolean {
   for (let start = 0; start + query.length <= text.length; start += 1) {
     let at = 0;
-    while (at < query.length && folded(text[start + at]) === folded(query[at])) at += 1;
+    while (at < query.length) {
+      const textByte = text.slice(start + at, start + at + 1)[0];
+      const queryByte = query.slice(at, at + 1)[0];
+      if (textByte === undefined || queryByte === undefined || folded(textByte) !== folded(queryByte)) break;
+      at += 1;
+    }
     if (at === query.length) return true;
   }
   return false;

@@ -73,6 +73,7 @@ import {
   directoryNotice,
   directoryTitle,
   DIR_OPEN_HERE_UNAVAILABLE_NOTICE,
+  type DirectoryRow,
 } from "./directory.ts";
 import {
   ENGINE_CHANNEL_KEY,
@@ -96,6 +97,7 @@ import {
   sameBytes,
   type SnapshotAgentRow,
   type EngineSnapshot,
+  type ThemeEntry,
 } from "./protocol.ts";
 
 /// One agent session drawn under the terminal tab it runs in. It is not a
@@ -825,20 +827,16 @@ function decimalBytes(value: number): Uint8Array {
 }
 
 function joinBytes(head: Uint8Array, mid: Uint8Array, tail: Uint8Array): Uint8Array {
-  const out = new Uint8Array(head.length + mid.length + tail.length);
+  // ScriptC 0.1.1 models the middle parameter as a runtime-optional capture;
+  // narrowing it keeps the typed-array copy on the supported same-kind path.
+  const middle = mid === undefined ? new Uint8Array(0) : mid;
+  const out = new Uint8Array(head.length + middle.length + tail.length);
   let at = 0;
-  for (let i = 0; i < head.length; i += 1) {
-    out[at] = head[i];
-    at += 1;
-  }
-  for (let i = 0; i < mid.length; i += 1) {
-    out[at] = mid[i];
-    at += 1;
-  }
-  for (let i = 0; i < tail.length; i += 1) {
-    out[at] = tail[i];
-    at += 1;
-  }
+  out.set(head, at);
+  at += head.length;
+  out.set(middle, at);
+  at += middle.length;
+  out.set(tail, at);
   return out;
 }
 
@@ -989,7 +987,7 @@ function reconcileNavigationSelection(model: Model): Model {
     if (sameBytes(model.paletteRows[i].target, model.paletteSelection)) return highlightNavigation(model, i);
   }
   const rows: SwitcherRow[] = [];
-  for (const row of model.paletteRows) rows.push({ ...row, highlighted: false });
+  for (const row of model.paletteRows) rows.push(highlightedSwitcherRow(row, false));
   return { ...model, paletteRows: rows, paletteCursor: 65535 };
 }
 
@@ -1012,7 +1010,12 @@ function currentNavigationPage(model: Model, page: NavigationPage): boolean {
 
 function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
   const result: SwitcherRow[] = [];
-  for (const row of rows) {
+  for (const candidate of rows) {
+    const row: NavigationRow = candidate === undefined
+      ? { id: 0, index: 0, label: NO_BYTES, target: NO_BYTES, highlighted: false,
+        detail: NO_BYTES, kind: 0, host: NO_BYTES, selectable: false, current: false,
+        resource: NO_BYTES, parent: NO_BYTES, nativeId: NO_BYTES, evidence: NO_BYTES }
+      : candidate;
     const index = row.index >= 0 && row.index <= 65535 ? Math.trunc(row.index) : 0;
     const kind = row.kind >= 0 && row.kind <= 5 ? Math.trunc(row.kind) : 0;
     result.push({ id: index, index, kind, label: row.label, detail: row.detail, host: row.host,
@@ -1073,9 +1076,16 @@ function highlightNavigation(model: Model, next: number): Model {
   const rows: SwitcherRow[] = [];
   for (let i = 0; i < model.paletteRows.length; i += 1) {
     const row = model.paletteRows[i];
-    rows.push({ ...row, highlighted: i === cursor });
+    rows.push(highlightedSwitcherRow(row, i === cursor));
   }
   return revealNavigator({ ...model, paletteCursor: cursor, paletteRows: rows, paletteSelection: rows[cursor].target }, cursor * 40, 40);
+}
+
+function highlightedSwitcherRow(row: SwitcherRow, highlighted: boolean): SwitcherRow {
+  return { id: row.id, index: row.index, label: row.label, target: row.target, highlighted,
+    current: row.current, detail: row.detail, kind: row.kind, host: row.host,
+    selectable: row.selectable, disabled: row.disabled, renamable: row.renamable,
+    resource: row.resource, parent: row.parent, nativeId: row.nativeId, evidence: row.evidence };
 }
 
 function editNavigation(model: Model, edit: TextInputEvent): Model {
@@ -1365,7 +1375,10 @@ function relistDirectory(model: Model, connected: boolean): Model {
 
 function directoryRows(page: DirectoryPage): readonly DirRow[] {
   const rows: DirRow[] = [];
-  for (const row of page.rows) {
+  for (const candidate of page.rows) {
+    const row: DirectoryRow = candidate === undefined
+      ? { index: 0, symlink: false, name: NO_BYTES }
+      : candidate;
     const index = row.index >= 0 && row.index <= 65535 ? Math.trunc(row.index) : 0;
     rows.push({ id: index, index, label: directoryRowLabel(row), highlighted: false });
   }
@@ -1378,7 +1391,7 @@ function highlightDirectory(model: Model, next: number): Model {
   const rows: DirRow[] = [];
   for (let i = 0; i < model.dirRows.length; i += 1) {
     const row = model.dirRows[i];
-    rows.push({ ...row, highlighted: i === cursor });
+    rows.push({ id: row.id, index: row.index, label: row.label, highlighted: i === cursor });
   }
   return { ...model, dirCursor: cursor, dirRows: rows };
 }
@@ -1766,16 +1779,21 @@ function scopeOverlays(model: Model): Model {
 
 const IN_EFFECT = asciiBytes("  (in effect)");
 
-function themeRows(themes: readonly { readonly index: number; readonly name: Uint8Array }[], active: number, cursor: number): readonly ThemeRow[] {
-  return themes.map((theme) => {
+function themeRows(themes: readonly ThemeEntry[], active: number, cursor: number): readonly ThemeRow[] {
+  const rows: ThemeRow[] = [];
+  for (const candidate of themes) {
+    const theme: ThemeEntry = candidate === undefined
+      ? { index: 0, name: NO_BYTES }
+      : candidate;
     const index = theme.index >= 0 && theme.index <= 32 ? Math.trunc(theme.index) : 0;
-    return {
+    rows.push({
       index,
       label: index === active ? joinBytes(theme.name, IN_EFFECT, NO_BYTES) : theme.name,
       active: index === active,
       highlighted: index === cursor,
-    };
-  });
+    });
+  }
+  return rows;
 }
 
 /// Re-highlight the catalog at `cursor`. A loop rather than a map with a
@@ -1812,6 +1830,8 @@ const AGENT_STATE_WORDS: readonly Uint8Array[] = [
   asciiBytes("gone"),
 ];
 
+const EMPTY_AGENT_ROW: AgentRow = { id: 0, provider: NO_BYTES, state: NO_BYTES,
+  attention: false, resource: NO_BYTES, parent: NO_BYTES, parentIndex: 65535 };
 const NO_AGENT_ROWS: readonly AgentRow[] = [];
 const NO_AGENTS: readonly SnapshotAgentRow[] = [];
 const NO_RAIL_ROWS: readonly RailRow[] = [];
@@ -1823,28 +1843,31 @@ function agentRowsFor(agents: readonly SnapshotAgentRow[], window: number, tab: 
   const out: AgentRow[] = [];
   let ordinal = 0;
   for (let i = 0; i < agents.length; i += 1) {
-    const row = agents[i];
+    const candidate = agents[i];
+    const row: SnapshotAgentRow = candidate === undefined
+      ? { window: 0, tab: 0, state: 0, attention: false, provider: NO_BYTES,
+        resource: NO_BYTES, parent: NO_BYTES, parentIndex: 65535 }
+      : candidate;
     if (row.window !== window || row.tab !== tab) continue;
-    const projected = projectAgentRow(row, ordinal, connection);
-    if (projected === null) continue;
-    out.push(projected);
-    ordinal += 1;
+    const state = row.state;
+    if (state >= 0 && state < AGENT_STATE_WORDS.length && ordinal >= 0 && ordinal <= 255) {
+      const rawParentIndex = row.parentIndex;
+      const candidateStateWord = AGENT_STATE_WORDS[Math.trunc(state)];
+      const stateWord = candidateStateWord === undefined ? NO_BYTES : candidateStateWord;
+      const reportedState = reportedAgentState(stateWord, connection);
+      if (rawParentIndex >= 0 && rawParentIndex < 65535) {
+        out.push({ ...EMPTY_AGENT_ROW, id: Math.trunc(ordinal), provider: row.provider, state: reportedState,
+          attention: row.attention && connection === 2, resource: row.resource,
+          parent: row.parent, parentIndex: Math.trunc(rawParentIndex) });
+      } else {
+        out.push({ ...EMPTY_AGENT_ROW, id: Math.trunc(ordinal), provider: row.provider, state: reportedState,
+          attention: row.attention && connection === 2, resource: row.resource,
+          parent: row.parent, parentIndex: 65535 });
+      }
+      ordinal += 1;
+    }
   }
   return out.length === 0 ? NO_AGENT_ROWS : out;
-}
-
-function projectAgentRow(row: SnapshotAgentRow, ordinal: number, connection: number): AgentRow | null {
-  const state = row.state;
-  if (!(state >= 0 && state < AGENT_STATE_WORDS.length)) return null;
-  if (!(ordinal >= 0 && ordinal <= 255)) return null;
-  const parentIndex = row.parentIndex;
-  return {
-    id: Math.trunc(ordinal), provider: row.provider,
-    state: reportedAgentState(AGENT_STATE_WORDS[Math.trunc(state)], connection),
-    attention: row.attention && connection === 2,
-    resource: row.resource, parent: row.parent,
-    parentIndex: parentIndex >= 0 && parentIndex < 65535 ? Math.trunc(parentIndex) : 65535,
-  };
 }
 
 function reportedAgentState(state: Uint8Array, connection: number): Uint8Array {
@@ -2410,7 +2433,9 @@ export function initialModel(): [Model, Cmd<Msg>] {
 }
 
 function selectTab(tabs: readonly Tab[], selected: number): readonly Tab[] {
-  return tabs.map((tab) => ({ ...tab, selected: tab.index === selected }));
+  return tabs.map((tab) => ({ id: tab.id, index: tab.index, slot: tab.slot, title: tab.title,
+    cwd: tab.cwd, selected: tab.index === selected, attention: tab.attention,
+    attentionLabel: tab.attentionLabel, agents: tab.agents, target: tab.target }));
 }
 
 function speculateTabTarget(model: Model, target: Uint8Array): Model {
@@ -2730,7 +2755,8 @@ function refreshActions(model: Model, cursor: number): Model {
   for (const row of rows) {
     const command = commandDefinition(row.index);
     const implemented = command !== null && commandMsg(command.name) !== null;
-    available.push({ ...row, disabled: row.disabled || !implemented,
+    available.push({ index: row.index, label: row.label, shortcut: row.shortcut,
+      highlighted: row.highlighted, disabled: row.disabled || !implemented,
       detail: implemented ? row.detail : asciiBytes("Unavailable in this connection") });
   }
   const selected = cursor >= 0 && cursor <= 65535 ? Math.trunc(cursor) : 0;

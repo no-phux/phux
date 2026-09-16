@@ -6,7 +6,7 @@ ROOT="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/check-sdk-pin-test.XXXXXX")"
 trap 'rm -rf -- "${WORK}"' EXIT
 
-SDK_SHA="806846ef3fd9d60c36abc8c6e459abc0d3df8242"
+SDK_SHA="905891de27b0138112d422af6b1ee2c60ee3eef9"
 GHOSTTY_SHA="7aa9591746ffa4d2eee458960c76554352832595"
 STALE_SHA="ad3f0fae36a7d1380c459c6b23ed12d83cad6a7a"
 pass=0

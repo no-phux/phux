@@ -49,7 +49,10 @@ export function contextualCommand(name: string): boolean {
 
 export function commandRows(query: Uint8Array, cursor: number, hasTerminal: boolean, context: Uint8Array, bindings: KeybindingPage): readonly ActionRow[] {
   const rows: ActionRow[] = [];
-  for (const command of COMMAND_CATALOG) {
+  for (const candidate of COMMAND_CATALOG) {
+    const command: CommandDefinition = candidate === undefined
+      ? { index: 0, name: "", label: new Uint8Array(0), shortcut: new Uint8Array(0) }
+      : candidate;
     if (!containsQuery(command.label, query)) continue;
     const disabled = terminalCommand(command.name) && !hasTerminal;
     const index = command.index >= 0 && command.index <= 65535 ? Math.trunc(command.index) : 0;
