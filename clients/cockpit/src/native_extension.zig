@@ -7150,12 +7150,14 @@ test "overlay light-dismiss fires once and Settings rollback stays transactional
     try rig.dispatch(.palette_open);
     try rig.settleNavigation();
     try rig.resize(.init(1100, 640));
+    // Stay below the draggable 50pt titlebar while pressing outside the sheet.
+    // The overlay must consume this before underlying terminal chrome sees it.
     try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
         .window_id = 1,
         .label = canvas_label,
         .kind = .pointer_down,
         .x = 8,
-        .y = 8,
+        .y = 80,
     } });
     try std.testing.expect(!rig.app_state.model.paletteOpen);
     try rig.dispatch(.settings_open);
@@ -7205,7 +7207,9 @@ test "Settings outside pointer down and up dismisses once without activating chr
     try rig.settleAppearance();
     try rig.resize(.init(1100, 640));
     const x: f32 = 8;
-    const y: f32 = 8;
+    // The titlebar is intentionally draggable; exercise sheet light-dismiss
+    // against the scrim below it rather than asking the platform to drag.
+    const y: f32 = 80;
     const tabs_before = bridge.engine.?.model.ws().tab_count;
     try dispatchPointer(&rig, .pointer_down, x, y);
     try std.testing.expect(rig.app_state.model.appearanceClosing);
