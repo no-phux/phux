@@ -15,13 +15,13 @@ to check what the terminal looks like.
 |---|---|---|---|
 | `native automate screenshot` | display list, layout, colour choices, which commands were emitted | everything the real macOS rasterizer does: CoreText outlines, hinting, font smoothing, CG blend arithmetic, device colour space | no |
 | `scripts/host-raster-check.sh` | the real host rasterizer's output for a fixed row | layout, what the app actually emitted, anything outside one command | no |
-| `scripts/capture-gpu-ink.sh` | the app's real composited frame: the host rasterizer AND the layout that fed it | anything the composite pass does differently from the shipping present path — it is a prototype flag, not the default; needs a patched SDK | no |
+| `scripts/capture-gpu-ink.sh` | the app's real composited frame: the host rasterizer AND the layout that fed it | anything the composite pass does differently from the shipping present path — it is a prototype flag, not the default | no |
 | eyes on glass / screen capture | everything | nothing | **yes** |
 
 The middle row was empty when this document was first written, and section 2
-is the survey that emptied it. Section 6 is how it got filled: one SDK-side
-patch, kept at docs/sdk-patches/composite-cell-grid.patch, plus the
-measurements proving the capture sees a defect the screenshot does not.
+is the survey that emptied it. Section 6 is how it got filled: an SDK-side
+change now carried by the pin, plus the measurements proving the capture sees
+a defect the screenshot does not.
 
 ---
 
@@ -174,8 +174,8 @@ was right about the shipped SDK and wrong about what it would cost to change.
 The blocker is the missing list ENTRY, not a missing capability: both bitmap
 paths under that gate already draw `cell_grid`, and
 `NativeSdkPacketCommandRasterCacheable` already answers YES for it. Adding the
-kind to the list is one line. With `docs/sdk-patches/composite-cell-grid.patch`
-applied to a sandbox copy of the pin, the real bundle reports
+kind to the list is one line. With that change applied to a sandbox copy of the
+then-current pin, the real bundle reports
 `gpu_present_path=packet present_fallback=none` and writes real composited PNGs
 at presents 1, 30, 60, …
 
@@ -201,11 +201,11 @@ composite=1       gpu_present_path=pixels  present_fallback=missing_service shot
 without TCC. A negative result, with the code that makes it negative named
 above.
 
-**Conclusion now.** That paragraph was a statement about the pinned SDK, not
-about macOS, and the gate it named is one condition long. Section 6 lifts it
-with `docs/sdk-patches/composite-cell-grid.patch`. The survey above still
-stands for everything else: with an unpatched SDK there is still no capture,
-and the four TCC-gated paths are still TCC-gated.
+**Conclusion now.** That paragraph was a statement about the old pin, not about
+macOS, and the gate it named was one condition long. The current pin carries
+the fix and configurable shot cadence; section 6 records the RED/GREEN evidence.
+The survey above still stands for everything else, and the four TCC-gated paths
+are still TCC-gated.
 
 ---
 
@@ -419,11 +419,11 @@ through `terminal_painter.zig` and reads the retained scene.
 
 ### And the whole chain, once, on the real app
 
-With `docs/sdk-patches/composite-cell-grid.patch` in a sandbox SDK, the same
-question was put to the real bundle. One binary, one driving script writing
-eight rows each of SGR 30, SGR 90, faint blue and plain text, two runs one
-config key apart, `publisher_pid` asserted against the launched pid both times,
-measured over fixed pixel bands of the `-p60` dump with
+With the composite `cell_grid` fix in a sandbox SDK (now carried by the pin),
+the same question was put to the real bundle. One binary, one driving script
+writing eight rows each of SGR 30, SGR 90, faint blue and plain text, two runs
+one config key apart, `publisher_pid` asserted against the launched pid both
+times, measured over fixed pixel bands of the `-p60` dump with
 `scripts/measure-png-ink.m`:
 
 | band | `minimum-contrast = 1` | `minimum-contrast = 3` |
@@ -479,8 +479,9 @@ on the one that was not ruled out by macOS at all — `NATIVE_SDK_GPU_SHOT_DIR`
 was blocked by a single condition in the SDK. This section is that condition
 removed, and the measurement that says the result is worth having.
 
-The SDK change is `docs/sdk-patches/composite-cell-grid.patch`; that README
-carries the argument for it. The harness is `scripts/capture-gpu-ink.sh`. Note
+The SDK change is pinned at `phall1/native@5cc3aa75`, with configurable capture
+cadence at `phall1/native@2d689c76`. The harness is
+`scripts/capture-gpu-ink.sh`. Note
 what neither of them is: composite mode remains a prototype flag that is off
 unless set, so this captures the app's frame through a pass the app does not
 normally present through. Everything below holds for the CoreText rasterization
@@ -488,7 +489,7 @@ inside that frame, which is the same code either way.
 
 ### The harness refuses in the state that would lie
 
-Against a bundle built on the pinned SDK:
+Against a bundle built on the old, unpatched SDK:
 
 ```
 $ ./scripts/capture-gpu-ink.sh --bundle <unpatched>
@@ -498,11 +499,11 @@ REFUSING TO CAPTURE: the host is not rasterizing this frame.
 gpu_present_path=pixels means every packet present was refused and the
 engine fell back to its own CPU reference renderer. Whatever the
 composite pass would dump is that renderer, not CoreText.
-Fix: docs/sdk-patches/composite-cell-grid.patch (see that README).
+Fix: use the current pinned SDK (`5cc3aa75` or later on this lineage).
 exit=1
 ```
 
-Against a bundle built on a sandbox copy of the pin with the patch applied:
+Against a bundle built on a sandbox copy with the fix applied:
 
 ```
 $ ./scripts/capture-gpu-ink.sh --bundle <patched>
@@ -524,7 +525,7 @@ they were built against:
 | bundle | SDK | binary sha256 |
 |---|---|---|
 | unpatched | the pin, `f3678832` | `b2bcbc1f6b7341c6…` |
-| patched | pin + `composite-cell-grid.patch` | `42f01b541ff0cff1…` |
+| patched | old pin + the later `5cc3aa75` change | `42f01b541ff0cff1…` |
 | bold-defect | patched, plus an INJECTED defect | `841053c4b31ba71c…` |
 
 The injected defect is one branch of `NativeSdkCellFaceFor` in
@@ -589,18 +590,9 @@ returning both 0 and 1 here.
 ### Reproduce it
 
 ```sh
-./scripts/build-automation-cli.sh                  # clones .zig-cache/pinned-sdk at the pin
-cp -R .zig-cache/pinned-sdk .zig-cache/pinned-sdk-patched
-rm -rf .zig-cache/pinned-sdk-patched/zig-out .zig-cache/pinned-sdk-patched/.zig-cache
-(cd .zig-cache/pinned-sdk-patched && git apply ../../docs/sdk-patches/composite-cell-grid.patch)
-# temporarily, in build.zig.zon:
-#   .native_sdk = .{ .path = ".zig-cache/pinned-sdk-patched" },
 zig build package -Dautomation=true
 ./scripts/capture-gpu-ink.sh
 ```
-
-Revert `build.zig.zon` before committing anything: the pin is a tarball sha and
-a locally patched build must not be able to masquerade as it.
 
 ### What this still cannot see
 
