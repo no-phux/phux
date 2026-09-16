@@ -174,6 +174,7 @@ const ORIENTATION: { file: string; slug: string; group: Group; order: number }[]
   { file: "CONCEPTS.md", slug: "concepts", group: "start", order: 3 },
   { file: "when-to-use.md", slug: "concepts/when-to-use", group: "start", order: 4 },
   { file: "coming-from.md", slug: "concepts/coming-from", group: "start", order: 5 },
+  { file: "performance.md", slug: "performance", group: "start", order: 6 },
   { file: "CONFIG.md", slug: "quickstart/config", group: "use", order: 0 },
   { file: "remote-access.md", slug: "remote-access", group: "use", order: 4 },
   { file: "operations.md", slug: "architecture/operations", group: "internals", order: 0 },

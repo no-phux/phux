@@ -1,16 +1,15 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-16
 ---
 
-# Coming from tmux, screen, or the old phux distro
+# Coming from tmux or screen
 
-**TL;DR.** Translate existing multiplexer muscle memory into phux. tmux
-users keep attach, split, and prefix habits. Anyone who used the in-tree
-starter formerly named `herdr` already has those defaults as stock phux.
-screen users get detach without the rest of screen. phux's extra surface
-is that every pane is a live terminal other programs attach to.
+**TL;DR.** Translate existing multiplexer muscle memory into phux. tmux users
+keep attach, split, and prefix habits; screen users keep detach and reattach.
+phux is not a drop-in configuration replacement: its extra surface is a live
+resource wire used by visual clients, scripts, and agents.
 
 ---
 
@@ -49,10 +48,11 @@ If you want a battle-hardened local multiplexer and nothing else, tmux
 is still the answer. phux is the multiplexer you use when a human and
 an agent should share the same terminal. [When to use phux](./when-to-use.md).
 
-## The old phux `herdr` distro
+## If you used the old phux starter
 
-This section is the in-tree starter formerly named `herdr`, not the
-separately developed herdr.dev product.
+An old in-tree configuration bundle was briefly named `herdr`. It has no
+relationship to [Herdr](https://herdr.dev). For the product comparison, read
+[When to use phux](./when-to-use.md#compared-with-herdr).
 
 That starter's opinions — which-key delay, split and palette chords, tab
 strip, tokyonight chrome — are the shipped defaults. A naked `phux`

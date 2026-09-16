@@ -44,9 +44,13 @@ export function OverviewBody() {
             <b>New here</b>
             <span>Install, attach, detach, and drive a pane from a second terminal. No protocol required.</span>
           </a>
-          <a href="/concepts">
+          <a href="/concepts/coming-from">
             <b>Coming from tmux</b>
-            <span>The model is familiar until it isn&apos;t: panes are a view. The terminal underneath is an object on a wire.</span>
+            <span>Translate attach, split, prefix, and detach muscle memory.</span>
+          </a>
+          <a href="/concepts/when-to-use#compared-with-herdr">
+            <b>Comparing Herdr</b>
+            <span>Both keep PTYs alive. See where their durable system boundaries differ.</span>
           </a>
           <a href="/consumers/agents">
             <b>You run agents</b>
@@ -67,6 +71,7 @@ export function OverviewBody() {
             <li><a href="/quickstart/install">Install</a></li>
             <li><a href="/concepts">Concepts</a></li>
             <li><a href="/concepts/when-to-use">When to use phux</a></li>
+            <li><a href="/performance">Performance</a></li>
           </ul>
         </section>
         <section>

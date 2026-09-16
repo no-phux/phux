@@ -142,8 +142,9 @@ Docs / Apps / Agents / GitHub.
 ### `/overview` — docs landing on docs.phux.sh
 
 `src/pages/overview.astro`. The docs host root 301s here. Surfaces (CLI,
-Cockpit, Web, Agents), pick-your-path (new / tmux / agents / peer), then Get
-started / Build / Resources columns. This is the persuasion surface for
+Cockpit, Web, Agents), pick-your-path (new / tmux / Herdr / agents / peer), then
+Get started / Build / Resources columns, including the public performance page.
+This is the persuasion surface for
 readers who already arrived to read; it does not replace `docs/README.md`
 (`/docs`), which stays the full index.
 

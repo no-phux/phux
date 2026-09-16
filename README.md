@@ -1,7 +1,7 @@
 <!--
 audience: humans, contributors, agents
 stability: stable
-last-reviewed: 2026-09-14
+last-reviewed: 2026-09-16
 -->
 
 <p align="center">
@@ -16,14 +16,36 @@ part of [no-phux](https://github.com/orgs/no-phux/repositories)
 [![CI](https://github.com/no-phux/phux/actions/workflows/ci.yml/badge.svg)](https://github.com/no-phux/phux/actions/workflows/ci.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](./LICENSE)
 
-A terminal multiplexer. Your shells live in a background server. Split,
-detach, they keep running. The TUI, Cockpit, a script, and an agent all
-attach to the same live terminal.
+phux is a terminal multiplexer for terminals shared by people, apps, and
+agents. Your shells live in a background server; the TUI, Cockpit, the browser,
+a script, and an agent can all attach to the same live terminal.
 
-- **same objects** — the pane you are looking at is the pane the harness drives.
-- **blocked is a fact** when the harness emits. Screen detection is the fallback.
-- **another machine, no account** — `phux --remote me@mini` pairs once; later
-  dials are QUIC. There is no phux account in the path.
+- **One terminal, many peers.** What you see is what an agent reads and drives;
+  there is no copied log or agent-only pane model.
+- **Agent state can be data.** A harness emits structured lifecycle records;
+  terminal detection is the compatibility path when it does not.
+- **The wire is public.** Visual clients, the JSON CLI, SDK, and MCP adapter use
+  the same resource protocol rather than privileged side channels.
+- **Remote does not require a phux account.** `phux --remote me@mini` pairs over
+  SSH once; subsequent attaches dial the machine directly over QUIC.
+
+## tmux, Herdr, or phux?
+
+Use **tmux** if you need a mature local multiplexer and nothing else. phux keeps
+the familiar attach, split, prefix, and detach loop, but earns its extra moving
+parts only when another client or an agent must share the terminal as a live,
+addressable object.
+
+Use **Herdr** if you want one integrated agent-workspace product. Herdr and phux
+both keep real PTYs alive and expose agent-aware control; they put the durable
+boundary in different places. Herdr projects its workspace model to its clients.
+phux exposes Terminal and AgentSession resources on one wire so independently
+shaped visual and headless clients remain peers.
+
+[Choose by use case](./docs/when-to-use.md) ·
+[translate tmux keys](./docs/coming-from.md) ·
+[compare the Herdr architecture](./docs/architecture/phux-and-herdr.md) ·
+[see measured performance](./docs/performance.md)
 
 ## Install
 
@@ -48,19 +70,22 @@ curl -fsSL https://phux.sh/install-cockpit | sh
 Run `phux` to start. Prefix is `Ctrl-A`; `Ctrl-A d` detaches. Other channels
 and source builds: [Install](./docs/INSTALL.md).
 
-## Coming from
+## First minute
 
-| You used | |
-|---|---|
-| **tmux** | Same attach, split, and prefix muscle memory. Every pane is also a real terminal an agent can read and type into. |
-| **old phux `herdr` distro** | Not herdr.dev. Those defaults are stock phux. `phux config init --distro starter` for the demo plugins. |
-| **screen** | Attach and detach. The rest is in the docs. |
+```sh
+phux                       # start the server and attach
+# Ctrl-A %                 # split left/right
+# Ctrl-A d                 # detach; the shells keep running
+phux ls --json             # inspect the same terminals headlessly
+phux snapshot default      # read the current grid without attaching a UI
+```
 
-Longer translation: [Coming from tmux, screen, or the old phux distro](./docs/coming-from.md).
-
-Keys, remote, agents, Cockpit, the wire: [docs.phux.sh](https://docs.phux.sh/overview).
-Harness authors: [emit contract](./docs/consumers/harness.md).
-New clients: [build against the wire](./docs/consumers/build-a-client.md).
+[Quickstart](./docs/QUICKSTART.md) ·
+[keys and configuration](./docs/CONFIG.md) ·
+[remote access](./docs/remote-access.md) ·
+[agent control](./docs/consumers/agents.md) ·
+[harness emit contract](./docs/consumers/harness.md) ·
+[build a client](./docs/consumers/build-a-client.md)
 
 ## License
 
