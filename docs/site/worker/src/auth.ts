@@ -49,7 +49,6 @@ interface SessionClaims extends SessionIdentity {
 
 interface TransactionClaims {
   provider: "github" | "google";
-  state: string;
   verifier: string;
   nonce?: string;
   returnPath: "/" | "/embed";
@@ -192,16 +191,71 @@ async function formResponse(response: Response): Promise<Record<string, unknown>
   return value;
 }
 
+async function oauthTokenBody(response: Response): Promise<Record<string, unknown>> {
+  const raw = await response.text();
+  const contentType = response.headers.get("content-type") ?? "";
+  let value: Record<string, unknown> = {};
+  if (contentType.includes("json") || raw.trimStart().startsWith("{")) {
+    try {
+      value = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      value = {};
+    }
+  } else {
+    value = Object.fromEntries(new URLSearchParams(raw).entries());
+  }
+  if (!response.ok) {
+    throw new Error(safeText(value.error, 80) ?? `http_${response.status}`);
+  }
+  return value;
+}
+
 function validTransaction(value: TransactionClaims, provider: "github" | "google"): boolean {
   return (
     value.provider === provider &&
-    typeof value.state === "string" &&
-    value.state.length >= 32 &&
     typeof value.verifier === "string" &&
     value.verifier.length >= 43 &&
     (value.returnPath === "/" || value.returnPath === "/embed") &&
     (provider === "github" || (typeof value.nonce === "string" && value.nonce.length >= 32))
   );
+}
+
+function oauthRedirectUri(provider: "github" | "google"): string {
+  return `${PUBLIC_APP_ORIGIN}/auth/${provider}/callback`;
+}
+
+function githubUserId(value: unknown): number | null {
+  if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) return value;
+  if (typeof value === "string" && /^\d{1,16}$/.test(value)) {
+    const id = Number(value);
+    if (Number.isSafeInteger(id) && id > 0) return id;
+  }
+  return null;
+}
+
+async function readOAuthTransaction(
+  request: Request,
+  secret: string,
+  provider: "github" | "google",
+  now: number,
+): Promise<TransactionClaims | null> {
+  const rawState = new URL(request.url).searchParams.get("state") ?? "";
+  const transaction = await verifyClaims<TransactionClaims>(secret, rawState, now);
+  if (!transaction || !validTransaction(transaction, provider)) return null;
+  const cookieVal = cookies(request).get(`${TRANSACTION_COOKIE_PREFIX}${provider}`);
+  if (cookieVal !== undefined && cookieVal !== rawState) return null;
+  return transaction;
+}
+
+function finishAuthRedirect(
+  path: "/" | "/embed",
+  result: "success" | "error",
+  extraCookies: string[] = [],
+): Response {
+  const response = redirectAfterAuth(path, result);
+  for (const extra of extraCookies) response.headers.append("Set-Cookie", extra);
+  response.headers.set("Cache-Control", "no-store");
+  return response;
 }
 
 export async function verifySessionCookie(
@@ -290,22 +344,21 @@ export function createAuthRequestHandler(
       return json({ error: "authentication is not configured" }, 500);
     }
     const transactionCookie = `${TRANSACTION_COOKIE_PREFIX}${provider}`;
-    const redirectUri = `${url.origin}/auth/${provider}/callback`;
+    const redirectUri = oauthRedirectUri(provider);
 
     if (!callback) {
       const destination = returnPath(url);
       if (!destination) return json({ error: "invalid return path" }, 400);
-      const state = randomValue();
       const verifier = randomValue(48);
       const nonce = provider === "google" ? randomValue() : undefined;
       const transaction: TransactionClaims = {
         provider,
-        state,
         verifier,
         ...(nonce ? { nonce } : {}),
         returnPath: destination,
         exp: now() + TRANSACTION_MAX_AGE_SECONDS * 1_000,
       };
+      const state = await signClaims(env.AUTH_COOKIE_SECRET, transaction);
       const authorization = new URL(
         provider === "github"
           ? "https://github.com/login/oauth/authorize"
@@ -330,31 +383,23 @@ export function createAuthRequestHandler(
       });
       response.headers.append(
         "Set-Cookie",
-        cookie(transactionCookie, await signClaims(env.AUTH_COOKIE_SECRET, transaction), TRANSACTION_MAX_AGE_SECONDS),
+        cookie(transactionCookie, state, TRANSACTION_MAX_AGE_SECONDS),
       );
       response.headers.set("Cache-Control", "no-store");
       return response;
     }
 
-    const transaction = await verifyClaims<TransactionClaims>(
+    const transaction = await readOAuthTransaction(
+      request,
       env.AUTH_COOKIE_SECRET,
-      cookies(request).get(transactionCookie),
+      provider,
       now(),
     );
-    if (
-      !transaction ||
-      !validTransaction(transaction, provider) ||
-      url.searchParams.get("state") !== transaction.state
-    ) {
-      const response = json({ error: "invalid OAuth transaction" }, 400);
-      response.headers.append("Set-Cookie", clearCookie(transactionCookie));
-      return response;
+    if (!transaction) {
+      return finishAuthRedirect("/", "error", [clearCookie(transactionCookie)]);
     }
     if (!url.searchParams.get("code") || url.searchParams.has("error")) {
-      const response = redirectAfterAuth(transaction.returnPath, "error");
-      response.headers.append("Set-Cookie", clearCookie(transactionCookie));
-      response.headers.set("Cache-Control", "no-store");
-      return response;
+      return finishAuthRedirect(transaction.returnPath, "error", [clearCookie(transactionCookie)]);
     }
 
     let identity: SessionIdentity;
@@ -371,7 +416,7 @@ export function createAuthRequestHandler(
             code_verifier: transaction.verifier,
           }),
         });
-        const tokenBody = await formResponse(tokenResponse);
+        const tokenBody = await oauthTokenBody(tokenResponse);
         const token = safeText(tokenBody.access_token, 2_000);
         if (!token) throw new Error(safeText(tokenBody.error, 80) ?? "GitHub access token missing");
         const userResponse = await fetcher("https://api.github.com/user", {
@@ -379,21 +424,22 @@ export function createAuthRequestHandler(
             Accept: "application/vnd.github+json",
             Authorization: `Bearer ${token}`,
             "User-Agent": "phux-shell",
+            "X-GitHub-Api-Version": "2022-11-28",
           },
         });
         const user = await formResponse(userResponse);
         const login = safeText(user.login);
         const createdAt = Date.parse(safeText(user.created_at) ?? "");
+        const userId = githubUserId(user.id);
         if (
-          !Number.isSafeInteger(user.id) ||
-          Number(user.id) <= 0 ||
+          userId === null ||
           !login ||
           !Number.isFinite(createdAt) ||
           createdAt > now() - GITHUB_MIN_ACCOUNT_AGE_MS
         ) {
           throw new Error("Invalid GitHub identity");
         }
-        identity = { principal: `github:${user.id}`, provider, display: login };
+        identity = { principal: `github:${userId}`, provider, display: login };
       } else {
         const tokenResponse = await fetcher("https://oauth2.googleapis.com/token", {
           method: "POST",
@@ -427,21 +473,17 @@ export function createAuthRequestHandler(
     } catch (error) {
       const reason = error instanceof Error ? error.message : "unknown";
       console.log(`oauth_callback_failed provider=${provider} reason=${reason}`);
-      const response = redirectAfterAuth(transaction.returnPath, "error");
-      response.headers.append("Set-Cookie", clearCookie(transactionCookie));
-      response.headers.set("Cache-Control", "no-store");
-      return response;
+      return finishAuthRedirect(transaction.returnPath, "error", [clearCookie(transactionCookie)]);
     }
 
     const session = await signClaims(env.AUTH_COOKIE_SECRET, {
       ...identity,
       exp: now() + SESSION_MAX_AGE_SECONDS * 1_000,
     } satisfies SessionClaims);
-    const response = redirectAfterAuth(transaction.returnPath, "success");
-    response.headers.append("Set-Cookie", cookie(SESSION_COOKIE, session, SESSION_MAX_AGE_SECONDS));
-    response.headers.append("Set-Cookie", clearCookie(transactionCookie));
-    response.headers.set("Cache-Control", "no-store");
-    return response;
+    return finishAuthRedirect(transaction.returnPath, "success", [
+      cookie(SESSION_COOKIE, session, SESSION_MAX_AGE_SECONDS),
+      clearCookie(transactionCookie),
+    ]);
   };
 }
 

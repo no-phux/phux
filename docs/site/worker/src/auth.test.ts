@@ -50,7 +50,7 @@ function requestWithCookie(url: string, cookie: string, init?: RequestInit): Req
 }
 
 describe("OAuth starts", () => {
-  test("uses exact-origin callbacks, S256 PKCE, no GitHub scopes, and exact transaction flags", async () => {
+  test("pins the public-site callback, S256 PKCE, no GitHub scopes, and exact transaction flags", async () => {
     const handler = createAuthRequestHandler(async () => {
       throw new Error("unexpected fetch");
     });
@@ -58,7 +58,7 @@ describe("OAuth starts", () => {
 
     expect(result.authorization.origin).toBe("https://github.com");
     expect(result.authorization.searchParams.get("redirect_uri")).toBe(
-      `${PUBLIC_AUTH_ORIGIN}/auth/github/callback`,
+      `${PUBLIC_APP_ORIGIN}/auth/github/callback`,
     );
     expect(result.authorization.searchParams.get("code_challenge_method")).toBe("S256");
     expect(result.authorization.searchParams.get("code_challenge")?.length).toBe(43);
@@ -125,7 +125,8 @@ describe("OAuth callbacks", () => {
       env,
     );
 
-    expect(response?.status).toBe(400);
+    expect(response?.status).toBe(302);
+    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/?auth=error`);
     expect(fetches).toBe(0);
     expect(setCookies(response!)).toContain(
       "__Secure-phux_oauth_github=; Domain=phux.sh; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Lax",
@@ -186,6 +187,61 @@ describe("OAuth callbacks", () => {
     );
     expect(identity).toEqual({ principal: "github:123456", provider: "github", display: "octocat" });
     expect(sessionSetCookie).not.toContain("transient-token");
+  });
+
+  test("completes GitHub login from the signed state when the transaction cookie is missing", async () => {
+    const handler = createAuthRequestHandler(async (input) => {
+      if (String(input).endsWith("/access_token")) {
+        return Response.json({ access_token: "transient-token" });
+      }
+      return Response.json({
+        id: 123456,
+        login: "octocat",
+        created_at: "2020-01-01T00:00:00Z",
+      });
+    });
+    const initiated = await start("github", handler, "/embed");
+    const state = initiated.authorization.searchParams.get("state")!;
+    const response = await handler(
+      new Request(`${PUBLIC_APP_ORIGIN}/auth/github/callback?code=one-time-code&state=${encodeURIComponent(state)}`),
+      env,
+    );
+
+    expect(response?.status).toBe(302);
+    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/embed?auth=success`);
+    const sessionSetCookie = setCookies(response!).find((value) => value.startsWith("__Secure-phux_session="))!;
+    expect(
+      await verifySessionCookie(
+        requestWithCookie(`${PUBLIC_APP_ORIGIN}/`, cookiePair(sessionSetCookie)),
+        env.AUTH_COOKIE_SECRET,
+      ),
+    ).toEqual({ principal: "github:123456", provider: "github", display: "octocat" });
+  });
+
+  test("accepts GitHub form-urlencoded tokens and string user ids", async () => {
+    const handler = createAuthRequestHandler(async (input) => {
+      if (String(input).endsWith("/access_token")) {
+        return new Response("access_token=transient-token&token_type=bearer", {
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        });
+      }
+      return Response.json({
+        id: "123456",
+        login: "octocat",
+        created_at: "2020-01-01T00:00:00Z",
+      });
+    });
+    const initiated = await start("github", handler);
+    const state = initiated.authorization.searchParams.get("state")!;
+    const response = await handler(
+      requestWithCookie(
+        `${PUBLIC_APP_ORIGIN}/auth/github/callback?code=one-time-code&state=${encodeURIComponent(state)}`,
+        initiated.cookie,
+      ),
+      env,
+    );
+    expect(response?.status).toBe(302);
+    expect(response?.headers.get("Location")).toBe(`${PUBLIC_APP_ORIGIN}/?auth=success`);
   });
 
   test("maps GitHub token-endpoint error bodies to a generic frontend error", async () => {

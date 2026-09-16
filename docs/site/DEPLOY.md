@@ -185,7 +185,10 @@ paths are scoped to `docs/site/**`.
      some document requests to that hostname. A mismatch is GitHub's
      "Invalid Redirect URI" page.
      Request no scopes. An unverified-app caution on first authorize is not a
-     failure; publisher verification is the only way to remove it.
+     failure; publisher verification is the only way to remove it. The Worker
+     always sends that public-site `redirect_uri`, and the OAuth `state` is the
+     signed transaction, so a no-scope GitHub bounce that drops the transaction
+     cookie still completes.
    - Google Web OAuth client in the `phux-shell-*` project: authorized
      JavaScript origins `https://phux.sh` and `https://shell.phux.sh`;
      authorized redirect URI exactly `https://phux.sh/auth/google/callback`
