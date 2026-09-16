@@ -16,7 +16,7 @@ use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, ServerCapabilities,
 };
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
-use phux_protocol::wire::frame::FrameKind;
+use phux_protocol::wire::frame::{FrameKind, TYPE_FRAME_COMPRESSED};
 #[cfg(test)]
 use phux_protocol::wire::frame::{AttachTarget, ViewportInfo};
 use phux_protocol::wire::info::{ResourceInfo, SessionSnapshot};
@@ -103,8 +103,8 @@ impl EdgeSession {
     #[must_use]
     pub fn on_message(&mut self, data: &[u8]) -> js_sys::Array {
         let out = js_sys::Array::new();
-        let Ok((frame, _rest)) = FrameKind::decode(data) else {
-            return out; // ignore undecodable input
+        let Some(frame) = decode_inbound_frame(data) else {
+            return out;
         };
         for frame in self.handle(frame) {
             out.push(&js_sys::Uint8Array::from(frame.as_slice()));
@@ -277,6 +277,16 @@ fn smoke_attach() -> FrameKind {
     }
 }
 
+/// Decode one client WebSocket message. `FRAME_COMPRESSED` is server-to-client
+/// only (proto.md §6.4). Refuse it before `FrameKind::decode` so a 64KiB
+/// envelope cannot inflate to the 8MiB bootstrap ceiling.
+fn decode_inbound_frame(data: &[u8]) -> Option<FrameKind> {
+    if data.get(4) == Some(&TYPE_FRAME_COMPRESSED) {
+        return None;
+    }
+    FrameKind::decode(data).ok().map(|(frame, _rest)| frame)
+}
+
 /// Encode a frame to one length-prefixed WebSocket message.
 fn encode(frame: &FrameKind) -> Vec<u8> {
     let mut buf = BytesMut::new();
@@ -286,8 +296,12 @@ fn encode(frame: &FrameKind) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EdgeSession, FrameKind, PROTOCOL_VERSION, encode, smoke_attach, smoke_hello};
+    use super::{
+        EdgeSession, FrameKind, PROTOCOL_VERSION, decode_inbound_frame, encode, smoke_attach,
+        smoke_hello,
+    };
     use phux_protocol::caps::ClientCapabilities;
+    use phux_protocol::wire::frame::TYPE_FRAME_COMPRESSED;
 
     fn decode_all(frames: &[Vec<u8>]) -> Vec<FrameKind> {
         frames
@@ -362,6 +376,16 @@ mod tests {
         assert_eq!(client_caps, ClientCapabilities::new());
         assert!(!encode(&smoke_hello()).is_empty());
         assert!(!encode(&smoke_attach()).is_empty());
+    }
+
+    #[test]
+    fn inbound_decode_refuses_client_frame_compressed_before_inflate() {
+        let hello = encode(&smoke_hello());
+        assert_eq!(hello[4], 1);
+        assert!(decode_inbound_frame(&hello).is_some());
+        let mut compressed = hello.clone();
+        compressed[4] = TYPE_FRAME_COMPRESSED;
+        assert!(decode_inbound_frame(&compressed).is_none());
     }
 
     #[test]

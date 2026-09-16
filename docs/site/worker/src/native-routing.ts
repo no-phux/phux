@@ -61,9 +61,18 @@ export function nativeUpstreamRequest(request: Request): Request {
     "X-Forwarded-For",
     "X-Phux-Session",
     "X-Phux-Token",
+    "Cookie",
+    "Authorization",
   ]) {
     headers.delete(name);
   }
 
   return new Request(url, { method: request.method, headers });
+}
+
+/** Client address for rate limits and native per-IP caps. Trust only the
+ * Cloudflare-injected header; never X-Forwarded-For. */
+export function trustedClientIp(request: Request): string {
+  const cf = request.headers.get("CF-Connecting-IP")?.trim();
+  return cf || "unknown";
 }
