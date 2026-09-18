@@ -4,7 +4,7 @@
 //! [`ServerState::rebuild_from_blob`] reconstructs the tree from one in the
 //! re-exec'd image.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::os::fd::{AsRawFd, RawFd};
 use std::path::PathBuf;
 use std::time::{Duration, UNIX_EPOCH};
@@ -49,6 +49,14 @@ pub enum RebuildError {
     InvalidPtyPair {
         /// Stable pane identity from the handoff blob.
         wire_id: u32,
+    },
+    /// The blob lists the same wire id twice for one kind of entity.
+    #[error("blob repeats {kind} wire id {id}")]
+    DuplicateId {
+        /// Which kind of entity repeated.
+        kind: &'static str,
+        /// The repeated wire id.
+        id: u32,
     },
 }
 
@@ -334,6 +342,11 @@ impl ServerState {
     /// rebuilt pane's exit receiver so the runtime can restore its lifecycle
     /// watcher after releasing the state lock.
     ///
+    /// Reconstruction is transactional: the blob is validated, the tree is
+    /// built on a fresh [`ServerState`], and only a complete success is
+    /// committed onto `self`. A validation, registry, or actor failure
+    /// leaves this state untouched so a resume cannot serve a partial tree.
+    ///
     /// Linear reconstruction: create entities, bind wire ids, spawn actors,
     /// re-link the tree, restore counters. The order of the passes is the
     /// meaning — each one resolves references the previous one bound.
@@ -341,8 +354,8 @@ impl ServerState {
     /// Must run inside the `LocalSet` that owns pane actors (it spawns them).
     ///
     /// # Errors
-    /// [`RebuildError`] on a registry insertion failure, an actor build
-    /// failure, or a dangling wire-id reference in the blob.
+    /// [`RebuildError`] on incomplete topology, a registry insertion
+    /// failure, an actor build failure, or a dangling wire-id reference.
     #[allow(
         clippy::type_complexity,
         reason = "the runtime immediately consumes each rebuilt pane id and its one-shot exit receiver"
@@ -351,13 +364,33 @@ impl ServerState {
         &mut self,
         blob: &StateBlob,
     ) -> Result<PaneExitWatchers, RebuildError> {
-        let session_core = self.rebuild_sessions(blob);
-        let window_core = self.rebuild_windows(blob, &session_core)?;
-        let panes = self.rebuild_panes(blob, &window_core)?;
-        self.relink_window_contents(blob, &window_core, &panes.core_ids);
-        self.relink_session_windows(blob, &session_core, &window_core);
-        self.restore_counters(blob);
+        validate_upgrade_blob(blob)?;
+        let mut fresh = Self::new();
+        fresh.config.scrollback = self.config.scrollback;
+        // ADR-0109: a blob from an image that predates the instance token
+        // leaves this process's token in place. Seed it onto the scratch
+        // state so commit cannot replace it with a second mint.
+        if blob.counters.server_instance.is_none() {
+            fresh.idspace.set_instance(self.idspace.instance());
+        }
+        let session_core = fresh.rebuild_sessions(blob);
+        let window_core = fresh.rebuild_windows(blob, &session_core)?;
+        let panes = fresh.rebuild_panes(blob, &window_core)?;
+        fresh.relink_window_contents(blob, &window_core, &panes.core_ids)?;
+        fresh.relink_session_windows(blob, &session_core, &window_core)?;
+        fresh.restore_counters(blob);
+        self.commit_rebuilt_tree(fresh);
         Ok(panes.exit_watchers)
+    }
+
+    /// Install a fully rebuilt tree, replacing only the tables reconstruction
+    /// owns. Startup gates already written on `self` (config, hub, policy,
+    /// upgrade context) stay put.
+    fn commit_rebuilt_tree(&mut self, mut fresh: Self) {
+        std::mem::swap(&mut self.sessions, &mut fresh.sessions);
+        std::mem::swap(&mut self.idspace, &mut fresh.idspace);
+        std::mem::swap(&mut self.resources, &mut fresh.resources);
+        std::mem::swap(&mut self.retained, &mut fresh.retained);
     }
 
     /// Recreate every session under its recorded wire id, restoring its
@@ -476,23 +509,32 @@ impl ServerState {
         blob: &StateBlob,
         window_core: &HashMap<u32, WindowId>,
         pane_core: &HashMap<u32, ResourceId>,
-    ) {
+    ) -> Result<(), RebuildError> {
         for w in &blob.windows {
             let Some(&core) = window_core.get(&w.wire_id) else {
                 continue;
             };
-            let panes = resolve_ids(&w.pane_wire_ids, pane_core);
-            let active = w.active_resource.and_then(|id| pane_core.get(&id).copied());
+            let panes = resolve_ids(&w.pane_wire_ids, pane_core, "pane")?;
+            let active = match w.active_resource {
+                Some(id) => Some(
+                    *pane_core
+                        .get(&id)
+                        .ok_or(RebuildError::DanglingRef { kind: "pane", id })?,
+                ),
+                None => None,
+            };
             let layout = w
                 .layout
                 .as_ref()
-                .and_then(|l| layout_from_blob(l, pane_core));
+                .map(|l| layout_from_blob(l, pane_core))
+                .transpose()?;
             if let Some(win) = self.sessions.registry.window_mut(core) {
                 win.slots = panes;
                 win.active = active;
                 win.layout = layout;
             }
         }
+        Ok(())
     }
 
     /// Re-apply session window order / active.
@@ -501,18 +543,26 @@ impl ServerState {
         blob: &StateBlob,
         session_core: &HashMap<u32, SessionId>,
         window_core: &HashMap<u32, WindowId>,
-    ) {
+    ) -> Result<(), RebuildError> {
         for s in &blob.sessions {
             let Some(&core) = session_core.get(&s.wire_id) else {
                 continue;
             };
-            let windows = resolve_ids(&s.window_wire_ids, window_core);
-            let active = s.active_window.and_then(|id| window_core.get(&id).copied());
+            let windows = resolve_ids(&s.window_wire_ids, window_core, "window")?;
+            let active = match s.active_window {
+                Some(id) => Some(
+                    *window_core
+                        .get(&id)
+                        .ok_or(RebuildError::DanglingRef { kind: "window", id })?,
+                ),
+                None => None,
+            };
             if let Some(sess) = self.sessions.registry.session_mut(core) {
                 sess.windows = windows;
                 sess.active = active;
             }
         }
+        Ok(())
     }
 
     /// Close every pane the old image retained after its process exited
@@ -578,13 +628,87 @@ fn pane_actor_bundle(
     })
 }
 
-/// Resolve a list of wire ids to their rebuilt core ids, dropping any that
-/// didn't resolve (a dangling reference is silently skipped at the list level;
-/// structural references error in `rebuild_from_blob`).
-fn resolve_ids<K: Copy>(wire_ids: &[u32], map: &HashMap<u32, K>) -> Vec<K> {
+/// Check the blob's topology is complete and internally consistent before
+/// any registry mutation, so a bad handoff cannot leave a partial tree.
+pub(crate) fn validate_upgrade_blob(blob: &StateBlob) -> Result<(), RebuildError> {
+    let sessions = unique_wire_ids("session", blob.sessions.iter().map(|s| s.wire_id))?;
+    let windows = unique_wire_ids("window", blob.windows.iter().map(|w| w.wire_id))?;
+    let panes = unique_wire_ids("pane", blob.panes.iter().map(|p| p.wire_id))?;
+
+    for s in &blob.sessions {
+        require_refs("window", &s.window_wire_ids, &windows)?;
+        if let Some(id) = s.active_window {
+            require_ref("window", id, &windows)?;
+        }
+    }
+    for w in &blob.windows {
+        require_ref("session", w.session_wire_id, &sessions)?;
+        require_refs("pane", &w.pane_wire_ids, &panes)?;
+        if let Some(id) = w.active_resource {
+            require_ref("pane", id, &panes)?;
+        }
+        if let Some(layout) = &w.layout {
+            validate_layout(layout, &panes)?;
+        }
+    }
+    for p in &blob.panes {
+        require_ref("window", p.window_wire_id, &windows)?;
+        match (p.master_fd, p.child_pid) {
+            (Some(_), Some(_)) | (None, None) => {}
+            _ => return Err(RebuildError::InvalidPtyPair { wire_id: p.wire_id }),
+        }
+    }
+    Ok(())
+}
+
+fn unique_wire_ids(
+    kind: &'static str,
+    ids: impl IntoIterator<Item = u32>,
+) -> Result<HashSet<u32>, RebuildError> {
+    let mut seen = HashSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(RebuildError::DuplicateId { kind, id });
+        }
+    }
+    Ok(seen)
+}
+
+fn require_ref(kind: &'static str, id: u32, known: &HashSet<u32>) -> Result<(), RebuildError> {
+    if known.contains(&id) {
+        Ok(())
+    } else {
+        Err(RebuildError::DanglingRef { kind, id })
+    }
+}
+
+fn require_refs(kind: &'static str, ids: &[u32], known: &HashSet<u32>) -> Result<(), RebuildError> {
+    ids.iter().try_for_each(|id| require_ref(kind, *id, known))
+}
+
+fn validate_layout(node: &LayoutBlob, panes: &HashSet<u32>) -> Result<(), RebuildError> {
+    match node {
+        LayoutBlob::Leaf(id) => require_ref("pane", *id, panes),
+        LayoutBlob::Split { left, right, .. } => {
+            validate_layout(left, panes)?;
+            validate_layout(right, panes)
+        }
+    }
+}
+
+/// Resolve a list of wire ids to their rebuilt core ids.
+fn resolve_ids<K: Copy>(
+    wire_ids: &[u32],
+    map: &HashMap<u32, K>,
+    kind: &'static str,
+) -> Result<Vec<K>, RebuildError> {
     wire_ids
         .iter()
-        .filter_map(|id| map.get(id).copied())
+        .map(|id| {
+            map.get(id)
+                .copied()
+                .ok_or(RebuildError::DanglingRef { kind, id: *id })
+        })
         .collect()
 }
 
@@ -606,16 +730,28 @@ fn pane_seed(p: &PaneBlob) -> Vec<u8> {
 }
 
 /// Rebuild a [`LayoutNode`] from its [`LayoutBlob`] mirror, resolving pane wire
-/// ids to core ids. `None` if any referenced pane is missing.
-fn layout_from_blob(node: &LayoutBlob, panes: &HashMap<u32, ResourceId>) -> Option<LayoutNode> {
+/// ids to core ids.
+fn layout_from_blob(
+    node: &LayoutBlob,
+    panes: &HashMap<u32, ResourceId>,
+) -> Result<LayoutNode, RebuildError> {
     match node {
-        LayoutBlob::Leaf(wire) => panes.get(wire).copied().map(LayoutNode::Leaf),
+        LayoutBlob::Leaf(wire) => {
+            panes
+                .get(wire)
+                .copied()
+                .map(LayoutNode::Leaf)
+                .ok_or(RebuildError::DanglingRef {
+                    kind: "pane",
+                    id: *wire,
+                })
+        }
         LayoutBlob::Split {
             dir,
             ratio,
             left,
             right,
-        } => Some(LayoutNode::Split {
+        } => Ok(LayoutNode::Split {
             dir: match dir {
                 SplitDirBlob::Horizontal => SplitDir::Horizontal,
                 SplitDirBlob::Vertical => SplitDir::Vertical,
@@ -629,8 +765,14 @@ fn layout_from_blob(node: &LayoutBlob, panes: &HashMap<u32, ResourceId>) -> Opti
 
 #[cfg(test)]
 mod tests {
+    use super::{RebuildError, validate_upgrade_blob};
     use crate::state::ServerState;
     use crate::terminal_actor::TerminalActor;
+    use crate::upgrade::blob::{
+        BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob, StateBlob,
+        WindowBlob,
+    };
+    use std::path::PathBuf;
 
     /// Walk a one-session/one-window/one-pane state into a blob: the tree
     /// links resolve by wire id and the pane carries the actor's replay
@@ -801,6 +943,217 @@ mod tests {
                     from_legacy.idspace.instance(),
                     fresh,
                     "nothing to restore: the fresh token stands"
+                );
+            })
+            .await;
+    }
+
+    fn empty_counters() -> Counters {
+        Counters {
+            next_session_wire_id: 10,
+            next_terminal_wire_id: 10,
+            next_window_wire_id: 10,
+            next_touch_timestamp: 1,
+            server_instance: None,
+        }
+    }
+
+    fn session(wire_id: u32, windows: Vec<u32>) -> SessionBlob {
+        SessionBlob {
+            wire_id,
+            name: "main".to_owned(),
+            window_wire_ids: windows,
+            active_window: None,
+            created_at_unix_nanos: 0,
+            last_touched: None,
+            root: None,
+            keep_empty: false,
+        }
+    }
+
+    fn window(wire_id: u32, session_wire_id: u32, panes: Vec<u32>) -> WindowBlob {
+        WindowBlob {
+            wire_id,
+            session_wire_id,
+            pane_wire_ids: panes,
+            active_resource: None,
+            layout: None,
+            last_cwd: None,
+        }
+    }
+
+    fn no_pty_pane(wire_id: u32, window_wire_id: u32) -> PaneBlob {
+        PaneBlob {
+            wire_id,
+            window_wire_id,
+            cols: 80,
+            rows: 24,
+            cell_px: None,
+            cwd: PathBuf::from("/tmp"),
+            title: None,
+            term: "xterm-256color".to_owned(),
+            child_pid: None,
+            master_fd: None,
+            vt_replay_bytes: Vec::new(),
+            scrollback_bytes: Vec::new(),
+            retained_exit: None,
+            retain_secs: None,
+        }
+    }
+
+    fn blob(
+        sessions: Vec<SessionBlob>,
+        windows: Vec<WindowBlob>,
+        panes: Vec<PaneBlob>,
+    ) -> StateBlob {
+        StateBlob {
+            version: BLOB_VERSION,
+            listener_fd: 7,
+            counters: empty_counters(),
+            sessions,
+            windows,
+            panes,
+        }
+    }
+
+    fn session_names(state: &ServerState) -> Vec<String> {
+        let mut names: Vec<String> = state
+            .registry()
+            .sessions()
+            .map(|(_, s)| s.name.clone())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A complete one-session/one-window/one-pane no-PTY blob rebuilds, and a
+    /// marker session already on the destination is replaced only after the
+    /// whole tree is ready.
+    #[tokio::test(flavor = "current_thread")]
+    async fn rebuild_from_a_complete_blob_is_transactional() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut state = ServerState::new();
+                state.registry_mut().new_session("already-here".to_owned());
+                let handoff = blob(
+                    vec![session(1, vec![2])],
+                    vec![window(2, 1, vec![3])],
+                    vec![no_pty_pane(3, 2)],
+                );
+                validate_upgrade_blob(&handoff).expect("complete topology");
+                state.rebuild_from_blob(&handoff).expect("rebuild");
+                assert_eq!(session_names(&state), vec!["main".to_owned()]);
+            })
+            .await;
+    }
+
+    /// A session that names a window the blob does not contain fails closed
+    /// and leaves the destination state untouched.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dangling_window_id_does_not_mutate_state() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut state = ServerState::new();
+                state.registry_mut().new_session("already-here".to_owned());
+                let handoff = blob(vec![session(1, vec![99])], Vec::new(), Vec::new());
+                match state.rebuild_from_blob(&handoff) {
+                    Err(RebuildError::DanglingRef { kind, id }) => {
+                        assert_eq!(kind, "window");
+                        assert_eq!(id, 99);
+                    }
+                    other => panic!("expected dangling window, got {other:?}"),
+                }
+                assert_eq!(session_names(&state), vec!["already-here".to_owned()]);
+            })
+            .await;
+    }
+
+    #[test]
+    fn duplicate_session_wire_id_is_rejected() {
+        let handoff = blob(
+            vec![session(1, Vec::new()), session(1, Vec::new())],
+            Vec::new(),
+            Vec::new(),
+        );
+        match validate_upgrade_blob(&handoff) {
+            Err(RebuildError::DuplicateId { kind, id }) => {
+                assert_eq!(kind, "session");
+                assert_eq!(id, 1);
+            }
+            other => panic!("expected duplicate session, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn incomplete_pty_pair_is_rejected() {
+        let mut pane = no_pty_pane(3, 2);
+        pane.master_fd = Some(11);
+        let handoff = blob(
+            vec![session(1, vec![2])],
+            vec![window(2, 1, vec![3])],
+            vec![pane],
+        );
+        match validate_upgrade_blob(&handoff) {
+            Err(RebuildError::InvalidPtyPair { wire_id }) => assert_eq!(wire_id, 3),
+            other => panic!("expected incomplete PTY pair, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn layout_leaf_must_name_a_pane_in_the_blob() {
+        let mut win = window(2, 1, vec![3]);
+        win.layout = Some(LayoutBlob::Split {
+            dir: SplitDirBlob::Horizontal,
+            ratio: 0.5,
+            left: Box::new(LayoutBlob::Leaf(3)),
+            right: Box::new(LayoutBlob::Leaf(99)),
+        });
+        let handoff = blob(
+            vec![session(1, vec![2])],
+            vec![win],
+            vec![no_pty_pane(3, 2)],
+        );
+        match validate_upgrade_blob(&handoff) {
+            Err(RebuildError::DanglingRef { kind, id }) => {
+                assert_eq!(kind, "pane");
+                assert_eq!(id, 99);
+            }
+            other => panic!("expected dangling layout pane, got {other:?}"),
+        }
+    }
+
+    /// A blob that passes topology checks but fails while building a pane
+    /// actor must not install the sessions that were rebuilt before the
+    /// failing pane.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pane_actor_failure_does_not_install_a_partial_tree() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let mut state = ServerState::new();
+                state.registry_mut().new_session("already-here".to_owned());
+
+                let mut bad = no_pty_pane(4, 2);
+                // libghostty refuses a zero-sized grid; topology is otherwise
+                // complete, so this is a mid-rebuild actor failure.
+                bad.cols = 0;
+                bad.rows = 0;
+                let handoff = blob(
+                    vec![session(1, vec![2])],
+                    vec![window(2, 1, vec![3, 4])],
+                    vec![no_pty_pane(3, 2), bad],
+                );
+                validate_upgrade_blob(&handoff).expect("topology is complete");
+                match state.rebuild_from_blob(&handoff) {
+                    Err(RebuildError::Actor(_)) => {}
+                    other => panic!("expected actor rebuild failure, got {other:?}"),
+                }
+                assert_eq!(
+                    session_names(&state),
+                    vec!["already-here".to_owned()],
+                    "a mid-rebuild actor failure must not commit the partial tree"
                 );
             })
             .await;
