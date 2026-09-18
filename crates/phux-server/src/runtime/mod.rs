@@ -548,6 +548,11 @@ pub enum ServerError {
     #[error("policy: paired mode needs usable workload authority material: {0}")]
     PolicyMaterial(#[source] crate::workload::WorkloadError),
 
+    /// The upgrade blob decoded, but reconstructing the session tree failed.
+    /// Resume must fail closed rather than serve a partial tree (phux-69pq.7).
+    #[error("resume rebuild: {0}")]
+    Rebuild(#[from] crate::state::RebuildError),
+
     /// The server token store needed to authorize bridged consumers could not
     /// be loaded. A connector must fail closed rather than admit consumers
     /// without the server's own authorization.
@@ -959,7 +964,7 @@ impl ServerRuntime {
                     });
 
                 if let Some(blob) = resume_blob {
-                    resume_session_tree(&state, &blob, &root_token);
+                    resume_session_tree(&state, &blob, &root_token)?;
                 } else if let Some(name) = pre_seeded.as_deref() {
                     seed_initial_session(
                         &state,
@@ -1444,32 +1449,35 @@ fn spawn_connector_supervisors(
 /// Graceful-upgrade resume (ADR-0032): rebuild the whole session tree from
 /// the handoff blob, re-adopting each pane's inherited PTY. Runs inside the
 /// `LocalSet` so the rebuilt pane actors `spawn_local` onto the same thread.
-fn resume_session_tree(state: &SharedState, blob: &StateBlob, root_token: &CancellationToken) {
-    match state.with_mut(|s| s.rebuild_from_blob(blob)) {
-        Ok(exit_watchers) => {
-            for (pane, exit_notify) in exit_watchers {
-                spawn_terminal_exit_watcher(
-                    state.clone(),
-                    pane,
-                    Some(exit_notify),
-                    root_token.clone(),
-                    None,
-                );
-            }
-            // ADR-0124 §6: a pane the old image retained after its process
-            // exited came across with no PTY, only so it closes through the
-            // ordinary path with `RESOURCE_CLOSED { SERVER_SHUTDOWN }`.
-            state.with_mut(|s| s.close_upgrade_retained(blob));
-            info!(
-                sessions = blob.sessions.len(),
-                panes = blob.panes.len(),
-                "resumed session tree from upgrade blob"
-            );
-        }
-        Err(err) => {
-            error!(error = %err, "failed to rebuild state from upgrade blob");
-        }
+///
+/// Reconstruction is all-or-nothing: a validation or rebuild failure returns
+/// before accept loops start, so the adopted listener is never served against
+/// a partial tree.
+fn resume_session_tree(
+    state: &SharedState,
+    blob: &StateBlob,
+    root_token: &CancellationToken,
+) -> Result<(), ServerError> {
+    let exit_watchers = state.with_mut(|s| s.rebuild_from_blob(blob))?;
+    for (pane, exit_notify) in exit_watchers {
+        spawn_terminal_exit_watcher(
+            state.clone(),
+            pane,
+            Some(exit_notify),
+            root_token.clone(),
+            None,
+        );
     }
+    // ADR-0124 §6: a pane the old image retained after its process
+    // exited came across with no PTY, only so it closes through the
+    // ordinary path with `RESOURCE_CLOSED { SERVER_SHUTDOWN }`.
+    state.with_mut(|s| s.close_upgrade_retained(blob));
+    info!(
+        sessions = blob.sessions.len(),
+        panes = blob.panes.len(),
+        "resumed session tree from upgrade blob"
+    );
+    Ok(())
 }
 
 /// A fresh start pre-seeds its single session instead of resuming one.
@@ -2553,7 +2561,7 @@ mod tests {
 
                 let resumed = SharedState::new();
                 let root = CancellationToken::new();
-                resume_session_tree(&resumed, &blob, &root);
+                resume_session_tree(&resumed, &blob, &root).expect("resume");
                 let pane = resumed
                     .with(|s| s.terminal_from_wire(&wire))
                     .expect("rebuilt, to be closed");
@@ -2593,6 +2601,140 @@ mod tests {
                     token.cancel();
                 }
             }))
+            .await;
+    }
+
+    fn resume_handoff_blob(
+        listener_fd: std::os::fd::RawFd,
+        sessions: Vec<crate::upgrade::blob::SessionBlob>,
+        windows: Vec<crate::upgrade::blob::WindowBlob>,
+        panes: Vec<crate::upgrade::blob::PaneBlob>,
+    ) -> crate::upgrade::blob::StateBlob {
+        crate::upgrade::blob::StateBlob {
+            version: crate::upgrade::blob::BLOB_VERSION,
+            listener_fd,
+            counters: crate::upgrade::blob::Counters {
+                next_session_wire_id: 10,
+                next_terminal_wire_id: 10,
+                next_window_wire_id: 10,
+                next_touch_timestamp: 1,
+                server_instance: None,
+            },
+            sessions,
+            windows,
+            panes,
+        }
+    }
+
+    fn write_resume_fd(blob: &crate::upgrade::blob::StateBlob) -> std::os::fd::RawFd {
+        use std::io::Write;
+        use std::os::fd::IntoRawFd;
+        let mut file = tempfile::tempfile().expect("tempfile");
+        file.write_all(&blob.to_bytes().expect("serialize"))
+            .expect("write blob");
+        file.into_raw_fd()
+    }
+
+    fn bind_resume_listener(dir: &tempfile::TempDir) -> (std::path::PathBuf, std::os::fd::RawFd) {
+        use std::os::fd::IntoRawFd;
+        let path = dir.path().join("resume.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        (path, listener.into_raw_fd())
+    }
+
+    /// A well-formed empty handoff rebuilds, then the adopted listener accepts.
+    #[tokio::test(flavor = "current_thread")]
+    async fn transactional_resume_serves_on_the_adopted_listener() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let (path, listener_fd) = bind_resume_listener(&dir);
+                let blob = resume_handoff_blob(listener_fd, Vec::new(), Vec::new(), Vec::new());
+                let resume_fd = write_resume_fd(&blob);
+                let cfg = ServerConfig {
+                    socket_path: path.clone(),
+                    ..ServerConfig::with_default_socket()
+                };
+                let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+                let server = tokio::task::spawn_local(async move {
+                    ServerRuntime::new(cfg)
+                        .resume(resume_fd)
+                        .overlay_detect(|| Vec::new())
+                        .run_async(async move {
+                            let _ = shutdown_rx.await;
+                        })
+                        .await
+                });
+
+                let mut connected = false;
+                for _ in 0..50 {
+                    if tokio::net::UnixStream::connect(&path).await.is_ok() {
+                        connected = true;
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+                assert!(
+                    connected,
+                    "a successful resume must accept on the adopted listener"
+                );
+                let _ = shutdown_tx.send(());
+                server
+                    .await
+                    .expect("server task")
+                    .expect("resumed server shuts down cleanly");
+            })
+            .await;
+    }
+
+    /// A dangling topology must not start accept loops: `run_async` returns
+    /// the rebuild error and the adopted listener is gone.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dangling_blob_refuses_to_serve_after_resume() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let dir = tempfile::tempdir().expect("tempdir");
+                let (path, listener_fd) = bind_resume_listener(&dir);
+                let blob = resume_handoff_blob(
+                    listener_fd,
+                    vec![crate::upgrade::blob::SessionBlob {
+                        wire_id: 1,
+                        name: "main".to_owned(),
+                        window_wire_ids: vec![99],
+                        active_window: None,
+                        created_at_unix_nanos: 0,
+                        last_touched: None,
+                        root: None,
+                        keep_empty: false,
+                    }],
+                    Vec::new(),
+                    Vec::new(),
+                );
+                let resume_fd = write_resume_fd(&blob);
+                let cfg = ServerConfig {
+                    socket_path: path.clone(),
+                    ..ServerConfig::with_default_socket()
+                };
+                let err = ServerRuntime::new(cfg)
+                    .resume(resume_fd)
+                    .overlay_detect(|| Vec::new())
+                    .run_async(std::future::pending())
+                    .await
+                    .expect_err("incomplete topology must fail closed");
+                match err {
+                    ServerError::Rebuild(crate::state::RebuildError::DanglingRef { kind, id }) => {
+                        assert_eq!(kind, "window");
+                        assert_eq!(id, 99);
+                    }
+                    other => panic!("expected dangling rebuild error, got {other:?}"),
+                }
+                assert!(
+                    tokio::net::UnixStream::connect(&path).await.is_err(),
+                    "rebuild failure must not keep the adopted listener serving"
+                );
+            })
             .await;
     }
 
