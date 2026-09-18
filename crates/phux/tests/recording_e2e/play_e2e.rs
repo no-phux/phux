@@ -35,23 +35,8 @@
 mod common;
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-
-/// Idle lifetime for this file's harness servers, as a backstop UNDER the
-/// `Drop` kill (ADR-0063). The guard is still the primary cleanup; it cannot
-/// run if the test process is `SIGKILL`ed, and what leaks then is a daemon
-/// holding a parked playback pane forever — this file creates panes that by
-/// design never exit on their own, so it is the worst file in the tree to
-/// leak from.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
-
-/// Path to the freshly-built `phux` binary, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
-/// The pre-seeded session name every test drives against.
-const SESSION: &str = "work";
 
 /// The seed pane's id. Every server here starts with exactly one pane, so
 /// this is the pane `.` resolves to and the pane playback is placed beside.
@@ -82,9 +67,6 @@ const LF_PROBE: &str = "LFCOL";
 /// What the probe must paint on the following row: the `X` stays in the
 /// column the line feed left it in, five cells across.
 const LF_PROBE_NEXT_ROW: &str = "     X";
-
-/// How long to wait for the server to bind its socket (cold-start bound).
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Ceiling on any "the pane reached this state" poll.
 ///
@@ -134,71 +116,18 @@ fn fixture_cast() -> PathBuf {
 }
 
 /// A running `phux server`, killed and unlinked when the guard drops.
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
     fn start() -> Self {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = PathBuf::from(format!(
-            "/tmp/phux-play-e2e-{}-{n}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
-        let child = Command::new(PHUX)
-            .args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if guard.socket.exists() {
-                return guard;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            guard.socket.display()
-        );
-    }
-
-    /// Build `phux <verb> --socket <sock> <rest...>`.
-    fn cmd(&self, args: &[&str]) -> Command {
-        let (verb, rest) = args.split_first().expect("at least a verb");
-        let mut c = Command::new(PHUX);
-        c.arg(verb)
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(rest)
-            .stdin(Stdio::null());
-        c
-    }
-
-    /// Run a verb, returning `(exit code, stdout, stderr)`.
-    fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = self.cmd(args).output().expect("run phux verb");
-        (
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
-        )
-    }
-
-    fn success(&self, args: &[&str]) -> String {
-        let (code, stdout, stderr) = self.run(args);
-        assert_eq!(code, 0, "phux {args:?} exited {code}; stderr={stderr}");
-        stdout
+        Self(common::ServerGuard::start("play"))
     }
 
     /// Start a playback and return the pane it created, from `--json`.

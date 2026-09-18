@@ -27,28 +27,13 @@ mod common;
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
-
-/// Idle lifetime for this file's harness server, as a backstop UNDER the
-/// `Drop` kill (ADR-0063). The guard is still the primary cleanup; it cannot
-/// run if the test process is `SIGKILL`ed or the runner is reaped mid-job, and
-/// what leaks then is a daemon holding a live PTY on a socket nobody will
-/// ever look at again. Ten minutes is far longer than any gap between this
-/// file's client connections, so it can only fire after the harness is gone.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 
 /// The pre-seeded session name the test drives against.
 const SESSION: &str = "work";
-
-/// How long to wait for the server to bind its socket (cold-start bound).
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
-
-/// Poll cadence while waiting for the socket file to appear.
-const SOCKET_POLL: Duration = Duration::from_millis(50);
 
 /// Poll cadence while sampling `phux agent show`. Denser than the detector's
 /// identified tick (~300 ms) so a transient record value cannot slip between
@@ -68,14 +53,14 @@ const DETECT_DEADLINE: Duration = Duration::from_secs(20);
 /// ticks at the identified cadence plus slack for a loaded pool.
 const HOLD_WINDOW: Duration = Duration::from_secs(3);
 
-/// Monotonic counter so concurrent tests never collide on a socket path.
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
 /// A running `phux server`, killed when the guard drops.
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
-    _dir: tempfile::TempDir,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
@@ -89,45 +74,11 @@ impl ServerGuard {
     /// read once inside the server process, so they cannot be set from a
     /// client verb after the fact.
     fn start_with_env(envs: &[(&str, &str)]) -> Self {
-        let dir = tempfile::tempdir().expect("create temp dir for socket");
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = dir
-            .path()
-            .join(format!("agent-{}-{n}.sock", std::process::id()));
-        let mut cmd = Command::new(PHUX);
-        cmd.args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS]);
-        for (key, value) in envs {
-            cmd.env(key, value);
-        }
-        let child = cmd
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        guard.wait_for_socket();
-        guard
-    }
-
-    fn wait_for_socket(&self) {
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if self.socket.exists() {
-                return;
-            }
-            std::thread::sleep(SOCKET_POLL);
-        }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            self.socket.display()
-        );
+        Self(
+            common::ServerGuard::builder("agent")
+                .envs(envs.iter().copied())
+                .start(),
+        )
     }
 
     /// Run `phux <args...> --socket <sock>` with `envs` capturing stdout.

@@ -21,89 +21,30 @@
 #[path = "../common/mod.rs"]
 mod common;
 
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 const SESSION: &str = "work";
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(50);
 
-/// Idle lifetime for the harness server, as a backstop UNDER the `Drop` kill
-/// (ADR-0063). The guard is still the primary cleanup; it cannot run if the
-/// test process is `SIGKILL`ed, and what leaks then is a daemon holding a live
-/// PTY forever. Ten minutes is far longer than any gap between this file's
-/// client connections, so it can only fire after the harness is gone.
-///
-/// It carries a second signal here for free: the re-exec argv is rebuilt by
-/// the server itself from `RuntimeFlags`, so if an upgrade ever dropped the
-/// lifetime, the resumed image in this very test would be the immortal one.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
+struct ServerGuard(common::ServerGuard);
 
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-struct ServerGuard {
-    process: common::ServerProcess,
-    socket: PathBuf,
-    _dir: tempfile::TempDir,
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
     /// Spawn `phux server` with a seed pane running `seed_command`, then block
     /// until the socket appears.
     fn start_with_seed(seed_command: &str) -> Self {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = dir
-            .path()
-            .join(format!("upg-{}-{n}.sock", std::process::id()));
-        let child = Command::new(PHUX)
-            .args([
-                "server",
-                "--session",
-                SESSION,
-                "--seed-command",
-                seed_command,
-                "--socket",
-            ])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        guard.wait_for_socket();
-        guard
-    }
-
-    fn wait_for_socket(&self) {
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if self.socket.exists() {
-                return;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!("server did not bind {} in time", self.socket.display());
-    }
-
-    fn cmd(&self, args: &[&str]) -> Command {
-        let (verb, rest) = args.split_first().expect("a verb");
-        let mut c = Command::new(PHUX);
-        c.arg(verb)
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(rest)
-            .stdin(Stdio::null());
-        c
+        Self(
+            common::ServerGuard::builder("upg")
+                .seed_command(seed_command)
+                .start(),
+        )
     }
 
     fn status(&self, args: &[&str]) -> i32 {
@@ -162,8 +103,8 @@ fn child_and_scrollback_survive_graceful_upgrade() {
     // The seed pane prints the marker, then `exec`s a long-lived `sleep` — so
     // the pane's child is a stable, observable process (the shell's pid is
     // preserved across its own exec).
-    let mut server = ServerGuard::start_with_seed(&format!("printf '{marker}\\n'; exec sleep 600"));
-    let server_pid = server.process.child_mut().id();
+    let server = ServerGuard::start_with_seed(&format!("printf '{marker}\\n'; exec sleep 600"));
+    let server_pid = server.pid();
 
     // The pane child (the sleep) must come up, and the marker must reach the
     // grid (observable via `wait --until`).

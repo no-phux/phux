@@ -34,19 +34,10 @@
 mod common;
 
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
-
-/// Idle lifetime for this file's harness server, as a backstop UNDER the
-/// `Drop` kill (ADR-0063). The guard is still the primary cleanup; it cannot
-/// run if the test process is `SIGKILL`ed or the runner is reaped mid-job, and
-/// what leaks then is a daemon holding a live PTY on a socket nobody will
-/// ever look at again. Ten minutes is far longer than any gap between this
-/// file's client connections, so it can only fire after the harness is gone.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
 
 /// Path to the freshly-built `phux` binary, injected by cargo for
 /// integration tests in the same crate.
@@ -55,27 +46,15 @@ const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 /// The pre-seeded session name every test drives against.
 const SESSION: &str = "work";
 
-/// How long to wait for the server to bind its socket. Generous: the
-/// very first build/start on a cold CI host is the slow case, and under a
-/// loaded full-workspace run the spawned server competes for CPU (the
-/// e2e-server nextest group serializes these tests to bound that load).
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
-
-/// Poll cadence while waiting for the socket file to appear.
-const SOCKET_POLL: Duration = Duration::from_millis(50);
-
-/// Monotonic counter so concurrently-running tests (nextest runs each in
-/// its own process, but `cargo test` shares one) never collide on a
-/// socket path.
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
 /// A running `phux server`, killed when the guard drops so a failing
 /// assertion never leaks a daemon.
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
-    // Held to keep the temp dir alive for the guard's lifetime.
-    _dir: tempfile::TempDir,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 /// A headless `phux watch --json` subprocess with its stdout decoded by a
@@ -132,46 +111,7 @@ impl ServerGuard {
     /// Spawn `phux server --session work --socket <unique>` detached
     /// from any terminal, then block until the socket file appears.
     fn start() -> Self {
-        let dir = tempfile::tempdir().expect("create temp dir for socket");
-        // Keep the path short: UDS paths have a ~104-char sun_path cap on
-        // macOS, and a `tempdir()` path plus a long name can exceed it.
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = dir
-            .path()
-            .join(format!("e2e-{}-{n}.sock", std::process::id()));
-
-        let child = Command::new(PHUX)
-            .args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        guard.wait_for_socket();
-        guard
-    }
-
-    /// Poll until the socket file exists or the deadline elapses.
-    fn wait_for_socket(&self) {
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if self.socket.exists() {
-                return;
-            }
-            std::thread::sleep(SOCKET_POLL);
-        }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            self.socket.display()
-        );
+        Self(common::ServerGuard::start("run-wait"))
     }
 
     fn cmd(&self, args: &[&str]) -> Command {

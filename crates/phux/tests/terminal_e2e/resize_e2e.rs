@@ -29,20 +29,10 @@
 mod common;
 
 use std::io::Read;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-
-/// Idle lifetime for this file's harness server, as a backstop UNDER the
-/// `Drop` kill (ADR-0063). The guard is still the primary cleanup; it cannot
-/// run if the test process is `SIGKILL`ed or the runner is reaped mid-job, and
-/// what leaks then is a daemon holding a live PTY on a socket nobody will
-/// ever look at again. Ten minutes is far longer than any gap between this
-/// file's client connections, so it can only fire after the harness is gone.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
 
 /// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
@@ -55,84 +45,27 @@ const SESSION: &str = "work";
 /// coincidence.
 const NO_TTY_DEFAULT: (u64, u64) = (80, 24);
 
-/// How long to wait for the server to bind its socket (cold-start bound).
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
-
-/// Poll cadence for the socket wait.
+/// Poll cadence for the chrome-reservation wait.
 const POLL: Duration = Duration::from_millis(50);
 
-/// Monotonic counter so concurrent tests never collide on a socket path.
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
 /// A running `phux server`, killed and unlinked when the guard drops.
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
     fn start() -> Self {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = PathBuf::from(format!(
-            "/tmp/phux-resize-e2e-{}-{n}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
-        let child = Command::new(PHUX)
-            .args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
-            // Panes run the server's `$SHELL`; never inherit the runner's.
-            .env("SHELL", "/bin/sh")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if guard.socket.exists() {
-                return guard;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            guard.socket.display()
-        );
-    }
-
-    /// Build `phux <verb> --socket <sock> <rest...>`. `--socket` goes right
-    /// after the verb, matching the sibling e2e harnesses.
-    fn cmd(&self, args: &[&str]) -> Command {
-        let (verb, rest) = args.split_first().expect("at least a verb");
-        let mut c = Command::new(PHUX);
-        c.arg(verb)
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(rest)
-            .stdin(Stdio::null());
-        c
-    }
-
-    /// Run a verb, returning `(exit code, stdout, stderr)`.
-    fn run(&self, args: &[&str]) -> (i32, String, String) {
-        let out = self.cmd(args).output().expect("run phux verb");
-        (
-            out.status.code().unwrap_or(-1),
-            String::from_utf8_lossy(&out.stdout).into_owned(),
-            String::from_utf8_lossy(&out.stderr).into_owned(),
+        Self(
+            common::ServerGuard::builder("resize")
+                // Panes run the server's `$SHELL`; never inherit the runner's.
+                .env("SHELL", "/bin/sh")
+                .start(),
         )
-    }
-
-    fn success(&self, args: &[&str]) -> String {
-        let (code, stdout, stderr) = self.run(args);
-        assert_eq!(code, 0, "phux {args:?} exited {code}; stderr={stderr}");
-        stdout
     }
 
     /// The pane's grid as the **pane actor's own libghostty `Terminal`**
