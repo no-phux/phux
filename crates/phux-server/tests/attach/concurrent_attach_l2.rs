@@ -84,7 +84,7 @@ use std::time::{Duration, Instant};
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACHED,
-    TYPE_BOOTSTRAP_BEGIN, TYPE_COMMAND_RESULT,
+    TYPE_BOOTSTRAP_BEGIN,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
@@ -92,8 +92,8 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, await_command_result, recv_typed, run_local,
+    send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// Attach and drain the initial ATTACHED + BEGIN/CHUNK/READY bootstrap.
@@ -153,32 +153,9 @@ async fn get_terminal_state(
     )
     .await;
 
-    let deadline = Instant::now() + WIRE_RECV_TIMEOUT;
-    loop {
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            panic!("GET_SCREEN request {request_id} timed out");
-        }
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            panic!("GET_SCREEN request {request_id} recv timeout");
-        };
-        if type_byte != TYPE_COMMAND_RESULT {
-            continue;
-        }
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-        {
-            if got == request_id {
-                match result {
-                    CommandResult::OkWith(CommandValue::Json(json)) => return json,
-                    other => {
-                        panic!("GET_SCREEN request {request_id} returned {other:?}, expected Json")
-                    }
-                }
-            }
-        }
+    match await_command_result(stream, request_id).await {
+        CommandResult::OkWith(CommandValue::Json(json)) => json,
+        other => panic!("GET_SCREEN request {request_id} returned {other:?}, expected Json"),
     }
 }
 

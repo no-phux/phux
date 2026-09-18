@@ -32,7 +32,7 @@ use phux_server::workload::ReloadingWorkloadRegistry;
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, recv_typed, run_local, send_frame, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, recv_typed, recv_until, run_local, send_frame, wait_for_raw_socket,
 };
 
 /// A policy engine that refuses every HELLO. Stands in for a workload that
@@ -172,16 +172,15 @@ async fn owner_whoami(socket_path: std::path::PathBuf) -> serde_json::Value {
         },
     )
     .await;
-    loop {
-        match recv_typed(&mut stream).await.1 {
-            FrameKind::MetadataValue {
-                request_id: 1,
-                value,
-            } => return serde_json::from_slice(&value.expect("a whoami record")).unwrap(),
-            FrameKind::Error { code, message, .. } => panic!("{code:?}: {message}"),
-            _ => {}
-        }
-    }
+    recv_until(&mut stream, |_, frame| match frame {
+        FrameKind::MetadataValue {
+            request_id: 1,
+            value,
+        } => Some(serde_json::from_slice(&value.expect("a whoami record")).unwrap()),
+        FrameKind::Error { code, message, .. } => panic!("{code:?}: {message}"),
+        _ => None,
+    })
+    .await
 }
 
 fn all_six_at_global() -> serde_json::Value {

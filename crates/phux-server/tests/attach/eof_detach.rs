@@ -38,11 +38,10 @@ use phux_protocol::wire::frame::{
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
-use tokio::time::timeout;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown, recv_typed,
-    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    recv_until_deadline, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// A shell that outlives the `ATTACH` handshake and then exits with code
@@ -86,14 +85,7 @@ fn pick_true_command(release: &std::path::Path) -> CommandBuilder {
 /// policy moved to the consumer.
 async fn await_terminal_closed(stream: &mut UnixStream, deadline: Duration) -> Option<FrameKind> {
     let end = tokio::time::Instant::now() + deadline;
-    loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return None;
-        }
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            return None;
-        };
+    recv_until_deadline(stream, end, |type_byte, frame| {
         assert_ne!(
             type_byte, TYPE_DETACHED,
             "server must NOT send DETACHED on PTY EOF (phux-4r1: detach is consumer policy)",
@@ -105,7 +97,9 @@ async fn await_terminal_closed(stream: &mut UnixStream, deadline: Duration) -> O
             );
             return Some(frame);
         }
-    }
+        None
+    })
+    .await
 }
 
 /// `TerminalActor` PTY EOF (from the seed shell exiting with code 0)
