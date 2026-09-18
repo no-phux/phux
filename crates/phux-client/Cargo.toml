@@ -117,7 +117,9 @@ tempfile.workspace = true
 rustls = { workspace = true }
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # `agent_prompt`'s unit tests run the wait loop on a paused clock
-# (`Builder::start_paused`), which needs tokio's `test-util`. The feature used
-# to arrive through the TUI's dev-dependency graph; now that the TUI is its
-# own crate this crate has to name it. Test-only, no new crate.
-tokio = { workspace = true, features = ["test-util"] }
+# (`Builder::start_paused`), which needs tokio's `test-util`. `command_isolation`
+# uses `tokio::fs`. That `fs` feature used to leak in through unification
+# from phux-server's WebTransport listener (`wtransport` enables `tokio/fs`).
+# Production WebTransport no longer depends on wtransport (phux-50wm), so the
+# test crate names `fs` itself. Test-only, no new crate.
+tokio = { workspace = true, features = ["test-util", "fs"] }
