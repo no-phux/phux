@@ -106,6 +106,10 @@ jobs:
     needs: gate
     if: needs.gate.outputs.should_build == 'true'
     runs-on: ${{ matrix.os }}
+    # Hosted ubuntu-22.04 labels retire in 2027 (actions/runner-images#14254).
+    # Linux legs keep a native glibc 2.35 userspace via ubuntu:22.04 on the
+    # free 24.04 runners. macOS is JSON null (no container).
+    container: ${{ fromJSON(matrix.container) }}
     defaults:
       run:
         shell: bash
@@ -115,10 +119,13 @@ jobs:
       matrix:
         include:
           - os: macos-26
+            container: "null"
             target: aarch64-apple-darwin
-          - os: ubuntu-22.04
+          - os: ubuntu-24.04
+            container: '{"image":"ubuntu:22.04"}'
             target: x86_64-unknown-linux-gnu
-          - os: ubuntu-22.04-arm
+          - os: ubuntu-24.04-arm
+            container: '{"image":"ubuntu:22.04"}'
             target: aarch64-unknown-linux-gnu
     steps:
       - name: Verify native release platform and Linux baseline
@@ -137,9 +144,21 @@ jobs:
             test "$(getconf GNU_LIBC_VERSION)" = 'glibc 2.35'
           fi
 
+      - name: Install git in the Ubuntu 22.04 container
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Setup Linux 22.04 release userspace
+        if: runner.os == 'Linux'
+        run: bash scripts/ci/setup-linux-release-userspace.sh
 
       - name: Install Zig
         run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
@@ -155,10 +174,6 @@ jobs:
         with:
           shared-key: release-deps
           cache-targets: "false"
-
-      - name: Install Linux build dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config build-essential mold
 
       - name: Build release binaries
         env:

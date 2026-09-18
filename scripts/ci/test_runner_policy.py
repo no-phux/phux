@@ -13,7 +13,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 RELEASE = (WORKFLOWS / "release.yml").read_text()
-STANDARD = {"ubuntu-latest", "ubuntu-24.04", "ubuntu-24.04-arm", "ubuntu-22.04", "ubuntu-22.04-arm", "macos-26"}
+NEXT_RELEASE = (WORKFLOWS / "next-release.yml").read_text()
+STANDARD = {"ubuntu-latest", "ubuntu-24.04", "ubuntu-24.04-arm", "macos-26"}
+RETIRED_UBUNTU_2204 = re.compile(
+    r"(?m)^[ \t]*(?:runs-on:|- os:) ubuntu-22\.04(?:-arm)?[ \t]*$"
+)
 
 
 class RunnerPolicyTests(unittest.TestCase):
@@ -65,16 +69,35 @@ class RunnerPolicyTests(unittest.TestCase):
         self.assertIn('echo "SCCACHE_GHA_RW_MODE=${SCCACHE_RW_MODE}"', lane)
         self.assertIn("save-if: ${{ github.ref == 'refs/heads/main' }}", lane)
 
-    def test_linux_arm_release_has_a_native_2204_userspace(self):
-        self.assertRegex(RELEASE, r"os: ubuntu-22\.04-arm\s+target: aarch64-unknown-linux-gnu")
-        self.assertRegex(RELEASE, r"os: ubuntu-22\.04\s+target: x86_64-unknown-linux-gnu")
-        self.assertIn("scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp", RELEASE)
-        self.assertIn("name: ${{ matrix.target }}", RELEASE)
+    def test_linux_release_keeps_glibc_2204_userspace_without_retired_runners(self):
+        for name, body in (("release.yml", RELEASE), ("next-release.yml", NEXT_RELEASE)):
+            with self.subTest(workflow=name):
+                self.assertNotRegex(body, RETIRED_UBUNTU_2204)
+                self.assertRegex(
+                    body,
+                    r"os: ubuntu-24\.04\s+"
+                    r"""container: '\{"image":"ubuntu:22\.04"\}'\s+"""
+                    r"target: x86_64-unknown-linux-gnu",
+                )
+                self.assertRegex(
+                    body,
+                    r"os: ubuntu-24\.04-arm\s+"
+                    r"""container: '\{"image":"ubuntu:22\.04"\}'\s+"""
+                    r"target: aarch64-unknown-linux-gnu",
+                )
+                self.assertIn("container: ${{ fromJSON(matrix.container) }}", body)
+                self.assertIn("scripts/ci/setup-linux-release-userspace.sh", body)
+                self.assertIn(
+                    "scripts/check-binary-portability.sh target/release/phux target/release/phux-mcp",
+                    body,
+                )
+                self.assertIn("name: ${{ matrix.target }}", body)
+                self.assertIn("test \"$(getconf GNU_LIBC_VERSION)\" = 'glibc 2.35'", body)
         self.assertIn("needs.build.result == 'success'", RELEASE)
 
     def test_release_platform_guard_rejects_wrong_arch_and_newer_glibc(self):
         block = RELEASE.split("- name: Verify native release platform and Linux baseline", 1)[1]
-        script = textwrap.dedent(block.split("run: |\n", 1)[1].split("\n      - uses:", 1)[0])
+        script = textwrap.dedent(block.split("run: |\n", 1)[1].split("\n      - ", 1)[0])
         cases = [
             ("aarch64-apple-darwin", "Darwin", "arm64", "22.04", "2.35", True),
             ("aarch64-unknown-linux-gnu", "Linux", "aarch64", "22.04", "2.35", True),

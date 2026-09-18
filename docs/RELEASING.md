@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-13
+last-reviewed: 2026-09-18
 ---
 
 # Releasing
@@ -89,9 +89,8 @@ tap build.
 This repository is public. Standard GitHub-hosted runners are
 [free for public repositories](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
 and do not consume the private-repository minute allowance. Workflows use only
-standard `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, `ubuntu-22.04`,
-`ubuntu-22.04-arm` and `macos-26` labels. Blacksmith and larger hosted runners
-are excluded. Public PR code does not execute on the owner's Mac mini, and phux needs no self-hosted
+standard `ubuntu-latest`, `ubuntu-24.04`, `ubuntu-24.04-arm`, and `macos-26`
+labels. Blacksmith and larger hosted runners are excluded. Public PR code does not execute on the owner's Mac mini, and phux needs no self-hosted
 runner registration. GitHub artifact/cache storage is a separate billing surface.
 
 ### Cache budget
@@ -127,20 +126,18 @@ Root release targets retain their artifact names and native architectures:
 | Target | Standard runner | Build userspace |
 |---|---|---|
 | `aarch64-apple-darwin` | `macos-26` | Native Apple-silicon macOS |
-| `x86_64-unknown-linux-gnu` | `ubuntu-22.04` | Native Ubuntu 22.04 |
-| `aarch64-unknown-linux-gnu` | `ubuntu-22.04-arm` | Native ARM Ubuntu 22.04 |
+| `x86_64-unknown-linux-gnu` | `ubuntu-24.04` | `ubuntu:22.04` container (glibc 2.35) |
+| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | `ubuntu:22.04` container (glibc 2.35) |
 
 The [standard runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)
-lists Ubuntu 22.04 for both Linux architectures. Before building, every matrix
-leg checks its OS/architecture; Linux also requires
-Ubuntu 22.04 and glibc 2.35. Existing binary portability and executable smoke
+lists Ubuntu 24.04 for both Linux architectures. Linux release jobs run in an
+`ubuntu:22.04` container so the compiler links against glibc 2.35 after GitHub
+[deprecated the hosted Ubuntu 22.04 labels](https://github.com/actions/runner-images/issues/14254).
+Before building, every matrix leg checks its OS/architecture; Linux also requires
+Ubuntu 22.04 and glibc 2.35 inside that container. Existing binary portability and executable smoke
 checks remain mandatory before upload. This is a native ARM build,
 not an x64 emulation or a relabeled macOS binary. Every target must succeed
 before the root draft is published; no partial-matrix publication is allowed.
-
-GitHub [announces retirement of both Ubuntu 22.04 images](https://github.com/actions/runner-images/issues/14254)
-on April 17, 2027, with deprecation beginning September 17, 2026. The replacement
-build userspace that preserves this glibc floor is tracked work in `phux-xrok`.
 
 All workflow concurrency groups use the `mini-v1-` cutover namespace. New
 pushes cannot cancel pre-cutover groups; root/Cockpit main validation still
@@ -430,8 +427,8 @@ library paths.
 packaging: macOS binaries may link only `/usr/lib/**` and `/System/Library/**`,
 Linux binaries only the glibc runtime set (`libc`, `libm`, `libgcc_s`, `libdl`,
 `libpthread`, `librt`, `libutil`, `ld-linux`). It also fails if a Linux binary
-demands a glibc symbol version above `PHUX_GLIBC_MAX` (2.35, the ubuntu-22.04
-floor the Linux legs build on), so a runner image bump cannot quietly raise the
+demands a glibc symbol version above `PHUX_GLIBC_MAX` (2.35, the Ubuntu 22.04
+floor the Linux legs build against), so a runner image bump cannot quietly raise the
 minimum distro. Before this existed the check was a `grep` for `/nix/store` in
 `otool -L` output — macOS only, one failure mode, and nothing whatsoever on
 Linux.
