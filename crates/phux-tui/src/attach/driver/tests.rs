@@ -3,7 +3,7 @@
 //! and the chrome-under-overlay probes.
 #![allow(clippy::expect_used, reason = "tests")]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self};
 use std::path::Path;
 use std::time::Duration;
@@ -833,20 +833,15 @@ async fn satellite_panes_are_never_subscribed() {
 /// bounded to the live foreign pane set.
 #[test]
 fn prune_foreign_agents_retains_only_live_foreign_panes() {
-    use phux_protocol::ids::SessionId;
     let live = ResourceId::local(1);
     let stale = ResourceId::local(2);
     let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
     cache.insert(live.clone(), AgentRecord::default());
     cache.insert(stale.clone(), AgentRecord::default());
-    let mut subscribed: std::collections::HashSet<ResourceId> =
-        [live.clone(), stale.clone()].into_iter().collect();
+    let mut subscribed: HashSet<ResourceId> = [live.clone(), stale.clone()].into_iter().collect();
 
-    // One foreign layout holds only `live`.
-    let mut foreign_layouts: HashMap<SessionId, Workspace> = HashMap::new();
-    foreign_layouts.insert(SessionId::new(9), Workspace::single(live.clone()));
-
-    prune_foreign_agents(&mut cache, &mut subscribed, &foreign_layouts);
+    let live_set: HashSet<ResourceId> = [live.clone()].into_iter().collect();
+    prune_foreign_agents(&mut cache, &mut subscribed, &live_set);
     assert!(
         cache.contains_key(&live),
         "a pane still in a layout survives"
@@ -864,10 +859,88 @@ fn prune_foreign_agents_retains_only_live_foreign_panes() {
         "a dead pane's subscription marker is dropped so a re-spawn re-subscribes"
     );
 
-    // No cached layouts at all evicts everything.
-    prune_foreign_agents(&mut cache, &mut subscribed, &HashMap::new());
-    assert!(cache.is_empty(), "no foreign layouts => no foreign agents");
+    // No live terminals at all evicts everything.
+    prune_foreign_agents(&mut cache, &mut subscribed, &HashSet::new());
+    assert!(cache.is_empty(), "no live terminals => no foreign agents");
     assert!(subscribed.is_empty());
+}
+
+/// phux-ah84: a CLI-created session has no persisted TUI layout, so the
+/// live set is the server graph. Pruning must not evict those records.
+#[test]
+fn prune_foreign_agents_keeps_graph_terminals_without_a_layout() {
+    let graph = ResourceId::local(10);
+    let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
+    cache.insert(graph.clone(), AgentRecord::default());
+    let mut subscribed: HashSet<ResourceId> = [graph.clone()].into_iter().collect();
+    let live: HashSet<ResourceId> = [graph.clone()].into_iter().collect();
+    prune_foreign_agents(&mut cache, &mut subscribed, &live);
+    assert!(cache.contains_key(&graph));
+    assert!(subscribed.contains(&graph));
+}
+
+/// phux-ah84: graph terminals are GET/SUBSCRIBEd even with no TUI layout.
+#[tokio::test]
+async fn graph_terminals_are_subscribed_without_a_layout() {
+    let (client_stream, server_stream) = UnixStream::pair().expect("pair");
+    let mut client = Connection::from_stream(client_stream);
+    let mut server = Connection::from_stream(server_stream);
+
+    let local = ResourceId::local(10);
+    let satellite = ResourceId::satellite("prod-3", 10);
+    let mut next_request_id = 1;
+    let mut pending = HashMap::new();
+    let mut subscribed = HashSet::new();
+
+    let sent = async {
+        sync_foreign_agent_ids(
+            &mut client,
+            vec![local.clone(), satellite.clone(), local.clone()],
+            &mut next_request_id,
+            &mut pending,
+            &mut subscribed,
+        )
+        .await
+        .expect("sweep sends");
+        drop(client);
+    };
+    let collect = async {
+        let mut frames = Vec::new();
+        while let Ok(frame) = server.recv().await {
+            frames.push(frame);
+        }
+        frames
+    };
+    let ((), frames) = tokio::join!(sent, collect);
+
+    let agent_gets = frames
+        .iter()
+        .filter(|f| {
+            matches!(
+                f,
+                FrameKind::GetMetadata { scope, key, .. }
+                    if *scope == Scope::Resource(local.clone())
+                        && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
+            )
+        })
+        .count();
+    assert_eq!(agent_gets, 1, "the graph pane is fetched once: {frames:?}");
+    assert!(
+        frames.iter().any(|f| matches!(
+            f,
+            FrameKind::SubscribeMetadata { scope, .. } if *scope == Scope::Resource(local.clone())
+        )),
+        "the graph pane is subscribed: {frames:?}"
+    );
+    assert!(
+        !frames.iter().any(|f| matches!(
+            f,
+            FrameKind::SubscribeMetadata { scope, .. }
+                | FrameKind::GetMetadata { scope, .. }
+                if *scope == Scope::Resource(satellite.clone())
+        )),
+        "a satellite pane is never asked for: {frames:?}"
+    );
 }
 
 #[test]

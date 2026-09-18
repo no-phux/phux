@@ -194,6 +194,7 @@ async fn apply_pane_move(
                 id: None,
                 window: Some(window),
                 pane: Some(pane),
+                resource: Some(intent.source),
             });
             true
         }
@@ -460,6 +461,7 @@ fn record_reattach_request(
             id,
             window: None,
             pane: None,
+            resource: None,
         } if is_current_session(id, &name, session_name, focused_session) => {
             tracing::debug!(target_session = %name, "switch-session to current session; no-op");
         }
@@ -468,13 +470,15 @@ fn record_reattach_request(
             id,
             window,
             pane,
+            resource,
         } => {
-            tracing::info!(target_session = %name, target_id = ?id, target_window = ?window, target_pane = ?pane, "switch-session requested");
+            tracing::info!(target_session = %name, target_id = ?id, target_window = ?window, target_pane = ?pane, target_resource = ?resource, "switch-session requested");
             *switch_request = Some(ReattachTarget::Existing {
                 name,
                 id,
                 window,
                 pane,
+                resource,
             });
         }
         ReattachTarget::Create(name) => {
@@ -740,6 +744,11 @@ pub enum ReattachTarget {
         /// `window` resolves in range; an out-of-range ordinal degrades to
         /// a logged no-op, same as `window`.
         pane: Option<usize>,
+        /// phux-ah84: authoritative pane identity from the server graph or
+        /// a persisted layout leaf. When present, the driver focuses this
+        /// `ResourceId` after re-attach instead of fabricating TUI window
+        /// or pane indices. Window/pane remain as layout-backed hints.
+        resource: Option<ResourceId>,
     },
     /// Create — or attach to, if it already exists — a session by name
     /// (`new-session`).

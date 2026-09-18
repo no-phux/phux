@@ -88,11 +88,15 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
     static AGENTS: LazyLock<HashMap<ResourceId, AgentRecord>> = LazyLock::new(HashMap::new);
     static ATTENTION: LazyLock<std::collections::HashSet<ResourceId>> =
         LazyLock::new(std::collections::HashSet::new);
+    static WINDOWS: &[phux_protocol::wire::info::WindowInfo] = &[];
+    static RESOURCES: &[phux_protocol::wire::info::ResourceInfo] = &[];
     crate::attach::sidebar_zones::PeerInputs {
         serving_host: None,
         hosts: &[],
         sessions: SESSIONS,
         focused_session: None,
+        windows: WINDOWS,
+        resources: RESOURCES,
         foreign_layouts: &LAYOUTS,
         foreign_agents: &AGENTS,
         foreign_attention: &ATTENTION,
@@ -108,6 +112,8 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
 pub(super) const fn peer_inputs<'a>(
     sessions: &'a [phux_protocol::wire::info::SessionInfo],
     focused_session: Option<phux_protocol::ids::SessionId>,
+    windows: &'a [phux_protocol::wire::info::WindowInfo],
+    resources: &'a [phux_protocol::wire::info::ResourceInfo],
     foreign_layouts: &'a HashMap<phux_protocol::ids::SessionId, Workspace>,
     foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
     foreign_attention: &'a std::collections::HashSet<ResourceId>,
@@ -117,6 +123,8 @@ pub(super) const fn peer_inputs<'a>(
         hosts: &[],
         sessions,
         focused_session,
+        windows,
+        resources,
         foreign_layouts,
         foreign_agents,
         foreign_attention,
@@ -280,6 +288,7 @@ pub(super) fn agent_entries(
             let base = AgentEntry {
                 session: None,
                 session_id: None,
+                resource: None,
                 window: i,
                 window_name: w.name.clone(),
                 pane: Some(leaf),

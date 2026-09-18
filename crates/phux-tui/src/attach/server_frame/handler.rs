@@ -505,6 +505,7 @@ fn handle_attached<W: crate::attach::RenderSink>(
     Ok(FrameOutcome {
         subscribe_layout: true,
         sessions: Some(session_cache),
+        inventory: Some((snapshot.windows.clone(), snapshot.resources.clone())),
         // ADR-0033: cache our own ClientId so the supervisory badge can
         // distinguish "you hold the wheel" from another client.
         own_client_id: Some(initial_client_id),
@@ -546,6 +547,7 @@ fn attach_empty_session<W: crate::attach::RenderSink>(
     FrameOutcome {
         subscribe_layout: true,
         sessions: Some((snapshot.sessions.clone(), snapshot.focused_session)),
+        inventory: Some((snapshot.windows.clone(), snapshot.resources.clone())),
         own_client_id: Some(initial_client_id),
         layout_replaced: true,
         ..FrameOutcome::default()

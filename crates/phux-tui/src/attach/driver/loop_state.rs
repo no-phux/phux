@@ -83,8 +83,7 @@ use super::session_io::{
 };
 use super::subscriptions::{
     apply_foreign_agent_reply, apply_foreign_layout_reply, prune_foreign_agents,
-    sync_agent_meta_subscriptions, sync_foreign_agent_subscriptions,
-    sync_foreign_layout_subscriptions,
+    sync_agent_meta_subscriptions, sync_foreign_agent_ids, sync_foreign_layout_subscriptions,
 };
 use super::terminal::{
     desired_mouse_capture, sync_hover_tracking, sync_mouse_capture, terminal_reset_on_signal,
@@ -282,6 +281,12 @@ struct PeerCaches {
     /// this to list peer sessions; `focused_session` marks the row the
     /// client is currently attached to (excluded from the picker).
     sessions: Vec<phux_protocol::wire::info::SessionInfo>,
+    /// Windows from the same ATTACHED/`GET_STATE` graph, joined via
+    /// `WindowInfo::session_id`. The sidebar falls back to these when a
+    /// peer has no persisted TUI layout (phux-ah84).
+    windows: Vec<phux_protocol::wire::info::WindowInfo>,
+    /// Resources from the same graph, joined via `ResourceInfo::window_id`.
+    resources: Vec<phux_protocol::wire::info::ResourceInfo>,
     /// The session this client is attached to, once ATTACHED has named it.
     focused_session: Option<SessionId>,
     /// phux-foz.8: peer sessions' persisted layouts, fetched right after the
@@ -293,15 +298,12 @@ struct PeerCaches {
     foreign_layouts: HashMap<SessionId, Workspace>,
     /// In-flight peer-layout GETs, by request id.
     foreign_layout_pending: HashMap<u32, SessionId>,
-    /// phux-jpqd: the `phux.agent/v1` records of FOREIGN panes, so the
-    /// agent-fleet dashboard shows a peer session's agent glyph/state without
-    /// attaching there. Populated lazily: when a peer's layout lands
-    /// (`apply_foreign_layout_reply`), the driver fires one `GET_METADATA` per
-    /// `ResourceId` in that workspace on the pane's agent key, correlated
-    /// through `foreign_agent_pending`. Keyed by foreign terminal id; pruned
-    /// to the union of all cached foreign layouts' leaves on each fold so it
-    /// stays bounded. No subscription — a one-shot read, same lazy-query
-    /// shape as the foreign layouts above (ADR-0018 / ADR-0030).
+    /// phux-jpqd / phux-ah84: the `phux.agent/v1` records of FOREIGN panes,
+    /// so the agent-fleet dashboard and Agents list show a peer session's
+    /// agent glyph/state without attaching there. Populated from persisted
+    /// TUI layouts when they exist, otherwise from the ATTACHED/`GET_STATE`
+    /// window/resource graph. Keyed by foreign terminal id; pruned to the
+    /// live foreign terminal set on each fold so it stays bounded.
     foreign_agents: HashMap<ResourceId, AgentRecord>,
     /// In-flight foreign agent-record GETs, by request id.
     foreign_agent_pending: HashMap<u32, ResourceId>,
@@ -361,6 +363,8 @@ impl PeerCaches {
         let mut inputs = peer_inputs(
             &self.sessions,
             self.focused_session,
+            &self.windows,
+            &self.resources,
             &self.foreign_layouts,
             &self.foreign_agents,
             &self.foreign_attention,
@@ -685,6 +689,9 @@ pub(super) struct SessionLoop {
     /// phux-jpqd: the DFS leaf ordinal focused after the window select
     /// resolves — the pane half of a one-step cross-session pick.
     pending_pane: Option<usize>,
+    /// phux-ah84: authoritative pane identity focused after re-attach,
+    /// even when the destination has no persisted TUI layout yet.
+    pending_resource: Option<ResourceId>,
     /// The outer terminal's key/mouse decoder.
     parser: StdinParser,
     /// Predictive local echo (phux-9gw.1). State is updated alongside
@@ -801,6 +808,7 @@ impl SessionLoop {
         onboarding_claim: Option<AttachClaim>,
         initial_window: Option<usize>,
         initial_pane: Option<usize>,
+        initial_resource: Option<ResourceId>,
         carried_sidebar_enabled: Option<bool>,
     ) -> Result<Self, AttachError> {
         let history_config = HistoryCacheConfig {
@@ -884,6 +892,7 @@ impl SessionLoop {
             },
             pending_window: initial_window,
             pending_pane: initial_pane,
+            pending_resource: initial_resource,
             parser: StdinParser::new(),
             predict: PredictionState::new(predict_cfg, 80, 24),
             overlay: Overlay,
@@ -1178,6 +1187,22 @@ impl SessionLoop {
             &mut self.peers.foreign_layout_subscribed,
         )
         .await?;
+        // phux-ah84: agent watches must not wait for a persisted TUI layout.
+        // CLI-created sessions already appear in the ATTACHED graph.
+        let live = crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs());
+        prune_foreign_agents(
+            &mut self.peers.foreign_agents,
+            &mut self.peers.foreign_agent_subscribed,
+            &live,
+        );
+        sync_foreign_agent_ids(
+            conn,
+            live.into_iter().collect(),
+            &mut self.next_request_id,
+            &mut self.peers.foreign_agent_pending,
+            &mut self.peers.foreign_agent_subscribed,
+        )
+        .await?;
         // phux-c2td.3: the fleet's other half. Rides the same deferred
         // sweep, so it costs the first paint nothing.
         self.request_serving_host(conn).await?;
@@ -1271,6 +1296,7 @@ impl SessionLoop {
                     self.peers.sessions.clone_from(&snapshot.sessions);
                     self.peers.sweep_pending = true;
                 }
+                self.adopt_snapshot_graph(snapshot);
                 self.peers.chrome_dirty = true;
                 self.session_picker_dirty = true;
                 &self.peers.hosts
@@ -1289,6 +1315,37 @@ impl SessionLoop {
         self.peers.hosts_pending = None;
         self.peers.hosts_pending_since = None;
         std::mem::take(&mut self.peers.held_unreachable)
+    }
+
+    /// Cache windows/resources from a snapshot when it actually carries them.
+    /// Host-inventory tests often construct sessions-only snapshots; wiping
+    /// a previously folded ATTACHED graph would hide unvisited agents.
+    fn adopt_snapshot_graph(&mut self, snapshot: &phux_protocol::wire::info::SessionSnapshot) {
+        if !snapshot.windows.is_empty() {
+            self.peers.windows.clone_from(&snapshot.windows);
+        }
+        if !snapshot.resources.is_empty() {
+            self.peers.resources.clone_from(&snapshot.resources);
+        }
+    }
+
+    /// Fold windows/resources carried on an ATTACHED outcome.
+    fn fold_inventory(
+        &mut self,
+        inventory: Option<(
+            Vec<phux_protocol::wire::info::WindowInfo>,
+            Vec<phux_protocol::wire::info::ResourceInfo>,
+        )>,
+    ) {
+        let Some((windows, resources)) = inventory else {
+            return;
+        };
+        if !windows.is_empty() {
+            self.peers.windows = windows;
+        }
+        if !resources.is_empty() {
+            self.peers.resources = resources;
+        }
     }
 
     /// Apply a `phux.session.name/v1` broadcast to the cached graph and
@@ -1316,6 +1373,7 @@ impl SessionLoop {
                     return;
                 };
                 self.peers.sessions.clone_from(&snapshot.sessions);
+                self.adopt_snapshot_graph(snapshot);
                 if let Some(id) = self.peers.focused_session.or(pending.session_id)
                     && let Some(info) = snapshot.sessions.iter().find(|s| s.id == id)
                 {
@@ -1511,6 +1569,11 @@ impl SessionLoop {
             self.peers.sessions = list;
             self.peers.focused_session = Some(focused);
         }
+        if let Some((windows, resources)) = outcome.inventory {
+            self.peers.windows = windows;
+            self.peers.resources = resources;
+        }
+        self.resolve_cross_session_pick();
         // phux-k0cw.10: the peer sweep belongs HERE in reading order — this is
         // where the session graph it reads (`sessions` / `focused_session`) has
         // just been folded from the ATTACHED replay above — but it is issued from
@@ -2773,34 +2836,30 @@ impl SessionLoop {
             return Ok(());
         };
         apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value);
-        self.reconcile_peer_layout(conn, session).await?;
+        self.reconcile_peer_agents(conn).await?;
         self.peers.chrome_dirty = true;
         repaint.raise_fleet();
         Ok(())
     }
 
     /// GET and broadcast layouts discover agent watches through the same path.
-    async fn reconcile_peer_layout(
-        &mut self,
-        conn: &mut Connection,
-        session: SessionId,
-    ) -> Result<(), AttachError> {
+    /// Live terminals come from a persisted TUI layout when one exists,
+    /// otherwise from the server session/resource graph (phux-ah84).
+    async fn reconcile_peer_agents(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
+        let live = crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs());
         prune_foreign_agents(
             &mut self.peers.foreign_agents,
             &mut self.peers.foreign_agent_subscribed,
-            &self.peers.foreign_layouts,
+            &live,
         );
-        if let Some(ws) = self.peers.foreign_layouts.get(&session) {
-            sync_foreign_agent_subscriptions(
-                conn,
-                ws,
-                &mut self.next_request_id,
-                &mut self.peers.foreign_agent_pending,
-                &mut self.peers.foreign_agent_subscribed,
-            )
-            .await?;
-        }
-        Ok(())
+        sync_foreign_agent_ids(
+            conn,
+            live.into_iter().collect(),
+            &mut self.next_request_id,
+            &mut self.peers.foreign_agent_pending,
+            &mut self.peers.foreign_agent_subscribed,
+        )
+        .await
     }
 
     /// Hand one frame to the server-frame handler and act on everything its
@@ -3163,7 +3222,7 @@ impl SessionLoop {
     ) -> Result<(), AttachError> {
         let layout_folded = if let Some((session, value)) = outcome.foreign_layout.take() {
             apply_foreign_layout_reply(&mut self.peers.foreign_layouts, session, value.as_deref());
-            self.reconcile_peer_layout(conn, session).await?;
+            self.reconcile_peer_agents(conn).await?;
             true
         } else {
             false
@@ -3223,6 +3282,7 @@ impl SessionLoop {
         if let Some((list, focused)) = outcome.sessions.take() {
             self.peers.sessions = list;
             self.peers.focused_session = Some(focused);
+            self.fold_inventory(std::mem::take(&mut outcome.inventory));
             // phux-k0cw.10: a graph refresh in the SAME batch
             // that satisfies the deferred bootstrap sweep does
             // its whole job — same call, same arguments, and
@@ -3233,6 +3293,8 @@ impl SessionLoop {
             // nothing dedupes the GET).
             self.peers.sweep_pending = false;
             self.sweep_peer_layouts(conn).await?;
+        } else {
+            self.fold_inventory(std::mem::take(&mut outcome.inventory));
         }
         Ok(())
     }
@@ -3456,6 +3518,10 @@ impl SessionLoop {
     ) {
         if outcome.layout_replaced {
             self.on_layout_replaced(sidebar, repaint);
+        } else if outcome.layout_get_answered {
+            // No persisted layout: still resolve a resource-identity pick
+            // against the ATTACHED graph (phux-ah84).
+            self.resolve_cross_session_pick();
         }
         // ADR-0040: a `phux.agent/v1` record changed (GET
         // reply or subscribed broadcast). The window labels
@@ -3539,12 +3605,16 @@ impl SessionLoop {
         }
     }
 
-    /// phux-foz.8: a one-step cross-session window pick drove this attach;
-    /// the multi-window layout just landed, so resolve the deferred select
-    /// against it before the repaint. Out-of-range (a peer mutated the layout
-    /// between pick and load) keeps the session's restored focus with a
-    /// warning.
+    /// phux-foz.8 / phux-ah84: a one-step cross-session pick drove this
+    /// attach. Prefer a ResourceId from the server graph; otherwise apply
+    /// the layout-backed window/pane indices once a TUI workspace exists.
     fn resolve_cross_session_pick(&mut self) {
+        if let Some(id) = self.pending_resource.take() {
+            self.pending_window = None;
+            self.pending_pane = None;
+            self.focus_pending_resource(id);
+            return;
+        }
         let Some(idx) = self.pending_window.take() else {
             return;
         };
@@ -3568,6 +3638,91 @@ impl SessionLoop {
         if let Some(fid) = self.focused_resource.as_ref() {
             reanchor_predict_to_pane(&mut self.predict, &self.panes, fid);
         }
+    }
+
+    /// Focus `id` in the current workspace, adopting a server-graph window
+    /// when the TUI layout does not yet name it.
+    fn focus_pending_resource(&mut self, id: ResourceId) {
+        if self.focus_resource_in_workspace(&id) {
+            return;
+        }
+        if !self.adopt_inventory_resource(&id) {
+            tracing::warn!(
+                resource = %id,
+                "cross-session resource pick not in workspace or inventory; keeping restored focus",
+            );
+            return;
+        }
+        if !self.focus_resource_in_workspace(&id) {
+            tracing::warn!(
+                resource = %id,
+                "cross-session resource pick adopted but not focusable",
+            );
+        }
+    }
+
+    fn focus_resource_in_workspace(&mut self, id: &ResourceId) -> bool {
+        let Some(idx) = self.workspace.windows.iter().position(|window| {
+            window
+                .state
+                .tree
+                .as_ref()
+                .is_some_and(|tree| crate::layout::leaves(tree).iter().any(|leaf| leaf == id))
+        }) else {
+            return false;
+        };
+        let _ = self.workspace.select(idx);
+        if let Some(ls) = self.workspace.active_window_mut() {
+            ls.focus = Some(id.clone());
+        }
+        self.focus_history
+            .transition(&mut self.focused_resource, Some(id.clone()));
+        reanchor_predict_to_pane(&mut self.predict, &self.panes, id);
+        true
+    }
+
+    fn adopt_inventory_resource(&mut self, id: &ResourceId) -> bool {
+        let Some(window) = self.peers.windows.iter().find(|window| {
+            self.peers
+                .focused_session
+                .is_none_or(|session| window.session_id == session)
+                && crate::attach::sidebar_zones::window_contains_terminal(
+                    window,
+                    &self.peers.resources,
+                    id,
+                )
+        }) else {
+            return false;
+        };
+        let layout = window
+            .layout
+            .clone()
+            .unwrap_or_else(|| crate::layout::LayoutNode::Leaf(id.clone()));
+        let name = window.name.clone();
+        let inventory_leaves = crate::layout::leaves(&layout);
+        if self.workspace.windows.len() == 1 {
+            let bootstrap = self.workspace.windows[0]
+                .state
+                .tree
+                .as_ref()
+                .map(crate::layout::leaves)
+                .unwrap_or_default();
+            if bootstrap.len() == 1 && inventory_leaves.iter().any(|leaf| bootstrap.contains(leaf))
+            {
+                let w = &mut self.workspace.windows[0];
+                w.name = name;
+                w.state.tree = Some(layout);
+                w.state.focus = Some(id.clone());
+                self.workspace.active = 0;
+                return true;
+            }
+        }
+        self.workspace.add_window(name, id.clone());
+        if let Some(ls) = self.workspace.active_window_mut() {
+            ls.tree = Some(layout);
+            ls.focus = Some(id.clone());
+        }
+        true
     }
 
     /// phux-jpqd: the pane half of a one-step cross-session pane pick — move

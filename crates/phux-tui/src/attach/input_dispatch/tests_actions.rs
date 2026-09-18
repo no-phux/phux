@@ -1935,6 +1935,7 @@ fn one_step_picker_row_commits_switch_session_with_window() {
             id: Some(phux_protocol::ids::SessionId::new(2)),
             window: Some(1),
             pane: None,
+            resource: None,
         }),
         "the one-step row carries the target window through dispatch"
     );
@@ -1963,6 +1964,7 @@ fn switch_session_bad_window_arg_degrades_to_plain_switch() {
             id: None,
             window: None,
             pane: None,
+            resource: None,
         }),
     );
     assert!(!effects.bell);
@@ -1990,6 +1992,7 @@ fn switch_session_with_pane_arg_carries_one_step_pane_target() {
             id: None,
             window: Some(1),
             pane: Some(2),
+            resource: None,
         }),
     );
     assert!(!effects.bell);
@@ -2484,6 +2487,7 @@ fn session_picker_commit_routes_switch_session_through_run_action() {
             id: Some(phux_protocol::ids::SessionId::new(2)),
             window: None,
             pane: None,
+            resource: None,
         }),
         "committing the picker row requests a switch to that session"
     );
@@ -3111,8 +3115,53 @@ fn switch_session_id_arg_navigates_by_session_identity() {
             id: Some(phux_protocol::ids::SessionId::new(7)),
             window: None,
             pane: None,
+            resource: None,
         }),
         "a painted row's session id outranks a stale display name"
+    );
+}
+
+#[test]
+fn switch_session_resource_arg_navigates_by_resource_identity() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String("peer".to_owned()));
+    args.insert("id".to_owned(), toml::Value::Integer(2));
+    args.insert("resource".to_owned(), toml::Value::String("@10".to_owned()));
+    let action = phux_config::keybind::ResolvedAction {
+        action: "switch-session".to_owned(),
+        args,
+    };
+    let effects = run(&action, &mut workspace);
+    assert_eq!(
+        effects.reattach,
+        Some(ReattachTarget::Existing {
+            name: "peer".to_owned(),
+            id: Some(phux_protocol::ids::SessionId::new(2)),
+            window: None,
+            pane: None,
+            resource: Some(ResourceId::local(10)),
+        }),
+        "resource identity is the navigation key when no TUI indices exist"
+    );
+
+    let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String("peer".to_owned()));
+    args.insert(
+        "resource".to_owned(),
+        toml::Value::String("prod-3/@10".to_owned()),
+    );
+    let action = phux_config::keybind::ResolvedAction {
+        action: "switch-session".to_owned(),
+        args,
+    };
+    let effects = run(&action, &mut workspace);
+    assert_eq!(
+        effects.reattach.and_then(|t| match t {
+            ReattachTarget::Existing { resource, .. } => resource,
+            ReattachTarget::Create(_) => None,
+        }),
+        Some(ResourceId::satellite("prod-3", 10)),
     );
 }
 
