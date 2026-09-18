@@ -633,6 +633,12 @@ async fn peer_layout_broadcast_discovers_and_subscribes_new_agent_leaves() {
     let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
     sidebar_frames_sent(&mut client, &mut server).await;
+    // The layout key is session-scoped; production already has this session
+    // in the ATTACHED graph from the peer sweep that opened the watch.
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer"));
     let id = ResourceId::local(10);
     let frame = FrameKind::MetadataChanged {
         scope: Scope::Group(phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID),
@@ -1509,7 +1515,7 @@ async fn rename_barrier_error_keeps_the_current_status_name() {
 }
 
 /// phux-ah84: a CLI-created peer with an agent record but no TUI layout
-/// still paints in Agents, keyed by ResourceId.
+/// still paints in Agents, keyed by `ResourceId`.
 #[tokio::test(flavor = "current_thread")]
 async fn unvisited_peer_agent_paints_from_server_inventory() {
     let (mut state, _client, _server, mut out) =

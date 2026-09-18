@@ -792,6 +792,10 @@ fn write_terminal_clear<W: Write>(out: &mut W) -> io::Result<()> {
 ///   for a new one), then re-enters `main_loop` with the new ATTACHED frame
 ///   and freshly-rebuilt session state.
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "SwitchTo carries the full re-attach request including resource identity"
+)]
 pub(super) enum LoopExit {
     /// The session ended (detach / server DETACHED / last pane closed).
     /// Carries WHY (phux-i0e8.2.2) so the teardown path can explain a

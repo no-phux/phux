@@ -594,7 +594,7 @@ mod tests {
     }
 
     /// CLI-created sessions have a server graph before any TUI layout is
-    /// persisted. Agents there must still appear, keyed by ResourceId, with
+    /// persisted. Agents there must still appear, keyed by `ResourceId`, with
     /// no fabricated pane ordinal.
     #[test]
     fn an_unvisited_peer_agent_appears_from_server_inventory() {
@@ -622,7 +622,7 @@ mod tests {
     }
 
     /// Two terminals in one unvisited session appear once each, in window
-    /// then ResourceId order, and stay the same rows after a TUI layout
+    /// then `ResourceId` order, and stay the same rows after a TUI layout
     /// lands.
     #[test]
     fn inventory_rows_are_stable_across_layout_persist() {
@@ -666,7 +666,7 @@ mod tests {
         assert!(ids.contains(&ResourceId::local(11)));
     }
 
-    /// Host-qualified ResourceIds from the server graph keep their identity
+    /// Host-qualified resource identities from the server graph keep their identity
     /// on the row so a click cannot collide with a local id of the same
     /// number.
     #[test]

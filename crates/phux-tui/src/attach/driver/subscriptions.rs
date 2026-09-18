@@ -88,35 +88,6 @@ pub(super) fn apply_foreign_layout_reply(
     }
 }
 
-/// phux-jpqd: fetch the `phux.agent/v1` record of every pane in one peer
-/// session's just-loaded `workspace` — one `GET_METADATA` per `ResourceId`
-/// leaf on the pane's agent key — so the agent-fleet dashboard's foreign
-/// rows show its agent glyph/state without attaching there. Correlated
-/// through `pending` (request id -> terminal id); replies fold via
-/// [`apply_foreign_agent_reply`]. Skips leaves with a GET already in flight
-/// so a re-fold (session-graph refresh re-requests the layout) does not
-/// duplicate traffic. One-shot reads, no subscription — the same lazy-query
-/// shape as [`request_foreign_layouts`] (ADR-0018 / ADR-0030).
-pub(super) async fn sync_foreign_agent_subscriptions(
-    conn: &mut Connection,
-    workspace: &Workspace,
-    next_request_id: &mut u32,
-    pending: &mut HashMap<u32, ResourceId>,
-    subscribed: &mut std::collections::HashSet<ResourceId>,
-) -> Result<(), AttachError> {
-    let mut targets = Vec::new();
-    for window in &workspace.windows {
-        if let Some(tree) = window.state.tree.as_ref() {
-            for id in crate::layout::leaves(tree) {
-                if !targets.contains(&id) {
-                    targets.push(id);
-                }
-            }
-        }
-    }
-    sync_foreign_agent_ids(conn, targets, next_request_id, pending, subscribed).await
-}
-
 /// GET/SUBSCRIBE `phux.agent/v1` for each local terminal in `targets`.
 ///
 /// Used both after a peer layout lands and from the server graph when no
@@ -129,14 +100,11 @@ pub(super) async fn sync_foreign_agent_ids(
     subscribed: &mut std::collections::HashSet<ResourceId>,
 ) -> Result<(), AttachError> {
     let in_flight: std::collections::HashSet<&ResourceId> = pending.values().collect();
-    let targets: Vec<ResourceId> = targets
-        .into_iter()
-        .filter(|id| id.is_local() && !in_flight.contains(id))
-        .collect();
-    // Dedup while preserving order.
+    // Dedup while preserving order; skip satellites and in-flight GETs.
     let mut seen = std::collections::HashSet::new();
     let targets: Vec<ResourceId> = targets
         .into_iter()
+        .filter(|id| id.is_local() && !in_flight.contains(id))
         .filter(|id| seen.insert(id.clone()))
         .collect();
     for id in targets {

@@ -662,15 +662,18 @@ impl SidebarPainter {
             needs_you: self
                 .needs_you
                 .iter()
-                .map(|e| match &e.session {
-                    Some(name) => SidebarTarget::Session {
-                        name: name.clone(),
-                        id: e.session_id,
-                        window: e.pane.map(|_| e.window),
-                        pane: e.pane,
-                        resource: e.resource.clone(),
-                    },
-                    None => SidebarTarget::Window(e.window),
+                .map(|e| {
+                    e.session
+                        .as_ref()
+                        .map_or(SidebarTarget::Window(e.window), |name| {
+                            SidebarTarget::Session {
+                                name: name.clone(),
+                                id: e.session_id,
+                                window: e.pane.map(|_| e.window),
+                                pane: e.pane,
+                                resource: e.resource.clone(),
+                            }
+                        })
                 })
                 .collect(),
             roster: self
@@ -2031,7 +2034,7 @@ mod tests {
         );
     }
 
-    /// phux-ah84: a graph-discovered agent click carries ResourceId and
+    /// phux-ah84: a graph-discovered agent click carries `ResourceId` and
     /// omits fabricated window/pane indices.
     #[test]
     fn a_foreign_queue_click_carries_resource_identity() {

@@ -779,17 +779,15 @@ async fn satellite_panes_are_never_subscribed() {
 
     let local = ResourceId::local(1);
     let satellite = ResourceId::satellite("prod-3", 2);
-    let mut ws = Workspace::single(local.clone());
-    ws.add_window("remote".to_owned(), satellite.clone());
 
     let mut next_request_id = 1;
     let mut pending = HashMap::new();
     let mut subscribed = std::collections::HashSet::new();
 
     let sent = async {
-        sync_foreign_agent_subscriptions(
+        sync_foreign_agent_ids(
             &mut client,
-            &ws,
+            vec![local.clone(), satellite.clone()],
             &mut next_request_id,
             &mut pending,
             &mut subscribed,
@@ -840,7 +838,7 @@ fn prune_foreign_agents_retains_only_live_foreign_panes() {
     cache.insert(stale.clone(), AgentRecord::default());
     let mut subscribed: HashSet<ResourceId> = [live.clone(), stale.clone()].into_iter().collect();
 
-    let live_set: HashSet<ResourceId> = [live.clone()].into_iter().collect();
+    let live_set: HashSet<ResourceId> = HashSet::from([live.clone()]);
     prune_foreign_agents(&mut cache, &mut subscribed, &live_set);
     assert!(
         cache.contains_key(&live),
@@ -872,8 +870,8 @@ fn prune_foreign_agents_keeps_graph_terminals_without_a_layout() {
     let graph = ResourceId::local(10);
     let mut cache: HashMap<ResourceId, AgentRecord> = HashMap::new();
     cache.insert(graph.clone(), AgentRecord::default());
-    let mut subscribed: HashSet<ResourceId> = [graph.clone()].into_iter().collect();
-    let live: HashSet<ResourceId> = [graph.clone()].into_iter().collect();
+    let mut subscribed: HashSet<ResourceId> = HashSet::from([graph.clone()]);
+    let live: HashSet<ResourceId> = HashSet::from([graph.clone()]);
     prune_foreign_agents(&mut cache, &mut subscribed, &live);
     assert!(cache.contains_key(&graph));
     assert!(subscribed.contains(&graph));

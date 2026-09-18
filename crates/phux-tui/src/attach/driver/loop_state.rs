@@ -799,6 +799,7 @@ impl SessionLoop {
     /// carried runtime value wins after that (see `seed_sidebar_enabled`).
     #[allow(
         clippy::too_many_lines,
+        clippy::too_many_arguments,
         reason = "single constructor keeps all session-loop ownership visible"
     )]
     pub(super) fn new(
@@ -3606,13 +3607,13 @@ impl SessionLoop {
     }
 
     /// phux-foz.8 / phux-ah84: a one-step cross-session pick drove this
-    /// attach. Prefer a ResourceId from the server graph; otherwise apply
+    /// attach. Prefer a `ResourceId` from the server graph; otherwise apply
     /// the layout-backed window/pane indices once a TUI workspace exists.
     fn resolve_cross_session_pick(&mut self) {
         if let Some(id) = self.pending_resource.take() {
             self.pending_window = None;
             self.pending_pane = None;
-            self.focus_pending_resource(id);
+            self.focus_pending_resource(&id);
             return;
         }
         let Some(idx) = self.pending_window.take() else {
@@ -3642,18 +3643,18 @@ impl SessionLoop {
 
     /// Focus `id` in the current workspace, adopting a server-graph window
     /// when the TUI layout does not yet name it.
-    fn focus_pending_resource(&mut self, id: ResourceId) {
-        if self.focus_resource_in_workspace(&id) {
+    fn focus_pending_resource(&mut self, id: &ResourceId) {
+        if self.focus_resource_in_workspace(id) {
             return;
         }
-        if !self.adopt_inventory_resource(&id) {
+        if !self.adopt_inventory_resource(id) {
             tracing::warn!(
                 resource = %id,
                 "cross-session resource pick not in workspace or inventory; keeping restored focus",
             );
             return;
         }
-        if !self.focus_resource_in_workspace(&id) {
+        if !self.focus_resource_in_workspace(id) {
             tracing::warn!(
                 resource = %id,
                 "cross-session resource pick adopted but not focusable",
