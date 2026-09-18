@@ -62,7 +62,7 @@ use crate::settings::TuiSettings;
 use phux_client::agent_meta::AgentRecord;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
-use super::chrome::{mark_focused_seen, peer_inputs, refresh_window_chrome};
+use super::chrome::{mark_focused_seen, refresh_window_chrome};
 
 use super::config_ui::{
     apply_initial_notice, handle_config_reload, push_which_key_overlay, update_which_key_deadline,
@@ -266,8 +266,8 @@ enum FrameStep {
 /// agent-fleet dashboard project from.
 ///
 /// One struct rather than ten parallel locals: every field here is written
-/// by the same peer sweep and read by the same [`peer_inputs`] projection,
-/// so they are refreshed, pruned, and reset together.
+/// by the same peer sweep and read by the same sidebar projection, so they
+/// are refreshed, pruned, and reset together.
 #[derive(Default)]
 struct PeerCaches {
     /// Identity of the serving machine, read once through the whoami key.
@@ -363,19 +363,18 @@ impl PeerCaches {
         &'a self,
         review: &'a super::review::ReviewIndex,
     ) -> crate::attach::sidebar_zones::PeerInputs<'a> {
-        let mut inputs = peer_inputs(
-            &self.sessions,
-            self.focused_session,
-            &self.windows,
-            &self.resources,
-            &self.foreign_layouts,
-            &self.foreign_agents,
-            &self.foreign_attention,
+        crate::attach::sidebar_zones::PeerInputs {
+            serving_host: self.serving_host.as_deref(),
+            hosts: &self.hosts,
+            sessions: &self.sessions,
+            focused_session: self.focused_session,
+            windows: &self.windows,
+            resources: &self.resources,
+            foreign_layouts: &self.foreign_layouts,
+            foreign_agents: &self.foreign_agents,
+            foreign_attention: &self.foreign_attention,
             review,
-        );
-        inputs.serving_host = self.serving_host.as_deref();
-        inputs.hosts = &self.hosts;
-        inputs
+        }
     }
 }
 
@@ -2721,11 +2720,11 @@ impl SessionLoop {
             FrameKind::MetadataValue { request_id, value }
                 if self.peers.foreign_agent_pending.contains_key(&request_id) =>
             {
-                if let Some(id) = self.peers.foreign_agent_pending.remove(&request_id) {
-                    if self.fold_foreign_agent(id, value.as_deref()) {
-                        self.peers.chrome_dirty = true;
-                        repaint.raise_fleet();
-                    }
+                if let Some(id) = self.peers.foreign_agent_pending.remove(&request_id)
+                    && self.fold_foreign_agent(&id, value.as_deref())
+                {
+                    self.peers.chrome_dirty = true;
+                    repaint.raise_fleet();
                 }
                 Ok(None)
             }
@@ -3209,12 +3208,12 @@ impl SessionLoop {
     /// Fold a foreign GET or broadcast into the fleet cache and the
     /// connection-lifetime review index. Returns whether either actually
     /// moved, so an identical read does not dirty chrome.
-    fn fold_foreign_agent(&mut self, id: ResourceId, value: Option<&[u8]>) -> bool {
+    fn fold_foreign_agent(&mut self, id: &ResourceId, value: Option<&[u8]>) -> bool {
         let cache_changed =
             apply_foreign_agent_reply(&mut self.peers.foreign_agents, id.clone(), value);
         let review_changed = self.review.observe_record(
-            &id,
-            self.peers.foreign_agents.get(&id),
+            id,
+            self.peers.foreign_agents.get(id),
             self.focused_resource.as_ref(),
         );
         cache_changed || review_changed
@@ -3269,7 +3268,7 @@ impl SessionLoop {
             false
         };
         let agent_folded = if let Some((id, value)) = outcome.foreign_agent.take() {
-            self.fold_foreign_agent(id, value.as_deref())
+            self.fold_foreign_agent(&id, value.as_deref())
         } else {
             false
         };

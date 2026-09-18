@@ -44,7 +44,7 @@ pub(in crate::attach) struct ReviewIndex {
 }
 
 impl ReviewIndex {
-    pub fn new() -> Self {
+    pub(in crate::attach) fn new() -> Self {
         Self::default()
     }
 
@@ -74,8 +74,8 @@ impl ReviewIndex {
     /// Confirmed death or metadata deletion. Locality changes (local ↔
     /// foreign) must not call this: the identity is the same pane.
     pub(in crate::attach) fn forget(&mut self, id: &ResourceId) -> bool {
-        let mut changed = self.entries.remove(id).is_some();
-        if let Some(pane) = self.stream_parents.remove(id) {
+        let removed = self.entries.remove(id).is_some();
+        let parent_changed = self.stream_parents.remove(id).is_some_and(|pane| {
             if let Some(entry) = self.entries.get_mut(&pane) {
                 let before = entry.observation.clone();
                 entry.observation.stream.retain(|(sid, _)| sid != id);
@@ -83,10 +83,10 @@ impl ReviewIndex {
                     entry.seen = false;
                 }
             }
-            changed = true;
-        }
+            true
+        });
         self.stream_parents.retain(|_, pane| pane != id);
-        changed
+        removed || parent_changed
     }
 
     /// Fold a GET or broadcast. `record = None` is a tombstone.

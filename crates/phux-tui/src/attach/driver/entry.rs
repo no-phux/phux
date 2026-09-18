@@ -423,6 +423,12 @@ fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) 
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "switch carries the same pending-focus and connection-lifetime \
+              locals the re-attach handshake already threads; a bag type \
+              would only rename the list"
+)]
 async fn switch_session<W: crate::attach::RenderSink>(
     conn: &mut Connection,
     out: &mut W,

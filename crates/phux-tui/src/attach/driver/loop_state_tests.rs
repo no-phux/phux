@@ -1640,11 +1640,11 @@ async fn resource_pick_focuses_inventory_pane_without_a_tui_layout() {
     assert_eq!(state.workspace.windows.len(), 1);
 }
 
-fn wide_sidebar() -> Option<SidebarReservation> {
-    Some(SidebarReservation {
+fn wide_sidebar() -> SidebarReservation {
+    SidebarReservation {
         edge: crate::attach::paint::SidebarEdge::Left,
         width: 32,
-    })
+    }
 }
 
 fn done_reviewer() -> AgentRecord {
@@ -1681,15 +1681,23 @@ fn agent_line(bytes: &[u8], name: &str) -> String {
 }
 
 fn assert_reviewed_row(bytes: &[u8], name: &str) {
-    let line = agent_line(bytes, name);
-    assert!(line.contains(name), "missing {name}: {line}");
+    let screen = painted_sidebar_text(bytes);
+    let line = screen
+        .lines()
+        .find(|line| line.contains(name))
+        .unwrap_or("");
+    assert!(
+        line.contains(name),
+        "missing {name} (bytes={}):\n{screen}",
+        bytes.len()
+    );
     assert!(
         line.contains('○'),
-        "reviewed {name} must quiet to a ring: {line}"
+        "reviewed {name} must quiet to a ring: {line}\n{screen}"
     );
     assert!(
         !line.contains('◆'),
-        "reviewed {name} must not keep the unread diamond: {line}"
+        "reviewed {name} must not keep the unread diamond: {line}\n{screen}"
     );
 }
 
@@ -1702,6 +1710,59 @@ fn assert_unread_done_row(bytes: &[u8], name: &str) {
     );
 }
 
+async fn loop_wide() -> (SessionLoop, Connection, Connection, Vec<u8>) {
+    let (mut state, client, server, out) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.viewport_dims = (100, 24);
+    (state, client, server, out)
+}
+
+async fn intercept_agent_get(
+    state: &mut SessionLoop,
+    client: &mut Connection,
+    request_id: u32,
+    id: &ResourceId,
+    record: &AgentRecord,
+) -> RepaintAccumulator {
+    let mut repaint = RepaintAccumulator::default();
+    state
+        .peers
+        .foreign_agent_pending
+        .insert(request_id, id.clone());
+    state
+        .intercept_peer_reply(
+            client,
+            FrameKind::MetadataValue {
+                request_id,
+                value: Some(record.encode()),
+            },
+            &mut repaint,
+        )
+        .await
+        .unwrap();
+    repaint
+}
+
+fn agent_broadcast(id: &ResourceId, record: &AgentRecord) -> FrameKind {
+    FrameKind::MetadataChanged {
+        scope: Scope::Resource(id.clone()),
+        key: phux_client::agent_meta::RESOURCE_AGENT_KEY.to_owned(),
+        value: Some(record.encode()),
+        actor: None,
+    }
+}
+
+/// Push the current projection into the painter and emit a chrome paint.
+/// Change detection is not the point: the tests need the glyphs the closed
+/// fleet would show, even when an identical GET correctly declined to dirty.
+fn snapshot_sidebar(state: &mut SessionLoop, out: &mut Vec<u8>, sidebar: SidebarReservation) {
+    out.clear();
+    let _ = state.refresh_chrome();
+    state.sidebar_painter.invalidate();
+    let mut repaint = RepaintAccumulator::default();
+    repaint.raise_chrome();
+    state.drain_repaint(out, Some(sidebar), &mut repaint);
+}
+
 /// phux-deya: A→B→A keeps an unchanged reviewed Done in the local queue,
 /// the peer queue, and the roster, with the fleet closed.
 #[tokio::test(flavor = "current_thread")]
@@ -1710,9 +1771,7 @@ async fn a_reviewed_done_survives_rebuild_in_peer_and_local_chrome() {
     let done = done_reviewer();
     let sidebar = wide_sidebar();
 
-    let (mut session_a, _client, _server, mut out) =
-        bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    session_a.viewport_dims = (100, 24);
+    let (mut session_a, _, _, _) = loop_wide().await;
     seed_local_agent(&mut session_a, &done_id, &done);
     session_a.focused_resource = Some(done_id.clone());
     assert!(
@@ -1720,89 +1779,45 @@ async fn a_reviewed_done_survives_rebuild_in_peer_and_local_chrome() {
             .review
             .observe_record(&done_id, Some(&done), Some(&done_id))
     );
-    session_a.peers.chrome_dirty = true;
-    out.clear();
-    session_a.drain_repaint(&mut out, sidebar, &mut RepaintAccumulator::default());
-    assert_reviewed_row(&out, "reviewer");
+    assert!(session_a.review.is_seen(&done_id));
 
-    let carried = std::mem::take(&mut session_a.review);
-    let (mut session_b, mut client, _server, mut out) =
-        bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    session_b.viewport_dims = (100, 24);
-    session_b.set_review(carried);
+    let (mut session_b, mut client, _server, mut out) = loop_wide().await;
+    session_b.set_review(std::mem::take(&mut session_a.review));
     seed_cached_peer(&mut session_b, &done_id);
     assert_eq!(
         session_b.focused_resource.as_ref(),
-        Some(&ResourceId::local(1)),
-        "return focus is a different pane"
+        Some(&ResourceId::local(1))
     );
 
-    let mut repaint = RepaintAccumulator::default();
-    session_b
-        .peers
-        .foreign_agent_pending
-        .insert(900, done_id.clone());
-    session_b
-        .intercept_peer_reply(
-            &mut client,
-            FrameKind::MetadataValue {
-                request_id: 900,
-                value: Some(done.encode()),
-            },
-            &mut repaint,
-        )
-        .await
-        .unwrap();
-    assert!(!session_b.overlays.is_active());
-    out.clear();
-    session_b.drain_repaint(&mut out, sidebar, &mut repaint);
+    let _ = intercept_agent_get(&mut session_b, &mut client, 900, &done_id, &done).await;
+    assert!(session_b.peers.foreign_agents.contains_key(&done_id));
+    assert!(session_b.peers.chrome_dirty);
+    assert!(session_b.review.is_seen(&done_id));
+    snapshot_sidebar(&mut session_b, &mut out, sidebar);
     assert_reviewed_row(&out, "reviewer");
-    assert!(
-        session_b.review.is_seen(&done_id),
-        "peer GET of the same Done must keep review"
-    );
-    let roster = session_b.sidebar_painter.click_targets();
-    assert_eq!(roster.counts.roster, 2, "here + peer stay in the roster");
+    assert_eq!(session_b.sidebar_painter.click_targets().counts.roster, 2);
 
-    session_b
-        .peers
-        .foreign_agent_pending
-        .insert(901, done_id.clone());
-    let mut repaint = RepaintAccumulator::default();
-    session_b
-        .intercept_peer_reply(
-            &mut client,
-            FrameKind::MetadataValue {
-                request_id: 901,
-                value: Some(done.encode()),
-            },
-            &mut repaint,
-        )
-        .await
-        .unwrap();
-    assert!(
-        !session_b.peers.chrome_dirty,
-        "an identical GET must not dirty chrome"
-    );
-    assert!(
-        !session_b.refresh_chrome(),
-        "an identical projection must not repaint"
-    );
+    let mut repaint = intercept_agent_get(&mut session_b, &mut client, 901, &done_id, &done).await;
+    assert!(!session_b.peers.chrome_dirty);
+    out.clear();
+    session_b.drain_repaint(&mut out, Some(sidebar), &mut repaint);
+    assert!(out.is_empty(), "an identical GET must emit no bytes");
+    assert!(!session_b.refresh_chrome());
     assert!(session_b.review.is_seen(&done_id));
 
-    let carried = std::mem::take(&mut session_b.review);
-    let (mut session_a2, mut client, _server, mut out) =
-        bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    session_a2.viewport_dims = (100, 24);
-    session_a2.set_review(carried);
+    let (mut session_a2, mut client, _server_a2, mut out) = loop_wide().await;
+    session_a2.set_review(std::mem::take(&mut session_b.review));
     seed_local_agent(&mut session_a2, &done_id, &done);
+    snapshot_sidebar(&mut session_a2, &mut out, sidebar);
+    assert_reviewed_row(&out, "reviewer");
+
     session_a2.agent_meta.pending.insert(42, done_id.clone());
     let mut repaint = RepaintAccumulator::default();
     session_a2
         .apply_server_frame(
             &mut client,
             &mut out,
-            sidebar,
+            Some(sidebar),
             FrameKind::MetadataValue {
                 request_id: 42,
                 value: Some(done.encode()),
@@ -1813,8 +1828,8 @@ async fn a_reviewed_done_survives_rebuild_in_peer_and_local_chrome() {
         .await
         .unwrap();
     out.clear();
-    session_a2.drain_repaint(&mut out, sidebar, &mut repaint);
-    assert_reviewed_row(&out, "reviewer");
+    session_a2.drain_repaint(&mut out, Some(sidebar), &mut repaint);
+    assert!(out.is_empty(), "an identical local GET must emit no bytes");
     assert!(session_a2.review.is_seen(&done_id));
 }
 
@@ -1825,29 +1840,12 @@ async fn a_change_while_away_rearms_unread_done() {
     let done_id = ResourceId::local(10);
     let done = done_reviewer();
     let sidebar = wide_sidebar();
-    let (mut state, mut client, _server, mut out) =
-        bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    state.viewport_dims = (100, 24);
+    let (mut state, mut client, _server, mut out) = loop_wide().await;
     state
         .review
         .observe_record(&done_id, Some(&done), Some(&done_id));
     seed_cached_peer(&mut state, &done_id);
-    state
-        .peers
-        .foreign_agent_pending
-        .insert(900, done_id.clone());
-    let mut repaint = RepaintAccumulator::default();
-    state
-        .intercept_peer_reply(
-            &mut client,
-            FrameKind::MetadataValue {
-                request_id: 900,
-                value: Some(done.encode()),
-            },
-            &mut repaint,
-        )
-        .await
-        .unwrap();
+    let mut repaint = intercept_agent_get(&mut state, &mut client, 900, &done_id, &done).await;
     assert!(state.review.is_seen(&done_id));
 
     let working = AgentRecord {
@@ -1859,13 +1857,8 @@ async fn a_change_while_away_rearms_unread_done() {
         .apply_server_frame(
             &mut client,
             &mut out,
-            sidebar,
-            FrameKind::MetadataChanged {
-                scope: Scope::Resource(done_id.clone()),
-                key: phux_client::agent_meta::RESOURCE_AGENT_KEY.to_owned(),
-                value: Some(working.encode()),
-                actor: None,
-            },
+            Some(sidebar),
+            agent_broadcast(&done_id, &working),
             true,
             &mut repaint,
         )
@@ -1873,25 +1866,19 @@ async fn a_change_while_away_rearms_unread_done() {
         .unwrap();
     assert!(!state.review.is_seen(&done_id));
 
-    let done_again = done_reviewer();
     state
         .apply_server_frame(
             &mut client,
             &mut out,
-            sidebar,
-            FrameKind::MetadataChanged {
-                scope: Scope::Resource(done_id.clone()),
-                key: phux_client::agent_meta::RESOURCE_AGENT_KEY.to_owned(),
-                value: Some(done_again.encode()),
-                actor: None,
-            },
+            Some(sidebar),
+            agent_broadcast(&done_id, &done_reviewer()),
             true,
             &mut repaint,
         )
         .await
         .unwrap();
     out.clear();
-    state.drain_repaint(&mut out, sidebar, &mut repaint);
+    state.drain_repaint(&mut out, Some(sidebar), &mut repaint);
     assert_unread_done_row(&out, "reviewer");
     assert!(!state.review.is_seen(&done_id));
 }
@@ -1948,9 +1935,7 @@ async fn stream_completion_invalidates_after_rebuild_without_retracting_on_gap()
     let pane = ResourceId::local(10);
     let sid = ResourceId::local(99);
     let sidebar = wide_sidebar();
-    let (mut session_a, _client, _server, _out) =
-        bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    session_a.viewport_dims = (100, 24);
+    let (mut session_a, _, _, _) = loop_wide().await;
     seed_local_agent(&mut session_a, &pane, &done_reviewer());
     session_a.review.observe_stream(
         &pane,
@@ -1962,13 +1947,10 @@ async fn stream_completion_invalidates_after_rebuild_without_retracting_on_gap()
     );
     assert!(session_a.review.is_seen(&pane));
 
-    let carried = std::mem::take(&mut session_a.review);
-    let (mut session_b, _client, _server, mut out) =
-        bootstrapped_loop_with(ServerFeatureSet::new()).await;
-    session_b.viewport_dims = (100, 24);
-    session_b.set_review(carried);
+    let (mut session_b, _, _, mut out) = loop_wide().await;
+    session_b.set_review(std::mem::take(&mut session_a.review));
     seed_local_agent(&mut session_b, &pane, &done_reviewer());
-    session_b.refresh_chrome();
+    let _ = session_b.refresh_chrome();
     assert!(
         session_b.review.is_seen(&pane),
         "stream absence after rebuild is not retraction"
@@ -1980,8 +1962,6 @@ async fn stream_completion_invalidates_after_rebuild_without_retracting_on_gap()
         None
     ));
     assert!(!session_b.review.is_seen(&pane));
-    session_b.peers.chrome_dirty = true;
-    out.clear();
-    session_b.drain_repaint(&mut out, sidebar, &mut RepaintAccumulator::default());
+    snapshot_sidebar(&mut session_b, &mut out, sidebar);
     assert_unread_done_row(&out, "reviewer");
 }

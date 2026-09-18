@@ -106,36 +106,6 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
     }
 }
 
-/// Bundle the driver's peer-wide caches for the sidebar's cross-session
-/// zones (phux-k0cw).
-///
-/// A free function rather than a method so the call sites read the same at
-/// all eleven of them, and so a test can build one from synthetic state
-/// without standing up a driver.
-pub(super) const fn peer_inputs<'a>(
-    sessions: &'a [phux_protocol::wire::info::SessionInfo],
-    focused_session: Option<phux_protocol::ids::SessionId>,
-    windows: &'a [phux_protocol::wire::info::WindowInfo],
-    resources: &'a [phux_protocol::wire::info::ResourceInfo],
-    foreign_layouts: &'a HashMap<phux_protocol::ids::SessionId, Workspace>,
-    foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
-    foreign_attention: &'a std::collections::HashSet<ResourceId>,
-    review: &'a ReviewIndex,
-) -> crate::attach::sidebar_zones::PeerInputs<'a> {
-    crate::attach::sidebar_zones::PeerInputs {
-        serving_host: None,
-        hosts: &[],
-        sessions,
-        focused_session,
-        windows,
-        resources,
-        foreign_layouts,
-        foreign_agents,
-        foreign_attention,
-        review,
-    }
-}
-
 /// Refresh all chrome inputs from one coherent view: window tabs, supervisory
 /// badges, agent rows and host-qualified session navigation. Returns whether
 /// any painter input changed, so unchanged metadata bursts need no paint.
@@ -721,19 +691,22 @@ mod tests {
         // focus action itself produced, one iteration before the flip.
         let mut sidebar_painter = SidebarPainter::new(crate::render::Theme::default());
         let mut vcs = VcsIndex::default();
-        refresh_window_chrome(
-            None,
-            &mut sidebar_painter,
-            &workspace,
-            &panes,
-            Some(&done),
-            None,
-            None,
-            &meta,
-            &mut vcs,
-            &HashMap::new(),
-            no_peers(),
-        );
+        let mut refresh = |painter: &mut SidebarPainter, panes: &HashMap<ResourceId, PaneSlot>| {
+            refresh_window_chrome(
+                None,
+                painter,
+                &workspace,
+                panes,
+                Some(&done),
+                None,
+                None,
+                &meta,
+                &mut vcs,
+                &HashMap::new(),
+                no_peers(),
+            )
+        };
+        refresh(&mut sidebar_painter, &panes);
 
         // The user is now looking at the finished pane.
         let mut review = ReviewIndex::new();
@@ -742,56 +715,26 @@ mod tests {
             "the first mark after a focus change must report the flip"
         );
 
-        // The flip must repaint the glyph without moving the row.
-        let chrome_changed = refresh_window_chrome(
-            None,
-            &mut sidebar_painter,
-            &workspace,
-            &panes,
-            Some(&done),
-            None,
-            None,
-            &meta,
-            &mut vcs,
-            &HashMap::new(),
-            no_peers(),
-        );
         assert!(
-            chrome_changed,
+            refresh(&mut sidebar_painter, &panes),
             "the seen flip must dirty the chrome, or nothing repaints the strip"
         );
         let entries = agent_entries(&workspace, &panes, &meta, &HashMap::new(), &review);
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["w", "d"], "the reviewed row keeps its place");
-        // Only the FOCUSED pane's row is reviewed — the background `working`
-        // one is still unvisited, and the glyph derives from this bit.
-        let reviewed: Vec<(&str, bool)> =
-            entries.iter().map(|e| (e.name.as_str(), e.seen)).collect();
         assert_eq!(
-            reviewed,
+            entries
+                .iter()
+                .map(|e| (e.name.as_str(), e.seen))
+                .collect::<Vec<_>>(),
             vec![("w", false), ("d", true)],
-            "the focused pane's row — and only it — must carry the reviewed bit"
+            "the focused pane's row stays put and is the only reviewed bit"
         );
 
-        // Steady state: no flip, no chrome change, no paint.
         assert!(
             !mark_focused_seen(&mut panes, &mut review, Some(&done)),
             "re-marking an already-seen pane must not report a flip"
         );
         assert!(
-            !refresh_window_chrome(
-                None,
-                &mut sidebar_painter,
-                &workspace,
-                &panes,
-                Some(&done),
-                None,
-                None,
-                &meta,
-                &mut vcs,
-                &HashMap::new(),
-                no_peers(),
-            ),
+            !refresh(&mut sidebar_painter, &panes),
             "an unchanged chrome must stay zero-cost"
         );
     }
