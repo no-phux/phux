@@ -65,13 +65,11 @@ pub enum AttachError {
     ///
     /// Split out of [`Self::Protocol`] as a *typed* variant on purpose. §5
     /// obliges the receiving peer — either peer, per the spec text — to answer
-    /// with `ERROR { code: FRAME_TOO_LARGE }` before closing. The client does
-    /// not yet: its readers do not hold the paired write half at the decode
-    /// seam, so emission stays deliberately deferred. Keeping the
-    /// [`FramingError`] instead of flattening it to a string at the detection
-    /// point means the eventual emitter needs the write half and nothing else
-    /// — no re-plumbing of two call sites and this enum. The rendered message
-    /// is unchanged from the string form it replaces.
+    /// with `ERROR { code: FRAME_TOO_LARGE }` before closing. Decode sites
+    /// keep this error typed rather than flattening it to a string;
+    /// [`super::connection::Connection::recv`] / `try_recv` hold the write
+    /// half and emit the goodbye (phux-85ot) before returning this variant.
+    /// The rendered message is unchanged from the string form it replaces.
     #[error("protocol error: server sent a malformed frame: {0}")]
     Framing(#[from] FramingError),
 

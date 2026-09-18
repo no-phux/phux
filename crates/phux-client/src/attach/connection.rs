@@ -1051,7 +1051,20 @@ impl Connection {
     /// [`AttachError::Disconnected`] rather than parking forever. UDS gets
     /// EOF from the kernel and QUIC has its own keep-alive, so both read
     /// straight through.
+    ///
+    /// A SPEC §5 framing violation is answered with
+    /// `ERROR { code: FRAME_TOO_LARGE }` (best-effort) before this returns
+    /// [`AttachError::Framing`]. Decode stays on the read half; emission
+    /// lives here because this is where the paired write half is in scope.
     pub async fn recv(&mut self) -> Result<FrameKind, AttachError> {
+        let result = self.recv_frame().await;
+        if let Err(err) = &result {
+            self.emit_frame_too_large(err).await;
+        }
+        result
+    }
+
+    async fn recv_frame(&mut self) -> Result<FrameKind, AttachError> {
         if self.multistream.is_some() {
             return self.recv_multistream().await;
         }
@@ -1061,6 +1074,27 @@ impl Connection {
             }
             (reader, _) => reader.recv().await,
         }
+    }
+
+    /// SPEC §5: send `ERROR { code: FRAME_TOO_LARGE }` before the caller
+    /// drops this connection. Best-effort — a peer that already vanished
+    /// cannot fail the close path (same rule as the server's per-client
+    /// loop and the hub's satellite links).
+    async fn emit_frame_too_large(&mut self, err: &AttachError) {
+        let AttachError::Framing(violation) = err else {
+            return;
+        };
+        // A §5 goodbye is not an input event: drop any corked batch so the
+        // ERROR hits the wire instead of dying in the buffer with the
+        // connection.
+        if let FrameWriter::Uds(writer) = &mut self.writer {
+            writer.corked = false;
+            writer.out.clear();
+        }
+        let _ = self
+            .writer
+            .send(&framing::frame_too_large_error(*violation))
+            .await;
     }
 
     async fn recv_multistream(&mut self) -> Result<FrameKind, AttachError> {
@@ -1106,7 +1140,21 @@ impl Connection {
     /// the next frame is not yet fully here. Lets the attach loop drain a
     /// back-to-back burst after the first `recv` so the whole run coalesces
     /// into a single paint (phux-jhv8).
+    ///
+    /// A SPEC §5 framing violation is answered the same way as [`Self::recv`]:
+    /// the ERROR is polled once against a no-op waker so this stays
+    /// non-blocking. On a live UDS socket that write completes immediately.
     pub fn try_recv(&mut self) -> Result<Option<FrameKind>, AttachError> {
+        let result = self.try_recv_frame();
+        if let Err(err) = &result {
+            // Same emission as `recv`, without awaiting: a framing violation
+            // ends the connection, and this drain path must not park.
+            let _ = futures_util::FutureExt::now_or_never(self.emit_frame_too_large(err));
+        }
+        result
+    }
+
+    fn try_recv_frame(&mut self) -> Result<Option<FrameKind>, AttachError> {
         let limits = self
             .negotiated_bootstrap
             .map_or_else(BootstrapLimits::default, |negotiated| negotiated.limits);
@@ -1954,9 +2002,8 @@ impl WsReader {
         // out-of-range length and a message size that disagrees with the
         // length it declares, so the decode below cannot leave a tail. The
         // violation stays typed (`AttachError::Framing`) rather than becoming
-        // prose here: SPEC §5's `ERROR { FRAME_TOO_LARGE }` answer is owed by
-        // any receiving peer, and this client's emission of it is deferred,
-        // not declined — see the variant's doc.
+        // prose here: `Connection::recv` / `try_recv` hold the write half and
+        // emit SPEC §5's `ERROR { FRAME_TOO_LARGE }` goodbye.
         framing::check_frame(&frame)?;
         let (decoded, _rest) = FrameKind::decode_with_limits(&frame, self.bootstrap_limits)
             .map_err(|err| {
@@ -1976,8 +2023,8 @@ fn decode_buffered(
     buf: &mut BytesMut,
     bootstrap_limits: BootstrapLimits,
 ) -> Result<Option<FrameKind>, AttachError> {
-    // Typed, like the WebSocket seam above: the §5 goodbye this client owes
-    // is deferred (no write half here), and the type is what marks the gap.
+    // Typed, like the WebSocket seam above: this helper has no write half,
+    // so `Connection::recv` / `try_recv` emit the §5 goodbye.
     let Some(framed) = framing::split_frame(buf)? else {
         // Prefix or body still in flight — wait for more bytes.
         return Ok(None);
@@ -2156,7 +2203,9 @@ mod tests {
     use bytes::Bytes;
     use phux_protocol::caps::BootstrapStreamProfile;
     use phux_protocol::ids::{BootstrapId, ResourceId, SatelliteHost, StreamId};
-    use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode};
+    use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, MAX_FRAME_LEN};
+    use phux_protocol::wire::framing::FramingError;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::UnixStream;
 
     fn block_on<F: std::future::Future>(fut: F) -> F::Output {
@@ -2668,5 +2717,101 @@ mod tests {
                 drop(server);
             });
         }
+    }
+
+    // --- phux-85ot: SPEC §5 ERROR { FRAME_TOO_LARGE } -------------------
+
+    /// Read one complete frame off `peer`, which is the far side of a
+    /// `from_stream` pair. The bytes must already be a well-formed frame —
+    /// this is how the test observes the client's §5 goodbye.
+    async fn recv_one_frame(peer: &mut UnixStream) -> FrameKind {
+        let mut buf = BytesMut::new();
+        loop {
+            if let Some(frame) = decode_buffered(&mut buf, BootstrapLimits::default())
+                .expect("peer reply must itself be a well-formed frame")
+            {
+                return frame;
+            }
+            let n = peer
+                .read_buf(&mut buf)
+                .await
+                .expect("read ERROR{FRAME_TOO_LARGE}");
+            assert!(n > 0, "peer closed before sending ERROR{{FRAME_TOO_LARGE}}");
+        }
+    }
+
+    fn assert_framing_err(err: &AttachError, header: [u8; 4]) {
+        let length = u32::from_be_bytes(header);
+        assert!(
+            matches!(
+                err,
+                AttachError::Framing(FramingError::LengthOutOfRange { length: got })
+                    if *got == length
+            ),
+            "expected LengthOutOfRange({length}), got {err:?}"
+        );
+    }
+
+    fn assert_frame_too_large(frame: &FrameKind, header: [u8; 4]) {
+        let declared = u32::from_be_bytes(header);
+        assert!(
+            matches!(
+                frame,
+                FrameKind::Error {
+                    request_id: None,
+                    code: ErrorCode::FrameTooLarge,
+                    message,
+                } if message.contains(&declared.to_string())
+            ),
+            "expected ERROR{{FRAME_TOO_LARGE}} naming {declared}, got {frame:?}"
+        );
+        let FrameKind::Error { code, .. } = frame else {
+            unreachable!("asserted above");
+        };
+        assert_eq!(code.as_wire(), 4, "FRAME_TOO_LARGE is wire value 4");
+    }
+
+    fn recv_answers_framing_violation(header: [u8; 4]) {
+        block_on(async {
+            let (client_stream, mut peer) = UnixStream::pair().expect("pair");
+            let mut client = Connection::from_stream(client_stream);
+            peer.write_all(&header).await.expect("write header");
+            let err = client.recv().await.expect_err("framing violation");
+            drop(client);
+            assert_framing_err(&err, header);
+            assert_frame_too_large(&recv_one_frame(&mut peer).await, header);
+        });
+    }
+
+    /// phux-85ot. SPEC §5: a peer receiving a length outside `1..=MAX_FRAME_LEN`
+    /// MUST send `ERROR { code: FRAME_TOO_LARGE }` and close. `recv` is the
+    /// attach path's decode/write seam.
+    #[test]
+    fn recv_answers_a_framing_violation_with_frame_too_large() {
+        recv_answers_framing_violation(0u32.to_be_bytes());
+        recv_answers_framing_violation((MAX_FRAME_LEN + 1).to_be_bytes());
+        recv_answers_framing_violation(u32::MAX.to_be_bytes());
+    }
+
+    /// Same obligation on the non-blocking drain path the attach loop uses
+    /// after the first `recv` of a burst (phux-jhv8).
+    #[test]
+    fn try_recv_answers_a_framing_violation_with_frame_too_large() {
+        block_on(async {
+            let header = 0u32.to_be_bytes();
+            let (client_stream, mut peer) = UnixStream::pair().expect("pair");
+            let mut client = Connection::from_stream(client_stream);
+            let mut bytes = framed(1);
+            bytes.extend_from_slice(&header);
+            peer.write_all(&bytes).await.expect("write burst");
+            assert!(matches!(
+                client.recv().await.expect("legal frame"),
+                FrameKind::FrameAck { seq: 1, .. }
+            ));
+            let err = client.try_recv().expect_err("framing violation");
+            drop(client);
+            assert_framing_err(&err, header);
+            assert_frame_too_large(&recv_one_frame(&mut peer).await, header);
+        });
     }
 }
