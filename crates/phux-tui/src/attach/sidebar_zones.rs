@@ -8,14 +8,17 @@
 //! state.
 //!
 //! Zero new wire surface (ADR-0030). Every input is something the client
-//! already receives — the session graph from `ATTACHED`, peer layouts and
-//! agent records from the L3 subscriptions phux-k0cw.5 opened, and peer asked
-//! flags from the server-wide event stream the client has always held.
+//! already receives — the session graph from `ATTACHED`/`GET_STATE`, peer
+//! layouts and agent records from the L3 subscriptions phux-k0cw.5 opened,
+//! and peer asked flags from the server-wide event stream the client has
+//! always held. A CLI-created session has no persisted TUI layout until a
+//! TUI visits it; the server window/resource graph is the inventory until
+//! then (phux-ah84).
 
 use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ids::{ResourceId, SessionId};
-use phux_protocol::wire::info::{HostInventory, SessionInfo};
+use phux_protocol::wire::info::{HostInventory, ResourceInfo, SessionInfo, WindowInfo};
 
 use crate::layout::Workspace;
 use crate::render::chrome::sidebar::{AgentEntry, SessionRosterEntry, attention_rank};
@@ -41,6 +44,10 @@ pub(super) struct PeerInputs<'a> {
     pub sessions: &'a [SessionInfo],
     /// Which of those sessions this client is attached to.
     pub focused_session: Option<SessionId>,
+    /// Windows from the same snapshot graph, joined via `WindowInfo::session_id`.
+    pub windows: &'a [WindowInfo],
+    /// Resources from the same snapshot graph, joined via `ResourceInfo::window_id`.
+    pub resources: &'a [ResourceInfo],
     /// Each peer session's persisted pane tree.
     pub foreign_layouts: &'a HashMap<SessionId, Workspace>,
     /// Each peer pane's `phux.agent/v1` record.
@@ -59,6 +66,23 @@ impl PeerInputs<'_> {
     }
 }
 
+/// One peer terminal as the Agents list visits it.
+struct PeerLeaf {
+    window: usize,
+    pane: Option<usize>,
+    id: ResourceId,
+    window_name: String,
+}
+
+/// A persisted TUI workspace with at least one window. An empty entry is
+/// treated as missing so the server graph can still name the session's panes.
+fn persisted_layout<'a>(peers: &'a PeerInputs<'_>, session: SessionId) -> Option<&'a Workspace> {
+    peers
+        .foreign_layouts
+        .get(&session)
+        .filter(|ws| !ws.windows.is_empty())
+}
+
 /// Every pane of `workspace` as `(window index, dfs ordinal, id)`.
 fn leaves_with_position(workspace: &Workspace) -> Vec<(usize, usize, ResourceId)> {
     let mut out = Vec::new();
@@ -72,6 +96,85 @@ fn leaves_with_position(workspace: &Workspace) -> Vec<(usize, usize, ResourceId)
     out
 }
 
+/// Peer terminals in stable session/window/leaf order. A persisted TUI layout
+/// wins when it has windows; otherwise the ATTACHED/`GET_STATE` graph is the
+/// inventory. Pane ordinals are `Some` only for layout-backed leaves so a
+/// click never fabricates a TUI index from the server graph.
+fn peer_leaves(peers: &PeerInputs<'_>, session: &SessionInfo) -> Vec<PeerLeaf> {
+    if let Some(layout) = persisted_layout(peers, session.id) {
+        return leaves_with_position(layout)
+            .into_iter()
+            .map(|(window, pane, id)| PeerLeaf {
+                window,
+                pane: Some(pane),
+                id,
+                window_name: session.name.clone(),
+            })
+            .collect();
+    }
+    graph_leaves(peers, session.id)
+}
+
+fn graph_leaves(peers: &PeerInputs<'_>, session: SessionId) -> Vec<PeerLeaf> {
+    let mut windows: Vec<&WindowInfo> = peers
+        .windows
+        .iter()
+        .filter(|window| window.session_id == session)
+        .collect();
+    windows.sort_by_key(|window| (window.index, window.id));
+    let mut out = Vec::new();
+    for window in windows {
+        for id in window_terminal_ids(window, peers.resources) {
+            out.push(PeerLeaf {
+                window: usize::from(window.index),
+                pane: None,
+                id,
+                window_name: window.name.clone(),
+            });
+        }
+    }
+    out
+}
+
+fn window_terminal_ids(window: &WindowInfo, resources: &[ResourceInfo]) -> Vec<ResourceId> {
+    if let Some(layout) = &window.layout {
+        let leaves = crate::layout::leaves(layout);
+        if !leaves.is_empty() {
+            return leaves;
+        }
+    }
+    let mut ids: Vec<_> = resources
+        .iter()
+        .filter(|resource| resource.window_id == window.id && resource.kind.is_terminal())
+        .map(|resource| resource.id.clone())
+        .collect();
+    ids.sort();
+    ids
+}
+
+/// Whether `window` holds `id` according to its layout tree or resource list.
+pub(super) fn window_contains_terminal(
+    window: &WindowInfo,
+    resources: &[ResourceInfo],
+    id: &ResourceId,
+) -> bool {
+    window_terminal_ids(window, resources)
+        .iter()
+        .any(|leaf| leaf == id)
+}
+
+/// Resource identities the foreign agent cache should retain: layout leaves
+/// when a TUI workspace exists, otherwise the server graph's terminals.
+pub(super) fn foreign_terminal_ids(peers: &PeerInputs<'_>) -> HashSet<ResourceId> {
+    peers
+        .ordered_sessions()
+        .into_iter()
+        .filter(|session| Some(session.id) != peers.focused_session)
+        .flat_map(|session| peer_leaves(peers, session))
+        .map(|leaf| leaf.id)
+        .collect()
+}
+
 /// Full agent list in stable session-id, window and leaf order. Status and
 /// review changes affect the row's badge only. Truncation belongs to the
 /// painter's fixed Agents panel, never to this projection.
@@ -83,11 +186,9 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
             rows.extend(local.take().unwrap_or_default());
             continue;
         }
-        let layout = peers.foreign_layouts.get(&session.id);
-        let Some(layout) = layout else { continue };
-        for (w, p, id) in leaves_with_position(layout) {
-            let asked = peers.foreign_attention.contains(&id);
-            let record = peers.foreign_agents.get(&id);
+        for leaf in peer_leaves(peers, session) {
+            let asked = peers.foreign_attention.contains(&leaf.id);
+            let record = peers.foreign_agents.get(&leaf.id);
             // A pane with neither a record nor an ask is a shell, not an
             // agent. The queue lists agents — otherwise every idle prompt on
             // the server competes with a blocked agent for the strip.
@@ -105,9 +206,10 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
             rows.push(AgentEntry {
                 session: Some(session.name.clone()),
                 session_id: Some(session.id),
-                window: w,
-                window_name: session.name.clone(),
-                pane: Some(p),
+                resource: Some(leaf.id),
+                window: leaf.window,
+                window_name: leaf.window_name,
+                pane: leaf.pane,
                 name,
                 state,
                 attention: asked
@@ -153,8 +255,8 @@ pub(super) fn session_roster(
         };
         if entry.active {
             summarize_local_agents(&mut entry, local);
-        } else if let Some(layout) = peers.foreign_layouts.get(&session.id) {
-            count_peer_panes(&mut entry, layout, peers);
+        } else {
+            count_peer_leaves(&mut entry, &peer_leaves(peers, session), peers);
         }
         out.push(entry);
     }
@@ -173,17 +275,17 @@ pub(super) fn summarize_local_agents(entry: &mut SessionRosterEntry, agents: &[A
 }
 
 /// A remote pane does not change the host of the session containing it.
-fn count_peer_panes(entry: &mut SessionRosterEntry, layout: &Workspace, peers: &PeerInputs<'_>) {
-    for (_, _, id) in leaves_with_position(layout) {
-        if !id.is_local() {
+fn count_peer_leaves(entry: &mut SessionRosterEntry, leaves: &[PeerLeaf], peers: &PeerInputs<'_>) {
+    for leaf in leaves {
+        if !leaf.id.is_local() {
             entry.unknown += 1;
             continue;
         }
-        let asked = peers.foreign_attention.contains(&id);
+        let asked = peers.foreign_attention.contains(&leaf.id);
         let (state, attention) =
             peers
                 .foreign_agents
-                .get(&id)
+                .get(&leaf.id)
                 .map_or((AgentMetaState::Unknown, asked), |r| {
                     (
                         r.state,
@@ -239,6 +341,8 @@ fn satellite_roster(hosts: &[HostInventory]) -> Vec<SessionRosterEntry> {
 mod tests {
     use super::*;
     use crate::layout::Workspace;
+    use phux_protocol::ids::WindowId;
+    use phux_protocol::wire::info::LayoutNode;
 
     fn sinfo(id: u32, name: &str) -> SessionInfo {
         SessionInfo::new(SessionId::new(id), name).with_window_count(1)
@@ -256,6 +360,7 @@ mod tests {
         AgentEntry {
             session: None,
             session_id: None,
+            resource: None,
             window: 0,
             window_name: "here".to_owned(),
             pane: Some(0),
@@ -266,8 +371,27 @@ mod tests {
         }
     }
 
+    fn graph_window(
+        session: u32,
+        window_id: u32,
+        index: u16,
+        name: &str,
+        leaf: ResourceId,
+    ) -> WindowInfo {
+        WindowInfo::new(WindowId::new(window_id), SessionId::new(session), name)
+            .with_index(index)
+            .with_layout(Some(LayoutNode::Leaf(leaf.clone())))
+            .with_active_resource(Some(leaf))
+    }
+
+    fn graph_resource(id: ResourceId, window: u32) -> ResourceInfo {
+        ResourceInfo::new(id, WindowId::new(window), 80, 24)
+    }
+
     struct Fixture {
         sessions: Vec<SessionInfo>,
+        windows: Vec<WindowInfo>,
+        resources: Vec<ResourceInfo>,
         layouts: HashMap<SessionId, Workspace>,
         agents: HashMap<ResourceId, AgentRecord>,
         attention: HashSet<ResourceId>,
@@ -280,6 +404,8 @@ mod tests {
                 hosts: &[],
                 sessions: &self.sessions,
                 focused_session: Some(SessionId::new(1)),
+                windows: &self.windows,
+                resources: &self.resources,
                 foreign_layouts: &self.layouts,
                 foreign_agents: &self.agents,
                 foreign_attention: &self.attention,
@@ -295,6 +421,14 @@ mod tests {
         layouts.insert(SessionId::new(2), ws);
         Fixture {
             sessions: vec![sinfo(1, "here"), sinfo(2, "peer")],
+            windows: vec![
+                graph_window(2, 10, 0, "main", ResourceId::local(10)),
+                graph_window(2, 11, 1, "two", ResourceId::local(11)),
+            ],
+            resources: vec![
+                graph_resource(ResourceId::local(10), 10),
+                graph_resource(ResourceId::local(11), 11),
+            ],
             layouts,
             agents: HashMap::new(),
             attention: HashSet::new(),
@@ -331,6 +465,11 @@ mod tests {
             "the click carries the stable id, not only the display name"
         );
         assert_eq!(rows[1].pane, Some(0), "and the pane that wants the human");
+        assert_eq!(
+            rows[1].resource,
+            Some(ResourceId::local(10)),
+            "and the stable resource a click must attach to"
+        );
         assert_eq!(rows[0].name, "codex");
 
         f.agents.get_mut(&ResourceId::local(10)).unwrap().state = AgentMetaState::Done;
@@ -434,8 +573,8 @@ mod tests {
     }
 
     /// A session with no cached layout still gets a row: "this space exists"
-    /// is the roster's job, and a session we cannot describe yet is exactly
-    /// the one a user has forgotten about.
+    /// is the roster's job. Counts come from the server graph until a TUI
+    /// layout lands; an empty graph still reads as "nothing known".
     #[test]
     fn a_peer_with_no_cached_layout_still_gets_a_row() {
         let mut f = fixture();
@@ -444,7 +583,106 @@ mod tests {
         let roster = session_roster(&f.inputs(), &[]);
         assert_eq!(roster.len(), 2);
         assert_eq!(roster[1].name, "peer");
-        assert_eq!(roster[1].total(), 0);
+        assert_eq!(roster[1].total(), 2);
+        assert_eq!(roster[1].unknown, 2);
+
+        f.windows.clear();
+        f.resources.clear();
+        let empty = session_roster(&f.inputs(), &[]);
+        assert_eq!(empty[1].name, "peer");
+        assert_eq!(empty[1].total(), 0);
+    }
+
+    /// CLI-created sessions have a server graph before any TUI layout is
+    /// persisted. Agents there must still appear, keyed by `ResourceId`, with
+    /// no fabricated pane ordinal.
+    #[test]
+    fn an_unvisited_peer_agent_appears_from_server_inventory() {
+        let mut f = fixture();
+        f.layouts.clear();
+        f.agents.insert(
+            ResourceId::local(10),
+            record("reviewer", AgentMetaState::Idle),
+        );
+
+        let rows = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].name, "reviewer");
+        assert_eq!(rows[0].session.as_deref(), Some("peer"));
+        assert_eq!(rows[0].session_id, Some(SessionId::new(2)));
+        assert_eq!(rows[0].resource, Some(ResourceId::local(10)));
+        assert_eq!(
+            rows[0].pane, None,
+            "graph fallback must not invent a TUI pane ordinal: {rows:?}"
+        );
+
+        let roster = session_roster(&f.inputs(), &[]);
+        assert_eq!(roster[1].settled, 1);
+        assert_eq!(roster[1].total(), 2);
+    }
+
+    /// Two terminals in one unvisited session appear once each, in window
+    /// then `ResourceId` order, and stay the same rows after a TUI layout
+    /// lands.
+    #[test]
+    fn inventory_rows_are_stable_across_layout_persist() {
+        let mut f = fixture();
+        f.layouts.clear();
+        f.agents.insert(
+            ResourceId::local(11),
+            record("builder", AgentMetaState::Working),
+        );
+        f.agents.insert(
+            ResourceId::local(10),
+            record("reviewer", AgentMetaState::Idle),
+        );
+
+        let before = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(
+            before
+                .iter()
+                .map(|row| (row.name.as_str(), row.resource.clone(), row.pane))
+                .collect::<Vec<_>>(),
+            vec![
+                ("reviewer", Some(ResourceId::local(10)), None),
+                ("builder", Some(ResourceId::local(11)), None),
+            ]
+        );
+
+        let mut ws = Workspace::single(ResourceId::local(10));
+        ws.add_window("two".to_owned(), ResourceId::local(11));
+        f.layouts.insert(SessionId::new(2), ws);
+        let after = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(after.len(), 2, "{after:?}");
+        assert_eq!(after[0].resource, Some(ResourceId::local(10)));
+        assert_eq!(after[1].resource, Some(ResourceId::local(11)));
+        assert_eq!(after[0].name, "reviewer");
+        assert_eq!(after[1].name, "builder");
+        assert_eq!(after[0].pane, Some(0));
+        assert_eq!(after[1].pane, Some(0));
+        let ids = foreign_terminal_ids(&f.inputs());
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&ResourceId::local(10)));
+        assert!(ids.contains(&ResourceId::local(11)));
+    }
+
+    /// Host-qualified resource identities from the server graph keep their identity
+    /// on the row so a click cannot collide with a local id of the same
+    /// number.
+    #[test]
+    fn host_qualified_inventory_rows_keep_resource_identity() {
+        let mut f = fixture();
+        f.layouts.clear();
+        let sat = ResourceId::satellite("prod-3", 10);
+        f.windows = vec![graph_window(2, 10, 0, "main", sat.clone())];
+        f.resources = vec![graph_resource(sat.clone(), 10)];
+        f.attention.insert(sat.clone());
+
+        let rows = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].resource.as_ref(), Some(&sat));
+        assert_eq!(rows[0].pane, None);
+        assert!(rows[0].attention);
     }
 
     #[test]

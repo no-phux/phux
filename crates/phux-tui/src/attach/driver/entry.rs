@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use phux_protocol::caps::OutputMode;
+use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{AttachTarget, FrameKind};
 use tracing::Instrument as _;
 
@@ -428,14 +429,21 @@ async fn switch_session<W: crate::attach::RenderSink>(
     target: ReattachTarget,
     pending_window: &mut Option<usize>,
     pending_pane: &mut Option<usize>,
+    pending_resource: &mut Option<ResourceId>,
     orphan_kills: &mut super::orphans::OrphanKills,
 ) -> Result<FrameKind, AttachError> {
     // Lifecycle transition (info): switching sessions on the same
     // connection. `?target` names the destination.
     tracing::info!(?target, "attach loop: SWITCH_TO; re-attaching");
-    let attached =
-        reattach_on_same_connection(conn, target, pending_window, pending_pane, orphan_kills)
-            .await?;
+    let attached = reattach_on_same_connection(
+        conn,
+        target,
+        pending_window,
+        pending_pane,
+        pending_resource,
+        orphan_kills,
+    )
+    .await?;
     let _ = write_terminal_clear(out);
     Ok(attached)
 }
@@ -552,8 +560,11 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // the SwitchTo arm below, consumed by `main_loop` once the target's
     // persisted layout loads. phux-jpqd: `pending_pane` is the pane half
     // of a one-step cross-session pane pick (`switch-session { .., pane }`).
+    // phux-ah84: `pending_resource` is the authoritative graph identity
+    // (`switch-session { .., resource }`) used when no TUI layout exists yet.
     let mut pending_window: Option<usize> = None;
     let mut pending_pane: Option<usize> = None;
+    let mut pending_resource: Option<ResourceId> = None;
     // The window sidebar's runtime on/off state, handed back by each
     // `LoopExit::SwitchTo` and fed into the next `main_loop` entry. `None` on
     // the first attach so `[sidebar] enabled` decides. Unlike `pending_window`
@@ -582,6 +593,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
             initial_notice.take(),
             pending_window.take(),
             pending_pane.take(),
+            pending_resource.take(),
             carried_sidebar_enabled,
             input_replay.clone(),
             std::mem::take(&mut orphan_kills),
@@ -635,6 +647,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
                     target,
                     &mut pending_window,
                     &mut pending_pane,
+                    &mut pending_resource,
                     &mut orphan_kills,
                 )
                 .await?;
@@ -659,12 +672,15 @@ async fn attach_session<W: crate::attach::RenderSink>(
 /// phux-foz.8: a one-step window pick carries a target window, stashed in
 /// `pending_window` for the next `main_loop` entry, which resolves it once the
 /// new session's layout loads. phux-jpqd: a foreign fleet row also carries a
-/// target pane, resolved after the window select.
+/// target pane, resolved after the window select. phux-ah84: a graph-discovered
+/// agent row carries a `ResourceId`, resolved from the ATTACHED inventory
+/// even when no TUI layout has been persisted.
 async fn reattach_on_same_connection(
     conn: &mut Connection,
     target: ReattachTarget,
     pending_window: &mut Option<usize>,
     pending_pane: &mut Option<usize>,
+    pending_resource: &mut Option<ResourceId>,
     orphan_kills: &mut super::orphans::OrphanKills,
 ) -> Result<phux_protocol::wire::frame::FrameKind, AttachError> {
     detach_and_drain(conn, orphan_kills).await?;
@@ -674,9 +690,11 @@ async fn reattach_on_same_connection(
             id,
             window,
             pane,
+            resource,
         } => {
             *pending_window = window;
             *pending_pane = pane;
+            *pending_resource = resource;
             id.map_or(AttachTarget::ByName(name), AttachTarget::ById)
         }
         ReattachTarget::Create(name) => create_session_target(name),
@@ -774,6 +792,10 @@ fn write_terminal_clear<W: Write>(out: &mut W) -> io::Result<()> {
 ///   for a new one), then re-enters `main_loop` with the new ATTACHED frame
 ///   and freshly-rebuilt session state.
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "SwitchTo carries the full re-attach request including resource identity"
+)]
 pub(super) enum LoopExit {
     /// The session ended (detach / server DETACHED / last pane closed).
     /// Carries WHY (phux-i0e8.2.2) so the teardown path can explain a

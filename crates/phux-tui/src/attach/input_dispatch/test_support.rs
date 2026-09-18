@@ -102,8 +102,9 @@ pub(super) fn targets(
                     SidebarTarget::Session {
                         name: format!("peer-{j}"),
                         id: None,
-                        window: 2,
-                        pane: 3,
+                        window: Some(2),
+                        pane: Some(3),
+                        resource: None,
                     }
                 }
             })

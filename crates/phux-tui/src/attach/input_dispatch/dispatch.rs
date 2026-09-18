@@ -1549,8 +1549,9 @@ pub(super) const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) ->
 ///
 /// * a nested window row commits `select-window { index }`;
 /// * an agent row commits `select-window` when the
-///   agent is in this session, and `switch-session { name, window, pane }`
-///   when it is in another one — the row resolves through `targets`, which
+///   agent is in this session, and `switch-session { name, resource }`
+///   (plus window/pane only when a TUI layout named them) when it is in
+///   another one — the row resolves through `targets`, which
 ///   carries the NAME the frame was painted with rather than re-deriving it
 ///   from a live model;
 /// * a session name or host row commits `switch-session { name, host? }`;
@@ -1604,24 +1605,37 @@ fn sidebar_agent_action(
     target: &crate::render::chrome::sidebar::SidebarTarget,
 ) -> Option<phux_config::keybind::ResolvedAction> {
     use crate::render::chrome::sidebar::SidebarTarget;
-    let (id, name, window, pane) = match target {
+    let (id, name, window, pane, resource) = match target {
         SidebarTarget::Window(index) => return sidebar_window_action(*index),
         SidebarTarget::Session {
             id,
             name,
             window,
             pane,
-        } => (id, name, window, pane),
+            resource,
+        } => (id, name, window, pane, resource),
     };
     let mut args = switch_session_args(name.clone(), *id);
-    args.insert(
-        "window".to_owned(),
-        toml::Value::Integer(i64::try_from(*window).ok()?),
-    );
-    args.insert(
-        "pane".to_owned(),
-        toml::Value::Integer(i64::try_from(*pane).ok()?),
-    );
+    if let Some(resource) = resource {
+        args.insert(
+            "resource".to_owned(),
+            toml::Value::String(phux_client::selector::format_terminal_id(resource)),
+        );
+    }
+    // Layout-backed rows may also name window/pane. Graph-only rows omit
+    // both so a click cannot fabricate a TUI index (phux-ah84).
+    if let Some(window) = *window {
+        args.insert(
+            "window".to_owned(),
+            toml::Value::Integer(i64::try_from(window).ok()?),
+        );
+    }
+    if let Some(pane) = *pane {
+        args.insert(
+            "pane".to_owned(),
+            toml::Value::Integer(i64::try_from(pane).ok()?),
+        );
+    }
     Some(phux_config::keybind::ResolvedAction {
         action: "switch-session".to_owned(),
         args,

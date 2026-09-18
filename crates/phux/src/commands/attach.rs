@@ -295,7 +295,7 @@ async fn run_attach_connection_rec(
 ) -> Result<AttachEnd, AttachError> {
     match rec {
         Some(rec) => {
-            attach::run_recorded_connection(
+            Box::pin(attach::run_recorded_connection(
                 connection,
                 dial,
                 target,
@@ -303,18 +303,18 @@ async fn run_attach_connection_rec(
                 rec,
                 initial_notice,
                 input_replay,
-            )
+            ))
             .await
         }
         None => {
-            attach::run_with_predict_connection(
+            Box::pin(attach::run_with_predict_connection(
                 connection,
                 dial,
                 target,
                 predict_cfg,
                 initial_notice,
                 input_replay,
-            )
+            ))
             .await
         }
     }

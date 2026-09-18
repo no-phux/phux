@@ -3,7 +3,7 @@
 
 use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::FrameKind;
-use phux_protocol::wire::info::SessionInfo;
+use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
 use phux_protocol::{BootstrapId, StreamId};
 
 use crate::attach::outcome::AttachEnd;
@@ -158,6 +158,10 @@ pub(in crate::attach) struct FrameOutcome {
     /// `ATTACHED` snapshot is already authoritative at attach time (SPEC
     /// §13). Set ONLY by the `Attached` arm.
     pub(in crate::attach) sessions: Option<(Vec<SessionInfo>, SessionId)>,
+    /// phux-ah84: windows and resources from the same ATTACHED snapshot
+    /// graph. The driver caches them so the Agents list can name panes in
+    /// CLI-created sessions that have no persisted TUI layout yet.
+    pub(in crate::attach) inventory: Option<(Vec<WindowInfo>, Vec<ResourceInfo>)>,
     /// ADR-0033: `Some(id)` ⇒ ATTACHED carried this client's own server-assigned
     /// `ClientId`. The driver caches it to tell "you have the wheel" from
     /// another client holding it when rendering the supervisory badge. Set ONLY

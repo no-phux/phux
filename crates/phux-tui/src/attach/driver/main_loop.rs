@@ -123,6 +123,10 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // window-only pick; resolved alongside `initial_window` and, like it,
     // degrades to a logged no-op if out of range.
     initial_pane: Option<usize>,
+    // phux-ah84: authoritative ResourceId to focus after re-attach, from
+    // a graph-discovered agent row (`switch-session { resource }`). Wins
+    // over window/pane indices and works before a TUI layout exists.
+    initial_resource: Option<ResourceId>,
     // The window sidebar's on/off state carried in from the previous
     // `main_loop` entry when a `switch-session` drove this one. `None` on the
     // first attach — `[sidebar] enabled` seeds it; `Some(v)` on every
@@ -153,6 +157,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
         onboarding_claim,
         initial_window,
         initial_pane,
+        initial_resource,
         carried_sidebar_enabled,
     )?;
     session.set_control_dial(control_dial.clone());

@@ -95,6 +95,7 @@ async fn queued_rename_cannot_write_before_initial_metadata_is_processed() {
             None,
             None,
             None,
+            None,
         )
         .unwrap();
         let mut out = Vec::new();
@@ -217,6 +218,7 @@ async fn bootstrapped_loop_with(
         None,
         None,
         None,
+        None,
     )
     .unwrap();
     let mut out = Vec::new();
@@ -253,6 +255,7 @@ async fn bootstrap_replay_does_not_write_until_the_recv_arm_drains() {
         None,
         None,
         None,
+        None,
     )
     .unwrap();
     let mut out = Vec::new();
@@ -283,6 +286,7 @@ async fn last_pane_close_on_first_burst_skips_deferred_bootstrap_writes() {
         negotiated,
         PredictiveConfig::disabled(),
         false,
+        None,
         None,
         None,
         None,
@@ -629,6 +633,12 @@ async fn peer_layout_broadcast_discovers_and_subscribes_new_agent_leaves() {
     let (mut state, mut client, mut server, mut out) =
         bootstrapped_loop_with(ServerFeatureSet::new()).await;
     sidebar_frames_sent(&mut client, &mut server).await;
+    // The layout key is session-scoped; production already has this session
+    // in the ATTACHED graph from the peer sweep that opened the watch.
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer"));
     let id = ResourceId::local(10);
     let frame = FrameKind::MetadataChanged {
         scope: Scope::Group(phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID),
@@ -1502,4 +1512,130 @@ async fn rename_barrier_error_keeps_the_current_status_name() {
     assert!(passed.is_none());
     assert!(state.rename_pending.is_none());
     assert_eq!(state.session_name, "test");
+}
+
+/// phux-ah84: a CLI-created peer with an agent record but no TUI layout
+/// still paints in Agents, keyed by `ResourceId`.
+#[tokio::test(flavor = "current_thread")]
+async fn unvisited_peer_agent_paints_from_server_inventory() {
+    let (mut state, _client, _server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state.viewport_dims = (100, 24);
+    let sidebar = Some(SidebarReservation {
+        edge: crate::attach::paint::SidebarEdge::Left,
+        width: 32,
+    });
+    let peer = ResourceId::local(10);
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer"));
+    state.peers.windows.push(
+        WindowInfo::new(WindowId::new(10), SessionId::new(2), "main")
+            .with_index(0)
+            .with_layout(Some(phux_protocol::wire::info::LayoutNode::Leaf(
+                peer.clone(),
+            )))
+            .with_active_resource(Some(peer.clone())),
+    );
+    state
+        .peers
+        .resources
+        .push(ResourceInfo::new(peer.clone(), WindowId::new(10), 80, 24));
+    state.peers.foreign_agents.insert(
+        peer,
+        AgentRecord {
+            name: "reviewer".into(),
+            state: phux_client::agent_meta::AgentMetaState::Idle,
+            ..AgentRecord::default()
+        },
+    );
+    state.peers.chrome_dirty = true;
+    out.clear();
+    state.drain_repaint(&mut out, sidebar, &mut RepaintAccumulator::default());
+    let screen = painted_sidebar_text(&out);
+    assert!(screen.contains("reviewer"), "{screen}");
+    assert!(screen.contains("peer"), "{screen}");
+}
+
+/// phux-ah84: sweeping an unvisited peer GETs/SUBSCRIBEs its graph terminals.
+#[tokio::test(flavor = "current_thread")]
+async fn sweep_discovers_graph_terminals_before_layout_persist() {
+    let (mut state, mut client, mut server, _) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    sidebar_frames_sent(&mut client, &mut server).await;
+    let peer = ResourceId::local(10);
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer"));
+    state.peers.windows.push(
+        WindowInfo::new(WindowId::new(10), SessionId::new(2), "main")
+            .with_index(0)
+            .with_layout(Some(phux_protocol::wire::info::LayoutNode::Leaf(
+                peer.clone(),
+            ))),
+    );
+    state
+        .peers
+        .resources
+        .push(ResourceInfo::new(peer.clone(), WindowId::new(10), 80, 24));
+    state.peers.sweep_pending = false;
+    state.sweep_peer_layouts(&mut client).await.unwrap();
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    assert!(
+        sent.iter().any(|f| matches!(
+            f,
+            FrameKind::GetMetadata { scope, key, .. }
+                if *scope == Scope::Resource(peer.clone())
+                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
+        )),
+        "graph terminal is fetched: {sent:?}"
+    );
+    assert!(
+        sent.iter().any(|f| matches!(
+            f,
+            FrameKind::SubscribeMetadata { scope, .. }
+                if *scope == Scope::Resource(peer.clone())
+        )),
+        "graph terminal is subscribed: {sent:?}"
+    );
+}
+
+/// phux-ah84: a resource-identity pick focuses the inventory pane even when
+/// the destination still has the single-pane attach bootstrap.
+#[tokio::test(flavor = "current_thread")]
+async fn resource_pick_focuses_inventory_pane_without_a_tui_layout() {
+    let (mut state, _, _, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let target = ResourceId::local(10);
+    state.peers.windows.push(
+        WindowInfo::new(WindowId::new(10), SessionId::new(1), "review")
+            .with_index(1)
+            .with_layout(Some(phux_protocol::wire::info::LayoutNode::Leaf(
+                target.clone(),
+            )))
+            .with_active_resource(Some(target.clone())),
+    );
+    state
+        .peers
+        .resources
+        .push(ResourceInfo::new(target.clone(), WindowId::new(10), 80, 24));
+    state.pending_resource = Some(target.clone());
+    state.resolve_cross_session_pick();
+    assert_eq!(state.focused_resource.as_ref(), Some(&target));
+    assert!(
+        state.workspace.windows.iter().any(|window| window
+            .state
+            .tree
+            .as_ref()
+            .is_some_and(|tree| crate::layout::leaves(tree).contains(&target))),
+        "inventory window is adopted: {:?}",
+        state.workspace.windows
+    );
+    state.pending_resource = Some(target.clone());
+    state.workspace = Workspace::single(target.clone());
+    state.workspace.windows[0].name = "review".into();
+    state.resolve_cross_session_pick();
+    assert_eq!(state.focused_resource.as_ref(), Some(&target));
+    assert_eq!(state.workspace.windows.len(), 1);
 }

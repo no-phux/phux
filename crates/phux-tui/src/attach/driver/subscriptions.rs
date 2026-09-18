@@ -88,47 +88,25 @@ pub(super) fn apply_foreign_layout_reply(
     }
 }
 
-/// phux-jpqd: fetch the `phux.agent/v1` record of every pane in one peer
-/// session's just-loaded `workspace` — one `GET_METADATA` per `ResourceId`
-/// leaf on the pane's agent key — so the agent-fleet dashboard's foreign
-/// rows show its agent glyph/state without attaching there. Correlated
-/// through `pending` (request id -> terminal id); replies fold via
-/// [`apply_foreign_agent_reply`]. Skips leaves with a GET already in flight
-/// so a re-fold (session-graph refresh re-requests the layout) does not
-/// duplicate traffic. One-shot reads, no subscription — the same lazy-query
-/// shape as [`request_foreign_layouts`] (ADR-0018 / ADR-0030).
-pub(super) async fn sync_foreign_agent_subscriptions(
+/// GET/SUBSCRIBE `phux.agent/v1` for each local terminal in `targets`.
+///
+/// Used both after a peer layout lands and from the server graph when no
+/// TUI layout has been persisted yet (phux-ah84).
+pub(super) async fn sync_foreign_agent_ids(
     conn: &mut Connection,
-    workspace: &Workspace,
+    targets: Vec<ResourceId>,
     next_request_id: &mut u32,
     pending: &mut HashMap<u32, ResourceId>,
     subscribed: &mut std::collections::HashSet<ResourceId>,
 ) -> Result<(), AttachError> {
-    // Collect the leaf ids first so the immutable borrow of `pending` (for
-    // the in-flight check) is released before we mutate it in the send loop.
-    let targets: Vec<ResourceId> = {
-        let in_flight: std::collections::HashSet<&ResourceId> = pending.values().collect();
-        let mut targets: Vec<ResourceId> = Vec::new();
-        for window in &workspace.windows {
-            if let Some(tree) = window.state.tree.as_ref() {
-                for id in crate::layout::leaves(tree) {
-                    // phux-k0cw: a satellite Terminal's metadata scope is
-                    // normatively refused (docs/spec/L3.md), so subscribing
-                    // would earn one UNSUPPORTED_SATELLITE_ROUTE per sweep —
-                    // errors the correlated-refusal intercept swallows
-                    // silently, which is the worst kind of noise. The same
-                    // skip `sync_agent_meta_subscriptions` already applies.
-                    if !id.is_local() {
-                        continue;
-                    }
-                    if !in_flight.contains(&id) && !targets.contains(&id) {
-                        targets.push(id);
-                    }
-                }
-            }
-        }
-        targets
-    };
+    let in_flight: std::collections::HashSet<&ResourceId> = pending.values().collect();
+    // Dedup while preserving order; skip satellites and in-flight GETs.
+    let mut seen = std::collections::HashSet::new();
+    let targets: Vec<ResourceId> = targets
+        .into_iter()
+        .filter(|id| id.is_local() && !in_flight.contains(id))
+        .filter(|id| seen.insert(id.clone()))
+        .collect();
     for id in targets {
         let request_id = *next_request_id;
         *next_request_id = next_request_id.wrapping_add(1);
@@ -139,7 +117,6 @@ pub(super) async fn sync_foreign_agent_subscriptions(
             key: RESOURCE_AGENT_KEY.to_owned(),
         })
         .await?;
-        // The level, then the edge — same shape as the layout sweep.
         if subscribed.insert(id.clone()) {
             conn.send(&FrameKind::SubscribeMetadata {
                 scope: Scope::Resource(id),
@@ -171,10 +148,10 @@ pub(super) fn apply_foreign_agent_reply(
     }
 }
 
-/// phux-jpqd: drop foreign agent records for panes no longer present in any
-/// cached foreign layout (a peer closed a pane, or a session left the
-/// graph), keeping the cache bounded to the live foreign pane set. Called
-/// on each foreign-layout fold, before re-requesting the surviving panes.
+/// Drop foreign agent records for panes no longer in the live foreign
+/// terminal set (a peer closed a pane, a session left the graph, or a
+/// graph-only inventory no longer names them). Called before re-requesting
+/// the surviving panes.
 ///
 /// phux-k0cw: the send-once subscription bookkeeping is pruned with it. A
 /// pane that leaves and later returns under the same id must be re-subscribed
@@ -183,14 +160,8 @@ pub(super) fn apply_foreign_agent_reply(
 pub(super) fn prune_foreign_agents(
     cache: &mut HashMap<ResourceId, AgentRecord>,
     subscribed: &mut std::collections::HashSet<ResourceId>,
-    foreign_layouts: &HashMap<phux_protocol::ids::SessionId, Workspace>,
+    live: &std::collections::HashSet<ResourceId>,
 ) {
-    let live: std::collections::HashSet<ResourceId> = foreign_layouts
-        .values()
-        .flat_map(|ws| ws.windows.iter())
-        .filter_map(|w| w.state.tree.as_ref())
-        .flat_map(crate::layout::leaves)
-        .collect();
     cache.retain(|id, _| live.contains(id));
     subscribed.retain(|id| live.contains(id));
 }

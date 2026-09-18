@@ -29,8 +29,8 @@ use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 
 use super::args::{
     PaneMouseArg, amount_arg, direction_arg, focus_terminal, index_arg, mouse_arg, name_arg,
-    ordered_workspace_panes, session_id_arg, signal_arg, soft_kill_input_frames, split_dir_arg,
-    str_arg, usize_arg,
+    ordered_workspace_panes, resource_id_arg, session_id_arg, signal_arg, soft_kill_input_frames,
+    split_dir_arg, str_arg, usize_arg,
 };
 use super::ctx::DispatchCtx;
 use super::dispatch::{
@@ -1117,6 +1117,7 @@ fn switch_session(
         id: session_id_arg(resolved),
         window,
         pane,
+        resource: resource_id_arg(resolved),
     });
 }
 

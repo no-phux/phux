@@ -599,6 +599,27 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
     assert_eq!(str_arg(&peer, "name").as_deref(), Some("peer-1"));
     assert_eq!(usize_arg(&peer, "window"), Some(2));
     assert_eq!(usize_arg(&peer, "pane"), Some(3));
+    assert!(
+        !peer.args.contains_key("resource"),
+        "layout-backed fixture rows do not invent a resource"
+    );
+
+    let mut graph = t.clone();
+    graph.needs_you[1] = crate::render::chrome::sidebar::SidebarTarget::Session {
+        name: "peer".to_owned(),
+        id: Some(phux_protocol::ids::SessionId::new(2)),
+        window: None,
+        pane: None,
+        resource: Some(ResourceId::local(10)),
+    };
+    let graph_click = sidebar_click_action(strip, &graph, 4, 2).expect("graph row hits");
+    assert_eq!(graph_click.action, "switch-session");
+    assert_eq!(str_arg(&graph_click, "resource").as_deref(), Some("@10"));
+    assert!(
+        !graph_click.args.contains_key("window") && !graph_click.args.contains_key("pane"),
+        "graph rows must not fabricate TUI indices: {:?}",
+        graph_click.args
+    );
     let fleet = sidebar_click_action(strip, &t, 4, 0).expect("Agents header hits");
     assert_eq!(fleet.action, "agent-fleet");
 

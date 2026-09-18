@@ -31,7 +31,7 @@ use crate::render::Theme;
 use crate::render::overlay::HardcodedBinding;
 use crate::render::{clip_text, display_width};
 use phux_client::agent_meta::AgentMetaState;
-use phux_protocol::ids::SessionId;
+use phux_protocol::ids::{ResourceId, SessionId};
 
 /// Label of the "create" affordance row (phux-fce4).
 ///
@@ -134,6 +134,9 @@ pub struct AgentEntry {
     /// session graph. `None` for the attached session (`session` is also
     /// `None`) and for satellite hops whose ids are not attachable here.
     pub session_id: Option<SessionId>,
+    /// Stable pane identity when the row came from a peer layout or the
+    /// server graph. `None` for a local row, which commits `select-window`.
+    pub resource: Option<ResourceId>,
     /// Index of the window holding the agent's pane (its `select-window`
     /// index) — clicking the row jumps there.
     pub window: usize,
@@ -355,10 +358,14 @@ pub enum SidebarTarget {
         name: String,
         /// Stable identity when the row was projected from the session graph.
         id: Option<SessionId>,
-        /// Window index within that session.
-        window: usize,
-        /// Pane ordinal within that window.
-        pane: usize,
+        /// Window index within that session. Present only for a persisted
+        /// TUI layout; graph-only rows omit it so a click cannot fabricate
+        /// a TUI index.
+        window: Option<usize>,
+        /// Pane ordinal within that window. Present only for a layout leaf.
+        pane: Option<usize>,
+        /// Server graph / layout leaf the click must land on.
+        resource: Option<ResourceId>,
     },
 }
 
@@ -655,23 +662,18 @@ impl SidebarPainter {
             needs_you: self
                 .needs_you
                 .iter()
-                .map(|e| match (&e.session, e.pane) {
-                    (Some(name), Some(pane)) => SidebarTarget::Session {
-                        name: name.clone(),
-                        id: e.session_id,
-                        window: e.window,
-                        pane,
-                    },
-                    // A foreign row with no pane ordinal still switches
-                    // sessions; it just lands on the session's remembered
-                    // focus rather than the pane that wants you.
-                    (Some(name), None) => SidebarTarget::Session {
-                        name: name.clone(),
-                        id: e.session_id,
-                        window: e.window,
-                        pane: 0,
-                    },
-                    (None, _) => SidebarTarget::Window(e.window),
+                .map(|e| {
+                    e.session
+                        .as_ref()
+                        .map_or(SidebarTarget::Window(e.window), |name| {
+                            SidebarTarget::Session {
+                                name: name.clone(),
+                                id: e.session_id,
+                                window: e.pane.map(|_| e.window),
+                                pane: e.pane,
+                                resource: e.resource.clone(),
+                            }
+                        })
                 })
                 .collect(),
             roster: self
@@ -1198,6 +1200,7 @@ mod tests {
         AgentEntry {
             session: None,
             session_id: None,
+            resource: None,
             window,
             window_name: window_name.to_owned(),
             pane: None,
@@ -2024,8 +2027,33 @@ mod tests {
             vec![SidebarTarget::Session {
                 name: "stale".to_owned(),
                 id: Some(SessionId::new(7)),
-                window: 0,
-                pane: 1,
+                window: Some(0),
+                pane: Some(1),
+                resource: None,
+            }]
+        );
+    }
+
+    /// phux-ah84: a graph-discovered agent click carries `ResourceId` and
+    /// omits fabricated window/pane indices.
+    #[test]
+    fn a_foreign_queue_click_carries_resource_identity() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_needs_you(vec![AgentEntry {
+            session: Some("peer".to_owned()),
+            session_id: Some(SessionId::new(2)),
+            resource: Some(ResourceId::local(10)),
+            pane: None,
+            ..agent(0, "main", "reviewer", AgentMetaState::Idle)
+        }]);
+        assert_eq!(
+            p.click_targets().needs_you,
+            vec![SidebarTarget::Session {
+                name: "peer".to_owned(),
+                id: Some(SessionId::new(2)),
+                window: None,
+                pane: None,
+                resource: Some(ResourceId::local(10)),
             }]
         );
     }
