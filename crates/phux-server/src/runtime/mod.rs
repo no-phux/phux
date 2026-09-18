@@ -2660,7 +2660,7 @@ mod tests {
                 let server = tokio::task::spawn_local(async move {
                     ServerRuntime::new(cfg)
                         .resume(resume_fd)
-                        .overlay_detect(|| Vec::new())
+                        .overlay_detect(Vec::new)
                         .run_async(async move {
                             let _ = shutdown_rx.await;
                         })
@@ -2719,7 +2719,7 @@ mod tests {
                 };
                 let err = ServerRuntime::new(cfg)
                     .resume(resume_fd)
-                    .overlay_detect(|| Vec::new())
+                    .overlay_detect(Vec::new)
                     .run_async(std::future::pending())
                     .await
                     .expect_err("incomplete topology must fail closed");
