@@ -300,6 +300,7 @@ fn run_in(
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -343,6 +344,7 @@ fn run_in(
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -1160,6 +1162,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -1201,6 +1204,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -1284,6 +1288,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -1363,6 +1368,7 @@ fn run_capturing_with_sessions(
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -1404,6 +1410,7 @@ fn run_capturing_with_sessions(
             foreign_agents: &HashMap::new(),
             focused_session,
             session_name: &mut session_name,
+            rename_pending: &mut rename_pending,
             switch_request: &mut switch_request,
             zoomed: &mut zoomed,
             sidebar: None,
@@ -1545,6 +1552,7 @@ fn run_with_panes(
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -1586,6 +1594,7 @@ fn run_with_panes(
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -1916,13 +1925,14 @@ fn one_step_picker_row_commits_switch_session_with_window() {
     let mut workspace = Workspace::single(tid(1));
     let mut scratch_ws = Workspace::single(tid(10));
     scratch_ws.add_window("logs".to_owned(), tid(11));
-    let rows = foreign_session_window_rows("scratch", &scratch_ws);
+    let rows = foreign_session_window_rows(&sinfo(2, "scratch"), &scratch_ws);
     assert_eq!(rows.len(), 2);
     let effects = run(&rows[1].action, &mut workspace);
     assert_eq!(
         effects.reattach,
         Some(ReattachTarget::Existing {
             name: "scratch".to_owned(),
+            id: Some(phux_protocol::ids::SessionId::new(2)),
             window: Some(1),
             pane: None,
         }),
@@ -1950,6 +1960,7 @@ fn switch_session_bad_window_arg_degrades_to_plain_switch() {
         effects.reattach,
         Some(ReattachTarget::Existing {
             name: "scratch".to_owned(),
+            id: None,
             window: None,
             pane: None,
         }),
@@ -1976,6 +1987,7 @@ fn switch_session_with_pane_arg_carries_one_step_pane_target() {
         effects.reattach,
         Some(ReattachTarget::Existing {
             name: "scratch".to_owned(),
+            id: None,
             window: Some(1),
             pane: Some(2),
         }),
@@ -2022,6 +2034,7 @@ fn run_attention(
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -2064,6 +2077,7 @@ fn run_attention(
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -2392,11 +2406,15 @@ fn session_picker_items_include_focused_first_and_commit_switch_session() {
     assert_eq!(items[0].secondary.as_deref(), Some("1 window, current"));
     assert_eq!(items[1].label, "logs");
     assert_eq!(items[2].label, "scratch");
-    // Each row commits switch-session with the session name.
+    // Each row commits switch-session with the session name and stable id.
     assert_eq!(items[0].action.action, "switch-session");
     assert_eq!(
         items[0].action.args.get("name"),
         Some(&toml::Value::String("work".to_owned()))
+    );
+    assert_eq!(
+        items[0].action.args.get("id"),
+        Some(&toml::Value::Integer(1))
     );
     assert_eq!(items[1].secondary.as_deref(), Some("1 window"));
 }
@@ -2463,6 +2481,7 @@ fn session_picker_commit_routes_switch_session_through_run_action() {
         effects.reattach,
         Some(ReattachTarget::Existing {
             name: "scratch".to_owned(),
+            id: Some(phux_protocol::ids::SessionId::new(2)),
             window: None,
             pane: None,
         }),
@@ -2848,6 +2867,7 @@ fn detach_action_requests_detach_effect() {
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -2889,6 +2909,7 @@ fn detach_action_requests_detach_effect() {
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -2951,6 +2972,7 @@ fn rename_session_without_name_opens_prompt_prefilled() {
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = "work".to_owned();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -2993,6 +3015,7 @@ fn rename_session_without_name_opens_prompt_prefilled() {
             foreign_agents: &HashMap::new(),
             focused_session: None,
             session_name: &mut session_name,
+            rename_pending: &mut rename_pending,
             switch_request: &mut switch_request,
             zoomed: &mut zoomed,
             sidebar: None,
@@ -3067,5 +3090,158 @@ fn rename_session_prompt_commits_rename_session_action() {
         effects.rename_session.as_deref(),
         Some("notes"),
         "the committed prompt action yields the rename effect with the typed name",
+    );
+}
+
+#[test]
+fn switch_session_id_arg_navigates_by_session_identity() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String("stale".to_owned()));
+    args.insert("id".to_owned(), toml::Value::Integer(7));
+    let action = phux_config::keybind::ResolvedAction {
+        action: "switch-session".to_owned(),
+        args,
+    };
+    let effects = run(&action, &mut workspace);
+    assert_eq!(
+        effects.reattach,
+        Some(ReattachTarget::Existing {
+            name: "stale".to_owned(),
+            id: Some(phux_protocol::ids::SessionId::new(7)),
+            window: None,
+            pane: None,
+        }),
+        "a painted row's session id outranks a stale display name"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[allow(clippy::too_many_lines)]
+async fn rename_session_does_not_apply_locally_until_confirmed() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String("notes".to_owned()));
+    let action = phux_config::keybind::ResolvedAction {
+        action: "rename-session".to_owned(),
+        args,
+    };
+    let effects = run(&action, &mut workspace);
+    assert_eq!(effects.rename_session.as_deref(), Some("notes"));
+
+    let mut next_request_id = 100;
+    let mut pending_splits = HashMap::new();
+    let mut pending_windows = HashMap::new();
+    let mut overlays = OverlayState::new();
+    let theme = Theme::default();
+    let mut switch_request = None;
+    let mut rename_pending = None;
+    let mut session_name = "work".to_owned();
+    let mut zoomed = None;
+    let mut sidebar_enabled = false;
+    let mut drag: Option<DragGrab> = None;
+    let mut reload_request = false;
+    let mut mouse_optout = HashSet::new();
+    let fleet_agent_meta = HashMap::new();
+    let mut fleet_vcs = crate::attach::pane_state::VcsIndex::default();
+    let mut engine_kernel = test_engine_kernel();
+    let sidebar_targets = targets(0, workspace.windows.len(), 0);
+    let mut host_refresh = false;
+    let mut ctx = DispatchCtx {
+        control_dial: None,
+        layout_read_complete: true,
+        engine_kernel: &mut engine_kernel,
+        resolver: None,
+        focus_history: FocusHistory::default(),
+        workspace: &mut workspace,
+        viewport: (80, 24),
+        cell_px: (1, 1),
+        next_request_id: &mut next_request_id,
+        input_replay: None,
+        spawn_initial_size_supported: true,
+        pending_splits: &mut pending_splits,
+        pending_windows: &mut pending_windows,
+        directory_support: crate::attach::directory_picker::DirectorySupport::HostAware,
+        pending_directory: &mut None,
+        expected_closes: &mut HashSet::new(),
+        overlays: &mut overlays,
+        keybindings: None,
+        theme: &theme,
+        sessions: &[],
+        foreign_layouts: &HashMap::new(),
+        hosts: &[],
+        host_refresh_request: &mut host_refresh,
+        foreign_agents: &HashMap::new(),
+        focused_session: Some(phux_protocol::ids::SessionId::new(1)),
+        session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
+        switch_request: &mut switch_request,
+        zoomed: &mut zoomed,
+        sidebar: None,
+        sidebar_enabled: &mut sidebar_enabled,
+        sidebar_width: 20,
+        chrome: ChromeBreakpoints::default(),
+        sidebar_targets: &sidebar_targets,
+        bar: None,
+        status_bar: None,
+        drag: &mut drag,
+        mouse_optout: &mut mouse_optout,
+        attention_navigation: &mut AttentionNavigation::default(),
+        plugin_actions: &[],
+        plugin_panes: &[],
+        plugin_tx: None,
+        reload_request: &mut reload_request,
+        agent_meta: &fleet_agent_meta,
+        vcs: &mut fleet_vcs,
+    };
+    let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
+    let mut conn = Connection::from_stream(a);
+    let mut peer = Connection::from_stream(b);
+    let mut out: Vec<u8> = Vec::new();
+    let mut focused_resource = None;
+    let mut detach_pending = false;
+    let mut predict = PredictionState::new(crate::predict::PredictiveConfig::disabled(), 80, 24);
+    let panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
+    apply_action_effects(
+        effects,
+        &mut out,
+        &mut conn,
+        &mut ctx,
+        &mut focused_resource,
+        &mut detach_pending,
+        &mut predict,
+        &panes,
+    )
+    .await
+    .expect("apply rename");
+    drop(conn);
+    assert_eq!(
+        session_name, "work",
+        "a refused or unconfirmed rename must not rewrite the status name"
+    );
+    let pending = rename_pending.expect("GET_STATE barrier parked");
+    assert_eq!(pending.current, "work");
+    assert_eq!(pending.new_name, "notes");
+    let mut frames = Vec::new();
+    while let Ok(Ok(frame)) = tokio::time::timeout(PEER_DRAIN_DEADLINE, peer.recv()).await {
+        frames.push(frame);
+    }
+    assert!(
+        frames.iter().any(|frame| matches!(
+            frame,
+            FrameKind::SetMetadata { key, .. }
+            if key == phux_protocol::wire::frame::SESSION_NAME_KEY
+        )),
+        "rename must write SESSION_NAME_KEY: {frames:?}"
+    );
+    assert!(
+        frames.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                request_id,
+                command: phux_protocol::wire::frame::Command::GetState { .. }
+            } if *request_id == pending.barrier
+        )),
+        "rename must send a correlated GET_STATE barrier: {frames:?}"
     );
 }

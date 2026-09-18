@@ -669,10 +669,15 @@ async fn reattach_on_same_connection(
 ) -> Result<phux_protocol::wire::frame::FrameKind, AttachError> {
     detach_and_drain(conn, orphan_kills).await?;
     let attach_target = match target {
-        ReattachTarget::Existing { name, window, pane } => {
+        ReattachTarget::Existing {
+            name,
+            id,
+            window,
+            pane,
+        } => {
             *pending_window = window;
             *pending_pane = pane;
-            AttachTarget::ByName(name)
+            id.map_or(AttachTarget::ByName(name), AttachTarget::ById)
         }
         ReattachTarget::Create(name) => create_session_target(name),
     };

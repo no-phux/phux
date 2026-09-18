@@ -8,7 +8,8 @@ use phux_protocol::ResourceKind;
 use phux_protocol::ids::{ClientId, ResourceId, SessionId};
 use phux_protocol::wire::frame::{
     AgentEvent, CONFIG_RELOAD_KEY, DetachReason, ErrorCode, FrameKind, ResourceLifecycle,
-    SESSION_KEEP_EMPTY_KEY, Scope, SpawnError, SpawnResult, decode_session_keep_empty,
+    SESSION_KEEP_EMPTY_KEY, SESSION_NAME_KEY, Scope, SpawnError, SpawnResult,
+    decode_session_keep_empty, decode_session_rename,
 };
 
 use crate::attach::actions::{
@@ -1163,6 +1164,9 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
     if key == SESSION_KEEP_EMPTY_KEY && matches!(scope, Scope::Global) {
         return Ok(apply_keep_empty_broadcast(ctx, value.as_deref()));
     }
+    if key == SESSION_NAME_KEY && matches!(scope, Scope::Global) {
+        return Ok(apply_session_rename_broadcast(ctx, value.as_deref()));
+    }
     let Some(LayoutKeyOwner::Session(key_session)) = layout_key_scope_session(scope, key) else {
         return Ok(FrameOutcome::default());
     };
@@ -1652,6 +1656,27 @@ fn apply_keep_empty_broadcast<W: crate::attach::RenderSink>(
         *ctx.keep_empty_session = keep;
     }
     FrameOutcome::default()
+}
+
+/// phux-4s6o / phux-q7ks: a `phux.session.name/v1` broadcast. The handler
+/// updates this client's status name when the `current` side matches; the
+/// driver folds the pair into the cached session graph so peer roster
+/// rows follow without a re-attach.
+fn apply_session_rename_broadcast<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    value: Option<&[u8]>,
+) -> FrameOutcome {
+    let Some((current, new_name)) = value.and_then(decode_session_rename) else {
+        return FrameOutcome::default();
+    };
+    if current == ctx.session_name.as_str() {
+        new_name.clone_into(ctx.session_name);
+    }
+    FrameOutcome {
+        session_rename: Some((current.to_owned(), new_name.to_owned())),
+        chrome_dirty: true,
+        ..FrameOutcome::default()
+    }
 }
 
 /// phux-i0e8.2.2: survivors get a transient Warn notice naming the dead pane

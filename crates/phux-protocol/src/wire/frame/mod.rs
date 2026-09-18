@@ -288,6 +288,29 @@ pub const TYPE_METADATA_CHANGED: u8 = FrameType::MetadataChanged as u8;
 /// `phux.tui.layout/v1` is for TUI layout).
 pub const SESSION_NAME_KEY: &str = "phux.session.name/v1";
 
+/// Encode a [`SESSION_NAME_KEY`] value: `current\0new`.
+#[must_use]
+pub fn encode_session_rename(current: &str, new_name: &str) -> Vec<u8> {
+    let mut value = current.as_bytes().to_vec();
+    value.push(0);
+    value.extend_from_slice(new_name.as_bytes());
+    value
+}
+
+/// Decode a [`SESSION_NAME_KEY`] value into `(current, new)`.
+///
+/// `None` for anything other than UTF-8 `current\0new` with both sides
+/// non-empty and no extra NULs.
+#[must_use]
+pub fn decode_session_rename(value: &[u8]) -> Option<(&str, &str)> {
+    let text = std::str::from_utf8(value).ok()?;
+    let (current, new_name) = text.split_once('\0')?;
+    if current.is_empty() || new_name.is_empty() || new_name.contains('\0') {
+        return None;
+    }
+    Some((current, new_name))
+}
+
 /// Conventional L3 metadata key requesting creation of a named session
 /// *without* attaching.
 ///

@@ -101,6 +101,7 @@ pub(super) fn targets(
                 } else {
                     SidebarTarget::Session {
                         name: format!("peer-{j}"),
+                        id: None,
                         window: 2,
                         pane: 3,
                     }
@@ -111,6 +112,7 @@ pub(super) fn targets(
             .map(|j| {
                 Some(SessionRosterTarget {
                     name: format!("space-{j}"),
+                    id: None,
                     host: None,
                 })
             })

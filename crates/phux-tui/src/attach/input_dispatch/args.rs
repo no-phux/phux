@@ -11,6 +11,7 @@
 //! chord to its remote `SPAWN_RESOURCE` reply.
 
 use phux_protocol::ResourceId;
+use phux_protocol::ids::SessionId;
 use phux_protocol::wire::frame::{FrameKind, TerminalSignal};
 
 use crate::layout::{Direction, SplitDir, Workspace};
@@ -89,6 +90,31 @@ pub(super) fn usize_arg(
 /// Pull a window name out of a [`phux_config::keybind::ResolvedAction`]'s `name = "..."` arg.
 pub(super) fn name_arg(resolved: &phux_config::keybind::ResolvedAction) -> Option<String> {
     resolved.args.get("name")?.as_str().map(ToOwned::to_owned)
+}
+
+/// Pull a session identity out of a `switch-session` `id = N` arg.
+///
+/// Names are display labels and can move; the wire [`SessionId`] does not.
+/// Callers that painted a roster or picker row stash the id so a rename
+/// cannot retarget the click. `None` for a typed name, a satellite hop
+/// (host-local ids are not attachable here), or a malformed integer.
+pub(super) fn session_id_arg(resolved: &phux_config::keybind::ResolvedAction) -> Option<SessionId> {
+    let v = resolved.args.get("id")?.as_integer()?;
+    u32::try_from(v).ok().map(SessionId::new)
+}
+
+/// `switch-session` args for a local session: the display name plus the
+/// stable id when the caller knows it.
+pub(super) fn switch_session_args(
+    name: impl Into<String>,
+    id: Option<SessionId>,
+) -> std::collections::BTreeMap<String, toml::Value> {
+    let mut args =
+        std::collections::BTreeMap::from([("name".to_owned(), toml::Value::String(name.into()))]);
+    if let Some(id) = id {
+        args.insert("id".to_owned(), toml::Value::Integer(i64::from(id.get())));
+    }
+    args
 }
 
 /// Pull an arbitrary string arg out of a

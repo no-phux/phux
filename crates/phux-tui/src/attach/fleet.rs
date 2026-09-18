@@ -193,11 +193,9 @@ pub(super) fn fleet_items(
                 .get(&session.id)
                 .filter(|ws| !ws.windows.is_empty())
             {
-                Some(foreign) => items.extend(foreign_session_pane_rows(
-                    &session.name,
-                    foreign,
-                    foreign_agents,
-                )),
+                Some(foreign) => {
+                    items.extend(foreign_session_pane_rows(session, foreign, foreign_agents));
+                }
                 None => items.push(foreign_session_row(session)),
             }
         }
@@ -353,6 +351,10 @@ fn foreign_session_row(session: &SessionInfo) -> SelectItem {
     };
     let mut args = BTreeMap::new();
     args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
+    args.insert(
+        "id".to_owned(),
+        toml::Value::Integer(i64::from(session.id.get())),
+    );
     SelectItem::new(
         "switch to this session",
         phux_config::keybind::ResolvedAction {
@@ -373,7 +375,7 @@ fn foreign_session_row(session: &SessionInfo) -> SelectItem {
 /// fetched for the peer's leaves (no live subscription, so no asked flag or
 /// branch/cwd).
 fn foreign_session_pane_rows(
-    session_name: &str,
+    session: &SessionInfo,
     workspace: &Workspace,
     foreign_agents: &HashMap<ResourceId, AgentRecord>,
 ) -> Vec<SelectItem> {
@@ -387,7 +389,7 @@ fn foreign_session_pane_rows(
             .unwrap_or_default();
         for (p, id) in leaves.iter().enumerate() {
             rows.push(foreign_pane_row(
-                session_name,
+                session,
                 w,
                 &window.name,
                 p,
@@ -406,7 +408,7 @@ fn foreign_session_pane_rows(
 /// no OSC-title fallback the way the attached session has). High effective
 /// attention highlights the row.
 fn foreign_pane_row(
-    session_name: &str,
+    session: &SessionInfo,
     w: usize,
     window_name: &str,
     p: usize,
@@ -425,9 +427,10 @@ fn foreign_pane_row(
     let attention = record.is_some_and(|r| r.effective_attention() == AgentAttention::High);
     let label = format!("{glyph} {w}:{window_name}.{p} {who}");
     let mut args = BTreeMap::new();
+    args.insert("name".to_owned(), toml::Value::String(session.name.clone()));
     args.insert(
-        "name".to_owned(),
-        toml::Value::String(session_name.to_owned()),
+        "id".to_owned(),
+        toml::Value::Integer(i64::from(session.id.get())),
     );
     // Window/pane ordinals never approach i64::MAX; the lossless path is
     // the only one that can fire in practice.
@@ -565,6 +568,10 @@ mod tests {
         assert_eq!(
             items[5].action.args.get("name"),
             Some(&toml::Value::String("scratch".to_owned()))
+        );
+        assert_eq!(
+            items[5].action.args.get("id"),
+            Some(&toml::Value::Integer(2))
         );
         assert_eq!(items[5].secondary.as_deref(), Some("3 windows"));
     }

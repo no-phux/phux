@@ -88,6 +88,7 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
     let mut pending_windows = HashMap::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
 
     // The default leader is `C-a`. Feed it, then a printable key.
@@ -150,6 +151,7 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -249,6 +251,7 @@ async fn dispatch_with_passthrough_popup(
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -290,6 +293,7 @@ async fn dispatch_with_passthrough_popup(
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -434,6 +438,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
     let mut pending_windows = HashMap::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -474,6 +479,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -713,6 +719,7 @@ async fn dispatch_sidebar_click_with(
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = true;
@@ -753,6 +760,7 @@ async fn dispatch_sidebar_click_with(
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: Some(SidebarReservation {
@@ -963,6 +971,7 @@ async fn dispatch_bar_click(
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -1004,6 +1013,7 @@ async fn dispatch_bar_click(
             foreign_agents: &HashMap::new(),
             focused_session: None,
             session_name: &mut session_name,
+            rename_pending: &mut rename_pending,
             switch_request: &mut switch_request,
             zoomed: &mut zoomed,
             sidebar: None,
@@ -1428,6 +1438,7 @@ async fn dispatch_mouse_two_pane_into_with_journal(
     let mut pending_windows = HashMap::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -1471,6 +1482,7 @@ async fn dispatch_mouse_two_pane_into_with_journal(
             foreign_agents: &HashMap::new(),
             focused_session: None,
             session_name: &mut session_name,
+            rename_pending: &mut rename_pending,
             switch_request: &mut switch_request,
             zoomed: &mut zoomed,
             sidebar: None,
@@ -2152,6 +2164,7 @@ fn run_set_pane(
     let mut overlays = OverlayState::new();
     let theme = Theme::default();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -2192,6 +2205,7 @@ fn run_set_pane(
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
@@ -2401,6 +2415,7 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
     let mut pending_splits = HashMap::new();
     let mut pending_windows = HashMap::new();
     let mut switch_request = None;
+    let mut rename_pending = None;
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = false;
@@ -2444,6 +2459,7 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
         foreign_agents: &HashMap::new(),
         focused_session: None,
         session_name: &mut session_name,
+        rename_pending: &mut rename_pending,
         switch_request: &mut switch_request,
         zoomed: &mut zoomed,
         sidebar: None,
