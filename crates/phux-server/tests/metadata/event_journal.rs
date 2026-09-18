@@ -205,11 +205,17 @@ async fn ask(stream: &mut UnixStream, request_id: u32, terminal: &ResourceId, id
 }
 
 /// The next `EVENT` `matches` accepts.
-async fn next_event(stream: &mut UnixStream, matches: impl Fn(&Seen) -> bool + Send) -> Seen {
-    recv_until(stream, |_, frame| {
-        as_seen(frame).filter(|seen| matches(seen))
-    })
-    .await
+async fn next_event(stream: &mut UnixStream, matches: impl Fn(&Seen) -> bool) -> Seen {
+    loop {
+        let (_, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(stream))
+            .await
+            .expect("the event arrives within the deadline");
+        if let Some(seen) = as_seen(frame)
+            && matches(&seen)
+        {
+            return seen;
+        }
+    }
 }
 
 /// `SPAWN_RESOURCE` a parked pane from a subscribed client; returns its id
