@@ -24,6 +24,8 @@ use crate::layout::Workspace;
 use crate::render::chrome::sidebar::{AgentEntry, SessionRosterEntry, attention_rank};
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 
+use super::review::ReviewIndex;
+
 /// Label for a peer pane that asked for a human but declares no agent
 /// record, so the strip can say WHAT happened without claiming to know who.
 const UNNAMED_AGENT: &str = "unnamed agent";
@@ -54,6 +56,9 @@ pub(super) struct PeerInputs<'a> {
     pub foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
     /// Peer panes that raised an ADR-0035 `Asked`.
     pub foreign_attention: &'a HashSet<ResourceId>,
+    /// Connection-lifetime review index (phux-deya). Peer rows read `seen`
+    /// from here instead of hardcoding unseen.
+    pub review: &'a ReviewIndex,
 }
 
 impl PeerInputs<'_> {
@@ -203,6 +208,7 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
                 || (UNNAMED_AGENT.to_owned(), AgentMetaState::Blocked),
                 |r| (r.name.clone(), r.state),
             );
+            let seen = peers.review.is_seen(&leaf.id);
             rows.push(AgentEntry {
                 session: Some(session.name.clone()),
                 session_id: Some(session.id),
@@ -214,7 +220,7 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
                 state,
                 attention: asked
                     || record.is_some_and(|r| r.effective_attention() == AgentAttention::High),
-                seen: false,
+                seen,
             });
         }
     }
@@ -292,7 +298,10 @@ fn count_peer_leaves(entry: &mut SessionRosterEntry, leaves: &[PeerLeaf], peers:
                         asked || r.effective_attention() == AgentAttention::High,
                     )
                 });
-        count_rank(entry, attention_rank(state, attention, false));
+        count_rank(
+            entry,
+            attention_rank(state, attention, peers.review.is_seen(&leaf.id)),
+        );
     }
 }
 
@@ -395,6 +404,7 @@ mod tests {
         layouts: HashMap<SessionId, Workspace>,
         agents: HashMap<ResourceId, AgentRecord>,
         attention: HashSet<ResourceId>,
+        review: ReviewIndex,
     }
 
     impl Fixture {
@@ -409,6 +419,7 @@ mod tests {
                 foreign_layouts: &self.layouts,
                 foreign_agents: &self.agents,
                 foreign_attention: &self.attention,
+                review: &self.review,
             }
         }
     }
@@ -432,6 +443,7 @@ mod tests {
             layouts,
             agents: HashMap::new(),
             attention: HashSet::new(),
+            review: ReviewIndex::default(),
         }
     }
 
@@ -540,6 +552,24 @@ mod tests {
             attention_rank(AgentMetaState::Blocked, false, false),
             "the session takes its worst pane's rung"
         );
+    }
+
+    #[test]
+    fn a_reviewed_peer_done_is_settled_not_unvisited() {
+        let mut f = fixture();
+        let done = ResourceId::local(10);
+        f.agents
+            .insert(done.clone(), record("claude", AgentMetaState::Done));
+        f.review
+            .observe_record(&done, f.agents.get(&done), Some(&done));
+
+        let rows = needs_you_queue(Vec::new(), &f.inputs());
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].seen, "the peer row must keep the reviewed bit");
+        let roster = session_roster(&f.inputs(), &[]);
+        let peer = &roster[1];
+        assert_eq!(peer.done_unvisited, 0);
+        assert_eq!(peer.settled, 1);
     }
 
     /// A satellite's panes are structurally unknowable from here, so the row

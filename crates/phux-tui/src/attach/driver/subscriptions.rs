@@ -132,19 +132,16 @@ pub(super) async fn sync_foreign_agent_ids(
 /// cache. `value: None` (no record) or an unparseable record clears the
 /// entry, so the fleet row falls back to `?` / "no agent" rather than
 /// showing stale identity — the same clear-on-empty policy as
-/// [`apply_foreign_layout_reply`].
+/// [`apply_foreign_layout_reply`]. Returns whether the cache actually moved,
+/// so an identical GET does not dirty chrome (phux-deya).
 pub(super) fn apply_foreign_agent_reply(
     cache: &mut HashMap<ResourceId, AgentRecord>,
     id: ResourceId,
     value: Option<&[u8]>,
-) {
+) -> bool {
     match value.and_then(parse_agent_record) {
-        Some(record) => {
-            cache.insert(id, record);
-        }
-        None => {
-            cache.remove(&id);
-        }
+        Some(record) => cache.insert(id, record.clone()) != Some(record),
+        None => cache.remove(&id).is_some(),
     }
 }
 

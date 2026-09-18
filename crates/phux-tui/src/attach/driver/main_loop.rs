@@ -146,6 +146,9 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // phux-c2td.23: the stray satellite panes an earlier entry on this
     // connection still owed a kill. Empty on the first attach.
     orphan_kills: super::orphans::OrphanKills,
+    // phux-deya: per-identity review status carried across session switches
+    // on this connection. Empty on the first attach.
+    review: crate::attach::review::ReviewIndex,
 ) -> Result<LoopExit, AttachError> {
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("attach loop started before bootstrap negotiation".to_owned())
@@ -168,6 +171,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // (and via kill_on_drop, their children) when this attach loop ends.
     session.set_input_replay(input_replay);
     session.set_orphan_kills(orphan_kills);
+    session.set_review(review);
     let _exec_runners = spawn_exec_feed_runners(session.exec_feeds());
     if let Some(exit) = session
         .bootstrap(conn, out, initial_attached, initial_notice)

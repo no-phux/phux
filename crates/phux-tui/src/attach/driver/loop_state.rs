@@ -62,7 +62,7 @@ use crate::settings::TuiSettings;
 use phux_client::agent_meta::AgentRecord;
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
-use super::chrome::{mark_focused_seen, peer_inputs, refresh_window_chrome};
+use super::chrome::{mark_focused_seen, refresh_window_chrome};
 
 use super::config_ui::{
     apply_initial_notice, handle_config_reload, push_which_key_overlay, update_which_key_deadline,
@@ -266,8 +266,8 @@ enum FrameStep {
 /// agent-fleet dashboard project from.
 ///
 /// One struct rather than ten parallel locals: every field here is written
-/// by the same peer sweep and read by the same [`peer_inputs`] projection,
-/// so they are refreshed, pruned, and reset together.
+/// by the same peer sweep and read by the same sidebar projection, so they
+/// are refreshed, pruned, and reset together.
 #[derive(Default)]
 struct PeerCaches {
     /// Identity of the serving machine, read once through the whoami key.
@@ -359,19 +359,22 @@ struct PeerCaches {
 impl PeerCaches {
     /// The peer-wide projection zones 1 and 3 of the sidebar strip render
     /// from.
-    fn inputs(&self) -> crate::attach::sidebar_zones::PeerInputs<'_> {
-        let mut inputs = peer_inputs(
-            &self.sessions,
-            self.focused_session,
-            &self.windows,
-            &self.resources,
-            &self.foreign_layouts,
-            &self.foreign_agents,
-            &self.foreign_attention,
-        );
-        inputs.serving_host = self.serving_host.as_deref();
-        inputs.hosts = &self.hosts;
-        inputs
+    fn inputs<'a>(
+        &'a self,
+        review: &'a crate::attach::review::ReviewIndex,
+    ) -> crate::attach::sidebar_zones::PeerInputs<'a> {
+        crate::attach::sidebar_zones::PeerInputs {
+            serving_host: self.serving_host.as_deref(),
+            hosts: &self.hosts,
+            sessions: &self.sessions,
+            focused_session: self.focused_session,
+            windows: &self.windows,
+            resources: &self.resources,
+            foreign_layouts: &self.foreign_layouts,
+            foreign_agents: &self.foreign_agents,
+            foreign_attention: &self.foreign_attention,
+            review,
+        }
     }
 }
 
@@ -598,6 +601,9 @@ pub(super) struct SessionLoop {
     /// phux-c2td.20: kills in flight for satellite panes this client spawned
     /// whose attach was refused; their replies are consumed and logged.
     orphan_kills: super::orphans::OrphanKills,
+    /// phux-deya: per-identity review status. Connection-lifetime; a
+    /// session switch rebuilds pane slots but not this index.
+    review: crate::attach::review::ReviewIndex,
     /// phux-c2td.25: did the server advertise
     /// [`ServerFeature::ConditionalKill`](phux_protocol::caps::ServerFeature::ConditionalKill)?
     /// Set, a bound stray satellite pane is retried through
@@ -866,6 +872,7 @@ impl SessionLoop {
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
             orphan_kills,
+            review: crate::attach::review::ReviewIndex::new(),
             conditional_kill_supported,
             pending_directory: None,
             expected_closes: HashSet::new(),
@@ -955,6 +962,9 @@ impl SessionLoop {
 
     /// The single chrome-refresh chokepoint, with this driver's inputs bound.
     fn refresh_chrome(&mut self) -> bool {
+        let rows = crate::attach::agent_rows::agent_session_rows(&self.engine_kernel);
+        self.review
+            .observe_streams(&rows, self.focused_resource.as_ref());
         refresh_window_chrome(
             self.settings.status_bar.as_mut(),
             &mut self.sidebar_painter,
@@ -965,8 +975,8 @@ impl SessionLoop {
             self.own_client_id,
             &self.agent_meta,
             &mut self.vcs,
-            &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
-            self.peers.inputs(),
+            &rows,
+            self.peers.inputs(&self.review),
         )
     }
 
@@ -1152,7 +1162,7 @@ impl SessionLoop {
             self.own_client_id,
             &self.agent_meta,
             &mut self.vcs,
-            self.peers.inputs(),
+            self.peers.inputs(&self.review),
             self.viewport_dims,
             sidebar,
             &self.session_name,
@@ -1190,7 +1200,8 @@ impl SessionLoop {
         .await?;
         // phux-ah84: agent watches must not wait for a persisted TUI layout.
         // CLI-created sessions already appear in the ATTACHED graph.
-        let live = crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs());
+        let live =
+            crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs(&self.review));
         prune_foreign_agents(
             &mut self.peers.foreign_agents,
             &mut self.peers.foreign_agent_subscribed,
@@ -1494,6 +1505,7 @@ impl SessionLoop {
             self.clear_delivery_fence_after_paint(terminal_id);
         }
         if let Some(terminal_id) = retired_terminal {
+            self.review.forget(&terminal_id);
             self.delivery_fence_paint_pending.remove(&terminal_id);
             if let Some(journal) = self.input_replay.as_ref() {
                 let reports = journal
@@ -1948,7 +1960,11 @@ impl SessionLoop {
         out: &mut W,
         sidebar: Option<SidebarReservation>,
     ) {
-        if !mark_focused_seen(&mut self.panes, self.focused_resource.as_ref()) {
+        if !mark_focused_seen(
+            &mut self.panes,
+            &mut self.review,
+            self.focused_resource.as_ref(),
+        ) {
             return;
         }
         if self.refresh_chrome() {
@@ -2266,6 +2282,7 @@ impl SessionLoop {
                 target,
                 sidebar_enabled: self.sidebar_enabled,
                 orphan_kills: self.orphans_for_switch(),
+                review: std::mem::take(&mut self.review),
             }));
         }
         // Window changes still repaint to show the newly active window, but
@@ -2703,8 +2720,9 @@ impl SessionLoop {
             FrameKind::MetadataValue { request_id, value }
                 if self.peers.foreign_agent_pending.contains_key(&request_id) =>
             {
-                if let Some(id) = self.peers.foreign_agent_pending.remove(&request_id) {
-                    apply_foreign_agent_reply(&mut self.peers.foreign_agents, id, value.as_deref());
+                if let Some(id) = self.peers.foreign_agent_pending.remove(&request_id)
+                    && self.fold_foreign_agent(&id, value.as_deref())
+                {
                     self.peers.chrome_dirty = true;
                     repaint.raise_fleet();
                 }
@@ -2847,7 +2865,8 @@ impl SessionLoop {
     /// Live terminals come from a persisted TUI layout when one exists,
     /// otherwise from the server session/resource graph (phux-ah84).
     async fn reconcile_peer_agents(&mut self, conn: &mut Connection) -> Result<(), AttachError> {
-        let live = crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs());
+        let live =
+            crate::attach::sidebar_zones::foreign_terminal_ids(&self.peers.inputs(&self.review));
         prune_foreign_agents(
             &mut self.peers.foreign_agents,
             &mut self.peers.foreign_agent_subscribed,
@@ -3180,6 +3199,26 @@ impl SessionLoop {
         self.orphan_kills = kills;
     }
 
+    /// phux-deya: take over the review index an earlier entry on this
+    /// connection handed out at a session switch.
+    pub(super) fn set_review(&mut self, review: crate::attach::review::ReviewIndex) {
+        self.review = review;
+    }
+
+    /// Fold a foreign GET or broadcast into the fleet cache and the
+    /// connection-lifetime review index. Returns whether either actually
+    /// moved, so an identical read does not dirty chrome.
+    fn fold_foreign_agent(&mut self, id: &ResourceId, value: Option<&[u8]>) -> bool {
+        let cache_changed =
+            apply_foreign_agent_reply(&mut self.peers.foreign_agents, id.clone(), value);
+        let review_changed = self.review.observe_record(
+            id,
+            self.peers.foreign_agents.get(id),
+            self.focused_resource.as_ref(),
+        );
+        cache_changed || review_changed
+    }
+
     /// phux-c2td.23: hand the orphan record to the next loop entry. The
     /// switch drops every window and split still opening, and sends no kill
     /// on the way out (the hub would hold the re-attach behind it), so their
@@ -3229,8 +3268,7 @@ impl SessionLoop {
             false
         };
         let agent_folded = if let Some((id, value)) = outcome.foreign_agent.take() {
-            apply_foreign_agent_reply(&mut self.peers.foreign_agents, id, value.as_deref());
-            true
+            self.fold_foreign_agent(&id, value.as_deref())
         } else {
             false
         };
@@ -3541,7 +3579,18 @@ impl SessionLoop {
         // fix are required: gate on `refresh_window_chrome`'s
         // change report, AND route to the in-place chrome
         // painter via the accumulator.
-        if outcome.agent_meta_changed {
+        // ADR-0040 + phux-deya: fold the Terminal even when the stored
+        // record was identical, so a repeat GET after a switch cannot
+        // re-arm a reviewed completion. Chrome paints only when the
+        // cache or the review index actually moved.
+        let review_changed = outcome.agent_meta_terminal.as_ref().is_some_and(|id| {
+            self.review.observe_record(
+                id,
+                self.agent_meta.records.get(id),
+                self.focused_resource.as_ref(),
+            )
+        });
+        if outcome.agent_meta_changed || review_changed {
             self.note_chrome_change(repaint);
         }
         // phux-foz.5: the `phux config reload` doorbell

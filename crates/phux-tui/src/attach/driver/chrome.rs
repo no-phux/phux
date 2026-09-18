@@ -8,6 +8,7 @@ use phux_protocol::wire::frame::ResourceLifecycle;
 
 use crate::attach::agent_rows::AgentSessionRows;
 use crate::attach::pane_state::{PaneSlot, VcsIndex};
+use crate::attach::review::ReviewIndex;
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
 use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter};
@@ -90,6 +91,7 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
         LazyLock::new(std::collections::HashSet::new);
     static WINDOWS: &[phux_protocol::wire::info::WindowInfo] = &[];
     static RESOURCES: &[phux_protocol::wire::info::ResourceInfo] = &[];
+    static REVIEW: LazyLock<ReviewIndex> = LazyLock::new(ReviewIndex::new);
     crate::attach::sidebar_zones::PeerInputs {
         serving_host: None,
         hosts: &[],
@@ -100,34 +102,7 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
         foreign_layouts: &LAYOUTS,
         foreign_agents: &AGENTS,
         foreign_attention: &ATTENTION,
-    }
-}
-
-/// Bundle the driver's peer-wide caches for the sidebar's cross-session
-/// zones (phux-k0cw).
-///
-/// A free function rather than a method so the call sites read the same at
-/// all eleven of them, and so a test can build one from synthetic state
-/// without standing up a driver.
-pub(super) const fn peer_inputs<'a>(
-    sessions: &'a [phux_protocol::wire::info::SessionInfo],
-    focused_session: Option<phux_protocol::ids::SessionId>,
-    windows: &'a [phux_protocol::wire::info::WindowInfo],
-    resources: &'a [phux_protocol::wire::info::ResourceInfo],
-    foreign_layouts: &'a HashMap<phux_protocol::ids::SessionId, Workspace>,
-    foreign_agents: &'a HashMap<ResourceId, AgentRecord>,
-    foreign_attention: &'a std::collections::HashSet<ResourceId>,
-) -> crate::attach::sidebar_zones::PeerInputs<'a> {
-    crate::attach::sidebar_zones::PeerInputs {
-        serving_host: None,
-        hosts: &[],
-        sessions,
-        focused_session,
-        windows,
-        resources,
-        foreign_layouts,
-        foreign_agents,
-        foreign_attention,
+        review: &REVIEW,
     }
 }
 
@@ -180,7 +155,7 @@ pub(super) fn refresh_window_chrome(
         changed |= sb.set_last_exit(focused.and_then(|slot| slot.last_exit));
     }
     changed |= sidebar_painter.set_windows(windows);
-    let local = agent_entries(workspace, panes, agent_meta, agent_sessions);
+    let local = agent_entries(workspace, panes, agent_meta, agent_sessions, peers.review);
     changed |=
         sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(&peers, &local));
     // Stable navigation order; lifecycle changes only restyle existing rows.
@@ -275,6 +250,7 @@ pub(super) fn agent_entries(
     panes: &HashMap<ResourceId, PaneSlot>,
     agent_meta: &AgentMetaIndex,
     agent_sessions: &AgentSessionRows,
+    review: &ReviewIndex,
 ) -> Vec<AgentEntry> {
     let mut rows = Vec::new();
     for (i, w) in workspace.windows.iter().enumerate() {
@@ -295,7 +271,7 @@ pub(super) fn agent_entries(
                 name: String::new(),
                 state: AgentMetaState::Unknown,
                 attention: panes.get(id).is_some_and(|slot| slot.attention),
-                seen: panes.get(id).is_some_and(|slot| slot.seen),
+                seen: review.seen_or(id, panes.get(id).is_some_and(|slot| slot.seen)),
             };
             let record = agent_meta.records.get(id);
             if let Some(sessions) = agent_sessions.get(id).filter(|rows| !rows.is_empty()) {
@@ -347,11 +323,17 @@ fn advisory_agent_entry(base: AgentEntry, record: Option<&AgentRecord>) -> Optio
 /// chrome event happens to recompute [`agent_entries`].
 pub(super) fn mark_focused_seen(
     panes: &mut HashMap<ResourceId, PaneSlot>,
+    review: &mut ReviewIndex,
     focused_resource: Option<&ResourceId>,
 ) -> bool {
-    focused_resource
-        .and_then(|fid| panes.get_mut(fid))
-        .is_some_and(|slot| !std::mem::replace(&mut slot.seen, true))
+    let Some(id) = focused_resource else {
+        return false;
+    };
+    let flipped = review.mark_seen(id);
+    if let Some(slot) = panes.get_mut(id) {
+        slot.seen = true;
+    }
+    flipped
 }
 
 #[cfg(test)]
@@ -631,6 +613,7 @@ mod tests {
             &panes,
             &meta_index(records.clone()),
             &HashMap::new(),
+            &ReviewIndex::new(),
         );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(
@@ -641,7 +624,13 @@ mod tests {
 
         // Visiting changes the badge in place.
         panes.get_mut(&done).expect("slot").seen = true;
-        let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records),
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["w", "d", "b"], "review does not move the row");
     }
@@ -686,78 +675,28 @@ mod tests {
         let meta = meta_index(records);
 
         // Completion stays in its original row while unreviewed.
-        let names: Vec<String> = agent_entries(&workspace, &panes, &meta, &HashMap::new())
-            .into_iter()
-            .map(|e| e.name)
-            .collect();
+        let names: Vec<String> = agent_entries(
+            &workspace,
+            &panes,
+            &meta,
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        )
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
         assert_eq!(names, vec!["w", "d"], "completion preserves row order");
 
         // Prime the painters against that (stale) view — this is the paint the
         // focus action itself produced, one iteration before the flip.
         let mut sidebar_painter = SidebarPainter::new(crate::render::Theme::default());
         let mut vcs = VcsIndex::default();
-        refresh_window_chrome(
-            None,
-            &mut sidebar_painter,
-            &workspace,
-            &panes,
-            Some(&done),
-            None,
-            None,
-            &meta,
-            &mut vcs,
-            &HashMap::new(),
-            no_peers(),
-        );
-
-        // The user is now looking at the finished pane.
-        assert!(
-            mark_focused_seen(&mut panes, Some(&done)),
-            "the first mark after a focus change must report the flip"
-        );
-
-        // The flip must repaint the glyph without moving the row.
-        let chrome_changed = refresh_window_chrome(
-            None,
-            &mut sidebar_painter,
-            &workspace,
-            &panes,
-            Some(&done),
-            None,
-            None,
-            &meta,
-            &mut vcs,
-            &HashMap::new(),
-            no_peers(),
-        );
-        assert!(
-            chrome_changed,
-            "the seen flip must dirty the chrome, or nothing repaints the strip"
-        );
-        let entries = agent_entries(&workspace, &panes, &meta, &HashMap::new());
-        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
-        assert_eq!(names, vec!["w", "d"], "the reviewed row keeps its place");
-        // Only the FOCUSED pane's row is reviewed — the background `working`
-        // one is still unvisited, and the glyph derives from this bit.
-        let reviewed: Vec<(&str, bool)> =
-            entries.iter().map(|e| (e.name.as_str(), e.seen)).collect();
-        assert_eq!(
-            reviewed,
-            vec![("w", false), ("d", true)],
-            "the focused pane's row — and only it — must carry the reviewed bit"
-        );
-
-        // Steady state: no flip, no chrome change, no paint.
-        assert!(
-            !mark_focused_seen(&mut panes, Some(&done)),
-            "re-marking an already-seen pane must not report a flip"
-        );
-        assert!(
-            !refresh_window_chrome(
+        let mut refresh = |painter: &mut SidebarPainter, panes: &HashMap<ResourceId, PaneSlot>| {
+            refresh_window_chrome(
                 None,
-                &mut sidebar_painter,
+                painter,
                 &workspace,
-                &panes,
+                panes,
                 Some(&done),
                 None,
                 None,
@@ -765,7 +704,37 @@ mod tests {
                 &mut vcs,
                 &HashMap::new(),
                 no_peers(),
-            ),
+            )
+        };
+        refresh(&mut sidebar_painter, &panes);
+
+        // The user is now looking at the finished pane.
+        let mut review = ReviewIndex::new();
+        assert!(
+            mark_focused_seen(&mut panes, &mut review, Some(&done)),
+            "the first mark after a focus change must report the flip"
+        );
+
+        assert!(
+            refresh(&mut sidebar_painter, &panes),
+            "the seen flip must dirty the chrome, or nothing repaints the strip"
+        );
+        let entries = agent_entries(&workspace, &panes, &meta, &HashMap::new(), &review);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|e| (e.name.as_str(), e.seen))
+                .collect::<Vec<_>>(),
+            vec![("w", false), ("d", true)],
+            "the focused pane's row stays put and is the only reviewed bit"
+        );
+
+        assert!(
+            !mark_focused_seen(&mut panes, &mut review, Some(&done)),
+            "re-marking an already-seen pane must not report a flip"
+        );
+        assert!(
+            !refresh(&mut sidebar_painter, &panes),
             "an unchanged chrome must stay zero-cost"
         );
     }
@@ -804,7 +773,13 @@ mod tests {
         index.change_at.insert(fresh, now);
         // `never` has no clock entry at all.
 
-        let entries = agent_entries(&workspace, &panes, &index, &HashMap::new());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &index,
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        );
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["old", "fresh", "never"]);
     }
@@ -830,7 +805,13 @@ mod tests {
             },
         );
 
-        let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records),
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].window, 0);
         assert_eq!(
@@ -861,6 +842,7 @@ mod tests {
             &panes,
             &AgentMetaIndex::default(),
             &HashMap::new(),
+            &ReviewIndex::new(),
         );
         assert!(
             entries.is_empty(),
@@ -887,7 +869,13 @@ mod tests {
             },
         );
 
-        let entries = agent_entries(&workspace, &panes, &meta_index(records), &HashMap::new());
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records),
+            &HashMap::new(),
+            &ReviewIndex::new(),
+        );
         assert!(entries[0].attention);
     }
 
@@ -921,7 +909,13 @@ mod tests {
             }],
         );
 
-        let entries = agent_entries(&workspace, &panes, &meta_index(records), &sessions);
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &meta_index(records),
+            &sessions,
+            &ReviewIndex::new(),
+        );
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].name, "reviewer", "the record names the row");
         assert_eq!(
@@ -961,7 +955,13 @@ mod tests {
             ],
         );
 
-        let entries = agent_entries(&workspace, &panes, &AgentMetaIndex::default(), &sessions);
+        let entries = agent_entries(
+            &workspace,
+            &panes,
+            &AgentMetaIndex::default(),
+            &sessions,
+            &ReviewIndex::new(),
+        );
         let names: Vec<(&str, AgentMetaState)> =
             entries.iter().map(|e| (e.name.as_str(), e.state)).collect();
         // Stream declaration order survives differing states.

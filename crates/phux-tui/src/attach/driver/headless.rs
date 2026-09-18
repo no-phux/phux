@@ -334,6 +334,7 @@ impl HeadlessSession {
             &self.panes,
             &self.agent_meta,
             &crate::attach::agent_rows::agent_session_rows(&self.engine_kernel),
+            &crate::attach::review::ReviewIndex::new(),
         );
         let mut session = crate::render::chrome::sidebar::SessionRosterEntry {
             name: self.session_name.clone(),

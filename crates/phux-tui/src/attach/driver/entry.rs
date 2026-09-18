@@ -423,6 +423,12 @@ fn stop_writer(writer: &mut Option<crate::attach::stdout_writer::WriterHandle>) 
     clippy::future_not_send,
     reason = "client-side libghostty Terminal is !Send; ADR-0003 binds us to current-thread"
 )]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "switch carries the same pending-focus and connection-lifetime \
+              locals the re-attach handshake already threads; a bag type \
+              would only rename the list"
+)]
 async fn switch_session<W: crate::attach::RenderSink>(
     conn: &mut Connection,
     out: &mut W,
@@ -431,6 +437,7 @@ async fn switch_session<W: crate::attach::RenderSink>(
     pending_pane: &mut Option<usize>,
     pending_resource: &mut Option<ResourceId>,
     orphan_kills: &mut super::orphans::OrphanKills,
+    review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<FrameKind, AttachError> {
     // Lifecycle transition (info): switching sessions on the same
     // connection. `?target` names the destination.
@@ -442,6 +449,7 @@ async fn switch_session<W: crate::attach::RenderSink>(
         pending_pane,
         pending_resource,
         orphan_kills,
+        review,
     )
     .await?;
     let _ = write_terminal_clear(out);
@@ -579,6 +587,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // handed out by each `LoopExit::SwitchTo` and into the next entry, so the
     // record lives as long as this connection, not one session's loop.
     let mut orphan_kills = super::orphans::OrphanKills::default();
+    let mut review = crate::attach::review::ReviewIndex::new();
     loop {
         let claim = onboarding_claim.take();
         let exit = match main_loop(
@@ -597,6 +606,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
             carried_sidebar_enabled,
             input_replay.clone(),
             std::mem::take(&mut orphan_kills),
+            std::mem::take(&mut review),
         )
         .await
         {
@@ -635,12 +645,14 @@ async fn attach_session<W: crate::attach::RenderSink>(
                 target,
                 sidebar_enabled,
                 orphan_kills: carried_orphans,
+                review: carried_review,
             } => {
                 // The sidebar is the human's chrome, not the session's. Carry
                 // the toggle into the next entry so the strip does not blink
                 // shut on every space switch.
                 carried_sidebar_enabled = Some(sidebar_enabled);
                 orphan_kills = carried_orphans;
+                review = carried_review;
                 attached = switch_session(
                     &mut conn,
                     out,
@@ -649,6 +661,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
                     &mut pending_pane,
                     &mut pending_resource,
                     &mut orphan_kills,
+                    &mut review,
                 )
                 .await?;
             }
@@ -682,8 +695,9 @@ async fn reattach_on_same_connection(
     pending_pane: &mut Option<usize>,
     pending_resource: &mut Option<ResourceId>,
     orphan_kills: &mut super::orphans::OrphanKills,
+    review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<phux_protocol::wire::frame::FrameKind, AttachError> {
-    detach_and_drain(conn, orphan_kills).await?;
+    detach_and_drain(conn, orphan_kills, review).await?;
     let attach_target = match target {
         ReattachTarget::Existing {
             name,
@@ -741,9 +755,15 @@ pub(super) fn create_session_target(name: String) -> AttachTarget {
 /// session. It sees each drained frame, so the reply to an orphan kill still
 /// settles and a satellite pane answering a spawn the old loop parked is
 /// remembered as a stray to kill later.
+///
+/// phux-deya: the review index is the other exception. Agent metadata (and
+/// unparsed `AgentSession` output) that lands in this window must still
+/// fold, or an identical GET after re-attach cannot recover a missed
+/// done-working-done cycle.
 async fn detach_and_drain(
     conn: &mut Connection,
     orphan_kills: &mut super::orphans::OrphanKills,
+    review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<(), AttachError> {
     conn.send(&FrameKind::Detach).await?;
     loop {
@@ -758,6 +778,7 @@ async fn detach_and_drain(
             }
             other => {
                 tracing::trace!(kind = ?other, "draining frame during session switch");
+                review.observe_switch_drain(&other);
                 orphan_kills.observe_switch_drain(other, std::time::Instant::now());
             }
         }
@@ -823,6 +844,9 @@ pub(super) enum LoopExit {
         /// kill, including the ones the switch itself strands. Connection
         /// state, not session state, so it rides into the next entry.
         orphan_kills: super::orphans::OrphanKills,
+        /// phux-deya: per-identity review status for this connection. Session
+        /// loops rebuild pane slots; this does not.
+        review: crate::attach::review::ReviewIndex,
     },
 }
 
