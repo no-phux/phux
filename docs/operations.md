@@ -956,17 +956,24 @@ listener (bounded at two seconds, after which detection falls back to
 the CGNAT route heuristic unless `PHUX_TAILSCALE` is set), never a late
 server.
 
-One detector feeds three consumers: `phux pair`, `phux doctor`'s
-remote-reachable check, and the auto-bound remote listener
+One detector feeds `phux pair` and the auto-bound remote listener
 ([ADR-0081](adr/0081-overlay-auto-listen-and-one-command-pairing.md)).
-`PHUX_TAILSCALE` substitutes the CLI all three run (default: `tailscale`
-on PATH). Setting it also disables the CGNAT route-probe fallback,
+`PHUX_TAILSCALE` substitutes the CLI both run (default: `tailscale` on
+PATH). Setting it also disables the CGNAT route-probe fallback,
 including after the CLI's two-second deadline: once you have named the
 overlay CLI, its answer is the whole answer. Pointing `PHUX_TAILSCALE`
-at a command that reports no address therefore turns detection off for
-all three: no overlay auto-listen, no advertised overlay address in
-`phux pair`, and no doctor dial (which is how test harnesses keep
-`phux doctor` off the network).
+at a command that reports no address therefore turns overlay auto-listen
+and `phux pair`'s advertised address off.
+
+`phux doctor`'s remote-reachable check dials the running server's bound
+wss address when that address is off-loopback, so a concrete `--listen`
+is probeable without this detector. An unspecified `0.0.0.0`/`::` bind
+still uses the detector to pick a host; with no overlay address the
+check warns rather than passing. Test harnesses set `PHUX_NO_AUTO_LISTEN`
+and `PHUX_TAILSCALE` so doctor does not dial the operator's tailnet
+(phux-vlv1). On macOS a bound listener with a silent off-loopback probe
+is the Application Firewall stealth-drop; see
+[Remote access, Troubleshooting](./remote-access.md#troubleshooting).
 
 ### Running the reference relay
 
