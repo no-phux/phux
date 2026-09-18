@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-18
 ---
 
 # The phux reference TUI
@@ -584,7 +584,7 @@ on detach, so divider drags work in a plain shell.
 |---|---|
 | Click in a pane | Focus, then forward |
 | Press / drag a divider | Resize; release commits the layout |
-| Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback, alt screen becomes arrows |
+| Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback (forwarded if the viewport cannot move); alt screen becomes arrows, or is forwarded if alternate-scroll is off |
 | Right-click in a pane | Pane context menu, unless the inner program has mouse tracking |
 | Click a status-bar tab | `select-window` |
 | Click a status-bar destination | Open Sessions, Commands, Settings, Help, or Copy |

@@ -1915,11 +1915,11 @@ async fn wheel_down_in_alt_screen_pane_synthesizes_arrow_down() {
     }
 }
 
-/// An app that opted out of alternate scroll (`?1007l`) gets neither
-/// arrows nor a forwarded wheel — matching xterm, the wheel is inert on
-/// an alt screen that asked for silence.
+/// An app that opted out of alternate scroll (`?1007l`) is still on the
+/// alt screen, so the client must not local-scroll. Forward the wheel
+/// instead of eating a no-op (phux-2vnl).
 #[tokio::test]
-async fn wheel_with_alt_scroll_off_sends_nothing() {
+async fn wheel_with_alt_scroll_off_forwards_to_the_app() {
     let (received, _, _, _) = dispatch_mouse_two_pane_with(
         vec![InputEvent::Mouse(mev(
             MouseAction::Press,
@@ -1932,13 +1932,40 @@ async fn wheel_with_alt_scroll_off_sends_nothing() {
         (1, 1),
     )
     .await;
+    match received.as_slice() {
+        [FrameKind::InputMouse { terminal_id, event }] => {
+            assert_eq!(*terminal_id, tid(2));
+            assert_eq!(event.button, MouseButton::Four);
+        }
+        other => panic!("expected the wheel to be forwarded, got {other:?}"),
+    }
+}
+
+/// Wheel over a primary-screen pane that actually has scrollback is
+/// consumed by the local viewport — nothing crosses the wire.
+#[tokio::test]
+async fn wheel_in_primary_screen_pane_scrolls_locally() {
+    let history = primary_scrollback_vt(40);
+    let (received, _, _, _) = dispatch_mouse_two_pane_with(
+        vec![InputEvent::Mouse(mev(
+            MouseAction::Press,
+            MouseButton::Four,
+            70.0,
+            5.0,
+        ))],
+        &[],
+        &[(tid(2), history.as_slice())],
+        (1, 1),
+    )
+    .await;
     assert!(received.is_empty(), "expected no frames, got {received:?}");
 }
 
-/// Wheel over a primary-screen pane without mouse tracking is consumed
-/// by the local scrollback viewport — nothing crosses the wire.
+/// phux-2vnl miss path: when local scroll cannot move the viewport
+/// (empty history, already at the live tail, or an alt-screen replica
+/// whose mode bits we missed), the wheel is forwarded instead of eaten.
 #[tokio::test]
-async fn wheel_in_primary_screen_pane_scrolls_locally() {
+async fn wheel_noop_local_scroll_is_forwarded() {
     let (received, _, _, _) = dispatch_mouse_two_pane_with(
         vec![InputEvent::Mouse(mev(
             MouseAction::Press,
@@ -1951,7 +1978,81 @@ async fn wheel_in_primary_screen_pane_scrolls_locally() {
         (1, 1),
     )
     .await;
-    assert!(received.is_empty(), "expected no frames, got {received:?}");
+    match received.as_slice() {
+        [FrameKind::InputMouse { terminal_id, event }] => {
+            assert_eq!(*terminal_id, tid(2));
+            assert_eq!(event.button, MouseButton::Four);
+        }
+        other => panic!("expected a no-op local scroll to forward, got {other:?}"),
+    }
+}
+
+/// Same miss path at the live tail of a pane that *does* have history:
+/// wheel-down cannot move further, so it must not be eaten.
+#[tokio::test]
+async fn wheel_down_at_live_tail_is_forwarded() {
+    let history = primary_scrollback_vt(40);
+    let (received, _, _, _) = dispatch_mouse_two_pane_with(
+        vec![InputEvent::Mouse(mev(
+            MouseAction::Press,
+            MouseButton::Five,
+            70.0,
+            5.0,
+        ))],
+        &[],
+        &[(tid(2), history.as_slice())],
+        (1, 1),
+    )
+    .await;
+    match received.as_slice() {
+        [FrameKind::InputMouse { terminal_id, event }] => {
+            assert_eq!(*terminal_id, tid(2));
+            assert_eq!(event.button, MouseButton::Five);
+        }
+        other => panic!("expected wheel-down at the live tail to forward, got {other:?}"),
+    }
+}
+
+/// Alt-screen with prior primary history still must not local-scroll
+/// (phux-2vnl): the wheel becomes arrows, not a replica history pan.
+#[tokio::test]
+async fn wheel_in_alt_screen_with_prior_history_still_synthesizes_arrows() {
+    let mut vt = primary_scrollback_vt(40);
+    vt.extend_from_slice(b"\x1b[?1049h");
+    let (received, _, _, _) = dispatch_mouse_two_pane_with(
+        vec![InputEvent::Mouse(mev(
+            MouseAction::Press,
+            MouseButton::Four,
+            70.0,
+            5.0,
+        ))],
+        &[],
+        &[(tid(2), vt.as_slice())],
+        (1, 1),
+    )
+    .await;
+    assert_eq!(
+        received.len(),
+        3,
+        "alt-screen owns the wheel; one notch = 3 arrows: {received:?}"
+    );
+    for frame in &received {
+        match frame {
+            FrameKind::InputKey { terminal_id, event } => {
+                assert_eq!(*terminal_id, tid(2));
+                assert_eq!(event.key, PhysicalKey::ArrowUp);
+            }
+            other => panic!("expected INPUT_KEY, not a forwarded wheel, got {other:?}"),
+        }
+    }
+}
+
+fn primary_scrollback_vt(lines: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    for i in 0..lines {
+        out.extend_from_slice(format!("line-{i:03}\r\n").as_bytes());
+    }
+    out
 }
 
 /// Wheel over a pane whose app tracks the mouse (Claude Code sets
