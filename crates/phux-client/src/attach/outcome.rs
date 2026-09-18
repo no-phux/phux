@@ -123,6 +123,12 @@ impl From<phux_dial::DialError> for AttachError {
         match value {
             phux_dial::DialError::Io(err) => Self::Io(err),
             phux_dial::DialError::Connect(msg) => Self::Connect(msg),
+            // Same repair class as a WebSocket 401: the host answered and
+            // refused the token, so the CLI re-pairs rather than treating
+            // it as overlay loss.
+            phux_dial::DialError::AuthRefused(msg) => {
+                Self::Connect(format!("pairing token refused ({msg})"))
+            }
             phux_dial::DialError::Unreachable(msg) => Self::Unreachable(msg),
             // A stalled lane IS a disconnection — the peer is gone, we just
             // had to ask to find out. Mapping it here is what routes a
@@ -244,6 +250,10 @@ mod tests {
         assert!(matches!(
             super::AttachError::from(phux_dial::DialError::Connect("pin mismatch".to_owned())),
             super::AttachError::Connect(_)
+        ));
+        assert!(matches!(
+            super::AttachError::from(phux_dial::DialError::AuthRefused("unauthorized".to_owned())),
+            super::AttachError::Connect(msg) if msg.contains("pairing token refused")
         ));
         assert!(matches!(
             super::AttachError::from(phux_dial::DialError::Io(std::io::Error::from(
