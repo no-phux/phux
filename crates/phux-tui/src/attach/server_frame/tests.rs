@@ -4034,6 +4034,69 @@ fn keep_empty_mark_follows_broadcasts_for_this_session_only() {
     assert!(!outcome.exit, "the broadcast mark keeps the attach");
 }
 
+/// phux-4s6o: a session-rename broadcast updates this client's status name
+/// when `current` matches, and always reports the pair so the driver can
+/// refresh the peer graph.
+#[test]
+fn session_rename_broadcast_updates_this_clients_status_name() {
+    use phux_protocol::wire::frame::{SESSION_NAME_KEY, Scope, encode_session_rename};
+
+    let pane = tid(1);
+    let mut workspace = Workspace::single(pane.clone());
+    let mut focused = Some(pane.clone());
+    let mut panes = panes_for(&[&pane]);
+    let mut name = "work".to_owned();
+    let mut keep = false;
+    let renamed = FrameKind::MetadataChanged {
+        scope: Scope::Global,
+        key: SESSION_NAME_KEY.to_owned(),
+        value: Some(encode_session_rename("work", "notes")),
+        actor: None,
+    };
+    let outcome = drive_keep_empty(
+        renamed,
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &mut name,
+        &mut keep,
+    );
+    assert_eq!(name, "notes");
+    assert_eq!(
+        outcome
+            .session_rename
+            .as_ref()
+            .map(|(c, n)| (c.as_str(), n.as_str())),
+        Some(("work", "notes"))
+    );
+
+    let peer = FrameKind::MetadataChanged {
+        scope: Scope::Global,
+        key: SESSION_NAME_KEY.to_owned(),
+        value: Some(encode_session_rename("other", "elsewhere")),
+        actor: None,
+    };
+    let outcome = drive_keep_empty(
+        peer,
+        &mut workspace,
+        &mut focused,
+        &mut panes,
+        &mut name,
+        &mut keep,
+    );
+    assert_eq!(
+        name, "notes",
+        "a peer rename does not overwrite our status name"
+    );
+    assert_eq!(
+        outcome
+            .session_rename
+            .as_ref()
+            .map(|(c, n)| (c.as_str(), n.as_str())),
+        Some(("other", "elsewhere"))
+    );
+}
+
 /// Attaching to a session that is already empty starts in the empty state:
 /// no workspace, no focus, and no pane slot for the sentinel focus id.
 #[test]

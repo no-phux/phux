@@ -1327,3 +1327,179 @@ fn federation_notices_use_the_degraded_wording() {
         "federation degraded: satellite edge is unreachable: x"
     );
 }
+
+// ---- phux-4s6o: session rename confirmation and peer identity ------------
+
+#[tokio::test(flavor = "current_thread")]
+async fn bootstrap_subscribes_to_session_rename_key() {
+    let (_state, mut client, mut server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    assert!(
+        sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::SubscribeMetadata { scope: Scope::Global, key }
+            if key == SESSION_NAME_KEY
+        )),
+        "attach must subscribe to SESSION_NAME_KEY so a peer rename refreshes the roster: {sent:?}"
+    );
+}
+
+#[test]
+fn apply_graph_rename_moves_the_label_not_the_id() {
+    let mut sessions = vec![
+        SessionInfo::new(SessionId::new(1), "test"),
+        SessionInfo::new(SessionId::new(2), "peer"),
+    ];
+    apply_graph_rename(&mut sessions, "peer", "notes");
+    assert_eq!(sessions[1].id, SessionId::new(2));
+    assert_eq!(sessions[1].name, "notes");
+    assert_eq!(sessions[0].name, "test");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn session_rename_broadcast_updates_peer_roster_without_reattach() {
+    use phux_protocol::wire::frame::encode_session_rename;
+
+    let (mut state, mut client, _server, mut out) =
+        bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    state
+        .peers
+        .sessions
+        .push(SessionInfo::new(SessionId::new(2), "peer"));
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::MetadataChanged {
+                scope: Scope::Global,
+                key: SESSION_NAME_KEY.to_owned(),
+                value: Some(encode_session_rename("peer", "notes")),
+                actor: None,
+            },
+            true,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        state.session_name, "test",
+        "a peer rename must not overwrite this client's status name"
+    );
+    let peer = state
+        .peers
+        .sessions
+        .iter()
+        .find(|session| session.id == SessionId::new(2))
+        .expect("peer row remains");
+    assert_eq!(peer.name, "notes");
+}
+
+async fn answer_rename_barrier(
+    state: &mut SessionLoop,
+    client: &mut Connection,
+    sessions: Vec<SessionInfo>,
+) {
+    use phux_protocol::wire::frame::{CommandResult, CommandValue};
+
+    let barrier = state
+        .rename_pending
+        .as_ref()
+        .expect("rename parked")
+        .barrier;
+    let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+        .with_sessions(sessions);
+    let passed = state
+        .intercept_peer_reply(
+            client,
+            FrameKind::CommandResult {
+                request_id: barrier,
+                result: CommandResult::OkWith(CommandValue::State(snapshot)),
+            },
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(passed.is_none(), "the rename GET_STATE barrier is consumed");
+}
+
+fn parked_rename(state: &mut SessionLoop, new_name: &str) {
+    state.rename_pending = Some(PendingSessionRename {
+        barrier: 4242,
+        session_id: Some(SessionId::new(1)),
+        current: "test".to_owned(),
+        new_name: new_name.to_owned(),
+    });
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn refused_rename_barrier_keeps_the_current_status_name() {
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    parked_rename(&mut state, "notes");
+    answer_rename_barrier(
+        &mut state,
+        &mut client,
+        vec![
+            SessionInfo::new(SessionId::new(1), "test"),
+            SessionInfo::new(SessionId::new(2), "taken"),
+        ],
+    )
+    .await;
+    assert!(state.rename_pending.is_none());
+    assert_eq!(
+        state.session_name, "test",
+        "a refused rename must leave the current status name authoritative"
+    );
+    let names: Vec<&str> = state
+        .peers
+        .sessions
+        .iter()
+        .map(|session| session.name.as_str())
+        .collect();
+    assert_eq!(names, ["test", "taken"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn confirmed_rename_barrier_applies_the_new_name() {
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    parked_rename(&mut state, "notes");
+    answer_rename_barrier(
+        &mut state,
+        &mut client,
+        vec![
+            SessionInfo::new(SessionId::new(1), "notes"),
+            SessionInfo::new(SessionId::new(2), "peer"),
+        ],
+    )
+    .await;
+    assert!(state.rename_pending.is_none());
+    assert_eq!(state.session_name, "notes");
+    let ours = state
+        .peers
+        .sessions
+        .iter()
+        .find(|session| session.id == SessionId::new(1))
+        .expect("this session remains");
+    assert_eq!(ours.name, "notes");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn rename_barrier_error_keeps_the_current_status_name() {
+    let (mut state, mut client, _server, _) = bootstrapped_loop_with(ServerFeatureSet::new()).await;
+    parked_rename(&mut state, "notes");
+    let passed = state
+        .intercept_peer_reply(
+            &mut client,
+            FrameKind::Error {
+                request_id: Some(4242),
+                code: phux_protocol::wire::frame::ErrorCode::InternalError,
+                message: "get-state failed".to_owned(),
+            },
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(passed.is_none());
+    assert!(state.rename_pending.is_none());
+    assert_eq!(state.session_name, "test");
+}

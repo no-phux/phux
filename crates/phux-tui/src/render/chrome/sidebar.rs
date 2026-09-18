@@ -31,6 +31,7 @@ use crate::render::Theme;
 use crate::render::overlay::HardcodedBinding;
 use crate::render::{clip_text, display_width};
 use phux_client::agent_meta::AgentMetaState;
+use phux_protocol::ids::SessionId;
 
 /// Label of the "create" affordance row (phux-fce4).
 ///
@@ -129,6 +130,10 @@ pub struct AgentEntry {
     /// two are deliberately different types of click, not the same click with
     /// a different argument.
     pub session: Option<String>,
+    /// Stable identity of [`Self::session`] when the row came from the
+    /// session graph. `None` for the attached session (`session` is also
+    /// `None`) and for satellite hops whose ids are not attachable here.
+    pub session_id: Option<SessionId>,
     /// Index of the window holding the agent's pane (its `select-window`
     /// index) — clicking the row jumps there.
     pub window: usize,
@@ -200,9 +205,11 @@ pub const fn attention_rank(state: AgentMetaState, attention: bool, seen: bool) 
 /// different morning than `!1`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SessionRosterEntry {
-    /// The session's name — also what a click commits as
-    /// `switch-session { name }`.
+    /// The session's name — the human-facing label a click still carries.
     pub name: String,
+    /// Stable session identity for local rows. `None` for satellite
+    /// placeholders: those ids are host-local and not attachable here.
+    pub id: Option<SessionId>,
     /// Display label of the serving host, supplied by the projection.
     pub host: String,
     /// Whether this is the session currently attached to the client.
@@ -344,8 +351,10 @@ pub enum SidebarTarget {
     /// A pane in another session: re-attach, select the window, focus the
     /// pane.
     Session {
-        /// The peer session's name.
+        /// The peer session's name (display / typed-name fallback).
         name: String,
+        /// Stable identity when the row was projected from the session graph.
+        id: Option<SessionId>,
         /// Window index within that session.
         window: usize,
         /// Pane ordinal within that window.
@@ -360,8 +369,8 @@ pub enum SidebarTarget {
 /// membership can change, so an index resolved against a newer table could
 /// send the user somewhere they did not click. A
 /// same-session `select-window` is forgiving of that; a `switch-session`
-/// re-attach is not, which is why the dispatcher commits the resolved NAME
-/// rather than re-deriving it.
+/// re-attach is not, which is why the dispatcher commits the resolved
+/// session id (and name as a fallback) rather than re-deriving it.
 #[derive(Debug, Clone, Default)]
 pub struct SidebarTargets {
     /// The counts the frame was painted from — the same ones [`hit_test`]
@@ -378,6 +387,8 @@ pub struct SidebarTargets {
 pub struct SessionRosterTarget {
     /// Session name, resolved against the painted frame.
     pub name: String,
+    /// Stable session identity when the row is a local-graph session.
+    pub id: Option<SessionId>,
     /// Satellite name passed to `switch-session`, if required.
     pub host: Option<String>,
 }
@@ -647,6 +658,7 @@ impl SidebarPainter {
                 .map(|e| match (&e.session, e.pane) {
                     (Some(name), Some(pane)) => SidebarTarget::Session {
                         name: name.clone(),
+                        id: e.session_id,
                         window: e.window,
                         pane,
                     },
@@ -655,6 +667,7 @@ impl SidebarPainter {
                     // focus rather than the pane that wants you.
                     (Some(name), None) => SidebarTarget::Session {
                         name: name.clone(),
+                        id: e.session_id,
                         window: e.window,
                         pane: 0,
                     },
@@ -667,6 +680,7 @@ impl SidebarPainter {
                 .map(|s| {
                     s.selectable.then(|| SessionRosterTarget {
                         name: s.name.clone(),
+                        id: s.id,
                         host: s.route_host.clone(),
                     })
                 })
@@ -1183,6 +1197,7 @@ mod tests {
     fn agent(window: usize, window_name: &str, name: &str, state: AgentMetaState) -> AgentEntry {
         AgentEntry {
             session: None,
+            session_id: None,
             window,
             window_name: window_name.to_owned(),
             pane: None,
@@ -1241,10 +1256,12 @@ mod tests {
             vec![
                 Some(SessionRosterTarget {
                     name: "development".to_owned(),
+                    id: None,
                     host: None
                 }),
                 Some(SessionRosterTarget {
                     name: "development".to_owned(),
+                    id: None,
                     host: Some("satellite-dev".to_owned())
                 }),
                 None,
@@ -1988,6 +2005,28 @@ mod tests {
         assert!(
             !row.contains("edit"),
             "window name is not the locator: {row:?}"
+        );
+    }
+
+    /// phux-4s6o: a queue click must carry the peer's `SessionId` so a
+    /// rename of that session cannot retarget the switch.
+    #[test]
+    fn a_foreign_queue_click_carries_session_identity() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_needs_you(vec![AgentEntry {
+            session: Some("stale".to_owned()),
+            session_id: Some(SessionId::new(7)),
+            pane: Some(1),
+            ..agent(0, "edit", "claude", AgentMetaState::Blocked)
+        }]);
+        assert_eq!(
+            p.click_targets().needs_you,
+            vec![SidebarTarget::Session {
+                name: "stale".to_owned(),
+                id: Some(SessionId::new(7)),
+                window: 0,
+                pane: 1,
+            }]
         );
     }
 

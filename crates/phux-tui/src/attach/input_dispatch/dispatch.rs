@@ -35,6 +35,7 @@ use crate::predict::{Overlay, PredictionState};
 use crate::render::overlay::{ContextMenu, OverlayOutcome, OverlayState, ScreenSelectionPoint};
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
+use super::args::switch_session_args;
 use super::ctx::{DispatchCtx, DragGrab};
 use super::effects::encode_layout_or_log;
 use super::effects::{ChordOutcome, apply_action_effects, consume_chord};
@@ -1603,23 +1604,27 @@ fn sidebar_agent_action(
     target: &crate::render::chrome::sidebar::SidebarTarget,
 ) -> Option<phux_config::keybind::ResolvedAction> {
     use crate::render::chrome::sidebar::SidebarTarget;
-    let (name, window, pane) = match target {
+    let (id, name, window, pane) = match target {
         SidebarTarget::Window(index) => return sidebar_window_action(*index),
-        SidebarTarget::Session { name, window, pane } => (name, window, pane),
+        SidebarTarget::Session {
+            id,
+            name,
+            window,
+            pane,
+        } => (id, name, window, pane),
     };
+    let mut args = switch_session_args(name.clone(), *id);
+    args.insert(
+        "window".to_owned(),
+        toml::Value::Integer(i64::try_from(*window).ok()?),
+    );
+    args.insert(
+        "pane".to_owned(),
+        toml::Value::Integer(i64::try_from(*pane).ok()?),
+    );
     Some(phux_config::keybind::ResolvedAction {
         action: "switch-session".to_owned(),
-        args: std::collections::BTreeMap::from([
-            ("name".to_owned(), toml::Value::String(name.clone())),
-            (
-                "window".to_owned(),
-                toml::Value::Integer(i64::try_from(*window).ok()?),
-            ),
-            (
-                "pane".to_owned(),
-                toml::Value::Integer(i64::try_from(*pane).ok()?),
-            ),
-        ]),
+        args,
     })
 }
 
@@ -1627,10 +1632,7 @@ fn sidebar_agent_action(
 fn sidebar_session_action(
     target: &crate::render::chrome::sidebar::SessionRosterTarget,
 ) -> phux_config::keybind::ResolvedAction {
-    let mut args = std::collections::BTreeMap::from([(
-        "name".to_owned(),
-        toml::Value::String(target.name.clone()),
-    )]);
+    let mut args = switch_session_args(target.name.clone(), target.id);
     if let Some(host) = &target.host {
         args.insert("host".to_owned(), toml::Value::String(host.clone()));
     }

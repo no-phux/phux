@@ -104,6 +104,7 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
             );
             rows.push(AgentEntry {
                 session: Some(session.name.clone()),
+                session_id: Some(session.id),
                 window: w,
                 window_name: session.name.clone(),
                 pane: Some(p),
@@ -138,6 +139,7 @@ pub(super) fn session_roster(
     for session in peers.ordered_sessions() {
         let mut entry = SessionRosterEntry {
             name: session.name.clone(),
+            id: Some(session.id),
             host: peers.serving_host.unwrap_or("this server").to_owned(),
             active: Some(session.id) == peers.focused_session,
             route_host: None,
@@ -253,6 +255,7 @@ mod tests {
     fn local_row(name: &str, state: AgentMetaState) -> AgentEntry {
         AgentEntry {
             session: None,
+            session_id: None,
             window: 0,
             window_name: "here".to_owned(),
             pane: Some(0),
@@ -322,6 +325,11 @@ mod tests {
             Some("peer"),
             "and it carries the session a click must switch to"
         );
+        assert_eq!(
+            rows[1].session_id,
+            Some(SessionId::new(2)),
+            "the click carries the stable id, not only the display name"
+        );
         assert_eq!(rows[1].pane, Some(0), "and the pane that wants the human");
         assert_eq!(rows[0].name, "codex");
 
@@ -359,6 +367,7 @@ mod tests {
         assert_eq!(rows.len(), 1, "{rows:?}");
         assert!(rows[0].attention);
         assert_eq!(rows[0].session.as_deref(), Some("peer"));
+        assert_eq!(rows[0].session_id, Some(SessionId::new(2)));
     }
 
     #[test]
@@ -383,6 +392,7 @@ mod tests {
         assert_eq!(roster[0].host, "mini");
         let peer = &roster[1];
         assert_eq!(peer.name, "peer");
+        assert_eq!(peer.id, Some(SessionId::new(2)));
         assert_eq!(peer.blocked, 1);
         assert_eq!(peer.working, 1);
         assert_eq!(peer.total(), 2);

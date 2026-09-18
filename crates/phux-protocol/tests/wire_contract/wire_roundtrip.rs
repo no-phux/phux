@@ -3625,6 +3625,24 @@ fn session_facets_follow_resource_facets_without_aliasing() {
     assert_eq!(decoded, frame);
 }
 
+/// The `phux.session.name/v1` value codec round-trips `current\0new` and
+/// refuses empty sides, extra NULs, or non-UTF-8.
+#[test]
+fn session_rename_value_codec() {
+    use phux_protocol::wire::frame::{decode_session_rename, encode_session_rename};
+
+    assert_eq!(encode_session_rename("work", "notes"), b"work\0notes");
+    assert_eq!(
+        decode_session_rename(&encode_session_rename("work", "notes")),
+        Some(("work", "notes"))
+    );
+    assert_eq!(decode_session_rename(b"work\0"), None);
+    assert_eq!(decode_session_rename(b"\0notes"), None);
+    assert_eq!(decode_session_rename(b"work"), None);
+    assert_eq!(decode_session_rename(b"work\0notes\0x"), None);
+    assert_eq!(decode_session_rename(&[0xFF, 0, b'n']), None);
+}
+
 /// The `phux.session.keep_empty/v1` value codec round-trips and refuses
 /// anything but `name\0true` / `name\0false`.
 #[test]

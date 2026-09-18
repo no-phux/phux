@@ -167,17 +167,20 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// snapshot.
     pub focused_session: Option<phux_protocol::ids::SessionId>,
     /// phux-eb0: the name of the session this client is attached to,
-    /// resolved from the latest ATTACHED snapshot. A `switch-session`
-    /// targeting this name without a window/pane target is a silent no-op
-    /// (guarded in [`apply_action_effects`]). Empty before the first snapshot.
+    /// resolved from the latest ATTACHED snapshot (and from a confirmed
+    /// `phux.session.name/v1` change). A `switch-session` targeting this
+    /// session without a window/pane target is a silent no-op (guarded in
+    /// [`apply_action_effects`]). Empty before the first snapshot.
     ///
-    /// Mutable so the `rename-session` action can optimistically update it
-    /// the moment the user commits a rename: the client sends the
-    /// `RENAME_SESSION` command and reflects the new name in its own status
-    /// bar immediately, rather than waiting a round-trip. The server is
-    /// authoritative — the next `ATTACHED` snapshot overwrites this with the
-    /// server's value (and is how other attached clients learn the rename).
+    /// Mutable so a confirmed rename can update the status bar. The write
+    /// itself is fire-and-forget (`SET_METADATA` has no reply); the driver
+    /// applies the new name only from the correlated `GET_STATE` barrier or
+    /// a `METADATA_CHANGED` broadcast, so a refused rename cannot lie.
     pub session_name: &'a mut String,
+    /// In-flight `rename-session` confirmation, parked by
+    /// [`apply_action_effects`] until the driver consumes the `GET_STATE`
+    /// barrier. `None` when no rename is outstanding.
+    pub rename_pending: &'a mut Option<super::effects::PendingSessionRename>,
     /// phux-eb0: out-channel for a committed `switch-session { name }`.
     /// `apply_action_effects` sets this to `Some(target)` when the user
     /// picks a peer session; the driver's `main_loop` reads it after the

@@ -24,15 +24,18 @@ use phux_client_core::session::{EffectBuffer as KernelEffectBuffer, SessionKerne
 use phux_protocol::ResourceKind;
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{ClientId, ResourceId, SatelliteHost, SessionId};
-use phux_protocol::wire::frame::{AttachTarget, CONFIG_RELOAD_KEY, Command, FrameKind, Scope};
+use phux_protocol::wire::frame::{
+    AttachTarget, CONFIG_RELOAD_KEY, Command, CommandResult, CommandValue, FrameKind,
+    SESSION_NAME_KEY, Scope,
+};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
 use crate::attach::actions::{ParkedAdopt, PendingSplit, PendingWindow};
 use crate::attach::connection::{Connection, NegotiatedBootstrap};
 use crate::attach::input::StdinParser;
 use crate::attach::input_dispatch::{
-    DispatchCtx, DragGrab, ReattachTarget, dispatch_input_events, encode_layout_or_log,
-    sync_overlays_to_focused_pane,
+    DispatchCtx, DragGrab, PendingSessionRename, ReattachTarget, dispatch_input_events,
+    encode_layout_or_log, sync_overlays_to_focused_pane,
 };
 
 /// The QUIC connection keeps one of its 128 bidi streams for control.
@@ -101,6 +104,18 @@ mod tests;
 /// satellite query by its relay deadline (30 s); the margin covers the
 /// aggregate's own work and the transport.
 const HOST_INVENTORY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(35);
+
+/// Rename the matching cached session in place. Identity (`SessionId`) is
+/// unchanged; only the display label moves.
+fn apply_graph_rename(
+    sessions: &mut [phux_protocol::wire::info::SessionInfo],
+    current: &str,
+    new_name: &str,
+) {
+    if let Some(session) = sessions.iter_mut().find(|session| session.name == current) {
+        new_name.clone_into(&mut session.name);
+    }
+}
 
 /// phux-c2td.3: of the `SatelliteUnreachable` notices held while a host
 /// inventory was in flight, the ones its reply does not explain.
@@ -222,6 +237,10 @@ const ESC_FLUSH_IDLE: Duration = Duration::from_millis(10);
 const SYNC_OUTPUT_WATCHDOG: Duration = Duration::from_secs(1);
 
 /// What one [`SessionLoop::step`] decided about the loop's future.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "LoopExit is the attach-ending payload; boxing it would scatter every match"
+)]
 pub(super) enum Step {
     /// Nothing ended; park on the wake-up sources again.
     Continue,
@@ -230,6 +249,10 @@ pub(super) enum Step {
 }
 
 /// What one handled server frame decided about the burst it arrived in.
+#[allow(
+    clippy::large_enum_variant,
+    reason = "LoopExit is the attach-ending payload; boxing it would scatter every match"
+)]
 enum FrameStep {
     /// Frame handled; move on to the next frame in the burst.
     Done,
@@ -647,8 +670,10 @@ pub(super) struct SessionLoop {
     /// on the same SIGWINCH edge — a monitor change can move the window to
     /// a display with a different cell size (phux-yyex).
     cell_px_dims: (u16, u16),
-    /// The attached session's name, from ATTACHED.
+    /// The attached session's name, from ATTACHED and confirmed rename broadcasts.
     session_name: String,
+    /// In-flight `rename-session` waiting on its `GET_STATE` barrier.
+    rename_pending: Option<PendingSessionRename>,
     /// ADR-0105: whether the attached session is keep-empty, from ATTACHED
     /// and `phux.session.keep_empty/v1` broadcasts.
     keep_empty_session: bool,
@@ -851,6 +876,7 @@ impl SessionLoop {
             viewport_dims,
             cell_px_dims,
             session_name: String::new(),
+            rename_pending: None,
             keep_empty_session: false,
             peers: PeerCaches {
                 sweep_pending: true,
@@ -1265,6 +1291,73 @@ impl SessionLoop {
         std::mem::take(&mut self.peers.held_unreachable)
     }
 
+    /// Apply a `phux.session.name/v1` broadcast to the cached graph and
+    /// (when it names this client's session) the status-bar name.
+    fn fold_session_rename(
+        &mut self,
+        outcome: &mut FrameOutcome,
+        repaint: &mut RepaintAccumulator,
+    ) {
+        let Some((current, new_name)) = outcome.session_rename.take() else {
+            return;
+        };
+        apply_graph_rename(&mut self.peers.sessions, &current, &new_name);
+        self.peers.chrome_dirty = true;
+        self.session_picker_dirty = true;
+        self.note_chrome_change(repaint);
+    }
+
+    /// The `GET_STATE` barrier after a local rename: the snapshot is
+    /// authoritative, so a refused write leaves the current name in place.
+    fn confirm_session_rename(&mut self, result: &CommandResult, repaint: &mut RepaintAccumulator) {
+        match result {
+            CommandResult::OkWith(CommandValue::State(snapshot)) => {
+                let Some(pending) = self.rename_pending.take() else {
+                    return;
+                };
+                self.peers.sessions.clone_from(&snapshot.sessions);
+                if let Some(id) = self.peers.focused_session.or(pending.session_id)
+                    && let Some(info) = snapshot.sessions.iter().find(|s| s.id == id)
+                {
+                    self.session_name.clone_from(&info.name);
+                    if info.name != pending.new_name {
+                        self.apply_notices(
+                            vec![Notice::warn(format!(
+                                "could not rename session to {}",
+                                pending.new_name
+                            ))],
+                            repaint,
+                        );
+                    }
+                }
+                self.peers.chrome_dirty = true;
+                self.session_picker_dirty = true;
+                self.note_chrome_change(repaint);
+            }
+            CommandResult::Error { message, .. } => {
+                self.fail_session_rename(message, repaint);
+            }
+            _ => {
+                self.fail_session_rename("the server did not confirm the session rename", repaint);
+            }
+        }
+    }
+
+    /// A refused or unanswered rename barrier: keep the current name.
+    fn fail_session_rename(&mut self, message: &str, repaint: &mut RepaintAccumulator) {
+        let pending = self.rename_pending.take();
+        let text = pending.as_ref().map_or_else(
+            || format!("could not rename session: {message}"),
+            |pending| {
+                format!(
+                    "could not rename session to {}: {message}",
+                    pending.new_name
+                )
+            },
+        );
+        self.apply_notices(vec![Notice::warn(text)], repaint);
+    }
+
     /// phux-c2td.3: once a host-inventory request has waited past
     /// [`HOST_INVENTORY_DEADLINE`], free its slot and put every notice held
     /// for it on the bar. Called from the status tick, which paints the bar
@@ -1511,6 +1604,14 @@ impl SessionLoop {
         conn.send(&FrameKind::SubscribeMetadata {
             scope: Scope::Global,
             key: phux_protocol::wire::frame::SESSION_KEEP_EMPTY_KEY.to_owned(),
+        })
+        .await?;
+        // phux-4s6o: watch session renames so the roster and status name
+        // follow `phux.session.name/v1` without a re-attach. The same
+        // subscription is how a peer learns a rename another client applied.
+        conn.send(&FrameKind::SubscribeMetadata {
+            scope: Scope::Global,
+            key: SESSION_NAME_KEY.to_owned(),
         })
         .await?;
         if subscribe_layout && let Some(session) = self.peers.focused_session {
@@ -2200,6 +2301,7 @@ impl SessionLoop {
             foreign_agents: &self.peers.foreign_agents,
             focused_session: self.peers.focused_session,
             session_name: &mut self.session_name,
+            rename_pending: &mut self.rename_pending,
             switch_request: &mut self.switch_request,
             zoomed: &mut self.zoomed,
             sidebar,
@@ -2580,6 +2682,27 @@ impl SessionLoop {
         repaint: &mut RepaintAccumulator,
     ) -> Result<Option<FrameKind>, AttachError> {
         match frame {
+            FrameKind::CommandResult { request_id, result }
+                if self
+                    .rename_pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.barrier == request_id) =>
+            {
+                self.confirm_session_rename(&result, repaint);
+                Ok(None)
+            }
+            FrameKind::Error {
+                request_id: Some(request_id),
+                message,
+                ..
+            } if self
+                .rename_pending
+                .as_ref()
+                .is_some_and(|pending| pending.barrier == request_id) =>
+            {
+                self.fail_session_rename(&message, repaint);
+                Ok(None)
+            }
             // phux-c2td.3: the reply to our own host-inventory GET_STATE.
             // Picker display data only, same intercept shape as the peer
             // replies above.
@@ -2734,6 +2857,7 @@ impl SessionLoop {
         self.settle_orphans(conn, &mut outcome, &answered).await?;
         let fleet_dirty = fleet_projection_dirty(&outcome);
         self.fold_peer_outcome(conn, &mut outcome, repaint).await?;
+        self.fold_session_rename(&mut outcome, repaint);
         self.finish_paint(outcome.status_bar_painted);
         self.resync_watches(conn, &mut outcome).await?;
         self.fold_chrome_and_notices(&mut outcome, repaint);

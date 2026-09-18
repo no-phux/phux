@@ -279,6 +279,7 @@ pub(super) fn agent_entries(
         for (leaf, id) in leaves.iter().enumerate() {
             let base = AgentEntry {
                 session: None,
+                session_id: None,
                 window: i,
                 window_name: w.name.clone(),
                 pane: Some(leaf),

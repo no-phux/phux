@@ -194,6 +194,11 @@ pub(in crate::attach) struct FrameOutcome {
     /// error. Set ONLY by the `MetadataChanged` arm; tombstones do not
     /// set it.
     pub(in crate::attach) config_reload: bool,
+    /// phux-4s6o: `Some((current, new))` ⇒ a subscribed `phux.session.name/v1`
+    /// broadcast applied a rename. The handler updates this client's status
+    /// name when `current` matches; the driver renames the cached session
+    /// graph so the roster/picker follow without a re-attach.
+    pub(in crate::attach) session_rename: Option<(String, String)>,
     /// phux-i0e8.2.1: transient status-bar notices raised by this frame,
     /// drained by the driver into the painter's newest-wins notice slot
     /// (`StatusBarPainter::set_notice`) right after the dispatch returns.
