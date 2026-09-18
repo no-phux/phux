@@ -5,6 +5,11 @@
 # isolated tmux server. Every assertion leaves its screen, cursor, client log,
 # server log, and command transcript under PHUX_SMOKE_ARTIFACT_DIR.
 #
+# Readiness waits are bounded polls on observed state (screen, client
+# trace, recording file, tmux size, process exit), not fixed sleeps, so
+# the probe stays load-tolerant. Each poll has a hard timeout and fails
+# the current step if the condition never holds.
+#
 # Usage: scripts/tui-probe.sh [COLS] [ROWS]
 set -Eeuo pipefail
 
@@ -134,6 +139,44 @@ wait_for_socket() {
   fail "real server did not bind $PHUX_SOCK within 30s"
 }
 
+# Poll until COMMAND succeeds. TIMEOUT is seconds; MESSAGE is the step
+# failure if the deadline is hit. COMMAND is re-evaluated each tick.
+poll_until() {
+  local timeout="$1"
+  local message="$2"
+  shift 2
+  local deadline=$((SECONDS + timeout))
+  while (( SECONDS < deadline )); do
+    if "$@"; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  fail "$message"
+}
+
+file_contains() {
+  [[ -f "$1" ]] && grep -Fq -- "$2" "$1"
+}
+
+tmux_size_is() {
+  local got
+  got="$("${TMUX[@]}" display-message -p -t "$1" '#{window_width}x#{window_height}' 2>/dev/null)" || return 1
+  [[ "$got" == "$2" ]]
+}
+
+pid_gone() {
+  ! kill -0 "$1" 2>/dev/null
+}
+
+trace_kind_gt() {
+  local kind="$1"
+  local min="$2"
+  local n
+  n="$(grep -c "kind=\"${kind}\"" "$CLIENT_TRACE" 2>/dev/null || true)"
+  [[ "${n:-0}" -gt "$min" ]]
+}
+
 collect_failure() {
   {
     printf 'step=%s\n' "$STEP"
@@ -255,6 +298,12 @@ capture attach-visible
 assert_marker_once "$RUN_DIR/attach-visible.txt" READY-VISIBLE-MARKER
 assert_marker_once "$RUN_DIR/attach-visible.txt" ONBOARDING-PASSTHROUGH
 
+# Visible snapshot can land before the client trace has flushed attach_ready
+# and the first history page; wait on those lines rather than racing them.
+poll_until 15 "client trace did not record attach_ready" \
+  file_contains "$CLIENT_TRACE" 'kind="attach_ready"'
+poll_until 15 "client trace did not record a progressive history page" \
+  file_contains "$CLIENT_TRACE" 'kind="history_page"'
 ATTACH_READY_LINE="$(grep -n 'kind="attach_ready"' "$CLIENT_TRACE" | head -n 1 | cut -d: -f1)"
 FIRST_HISTORY_LINE="$(grep -n 'kind="history_page"' "$CLIENT_TRACE" | head -n 1 | cut -d: -f1)"
 [[ -n "$ATTACH_READY_LINE" ]] || fail "client trace did not record attach_ready"
@@ -297,20 +346,21 @@ assert_screen_contains "$SESSION" LIVE-WHILE-PAGED
 
 STEP=resize-split-resync
 note "resize, split, and repaint stay exact"
+SPAWNED_BEFORE="$(grep -c 'kind="terminal_spawned"' "$CLIENT_TRACE" 2>/dev/null || true)"
 "${TMUX[@]}" resize-window -t "$SESSION" -x 96 -y 28
-sleep 0.2
-[[ "$("${TMUX[@]}" display-message -p -t "$SESSION" '#{window_width}x#{window_height}')" == "96x28" ]] \
-  || fail "tmux host did not reach 96x28"
+poll_until 15 "tmux host did not reach 96x28" tmux_size_is "$SESSION" "96x28"
 "${TMUX[@]}" send-keys -t "$SESSION" C-a
 "${TMUX[@]}" send-keys -t "$SESSION" "%"
-sleep 0.2
+poll_until 15 "client trace did not record a split pane spawn" \
+  trace_kind_gt "terminal_spawned" "${SPAWNED_BEFORE:-0}"
 "${TMUX[@]}" send-keys -t "$SESSION" "printf 'SPLIT-PANE-MARKER\\r\\n'" Enter
 assert_screen_contains "$SESSION" SPLIT-PANE-MARKER
 "${TMUX[@]}" resize-window -t "$SESSION" -x "$COLS" -y "$ROWS"
-sleep 0.2
+poll_until 15 "tmux host did not return to ${COLS}x${ROWS}" \
+  tmux_size_is "$SESSION" "${COLS}x${ROWS}"
+assert_screen_contains "$SESSION" SPLIT-PANE-MARKER
+assert_screen_contains "$SESSION" READY-VISIBLE-MARKER
 capture resize-split-resync
-[[ "$("${TMUX[@]}" display-message -p -t "$SESSION" '#{window_width}x#{window_height}')" == "${COLS}x${ROWS}" ]] \
-  || fail "tmux host did not return to ${COLS}x${ROWS}"
 assert_marker_once "$RUN_DIR/resize-split-resync.txt" READY-VISIBLE-MARKER
 assert_marker_once "$RUN_DIR/resize-split-resync.txt" SPLIT-PANE-MARKER
 
@@ -359,10 +409,15 @@ INTERRUPT="interrupt"
 assert_screen_contains "$INTERRUPT" READY-VISIBLE-MARKER
 "${TMUX[@]}" send-keys -t "$INTERRUPT" "printf 'INTERRUPTED-CAST-MARKER\\r\\n'" Enter
 assert_screen_contains "$INTERRUPT" INTERRUPTED-CAST-MARKER
+# The recorder flushes each event, but under load the screen can paint
+# before that write is visible. Do not SIGKILL until the marker is on disk.
+poll_until 15 "interrupted recording did not flush INTERRUPTED-CAST-MARKER" \
+  file_contains "$INTERRUPTED_CAST" INTERRUPTED-CAST-MARKER
 capture interrupted-before-kill "$INTERRUPT"
 INTERRUPT_PID="$("${TMUX[@]}" display-message -p -t "$INTERRUPT" '#{pane_pid}')"
 kill -KILL "$INTERRUPT_PID"
-sleep 0.2
+poll_until 15 "interrupted attach pid ${INTERRUPT_PID} did not exit" \
+  pid_gone "$INTERRUPT_PID"
 "${TMUX[@]}" kill-session -t "$INTERRUPT" 2>/dev/null || true
 [[ -s "$INTERRUPTED_CAST" ]] || fail "interrupted attach left no playable cast prefix"
 
