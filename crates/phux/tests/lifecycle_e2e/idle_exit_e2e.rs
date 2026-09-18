@@ -80,16 +80,13 @@ const EXIT_HANG_CEILING: Duration = Duration::from_secs(45);
 /// still makes the statement.
 const NO_LIFETIME_OBSERVATION: Duration = Duration::from_secs(3 * IDLE_SECS);
 
-/// Wait for the server to bind (cold-start bound, matching `rec_e2e.rs`).
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
-
 /// Wait for the seed pane's first heartbeat tick.
 ///
-/// Deliberately shorter than `SOCKET_DEADLINE`: a pane that has not run a
-/// command within this window on a server whose own idle limit is
-/// `IDLE_SECS` will never produce one, because the server is about to leave.
-/// Failing here quickly names the real problem instead of spending half a
-/// minute confirming it.
+/// Deliberately shorter than the 30s server-bind hang ceiling: a pane that
+/// has not run a command within this window on a server whose own idle limit
+/// is `IDLE_SECS` will never produce one, because the server is about to
+/// leave. Failing here quickly names the real problem instead of spending
+/// half a minute confirming it.
 const PANE_LIVE_DEADLINE: Duration = Duration::from_secs(10);
 
 /// Poll cadence for every wait loop in this file.
@@ -115,30 +112,31 @@ static COUNTER: AtomicU32 = AtomicU32::new(0);
 /// server gone by design: a panicking assertion must not leak a daemon, which
 /// is the failure mode this whole feature exists to prevent. Belt and braces.
 struct ServerGuard {
-    process: common::ServerProcess,
-    socket: PathBuf,
+    inner: common::ServerGuard,
     /// Owns the scratch directory `heartbeat` lives in. Never read — held
     /// solely so the directory outlives the guard rather than being unlinked
     /// the moment `start` returns.
     _dir: tempfile::TempDir,
     heartbeat: PathBuf,
-    /// When the child was spawned. The idle clock starts inside the server
-    /// at roughly this instant, so it is the only correct origin for "did
-    /// it honour the interval?" — measuring from the end of harness setup
-    /// would charge the server for time it had already spent counting.
-    spawned_at: Instant,
+}
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
+
+impl std::ops::DerefMut for ServerGuard {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.inner
+    }
 }
 
 impl ServerGuard {
     /// Start a server whose seed pane runs a heartbeat loop forever, with
     /// `--exit-after-idle` set to `idle_secs`.
     fn start(idle_secs: u64) -> Self {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = PathBuf::from(format!(
-            "/tmp/phux-idle-e2e-{}-{n}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
         let dir = tempfile::tempdir().expect("create temp dir");
         let heartbeat = dir.path().join("heartbeat");
 
@@ -151,44 +149,14 @@ impl ServerGuard {
             heartbeat.display()
         );
 
-        let mut cmd = Command::new(PHUX);
-        cmd.args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .arg("--seed-command")
-            .arg(&seed)
-            .arg("--exit-after-idle")
-            .arg(idle_secs.to_string());
-        let child = cmd
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-
-        let guard = Self {
-            process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
+        Self {
+            inner: common::ServerGuard::builder("idle")
+                .seed_command(seed)
+                .idle_secs(idle_secs)
+                .start(),
             _dir: dir,
             heartbeat,
-            spawned_at: Instant::now(),
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if guard.socket.exists() {
-                return guard;
-            }
-            std::thread::sleep(POLL);
         }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            guard.socket.display()
-        );
-    }
-
-    /// Poll until the server process has exited, returning how long it took.
-    /// `None` if it was still running at the deadline.
-    fn wait_for_exit(&mut self, within: Duration) -> Option<Duration> {
-        self.process.wait_for_exit(within)
     }
 
     /// The seed pane's heartbeat counter, or `None` before its first tick.

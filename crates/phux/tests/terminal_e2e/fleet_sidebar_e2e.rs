@@ -29,9 +29,6 @@
 mod common;
 
 use std::io::Read;
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -55,71 +52,30 @@ const PEER: &str = "scratch";
 const SESSION_ID_SCAN: u32 = 8;
 /// How long to wait for the briefly attached peer client to write its layout.
 const LAYOUT_DEADLINE: Duration = Duration::from_secs(20);
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
 /// Generous on purpose: the roster is deliberately allowed to arrive late now,
 /// so this is a liveness bound, not a latency assertion. The latency half of
 /// phux-k0cw.10's acceptance is structural (the sweep is issued from the
 /// repaint drain, not from bootstrap) and is not what this test measures.
 const ROSTER_DEADLINE: Duration = Duration::from_secs(20);
 const POLL: Duration = Duration::from_millis(100);
-static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
-    _dir: tempfile::TempDir,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
     fn start() -> Self {
-        let dir = tempfile::tempdir().expect("server tempdir");
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = dir
-            .path()
-            .join(format!("fleet-sidebar-{}-{n}.sock", std::process::id()));
-        let child = Command::new(PHUX)
-            .args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", common::SERVER_IDLE_LIMIT_SECS])
-            // Panes run the server's `$SHELL`; never inherit the runner's.
-            .env("SHELL", "/bin/sh")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if guard.socket.exists() {
-                return guard;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!("server did not bind {}", guard.socket.display());
-    }
-
-    fn success(&self, args: &[&str]) -> String {
-        let (verb, rest) = args.split_first().expect("verb");
-        let output = Command::new(PHUX)
-            .arg(verb)
-            .arg("--socket")
-            .arg(&self.socket)
-            .args(rest)
-            .stdin(Stdio::null())
-            .output()
-            .expect("run phux command");
-        assert!(
-            output.status.success(),
-            "phux {args:?} failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr),
-        );
-        String::from_utf8_lossy(&output.stdout).into_owned()
+        Self(
+            common::ServerGuard::builder("fleet-sidebar")
+                // Panes run the server's `$SHELL`; never inherit the runner's.
+                .env("SHELL", "/bin/sh")
+                .start(),
+        )
     }
 
     /// The peer's seed pane, read back rather than assumed.

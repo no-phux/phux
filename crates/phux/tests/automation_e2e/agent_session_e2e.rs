@@ -70,18 +70,10 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-/// Path to the freshly-built `phux` binary, injected by cargo.
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-
-/// The pre-seeded session name every server here starts with.
 const SESSION: &str = "work";
-
-/// Idle lifetime for this file's harness servers — a backstop UNDER the
-/// `Drop` kill (ADR-0063), for the case where the harness itself is reaped.
-const SERVER_IDLE_LIMIT_SECS: &str = "600";
 
 /// The detector startup grace these servers run under (production default
 /// 3 s). The fake `claude` is identifiable the moment it execs, so
@@ -91,9 +83,6 @@ const TEST_STARTUP_GRACE_MS: &str = "200";
 /// Identity recheck cadence, shortened for the same reason.
 const TEST_RECHECK_MS: &str = "200";
 
-/// How long to wait for the server to bind its socket (cold-start bound).
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
-
 /// Ceiling for one observable consequence to become visible through a verb.
 /// A failure bound, not a timing gate.
 const STEP_DEADLINE: Duration = Duration::from_secs(20);
@@ -101,18 +90,18 @@ const STEP_DEADLINE: Duration = Duration::from_secs(20);
 /// Poll cadence while sampling a verb or a watch child's captured lines.
 const POLL: Duration = Duration::from_millis(50);
 
-/// Monotonic counter so concurrent tests never collide on a socket path.
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
 
 /// A running `phux server`, killed when the guard drops.
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
-    _dir: tempfile::TempDir,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
@@ -120,53 +109,19 @@ impl ServerGuard {
     /// wants the same two overrides; they are read once inside the server
     /// process, so a client verb cannot set them after the fact.
     fn start() -> Self {
-        let dir = tempfile::tempdir().expect("create temp dir for socket");
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = dir
-            .path()
-            .join(format!("session-{}-{n}.sock", std::process::id()));
-        let child = Command::new(PHUX)
-            .args(["server", "--session", SESSION, "--socket"])
-            .arg(&socket)
-            .args(["--exit-after-idle", SERVER_IDLE_LIMIT_SECS])
-            .env("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)
-            .env("PHUX_AGENT_IDENTIFY_RECHECK_MS", TEST_RECHECK_MS)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-            _dir: dir,
-        };
-        guard.wait_for_socket();
-        guard
-    }
-
-    fn wait_for_socket(&self) {
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if self.socket.exists() {
-                return;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            self.socket.display()
-        );
+        Self(
+            common::ServerGuard::builder("session")
+                .env("PHUX_AGENT_STARTUP_GRACE_MS", TEST_STARTUP_GRACE_MS)
+                .env("PHUX_AGENT_IDENTIFY_RECHECK_MS", TEST_RECHECK_MS)
+                .start(),
+        )
     }
 
     /// Build `phux --socket <sock> <args...>`. `--socket` precedes the verb
     /// because it is the root global (ADR-0065), which makes this form safe
     /// even for verbs whose trailing positional would swallow it.
     fn cmd(&self, args: &[&str]) -> Command {
-        let mut cmd = Command::new(PHUX);
-        cmd.arg("--socket").arg(&self.socket).args(args);
-        cmd.stdin(Stdio::null());
-        cmd
+        self.cmd_global(args)
     }
 
     /// Run a verb and return its raw `Output`, success or not.

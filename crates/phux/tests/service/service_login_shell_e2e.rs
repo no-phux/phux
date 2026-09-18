@@ -49,15 +49,11 @@
 mod common;
 
 use std::io::Write as _;
-use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::path::Path;
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
-
-/// Path to the freshly-built `phux` binary, injected by cargo.
-const PHUX: &str = env!("CARGO_BIN_EXE_phux");
 
 /// The marker `phux service install` writes into the generated unit's
 /// environment (`crates/phux/src/commands/service.rs::SERVICE_MANAGED_ENV`).
@@ -75,9 +71,6 @@ const SERVICE_MANAGED_ENV: &str = "PHUX_SERVICE_MANAGED";
 /// minimal — not artificially empty — service environment.
 const LAUNCHD_DEFAULT_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 
-/// Wait for the server to bind (cold-start bound, matching `idle_exit_e2e.rs`).
-const SOCKET_DEADLINE: Duration = Duration::from_secs(30);
-
 /// Wait for the seed pane to run its command and write the result file.
 ///
 /// The command itself resolves in milliseconds; the margin is generous
@@ -90,18 +83,19 @@ const RESULT_DEADLINE: Duration = Duration::from_secs(20);
 /// Poll cadence for every wait loop in this file.
 const POLL: Duration = Duration::from_millis(50);
 
-/// Monotonic counter so concurrent tests never collide on a socket path.
-static COUNTER: AtomicU32 = AtomicU32::new(0);
-
 /// A running `phux server` child plus its private socket.
 ///
 /// Sockets live at the root of `/tmp` (matching `idle_exit_e2e.rs` /
 /// `rec_e2e.rs`): macOS caps `sun_path` at 104 bytes and this crate runs
 /// from deep worktree paths that can already exceed it before adding a
 /// filename.
-struct ServerGuard {
-    _process: common::ServerProcess,
-    socket: PathBuf,
+struct ServerGuard(common::ServerGuard);
+
+impl std::ops::Deref for ServerGuard {
+    type Target = common::ServerGuard;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
 }
 
 impl ServerGuard {
@@ -120,47 +114,16 @@ impl ServerGuard {
     /// generated unit; absent, this is indistinguishable from a server a
     /// human started directly from their own terminal.
     fn start(home: &Path, seed_command: &str, service_managed: bool) -> Self {
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let socket = PathBuf::from(format!(
-            "/tmp/phux-login-e2e-{}-{n}.sock",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&socket);
-
-        let mut cmd = Command::new(PHUX);
-        cmd.env_clear();
-        cmd.env("HOME", home);
-        cmd.env("PATH", LAUNCHD_DEFAULT_PATH);
+        let mut spawn = common::ServerGuard::builder("login")
+            .session("svc")
+            .seed_command(seed_command)
+            .env_clear()
+            .env("HOME", home)
+            .env("PATH", LAUNCHD_DEFAULT_PATH);
         if service_managed {
-            cmd.env(SERVICE_MANAGED_ENV, "1");
+            spawn = spawn.env(SERVICE_MANAGED_ENV, "1");
         }
-        cmd.args(["server", "--session", "svc", "--socket"])
-            .arg(&socket)
-            .arg("--seed-command")
-            .arg(seed_command)
-            .args(["--exit-after-idle", common::SERVER_IDLE_LIMIT_SECS]);
-        let child = cmd
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn phux server");
-
-        let guard = Self {
-            _process: common::ServerProcess::from_child(child, socket.clone()),
-            socket,
-        };
-        let deadline = Instant::now() + SOCKET_DEADLINE;
-        while Instant::now() < deadline {
-            if guard.socket.exists() {
-                return guard;
-            }
-            std::thread::sleep(POLL);
-        }
-        panic!(
-            "phux server did not bind {} within {SOCKET_DEADLINE:?}",
-            guard.socket.display()
-        );
+        Self(spawn.start())
     }
 }
 

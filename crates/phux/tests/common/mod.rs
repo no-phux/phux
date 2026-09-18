@@ -20,6 +20,13 @@ const SERVER_DEADLINE: Duration = Duration::from_secs(30);
 const GRACEFUL_DEADLINE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(50);
 
+mod server_guard;
+#[allow(
+    unused_imports,
+    reason = "re-exported for suites that spawn a ServerGuard; other common consumers do not"
+)]
+pub use server_guard::ServerGuard;
+
 /// Owns a directly spawned server until it has actually been reaped.
 pub struct ServerProcess {
     child: Child,
@@ -29,6 +36,10 @@ pub struct ServerProcess {
 impl ServerProcess {
     pub fn from_child(child: Child, socket: PathBuf) -> Self {
         Self { child, socket }
+    }
+
+    pub fn id(&self) -> u32 {
+        self.child.id()
     }
 
     pub fn child_mut(&mut self) -> &mut Child {
