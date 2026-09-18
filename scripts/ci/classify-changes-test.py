@@ -60,6 +60,8 @@ class RoutingTests(unittest.TestCase):
             (["scripts/ci/validation_receipt.py"], set()),
             (["scripts/ci/wait_validation.py"], set()),
             (["scripts/ci/extract_changelog_section.py"], set()),
+            (["scripts/ci/setup-linux-release-userspace.sh"], set()),
+            (["scripts/ci/test_runner_policy.py"], set()),
             (["scripts/check-release-orchestration.mjs"], set()),
             (["scripts/ci/cockpit_artifacts.py"], {"cockpit"}),
             (["clients/cockpit/src/main.zig", "integrations/pi/src/index.ts"], {"cockpit", "integrations"}),

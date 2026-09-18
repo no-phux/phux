@@ -64,6 +64,7 @@ WORKFLOWS = (
     "scripts/ci/validation_receipt.py", "scripts/ci/test_validation_receipt.py",
     "scripts/ci/wait_validation.py", "scripts/ci/test_wait_validation.py",
     "scripts/ci/extract_changelog_section.py", "scripts/ci/test_extract_changelog_section.py",
+    "scripts/ci/setup-linux-release-userspace.sh", "scripts/ci/test_runner_policy.py",
     "scripts/check-release-orchestration.mjs",
 )
 ROOT = Path(__file__).resolve().parents[2]
