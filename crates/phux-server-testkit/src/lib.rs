@@ -58,6 +58,7 @@ use phux_protocol::wire::frame::{
     TYPE_COMMAND_RESULT, TYPE_DETACHED, TYPE_HELLO_OK, ViewportInfo,
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
+use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::oneshot;
@@ -310,6 +311,45 @@ pub async fn wait_for_socket(path: &Path, deadline: Duration) -> UnixStream {
     assert_eq!(type_byte, TYPE_HELLO_OK);
     assert!(matches!(frame, FrameKind::HelloOk { .. }));
     stream
+}
+
+/// Owning handles for [`spawn_server_connected`]. Keep this alive: dropping it
+/// drops the shutdown sender, which is what tells `run_async` to exit.
+#[must_use = "dropping the shutdown sender stops the server"]
+pub struct SpawnedServer {
+    _tmp: TempDir,
+    socket_path: PathBuf,
+    _shutdown: oneshot::Sender<()>,
+    _server: JoinHandle<Result<(), ServerError>>,
+}
+
+impl SpawnedServer {
+    /// Open another HELLO'd client against this server.
+    pub async fn connect(&self) -> UnixStream {
+        wait_for_socket(&self.socket_path, SOCKET_CONNECT_DEADLINE).await
+    }
+}
+
+/// Spawn a [`ServerRuntime`] (optionally pre-seeded) and wait until a HELLO'd
+/// client is connected.
+///
+/// Replaces the four-line `TempDir` + [`spawn_server`] + [`wait_for_socket`]
+/// preamble (phux-n0du Pass 3 item 2). Extra clients use [`SpawnedServer::connect`].
+#[must_use = "dropping the shutdown sender stops the server"]
+pub async fn spawn_server_connected(pre_seeded: Option<&str>) -> (SpawnedServer, UnixStream) {
+    let tmp = TempDir::new().unwrap();
+    let socket_path = tmp.path().join("phux.sock");
+    let (shutdown, server) = spawn_server(socket_path.clone(), pre_seeded);
+    let stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
+    (
+        SpawnedServer {
+            _tmp: tmp,
+            socket_path,
+            _shutdown: shutdown,
+            _server: server,
+        },
+        stream,
+    )
 }
 
 /// Poll `UnixStream::connect(path)` without sending protocol frames.
