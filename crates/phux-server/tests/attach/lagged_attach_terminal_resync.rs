@@ -215,7 +215,10 @@ async fn spawn_burst_pane(
     )
     .await;
     recv_until(owner, |_, frame| match frame {
-        FrameKind::ResourceSpawned { request_id, result } if request_id == 1 => match result {
+        FrameKind::ResourceSpawned {
+            request_id: 1,
+            result,
+        } => match result {
             SpawnResult::Ok(id) => Some(id),
             other => panic!("SPAWN_RESOURCE failed: {other:?}"),
         },

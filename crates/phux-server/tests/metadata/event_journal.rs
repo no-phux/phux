@@ -205,7 +205,7 @@ async fn ask(stream: &mut UnixStream, request_id: u32, terminal: &ResourceId, id
 }
 
 /// The next `EVENT` `matches` accepts.
-async fn next_event(stream: &mut UnixStream, matches: impl Fn(&Seen) -> bool) -> Seen {
+async fn next_event(stream: &mut UnixStream, matches: impl Fn(&Seen) -> bool + Send) -> Seen {
     recv_until(stream, |_, frame| {
         as_seen(frame).filter(|seen| matches(seen))
     })
