@@ -4823,7 +4823,7 @@ mod tests {
     }
 
     /// phux-5js7: ECH of a wrapped wide glyph's continuation rewrites the
-    /// spacer head on the previous row. A pooled RenderState (and a full paint
+    /// spacer head on the previous row. A pooled `RenderState` (and a full paint)
     /// that trusts dirty bits) must copy that rewrite, matching a fresh
     /// snapshot. This is seed 11 of the property test below, locked so it
     /// cannot be skipped.
