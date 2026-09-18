@@ -20,6 +20,23 @@ const SERVER_DEADLINE: Duration = Duration::from_secs(30);
 const GRACEFUL_DEADLINE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(50);
 
+/// Poll `socket` until a Unix stream connect succeeds, or `SERVER_DEADLINE`
+/// elapses.
+///
+/// Waiting on accept rather than on the file existing is the property the
+/// service suites need: a stale socket file is exactly the case those tests
+/// distinguish. Four suites used to copy this loop (phux-n0du).
+pub fn wait_until_accepting(socket: &Path) -> bool {
+    let deadline = Instant::now() + SERVER_DEADLINE;
+    while Instant::now() < deadline {
+        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+            return true;
+        }
+        std::thread::sleep(POLL);
+    }
+    false
+}
+
 mod server_guard;
 #[allow(
     unused_imports,
