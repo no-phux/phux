@@ -1,12 +1,15 @@
 //! Connection-lifetime agent review state (phux-deya).
 //!
-//! `PaneSlot.seen` dies with [`super::loop_state::SessionLoop`]. Review is
-//! per-viewer and per-identity, so it lives next to orphan bookkeeping in
-//! the outer attach loop and is keyed by [`ResourceId`]. Local and foreign
-//! GET/broadcast folds, and `AgentSession` stream snapshots, all share this
-//! index. Identical observations do not re-arm; a switch-drain frame that
-//! cannot be interpreted marks a gap because equality cannot recover a
-//! missed done-working-done cycle without a revision.
+//! `PaneSlot.seen` dies with each session-loop rebuild. Review is per-viewer
+//! and per-identity, so it lives next to orphan bookkeeping in the outer
+//! attach loop and is keyed by [`ResourceId`]. Local and foreign GET/broadcast
+//! folds, and `AgentSession` stream snapshots, all share this index. Identical
+//! observations do not re-arm; a switch-drain frame that cannot be interpreted
+//! marks a gap because equality cannot recover a missed done-working-done
+//! cycle without a revision.
+//!
+//! Lifted out of the driver so [`super::sidebar_zones`] and chrome can read
+//! it without naming `driver::` (phux-4fbs.4).
 
 use std::collections::HashMap;
 

@@ -148,7 +148,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     orphan_kills: super::orphans::OrphanKills,
     // phux-deya: per-identity review status carried across session switches
     // on this connection. Empty on the first attach.
-    review: super::review::ReviewIndex,
+    review: crate::attach::review::ReviewIndex,
 ) -> Result<LoopExit, AttachError> {
     let negotiated = conn.negotiated_bootstrap().ok_or_else(|| {
         AttachError::Protocol("attach loop started before bootstrap negotiation".to_owned())

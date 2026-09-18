@@ -437,7 +437,7 @@ async fn switch_session<W: crate::attach::RenderSink>(
     pending_pane: &mut Option<usize>,
     pending_resource: &mut Option<ResourceId>,
     orphan_kills: &mut super::orphans::OrphanKills,
-    review: &mut super::review::ReviewIndex,
+    review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<FrameKind, AttachError> {
     // Lifecycle transition (info): switching sessions on the same
     // connection. `?target` names the destination.
@@ -587,7 +587,7 @@ async fn attach_session<W: crate::attach::RenderSink>(
     // handed out by each `LoopExit::SwitchTo` and into the next entry, so the
     // record lives as long as this connection, not one session's loop.
     let mut orphan_kills = super::orphans::OrphanKills::default();
-    let mut review = super::review::ReviewIndex::new();
+    let mut review = crate::attach::review::ReviewIndex::new();
     loop {
         let claim = onboarding_claim.take();
         let exit = match main_loop(
@@ -695,7 +695,7 @@ async fn reattach_on_same_connection(
     pending_pane: &mut Option<usize>,
     pending_resource: &mut Option<ResourceId>,
     orphan_kills: &mut super::orphans::OrphanKills,
-    review: &mut super::review::ReviewIndex,
+    review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<phux_protocol::wire::frame::FrameKind, AttachError> {
     detach_and_drain(conn, orphan_kills, review).await?;
     let attach_target = match target {
@@ -763,7 +763,7 @@ pub(super) fn create_session_target(name: String) -> AttachTarget {
 async fn detach_and_drain(
     conn: &mut Connection,
     orphan_kills: &mut super::orphans::OrphanKills,
-    review: &mut super::review::ReviewIndex,
+    review: &mut crate::attach::review::ReviewIndex,
 ) -> Result<(), AttachError> {
     conn.send(&FrameKind::Detach).await?;
     loop {
@@ -846,7 +846,7 @@ pub(super) enum LoopExit {
         orphan_kills: super::orphans::OrphanKills,
         /// phux-deya: per-identity review status for this connection. Session
         /// loops rebuild pane slots; this does not.
-        review: super::review::ReviewIndex,
+        review: crate::attach::review::ReviewIndex,
     },
 }
 

@@ -7,8 +7,8 @@ use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::ResourceLifecycle;
 
 use crate::attach::agent_rows::AgentSessionRows;
-use crate::attach::driver::review::ReviewIndex;
 use crate::attach::pane_state::{PaneSlot, VcsIndex};
+use crate::attach::review::ReviewIndex;
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
 use crate::render::chrome::sidebar::{AgentEntry, SidebarPainter};

@@ -24,7 +24,7 @@ use crate::layout::Workspace;
 use crate::render::chrome::sidebar::{AgentEntry, SessionRosterEntry, attention_rank};
 use phux_client::agent_meta::{AgentAttention, AgentMetaState, AgentRecord};
 
-use super::driver::review::ReviewIndex;
+use super::review::ReviewIndex;
 
 /// Label for a peer pane that asked for a human but declares no agent
 /// record, so the strip can say WHAT happened without claiming to know who.

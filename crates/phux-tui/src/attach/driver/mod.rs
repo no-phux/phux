@@ -28,7 +28,6 @@ mod loop_state;
 mod main_loop;
 mod orphans;
 mod overlay_paint;
-pub(in crate::attach) mod review;
 mod session_io;
 mod subscriptions;
 mod terminal;

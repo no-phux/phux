@@ -361,7 +361,7 @@ impl PeerCaches {
     /// from.
     fn inputs<'a>(
         &'a self,
-        review: &'a super::review::ReviewIndex,
+        review: &'a crate::attach::review::ReviewIndex,
     ) -> crate::attach::sidebar_zones::PeerInputs<'a> {
         crate::attach::sidebar_zones::PeerInputs {
             serving_host: self.serving_host.as_deref(),
@@ -603,7 +603,7 @@ pub(super) struct SessionLoop {
     orphan_kills: super::orphans::OrphanKills,
     /// phux-deya: per-identity review status. Connection-lifetime; a
     /// session switch rebuilds pane slots but not this index.
-    review: super::review::ReviewIndex,
+    review: crate::attach::review::ReviewIndex,
     /// phux-c2td.25: did the server advertise
     /// [`ServerFeature::ConditionalKill`](phux_protocol::caps::ServerFeature::ConditionalKill)?
     /// Set, a bound stray satellite pane is retried through
@@ -872,7 +872,7 @@ impl SessionLoop {
             pending_splits: HashMap::new(),
             pending_windows: HashMap::new(),
             orphan_kills,
-            review: super::review::ReviewIndex::new(),
+            review: crate::attach::review::ReviewIndex::new(),
             conditional_kill_supported,
             pending_directory: None,
             expected_closes: HashSet::new(),
@@ -3201,7 +3201,7 @@ impl SessionLoop {
 
     /// phux-deya: take over the review index an earlier entry on this
     /// connection handed out at a session switch.
-    pub(super) fn set_review(&mut self, review: super::review::ReviewIndex) {
+    pub(super) fn set_review(&mut self, review: crate::attach::review::ReviewIndex) {
         self.review = review;
     }
 
