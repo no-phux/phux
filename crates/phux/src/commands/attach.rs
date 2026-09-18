@@ -456,25 +456,25 @@ impl AttachAttempt<'_> {
                 .await
             }
             (None, Some(name)) => {
-                attach_default_with_fallback(
+                Box::pin(attach_default_with_fallback(
                     self.dial,
                     name,
                     self.predict_cfg,
                     self.recorder,
                     initial_notice,
                     self.input_replay,
-                )
+                ))
                 .await
             }
             (None, None) => {
-                run_attach_once_rec(
+                Box::pin(run_attach_once_rec(
                     self.dial,
                     self.target.clone(),
                     self.predict_cfg,
                     self.recorder.map(Rc::clone),
                     initial_notice,
                     self.input_replay.map(Rc::clone),
-                )
+                ))
                 .await
             }
         }
