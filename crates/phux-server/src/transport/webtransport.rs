@@ -18,7 +18,9 @@
 //! the request path (browsers: the JS `WebTransport` API cannot set request
 //! headers, and the URL is the one authenticated slot it does control). A
 //! missing or invalid token refuses the session with HTTP 403 before it is
-//! established. On a loopback (unauthenticated) listener no token is expected.
+//! established. Duplicate `Authorization` fields are refused on the CONNECT
+//! accept path before QPACK is collapsed into a header map (phux-50wm). On a
+//! loopback (unauthenticated) listener no token is expected.
 //!
 //! The listener shares the persisted certificate, key, and token store with
 //! the `wss://` and QUIC paths (`transport::tls`, [`crate::auth`]), so one
@@ -27,6 +29,7 @@
 //! browsers offer only `h3`, so the two cannot share a listener without
 //! ALPN-demultiplexing complexity that buys nothing here.
 
+use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -41,11 +44,12 @@ use phux_protocol::wire::framing;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
-use wtransport::endpoint::{IncomingSession, SessionRequest};
-use wtransport::error::StreamReadExactError;
-use wtransport::stream::{RecvStream, SendStream};
+use wtransport_proto::qpack::Decoder;
 
 use super::{FrameReader, FrameWriter, Incoming, LENGTH_PREFIX};
+
+mod connect_headers;
+mod h3;
 
 /// QUIC idle timeout, matching the raw-QUIC listener: a connection with no
 /// traffic and no keep-alive for this long is dropped.
@@ -68,10 +72,10 @@ const MAX_PENDING_ESTABLISHMENTS: usize = 32;
 type Accepted = (WtReader, WtWriter, crate::auth::ConnectionIdentity);
 type PendingEstablishments = FuturesUnordered<LocalBoxFuture<'static, Option<Accepted>>>;
 
-/// A WebTransport listener: a wtransport server endpoint bound to a UDP
+/// A WebTransport listener: a quinn server endpoint bound to a UDP
 /// socket, optionally token-authenticated for routable consumers.
 pub(crate) struct WtListener {
-    endpoint: wtransport::Endpoint<wtransport::endpoint::endpoint_side::Server>,
+    endpoint: quinn::Endpoint,
     tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
     pending: Mutex<PendingEstablishments>,
 }
@@ -82,10 +86,9 @@ pub(crate) enum WtBindError {
     /// Building the rustls TLS config failed.
     #[error("webtransport tls: {0}")]
     Tls(#[from] super::tls::TlsError),
-    /// The idle-timeout constant overflowed QUIC's varint encoding (cannot
-    /// happen with the compiled-in value; surfaced rather than swallowed).
-    #[error("webtransport transport config: invalid idle timeout")]
-    IdleTimeout,
+    /// The QUIC crypto config had no usable initial cipher suite.
+    #[error("webtransport crypto: {0}")]
+    Crypto(#[from] quinn::crypto::rustls::NoInitialCipherSuite),
     /// Binding the UDP endpoint failed.
     #[error("webtransport bind: {0}")]
     Io(#[from] io::Error),
@@ -105,15 +108,8 @@ impl WtListener {
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
     ) -> Result<Self, WtBindError> {
         let tls = super::tls::webtransport_server_config(cert_path, key_path)?;
-        let config = wtransport::ServerConfig::builder()
-            .with_bind_address(addr)
-            .with_custom_tls(tls)
-            .max_idle_timeout(Some(IDLE_TIMEOUT))
-            .map_err(|_| WtBindError::IdleTimeout)?
-            .keep_alive_interval(Some(KEEP_ALIVE))
-            .build();
         Ok(Self {
-            endpoint: wtransport::Endpoint::server(config)?,
+            endpoint: build_endpoint(addr, tls)?,
             tokens,
             pending: Mutex::new(FuturesUnordered::new()),
         })
@@ -129,44 +125,58 @@ impl WtListener {
     /// handshake, token gate, session accept, then the consumer's single
     /// bidirectional stream. `None` means "refused or failed — next session".
     async fn establish(
-        incoming: IncomingSession,
+        incoming: quinn::Incoming,
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
     ) -> Option<Accepted> {
-        let request = match incoming.await {
-            Ok(request) => request,
+        let connection = match incoming.await {
+            Ok(connection) => connection,
             Err(err) => {
                 debug!(error = %err, "webtransport session handshake failed");
                 return None;
             }
         };
-        let remote = request.remote_address();
+        let remote = connection.remote_address();
+
+        let settings_send = match h3::send_local_settings(&connection).await {
+            Ok(send) => send,
+            Err(err) => {
+                debug!(%remote, error = %err, "webtransport SETTINGS send failed");
+                return None;
+            }
+        };
+        h3::drain_uni_streams(connection.clone());
+
+        let (mut connect_send, connect_recv, payload, session_id) =
+            match h3::accept_connect(&connection).await {
+                Ok(accepted) => accepted,
+                Err(err) => {
+                    debug!(%remote, error = %err, "webtransport CONNECT accept failed");
+                    return None;
+                }
+            };
 
         // Token gate BEFORE the session is accepted, mirroring the WebSocket
         // path's reject-at-the-upgrade: an unauthorized consumer sees HTTP
-        // 403 and no WebTransport session ever exists.
-        let credential = match &tokens {
-            Some(store) => {
-                let Some(credential) = authorize_request(&request, store) else {
-                    warn!(%remote, "webtransport consumer refused: missing or invalid token");
-                    request.forbidden().await;
-                    return None;
-                };
-                Some(credential)
-            }
-            None => None,
-        };
-
-        let connection = match request.accept().await {
-            Ok(connection) => connection,
-            Err(err) => {
-                debug!(%remote, error = %err, "webtransport session accept failed");
+        // 403 and no WebTransport session ever exists. Duplicate Authorization
+        // is refused on the raw QPACK field list, before the decoder map.
+        let credential = match admit_connect(&payload, tokens.as_deref()) {
+            Ok(credential) => credential,
+            Err(reason) => {
+                warn!(%remote, "webtransport consumer refused: {reason}");
+                let _ = h3::send_connect_status(&mut connect_send, false).await;
                 return None;
             }
         };
 
-        // The consumer opens one bidi stream and immediately writes its first
-        // frame, so `accept_bi` resolves promptly.
-        let (send, recv) = match connection.accept_bi().await {
+        if h3::send_connect_status(&mut connect_send, true)
+            .await
+            .is_err()
+        {
+            debug!(%remote, "webtransport CONNECT 200 failed");
+            return None;
+        }
+
+        let (send, recv) = match h3::accept_wt_bidi(&connection, session_id).await {
             Ok(pair) => pair,
             Err(err) => {
                 debug!(%remote, error = %err, "webtransport stream accept failed");
@@ -182,7 +192,6 @@ impl WtListener {
             transport: TransportType::WebTransport,
             source_addr: Some(remote.ip()),
         };
-        // Kept so the bearer's revocation ends the connection live.
         let bearer = tokens
             .as_ref()
             .zip(credential.as_ref())
@@ -190,19 +199,19 @@ impl WtListener {
                 crate::auth::BearerAdmission::new(Arc::clone(store), credential)
             });
 
-        // Each half keeps a clone of the session-owning `Connection`: dropping
-        // the last handle tears the WebTransport session down, and the frame
-        // halves must outlive this accept scope.
         Some((
             WtReader {
-                _connection: connection.clone(),
+                _session: h3::SessionStreams {
+                    connection: connection.clone(),
+                    connect_send,
+                    connect_recv,
+                    settings_send,
+                },
                 recv,
                 header: [0u8; LENGTH_PREFIX],
             },
             WtWriter {
-                // wtransport rides quinn, so the session's quinn connection
-                // carries the same congestion-tracked window as raw QUIC.
-                send: TrackedSend::new(send, SendWindow::new(connection.quic_connection().clone())),
+                send: TrackedSend::new(send, SendWindow::new(connection.clone())),
                 _connection: connection,
             },
             crate::auth::ConnectionIdentity {
@@ -217,7 +226,7 @@ impl WtListener {
     /// Bound every stage after the endpoint yields an incoming session,
     /// including the application-owned first-stream admission.
     async fn establish_bounded(
-        incoming: IncomingSession,
+        incoming: quinn::Incoming,
         tokens: Option<Arc<crate::auth::ReloadingTokenStore>>,
         deadline: Duration,
     ) -> Option<Accepted> {
@@ -241,9 +250,9 @@ impl std::fmt::Debug for WtListener {
 /// WebTransport read half: reassembles length-prefixed frames off the bidi
 /// stream, byte-for-byte the same framing as the UDS and QUIC paths.
 pub(crate) struct WtReader {
-    /// Keeps the WebTransport session alive for the stream's lifetime.
-    _connection: wtransport::Connection,
-    recv: RecvStream,
+    /// Keeps the HTTP/3 CONNECT session and control stream alive.
+    _session: h3::SessionStreams,
+    recv: quinn::RecvStream,
     header: [u8; LENGTH_PREFIX],
 }
 
@@ -272,9 +281,9 @@ impl FrameReader for WtReader {
 /// instead of queueing megabytes in quinn's default window, so the output
 /// pump's staleness resync can skip it to a fresh checkpoint.
 pub(crate) struct WtWriter {
-    send: TrackedSend<SendStream>,
+    send: TrackedSend<quinn::SendStream>,
     /// Keeps the WebTransport session alive for the stream's lifetime.
-    _connection: wtransport::Connection,
+    _connection: quinn::Connection,
 }
 
 impl FrameWriter for WtWriter {
@@ -291,8 +300,12 @@ impl FrameWriter for WtWriter {
         self.send.write_all(batch).await
     }
 
+    #[allow(
+        clippy::unused_async_trait_impl,
+        reason = "FrameWriter requires an async close; Quinn's finish is synchronous"
+    )]
     async fn close(&mut self) -> io::Result<()> {
-        self.send.get_mut().finish().await.map_err(io::Error::other)
+        self.send.get_mut().finish().map_err(io::Error::other)
     }
 }
 
@@ -315,7 +328,12 @@ impl Incoming for WtListener {
                     None
                 }
                 incoming = self.endpoint.accept(), if pending.len() < MAX_PENDING_ESTABLISHMENTS => {
-                    Some(incoming)
+                    Some(incoming.ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::NotConnected,
+                            "webtransport endpoint closed",
+                        )
+                    })?)
                 }
             };
             drop(pending);
@@ -333,6 +351,27 @@ impl Incoming for WtListener {
     }
 }
 
+/// Admit a CONNECT from its raw QPACK payload, before any header map is
+/// used for token verification. Duplicate `Authorization` fields are
+/// refused here so a collapsed map cannot hide them (phux-50wm).
+fn admit_connect(
+    payload: &[u8],
+    tokens: Option<&crate::auth::ReloadingTokenStore>,
+) -> Result<Option<crate::auth::AuthenticatedCredential>, &'static str> {
+    match connect_headers::has_duplicate_authorization(payload) {
+        Ok(true) | Err(_) => {
+            return Err("duplicate or malformed authorization");
+        }
+        Ok(false) => {}
+    }
+    let headers = Decoder::decode(payload).map_err(|_| "CONNECT QPACK decode failed")?;
+    tokens.map_or(Ok(None), |store| {
+        authorize_request(&headers, store)
+            .map(Some)
+            .ok_or("missing or invalid token")
+    })
+}
+
 /// Extract and verify the bearer token from a WebTransport `CONNECT` request.
 ///
 /// Two carriers are accepted, both inside TLS: an `Authorization: Bearer
@@ -342,19 +381,17 @@ impl Incoming for WtListener {
 /// stable credential id on success, `None` on a missing, malformed, or
 /// unrecognized token.
 fn authorize_request(
-    request: &SessionRequest,
+    headers: &HashMap<String, String>,
     store: &crate::auth::ReloadingTokenStore,
 ) -> Option<crate::auth::AuthenticatedCredential> {
-    let token_hex = request_token(request)?;
+    let token_hex = request_token(headers)?;
     let token = hex::decode(token_hex.trim()).ok()?;
     store.authenticate(&token)
 }
 
-fn request_token(request: &SessionRequest) -> Option<&str> {
-    match (
-        unique_bearer(request.headers()),
-        unique_query_token(request.path()),
-    ) {
+fn request_token(headers: &HashMap<String, String>) -> Option<&str> {
+    let path = headers.get(":path").map_or("/", String::as_str);
+    match (unique_bearer(headers), unique_query_token(path)) {
         (UniqueToken::Valid(token), UniqueToken::Missing)
         | (UniqueToken::Missing, UniqueToken::Valid(token)) => Some(token),
         _ => None,
@@ -371,10 +408,9 @@ enum UniqueToken<'a> {
 /// case-insensitively on the field name (HTTP/3 encodes field names
 /// lowercase on the wire, but a hand-built native client may not).
 ///
-/// This checks the headers exposed by `wtransport`, whose map has already
-/// collapsed repeated identical field names. Rejecting those raw duplicates
-/// requires validation before that dependency builds its header map.
-fn unique_bearer(headers: &std::collections::HashMap<String, String>) -> UniqueToken<'_> {
+/// Identical lowercase duplicates are refused earlier, on the raw QPACK
+/// field list, before this map is built (`connect_headers`).
+fn unique_bearer(headers: &HashMap<String, String>) -> UniqueToken<'_> {
     let mut values = headers
         .iter()
         .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
@@ -416,14 +452,28 @@ fn unique_query_token(path: &str) -> UniqueToken<'_> {
 /// filled, `Ok(false)` on a clean stream finish before any byte was read (end
 /// of the connection at a frame boundary), and `Err` on a
 /// partial-then-finished read (a truncated frame) or a transport error.
-async fn read_exact_wt(recv: &mut RecvStream, buf: &mut [u8]) -> io::Result<bool> {
+async fn read_exact_wt(recv: &mut quinn::RecvStream, buf: &mut [u8]) -> io::Result<bool> {
     match recv.read_exact(buf).await {
         Ok(()) => Ok(true),
-        // Zero bytes before the stream finished is a clean EOF at a frame
-        // boundary; any other shortfall is a truncated frame.
-        Err(StreamReadExactError::FinishedEarly(0)) => Ok(false),
+        Err(quinn::ReadExactError::FinishedEarly(0)) => Ok(false),
         Err(err) => Err(io::Error::other(err)),
     }
+}
+
+/// Assemble a quinn server endpoint from the WebTransport rustls config.
+fn build_endpoint(
+    addr: SocketAddr,
+    tls: rustls::ServerConfig,
+) -> Result<quinn::Endpoint, WtBindError> {
+    let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
+    let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+    let mut transport = quinn::TransportConfig::default();
+    if let Ok(idle) = IDLE_TIMEOUT.try_into() {
+        transport.max_idle_timeout(Some(idle));
+    }
+    transport.keep_alive_interval(Some(KEEP_ALIVE));
+    server_config.transport_config(Arc::new(transport));
+    Ok(quinn::Endpoint::server(server_config, addr)?)
 }
 
 #[cfg(test)]
@@ -740,6 +790,89 @@ mod tests {
             () = malformed_client => {}
             _ = listener.accept() => panic!("malformed bearer was accepted"),
         }
+    }
+
+    /// phux-50wm: wtransport's native client cannot emit identical lowercase
+    /// `authorization` fields (`ConnectOptions` is a `HashMap`, and QPACK
+    /// decode inserts into one). Speak enough HTTP/3 on quinn to send the
+    /// raw repeated field list and assert the listener refuses it *before*
+    /// token verification would have succeeded.
+    #[tokio::test]
+    async fn raw_duplicate_authorization_is_refused_before_auth() {
+        let (_tok_file, store) = token_store();
+        let (_dir, listener) = listener(Some(store));
+        let addr = listener.local_addr().unwrap();
+        let bearer = format!("Bearer {}", hex::encode(TEST_TOKEN));
+
+        let client = async {
+            let status = raw_connect_status(
+                addr,
+                vec![
+                    (":method", "CONNECT"),
+                    (":scheme", "https"),
+                    (":protocol", "webtransport"),
+                    (":authority", "127.0.0.1"),
+                    (":path", "/session"),
+                    ("authorization", bearer.as_str()),
+                    ("authorization", bearer.as_str()),
+                ],
+            )
+            .await;
+            assert_eq!(
+                status, 403,
+                "repeated lowercase authorization must be HTTP 403"
+            );
+        };
+        tokio::select! {
+            () = client => {}
+            _ = listener.accept() => panic!("duplicate Authorization was accepted"),
+        }
+    }
+
+    /// A quinn client offering HTTP/3 ALPN. Certificate validation is
+    /// skipped the same way the native WebTransport tests skip it.
+    fn h3_client_endpoint() -> quinn::Endpoint {
+        let crypto =
+            phux_dial::tls::client_config(&phux_dial::CertTrust::SkipVerify, Some(b"h3")).unwrap();
+        let client_config = quinn::ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(crypto).unwrap(),
+        ));
+        let mut endpoint = quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).unwrap();
+        endpoint.set_default_client_config(client_config);
+        endpoint
+    }
+
+    /// Drive a CONNECT whose QPACK payload is `headers` (preserving repeats)
+    /// and return the `:status` the listener answers with.
+    async fn raw_connect_status(addr: SocketAddr, headers: Vec<(&str, &str)>) -> u16 {
+        use std::borrow::Cow;
+        use wtransport_proto::frame::Frame;
+        use wtransport_proto::qpack::{Decoder as QpackDecoder, Encoder};
+
+        let endpoint = h3_client_endpoint();
+        let conn = endpoint
+            .connect(addr, "localhost")
+            .unwrap()
+            .await
+            .expect("QUIC handshake");
+        let _settings = h3::send_local_settings(&conn)
+            .await
+            .expect("client SETTINGS");
+        let (mut send, mut recv) = conn.open_bi().await.expect("CONNECT stream");
+        let payload = Encoder::encode(headers);
+        Frame::new_headers(Cow::Owned(payload.into_vec()))
+            .write_async(&mut h3::H3Send(&mut send))
+            .await
+            .expect("CONNECT HEADERS");
+        let frame = Frame::read_async(&mut h3::H3Recv(&mut recv))
+            .await
+            .expect("CONNECT response");
+        let decoded = QpackDecoder::decode(frame.payload()).expect("response QPACK");
+        decoded
+            .get(":status")
+            .expect("response :status")
+            .parse()
+            .expect("numeric :status")
     }
 
     #[tokio::test]

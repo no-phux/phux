@@ -20,7 +20,7 @@ default = ["webtransport", "native-engine"]
 # QUIC-class transport; `phux-web` dials it, falling back to WebSocket.
 # On by default because the shipped binary should serve browsers out of
 # the box; disable for a leaner daemon that keeps UDS/WS/QUIC only.
-webtransport = ["dep:wtransport"]
+webtransport = ["dep:wtransport-proto", "dep:httlib-huffman"]
 # Compile-in the tokio-console async-runtime debugger. Off by default
 # (pulls a TCP server + extra task instrumentation). Requires Tokio
 # built with `--cfg tokio_unstable`, so build with:
@@ -220,23 +220,28 @@ phux-dial = { workspace = true, features = ["provision"] }
 # WebTransport listener (phux-0wmf, `webtransport` feature). Browsers cannot
 # open raw QUIC, so the quinn listener above is unreachable from `phux-web`;
 # WebTransport (HTTP/3 CONNECT over QUIC, RFC 9220-adjacent draft) is the one
-# QUIC-class transport a browser exposes. wtransport implements BOTH the
-# server role (this listener) and the client role (the native test dialer in
-# `transport::webtransport`'s tests), riding the exact quinn 0.11 + rustls
-# 0.23 + `ring` stack already in this crate (`default-features = false` +
-# `ring` keeps it off aws-lc-rs/cmake; `self-signed` stays off because cert
-# provisioning reuses this crate's rcgen path). The hyperium h3 +
-# h3-webtransport pair was evaluated and rejected: h3-webtransport is
-# server-only, and h3 0.0.8's client builder cannot advertise the
-# SETTINGS_ENABLE_WEBTRANSPORT the server-side session accept requires — so
-# the handshake, auth gating, and wire echo could not be tested honestly
-# without a browser in the loop. wtransport's spawned driver tasks are Send
-# futures, compatible with the current-thread runtime (ADR-0003).
-# `quinn` is a feature of this same crate, not a new dependency: it exposes
-# the session's underlying quinn connection, so `WtWriter` holds the same
-# congestion-tracked send window (`phux_dial::window`) as the raw-QUIC writer
-# (phux-byyu).
-wtransport = { version = "0.7.2", optional = true, default-features = false, features = ["ring", "quinn"] }
+# QUIC-class transport a browser exposes. The listener owns that CONNECT
+# accept path on quinn (phux-50wm) so duplicate `Authorization` fields are
+# refused before QPACK is collapsed into a map. `wtransport` stays a
+# test-only dialer (see `[dev-dependencies]`); production does not take it
+# as a runtime dependency. The hyperium h3 + h3-webtransport pair was
+# evaluated and rejected: h3-webtransport is server-only, and h3 0.0.8's
+# client builder cannot advertise the SETTINGS_ENABLE_WEBTRANSPORT the
+# server-side session accept requires — so the handshake, auth gating, and
+# wire echo could not be tested honestly without a browser in the loop.
+# `WtWriter` holds the same congestion-tracked send window
+# (`phux_dial::window`) as the raw-QUIC writer (phux-byyu).
+#
+# `wtransport-proto` is already in the graph via the test dialer. Promoted
+# so the listener can read CONNECT HEADERS frames and QPACK field lines on
+# a phux-owned accept path instead of vendoring a fork (phux-50wm). `async`
+# matches the feature wtransport already enables, so Cargo.lock gains no
+# new crate.
+wtransport-proto = { version = "0.7.2", optional = true, features = ["async"] }
+# Already in the graph via wtransport-proto. Direct so the CONNECT uniqueness
+# scanner can decode Huffman-coded literal field names; skipping those names
+# would miss a hand-built duplicate `authorization` encoded as a literal.
+httlib-huffman = { version = "0.3.4", optional = true }
 # Optional: opt-in via the `tokio-console` feature. See the feature
 # comment above for the build incantation.
 console-subscriber = { version = "0.5", optional = true }
