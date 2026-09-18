@@ -367,6 +367,12 @@ impl ServerState {
         validate_upgrade_blob(blob)?;
         let mut fresh = Self::new();
         fresh.config.scrollback = self.config.scrollback;
+        // ADR-0109: a blob from an image that predates the instance token
+        // leaves this process's token in place. Seed it onto the scratch
+        // state so commit cannot replace it with a second mint.
+        if blob.counters.server_instance.is_none() {
+            fresh.idspace.set_instance(self.idspace.instance());
+        }
         let session_core = fresh.rebuild_sessions(blob);
         let window_core = fresh.rebuild_windows(blob, &session_core)?;
         let panes = fresh.rebuild_panes(blob, &window_core)?;
@@ -766,7 +772,6 @@ mod tests {
         BLOB_VERSION, Counters, LayoutBlob, PaneBlob, SessionBlob, SplitDirBlob, StateBlob,
         WindowBlob,
     };
-    use std::os::fd::{AsRawFd, RawFd};
     use std::path::PathBuf;
 
     /// Walk a one-session/one-window/one-pane state into a blob: the tree
@@ -1119,40 +1124,36 @@ mod tests {
         }
     }
 
-    /// A blob that passes topology checks but fails while adopting a PTY
-    /// must not install the sessions and panes that were rebuilt before the
+    /// A blob that passes topology checks but fails while building a pane
+    /// actor must not install the sessions that were rebuilt before the
     /// failing pane.
     #[tokio::test(flavor = "current_thread")]
-    async fn pty_adoption_failure_does_not_install_a_partial_tree() {
+    async fn pane_actor_failure_does_not_install_a_partial_tree() {
         let local = tokio::task::LocalSet::new();
         local
             .run_until(async {
                 let mut state = ServerState::new();
                 state.registry_mut().new_session("already-here".to_owned());
 
-                let closed: RawFd = {
-                    let file = tempfile::tempfile().expect("tempfile");
-                    let fd = file.as_raw_fd();
-                    drop(file);
-                    fd
-                };
                 let mut bad = no_pty_pane(4, 2);
-                bad.master_fd = Some(closed);
-                bad.child_pid = Some(1);
+                // libghostty refuses a zero-sized grid; topology is otherwise
+                // complete, so this is a mid-rebuild actor failure.
+                bad.cols = 0;
+                bad.rows = 0;
                 let handoff = blob(
                     vec![session(1, vec![2])],
                     vec![window(2, 1, vec![3, 4])],
                     vec![no_pty_pane(3, 2), bad],
                 );
                 validate_upgrade_blob(&handoff).expect("topology is complete");
-                assert!(
-                    state.rebuild_from_blob(&handoff).is_err(),
-                    "adopting a closed master fd must fail"
-                );
+                match state.rebuild_from_blob(&handoff) {
+                    Err(RebuildError::Actor(_)) => {}
+                    other => panic!("expected actor rebuild failure, got {other:?}"),
+                }
                 assert_eq!(
                     session_names(&state),
                     vec!["already-here".to_owned()],
-                    "a mid-adoption failure must not commit the partial tree"
+                    "a mid-rebuild actor failure must not commit the partial tree"
                 );
             })
             .await;
