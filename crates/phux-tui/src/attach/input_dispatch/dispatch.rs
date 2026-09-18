@@ -909,20 +909,28 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         if modes.wants_mouse_tracking {
             return Ok(None);
         }
-        // xterm "alternate scroll" (DECSET 1007, on by
-        // default in libghostty): the alt screen has no
-        // scrollback, so the viewport scroll below would be
-        // a silent no-op there and the wheel would go dead
-        // in any full-screen app that doesn't track the
-        // mouse (pagers, vim with mouse off). Convert each
-        // wheel notch into arrow-key presses instead — the
-        // same translation tmux and ghostty perform. Apps
-        // opt out with `?1007l` (phux-yyex).
-        if modes.alt_screen && modes.alt_scroll {
-            self.send_wheel_as_arrows(target, delta).await?;
-            return Ok(Some(false));
+        // Alt-screen panes have no client-local scrollback. Never
+        // local-scroll them (phux-2vnl): a missed mouse-mode bit
+        // used to feed `scroll_viewport` and either smear primary
+        // history over the app or eat a silent no-op. Translate to
+        // arrows when DECSET 1007 is on (libghostty default, same
+        // as tmux/ghostty); otherwise forward the wheel so the
+        // inner app can handle it. Apps opt out of arrows with
+        // `?1007l` (phux-yyex).
+        if modes.alt_screen {
+            if modes.alt_scroll {
+                self.send_wheel_as_arrows(target, delta).await?;
+                return Ok(Some(false));
+            }
+            return Ok(None);
         }
-        Ok(Some(self.scroll_pane_viewport(target, delta)))
+        if self.scroll_pane_viewport(target, delta) {
+            return Ok(Some(true));
+        }
+        // Local scroll did not move the viewport (already at the
+        // edge, empty history, or an alt-screen replica whose
+        // mode bits we missed). Forward so the inner app sees it.
+        Ok(None)
     }
 
     /// Emit one arrow-key press per wheel notch — the alternate-scroll
@@ -948,17 +956,16 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     }
 
     /// Scroll `target`'s local mirror by `delta`, returning `true` iff the
-    /// viewport actually moved (the caller repaints).
+    /// viewport actually moved (the caller repaints). A successful
+    /// `scroll_viewport` call is not enough: libghostty reports `Ok` at
+    /// the live tail, on an empty history, and on the alt screen, and
+    /// consuming those no-ops ate the wheel (phux-2vnl).
     fn scroll_pane_viewport(&mut self, target: &ResourceId, delta: isize) -> bool {
         let scrolled = self
             .ctx
             .engine_kernel
             .published_engine_mut(target)
-            .is_some_and(|replica| {
-                replica
-                    .scroll_viewport(ScrollViewport::Delta(delta))
-                    .is_ok()
-            });
+            .is_some_and(|replica| replica_scroll_moved(replica, delta));
         if !scrolled {
             return false;
         }
@@ -1263,14 +1270,12 @@ pub(super) fn scale_to_surface_pixels(mut mouse: MouseEvent, cell_px: (u16, u16)
     mouse
 }
 pub(super) fn terminal_wants_mouse_tracking(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
-    [
-        Mode::X10_MOUSE,
-        Mode::NORMAL_MOUSE,
-        Mode::BUTTON_MOUSE,
-        Mode::ANY_MOUSE,
-    ]
-    .into_iter()
-    .any(|mode| terminal.mode(mode).unwrap_or(false))
+    // Same source of truth the server encoder and the FFI bridge use.
+    // The four DECSET bits (9/1000/1002/1003) are the common cases, but
+    // `TrackingMode` is non-exhaustive — a Mode-list miss is what sent
+    // grok/opencode wheels into local scroll (phux-2vnl).
+    libghostty_vt::mouse::EncoderOptions::from_terminal(terminal)
+        .is_ok_and(|options| options.tracking_mode != libghostty_vt::mouse::TrackingMode::None)
 }
 
 /// Whether the pane's mirror has DECSET 1007 (xterm "alternate scroll")
@@ -1318,6 +1323,29 @@ pub(in crate::attach) fn terminal_in_alt_screen(
     .into_iter()
     .any(|mode| terminal.mode(mode).unwrap_or(false))
 }
+
+/// Apply `delta` and report whether the history viewport offset changed.
+fn replica_scroll_moved(
+    replica: &mut phux_client_core::engine::ghostty::GhosttyReplica,
+    delta: isize,
+) -> bool {
+    let before = replica_viewport_offset(replica);
+    if replica
+        .scroll_viewport(ScrollViewport::Delta(delta))
+        .is_err()
+    {
+        return false;
+    }
+    let after = replica_viewport_offset(replica);
+    before.zip(after).is_some_and(|(a, b)| a != b)
+}
+
+fn replica_viewport_offset(
+    replica: &phux_client_core::engine::ghostty::GhosttyReplica,
+) -> Option<u64> {
+    replica.terminal()?.scrollbar().ok().map(|bar| bar.offset)
+}
+
 pub(super) fn scroll_focused_pane_viewport(
     kernel: &mut crate::attach::pane_state::AttachKernel,
     panes: &mut HashMap<ResourceId, PaneSlot>,
