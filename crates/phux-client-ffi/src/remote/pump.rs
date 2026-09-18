@@ -200,6 +200,9 @@ async fn serve_quic(
     .await
     .map_err(|_| timed_out(name))??;
     let (endpoint, connection, mut to_host, mut from_host) = established;
+    if let Some(err) = connection.close_reason() {
+        return Err(quic_closed_message(name, &err));
+    }
     tracing::info!(
         host = name,
         transport = "quic",
@@ -209,12 +212,17 @@ async fn serve_quic(
     shared.connected();
     let (mut from_embedder, mut to_embedder) = socket.split();
     let result = tokio::select! {
+        biased;
+        err = connection.closed() => Err(quic_closed_message(name, &err)),
         outbound = tokio::io::copy(&mut from_embedder, &mut to_host) => outbound
             .map(|sent| tracing::info!(host = name, bytes_sent = sent, "embedder closed its end"))
-            .map_err(|err| format!("{name}: sending failed: {err}")),
+            .map_err(|err| quic_stream_lost(name, &connection, err)),
         inbound = tokio::io::copy(&mut from_host, &mut to_embedder) => Err(match inbound {
-            Ok(_) => format!("{name} closed the connection"),
-            Err(err) => format!("{name}: the connection was lost: {err}"),
+            Ok(_) => connection.close_reason().map_or_else(
+                || format!("{name} closed the connection"),
+                |close| quic_closed_message(name, &close),
+            ),
+            Err(err) => quic_stream_lost(name, &connection, err),
         }),
     };
     connection.close(quinn::VarInt::from_u32(0), b"tunnel closed");
@@ -526,9 +534,29 @@ fn dial_message(name: &str, err: &DialError) -> String {
             "{name} did not answer ({detail}); check that it is up and its network is connected"
         ),
         DialError::Connect(detail) => format!("{name}: {detail}"),
+        DialError::AuthRefused(detail) => format!(
+            "{name} refused the pairing token ({detail}); re-pair it with `phux host enroll {name}`"
+        ),
         DialError::Io(detail) => format!("{name}: {detail}"),
         DialError::Stalled(detail) => format!("{name} stopped answering ({detail})"),
     }
+}
+
+/// Preserve the QUIC application-close code: quinn's stream I/O displays
+/// `connection lost` even when the peer sent `AUTH_FAILED`.
+fn quic_closed_message(name: &str, err: &quinn::ConnectionError) -> String {
+    dial_message(name, &phux_dial::quic::close_error(err))
+}
+
+fn quic_stream_lost(
+    name: &str,
+    connection: &quinn::Connection,
+    err: impl std::fmt::Display,
+) -> String {
+    connection.close_reason().map_or_else(
+        || format!("{name}: the connection was lost: {err}"),
+        |close| quic_closed_message(name, &close),
+    )
 }
 
 #[cfg(test)]
@@ -684,5 +712,55 @@ mod tests {
             .expect("loopback");
         assert_eq!(loopback.trust, CertTrust::SkipVerify);
         assert_eq!(loopback.server_name, "localhost");
+    }
+
+    #[test]
+    fn revoked_quic_token_is_re_pair_not_connection_lost() {
+        let msg = dial_message(
+            "stale-token",
+            &DialError::AuthRefused("unauthorized".to_owned()),
+        );
+        assert!(
+            msg.contains("refused the pairing token") && msg.contains("unauthorized"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("phux host enroll stale-token"),
+            "B9 remedy must name re-pair: {msg}"
+        );
+        assert!(
+            !msg.contains("connection was lost") && !msg.contains("connection lost"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn quic_auth_close_is_not_generic_loss() {
+        let err = quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
+            error_code: quinn::VarInt::from_u32(phux_dial::quic::AUTH_FAILED_CODE),
+            reason: b"unauthorized".as_slice().into(),
+        });
+        let msg = quic_closed_message("stale-token", &err);
+        assert!(msg.contains("refused the pairing token"), "{msg}");
+        assert!(!msg.contains("connection was lost"), "{msg}");
+        assert!(!msg.contains("connection lost"), "{msg}");
+    }
+
+    #[test]
+    fn quic_idle_timeout_is_reachability_not_auth() {
+        let msg = quic_closed_message("mini", &quinn::ConnectionError::TimedOut);
+        assert!(msg.contains("did not answer"), "{msg}");
+        assert!(!msg.contains("pairing token"), "{msg}");
+    }
+
+    #[test]
+    fn graceful_quic_close_is_not_auth() {
+        let err = quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
+            error_code: quinn::VarInt::from_u32(0),
+            reason: b"bye".as_slice().into(),
+        });
+        let msg = quic_closed_message("mini", &err);
+        assert!(!msg.contains("pairing token"), "{msg}");
+        assert!(!msg.contains("enroll"), "{msg}");
     }
 }

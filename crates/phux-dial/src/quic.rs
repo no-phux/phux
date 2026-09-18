@@ -58,6 +58,11 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// (no keystrokes, no output) holds its connection open across NATs.
 const KEEP_ALIVE: Duration = Duration::from_secs(10);
 
+/// QUIC application close code for a connection refused at the auth
+/// preamble. Same `0x01` / `AUTH_FAILED` the server listener and relay
+/// emit (`docs/spec/proto.md` §4.1).
+pub const AUTH_FAILED_CODE: u32 = 0x01;
+
 /// First bytes of the initial destination connection ID a tunnel dial uses
 /// (see the module docs): ASCII `phxT`.
 pub const TUNNEL_CID_PREFIX: [u8; 4] = *b"phxT";
@@ -130,8 +135,9 @@ pub fn parse_token_hex(token: &str) -> Result<Vec<u8>, DialError> {
 /// # Errors
 ///
 /// Returns [`DialError::Unreachable`] when the handshake times out (nothing
-/// answered) and [`DialError::Connect`] on any other bind, handshake,
-/// certificate, or preamble failure.
+/// answered), [`DialError::AuthRefused`] when the peer application-closes
+/// with `AUTH_FAILED` after the token preamble, and [`DialError::Connect`]
+/// on any other bind, handshake, certificate, or preamble failure.
 pub async fn dial(d: &QuicDial) -> Result<QuicConnection, DialError> {
     dial_with_alpn(d, QUIC_ALPN).await
 }
@@ -166,8 +172,9 @@ pub async fn dial_with_identity(
 /// # Errors
 ///
 /// Returns [`DialError::Unreachable`] when the handshake times out (nothing
-/// answered) and [`DialError::Connect`] on any other bind, handshake,
-/// certificate, or preamble failure.
+/// answered), [`DialError::AuthRefused`] when the peer application-closes
+/// with `AUTH_FAILED` after the token preamble, and [`DialError::Connect`]
+/// on any other bind, handshake, certificate, or preamble failure.
 pub async fn dial_with_alpn(d: &QuicDial, alpn: &[u8]) -> Result<QuicConnection, DialError> {
     dial_with_alpn_inner(d, alpn, None).await
 }
@@ -218,35 +225,89 @@ async fn dial_with_alpn_inner(
         .map_err(|err| DialError::Connect(format!("open QUIC stream: {err}")))?;
 
     if let Some(token) = &d.token {
-        write_preamble(&mut send, token).await?;
+        write_preamble(&conn, &mut send, token).await?;
     }
 
     Ok((endpoint, conn, send, recv))
 }
 
 /// Classify a failed QUIC handshake: `TimedOut` is the UDP analogue of
-/// refused/no-route (nothing answered), everything else — including TLS
-/// alerts from a certificate-pin mismatch — stays `Connect`.
+/// refused/no-route (nothing answered), an `AUTH_FAILED` application close
+/// is a credential refusal, and everything else — including TLS alerts
+/// from a certificate-pin mismatch — stays `Connect`.
 fn handshake_error(addr: SocketAddr, err: &quinn::ConnectionError) -> DialError {
-    let msg = format!("QUIC handshake with {addr}: {err}");
     match err {
-        quinn::ConnectionError::TimedOut => DialError::Unreachable(msg),
-        _ => DialError::Connect(msg),
+        quinn::ConnectionError::ApplicationClosed(close) if is_auth_failed(close) => {
+            close_error(err)
+        }
+        quinn::ConnectionError::TimedOut => {
+            DialError::Unreachable(format!("QUIC handshake with {addr}: {err}"))
+        }
+        _ => DialError::Connect(format!("QUIC handshake with {addr}: {err}")),
+    }
+}
+
+/// Classify a QUIC connection close.
+///
+/// An application close with [`AUTH_FAILED_CODE`] and reason `unauthorized`
+/// (or empty) is a credential refusal — revoked, unknown, or missing
+/// pairing token — not a lost path. Other closes, including idle timeout
+/// and a graceful `CONNECTION_CLOSE`, stay [`DialError::Connect`] or
+/// [`DialError::Unreachable`].
+#[must_use]
+pub fn close_error(err: &quinn::ConnectionError) -> DialError {
+    match err {
+        quinn::ConnectionError::ApplicationClosed(close) if is_auth_failed(close) => {
+            DialError::AuthRefused(auth_refused_reason(close))
+        }
+        quinn::ConnectionError::TimedOut => DialError::Unreachable(err.to_string()),
+        _ => DialError::Connect(err.to_string()),
+    }
+}
+
+fn is_auth_failed(close: &quinn::ApplicationClose) -> bool {
+    close.error_code.into_inner() == u64::from(AUTH_FAILED_CODE)
+        && (close.reason.is_empty() || close.reason.as_ref() == b"unauthorized")
+}
+
+fn auth_refused_reason(close: &quinn::ApplicationClose) -> String {
+    if close.reason.is_empty() {
+        "unauthorized".to_owned()
+    } else {
+        String::from_utf8_lossy(&close.reason).into_owned()
     }
 }
 
 /// Write the auth preamble: `len: u32 BE` + raw token bytes (ADR-0031 parity
 /// with the WebSocket `Authorization: Bearer` header).
-async fn write_preamble(send: &mut quinn::SendStream, token: &[u8]) -> Result<(), DialError> {
+///
+/// A write that races the server's `AUTH_FAILED` close is classified as
+/// credential refusal, not a generic I/O failure: quinn's stream error
+/// displays as `connection lost` and would otherwise drop the close code.
+async fn write_preamble(
+    conn: &quinn::Connection,
+    send: &mut quinn::SendStream,
+    token: &[u8],
+) -> Result<(), DialError> {
     let len = u32::try_from(token.len())
         .map_err(|_| DialError::Connect("pairing token too long".to_owned()))?;
     send.write_all(&len.to_be_bytes())
         .await
-        .map_err(|err| DialError::Connect(format!("write token preamble: {err}")))?;
+        .map_err(|err| write_lost(conn, err, "write token preamble"))?;
     send.write_all(token)
         .await
-        .map_err(|err| DialError::Connect(format!("write token: {err}")))?;
+        .map_err(|err| write_lost(conn, err, "write token"))?;
+    if let Some(err) = conn.close_reason() {
+        return Err(close_error(&err));
+    }
     Ok(())
+}
+
+fn write_lost(conn: &quinn::Connection, err: impl std::fmt::Display, what: &str) -> DialError {
+    conn.close_reason().map_or_else(
+        || DialError::Connect(format!("{what}: {err}")),
+        |close| close_error(&close),
+    )
 }
 
 /// Build the quinn client config: rustls TLS 1.3 with the given ALPN, the
@@ -310,6 +371,53 @@ mod tests {
         assert!(matches!(err, DialError::Connect(_)), "got {err:?}");
     }
 
+    fn application_close(code: u32, reason: &'static [u8]) -> quinn::ConnectionError {
+        quinn::ConnectionError::ApplicationClosed(quinn::ApplicationClose {
+            error_code: quinn::VarInt::from_u32(code),
+            reason: reason.into(),
+        })
+    }
+
+    #[test]
+    fn auth_failed_close_is_credential_refusal_not_loss() {
+        let err = close_error(&application_close(AUTH_FAILED_CODE, b"unauthorized"));
+        assert!(
+            matches!(err, DialError::AuthRefused(ref reason) if reason == "unauthorized"),
+            "got {err:?}"
+        );
+        assert!(
+            !err.to_string().contains("connection lost"),
+            "revoked token must not look like a dropped path: {err}"
+        );
+        let empty = close_error(&application_close(AUTH_FAILED_CODE, b""));
+        assert!(
+            matches!(empty, DialError::AuthRefused(ref reason) if reason == "unauthorized"),
+            "got {empty:?}"
+        );
+    }
+
+    #[test]
+    fn non_auth_closes_are_not_credential_refusal() {
+        for err in [
+            application_close(0, b"bye"),
+            application_close(AUTH_FAILED_CODE, b"stream timeout"),
+            quinn::ConnectionError::TimedOut,
+            quinn::ConnectionError::Reset,
+            quinn::ConnectionError::LocallyClosed,
+            quinn::ConnectionError::VersionMismatch,
+        ] {
+            let classified = close_error(&err);
+            assert!(
+                !matches!(classified, DialError::AuthRefused(_)),
+                "{err:?} became {classified:?}"
+            );
+        }
+        assert!(matches!(
+            close_error(&quinn::ConnectionError::TimedOut),
+            DialError::Unreachable(_)
+        ));
+    }
+
     #[test]
     fn tunnel_cids_are_tagged_full_length_and_random() {
         let first = tunnel_cid().expect("tagged cid");
@@ -353,5 +461,126 @@ mod tests {
             QUIC_ALPN,
         )
         .expect("explicitly identity-free QUIC config");
+    }
+
+    /// A loopback QUIC peer that completes the TLS handshake, reads the
+    /// bearer preamble, then application-closes the way the real listener
+    /// refuses a revoked token (`AUTH_FAILED` / `unauthorized`).
+    fn refuse_after_preamble() -> (tempfile::TempDir, quinn::Endpoint, SocketAddr) {
+        use rustls::pki_types::pem::PemObject as _;
+        use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let cert_path = dir.path().join("cert.pem");
+        let key_path = dir.path().join("key.pem");
+        crate::cert::ensure_self_signed(&cert_path, &key_path).expect("cert");
+        let certs = CertificateDer::pem_file_iter(&cert_path)
+            .expect("cert pem")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("certs");
+        let key = PrivateKeyDer::from_pem_file(&key_path).expect("key");
+        let mut tls = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .expect("tls13")
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .expect("server cert");
+        tls.alpn_protocols = vec![QUIC_ALPN.to_vec()];
+        let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls).expect("quic crypto");
+        let server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
+        let endpoint = quinn::Endpoint::server(server_config, "127.0.0.1:0".parse().expect("addr"))
+            .expect("bind");
+        let addr = endpoint.local_addr().expect("local");
+        (dir, endpoint, addr)
+    }
+
+    #[tokio::test]
+    async fn refused_token_surfaces_auth_close_not_connection_lost() {
+        let (_dir, endpoint, addr) = refuse_after_preamble();
+        let server = tokio::spawn(async move {
+            let incoming = endpoint.accept().await.expect("incoming");
+            let conn = incoming.await.expect("handshake");
+            let (_send, mut recv) = conn.accept_bi().await.expect("stream");
+            let mut header = [0u8; 4];
+            recv.read_exact(&mut header).await.expect("len");
+            let len = usize::try_from(u32::from_be_bytes(header)).expect("len");
+            let mut token = vec![0u8; len];
+            recv.read_exact(&mut token).await.expect("token");
+            conn.close(AUTH_FAILED_CODE.into(), b"unauthorized");
+            conn.closed().await;
+        });
+
+        let dialed = super::dial(&QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: Some(vec![0xAB; 32]),
+            trust: CertTrust::SkipVerify,
+        })
+        .await;
+        let classified = match dialed {
+            Err(err) => err,
+            Ok((_endpoint, conn, _send, mut recv)) => {
+                // The historical native-tunnel bug: write_all finishes
+                // before the application close arrives, so the first
+                // inbound read fails with quinn's Display "connection lost"
+                // while close_reason still carries AUTH_FAILED.
+                let mut buf = [0u8; 1];
+                let read_err = recv.read(&mut buf).await.expect_err("refused");
+                assert!(
+                    read_err.to_string().contains("connection lost"),
+                    "the raw stream error is what used to leak: {read_err}"
+                );
+                close_error(&conn.closed().await)
+            }
+        };
+        assert!(
+            matches!(classified, DialError::AuthRefused(ref reason) if reason == "unauthorized"),
+            "got {classified:?}"
+        );
+        assert!(
+            !classified.to_string().contains("connection lost"),
+            "revoked token must not look like a dropped path: {classified}"
+        );
+        server.await.expect("server");
+    }
+
+    #[tokio::test]
+    async fn graceful_close_is_not_credential_refusal() {
+        let (_dir, endpoint, addr) = refuse_after_preamble();
+        let server = tokio::spawn(async move {
+            let incoming = endpoint.accept().await.expect("incoming");
+            let conn = incoming.await.expect("handshake");
+            let (_send, mut recv) = conn.accept_bi().await.expect("stream");
+            let mut header = [0u8; 4];
+            recv.read_exact(&mut header).await.expect("len");
+            let len = usize::try_from(u32::from_be_bytes(header)).expect("len");
+            let mut token = vec![0u8; len];
+            recv.read_exact(&mut token).await.expect("token");
+            conn.close(0u32.into(), b"bye");
+            conn.closed().await;
+        });
+
+        let classified = match super::dial(&QuicDial {
+            addr,
+            server_name: "localhost".to_owned(),
+            token: Some(vec![0xAB; 32]),
+            trust: CertTrust::SkipVerify,
+        })
+        .await
+        {
+            Err(err) => err,
+            Ok((_endpoint, conn, _send, mut recv)) => {
+                let mut buf = [0u8; 1];
+                let _ = recv.read(&mut buf).await;
+                close_error(&conn.closed().await)
+            }
+        };
+        assert!(
+            !matches!(classified, DialError::AuthRefused(_)),
+            "a non-auth close must stay generic, got {classified:?}"
+        );
+        server.await.expect("server");
     }
 }
