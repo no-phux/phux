@@ -184,6 +184,10 @@ pub(in crate::attach) struct FrameOutcome {
     /// (tab strip + sidebar) and repaints. Set ONLY by the
     /// `MetadataValue` / `MetadataChanged` arms.
     pub(in crate::attach) agent_meta_changed: bool,
+    /// The Terminal a local agent GET/broadcast applied to, even when the
+    /// stored record was identical, so the connection-lifetime review index
+    /// can fold without invalidating on a repeat read (phux-deya).
+    pub(in crate::attach) agent_meta_terminal: Option<ResourceId>,
     /// phux-p4vp: per-pane working directories carried by the `ATTACHED`
     /// snapshot (`ResourceInfo::cwd`). The driver folds these into its
     /// pane-cwd index, from which the sidebar's branch line is derived

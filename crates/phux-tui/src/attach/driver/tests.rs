@@ -660,8 +660,16 @@ fn apply_foreign_agent_reply_caches_clears_and_survives_garbage() {
         state: AgentMetaState::Working,
         ..AgentRecord::default()
     };
-    apply_foreign_agent_reply(&mut cache, id.clone(), Some(&record.encode()));
+    assert!(apply_foreign_agent_reply(
+        &mut cache,
+        id.clone(),
+        Some(&record.encode())
+    ));
     assert_eq!(cache.get(&id).map(|r| r.name.as_str()), Some("packer"));
+    assert!(
+        !apply_foreign_agent_reply(&mut cache, id.clone(), Some(&record.encode())),
+        "an identical GET must not report a cache change"
+    );
 
     // Garbage (no non-empty `name`) clears the stale entry.
     apply_foreign_agent_reply(&mut cache, id.clone(), Some(b"not json"));

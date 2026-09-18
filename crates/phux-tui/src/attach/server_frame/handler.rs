@@ -1093,6 +1093,7 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
         }
         return Ok(FrameOutcome {
             agent_meta_changed: changed,
+            agent_meta_terminal: Some(terminal),
             ..FrameOutcome::default()
         });
     }
@@ -1241,6 +1242,7 @@ fn apply_agent_broadcast<W: crate::attach::RenderSink>(
     }
     FrameOutcome {
         agent_meta_changed: changed,
+        agent_meta_terminal: Some(terminal.clone()),
         ..FrameOutcome::default()
     }
 }
