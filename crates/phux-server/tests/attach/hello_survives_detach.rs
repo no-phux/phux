@@ -39,15 +39,15 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet};
 use phux_protocol::ids::GroupId;
 use phux_protocol::wire::frame::{
-    Command, CommandResult, ErrorCode, FrameKind, Scope, TYPE_ATTACH_READY, TYPE_COMMAND_RESULT,
-    TYPE_DETACHED, TYPE_HELLO_OK, TYPE_METADATA_VALUE, TYPE_PONG,
+    Command, CommandResult, ErrorCode, FrameKind, Scope, TYPE_ATTACH_READY, TYPE_HELLO_OK,
+    TYPE_METADATA_VALUE, TYPE_PONG,
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server,
-    wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_command_result, recv_typed, recv_until,
+    recv_until_detached, run_local, send_frame, spawn_server, wait_for_raw_socket,
 };
 
 const SESSION: &str = "work";
@@ -85,24 +85,17 @@ async fn connect_with_layers(path: &std::path::Path, layers: LayerSet) -> UnixSt
 /// last frame of the attach handshake.
 async fn attach_and_settle(stream: &mut UnixStream) {
     send_frame(stream, &attach_by_name(SESSION)).await;
-    loop {
-        let (type_byte, _) = recv_typed(stream).await;
-        if type_byte == TYPE_ATTACH_READY {
-            return;
-        }
-    }
+    recv_until(stream, |type_byte, _| {
+        (type_byte == TYPE_ATTACH_READY).then_some(())
+    })
+    .await;
 }
 
 /// Send `DETACH` and read through to the `DETACHED` acknowledgement. The
 /// connection stays open afterwards; that is the state under test.
 async fn detach_and_settle(stream: &mut UnixStream) {
     send_frame(stream, &FrameKind::Detach).await;
-    loop {
-        let (type_byte, _) = recv_typed(stream).await;
-        if type_byte == TYPE_DETACHED {
-            return;
-        }
-    }
+    let _ = recv_until_detached(stream).await;
 }
 
 /// An L1-only consumer stays L1-only after `DETACH`.
@@ -138,17 +131,15 @@ fn l1_only_consumer_still_fails_the_l3_gate_after_detach() {
         // In-order barrier: PONG proves GET_METADATA was already dispatched.
         send_frame(&mut stream, &FrameKind::Ping { nonce: 0x7255 }).await;
 
-        loop {
-            let (type_byte, frame) = recv_typed(&mut stream).await;
+        recv_until(&mut stream, |type_byte, frame| {
             assert_ne!(
                 type_byte, TYPE_METADATA_VALUE,
                 "L1-only consumer received an L3 reply after DETACH \
                  (phux-w7z2.55: negotiated layers must survive detach); got {frame:?}",
             );
-            if type_byte == TYPE_PONG {
-                break;
-            }
-        }
+            (type_byte == TYPE_PONG).then_some(())
+        })
+        .await;
 
         drop(stream);
         shutdown_tx.send(()).ok();
@@ -181,15 +172,7 @@ fn local_peer_can_still_shut_down_after_detach() {
         )
         .await;
 
-        let result = loop {
-            let (type_byte, frame) = recv_typed(&mut stream).await;
-            if type_byte == TYPE_COMMAND_RESULT
-                && let FrameKind::CommandResult { request_id, result } = frame
-                && request_id == 11
-            {
-                break result;
-            }
-        };
+        let result = recv_command_result(&mut stream, 11).await;
         match result {
             CommandResult::Ok => {}
             CommandResult::Error { code, message } => {

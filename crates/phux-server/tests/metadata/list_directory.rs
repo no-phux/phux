@@ -16,7 +16,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, recv_until, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
@@ -59,10 +59,9 @@ async fn list(stream: &mut UnixStream, request_id: u32, path: &str) -> Directory
         },
     )
     .await;
-    loop {
-        let (type_byte, frame) = recv_typed(stream).await;
+    recv_until(stream, |type_byte, frame| {
         if type_byte != TYPE_DIRECTORY_LISTING {
-            continue;
+            return None;
         }
         let FrameKind::DirectoryListing {
             request_id: got,
@@ -72,8 +71,9 @@ async fn list(stream: &mut UnixStream, request_id: u32, path: &str) -> Directory
             panic!("expected DIRECTORY_LISTING, got {frame:?}");
         };
         assert_eq!(got, request_id, "reply must correlate to its request");
-        return result;
-    }
+        Some(result)
+    })
+    .await
 }
 
 #[test]
@@ -94,12 +94,10 @@ fn list_directory_answers_with_child_directories_and_typed_refusals() {
 
         let mut stream = connect(&socket_path).await;
         send_frame(&mut stream, &attach_by_name(SESSION)).await;
-        loop {
-            let (type_byte, _) = recv_typed(&mut stream).await;
-            if type_byte == TYPE_ATTACH_READY {
-                break;
-            }
-        }
+        recv_until(&mut stream, |type_byte, _| {
+            (type_byte == TYPE_ATTACH_READY).then_some(())
+        })
+        .await;
 
         let listing = list(&mut stream, 7, tree.to_str().unwrap())
             .await

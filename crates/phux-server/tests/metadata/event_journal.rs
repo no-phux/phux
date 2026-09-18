@@ -33,7 +33,8 @@ use tokio::time::timeout;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown, recv_typed,
-    run_local, send_frame, spawn_server_with, spawn_server_with_seed_cmd, wait_for_raw_socket,
+    recv_until, run_local, send_frame, spawn_server_with, spawn_server_with_seed_cmd,
+    wait_for_raw_socket,
 };
 
 /// One observed `EVENT` frame.
@@ -205,16 +206,10 @@ async fn ask(stream: &mut UnixStream, request_id: u32, terminal: &ResourceId, id
 
 /// The next `EVENT` `matches` accepts.
 async fn next_event(stream: &mut UnixStream, matches: impl Fn(&Seen) -> bool) -> Seen {
-    loop {
-        let (_, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(stream))
-            .await
-            .expect("the event arrives within the deadline");
-        if let Some(seen) = as_seen(frame)
-            && matches(&seen)
-        {
-            return seen;
-        }
-    }
+    recv_until(stream, |_, frame| {
+        as_seen(frame).filter(|seen| matches(seen))
+    })
+    .await
 }
 
 /// `SPAWN_RESOURCE` a parked pane from a subscribed client; returns its id
@@ -927,16 +922,11 @@ fn metadata_changed_carries_the_writers_actor() {
         )
         .await;
 
-        let actor = loop {
-            let (_, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut watcher))
-                .await
-                .expect("METADATA_CHANGED within the deadline");
-            if let FrameKind::MetadataChanged { key, actor, .. } = frame
-                && key == KEY
-            {
-                break actor;
-            }
-        };
+        let actor = recv_until(&mut watcher, |_, frame| match frame {
+            FrameKind::MetadataChanged { key, actor, .. } if key == KEY => Some(actor),
+            _ => None,
+        })
+        .await;
         let actor = actor.expect("a client's write is attributed");
         assert_eq!(actor.client_name.as_deref(), Some("writer"));
 
@@ -1087,22 +1077,19 @@ async fn spawn_pane_running(stream: &mut UnixStream, request_id: u32, script: &s
         },
     )
     .await;
-    loop {
-        let (_, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(stream))
-            .await
-            .expect("the spawn is answered within the deadline");
-        if let FrameKind::ResourceSpawned {
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::ResourceSpawned {
             request_id: got,
             result,
-        } = frame
-            && got == request_id
-        {
+        } if got == request_id => {
             let SpawnResult::Ok(id) = result else {
                 panic!("spawn failed: {result:?}");
             };
-            return id;
+            Some(id)
         }
-    }
+        _ => None,
+    })
+    .await
 }
 
 /// For every pane that closed in `seen`: its `pane_spawned` came first and
@@ -1297,20 +1284,15 @@ fn rename_and_keep_empty_carry_the_writers_actor() {
                 },
             )
             .await;
-            let actor = loop {
-                let (_, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(&mut watcher))
-                    .await
-                    .expect("METADATA_CHANGED within the deadline");
-                if let FrameKind::MetadataChanged {
+            let actor = recv_until(&mut watcher, |_, frame| match frame {
+                FrameKind::MetadataChanged {
                     key: changed,
                     actor,
                     ..
-                } = frame
-                    && changed == key
-                {
-                    break actor;
-                }
-            };
+                } if changed == key => Some(actor),
+                _ => None,
+            })
+            .await;
             let actor = actor.unwrap_or_else(|| panic!("{key} change is attributed"));
             assert_eq!(actor.client_name.as_deref(), Some("renamer"), "{key}");
         }

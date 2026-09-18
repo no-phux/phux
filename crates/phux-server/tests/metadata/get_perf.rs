@@ -9,15 +9,14 @@ use phux_perf::{MetricValue, PerfReport};
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACH_READY, TYPE_COMMAND_RESULT,
-    TYPE_HELLO_OK,
+    Command, CommandResult, CommandValue, FrameKind, TYPE_ATTACH_READY, TYPE_HELLO_OK,
 };
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_command_result, recv_typed, recv_until,
+    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 const SESSION: &str = "perf";
@@ -58,37 +57,24 @@ async fn get_perf(stream: &mut UnixStream, request_id: u32, reset: bool) -> Perf
         },
     )
     .await;
-    loop {
-        let (type_byte, frame) = recv_typed(stream).await;
-        if type_byte != TYPE_COMMAND_RESULT {
-            continue;
-        }
-        let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-        else {
-            panic!("expected COMMAND_RESULT, got {frame:?}");
-        };
-        assert_eq!(got, request_id);
-        let CommandResult::OkWith(CommandValue::Json(json)) = result else {
-            panic!("GET_PERF must answer OkWith(Json): {result:?}");
-        };
-        let report = PerfReport::from_json(&json).expect("report JSON parses");
-        let diagnostics = report
-            .stream_diagnostics
-            .as_ref()
-            .expect("stream diagnostics preserved");
-        assert!(
-            diagnostics["streams"]
-                .as_array()
-                .expect("stream samples")
-                .len()
-                <= 128
-        );
-        assert!(diagnostics["suppressed_streams"].as_u64().is_some());
-        return report;
-    }
+    let result = recv_command_result(stream, request_id).await;
+    let CommandResult::OkWith(CommandValue::Json(json)) = result else {
+        panic!("GET_PERF must answer OkWith(Json): {result:?}");
+    };
+    let report = PerfReport::from_json(&json).expect("report JSON parses");
+    let diagnostics = report
+        .stream_diagnostics
+        .as_ref()
+        .expect("stream diagnostics preserved");
+    assert!(
+        diagnostics["streams"]
+            .as_array()
+            .expect("stream samples")
+            .len()
+            <= 128
+    );
+    assert!(diagnostics["suppressed_streams"].as_u64().is_some());
+    report
 }
 
 fn counter(report: &PerfReport, name: &str) -> u64 {
@@ -128,12 +114,10 @@ fn get_perf_reports_hot_path_metrics_and_resets_on_request() {
 
         let mut stream = connect(&socket_path).await;
         send_frame(&mut stream, &attach_by_name(SESSION)).await;
-        loop {
-            let (type_byte, _) = recv_typed(&mut stream).await;
-            if type_byte == TYPE_ATTACH_READY {
-                break;
-            }
-        }
+        recv_until(&mut stream, |type_byte, _| {
+            (type_byte == TYPE_ATTACH_READY).then_some(())
+        })
+        .await;
 
         // Wait for the seed's printf to travel PTY -> actor -> us.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);

@@ -419,17 +419,66 @@ pub async fn recv_typed(stream: &mut UnixStream) -> (u8, FrameKind) {
     assert!(rest.is_empty(), "decoder did not consume entire frame");
     (type_byte, frame)
 }
+
+/// Drain frames until `pred` returns `Some`.
+///
+/// Each read uses [`recv_typed`]'s per-frame [`WIRE_RECV_TIMEOUT`]. Unrelated
+/// frames are skipped. This is the shared form of the
+/// `loop { let (type_byte, frame) = recv_typed(...); if ... continue; }`
+/// skeleton that was hand-rolled across the protocol/attach/metadata tests
+/// (phux-n0du Pass 3 item 3).
+///
+/// The specialized siblings [`recv_until_detached`] and [`recv_command_result`]
+/// stay as named wrappers for the two most common predicates. For a wait that
+/// must fail once an overall deadline elapses — even if frames keep arriving —
+/// use [`recv_until_deadline`].
+pub async fn recv_until<T>(
+    stream: &mut UnixStream,
+    mut pred: impl FnMut(u8, FrameKind) -> Option<T>,
+) -> T {
+    loop {
+        let (type_byte, frame) = recv_typed(stream).await;
+        if let Some(value) = pred(type_byte, frame) {
+            return value;
+        }
+    }
+}
+
+/// Like [`recv_until`], but the whole wait is bounded by `deadline`.
+///
+/// Returns `None` if the deadline elapses before `pred` matches. Each read
+/// is also bounded by the remaining time, matching [`await_command_result`].
+/// A hung server still fails the run; a missing frame is a `None` the caller
+/// panics on with its own wording.
+pub async fn recv_until_deadline<T>(
+    stream: &mut UnixStream,
+    deadline: tokio::time::Instant,
+    mut pred: impl FnMut(u8, FrameKind) -> Option<T>,
+) -> Option<T> {
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
+            break;
+        };
+        if let Some(value) = pred(type_byte, frame) {
+            return Some(value);
+        }
+    }
+    None
+}
+
 /// Drain queued attach/bootstrap traffic until the server acknowledges DETACH.
 ///
 /// Progressive bootstrap frames can already be in flight when a client sends
 /// DETACH; tests must not assume the acknowledgement is the next wire frame.
 pub async fn recv_until_detached(stream: &mut UnixStream) -> FrameKind {
-    loop {
-        let (_, frame) = recv_typed(stream).await;
-        if matches!(frame, FrameKind::Detached { .. }) {
-            return frame;
-        }
-    }
+    recv_until(stream, |_, frame| {
+        matches!(frame, FrameKind::Detached { .. }).then_some(frame)
+    })
+    .await
 }
 
 /// Like [`recv_typed`] but returns `None` on a clean connection close
@@ -523,24 +572,20 @@ pub fn encode_frame(frame: &FrameKind) -> BytesMut {
 /// missing reply should fail the test rather than hang it.
 pub async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
     let deadline = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
-    while tokio::time::Instant::now() < deadline {
-        let remaining = deadline - tokio::time::Instant::now();
-        let Ok((type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            break;
-        };
+    recv_until_deadline(stream, deadline, |type_byte, frame| {
         if type_byte != TYPE_COMMAND_RESULT {
-            continue;
+            return None;
         }
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
+        match frame {
+            FrameKind::CommandResult {
+                request_id: got,
+                result,
+            } if got == request_id => Some(result),
+            _ => None,
         }
-    }
-    panic!("no COMMAND_RESULT with request_id={request_id} within deadline");
+    })
+    .await
+    .unwrap_or_else(|| panic!("no COMMAND_RESULT with request_id={request_id} within deadline"))
 }
 
 /// Read frames until the `COMMAND_RESULT` for `request_id` arrives, skipping
@@ -551,17 +596,14 @@ pub async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> C
 /// deliberately lean on the per-read timeout inside [`recv_typed`] instead of
 /// bounding the whole wait.
 pub async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    loop {
-        let (_type_byte, frame) = recv_typed(stream).await;
-        if let FrameKind::CommandResult {
+    recv_until(stream, |_, frame| match frame {
+        FrameKind::CommandResult {
             request_id: got,
             result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
+        } if got == request_id => Some(result),
+        _ => None,
+    })
+    .await
 }
 
 /// Bind an ephemeral loopback port, read it back, and drop the listener.

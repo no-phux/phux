@@ -30,7 +30,7 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, recv_until, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
@@ -130,12 +130,10 @@ async fn attach_with_caps(
     assert_eq!(tb, TYPE_ATTACHED, "expected ATTACHED after ATTACH");
     let (tb, _) = recv_typed(&mut stream).await;
     assert_eq!(tb, TYPE_BOOTSTRAP_BEGIN, "expected opening snapshot");
-    loop {
-        let (_, frame) = recv_typed(&mut stream).await;
-        if matches!(frame, FrameKind::BootstrapReady { .. }) {
-            break;
-        }
-    }
+    recv_until(&mut stream, |_, frame| {
+        matches!(frame, FrameKind::BootstrapReady { .. }).then_some(())
+    })
+    .await;
     stream
 }
 

@@ -22,8 +22,8 @@ use tokio::net::UnixStream;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, expect_protocol_error_close,
-    join_after_shutdown, recv_typed, recv_until_detached, run_local, send_frame, spawn_server,
-    wait_for_raw_socket,
+    join_after_shutdown, recv_typed, recv_until, recv_until_detached, run_local, send_frame,
+    spawn_server, wait_for_raw_socket,
 };
 
 /// Build the canonical HELLO payload for these tests. Mirrors the
@@ -522,12 +522,10 @@ fn post_attach_duplicate_hello_is_rejected_and_flushed() {
             client_caps: ClientCapabilities::new(),
         };
         send_frame(&mut stream, &changed_caps).await;
-        let response = loop {
-            let (_, frame) = recv_typed(&mut stream).await;
-            if matches!(frame, FrameKind::Error { .. }) {
-                break frame;
-            }
-        };
+        let response = recv_until(&mut stream, |_, frame| {
+            matches!(frame, FrameKind::Error { .. }).then_some(frame)
+        })
+        .await;
         match response {
             FrameKind::Error { code, message, .. } => {
                 assert_eq!(code, ErrorCode::InvalidCommand);

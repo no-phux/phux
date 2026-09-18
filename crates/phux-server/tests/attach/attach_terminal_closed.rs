@@ -50,8 +50,8 @@ use tokio::time::timeout;
 
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
-    recv_command_result, recv_typed, run_local, send_frame, spawn_server_with_seed_cmd,
-    wait_for_socket,
+    recv_command_result, recv_typed, recv_until, recv_until_deadline, run_local, send_frame,
+    spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// A shell that never exits on its own.
@@ -82,24 +82,15 @@ async fn await_terminal_closed(
     deadline: Duration,
 ) -> Option<Option<i32>> {
     let end = tokio::time::Instant::now() + deadline;
-    loop {
-        let remaining = end.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return None;
-        }
-        let Ok((_type_byte, frame)) = timeout(remaining, recv_typed(stream)).await else {
-            return None;
-        };
-        if let FrameKind::ResourceClosed {
+    recv_until_deadline(stream, end, |_, frame| match frame {
+        FrameKind::ResourceClosed {
             terminal_id,
             exit_status,
             ..
-        } = frame
-            && terminal_id == *victim
-        {
-            return Some(exit_status);
-        }
-    }
+        } if terminal_id == *victim => Some(exit_status),
+        _ => None,
+    })
+    .await
 }
 
 /// Count further `RESOURCE_CLOSED` frames for `victim` up to the
@@ -182,17 +173,14 @@ async fn spawn_victim_pane(owner: &mut UnixStream) -> ResourceId {
         },
     )
     .await;
-    loop {
-        let (_type_byte, frame) = recv_typed(owner).await;
-        if let FrameKind::ResourceSpawned { request_id, result } = frame
-            && request_id == 1
-        {
-            match result {
-                SpawnResult::Ok(id) => return id,
-                other => panic!("SPAWN_RESOURCE failed: {other:?}"),
-            }
-        }
-    }
+    recv_until(owner, |_, frame| match frame {
+        FrameKind::ResourceSpawned { request_id, result } if request_id == 1 => match result {
+            SpawnResult::Ok(id) => Some(id),
+            other => panic!("SPAWN_RESOURCE failed: {other:?}"),
+        },
+        _ => None,
+    })
+    .await
 }
 
 /// Subscribe `watcher` to `victim` with `ATTACH_RESOURCE` and nothing else,

@@ -52,7 +52,7 @@ use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult};
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, recv_until, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_server_screen_text, wait_for_socket,
 };
 use portable_pty::CommandBuilder;
@@ -214,17 +214,14 @@ async fn spawn_burst_pane(
         },
     )
     .await;
-    loop {
-        let (_type_byte, frame) = recv_typed(owner).await;
-        if let FrameKind::ResourceSpawned { request_id, result } = frame
-            && request_id == 1
-        {
-            match result {
-                SpawnResult::Ok(id) => return id,
-                other => panic!("SPAWN_RESOURCE failed: {other:?}"),
-            }
-        }
-    }
+    recv_until(owner, |_, frame| match frame {
+        FrameKind::ResourceSpawned { request_id, result } if request_id == 1 => match result {
+            SpawnResult::Ok(id) => Some(id),
+            other => panic!("SPAWN_RESOURCE failed: {other:?}"),
+        },
+        _ => None,
+    })
+    .await
 }
 
 /// Subscribe `watcher` to `pane` with `ATTACH_RESOURCE` and nothing else — no

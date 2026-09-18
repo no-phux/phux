@@ -17,8 +17,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, recv_typed, run_local, send_frame, spawn_server_with_seed_cmd,
-    wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, recv_typed, recv_until, run_local, send_frame,
+    spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 const fn caps() -> ClientCapabilities {
@@ -71,10 +71,9 @@ async fn get(stream: &mut UnixStream, request_id: u32, scope: Scope) -> Option<V
         },
     )
     .await;
-    loop {
-        let (type_byte, frame) = recv_typed(stream).await;
+    recv_until(stream, |type_byte, frame| {
         if type_byte != TYPE_METADATA_VALUE {
-            continue;
+            return None;
         }
         let FrameKind::MetadataValue {
             request_id: got,
@@ -84,8 +83,9 @@ async fn get(stream: &mut UnixStream, request_id: u32, scope: Scope) -> Option<V
             panic!("expected METADATA_VALUE, got {frame:?}");
         };
         assert_eq!(got, request_id, "reply must correlate to its request");
-        return value;
-    }
+        Some(value)
+    })
+    .await
 }
 
 async fn whoami(stream: &mut UnixStream, request_id: u32) -> WhoamiRecord {

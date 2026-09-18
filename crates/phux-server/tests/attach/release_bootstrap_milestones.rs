@@ -38,7 +38,7 @@ use tokio::sync::Barrier;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, recv_typed,
+    SERVER_JOIN_DEADLINE, SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, recv_typed, recv_until,
     recv_until_detached, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
     wait_for_socket,
 };
@@ -182,24 +182,21 @@ async fn disconnect_at(path: &Path, milestone: Milestone, attach_id: u32) {
         return;
     }
     send_frame(&mut stream, &attach_frame(attach_id, false)).await;
-    loop {
-        let (_, frame) = recv_typed(&mut stream).await;
-        if milestone.reached(&frame) {
-            drop(stream);
-            return;
-        }
-    }
+    recv_until(&mut stream, |_, frame| {
+        milestone.reached(&frame).then_some(())
+    })
+    .await;
+    drop(stream);
 }
 
 async fn attach_ready(path: &Path, attach_id: u32) -> UnixStream {
     let mut stream = wait_for_socket(path, SOCKET_CONNECT_DEADLINE).await;
     send_frame(&mut stream, &attach_frame(attach_id, false)).await;
-    loop {
-        let (_, frame) = recv_typed(&mut stream).await;
-        if matches!(frame, FrameKind::AttachReady { attach_id: id } if id == attach_id) {
-            return stream;
-        }
-    }
+    recv_until(&mut stream, |_, frame| {
+        matches!(frame, FrameKind::AttachReady { attach_id: id } if id == attach_id).then_some(())
+    })
+    .await;
+    stream
 }
 
 #[test]
