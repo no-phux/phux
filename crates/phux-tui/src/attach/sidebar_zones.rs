@@ -208,6 +208,7 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
                 || (UNNAMED_AGENT.to_owned(), AgentMetaState::Blocked),
                 |r| (r.name.clone(), r.state),
             );
+            let seen = peers.review.is_seen(&leaf.id);
             rows.push(AgentEntry {
                 session: Some(session.name.clone()),
                 session_id: Some(session.id),
@@ -219,7 +220,7 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
                 state,
                 attention: asked
                     || record.is_some_and(|r| r.effective_attention() == AgentAttention::High),
-                seen: peers.review.is_seen(&leaf.id),
+                seen,
             });
         }
     }

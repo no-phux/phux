@@ -91,7 +91,7 @@ fn no_peers() -> crate::attach::sidebar_zones::PeerInputs<'static> {
         LazyLock::new(std::collections::HashSet::new);
     static WINDOWS: &[phux_protocol::wire::info::WindowInfo] = &[];
     static RESOURCES: &[phux_protocol::wire::info::ResourceInfo] = &[];
-    static REVIEW: ReviewIndex = ReviewIndex::new();
+    static REVIEW: LazyLock<ReviewIndex> = LazyLock::new(ReviewIndex::new);
     crate::attach::sidebar_zones::PeerInputs {
         serving_host: None,
         hosts: &[],

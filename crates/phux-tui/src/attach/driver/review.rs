@@ -44,11 +44,8 @@ pub(in crate::attach) struct ReviewIndex {
 }
 
 impl ReviewIndex {
-    pub const fn new() -> Self {
-        Self {
-            entries: HashMap::new(),
-            stream_parents: HashMap::new(),
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Whether this identity is currently reviewed. Unknown identities are
@@ -84,7 +81,6 @@ impl ReviewIndex {
                 entry.observation.stream.retain(|(sid, _)| sid != id);
                 if entry.observation != before {
                     entry.seen = false;
-                    changed = true;
                 }
             }
             changed = true;
