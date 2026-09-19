@@ -583,8 +583,7 @@ fn last_pane_death_surfaces_its_exit_status() {
     // Natural `exit` in the last shell respawns in place (ADR-0131). Kill
     // the last pane so RESOURCE_CLOSED still reaches the client and the
     // teardown line explains the ending — not discarded as when audited.
-    let (code, _stdout, stderr) =
-        run_captured(&mut server.cmd(&iso, &["kill", "--yes", SESSION]));
+    let (code, _stdout, stderr) = run_captured(&mut server.cmd(&iso, &["kill", "--yes", SESSION]));
     assert_eq!(code, 0, "kill must succeed; stderr:\n{stderr}");
 
     let status = client.wait_exit();
