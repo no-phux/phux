@@ -109,6 +109,7 @@ fn schema_contracts() -> Value {
         { "invocation": "phux snapshot --json", "schema_version": 3, "kind": "document" },
         { "invocation": "phux snapshot --rendered --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux status --json", "schema_version": 1, "kind": "document" },
+        { "invocation": "phux server --ensure --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux new --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux spawn --json", "schema_version": 1, "kind": "document" },
         { "invocation": "phux launch --json", "schema_version": 1, "kind": "document" },

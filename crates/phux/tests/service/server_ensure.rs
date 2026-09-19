@@ -99,6 +99,15 @@ impl Fixture {
         output
     }
 
+    fn ensure_json(&mut self) -> (Output, serde_json::Value) {
+        let output = bounded_output(self.command().args(["server", "--ensure", "--json"]));
+        if output.status.success() {
+            self.server.capture_pid();
+        }
+        let document = serde_json::from_slice(&output.stdout).expect("ensure document");
+        (output, document)
+    }
+
     fn status(&self) -> serde_json::Value {
         let output = bounded_output(self.command().args(["status", "--json"]));
         assert!(output.status.success(), "{output:?}");
@@ -171,6 +180,31 @@ fn cold_profile_start_obeys_seed_policy_and_reuses_the_same_coordinator() {
     let second = fixture.status();
     assert_eq!(first["pid"], second["pid"]);
     assert_eq!(second["sessions"].as_array().expect("sessions").len(), 1);
+    fixture.assert_cleaned_up();
+}
+
+#[test]
+fn json_contract_reports_cold_owner_then_exact_socket_reuse() {
+    let mut fixture = Fixture::new();
+    let (cold, cold_doc) = fixture.ensure_json();
+    assert!(cold.status.success(), "{cold:?}");
+    assert!(cold.stderr.is_empty(), "{cold:?}");
+    assert_eq!(cold_doc["schema_version"], 1);
+    assert_eq!(cold_doc["running"], true);
+    assert_eq!(cold_doc["socket"], fixture.socket.display().to_string());
+    assert_eq!(cold_doc["disposition"], "daemon_started");
+    assert!(cold_doc["cli_version"].is_string());
+    assert!(cold_doc["server_log"].is_string());
+
+    let (warm, warm_doc) = fixture.ensure_json();
+    assert!(warm.status.success(), "{warm:?}");
+    assert!(warm.stderr.is_empty(), "{warm:?}");
+    assert_eq!(warm_doc["socket"], cold_doc["socket"]);
+    assert_eq!(warm_doc["disposition"], "reused");
+    assert_eq!(
+        fixture.status()["sessions"].as_array().map(Vec::len),
+        Some(1)
+    );
     fixture.assert_cleaned_up();
 }
 

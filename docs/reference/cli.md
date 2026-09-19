@@ -2725,6 +2725,10 @@ Flags:
                                   on stderr. Startup is bounded to 10 seconds,
                                   including lock contention. Does not attach or
                                   create another session on an existing server.
+      --json                      Emit stable, versioned JSON on stdout instead
+                                  of the human view. On failure, stdout stays
+                                  empty and stderr carries one JSON error
+                                  object.
       --session <SESSION>         Name of the pre-seeded session. Matches what
                                   `phux attach <name>` will request.
                                   (default: default)

@@ -769,6 +769,18 @@ fn usage_refusal(cli: &Cli) -> Option<ExitCode> {
         return Some(ExitCode::from(2));
     }
 
+    if matches!(
+        &cli.command,
+        Some(Command::Server {
+            ensure: false,
+            json: commands::JsonOpt { json: true },
+            ..
+        })
+    ) {
+        eprintln!("phux: `phux server --json` requires `--ensure`");
+        return Some(ExitCode::from(2));
+    }
+
     if let Some(message) = root_rec_before_verb(cli) {
         eprintln!("{message}");
         return Some(ExitCode::from(2));
@@ -1088,6 +1100,7 @@ fn dispatch(
         Some(Command::Server {
             // --ensure returns from run before tracing and this dispatch.
             ensure: _,
+            json: _,
             session,
             listen,
             quic,
@@ -1564,8 +1577,11 @@ pub fn run() -> ExitCode {
     // The one-shot watchdog must precede any potentially blocking log open
     // (PHUX_LOG may name a FIFO). Ensure initializes tracing on its bounded
     // worker; its watchdog reports failures directly on stderr.
-    if matches!(cli.command, Some(Command::Server { ensure: true, .. })) {
-        return commands::server::run_ensure(cli.socket);
+    if let Some(Command::Server {
+        ensure: true, json, ..
+    }) = &cli.command
+    {
+        return commands::server::run_ensure(cli.socket, json.json);
     }
 
     // Refuse every alt-screen path before telemetry, dialing, server spawn,
