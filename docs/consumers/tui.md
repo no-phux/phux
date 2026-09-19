@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-18
+last-reviewed: 2026-09-19
 ---
 
 # The phux reference TUI
@@ -331,9 +331,11 @@ the TUI's ordinary subscription renders that the same as an explicit
 non-zero exit (clean `exit 0` and a kill you requested are silent), and
 re-attach after a server restart. An empty `[status]` reserves no row, so
 notices degrade to log lines.
-When the last pane of a default session dies, the TUI tears down and prints one
-cooked-terminal line naming the exit. A keep-empty session stays attached and
-paints `Empty session` with the `new-window` chord.
+When the last pane of a default session is killed, the TUI tears down and prints one
+cooked-terminal line naming the exit. Natural `exit` of that last shell is
+replaced in place by the server, so the attach stays on a fresh prompt.
+A keep-empty session stays attached and paints `Empty session` with the
+`new-window` chord after Close Tab of its last pane.
 
 **Retained panes.** A pane whose spawner asked the server to retain it
 (`SPAWN_RESOURCE.retain_secs`, or `defaults.retain-on-exit`, ADR-0124) does not

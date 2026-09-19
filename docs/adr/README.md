@@ -175,6 +175,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0128](./0128-approvals-are-held-actions.md) | Approvals are held actions | Accepted (builds on [0116](./0116-workload-auth-is-mtls.md); amends [0035](./0035-agent-asked-event.md), [0071](./0071-what-phux-1-0-commits-to.md)) |
 | [0129](./0129-projections-are-named-by-key.md) | Named projections are a metadata-key convention, not a resource | Accepted |
 | [0130](./0130-on-disk-pty-journal-is-not-built.md) | The on-disk PTY output journal is not built | Accepted |
+| [0131](./0131-last-shell-exit-keeps-a-terminal.md) | Last-shell exit keeps a terminal | Accepted (amends [0105](./0105-sessions-can-outlive-their-last-window.md), [0063](./0063-ephemeral-server-lifetime.md)) |
 
 ## When to write an ADR
 

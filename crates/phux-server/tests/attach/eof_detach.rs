@@ -1,30 +1,11 @@
-//! Wire-level integration test for the PTY-EOF → `RESOURCE_CLOSED` path
-//! (`phux-it8`, reshaped by `phux-4r1`).
+//! Last-shell natural exit keeps the Terminal live (`phux-bnbd`).
 //!
-//! Reproduces the user-visible "type `exit` in the inner shell and the
-//! client freezes forever in alt-screen" bug. Before the original fix,
-//! the `TerminalActor`'s EOF branch just dropped its PTY receiver and
-//! kept the actor alive "for snapshot/input drain" — but neither the
-//! runtime nor any attached client got told the pane was dead, so the
-//! client sat in its `tokio::select!` waiting for frames that never came.
-//!
-//! `phux-it8` first closed that hole by having the server send
-//! `FrameKind::Detached` on EOF. `phux-4r1` then reshaped that EOF
-//! signal into the L1 lifecycle event `FrameKind::ResourceClosed`
-//! (ADR-0015 L1): the server now reports the *fact* that the PTY exited
-//! (carrying its exit status) and stops deciding detach. The
-//! "no Terminals left in my collection ⇒ detach" policy moved out of
-//! the server runtime and into the TUI consumer (`attach::driver`).
-//!
-//! This test pins down the server half of that contract from the wire's
-//! point of view: pre-seed with a shell that exits promptly, attach a
-//! client, and assert a `RESOURCE_CLOSED { exit_status: Some(0) }` frame
-//! arrives at all. The server MUST NOT send `DETACHED` on EOF anymore.
-//!
-//! What is asserted is arrival, not latency: the drain below is bounded by
-//! the shared `WIRE_RECV_TIMEOUT` so a genuinely hung server still
-//! fails the run. See the call site for why the old hand-picked two-second
-//! bound was a flake (phux-br1f).
+//! Typing `exit` in the only remaining shell used to broadcast
+//! `RESOURCE_CLOSED` and reap the session. Clients then either froze
+//! (pre-phux-it8) or detached (phux-4r1 consumer policy). The server now
+//! replaces the child in place: same Terminal id, a fresh default shell,
+//! a resync of the new grid. The server MUST NOT send `DETACHED` or
+//! `RESOURCE_CLOSED` for that last natural exit.
 
 #![allow(clippy::expect_used, reason = "tests")]
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -33,15 +14,17 @@
 use std::time::Duration;
 
 use phux_protocol::wire::frame::{
-    FrameKind, TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_RESOURCE_CLOSED,
+    Command, CommandResult, CommandValue, FrameKind, ResourceLifecycle, StateScope, TYPE_ATTACHED,
+    TYPE_BOOTSTRAP_BEGIN, TYPE_DETACHED, TYPE_RESOURCE_CLOSED,
 };
 use portable_pty::CommandBuilder;
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown, recv_typed,
-    recv_until_deadline, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, join_after_shutdown,
+    recv_command_result, recv_typed, recv_until_deadline, run_local, send_frame,
+    spawn_server_with_seed_cmd, wait_for_socket,
 };
 
 /// A shell that outlives the `ATTACH` handshake and then exits with code
@@ -60,59 +43,44 @@ use phux_server_testkit::{
 /// expresses the same intent without a number to be wrong about, and makes
 /// the EOF fire at a point the test chooses rather than one it hopes for.
 /// `sleep` and `[ -f ]` are POSIX so no path probing is needed.
-fn pick_true_command(release: &std::path::Path) -> CommandBuilder {
+fn pick_true_command(release: &std::path::Path, exited: &std::path::Path) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("/bin/sh");
     cmd.arg("-c");
     cmd.arg(format!(
-        "until [ -f '{}' ]; do sleep 0.01; done; exit 0",
-        release.display()
+        "until [ -f '{}' ]; do sleep 0.01; done; echo done > '{}'; exit 0",
+        release.display(),
+        exited.display()
     ));
     cmd
 }
 
-/// Drain non-`RESOURCE_CLOSED` frames (`ATTACHED`, `TERMINAL_SNAPSHOT`,
-/// late `RESOURCE_OUTPUT`) until a `RESOURCE_CLOSED` frame arrives or
-/// `deadline` elapses. Returns the decoded frame on success.
-///
-/// We can't just `recv_typed` once and assert: between `ATTACHED` and
-/// the EOF-driven `RESOURCE_CLOSED`, the runtime ships one
-/// `TERMINAL_SNAPSHOT` per pane, and the `TerminalActor`'s PTY pump may
-/// emit a few stray `RESOURCE_OUTPUT` chunks from libghostty's snapshot
-/// replay before the EOF fires. Skip those rather than fail on them.
-///
-/// A `DETACHED` frame during the drain is a hard failure: under
-/// `phux-4r1` the server must NOT send `DETACHED` on PTY EOF — that
-/// policy moved to the consumer.
-async fn await_terminal_closed(stream: &mut UnixStream, deadline: Duration) -> Option<FrameKind> {
+/// Drain inbound frames until `deadline`, failing if `RESOURCE_CLOSED` or
+/// `DETACHED` arrives. Last-shell replacement must keep the attach alive.
+async fn assert_no_close(stream: &mut UnixStream, deadline: Duration) {
     let end = tokio::time::Instant::now() + deadline;
-    recv_until_deadline(stream, end, |type_byte, frame| {
+    let closed = recv_until_deadline(stream, end, |type_byte, _frame| {
         assert_ne!(
             type_byte, TYPE_DETACHED,
-            "server must NOT send DETACHED on PTY EOF (phux-4r1: detach is consumer policy)",
+            "server must NOT send DETACHED on last-shell exit",
         );
-        if type_byte == TYPE_RESOURCE_CLOSED {
-            assert!(
-                matches!(frame, FrameKind::ResourceClosed { .. }),
-                "TYPE_RESOURCE_CLOSED must decode to FrameKind::ResourceClosed",
-            );
-            return Some(frame);
-        }
-        None
+        assert_ne!(
+            type_byte, TYPE_RESOURCE_CLOSED,
+            "last-shell natural exit must replace the child, not close the Terminal",
+        );
+        None::<()>
     })
-    .await
+    .await;
+    assert!(
+        closed.is_none(),
+        "last-shell natural exit must not close the Terminal"
+    );
 }
 
-/// `TerminalActor` PTY EOF (from the seed shell exiting with code 0)
-/// drives the runtime to broadcast `FrameKind::ResourceClosed` — the L1
-/// lifecycle event — to the attached client, carrying the exit status.
-///
-/// Before phux-it8, the client would never receive any post-snapshot
-/// frame and this test would time out — exactly the user-facing "client
-/// freezes in alt-screen" symptom. Before phux-4r1 the server reported
-/// the death by sending `DETACHED`; now it sends the structured
-/// `RESOURCE_CLOSED` and leaves the detach decision to the consumer.
+/// Last-shell PTY EOF replaces the child in place. The attached client
+/// must not see `RESOURCE_CLOSED` or `DETACHED`, and `GET_STATE` still
+/// names a live Terminal.
 #[test]
-fn pty_eof_drives_terminal_closed_to_attached_client() {
+fn last_shell_eof_keeps_the_terminal_live() {
     run_local(async {
         let tmp = TempDir::new().unwrap();
         let socket_path = tmp.path().join("phux.sock");
@@ -122,7 +90,8 @@ fn pty_eof_drives_terminal_closed_to_attached_client() {
         // "the EOF watcher fires while the client is still draining" a fact
         // rather than a hope.
         let release = tmp.path().join("release");
-        let cmd = pick_true_command(&release);
+        let exited = tmp.path().join("exited");
+        let cmd = pick_true_command(&release, &exited);
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd(socket_path.clone(), "demo", cmd);
 
@@ -141,6 +110,14 @@ fn pty_eof_drives_terminal_closed_to_attached_client() {
         // The handshake has landed, so the pane may now die: everything below
         // is the lifecycle this test exists to pin.
         std::fs::write(&release, b"go").expect("release the seed pane");
+        let wait_exit = tokio::time::Instant::now() + WIRE_RECV_TIMEOUT;
+        while !exited.exists() {
+            assert!(
+                tokio::time::Instant::now() < wait_exit,
+                "seed pane never recorded its exit"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
 
         // ---- TERMINAL_SNAPSHOT (one per pane in focused window) ----
         let (type_byte, _snap_frame) = recv_typed(&mut stream).await;
@@ -149,44 +126,29 @@ fn pty_eof_drives_terminal_closed_to_attached_client() {
             "second server-to-client frame must be TERMINAL_SNAPSHOT",
         );
 
-        // ---- RESOURCE_CLOSED (the contract under test) ----
-        //
-        // The bound is the shared `WIRE_RECV_TIMEOUT` rather than a number
-        // picked for this test, and the number is not load-bearing: what is
-        // asserted is that the frame arrives and carries the exit status,
-        // never how quickly. Arrival is sub-100ms locally.
-        //
-        // It used to be a hand-picked two seconds, described in this very
-        // comment as "generous". Two seconds is generous on an idle laptop
-        // and not generous on a loaded runner — this test failed at 79.9s in
-        // a saturated full-workspace run and passed in 0.847s re-run alone on
-        // the same tree (phux-br1f). A deadline that measures the machine
-        // rather than the server is a latent flake, and a suite that cries
-        // wolf gets ignored, which is how a real regression ships.
-        //
-        // Raising it does not weaken the contract. A server that never sends
-        // RESOURCE_CLOSED — the pre-phux-it8 "client freezes in alt-screen"
-        // regression — still fails, just at the 15s ceiling instead of 2s,
-        // with the same message.
-        let closed = await_terminal_closed(&mut stream, WIRE_RECV_TIMEOUT).await;
-        let closed = closed
-            .expect("client must receive FrameKind::ResourceClosed after the seed shell's PTY EOF");
-        match closed {
-            FrameKind::ResourceClosed { exit_status, .. } => {
-                assert_eq!(
-                    exit_status,
-                    Some(0),
-                    "the seed shell exited with code 0; RESOURCE_CLOSED must carry it",
-                );
-            }
-            other => panic!("expected ResourceClosed, got {other:?}"),
-        }
+        assert_no_close(&mut stream, Duration::from_millis(250)).await;
 
-        // Clean teardown. The seed shell was the server's only pane, so
-        // its exit triggers the server self-exit path (phux-60s); the
-        // join below confirms the server stopped on its own. The
-        // explicit shutdown signal is a belt-and-suspenders no-op if the
-        // server already exited.
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 10,
+                command: Command::GetState {
+                    scope: StateScope::Server,
+                },
+            },
+        )
+        .await;
+        let result = recv_command_result(&mut stream, 10).await;
+        let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
+            panic!("GET_STATE failed: {result:?}");
+        };
+        assert!(
+            snapshot.resources.iter().any(|resource| {
+                resource.lifecycle == ResourceLifecycle::Running && resource.exit.is_none()
+            }),
+            "last-shell exit must leave a live Terminal, got {snapshot:?}"
+        );
+
         drop(stream);
         join_after_shutdown(shutdown_tx, server_handle).await;
     });

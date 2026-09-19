@@ -1393,7 +1393,13 @@ pub(crate) fn spawn_terminal_exit_watcher(
         // Recv error (sender dropped without firing) is treated the
         // same as a fired EOF with unknown exit status: in both cases
         // the pane is dead and every subscribed client must be told.
-        let (exit, mut events) = journal_until_exit(&state, rx, events).await;
+        let (mut exit, mut events) = journal_until_exit(&state, rx, events).await;
+        while let Some(next_rx) = replace_last_shell(&state, pane, &root_token).await {
+            info!("last shell exited; respawning a default shell in place");
+            let next = journal_until_exit(&state, next_rx, events).await;
+            exit = next.0;
+            events = next.1;
+        }
         // ADR-0124: a retained pane's exit is a facet, not a close. It stays
         // in the registry as `Exited`, readable, until a purge cancels its
         // engine token or its retention expires; only then does it take the
@@ -1422,6 +1428,48 @@ pub(crate) fn spawn_terminal_exit_watcher(
         };
         announce_close(&state, reap, &root_token, exit_hook_owed).await;
     });
+}
+
+/// If `pane` is the session's last Terminal and this was a natural process
+/// exit, replace the child in place and return the next EOF receiver.
+async fn replace_last_shell(
+    state: &SharedState,
+    pane: phux_core::ids::ResourceId,
+    root_token: &CancellationToken,
+) -> Option<oneshot::Receiver<phux_core::process::ExitOutcome>> {
+    if root_token.is_cancelled() {
+        return None;
+    }
+    let handle = state.with(|s| {
+        s.should_replace_last_shell(pane)
+            .then(|| s.resource_handle(pane).cloned())
+            .flatten()
+    })?;
+    let command = replacement_shell_command(state, pane);
+    let (reply_tx, reply_rx) = oneshot::channel();
+    handle
+        .control
+        .send(crate::resource::ControlRequest::ReplaceChild {
+            command: crate::resource::ReplacementCommand(command),
+            reply: reply_tx,
+        })
+        .await
+        .ok()?;
+    reply_rx.await.ok()?.ok()
+}
+
+fn replacement_shell_command(
+    state: &SharedState,
+    pane: phux_core::ids::ResourceId,
+) -> portable_pty::CommandBuilder {
+    state.with_mut(|s| {
+        let mut cmd = crate::terminal_actor::default_shell_command(s.shell(), s.login_shell());
+        crate::terminal_actor::apply_term(&mut cmd, s.term());
+        let wire = s.intern_terminal_wire(pane);
+        crate::terminal_actor::apply_terminal_id(&mut cmd, &wire);
+        crate::terminal_actor::apply_server_socket(&mut cmd, s.server_socket_path());
+        cmd
+    })
 }
 
 /// A pane kept as `Exited` after its process exited (ADR-0124), as its exit

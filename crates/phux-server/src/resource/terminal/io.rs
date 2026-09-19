@@ -5,7 +5,7 @@ use super::{
     Bytes, EncodedInputRequest, InputEncoderSnapshot, PANE_KILL_POLL, PANE_KILL_REAP_BUDGET,
     PaneOutput, PasteOutcome, PtyOwned, PtySize, ResyncAudience, ResyncReason, SizeReportSize,
     SnapshotBytes, TerminalActor, TerminalInput, WriteCompletion, debug, error, exit_outcome, mpsc,
-    trace, warn,
+    oneshot, trace, warn,
 };
 
 impl TerminalActor {
@@ -488,16 +488,74 @@ impl TerminalActor {
     /// lets attached clients learn the shell exited instead of freezing in
     /// alt-screen.)
     ///
-    /// TODO(phux-9gw): multi-pane lifecycle — when a session has more than
-    /// one pane, a single EOF should switch focus to a sibling rather than
-    /// detach the whole session. Today sessions are 1:1 with panes in
-    /// practice so the simpler "EOF → detach attached" model is correct.
+    /// The runtime decides whether this EOF closes the pane or replaces the
+    /// child with a fresh default shell (last live Terminal in the session).
     pub(super) fn handle_pty_eof(&mut self) {
         debug!("PTY EOF; firing exit_notify and keeping actor alive for late snapshot/input drain");
         self.pty_rx = None;
         let exit = self.reap_child_if_any();
         self.record_exit(exit);
         self.core.notify_exit(exit);
+    }
+
+    /// Spawn a replacement child in this same Terminal after PTY EOF.
+    pub(super) fn replace_child(
+        &mut self,
+        mut cmd: portable_pty::CommandBuilder,
+    ) -> Result<oneshot::Receiver<phux_core::process::ExitOutcome>, String> {
+        self.apply_replacement_cwd(&mut cmd);
+        self.release_pty_after_exit();
+        self.reset_for_replacement();
+        let spawned = super::spawn_pty(cmd, self.cols, self.rows).map_err(|err| err.to_string())?;
+        self.install_replacement_pty(spawned)?;
+        Ok(self.core.arm_exit_notify())
+    }
+
+    fn apply_replacement_cwd(&self, cmd: &mut portable_pty::CommandBuilder) {
+        let cwd = self.last_known_cwd.borrow();
+        if !cwd.is_empty() {
+            cmd.cwd(cwd.as_str());
+        }
+    }
+
+    fn reset_for_replacement(&mut self) {
+        self.exit = None;
+        self.lifecycle = super::ResourceLifecycle::Running;
+        self.osc133 = super::osc133::Osc133Scanner::new();
+        self.prompt = super::osc133::PromptTracker::default();
+        self.last_title.clear();
+        self.last_progress.clear();
+        self.in_output_burst = false;
+        self.output_since_idle_tick = false;
+        self.terminal.borrow_mut().reset_for_new_child();
+    }
+
+    fn install_replacement_pty(
+        &mut self,
+        spawned: (
+            mpsc::Receiver<super::PtyEvent>,
+            mpsc::Sender<super::EncodedInputRequest>,
+            super::PtyOwned,
+        ),
+    ) -> Result<(), String> {
+        let (pty_rx, pty_tx, pty) = spawned;
+        self.pty_rx = Some(pty_rx);
+        self.pty_tx = Some(pty_tx);
+        self.pty = Some(pty);
+        let facts = super::process_facet::ChildFacts::capture(self.pty.as_ref());
+        self.child_start_ms = facts.start_ms;
+        self.released_child_pid = None;
+        if !facts.cwd.is_empty() {
+            self.last_known_cwd.borrow_mut().clone_from(&facts.cwd);
+            self.cwd_announced.set(false);
+        }
+        self.terminal
+            .borrow_mut()
+            .reinstall_pty_write(&self.size_report, self.pty_tx.as_ref())
+            .map_err(|err| err.to_string())?;
+        self.publish_input_snapshot();
+        self.broadcast_resync(ResyncReason::Resize, super::ResyncAudience::Everyone);
+        Ok(())
     }
 
     /// Let go of a retained pane's PTY once its process has exited
