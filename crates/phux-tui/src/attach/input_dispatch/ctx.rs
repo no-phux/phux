@@ -1,5 +1,5 @@
 //! The mutable dispatch context (`DispatchCtx`) and the in-flight
-//! divider-drag state (`DragGrab`).
+//! chrome-drag state (`DragGrab`: dividers, the sidebar edge, window tabs).
 
 //! Input dispatcher: translates parser-emitted events into wire frames
 //! or layout-action effects.
@@ -202,12 +202,14 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// the per-frame `sidebar` reservation after dispatch so the toggle repaint
     /// reflects the new state. Owned by the driver like `zoomed`.
     pub sidebar_enabled: &'a mut bool,
-    /// The configured sidebar width in columns, whether or not the strip
-    /// is currently shown. `toggle-sidebar` needs it to answer "would
+    /// The sidebar width in columns, whether or not the strip is currently
+    /// shown. Borrowed from the driver's settings so a sidebar-edge drag
+    /// resizes the strip in place; the driver re-folds the reservation after
+    /// dispatch and reflows the panes. `toggle-sidebar` needs it to answer "would
     /// turning this on actually change anything at this terminal size?"
     /// before flipping a flag whose effect the driver would then fold
     /// away — see the `toggle-sidebar` arm of [`run_action`].
-    pub sidebar_width: u16,
+    pub sidebar_width: &'a mut u16,
     /// phux-huhi: the attach's `[chrome]` breakpoints. `toggle-sidebar`
     /// consults [`ChromeBreakpoints::min_pane_cols`] for the same
     /// "would this actually change anything?" arithmetic the driver's
@@ -237,10 +239,10 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// or in fixtures that don't exercise bar clicks (the row is still
     /// claimed as chrome; every click on it is a no-op).
     pub status_bar: Option<&'a crate::render::chrome::status_bar::StatusBarPainter>,
-    /// ADR-0048: the in-flight divider drag, or `None` when no divider is
-    /// grabbed. A press on a divider cell records the grabbed split here;
-    /// subsequent button-motion events re-tune that split's ratio from the
-    /// pointer position; a release clears it. Owned by `main_loop` (it
+    /// The in-flight chrome drag, or `None` when nothing is grabbed: a pane
+    /// divider (ADR-0048), the sidebar edge, or a window tab or row. A press
+    /// records the grab here, button-motion advances it, and a release
+    /// commits and clears it. Owned by `main_loop` (it
     /// must survive across dispatch batches) and threaded in by reference.
     pub drag: &'a mut Option<DragGrab>,
     /// phux-npb3 (ADR-0048 decision 3 follow-up): panes that opted out of
@@ -291,17 +293,53 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     pub vcs: &'a mut crate::attach::pane_state::VcsIndex,
 }
 
+/// An in-flight pointer drag over client chrome.
+///
+/// Press records the grab; button-motion while held advances it; release
+/// commits it and clears the grab. Only one grab is live at a time, and
+/// while one is live no pointer event reaches a pane (ADR-0048).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::attach) enum DragGrab {
+    /// A pane divider: motion re-tunes the controlling split's ratio.
+    Divider(DividerGrab),
+    /// The left-docked sidebar's separator rule: motion resizes the strip. The width
+    /// is runtime chrome like `toggle-sidebar`: it lasts for the attach and
+    /// is never written to `config.toml` (ADR-0101 decision 2).
+    SidebarEdge,
+    /// A window tab or sidebar window row: the release reorders the
+    /// window to the slot it was dropped on.
+    Window(WindowGrab),
+}
+
 /// An active divider drag (ADR-0048).
 ///
-/// Press on a divider cell records the controlling split (`node_path`) and
-/// its `axis`; while held, each button-motion event sets that split's
-/// ratio so the divider tracks the pointer; release drops it. The grab is
-/// keyed by split identity, not by cursor cell, so a fast drag that
-/// outruns the divider still re-tunes the right split.
+/// The grab is keyed by split identity, not by cursor cell, so a fast drag
+/// that outruns the divider still re-tunes the right split.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::attach) struct DragGrab {
+pub(in crate::attach) struct DividerGrab {
     /// Path to the grabbed [`crate::layout::LayoutNode::Split`].
     pub node_path: crate::layout::NodePath,
     /// The grabbed split's axis (drives x vs y of the pointer).
     pub axis: SplitDir,
+}
+
+/// A window picked up from one of the two window strips.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::attach) struct WindowGrab {
+    /// The grabbed window's durable layout id. The drop re-resolves its
+    /// position, so a reorder, close, or peer layout that lands mid-drag
+    /// cannot redirect the move onto a different window.
+    pub window: [u8; 16],
+    /// Which strip it was picked up from; the drop resolves against the
+    /// same strip, so a tab dropped on the sidebar is a no-op.
+    pub strip: WindowStrip,
+}
+
+/// The two chrome surfaces that list windows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::attach) enum WindowStrip {
+    /// The status bar's window tabs.
+    Tabs,
+    /// The sidebar's window rows.
+    Sidebar,
 }

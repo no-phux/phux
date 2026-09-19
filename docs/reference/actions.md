@@ -29,6 +29,7 @@ The **Palette** column is the command-palette section the action is offered unde
 | `next-window` | Window |  | Switch to the next window |
 | `previous-window` | Window |  | Switch to the previous window |
 | `select-window` | — | `index` (0-based window position) | Focus the window at a given index |
+| `move-window` | — | `index` (0-based destination) or `delta` (signed slots, e.g. `-1`); clamped to the ends | Move the active window to another position in the window order |
 | `rename-window` | Window | `name?` (bare opens an interactive prompt) | Rename the active window (interactive prompt) |
 | `rename-session` | Session | `name?` (bare opens an interactive prompt) | Rename the current session (interactive prompt) |
 | `focus-direction` | Pane | `direction` = `left` \| `right` \| `up` \| `down` | Move focus to the pane on the left |
@@ -67,6 +68,7 @@ Why the dash rows have no palette entry:
 - `command-palette` — it is an entry alias for the finder, so listing it inside the finder would recurse.
 - `show-help` — it is an entry alias for the same finder as `command-palette`, so listing it would duplicate that surface.
 - `select-window` — parameterized by `index`, which the palette has no UI to collect; the window picker is the surface for "jump to window N".
+- `move-window` — parameterized by direction; bound to `<` and `>` under the leader, offered in the window context menu, and done by dragging a tab or a sidebar window row.
 - `switch-session` — requires a `name` arg supplied by the session picker (or the fleet's foreign rows), so a bare palette row would have no target to act on.
 - `copy-mode` — a modal input surface entered from its keybinding, not a one-shot command the palette can commit.
 - `plugin-action` — its palette rows are built dynamically from enabled plugins' manifests, one per manifest action, carrying `plugin`/`action` args a static row could not supply.

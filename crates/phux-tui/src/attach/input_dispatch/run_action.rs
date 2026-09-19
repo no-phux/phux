@@ -109,6 +109,7 @@ pub(super) fn run_action(
         "next-window" => switch_window(ctx, e, Workspace::next),
         "previous-window" => switch_window(ctx, e, Workspace::prev),
         "select-window" => select_window(resolved, ctx, e),
+        "move-window" => move_window(resolved, ctx, e),
         "rename-window" => rename_window(resolved, ctx, e),
         "rename-session" => rename_session(resolved, ctx, e),
         "focus-direction" => focus_direction(resolved, ctx, e),
@@ -618,6 +619,47 @@ fn select_window(
     switch_window(ctx, effects, |w| {
         w.select(index);
     });
+}
+
+/// Move the active window to another position in the window order: to
+/// `index` when given, otherwise `delta` slots along (negative is left),
+/// clamped to the ends. The window stays active. Order is shared window
+/// state, so a move broadcasts like a rename does.
+fn move_window(
+    resolved: &phux_config::keybind::ResolvedAction,
+    ctx: &mut DispatchCtx<'_>,
+    effects: &mut ActionEffects,
+) {
+    let from = ctx.workspace.active;
+    let last = ctx.workspace.windows.len().saturating_sub(1);
+    let target = index_arg(resolved)
+        .map(|index| index.min(last))
+        .or_else(|| {
+            let delta = resolved.args.get("delta")?.as_integer()?;
+            Some(offset_index(from, delta, ctx.workspace.windows.len()))
+        });
+    let Some(to) = target else {
+        tracing::warn!(args = ?resolved.args, "move-window needs `index` or `delta`");
+        effects.bell = true;
+        return;
+    };
+    if !ctx.workspace.move_window(from, to) {
+        effects.bell = true;
+        return;
+    }
+    effects.layout_mutated = true;
+    effects.set_metadata = true;
+}
+
+/// `from` moved `delta` slots, clamped to `0..len`.
+fn offset_index(from: usize, delta: i64, len: usize) -> usize {
+    let last = len.saturating_sub(1);
+    let magnitude = usize::try_from(delta.unsigned_abs()).unwrap_or(usize::MAX);
+    if delta < 0 {
+        from.saturating_sub(magnitude)
+    } else {
+        from.saturating_add(magnitude).min(last)
+    }
 }
 
 /// Rename the active window, directly or through the interactive prompt.
@@ -1437,7 +1479,7 @@ const fn toggle_sidebar(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
         && crate::attach::paint::sidebar_reservation(
             ctx.viewport.0,
             true,
-            ctx.sidebar_width,
+            *ctx.sidebar_width,
             crate::attach::paint::SidebarEdge::Left,
             ctx.chrome.min_pane_cols,
         )

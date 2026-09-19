@@ -435,6 +435,15 @@ pub const NON_PALETTE_ACTIONS: &[NonPaletteAction] = &[
                  window N\"",
     },
     NonPaletteAction {
+        name: "move-window",
+        description: "Move the active window to another position in the window order",
+        params: "`index` (0-based destination) or `delta` (signed slots, e.g. `-1`); \
+                 clamped to the ends",
+        reason: "parameterized by direction; bound to `<` and `>` under the leader, \
+                 offered in the window context menu, and done by dragging a tab \
+                 or a sidebar window row",
+    },
+    NonPaletteAction {
         name: "switch-session",
         description: "Re-attach this client to another session",
         params: "`name`; `window?` (window index to select after the \
