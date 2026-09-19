@@ -42,8 +42,9 @@ Install, then:
 phux
 ```
 
-Work in it like a normal terminal. The default prefix is `Ctrl-A`. The status
-bar also exposes the main destinations as clickable labels. These continuations
+Work in it like a normal terminal. The default prefix is `Ctrl-A`. Window tabs
+on the status bar are clickable; everything else is a prefix chord, the
+command palette (`C-a Space` or `:`), or a right-click. These continuations
 are enough for a first run:
 
 | Keys | Action |
@@ -281,7 +282,7 @@ widgets:
 ```toml
 [status]
 left   = [{ kind = "windows" }]
-center = [{ kind = "help-hints" }]
+center = []
 right  = ["session-name", { kind = "time", format = " %H:%M" }]
 position = "top"
 ```
@@ -294,14 +295,13 @@ validation is dropped with a warning.
 When the three slots want more than the row, **right** takes up to half,
 **left** (the tab strip) gets the rest, **center** gets the surviving
 gap. Within a slot, later widgets yield first. Widgets drop whole units,
-never fragments: `windows` drops whole tabs around the active one;
-`help-hints` shows Sessions, Commands, Settings, Help, and Copy. Each complete
-label is a click target for the same action as its keybinding; the prefix and
-separators are inert. It drops whole hints from the right, leaving Sessions as
-the last route on a tight bar. `min-cols` / `max-cols` hide a widget
-outright. The shipped lineup uses that to change shape at 64 columns:
-session name and clock give way to a clickable `switch` chip that opens
-the fleet dashboard.
+never fragments: `windows` drops whole tabs around the active one.
+`help-hints` is opt-in teaching chrome (Sessions, Commands, Settings, Help,
+Copy); it is not in the shipped center slot. Each of its complete labels is
+a click target for the same action as its keybinding. `min-cols` /
+`max-cols` hide a widget outright. The shipped lineup uses that to change
+shape at 64 columns: session name and clock give way to a clickable
+`switch` chip that opens the fleet dashboard.
 
 ### Spacer
 
@@ -371,7 +371,7 @@ positive width is exact. Automatic width depends only on viewport size,
 so changing titles never reflows work.
 
 The strip runs the full height of the terminal. The status bar yields
-its columns rather than spanning underneath. After two footer rows, the
+its columns rather than spanning underneath. After the footer row, the
 upper half is **Agents** and the lower half is **Sessions**. The split
 depends only on viewport height.
 
@@ -398,9 +398,9 @@ per-terminal metadata is not subscribable from here.
 Click targets commit the same actions as keys. The **Agents** and **Sessions**
 headings open their full management views; window and roster rows select their
 destination; overflow opens the matching view. The footer keeps `+ new window`
-on one row and `= commands  S settings` on the next, with an independent target
-for each action. The collapse chevron runs `toggle-sidebar`. Pointer events over
-the strip never leak into pane routing.
+as the create affordance. Commands and Settings stay on the palette
+(`C-a Space` / `:`) and the context menu. The collapse chevron runs
+`toggle-sidebar`. Pointer events over the strip never leak into pane routing.
 
 ### Small terminals
 

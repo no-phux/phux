@@ -60,7 +60,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
-use super::widgets::{Modal, centered_panel, paint_scrollbar, scroll_into_view};
+use super::widgets::{Modal, centered_panel, modal_inner_width, paint_scrollbar, scroll_into_view};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::clip_text;
 use crate::render::{ChromeBreakpoints, Theme};
@@ -71,9 +71,9 @@ use crate::render::{ChromeBreakpoints, Theme};
 const GAP: usize = 1;
 
 /// Rows of the modal box that are *not* list rows: the two borders, the
-/// query line, the blank beneath it, and the footer's blank + text. The list
-/// viewport is whatever height is left over.
-const CHROME_ROWS: u16 = 6;
+/// query line, and the blank beneath it. The list viewport is whatever
+/// height is left over.
+const CHROME_ROWS: u16 = 4;
 
 /// Rows the selection moves per mouse-wheel detent, matching copy-mode's
 /// `WHEEL_SCROLL_LINES` so the wheel feels the same everywhere in the client.
@@ -451,8 +451,8 @@ impl SelectList {
         centered_panel(outer, 6, 30, 10, bp)
     }
 
-    /// Rows available to the list inside `modal_area`, once the borders, the
-    /// query line + its blank, and the footer + its blank are taken out.
+    /// Rows available to the list inside `modal_area`, once the borders and
+    /// the query line + its blank are taken out.
     const fn list_height(modal_area: Rect) -> usize {
         modal_area.height.saturating_sub(CHROME_ROWS) as usize
     }
@@ -619,7 +619,7 @@ impl RenderOverlay for SelectList {
         let indices = self.filtered_indices();
         // Body width is the modal interior minus the 1-cell border on
         // each side.
-        let inner_width = modal_area.width.saturating_sub(2);
+        let inner_width = modal_inner_width(modal_area.width);
 
         // Window the rows to what actually fits, keeping the selection in
         // view. Both are view state: recorded here (the only place the
@@ -633,9 +633,7 @@ impl RenderOverlay for SelectList {
             .unwrap_or(&[]);
 
         let body = self.body_lines(window, offset, inner_width);
-        Modal::new(&self.theme, self.title.clone(), body)
-            .footer_hints(["Enter select", "Esc cancel", "type to filter"])
-            .render_into(modal_area, buf);
+        Modal::new(&self.theme, self.title.clone(), body).render_into(modal_area, buf);
         // Over the border the modal just drew, so an overflowing list shows
         // its extent and position instead of silently clipping.
         paint_scrollbar(

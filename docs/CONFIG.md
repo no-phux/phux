@@ -214,7 +214,8 @@ use inline table syntax.
 **Assigning `right =` replaces the shipped right lineup.** The defaults
 put session name and clock on a wide terminal and a `switch` chip below
 65 columns. A `right = [...]` in your file drops all of that, including
-`switch`. The same is true of `center` for `help-hints`. Use
+`switch`. The shipped `center` slot is empty; assigning `center =` is how
+you add teaching chrome such as `help-hints`. Use
 `right-append` / `center-append` to add a widget; to change one widget,
 copy the shipped list from `phux config show --default` and edit in
 place.
