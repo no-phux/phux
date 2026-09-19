@@ -737,9 +737,13 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
 ///   With `;` it lands even when `cat` died after one buffer, which makes this
 ///   test pass against the exact bug it exists to catch.
 ///
-/// Load-sensitive for the same structural reason as the sibling test, and
-/// mitigated the same way: stretch the hangup ceiling (phux-7n1g) and
-/// clear the runner pool via `threads-required` in `.config/nextest.toml`.
+/// Load-sensitive for the same structural reason as the sibling test.
+/// The hangup ceiling is stretched (phux-7n1g) and, for this fixture
+/// only, gated on an observed trap-started marker so a starved `/bin/sh`
+/// does not spend that ceiling waiting to be scheduled (phux-ko7j).
+/// `.config/nextest.toml` still gives this test `threads-required =
+/// 'num-cpus'` so the runner's own pool is not a second source of
+/// starvation.
 #[tokio::test(flavor = "current_thread")]
 async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
     use portable_pty::CommandBuilder;
@@ -759,6 +763,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
         .run_until(async {
             let dir = tempfile::tempdir().expect("tempdir");
             let marker = dir.path().join("flushed");
+            let started = dir.path().join("started");
             let armed = dir.path().join("armed");
             let foreground = FixtureGroup::new(dir.path(), "PHUX_TEST_FOREGROUND");
             let payload = dir.path().join("payload");
@@ -777,7 +782,8 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             std::fs::write(
                 &script,
                 foreground.script(
-                    "trap 'trap \"\" HUP; cat \"$PHUX_TEST_PAYLOAD\" 2>\"$PHUX_TEST_ERR\"; s=$?; \
+                    "trap 'trap \"\" HUP; printf flushing > \"$PHUX_TEST_STARTED\"; \
+                     cat \"$PHUX_TEST_PAYLOAD\" 2>\"$PHUX_TEST_ERR\"; s=$?; \
                      printf %s \"$s\" > \"$PHUX_TEST_STATUS\"; \
                      [ \"$s\" -eq 0 ] && printf flushed > \"$PHUX_TEST_MARKER\"; exit 0' HUP\n\
                      printf armed > \"$PHUX_TEST_ARMED\"\n\
@@ -797,6 +803,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
                 script.display()
             ));
             cmd.env("PHUX_TEST_MARKER", &marker);
+            cmd.env("PHUX_TEST_STARTED", &started);
             cmd.env("PHUX_TEST_ARMED", &armed);
             cmd.env("PHUX_TEST_PAYLOAD", &payload);
             cmd.env("PHUX_TEST_STATUS", &status);
@@ -835,7 +842,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
                      get scheduled, which is an environment problem (machine load), not a \
                      failure of the flush-before-death path this test covers",
             );
-            let _grace = stretch_pane_kill_grace(CONTENDED_FLUSH_GRACE);
+            let _grace = stretch_pane_kill_grace_after(CONTENDED_FLUSH_GRACE, Some(&started));
 
             let foreground_group = master
                 .lock()
@@ -850,6 +857,20 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
 
             let killed_at = std::time::Instant::now();
             token.cancel();
+            // The grace clock is gated on this file. A 30s wait here is
+            // the armed barrier again: "did the shell get scheduled to
+            // run its trap?", not "did the megabyte flush finish?".
+            tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                while !started.exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect(
+                "SIGHUP trap never started: the fixture shell did not get scheduled \
+                     after hangup, which is an environment problem (machine load), not a \
+                     failure of the flush-before-death path this test covers",
+            );
             let body = wait_for_flush_marker(&marker).await;
             tokio::time::timeout(std::time::Duration::from_secs(10), run)
                 .await

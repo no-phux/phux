@@ -978,7 +978,12 @@ const ORPHAN_DRAIN_BUDGET: std::time::Duration = {
     // ceiling too — EOF still ends it — so a contended flush is not cut
     // off by a 500ms reader budget while the actor is still waiting.
     const GRACE: std::time::Duration = if cfg!(test) {
-        std::time::Duration::from_millis(2500)
+        // 7n1g stretched the actor ceiling to 2500ms. phux-ko7j may
+        // also hold that ceiling until a trap-started marker exists
+        // (up to 30s of scheduling). The reader thread cannot see the
+        // thread-local gate, so the drain ceiling includes the hold.
+        // EOF still ends it.
+        std::time::Duration::from_millis(30_000 + 2_500)
     } else {
         super::PANE_KILL_GRACE
     };
