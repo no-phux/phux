@@ -25,24 +25,24 @@ use phux_protocol::ids::{
     BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, ResourceId, ResourceKind,
     SessionId, StreamId, WindowId,
 };
+use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, CloseReason, Command, CommandResult, CommandValue, ControlAction,
     DetachReason, DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
-    DirectoryListingResult, ErrorCode, FileUploadAck, InputMode, ListenerTransport, MoveError,
+    DirectoryListingResult, ErrorCode, FileUploadAck, InputMode, ListenerTransport,
+    MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, MoveError,
     MoveResult, ReportedAgentState, ResourceLifecycle, Scope, SpawnError, SpawnResource,
-    SpawnResult, StateScope, TerminalSignal, ViewportInfo, MAX_APPEND_BYTES,
-    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
-    MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES,
+    SpawnResult, StateScope, TerminalSignal, ViewportInfo,
 };
 use phux_protocol::wire::info::{
     AgentFacet, LayoutNode, ResourceInfo, SessionInfo, SessionSnapshot, SplitDir, WindowInfo,
 };
-use phux_protocol::wire::{decode::Decoder, frame::FrameKind, DecodeError};
+use phux_protocol::wire::{DecodeError, decode::Decoder, frame::FrameKind};
 use proptest::prelude::*;
 
 use crate::common;
@@ -1965,7 +1965,7 @@ fn get_screen_without_format_is_byte_identical() {
     get_screen.push(0x01); // request_scrollback = Some
     get_screen.extend_from_slice(&3u32.to_be_bytes());
     get_screen.push(0x01); // cells = true
-                           // no format byte
+    // no format byte
 
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &7u32.to_be_bytes()); // field::command::REQUEST_ID
@@ -2027,7 +2027,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
     get_screen.push(0x00); // RESOURCE_ID_TAG_LOCAL
     get_screen.extend_from_slice(&1u32.to_be_bytes());
     get_screen.push(0x00); // request_scrollback = None
-                           // no cells byte
+    // no cells byte
     let mut first_fields = Vec::new();
     tlv_field(&mut first_fields, 1, &1u32.to_be_bytes()); // REQUEST_ID
     tlv_field(&mut first_fields, 2, &get_screen); // COMMAND
@@ -3167,14 +3167,11 @@ fn snapshot_journal_head_rides_the_extension_block_and_is_absent_by_default() {
 
     // Beside a retained resource's state, in the same block.
     let retained = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
-        .with_resources(vec![ResourceInfo::new(
-            ResourceId::local(1),
-            WindowId::new(1),
-            80,
-            24,
-        )
-        .with_lifecycle(phux_protocol::wire::frame::ResourceLifecycle::Exited)
-        .with_exit(Some(ExitFacet::new(5, 9).with_exit_status(Some(3))))])
+        .with_resources(vec![
+            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
+                .with_lifecycle(phux_protocol::wire::frame::ResourceLifecycle::Exited)
+                .with_exit(Some(ExitFacet::new(5, 9).with_exit_status(Some(3)))),
+        ])
         .with_journal_head(Some(7));
     let decoded = decode(&encode(&retained));
     assert_eq!(decoded, retained);
@@ -3201,14 +3198,14 @@ fn snapshot_resource_facets_join_by_id_and_ignore_unknown_rows() {
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_session
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_window
     snap.extend_from_slice(&local_id_bytes(7)); // focused_resource
-                                                // Trailing facets: two rows.
+    // Trailing facets: two rows.
     snap.extend_from_slice(&2u32.to_be_bytes());
     // Row for an id with no pane entry: ignored.
     snap.extend_from_slice(&local_id_bytes(99));
     snap.push(1); // AgentSession
     snap.push(0); // parent None
     snap.push(0); // agent None
-                  // Row for pane 7.
+    // Row for pane 7.
     snap.extend_from_slice(&local_id_bytes(7));
     snap.push(1); // AgentSession
     snap.push(1); // parent Some
@@ -3359,7 +3356,7 @@ fn snapshot_without_keep_empty_sessions_has_no_session_facets() {
     let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(0), ResourceId::local(0))
         .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")]);
     let marked = plain.clone().with_sessions(vec![
-        SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true)
+        SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true),
     ]);
     let encode = |snapshot: SessionSnapshot| {
         let mut buf = BytesMut::new();
@@ -3425,7 +3422,7 @@ fn keep_empty_without_hosts_writes_zero_count_anchors() {
 
     let snapshot = SessionSnapshot::new(SessionId::new(2), WindowId::new(0), ResourceId::local(0))
         .with_sessions(vec![
-            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true)
+            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true),
         ]);
     let reply = FrameKind::CommandResult {
         request_id: 4,
@@ -3501,9 +3498,11 @@ fn session_facets_follow_resource_facets_without_aliasing() {
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(7))
-        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")
-            .with_window_count(1)
-            .with_keep_empty(true)])
+        .with_sessions(vec![
+            SessionInfo::new(SessionId::new(1), "work")
+                .with_window_count(1)
+                .with_keep_empty(true),
+        ])
         .with_resources(vec![
             ResourceInfo::new(ResourceId::local(7), WindowId::new(10), 80, 24),
             ResourceInfo::resource(ResourceId::local(8), ResourceKind::AgentSession)
@@ -3567,7 +3566,7 @@ fn unknown_session_facet_flag_bits_are_ignored() {
 
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(0), ResourceId::local(0))
         .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true)
+            SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true),
         ]);
     let reply = FrameKind::CommandResult {
         request_id: 1,
