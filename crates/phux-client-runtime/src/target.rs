@@ -23,21 +23,24 @@ use phux_config::RemoteConfigEntry;
 /// The QUIC port a server auto-binds on its overlay address (ADR-0081), and
 /// therefore the port a target with no `:PORT` means. Same constant as the
 /// CLI's `remote_target::DEFAULT_QUIC_PORT`.
-pub(crate) const DEFAULT_QUIC_PORT: u16 = 8788;
+pub const DEFAULT_QUIC_PORT: u16 = 8788;
 
 /// A parsed `[USER@]HOST[:PORT]` target. `user@` is a registry label, never a
 /// wire identity (see the CLI module's header).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RemoteTarget {
-    pub(crate) user: Option<String>,
-    pub(crate) host: String,
-    pub(crate) port: Option<u16>,
+pub struct RemoteTarget {
+    /// The `user@` label, if typed.
+    pub user: Option<String>,
+    /// The host as typed, unbracketed.
+    pub host: String,
+    /// An explicit `:PORT`, applied per dial and never written back.
+    pub port: Option<u16>,
 }
 
 impl RemoteTarget {
     /// Parse `host`, `user@host`, `host:port`, `user@host:port`, and their
     /// bracketed-IPv6 spellings. A URI is refused rather than guessed at.
-    pub(crate) fn parse(raw: &str) -> Result<Self, String> {
+    pub fn parse(raw: &str) -> Result<Self, String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return Err("enter a registered host, e.g. mini or me@mini".to_owned());
@@ -70,14 +73,16 @@ impl RemoteTarget {
     }
 
     /// The registry key: the typed spelling minus any port.
-    pub(crate) fn registry_name(&self) -> String {
+    #[must_use]
+    pub fn registry_name(&self) -> String {
         self.user
             .as_ref()
             .map_or_else(|| self.host.clone(), |user| format!("{user}@{}", self.host))
     }
 
     /// `HOST:PORT` to dial, bracketing an IPv6 literal.
-    pub(crate) fn authority(&self) -> String {
+    #[must_use]
+    pub fn authority(&self) -> String {
         let port = self.port.unwrap_or(DEFAULT_QUIC_PORT);
         if self.host.contains(':') {
             format!("[{}]:{port}", self.host)
@@ -122,10 +127,13 @@ fn parse_port(raw: &str) -> Result<u16, String> {
         .ok_or_else(|| format!("port {raw:?} must be 1..=65535"))
 }
 
-/// The registry entry that describes `target`: exact `user@host`, then the
-/// bare host (what `phux host enroll` registers), then any entry whose
-/// endpoint addresses that host. Same order as the CLI's `find_entry`.
-pub(crate) fn find_entry<'a>(
+/// The registry entry that describes `target`.
+///
+/// Matched as exact `user@host`, then the bare host (what `phux host enroll`
+/// registers), then any entry whose endpoint addresses that host. Same
+/// order as the CLI's `find_entry`.
+#[must_use]
+pub fn find_entry<'a>(
     entries: &'a [RemoteConfigEntry],
     target: &RemoteTarget,
 ) -> Option<&'a RemoteConfigEntry> {
@@ -162,7 +170,7 @@ fn endpoint_host(endpoint: &str) -> Option<String> {
 /// The transport a registry endpoint names, restricted to what an embedder
 /// can dial without a terminal.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Transport {
+pub enum Transport {
     /// `quic://HOST:PORT`, carrying `HOST:PORT`.
     Quic(String),
     /// `ws://` or `wss://`, carrying the URL.
@@ -171,7 +179,8 @@ pub(crate) enum Transport {
 
 impl Transport {
     /// The transport's name as a log field.
-    pub(crate) const fn label(&self) -> &'static str {
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
         match self {
             Self::Quic(_) => "quic",
             Self::Ws(_) => "ws",
@@ -182,10 +191,7 @@ impl Transport {
 /// Classify an endpoint, applying an explicit `:PORT` from the target as a
 /// per-dial override (the registry is never rewritten). Returns the effective
 /// endpoint URI beside its transport.
-pub(crate) fn classify(
-    endpoint: &str,
-    target: &RemoteTarget,
-) -> Result<(String, Transport), String> {
+pub fn classify(endpoint: &str, target: &RemoteTarget) -> Result<(String, Transport), String> {
     let trimmed = endpoint.trim();
     if let Some(rest) = trimmed.strip_prefix("quic://") {
         if rest.is_empty() || !rest.contains(':') {
@@ -220,10 +226,12 @@ pub(crate) fn classify(
     ))
 }
 
-/// Read the bearer token behind an entry's `token-file`: the first line that
-/// is neither blank nor a `#` comment. Same rule as the CLI's `read_token`.
-/// Failures name the path and never echo token bytes.
-pub(crate) fn read_token(path: Option<&Path>) -> Result<Option<String>, String> {
+/// Read the bearer token behind an entry's `token-file`.
+///
+/// That is the first line that is neither blank nor a `#` comment, the same
+/// rule as the CLI's `read_token`. Failures name the path and never echo
+/// token bytes.
+pub fn read_token(path: Option<&Path>) -> Result<Option<String>, String> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -237,22 +245,30 @@ pub(crate) fn read_token(path: Option<&Path>) -> Result<Option<String>, String> 
     Ok(Some(token.to_owned()))
 }
 
-/// Everything a dial needs, resolved from the registry. Holds no secret: the
-/// token file is only NAMED here, and the tunnel thread reads it just before
-/// dialing, so resolving a host for display never touches the token.
+/// Everything a dial needs, resolved from the registry.
+///
+/// Holds no secret: the token file is only NAMED here, and the tunnel thread
+/// reads it just before dialing, so resolving a host for display never
+/// touches the token.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Resolved {
-    pub(crate) name: String,
-    pub(crate) endpoint: String,
-    pub(crate) session: Option<String>,
-    pub(crate) transport: Transport,
-    pub(crate) token_file: Option<PathBuf>,
-    pub(crate) cert_fingerprint: Option<String>,
+pub struct Resolved {
+    /// The registry entry's name.
+    pub name: String,
+    /// Effective endpoint URI, after any `:PORT` override.
+    pub endpoint: String,
+    /// The entry's pinned session, if any.
+    pub session: Option<String>,
+    /// The lane the endpoint selects.
+    pub transport: Transport,
+    /// Where the bearer token lives; read only at dial time.
+    pub token_file: Option<PathBuf>,
+    /// The SHA-256 leaf fingerprint to pin, or `None` for loopback.
+    pub cert_fingerprint: Option<String>,
 }
 
 /// Resolve `raw` against the registry at `config_path`, or at the CLI's own
 /// canonical path when none is given.
-pub(crate) fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String> {
+pub fn resolve(raw: &str, config_path: Option<&Path>) -> Result<Resolved, String> {
     let target = RemoteTarget::parse(raw)?;
     let path: PathBuf =
         config_path.map_or_else(phux_config::loader::config_path, Path::to_path_buf);

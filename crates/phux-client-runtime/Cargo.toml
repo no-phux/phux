@@ -1,0 +1,50 @@
+[package]
+name = "phux-client-runtime"
+description = "The one client orchestration layer between the sans-IO session kernel and a language binding: registry resolution, dial planning, reconnect policy, and the relay tunnel."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+# Test-only hooks a consumer's tests need to drive tunnel state without a
+# network, the way phux-dial's `testing` feature exposes its fixtures.
+testing = []
+
+[dependencies]
+# Every dependency below was already carried by phux-client-ffi's remote
+# tunnel at these exact specs (ADR-0133 moves that code here); nothing new
+# enters Cargo.lock.
+#
+# The `[[remote]]` registry is read through the CLI's own schema and loader,
+# so an entry means one thing to the CLI and to every embedder.
+phux-config.workspace = true
+# QUIC/WSS establishment with the certificate pin and bearer token. The
+# security-sensitive dial path exists once; this crate plans dials and
+# supplies the policy around them.
+phux-dial.workspace = true
+# SPEC §5 framing (`wire::framing`) for cutting and checking frames on the
+# WebSocket lane. Default features only: no engine surface.
+phux-protocol.workspace = true
+# The QUIC lane's connection handle and close reasons; phux-dial re-exports
+# neither, and the tunnel preserves the application-close code.
+quinn.workspace = true
+tokio.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+# The WebSocket lane reads the raw message stream so its two directions can
+# run concurrently while it still sees keepalive pongs; `Message` is not
+# re-exported by phux-dial.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
+bytes.workspace = true
+# Lifecycle events for whichever subscriber the embedder installs.
+tracing.workspace = true
+
+[dev-dependencies]
+# A registry fixture file for the resolution tests.
+tempfile.workspace = true

@@ -3,11 +3,11 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::{mem, ptr};
 
+use phux_client_runtime::target;
+use phux_client_runtime::tunnel::Tunnel;
 use phux_config::{RemoteConfigEntry, SatelliteConfigEntry};
 
-use super::{
-    PhuxRemoteTunnel, REMOTE_TUNNEL_RESOLVED, Shared, config_path_in, guard, target, text_in,
-};
+use super::{PhuxRemoteTunnel, config_path_in, guard, text_in};
 use crate::error::{BridgeError, check_struct};
 use crate::types::{PhuxBytes, PhuxClientResult, bytes_out};
 
@@ -297,10 +297,7 @@ impl PhuxMachineRegistry {
             name: entry.name.clone(),
             endpoint,
             session: row.session.clone(),
-            resolved: Some(resolved),
-            shared: std::sync::Arc::new(Shared::with_state(REMOTE_TUNNEL_RESOLVED)),
-            cancel: std::sync::Arc::new(tokio::sync::Notify::new()),
-            thread: std::sync::Mutex::new(None),
+            inner: Ok(Tunnel::new(resolved)),
         })
     }
 

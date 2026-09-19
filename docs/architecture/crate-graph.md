@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-19
 ---
 
 # Crate dependency graph
@@ -37,7 +37,7 @@ the L1/L3 wire layering from ADR-0015 and ADR-0102.
                         └───────────────────┘      pane (ADR-0013)
 ```
 
-Four crate boundaries carry weight:
+Five crate boundaries carry weight:
 
 1. **`phux-core` and `phux-protocol` do not depend on each other.** Core
    holds the in-process domain (slotmap keys with generational tags,
@@ -79,6 +79,15 @@ Four crate boundaries carry weight:
    (`phux_dial::window`) that `phux-server`'s QUIC and WebTransport writers
    and `phux-relay`'s consumer leg share, since both crates already depend
    on it.
+5. **`phux-client-runtime` is the one orchestration layer below every
+   binding** (ADR-0133). It sits above `phux-dial` and `phux-config` and
+   below `phux-client-ffi`: registry resolution, dial planning under the
+   CLI's trust rules, reconnect policy, WebSocket frame cutting, and the
+   relay tunnel exist once, as a Rust API with no FFI. A binding crate
+   translates runtime-owned values into its language's idiom and holds no
+   state machine; a loop, a `select!`, or a backoff constant in a binding
+   is in the wrong crate. phux-mobile's UniFFI bridge is the second
+   consumer, across its `PHUX_REV` pin.
 
 `server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
 also depend on `libghostty-vt` directly: the server's `Terminal` is the
@@ -101,10 +110,10 @@ workspace: it is a stable C ABI over the synchronous session kernel, for
 native embedders that are not written in Rust. It is compile-time excluded
 on wasm. Nothing else in the graph depends on it — it is a leaf, and the
 crate to reach for before hand-rolling a second bridge to the kernel. Its
-remote-host tunnel also depends on `phux-config` (to read the CLI's
-`[[remote]]` registry through the same loader) and `phux-dial` (QUIC/WSS
-establishment with the certificate pin and bearer token), so an embedder
-reaches a registered host without a second registry or a second dialer.
+remote-host tunnel is `phux-client-runtime`'s, behind a C handle: the
+runtime reads the CLI's `[[remote]]` registry through `phux-config`'s
+loader and dials through `phux-dial`, so an embedder reaches a registered
+host without a second registry, a second dialer, or a second relay.
 
 ## Browser client crates (standalone wasm workspace)
 

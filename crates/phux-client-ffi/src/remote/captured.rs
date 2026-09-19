@@ -1,28 +1,22 @@
 //! Independent dials from one captured registry capability, without resolving
-//! the alias again or sharing an active transport. Token bytes stay in the pump.
+//! the alias again or sharing an active transport. Token bytes stay in the
+//! runtime's tunnel thread.
 use std::ptr;
-use std::sync::{Arc, Mutex};
 
-use tokio::sync::Notify;
+use phux_client_runtime::tunnel::Tunnel;
 
-use super::{PhuxRemoteTunnel, REMOTE_TUNNEL_RESOLVED, Shared, guard};
+use super::{PhuxRemoteTunnel, guard};
 use crate::error::BridgeError;
 use crate::types::PhuxClientResult;
 
 impl PhuxRemoteTunnel {
     fn clone_resolved(&self) -> Result<Self, BridgeError> {
-        let resolved = self
-            .resolved
-            .clone()
-            .ok_or_else(|| BridgeError::state("remote tunnel has no resolved host"))?;
+        let resolved = self.tunnel()?.resolved().clone();
         Ok(Self {
-            resolved: Some(resolved),
+            inner: Ok(Tunnel::new(resolved)),
             name: self.name.clone(),
             endpoint: self.endpoint.clone(),
             session: self.session.clone(),
-            shared: Arc::new(Shared::with_state(REMOTE_TUNNEL_RESOLVED)),
-            cancel: Arc::new(Notify::new()),
-            thread: Mutex::new(None),
         })
     }
 }
@@ -59,7 +53,7 @@ pub unsafe extern "C" fn phux_remote_tunnel_clone_resolved(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use phux_client_runtime::tunnel::TunnelState;
 
     use super::*;
 
@@ -70,7 +64,8 @@ mod tests {
         let token = dir.path().join("token-A");
         std::fs::write(&config, format!("[[remote]]\nname='mini'\nendpoint='wss://endpoint-A:8788'\ntoken-file='{}'\ncert-fingerprint='pin-A'\nsession='work'\n", token.display())).expect("config");
         let source = PhuxRemoteTunnel::resolve("mini", Some(&config));
-        let original = source.resolved.as_ref().expect("resolved").clone();
+        let source_tunnel = source.tunnel().expect("resolved");
+        let original = source_tunnel.resolved().clone();
         assert_eq!(original.cert_fingerprint.as_deref(), Some("pin-A"));
         assert_eq!(original.token_file.as_deref(), Some(token.as_path()));
         std::fs::write(
@@ -78,7 +73,8 @@ mod tests {
             "[[remote]]\nname='mini'\nendpoint='ws://endpoint-B:8788'\n",
         )
         .expect("rewrite");
-        source.shared.fail("old dial failed".into());
+        source_tunnel.inject_failure("old dial failed".into());
+        assert_eq!(source_tunnel.state(), TunnelState::Failed);
         let mut cloned = ptr::null_mut();
         // SAFETY: live source and writable output; owns cloned handle below.
         assert_eq!(
@@ -87,15 +83,18 @@ mod tests {
         );
         // SAFETY: successful clone returned a unique allocated handle.
         let cloned = unsafe { Box::from_raw(cloned) };
-        assert_eq!(cloned.resolved.as_ref(), Some(&original));
-        assert_eq!(
-            cloned.shared.state.load(Ordering::Acquire),
-            REMOTE_TUNNEL_RESOLVED
-        );
-        assert!(!Arc::ptr_eq(&source.shared, &cloned.shared));
-        assert!(!Arc::ptr_eq(&source.cancel, &cloned.cancel));
-        assert!(cloned.thread.lock().expect("thread mutex").is_none());
+        let cloned_tunnel = cloned.tunnel().expect("cloned is resolved");
+        assert_eq!(cloned_tunnel.resolved(), &original);
+        // Fresh state, cancellation, and thread: the source's failure did not
+        // propagate, and dropping the source (which cancels and joins its own
+        // thread) leaves the clone RESOLVED and startable.
+        assert_eq!(cloned_tunnel.state(), TunnelState::Resolved);
         drop(source);
+        assert_eq!(cloned_tunnel.state(), TunnelState::Resolved);
+        let (_embedder, tunnel_end) = std::os::unix::net::UnixStream::pair().expect("socket pair");
+        cloned_tunnel
+            .start(tunnel_end)
+            .expect("the clone starts after the source is gone");
         assert_eq!(cloned.endpoint, "wss://endpoint-A:8788");
         assert_eq!(cloned.session, "work");
     }

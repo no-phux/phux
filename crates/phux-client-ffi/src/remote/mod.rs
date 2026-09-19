@@ -1,19 +1,12 @@
-//! Remote-host tunnels: how a native embedder reaches a registered remote
-//! phux server the way `phux attach --remote HOST` does (ADR-0007, ADR-0031,
-//! ADR-0093 rung 1).
+//! The C surface over the runtime's relay tunnel (ADR-0133): how a native
+//! embedder reaches a registered remote phux server the way
+//! `phux attach --remote HOST` does (ADR-0007, ADR-0031, ADR-0093 rung 1).
 //!
-//! The session kernel behind `PhuxClient` is sans-IO: the embedder owns the
-//! socket and moves SPEC §5 frames. A local server is a Unix-domain socket the
-//! embedder can open itself. A remote one is QUIC or TLS WebSocket with a
-//! pinned certificate and a bearer token, which no embedder should
-//! reimplement. So this module keeps the embedder's socket model and supplies
-//! the far side of it: the embedder creates a connected Unix-domain socket
-//! pair, keeps one end for its ordinary framed I/O, and hands the other to a
-//! tunnel, which dials the host and relays frames through it byte-for-byte.
-//!
-//! Resolution reads the CLI's own `[[remote]]` registry (see `target`); the
-//! bearer token is read from the entry's token file inside the tunnel and
-//! never crosses the C ABI.
+//! Resolution, dial planning, trust rules, the relay itself, and the
+//! tunnel's lifecycle all live in `phux_client_runtime`; this module owns
+//! only the opaque handle, the `#[repr(C)]` structs, and the exported
+//! functions. The bearer token is read inside the runtime's tunnel thread
+//! and never crosses the C ABI.
 
 #![allow(
     clippy::redundant_pub_crate,
@@ -21,9 +14,7 @@
 )]
 
 mod captured;
-mod pump;
 pub mod registry;
-mod target;
 
 pub use captured::phux_remote_tunnel_clone_resolved;
 
@@ -32,26 +23,24 @@ use std::os::fd::{FromRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
-use std::thread::JoinHandle;
 use std::{mem, ptr};
 
-use tokio::sync::Notify;
+use phux_client_runtime::target::{self, Transport};
+use phux_client_runtime::tunnel::{Tunnel, TunnelStartError, TunnelState};
 
 use crate::error::{BridgeError, bytes_in, check_struct};
 use crate::types::{PhuxBytes, PhuxClientResult, bytes_out};
 
 /// Registry entry found; no network activity yet.
-pub const REMOTE_TUNNEL_RESOLVED: u32 = 0;
+pub const REMOTE_TUNNEL_RESOLVED: u32 = TunnelState::Resolved.as_u32();
 /// `phux_remote_tunnel_start` accepted the transport socket; dialing.
-pub const REMOTE_TUNNEL_CONNECTING: u32 = 1;
+pub const REMOTE_TUNNEL_CONNECTING: u32 = TunnelState::Connecting.as_u32();
 /// Transport established; frames are being relayed.
-pub const REMOTE_TUNNEL_CONNECTED: u32 = 2;
+pub const REMOTE_TUNNEL_CONNECTED: u32 = TunnelState::Connected.as_u32();
 /// Resolution or the connection failed; `message` says why. Terminal.
-pub const REMOTE_TUNNEL_FAILED: u32 = 3;
+pub const REMOTE_TUNNEL_FAILED: u32 = TunnelState::Failed.as_u32();
 /// The embedder closed its end, or the tunnel was freed. Terminal.
-pub const REMOTE_TUNNEL_CLOSED: u32 = 4;
+pub const REMOTE_TUNNEL_CLOSED: u32 = TunnelState::Closed.as_u32();
 
 /// No transport: resolution failed.
 pub const REMOTE_TRANSPORT_NONE: u32 = 0;
@@ -62,7 +51,7 @@ pub const REMOTE_TRANSPORT_WS: u32 = 2;
 
 /// Bounds on the caller's spans: a target is a host label, not a document.
 const MAX_TARGET_BYTES: usize = 1024;
-const MAX_CONFIG_PATH_BYTES: usize = 4096;
+pub(crate) const MAX_CONFIG_PATH_BYTES: usize = 4096;
 
 /// What to resolve. Initialize `size`/`version` like every ABI struct.
 #[repr(C)]
@@ -97,81 +86,22 @@ pub struct PhuxRemoteTunnelInfo {
     pub message: PhuxBytes,
 }
 
-/// State shared with the tunnel thread. The message is written once, before
-/// the FAILED state is published, so a reader that observes FAILED always
-/// finds a stable message it may borrow until free.
-#[derive(Debug)]
-pub(crate) struct Shared {
-    state: AtomicU32,
-    message: OnceLock<String>,
-}
-
-impl Shared {
-    pub(crate) const fn with_state(state: u32) -> Self {
-        Self {
-            state: AtomicU32::new(state),
-            message: OnceLock::new(),
-        }
-    }
-
-    fn terminal(&self) -> bool {
-        matches!(
-            self.state.load(Ordering::Acquire),
-            REMOTE_TUNNEL_FAILED | REMOTE_TUNNEL_CLOSED
-        )
-    }
-
-    #[cfg(test)]
-    pub(crate) fn state(&self) -> u32 {
-        self.state.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn connected(&self) {
-        let _ = self.state.compare_exchange(
-            REMOTE_TUNNEL_CONNECTING,
-            REMOTE_TUNNEL_CONNECTED,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
-    }
-
-    /// Publish the reason and the FAILED state, in that order. The one warn
-    /// event for a tunnel failure is emitted here, so every caller's reason
-    /// reaches the log exactly once.
-    pub(crate) fn fail(&self, message: String) {
-        if self.terminal() {
-            return;
-        }
-        tracing::warn!(reason = %message, "remote tunnel failed");
-        let _ = self.message.set(message);
-        self.state.store(REMOTE_TUNNEL_FAILED, Ordering::Release);
-    }
-
-    pub(crate) fn close(&self) {
-        if !self.terminal() {
-            tracing::info!("remote tunnel closed");
-            self.state.store(REMOTE_TUNNEL_CLOSED, Ordering::Release);
-        }
-    }
-}
-
 /// Opaque tunnel handle.
 ///
 /// One embedder thread at a time owns resolve/start/free. Ownership may move
 /// before start, and back after the embedder joins its socket worker; unlike a
-/// `PhuxClient`, this handle has no originating-thread affinity. `phux_remote_tunnel_info`
-/// may run on any thread while the tunnel lives, including concurrently with
-/// `start`, because nothing `start` changes is reachable except through
-/// atomics and the thread mutex.
+/// `PhuxClient`, this handle has no originating-thread affinity.
+/// `phux_remote_tunnel_info` may run on any thread while the tunnel lives,
+/// including concurrently with `start`: the runtime's tunnel publishes its
+/// state through atomics only.
 pub struct PhuxRemoteTunnel {
-    /// Display fields and the token file's PATH only; no secret.
-    resolved: Option<target::Resolved>,
-    name: String,
-    endpoint: String,
-    session: String,
-    shared: Arc<Shared>,
-    cancel: Arc<Notify>,
-    thread: Mutex<Option<JoinHandle<()>>>,
+    /// The live tunnel, or the reason resolution failed. A handle for an
+    /// unregistered host is FAILED from birth and can never start.
+    pub(crate) inner: Result<Tunnel, String>,
+    /// Display fields only; no secret.
+    pub(crate) name: String,
+    pub(crate) endpoint: String,
+    pub(crate) session: String,
 }
 
 impl std::fmt::Debug for PhuxRemoteTunnel {
@@ -180,7 +110,7 @@ impl std::fmt::Debug for PhuxRemoteTunnel {
             .debug_struct("PhuxRemoteTunnel")
             .field("name", &self.name)
             .field("endpoint", &self.endpoint)
-            .field("state", &self.shared.state.load(Ordering::Acquire))
+            .field("state", &self.state())
             .finish_non_exhaustive()
     }
 }
@@ -199,94 +129,53 @@ impl PhuxRemoteTunnel {
                     name: resolved.name.clone(),
                     endpoint: resolved.endpoint.clone(),
                     session: resolved.session.clone().unwrap_or_default(),
-                    resolved: Some(resolved),
-                    shared: Arc::new(Shared::with_state(REMOTE_TUNNEL_RESOLVED)),
-                    cancel: Arc::new(Notify::new()),
-                    thread: Mutex::new(None),
+                    inner: Ok(Tunnel::new(resolved)),
                 }
             }
             Err(message) => {
                 tracing::warn!(target = raw.trim(), reason = %message, "remote tunnel resolution failed");
-                let shared = Shared::with_state(REMOTE_TUNNEL_FAILED);
-                let _ = shared.message.set(message);
                 Self {
-                    resolved: None,
+                    inner: Err(message),
                     name: raw.trim().to_owned(),
                     endpoint: String::new(),
                     session: String::new(),
-                    shared: Arc::new(shared),
-                    cancel: Arc::new(Notify::new()),
-                    thread: Mutex::new(None),
                 }
             }
         }
     }
 
-    const fn transport(&self) -> u32 {
-        match &self.resolved {
-            Some(resolved) => match resolved.transport {
-                target::Transport::Quic(_) => REMOTE_TRANSPORT_QUIC,
-                target::Transport::Ws(_) => REMOTE_TRANSPORT_WS,
-            },
-            None => REMOTE_TRANSPORT_NONE,
-        }
+    pub(crate) fn tunnel(&self) -> Result<&Tunnel, BridgeError> {
+        self.inner
+            .as_ref()
+            .map_err(|_| BridgeError::state("remote tunnel has no resolved host"))
     }
 
-    /// `&self`: the one-shot RESOLVED -> CONNECTING step is an atomic
-    /// compare-exchange and the join handle sits behind a mutex, so a
-    /// concurrent `info` never aliases a unique borrow.
+    fn state(&self) -> u32 {
+        self.inner
+            .as_ref()
+            .map_or(REMOTE_TUNNEL_FAILED, |tunnel| tunnel.state().as_u32())
+    }
+
+    fn message(&self) -> &str {
+        self.inner
+            .as_ref()
+            .map_or_else(String::as_str, |tunnel| tunnel.message().unwrap_or(""))
+    }
+
+    fn transport(&self) -> u32 {
+        self.inner
+            .as_ref()
+            .map_or(REMOTE_TRANSPORT_NONE, |tunnel| match tunnel.transport() {
+                Transport::Quic(_) => REMOTE_TRANSPORT_QUIC,
+                Transport::Ws(_) => REMOTE_TRANSPORT_WS,
+            })
+    }
+
     fn start(&self, stream: UnixStream) -> Result<(), BridgeError> {
-        let resolved = self
-            .resolved
-            .clone()
-            .ok_or_else(|| BridgeError::state("remote tunnel has no resolved host"))?;
-        if self
-            .shared
-            .state
-            .compare_exchange(
-                REMOTE_TUNNEL_RESOLVED,
-                REMOTE_TUNNEL_CONNECTING,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
-            .is_err()
-        {
-            return Err(BridgeError::state(
-                "remote tunnel is not in the RESOLVED state",
-            ));
-        }
-        tracing::info!(host = %resolved.name, "remote tunnel starting");
-        let shared = Arc::clone(&self.shared);
-        let cancel = Arc::clone(&self.cancel);
-        let spawned = std::thread::Builder::new()
-            .name("phux-remote-tunnel".to_owned())
-            .spawn(move || pump::run(&shared, &cancel, &resolved, stream));
-        match spawned {
-            Ok(thread) => {
-                *self.thread.lock().unwrap_or_else(PoisonError::into_inner) = Some(thread);
-                Ok(())
-            }
-            Err(err) => {
-                self.shared
-                    .fail(format!("could not start the tunnel thread: {err}"));
-                Err(BridgeError::engine("could not start the tunnel thread"))
-            }
-        }
-    }
-}
-
-impl Drop for PhuxRemoteTunnel {
-    fn drop(&mut self) {
-        // The pump selects on this notification at every await, so the join
-        // below is bounded by one poll, not by a dial or a relay.
-        self.cancel.notify_one();
-        let slot = self
-            .thread
-            .get_mut()
-            .unwrap_or_else(PoisonError::into_inner);
-        if let Some(thread) = slot.take() {
-            let _ = thread.join();
-        }
+        self.tunnel()?.start(stream).map_err(|err| match err {
+            TunnelStartError::NotResolved => BridgeError::state(err.to_string()),
+            TunnelStartError::Spawn(_) => BridgeError::engine("could not start the tunnel thread"),
+        })
     }
 }
 
@@ -362,7 +251,7 @@ pub unsafe extern "C" fn phux_remote_tunnel_resolve(
 /// Empty selects the CLI's own config path; anything else must be absolute,
 /// because a relative path would resolve against whatever the embedder's
 /// working directory happens to be.
-fn config_path_in(path: &str) -> Result<Option<&Path>, BridgeError> {
+pub(crate) fn config_path_in(path: &str) -> Result<Option<&Path>, BridgeError> {
     if path.is_empty() {
         return Ok(None);
     }
@@ -395,17 +284,21 @@ pub unsafe extern "C" fn phux_remote_tunnel_info(
             mem::size_of::<PhuxRemoteTunnelInfo>(),
             out.version,
         )?;
-        let state = tunnel.shared.state.load(Ordering::Acquire);
-        let message = if state == REMOTE_TUNNEL_FAILED {
-            tunnel.shared.message.get().map_or("", String::as_str)
-        } else {
-            ""
-        };
+        // One load decides both fields: a failure landing between two reads
+        // would pair a live state with a reason, and `message` is documented
+        // as empty unless `state` is FAILED. FAILED is terminal, so a second
+        // read after observing it cannot see anything else.
+        let state = tunnel.state();
         out.state = state;
         out.transport = tunnel.transport();
         out.name = bytes_out(tunnel.name.as_bytes());
         out.endpoint = bytes_out(tunnel.endpoint.as_bytes());
         out.session = bytes_out(tunnel.session.as_bytes());
+        let message = if state == REMOTE_TUNNEL_FAILED {
+            tunnel.message()
+        } else {
+            ""
+        };
         out.message = bytes_out(message.as_bytes());
         Ok(())
     })
