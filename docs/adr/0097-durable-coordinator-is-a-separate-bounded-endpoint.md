@@ -15,6 +15,7 @@ coordinator capabilities fail closed rather than falling back to L1 or L3.
 
 Status: Accepted (forward-compat)
 Date: 2026-09-10
+Superseded in part by [ADR-0132](./0132-swarm-members-are-coordinator-clients.md): bindings are to resources, not Terminals only; a Run may bind none.
 
 ## Context
 
