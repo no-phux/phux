@@ -661,9 +661,10 @@ test "failed exited helper cannot leave disposable process group children" {
 test "exited helper cleanup preserves a daemon that acquired its own session" {
     var fixture = try TestFixture.init();
     defer fixture.deinit();
-    const script = "#!/usr/bin/python3\nimport pathlib, subprocess\n" ++
+    const script = "#!/usr/bin/python3\nimport json, pathlib, subprocess, sys\n" ++
         "p = subprocess.Popen(['/bin/sleep', '60'], start_new_session=True, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n" ++
-        "(pathlib.Path(__file__).parent / 'daemon-pid').write_text(str(p.pid))\n";
+        "(pathlib.Path(__file__).parent / 'daemon-pid').write_text(str(p.pid))\n" ++
+        "print(json.dumps({'schema_version': 1, 'running': True, 'socket': sys.argv[2], 'disposition': 'daemon_started', 'cli_version': 'test', 'server_log': '/unused.log'}))\n";
     try fixture.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "fixture cli", .data = script, .flags = .{ .permissions = .fromMode(0o700) } });
     var stopping = std.atomic.Value(bool).init(false);
     try ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli });
