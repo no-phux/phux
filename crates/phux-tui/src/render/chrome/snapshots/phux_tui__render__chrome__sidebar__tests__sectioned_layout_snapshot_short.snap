@@ -9,6 +9,6 @@ expression: "strip_text(&p, rect)"
  Sessions                │
  ○ development           │
    on mini               │
- +1 sessions, +2 windows │
- + new window            │
- = commands  S settings  ‹
+   ● phux main           │
+ +1 sessions, +1 windows │
+ + new window            ‹

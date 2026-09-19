@@ -385,12 +385,8 @@ pub struct SessionRosterTarget {
 #[must_use]
 pub fn row_model(counts: SidebarCounts, h: u16) -> Vec<SidebarRow> {
     let h = usize::from(h);
-    let footer = if h >= usize::from(MIN_FOOTER_HEIGHT) {
-        1
-    } else {
-        0
-    };
-    let body = h - footer;
+    let show_footer = h >= usize::from(MIN_FOOTER_HEIGHT);
+    let body = h - usize::from(show_footer);
     let mut rows = Vec::with_capacity(h);
 
     if body == 1 {
@@ -402,7 +398,7 @@ pub fn row_model(counts: SidebarCounts, h: u16) -> Vec<SidebarRow> {
         push_sessions(&mut rows, counts, body - agents);
         rows.resize(body, SidebarRow::Blank);
     }
-    if footer == 1 {
+    if show_footer {
         rows.push(SidebarRow::NewWindow);
     }
     rows
@@ -1267,13 +1263,13 @@ mod tests {
         let hidden = hidden_counts(c, &model);
         assert_eq!(hidden.needs_you, 5);
         assert_eq!(hidden.roster, 3);
-        assert_eq!(hidden.windows, 3);
+        assert_eq!(hidden.windows, 2);
         assert!(model.contains(&SidebarRow::RosterOverflow));
         assert!(model.contains(&SidebarRow::RosterHost(0)));
         let p = SidebarPainter::new(Theme::default());
         let line = p.sessions_overflow_line(hidden, 32);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "+3 sessions, +3 windows");
+        assert_eq!(text, "+3 sessions, +2 windows");
     }
 
     #[test]
@@ -2400,7 +2396,7 @@ mod tests {
     fn agents_never_starve_sessions() {
         for h in MIN_FOOTER_HEIGHT..24 {
             let rows = row_model(counts(20, 2, 3), h);
-            let body = usize::from(h).saturating_sub(2);
+            let body = usize::from(h).saturating_sub(1);
             assert_eq!(rows[0], SidebarRow::NeedsYouHeader);
             assert_eq!(rows[body / 2], SidebarRow::SpacesHeader);
             let quiet = row_model(counts(0, 2, 3), h);
@@ -2590,8 +2586,8 @@ mod tests {
 
     /// Paint and hit-test derive from one row model: every row the painter
     /// fills with a window label hit-tests to that window, agent rows
-    /// hit-test to their windows, and the footer rows hit-test to their
-    /// affordances.
+    /// hit-test to their windows, and the footer row hit-tests to its
+    /// affordance.
     #[test]
     fn paint_and_hit_test_agree_row_for_row() {
         let rect = Rect {

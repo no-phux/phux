@@ -1,20 +1,20 @@
 ---
-source: crates/phux-client/src/render/overlay/select_list.rs
+source: crates/phux-tui/src/render/overlay/select_list.rs
 expression: out
 ---
 ┌──────────── command palette ─────────────┐
-│>                                         │
+│ >                                        │
 │                                          │
-│item-6                                    │
-│item-7                                    │
-│item-8                                    █
-│item-9                                    █
-│item-10                                   █
-│item-11                                   █
-│item-12                                   │
-│item-13                                   │
-│item-14                                   │
-│item-15                                   │
-│                                          │
-│Enter select  ·  Esc cancel               │
+│ item-4                                   │
+│ item-5                                   │
+│ item-6                                   █
+│ item-7                                   █
+│ item-8                                   █
+│ item-9                                   █
+│ item-10                                  █
+│ item-11                                  █
+│ item-12                                  │
+│ item-13                                  │
+│ item-14                                  │
+│ item-15                                  │
 └──────────────────────────────────────────┘

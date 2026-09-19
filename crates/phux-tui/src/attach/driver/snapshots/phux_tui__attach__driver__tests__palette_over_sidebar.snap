@@ -9,12 +9,12 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
                    │
                    │
                    │┌──────────────────── command palette ─────────────────────┐
-                   ││>                                                         │
+                   ││ >                                                        │
                    ││                                                          │
-                   ││detach                                                    │
-                   ││new-window                                                │
+                   ││ detach                                                   │
+                   ││ new-window                                               │
  Sessions          ││                                                          │
- ○ probe           ││Enter select  ·  Esc cancel  ·  type to filter            │
+ ○ probe           ││                                                          │
    on probe-host   ││                                                          │
    ● w1-agent      ││                                                          │
                    ││                                                          │
@@ -24,5 +24,5 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
                    │
                    │
                    │
- + new window      │
- = commands        ‹
+                   │
+ + new window      ‹

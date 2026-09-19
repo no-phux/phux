@@ -18,5 +18,5 @@ expression: "strip_text(&p, rect)"
    on mini               │
  ○ prod-3             ?2 │
    on devbox             │
- + new window            │
- = commands  S settings  ‹
+                         │
+ + new window            ‹

@@ -18,5 +18,5 @@ expression: "strip_text(&p, rect)"
                          │
                          │
                          │
- + new window            │
- = commands  S settings  ‹
+                         │
+ + new window            ‹

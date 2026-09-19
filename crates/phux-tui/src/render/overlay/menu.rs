@@ -48,7 +48,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::HardcodedBinding;
-use super::widgets::Modal;
+use super::widgets::{MODAL_PAD, Modal, modal_inner_width};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::Theme;
 
@@ -214,7 +214,9 @@ impl ContextMenu {
     /// than rejecting it.
     fn row_at(&self, x: u16, y: u16) -> Option<usize> {
         let r = self.rect;
-        let interior_x = r.x.saturating_add(1)..r.x.saturating_add(r.width).saturating_sub(1);
+        let inset_x = 1 + MODAL_PAD;
+        let interior_x =
+            r.x.saturating_add(inset_x)..r.x.saturating_add(r.width).saturating_sub(inset_x);
         let interior_y = r.y.saturating_add(1)..r.y.saturating_add(r.height).saturating_sub(1);
         if !interior_x.contains(&x) || !interior_y.contains(&y) {
             return None;
@@ -358,7 +360,10 @@ fn box_size(title: &str, rows: &[MenuRow]) -> (u16, u16) {
         .max(title_w.saturating_add(2))
         .max(MIN_WIDTH.saturating_sub(2));
     let rows_h = u16::try_from(rows.len()).unwrap_or(u16::MAX);
-    (inner.saturating_add(2), rows_h.saturating_add(2))
+    (
+        inner.saturating_add(2 + MODAL_PAD * 2),
+        rows_h.saturating_add(2),
+    )
 }
 
 /// Place a `size` box with its top-left corner on `anchor`, flipping left
@@ -413,7 +418,7 @@ impl RenderOverlay for ContextMenu {
         {
             return;
         }
-        let body = self.body_lines(self.rect.width.saturating_sub(2));
+        let body = self.body_lines(modal_inner_width(self.rect.width));
         Modal::new(&self.theme, self.title.clone(), body).render_into(self.rect, buf);
     }
 

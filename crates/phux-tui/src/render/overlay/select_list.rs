@@ -1289,10 +1289,10 @@ mod tests {
         assert_eq!(sl.selected, 1, "no measured viewport ⇒ a single-row step");
         // After a paint, a page is a real screenful. A 40x16 viewport is
         // compact on both axes, so the picker is full-bleed: 16 rows less
-        // the 6 of shared chrome leaves 10 visible.
+        // the 4 of shared chrome leaves 12 visible.
         render_to_string(&sl, 40, 16);
         sl.handle_key(&press(PhysicalKey::PageDown, None));
-        assert_eq!(sl.selected, 11);
+        assert_eq!(sl.selected, 13);
         sl.handle_key(&press(PhysicalKey::PageUp, None));
         assert_eq!(sl.selected, 1);
         // And both saturate rather than wrapping.
