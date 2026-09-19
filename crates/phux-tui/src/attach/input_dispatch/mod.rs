@@ -8,6 +8,7 @@
 //! chord to its remote `SPAWN_RESOURCE` reply.
 
 mod args;
+mod chrome_drag;
 mod ctx;
 mod dispatch;
 mod effects;

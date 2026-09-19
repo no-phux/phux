@@ -573,12 +573,12 @@ async fn attach_session<W: crate::attach::RenderSink>(
     let mut pending_window: Option<usize> = None;
     let mut pending_pane: Option<usize> = None;
     let mut pending_resource: Option<ResourceId> = None;
-    // The window sidebar's runtime on/off state, handed back by each
-    // `LoopExit::SwitchTo` and fed into the next `main_loop` entry. `None` on
-    // the first attach so `[sidebar] enabled` decides. Unlike `pending_window`
-    // / `pending_pane` this is deliberately NOT `take`n — it persists for the
-    // life of the attach, across any number of switches.
-    let mut carried_sidebar_enabled: Option<bool> = None;
+    // The window sidebar's runtime state (on/off and width), handed back by
+    // each `LoopExit::SwitchTo` and fed into the next `main_loop` entry.
+    // `None` on the first attach so `[sidebar]` decides. Unlike
+    // `pending_window` / `pending_pane` this is deliberately NOT `take`n — it
+    // persists for the life of the attach, across any number of switches.
+    let mut carried_sidebar: Option<CarriedSidebar> = None;
     // phux-i0e8.2.3: hand the reconnect notice to the first `main_loop`
     // entry only (same `take` pattern as the onboarding hint above): a
     // session switch re-enters `main_loop` but is not a reconnect.
@@ -590,7 +590,10 @@ async fn attach_session<W: crate::attach::RenderSink>(
     let mut review = crate::attach::review::ReviewIndex::new();
     loop {
         let claim = onboarding_claim.take();
-        let exit = match main_loop(
+        // Boxed: the session loop's state machine is large, and inlining it
+        // here pushed every caller's attach future past clippy's
+        // `large_futures` limit. One allocation per attach or switch.
+        let exit = match Box::pin(main_loop(
             &mut conn,
             dial,
             attached,
@@ -603,11 +606,11 @@ async fn attach_session<W: crate::attach::RenderSink>(
             pending_window.take(),
             pending_pane.take(),
             pending_resource.take(),
-            carried_sidebar_enabled,
+            carried_sidebar,
             input_replay.clone(),
             std::mem::take(&mut orphan_kills),
             std::mem::take(&mut review),
-        )
+        ))
         .await
         {
             Ok(exit) => exit,
@@ -643,14 +646,14 @@ async fn attach_session<W: crate::attach::RenderSink>(
             }
             LoopExit::SwitchTo {
                 target,
-                sidebar_enabled,
+                sidebar,
                 orphan_kills: carried_orphans,
                 review: carried_review,
             } => {
                 // The sidebar is the human's chrome, not the session's. Carry
-                // the toggle into the next entry so the strip does not blink
-                // shut on every space switch.
-                carried_sidebar_enabled = Some(sidebar_enabled);
+                // the toggle and a dragged width into the next entry so the
+                // strip neither blinks shut nor snaps back on a space switch.
+                carried_sidebar = Some(sidebar);
                 orphan_kills = carried_orphans;
                 review = carried_review;
                 attached = switch_session(
@@ -838,8 +841,9 @@ pub(super) enum LoopExit {
         /// human's chrome, not the session's, and switching spaces does not
         /// change which window they are looking at. Without carrying it out,
         /// the next entry re-seeds the strip from `[sidebar] enabled` and
-        /// silently reverts a `toggle-sidebar` the user made.
-        sidebar_enabled: bool,
+        /// silently reverts a `toggle-sidebar` the user made. The width rides
+        /// along for the same reason: a dragged edge must not snap back.
+        sidebar: CarriedSidebar,
         /// phux-c2td.23: the stray satellite panes this client still owes a
         /// kill, including the ones the switch itself strands. Connection
         /// state, not session state, so it rides into the next entry.
@@ -862,6 +866,18 @@ pub(super) const fn detached_loop_exit(end: AttachEnd, local_intent: bool) -> Lo
         end,
         locally_requested: is_local_detach(end, local_intent),
     }
+}
+
+/// The sidebar state one `main_loop` entry hands the next across an
+/// in-process session switch. Runtime-only: neither field is ever written
+/// to `config.toml` (ADR-0101 decision 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CarriedSidebar {
+    /// `toggle-sidebar`'s current state.
+    pub enabled: bool,
+    /// The strip width when a drag moved it away from `[sidebar] width`;
+    /// `None` lets the next entry's config load decide, as before.
+    pub width: Option<u16>,
 }
 
 /// The window sidebar's enabled flag at `main_loop` entry.

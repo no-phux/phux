@@ -204,6 +204,11 @@ which-key-delay-ms = 400
 "7" = { action = "select-window", index = 7 }
 "8" = { action = "select-window", index = 8 }
 "9" = { action = "select-window", index = 9 }
+# < and > move the active window one slot left or right in the order the
+# status bar and sidebar show. Dragging a tab or a sidebar window row does
+# the same with the mouse.
+"<" = { action = "move-window", delta = -1 }
+">" = { action = "move-window", delta = 1 }
 
 # Directory picker: browse directories on the attached server's host and
 # open a new window in the one you pick. G for "go" (the Go-to-Folder

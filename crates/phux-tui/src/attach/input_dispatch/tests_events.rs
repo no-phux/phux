@@ -156,7 +156,7 @@ async fn overlay_active_prefix_key_reaches_overlay_not_resolver() {
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -298,7 +298,7 @@ async fn dispatch_with_passthrough_popup(
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -484,7 +484,7 @@ async fn copy_mode_page_scroll_mutates_focused_terminal_viewport() {
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -723,6 +723,35 @@ async fn dispatch_sidebar_click_with(
     height: u16,
     sidebar_targets: crate::render::chrome::sidebar::SidebarTargets,
 ) -> (usize, bool, usize) {
+    let run = dispatch_sidebar_events(vec![ev], height, sidebar_targets).await;
+    (run.active, run.overlay_active, run.pending_windows)
+}
+
+/// What a sidebar fixture run left behind.
+struct SidebarRun {
+    active: usize,
+    overlay_active: bool,
+    pending_windows: usize,
+    /// Window names in display order.
+    names: Vec<String>,
+    /// The driver's sidebar width after the batch.
+    width: u16,
+    sidebar_enabled: bool,
+    drag_live: bool,
+}
+
+/// Drive one batch of `events` against a left-docked, 20-column sidebar
+/// over an 80-column viewport and a two-window workspace ("1", "two").
+#[allow(
+    clippy::future_not_send,
+    clippy::too_many_lines,
+    reason = "test-owned native terminal is !Send; the length is one DispatchCtx fixture literal"
+)]
+async fn dispatch_sidebar_events(
+    events: Vec<InputEvent>,
+    height: u16,
+    sidebar_targets: crate::render::chrome::sidebar::SidebarTargets,
+) -> SidebarRun {
     let (a, _b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut out: Vec<u8> = Vec::new();
@@ -744,6 +773,7 @@ async fn dispatch_sidebar_click_with(
     let mut session_name = String::new();
     let mut zoomed = None;
     let mut sidebar_enabled = true;
+    let mut sidebar_width: u16 = 20;
     let mut drag: Option<DragGrab> = None;
     let mut mouse_optout: std::collections::HashSet<ResourceId> = std::collections::HashSet::new();
     let mut reload_request = false;
@@ -789,7 +819,7 @@ async fn dispatch_sidebar_click_with(
             width: 20,
         }),
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut sidebar_width,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: Some(crate::render::chrome::status_bar::Position::Bottom),
@@ -807,7 +837,7 @@ async fn dispatch_sidebar_click_with(
     dispatch_input_events(
         &mut out,
         &mut conn,
-        &mut vec![ev],
+        &mut events.clone(),
         &mut focused_resource,
         &mut detach_pending,
         &mut predict,
@@ -817,11 +847,16 @@ async fn dispatch_sidebar_click_with(
     )
     .await
     .expect("dispatch");
-    (
-        workspace.active,
-        overlays.is_active(),
-        pending_windows.len(),
-    )
+    let drag_live = drag.is_some();
+    SidebarRun {
+        active: workspace.active,
+        overlay_active: overlays.is_active(),
+        pending_windows: pending_windows.len(),
+        names: workspace.windows.iter().map(|w| w.name.clone()).collect(),
+        width: sidebar_width,
+        sidebar_enabled,
+        drag_live,
+    }
 }
 
 /// A left press on the second window's block switches to it — the
@@ -912,6 +947,157 @@ async fn sidebar_right_press_on_blank_chrome_opens_the_session_menu() {
 
 // ---------- phux-foz.12: status-bar window-tab hit targets ----------
 
+fn left_mouse(action: MouseAction, x: u16, y: u16) -> InputEvent {
+    InputEvent::Mouse(mev(action, MouseButton::Left, f64::from(x), f64::from(y)))
+}
+
+/// Dragging the left-docked strip's separator rule resizes the strip to
+/// follow the pointer, and the release ends the grab without undoing it.
+/// The 20-column strip's rule sits on column 19.
+#[tokio::test]
+async fn dragging_the_sidebar_edge_resizes_the_strip() {
+    let run = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 19, 5),
+            left_mouse(MouseAction::Motion, 25, 5),
+            left_mouse(MouseAction::Motion, 29, 6),
+            left_mouse(MouseAction::Release, 29, 6),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(run.width, 30, "the rule lands under the pointer");
+    assert!(!run.drag_live, "the release ends the grab");
+    assert_eq!(run.active, 0, "grabbing the edge selects nothing");
+    assert!(run.sidebar_enabled);
+}
+
+/// The dragged width is clamped: the strip keeps room for a window name
+/// and the panes keep `min_pane_cols` (40 by default of 80 columns).
+#[tokio::test]
+async fn sidebar_edge_drag_is_clamped_at_both_ends() {
+    let wide = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 19, 5),
+            left_mouse(MouseAction::Motion, 75, 5),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(wide.width, 40, "panes keep their minimum columns");
+    assert!(wide.drag_live, "without a release the grab stays live");
+
+    let narrow = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 19, 5),
+            left_mouse(MouseAction::Motion, 2, 5),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(
+        narrow.width,
+        super::chrome_drag::MIN_DRAGGED_SIDEBAR_COLS,
+        "the strip keeps room for a window name"
+    );
+}
+
+/// Width math for both docks, and the strip floor that yields to a config
+/// already narrower than the default floor.
+#[test]
+fn dragged_sidebar_width_tracks_the_pointer_within_both_floors() {
+    use super::super::paint::SidebarEdge;
+    use super::chrome_drag::{WidthFloors, dragged_sidebar_width};
+    let floors = WidthFloors {
+        strip: 16,
+        panes: 40,
+    };
+    assert_eq!(
+        dragged_sidebar_width(80, SidebarEdge::Left, 29, floors),
+        Some(30)
+    );
+    assert_eq!(
+        dragged_sidebar_width(80, SidebarEdge::Right, 50, floors),
+        Some(30)
+    );
+    assert_eq!(
+        dragged_sidebar_width(80, SidebarEdge::Left, 79, floors),
+        Some(40)
+    );
+    assert_eq!(
+        dragged_sidebar_width(50, SidebarEdge::Left, 20, floors),
+        None
+    );
+    let narrow = WidthFloors {
+        strip: 12,
+        panes: 40,
+    };
+    assert_eq!(
+        dragged_sidebar_width(80, SidebarEdge::Left, 11, narrow),
+        Some(12),
+        "a 12-column config does not snap to 16 when grabbed"
+    );
+}
+
+/// The rule's bottom corner is still the collapse chevron, not a handle.
+#[tokio::test]
+async fn the_collapse_corner_is_not_a_resize_handle() {
+    let run = dispatch_sidebar_events(
+        vec![left_mouse(MouseAction::Press, 19, 23)],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert!(
+        !run.sidebar_enabled,
+        "the chevron still collapses the strip"
+    );
+    assert!(!run.drag_live);
+    assert_eq!(run.width, 20);
+}
+
+/// Pressing a sidebar window row selects it and picks it up; releasing it
+/// over another window row moves it into that slot, still selected.
+/// Window rows sit at 14 and 15 in this fixture.
+#[tokio::test]
+async fn dragging_a_sidebar_window_row_reorders_windows() {
+    let run = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 3, 14),
+            left_mouse(MouseAction::Motion, 3, 15),
+            left_mouse(MouseAction::Release, 3, 15),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(run.names, ["two", "1"]);
+    assert_eq!(run.active, 1, "the dragged window stays active");
+    assert!(!run.drag_live);
+}
+
+/// A window row dropped anywhere but another window row stays put, and so
+/// does a plain click.
+#[tokio::test]
+async fn sidebar_window_drop_off_the_rows_changes_nothing() {
+    for release_at in [(3, 14), (3, 5), (50, 15)] {
+        let run = dispatch_sidebar_events(
+            vec![
+                left_mouse(MouseAction::Press, 3, 14),
+                left_mouse(MouseAction::Release, release_at.0, release_at.1),
+            ],
+            24,
+            targets(0, 2, 1),
+        )
+        .await;
+        assert_eq!(run.names, ["1", "two"], "release at {release_at:?}");
+        assert!(!run.drag_live);
+    }
+}
+
 /// Build a status-bar painter with the `windows` widget in the left
 /// slot (the default config's layout), fed `bash`/`vim` tabs and
 /// painted once at `cols x rows` so its cached strip — the click
@@ -973,6 +1159,23 @@ async fn dispatch_bar_click(
     position: crate::render::chrome::status_bar::Position,
     with_painter: bool,
 ) -> (usize, Vec<FrameKind>, bool) {
+    let (active, received, overlay_active, _) =
+        dispatch_bar_events(vec![ev], position, with_painter).await;
+    (active, received, overlay_active)
+}
+
+/// [`dispatch_bar_click`] over a batch of events, also returning the window
+/// names in display order.
+#[allow(
+    clippy::future_not_send,
+    clippy::too_many_lines,
+    reason = "client-side libghostty Terminal is !Send (ADR-0003 binds us to current-thread); the length is one DispatchCtx fixture literal"
+)]
+async fn dispatch_bar_events(
+    events: Vec<InputEvent>,
+    position: crate::render::chrome::status_bar::Position,
+    with_painter: bool,
+) -> (usize, Vec<FrameKind>, bool, Vec<String>) {
     let painter = painted_windows_bar(position, 80, 24);
     let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
@@ -1039,7 +1242,7 @@ async fn dispatch_bar_click(
             zoomed: &mut zoomed,
             sidebar: None,
             sidebar_enabled: &mut sidebar_enabled,
-            sidebar_width: 20,
+            sidebar_width: &mut 20,
             chrome: ChromeBreakpoints::default(),
             sidebar_targets: &sidebar_targets,
             bar: Some(position),
@@ -1057,7 +1260,7 @@ async fn dispatch_bar_click(
         dispatch_input_events(
             &mut out,
             &mut conn,
-            &mut vec![ev],
+            &mut events.clone(),
             &mut focused_resource,
             &mut detach_pending,
             &mut predict,
@@ -1082,7 +1285,8 @@ async fn dispatch_bar_click(
         }
     }
     drop(peer);
-    (workspace.active, received, overlays.is_active())
+    let names = workspace.windows.iter().map(|w| w.name.clone()).collect();
+    (workspace.active, received, overlays.is_active(), names)
 }
 
 /// A left press on window 1's tab in the BOTTOM bar (the user-reported
@@ -1184,6 +1388,53 @@ async fn bar_click_without_painter_is_consumed() {
 /// column commits `select-window { index }`; non-tab columns and a
 /// missing painter commit nothing — and the committed name must be a
 /// dispatched action (the palette-registry lockstep).
+/// Dragging a status-bar tab onto another tab moves that window into the
+/// other tab's slot. The strip reads "0:bash 1:vim": window 0 on columns
+/// 0..=5, window 1 on 7..=11.
+#[tokio::test]
+async fn dragging_a_tab_onto_another_tab_reorders_windows() {
+    use crate::render::chrome::status_bar::Position;
+    let (active, received, _, names) = dispatch_bar_events(
+        vec![
+            left_mouse(MouseAction::Press, 2, 23),
+            left_mouse(MouseAction::Motion, 5, 23),
+            left_mouse(MouseAction::Motion, 9, 23),
+            left_mouse(MouseAction::Release, 9, 23),
+        ],
+        Position::Bottom,
+        true,
+    )
+    .await;
+    assert_eq!(names, ["two", "1"]);
+    assert_eq!(active, 1, "the dragged window stays active");
+    assert!(
+        received.is_empty(),
+        "a tab drag must not reach a pane; got {received:?}"
+    );
+}
+
+/// A tab released off the bar row, or back on itself, keeps the order.
+#[tokio::test]
+async fn tab_drop_off_the_bar_changes_nothing() {
+    use crate::render::chrome::status_bar::Position;
+    for release_at in [(9, 10), (3, 23), (40, 23)] {
+        let (_, received, _, names) = dispatch_bar_events(
+            vec![
+                left_mouse(MouseAction::Press, 2, 23),
+                left_mouse(MouseAction::Release, release_at.0, release_at.1),
+            ],
+            Position::Bottom,
+            true,
+        )
+        .await;
+        assert_eq!(names, ["1", "two"], "release at {release_at:?}");
+        assert!(
+            received.is_empty(),
+            "release at {release_at:?}: {received:?}"
+        );
+    }
+}
+
 #[test]
 fn bar_click_action_maps_tab_columns_to_select_window() {
     use crate::render::chrome::status_bar::Position;
@@ -1508,7 +1759,7 @@ async fn dispatch_mouse_two_pane_into_with_journal(
             zoomed: &mut zoomed,
             sidebar: None,
             sidebar_enabled: &mut sidebar_enabled,
-            sidebar_width: 20,
+            sidebar_width: &mut 20,
             chrome: ChromeBreakpoints::default(),
             sidebar_targets: &sidebar_targets,
             bar: None,
@@ -2332,7 +2583,7 @@ fn run_set_pane(
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -2586,7 +2837,7 @@ async fn predict_state_after_key_dispatch(alt_screen: bool) -> PredictionState {
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,

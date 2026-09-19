@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-18
+last-reviewed: 2026-09-19
 ---
 
 # The phux reference TUI
@@ -195,6 +195,7 @@ Default prefix `C-a`. Override it in one line of config.
 | `C-a c` | `new-window` |
 | `C-a n/p` | `next-window` / `previous-window` |
 | `C-a 0`–`9` | `select-window` by index |
+| `C-a <` / `C-a >` | `move-window` one slot left / right |
 | `C-a G` | `go-to-directory` |
 | `C-a w` | `window-picker` |
 | `C-a s` | `session-picker` (`C-a a` is a kept alias) |
@@ -578,17 +579,20 @@ exhaustive cross-session CLI projection.
 
 Mouse handling is on by default. On attach the client enables button-event
 tracking plus SGR coordinates on the *outer* terminal and restores them
-on detach, so divider drags work in a plain shell.
+on detach, so divider, sidebar, and tab drags work in a plain shell.
 
 | Event | Action |
 |---|---|
 | Click in a pane | Focus, then forward |
 | Press / drag a divider | Resize; release commits the layout |
+| Drag the sidebar's separator rule (left dock) | Resize the strip for this attach; `sidebar.width` in the config is unchanged |
 | Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback (forwarded if the viewport cannot move); alt screen becomes arrows, or is forwarded if alternate-scroll is off |
 | Right-click in a pane | Pane context menu, unless the inner program has mouse tracking |
 | Click a status-bar tab | `select-window` |
+| Drag a status-bar tab onto another tab | Move the window into that slot |
 | Click a status-bar destination | Open Sessions, Commands, Settings, Help, or Copy |
 | Click a sidebar row | The same action the keyboard binding would run |
+| Drag a sidebar window row onto another window row | Move the window into that slot |
 
 Hold **Shift** to bypass application mouse reporting and use the host
 terminal's native selection. `mouse = false` in `[defaults]` skips

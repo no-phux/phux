@@ -349,7 +349,7 @@ fn run_in(
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -908,6 +908,78 @@ fn select_window_missing_index_bells() {
     assert!(!effects.layout_mutated);
 }
 
+fn three_windows() -> Workspace {
+    let mut workspace = Workspace::single(tid(1));
+    workspace.add_window("2".to_owned(), tid(2));
+    workspace.add_window("3".to_owned(), tid(3)); // active = 2
+    workspace
+}
+
+fn window_names(workspace: &Workspace) -> Vec<&str> {
+    workspace.windows.iter().map(|w| w.name.as_str()).collect()
+}
+
+fn move_window_action(key: &str, value: i64) -> phux_config::keybind::ResolvedAction {
+    let mut action = bare_action("move-window");
+    action
+        .args
+        .insert(key.to_owned(), toml::Value::Integer(value));
+    action
+}
+
+/// `move-window` moves the ACTIVE window and keeps it active. Window order
+/// is shared layout, so the move broadcasts like a rename.
+#[test]
+fn move_window_by_delta_moves_the_active_window() {
+    let mut workspace = three_windows();
+    let effects = run(&move_window_action("delta", -1), &mut workspace);
+    assert_eq!(window_names(&workspace), ["1", "3", "2"]);
+    assert_eq!(workspace.active, 1, "the moved window stays active");
+    assert!(effects.layout_mutated);
+    assert!(effects.set_metadata, "window order is shared layout");
+    assert!(!effects.bell);
+}
+
+/// A delta past either end clamps there instead of wrapping.
+#[test]
+fn move_window_delta_clamps_at_the_ends() {
+    let mut workspace = three_windows();
+    run(&move_window_action("delta", -9), &mut workspace);
+    assert_eq!(window_names(&workspace), ["3", "1", "2"]);
+    let effects = run(&move_window_action("delta", -1), &mut workspace);
+    assert!(effects.bell, "already first: nothing to move");
+    assert!(!effects.set_metadata);
+}
+
+#[test]
+fn move_window_to_an_index() {
+    let mut workspace = three_windows();
+    workspace.select(0);
+    let effects = run(&move_window_action("index", 2), &mut workspace);
+    assert_eq!(window_names(&workspace), ["2", "3", "1"]);
+    assert_eq!(workspace.active, 2);
+    assert!(effects.set_metadata);
+}
+
+/// An out-of-range `index` clamps to the last slot, like `delta` does.
+#[test]
+fn move_window_index_past_the_end_clamps() {
+    let mut workspace = three_windows();
+    workspace.select(0);
+    let effects = run(&move_window_action("index", 99), &mut workspace);
+    assert_eq!(window_names(&workspace), ["2", "3", "1"]);
+    assert!(effects.set_metadata);
+}
+
+#[test]
+fn move_window_without_a_destination_bells() {
+    let mut workspace = three_windows();
+    let effects = run(&bare_action("move-window"), &mut workspace);
+    assert!(effects.bell);
+    assert!(!effects.layout_mutated);
+    assert_eq!(window_names(&workspace), ["1", "2", "3"]);
+}
+
 /// phux-x2hm: a multi-pane window can zoom — `toggle-zoom` requests the
 /// driver-side flip (`toggle_zoom`) plus a repaint (`layout_mutated`),
 /// without mutating the real tree or bell-ing.
@@ -1209,7 +1281,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -1293,7 +1365,7 @@ async fn apply_effects_flips_sidebar_enabled_state() {
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -1415,7 +1487,7 @@ fn run_capturing_with_sessions(
             zoomed: &mut zoomed,
             sidebar: None,
             sidebar_enabled: &mut sidebar_enabled,
-            sidebar_width: 20,
+            sidebar_width: &mut 20,
             chrome: ChromeBreakpoints::default(),
             sidebar_targets: &sidebar_targets,
             bar: None,
@@ -1599,7 +1671,7 @@ fn run_with_panes(
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -2085,7 +2157,7 @@ fn run_attention(
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -2918,7 +2990,7 @@ fn detach_action_requests_detach_effect() {
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,
@@ -3024,7 +3096,7 @@ fn rename_session_without_name_opens_prompt_prefilled() {
             zoomed: &mut zoomed,
             sidebar: None,
             sidebar_enabled: &mut sidebar_enabled,
-            sidebar_width: 20,
+            sidebar_width: &mut 20,
             chrome: ChromeBreakpoints::default(),
             sidebar_targets: &sidebar_targets,
             bar: None,
@@ -3228,7 +3300,7 @@ async fn rename_session_does_not_apply_locally_until_confirmed() {
         zoomed: &mut zoomed,
         sidebar: None,
         sidebar_enabled: &mut sidebar_enabled,
-        sidebar_width: 20,
+        sidebar_width: &mut 20,
         chrome: ChromeBreakpoints::default(),
         sidebar_targets: &sidebar_targets,
         bar: None,

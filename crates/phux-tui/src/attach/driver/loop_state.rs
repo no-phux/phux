@@ -68,8 +68,8 @@ use super::config_ui::{
     apply_initial_notice, handle_config_reload, push_which_key_overlay, update_which_key_deadline,
 };
 use super::entry::{
-    LoopExit, detached_loop_exit, finish_onboarding_claim, finish_return_onboarding_after_paint,
-    seed_sidebar_enabled,
+    CarriedSidebar, LoopExit, detached_loop_exit, finish_onboarding_claim,
+    finish_return_onboarding_after_paint, seed_sidebar_enabled,
 };
 use super::main_loop::{
     FRAME_COALESCE_CAP, coalesce_defer_flags, frame_defers_paint, frame_paint_target,
@@ -670,6 +670,10 @@ pub(super) struct SessionLoop {
     /// `toggle-sidebar`. Only the toggle is carried across a session switch:
     /// the strip's width and edge stay pure config, re-derived per entry.
     sidebar_enabled: bool,
+    /// `[sidebar] width` as this entry's config load read it, before any
+    /// carried or dragged width. A switch carries the live width only when
+    /// it differs, so an untouched strip keeps following the config.
+    configured_sidebar_width: u16,
     /// Track the current outer-terminal viewport so the painter knows
     /// which row is "bottom". Initialized to a sensible default and
     /// updated by SIGWINCH; the server doesn't drive client-side
@@ -799,9 +803,9 @@ impl SessionLoop {
 
     /// Build every session-scoped local for one attach entry.
     ///
-    /// `carried_sidebar_enabled` is the window sidebar's on/off state carried
-    /// in from the previous entry when a `switch-session` drove this one;
-    /// `None` on the first attach — `[sidebar] enabled` seeds it, and a
+    /// `carried_sidebar` is the window sidebar's on/off state and width
+    /// carried in from the previous entry when a `switch-session` drove this
+    /// one; `None` on the first attach — `[sidebar]` seeds both, and a
     /// carried runtime value wins after that (see `seed_sidebar_enabled`).
     #[allow(
         clippy::too_many_lines,
@@ -816,13 +820,17 @@ impl SessionLoop {
         initial_window: Option<usize>,
         initial_pane: Option<usize>,
         initial_resource: Option<ResourceId>,
-        carried_sidebar_enabled: Option<bool>,
+        carried_sidebar: Option<CarriedSidebar>,
     ) -> Result<Self, AttachError> {
         let history_config = HistoryCacheConfig {
             request_max_bytes: negotiated.limits.max_history_page_bytes(),
             ..HistoryCacheConfig::default()
         };
-        let settings = TuiSettings::load_tolerant();
+        let mut settings = TuiSettings::load_tolerant();
+        let configured_sidebar_width = settings.sidebar.width;
+        if let Some(width) = carried_sidebar.and_then(|carried| carried.width) {
+            settings.sidebar.width = width;
+        }
         let server_features = negotiated.server_features;
         let (plugin_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel::<PluginRunResult>();
         // phux-huhi: stamp the configured breakpoints once, before anything
@@ -885,8 +893,9 @@ impl SessionLoop {
             attention_navigation: AttentionNavigation::default(),
             drag: None,
             mouse_optout: HashSet::new(),
+            configured_sidebar_width,
             sidebar_enabled: seed_sidebar_enabled(
-                carried_sidebar_enabled,
+                carried_sidebar.map(|carried| carried.enabled),
                 settings.sidebar.enabled,
             ),
             viewport_dims,
@@ -2280,7 +2289,11 @@ impl SessionLoop {
         if let Some(target) = self.switch_request.take() {
             return Ok(Step::Exit(LoopExit::SwitchTo {
                 target,
-                sidebar_enabled: self.sidebar_enabled,
+                sidebar: CarriedSidebar {
+                    enabled: self.sidebar_enabled,
+                    width: (self.settings.sidebar.width != self.configured_sidebar_width)
+                        .then_some(self.settings.sidebar.width),
+                },
                 orphan_kills: self.orphans_for_switch(),
                 review: std::mem::take(&mut self.review),
             }));
@@ -2387,7 +2400,7 @@ impl SessionLoop {
             zoomed: &mut self.zoomed,
             sidebar,
             sidebar_enabled: &mut self.sidebar_enabled,
-            sidebar_width: self.settings.sidebar.width,
+            sidebar_width: &mut self.settings.sidebar.width,
             chrome: self.settings.chrome,
             sidebar_targets: &sidebar_targets,
             bar: self
