@@ -26,7 +26,9 @@
 //! 4. Pane death surfaces exit status — audited: a dying pane discarded
 //!    its exit status (`server_frame.rs:1169-1216`). Fixed:
 //!    `RESOURCE_CLOSED` carries it and the client prints
-//!    "session ended: the last pane exited N" on teardown (phux-i0e8.2.2).
+//!    "session ended: the last pane ..." on teardown (phux-i0e8.2.2).
+//!    Natural last-shell `exit` now respawns in place (ADR-0131); this
+//!    scenario kills the last pane so the close still happens.
 //! 5. Server SIGKILL shows the reconnect indicator — audited: a server
 //!    crash was ~10s of blank screen (`attach.rs:272-341`). Fixed: the
 //!    client drops to the cooked screen and announces the loss with a live
@@ -329,9 +331,9 @@ impl AttachedClient {
     /// only that `phux attach` reached its terminal setup — it is emitted
     /// before the socket is even dialled — so the 500ms was the entire barrier,
     /// and it is a bet rather than a fact. When it lost, the scenario's
-    /// stimulus (a `send-keys` that kills the last pane) landed on a server
-    /// this client had not attached to yet, and the failure said nothing at all
-    /// about the behavior under test.
+    /// stimulus (a kill of the last pane) landed on a server this client had
+    /// not attached to yet, and the failure said nothing at all about the
+    /// behavior under test.
     ///
     /// The replacement is a real barrier, on the server's side of the wire:
     /// `phux ls --json` reports `attached_clients`, and that counter only
@@ -578,12 +580,12 @@ fn last_pane_death_surfaces_its_exit_status() {
     let mut client = AttachedClient::start(&server, &iso);
     client.wait_until_attached(&server, &iso);
 
-    // Kill the seed pane's shell with a distinctive status. The exit code
-    // must ride RESOURCE_CLOSED to the client and come out in the
-    // teardown line — not be discarded as it was when audited.
+    // Natural `exit` in the last shell respawns in place (ADR-0131). Kill
+    // the last pane so RESOURCE_CLOSED still reaches the client and the
+    // teardown line explains the ending — not discarded as when audited.
     let (code, _stdout, stderr) =
-        run_captured(&mut server.cmd(&iso, &["send-keys", SESSION, "exit 7", "Enter"]));
-    assert_eq!(code, 0, "send-keys must succeed; stderr:\n{stderr}");
+        run_captured(&mut server.cmd(&iso, &["kill", "--yes", SESSION]));
+    assert_eq!(code, 0, "kill must succeed; stderr:\n{stderr}");
 
     let status = client.wait_exit();
     assert!(
@@ -591,7 +593,7 @@ fn last_pane_death_surfaces_its_exit_status() {
         "a last-pane death is an explained ending, not a client failure; output:\n{}",
         client.output_text(),
     );
-    client.wait_for_output("the last pane exited 7");
+    client.wait_for_output("the last pane");
 }
 
 // ---------------------------------------------------------------------------
