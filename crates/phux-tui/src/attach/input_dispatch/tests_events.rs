@@ -539,12 +539,12 @@ fn str_arg(r: &phux_config::keybind::ResolvedAction, key: &str) -> Option<String
 }
 
 /// The pure click→action mapping: window blocks commit
-/// `select-window { index }`, the footer rows `new-window` and
-/// `command-palette` / `settings`, the collapse corner `toggle-sidebar`, and
-/// section headers their corresponding management views.
+/// `select-window { index }`, the footer row `new-window`, the collapse
+/// corner `toggle-sidebar`, and section headers their corresponding
+/// management views.
 #[test]
 fn sidebar_click_action_maps_rows_to_registry_actions() {
-    // Body has 21 rows: Agents starts at 0, Sessions at 10, footer at 21.
+    // Body has 22 rows: Agents starts at 0, Sessions at 11, footer at 22.
     let strip = crate::layout::Rect {
         x: 0,
         y: 0,
@@ -552,27 +552,23 @@ fn sidebar_click_action_maps_rows_to_registry_actions() {
         h: 23,
     };
     let quiet = targets(0, 2, 1);
-    let resolved = sidebar_click_action(strip, &quiet, 4, 14).expect("window row hits");
+    let resolved = sidebar_click_action(strip, &quiet, 4, 15).expect("window row hits");
     assert_eq!(resolved.action, "select-window");
     assert_eq!(index_arg(&resolved), Some(1));
-    let new = sidebar_click_action(strip, &quiet, 4, 21).expect("new row hits");
+    let new = sidebar_click_action(strip, &quiet, 4, 22).expect("new row hits");
     assert_eq!(new.action, "new-window");
     assert!(new.args.is_empty());
-    let menu = sidebar_click_action(strip, &quiet, 4, 22).expect("menu row hits");
-    assert_eq!(menu.action, "command-palette");
-    let settings = sidebar_click_action(strip, &quiet, 14, 22).expect("settings label hits");
-    assert_eq!(settings.action, "settings");
     // phux-foz.9: the collapse chevron in the bottom corner.
     let collapse = sidebar_click_action(strip, &quiet, 27, 22).expect("collapse corner hits");
     assert_eq!(collapse.action, "toggle-sidebar");
     assert!(collapse.args.is_empty());
     let fleet = sidebar_click_action(strip, &quiet, 4, 0).expect("Agents header hits");
     assert_eq!(fleet.action, "agent-fleet");
-    let sessions = sidebar_click_action(strip, &quiet, 4, 10).expect("Sessions header hits");
+    let sessions = sidebar_click_action(strip, &quiet, 4, 11).expect("Sessions header hits");
     assert_eq!(sessions.action, "session-picker");
     // Blank padding and the separator column (outside the chevron corner)
     // commit nothing.
-    assert!(sidebar_click_action(strip, &quiet, 4, 9).is_none());
+    assert!(sidebar_click_action(strip, &quiet, 4, 10).is_none());
     assert!(sidebar_click_action(strip, &quiet, 27, 0).is_none());
 }
 
@@ -588,7 +584,7 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
         w: 28,
         h: 23,
     };
-    // Agent activity never moves Sessions from row 10.
+    // Agent activity never moves Sessions from the lower half.
     let t = targets(2, 2, 0);
     let local = sidebar_click_action(strip, &t, 4, 1).expect("queue row 0 hits");
     assert_eq!(local.action, "select-window", "a local row stays local");
@@ -624,9 +620,9 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
     assert_eq!(fleet.action, "agent-fleet");
 
     let mut t = targets(0, 2, 2);
-    let sessions = sidebar_click_action(strip, &t, 4, 10).expect("Sessions header hits");
+    let sessions = sidebar_click_action(strip, &t, 4, 11).expect("Sessions header hits");
     assert_eq!(sessions.action, "session-picker");
-    let space = sidebar_click_action(strip, &t, 4, 11).expect("roster row hits");
+    let space = sidebar_click_action(strip, &t, 4, 12).expect("roster row hits");
     assert_eq!(space.action, "switch-session");
     assert_eq!(str_arg(&space, "name").as_deref(), Some("space-0"));
     assert!(
@@ -634,12 +630,12 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
         "a roster click names a session, not a pane"
     );
     t.roster[0].as_mut().unwrap().host = Some("devbox".to_owned());
-    let host = sidebar_click_action(strip, &t, 4, 12).expect("host row hits");
+    let host = sidebar_click_action(strip, &t, 4, 13).expect("host row hits");
     assert_eq!(str_arg(&host, "name").as_deref(), Some("space-0"));
     assert_eq!(str_arg(&host, "host").as_deref(), Some("devbox"));
     t.roster[0] = None;
     assert!(
-        sidebar_click_action(strip, &t, 4, 12).is_none(),
+        sidebar_click_action(strip, &t, 4, 13).is_none(),
         "unreachable host is inert"
     );
 
@@ -879,7 +875,7 @@ async fn short_sidebar_overflow_clicks_open_both_navigation_overlays() {
         h: 7,
     };
     let table = targets(3, 2, 2);
-    for (y, action) in [(1, "agent-fleet"), (3, "session-picker")] {
+    for (y, action) in [(2, "agent-fleet"), (3, "session-picker")] {
         let resolved = sidebar_click_action(strip, &table, 4, y).unwrap();
         assert_eq!(resolved.action, action);
         let (_, opened, pending) =
@@ -893,26 +889,12 @@ async fn short_sidebar_overflow_clicks_open_both_navigation_overlays() {
 /// the window), exactly like the `new-window` chord.
 #[tokio::test]
 async fn sidebar_click_on_new_parks_a_window_spawn() {
-    // The footer is bottom-anchored: `+ new` is the strip's second-to-last
-    // row, y = 22 of a full-height 24-row strip (phux-qtw8).
-    let (active, overlay_active, pending) = dispatch_sidebar_click(left_press_at(3, 22)).await;
+    // The footer is bottom-anchored: `+ new` is the strip's last row,
+    // y = 23 of a full-height 24-row strip.
+    let (active, overlay_active, pending) = dispatch_sidebar_click(left_press_at(3, 23)).await;
     assert_eq!(active, 0, "spawn is parked; no window switch yet");
     assert!(!overlay_active);
     assert_eq!(pending, 1, "new-window spawn must be parked");
-}
-
-/// A left press on `= menu` opens the command palette overlay — the
-/// session/plugin menu built from the action registry.
-///
-/// phux-qtw8: `= menu` is the strip's last row, which is also the bar row —
-/// the strip owns its columns there, and the bar has yielded them. The
-/// strip hit-tests first, so the click reaches the footer, not the bar.
-#[tokio::test]
-async fn sidebar_click_on_menu_opens_the_command_palette() {
-    let (active, overlay_active, pending) = dispatch_sidebar_click(left_press_at(3, 23)).await;
-    assert_eq!(active, 0);
-    assert!(overlay_active, "menu click must push the palette overlay");
-    assert_eq!(pending, 0);
 }
 
 /// Pointer events over the strip never leak into pane routing: a press

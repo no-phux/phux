@@ -1469,7 +1469,7 @@ fn probe_window(name: &str, active: bool) -> WindowInfo {
 }
 
 /// The whole composited frame at a roomy viewport: padded tab strip,
-/// hints, session name and clock, all on one bar row.
+/// session name and clock, all on one bar row. No teaching strip.
 #[test]
 fn shipped_frame_at_a_roomy_viewport() {
     let windows = [
@@ -1480,17 +1480,16 @@ fn shipped_frame_at_a_roomy_viewport() {
     let rows = shipped_frame_rows((100, 12), &windows, None);
     let bar = rows.first().expect("a top bar row");
     assert!(bar.contains(" 1:nvim "), "{bar:?}");
-    assert!(bar.contains("s Sessions"), "{bar:?}");
-    assert!(bar.contains("S Settings"), "{bar:?}");
+    assert!(!bar.contains("s Sessions"), "{bar:?}");
+    assert!(!bar.contains("S Settings"), "{bar:?}");
     assert!(bar.contains("phux"), "{bar:?}");
     assert!(!bar.contains("switch"), "{bar:?}");
     assert!(rows.join("\n").contains(PROBE_PANE_TEXT), "{rows:?}");
 }
 
 /// The same frame on a phone-sized grid. This is the shape the
-/// responsive work exists for: the hints and the clock are gone and a
-/// `switch` chip has taken their place, while every tab that is shown
-/// is shown whole.
+/// responsive work exists for: the clock is gone and a `switch` chip has
+/// taken its place, while every tab that is shown is shown whole.
 #[test]
 fn shipped_frame_at_a_phone_sized_viewport() {
     let windows = [
@@ -1503,7 +1502,7 @@ fn shipped_frame_at_a_phone_sized_viewport() {
     let bar = rows.first().expect("a top bar row");
     assert!(bar.contains(" 1:nvim "), "active tab whole: {bar:?}");
     assert!(bar.contains("switch"), "{bar:?}");
-    assert!(!bar.contains("Space palette"), "hints yield: {bar:?}");
+    assert!(!bar.contains("Space palette"), "no teaching strip: {bar:?}");
     assert!(bar.chars().count() <= 46, "row overran: {bar:?}");
     assert!(rows.join("\n").contains(PROBE_PANE_TEXT), "{rows:?}");
     insta::assert_snapshot!("shipped_frame_phone_sized", rows.join("\n"));

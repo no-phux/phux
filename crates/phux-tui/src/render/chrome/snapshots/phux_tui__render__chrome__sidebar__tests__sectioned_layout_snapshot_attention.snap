@@ -18,5 +18,5 @@ expression: "strip_text(&p, rect)"
    on mini               │
                          │
                          │
- + new window            │
- = commands  S settings  ‹
+                         │
+ + new window            ‹

@@ -55,7 +55,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 use super::select_list::{WHEEL_SCROLL_ROWS, fuzzy_score};
-use super::widgets::{Modal, centered_panel, paint_scrollbar, scroll_into_view};
+use super::widgets::{Modal, centered_panel, modal_inner_width, paint_scrollbar, scroll_into_view};
 use super::{OverlayCommand, RenderOverlay};
 use crate::render::theme::SLOT_SPECS;
 use crate::render::{ChromeBreakpoints, Theme, clip_text, display_width};
@@ -75,9 +75,9 @@ const DETAIL_ROWS: u16 = 6;
 /// Rows the detail panel keeps on a row-starved viewport.
 const DETAIL_ROWS_COMPACT: u16 = 2;
 /// Rows of the modal box that are not list rows on a roomy layout: the two
-/// borders, the query line and its blank, the footer and its blank, and the
-/// rule above the detail panel.
-const FIXED_ROWS: u16 = 7;
+/// borders, the query line and its blank, and the rule above the detail
+/// panel.
+const FIXED_ROWS: u16 = 5;
 /// Width of the origin badge column, including its leading gap.
 const BADGE_COLS: usize = 9;
 
@@ -1028,22 +1028,6 @@ impl SettingsOverlay {
         }
         lines
     }
-
-    fn footer_hints(&self) -> Vec<&'static str> {
-        if self.editor.is_some() {
-            vec!["Enter apply", "Esc cancel", "C-u clear"]
-        } else {
-            vec![
-                "Enter edit",
-                "\u{2190}/\u{2192} step",
-                "Del reset",
-                "C-z undo",
-                "Tab section",
-                "type to filter",
-                "Esc close",
-            ]
-        }
-    }
 }
 
 /// A short kind description for the detail panel's first line.
@@ -1329,7 +1313,7 @@ fn cell_coord(value: f64) -> u16 {
 impl RenderOverlay for SettingsOverlay {
     fn render(&self, area: Rect, buf: &mut Buffer) {
         let modal = Self::modal_area(area, self.breakpoints);
-        let inner_width = modal.width.saturating_sub(2);
+        let inner_width = modal_inner_width(modal.width);
         let width = usize::from(inner_width);
         let two_column = Self::use_two_columns(inner_width, area, self.breakpoints);
         let detail = Self::detail_rows(area, self.breakpoints);
@@ -1356,9 +1340,7 @@ impl RenderOverlay for SettingsOverlay {
         }
         lines.extend(detail_lines);
 
-        Modal::new(&self.theme, "Settings", lines)
-            .footer_hints(self.footer_hints())
-            .render_into(modal, buf);
+        Modal::new(&self.theme, "Settings", lines).render_into(modal, buf);
 
         // Scrollbar over the setting rows only.
         let list_top = modal.y.saturating_add(3);

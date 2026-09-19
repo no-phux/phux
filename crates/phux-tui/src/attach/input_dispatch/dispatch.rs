@@ -1620,8 +1620,6 @@ pub(super) const fn strip_contains(rect: crate::layout::Rect, x: u16, y: u16) ->
 /// * `+ new` commits `new-window` (the strip lists windows, so its create
 ///   affordance creates one);
 /// * the Agents / Sessions headings open their complete management views;
-/// * the shared footer row maps `= commands` and `S settings` to distinct
-///   actions through the registry;
 /// * the collapse chevron in the bottom corner (phux-foz.9) commits
 ///   `toggle-sidebar`.
 pub(super) fn sidebar_click_action(
@@ -1639,8 +1637,6 @@ pub(super) fn sidebar_click_action(
         SidebarHit::Sessions => ("session-picker", std::collections::BTreeMap::new()),
         SidebarHit::Fleet => ("agent-fleet", std::collections::BTreeMap::new()),
         SidebarHit::NewWindow => ("new-window", std::collections::BTreeMap::new()),
-        SidebarHit::Menu => ("command-palette", std::collections::BTreeMap::new()),
-        SidebarHit::Settings => ("settings", std::collections::BTreeMap::new()),
         SidebarHit::Collapse => ("toggle-sidebar", std::collections::BTreeMap::new()),
     };
     Some(phux_config::keybind::ResolvedAction {

@@ -23,9 +23,20 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Padding, Paragraph, Widget, Wrap};
 
 use crate::render::{ChromeBreakpoints, Theme};
+
+/// Horizontal inner padding of a floating modal, in cells. Text never sits
+/// flush against the border.
+pub const MODAL_PAD: u16 = 1;
+
+/// Interior text width of a modal: two border columns plus [`MODAL_PAD`]
+/// on each side.
+#[must_use]
+pub const fn modal_inner_width(area_width: u16) -> u16 {
+    area_width.saturating_sub(2 + MODAL_PAD * 2)
+}
 
 /// A centered, bordered modal box: themed border + centered title, a body
 /// of pre-built [`Line`]s, and an optional dimmed footer line.
@@ -191,9 +202,10 @@ impl<'a> Modal<'a> {
                     .fg(self.theme.accent)
                     .add_modifier(Modifier::BOLD),
             ))
-            .title_alignment(Alignment::Center);
+            .title_alignment(Alignment::Center)
+            .padding(Padding::horizontal(MODAL_PAD));
 
-        let mut para = Paragraph::new(self.lines(area.width.saturating_sub(2))).block(block);
+        let mut para = Paragraph::new(self.lines(modal_inner_width(area.width))).block(block);
         if self.wrap {
             para = para.wrap(Wrap { trim: false });
         }

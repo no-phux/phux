@@ -235,9 +235,9 @@ fn inbox_lines(keybindings: Option<&KeybindingsCfg>, sidebar_visible: bool) -> V
 
 fn destinations_line(sidebar_visible: bool) -> String {
     if sidebar_visible {
-        "These destinations stay clickable in the status bar and sidebar.".to_owned()
+        "Window tabs and sidebar rows are clickable. Prefix keys and the palette open everything else.".to_owned()
     } else {
-        "These destinations stay clickable in the status bar.".to_owned()
+        "Window tabs are clickable. Prefix keys and the palette open everything else.".to_owned()
     }
 }
 
