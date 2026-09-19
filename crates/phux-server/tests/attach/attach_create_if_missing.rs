@@ -50,7 +50,7 @@ use phux_protocol::wire::frame::{
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, recv_typed, run_local, send_frame, spawn_server,
+    SOCKET_CONNECT_DEADLINE, join_after_shutdown, recv_typed, run_local, send_frame, spawn_server,
     spawn_server_seed_pty_no_cmd, wait_for_socket,
 };
 
@@ -171,8 +171,7 @@ fn create_if_missing_creates_session_when_absent() {
         }
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -214,8 +213,7 @@ fn create_if_missing_seeds_pane_in_wire_cwd() {
         let _ = recv_typed(&mut stream).await;
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -263,8 +261,7 @@ fn create_if_missing_invalid_cwd_falls_back_without_failing_attach() {
         let _ = recv_typed(&mut stream).await;
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -299,8 +296,7 @@ fn create_if_missing_uses_default_name_string() {
         let _ = recv_typed(&mut stream).await;
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -343,7 +339,6 @@ fn create_if_missing_attaches_to_existing_session_without_duplicating() {
         let _ = recv_typed(&mut stream).await;
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

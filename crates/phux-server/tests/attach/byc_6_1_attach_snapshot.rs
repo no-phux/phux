@@ -57,8 +57,8 @@ use phux_server::grid::SnapshotSynthesizer;
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server,
-    wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, run_local,
+    send_frame, spawn_server, wait_for_socket,
 };
 
 /// Allocate a fresh `libghostty_vt::Terminal` matching the wire
@@ -216,7 +216,6 @@ fn byc_6_1_attach_returns_session_id_and_round_trip_snapshot() {
         // Clean teardown so the server's `LocalSet` unwinds without
         // leaking the socket file.
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

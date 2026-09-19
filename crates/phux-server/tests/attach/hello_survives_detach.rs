@@ -46,8 +46,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_command_result, recv_typed, recv_until,
-    recv_until_detached, run_local, send_frame, spawn_server, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_command_result, recv_typed,
+    recv_until, recv_until_detached, run_local, send_frame, spawn_server, wait_for_raw_socket,
 };
 
 const SESSION: &str = "work";
@@ -142,8 +142,7 @@ fn l1_only_consumer_still_fails_the_l3_gate_after_detach() {
         .await;
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
