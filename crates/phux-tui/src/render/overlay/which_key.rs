@@ -141,9 +141,9 @@ impl RenderOverlay for WhichKeyOverlay {
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        // Same floating-modal shape as help, slightly smaller: ~60% of
-        // the viewport, min 36x8, clamped to the outer rect.
-        Some(centered_panel(area, 6, 36, 8, self.breakpoints))
+        // Same floating-modal shape as the command palette: 50% of the
+        // viewport, min 36x8, clamped to the outer rect.
+        Some(centered_panel(area, 5, 36, 8, self.breakpoints))
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {

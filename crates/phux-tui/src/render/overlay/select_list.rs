@@ -445,10 +445,10 @@ impl SelectList {
         self.snap_to_selectable(indices);
     }
 
-    /// The modal rect: 60% of the viewport, min 30x10, clamped to the
-    /// outer rect.
+    /// The modal rect: 50% of the viewport, min 30x10, clamped to the
+    /// outer rect. Half leaves live panes visible around the finder.
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        centered_panel(outer, 6, 30, 10, bp)
+        centered_panel(outer, 5, 30, 10, bp)
     }
 
     /// Rows available to the list inside `modal_area`, once the borders and
@@ -1626,8 +1626,8 @@ mod tests {
         }
         // The box occupies neither the full width nor the full height.
         let bounds = sl.bounds(area).expect("a floating picker is bounded");
-        assert!(bounds.width < area.width, "{bounds:?}");
-        assert!(bounds.height < area.height, "{bounds:?}");
+        assert_eq!(bounds.width, 50, "{bounds:?}");
+        assert_eq!(bounds.height, 15, "{bounds:?}");
         assert!(bounds.x > 0 && bounds.y > 0, "{bounds:?}");
         insta::assert_snapshot!(out);
     }

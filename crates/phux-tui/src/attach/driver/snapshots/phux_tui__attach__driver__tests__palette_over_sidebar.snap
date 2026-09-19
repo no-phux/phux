@@ -8,19 +8,19 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
                    │
                    │
                    │
+                   │
                    │┌──────────────────── command palette ─────────────────────┐
                    ││ >                                                        │
                    ││                                                          │
                    ││ detach                                                   │
-                   ││ new-window                                               │
- Sessions          ││                                                          │
+ Sessions          ││ new-window                                               │
  ○ probe           ││                                                          │
    on probe-host   ││                                                          │
    ● w1-agent      ││                                                          │
                    ││                                                          │
                    ││                                                          │
-                   ││                                                          │
                    │└──────────────────────────────────────────────────────────┘
+                   │
                    │
                    │
                    │
