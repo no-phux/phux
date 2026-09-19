@@ -1,8 +1,9 @@
 //! Wire-codec round-trip and malformed-input tests.
 //!
-//! Proptest exercises the encoder and decoder on arbitrary `FrameKind`
-//! values. Hand-rolled cases cover known-bad inputs and confirm the decoder
-//! returns `DecodeError` rather than panicking.
+//! `roundtrip_frame_kind` plus `arb_frame_kind` cover the thin-wrapper
+//! catalog. Hand-rolled cases cover known-bad inputs and confirm the
+//! decoder returns `DecodeError` rather than panicking. Focused properties
+//! remain only where a constraint the catalog strategy cannot express.
 //!
 //! Protocol 0.7 binds `ResourceOutput` to non-zero stream/bootstrap ids; native
 //! checkpoint and history frames have focused semantic tests in
@@ -24,24 +25,24 @@ use phux_protocol::ids::{
     BootstrapId, ClientId, FileUploadId, GroupId, InputOperationId, ResourceId, ResourceKind,
     SessionId, StreamId, WindowId,
 };
-use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
+use phux_protocol::input::InputEvent;
 use phux_protocol::wire::frame::{
     AgentEvent, AttachTarget, CloseReason, Command, CommandResult, CommandValue, ControlAction,
     DetachReason, DirectoryEntry, DirectoryErrorCode, DirectoryListing, DirectoryListingError,
-    DirectoryListingResult, ErrorCode, FileUploadAck, InputMode, ListenerTransport,
-    MAX_APPEND_BYTES, MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
-    MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES, MoveError,
+    DirectoryListingResult, ErrorCode, FileUploadAck, InputMode, ListenerTransport, MoveError,
     MoveResult, ReportedAgentState, ResourceLifecycle, Scope, SpawnError, SpawnResource,
-    SpawnResult, StateScope, TerminalSignal, ViewportInfo,
+    SpawnResult, StateScope, TerminalSignal, ViewportInfo, MAX_APPEND_BYTES,
+    MAX_APPLY_INPUT_COMMAND_BODY, MAX_APPLY_INPUT_EVENTS, MAX_FILE_UPLOAD_CHUNK,
+    MAX_FILE_UPLOAD_SIZE, MAX_RESOURCE_NATIVE_ID_BYTES, MAX_RESOURCE_PROVIDER_BYTES,
 };
 use phux_protocol::wire::info::{
     AgentFacet, LayoutNode, ResourceInfo, SessionInfo, SessionSnapshot, SplitDir, WindowInfo,
 };
-use phux_protocol::wire::{DecodeError, decode::Decoder, frame::FrameKind};
+use phux_protocol::wire::{decode::Decoder, frame::FrameKind, DecodeError};
 use proptest::prelude::*;
 
 use crate::common;
@@ -344,9 +345,6 @@ fn arb_session_snapshot() -> impl Strategy<Value = SessionSnapshot> {
         })
 }
 
-/// Strategy producing one of the simple-payload `FrameKind` variants. Structured
-/// attach, bootstrap/history, generation-bound output, and input frames have
-/// dedicated property or focused semantic tests below.
 fn arb_color_support() -> impl Strategy<Value = ColorSupport> {
     prop_oneof![
         Just(ColorSupport::TrueColor),
@@ -356,7 +354,32 @@ fn arb_color_support() -> impl Strategy<Value = ColorSupport> {
     ]
 }
 
+/// Non-zero stream / bootstrap generation ids. Protocol 0.7 binds
+/// `ResourceOutput` and `FrameAck` to these; zero is reserved.
+fn arb_stream_id() -> impl Strategy<Value = StreamId> {
+    (1_u64..=u64::MAX).prop_map(|raw| StreamId::new(raw).unwrap())
+}
+
+fn arb_bootstrap_id() -> impl Strategy<Value = BootstrapId> {
+    (1_u64..=u64::MAX).prop_map(|raw| BootstrapId::new(raw).unwrap())
+}
+
+/// Strategy over the thin-wrapper `FrameKind` catalog. Focused tests below
+/// keep constraints this union cannot express: `prop_assume!` agent-session
+/// facet bounds, unknown spawn kinds, `bind_instance`, `KILL_RESOURCE_IF`
+/// condition bits, bootstrap/history lifecycle, and snapshot-component
+/// isolation (session/window/pane/layout/resource-info).
 fn arb_frame_kind() -> impl Strategy<Value = FrameKind> {
+    prop_oneof![
+        arb_frame_kind_simple(),
+        arb_frame_kind_attach(),
+        arb_frame_kind_input(),
+        arb_frame_kind_metadata(),
+        arb_frame_kind_lifecycle(),
+    ]
+}
+
+fn arb_frame_kind_simple() -> impl Strategy<Value = FrameKind> {
     prop_oneof![
         (
             ".{0,128}",
@@ -364,21 +387,299 @@ fn arb_frame_kind() -> impl Strategy<Value = FrameKind> {
             any::<u16>(),
             any::<u16>(),
             arb_color_support(),
+            arb_layer_set(),
         )
-            .prop_map(|(client_name, major, minor, patch, color_support)| {
-                FrameKind::Hello {
-                    client_name,
-                    protocol_major: major,
-                    protocol_minor: minor,
-                    protocol_patch: patch,
-                    client_caps: ClientCapabilities::new().with_color_support(color_support),
+            .prop_map(
+                |(client_name, major, minor, patch, color_support, layers)| {
+                    FrameKind::Hello {
+                        client_name,
+                        protocol_major: major,
+                        protocol_minor: minor,
+                        protocol_patch: patch,
+                        client_caps: ClientCapabilities::new()
+                            .with_color_support(color_support)
+                            .with_layers(layers),
+                    }
                 }
-            },),
+            ),
         any::<u64>().prop_map(|nonce| FrameKind::Ping { nonce }),
+        any::<u64>().prop_map(|nonce| FrameKind::Pong { nonce }),
         Just(FrameKind::Detach),
         (arb_detach_reason(), ".{0,128}")
             .prop_map(|(reason, message)| FrameKind::Detached { reason, message }),
         arb_terminal_id().prop_map(|terminal_id| FrameKind::Bell { terminal_id }),
+        (
+            proptest::option::of(any::<u32>()),
+            arb_error_code(),
+            ".{0,256}",
+        )
+            .prop_map(|(request_id, code, message)| FrameKind::Error {
+                request_id,
+                code,
+                message,
+            }),
+        arb_viewport_info().prop_map(|viewport| FrameKind::ViewportResize { viewport }),
+    ]
+}
+
+fn arb_frame_kind_attach() -> impl Strategy<Value = FrameKind> {
+    prop_oneof![
+        (
+            arb_terminal_id(),
+            arb_stream_id(),
+            arb_bootstrap_id(),
+            any::<u64>(),
+            arb_vt_bytes(),
+        )
+            .prop_map(|(terminal_id, stream_id, bootstrap_id, seq, bytes)| {
+                FrameKind::ResourceOutput {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    seq,
+                    bytes: bytes.into(),
+                }
+            }),
+        (
+            arb_terminal_id(),
+            arb_stream_id(),
+            arb_bootstrap_id(),
+            any::<u64>(),
+        )
+            .prop_map(
+                |(terminal_id, stream_id, bootstrap_id, seq)| FrameKind::FrameAck {
+                    terminal_id,
+                    stream_id,
+                    bootstrap_id,
+                    seq,
+                }
+            ),
+        (
+            any::<u32>(),
+            arb_attach_target(),
+            arb_viewport_info(),
+            any::<bool>(),
+            any::<u32>(),
+            proptest::option::of(any::<u8>()),
+        )
+            .prop_map(
+                |(
+                    attach_id,
+                    target,
+                    viewport,
+                    request_scrollback,
+                    scrollback_limit_lines,
+                    role_byte,
+                )| {
+                    FrameKind::Attach {
+                        attach_id,
+                        target,
+                        viewport,
+                        request_scrollback,
+                        scrollback_limit_lines,
+                        role_policy: role_byte.map(phux_protocol::wire::frame::RolePolicy::from_u8),
+                    }
+                },
+            ),
+        (any::<u32>(), arb_session_snapshot(), any::<u32>()).prop_map(
+            |(attach_id, snapshot, client_id)| FrameKind::Attached {
+                attach_id,
+                snapshot,
+                initial_client_id: ClientId::new(client_id),
+            },
+        ),
+    ]
+}
+
+fn arb_frame_kind_input() -> impl Strategy<Value = FrameKind> {
+    prop_oneof![
+        (arb_terminal_id(), arb_key_event())
+            .prop_map(|(terminal_id, event)| FrameKind::InputKey { terminal_id, event }),
+        (arb_terminal_id(), arb_mouse_event())
+            .prop_map(|(terminal_id, event)| FrameKind::InputMouse { terminal_id, event }),
+        (arb_terminal_id(), arb_focus_event())
+            .prop_map(|(terminal_id, event)| FrameKind::InputFocus { terminal_id, event }),
+        (arb_terminal_id(), arb_paste_event())
+            .prop_map(|(terminal_id, event)| FrameKind::InputPaste { terminal_id, event }),
+    ]
+}
+
+fn arb_frame_kind_metadata() -> impl Strategy<Value = FrameKind> {
+    prop_oneof![
+        (any::<u32>(), arb_scope(), ".{0,64}").prop_map(|(request_id, scope, key)| {
+            FrameKind::GetMetadata {
+                request_id,
+                scope,
+                key,
+            }
+        }),
+        (any::<u32>(), arb_scope(), ".{0,64}", arb_metadata_value(),).prop_map(
+            |(request_id, scope, key, value)| FrameKind::SetMetadata {
+                request_id,
+                scope,
+                key,
+                value,
+            }
+        ),
+        (any::<u32>(), arb_scope(), ".{0,64}").prop_map(|(request_id, scope, key)| {
+            FrameKind::DeleteMetadata {
+                request_id,
+                scope,
+                key,
+            }
+        }),
+        (any::<u32>(), arb_scope())
+            .prop_map(|(request_id, scope)| FrameKind::ListMetadata { request_id, scope }),
+        (arb_scope(), ".{0,64}")
+            .prop_map(|(scope, key)| FrameKind::SubscribeMetadata { scope, key }),
+        (
+            arb_scope(),
+            ".{0,64}",
+            proptest::option::of(arb_metadata_value()),
+            proptest::option::of(arb_actor()),
+        )
+            .prop_map(|(scope, key, value, actor)| FrameKind::MetadataChanged {
+                scope,
+                key,
+                value,
+                actor,
+            }),
+        (any::<u32>(), proptest::option::of(arb_metadata_value()))
+            .prop_map(|(request_id, value)| FrameKind::MetadataValue { request_id, value },),
+        (any::<u32>(), proptest::collection::vec(".{0,32}", 0..8),)
+            .prop_map(|(request_id, keys)| FrameKind::MetadataKeys { request_id, keys }),
+        (
+            any::<u32>(),
+            ".{0,64}",
+            proptest::option::of("[a-z0-9.-]{0,32}"),
+        )
+            .prop_map(|(request_id, path, host)| FrameKind::ListDirectory {
+                request_id,
+                path,
+                host: host.map(phux_protocol::ids::SatelliteHost::new),
+            }),
+        (any::<u32>(), arb_directory_listing_result()).prop_map(|(request_id, result)| {
+            FrameKind::DirectoryListing { request_id, result }
+        }),
+    ]
+}
+
+fn arb_plain_spawn_resource() -> impl Strategy<Value = FrameKind> {
+    (
+        any::<u32>(),
+        any::<u32>(),
+        proptest::option::of(proptest::collection::vec(".{0,16}", 0..4)),
+        proptest::option::of(".{0,32}"),
+        proptest::option::of(proptest::collection::vec(arb_env_pair(), 0..4)),
+        proptest::option::of(".{0,16}"),
+        proptest::option::of(".{0,16}"),
+        proptest::option::of(any::<u32>()),
+        proptest::option::of(proptest::collection::vec(any::<u8>(), 0..64)),
+        proptest::option::of((any::<u16>(), any::<u16>())),
+    )
+        .prop_map(
+            |(
+                request_id,
+                group,
+                command,
+                cwd,
+                env,
+                term,
+                satellite,
+                owner_terminal,
+                agent_session,
+                initial_size,
+            )| {
+                FrameKind::SpawnResource {
+                    request_id,
+                    group: GroupId::new(group),
+                    command,
+                    cwd,
+                    env,
+                    term,
+                    satellite: satellite.map(phux_protocol::ids::SatelliteHost::new),
+                    owner_terminal: owner_terminal.map(ResourceId::local),
+                    agent_session,
+                    initial_size,
+                    resource: None,
+                }
+            },
+        )
+}
+
+fn arb_frame_kind_lifecycle() -> impl Strategy<Value = FrameKind> {
+    prop_oneof![
+        arb_plain_spawn_resource(),
+        (any::<u32>(), arb_spawn_result())
+            .prop_map(|(request_id, result)| { FrameKind::ResourceSpawned { request_id, result } }),
+        (any::<u32>(), arb_terminal_id(), arb_terminal_id()).prop_map(
+            |(request_id, terminal, owner_terminal)| FrameKind::MoveResource {
+                request_id,
+                terminal,
+                owner_terminal,
+            },
+        ),
+        (any::<u32>(), arb_move_result())
+            .prop_map(|(request_id, result)| { FrameKind::ResourceMoved { request_id, result } }),
+        (
+            arb_terminal_id(),
+            proptest::option::of(any::<i32>()),
+            arb_close_reason(),
+            proptest::option::of(any::<i32>()),
+        )
+            .prop_map(|(terminal_id, exit_status, reason, signal)| {
+                FrameKind::ResourceClosed {
+                    terminal_id,
+                    exit_status,
+                    reason,
+                    signal,
+                }
+            }),
+        (arb_terminal_id(), any::<u16>(), any::<u16>()).prop_map(|(terminal_id, cols, rows)| {
+            FrameKind::ResizeTerminal {
+                terminal_id,
+                cols,
+                rows,
+            }
+        }),
+        (any::<u32>(), arb_terminal_id()).prop_map(|(request_id, terminal_id)| {
+            FrameKind::Command {
+                request_id,
+                command: Command::KillResource {
+                    terminal_id,
+                    operation_id: None,
+                },
+            }
+        }),
+        any::<u32>().prop_map(|request_id| FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::Ok,
+        }),
+        (any::<u32>(), ".{0,48}").prop_map(|(request_id, message)| FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::Error {
+                code: ErrorCode::InvalidCommand,
+                message,
+            },
+        }),
+        (
+            proptest::option::of(arb_terminal_id()),
+            proptest::option::of(any::<u64>()),
+        )
+            .prop_map(|(terminal, after_seq)| FrameKind::SubscribeEvents {
+                terminal,
+                after_seq
+            }),
+        (
+            proptest::option::of(arb_terminal_id()),
+            arb_agent_event(),
+            proptest::option::of(arb_event_stamp()),
+        )
+            .prop_map(|(terminal, event, stamp)| FrameKind::Event {
+                terminal,
+                event,
+                stamp: stamp.map(Box::new),
+            }),
     ]
 }
 
@@ -546,37 +847,23 @@ fn arb_vt_bytes() -> impl Strategy<Value = Vec<u8>> {
 }
 
 proptest! {
-    /// Encoding then decoding any supported `FrameKind` is the identity.
+    // Five catalog groups share this budget; 2048 cases keeps per-group
+    // draws in the same order as the deleted thin wrappers.
+    #![proptest_config(ProptestConfig::with_cases(2048))]
+
+    /// Encoding then decoding any catalog `FrameKind` is the identity.
     #[test]
     fn roundtrip_frame_kind(frame in arb_frame_kind()) {
         assert_round_trip(&frame);
     }
+}
 
+proptest! {
     /// Decoding never panics on arbitrary byte input. The result is either
     /// a successful parse (rare but possible by luck) or a `DecodeError`.
     #[test]
     fn decode_never_panics(bytes in proptest::collection::vec(any::<u8>(), 0..256)) {
         let _ = Decoder::new(&bytes).read_frame();
-    }
-
-    #[test]
-    fn roundtrip_pane_output(
-        terminal_id in arb_terminal_id(),
-        seq in any::<u64>(),
-        bytes in arb_vt_bytes(),
-    ) {
-        let frame = FrameKind::ResourceOutput {
-            terminal_id,
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(1).unwrap(),
-            seq,
-            bytes: bytes.into(),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
     }
 
     #[test]
@@ -643,11 +930,7 @@ proptest! {
         ];
 
         for frame in frames {
-            let mut encoded = BytesMut::new();
-            frame.encode(&mut encoded);
-            let (decoded, tail) = FrameKind::decode(&encoded).unwrap();
-            prop_assert_eq!(decoded, frame);
-            prop_assert!(tail.is_empty());
+            assert_round_trip(&frame);
         }
     }
 }
@@ -976,108 +1259,41 @@ fn tail_is_returned_after_single_frame() {
 // -----------------------------------------------------------------------------
 
 proptest! {
-    #[test]
-    fn roundtrip_attach_target(target in arb_attach_target()) {
-        let frame = FrameKind::Attach {
-            attach_id: 1,
-            target,
-            viewport: ViewportInfo::new(80, 24),
-            request_scrollback: false,
-            scrollback_limit_lines: 0,
-            role_policy: None,
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
-    }
-
-    #[test]
-    fn roundtrip_attach_full(
-        target in arb_attach_target(),
-        viewport in arb_viewport_info(),
-        request_scrollback in any::<bool>(),
-        scrollback_limit_lines in any::<u32>(),
-        role_byte in proptest::option::of(any::<u8>()),
-    ) {
-        let frame = FrameKind::Attach {
-            attach_id: 1,
-            target,
-            viewport,
-            request_scrollback,
-            scrollback_limit_lines,
-            role_policy: role_byte.map(phux_protocol::wire::frame::RolePolicy::from_u8),
-        };
-        assert_round_trip(&frame);
-    }
-
-    #[test]
-    fn roundtrip_input_key(terminal_id in arb_terminal_id(), event in arb_key_event()) {
-        assert_round_trip(&FrameKind::InputKey { terminal_id, event });
-    }
-
-    #[test]
-    fn roundtrip_input_mouse(terminal_id in arb_terminal_id(), event in arb_mouse_event()) {
-        assert_round_trip(&FrameKind::InputMouse { terminal_id, event });
-    }
-
-    #[test]
-    fn roundtrip_input_focus(terminal_id in arb_terminal_id(), event in arb_focus_event()) {
-        assert_round_trip(&FrameKind::InputFocus { terminal_id, event });
-    }
-
-    #[test]
-    fn roundtrip_input_paste(terminal_id in arb_terminal_id(), event in arb_paste_event()) {
-        assert_round_trip(&FrameKind::InputPaste { terminal_id, event });
-    }
-
+    /// Isolated snapshot components. `arb_session_snapshot` mixes these
+    /// lists but does not pin a single-entry session, window, pane, or
+    /// layout, and `roundtrip_resource_info` additionally dedupes ids so
+    /// the facet join cannot collapse two rows.
     #[test]
     fn roundtrip_session_info(info in arb_session_info()) {
         let snap = SessionSnapshot::new(info.id, WindowId::new(0), ResourceId::new(0))
             .with_sessions(vec![info]);
-        let frame = FrameKind::Attached {
+        assert_round_trip(&FrameKind::Attached {
             attach_id: 1,
             snapshot: snap,
             initial_client_id: ClientId::new(0),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 
     #[test]
     fn roundtrip_window_info(info in arb_window_info()) {
         let snap = SessionSnapshot::new(info.session_id, info.id, ResourceId::new(0))
             .with_windows(vec![info]);
-        let frame = FrameKind::Attached {
+        assert_round_trip(&FrameKind::Attached {
             attach_id: 1,
             snapshot: snap,
             initial_client_id: ClientId::new(0),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 
     #[test]
     fn roundtrip_pane_info(info in arb_pane_info()) {
         let snap = SessionSnapshot::new(SessionId::new(0), info.window_id, info.id.clone())
             .with_resources(vec![info]);
-        let frame = FrameKind::Attached {
+        assert_round_trip(&FrameKind::Attached {
             attach_id: 1,
             snapshot: snap,
             initial_client_id: ClientId::new(0),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 
     /// Snapshot entries with resource facets round-trip through the trailing
@@ -1096,16 +1312,11 @@ proptest! {
             .collect();
         let snap = SessionSnapshot::new(SessionId::new(0), WindowId::new(0), ResourceId::new(0))
             .with_resources(panes);
-        let frame = FrameKind::Attached {
+        assert_round_trip(&FrameKind::Attached {
             attach_id: 1,
             snapshot: snap,
             initial_client_id: ClientId::new(0),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 
     #[test]
@@ -1114,63 +1325,11 @@ proptest! {
             .with_layout(Some(layout));
         let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(0))
             .with_windows(vec![win]);
-        let frame = FrameKind::Attached {
+        assert_round_trip(&FrameKind::Attached {
             attach_id: 1,
             snapshot: snap,
             initial_client_id: ClientId::new(0),
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
-    }
-
-    #[test]
-    fn roundtrip_attached(
-        snapshot in arb_session_snapshot(),
-        client_id in any::<u32>(),
-    ) {
-        let frame = FrameKind::Attached {
-            attach_id: 1,
-            snapshot,
-            initial_client_id: ClientId::new(client_id),
-        };
-        assert_round_trip(&frame);
-    }
-
-    #[test]
-    fn roundtrip_bell(terminal_id in arb_terminal_id()) {
-        assert_round_trip(&FrameKind::Bell { terminal_id });
-    }
-
-    #[test]
-    fn roundtrip_error(
-        request_id in proptest::option::of(any::<u32>()),
-        code in arb_error_code(),
-        message in ".{0,256}",
-    ) {
-        assert_round_trip(&FrameKind::Error { request_id, code, message });
-    }
-
-    #[test]
-    fn roundtrip_viewport_resize(viewport in arb_viewport_info()) {
-        assert_round_trip(&FrameKind::ViewportResize { viewport });
-    }
-
-    #[test]
-    fn roundtrip_frame_ack(terminal_id in arb_terminal_id(), seq in any::<u64>()) {
-        let frame = FrameKind::FrameAck {
-            terminal_id,
-            stream_id: StreamId::new(1).unwrap(),
-            bootstrap_id: BootstrapId::new(1).unwrap(),
-            seq,
-        };
-        let mut buf = BytesMut::new();
-        frame.encode(&mut buf);
-        let (decoded, tail) = FrameKind::decode(&buf).unwrap();
-        prop_assert_eq!(decoded, frame);
-        prop_assert!(tail.is_empty());
+        });
     }
 }
 
@@ -1414,125 +1573,6 @@ fn arb_layer_set() -> impl Strategy<Value = LayerSet> {
     ]
 }
 
-proptest! {
-    #[test]
-    fn roundtrip_get_metadata(
-        request_id in any::<u32>(),
-        scope in arb_scope(),
-        key in ".{0,64}",
-    ) {
-        assert_round_trip(&FrameKind::GetMetadata { request_id, scope, key });
-    }
-
-    #[test]
-    fn roundtrip_set_metadata(
-        request_id in any::<u32>(),
-        scope in arb_scope(),
-        key in ".{0,64}",
-        value in arb_metadata_value(),
-    ) {
-        assert_round_trip(&FrameKind::SetMetadata { request_id, scope, key, value });
-    }
-
-    #[test]
-    fn roundtrip_delete_metadata(
-        request_id in any::<u32>(),
-        scope in arb_scope(),
-        key in ".{0,64}",
-    ) {
-        assert_round_trip(&FrameKind::DeleteMetadata { request_id, scope, key });
-    }
-
-    #[test]
-    fn roundtrip_list_metadata(
-        request_id in any::<u32>(),
-        scope in arb_scope(),
-    ) {
-        assert_round_trip(&FrameKind::ListMetadata { request_id, scope });
-    }
-
-    #[test]
-    fn roundtrip_subscribe_metadata(
-        scope in arb_scope(),
-        key in ".{0,64}",
-    ) {
-        assert_round_trip(&FrameKind::SubscribeMetadata { scope, key });
-    }
-
-    #[test]
-    fn roundtrip_metadata_changed(
-        scope in arb_scope(),
-        key in ".{0,64}",
-        value in proptest::option::of(arb_metadata_value()),
-        actor in proptest::option::of(arb_actor()),
-    ) {
-        assert_round_trip(&FrameKind::MetadataChanged { scope, key, value, actor });
-    }
-
-    /// METADATA_VALUE — reply to GET_METADATA (phux-4li.8). Carries the
-    /// request_id verbatim and an optional value (None = key absent).
-    #[test]
-    fn roundtrip_metadata_value(
-        request_id in any::<u32>(),
-        value in proptest::option::of(arb_metadata_value()),
-    ) {
-        assert_round_trip(&FrameKind::MetadataValue { request_id, value });
-    }
-
-    /// METADATA_KEYS — reply to LIST_METADATA (phux-4li.8). Carries the
-    /// request_id verbatim and a (possibly empty) list of key names.
-    #[test]
-    fn roundtrip_metadata_keys(
-        request_id in any::<u32>(),
-        keys in proptest::collection::vec(".{0,32}", 0..8),
-    ) {
-        assert_round_trip(&FrameKind::MetadataKeys { request_id, keys });
-    }
-
-    /// LIST_DIRECTORY — the host query (L3.md §4). Carries the request_id
-    /// and the requested path verbatim, including the empty home request,
-    /// and the optional satellite `host` (§4.1), absent or named.
-    #[test]
-    fn roundtrip_list_directory(
-        request_id in any::<u32>(),
-        path in ".{0,64}",
-        host in proptest::option::of("[a-z0-9.-]{0,32}"),
-    ) {
-        assert_round_trip(&FrameKind::ListDirectory {
-            request_id,
-            path,
-            host: host.map(phux_protocol::ids::SatelliteHost::new),
-        });
-    }
-
-    /// DIRECTORY_LISTING — reply to LIST_DIRECTORY (L3.md §4): a listing
-    /// with optional parent, entries, and truncation, or a typed refusal.
-    #[test]
-    fn roundtrip_directory_listing(
-        request_id in any::<u32>(),
-        result in arb_directory_listing_result(),
-    ) {
-        assert_round_trip(&FrameKind::DirectoryListing { request_id, result });
-    }
-
-    /// HELLO carries the complete protocol-0.7 capability record, including
-    /// layer and bootstrap negotiation fields.
-    #[test]
-    fn roundtrip_hello_layers(
-        layers in arb_layer_set(),
-    ) {
-        assert_round_trip(&FrameKind::Hello {
-            client_name: "phux-client/test".to_owned(),
-            protocol_major: 0,
-            protocol_minor: 7,
-            protocol_patch: 0,
-            client_caps: ClientCapabilities::new()
-                .with_color_support(ColorSupport::TrueColor)
-                .with_layers(layers),
-        });
-    }
-}
-
 #[test]
 fn hello_decoder_rejects_legacy_body_with_color_but_no_layers() {
     let mut fields = Vec::new();
@@ -1652,42 +1692,10 @@ fn arb_move_result() -> impl Strategy<Value = MoveResult> {
 }
 
 proptest! {
-    /// The `Some(vec![])` shapes matter here: `command = Some(vec![])` is
-    /// distinct from `command = None`, and `env = Some(vec![])` ("start with
-    /// empty environment") is distinct from `env = None` ("inherit server's
-    /// env") — the 0..4 collection bounds and `option::of` wrappers keep all
-    /// of those in the generated space, as are `term` = None / Some("").
-    #[test]
-    fn roundtrip_spawn_terminal(
-        request_id in any::<u32>(),
-        group in any::<u32>(),
-        command in proptest::option::of(proptest::collection::vec(".{0,16}", 0..4)),
-        cwd in proptest::option::of(".{0,32}"),
-        env in proptest::option::of(proptest::collection::vec(arb_env_pair(), 0..4)),
-        term in proptest::option::of(".{0,16}"),
-        satellite in proptest::option::of(".{0,16}"),
-        owner_terminal in proptest::option::of(any::<u32>()),
-        agent_session in proptest::option::of(proptest::collection::vec(any::<u8>(), 0..64)),
-        initial_size in proptest::option::of((any::<u16>(), any::<u16>())),
-    ) {
-        assert_round_trip(&FrameKind::SpawnResource {
-            request_id,
-            group: GroupId::new(group),
-            command,
-            cwd,
-            env,
-            term,
-            satellite: satellite.map(phux_protocol::ids::SatelliteHost::new),
-            owner_terminal: owner_terminal.map(ResourceId::local),
-            agent_session,
-            initial_size,
-            resource: None,
-        });
-    }
-
     /// An `AgentSession` spawn carries fields 11-14 and none of the PTY
     /// shape; `parent` and `provider` are required, `native_id` optional,
     /// and `satellite` (7) and `agent_session` (9) stay legal for it.
+    /// `prop_assume!` facet-length bounds cannot live inside `arb_frame_kind`.
     #[test]
     fn roundtrip_spawn_agent_session(
         request_id in any::<u32>(),
@@ -1747,85 +1755,10 @@ proptest! {
         });
     }
 
-    /// `pane_spawned` carries the new resource's kind and parent as
-    /// additive TLV fields; every combination round-trips.
-    #[test]
-    fn roundtrip_event_pane_spawned(
-        terminal in arb_terminal_id(),
-        kind in arb_resource_kind(),
-        parent in proptest::option::of(arb_terminal_id()),
-    ) {
-        assert_round_trip(&FrameKind::Event {
-            terminal: Some(terminal),
-            event: AgentEvent::ResourceSpawned { kind, parent }, stamp: None,
-        });
-    }
-
-    #[test]
-    fn roundtrip_terminal_spawned(
-        request_id in any::<u32>(),
-        result in arb_spawn_result(),
-    ) {
-        assert_round_trip(&FrameKind::ResourceSpawned { request_id, result });
-    }
-
-    /// MOVE_RESOURCE / RESOURCE_MOVED (ADR-0056): both ResourceId fields
-    /// are required, and the reply's tagged union mirrors SpawnResult.
-    #[test]
-    fn roundtrip_move_terminal(
-        request_id in any::<u32>(),
-        terminal in arb_terminal_id(),
-        owner_terminal in arb_terminal_id(),
-    ) {
-        assert_round_trip(&FrameKind::MoveResource { request_id, terminal, owner_terminal });
-    }
-
-    #[test]
-    fn roundtrip_terminal_moved(
-        request_id in any::<u32>(),
-        result in arb_move_result(),
-    ) {
-        assert_round_trip(&FrameKind::ResourceMoved { request_id, result });
-    }
-
-    /// `exit_status = None` is the wire encoding for "killed by signal /
-    /// unknown cause"; negative statuses ride as u32 two's-complement. Both
-    /// live inside `option::of(any::<i32>())`.
-    #[test]
-    fn roundtrip_terminal_closed(
-        terminal_id in arb_terminal_id(),
-        exit_status in proptest::option::of(any::<i32>()),
-        reason in arb_close_reason(),
-        signal in proptest::option::of(any::<i32>()),
-    ) {
-        assert_round_trip(&FrameKind::ResourceClosed { terminal_id, exit_status, reason, signal });
-    }
-
-    /// Zero dims are in-range: SPEC §10.2 leaves them implementation-defined
-    /// and the codec round-trips them faithfully.
-    #[test]
-    fn roundtrip_terminal_resize(
-        terminal_id in arb_terminal_id(),
-        cols in any::<u16>(),
-        rows in any::<u16>(),
-    ) {
-        assert_round_trip(&FrameKind::ResizeTerminal { terminal_id, cols, rows });
-    }
-
-    #[test]
-    fn roundtrip_command_kill_terminal(
-        request_id in any::<u32>(),
-        terminal_id in arb_terminal_id(),
-    ) {
-        assert_round_trip(&FrameKind::Command {
-            request_id,
-            command: Command::KillResource { terminal_id, operation_id: None },
-        });
-    }
-
     /// KILL_RESOURCE_IF (ADR-0109): every instance presence and every
     /// condition byte round-trips, unknown bits included, so a server can
     /// refuse a condition it does not know instead of dropping it.
+    /// Condition bits are not in `arb_frame_kind`.
     #[test]
     fn roundtrip_command_kill_resource_if(
         request_id in any::<u32>(),
@@ -1864,19 +1797,6 @@ proptest! {
             initial_size: None,
             resource: bind.then(|| Box::new(SpawnResource::default().with_bind_instance(true))),
         });
-    }
-
-    #[test]
-    fn roundtrip_command_result_ok_and_error(
-        request_id in any::<u32>(),
-        message in ".{0,48}",
-    ) {
-        for result in [
-            CommandResult::Ok,
-            CommandResult::Error { code: ErrorCode::InvalidCommand, message },
-        ] {
-            assert_round_trip(&FrameKind::CommandResult { request_id, result });
-        }
     }
 }
 
@@ -2045,7 +1965,7 @@ fn get_screen_without_format_is_byte_identical() {
     get_screen.push(0x01); // request_scrollback = Some
     get_screen.extend_from_slice(&3u32.to_be_bytes());
     get_screen.push(0x01); // cells = true
-    // no format byte
+                           // no format byte
 
     let mut fields = Vec::new();
     tlv_field(&mut fields, 1, &7u32.to_be_bytes()); // field::command::REQUEST_ID
@@ -2107,7 +2027,7 @@ fn command_get_screen_back_to_back_frames_dont_bleed_cells() {
     get_screen.push(0x00); // RESOURCE_ID_TAG_LOCAL
     get_screen.extend_from_slice(&1u32.to_be_bytes());
     get_screen.push(0x00); // request_scrollback = None
-    // no cells byte
+                           // no cells byte
     let mut first_fields = Vec::new();
     tlv_field(&mut first_fields, 1, &1u32.to_be_bytes()); // REQUEST_ID
     tlv_field(&mut first_fields, 2, &get_screen); // COMMAND
@@ -2686,31 +2606,6 @@ fn arb_agent_event() -> impl Strategy<Value = AgentEvent> {
     ]
 }
 
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
-
-    /// `SUBSCRIBE_EVENTS` round-trips for both per-Terminal and
-    /// server-scoped (`None`) subscriptions.
-    #[test]
-    fn roundtrip_subscribe_events(
-        terminal in proptest::option::of(arb_terminal_id()),
-        after_seq in proptest::option::of(any::<u64>()),
-    ) {
-        assert_round_trip(&FrameKind::SubscribeEvents { terminal, after_seq });
-    }
-
-    /// `EVENT` round-trips across the full event taxonomy, both scope
-    /// shapes, and with or without a journal stamp.
-    #[test]
-    fn roundtrip_event(
-        terminal in proptest::option::of(arb_terminal_id()),
-        event in arb_agent_event(),
-        stamp in proptest::option::of(arb_event_stamp()),
-    ) {
-        assert_round_trip(&FrameKind::Event { terminal, event, stamp: stamp.map(Box::new) });
-    }
-}
-
 /// Named EVENT fixtures the proptest taxonomy doesn't pin by name: `Asked`
 /// with every field populated and with the minimal shape (empty suggestions,
 /// no elapsed counter), `CwdChanged` (phux-foz.4, tag 0x0a), and `Unknown` —
@@ -3272,11 +3167,14 @@ fn snapshot_journal_head_rides_the_extension_block_and_is_absent_by_default() {
 
     // Beside a retained resource's state, in the same block.
     let retained = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
-        .with_resources(vec![
-            ResourceInfo::new(ResourceId::local(1), WindowId::new(1), 80, 24)
-                .with_lifecycle(phux_protocol::wire::frame::ResourceLifecycle::Exited)
-                .with_exit(Some(ExitFacet::new(5, 9).with_exit_status(Some(3)))),
-        ])
+        .with_resources(vec![ResourceInfo::new(
+            ResourceId::local(1),
+            WindowId::new(1),
+            80,
+            24,
+        )
+        .with_lifecycle(phux_protocol::wire::frame::ResourceLifecycle::Exited)
+        .with_exit(Some(ExitFacet::new(5, 9).with_exit_status(Some(3))))])
         .with_journal_head(Some(7));
     let decoded = decode(&encode(&retained));
     assert_eq!(decoded, retained);
@@ -3303,14 +3201,14 @@ fn snapshot_resource_facets_join_by_id_and_ignore_unknown_rows() {
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_session
     snap.extend_from_slice(&1u32.to_be_bytes()); // focused_window
     snap.extend_from_slice(&local_id_bytes(7)); // focused_resource
-    // Trailing facets: two rows.
+                                                // Trailing facets: two rows.
     snap.extend_from_slice(&2u32.to_be_bytes());
     // Row for an id with no pane entry: ignored.
     snap.extend_from_slice(&local_id_bytes(99));
     snap.push(1); // AgentSession
     snap.push(0); // parent None
     snap.push(0); // agent None
-    // Row for pane 7.
+                  // Row for pane 7.
     snap.extend_from_slice(&local_id_bytes(7));
     snap.push(1); // AgentSession
     snap.push(1); // parent Some
@@ -3461,7 +3359,7 @@ fn snapshot_without_keep_empty_sessions_has_no_session_facets() {
     let plain = SessionSnapshot::new(SessionId::new(1), WindowId::new(0), ResourceId::local(0))
         .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")]);
     let marked = plain.clone().with_sessions(vec![
-        SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true),
+        SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true)
     ]);
     let encode = |snapshot: SessionSnapshot| {
         let mut buf = BytesMut::new();
@@ -3527,7 +3425,7 @@ fn keep_empty_without_hosts_writes_zero_count_anchors() {
 
     let snapshot = SessionSnapshot::new(SessionId::new(2), WindowId::new(0), ResourceId::local(0))
         .with_sessions(vec![
-            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true),
+            SessionInfo::new(SessionId::new(2), "parked").with_keep_empty(true)
         ]);
     let reply = FrameKind::CommandResult {
         request_id: 4,
@@ -3603,11 +3501,9 @@ fn session_facets_follow_resource_facets_without_aliasing() {
     use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot};
 
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(10), ResourceId::local(7))
-        .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "work")
-                .with_window_count(1)
-                .with_keep_empty(true),
-        ])
+        .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")
+            .with_window_count(1)
+            .with_keep_empty(true)])
         .with_resources(vec![
             ResourceInfo::new(ResourceId::local(7), WindowId::new(10), 80, 24),
             ResourceInfo::resource(ResourceId::local(8), ResourceKind::AgentSession)
@@ -3671,7 +3567,7 @@ fn unknown_session_facet_flag_bits_are_ignored() {
 
     let snapshot = SessionSnapshot::new(SessionId::new(1), WindowId::new(0), ResourceId::local(0))
         .with_sessions(vec![
-            SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true),
+            SessionInfo::new(SessionId::new(1), "work").with_keep_empty(true)
         ]);
     let reply = FrameKind::CommandResult {
         request_id: 1,
