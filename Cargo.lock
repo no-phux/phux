@@ -2153,10 +2153,9 @@ dependencies = [
  "futures-util",
  "libghostty-vt",
  "phux-client-core",
+ "phux-client-runtime",
  "phux-config",
- "phux-dial",
  "phux-protocol",
- "quinn",
  "serde_json",
  "tempfile",
  "tokio",
@@ -2164,6 +2163,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "phux-client-runtime"
+version = "0.39.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "phux-config",
+ "phux-dial",
+ "phux-protocol",
+ "quinn",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "tracing",
 ]
 
 [[package]]

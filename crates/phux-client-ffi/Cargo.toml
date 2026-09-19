@@ -28,22 +28,14 @@ serde_json.workspace = true
 # emits. Reuse the already-locked workspace v4 implementation rather than
 # inventing a second collision-prone generator for concurrent native clients.
 uuid.workspace = true
-# Remote hosts (`remote` module, ADR-0007/ADR-0031/ADR-0093 rung 1). The
-# `[[remote]]` registry is read through the CLI's own schema and loader, and
-# QUIC/WSS establishment (certificate pin, bearer preamble) goes through the
-# shared dialer, so an embedder never carries a second copy of either. All
-# five are workspace members or already-locked crates: phux-dial already
-# depends on quinn, tokio and futures-util at these exact specs, and nothing
-# new enters Cargo.lock.
+# Remote hosts (`remote` module, ADR-0007/ADR-0031/ADR-0093 rung 1) are the
+# runtime's relay tunnel behind a C handle (ADR-0133): resolution, dial
+# planning, trust rules and the relay live there, so an embedder never
+# carries a second registry reader or a second dialer. The machine-registry
+# snapshot still reads `[[remote]]` and `[[satellite]]` entries through the
+# CLI's own schema.
+phux-client-runtime.workspace = true
 phux-config.workspace = true
-phux-dial.workspace = true
-quinn.workspace = true
-tokio.workspace = true
-futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-# The WebSocket lane reads the raw message stream so its two directions can
-# run concurrently while it still sees keepalive pongs; `Message` is not
-# re-exported by phux-dial. Same spec phux-dial locks.
-tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 # `phux_client_log_init` gives an embedder the tunnel's lifecycle on its own
 # stderr, and the dial stacks (quinn, rustls, phux-dial) already speak
 # `tracing`, so without a subscriber their spans are dropped. Both crates are
@@ -56,3 +48,9 @@ tracing-subscriber.workspace = true
 [dev-dependencies]
 # A registry fixture file for the resolution and relay tests.
 tempfile.workspace = true
+# `TunnelShared::inject_failure` for the captured-tunnel test.
+phux-client-runtime = { workspace = true, features = ["testing"] }
+# The relay tests run a loopback WebSocket echo server against the tunnel.
+tokio.workspace = true
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }

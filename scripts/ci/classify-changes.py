@@ -42,6 +42,7 @@ ROUTES = (
     # against manifests so a new local dependency cannot silently lose coverage.
     (("crates/phux-protocol/*", "crates/phux-client-core/*", "crates/phux-perf/*",
       "crates/phux-client-ffi/*", "crates/phux-config/*", "crates/phux-core/*",
+      "crates/phux-client-runtime/*",
       "crates/phux-dial/*", "crates/phux-plugin/*", "crates/phux-relay/*",
       "crates/phux-server/*", "crates/phux-server-testkit/*",
       "crates/portable-pty-adopt/*"), {"web"}),

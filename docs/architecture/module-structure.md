@@ -13,7 +13,7 @@ work.
 
 ---
 
-Eighteen crates make up the workspace; the sections below cover them
+Nineteen crates make up the workspace; the sections below cover them
 roughly in dependency order (wire, domain, daemon, clients, config,
 binary, then the smaller special-purpose crates). The render-layering
 split between `phux-tui` and `phux-client-core` is
@@ -628,6 +628,22 @@ rather than a layer with its own internal architecture worth diagramming:
   write — that the server's QUIC and WebTransport writers and `phux-relay`'s
   consumer-facing leg all write through (see
   [`transport.md`](./transport.md)).
+- **`phux-client-runtime`** — the one client orchestration layer between
+  the sans-IO session kernel and a language binding (ADR-0133). `target.rs`
+  resolves `[USER@]HOST[:PORT]` against the CLI's `[[remote]]` registry
+  through `phux-config`'s own loader (rung 1 of the ADR-0093 ladder);
+  `dial.rs` turns a resolved entry into a `phux-dial` plan under the CLI's
+  trust rules (pin off loopback, `wss://` plus a token when routable), owns
+  the operator-facing wording of every dial failure, and cuts SPEC §5
+  frames for the WebSocket lane; `reconnect.rs` is the backoff ladder and
+  the fatal-refusal rule (401/403 upgrade, QUIC `AUTH_FAILED`), the one
+  home the TUI and the mobile bridge move their reconnects onto in later
+  rungs; `tunnel.rs` is the byte-relay tunnel a
+  socket-owning embedder hands one end of a Unix-domain socket pair, with
+  its dedicated thread, cancellation, and panic containment. It exposes a
+  Rust API and no FFI; `phux-client-ffi` and phux-mobile's bridge are shims
+  over it and hold no state machine of their own. Later rungs of ADR-0133
+  move the engine owner thread, the frame pump, and grid publication here.
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): splices an
   inbound consumer connection onto an outbound connector tunnel. Never
   parses phux frames — only the connector's auth preamble.
@@ -669,10 +685,12 @@ rather than a layer with its own internal architecture worth diagramming:
   server's `hooks.rs` dispatcher.
 - **`phux-client-ffi`** — a stable native C bridge over
   `phux-client-core`'s synchronous session kernel, for non-Rust native
-  embedders; compile-time excluded on wasm. Its `remote` module is the
-  embedder half of `phux --remote`: it resolves a host in the CLI's
-  `[[remote]]` registry and relays frames between an embedder-owned
-  Unix-domain socket pair and a QUIC/WSS dial (`phux_remote_tunnel_*`).
+  embedders; compile-time excluded on wasm. Its `remote` module is the C
+  handle over `phux-client-runtime`'s relay tunnel (ADR-0133): the runtime
+  resolves the host in the CLI's `[[remote]]` registry and relays frames
+  between an embedder-owned Unix-domain socket pair and a QUIC/WSS dial;
+  the module owns only the `phux_remote_tunnel_*` exports, their
+  `#[repr(C)]` structs, and the machine-registry snapshot.
   Its `directory` module carries the `LIST_DIRECTORY` host query for a
   go-to-directory picker, retaining one correlated listing per client
   (`phux_client_list_directory_on`, `phux_client_directory_*`). Its `log`
