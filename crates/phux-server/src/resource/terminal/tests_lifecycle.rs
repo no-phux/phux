@@ -552,6 +552,25 @@ async fn signal_freezes_resumes_and_kills_the_child() {
 /// exit, so an idle trap still returns on the first poll.
 const CONTENDED_FLUSH_GRACE: std::time::Duration = std::time::Duration::from_millis(2500);
 
+/// Larger than everything that could absorb a hangup flush without the
+/// child blocking: the reader→actor channel plus slack for the kernel
+/// PTY buffer. Derived from the production constants so retuning the
+/// channel cannot silently defang the grace test.
+const TERMINAL_FLUSH_BYTES: usize =
+    super::spawn::PTY_CHANNEL_DEPTH * super::spawn::PTY_READ_CHUNK + 512 * 1024;
+
+/// Poll until `path` exists or 30s expires. Covers ambient shell
+/// scheduling (the armed / trap-started barriers), not the hangup flush.
+async fn wait_until_fixture_exists(path: &std::path::Path) -> bool {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while !path.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
 /// Poll the SIGHUP flush marker until it lands or [`CONTENDED_FLUSH_GRACE`]
 /// expires. Replaces a one-shot read after a fixed actor join.
 async fn wait_for_flush_marker(path: &std::path::Path) -> String {
@@ -748,16 +767,6 @@ async fn pane_kill_lets_foreground_process_flush_before_death() {
 async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
     use portable_pty::CommandBuilder;
 
-    // Larger than everything that could absorb the flush without the child
-    // ever blocking: the whole reader->actor channel, plus slack for the
-    // kernel PTY buffer. Derived from the constants rather than written out,
-    // so retuning the channel cannot silently defang this test. This is
-    // deliberately above the 512 KiB the ticket names — 512 KiB is under the
-    // bound on any platform whose line discipline fills a whole
-    // `PTY_READ_CHUNK` per read, and would gate nothing there.
-    const FLUSH_BYTES: usize =
-        super::spawn::PTY_CHANNEL_DEPTH * super::spawn::PTY_READ_CHUNK + 512 * 1024;
-
     let local = tokio::task::LocalSet::new();
     local
         .run_until(async {
@@ -769,7 +778,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             let payload = dir.path().join("payload");
             let status = dir.path().join("status");
             let stderr = dir.path().join("err");
-            std::fs::write(&payload, vec![b'.'; FLUSH_BYTES]).expect("write flush payload");
+            std::fs::write(&payload, vec![b'.'; TERMINAL_FLUSH_BYTES]).expect("write flush payload");
 
             // `cat`, not a shell loop: this has to move megabytes inside a
             // 500ms product budget, and a `printf` loop cannot.
@@ -827,17 +836,8 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             let master = std::sync::Arc::clone(&pty.master);
             let run = tokio::task::spawn_local(actor.run());
 
-            // Same single barrier as the sibling test, generous for the same
-            // reason: forking and scheduling two shells is ambient work whose
-            // cost is unbounded in machine load. Nothing after it depends on
-            // this budget.
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                while !armed.exists() {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect(
+            assert!(
+                wait_until_fixture_exists(&armed).await,
                 "foreground job never installed its SIGHUP trap: the fixture shells did not \
                      get scheduled, which is an environment problem (machine load), not a \
                      failure of the flush-before-death path this test covers",
@@ -857,16 +857,8 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
 
             let killed_at = std::time::Instant::now();
             token.cancel();
-            // The grace clock is gated on this file. A 30s wait here is
-            // the armed barrier again: "did the shell get scheduled to
-            // run its trap?", not "did the megabyte flush finish?".
-            tokio::time::timeout(std::time::Duration::from_secs(30), async {
-                while !started.exists() {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .expect(
+            assert!(
+                wait_until_fixture_exists(&started).await,
                 "SIGHUP trap never started: the fixture shell did not get scheduled \
                      after hangup, which is an environment problem (machine load), not a \
                      failure of the flush-before-death path this test covers",
@@ -881,7 +873,7 @@ async fn pane_kill_lets_a_terminal_flush_finish_inside_the_grace() {
             let cat_err = std::fs::read_to_string(&stderr).unwrap_or_default();
             assert!(
                 body.contains("flushed"),
-                "a foreground job flushing {FLUSH_BYTES} bytes to the TERMINAL must finish \
+                "a foreground job flushing {TERMINAL_FLUSH_BYTES} bytes to the TERMINAL must finish \
                      inside the hangup grace. An empty marker with a non-zero cat status means \
                      it could not write: either it blocked against an undrained PTY and was \
                      hard-killed mid-flush, or the terminal was revoked out from under it. \
