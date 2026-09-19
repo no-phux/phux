@@ -64,6 +64,19 @@ enum TickOutcome {
     Emitted(usize),
 }
 
+/// The consumer walk of one productive state-sync tick, handed back to
+/// [`TerminalActor::tick_emit`] so span/histogram/reap stay in one place.
+struct TickEmitWalk {
+    /// Frames actually shipped this tick.
+    emitted: u64,
+    /// Sum of shipped payload bytes.
+    total_out_bytes: usize,
+    /// Consumers whose outbound mailbox was closed; reap after borrows drop.
+    closed: Vec<ClientId>,
+    /// Instant the productive work started (excludes gated/idle ticks).
+    started: std::time::Instant,
+}
+
 /// The cooperative native-capture pump's position for one `run` turn.
 ///
 /// While a native bootstrap is in flight the loop alternates a yield to the
@@ -192,21 +205,40 @@ impl ResyncDebounce {
     }
 }
 
+/// Loop-local timers and ingress preference owned by [`TerminalActor::run`].
+///
+/// Kept as one value so [`TerminalActor::run`] can arm once and
+/// [`TerminalActor::drive_run_loop`] can drive without threading each
+/// timer through a long parameter list (phux-18sb).
+struct RunLoopState {
+    /// Shared state-sync cadence; rebuilt when a consumer's RTT shifts it.
+    tick_interval: std::time::Duration,
+    /// The armed state-sync interval (Delay + first tick eaten).
+    tick: tokio::time::Interval,
+    /// Agent-detector cadence; rebuilt when `detect_tick` asks for a new one.
+    detect_interval: std::time::Duration,
+    /// The armed detector interval.
+    detect_tick: tokio::time::Interval,
+    /// Debounced post-resize / gap resync owed to subscribers.
+    resync: ResyncDebounce,
+    /// Next combined ingress prefers native control when true.
+    prefer_native: bool,
+    /// The cooperative native pump owes a record step on the next turn.
+    native_step_due: bool,
+}
+
 impl TerminalActor {
     /// Run the actor's event loop until shutdown.
     ///
     /// Native prefix capture advances by one record between ingress turns.
     ///
-    /// Every arm is a one-line dispatch into a named handler; what remains
-    /// inline is the `select!`'s own arm/guard scaffolding plus the
-    /// rationale comments that must sit next to the guard they explain.
+    /// Arms the loop-local timers, then drives the `select!`. Every arm is
+    /// a one-line dispatch into a named handler; what remains inline is the
+    /// `select!`'s own arm/guard scaffolding plus the rationale comments
+    /// that must sit next to the guard they explain.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
-    )]
-    #[allow(
-        clippy::cognitive_complexity,
-        reason = "select! macro expansion inflates the score; every arm body is a single handler call"
     )]
     pub async fn run(mut self) {
         debug!(
@@ -216,6 +248,22 @@ impl TerminalActor {
             "TerminalActor started",
         );
 
+        let mut state = self.arm_run_loop().await;
+        // Init the debounce deadline far out — `resync.pending` is false
+        // until a resize arms it, and arming always resets the deadline, so
+        // the initial instant is never observed.
+        let resync_deadline = tokio::time::sleep(std::time::Duration::from_secs(3600));
+        tokio::pin!(resync_deadline);
+        self.drive_run_loop(&mut state, resync_deadline).await;
+    }
+
+    /// Arm the state-sync tick, the agent detector, and the idle resync /
+    /// ingress bookkeeping that [`Self::drive_run_loop`] then drives.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+    )]
+    async fn arm_run_loop(&mut self) -> RunLoopState {
         // State-sync tick driver (phux-q0e.3 / phux-q0e.5). RTT-adaptive
         // cadence: starts at the `DEFAULT_TICK_INTERVAL` cold-start value and
         // is rebuilt toward each consumer's measured `RTT/2` (clamped to
@@ -224,40 +272,56 @@ impl TerminalActor {
         // interval across consumers (see [`Self::adaptive_tick_interval`]).
         // The timer's missed-tick behavior and the eaten first tick are
         // [`armed_interval`]'s; the rationale for both lives there.
-        let mut tick_interval = DEFAULT_TICK_INTERVAL;
-        let mut tick = armed_interval(tick_interval).await;
+        let tick_interval = DEFAULT_TICK_INTERVAL;
+        let tick = armed_interval(tick_interval).await;
 
         self.install_agent_detector();
-        let mut detect_interval = crate::agent_detect::TICK_UNIDENTIFIED;
-        let mut detect_tick = armed_interval(detect_interval).await;
+        let detect_interval = crate::agent_detect::TICK_UNIDENTIFIED;
+        let detect_tick = armed_interval(detect_interval).await;
 
-        // Init the debounce deadline far out — `resync.pending` is false
-        // until a resize arms it, and arming always resets the deadline, so
-        // the initial instant is never observed.
-        let resync_deadline = tokio::time::sleep(std::time::Duration::from_secs(3600));
-        tokio::pin!(resync_deadline);
-        let mut resync = ResyncDebounce::idle();
         // Native control and PTY output are one outer select arm so the actor
         // never borrows either receiver twice. Preference swaps after every
         // selected ingress, but both sources remain enabled: a silent PTY can
         // never park bootstrap or consecutive history requests.
-        let mut prefer_native = false;
-        let mut native_step_due = false;
+        RunLoopState {
+            tick_interval,
+            tick,
+            detect_interval,
+            detect_tick,
+            resync: ResyncDebounce::idle(),
+            prefer_native: false,
+            native_step_due: false,
+        }
+    }
 
+    /// Drive the actor `select!` until cancel, sequence exhaustion, or every
+    /// mailbox closes.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+    )]
+    #[allow(
+        clippy::cognitive_complexity,
+        reason = "select! macro expansion inflates the score; every arm body is a single handler call"
+    )]
+    async fn drive_run_loop(
+        &mut self,
+        state: &mut RunLoopState,
+        mut resync_deadline: std::pin::Pin<&mut tokio::time::Sleep>,
+    ) {
         loop {
             // Resolved once per turn. `select!` evaluates every precondition
             // below in one pass as it is entered, and nothing runs between
             // here and there, so one read stands in for the ~ten separate
             // reads the guards used to make.
             let bootstrap_pending = self.native_bootstrap_pending();
-            let pump = BootstrapPump::resolve(self.native_work_pending(), native_step_due);
+            let pump = BootstrapPump::resolve(self.native_work_pending(), state.native_step_due);
 
             tokio::select! {
                 biased;
 
                 () = self.core.token.cancelled() => {
-                    debug!("TerminalActor cancellation token fired");
-                    self.shutdown_pty().await;
+                    self.shutdown_from_cancel().await;
                     return;
                 }
 
@@ -280,18 +344,20 @@ impl TerminalActor {
                 // `MAX_PTY_COALESCE_BYTES`.
                 Some(input) = self.input_rx.recv() => self.service_input_batch(&input),
 
-                () = std::future::ready(()), if pump == BootstrapPump::StepDue => {
-                    self.cooperative_native_step();
-                    native_step_due = false;
-                }
+                () = std::future::ready(()), if pump == BootstrapPump::StepDue =>
+                    self.service_cooperative_native_step(&mut state.native_step_due),
 
                 ingress = recv_native_or_pty(
                     &mut self.native_requests,
                     self.pty_rx.as_mut(),
-                    prefer_native,
+                    state.prefer_native,
                 ) => {
                     if self
-                        .service_ingress_turn(ingress, &mut prefer_native, &mut native_step_due)
+                        .service_ingress_turn(
+                            ingress,
+                            &mut state.prefer_native,
+                            &mut state.native_step_due,
+                        )
                         .await
                         .is_break()
                     {
@@ -316,22 +382,20 @@ impl TerminalActor {
                 Some(req) = self.process_rx.recv() => self.reply_process_facet(req),
 
                 Some(req) = self.resize_rx.recv(), if !bootstrap_pending =>
-                    self.service_resize_request(req, &mut resync, resync_deadline.as_mut()),
+                    self.service_resize_request(req, &mut state.resync, resync_deadline.as_mut()),
 
                 // phux-8v1: debounced resize resync — fires once the
                 // resize storm settles (RESIZE_RESYNC_DEBOUNCE after the
                 // last resync-requesting resize). Guarded by the owed-resync
                 // flag so the idle far-future timer never fires spuriously.
-                () = &mut resync_deadline, if resync.may_fire(bootstrap_pending) => {
-                    let (reason, audience) = resync.take();
-                    self.broadcast_resync(reason, audience);
-                }
+                () = &mut resync_deadline, if state.resync.may_fire(bootstrap_pending) =>
+                    self.fire_owed_resync(&mut state.resync),
 
                 Some(req) = self.consumer_attach_rx.recv(), if !bootstrap_pending =>
                     self.handle_consumer_attach(req),
 
                 Some(req) = self.consumer_detach_rx.recv() =>
-                    self.service_consumer_detach(req, &mut tick, &mut tick_interval),
+                    self.service_consumer_detach(req, &mut state.tick, &mut state.tick_interval),
 
                 // ADR-0018 / phux-q0e.4: inbound FRAME_ACK. Clears the
                 // per-consumer dirty cache so the next tick re-diffs
@@ -340,7 +404,7 @@ impl TerminalActor {
                 // diff against the same older reference — no
                 // retransmit machinery here.
                 Some(req) = self.consumer_ack_rx.recv(), if !bootstrap_pending =>
-                    self.service_frame_ack(&req, &mut tick, &mut tick_interval),
+                    self.service_frame_ack(&req, &mut state.tick, &mut state.tick_interval),
 
                 // Supervisory control (ADR-0033): lease-change broadcasts and
                 // process signals. The lease itself lives in `ServerState`; the
@@ -358,7 +422,7 @@ impl TerminalActor {
                 // make the tick relevant (a consumer attaching, a PTY chunk
                 // opening an output burst, a native cursor binding) is itself
                 // a loop turn, so re-arming is immediate.
-                _ = tick.tick(), if !bootstrap_pending && self.state_tick_armed() =>
+                _ = state.tick.tick(), if !bootstrap_pending && self.state_tick_armed() =>
                     self.service_state_tick(),
 
                 // Agent-state detector (ADR-0046). This interval is the SOLE
@@ -370,16 +434,37 @@ impl TerminalActor {
                 // confirming a working -> idle transition) and is re-armed
                 // through the existing `rearm_tick`, whose deadband keeps a
                 // steady cadence from churning the scheduler.
-                _ = detect_tick.tick(), if self.detector_tick_armed(bootstrap_pending) =>
-                    self.service_detect_tick(&mut detect_tick, &mut detect_interval),
+                _ = state.detect_tick.tick(), if self.detector_tick_armed(bootstrap_pending) =>
+                    self.service_detect_tick(&mut state.detect_tick, &mut state.detect_interval),
 
-                () = tokio::task::yield_now(), if pump == BootstrapPump::YieldDue => {
-                    native_step_due = true;
-                }
+                () = tokio::task::yield_now(), if pump == BootstrapPump::YieldDue =>
+                    state.native_step_due = true,
 
                 else => break,
             }
         }
+    }
+
+    /// Tear the PTY down after the actor-global cancel token fires.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+    )]
+    async fn shutdown_from_cancel(&mut self) {
+        debug!("TerminalActor cancellation token fired");
+        self.shutdown_pty().await;
+    }
+
+    /// Advance native prefix capture by one record and clear the owed-step flag.
+    fn service_cooperative_native_step(&mut self, native_step_due: &mut bool) {
+        self.cooperative_native_step();
+        *native_step_due = false;
+    }
+
+    /// Broadcast the settled-resize / gap snapshot this debounce window owed.
+    fn fire_owed_resync(&self, resync: &mut ResyncDebounce) {
+        let (reason, audience) = resync.take();
+        self.broadcast_resync(reason, audience);
     }
 
     /// Service one combined native-control / PTY-output ingress turn.
@@ -1043,35 +1128,77 @@ impl TerminalActor {
         )
         .entered();
 
-        // Emission gate (phux-0q8 / phux-3uv / phux-ia4 / phux-fseo). The tick
-        // emits only for a *tick-managed* consumer — one that negotiated
-        // `OutputMode::StateSync` (`state.wants_state_sync`), or any consumer
-        // when the global test gate forces it; the runtime suppresses its
-        // broadcast pump for exactly those (see `ConsumerAttachOutcome`). A
-        // raw consumer is served by the pump, so the tick stays silent for it
-        // to avoid double-painting. `force_all_consumers` is captured here so
-        // the loop below reads it without re-borrowing `self` while it holds
-        // `&mut self.consumer_states`.
+        let Some(force_all_consumers) = self.tick_emit_audience() else {
+            return;
+        };
+        let Some(mutated) = self.take_tick_mutation() else {
+            return;
+        };
+        let Some(walk) = self.emit_ready_tick(force_all_consumers, mutated) else {
+            return;
+        };
+        // Record the per-tick emission tally on the tick span so a reader
+        // can reconstruct "tick served N consumers, shipped M frames /
+        // B bytes" without re-deriving it from the per-consumer trace lines.
+        tick_span.record("emitted", walk.emitted);
+        tick_span.record("total_out_bytes", walk.total_out_bytes);
+        crate::perf::TICK_EMIT.record_elapsed(walk.started);
+        for client_id in walk.closed {
+            self.consumer_states.remove(&client_id);
+        }
+    }
+
+    /// Whether this tick has anyone to serve, and whether the test gate
+    /// forces every consumer onto the tick path.
+    ///
+    /// Emission gate (phux-0q8 / phux-3uv / phux-ia4 / phux-fseo). The tick
+    /// emits only for a *tick-managed* consumer — one that negotiated
+    /// `OutputMode::StateSync` (`state.wants_state_sync`), or any consumer
+    /// when the global test gate forces it; the runtime suppresses its
+    /// broadcast pump for exactly those (see `ConsumerAttachOutcome`). A
+    /// raw consumer is served by the pump, so the tick stays silent for it
+    /// to avoid double-painting. `force_all_consumers` is captured here so
+    /// the walk below reads it without re-borrowing `self` while it holds
+    /// `&mut self.consumer_states`.
+    fn tick_emit_audience(&self) -> Option<bool> {
         let force_all_consumers = self.consumer_tick_emits;
         if !force_all_consumers && !self.consumer_states.values().any(|s| s.wants_state_sync) {
             // No tick-managed consumer: nothing to emit (dirty flag untouched).
-            return;
+            return None;
         }
+        Some(force_all_consumers)
+    }
 
-        // Idle short-circuit (phux-4l0). The per-consumer reference diff
-        // walks + renders every viewport row into a throwaway `Vec<u8>`
-        // for every consumer, every tick — pure waste when nothing has
-        // changed. Take and reset the "mutated since last tick" flag here;
-        // if the terminal is unchanged AND no consumer is awaiting its
-        // first emission, skip the entire per-consumer loop.
+    /// Take the "mutated since last tick" flag and decide whether a consumer
+    /// walk is still owed on a clean terminal.
+    ///
+    /// Idle short-circuit (phux-4l0). The per-consumer reference diff
+    /// walks + renders every viewport row into a throwaway `Vec<u8>`
+    /// for every consumer, every tick — pure waste when nothing has
+    /// changed. Take and reset the flag here; if the terminal is
+    /// unchanged AND no consumer is awaiting its first emission, skip
+    /// the entire per-consumer loop.
+    fn take_tick_mutation(&mut self) -> Option<bool> {
         let mutated = self.terminal_dirty_since_tick;
         self.terminal_dirty_since_tick = false;
         if !mutated && !self.consumer_states.values().any(must_walk_when_clean) {
-            return;
+            return None;
         }
-        // Timed from here so gated-off and idle ticks, which are the common
-        // case and nearly free, do not swamp the histogram.
-        let tick_started = std::time::Instant::now();
+        Some(mutated)
+    }
+
+    /// Render the grid once and walk every consumer against that snapshot.
+    ///
+    /// Returns `None` when `prepare_tick` fails (same skip as before: no
+    /// histogram sample, no reap). Timed from here so gated-off and idle
+    /// ticks, which are the common case and nearly free, do not swamp the
+    /// histogram.
+    fn emit_ready_tick(
+        &mut self,
+        force_all_consumers: bool,
+        mutated: bool,
+    ) -> Option<TickEmitWalk> {
+        let started = std::time::Instant::now();
 
         // Borrow the terminal + shared synthesizer once per tick. The
         // synthesizer's `RenderState`/iterators are reused across
@@ -1091,7 +1218,7 @@ impl TerminalActor {
             },
             Err(err) => {
                 warn!(error = %err, "state-sync tick: prepare_tick failed; skipping tick");
-                return;
+                return None;
             }
         };
         // Consumers whose outbound mailbox is `Closed` (receiver dropped)
@@ -1122,15 +1249,12 @@ impl TerminalActor {
         }
         drop(synth);
         drop(terminal);
-        // Record the per-tick emission tally on the tick span so a reader
-        // can reconstruct "tick served N consumers, shipped M frames /
-        // B bytes" without re-deriving it from the per-consumer trace lines.
-        tick_span.record("emitted", emitted);
-        tick_span.record("total_out_bytes", total_out_bytes);
-        crate::perf::TICK_EMIT.record_elapsed(tick_started);
-        for client_id in closed {
-            self.consumer_states.remove(&client_id);
-        }
+        Some(TickEmitWalk {
+            emitted,
+            total_out_bytes,
+            closed,
+            started,
+        })
     }
 
     /// Serve one consumer within a state-sync tick: reserve its outbound
