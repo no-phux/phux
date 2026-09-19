@@ -539,12 +539,12 @@ fn str_arg(r: &phux_config::keybind::ResolvedAction, key: &str) -> Option<String
 }
 
 /// The pure click→action mapping: window blocks commit
-/// `select-window { index }`, the footer rows `new-window` and
-/// `command-palette` / `settings`, the collapse corner `toggle-sidebar`, and
-/// section headers their corresponding management views.
+/// `select-window { index }`, the footer row `new-window`, the collapse
+/// corner `toggle-sidebar`, and section headers their corresponding
+/// management views.
 #[test]
 fn sidebar_click_action_maps_rows_to_registry_actions() {
-    // Body has 21 rows: Agents starts at 0, Sessions at 10, footer at 21.
+    // Body has 22 rows: Agents starts at 0, Sessions at 11, footer at 22.
     let strip = crate::layout::Rect {
         x: 0,
         y: 0,
@@ -555,24 +555,20 @@ fn sidebar_click_action_maps_rows_to_registry_actions() {
     let resolved = sidebar_click_action(strip, &quiet, 4, 14).expect("window row hits");
     assert_eq!(resolved.action, "select-window");
     assert_eq!(index_arg(&resolved), Some(1));
-    let new = sidebar_click_action(strip, &quiet, 4, 21).expect("new row hits");
+    let new = sidebar_click_action(strip, &quiet, 4, 22).expect("new row hits");
     assert_eq!(new.action, "new-window");
     assert!(new.args.is_empty());
-    let menu = sidebar_click_action(strip, &quiet, 4, 22).expect("menu row hits");
-    assert_eq!(menu.action, "command-palette");
-    let settings = sidebar_click_action(strip, &quiet, 14, 22).expect("settings label hits");
-    assert_eq!(settings.action, "settings");
     // phux-foz.9: the collapse chevron in the bottom corner.
     let collapse = sidebar_click_action(strip, &quiet, 27, 22).expect("collapse corner hits");
     assert_eq!(collapse.action, "toggle-sidebar");
     assert!(collapse.args.is_empty());
     let fleet = sidebar_click_action(strip, &quiet, 4, 0).expect("Agents header hits");
     assert_eq!(fleet.action, "agent-fleet");
-    let sessions = sidebar_click_action(strip, &quiet, 4, 10).expect("Sessions header hits");
+    let sessions = sidebar_click_action(strip, &quiet, 4, 11).expect("Sessions header hits");
     assert_eq!(sessions.action, "session-picker");
     // Blank padding and the separator column (outside the chevron corner)
     // commit nothing.
-    assert!(sidebar_click_action(strip, &quiet, 4, 9).is_none());
+    assert!(sidebar_click_action(strip, &quiet, 4, 10).is_none());
     assert!(sidebar_click_action(strip, &quiet, 27, 0).is_none());
 }
 
@@ -588,7 +584,7 @@ fn sidebar_queue_and_roster_rows_commit_their_own_actions() {
         w: 28,
         h: 23,
     };
-    // Agent activity never moves Sessions from row 10.
+    // Agent activity never moves Sessions from the lower half.
     let t = targets(2, 2, 0);
     let local = sidebar_click_action(strip, &t, 4, 1).expect("queue row 0 hits");
     assert_eq!(local.action, "select-window", "a local row stays local");

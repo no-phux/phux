@@ -74,16 +74,16 @@ fn the_shipped_bar_is_exactly_the_terminal_width_at_every_size() {
     }
 }
 
-/// A roomy terminal shows everything: all four padded tabs, the hints,
-/// the session name and the clock.
+/// A roomy terminal shows the quiet lineup: padded tabs, session name,
+/// and clock. No permanent action-hint strip.
 #[test]
 fn a_roomy_terminal_shows_the_whole_lineup() {
     let windows = [win("zsh", false), win("nvim", true), win("server", false)];
     let text = shipped_text(120, "phux", &windows);
 
     assert!(text.starts_with(" 0:zsh   1:nvim   2:server "), "{text:?}");
-    assert!(text.contains("C-a  s Sessions"), "{text:?}");
-    assert!(text.contains("S Settings"), "{text:?}");
+    assert!(!text.contains("s Sessions"), "{text:?}");
+    assert!(!text.contains("S Settings"), "{text:?}");
     assert!(text.contains("phux"), "{text:?}");
     // The `switch` chip is for narrow terminals only.
     assert!(!text.contains("switch"), "{text:?}");
@@ -103,7 +103,7 @@ fn a_narrow_terminal_trades_context_for_an_affordance() {
     let text = shipped_text(46, "phux", &windows);
 
     assert!(text.contains(" switch "), "{text:?}");
-    assert!(!text.contains("C-a"), "hints yield first: {text:?}");
+    assert!(!text.contains("C-a"), "no teaching strip: {text:?}");
     // The active tab is always visible, whole.
     assert!(text.contains("1:nvim"), "{text:?}");
     // And no tab is half-drawn: every window name present is complete.
