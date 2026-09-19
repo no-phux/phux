@@ -1,7 +1,7 @@
 ---
 audience: humans, consumers
 stability: evolving
-last-reviewed: 2026-09-14
+last-reviewed: 2026-09-19
 ---
 
 # Cockpit
@@ -77,9 +77,11 @@ which need their own explicit per-terminal subscription. Cockpit consumes
 them on the remote provider (PHA-284). The live working directory's basename
 (`/` for the root) names an untitled tab ahead of the attach catalog.
 `EXITED` with reason `Exited` or `Killed` closes the pane; any other reason
-keeps today's handling. A window that loses its last pane this way shows
-Empty session when its session is keep-empty (ADR-0114). Otherwise the window
-closes, and closing the last window quits. The result is the same whichever
+keeps today's handling. Natural `exit` of a session's last shell does not
+publish `EXITED`: the server replaces the child in place, so the pane stays.
+A window that loses its last pane to Close Pane/Tab shows Empty session when
+its session is keep-empty (ADR-0114). Otherwise the window closes, and closing
+the last window quits. The result is the same whichever
 of the close and the workspace snapshot arrives first. The command
 boundaries answer `atPrompt()`. A command that ran at least ten seconds posts
 a notification under the bell's gate and latch. A missing status, such as a

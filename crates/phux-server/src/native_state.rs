@@ -731,6 +731,15 @@ impl NativeTerminalManager {
         )
     }
 
+    pub(crate) fn reset(&mut self) {
+        debug_assert!(!self.capture_active);
+        self.retire_all_generations();
+        match self.terminal.as_mut() {
+            Some(terminal) => terminal.reset(),
+            None => unreachable!("terminal available outside prefix capture"),
+        }
+    }
+
     #[cfg(test)]
     #[allow(
         dead_code,

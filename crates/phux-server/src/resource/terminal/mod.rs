@@ -657,6 +657,30 @@ impl CanonicalTerminal {
         }
     }
 
+    fn reset_for_new_child(&mut self) {
+        match self {
+            Self::Plain(Some(terminal)) => terminal.reset(),
+            Self::Plain(None) => {}
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            Self::Native(manager) => manager.reset(),
+        }
+    }
+
+    fn reinstall_pty_write(
+        &mut self,
+        size_report: &Rc<Cell<SizeReportSize>>,
+        pty_tx: Option<&mpsc::Sender<EncodedInputRequest>>,
+    ) -> Result<(), TerminalActorError> {
+        match self {
+            Self::Plain(Some(terminal)) => {
+                TerminalActor::install_effects(terminal, size_report, pty_tx)
+            }
+            Self::Plain(None) => Ok(()),
+            #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+            Self::Native(_) => Ok(()),
+        }
+    }
+
     #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
     fn native_manager(
         &mut self,

@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-19
 ---
 
 # Process model
@@ -53,6 +53,13 @@ subcommand dispatches. `phux server` runs the daemon in the foreground;
 `phux` (no args) becomes a client and lazily spawns a server if none is
 listening on the socket. The auto-spawn follows tmux's convention so a
 user never has to start a daemon by hand.
+
+Natural `exit` of a session's last live shell does not reap that
+Terminal. The server replaces the child in place with a fresh default
+shell so Cockpit, the TUI, and headless clients keep a live pane.
+`KILL_RESOURCES` and Close Tab still close the pane; a last-session
+kill still self-exits the server after it has served a client
+([ADR-0131](../adr/0131-last-shell-exit-keeps-a-terminal.md)).
 
 ## Noninteractive coordinator startup
 
