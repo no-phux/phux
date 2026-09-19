@@ -407,14 +407,43 @@ fn pane_kill_grace() -> std::time::Duration {
 thread_local! {
     static PANE_KILL_GRACE_OVERRIDE: Cell<Option<std::time::Duration>> =
         const { Cell::new(None) };
+    static PANE_KILL_GRACE_GATE: RefCell<Option<std::path::PathBuf>> =
+        const { RefCell::new(None) };
 }
+
+/// How long a test may hold the hangup clock waiting for an observed
+/// trap-started marker before the ceiling begins (phux-ko7j). Ambient
+/// scheduling, not the product flush window — same budget as the armed
+/// barrier. Idle groups still return on the first poll, before this
+/// wait is consulted.
+#[cfg(test)]
+const PANE_KILL_GRACE_GATE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Stretch the pane-kill grace ceiling for the rest of this thread.
 /// Cleared when the guard drops. Production never calls this.
 #[cfg(test)]
 fn stretch_pane_kill_grace(grace: std::time::Duration) -> PaneKillGraceOverride {
+    stretch_pane_kill_grace_after(grace, None)
+}
+
+/// Like [`stretch_pane_kill_grace`], but do not start the ceiling until
+/// `gate` exists. Isolates SIGHUP-delivery scheduling from the flush
+/// budget (phux-ko7j). Production never calls this.
+#[cfg(test)]
+fn stretch_pane_kill_grace_after(
+    grace: std::time::Duration,
+    gate: Option<&std::path::Path>,
+) -> PaneKillGraceOverride {
     PANE_KILL_GRACE_OVERRIDE.with(|slot| slot.set(Some(grace)));
+    PANE_KILL_GRACE_GATE.with(|slot| {
+        *slot.borrow_mut() = gate.map(std::path::Path::to_path_buf);
+    });
     PaneKillGraceOverride
+}
+
+#[cfg(test)]
+fn pane_kill_grace_gate() -> Option<std::path::PathBuf> {
+    PANE_KILL_GRACE_GATE.with(|slot| slot.borrow().clone())
 }
 
 #[cfg(test)]
@@ -424,6 +453,9 @@ struct PaneKillGraceOverride;
 impl Drop for PaneKillGraceOverride {
     fn drop(&mut self) {
         PANE_KILL_GRACE_OVERRIDE.with(|slot| slot.set(None));
+        PANE_KILL_GRACE_GATE.with(|slot| {
+            slot.borrow_mut().take();
+        });
     }
 }
 

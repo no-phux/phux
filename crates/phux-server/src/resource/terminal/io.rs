@@ -727,6 +727,31 @@ async fn await_pane_group_exit(pty: &mut PtyOwned, groups: &[nix::unistd::Pid]) 
     use nix::errno::Errno;
     use nix::sys::signal::killpg;
 
+    // Tests may gate the ceiling on an observed trap-started marker so
+    // a starved `/bin/sh` does not spend the flush budget waiting to
+    // be scheduled (phux-ko7j). Production has no gate: the deadline
+    // starts here, as it always has. Groups that already exited return
+    // on the first poll in either case.
+    #[cfg(test)]
+    if let Some(gate) = super::pane_kill_grace_gate() {
+        let hold = tokio::time::Instant::now() + super::PANE_KILL_GRACE_GATE_WAIT;
+        loop {
+            if let Err(err) = pty.child.try_wait() {
+                debug!(?err, "try_wait during pane-kill grace gate failed");
+            }
+            if groups
+                .iter()
+                .all(|&group| matches!(killpg(group, None), Err(Errno::ESRCH)))
+            {
+                return true;
+            }
+            if gate.exists() || tokio::time::Instant::now() >= hold {
+                break;
+            }
+            tokio::time::sleep(PANE_KILL_POLL).await;
+        }
+    }
+
     let deadline = tokio::time::Instant::now() + super::pane_kill_grace();
     while tokio::time::Instant::now() < deadline {
         if let Err(err) = pty.child.try_wait() {
