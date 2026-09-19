@@ -21,27 +21,13 @@ mod common;
 
 use std::path::Path;
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-const DEADLINE: Duration = Duration::from_secs(30);
-const POLL: Duration = Duration::from_millis(50);
 
 /// Backstop for a test that fails before it reaches its own stop (phux-whhd).
 struct Cleanup {
     _server: common::AutoSpawnedServer,
     _dir: tempfile::TempDir,
-}
-
-fn wait_until_accepting(socket: &Path) -> bool {
-    let deadline = Instant::now() + DEADLINE;
-    while Instant::now() < deadline {
-        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
-            return true;
-        }
-        std::thread::sleep(POLL);
-    }
-    false
 }
 
 fn spawn_session(socket: &Path, session: &str) {
@@ -55,7 +41,7 @@ fn spawn_session(socket: &Path, session: &str) {
         "phux new must start a server.\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(wait_until_accepting(socket), "server must be up");
+    assert!(common::wait_until_accepting(socket), "server must be up");
 }
 
 fn start_server(socket: &Path, session: &str) -> common::AutoSpawnedServer {

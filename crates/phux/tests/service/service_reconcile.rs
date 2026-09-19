@@ -28,11 +28,8 @@ mod common;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-const DEADLINE: Duration = Duration::from_secs(30);
-const POLL: Duration = Duration::from_millis(50);
 
 /// The profile these tests pin, so the unit path is a fact rather than a
 /// consequence of where cargo put the binary.
@@ -122,17 +119,6 @@ fn plant_legacy_unit(home: &Path, socket: &Path) -> PathBuf {
     unit
 }
 
-fn wait_until_accepting(socket: &Path) -> bool {
-    let deadline = Instant::now() + DEADLINE;
-    while Instant::now() < deadline {
-        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
-            return true;
-        }
-        std::thread::sleep(POLL);
-    }
-    false
-}
-
 /// Start a real server on a temp socket and return the guard that stops it.
 fn live_server() -> (PathBuf, Cleanup) {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -153,7 +139,7 @@ fn live_server() -> (PathBuf, Cleanup) {
         _server: server,
         _dir: dir,
     };
-    assert!(wait_until_accepting(&socket), "server must be up");
+    assert!(common::wait_until_accepting(&socket), "server must be up");
     (socket, cleanup)
 }
 

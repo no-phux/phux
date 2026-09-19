@@ -61,11 +61,8 @@ mod common;
 
 use std::path::Path;
 use std::process::Command;
-use std::time::{Duration, Instant};
 
 const PHUX: &str = env!("CARGO_BIN_EXE_phux");
-const DEADLINE: Duration = Duration::from_secs(30);
-const POLL: Duration = Duration::from_millis(50);
 
 /// Stop whatever server ended up on `socket`, so a failing assertion cannot
 /// leak a daemon holding a PTY (phux-whhd).
@@ -121,17 +118,6 @@ fn sandboxed(home: &Path) -> Command {
     cmd
 }
 
-fn wait_until_accepting(socket: &Path) -> bool {
-    let deadline = Instant::now() + DEADLINE;
-    while Instant::now() < deadline {
-        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
-            return true;
-        }
-        std::thread::sleep(POLL);
-    }
-    false
-}
-
 /// The regression: install against a live socket must fail, and must say why.
 #[test]
 fn install_refuses_while_a_server_holds_the_socket() {
@@ -148,7 +134,7 @@ fn install_refuses_while_a_server_holds_the_socket() {
         "phux new must start a server.\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(wait_until_accepting(&socket), "server must be up");
+    assert!(common::wait_until_accepting(&socket), "server must be up");
     let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
     server.capture_pid();
     let _cleanup = Cleanup {
@@ -210,7 +196,7 @@ fn print_still_renders_while_a_server_holds_the_socket() {
         .output()
         .expect("run phux new");
     assert!(out.status.success(), "phux new must start a server");
-    assert!(wait_until_accepting(&socket), "server must be up");
+    assert!(common::wait_until_accepting(&socket), "server must be up");
     let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
     server.capture_pid();
     let _cleanup = Cleanup {
@@ -275,7 +261,7 @@ fn adopt_installs_over_a_live_server_without_stopping_it() {
         "phux new must start a server.\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(wait_until_accepting(&socket), "server must be up");
+    assert!(common::wait_until_accepting(&socket), "server must be up");
     let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
     server.capture_pid();
     let _cleanup = Cleanup {

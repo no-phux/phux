@@ -68,19 +68,6 @@ fn leave_stale_socket(path: &Path) {
     );
 }
 
-/// Wait for `socket` to accept, so the assertion is on liveness rather than on
-/// the file's existence — the distinction this whole module is about.
-fn wait_until_accepting(socket: &Path) -> bool {
-    let deadline = Instant::now() + DEADLINE;
-    while Instant::now() < deadline {
-        if std::os::unix::net::UnixStream::connect(socket).is_ok() {
-            return true;
-        }
-        std::thread::sleep(POLL);
-    }
-    false
-}
-
 /// `phux new` against a stale socket must reap it and start a server, not
 /// report a dead socket to the user.
 #[test]
@@ -113,7 +100,7 @@ fn auto_spawn_reaps_a_stale_socket_instead_of_wedging() {
          stdout: {stdout}\nstderr: {stderr}"
     );
     assert!(
-        wait_until_accepting(&socket),
+        common::wait_until_accepting(&socket),
         "a server must be accepting on the reaped path"
     );
 }
@@ -136,7 +123,7 @@ fn a_second_invocation_reuses_the_live_server() {
         .output()
         .expect("run phux new (first)");
     assert!(first.status.success(), "first invocation must succeed");
-    assert!(wait_until_accepting(&socket), "server must be up");
+    assert!(common::wait_until_accepting(&socket), "server must be up");
     let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
     server.capture_pid();
     let _cleanup = Cleanup {
@@ -201,7 +188,7 @@ fn sigterm_unlinks_the_socket_instead_of_leaving_a_stale_entry() {
         "phux new must start a server.\nstderr: {}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(wait_until_accepting(&socket), "server must be up");
+    assert!(common::wait_until_accepting(&socket), "server must be up");
     let mut server = common::AutoSpawnedServer::new(PHUX, socket.clone());
     let pid = server.capture_pid();
     let _cleanup = Cleanup {
