@@ -32,11 +32,13 @@ use crate::attach::pane_state::{
 };
 use crate::layout::Workspace;
 use crate::predict::{Overlay, PredictionState};
+use crate::render::chrome::sidebar::{SidebarHit, hit_test};
 use crate::render::overlay::{ContextMenu, OverlayOutcome, OverlayState, ScreenSelectionPoint};
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 use super::args::switch_session_args;
-use super::ctx::{DispatchCtx, DragGrab};
+use super::chrome_drag;
+use super::ctx::{DispatchCtx, DividerGrab, DragGrab, WindowStrip};
 use super::effects::encode_layout_or_log;
 use super::effects::{ChordOutcome, apply_action_effects, consume_chord};
 use super::run_action::run_action;
@@ -50,6 +52,7 @@ fn edits_workspace(action: &str) -> bool {
             | "kill-pane"
             | "kill-window"
             | "rename-window"
+            | "move-window"
             | "resize-pane"
             | "plugin-pane"
     )
@@ -562,7 +565,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let InputEvent::Mouse(mouse) = ev else {
             return Ok(StageOutcome::PASS);
         };
-        if let Some(outcome) = self.step_divider_drag(mouse).await? {
+        if let Some(outcome) = self.step_chrome_drag(mouse).await? {
             return Ok(outcome);
         }
         if let Some(outcome) = self.route_sidebar_click(mouse).await? {
@@ -617,54 +620,51 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         }
     }
 
-    /// Advance (or end) an in-flight divider drag. `None` when no drag is
-    /// active and the event should route normally.
-    async fn step_divider_drag(
+    /// Advance (or end) an in-flight chrome drag: a pane divider, the
+    /// sidebar edge, or a window tab or row. `None` when nothing is grabbed
+    /// and the event should route normally.
+    async fn step_chrome_drag(
         &mut self,
         mouse: &MouseEvent,
     ) -> Result<Option<StageOutcome>, AttachError> {
-        // ADR-0048: a release ALWAYS ends any in-flight drag first,
-        // regardless of where it lands — the cursor may have left the
-        // divider cell mid-drag. The commit broadcasts the final
-        // layout via SET_METADATA, the same persistence path the
-        // keyboard resize uses, so other attached clients converge. A
-        // release with no active drag falls through to normal routing
-        // (an inner app may want it).
-        if matches!(mouse.action, MouseAction::Release) && self.ctx.drag.is_some() {
-            *self.ctx.drag = None;
-            self.broadcast_dragged_layout().await?;
-            tracing::debug!("divider drag: released, broadcast layout");
-            return Ok(Some(StageOutcome::CONSUMED));
+        let Some(grab) = self.ctx.drag.clone() else {
+            return Ok(None);
+        };
+        match mouse.action {
+            // ADR-0048: a release ALWAYS ends the grab, wherever it lands —
+            // the cursor may have left the handle mid-drag. A divider
+            // publishes its final layout via SET_METADATA, the same path the
+            // keyboard resize uses; a window drop publishes the new order.
+            MouseAction::Release => {
+                *self.ctx.drag = None;
+                let commit = chrome_drag::release(self.ctx, &grab, mouse);
+                if commit.broadcast {
+                    self.broadcast_dragged_layout().await?;
+                }
+                tracing::debug!(?grab, "chrome drag: released");
+                Ok(Some(StageOutcome::consumed(commit.layout_changed)))
+            }
+            // While something is grabbed, motion advances it and nothing
+            // reaches a pane.
+            MouseAction::Motion => Ok(Some(StageOutcome::consumed(chrome_drag::motion(
+                self.ctx, &grab, mouse,
+            )))),
+            // phux-npb3 hardening (PR #142 review, recorded in ADR-0048):
+            // anything else mid-drag (a second Press from a chorded button,
+            // a wheel tick, a re-encoded press glitch) is consumed so it
+            // cannot forward to a pane, move focus, or start a second grab.
+            MouseAction::Press => {
+                tracing::trace!(
+                    action = ?mouse.action,
+                    button = ?mouse.button,
+                    "dropping mouse event during chrome drag"
+                );
+                Ok(Some(StageOutcome::CONSUMED))
+            }
         }
-        // While a divider is grabbed, motion re-tunes that split and
-        // nothing reaches a pane. Press/other actions fall through.
-        if let Some(grab) = self.ctx.drag.clone()
-            && matches!(mouse.action, MouseAction::Motion)
-        {
-            return Ok(Some(StageOutcome::consumed(drag_resize(
-                self.ctx, mouse, &grab,
-            ))));
-        }
-        // phux-npb3 hardening (PR #142 review, recorded in ADR-0048):
-        // while a divider drag is active, ONLY a release ends it and
-        // ONLY motion re-tunes it — both handled above. Anything else
-        // (notably a second Press from a chorded button, a wheel tick,
-        // or a re-encoded press glitch) is consumed here so it cannot
-        // fall through to normal routing mid-drag, where it would
-        // forward to a pane, move focus, or grab a second divider while
-        // the first grab is still live.
-        if self.ctx.drag.is_some() {
-            tracing::trace!(
-                action = ?mouse.action,
-                button = ?mouse.button,
-                "dropping mouse event during divider drag"
-            );
-            return Ok(Some(StageOutcome::CONSUMED));
-        }
-        Ok(None)
     }
 
-    /// Broadcast the layout a finished divider drag produced via
+    /// Broadcast the layout a finished divider or window drag produced via
     /// `SET_METADATA`, so other attached clients converge on it.
     async fn broadcast_dragged_layout(&mut self) -> Result<(), AttachError> {
         if self.ctx.layout_read_complete
@@ -716,10 +716,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         let hit = sidebar_click_action(strip, self.ctx.sidebar_targets, cell_x, cell_y);
         let mut layout_changed = false;
         if is_left_press(mouse) {
-            if let Some(resolved) = hit {
-                tracing::debug!(action = %resolved.action, "sidebar: click dispatched");
-                layout_changed = self.run_resolved(&resolved).await?;
-            }
+            layout_changed = self
+                .sidebar_left_press(strip, hit, (cell_x, cell_y))
+                .await?;
         } else if is_right_press(mouse) {
             // phux-wrnm: a right press on a window block (or an
             // agents-section row, which resolves to the window
@@ -735,6 +734,33 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
                 .await?;
         }
         Ok(Some(StageOutcome::consumed(layout_changed)))
+    }
+
+    /// A left press on the sidebar strip: the pane-facing edge starts a
+    /// resize; any other target commits its action, and a window row is
+    /// also picked up so releasing it over another window row reorders.
+    async fn sidebar_left_press(
+        &mut self,
+        strip: crate::layout::Rect,
+        hit: Option<phux_config::keybind::ResolvedAction>,
+        (cell_x, cell_y): (u16, u16),
+    ) -> Result<bool, AttachError> {
+        if chrome_drag::on_sidebar_edge(self.ctx, cell_x, cell_y) {
+            chrome_drag::begin_sidebar_resize(self.ctx);
+            return Ok(false);
+        }
+        let layout_changed = if let Some(resolved) = hit {
+            tracing::debug!(action = %resolved.action, "sidebar: click dispatched");
+            self.run_resolved(&resolved).await?
+        } else {
+            false
+        };
+        if let Some(SidebarHit::Window(index)) =
+            hit_test(strip, self.ctx.sidebar_targets.counts, cell_x, cell_y)
+        {
+            chrome_drag::begin_window_drag(self.ctx, index, WindowStrip::Sidebar);
+        }
+        Ok(layout_changed)
     }
 
     /// phux-foz.12: the status-bar row is chrome, not pane content —
@@ -758,17 +784,11 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         &mut self,
         mouse: &MouseEvent,
     ) -> Result<Option<StageOutcome>, AttachError> {
-        let Some(pos) = self.ctx.bar else {
+        let Some(bar_row) = chrome_drag::bar_row(self.ctx) else {
             return Ok(None);
         };
-        let bar_row = match pos {
-            crate::render::chrome::status_bar::Position::Bottom => {
-                self.ctx.viewport.1.saturating_sub(1)
-            }
-            crate::render::chrome::status_bar::Position::Top => 0,
-        };
         let (cell_x, cell_y) = (quantize_cell(mouse.x), quantize_cell(mouse.y));
-        if self.ctx.viewport.1 == 0 || cell_y != bar_row {
+        if cell_y != bar_row {
             return Ok(None);
         }
         let hit = bar_click_action(self.ctx.status_bar, cell_x);
@@ -777,6 +797,15 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             if let Some(resolved) = hit {
                 tracing::debug!(action = %resolved.action, "status bar: tab click dispatched");
                 layout_changed = self.run_resolved(&resolved).await?;
+            }
+            // A press on a tab also picks the window up; releasing over
+            // another tab drops it into that slot.
+            if let Some(index) = self
+                .ctx
+                .status_bar
+                .and_then(|bar| bar.window_hit_at(cell_x))
+            {
+                chrome_drag::begin_window_drag(self.ctx, index, WindowStrip::Tabs);
             }
         } else if is_right_press(mouse) {
             // phux-wrnm: right press on a tab selects that window
@@ -1067,9 +1096,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::trace!(x = mouse.x, y = mouse.y, "dropping mouse on divider");
             return false;
         }
-        let grab = DragGrab { node_path, axis };
+        let grab = DividerGrab { node_path, axis };
         let layout_changed = drag_resize(self.ctx, mouse, &grab);
-        *self.ctx.drag = Some(grab);
+        *self.ctx.drag = Some(DragGrab::Divider(grab));
         tracing::debug!("divider drag: grabbed");
         layout_changed
     }
@@ -1529,7 +1558,11 @@ pub(in crate::attach) fn sync_overlays_to_focused_pane(
 /// `Ok(None)` from the resize (min-cell floor hit, or a stale grab whose
 /// split the layout no longer has) leaves the layout untouched: the drag
 /// stalls at the floor rather than collapsing a pane.
-pub(super) fn drag_resize(ctx: &mut DispatchCtx<'_>, mouse: &MouseEvent, grab: &DragGrab) -> bool {
+pub(super) fn drag_resize(
+    ctx: &mut DispatchCtx<'_>,
+    mouse: &MouseEvent,
+    grab: &DividerGrab,
+) -> bool {
     // Snapshot the geometry that feeds the resize before borrowing the
     // workspace mutably for the active window.
     let viewport = ctx.viewport;
@@ -1597,7 +1630,6 @@ pub(super) fn sidebar_click_action(
     x: u16,
     y: u16,
 ) -> Option<phux_config::keybind::ResolvedAction> {
-    use crate::render::chrome::sidebar::{SidebarHit, hit_test};
     let (action, args) = match hit_test(strip, targets.counts, x, y)? {
         SidebarHit::Window(i) => return sidebar_window_action(i),
         SidebarHit::NeedsYou(j) => return sidebar_agent_action(targets.needs_you.get(j)?),

@@ -131,9 +131,9 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
     // `main_loop` entry when a `switch-session` drove this one. `None` on the
     // first attach — `[sidebar] enabled` seeds it; `Some(v)` on every
     // in-process switch, so a `toggle-sidebar` the user made survives moving
-    // between spaces. Only the toggle is carried: the strip's width and edge
-    // stay pure config, re-derived per entry.
-    carried_sidebar_enabled: Option<bool>,
+    // between spaces. A dragged width is carried too; the edge stays pure
+    // config, re-derived per entry.
+    carried_sidebar: Option<super::entry::CarriedSidebar>,
     // ADR-0053: the acknowledged-input replay journal, shared across attach
     // attempts by the CLI's reconnect loop (remote dials only — `None` on
     // UDS). The session loop re-decides every queued operation against this
@@ -161,7 +161,7 @@ pub(super) async fn main_loop<W: crate::attach::RenderSink>(
         initial_window,
         initial_pane,
         initial_resource,
-        carried_sidebar_enabled,
+        carried_sidebar,
     )?;
     session.set_control_dial(control_dial.clone());
     // phux-r82.6: spawn one bounded interval runner per `exec` widget. The

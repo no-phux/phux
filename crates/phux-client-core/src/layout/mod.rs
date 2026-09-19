@@ -456,6 +456,21 @@ impl Workspace {
         }
     }
 
+    /// Move the window at `from` so it lands at position `to`, shifting the
+    /// windows between them by one. The active window keeps its identity:
+    /// `active` follows it to its new index. Returns `false` (no-op) when
+    /// either index is out of range or `from == to`.
+    pub fn move_window(&mut self, from: usize, to: usize) -> bool {
+        let len = self.windows.len();
+        if from >= len || to >= len || from == to {
+            return false;
+        }
+        let window = self.windows.remove(from);
+        self.windows.insert(to, window);
+        self.active = shifted_index(self.active, from, to);
+        true
+    }
+
     /// Rename the active window. No-op when the workspace is empty.
     pub fn rename_active(&mut self, name: String) {
         if let Some(w) = self.windows.get_mut(self.active) {
@@ -619,6 +634,19 @@ fn repair_focus(state: &mut LayoutState) {
 // -----------------------------------------------------------------------------
 // Free-function algorithms — ports of phux-core::window
 // -----------------------------------------------------------------------------
+
+/// Where index `i` lands after the element at `from` moves to `to`.
+const fn shifted_index(i: usize, from: usize, to: usize) -> usize {
+    if i == from {
+        to
+    } else if from < i && i <= to {
+        i - 1
+    } else if to <= i && i < from {
+        i + 1
+    } else {
+        i
+    }
+}
 
 /// Split the leaf for `target` into two, with `new_pane` as the new
 /// sibling along `dir` at `ratio`.
@@ -1373,6 +1401,48 @@ mod tests {
         let mut ws = ws3();
         ws.rename_active("build".to_owned());
         assert_eq!(ws.windows[2].name, "build");
+    }
+
+    fn names(ws: &Workspace) -> Vec<&str> {
+        ws.windows.iter().map(|w| w.name.as_str()).collect()
+    }
+
+    #[test]
+    fn move_window_reorders_and_active_follows_its_window() {
+        let mut ws = ws3(); // active = "3"
+        assert!(ws.move_window(2, 0));
+        assert_eq!(names(&ws), ["3", "1", "2"]);
+        assert_eq!(ws.windows[ws.active].name, "3");
+
+        assert!(ws.move_window(0, 2));
+        assert_eq!(names(&ws), ["1", "2", "3"]);
+        assert_eq!(ws.windows[ws.active].name, "3");
+    }
+
+    #[test]
+    fn move_window_keeps_an_uninvolved_active_window_selected() {
+        for (from, to) in [(0, 2), (2, 0), (0, 1), (1, 2), (2, 1), (1, 0)] {
+            for active in 0..3 {
+                let mut ws = ws3();
+                ws.select(active);
+                let focused = ws.windows[active].name.clone();
+                assert!(ws.move_window(from, to));
+                assert_eq!(
+                    ws.windows[ws.active].name, focused,
+                    "move {from}->{to} with active {active}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn move_window_out_of_range_or_in_place_is_noop() {
+        let mut ws = ws3();
+        assert!(!ws.move_window(1, 1));
+        assert!(!ws.move_window(3, 0));
+        assert!(!ws.move_window(0, 3));
+        assert_eq!(names(&ws), ["1", "2", "3"]);
+        assert_eq!(ws.active, 2);
     }
 
     #[test]

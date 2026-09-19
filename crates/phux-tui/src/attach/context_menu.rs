@@ -77,6 +77,18 @@ pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, name: &str) -> M
         row(keybindings, "New window", "new-window", &[]),
         row(keybindings, "Rename window…", "rename-window", &[]),
         row(keybindings, "Pick window…", "window-picker", &[]),
+        int_row(
+            keybindings,
+            "Move window left",
+            "move-window",
+            ("delta", -1),
+        ),
+        int_row(
+            keybindings,
+            "Move window right",
+            "move-window",
+            ("delta", 1),
+        ),
         MenuRow::Separator,
         row(keybindings, "All commands…", "command-palette", &[]),
         MenuRow::Separator,
@@ -121,6 +133,22 @@ pub(super) fn session_menu(keybindings: Option<&KeybindingsCfg>, session: &str) 
 
 /// One menu row: `label` committing `action` with inline string `args`,
 /// annotated with the chord bound to that exact action when there is one.
+/// A menu row whose one argument is an integer, so its chord annotation
+/// matches a binding written the natural way (`delta = -1`, not `"-1"`).
+fn int_row(
+    keybindings: Option<&KeybindingsCfg>,
+    label: &str,
+    action: &str,
+    (key, value): (&str, i64),
+) -> MenuRow {
+    let resolved = ResolvedAction {
+        action: action.to_owned(),
+        args: BTreeMap::from([(key.to_owned(), toml::Value::Integer(value))]),
+    };
+    let chord = super::action_registry::bound_chord_for(keybindings, &resolved);
+    MenuRow::item(label, resolved).secondary(chord)
+}
+
 fn row(
     keybindings: Option<&KeybindingsCfg>,
     label: &str,
