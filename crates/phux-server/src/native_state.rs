@@ -11,7 +11,6 @@ use bytes::Bytes;
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
-    io::Cursor,
     marker::PhantomData,
     sync::{
         Arc,
@@ -22,7 +21,7 @@ use std::{
 use libghostty_vt::{
     Error as GhosttyError, Terminal as GhosttyTerminal,
     snapshot::{
-        CaptureEvent, CaptureInvalidation, CaptureOptions, Decoder, HistoryCapture, OwnedCapture,
+        Capture, CaptureEvent, CaptureInvalidation, CaptureOptions, HistoryCapture, OwnedCapture,
     },
 };
 use phux_protocol::caps::{BootstrapCapabilities, BootstrapLimits, EngineCodec, EngineFeatureSet};
@@ -30,9 +29,8 @@ use thiserror::Error;
 
 /// Opaque manager-local generation identity: SHA-256 of READY bytes and nonce.
 pub const TOKEN_LEN: usize = 32;
-const LEGACY_CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttyCheckpointV2 as u16;
 const PROGRESSIVE_CHECKPOINT_VERSION: u16 = EngineCodec::LibghosttySnapshotV1 as u16;
-/// Continuation tracking limit so `encode_snapshot` can capture mid-sequence VT.
+/// Continuation tracking limit so a frozen capture can include mid-sequence VT.
 const CONTINUATION_LIMIT: usize = 64 * 1024 * 1024;
 
 /// Greatest number of opaque codec records retained before READY publication.
@@ -148,8 +146,25 @@ fn official_snapshot_available() -> bool {
         return false;
     }
     terminal.vt_write(b"ok");
-    let mut encoded = Vec::new();
-    terminal.encode_snapshot(&mut encoded).is_ok() && !encoded.is_empty()
+    progressive_ready_available(&mut terminal)
+}
+
+fn progressive_ready_available(terminal: &mut GhosttyTerminal<'static, 'static>) -> bool {
+    const PROBE_RECORD_BYTES: usize = 4096;
+    let Ok(mut capture) = terminal.capture_snapshot(CaptureOptions {
+        max_record_bytes: PROBE_RECORD_BYTES,
+        max_pages: 8,
+    }) else {
+        return false;
+    };
+    let mut buffer = vec![0; PROBE_RECORD_BYTES];
+    loop {
+        match capture.next(&mut buffer) {
+            Ok(CaptureEvent::Ready { written }) => return written > 0,
+            Ok(CaptureEvent::Record { .. }) => {}
+            _ => return false,
+        }
+    }
 }
 
 /// Typed metadata for one complete bootstrap-prefix record.
@@ -172,113 +187,75 @@ pub struct NativeCheckpointChunk<'buffer> {
     pub bytes: &'buffer [u8],
 }
 
-#[derive(Clone, Debug)]
-struct SnapshotCut {
-    prefix: Bytes,
-    suffix: Bytes,
-    cursor: OpaqueHistoryCursor,
-}
-
 fn cursor_for(bytes: &[u8]) -> OpaqueHistoryCursor {
     Sha256::digest(bytes).into()
 }
 
-fn encode_cut(terminal: &mut GhosttyTerminal<'_, '_>) -> Result<SnapshotCut, NativeStateError> {
-    let _ = terminal.set_continuation_max_bytes(CONTINUATION_LIMIT);
-    let mut encoded = Vec::new();
-    terminal.encode_snapshot(&mut encoded)?;
-    if encoded.is_empty() {
-        return Err(NativeStateError::InvalidState);
-    }
-    let ready_at = snapshot_ready_offset(&encoded)?;
-    if ready_at == 0 || ready_at > encoded.len() {
-        return Err(NativeStateError::InvalidState);
-    }
-    let cursor = cursor_for(&encoded);
-    // Prefix is the full GHOSTSNP blob so a `#![forbid(unsafe_code)]` client
-    // can `Decoder::new_buf` at READY without holding IncrementalDecoder.
-    // Suffix is the post-READY tail of the same buffer, served as history
-    // pages to pullers. `Bytes::slice` shares the allocation.
-    let encoded = Bytes::from(encoded);
-    let suffix = encoded.slice(ready_at..);
-    Ok(SnapshotCut {
-        prefix: encoded,
-        suffix,
-        cursor,
+fn frozen_capture_options(limits: BootstrapLimits) -> Result<CaptureOptions, NativeStateError> {
+    let max_record_bytes = usize::try_from(limits.max_history_page_bytes())
+        .map_err(|_| NativeStateError::LimitExceeded)?
+        .max(1);
+    Ok(CaptureOptions {
+        max_record_bytes,
+        max_pages: MAX_NATIVE_PREFIX_CHUNKS,
     })
 }
 
-fn snapshot_ready_offset(bytes: &[u8]) -> Result<usize, NativeStateError> {
-    let mut reader = Cursor::new(bytes);
-    let decoder = Decoder::new(&mut reader)?;
-    drop(decoder.ready()?);
-    let offset = usize::try_from(reader.position()).unwrap_or(bytes.len());
-    Ok(offset.min(bytes.len()))
-}
-
-fn chunk_plan(remaining: usize, max_record_bytes: usize) -> Result<usize, NativeStateError> {
-    if remaining == 0 || max_record_bytes == 0 {
-        return Err(NativeStateError::InvalidState);
-    }
-    Ok(remaining.min(max_record_bytes))
-}
-
-fn prefix_record_bound(
-    limits: BootstrapLimits,
-    prefix_len: usize,
-) -> Result<usize, NativeStateError> {
-    let chunk =
-        usize::try_from(limits.max_chunk_bytes()).map_err(|_| NativeStateError::LimitExceeded)?;
-    if prefix_len > MAX_NATIVE_PREFIX_BYTES {
-        return Err(NativeStateError::LimitExceeded);
-    }
-    let bound = chunk.clamp(1, MAX_NATIVE_PREFIX_BYTES);
-    Ok(bound.min(prefix_len.max(1)))
-}
-
 /// RAII host for the bounded checkpoint prefix ending at READY.
+///
+/// The engine emits one record per step. History is not traversed; aborting
+/// drops the capture without encoding a suffix.
 #[derive(Debug)]
 pub struct NativeCheckpointCapture<'terminal> {
-    prefix: Bytes,
-    suffix: Bytes,
-    cursor: OpaqueHistoryCursor,
-    pos: usize,
+    capture: Capture<'static, 'static, 'terminal>,
     max_record_bytes: usize,
     ready: bool,
-    _terminal: PhantomData<&'terminal mut GhosttyTerminal<'static, 'static>>,
 }
 
 impl NativeCheckpointCapture<'_> {
-    /// Encode one snapshot and prepare prefix streaming.
-    pub fn new(
-        terminal: &mut GhosttyTerminal<'_, '_>,
+    /// Freeze the terminal and prepare record-at-a-time prefix capture.
+    pub fn new<'terminal>(
+        terminal: &'terminal mut GhosttyTerminal<'static, 'static>,
         limits: BootstrapLimits,
-    ) -> Result<Self, NativeStateError> {
-        let cut = encode_cut(terminal)?;
-        let max_record_bytes = prefix_record_bound(limits, cut.prefix.len())?;
-        Ok(Self {
-            prefix: cut.prefix,
-            suffix: cut.suffix,
-            cursor: cut.cursor,
-            pos: 0,
+    ) -> Result<NativeCheckpointCapture<'terminal>, NativeStateError> {
+        let options = frozen_capture_options(limits)?;
+        let max_record_bytes = options.max_record_bytes;
+        let capture = terminal.capture_snapshot(options)?;
+        Ok(NativeCheckpointCapture {
+            capture,
             max_record_bytes,
             ready: false,
-            _terminal: PhantomData,
         })
     }
 
-    /// Emit one prefix slice into `buffer`. The last slice is READY.
+    /// Emit one prefix record into `buffer`. The last record is READY.
     pub fn step<'buffer>(
         &mut self,
         buffer: &'buffer mut [u8],
     ) -> Result<NativeCheckpointChunk<'buffer>, NativeStateError> {
-        step_prefix(
-            &self.prefix,
-            &mut self.pos,
-            &mut self.ready,
-            self.max_record_bytes,
-            buffer,
-        )
+        if self.ready {
+            return Err(NativeStateError::InvalidState);
+        }
+        if buffer.len() < self.max_record_bytes {
+            return Err(NativeStateError::OutOfSpace {
+                required_bytes: self.max_record_bytes,
+                required_rows: 0,
+            });
+        }
+        let event = self.capture.next(buffer)?;
+        let kind = match event {
+            CaptureEvent::Ready { .. } => {
+                self.ready = true;
+                NativeCheckpointChunkKind::Ready
+            }
+            CaptureEvent::Record { .. } => NativeCheckpointChunkKind::Record,
+            _ => return Err(NativeStateError::InvalidState),
+        };
+        Ok(NativeCheckpointChunk {
+            kind,
+            codec_version: PROGRESSIVE_CHECKPOINT_VERSION,
+            bytes: &buffer[..event.written()],
+        })
     }
 
     /// Maximum bytes required for one complete opaque native record.
@@ -293,51 +270,15 @@ impl NativeCheckpointCapture<'_> {
         self.ready
     }
 
-    /// Release without installing history. The snapshot bytes are dropped.
+    /// Release without installing history. The frozen cut is dropped.
     #[allow(
         clippy::unnecessary_wraps,
         reason = "callers match Result with other capture APIs"
     )]
     pub fn abort(self) -> Result<(), NativeStateError> {
-        let _ = (self.suffix, self.cursor);
+        drop(self);
         Ok(())
     }
-}
-
-fn step_prefix<'buffer>(
-    prefix: &Bytes,
-    pos: &mut usize,
-    ready: &mut bool,
-    max_record_bytes: usize,
-    buffer: &'buffer mut [u8],
-) -> Result<NativeCheckpointChunk<'buffer>, NativeStateError> {
-    if *ready {
-        return Err(NativeStateError::InvalidState);
-    }
-    let remaining = prefix.len().saturating_sub(*pos);
-    let want = chunk_plan(remaining, max_record_bytes)?;
-    if buffer.len() < want {
-        return Err(NativeStateError::OutOfSpace {
-            required_bytes: want,
-            required_rows: 0,
-        });
-    }
-    let end = *pos + want;
-    buffer[..want].copy_from_slice(&prefix[*pos..end]);
-    *pos = end;
-    let last = *pos >= prefix.len();
-    if last {
-        *ready = true;
-    }
-    Ok(NativeCheckpointChunk {
-        kind: if last {
-            NativeCheckpointChunkKind::Ready
-        } else {
-            NativeCheckpointChunkKind::Record
-        },
-        codec_version: LEGACY_CHECKPOINT_VERSION,
-        bytes: &buffer[..want],
-    })
 }
 
 /// One bounded result from a retained-history cursor.
@@ -358,33 +299,47 @@ pub enum NativeHistoryEvent<'buffer> {
     End,
 }
 
-/// Owned canonical terminal plus a frozen history suffix from its READY cut.
+/// Owned canonical terminal plus a frozen history cut from its READY prefix.
 #[derive(Debug)]
 pub struct NativeHistoryCursor<'terminal_alloc, 'cb> {
     terminal: GhosttyTerminal<'terminal_alloc, 'cb>,
-    suffix: Bytes,
+    history: HistoryCapture<'terminal_alloc>,
     cursor: OpaqueHistoryCursor,
-    pos: usize,
     max_unit_bytes: usize,
+    finished: bool,
     invalidated: Option<NativeStateError>,
 }
 
 impl<'terminal_alloc, 'cb> NativeHistoryCursor<'terminal_alloc, 'cb> {
-    /// Consume the canonical terminal and freeze its current snapshot suffix.
+    /// Consume the canonical terminal, emit READY, and freeze the history cut.
     pub fn new(
-        mut terminal: GhosttyTerminal<'terminal_alloc, 'cb>,
+        terminal: GhosttyTerminal<'terminal_alloc, 'cb>,
         limits: BootstrapLimits,
     ) -> Result<Self, NativeStateError> {
-        let cut = encode_cut(&mut terminal)?;
-        let max_unit_bytes = usize::try_from(limits.max_history_page_bytes())
-            .map_err(|_| NativeStateError::LimitExceeded)?
-            .max(1);
+        let options = frozen_capture_options(limits)?;
+        let max_unit_bytes = options.max_record_bytes;
+        let mut capture = terminal
+            .into_snapshot_capture(options)
+            .map_err(|failure| failure.error)?;
+        let mut buffer = vec![0; max_unit_bytes];
+        let mut digest = Sha256::new();
+        loop {
+            match capture.next(&mut buffer)? {
+                CaptureEvent::Ready { written } => {
+                    digest.update(&buffer[..written]);
+                    break;
+                }
+                CaptureEvent::Record { written } => digest.update(&buffer[..written]),
+                _ => return Err(NativeStateError::InvalidState),
+            }
+        }
+        let (terminal, history) = capture.detach().map_err(|failure| failure.error)?;
         Ok(Self {
             terminal,
-            suffix: cut.suffix,
-            cursor: cut.cursor,
-            pos: 0,
+            history,
+            cursor: cursor_for(&digest.finalize()),
             max_unit_bytes,
+            finished: false,
             invalidated: None,
         })
     }
@@ -444,30 +399,50 @@ impl<'terminal_alloc, 'cb> NativeHistoryCursor<'terminal_alloc, 'cb> {
         if let Some(error) = self.invalidated {
             return Err(error);
         }
+        if self.finished {
+            return Ok(NativeHistoryEvent::End);
+        }
         let requested = usize::try_from(max_bytes).map_err(|_| NativeStateError::LimitExceeded)?;
         if requested == 0 {
             return Err(NativeStateError::LimitExceeded);
         }
-        let remaining = self.suffix.len().saturating_sub(self.pos);
-        if remaining == 0 {
-            return Ok(NativeHistoryEvent::End);
-        }
-        let want = remaining.min(self.max_unit_bytes).min(requested);
+        let want = self.max_unit_bytes.min(requested);
         if buffer.len() < want {
             return Err(NativeStateError::OutOfSpace {
                 required_bytes: want,
                 required_rows: 0,
             });
         }
-        let end = self.pos + want;
-        buffer[..want].copy_from_slice(&self.suffix[self.pos..end]);
-        self.pos = end;
-        Ok(NativeHistoryEvent::Page {
-            bytes: &buffer[..want],
-            rows: 0,
-            page_complete: self.pos >= self.suffix.len(),
-            next_cursor: self.cursor,
-        })
+        loop {
+            let event = self.history.next(&mut self.terminal, buffer)?;
+            match event {
+                CaptureEvent::Scan => {}
+                CaptureEvent::Record { written } | CaptureEvent::HistoryPage { written, .. } => {
+                    return Ok(NativeHistoryEvent::Page {
+                        bytes: &buffer[..written],
+                        rows: match event {
+                            CaptureEvent::HistoryPage { rows, .. } => rows,
+                            _ => 0,
+                        },
+                        page_complete: matches!(event, CaptureEvent::HistoryPage { .. }),
+                        next_cursor: self.cursor,
+                    });
+                }
+                CaptureEvent::Finish { written } => {
+                    self.finished = true;
+                    return Ok(NativeHistoryEvent::Page {
+                        bytes: &buffer[..written],
+                        rows: 0,
+                        page_complete: true,
+                        next_cursor: self.cursor,
+                    });
+                }
+                CaptureEvent::Invalidated(reason) => {
+                    return Err(invalidation_error(reason));
+                }
+                CaptureEvent::Ready { .. } => return Err(NativeStateError::InvalidState),
+            }
+        }
     }
 
     /// Release cursor state before returning the live terminal.
@@ -1273,7 +1248,18 @@ fn requested_record_window(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+
+    use libghostty_vt::snapshot::Decoder;
     use phux_protocol::caps::BootstrapProfileKind;
+
+    fn snapshot_ready_offset(bytes: &[u8]) -> Result<usize, NativeStateError> {
+        let mut reader = Cursor::new(bytes);
+        let decoder = Decoder::new(&mut reader)?;
+        drop(decoder.ready()?);
+        let offset = usize::try_from(reader.position()).unwrap_or(bytes.len());
+        Ok(offset.min(bytes.len()))
+    }
 
     fn terminal(cols: u16, rows: u16) -> GhosttyTerminal<'static, 'static> {
         let mut terminal = GhosttyTerminal::new(cols, rows).expect("canonical terminal");
@@ -1570,6 +1556,55 @@ mod tests {
         let _ = pages;
         let mut source = history.into_terminal();
         NativeCheckpointCapture::new(&mut source, limits).expect("still capturable");
+    }
+
+    /// READY records are the active area. Extra scrollback must not enlarge
+    /// the prefix; it is pulled later as frozen history.
+    #[test]
+    fn ready_prefix_bytes_do_not_grow_with_scrollback() {
+        fn ready_prefix_len(lines: usize) -> usize {
+            let mut terminal = GhosttyTerminal::new(80, 24).expect("terminal");
+            terminal
+                .set_scrollback_max_lines(Some(100_000))
+                .expect("history rows");
+            terminal
+                .set_scrollback_max_bytes(None)
+                .expect("history bytes");
+            terminal
+                .set_continuation_max_bytes(CONTINUATION_LIMIT)
+                .expect("continuation");
+            for row in 0..lines {
+                terminal.vt_write(format!("history-{row:04}\r\n").as_bytes());
+            }
+            let limits = BootstrapLimits::default();
+            let mut manager = NativeTerminalManager::new(terminal, 1).expect("manager");
+            let mut capture = manager
+                .begin_generation_capture(limits, MAX_NATIVE_PREFIX_BYTES, MAX_NATIVE_PREFIX_CHUNKS)
+                .expect("capture");
+            let mut total = 0usize;
+            loop {
+                let required = match capture.step(&mut []) {
+                    Err(NativeStateError::OutOfSpace { required_bytes, .. }) => required_bytes,
+                    other => panic!("probe: {other:?}"),
+                };
+                let mut exact = vec![0; required];
+                let chunk = capture.step(&mut exact).expect("record");
+                total = total.saturating_add(chunk.bytes.len());
+                if matches!(chunk.kind, NativeCheckpointChunkKind::Ready) {
+                    break;
+                }
+            }
+            manager.abort_generation_capture(capture);
+            total
+        }
+
+        let shallow = ready_prefix_len(80);
+        let deep = ready_prefix_len(2_000);
+        assert!(
+            deep <= shallow.saturating_mul(2).saturating_add(4096),
+            "READY prefix grew with scrollback: 80 lines {shallow} bytes, \
+             2000 lines {deep} bytes"
+        );
     }
 
     #[test]
