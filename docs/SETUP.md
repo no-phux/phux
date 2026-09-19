@@ -38,8 +38,10 @@ just ci-full            # that plus real-server e2e and agent smoke; the PR bar
 ```
 
 `just` is how you run this repository after the tools are on PATH. It is not
-how you get a compiler. Do not add a third bootstrap (`setup-rust.sh` /
-`install-zig.sh`) unless you are on the native CI path below.
+how you get a compiler. Recipes live in `just/*.just` (`just cockpit-test`
+still works); the root justfile is imports plus `just --list`. Do not add a
+third bootstrap (`setup-rust.sh` / `install-zig.sh`) unless you are on the
+native CI path below.
 
 With [direnv](https://direnv.net), `.envrc` loads Nix by default. To make Mise
 the environment it loads, create an untracked `.envrc.local`:

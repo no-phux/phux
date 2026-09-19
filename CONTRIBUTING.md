@@ -109,9 +109,10 @@ commitment to keep the two columns aligned.
 Most rows now say "same recipe" rather than "(identical)". That is the point:
 `ci.yml` used to re-type the cargo invocations, and "identical" was a promise a
 human had to keep on every edit. The workflow calls the recipes instead, so the
-flags exist in exactly one place — the `justfile` — and the columns cannot
+flags exist in exactly one place — `just/*.just` — and the columns cannot
 disagree. A row that names a bare `cargo` command under CI is a row where that
-promise is back; prefer adding the recipe.
+promise is back; prefer adding the recipe. Product recipes stay out of the
+root `justfile` so CI can route by which module changed.
 
 | Gate | CI (`ci.yml`) | Local |
 |---|---|---|
