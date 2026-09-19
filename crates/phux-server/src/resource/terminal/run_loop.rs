@@ -462,7 +462,7 @@ impl TerminalActor {
     }
 
     /// Broadcast the settled-resize / gap snapshot this debounce window owed.
-    fn fire_owed_resync(&mut self, resync: &mut ResyncDebounce) {
+    fn fire_owed_resync(&self, resync: &mut ResyncDebounce) {
         let (reason, audience) = resync.take();
         self.broadcast_resync(reason, audience);
     }
