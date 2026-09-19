@@ -176,6 +176,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0129](./0129-projections-are-named-by-key.md) | Named projections are a metadata-key convention, not a resource | Accepted |
 | [0130](./0130-on-disk-pty-journal-is-not-built.md) | The on-disk PTY output journal is not built | Accepted |
 | [0131](./0131-last-shell-exit-keeps-a-terminal.md) | Last-shell exit keeps a terminal | Accepted (amends [0105](./0105-sessions-can-outlive-their-last-window.md), [0063](./0063-ephemeral-server-lifetime.md)) |
+| [0133](./0133-one-client-runtime-below-every-binding.md) | One client runtime below every binding | Accepted (builds on [0020](./0020-layered-render.md), [0100](./0100-the-tui-is-its-own-crate.md)) |
 
 ## When to write an ADR
 
