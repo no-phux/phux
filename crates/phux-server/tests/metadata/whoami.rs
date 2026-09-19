@@ -17,7 +17,7 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, recv_typed, recv_until, run_local, send_frame,
+    SOCKET_CONNECT_DEADLINE, join_after_shutdown, recv_typed, recv_until, run_local, send_frame,
     spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
@@ -161,8 +161,7 @@ fn whoami_reports_the_uds_peer_and_refuses_client_writes() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -207,7 +206,6 @@ fn whoami_reports_a_bridge_announced_connection_as_ssh_stdio() {
 
         drop(bridged);
         drop(plain);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

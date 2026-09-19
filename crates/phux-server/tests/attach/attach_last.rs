@@ -27,8 +27,8 @@ use phux_protocol::wire::frame::{
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server,
-    wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, run_local,
+    send_frame, spawn_server, wait_for_socket,
 };
 
 /// Build an `ATTACH { Last }` with the same viewport/scrollback knobs
@@ -174,8 +174,7 @@ fn last_resolves_to_prior_attach() {
         drain_successful_attach(&mut stream, "default").await;
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -211,8 +210,7 @@ fn last_resolves_to_most_recently_focused_not_last_attached() {
         drop(last_stream);
         drop(other_stream);
         drop(default_stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -232,8 +230,7 @@ fn last_without_prior_touch_resolves_configured_seed() {
         drain_successful_attach(&mut stream, configured_seed).await;
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -301,7 +298,6 @@ fn last_with_no_live_session_returns_error() {
         }
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

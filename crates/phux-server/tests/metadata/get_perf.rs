@@ -15,8 +15,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_command_result, recv_typed, recv_until,
-    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_command_result, recv_typed,
+    recv_until, run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 const SESSION: &str = "perf";
@@ -169,7 +169,6 @@ fn get_perf_reports_hot_path_metrics_and_resets_on_request() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

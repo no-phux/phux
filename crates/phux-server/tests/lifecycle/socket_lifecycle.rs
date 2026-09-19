@@ -24,7 +24,7 @@ use phux_server::{ServerConfig, ServerError, ServerRuntime};
 // into this file. They are the testkit's versions verbatim (same config
 // shape, same connect-poll cadence, same `LocalSet` bootstrap), so the
 // copies were pure drift risk.
-use phux_server_testkit::{run_local, spawn_server, wait_for_socket};
+use phux_server_testkit::{join_after_shutdown, run_local, spawn_server, wait_for_socket};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -76,9 +76,7 @@ fn lifecycle_ping_pong() {
 
         // Trigger shutdown and let the server drain.
         drop(stream);
-        shutdown_tx.send(()).ok();
-        let result = server_handle.await.unwrap();
-        assert!(result.is_ok(), "server returned: {result:?}");
+        join_after_shutdown(shutdown_tx, server_handle).await;
 
         // Clean shutdown should remove the socket file.
         assert!(
@@ -107,8 +105,7 @@ fn lifecycle_stale_socket() {
         assert_eq!(frame, FrameKind::Pong { nonce: 7 });
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -145,8 +142,7 @@ fn lifecycle_busy_socket() {
         }
 
         // Tear A down cleanly.
-        shutdown_a.send(()).ok();
-        handle_a.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_a, handle_a).await;
     });
 }
 
@@ -178,7 +174,6 @@ fn lifecycle_partial_frame_disconnect() {
         assert_eq!(frame, FrameKind::Pong { nonce });
 
         drop(stream2);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

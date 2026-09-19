@@ -36,7 +36,8 @@ use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope, TYPE_ERROR, TYPE_M
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, recv_typed, run_local, send_frame, spawn_server, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, join_after_shutdown, recv_typed, run_local, send_frame, spawn_server,
+    wait_for_socket,
 };
 
 const AGENT_KEY: &str = "phux.agent/v1";
@@ -141,7 +142,6 @@ fn subscribe_metadata_on_a_satellite_scope_is_refused_on_the_wire() {
         }
 
         drop(stream);
-        let _ = shutdown_tx.send(());
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
