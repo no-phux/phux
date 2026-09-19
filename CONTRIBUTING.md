@@ -29,10 +29,9 @@ phux away from any of those, it's the wrong proposal.
 
 ## Get set up
 
-Start with [Contributor setup](./docs/SETUP.md): choose docs, Rust core, native
-terminal, an agent integration, browser, or Cockpit. Native tools and Nix run
-the same commands. You do not need Nix or maintainer task-tracking tools to
-contribute; a GitHub issue or PR is enough to coordinate a contribution.
+Start with [Contributor setup](./docs/SETUP.md): `mise install` or
+`nix develop`, then the same `just` recipes. A GitHub issue or PR is enough
+to coordinate; you do not need Beads.
 
 ## Agent entrypoints
 

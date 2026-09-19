@@ -1,5 +1,7 @@
 # phux developer commands.
-# Run `just` (no args) to list them.
+# Mise or Nix gets the tools; this file is how you run the repo after that.
+# `just` (no args) lists the public API. CI-internal recipes are [private]
+# and still invokable by name (`just fmt-check`, `just ci`, workflows).
 
 default:
     @just --list
@@ -44,43 +46,13 @@ native-smoke:
 
 # Setup helper behavior, including missing tools and rejected compiler downloads.
 [group('setup')]
+[private]
 setup-check:
     bash scripts/test-dev-setup.sh
 
-# Bound every daemon the test lanes can AUTO-SPAWN (phux-whhd, phux-nbam).
-#
-# A test that spawns `phux server` itself passes `--exit-after-idle 600` as
-# its survives-a-SIGKILLed-runner backstop, on top of a `Drop` guard. The
-# auto-spawn path can do neither on its own: `maybe_auto_spawn_server`
-# deliberately orphans a daemonised child, and the last-pane self-exit is
-# armed only once a client has attached, so a daemon nobody attached to never
-# exits by itself. Kill a test process before its `Drop` guard runs — a
-# cancelled agent run, a reaped job — and what leaks is immortal.
-#
-# Not hypothetical: three such daemons were found alive on a developer box
-# three days after the runs that started them, each still holding a PTY on a
-# `tempfile` socket whose directory had long since been removed.
-#
-# `PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE` is the opt-in seam phux-nbam added for
-# exactly this, and it stays off in production on purpose: ADR-0063 pins that
-# an unattended server stays up, so making auto-spawn finite by default would
-# change the multiplexer contract. Applying it here — on the test lanes only,
-# not as a `justfile`-wide `export` that would also reach `install-dev`,
-# `rebuild` and the `cargo run` recipes — bounds the harness without touching
-# what a developer's own server does.
-#
-# 600s is far longer than any gap between a test's client connections, so the
-# backstop can only fire once the harness is already gone. `idle_exit_e2e`
-# drives both the set and the unset case and `env_remove`s it for the latter,
-# so inheriting it here does not weaken that coverage.
-#
-# CAVEAT (phux-8y3o): this export cannot survive a lane that `env_clear()`s
-# the processes it spawns — the variable is wiped before it reaches the
-# auto-spawning parent. The rule for such a lane is not carried here any
-# more: it belongs to the type that defines the hazard, as
-# `AutoSpawnedServer::IDLE_BACKSTOP` in `crates/phux/tests/common/mod.rs`,
-# which names the server's own constant. A hermetic harness re-arms from
-# there rather than from a literal of its own.
+# Test-lane only: bound auto-spawned daemons (ADR-0063 keeps production
+# unattended servers up). Lanes that `env_clear()` re-arm from
+# `AutoSpawnedServer::IDLE_BACKSTOP` instead. Do not export this justfile-wide.
 AUTO_SPAWN_BACKSTOP := "PHUX_AUTO_SPAWN_EXIT_AFTER_IDLE=600"
 
 # Scaffold a commented starter config into a worktree-local XDG dir
@@ -239,6 +211,7 @@ fmt:
 
 # CI-style format check — fails if anything is dirty.
 [group('gates')]
+[private]
 fmt-check:
     cargo fmt --all -- --check
 
@@ -247,37 +220,15 @@ fmt-check:
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
-# The iteration loop: everything in `ci` that is fast and catches most of what
-# `ci` rejects, in the order `ci` would hit it, with the same flags.
-#
-# The flags matter more than the list. `lint` resolves --all-features and
-# `test` resolves default features (see `test`'s comment), so those are two
-# distinct build graphs; running either with the *wrong* flags produces
-# artifacts `ci` cannot reuse and rebuilds the world. Iterating on `just ci`
-# itself is the expensive mistake this recipe exists to prevent: it fail-fasts,
-# so one clippy nit costs a full re-run of every leg before it.
-#
-# Run this until clean, then `just ci` ONCE as the final gate.
-#
-# `e2e` is included deliberately, even though it is the slow leg. CI's `test`
-# job runs unit AND e2e; `just ci` runs only the unit pool, so a green `ci`
-# locally is NOT the same bar as a green PR. Two failures reached CI that way
-# before this line existed. If you want the fast inner loop, run `fmt`,
-# `lint`, and `test` directly — but do not call it clean without this.
-#
-# NOTE: no backticks in the echo below — `just` runs backticks as a shell
-# command, so a friendly "run `just ci`" hint would actually RUN `just ci`
-# on every precommit, which is precisely the waste this recipe avoids.
+# Inner loop with the same flags `ci` uses. Includes e2e because CI's test
+# job does; `just ci` does not. No backticks in the echo — just would run them.
 [group('gates')]
 [doc('Iteration loop: the fast gates ci would reject you on, in the order ci hits them.')]
 precommit: fmt lint docs-gen test e2e
     @echo "precommit clean - now run 'just ci' once to confirm the remaining gates"
 
-# Run tests via nextest (parallel, sane output).
-#
-# Match ci.yml and the e2e/stress lanes: all use the workspace's default feature
-# union. Optional debugger/profiler surfaces compile under lint/doc instead of
-# causing a second test dependency graph. Heap profiling has its own executable.
+# Workspace unit pool via nextest. Same --workspace feature union as e2e/stress
+# (CONTRIBUTING.md). Optional profiler surfaces compile under lint/doc instead.
 [group('test')]
 [doc('Run the workspace unit test pool via nextest.')]
 test:
@@ -292,60 +243,13 @@ test:
     fi
     {{AUTO_SPAWN_BACKSTOP}} cargo nextest run --workspace "${extra[@]}"
 
-# Fast e2e lane — gates every PR (the `e2e` step in ci.yml). Covers the
-# headless agent-surface contract (`run_wait_e2e`), the ADR-0040 agent
-# identity record loop (`agent_record_e2e`), real attached-client spatial
-# edits (`spatial_e2e`), plus the wall-clock perf
-# gates (`perf_latency`, `perf_colored_output`). These spin a real server +
-# PTY, so they are `#[ignore]`d out of the default `just test` pool and run
-# serially with `--retries=2`: serial removes the CPU contention that makes
-# a fresh attach handshake / snapshot render miss `WIRE_RECV_TIMEOUT`, and
-# the retries absorb residual environment-driven flakes (mirroring the
-# reconnect override in .config/nextest.toml). Finishes in minutes — fast
-# enough to block a PR on.
-#
-# The BUILD selection is `--workspace` on purpose, even though only four test
-# binaries actually run. It must resolve the SAME feature union as the unit
-# lane's `cargo nextest run --workspace`, so this lane reuses that build
-# instead of producing a second one.
-#
-# Narrowing the BUILD with `-p`/`--test` is what the old form did, and it cost
-# ~87s per CI run. Under the v2/v3 feature resolver a package's dev-dependency
-# features only join the unified feature set for packages whose test targets
-# are being built, so `-p phux` drops phux-server's dev-deps (tokio/test-util,
-# wtransport/dangerous-configuration) and `-p phux-server` drops phux-tui's
-# tokio/io-std. Each selection therefore re-keys `tokio` into a DIFFERENT unit,
-# and every crate downstream of tokio (phux-core, phux-server, phux-client,
-# phux, quinn, tokio-util, tokio-rustls, ...) recompiles from scratch.
-#
-# Test selection is a nextest filterset instead, which is applied AFTER the
-# build and so costs nothing. Verified: same 18 tests, 0 crates recompiled.
-#
-# The filterset names binaries, not files, so renaming/moving one of these test
-# files does NOT silently drop it from the PR gate: nextest rejects a
-# `binary_id(...)` that matches no binary ("operator didn't match any binary
-# IDs") and exits 94. A rename fails this lane loudly, exactly as `--test
-# <name>` used to.
-#
-# What a rename does NOT catch is a brand-new `*_e2e.rs` that nobody adds
-# here: its `#[ignore]`d tests would then run in no lane at all and sit green
-# forever. `just e2e-lane-check` (scripts/check-e2e-lanes.sh, a `just ci`
-# gate) closes that: every `crates/*/tests/*_e2e.rs` carrying an `#[ignore]`
-# must be named by this recipe or by `stress`. It found three binaries in
-# exactly that state — plugin_agent_bench_e2e, upgrade_e2e (whose own module
-# doc claimed "run via `just e2e`"), and workspace_archive_e2e — which is why
-# the filterset below now names them. They add ~2.6s to the lane.
-#
-# Corollary: the build selection here and in `test` must stay identical, or
-# the double-compile comes straight back. This used to say "and in ci.yml",
-# because ci.yml re-typed the cargo invocation and a human had to keep three
-# copies in step. It no longer does: ci.yml's test job runs `just test` and
-# `just e2e`, and its check job runs `just fmt-check|lint|doc|deny`, so the
-# flags exist once, here. Keep it that way — a workflow that inlines a cargo
-# command again reintroduces exactly the drift this note used to beg for.
-
-# Fast e2e lane (every #[ignore]d phux e2e binary + the perf gates) — gates every PR.
+# Fast e2e + perf gates (every PR). #[ignore]d out of `just test`; serial +
+# retries because these spin a real server+PTY. Keep --workspace so the
+# feature union matches `test` (a `-p` selection recompiles tokio). Filterset
+# names binaries; `just e2e-lane-check` fails if an ignored *_e2e.rs is in
+# no lane. Flag-stability story: CONTRIBUTING.md.
 [group('test')]
+[doc('Fast e2e + perf gates that spin a real server; every PR.')]
 e2e:
     # MCP's discovery integration test makes Cargo build its normal executable
     # in this same graph; first_five_minutes_e2e can copy both payload binaries.
@@ -356,25 +260,11 @@ e2e:
       --test-threads=1 --retries=2 \
       -E 'binary_id(phux-server::perf_latency) + binary_id(phux-server::perf_colored_output)'
 
-# Heavy stress/flywheel lane — runs OFF the PR critical path (the `stress`
-# GitHub workflow: post-merge on `main` + nightly). Resize/output/lifecycle
-# storms that hammer a real server + PTY. They are CPU-starvation-sensitive:
-# the server is one current-thread runtime, and on a 2-core runner the
-# output-flood-vs-resize-reflow feedback loop balloons a sub-second test
-# into minutes (e.g. both_axes_shrink_storm_under_output: ~0.3s on a
-# multi-core box, ~13 min on a 2-core runner). That cost is pure CPU
-# starvation, not a code defect — so these run where they don't block a PR,
-# never as a `just ci` gate. Run locally any time (one binary at a time,
-# they pass reliably).
-
-# The lane also hosts `perf_bursty_output`: NOT starvation-sensitive (it
-# gates an allocation count, not wall time), just ~110s of CPU-bound
-# full-churn synthesis that was the single longest test in the PR unit
-# pool. Off the PR path it costs nothing; a regression still trips
-# post-merge/nightly.
-
 # Heavy stress storms — off the PR path (post-merge + nightly stress.yml).
+# Starvation-sensitive on 2-core runners; run locally. Also hosts
+# perf_bursty_output (~110s, allocation count, not wall time).
 [group('test')]
+[doc('Heavy stress storms; off the PR path (post-merge + nightly).')]
 stress:
     cargo nextest run --workspace --run-ignored ignored-only \
       --test-threads=1 --retries=2 \
@@ -507,6 +397,7 @@ shellcheck:
 # GitHub workflow + composite-action syntax, the fail-closed CI path-routing
 # truth table, and the SHA-pin policy for action references.
 [group('gates')]
+[private]
 [doc('Workflow syntax, the CI path-routing truth table, and action SHA pins.')]
 workflow-check:
     actionlint .github/workflows/*.yml
@@ -533,11 +424,13 @@ deny:
 
 # Default, lean and headless production dependency boundaries (compile-free).
 [group('gates')]
+[private]
 build-features-check:
     python3 scripts/check-build-features.py
 
 # Compile opt-out consumers separately: workspace feature unification masks them.
 [group('build')]
+[private]
 build-features-compile:
     cargo check --locked -p phux-client -p phux-mcp --all-targets --no-default-features --features phux-client/testkit
     cargo check --locked -p phux --no-default-features --bin phux
@@ -572,12 +465,14 @@ docs-gen:
 
 # Homebrew formula generator vs the shapes release.yml's matrix can produce.
 [group('gates')]
+[private]
 formula-check:
     bash scripts/check-formula.sh
 
 # release.yml's pinned Zig tarball digests vs ziglang.org's published index.
 # Skips (exit 0) when the index is unreachable, so it is safe offline.
 [group('gates')]
+[private]
 [doc('Pinned Zig tarball digests vs the published ziglang.org index.')]
 zig-pin-check:
     bash scripts/check-zig-pins.sh
@@ -591,20 +486,8 @@ zig-pin-check:
 toolchain-check:
     bash scripts/check-toolchain-sync.sh
 
-# The runtime half of toolchain-check: realize BOTH supported environments and
-# compare the binaries they actually hand you, tool by tool.
-#
-# The static check can only see that the files agree. It cannot see nixpkgs
-# quietly resolving a different release than the one mise.toml pins — which is
-# how the Nix shell came to ship Bun 1.3.13 while mise.toml, `@types/bun` and
-# the site's production builder were all on 1.4.0. Run this after bumping a
-# pin or flake.lock.
-#
-# DELIBERATELY NOT IN `ci`: a CI checkout has no Mise, and realizing the dev
-# shell to compare linter versions is not a bar to hold a PR to. It skips
-# (exit 0) when either environment is missing, so it is safe to run anywhere.
-
-# Nix and Mise resolve the same tool versions — advisory, local-only.
+# Runtime half of toolchain-check: both environments, actual binaries.
+# Not in `ci` (no Mise on a CI checkout). Skips if either env is missing.
 [group('setup')]
 toolchain-parity:
     bash scripts/check-toolchain-parity.sh
@@ -613,71 +496,32 @@ toolchain-parity:
 # installer, the formula generator, release.yml). Also run by
 # `just release-preflight`; in `ci` so it cannot rot between releases.
 [group('gates')]
+[private]
 [doc('Install and release doc contracts: README, INSTALL, RELEASING, installer.')]
 install-surface-check:
     bash scripts/check-install-surface.sh
 
 # Every released agent-facing binary embeds a configless, EPIPE-safe --skill.
 [group('gates')]
+[private]
 skill-contract:
     cargo build -p phux -p phux-mcp
     bash scripts/check-skill-contract.sh
 
-# Drift gate for the one generated Rust source in the tree:
-# crates/phux-record/src/font/spleen_8x16.rs vs its vendored .bdf. Compile-free
-# (python3 + cmp). See scripts/check-generated-font.sh for why this is a check
-# and not a build.rs.
-
 # Generated glyph table vs its .bdf source — catches hand edits and stale regens.
 [group('gates')]
+[private]
 font-check:
     bash scripts/check-generated-font.sh
 
-# Coverage gate for the `e2e` filterset above: every `crates/*/tests/*_e2e.rs`
-# carrying an `#[ignore]` must be named by a lane that runs ignored tests,
-# otherwise it executes nowhere and stays green on nothing. Compile-free.
-
 # Every #[ignore]d e2e binary is named by some lane — no test rots unrun.
 [group('gates')]
+[private]
 e2e-lane-check:
     bash scripts/check-e2e-lanes.sh
 
-# Release-milestone label coverage in the beads tracker: every non-closed bead
-# carries exactly one of `rc-1.0` / `post-1.0`, so "what is left for 1.0" — a
-# label query — cannot silently undercount (phux-i7vu, phux-axdt).
-#
-# DELIBERATELY NOT IN `ci`. This queries the live Dolt store through `bd`; a
-# CI checkout has no store (`.beads/embeddeddolt/` is gitignored) and the
-# tracked `.beads/issues.jsonl` is a passive, deliberately scrubbed export, so
-# the only CI-shaped implementation would be one that reads a snapshot and is
-# wrong in both directions. Advisory and local: run it at session close. It
-# skips with exit 0 when there is no store, and never prints a verdict about
-# labels it could not read. See the header of the script for the full argument.
-
-# Cyclomatic-complexity report for production code, worst function first.
-#
-# The enforced ceiling is `cognitive-complexity-threshold` in clippy.toml,
-# which `just lint` applies on every run and CI therefore gates. This recipe
-# is the richer second opinion: clippy measures *cognitive* complexity, which
-# discounts a flat `match` arm, while lizard measures classic cyclomatic
-# complexity and counts every decision point. A dispatch table that clippy is
-# content with still shows up here, which is what you want when deciding
-# whether a function has grown a second responsibility.
-#
-# DELIBERATELY NOT IN `ci`. lizard is fetched on demand with `uvx` rather than
-# pinned in the dev shell, so it needs a network on first run and cannot be a
-# hard gate without making a CI checkout depend on PyPI. clippy.toml carries
-# the gate; this carries the detail.
-#
-# Reads its threshold from the argument, defaulting to the ceiling the
-# codebase was brought to in the complexity pass: no production function
-# exceeds 15. Tests, benches and examples are excluded — a long table-driven
-# test is not the same defect as a long handler.
-#
-#   just complexity        # anything over CCN 15
-#   just complexity 10     # tighter sweep, for finding the next candidates
-
-# Cyclomatic complexity of production code over a CCN ceiling — advisory, local-only.
+# Cyclomatic complexity of production code over a CCN ceiling — advisory.
+# clippy.toml is the CI gate; this is lizard via uvx. Not in `ci`.
 [group('perf')]
 complexity CCN="15":
     #!/usr/bin/env bash
@@ -697,6 +541,7 @@ milestone-check:
 
 # All integration packages and their shared version contract.
 [group('gates')]
+[private]
 agent-integrations-check:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -782,16 +627,8 @@ publish-protocol-dry:
 publish-protocol:
     cargo publish --locked -p phux-protocol
 
-# Builds the `profiling` profile (release codegen + line-table debug
-# info) then records a Firefox Profiler JSON at target/samply-profile.json.
-# Default subcommand is `server`; pass any other subcommand + args:
-#
-#   just profile                 # records `phux server`
-#   just profile attach default  # records `phux attach default`
-#
-# samply is not a workspace dep — install with `cargo install samply`.
-
-# CPU-profile the phux binary with samply.
+# CPU-profile the phux binary with samply (not a workspace dep).
+# `just profile` records `phux server`; pass args for another subcommand.
 [group('perf')]
 profile *ARGS:
     @if ! command -v samply >/dev/null 2>&1; then \
@@ -811,51 +648,16 @@ profile *ARGS:
     @echo "  View it with:  samply load target/samply-profile.json"
     @echo "  (opens https://profiler.firefox.com in your browser)"
 
-# --- Build observability ---------------------------------------------------
-# Three lenses on "why is the build this slow / this big". Honest caveat:
-# the dominant COLD-build cost is libghostty-vt's zig blob (a build.rs
-# shell-out to zig), which none of these three see — they profile the Rust
-# side. For the zig cost, lean on the CPU-keyed CI cache and not rebuilding
-# per-worktree. These tools find the *Rust* wins: critical-path crates,
-# monomorphization bloat, and binary size.
-
-# Cargo's built-in compile-time report -> target/cargo-timings/. Shows the
-# per-crate timeline, the critical path (the longest dependency chain
-# gating everything else), and the codegen-vs-frontend split. Pass extra
-# args to change profile:
-#   just timings                 # debug, --all-targets (dev iteration cost)
-#   just timings --release       # the release/LTO timeline
-# CAVEAT: a WARM build's timeline is near-empty because cached crates don't
-# recompile. For a true cold picture, `cargo clean` first. There is no CI
-# lane that builds cold for you any more (ADR-0082) — this is the tool.
-
-# HTML compile-time report (critical path, codegen vs frontend).
+# Build observability (Rust side only; the cold Zig blob is invisible here).
 [group('perf')]
 timings *ARGS:
     cargo build --workspace --all-targets --timings {{ARGS}}
     @echo "report -> target/cargo-timings/cargo-timing.html"
 
-# LLVM IR lines emitted per (generic) function for one crate — the
-# monomorphization-bloat view. A helper instantiated for hundreds of type
-# combinations shows up at the top; the fix is usually `#[inline(never)]`
-# or pulling the type-independent body into a non-generic fn. Reads the
-# `llvm-tools-preview` component (pinned in rust-toolchain.toml).
-#   just llvm-lines                     # phux-protocol lib (default)
-#   just llvm-lines phux-server         # another crate's lib
-#   just llvm-lines phux --bin phux     # a specific binary target
-
-# Per-function LLVM IR line counts (monomorphization bloat) for one crate.
 [group('perf')]
 llvm-lines PKG='phux-protocol' *ARGS:
     cargo llvm-lines -p {{PKG}} {{ARGS}}
 
-# Attribute release binary size. Defaults to a by-crate breakdown of the
-# `phux` binary; pass args for the per-function view or another target:
-#   just bloat                   # size by crate (the phux binary)
-#   just bloat -n 30             # top 30 individual functions
-#   just bloat --bin phux-mcp    # a different binary
-
-# Attribute release binary size by crate (or per-fn with args).
 [group('perf')]
 bloat *ARGS:
     cargo bloat --release --bin phux {{ if ARGS == "" { "--crates" } else { ARGS } }}

@@ -78,7 +78,13 @@ MD
 printf '| `0x07` | `BOGUS`       | [L1.md](./L1.md) | shipped |\n' >>"$repo/docs/spec/appendix-reserved.md"
 expect_fail 'more than one row for command tag 0x07' "$repo/scripts/check-docs.sh" --only=spec-id-unique
 expect_fail 'usage:' "$repo/scripts/doctor.sh" typo
-expect_fail 'bash scripts/setup-rust.sh core' "$repo/scripts/doctor.sh" core
+# Doctor names Mise/Nix first; the rustup helper is the native-CI fallback.
+# Unset IN_NIX_SHELL so a leftover Nix shell from the runner cannot flip the
+# remedy (the fixture PATH has no compilers either way).
+unset IN_NIX_SHELL
+expect_fail 'mise install' "$repo/scripts/doctor.sh" core
+grep -Fq 'bash scripts/setup-rust.sh core' "$scratch/output" || { cat "$scratch/output" >&2; exit 1; }
+IN_NIX_SHELL=1 expect_fail 'nix develop should provide this' "$repo/scripts/doctor.sh" core
 rm -f "$bin/uname"
 cat >"$bin/uname" <<'SH'
 #!/bin/sh

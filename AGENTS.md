@@ -5,20 +5,20 @@ last-reviewed: 2026-09-08
 ---
 # Agent Instructions
 
-**TL;DR.** Select setup and validation by the area you change. Work in an
-isolated branch/worktree, use non-interactive shell commands, track agent work
-with Beads, commit verified changes before handoff, and report actual validation.
-Project architecture and coding conventions live in CLAUDE.md; contributor setup
-has one canonical guide.
+**TL;DR.** `mise install` or `nix develop`, then `just doctor` and a scoped
+check. Work in an isolated branch/worktree, use non-interactive shell commands,
+track agent work with Beads, commit verified changes before handoff, and report
+actual validation. Project architecture lives in CLAUDE.md; setup is one guide.
 <!-- bd-doctor-divergence: ok -->
 
 ## Setup and validation scope
 
-- Start at [`docs/SETUP.md`](./docs/SETUP.md). Native tools and Nix are supported;
-  select prerequisites by the work area instead of installing the full shell.
-- Run `bash scripts/doctor.sh <area>` for prerequisites and the smallest relevant
-  gate first. Expand validation for shared APIs, protocol/FFI, Cargo inputs, or
-  build scripts. Report exact checks; a scoped pass is not a full CI pass.
+- Start at [`docs/SETUP.md`](./docs/SETUP.md). Pick `mise install` or
+  `nix develop` (both first-class); then `just doctor` and the smallest
+  relevant gate. Just is the command layer, not a third environment.
+- Run `bash scripts/doctor.sh <area>` for prerequisites. Expand validation for
+  shared APIs, protocol/FFI, Cargo inputs, or build scripts. Report exact
+  checks; a scoped pass is not a full CI pass.
 - Keep setup/version details in that guide and the toolchain pins, not in agent
   instruction files. Browser engine regeneration uses verified pinned source.
 - Beads is maintainer/agent task tracking, not a compiler or contributor gate
