@@ -9,6 +9,60 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.40.0](https://github.com/no-phux/phux/compare/v0.39.0...v0.40.0) (2026-09-19)
+
+
+### Features
+
+* **cli:** add a JSON contract for phux server --ensure ([4e3610b](https://github.com/no-phux/phux/commit/4e3610b651c18c2fac46f59bcf2b05331847a980))
+* **client-ffi:** expose named-projection L3 get/set/delete ([#706](https://github.com/no-phux/phux/issues/706)) ([247379f](https://github.com/no-phux/phux/commit/247379fbea8ebc8a7bc3f44c3cbd2ab965e87781))
+* **cli:** phux resource show|wait|methods, retain and idempotency flags, and cursor-resumable watch ([#709](https://github.com/no-phux/phux/issues/709)) ([ae6c040](https://github.com/no-phux/phux/commit/ae6c0407092d665eac61c03391596960449157b9))
+* **mcp:** call phux-client in-process and gate cli/mcp parity ([#719](https://github.com/no-phux/phux/issues/719)) ([088ff53](https://github.com/no-phux/phux/commit/088ff5310bedc352b81534dff439d2cf285500b1))
+* **protocol:** attach roles as intent on the input lease ([#717](https://github.com/no-phux/phux/issues/717)) ([bbccc3a](https://github.com/no-phux/phux/commit/bbccc3ad88739d6c37aec985d2407dc41b92631a))
+* **server:** approvals are held signal actions, single-use and expiring ([#724](https://github.com/no-phux/phux/issues/724)) ([5b690d5](https://github.com/no-phux/phux/commit/5b690d54608af9b4408bfaa8edc68c9d57fd6a21))
+* **server:** freeze snapshot capture at READY without encoding history ([#758](https://github.com/no-phux/phux/issues/758)) ([edc7382](https://github.com/no-phux/phux/commit/edc738229ff16e190abd31be02881df29096fee9))
+* **server:** input leases expire on their TTL and inventories show the holder ([#705](https://github.com/no-phux/phux/issues/705)) ([d7795e5](https://github.com/no-phux/phux/commit/d7795e583f4520c92e281f2f5efde5bf0e6b1e99))
+* **server:** keep a live shell after the last process exits ([244874b](https://github.com/no-phux/phux/commit/244874b6f57a63e575aef2944a5e2057331051c0))
+* **server:** keyed kill and signal, federated keyed input with an incarnation fence ([#721](https://github.com/no-phux/phux/issues/721)) ([f8d6e75](https://github.com/no-phux/phux/commit/f8d6e755598cdae6f81ff768e5890fdb52a5cf1e))
+* **server:** revoke workload authority live ([#704](https://github.com/no-phux/phux/issues/704)) ([5833c03](https://github.com/no-phux/phux/commit/5833c0322ff8b50efffda53527a54159ed547603))
+* **tui:** drag to resize the sidebar and reorder windows ([#755](https://github.com/no-phux/phux/issues/755)) ([05a7016](https://github.com/no-phux/phux/commit/05a7016879607d2f1e2ea089db31340991c3e03e))
+
+
+### Bug Fixes
+
+* **ci:** retry Cockpit DMG hdiutil on GitHub macOS runners ([#708](https://github.com/no-phux/phux/issues/708)) ([23c4071](https://github.com/no-phux/phux/commit/23c4071dd79494d2d772192e85cc100a39bc1ffe))
+* **cli:** diagnose macOS firewall stealth-drop (phux-9lj9) ([3e99e2b](https://github.com/no-phux/phux/commit/3e99e2b39ba32c189fdc25307ffd4668d2e10bc1))
+* **client:** emit ERROR{FRAME_TOO_LARGE} on attach framing violations ([#743](https://github.com/no-phux/phux/issues/743)) ([eccdd6d](https://github.com/no-phux/phux/commit/eccdd6db12f4648feae9382050ab21dd885f4239))
+* **config:** follow symlinks in the registry writer (phux-u1tq.7) ([c02cf29](https://github.com/no-phux/phux/commit/c02cf29ed41023ea3b7f3a3bd0cfdf395e04ae6e))
+* **dial:** preserve QUIC credential refusal reason ([#738](https://github.com/no-phux/phux/issues/738)) ([9304d80](https://github.com/no-phux/phux/commit/9304d80bcf977ade5e7692b89c40645f54a8d4e9))
+* **protocol:** preserve keep-empty on explicit Close Tab ([#718](https://github.com/no-phux/phux/issues/718)) ([df8bb87](https://github.com/no-phux/phux/commit/df8bb87543e2f1d4a1f00e567ac62456cabdc20a))
+* **scripts:** poll tui-probe waits instead of fixed sleeps ([#739](https://github.com/no-phux/phux/issues/739)) ([b4f0144](https://github.com/no-phux/phux/commit/b4f014484af7af7b758410e078c02150876982e1))
+* **server:** make resumed upgrade reconstruction transactional ([#742](https://github.com/no-phux/phux/issues/742)) ([b82638f](https://github.com/no-phux/phux/commit/b82638f35456056b840dc83ee404a18a56abc2bc))
+* **server:** reject duplicate WebTransport Authorization before header map ([#733](https://github.com/no-phux/phux/issues/733)) ([789391b](https://github.com/no-phux/phux/commit/789391bbeaa33ef5e22df98519ccc9675fc42529))
+* **site:** complete GitHub OAuth without the transaction cookie ([#729](https://github.com/no-phux/phux/issues/729)) ([39f546e](https://github.com/no-phux/phux/commit/39f546e58578c65f4ef04b74cc3c4153667a98c4))
+* **site:** complete hosted native pin to workspace 0.39.0 ([6cffd4b](https://github.com/no-phux/phux/commit/6cffd4b00b50412bffd4e58864df6d3055b0d310))
+* **site:** keep demo credentials and quotas off spoofable paths ([#730](https://github.com/no-phux/phux/issues/730)) ([339f792](https://github.com/no-phux/phux/commit/339f792adaacd24a48d429e7c94944605f12456f))
+* **site:** pin hosted native phux to workspace 0.39.0 ([#711](https://github.com/no-phux/phux/issues/711)) ([50c4c85](https://github.com/no-phux/phux/commit/50c4c8514cc9e7573bba8b4629a71a5720e363d8))
+* **tui:** confirm session rename and navigate peers by identity ([#735](https://github.com/no-phux/phux/issues/735)) ([3cd08dd](https://github.com/no-phux/phux/commit/3cd08dd48adda489e19efdc84d40da804fec64c4))
+* **tui:** discover peer agents from the server graph before layout persist ([#736](https://github.com/no-phux/phux/issues/736)) ([d5ff88f](https://github.com/no-phux/phux/commit/d5ff88fa912abe26f145762bf937f63b27f94c5f))
+* **tui:** drop unused non-native-engine driver fallback (phux-u1tq.5) ([#727](https://github.com/no-phux/phux/issues/727)) ([aaba7e4](https://github.com/no-phux/phux/commit/aaba7e40f48ccf322c23e04227e4c87b80629792))
+* **tui:** never local-scroll alt-screen; forward no-op wheels ([#740](https://github.com/no-phux/phux/issues/740)) ([02734be](https://github.com/no-phux/phux/commit/02734be7b1a776929b1c7e181b69e594e164ad07))
+* **tui:** pin libghostty-vt wrap spacer-head dirty rewrite (phux-5js7) ([a85e8bd](https://github.com/no-phux/phux/commit/a85e8bd715685cc9129191cf81ae87f7eda875a8))
+* **tui:** preserve agent review state across session switches ([#737](https://github.com/no-phux/phux/issues/737)) ([ad300c7](https://github.com/no-phux/phux/commit/ad300c7659b90315e194d7dfe0ef4fff3ce076a2))
+
+
+### Refactors
+
+* **client-ffi:** drop unused set_callbacks and list_directory exports (phux-1k7t) ([#726](https://github.com/no-phux/phux/issues/726)) ([697a039](https://github.com/no-phux/phux/commit/697a039b2a7f21bd436728909ce475f3e5d50cba))
+* **protocol:** derive ServerFeature tables from one list ([#722](https://github.com/no-phux/phux/issues/722)) ([c80445b](https://github.com/no-phux/phux/commit/c80445bbd0aba078bbd184f8fd6c6b1ea844264d))
+* **server:** split terminal run loop and tick_emit (phux-18sb) ([#752](https://github.com/no-phux/phux/issues/752)) ([5b0a8af](https://github.com/no-phux/phux/commit/5b0a8afba05b1ca0c6c7dd62caf481c4f800e980))
+
+
+### Documentation
+
+* clarify alternatives and publish performance evidence ([74b2c9f](https://github.com/no-phux/phux/commit/74b2c9f4c48e8613a0adff95f051df3e6fbf4157))
+* **pha-406:** close out the phase-2 program ([#725](https://github.com/no-phux/phux/issues/725)) ([36657c0](https://github.com/no-phux/phux/commit/36657c0e9c690af2776ca2fd86f2685095acd653))
+
 ## [0.39.0](https://github.com/no-phux/phux/compare/v0.38.0...v0.39.0) (2026-09-15)
 
 

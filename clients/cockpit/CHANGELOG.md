@@ -3,6 +3,22 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.0](https://github.com/no-phux/phux/compare/cockpit-v0.26.0...cockpit-v0.27.0) (2026-09-19)
+
+
+### Features
+
+* **cli:** add a JSON contract for phux server --ensure ([4e3610b](https://github.com/no-phux/phux/commit/4e3610b651c18c2fac46f59bcf2b05331847a980))
+* **protocol:** attach roles as intent on the input lease ([#717](https://github.com/no-phux/phux/issues/717)) ([bbccc3a](https://github.com/no-phux/phux/commit/bbccc3ad88739d6c37aec985d2407dc41b92631a))
+
+
+### Bug Fixes
+
+* **ci:** retry Cockpit DMG hdiutil on GitHub macOS runners ([#708](https://github.com/no-phux/phux/issues/708)) ([23c4071](https://github.com/no-phux/phux/commit/23c4071dd79494d2d772192e85cc100a39bc1ffe))
+* **ci:** use PATH sync when packaging the Cockpit DMG ([#716](https://github.com/no-phux/phux/issues/716)) ([01db63c](https://github.com/no-phux/phux/commit/01db63c365bc348089a0d3d689221ba6919fe39e))
+* **cockpit:** pin seamless cell backgrounds ([#732](https://github.com/no-phux/phux/issues/732)) ([2af4066](https://github.com/no-phux/phux/commit/2af40668066ede5034a62d6c44daa62cd8e44eac))
+* **protocol:** preserve keep-empty on explicit Close Tab ([#718](https://github.com/no-phux/phux/issues/718)) ([df8bb87](https://github.com/no-phux/phux/commit/df8bb87543e2f1d4a1f00e567ac62456cabdc20a))
+
 ## [0.26.0](https://github.com/no-phux/phux/compare/cockpit-v0.25.0...cockpit-v0.26.0) (2026-09-15)
 
 
