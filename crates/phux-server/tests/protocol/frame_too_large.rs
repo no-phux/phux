@@ -28,8 +28,8 @@ use tempfile::TempDir;
 use tokio::io::AsyncWriteExt;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, expect_protocol_error_close, recv_typed, run_local, spawn_server,
-    wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, expect_protocol_error_close, join_after_shutdown, recv_typed,
+    run_local, spawn_server, wait_for_socket,
 };
 
 /// How long the server gets to finish the close after its final frame.
@@ -87,8 +87,7 @@ fn assert_framing_violation_close(header: [u8; 4]) {
         expect_protocol_error_close(&mut stream, EOF_DEADLINE).await;
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 

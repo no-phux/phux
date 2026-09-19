@@ -634,8 +634,10 @@ pub fn encode_frame_vec(frame: &FrameKind) -> Vec<u8> {
 /// Signal shutdown and assert the server task joined cleanly.
 ///
 /// Pairs with every `spawn_server*` in this module, which hand back exactly
-/// this `(Sender, JoinHandle)`. Forty-nine call sites across nineteen test
-/// files each spelled this block out by hand before it was promoted here.
+/// this `(Sender, JoinHandle)`. Promoted from forty-nine hand-written copies
+/// across nineteen files; leftover asserting teardowns that still spelled
+/// send-then-join by hand (the two-line `await.unwrap().unwrap()` form and
+/// the timeout+expect form) now call this too.
 ///
 /// Deliberately does NOT assert the socket was unlinked: most of those call
 /// sites had no socket path in scope, and the ones that care about unlinking
@@ -643,6 +645,9 @@ pub fn encode_frame_vec(frame: &FrameKind) -> Vec<u8> {
 ///
 /// Drop your own client stream before calling this — the call sites that need
 /// it keep their `drop(stream)` because the variable is theirs, not ours.
+///
+/// Call sites that swallow the join (`await.ok()`, `let _ = handle.await`)
+/// stay inline: that is a different contract, not this helper.
 pub async fn join_after_shutdown(
     shutdown: oneshot::Sender<()>,
     server: JoinHandle<Result<(), ServerError>>,

@@ -29,7 +29,7 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::ClientCapabilities;
 use phux_protocol::wire::frame::{AttachTarget, ErrorCode, FrameKind, ViewportInfo};
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
-use phux_server_testkit::{assert_protocol_error_detach, encode_frame_vec};
+use phux_server_testkit::{assert_protocol_error_detach, encode_frame_vec, join_after_shutdown};
 use tempfile::TempDir;
 use tokio::net::TcpStream;
 use tokio::sync::oneshot;
@@ -247,7 +247,6 @@ fn ws_hello_attach_receives_attached_and_snapshot() {
             .await
             .expect("server closes websocket");
         assert!(matches!(closed, None | Some(Ok(Message::Close(_)))));
-        shutdown.send(()).ok();
-        server.await.unwrap().unwrap();
+        join_after_shutdown(shutdown, server).await;
     });
 }

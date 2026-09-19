@@ -17,8 +17,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, run_local, send_frame, spawn_server_with,
-    wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, run_local,
+    send_frame, spawn_server_with, wait_for_raw_socket,
 };
 
 const SESSION: &str = "voice";
@@ -194,8 +194,7 @@ fn transcribe_pastes_the_transcript_into_the_pane_and_returns_it() {
         );
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
 
@@ -230,7 +229,6 @@ fn transcribe_without_a_transcriber_is_refused_with_a_remedy() {
             other => panic!("expected a refusal, got {other:?}"),
         }
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }

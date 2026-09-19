@@ -16,8 +16,8 @@ use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, recv_until, run_local, send_frame,
-    spawn_server_with_seed_cmd, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, recv_until,
+    run_local, send_frame, spawn_server_with_seed_cmd, wait_for_raw_socket,
 };
 
 const SESSION: &str = "dirs";
@@ -114,7 +114,6 @@ fn list_directory_answers_with_child_directories_and_typed_refusals() {
         assert_eq!(refusal.code, DirectoryErrorCode::NotFound);
 
         drop(stream);
-        shutdown_tx.send(()).ok();
-        server_handle.await.unwrap().unwrap();
+        join_after_shutdown(shutdown_tx, server_handle).await;
     });
 }
