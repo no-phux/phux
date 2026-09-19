@@ -67,15 +67,22 @@ Native consumers such as Cockpit can invoke the same startup owner without
 entering the TUI:
 
 ```sh
-phux --socket /absolute/path/to/phux.sock server --ensure
+phux --socket /absolute/path/to/phux.sock server --ensure --json
 ```
 
 `--ensure` is availability-only: reuse a live server or auto-spawn one
 with the same session-name template and spawn-on-attach policy as naked
 `phux`, then exit. It does not attach, handshake, or reconcile a running
-coordinator's binary version. Pass the consumer's selected socket
-explicitly so a development binary's profile default cannot select a
-different coordinator. Flag contract, exits, and the 10-second deadline:
+coordinator's binary version. `--json` is the machine contract Cockpit
+and other peers use: a versioned availability document on success
+(`schema_version`, `running`, `socket`, `disposition`, `cli_version`,
+`server_log`) and a JSON error on stderr on failure
+(`server_start_timeout`, `server_start_cancelled`, `server_start_failed`).
+`disposition` is `reused`, `joined`, `supervised_started`, or
+`daemon_started`. HELLO remains the authority for protocol compatibility.
+Pass the consumer's selected socket explicitly so a development binary's
+profile default cannot select a different coordinator. Flag contract,
+exits, and the 10-second deadline:
 [`phux server`](../reference/cli.md#phux-server).
 
 ## Terminal engine timers

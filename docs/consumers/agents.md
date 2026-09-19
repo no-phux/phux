@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-19
 ---
 
 # The phux agent CLI
@@ -882,7 +882,9 @@ JSON error object on stderr:
 
 Branch on `error.code`, never on `message`. `remedy` is always present.
 Transport: `no_server`, `server_disconnected`, `transport`,
-`remote_unresolved`. Resolution: `no_such_target`, `partial_view`.
+`remote_unresolved`. Coordinator startup (`phux server --ensure --json`):
+`server_start_timeout`, `server_start_cancelled`, `server_start_failed`.
+Resolution: `no_such_target`, `partial_view`.
 Local I/O: `io` (a bug-report bundle could not be written under the
 state directory), `json_serialize`.
 Agent lifecycle: `no_agent_record`, `satellite_target`,

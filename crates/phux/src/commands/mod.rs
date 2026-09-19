@@ -569,6 +569,12 @@ pub(crate) enum Command {
         )]
         ensure: bool,
 
+        /// Emit the stable coordinator-availability result document.
+        /// On failure, stdout stays empty and stderr carries one JSON error
+        /// object. Requires `--ensure`.
+        #[usage(flatten)]
+        json: JsonOpt,
+
         /// Name of the pre-seeded session. Matches what
         /// `phux attach <name>` will request.
         #[usage(long, default = "default")]

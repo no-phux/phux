@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-12
+last-reviewed: 2026-09-19
 ---
 
 # Cockpit everyday UX: implementation design
@@ -203,12 +203,13 @@ bundled sibling and discards helper stderr. The integration contract is:
 | Explicit socket override | Address that exact socket throughout probe, ensure, attach, setup and editor launch. Failure names that destination; never retry against the default socket. |
 | Finder environment lacks shell PATH/EDITOR | Resolve candidates using the runtime-discovery contract and explicit preferences; use bundle fallback and editor selection. Do not source arbitrary shell startup files just to inspect versions. |
 | Running server and Cockpit cannot negotiate | Keep work and its server intact. Show which component is incompatible and an Update Cockpit or Update Phux recovery appropriate to supported releases, then Retry. A Phux update uses its existing graceful-upgrade path; a bundle update alone does not restart the server. |
-| Helper launch/ensure fails | Keep bounded stderr/exit evidence, identify the executable and socket, offer Retry or Repair Installation; do not report a generic disconnected terminal or fall back to scratch. |
+| Helper launch/ensure fails | Invoke `server --ensure --json` on a CLI that advertises `server-ensure-json-v1`. Keep bounded stdout/stderr/exit evidence, identify the executable and socket, offer Retry or Repair Installation; do not report a generic disconnected terminal or fall back to scratch. Malformed success documents are refused. |
 | Compatible CLI installed after Cockpit | Apply preference at the next server-start decision, not by moving active work. An existing compatible connection remains authoritative. |
 
 Setup and editor terminals use this same selected local coordinator even when a
 remote terminal is focused. Runtime probe output must be versioned and usable
-without connecting or changing a server. Candidate resolution is deterministic,
+without connecting or changing a server. `phux server --ensure --json` is
+availability only: HELLO remains the authority for protocol compatibility. Candidate resolution is deterministic,
 bounded and captured once per launch operation. Repair results return to the
 initiating Machines/Settings flow with state refreshed from the real server;
 an updater success line alone is not proof of a working terminal.

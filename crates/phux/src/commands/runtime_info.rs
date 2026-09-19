@@ -8,7 +8,12 @@ fn document() -> serde_json::Value {
         "binary": "phux",
         "version": env!("CARGO_PKG_VERSION"),
         "protocol": { "major": wire.major, "minor": wire.minor, "patch": wire.patch },
-        "capabilities": ["server-ensure-v1", "structured-spawn-v1", "host-enroll-v1"]
+        "capabilities": [
+            "server-ensure-v1",
+            "server-ensure-json-v1",
+            "structured-spawn-v1",
+            "host-enroll-v1"
+        ]
     })
 }
 

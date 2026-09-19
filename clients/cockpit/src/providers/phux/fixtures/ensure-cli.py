@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 """Explicit test-only helper: no Phux invocation and no socket/service creation."""
 import os
+import json
 from pathlib import Path
 import signal
 import subprocess
@@ -20,4 +21,14 @@ while not (home / "release").exists():
     time.sleep(0.01)
 code = (home / "release").read_text()
 (home / "exit-code").write_text(code)
+if int(code) == 0:
+    socket = sys.argv[2]
+    print(json.dumps({
+        "schema_version": 1,
+        "running": True,
+        "socket": socket,
+        "disposition": "daemon_started",
+        "cli_version": "test",
+        "server_log": str(home / "server.log"),
+    }))
 sys.exit(int(code))
