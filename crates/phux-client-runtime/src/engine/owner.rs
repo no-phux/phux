@@ -3,6 +3,8 @@
 use super::apply::apply_event;
 #[cfg(feature = "engine")]
 use super::apply::frame_colors;
+#[cfg(feature = "engine")]
+use super::predict::Predictor;
 use super::{
     Adapter, Command, EffectBuffer, EngineApplyError, EngineEvent, EngineOutcome, HashSet,
     InputBlockReason, InputEligibility, KernelDamageKind, KernelEffect, Lifecycle, Query,
@@ -36,6 +38,7 @@ struct PointerGesture {
 struct ProjectorSlot {
     token: u128,
     projector: GridProjector,
+    predictor: Predictor,
     /// The buffer recycled from the frame the last publish replaced.
     spare: Option<GridBuffer>,
 }
@@ -157,9 +160,9 @@ impl Owner {
                 if self.closed.contains_key(&id) {
                     self.pending_releases.insert(id.clone());
                     self.release_closed(&id);
+                    self.projectors.remove(&id);
+                    self.publication.remove(&id);
                 }
-                self.projectors.remove(&id);
-                self.publication.remove(&id);
             }
         }
     }
@@ -245,6 +248,18 @@ impl Owner {
                         )
                     });
                 let _ = reply.send(alt);
+            }
+            Query::PredictText(id, text, reply) => {
+                let result = self
+                    .predict_text(&id, &text)
+                    .and_then(|()| self.render_and_publish(&id));
+                let _ = reply.send(result);
+            }
+            Query::ClearPredictions(id, reply) => {
+                if let Some(slot) = self.projectors.get_mut(&id) {
+                    slot.predictor.clear();
+                }
+                let _ = reply.send(self.render_and_publish(&id));
             }
             Query::Republish(id, reply) => {
                 let _ = reply.send(self.render_and_publish(&id));
@@ -484,15 +499,44 @@ impl Owner {
             .or_else(from_closed)
     }
 
+    #[cfg(feature = "engine")]
+    fn predict_text(&mut self, id: &ResourceId, text: &str) -> Result<(), EngineError> {
+        let Some((token, geometry, ..)) = self.replica_identity(id) else {
+            return Ok(());
+        };
+        self.ensure_projector(id, token, geometry)?;
+        let (cursor, alternate) = {
+            let terminal = self
+                .replica(id)
+                .and_then(GhosttyReplica::terminal)
+                .ok_or_else(|| engine_error("terminal has no renderable replica"))?;
+            let cursor = (
+                terminal.cursor_x().unwrap_or(0),
+                terminal.cursor_y().unwrap_or(0),
+            );
+            let alternate = matches!(
+                terminal.active_screen(),
+                Ok(libghostty_vt::screen::Screen::Alternate)
+            );
+            (cursor, alternate)
+        };
+        let Some(slot) = self.projectors.get_mut(id) else {
+            return Ok(());
+        };
+        slot.predictor
+            .predict_text(text, cursor, alternate, monotonic_ms());
+        Ok(())
+    }
+
     /// Project `id`'s replica into the back buffer and publish it. `Ok(false)`
     /// means there is nothing renderable yet (a native replica before READY).
     #[cfg(feature = "engine")]
     fn render_and_publish(&mut self, id: &ResourceId) -> Result<bool, EngineError> {
-        let Some((token, _geometry, stream_id, bootstrap_id, last_seq)) = self.replica_identity(id)
+        let Some((token, geometry, stream_id, bootstrap_id, last_seq)) = self.replica_identity(id)
         else {
             return Ok(false);
         };
-        self.ensure_projector(id, token)?;
+        self.ensure_projector(id, token, geometry)?;
         let Some(mut slot) = self.projectors.remove(id) else {
             return Ok(false);
         };
@@ -501,6 +545,10 @@ impl Owner {
             return Ok(false);
         };
         let defaults = terminal_defaults(terminal)?;
+        let alternate = matches!(
+            terminal.active_screen(),
+            Ok(libghostty_vt::screen::Screen::Alternate)
+        );
         let projected = slot
             .projector
             .project(terminal)
@@ -536,11 +584,19 @@ impl Owner {
             offset: bar.offset,
             len: bar.len,
         });
-        let outcome = projected.and_then(|(cols, rows, cursor, colors, damage)| {
+        let outcome = projected.and_then(|(cols, rows, mut cursor, colors, damage)| {
             let scrollbar =
                 scrollbar.map_err(|error| EngineError::Engine(format!("scrollbar: {error}")))?;
             let mut buffer = slot.spare.take().unwrap_or_default();
             slot.projector.swap_buffer(&mut buffer);
+            slot.predictor.apply(
+                cols,
+                rows,
+                alternate,
+                &mut cursor,
+                &mut buffer,
+                monotonic_ms(),
+            );
             let frame = GridFrame {
                 terminal_id: id.clone(),
                 generation: 0,
@@ -567,7 +623,12 @@ impl Owner {
     }
 
     #[cfg(feature = "engine")]
-    fn ensure_projector(&mut self, id: &ResourceId, token: u128) -> Result<(), EngineError> {
+    fn ensure_projector(
+        &mut self,
+        id: &ResourceId,
+        token: u128,
+        geometry: CanonicalGeometry,
+    ) -> Result<(), EngineError> {
         let replace = self
             .projectors
             .get(id)
@@ -583,6 +644,7 @@ impl Owner {
             ProjectorSlot {
                 token,
                 projector,
+                predictor: Predictor::new(geometry.cols, geometry.rows),
                 spare: None,
             },
         );
@@ -1221,6 +1283,15 @@ fn gesture_document_points(
             row: end.y,
         },
     ))
+}
+
+#[cfg(feature = "engine")]
+fn monotonic_ms() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    u64::try_from(EPOCH.get_or_init(Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(feature = "engine")]

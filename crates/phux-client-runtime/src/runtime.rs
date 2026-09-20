@@ -343,6 +343,7 @@ impl Client {
     }
 }
 
+mod extensions;
 mod input;
 mod projection;
 

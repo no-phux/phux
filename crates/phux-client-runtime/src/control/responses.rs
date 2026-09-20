@@ -61,6 +61,7 @@ impl ControlPlane {
             self.queue_post_handshake();
         }
         self.queue_durable_frames();
+        self.queue_next_upload();
         Ok(())
     }
 
@@ -414,6 +415,9 @@ impl ControlPlane {
             }
             Pending::Extension => {
                 self.push_event(Event::CommandResult { request_id, result });
+            }
+            pending @ (Pending::PutFile(_) | Pending::Transcribe(_)) => {
+                self.resolve_extension_result(&pending, request_id, result);
             }
         }
         self.queue_durable_frames();

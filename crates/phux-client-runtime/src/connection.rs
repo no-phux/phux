@@ -63,6 +63,9 @@ pub struct Target {
     pub cert_fingerprint: Option<String>,
     /// Where the bearer token lives; read only at dial time.
     pub token_file: Option<PathBuf>,
+    /// An in-memory bearer token supplied by an embedder such as a Keychain
+    /// consumer. Takes precedence over `token_file` and is never logged.
+    pub token: Option<String>,
 }
 
 impl Target {
@@ -75,6 +78,7 @@ impl Target {
             transport: Transport::Uds(path),
             cert_fingerprint: None,
             token_file: None,
+            token: None,
         }
     }
 
@@ -87,6 +91,7 @@ impl Target {
             transport: Transport::Ws(url),
             cert_fingerprint: None,
             token_file: None,
+            token: None,
         }
     }
 
@@ -99,6 +104,7 @@ impl Target {
             transport: Transport::Quic(authority),
             cert_fingerprint: None,
             token_file: None,
+            token: None,
         }
     }
 
@@ -139,6 +145,7 @@ impl From<Resolved> for Target {
             name: resolved.name,
             cert_fingerprint: resolved.cert_fingerprint,
             token_file: resolved.token_file,
+            token: None,
         }
     }
 }

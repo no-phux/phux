@@ -63,6 +63,14 @@ thiserror.workspace = true
 # Fresh 128-bit acknowledged-input operation ids (`InputOperationId`), the
 # same source phux-client-ffi already draws its session-create tokens from.
 uuid.workspace = true
+# Runtime-owned file upload hashes complete payloads before chunking so every
+# binding shares the same reconnect-safe transfer state machine.
+sha2 = "0.10"
+# TRANSCRIBE returns the protocol's open-shaped JSON command value.
+serde_json.workspace = true
+# Predictive text commits are segmented by grapheme before entering the
+# shared phux-client-core predictor.
+unicode-segmentation.workspace = true
 
 [dev-dependencies]
 # A registry fixture file for the resolution tests.

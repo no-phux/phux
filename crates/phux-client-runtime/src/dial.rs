@@ -38,6 +38,16 @@ pub const MAX_FRAME_BODY: usize = 16 * 1024 * 1024;
 /// the pin rule, and parse the bearer token. The returned plan owns the
 /// token; drop it as soon as the dial has sent its preamble.
 pub async fn plan_quic(resolved: &Resolved, authority: &str) -> Result<QuicDial, String> {
+    plan_quic_with_token(resolved, authority, None).await
+}
+
+/// Plan a QUIC dial with an optional in-memory token overriding the registry
+/// file. Native embedders use this for Keychain-backed credentials.
+pub async fn plan_quic_with_token(
+    resolved: &Resolved,
+    authority: &str,
+    token: Option<String>,
+) -> Result<QuicDial, String> {
     let name = resolved.name.as_str();
     let (bare, addr) = resolve_quic_addr(name, authority).await?;
     let trust = quic_trust(
@@ -45,7 +55,7 @@ pub async fn plan_quic(resolved: &Resolved, authority: &str) -> Result<QuicDial,
         resolved.cert_fingerprint.as_deref(),
         addr.ip().is_loopback(),
     )?;
-    let token = match load_token(resolved)? {
+    let token = match token.or(load_token(resolved)?) {
         Some(token) => Some(parse_token_hex(&token).map_err(|_| bad_token(resolved))?),
         None => None,
     };

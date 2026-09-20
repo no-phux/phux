@@ -39,8 +39,8 @@ use phux_client_core::session::{
 };
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
-    BootstrapCapabilities, BootstrapLimits, BootstrapProfile, ClientCapabilities, Layer, LayerSet,
-    ServerFeature, ServerFeatureSet,
+    BootstrapCapabilities, BootstrapLimits, BootstrapProfile, ClientCapabilities, ImageProtocolSet,
+    Layer, LayerSet, ServerFeature, ServerFeatureSet,
 };
 #[cfg(not(feature = "engine"))]
 use phux_protocol::caps::{BootstrapProfileKind, BootstrapProfileSet};
@@ -67,6 +67,7 @@ use crate::publication::Publication;
 mod agents;
 mod commands;
 mod events;
+mod extensions;
 mod frames;
 mod input;
 mod kernel;
@@ -76,6 +77,10 @@ mod state;
 mod topology;
 
 pub use events::{DeliveryOutcome, Event, Status};
+pub use extensions::{
+    DirectoryChild, DirectoryFailure, DirectoryListing, FileUploadOutcome, FileUploadReceipt,
+    TranscribeOutcome, TranscribeReceipt,
+};
 pub use topology::{
     AgentSessionDescriptor, PaneDescriptor, SessionDescriptor, Topology, WindowDescriptor,
 };
@@ -151,6 +156,9 @@ impl ControlOptions {
     )]
     pub fn client_caps(&self) -> ClientCapabilities {
         ClientCapabilities::new()
+            // GridFrame publishes text/style POD cells, not image planes. Do
+            // not pay mobile bandwidth for escapes no runtime consumer sees.
+            .with_image_protocols(ImageProtocolSet::new())
             .with_layers(LayerSet::with(&[Layer::L3]))
             .with_bootstrap(self.bootstrap_caps())
     }
@@ -258,6 +266,10 @@ enum Pending {
     RefreshTopology,
     /// A binding's own command; the reply is surfaced raw.
     Extension,
+    /// One chunk of a runtime-owned durable upload.
+    PutFile(u64),
+    /// A one-shot transcription request for a completed upload.
+    Transcribe(u64),
 }
 
 /// The sans-IO control plane. See the module docs.
@@ -305,6 +317,7 @@ pub struct ControlPlane {
     outbound: Vec<Vec<u8>>,
     events: Vec<Event>,
     damaged: Vec<ResourceId>,
+    extensions: extensions::Extensions,
 }
 
 impl ControlPlane {
@@ -346,6 +359,7 @@ impl ControlPlane {
             outbound: Vec::new(),
             events: Vec::new(),
             damaged: Vec::new(),
+            extensions: extensions::Extensions::default(),
         }
     }
 
@@ -569,6 +583,7 @@ impl ControlPlane {
         self.attached_session = None;
         self.selected_session = None;
         self.input_replay.connection_lost();
+        self.reset_extension_correlations("the connection ended before the server answered");
         self.fail_pending("connection replaced before the server answered");
         self.set_status(Status::Connecting);
         self.queue_frame(&FrameKind::Hello {
@@ -584,6 +599,7 @@ impl ControlPlane {
     pub fn connection_lost(&mut self, message: Option<String>) {
         self.handshake_ready = false;
         self.input_replay.connection_lost();
+        self.reset_extension_correlations("the connection ended before the server answered");
         if let Some(message) = &message {
             self.error = Some(message.clone());
         }
@@ -598,6 +614,7 @@ impl ControlPlane {
         self.handshake_ready = false;
         self.error = Some(message.into());
         self.strand_durable("the connection failed before the operation completed");
+        self.strand_extensions("the connection failed before the operation completed");
         self.fail_pending("the connection failed before the server answered");
         self.set_status(Status::Failed);
     }
@@ -606,6 +623,7 @@ impl ControlPlane {
     pub fn close(&mut self) {
         self.handshake_ready = false;
         self.strand_durable("the client closed before the operation completed");
+        self.strand_extensions("the client closed before the operation completed");
         self.fail_pending("the client closed before the server answered");
         if let Some(engine) = &self.engine {
             engine.reset_connection();

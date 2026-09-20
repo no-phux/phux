@@ -153,12 +153,36 @@ impl ControlPlane {
         self.input_replay.delivery_fenced(terminal_id)
     }
 
+    /// Confirm that fresh authoritative presentation was handed to the user.
+    /// This is the only evidence that may clear an unknown-delivery fence.
+    pub fn acknowledge_projection(&mut self, terminal_id: &ResourceId) {
+        self.input_replay.clear_delivery_fence(terminal_id);
+    }
+
     /// When the earliest queued acknowledged input crosses the retry
     /// horizon; `None` while none is queued. The driver sleeps until then
     /// and calls [`Self::expire_inputs`].
     #[must_use]
     pub fn next_input_deadline(&self) -> Option<Instant> {
         self.input_deadlines.values().min().copied()
+    }
+
+    /// Earliest retry-horizon deadline across acknowledged input and durable
+    /// uploads.
+    #[must_use]
+    pub fn next_operation_deadline(&self) -> Option<Instant> {
+        match (self.next_input_deadline(), self.next_upload_deadline()) {
+            (Some(input), Some(upload)) => Some(input.min(upload)),
+            (input, upload) => input.or(upload),
+        }
+    }
+
+    /// Resolve every operation past its retry horizon. Returns whether any
+    /// lossless receipt was published.
+    pub fn expire_operations(&mut self) -> bool {
+        let input = self.expire_inputs();
+        let uploads = self.expire_uploads();
+        input || uploads
     }
 
     /// Resolve every acknowledged input past the retry horizon. Returns
@@ -177,7 +201,7 @@ impl ControlPlane {
     }
     // ----- acknowledged input --------------------------------------------
 
-    pub(super) fn refuse_acknowledged_input(&mut self, message: &str) -> u64 {
+    pub(crate) fn refuse_acknowledged_input(&mut self, message: &str) -> u64 {
         let delivery_id = self.next_delivery_id();
         self.push_event(Event::InputDelivery {
             delivery_id,
