@@ -593,12 +593,21 @@ to that release:
 | `PhuxFFI-<tag>.provenance` | the build's inputs, below |
 
 The provenance file is `key value` lines: `phux-rev` and `phux-tree`
-(`clean` or `dirty`), `phux-client-abi-version` from the header,
-`libghostty-vt-rev` as pinned in the root `Cargo.toml`, `ghostty-rev` from the
-`-sys` crate's build script, `zig`, `rustc`, `cargo-profile`, `mode`,
-`targets`, `xcode`, `macosx-sdk`, `iphoneos-sdk`, both deployment floors
-(26.0, phux-mobile's), and one `slice-sha256 <identifier> <digest>` per slice.
-phux-mobile's `PHUX_REV` pin should match `phux-rev` of the archive it links.
+(`clean`, or `dirty` when anything is modified or untracked),
+`phux-client-abi-version` from the header, `libghostty-vt-rev` as Cargo
+resolved it (cross-checked against the root `Cargo.toml` pin), `ghostty-rev`
+from the `-sys` crate's build script, `zig`, `rustc`, `cargo-profile`, `mode`,
+`targets`, one `rustflags <target> <flags>` line per slice (the explicit CPU
+floor: `apple-a7` device, `apple-a12` simulator, `apple-m1` macOS, which
+`scripts/check-release-cpu-baselines.sh` pins beside the other release
+lanes), `libghostty-cpu-macos` (`baseline`) and `libghostty-cpu-ios`
+(`ghostty-xcframework-targets`, because the iOS emit selects its own platform
+targets rather than inheriting `LIBGHOSTTY_VT_SYS_CPU`), `xcode`, `macosx-sdk`,
+`iphoneos-sdk`, both deployment floors (26.0, phux-mobile's), and one
+`slice-sha256 <identifier> <digest>` per slice. Slice verification also
+rejects any member above the floor or carrying the other platform's legacy
+`LC_VERSION_MIN_*` marker. phux-mobile's `PHUX_REV` pin should match
+`phux-rev` of the archive it links.
 
 The xcframework never gates the draft's publication; `release.yml` owns that,
 and the CLI tarballs remain the release contract. A failed or missing build is
@@ -614,9 +623,16 @@ builds the chosen ref and only uploads the workflow artifact, which is how a
 branch is proven before it lands.
 
 Locally the script needs full Xcode with the iOS SDK, rustup, and the pinned
-Zig on `PATH`; it scrubs Nix devshell toolchain overrides itself, so it runs
-the same from a stock shell, from `mise`, or under `nix develop`. Output lands
-in `target/ffi-xcframework/Artifacts/`.
+Zig on `PATH`; it scrubs Nix devshell toolchain overrides itself (including
+the devshell's `DEVELOPER_DIR`, inherited `RUSTFLAGS`, and the SDK pins), so
+it runs the same from a stock shell, from `mise`, or under `nix develop`, and
+that scrub is why the "never inside `nix develop`" rule for release tarballs
+above does not apply to it. It honours cargo's own target directory
+(`CARGO_TARGET_DIR`, `build.target-dir`). Output lands in
+`target/ffi-xcframework/Artifacts/`, or under `--out` (a relative path is
+taken from the invoking directory). A local build is for proving a change;
+the slices a release ships come from `ffi-xcframework.yml`, whose provenance
+file is the authoritative record.
 
 ## One-time Cockpit import cutover
 
