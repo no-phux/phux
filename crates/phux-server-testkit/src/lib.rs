@@ -565,8 +565,9 @@ pub fn encode_frame(frame: &FrameKind) -> BytesMut {
 /// Read frames until the `COMMAND_RESULT` for `request_id` arrives, bounded by
 /// [`WIRE_RECV_TIMEOUT`] overall. Unrelated frames in between are skipped.
 ///
-/// Six test files carried their own copy, four byte-identical and two
-/// differing only in the panic wording.
+/// Pass 2 moved the six named copies here (four byte-identical, two
+/// differing only in panic wording). Leftover skip-until drain loops that
+/// still spelled the same wait by hand now call this too.
 ///
 /// The unbounded sibling is [`recv_command_result`]: use this one when a
 /// missing reply should fail the test rather than hang it.
@@ -591,10 +592,16 @@ pub async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> C
 /// Read frames until the `COMMAND_RESULT` for `request_id` arrives, skipping
 /// anything else, with no overall deadline of its own.
 ///
-/// Four test files carried a byte-identical copy. Prefer
-/// [`await_command_result`] in new tests; this exists because these call sites
-/// deliberately lean on the per-read timeout inside [`recv_typed`] instead of
-/// bounding the whole wait.
+/// Pass 2 moved four byte-identical copies here; leftover skip-until drains
+/// that leaned on [`recv_typed`]'s per-read timeout now call this too. Prefer
+/// [`await_command_result`] in new tests.
+///
+/// Call sites left alone on purpose, not duplication: `end_to_end.rs`
+/// asserts the id rather than skipping a mismatch; `stress_spawn_kill.rs`
+/// takes the first result regardless of request id; `open_listener.rs` reads
+/// over QUIC, not a UnixStream; loops that collect interleaved frames
+/// (events, output, errors) stay local because discarding those frames
+/// would change the test.
 pub async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
     recv_until(stream, |_, frame| match frame {
         FrameKind::CommandResult {

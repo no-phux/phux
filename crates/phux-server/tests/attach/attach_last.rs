@@ -27,8 +27,8 @@ use phux_protocol::wire::frame::{
 use tempfile::TempDir;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, run_local,
-    send_frame, spawn_server, wait_for_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_command_result, recv_typed,
+    run_local, send_frame, spawn_server, wait_for_socket,
 };
 
 /// Build an `ATTACH { Last }` with the same viewport/scrollback knobs
@@ -116,28 +116,13 @@ async fn await_focus_touch(stream: &mut tokio::net::UnixStream, expected_name: &
             },
         )
         .await;
-        let focused_name = loop {
-            let (type_byte, frame) = recv_typed(stream).await;
-            if type_byte != TYPE_COMMAND_RESULT {
-                continue;
-            }
-            if let FrameKind::CommandResult {
-                request_id: got,
-                result,
-            } = frame
-                && got == request_id
-            {
-                match result {
-                    CommandResult::OkWith(CommandValue::State(snapshot)) => {
-                        break snapshot
-                            .sessions
-                            .iter()
-                            .find(|session| session.id == snapshot.focused_session)
-                            .map(|session| session.name.clone());
-                    }
-                    other => panic!("GET_STATE must return Ok_With(State(..)), got {other:?}"),
-                }
-            }
+        let focused_name = match recv_command_result(stream, request_id).await {
+            CommandResult::OkWith(CommandValue::State(snapshot)) => snapshot
+                .sessions
+                .iter()
+                .find(|session| session.id == snapshot.focused_session)
+                .map(|session| session.name.clone()),
+            other => panic!("GET_STATE must return Ok_With(State(..)), got {other:?}"),
         };
         if focused_name.as_deref() == Some(expected_name) {
             return;

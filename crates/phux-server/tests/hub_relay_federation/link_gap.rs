@@ -15,6 +15,7 @@
 //! The hub consumer filters to cwd changes, so the notice reaches it alone.
 
 use super::*;
+use phux_server_testkit::recv_command_result;
 
 #[test]
 fn a_satellites_link_gap_reaches_the_hubs_consumer_as_a_source_gap() {
@@ -55,21 +56,11 @@ fn a_satellites_link_gap_reaches_the_hubs_consumer_as_a_source_gap() {
             },
         )
         .await;
-        loop {
-            let (_, frame) = recv_typed(&mut hub).await;
-            if let FrameKind::CommandResult {
-                request_id: 50,
-                result,
-            } = frame
-            {
-                assert_eq!(
-                    result,
-                    CommandResult::Ok,
-                    "the filtered subscribe is accepted"
-                );
-                break;
-            }
-        }
+        assert_eq!(
+            recv_command_result(&mut hub, 50).await,
+            CommandResult::Ok,
+            "the filtered subscribe is accepted"
+        );
         std::fs::write(&release, b"go").unwrap();
 
         let deadline = Instant::now() + STEP_DEADLINE;

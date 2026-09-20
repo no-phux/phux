@@ -28,8 +28,9 @@ use tokio::net::UnixStream;
 use tokio::time::timeout;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, encode_frame_vec,
-    join_after_shutdown, recv_typed, run_local, send_frame, spawn_server_with, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, await_command_result,
+    encode_frame_vec, join_after_shutdown, recv_typed, run_local, send_frame, spawn_server_with,
+    wait_for_raw_socket,
 };
 
 const SESSION: &str = "demo";
@@ -123,19 +124,7 @@ async fn command(stream: &mut UnixStream, request_id: u32, command: Command) -> 
         },
     )
     .await;
-    loop {
-        let (_, frame) = timeout(WIRE_RECV_TIMEOUT, recv_typed(stream))
-            .await
-            .expect("the reply arrives within the deadline");
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
+    await_command_result(stream, request_id).await
 }
 
 fn attach_resource(pane: &ResourceId, role_policy: Option<RolePolicy>) -> Command {

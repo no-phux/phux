@@ -9,16 +9,16 @@ use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{ClientCapabilities, ColorSupport, LayerSet, ServerFeature};
 use phux_protocol::ids::{FileUploadId, ResourceId};
 use phux_protocol::wire::frame::{
-    Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACH_READY,
-    TYPE_COMMAND_RESULT, TYPE_HELLO_OK, TYPE_RESOURCE_OUTPUT,
+    Command, CommandResult, CommandValue, ErrorCode, FrameKind, TYPE_ATTACH_READY, TYPE_HELLO_OK,
+    TYPE_RESOURCE_OUTPUT,
 };
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tokio::net::UnixStream;
 
 use phux_server_testkit::{
-    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_typed, run_local,
-    send_frame, spawn_server_with, wait_for_raw_socket,
+    SOCKET_CONNECT_DEADLINE, attach_by_name, join_after_shutdown, recv_command_result, recv_typed,
+    run_local, send_frame, spawn_server_with, wait_for_raw_socket,
 };
 
 const SESSION: &str = "voice";
@@ -67,23 +67,6 @@ async fn attach(stream: &mut UnixStream) -> ResourceId {
     pane.expect("ATTACHED carried the seed pane")
 }
 
-async fn command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
-    loop {
-        let (type_byte, frame) = recv_typed(stream).await;
-        if type_byte != TYPE_COMMAND_RESULT {
-            continue;
-        }
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
-}
-
 async fn upload(stream: &mut UnixStream, pane: &ResourceId, bytes: &[u8]) -> FileUploadId {
     let upload_id = FileUploadId::new([0x5a; 16]).expect("non-zero");
     send_frame(
@@ -102,7 +85,7 @@ async fn upload(stream: &mut UnixStream, pane: &ResourceId, bytes: &[u8]) -> Fil
         },
     )
     .await;
-    match command_result(stream, 10).await {
+    match recv_command_result(stream, 10).await {
         CommandResult::OkWith(CommandValue::FileUpload(ack)) => {
             assert!(ack.path.is_some(), "final chunk must land the file");
         }
@@ -218,7 +201,7 @@ fn transcribe_without_a_transcriber_is_refused_with_a_remedy() {
             },
         )
         .await;
-        match command_result(&mut stream, 12).await {
+        match recv_command_result(&mut stream, 12).await {
             CommandResult::Error { code, message } => {
                 assert_eq!(code, ErrorCode::InvalidCommand);
                 assert!(
