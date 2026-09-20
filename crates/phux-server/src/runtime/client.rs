@@ -1806,6 +1806,13 @@ async fn announce_close(
     if let Some(token) = actor_token {
         token.cancel();
     }
+    // `send` only queues on the client mailbox. A last-session self-exit
+    // that cancels the root token in this same turn tears the socket down
+    // before the connection writer can flush, so the TUI sees "lost the
+    // server" instead of the last-pane explanation (phux-fpgl.28).
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
 
     // ADR-0105: after the closes, so a client sees its last pane go before
     // the session that held it.
