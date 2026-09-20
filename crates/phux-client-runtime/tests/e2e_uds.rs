@@ -13,11 +13,12 @@ use std::time::{Duration, Instant};
 use phux_client_runtime::control::{ControlOptions, Event, SpawnRequest, Status};
 use phux_client_runtime::reconnect::Ladder;
 use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Listener, Runtime, Target};
-use phux_protocol::ResourceId;
-use phux_protocol::wire::frame::AttachTarget;
-use phux_server_testkit::{run_local, spawn_server};
+use phux_protocol::wire::frame::{AttachTarget, FrameKind, SpawnResult, ViewportInfo};
+use phux_protocol::{GroupId, ResourceId};
+use phux_server_testkit::{recv_until, run_local, send_frame, spawn_server, wait_for_socket};
 use tempfile::TempDir;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{UnixListener, UnixStream};
 
 /// Generous, like the testkit's deadlines: these drive real PTYs under a
 /// parallel test run, and a genuine hang still fails.
@@ -174,6 +175,151 @@ fn attaches_spawns_types_and_observes_the_published_frame() {
 
         client.close();
         wait_for_status(&client, Status::Closed).await;
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+    });
+}
+
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear real-server scenario keeps connection-count evidence and cleanup together"
+)]
+fn switches_sessions_and_picks_up_a_foreign_pane_without_redialing() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let server_socket = tmp.path().join("server.sock");
+        let proxy_socket = tmp.path().join("proxy.sock");
+        let (shutdown, server) = spawn_server(server_socket.clone(), Some("main"));
+
+        // A second real client creates and owns beta. Its spawn below is
+        // foreign to the runtime client, so only ATTACH_RESOURCE can open
+        // that pane's stream on the runtime's existing socket.
+        let mut controller = wait_for_socket(&server_socket, DEADLINE).await;
+        send_frame(
+            &mut controller,
+            &FrameKind::Attach {
+                attach_id: 77,
+                target: AttachTarget::CreateIfMissing {
+                    name: "beta".to_owned(),
+                    command: None,
+                    cwd: None,
+                },
+                viewport: ViewportInfo::new(40, 8),
+                request_scrollback: false,
+                scrollback_limit_lines: 0,
+                role_policy: None,
+            },
+        )
+        .await;
+        recv_until(&mut controller, |_, frame| {
+            matches!(frame, FrameKind::Attached { .. }).then_some(())
+        })
+        .await;
+        recv_until(&mut controller, |_, frame| {
+            matches!(frame, FrameKind::AttachReady { attach_id: 77 }).then_some(())
+        })
+        .await;
+        send_frame(
+            &mut controller,
+            &FrameKind::SpawnResource {
+                request_id: 87,
+                group: GroupId::new(1),
+                command: Some(vec!["/bin/cat".to_owned()]),
+                cwd: None,
+                env: None,
+                term: None,
+                satellite: None,
+                owner_terminal: None,
+                agent_session: None,
+                resource: None,
+                initial_size: Some((40, 8)),
+            },
+        )
+        .await;
+        let beta_live = recv_until(&mut controller, |_, frame| match frame {
+            FrameKind::ResourceSpawned {
+                request_id: 87,
+                result: SpawnResult::Ok(id),
+            } => Some(id),
+            _ => None,
+        })
+        .await;
+
+        let dials = Arc::new(AtomicUsize::new(0));
+        let proxy_listener = UnixListener::bind(&proxy_socket).unwrap();
+        let proxy_dials = Arc::clone(&dials);
+        let upstream_path = server_socket.clone();
+        let proxy = tokio::task::spawn_local(async move {
+            while let Ok((mut downstream, _)) = proxy_listener.accept().await {
+                proxy_dials.fetch_add(1, Ordering::SeqCst);
+                let Ok(mut upstream) = UnixStream::connect(&upstream_path).await else {
+                    continue;
+                };
+                tokio::task::spawn_local(async move {
+                    let _ = tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await;
+                });
+            }
+        });
+
+        let client = Runtime::connect(Target::uds(&proxy_socket), options()).expect("connect");
+        wait_for_status(&client, Status::Attached).await;
+        wait_until("both sessions in topology", || {
+            client
+                .topology()
+                .is_some_and(|topology| topology.session_named("beta").is_some())
+        })
+        .await;
+        assert_eq!(dials.load(Ordering::SeqCst), 1);
+
+        client.attach_session(AttachTarget::ByName("beta".to_owned()));
+        wait_until("beta's per-terminal stream", || {
+            client.selected_session() == Some(2) && client.input_ready(&beta_live)
+        })
+        .await;
+        assert!(client.send_text(&beta_live, "BETA-READY\n"));
+        wait_for_text(&client, &beta_live, "BETA-READY").await;
+        assert_eq!(dials.load(Ordering::SeqCst), 1, "switch must not redial");
+
+        client.attach_session(AttachTarget::ByName("main".to_owned()));
+        wait_until("main selected again", || {
+            client.selected_session() == Some(1)
+        })
+        .await;
+
+        send_frame(
+            &mut controller,
+            &FrameKind::SpawnResource {
+                request_id: 88,
+                group: GroupId::new(1),
+                command: Some(vec!["/bin/cat".to_owned()]),
+                cwd: None,
+                env: None,
+                term: None,
+                satellite: None,
+                owner_terminal: None,
+                agent_session: None,
+                resource: None,
+                initial_size: Some((40, 8)),
+            },
+        )
+        .await;
+        let foreign = recv_until(&mut controller, |_, frame| match frame {
+            FrameKind::ResourceSpawned {
+                request_id: 88,
+                result: SpawnResult::Ok(id),
+            } => Some(id),
+            _ => None,
+        })
+        .await;
+        wait_until("foreign pane pickup", || client.input_ready(&foreign)).await;
+        assert!(client.send_text(&foreign, "FOREIGN-PANE\n"));
+        wait_for_text(&client, &foreign, "FOREIGN-PANE").await;
+        assert_eq!(dials.load(Ordering::SeqCst), 1, "pickup must not redial");
+
+        client.close();
+        proxy.abort();
+        drop(controller);
         drop(shutdown);
         server.await.unwrap().unwrap();
     });

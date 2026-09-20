@@ -17,6 +17,9 @@ pub(super) fn frame_colors(colors: &libghostty_vt::render::Colors) -> FrameColor
     FrameColors {
         background: rgb(colors.background),
         foreground: rgb(colors.foreground),
+        has_background: false,
+        has_foreground: false,
+        reversed: false,
         cursor: colors.cursor.map(rgb),
         palette: Box::new(colors.palette.map(rgb)),
     }

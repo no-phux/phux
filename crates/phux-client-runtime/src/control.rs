@@ -30,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use bytes::BytesMut;
 use phux_client_core::handshake::validate_hello_ok;
+use phux_client_core::history::HistoryCacheConfig;
 use phux_client_core::input_replay::{
     INPUT_RETRY_HORIZON, InputReplayJournal, ReplayDisposition, ReplayReport,
 };
@@ -96,6 +97,12 @@ const APPLY_PASTE_OVERHEAD: usize = 30;
 pub struct ControlOptions {
     /// The `HELLO` client name.
     pub client_name: String,
+    /// Whether the runtime queues its post-handshake attach or topology read.
+    ///
+    /// Socket-owning embedders set this to `false`: their stable ABI exposes
+    /// `HELLO` and `ATTACH` as explicit calls, while this plane still owns all
+    /// lifecycle validation and frame application.
+    pub automatic_lifecycle: bool,
     /// The viewport `ATTACH` and spawns declare, in cells.
     pub viewport: (u16, u16),
     /// The scrollback depth `ATTACH` requests and the history cache keeps.
@@ -120,6 +127,7 @@ impl Default for ControlOptions {
     fn default() -> Self {
         Self {
             client_name: "phux-client-runtime".to_owned(),
+            automatic_lifecycle: true,
             viewport: (80, 24),
             scrollback_lines: 1000,
             attach: None,
@@ -258,6 +266,7 @@ pub struct ControlPlane {
     server: Option<ServerInfo>,
     engine: Option<EngineHandle>,
     engine_config: Option<EngineConfig>,
+    history_config: Option<HistoryCacheConfig>,
     #[cfg(feature = "engine")]
     publication: Arc<Publication>,
     topology: Option<Topology>,
@@ -266,8 +275,11 @@ pub struct ControlPlane {
     attach_target: Option<AttachTarget>,
     active_attach_id: Option<u32>,
     attach_terminals: HashSet<ResourceId>,
-    /// The session the active attach bootstrapped.
+    /// The home session whose pumps the connection-level `ATTACH` opened.
     attached_session: Option<u32>,
+    /// The session the consumer is currently viewing. This may differ from
+    /// `attached_session` after a live, per-terminal session switch.
+    selected_session: Option<u32>,
     /// Terminals subscribed with a per-terminal attach on this connection.
     terminal_attached: HashSet<ResourceId>,
     /// Terminals whose replacement snapshot is requested but not published.
@@ -305,12 +317,14 @@ impl ControlPlane {
             server: None,
             engine: None,
             engine_config: None,
+            history_config: None,
             #[cfg(feature = "engine")]
             publication: Arc::new(Publication::new()),
             topology: None,
             active_attach_id: None,
             attach_terminals: HashSet::new(),
             attached_session: None,
+            selected_session: None,
             terminal_attached: HashSet::new(),
             stream_recoveries: HashSet::new(),
             own_spawns: HashSet::new(),
@@ -326,6 +340,15 @@ impl ControlPlane {
             events: Vec::new(),
             damaged: Vec::new(),
         }
+    }
+
+    /// Override the history cache policy before opening the connection.
+    /// Bindings with explicit cache and prefetch limits use this builder;
+    /// ordinary runtime clients derive policy from [`ControlOptions`].
+    #[must_use]
+    pub fn with_history_config(mut self, config: HistoryCacheConfig) -> Self {
+        self.history_config = Some(config.normalized());
+        self
     }
 
     // ----- observation -------------------------------------------------
@@ -373,10 +396,16 @@ impl ControlPlane {
         self.topology.as_ref()
     }
 
-    /// The session the active attach bootstrapped.
+    /// The home session whose pumps the active connection-level attach opened.
     #[must_use]
     pub const fn attached_session(&self) -> Option<u32> {
         self.attached_session
+    }
+
+    /// The session currently selected by the consumer.
+    #[must_use]
+    pub const fn selected_session(&self) -> Option<u32> {
+        self.selected_session
     }
 
     /// The engine host, once `HELLO_OK` selected a profile.
@@ -418,6 +447,47 @@ impl ControlPlane {
 
     // ----- connection lifecycle ---------------------------------------
 
+    /// Open a manually driven plane with the embedder's client name.
+    /// Returns `false` after the plane has already left `Idle`.
+    pub fn open_explicit(&mut self, client_name: String) -> bool {
+        if self.options.automatic_lifecycle || self.status != Status::Idle {
+            return false;
+        }
+        self.options.client_name = client_name;
+        self.connection_opened();
+        true
+    }
+
+    /// Whether `terminal_id` belongs to the active session attach.
+    #[must_use]
+    pub fn active_attach_contains(&self, terminal_id: &ResourceId) -> bool {
+        self.attach_terminals.contains(terminal_id)
+            && self
+                .engine
+                .as_ref()
+                .is_none_or(|engine| !engine.is_closed(terminal_id))
+    }
+
+    /// Release one explicitly withdrawn terminal from both the attach
+    /// inventory and the engine owner.
+    pub fn release_terminal(&mut self, terminal_id: &ResourceId) -> bool {
+        let Some(engine) = &self.engine else {
+            return false;
+        };
+        if !engine.detach(terminal_id.clone()) {
+            return false;
+        }
+        self.attach_terminals.remove(terminal_id);
+        self.terminal_attached.remove(terminal_id);
+        self.agent_streams.remove(terminal_id);
+        true
+    }
+
+    /// Update the cursor carried by runtime-generated event subscriptions.
+    pub const fn set_event_after_seq(&mut self, after_seq: Option<u64>) {
+        self.options.event_after_seq = after_seq;
+    }
+
     /// A transport is up: reset every per-connection correlation and queue
     /// `HELLO`. Frames still queued from the previous connection are
     /// discarded, as they were built against per-connection state.
@@ -430,6 +500,7 @@ impl ControlPlane {
         self.active_attach_id = None;
         self.attach_terminals.clear();
         self.attached_session = None;
+        self.selected_session = None;
         self.input_replay.connection_lost();
         self.fail_pending("connection replaced before the server answered");
         self.set_status(Status::Connecting);
@@ -469,6 +540,15 @@ impl ControlPlane {
         self.handshake_ready = false;
         self.strand_durable("the client closed before the operation completed");
         self.fail_pending("the client closed before the server answered");
+        if let Some(engine) = &self.engine {
+            engine.reset_connection();
+        }
+        self.active_attach_id = None;
+        self.attach_terminals.clear();
+        self.attached_session = None;
+        self.selected_session = None;
+        self.terminal_attached.clear();
+        self.agent_streams.clear();
         self.set_status(Status::Closed);
     }
 }

@@ -19,6 +19,7 @@ fn config() -> EngineConfig {
         profile: BootstrapProfile::SynthesizedVtRaw,
         limits: BootstrapLimits::default(),
         scrollback_lines: 100,
+        history: None,
     }
 }
 

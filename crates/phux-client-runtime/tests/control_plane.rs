@@ -6,7 +6,7 @@
 #![allow(clippy::panic, reason = "test assertions")]
 
 use phux_client_runtime::control::{
-    ControlError, ControlOptions, ControlPlane, Event, SpawnRequest, Status,
+    ControlError, ControlOptions, ControlPlane, Event, SpawnRequest, Status, StreamRecovery,
 };
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
@@ -15,7 +15,8 @@ use phux_protocol::caps::{
 };
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
 use phux_protocol::wire::frame::{
-    AttachTarget, Command, DetachReason, ErrorCode, FrameKind, SpawnResult,
+    AttachTarget, Command, CommandResult, CommandValue, DetachReason, ErrorCode, FrameKind,
+    SpawnResult,
 };
 use phux_protocol::wire::info::{ResourceInfo, SessionInfo, SessionSnapshot, WindowInfo};
 
@@ -46,6 +47,30 @@ fn snapshot() -> SessionSnapshot {
             "shell",
         )])
         .with_resources(vec![ResourceInfo::new(terminal(), WindowId::new(1), 20, 4)])
+}
+
+fn two_session_snapshot(include_own_spawn: bool) -> SessionSnapshot {
+    let main = SessionId::new(1);
+    let beta = SessionId::new(2);
+    let main_window = WindowId::new(1);
+    let beta_window = WindowId::new(2);
+    let mut resources = vec![
+        ResourceInfo::new(terminal(), main_window, 20, 4),
+        ResourceInfo::new(ResourceId::local(8), beta_window, 20, 4),
+    ];
+    if include_own_spawn {
+        resources.push(ResourceInfo::new(ResourceId::local(9), beta_window, 20, 4));
+    }
+    SessionSnapshot::new(main, main_window, terminal())
+        .with_sessions(vec![
+            SessionInfo::new(main, "main"),
+            SessionInfo::new(beta, "beta"),
+        ])
+        .with_windows(vec![
+            WindowInfo::new(main_window, main, "shell"),
+            WindowInfo::new(beta_window, beta, "other"),
+        ])
+        .with_resources(resources)
 }
 
 fn decode(frame: &[u8]) -> FrameKind {
@@ -132,6 +157,18 @@ fn attach(plane: &mut ControlPlane, attach_id: u32, bytes: &[u8]) {
     plane
         .feed(FrameKind::AttachReady { attach_id })
         .expect("ATTACH_READY");
+}
+
+fn refresh_to(plane: &mut ControlPlane, snapshot: SessionSnapshot) {
+    let request_id = plane.refresh_topology().expect("negotiated topology read");
+    let _ = plane.take_outbound();
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id,
+            result: CommandResult::OkWith(CommandValue::State(snapshot)),
+        })
+        .expect("GET_STATE reply");
+    let _ = plane.take_events();
 }
 
 fn output(plane: &mut ControlPlane, seq: u64, bytes: &[u8]) {
@@ -255,6 +292,98 @@ fn a_fed_attach_publishes_the_terminal_and_input_goes_out_as_frames() {
             ..
         }
     ));
+}
+
+#[test]
+fn live_session_switch_uses_the_same_socket_and_preserves_home_pumps() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_events();
+    let _ = plane.take_outbound();
+    refresh_to(&mut plane, two_session_snapshot(false));
+
+    assert!(!plane.attach_session(AttachTarget::ByName("beta".to_owned())));
+    assert_eq!(plane.attached_session(), Some(1));
+    assert_eq!(plane.selected_session(), Some(2));
+    let switched = plane
+        .take_outbound()
+        .into_iter()
+        .map(|frame| decode(&frame))
+        .collect::<Vec<_>>();
+    assert_eq!(switched.len(), 2, "one attach and its required resize");
+    assert!(matches!(
+        &switched[0],
+        FrameKind::Command {
+            command: Command::AttachResource { terminal_id, .. },
+            ..
+        } if *terminal_id == ResourceId::local(8)
+    ));
+    assert!(matches!(
+        &switched[1],
+        FrameKind::ResizeTerminal { terminal_id, .. }
+            if *terminal_id == ResourceId::local(8)
+    ));
+
+    assert!(!plane.attach_session(AttachTarget::ByName("main".to_owned())));
+    assert_eq!(plane.selected_session(), Some(1));
+    let home = plane
+        .take_outbound()
+        .into_iter()
+        .map(|frame| decode(&frame))
+        .collect::<Vec<_>>();
+    assert_eq!(home.len(), 1, "home already rides the session pumps");
+    assert!(matches!(
+        &home[0],
+        FrameKind::Command {
+            command: Command::DetachResource { terminal_id },
+            ..
+        } if *terminal_id == ResourceId::local(8)
+    ));
+}
+
+#[test]
+fn own_spawns_are_never_attached_a_second_time() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_events();
+    let _ = plane.take_outbound();
+    plane
+        .feed(FrameKind::ResourceSpawned {
+            request_id: 44,
+            result: SpawnResult::Ok(ResourceId::local(9)),
+        })
+        .expect("own spawn reply");
+    let _ = plane.take_outbound();
+    refresh_to(&mut plane, two_session_snapshot(true));
+
+    assert!(!plane.attach_session(AttachTarget::ByName("beta".to_owned())));
+    let frames = plane
+        .take_outbound()
+        .into_iter()
+        .map(|frame| decode(&frame))
+        .collect::<Vec<_>>();
+    assert!(frames.iter().any(|frame| matches!(
+        frame,
+        FrameKind::Command {
+            command: Command::AttachResource { terminal_id, .. },
+            ..
+        } if *terminal_id == ResourceId::local(8)
+    )));
+    assert!(!frames.iter().any(|frame| match frame {
+        FrameKind::Command {
+            command: Command::AttachResource { terminal_id, .. },
+            ..
+        }
+        | FrameKind::ResizeTerminal { terminal_id, .. } => {
+            *terminal_id == ResourceId::local(9)
+        }
+        _ => false,
+    }));
+    assert_eq!(
+        plane.ensure_stream(&ResourceId::local(9)),
+        StreamRecovery::Noop
+    );
+    assert!(plane.take_outbound().is_empty());
 }
 
 #[test]

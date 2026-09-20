@@ -64,7 +64,8 @@ impl ControlPlane {
 
     pub(super) fn fold_agent_event(&mut self, terminal_id: ResourceId, event: AgentEvent) {
         match event {
-            AgentEvent::Bell => self.push_event(Event::Bell { terminal_id }),
+            // A subscribed EVENT Bell is advisory metadata, not the terminal
+            // engine's BEL status. The dedicated BELL frame remains observable.
             AgentEvent::TitleChanged { title } => {
                 if let Some(pane) = self
                     .topology
