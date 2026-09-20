@@ -5,20 +5,19 @@
 
 use std::{mem::size_of, ptr};
 
-use libghostty_vt::render::{Colors, Snapshot};
-use libghostty_vt::screen::{CellContentTag, CellWide};
-use libghostty_vt::style::{RgbColor, Style, StyleColor};
+use libghostty_vt::style::RgbColor;
 use libghostty_vt::terminal::{Mode, Terminal};
+use phux_client_core::grid::{self, CursorWidth, GridSnapshot};
 
 use crate::error::{BridgeError, check_struct, terminal_id_in};
 use crate::{
-    ABI_VERSION, PhuxClient, PhuxClientResult, PhuxResourceId, PhuxTerminalCell,
-    PhuxTerminalGridView, with_client_ref,
+    ABI_VERSION, PhuxClient, PhuxClientResult, PhuxResourceId, PhuxTerminalGridView,
+    with_client_ref,
 };
 
-pub const GRID_COLOR_DEFAULT: u8 = 0;
-pub const GRID_COLOR_PALETTE: u8 = 1;
-pub const GRID_COLOR_RGB: u8 = 2;
+pub const GRID_COLOR_DEFAULT: u8 = grid::COLOR_KIND_DEFAULT;
+pub const GRID_COLOR_PALETTE: u8 = grid::COLOR_KIND_PALETTE;
+pub const GRID_COLOR_RGB: u8 = grid::COLOR_KIND_RGB;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -39,15 +38,10 @@ impl From<RgbColor> for PhuxGridRgb {
 }
 
 /// Color provenance lost by the v1 cell's palette-resolved RGB fields.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PhuxGridCellMetadata {
-    pub foreground_kind: u8,
-    /// Meaningful only for `GRID_COLOR_PALETTE`.
-    pub foreground_palette_index: u8,
-    pub underline_color_is_default: bool,
-    pub background_color_is_default: bool,
-}
+///
+/// Defined once, in `phux_client_core::grid::CellMetadata`; the metadata
+/// query lends a pointer into core's per-cell buffer.
+pub type PhuxGridCellMetadata = grid::CellMetadata;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -109,27 +103,23 @@ impl Default for PhuxTerminalGridMetadata {
     reason = "private cache shared with client flattening, not a C API export"
 )]
 pub(crate) struct GridMetadataCache {
-    pub cells: Vec<PhuxGridCellMetadata>,
     pub view: PhuxTerminalGridMetadata,
     pub valid: bool,
 }
 
 impl GridMetadataCache {
+    /// Capture the additive metadata for one projected grid. `cells` lends
+    /// core's per-cell provenance records; `grid` carries the identity and
+    /// cursor fields the view repeats.
     pub(crate) fn publish(
         &mut self,
-        snapshot: &Snapshot<'_, '_>,
+        snapshot: &GridSnapshot<'_>,
         terminal: &Terminal<'_, '_>,
-        colors: &Colors,
         grid: &PhuxTerminalGridView,
-        cells: &[PhuxTerminalCell],
     ) -> Result<(), BridgeError> {
-        let cursor = snapshot.cursor_viewport().map_err(BridgeError::ghostty)?;
-        let wide_tail = cursor.is_some_and(|value| value.at_wide_tail);
-        let cursor_index =
-            usize::from(grid.cursor_row) * usize::from(grid.cols) + usize::from(grid.cursor_col);
-        let wide = cells
-            .get(cursor_index)
-            .is_some_and(|cell| cell.wide == CellWide::Wide as u8);
+        let cursor = snapshot.cursor;
+        let colors = &snapshot.colors;
+        let cells = &snapshot.buffer.metadata;
         let defaults = DefaultColors::read(terminal)?;
         self.view = PhuxTerminalGridMetadata {
             stream_id: grid.stream_id,
@@ -149,45 +139,17 @@ impl GridMetadataCache {
             reverse_colors: defaults.reversed,
             cursor_color: colors.cursor.map_or_else(PhuxGridRgb::default, Into::into),
             has_cursor_color: colors.cursor.is_some(),
-            cursor_blinking: snapshot.cursor_blinking().map_err(BridgeError::ghostty)?,
-            cursor_wide: grid.cursor_visible && (wide || wide_tail),
-            cursor_at_wide_tail: wide_tail,
+            cursor_blinking: cursor.blinking,
+            cursor_wide: cursor.visible && cursor.width.is_wide(),
+            cursor_at_wide_tail: cursor.width == CursorWidth::WideTail,
             palette: colors.palette.map(Into::into),
-            cells: self.cells.as_ptr(),
-            cell_count: self.cells.len(),
+            cells: cells.as_ptr(),
+            cell_count: cells.len(),
             ..PhuxTerminalGridMetadata::default()
         };
         self.valid = true;
         Ok(())
     }
-}
-
-#[allow(
-    clippy::redundant_pub_crate,
-    reason = "private helper shared with client flattening, not a C API export"
-)]
-pub(crate) const fn cell_metadata(style: Style, content: CellContentTag) -> PhuxGridCellMetadata {
-    let (foreground_kind, foreground_palette_index) = match style.fg_color {
-        StyleColor::None => (GRID_COLOR_DEFAULT, 0),
-        StyleColor::Palette(index) => (GRID_COLOR_PALETTE, index.0),
-        StyleColor::Rgb(_) => (GRID_COLOR_RGB, 0),
-    };
-    PhuxGridCellMetadata {
-        foreground_kind,
-        foreground_palette_index,
-        underline_color_is_default: matches!(style.underline_color, StyleColor::None),
-        background_color_is_default: default_background(style, content),
-    }
-}
-
-const fn default_background(style: Style, content: CellContentTag) -> bool {
-    if matches!(
-        content,
-        CellContentTag::BgColorPalette | CellContentTag::BgColorRgb
-    ) {
-        return false;
-    }
-    matches!(style.bg_color, StyleColor::None)
 }
 
 struct DefaultColors {
