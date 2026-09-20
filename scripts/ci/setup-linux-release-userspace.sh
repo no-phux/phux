@@ -31,6 +31,13 @@ apt-get install -y --no-install-recommends \
     pkg-config \
     xz-utils
 
+# actions/checkout registers the host-mounted workspace in a temporary HOME.
+# Container shell steps run as root with a different global Git config, so any
+# later fetch or checkout otherwise fails with "detected dubious ownership".
+if [[ -n "${GITHUB_WORKSPACE:-}" ]]; then
+    git config --global --add safe.directory "$GITHUB_WORKSPACE"
+fi
+
 # rustc passes -fuse-ld=mold to cc. Jammy's default GCC 11 rejects that name;
 # GCC 12 accepts it and is what the hosted 22.04 image also shipped.
 ln -sfn "$(command -v gcc-12)" /usr/local/bin/cc
