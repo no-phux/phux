@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github/workflows"
 RELEASE = (WORKFLOWS / "release.yml").read_text()
 NEXT_RELEASE = (WORKFLOWS / "next-release.yml").read_text()
+LINUX_RELEASE_SETUP = (ROOT / "scripts/ci/setup-linux-release-userspace.sh").read_text()
 STANDARD = {"ubuntu-latest", "ubuntu-24.04", "ubuntu-24.04-arm", "macos-26"}
 RETIRED_UBUNTU_2204 = re.compile(
     r"(?m)^[ \t]*(?:runs-on:|- os:) ubuntu-22\.04(?:-arm)?[ \t]*$"
@@ -94,6 +95,20 @@ class RunnerPolicyTests(unittest.TestCase):
                 self.assertIn("name: ${{ matrix.target }}", body)
                 self.assertIn("test \"$(getconf GNU_LIBC_VERSION)\" = 'glibc 2.35'", body)
         self.assertIn("needs.build.result == 'success'", RELEASE)
+
+    def test_linux_release_container_trusts_the_host_mounted_workspace(self):
+        command = 'git config --global --add safe.directory "$GITHUB_WORKSPACE"'
+        self.assertRegex(LINUX_RELEASE_SETUP, rf"(?m)^\s+{re.escape(command)}$")
+        self.assertLess(
+            LINUX_RELEASE_SETUP.index("apt-get install"),
+            LINUX_RELEASE_SETUP.index(command),
+        )
+
+        build_job = RELEASE.split("\n  build:\n", 1)[1].split("\n  release:\n", 1)[0]
+        self.assertLess(
+            build_job.index("scripts/ci/setup-linux-release-userspace.sh"),
+            build_job.index('git fetch --force --tags origin'),
+        )
 
     def test_release_platform_guard_rejects_wrong_arch_and_newer_glibc(self):
         block = RELEASE.split("- name: Verify native release platform and Linux baseline", 1)[1]
