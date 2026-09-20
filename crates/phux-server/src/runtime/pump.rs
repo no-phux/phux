@@ -17,8 +17,35 @@
 use std::time::Duration;
 
 use phux_protocol::ids::BootstrapId;
+use phux_protocol::wire::frame::FrameKind;
+use tokio::sync::mpsc::error::TrySendError;
 
+use crate::state::Outbound;
 use crate::terminal_actor::{PaneOutput, ResyncAudience, ResyncTarget};
+
+/// Outcome of offering one live frame to a consumer mailbox without parking.
+pub(super) enum MailboxForward {
+    /// The frame is on the mailbox.
+    Sent,
+    /// The consumer went away.
+    Closed,
+    /// The mailbox is full: this consumer is behind, and parking would keep
+    /// the pump off the broadcast until it drains — the trap that lets a
+    /// pane exit lose a fenced resync (phux-fpgl.28).
+    Full,
+}
+
+/// Offer `frame` to `out_tx` without waiting for capacity.
+pub(super) fn try_send_frame(
+    out_tx: &tokio::sync::mpsc::Sender<Outbound>,
+    frame: FrameKind,
+) -> MailboxForward {
+    match out_tx.try_send(Outbound::Frame(frame)) {
+        Ok(()) => MailboxForward::Sent,
+        Err(TrySendError::Closed(_)) => MailboxForward::Closed,
+        Err(TrySendError::Full(_)) => MailboxForward::Full,
+    }
+}
 
 /// Spawn an owned output task from any subscription path. Completion guards
 /// are captured before spawning, so even abort-before-first-poll resolves the

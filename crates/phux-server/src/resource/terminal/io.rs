@@ -477,7 +477,9 @@ impl TerminalActor {
     }
 
     /// React to PTY EOF (the child went away): detach the PTY-read branch
-    /// and notify the runtime so it can broadcast `RESOURCE_CLOSED`.
+    /// and record the exit facet. `exit_notify` is fired by the run loop
+    /// *after* it flushes any pending gap resync, so a fenced consumer still
+    /// gets the last screen before `RESOURCE_CLOSED` (phux-fpgl.28).
     ///
     /// Dropping `pty_rx` parks the pump's `select!` arm forever, but the
     /// actor deliberately stays alive — it must remain reachable for
@@ -491,11 +493,10 @@ impl TerminalActor {
     /// The runtime decides whether this EOF closes the pane or replaces the
     /// child with a fresh default shell (last live Terminal in the session).
     pub(super) fn handle_pty_eof(&mut self) {
-        debug!("PTY EOF; firing exit_notify and keeping actor alive for late snapshot/input drain");
+        debug!("PTY EOF; recording exit and keeping actor alive for a final resync flush");
         self.pty_rx = None;
         let exit = self.reap_child_if_any();
         self.record_exit(exit);
-        self.core.notify_exit(exit);
     }
 
     /// Spawn a replacement child in this same Terminal after PTY EOF.

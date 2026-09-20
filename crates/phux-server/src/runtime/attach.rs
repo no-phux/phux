@@ -609,6 +609,11 @@ impl OutputPumpContext {
 
     /// Forward one live PTY chunk, dropping anything a tombstone voided or the
     /// published bootstrap already covered.
+    ///
+    /// A full consumer mailbox is a gap: parking on `send` would keep this
+    /// pump off the broadcast until the consumer drains, so a pane that exits
+    /// in that window cannot deliver the resync the pump is about to ask for
+    /// (phux-fpgl.28). Fence and skip to a fresh screen instead.
     async fn forward_live(
         &self,
         generation: &mut PumpGeneration,
@@ -619,14 +624,20 @@ impl OutputPumpContext {
             return ControlFlow::Continue(());
         }
         let frame = self.output_frame(generation, seq, bytes);
-        if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
-            return ControlFlow::Break(Some(PumpFault::OutboundClosed));
+        match pump::try_send_frame(&self.out_tx, frame) {
+            pump::MailboxForward::Sent => {
+                crate::perf::PUMP_FRAMES.incr();
+                crate::perf::PUMP_BYTES.add_len(bytes.len());
+                crate::perf::PUMP_FRAME_BYTES.record_len(bytes.len());
+                generation.note_forwarded(seq);
+                ControlFlow::Continue(())
+            }
+            pump::MailboxForward::Closed => ControlFlow::Break(Some(PumpFault::OutboundClosed)),
+            pump::MailboxForward::Full => {
+                self.request_gap_resync(generation, GapCause::Backpressure)
+                    .await
+            }
         }
-        crate::perf::PUMP_FRAMES.incr();
-        crate::perf::PUMP_BYTES.add_len(bytes.len());
-        crate::perf::PUMP_FRAME_BYTES.record_len(bytes.len());
-        generation.note_forwarded(seq);
-        ControlFlow::Continue(())
     }
 
     /// Does this ordered control frame name this pump's terminal, stream, and
@@ -900,6 +911,10 @@ impl OutputPumpContext {
         if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
             return ControlFlow::Continue(());
         }
+        if self.resize.is_closed() {
+            // Pane actor is gone; RESOURCE_CLOSED is the terminal signal.
+            return ControlFlow::Break(None);
+        }
         self.fail_unrecoverable_gap().await
     }
 
@@ -927,6 +942,9 @@ impl OutputPumpContext {
         generation.note_resync_requested();
         if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
             return ControlFlow::Continue(());
+        }
+        if self.resize.is_closed() {
+            return ControlFlow::Break(None);
         }
         self.fail_unrecoverable_gap().await
     }
@@ -969,6 +987,9 @@ enum GapCause {
     /// The chunk in hand was read from the pane this long ago, past
     /// [`pump::STALE_OUTPUT_BUDGET`].
     Stale(std::time::Duration),
+    /// The consumer mailbox was full; parking would have kept the pump off
+    /// the broadcast (phux-fpgl.28).
+    Backpressure,
 }
 
 impl std::fmt::Display for GapCause {
@@ -976,6 +997,7 @@ impl std::fmt::Display for GapCause {
         match self {
             Self::Dropped(n) => write!(f, "broadcast dropped {n} chunks"),
             Self::Stale(age) => write!(f, "chunk {}ms old", age.as_millis()),
+            Self::Backpressure => write!(f, "consumer mailbox full"),
         }
     }
 }
@@ -4476,13 +4498,13 @@ mod tests {
             generation: BootstrapId,
         },
         Tombstone,
-        Other,
+        Other(String),
     }
 
     impl Seen {
         fn of(outbound: Outbound) -> Self {
             let Outbound::Frame(frame) = outbound else {
-                return Self::Other;
+                return Self::Other(format!("{outbound:?}"));
             };
             match frame {
                 FrameKind::ResourceOutput {
@@ -4504,7 +4526,7 @@ mod tests {
                     generation: bootstrap_id,
                 },
                 FrameKind::BootstrapTombstone { .. } => Self::Tombstone,
-                _ => Self::Other,
+                other => Self::Other(format!("{other:?}")),
             }
         }
     }
@@ -4739,10 +4761,12 @@ mod tests {
             .await;
     }
 
-    /// phux-auqy, the `Lagged` half: a consumer whose mailbox stalls long
-    /// enough for the broadcast to overwrite its window is re-bootstrapped
-    /// alone. Its neighbour, draining promptly, sees every chunk on its
-    /// original generation and never a republish.
+    /// phux-auqy + phux-fpgl.28: a consumer whose mailbox fills is
+    /// re-bootstrapped alone. A full mailbox is itself a gap — parking
+    /// would keep the pump off the broadcast — so the resync is requested
+    /// without waiting for the consumer to drain. Its neighbour, draining
+    /// promptly, sees every chunk on its original generation and never a
+    /// republish.
     #[tokio::test(flavor = "current_thread")]
     async fn a_lagged_consumer_resyncs_without_republishing_its_neighbour() {
         let local = tokio::task::LocalSet::new();
@@ -4755,35 +4779,15 @@ mod tests {
                 let initial = two_pump_initial_generation();
                 let replacement = next_bootstrap_id(initial);
 
-                // Nobody drains the lagging consumer yet, so its link is
-                // stalled: its one mailbox slot takes seq 1 and its pump
-                // blocks forwarding seq 2 while the four-slot ring moves on
-                // past the chunks it has not read.
+                // Nobody drains the lagging consumer: its one mailbox slot
+                // takes seq 1, and seq 2 finds the mailbox full. That is a
+                // gap (phux-fpgl.28); the pump fences and asks for a resync
+                // instead of parking while the four-slot ring moves on.
                 let now = std::time::Instant::now();
                 for seq in 1..=9 {
                     output.send(live(seq, now)).expect("pumps subscribed");
                     let_pumps_run().await;
                 }
-                assert!(
-                    resize_rx.try_recv().is_err(),
-                    "a stalled pump has not observed its gap yet",
-                );
-
-                // The link drains; only now does the pump find its window
-                // overwritten and ask for a resync.
-                assert_eq!(
-                    frames_seen(&mut lagging, 2).await,
-                    vec![
-                        Seen::Output {
-                            generation: initial,
-                            seq: 1
-                        },
-                        Seen::Output {
-                            generation: initial,
-                            seq: 2
-                        },
-                    ],
-                );
                 let request = resync_request_from(&mut resize_rx, &mut lagging).await;
                 assert_eq!(
                     request.resync_for,
@@ -4794,18 +4798,19 @@ mod tests {
                     }),
                     "the resync names the lagging pump, not the pane",
                 );
-                answer_gap_resync(&output, &request, 9);
-                output.send(live(10, now)).expect("pumps subscribed");
 
-                let expected_fresh: Vec<_> = (1..=10)
-                    .map(|seq| Seen::Output {
-                        generation: initial,
-                        seq,
-                    })
-                    .collect();
-                assert_eq!(frames_seen(&mut fresh, 10).await, expected_fresh);
+                // The one live frame that made it before the fence. Draining
+                // it gives republish room on the one-slot mailbox.
                 assert_eq!(
-                    frames_seen(&mut lagging, 4).await,
+                    frames_seen(&mut lagging, 1).await,
+                    vec![Seen::Output {
+                        generation: initial,
+                        seq: 1
+                    }],
+                );
+                answer_gap_resync(&output, &request, 9);
+                assert_eq!(
+                    frames_seen(&mut lagging, 3).await,
                     vec![
                         Seen::Begin {
                             generation: replacement,
@@ -4815,11 +4820,30 @@ mod tests {
                         Seen::Ready {
                             generation: replacement
                         },
-                        Seen::Output {
-                            generation: replacement,
-                            seq: 10
-                        },
                     ],
+                    "the lagging consumer converges onto a fresh generation",
+                );
+
+                // Stamp seq 10 after the republish so it cannot sit in the
+                // four-slot ring (or age past the stale budget) while the
+                // one-slot mailbox drains Begin/Chunk/Ready.
+                output
+                    .send(live(10, std::time::Instant::now()))
+                    .expect("pumps subscribed");
+
+                let expected_fresh: Vec<_> = (1..=10)
+                    .map(|seq| Seen::Output {
+                        generation: initial,
+                        seq,
+                    })
+                    .collect();
+                assert_eq!(frames_seen(&mut fresh, 10).await, expected_fresh);
+                assert_eq!(
+                    frames_seen(&mut lagging, 1).await,
+                    vec![Seen::Output {
+                        generation: replacement,
+                        seq: 10
+                    }],
                 );
                 assert_quiet(&mut fresh, "the fresh consumer").await;
                 assert_quiet(&mut lagging, "the lagging consumer").await;

@@ -178,6 +178,20 @@ impl ResyncDebounce {
     /// asks while another pump's gap resync is already owed still rides the
     /// same snapshot.
     fn arm(&mut self, owed: OwedResync, deadline: std::pin::Pin<&mut tokio::time::Sleep>) {
+        let coalesce_gap = self.pending && owed.reason == ResyncReason::OutboundGap;
+        self.include(owed);
+        if coalesce_gap {
+            return;
+        }
+        deadline.reset(tokio::time::Instant::now() + RESIZE_RESYNC_DEBOUNCE);
+    }
+
+    /// Fold `owed` into the audience without touching the deadline.
+    ///
+    /// PTY EOF uses this: a fenced pump's request must ride the snapshot that
+    /// is about to fire, not wait another debounce the actor will not live to
+    /// serve (phux-fpgl.28).
+    fn include(&mut self, owed: OwedResync) {
         match owed.target {
             None => self.everyone = true,
             Some(target) if !self.targets.contains(&target) => self.targets.push(target),
@@ -188,7 +202,6 @@ impl ResyncDebounce {
         }
         self.pending = true;
         self.reason = owed.reason;
-        deadline.reset(tokio::time::Instant::now() + RESIZE_RESYNC_DEBOUNCE);
     }
 
     /// Clear the owed resync and hand back the reason and audience to
@@ -321,6 +334,7 @@ impl TerminalActor {
                 biased;
 
                 () = self.core.token.cancelled() => {
+                    let _ = self.flush_final_gap_resync(&mut state.resync);
                     self.shutdown_from_cancel().await;
                     return;
                 }
@@ -363,6 +377,7 @@ impl TerminalActor {
                     {
                         return;
                     }
+                    self.flush_exit_resync_if_needed(&mut state.resync).await;
                 }
 
                 Some(req) = self.snapshot_rx.recv(), if !bootstrap_pending =>
@@ -453,6 +468,54 @@ impl TerminalActor {
     async fn shutdown_from_cancel(&mut self) {
         debug!("TerminalActor cancellation token fired");
         self.shutdown_pty().await;
+    }
+
+    /// Drain queued gap-resync requests and fire any owed snapshot now.
+    ///
+    /// A fenced pump asked while the actor was ingesting the last PTY burst
+    /// still has its request in `resize_rx` or on the debounce; waiting for
+    /// the debounce after EOF lets the exit watcher reap the pane first
+    /// (phux-fpgl.28).
+    fn flush_final_gap_resync(&mut self, resync: &mut ResyncDebounce) -> bool {
+        while let Ok(req) = self.resize_rx.try_recv() {
+            for owed in self.apply_resize_request(req) {
+                resync.include(owed);
+            }
+        }
+        if !resync.pending {
+            return false;
+        }
+        self.fire_owed_resync(resync);
+        true
+    }
+
+    /// After PTY EOF: publish the last grid, then tell the exit watcher
+    /// the child is gone.
+    ///
+    /// Drain any queued gap request first so it rides this snapshot, then
+    /// broadcast everyone: a targeted fire names only the pump that asked,
+    /// and a lagged `ATTACH_RESOURCE` watcher is often not that pump
+    /// (phux-fpgl.28). Healthy last-pane attach still gets one replacement
+    /// generation; it must not get a second, and close must not wait on
+    /// mailbox occupancy — those stuffed the TUI and lost `RESOURCE_CLOSED`
+    /// to server self-exit.
+    #[allow(
+        clippy::future_not_send,
+        reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
+    )]
+    async fn flush_exit_resync_if_needed(&mut self, resync: &mut ResyncDebounce) {
+        if self.pty_rx.is_some() || self.core.exit_notify.is_none() || self.exit.is_none() {
+            return;
+        }
+        let _ = self.flush_final_gap_resync(resync);
+        self.broadcast_resync(ResyncReason::OutboundGap, ResyncAudience::Everyone);
+        tokio::task::yield_now().await;
+        if let Some(exit) = self.exit.as_ref() {
+            self.core.notify_exit(phux_core::process::ExitOutcome {
+                status: exit.status,
+                signal: exit.signal,
+            });
+        }
     }
 
     /// Advance native prefix capture by one record and clear the owed-step flag.
@@ -1674,6 +1737,29 @@ mod resync_debounce_tests {
             audience,
             ResyncAudience::Only(expected.into()),
             "every lagged pump rides the one snapshot, each named once",
+        );
+    }
+
+    /// phux-fpgl.28: EOF folds queued gap requests onto the pending snapshot
+    /// without pushing the deadline out — the actor will fire it immediately.
+    #[tokio::test(start_paused = true)]
+    async fn eof_flush_includes_queued_gap_requests_without_rearming_the_deadline() {
+        let sleep = tokio::time::sleep(Duration::from_secs(3600));
+        tokio::pin!(sleep);
+        let mut debounce = idle();
+        debounce.arm(gap_for(pump(1)), sleep.as_mut());
+        let first_deadline = sleep.deadline();
+        debounce.include(gap_for(pump(2)));
+        assert_eq!(
+            sleep.deadline(),
+            first_deadline,
+            "including a queued gap request at EOF must not wait another debounce",
+        );
+        let (reason, audience) = debounce.take();
+        assert_eq!(reason, ResyncReason::OutboundGap);
+        assert_eq!(
+            audience,
+            ResyncAudience::Only(vec![pump(1), pump(2)].into())
         );
     }
 

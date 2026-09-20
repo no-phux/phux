@@ -2306,8 +2306,12 @@ impl AttachResourcePumpCtx {
         );
         loop {
             let next = tokio::select! {
-                () = token.cancelled() => break,
+                biased;
+                // A ready resync must beat cooperative cancel: reap cancels
+                // this token, and taking cancel first would drop the final
+                // screen a fenced consumer is owed (phux-fpgl.28).
                 next = pump::next_event(&stream.generation, &mut stream.output_rx) => next,
+                () = token.cancelled() => break,
             };
             let msg = match next {
                 pump::PumpWait::Event(msg) => msg,
@@ -2377,6 +2381,10 @@ impl AttachResourcePumpCtx {
     }
 
     /// Forward one post-bootstrap byte delta.
+    ///
+    /// A full mailbox fences rather than parks: waiting for capacity keeps
+    /// this pump off the broadcast, so a pane that exits in that window
+    /// cannot answer the resync the pump would then ask for (phux-fpgl.28).
     async fn forward_live(
         &self,
         stream: &mut AttachResourcePumpStream,
@@ -2397,13 +2405,16 @@ impl AttachResourcePumpCtx {
                 self.stream_profile,
             ),
         };
-        if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
-            return PumpStep::Stop;
+        match crate::runtime::pump::try_send_frame(&self.out_tx, frame) {
+            crate::runtime::pump::MailboxForward::Sent => {
+                stream.generation.note_forwarded(seq);
+                self.generation_last_seq
+                    .store(seq, std::sync::atomic::Ordering::Release);
+                PumpStep::Continue
+            }
+            crate::runtime::pump::MailboxForward::Closed => PumpStep::Stop,
+            crate::runtime::pump::MailboxForward::Full => self.resync_after_lag(stream, 0).await,
         }
-        stream.generation.note_forwarded(seq);
-        self.generation_last_seq
-            .store(seq, std::sync::atomic::Ordering::Release);
-        PumpStep::Continue
     }
 
     /// Whether an ordered native control frame belongs to this pump, and
@@ -2535,6 +2546,9 @@ impl AttachResourcePumpCtx {
         let pump = self.resync_target(generation);
         if crate::runtime::attach::enqueue_output_resync(&self.resize, pump).await {
             return PumpStep::Continue;
+        }
+        if self.resize.is_closed() {
+            return PumpStep::Stop;
         }
         self.fail_unrecoverable_gap().await
     }

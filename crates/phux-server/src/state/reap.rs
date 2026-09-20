@@ -81,18 +81,41 @@ impl ServerState {
     /// bookkeeping (actor handle, token, input log, subscribers, wire-id
     /// interning, and per-Terminal L3 metadata).
     pub fn reap_terminal(&mut self, pane: ResourceId) -> bool {
-        // Resolve the parent window before the registry drops the pane.
-        let window_id = self.sessions.registry.resource(pane).and_then(|t| t.window);
-        if self.sessions.registry.remove_resource(pane).is_some() {
-            self.forget_terminal_bookkeeping(pane);
+        let (empty, token) = self.reap_terminal_inner(pane);
+        if let Some(token) = token {
+            token.cancel();
         }
+        empty
+    }
+
+    /// Reap `pane` but leave its actor running until the caller cancels the
+    /// returned token. The exit watcher uses this so a fenced pump can
+    /// finish publishing the last screen before `RESOURCE_CLOSED`
+    /// (phux-fpgl.28).
+    pub(crate) fn reap_terminal_deferring_actor_cancel(
+        &mut self,
+        pane: ResourceId,
+    ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
+        self.reap_terminal_inner(pane)
+    }
+
+    fn reap_terminal_inner(
+        &mut self,
+        pane: ResourceId,
+    ) -> (bool, Option<tokio_util::sync::CancellationToken>) {
+        let window_id = self.sessions.registry.resource(pane).and_then(|t| t.window);
+        let token = if self.sessions.registry.remove_resource(pane).is_some() {
+            self.forget_terminal_bookkeeping(pane)
+        } else {
+            None
+        };
         let Some(window_id) = window_id else {
-            return self.sessions.registry.session_count() == 0;
+            return (self.sessions.registry.session_count() == 0, token);
         };
 
         self.reap_window_if_empty(window_id);
 
-        self.sessions.registry.session_count() == 0
+        (self.sessions.registry.session_count() == 0, token)
     }
 
     /// Cascade the `window → session` half of [`Self::reap_terminal`]:
@@ -284,10 +307,15 @@ impl ServerState {
     /// Cancels the actor token defensively (the actor has usually already
     /// exited by the time we reap, but a still-live token is cleanly
     /// resolved by the cancel) and retires the wire id without reuse.
-    fn forget_terminal_bookkeeping(&mut self, pane: ResourceId) {
+    fn forget_terminal_bookkeeping(
+        &mut self,
+        pane: ResourceId,
+    ) -> Option<tokio_util::sync::CancellationToken> {
         // Handle, actor token, subscribers, and the pane's ATTACH_RESOURCE
-        // pumps (phux-v45.7) all go in one step.
-        self.resources.forget_resource(pane);
+        // pumps (phux-v45.7) all go in one step. The token is returned
+        // uncancelled so the exit path can keep the actor alive through
+        // the last-screen publish (phux-fpgl.28).
+        let token = self.resources.forget_resource(pane);
         // The close reason was claimed by whoever emitted RESOURCE_CLOSED;
         // an entry still here belonged to a resource that never got that
         // far, and it must not outlive the id it is filed under.
@@ -311,6 +339,7 @@ impl ServerState {
             // or a recycled wire id would inherit a stale declaration.
             self.agent.forget_record(&wire);
         }
+        token
     }
 
     /// Retire a removed window's wire-id mapping (no reuse).
