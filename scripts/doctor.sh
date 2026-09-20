@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Check only the selected work area's prerequisites. Never install or build.
+# Check only the selected work area's prerequisites. Never install, and never
+# build anything but a throwaway hello-world link probe in a temp directory.
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/lib/dev-toolchain.sh"
 scope="${1:-native}"
@@ -37,9 +38,33 @@ rust_tools() {
         ok "Cargo, rustfmt, clippy"
     else fail "Cargo/rustfmt/clippy" "$(env_remedy "bash scripts/setup-rust.sh $1")"; fi
     need cc 'Install platform compiler tools; see docs/SETUP.md#platform-packages'
+    rust_link_probe
     if [[ "$(uname -s)" == Linux ]]; then
         need mold 'sudo apt-get install -y mold (required by .cargo/config.toml on Linux GNU)'
     fi
+}
+# Every tool can be present and still not link: a linker older than the
+# selected macOS SDK rejects its .tbd stubs ("unknown architecture"). Only a
+# real link finds that, so link the smallest program there is.
+# Cargo's per-target linker override is honored so the probe links the way
+# `cargo build` will.
+rust_link_probe() {
+    local dir detail host linker_var linker
+    dir="$(mktemp -d "${TMPDIR:-/tmp}/phux-doctor.XXXXXX")"
+    printf 'fn main() {}\n' >"$dir/probe.rs"
+    host="$(rustc -vV 2>/dev/null | sed -n 's/^host: //p')"
+    linker_var="CARGO_TARGET_$(printf '%s' "$host" | tr 'a-z-' 'A-Z_')_LINKER"
+    linker="${host:+${!linker_var:-}}"
+    if rustc ${linker:+-C "linker=$linker"} -o "$dir/probe" "$dir/probe.rs" >"$dir/log" 2>&1 &&
+        "$dir/probe"; then
+        ok 'Rust links and runs a binary'
+    else
+        detail="$(grep -m1 -E 'unknown architecture|symbol\(s\) not found' "$dir/log" ||
+            grep -m1 -E 'error' "$dir/log" || true)"
+        fail "Rust link probe (${detail:-no output})" \
+            'Make cc and the SDK agree: open a clean shell so no SDKROOT/DEVELOPER_DIR is inherited, and see docs/SETUP.md#platform-packages'
+    fi
+    rm -rf "$dir"
 }
 zig_tool() {
     local version

@@ -14,7 +14,7 @@ cp "$root/rust-toolchain.toml" "$repo/"
 cp "$root/.config/zig-toolchain.json" "$repo/.config/"
 source "$root/scripts/lib/dev-toolchain.sh"
 bash_bin="$BASH"
-for tool in dirname basename sed head awk git grep find sort mkdir mktemp rm mv tar uname tr; do
+for tool in dirname basename sed head awk git grep find sort mkdir mktemp rm mv tar uname tr chmod; do
     ln -s "$(command -v "$tool")" "$bin/$tool"
 done
 if command -v sha256sum >/dev/null 2>&1; then
@@ -93,7 +93,12 @@ SH
 cat >"$bin/rustc" <<SH
 #!/bin/sh
 test "\$RUSTUP_AUTO_INSTALL" = 0 || exit 1
-if [ "\$1" = --print ]; then echo "\$SETUP_TEST_SYSROOT"; else echo 'rustc $RUST_CHANNEL (fixture)'; fi
+if [ "\$1" = --print ]; then echo "\$SETUP_TEST_SYSROOT"; exit 0; fi
+if [ "\$1" = -o ]; then
+    if [ -n "\$SETUP_TEST_LINK_FAIL" ]; then echo 'libSystem.tbd:4:20: error: unknown architecture' >&2; exit 1; fi
+    printf '#!/bin/sh\\nexit 0\\n' >"\$2"; chmod +x "\$2"; exit 0
+fi
+echo 'rustc $RUST_CHANNEL (fixture)'
 SH
 for tool in cargo cc mold pkg-config npm; do
     cat >"$bin/$tool" <<'SH'
@@ -107,6 +112,8 @@ echo 22
 SH
 chmod +x "$bin"/{uname,rustc,cargo,cc,mold,pkg-config,npm,node}
 expect_pass "$repo/scripts/doctor.sh" core
+# Tools present but the link broken (a linker older than the SDK) must fail.
+SETUP_TEST_LINK_FAIL=1 expect_fail 'unknown architecture' "$repo/scripts/doctor.sh" core
 expect_fail 'Node 24+' "$repo/scripts/doctor.sh" integrations
 sed 's/echo 22/echo 24/' "$bin/node" >"$scratch/node"
 cp "$scratch/node" "$bin/node"

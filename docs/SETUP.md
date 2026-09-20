@@ -255,6 +255,12 @@ The full gate uses network services for npm auditing and advisory data;
 availability failures are not source-code verdicts. See
 [Contributing](../CONTRIBUTING.md#gate-by-gate-local-vs-ci) for the gate map.
 
+Every tool can be present and still not link: a linker that predates the SDK
+it is pointed at rejects its stub files, and an `SDKROOT` or `DEVELOPER_DIR`
+inherited from another shell is enough to cause it. `just doctor` therefore
+links and runs a throwaway binary, so that class of mismatch fails in a
+second rather than part-way through a cold build.
+
 ## Validation scope
 
 Start with the smallest relevant gate. Expand to downstream crates and clients
