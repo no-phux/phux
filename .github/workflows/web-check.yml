@@ -13,7 +13,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: mini-v1-web-check-${{ github.ref }}
+  # Same rule as ci.yml: pull requests are latest-wins, but every main SHA
+  # keeps its own run. Keyed on the ref alone, consecutive merges cancelled
+  # each other's validation of main, and the cancelled run never wrote
+  # its validation receipt.
+  group: mini-v1-web-check-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:

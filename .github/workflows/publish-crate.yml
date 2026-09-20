@@ -34,6 +34,13 @@ on:
         type: boolean
         default: true
 
+# crates.io publication is irreversible and a version can never be reused, so
+# two dispatches must never overlap. The `crates-io` environment's reviewer
+# gate serialized this by convention; this makes it a property of the workflow.
+concurrency:
+  group: mini-v1-publish-crate-${{ inputs.tag }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
 

@@ -30,7 +30,9 @@ permissions:
 # result at all, which is indistinguishable from the failure this job exists to
 # catch.
 concurrency:
-  group: mini-v1-cockpit-sdk-head
+  # Keyed on the dispatched ref: two branches probing different SDK heads are
+  # unrelated runs, and a bare group made the second queue behind the first.
+  group: mini-v1-cockpit-sdk-head-${{ inputs.ref || github.ref }}
   cancel-in-progress: false
 
 jobs:
