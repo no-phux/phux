@@ -3507,13 +3507,14 @@ async fn relay_satellite_attach(
     // A narrowing applies before the relay, in the lock, so no input slips
     // through while it is in flight; a widening applies only once the
     // satellite has accepted the attach (ADR-0127).
-    let (was_attached, narrowed) = state.with_mut(|s| {
+    let (was_attached, was_viewer, narrowed) = state.with_mut(|s| {
         let was_attached =
             s.has_satellite_proxy_attach(target.client_id, target.host, target.terminal);
+        let was_viewer = s.is_viewer(target.client_id, &wire);
         let narrowed = role
             .is_viewer()
             .then(|| s.apply_attach_role(target.client_id, &wire, None, role, was_attached));
-        (was_attached, narrowed)
+        (was_attached, was_viewer, narrowed)
     });
     let seize = role.takes_over();
     if seize {
@@ -3533,8 +3534,13 @@ async fn relay_satellite_attach(
     )
     .await;
     if matches!(attached, CommandResult::Error { .. }) {
-        // A refused attach leaves the mark as it is: a narrowing stays
-        // declared, and a widening never happened, so nothing is journaled.
+        // A refused first narrowing must not leave a tombstone: the hub
+        // marks before the relay so no input slips through, but a satellite
+        // that then refuses never subscribed this id (phux-4z1y). A prior
+        // mark or proxy attach stays; a refused widening never applied.
+        if role.is_viewer() && !was_viewer && !was_attached {
+            state.with_mut(|s| s.set_viewer_mark(target.client_id, &wire, false));
+        }
         if seize {
             settle_satellite_seize(target, &attached, out_tx);
         }
@@ -6545,6 +6551,176 @@ mod hub_detach_fence_tests {
         });
         assert!(matches!(detach.await, CommandResult::Error { .. }));
         assert!(state.with(|s| s.has_satellite_proxy_attach(ClientId(1), &host, 7)));
+    }
+}
+
+#[cfg(test)]
+mod relay_satellite_attach_role_tests {
+    use super::*;
+    use crate::hub::relay::{HubRelays, RelayHandle, RelayMailbox, RelayRequest};
+    use phux_protocol::ids::{ResourceId, SatelliteHost};
+
+    struct Fixture {
+        state: SharedState,
+        host: SatelliteHost,
+        client_id: ClientId,
+        handle: RelayHandle,
+        mailbox: RelayMailbox,
+        out_tx: tokio::sync::mpsc::Sender<Outbound>,
+    }
+
+    impl Fixture {
+        fn new() -> Self {
+            let state = SharedState::new();
+            let host = SatelliteHost::from("sat");
+            let (handle, mailbox) = RelayHandle::new(host.clone());
+            let relays = HubRelays::default();
+            relays.insert(handle.clone());
+            let client_id = ClientId(1);
+            let token = CancellationToken::new();
+            state.with_mut(|s| {
+                s.set_hub_relays(relays);
+                s.set_client_connection_cancellation(client_id, token);
+            });
+            let (out_tx, _out_rx) = tokio::sync::mpsc::channel(8);
+            Self {
+                state,
+                host,
+                client_id,
+                handle,
+                mailbox,
+                out_tx,
+            }
+        }
+
+        fn wire(&self, terminal: u32) -> ResourceId {
+            ResourceId::satellite(self.host.clone(), terminal)
+        }
+
+        async fn refuse_attach(&mut self, terminal: u32, role: RolePolicy) -> CommandResult {
+            self.settle_attach(
+                terminal,
+                role,
+                CommandResult::Error {
+                    code: ErrorCode::TerminalNotFound,
+                    message: "no such terminal".to_owned(),
+                },
+            )
+            .await
+        }
+
+        async fn settle_attach(
+            &mut self,
+            terminal: u32,
+            role: RolePolicy,
+            result: CommandResult,
+        ) -> CommandResult {
+            let local = ResourceId::local(terminal);
+            let command = Command::AttachResource {
+                terminal_id: local.clone(),
+                role_policy: Some(role),
+            };
+            let attach = relay_satellite_attach(
+                &SatelliteLeaseTarget::new(&self.state, &self.host, self.client_id, &local),
+                &self.handle,
+                &command,
+                role,
+                &self.out_tx,
+                BootstrapProfile::SynthesizedVtRaw,
+                BootstrapLimits::default(),
+            );
+            tokio::pin!(attach);
+            assert!(
+                futures_util::poll!(&mut attach).is_pending(),
+                "attach must wait on the satellite reply"
+            );
+            let RelayRequest::Command { reply, .. } = self
+                .mailbox
+                .requests
+                .try_recv()
+                .expect("attach must reach the link")
+            else {
+                panic!("expected a relayed ATTACH_RESOURCE");
+            };
+            reply.send(result).expect("attach is waiting");
+            attach.await
+        }
+    }
+
+    /// phux-4z1y: a refused first VIEWER attach must not leave a hub-side
+    /// tombstone keyed on a satellite id the hub never subscribed.
+    #[tokio::test]
+    async fn a_refused_first_satellite_viewer_attach_does_not_leave_a_tombstone() {
+        let mut fixture = Fixture::new();
+        for terminal in 1..=8 {
+            let result = fixture.refuse_attach(terminal, RolePolicy::VIEWER).await;
+            assert!(matches!(
+                result,
+                CommandResult::Error {
+                    code: ErrorCode::TerminalNotFound,
+                    ..
+                }
+            ));
+            let wire = fixture.wire(terminal);
+            assert!(
+                !fixture
+                    .state
+                    .with(|s| s.is_viewer(fixture.client_id, &wire)),
+                "refused VIEWER attach to {wire:?} must not leave a tombstone"
+            );
+            assert!(fixture.state.with(|s| s.terminal_viewers(&wire).is_empty()));
+        }
+    }
+
+    /// A prior mark or proxy attach is the restore exception: the refused
+    /// narrowing must not shed an existing tombstone, and must not undo a
+    /// mark that already had a hub-side subscription.
+    #[tokio::test]
+    async fn a_refused_satellite_viewer_attach_keeps_a_prior_mark_or_proxy() {
+        let mut fixture = Fixture::new();
+        let prior = fixture.wire(3);
+        fixture.state.with_mut(|s| {
+            s.set_viewer_mark(fixture.client_id, &prior, true);
+        });
+        let _ = fixture.refuse_attach(3, RolePolicy::VIEWER).await;
+        assert!(
+            fixture
+                .state
+                .with(|s| s.is_viewer(fixture.client_id, &prior)),
+            "a refused re-attach must not shed a prior viewer tombstone"
+        );
+
+        let attached = fixture.wire(9);
+        fixture.state.with_mut(|s| {
+            s.register_satellite_proxy_attach(fixture.client_id, fixture.host.clone(), 9);
+        });
+        let _ = fixture.refuse_attach(9, RolePolicy::VIEWER).await;
+        assert!(
+            fixture
+                .state
+                .with(|s| s.is_viewer(fixture.client_id, &attached)),
+            "a refused narrowing of an existing proxy attach keeps the mark"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_satellite_viewer_attach_keeps_the_mark() {
+        let mut fixture = Fixture::new();
+        let result = fixture
+            .settle_attach(7, RolePolicy::VIEWER, CommandResult::Ok)
+            .await;
+        assert!(matches!(result, CommandResult::Ok));
+        let wire = fixture.wire(7);
+        assert!(
+            fixture
+                .state
+                .with(|s| s.is_viewer(fixture.client_id, &wire))
+        );
+        assert!(fixture.state.with(|s| s.has_satellite_proxy_attach(
+            fixture.client_id,
+            &fixture.host,
+            7
+        )));
     }
 }
 

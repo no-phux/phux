@@ -70,7 +70,10 @@ lease is open.
    mark never crosses the link. A takeover crosses only to a satellite that
    advertises `ATTACH_ROLES`; any other gets a plain attach and a relayed
    `ACQUIRE_INPUT { SEIZE }`, and the hub's lease ledger records the new
-   holder either way.
+   holder either way. A `SPAWN_RESOURCE` with satellite on a hub is not
+   marked (the hub keeps no subscription), so a raw client's first plain
+   `ATTACH_RESOURCE` to it is input-capable; this matches "a first attach
+   is not a change".
 7. **Consumers.** `phux attach --viewer` and `--take`; the recorder and
    `phux agent log` attach as `VIEWER` when the server advertises the bit;
    the snapshot's `RESOURCE_STATE` lists viewers (field 4) beside
