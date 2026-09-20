@@ -16,6 +16,20 @@
 //!   refusals no retry can satisfy.
 //! - [`tunnel`] — the byte-relay tunnel a socket-owning embedder hands one
 //!   end of a Unix-domain socket pair.
+//! - [`control`] — the sans-IO control plane over `SessionKernel`: decoded
+//!   frames in, encoded frames and owned [`control::Event`]s out. It owns
+//!   the connection lifecycle, the topology, per-terminal commands, input,
+//!   and the event subscription, and it never touches a socket.
+//! - [`engine`] — the owner thread that hosts the kernel and every engine
+//!   replica. Ghostty values never cross threads; commands go in over a
+//!   channel and owned results come back.
+//! - `publication` (feature `engine`) — the double-buffered grid: an
+//!   immutable `GridFrame` per terminal with a generation counter and dirty
+//!   rows, acquired from any thread.
+//! - [`connection`] — the async driver: dial, framing, keepalive, the
+//!   reconnect ladder, and the pump that feeds the control plane.
+//! - [`runtime`] — [`runtime::Runtime::connect`] and the thread-safe
+//!   synchronous [`runtime::Client`] a binding drives.
 //!
 //! Binding crates (`phux-client-ffi`, phux-mobile's bridge) translate these
 //! into their language's idiom and hold no state machine of their own.
@@ -24,7 +38,15 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::private_intra_doc_links)]
 
+pub mod connection;
+pub mod control;
 pub mod dial;
+pub mod engine;
+#[cfg(feature = "engine")]
+pub mod publication;
 pub mod reconnect;
+pub mod runtime;
 pub mod target;
 pub mod tunnel;
+
+pub use runtime::{Client, ClientOptions, ConnectOptions, Listener, Runtime, Target, Transport};

@@ -49,6 +49,10 @@ pub(super) fn fill_grid_cells(
     let mut row_index = 0_u32;
     let mut row_iter = rows.update(snapshot)?;
     while let Some(row) = row_iter.next() {
+        // Read the flag before clearing it: the buffer reports what changed
+        // since the previous projection, and the next one starts clean.
+        buffer.row_dirty.push(row.dirty()?);
+        row.set_dirty(false)?;
         let mut column_index = 0_u16;
         let mut cell_iter = cells.update(row)?;
         while let Some(cell) = cell_iter.next() {

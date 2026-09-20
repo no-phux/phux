@@ -17,7 +17,8 @@ use std::fmt;
 
 use libghostty_vt::Terminal;
 use libghostty_vt::render::{
-    CellIterator, Colors, CursorViewport, CursorVisualStyle, RenderState, RowIterator, Snapshot,
+    CellIterator, Colors, CursorViewport, CursorVisualStyle, Dirty, RenderState, RowIterator,
+    Snapshot,
 };
 use libghostty_vt::screen::CellWide;
 use thiserror::Error;
@@ -192,11 +193,41 @@ pub struct Cursor {
     pub width: CursorWidth,
 }
 
+/// How much of the viewport changed since the previous projection, as
+/// libghostty's render state reports it (`Snapshot::dirty`).
+///
+/// A projector's first projection is always [`GridDamage::Full`], and every
+/// row of a full projection is marked dirty, so a consumer that keys its
+/// work on damage never misses the first paint.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GridDamage {
+    /// Nothing changed; a consumer may skip the frame.
+    Clean,
+    /// Some rows changed; `GridBuffer::row_dirty` says which.
+    Rows,
+    /// Global state changed (a resize, a palette change, a scroll of the
+    /// viewport); every row is dirty.
+    #[default]
+    Full,
+}
+
+impl From<Dirty> for GridDamage {
+    fn from(dirty: Dirty) -> Self {
+        match dirty {
+            Dirty::Clean => Self::Clean,
+            Dirty::Partial => Self::Rows,
+            Dirty::Full => Self::Full,
+        }
+    }
+}
+
 /// The dense, row-major viewport a [`GridProjector`] fills.
 ///
 /// `cells` and `metadata` are parallel: index `row * cols + col` in each.
 /// `utf8` is the arena every cell's text and hyperlink spans address; it is
 /// valid UTF-8 as a whole because each span is appended as whole scalars.
+/// `row_dirty` has one flag per viewport row: whether libghostty reported
+/// the row changed since the previous projection of the same projector.
 #[derive(Debug, Default)]
 pub struct GridBuffer {
     /// One record per viewport cell.
@@ -205,6 +236,8 @@ pub struct GridBuffer {
     pub utf8: Vec<u8>,
     /// One provenance record per viewport cell.
     pub metadata: Vec<CellMetadata>,
+    /// One flag per viewport row: changed since the previous projection.
+    pub row_dirty: Vec<bool>,
 }
 
 impl GridBuffer {
@@ -212,6 +245,16 @@ impl GridBuffer {
         self.cells.clear();
         self.utf8.clear();
         self.metadata.clear();
+        self.row_dirty.clear();
+    }
+
+    /// The text of the cell at `index`, as a UTF-8 slice of the arena.
+    #[must_use]
+    pub fn cell_text(&self, index: usize) -> &[u8] {
+        self.cells.get(index).map_or(&[], |cell| {
+            let start = cell.utf8_offset as usize;
+            &self.utf8[start..start + usize::from(cell.utf8_len)]
+        })
     }
 }
 
@@ -228,6 +271,8 @@ pub struct GridSnapshot<'a> {
     /// The default colors, cursor color, and palette the cells were
     /// resolved against.
     pub colors: Colors,
+    /// How much changed since this projector's previous projection.
+    pub damage: GridDamage,
     /// The dense `rows * cols` buffer.
     pub buffer: &'a GridBuffer,
 }
@@ -269,6 +314,8 @@ pub struct GridProjector {
     cells: CellIterator<'static>,
     buffer: GridBuffer,
     scratch: flatten::CellScratch,
+    /// Whether a projection has completed: the first one is always full.
+    projected: bool,
 }
 
 impl fmt::Debug for GridProjector {
@@ -288,7 +335,19 @@ impl GridProjector {
             cells: CellIterator::new()?,
             buffer: GridBuffer::default(),
             scratch: flatten::CellScratch::new(),
+            projected: false,
         })
+    }
+
+    /// Exchange the projector's buffer for `other`.
+    ///
+    /// This is the double-buffering seam: after a projection the caller
+    /// takes the freshly filled buffer out and hands back the one it
+    /// finished reading, so a steady state publishes without copying cells.
+    /// The next projection clears and refills whatever buffer it holds; its
+    /// damage is still relative to this projector's previous projection.
+    pub const fn swap_buffer(&mut self, other: &mut GridBuffer) {
+        std::mem::swap(&mut self.buffer, other);
     }
 
     /// The buffer the last successful [`project`](Self::project) filled.
@@ -306,12 +365,13 @@ impl GridProjector {
         &mut self,
         terminal: &Terminal<'static, '_>,
     ) -> Result<GridSnapshot<'_>, GridError> {
-        let (cols, rows, cursor, colors) = self.fill(terminal)?;
+        let (cols, rows, cursor, colors, damage) = self.fill(terminal)?;
         Ok(GridSnapshot {
             cols,
             rows,
             cursor,
             colors,
+            damage,
             buffer: &self.buffer,
         })
     }
@@ -321,11 +381,16 @@ impl GridProjector {
     fn fill(
         &mut self,
         terminal: &Terminal<'static, '_>,
-    ) -> Result<(u16, u16, Cursor, Colors), GridError> {
+    ) -> Result<(u16, u16, Cursor, Colors, GridDamage), GridError> {
         let snapshot = self.state.update(terminal)?;
         let cols = snapshot.cols()?;
         let rows = snapshot.rows()?;
         let colors = snapshot.colors()?;
+        let damage = if self.projected {
+            GridDamage::from(snapshot.dirty()?)
+        } else {
+            GridDamage::Full
+        };
         self.buffer.clear();
         let expected = usize::from(cols)
             .checked_mul(usize::from(rows))
@@ -347,8 +412,15 @@ impl GridProjector {
         if produced != expected {
             return Err(GridError::SparseViewport { produced, expected });
         }
+        if damage == GridDamage::Full {
+            self.buffer.row_dirty.iter_mut().for_each(|row| *row = true);
+        }
+        // The render state accumulates dirty flags until a renderer clears
+        // them (the libghostty contract); this projection consumed them.
+        snapshot.set_dirty(Dirty::Clean)?;
         let cursor = read_cursor(&snapshot, &self.buffer, cols)?;
-        Ok((cols, rows, cursor, colors))
+        self.projected = true;
+        Ok((cols, rows, cursor, colors, damage))
     }
 }
 

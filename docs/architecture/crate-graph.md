@@ -80,25 +80,28 @@ Five crate boundaries carry weight:
    and `phux-relay`'s consumer leg share, since both crates already depend
    on it.
 5. **`phux-client-runtime` is the one orchestration layer below every
-   binding** (ADR-0133). It sits above `phux-dial` and `phux-config` and
-   below `phux-client-ffi`, `phux-client`, and the `phux` binary: registry
-   resolution, dial planning under the CLI's trust rules, reconnect policy,
-   WebSocket frame cutting, and the relay tunnel exist once, as a Rust API
-   with no FFI. The reconnect policy is one `Ladder` with a preset per
-   lane: `phux-client`'s agent verbs walk the fast agent-verb ladder and
-   the binary's attach loop walks the interactive one for remote dials and
-   the flat local-upgrade poll for UDS, so no consumer carries a backoff
-   constant of its own. The same module owns the other half of the policy:
-   a refusal no retry can satisfy — a 401/403 on the upgrade, a QUIC
-   preamble answered `AUTH_FAILED` — ends the attach loop's reconnect on
-   the probe that saw it, with the refusal as the reported reason. `phux-server`'s hub link and connector keep their
-   own redial ladder: they are the server-side federation dialer, not a
-   client binding, and moving them onto the runtime's `Ladder` is a
-   separate decision. A binding crate translates runtime-owned values
-   into its language's idiom and holds no state machine; a loop, a
-   `select!`, or a backoff constant in a binding is in the wrong crate.
-   phux-mobile's UniFFI bridge is the second binding, across its
-   `PHUX_REV` pin.
+   binding** (ADR-0133). It sits above `phux-dial`, `phux-config`, and
+   `phux-client-core` and below `phux-client-ffi`, `phux-client`, and the
+   `phux` binary: registry resolution, dial planning under the CLI's trust
+   rules, reconnect policy, WebSocket frame cutting, the relay tunnel, the
+   sans-IO control plane over `SessionKernel`, the engine owner thread,
+   and grid publication exist once, as a Rust API with no FFI (see
+   [`client-runtime.md`](./client-runtime.md)). The reconnect policy is one
+   `Ladder` with a preset per lane: `phux-client`'s agent verbs walk the
+   fast agent-verb ladder and the binary's attach loop walks the
+   interactive one for remote dials and the flat local-upgrade poll for
+   UDS, so no consumer carries a backoff constant of its own. The same
+   module owns the other half of the policy: a refusal no retry can
+   satisfy — a 401/403 on the upgrade, a QUIC preamble answered
+   `AUTH_FAILED` — ends the attach loop's reconnect on the probe that saw
+   it, with the refusal as the reported reason. `phux-server`'s hub link
+   and connector keep their own redial ladder: they are the server-side
+   federation dialer, not a client binding, and moving them onto the
+   runtime's `Ladder` is a separate decision. A binding crate translates
+   runtime-owned values into its language's idiom and holds no state
+   machine; a loop, a `select!`, or a backoff constant in a binding is in
+   the wrong crate. phux-mobile's UniFFI bridge is the second binding,
+   across its `PHUX_REV` pin.
 
 `server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
 also depend on `libghostty-vt` directly: the server's `Terminal` is the

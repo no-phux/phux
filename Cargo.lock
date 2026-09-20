@@ -2173,14 +2173,19 @@ version = "0.40.0"
 dependencies = [
  "bytes",
  "futures-util",
+ "libghostty-vt",
+ "phux-client-core",
  "phux-config",
  "phux-dial",
  "phux-protocol",
+ "phux-server-testkit",
  "quinn",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
