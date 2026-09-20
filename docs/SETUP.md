@@ -137,7 +137,12 @@ brew install pkgconf
 ```
 
 The two `xcrun` probes must succeed. A CLT-only setup has failed this build.
-This host requirement also applies inside Nix.
+
+Inside Nix this does not apply. The dev shell keeps `DEVELOPER_DIR` on its
+own Apple SDK and supplies `nmedit` through `cctools`; only Apple's Command
+Line Tools are needed, for `xcrun` itself. The shell must not adopt the host
+Xcode SDK: nixpkgs' `ld64` predates the `arm64e.x1` TBD targets Xcode 27
+ships, and every link in the shell would fail against it.
 
 ### Native CI (no Mise, no Nix)
 
