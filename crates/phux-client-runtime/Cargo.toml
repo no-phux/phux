@@ -1,6 +1,6 @@
 [package]
 name = "phux-client-runtime"
-description = "The one client orchestration layer between the sans-IO session kernel and a language binding: registry resolution, dial planning, reconnect policy, and the relay tunnel."
+description = "The one client orchestration layer between the sans-IO session kernel and a language binding: registry resolution, dial planning, reconnect policy, the relay tunnel, the control plane, the engine owner thread, and grid publication."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -13,14 +13,21 @@ authors.workspace = true
 workspace = true
 
 [features]
+default = ["engine"]
+# The libghostty engine behind every replica (ADR-0133 decision 4): the
+# owner thread hosts `SessionKernel<GhosttyAdapter>` and publishes the
+# projected grid. Without it a bounded byte adapter keeps the transport and
+# control-plane lanes buildable and testable with no Zig toolchain, the way
+# phux-mobile's headless `wire` lane does.
+engine = ["dep:libghostty-vt", "phux-client-core/native-engine"]
 # Test-only hooks a consumer's tests need to drive tunnel state without a
 # network, the way phux-dial's `testing` feature exposes its fixtures.
 testing = []
 
 [dependencies]
-# Every dependency below was already carried by phux-client-ffi's remote
-# tunnel at these exact specs (ADR-0133 moves that code here); nothing new
-# enters Cargo.lock.
+# Every dependency below was already carried by phux-client-ffi or the
+# phux-mobile bridge at these exact specs (ADR-0133 moves that code here);
+# nothing new enters Cargo.lock.
 #
 # The `[[remote]]` registry is read through the CLI's own schema and loader,
 # so an entry means one thing to the CLI and to every embedder.
@@ -29,9 +36,16 @@ phux-config.workspace = true
 # security-sensitive dial path exists once; this crate plans dials and
 # supplies the policy around them.
 phux-dial.workspace = true
-# SPEC §5 framing (`wire::framing`) for cutting and checking frames on the
-# WebSocket lane. Default features only: no engine surface.
+# SPEC section 5 framing (`wire::framing`) and the frame codec the control
+# plane decodes inbound frames with. Default features only: no engine
+# surface.
 phux-protocol.workspace = true
+# The sans-IO session kernel the control plane drives and the one cell
+# layout the owner thread projects (ADR-0133 decisions 1, 3, 4).
+phux-client-core.workspace = true
+# The engine the owner thread hosts; optional so the headless lane links no
+# Zig (see the `engine` feature).
+libghostty-vt = { workspace = true, optional = true }
 # The QUIC lane's connection handle and close reasons; phux-dial re-exports
 # neither, and the tunnel preserves the application-close code.
 quinn.workspace = true
@@ -44,7 +58,14 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["h
 bytes.workspace = true
 # Lifecycle events for whichever subscriber the embedder installs.
 tracing.workspace = true
+# Typed errors for the control plane and the engine host.
+thiserror.workspace = true
+# Fresh 128-bit acknowledged-input operation ids (`InputOperationId`), the
+# same source phux-client-ffi already draws its session-create tokens from.
+uuid.workspace = true
 
 [dev-dependencies]
 # A registry fixture file for the resolution tests.
 tempfile.workspace = true
+# The real server the end-to-end tests attach to over a Unix socket.
+phux-server-testkit.workspace = true

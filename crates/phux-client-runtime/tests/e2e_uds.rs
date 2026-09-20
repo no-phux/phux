@@ -1,0 +1,237 @@
+//! The runtime against a real server over a Unix socket: attach, spawn,
+//! type, observe the published frame; survive a server restart; fail
+//! terminally on a refusal.
+
+#![allow(clippy::expect_used, reason = "test assertions")]
+#![allow(clippy::unwrap_used, reason = "test assertions")]
+#![allow(clippy::panic, reason = "test assertions")]
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
+
+use phux_client_runtime::control::{ControlOptions, Event, SpawnRequest, Status};
+use phux_client_runtime::reconnect::Ladder;
+use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Runtime, Target};
+use phux_protocol::ResourceId;
+use phux_protocol::wire::frame::AttachTarget;
+use phux_server_testkit::{run_local, spawn_server};
+use tempfile::TempDir;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// Generous, like the testkit's deadlines: these drive real PTYs under a
+/// parallel test run, and a genuine hang still fails.
+const DEADLINE: Duration = Duration::from_secs(20);
+
+fn options() -> ClientOptions {
+    ClientOptions {
+        control: ControlOptions {
+            client_name: "phux-client-runtime-e2e".to_owned(),
+            attach: Some(AttachTarget::ByName("main".to_owned())),
+            viewport: (40, 8),
+            ..ControlOptions::default()
+        },
+        connect: ConnectOptions {
+            // A local socket comes back in well under a second.
+            ladder: Ladder::AGENT_VERB,
+            ..ConnectOptions::default()
+        },
+    }
+}
+
+async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
+    let start = Instant::now();
+    while !ready() {
+        assert!(start.elapsed() < DEADLINE, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_status(client: &Client, status: Status) {
+    wait_until(&format!("status {status:?}"), || client.status() == status).await;
+}
+
+/// Drain events until one matches, collecting nothing else.
+async fn wait_for_event<T>(
+    client: &Client,
+    what: &str,
+    mut pick: impl FnMut(&Event) -> Option<T>,
+) -> T {
+    let start = Instant::now();
+    loop {
+        for event in client.take_events() {
+            if let Some(found) = pick(&event) {
+                return found;
+            }
+        }
+        assert!(start.elapsed() < DEADLINE, "timed out waiting for {what}");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn spawn_cat(client: &Client) -> ResourceId {
+    let request_id = client.spawn_terminal(SpawnRequest {
+        command: Some(vec!["/bin/cat".to_owned()]),
+        ..SpawnRequest::default()
+    });
+    let terminal = wait_for_event(client, "RESOURCE_SPAWNED", |event| match event {
+        Event::TerminalSpawned {
+            request_id: id,
+            terminal_id: Some(terminal_id),
+            ..
+        } if *id == request_id => Some(terminal_id.clone()),
+        Event::TerminalSpawned {
+            request_id: id,
+            error: Some(error),
+            ..
+        } if *id == request_id => panic!("spawn failed: {error}"),
+        _ => None,
+    })
+    .await;
+    wait_until("the spawned terminal to accept input", || {
+        client.input_ready(&terminal)
+    })
+    .await;
+    terminal
+}
+
+#[cfg(feature = "engine")]
+async fn wait_for_text(client: &Client, terminal: &ResourceId, needle: &str) {
+    wait_until(&format!("the frame to show {needle:?}"), || {
+        client
+            .acquire(terminal)
+            .is_some_and(|frame| frame.text().contains(needle))
+    })
+    .await;
+}
+
+#[cfg(not(feature = "engine"))]
+async fn wait_for_text(client: &Client, terminal: &ResourceId, needle: &str) {
+    let mut seen = Vec::new();
+    wait_until(&format!("the output to carry {needle:?}"), || {
+        seen.extend(client.take_output(terminal));
+        String::from_utf8_lossy(&seen).contains(needle)
+    })
+    .await;
+}
+
+#[test]
+fn attaches_spawns_types_and_observes_the_published_frame() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
+        wait_for_status(&client, Status::Attached).await;
+        let server_info = client.server().expect("negotiated");
+        assert!(!server_info.id.is_empty());
+        let topology = client.topology().expect("topology");
+        assert!(topology.session_named("main").is_some());
+
+        let terminal = spawn_cat(&client).await;
+        #[cfg(feature = "engine")]
+        let before = client.generation(&terminal).expect("published");
+        assert!(client.send_text(&terminal, "hello"));
+        wait_for_text(&client, &terminal, "hello").await;
+        #[cfg(feature = "engine")]
+        {
+            let frame = client.acquire(&terminal).expect("frame");
+            assert!(frame.generation > before, "output advanced the generation");
+            assert!(frame.dirty_rows().count() >= 1);
+            assert_eq!((frame.cols, frame.rows), (40, 8));
+            // An unchanged terminal keeps its generation.
+            let settled = client.generation(&terminal).unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(client.generation(&terminal), Some(settled));
+            let slot = client.slot(&terminal).expect("slot");
+            assert_eq!(slot.generation(), settled);
+        }
+
+        client.close();
+        wait_for_status(&client, Status::Closed).await;
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+    });
+}
+
+#[test]
+fn reconnects_through_the_ladder_after_a_server_restart() {
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
+        wait_for_status(&client, Status::Attached).await;
+
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+        wait_for_status(&client, Status::Connecting).await;
+        let lost = wait_for_event(&client, "ConnectionLost", |event| {
+            matches!(event, Event::ConnectionLost { .. }).then_some(())
+        })
+        .await;
+        assert_eq!(lost, ());
+
+        let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
+        wait_for_status(&client, Status::Attached).await;
+        assert!(client.attached_once());
+        let terminal = spawn_cat(&client).await;
+        assert!(client.send_text(&terminal, "back"));
+        wait_for_text(&client, &terminal, "back").await;
+
+        client.close();
+        drop(shutdown);
+        server.await.unwrap().unwrap();
+    });
+}
+
+/// A listener that answers every WebSocket upgrade with 401: the pairing
+/// gate refusing a token, which no retry can change. Returns the port and
+/// the count of connections it accepted.
+async fn refuse_with_401() -> (u16, Arc<AtomicUsize>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let accepted = Arc::new(AtomicUsize::new(0));
+    let counter = Arc::clone(&accepted);
+    tokio::task::spawn_local(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            counter.fetch_add(1, Ordering::SeqCst);
+            // Read the whole upgrade request before answering, so the
+            // client never sees a reset instead of the status line.
+            let mut request = Vec::new();
+            let mut buf = [0_u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                match stream.read(&mut buf).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(read) => request.extend_from_slice(&buf[..read]),
+                }
+            }
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            drop(stream);
+        }
+    });
+    (port, accepted)
+}
+
+#[test]
+fn a_401_refusal_ends_the_session_without_walking_the_ladder() {
+    run_local(async {
+        let (port, accepted) = refuse_with_401().await;
+        let client = Runtime::connect(Target::ws(format!("ws://127.0.0.1:{port}")), options())
+            .expect("connect");
+        wait_for_status(&client, Status::Failed).await;
+        let error = client.last_error().expect("refusal message");
+        assert!(
+            error.contains("401"),
+            "the status stays in the message: {error}"
+        );
+        // One dial, no retry: the gate saw exactly one connection.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(accepted.load(Ordering::SeqCst), 1);
+        drop(client);
+    });
+}
