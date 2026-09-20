@@ -5,7 +5,8 @@ use phux_protocol::ResourceId;
 
 pub const ABI_VERSION: u32 = 2;
 /// The cell flag word's bits are core's (`phux_client_core::grid`, ADR-0133
-/// decision 3); the C names in `include/phux/client.h` alias them.
+/// decision 3); the C names in `include/phux/client.h` match them, pinned by
+/// core's layout tests.
 pub use phux_client_core::grid::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,
     CELL_OVERLINE, CELL_PROTECTED, CELL_SELECTED, CELL_STRIKETHROUGH,

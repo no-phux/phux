@@ -5,8 +5,8 @@
 //! per viewport cell in row-major order, the UTF-8 arena their text and
 //! hyperlink URIs address, and one [`CellMetadata`] record per cell carrying
 //! the color provenance the resolved RGB fields lose. The C ABI lends a
-//! pointer to that buffer and `UniFFI` copies it as byte vectors; neither
-//! defines a second cell.
+//! pointer to that buffer; the mobile bridge copies it as byte vectors once
+//! it re-pins (ADR-0133 decision 3). Neither defines a second cell.
 //!
 //! [`Cell`] is `#[repr(C)]` and its field order is part of the native ABI
 //! (`crates/phux-client-ffi/include/phux/client.h`, `PhuxTerminalCell`,
@@ -17,7 +17,7 @@ use std::fmt;
 
 use libghostty_vt::Terminal;
 use libghostty_vt::render::{
-    CellIterator, Colors, CursorVisualStyle, RenderState, RowIterator, Snapshot,
+    CellIterator, Colors, CursorViewport, CursorVisualStyle, RenderState, RowIterator, Snapshot,
 };
 use libghostty_vt::screen::CellWide;
 use thiserror::Error;
@@ -105,7 +105,7 @@ pub struct Cell {
     /// Resolved underline color, blue.
     pub underline_b: u8,
     /// Always zero; the last byte of the 36-byte record (its trailing `u8`
-    /// run starts at the 4-aligned `flags`).
+    /// run begins at offset 24, after the 4-aligned `flags`).
     pub reserved: u8,
 }
 
@@ -239,8 +239,9 @@ pub enum GridError {
     /// libghostty refused a render-state, iterator, or cell query.
     #[error("libghostty render query failed: {0}")]
     Engine(#[from] libghostty_vt::Error),
-    /// A span or coordinate outgrew the field the cell record stores it in.
-    #[error("{0} exceeds the cell record")]
+    /// A span, coordinate, or count outgrew the integer that carries it; the
+    /// payload names both, as in `"render column exceeds u16"`.
+    #[error("{0}")]
     Overflow(&'static str),
     /// libghostty reported a codepoint that is not a Unicode scalar value.
     #[error("invalid terminal codepoint {0:#x}")]
@@ -328,7 +329,7 @@ impl GridProjector {
         self.buffer.clear();
         let expected = usize::from(cols)
             .checked_mul(usize::from(rows))
-            .ok_or(GridError::Overflow("viewport cell count"))?;
+            .ok_or(GridError::Overflow("viewport cell count exceeds usize"))?;
         self.buffer.cells.reserve(expected);
         self.buffer.metadata.reserve(expected);
         flatten::fill_grid_cells(
@@ -359,18 +360,9 @@ fn read_cursor(
     cols: u16,
 ) -> Result<Cursor, GridError> {
     let viewport = snapshot.cursor_viewport()?;
-    let col = viewport.map_or(0, |value| value.x);
-    let row = viewport.map_or(0, |value| value.y);
-    let index = usize::from(row) * usize::from(cols) + usize::from(col);
-    let on_wide_head = buffer
-        .cells
-        .get(index)
-        .is_some_and(|cell| cell.wide == CellWide::Wide as u8);
-    let width = match viewport {
-        Some(value) if value.at_wide_tail => CursorWidth::WideTail,
-        Some(_) if on_wide_head => CursorWidth::Wide,
-        _ => CursorWidth::Narrow,
-    };
+    let (col, row, width) = viewport.map_or((0, 0, CursorWidth::Narrow), |at| {
+        (at.x, at.y, cursor_width(at, buffer, cols))
+    });
     Ok(Cursor {
         visible: snapshot.cursor_visible()? && viewport.is_some(),
         col,
@@ -379,4 +371,23 @@ fn read_cursor(
         blinking: snapshot.cursor_blinking()?,
         width,
     })
+}
+
+/// Width of the glyph under a cursor that is on the viewport: libghostty says
+/// when the cursor sits on a wide character's spacer tail; the projected cell
+/// says when it sits on the head.
+fn cursor_width(at: CursorViewport, buffer: &GridBuffer, cols: u16) -> CursorWidth {
+    if at.at_wide_tail {
+        return CursorWidth::WideTail;
+    }
+    let index = usize::from(at.y) * usize::from(cols) + usize::from(at.x);
+    let on_wide_head = buffer
+        .cells
+        .get(index)
+        .is_some_and(|cell| cell.wide == CellWide::Wide as u8);
+    if on_wide_head {
+        CursorWidth::Wide
+    } else {
+        CursorWidth::Narrow
+    }
 }

@@ -64,11 +64,11 @@ pub(super) fn fill_grid_cells(
             )?;
             column_index = column_index
                 .checked_add(1)
-                .ok_or(GridError::Overflow("render column"))?;
+                .ok_or(GridError::Overflow("render column exceeds u16"))?;
         }
         row_index = row_index
             .checked_add(1)
-            .ok_or(GridError::Overflow("render row"))?;
+            .ok_or(GridError::Overflow("render row exceeds u32"))?;
     }
     Ok(())
 }
@@ -112,9 +112,9 @@ fn push_flattened_cell(
     let flags = cell_flags(style, cell, raw, has_hyperlink)?;
     let record = Cell {
         utf8_offset: u32::try_from(start)
-            .map_err(|_| GridError::Overflow("cell UTF-8 arena offset"))?,
+            .map_err(|_| GridError::Overflow("cell UTF-8 arena offset exceeds u32"))?,
         utf8_len: u16::try_from(cell_utf8_len)
-            .map_err(|_| GridError::Overflow("cell grapheme length"))?,
+            .map_err(|_| GridError::Overflow("cell grapheme length exceeds u16"))?,
         hyperlink_offset,
         hyperlink_len,
         content_tag: content_tag as u16,
@@ -185,12 +185,12 @@ fn append_hyperlink_uri(
             Err(error) => return Err(error.into()),
         }
     };
-    let offset =
-        u32::try_from(utf8.len()).map_err(|_| GridError::Overflow("cell UTF-8 arena offset"))?;
+    let offset = u32::try_from(utf8.len())
+        .map_err(|_| GridError::Overflow("cell UTF-8 arena offset exceeds u32"))?;
     utf8.extend_from_slice(&scratch[..len]);
     Ok((
         offset,
-        u32::try_from(len).map_err(|_| GridError::Overflow("hyperlink URI length"))?,
+        u32::try_from(len).map_err(|_| GridError::Overflow("hyperlink URI length exceeds u32"))?,
     ))
 }
 

@@ -700,7 +700,8 @@ rather than a layer with its own internal architecture worth diagramming:
   `phux-client-core`'s synchronous session kernel, for non-Rust native
   embedders; compile-time excluded on wasm. The cell layout is core's:
   `PhuxTerminalCell`, `PhuxGridCellMetadata` and the `PHUX_CLIENT_CELL_*` flags
-  in `include/phux/client.h` alias `phux_client_core::grid`, and the grid
+  in `include/phux/client.h` match `phux_client_core::grid` (pinned by core's
+  layout tests), and the grid
   view lends a pointer into the `GridProjector`'s buffer rather than
   flattening cells of its own (ADR-0133 decision 3). Its `remote` module is the C
   handle over `phux-client-runtime`'s relay tunnel (ADR-0133): the runtime

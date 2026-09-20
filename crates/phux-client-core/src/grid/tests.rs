@@ -4,8 +4,10 @@ use libghostty_vt::Terminal;
 use libghostty_vt::screen::{CellContentTag, CellWide};
 
 use super::{
-    CELL_BOLD, CELL_HYPERLINK, COLOR_KIND_DEFAULT, COLOR_KIND_PALETTE, Cell, CellMetadata,
-    CursorStyle, CursorWidth, GridProjector,
+    CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,
+    CELL_OVERLINE, CELL_PROTECTED, CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT,
+    COLOR_KIND_PALETTE, COLOR_KIND_RGB, Cell, CellMetadata, CursorStyle, CursorWidth,
+    GridProjector,
 };
 
 /// `Cell` is `PhuxTerminalCell` in `include/phux/client.h` (ABI v2). Its size
@@ -51,6 +53,27 @@ fn cursor_style_numbers_match_the_c_abi() {
     assert_eq!(CursorStyle::Block as u32, 1);
     assert_eq!(CursorStyle::Underline as u32, 2);
     assert_eq!(CursorStyle::BlockHollow as u32, 3);
+}
+
+/// The `CELL_*` bits are `PHUX_CLIENT_CELL_*` and the `COLOR_KIND_*` values
+/// are `PHUX_GRID_COLOR_*` in the header; both sides are independent literals,
+/// so this test is what keeps them from drifting apart.
+#[test]
+fn cell_flag_bits_and_color_kinds_match_the_c_abi() {
+    assert_eq!(CELL_BOLD, 1 << 0);
+    assert_eq!(CELL_ITALIC, 1 << 1);
+    assert_eq!(CELL_FAINT, 1 << 2);
+    assert_eq!(CELL_BLINK, 1 << 3);
+    assert_eq!(CELL_INVERSE, 1 << 4);
+    assert_eq!(CELL_INVISIBLE, 1 << 5);
+    assert_eq!(CELL_STRIKETHROUGH, 1 << 6);
+    assert_eq!(CELL_OVERLINE, 1 << 7);
+    assert_eq!(CELL_SELECTED, 1 << 8);
+    assert_eq!(CELL_PROTECTED, 1 << 9);
+    assert_eq!(CELL_HYPERLINK, 1 << 10);
+    assert_eq!(COLOR_KIND_DEFAULT, 0);
+    assert_eq!(COLOR_KIND_PALETTE, 1);
+    assert_eq!(COLOR_KIND_RGB, 2);
 }
 
 fn seeded_terminal(cols: u16, rows: u16, bytes: &[u8]) -> Terminal<'static, 'static> {
