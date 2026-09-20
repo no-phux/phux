@@ -599,7 +599,7 @@ pub async fn await_command_result(stream: &mut UnixStream, request_id: u32) -> C
 /// Call sites left alone on purpose, not duplication: `end_to_end.rs`
 /// asserts the id rather than skipping a mismatch; `stress_spawn_kill.rs`
 /// takes the first result regardless of request id; `open_listener.rs` reads
-/// over QUIC, not a UnixStream; loops that collect interleaved frames
+/// over QUIC, not a `UnixStream`; loops that collect interleaved frames
 /// (events, output, errors) stay local because discarding those frames
 /// would change the test.
 pub async fn recv_command_result(stream: &mut UnixStream, request_id: u32) -> CommandResult {
