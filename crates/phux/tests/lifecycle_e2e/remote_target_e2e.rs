@@ -463,9 +463,8 @@ fn service_install_failure_falls_back_to_an_unsupervised_server() {
 fn code_rung_registers_from_a_connect_link_without_ssh() {
     let home = RemoteHome::new();
     let no_ssh = home.dir.path().join("no-such-ssh");
-    let link = format!(
-        "https://phux.sh/connect?url=wss://100.64.0.7:8787&fp={FINGERPRINT}&token={TOKEN}"
-    );
+    let link =
+        format!("https://phux.sh/connect?url=wss://100.64.0.7:8787&fp={FINGERPRINT}&token={TOKEN}");
 
     let seen = home.run_until(
         &["attach", "--remote", "mini", "--code", &link],

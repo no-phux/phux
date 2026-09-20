@@ -1133,22 +1133,17 @@ mod tests {
         assert!(parse_connect_link("https://example.com").is_err());
         assert!(parse_connect_link("https://example.com/connect?url=wss://m:1&token=t").is_err());
         assert!(parse_connect_link("https://phux.phall.io/other?url=wss://m:1&token=t").is_err());
-        assert!(
-            parse_connect_link("https://phux.sh/connected?url=wss://m:1&token=t").is_err()
-        );
+        assert!(parse_connect_link("https://phux.sh/connected?url=wss://m:1&token=t").is_err());
         // No token: grants no access.
         assert!(parse_connect_link("https://phux.sh/connect?url=wss://mini:8787").is_err());
         // No url: names no server.
         assert!(parse_connect_link("https://phux.sh/connect?token=tok").is_err());
         // A scheme the WebSocket dialer cannot use.
         assert!(
-            parse_connect_link("https://phux.sh/connect?url=quic://mini:8788&token=tok")
-                .is_err()
+            parse_connect_link("https://phux.sh/connect?url=quic://mini:8788&token=tok").is_err()
         );
         // Empty values are the same as absent, under either prefix.
-        assert!(
-            parse_connect_link("https://phux.sh/connect?url=wss://mini:8787&token=").is_err()
-        );
+        assert!(parse_connect_link("https://phux.sh/connect?url=wss://mini:8787&token=").is_err());
         assert!(parse_connect_link("phux://connect?url=wss://mini:8787&token=").is_err());
     }
 }
