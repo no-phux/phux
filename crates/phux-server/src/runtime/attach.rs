@@ -4761,10 +4761,12 @@ mod tests {
             .await;
     }
 
-    /// phux-auqy, the `Lagged` half: a consumer whose mailbox stalls long
-    /// enough for the broadcast to overwrite its window is re-bootstrapped
-    /// alone. Its neighbour, draining promptly, sees every chunk on its
-    /// original generation and never a republish.
+    /// phux-auqy + phux-fpgl.28: a consumer whose mailbox fills is
+    /// re-bootstrapped alone. A full mailbox is itself a gap — parking
+    /// would keep the pump off the broadcast — so the resync is requested
+    /// without waiting for the consumer to drain. Its neighbour, draining
+    /// promptly, sees every chunk on its original generation and never a
+    /// republish.
     #[tokio::test(flavor = "current_thread")]
     async fn a_lagged_consumer_resyncs_without_republishing_its_neighbour() {
         let local = tokio::task::LocalSet::new();
@@ -4777,35 +4779,15 @@ mod tests {
                 let initial = two_pump_initial_generation();
                 let replacement = next_bootstrap_id(initial);
 
-                // Nobody drains the lagging consumer yet, so its link is
-                // stalled: its one mailbox slot takes seq 1 and its pump
-                // blocks forwarding seq 2 while the four-slot ring moves on
-                // past the chunks it has not read.
+                // Nobody drains the lagging consumer: its one mailbox slot
+                // takes seq 1, and seq 2 finds the mailbox full. That is a
+                // gap (phux-fpgl.28); the pump fences and asks for a resync
+                // instead of parking while the four-slot ring moves on.
                 let now = std::time::Instant::now();
                 for seq in 1..=9 {
                     output.send(live(seq, now)).expect("pumps subscribed");
                     let_pumps_run().await;
                 }
-                assert!(
-                    resize_rx.try_recv().is_err(),
-                    "a stalled pump has not observed its gap yet",
-                );
-
-                // The link drains; only now does the pump find its window
-                // overwritten and ask for a resync.
-                assert_eq!(
-                    frames_seen(&mut lagging, 2).await,
-                    vec![
-                        Seen::Output {
-                            generation: initial,
-                            seq: 1
-                        },
-                        Seen::Output {
-                            generation: initial,
-                            seq: 2
-                        },
-                    ],
-                );
                 let request = resync_request_from(&mut resize_rx, &mut lagging).await;
                 assert_eq!(
                     request.resync_for,
@@ -4815,6 +4797,16 @@ mod tests {
                         bootstrap_id: two_pump_initial_generation(),
                     }),
                     "the resync names the lagging pump, not the pane",
+                );
+
+                // The one live frame that made it before the fence. Draining
+                // it gives republish room on the one-slot mailbox.
+                assert_eq!(
+                    frames_seen(&mut lagging, 1).await,
+                    vec![Seen::Output {
+                        generation: initial,
+                        seq: 1
+                    }],
                 );
                 answer_gap_resync(&output, &request, 9);
                 output.send(live(10, now)).expect("pumps subscribed");
