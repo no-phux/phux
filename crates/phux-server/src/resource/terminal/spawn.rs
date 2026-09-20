@@ -814,6 +814,53 @@ pub(crate) fn clear_upgrade_handoff_env(cmd: &mut CommandBuilder) {
     }
 }
 
+/// Env var names Claude Code stamps on every process it spawns (its own
+/// Bash tool included) to mark that process as a *nested* session — see
+/// `research/2026-08-12-osc-9-4-claude-code.md`, which already documented
+/// the leak for a test harness. `CLAUDE_CODE_CHILD_SESSION` is the one that
+/// matters here: a `claude` that inherits it prints "Transcript saving is
+/// off" and never writes a `.jsonl` at all, no matter how the session ends.
+const CLAUDE_CODE_ENV_PREFIX: &str = "CLAUDE_CODE_";
+/// The bare (no-underscore) sibling of the prefix above; same vendor
+/// namespace, same "I am already inside a Claude Code process" signal.
+const CLAUDE_CODE_ENV_BARE: &str = "CLAUDECODE";
+
+/// Strip Claude Code's `CLAUDE_CODE_*` / `CLAUDECODE` nested-session markers
+/// from a pane child's environment. [`spawn_pty`] applies it to every pane,
+/// alongside [`clear_upgrade_handoff_env`] — same shape of bug, same fix.
+///
+/// `CommandBuilder::new` snapshots the server's own environment, which holds
+/// these variables whenever the `phux server` process was itself started
+/// (or `phux upgrade`-restarted, ADR-0032) from inside a Claude Code
+/// session — e.g. an agent's own Bash tool running `phux server start`.
+/// Once baked into the server's environment they never age out: every pane
+/// spawned afterward inherits them too, including one where a user runs
+/// `claude` interactively through a phux-mobile pane hours or days later.
+/// That `claude` does real work (writes files, updates its own `memory/`)
+/// but Claude Code itself has silently decided this is a nested session and
+/// keeps no transcript — not a race with pane teardown, so no grace window
+/// fixes it (phux-3oa; a re-check of the narrower race phux-r2r closed).
+///
+/// A fixed list would go stale (Claude Code owns this vocabulary, not
+/// phux), so this scrubs by prefix over whatever the environment snapshot
+/// actually carries, the same way [`CommandBuilder::env_remove`] targets an
+/// exact key.
+///
+/// ponytail: prefix-matches the one vendor namespace this was actually
+/// reproduced against. A different agent CLI leaking its own nested-session
+/// marker through this same server-env path gets the same fix by adding its
+/// prefix here, not by inventing a generic allowlist nobody has needed yet.
+pub(crate) fn clear_agent_host_env(cmd: &mut CommandBuilder) {
+    let leaked: Vec<String> = cmd
+        .iter_full_env_as_str()
+        .filter(|&(key, _)| key.starts_with(CLAUDE_CODE_ENV_PREFIX) || key == CLAUDE_CODE_ENV_BARE)
+        .map(|(key, _)| key.to_owned())
+        .collect();
+    for key in leaked {
+        cmd.env_remove(key);
+    }
+}
+
 /// Apply a wire-supplied working directory to `cmd` with the uniform
 /// validation and fallback the seed-and-attach create path and the
 /// `SESSION_CREATE_KEY` create-without-attach path share (phux-0v1l).
@@ -931,6 +978,7 @@ pub(crate) fn spawn_pty(
         .map_err(|e| TerminalActorError::OpenPty(e.to_string()))?;
 
     clear_upgrade_handoff_env(&mut cmd);
+    clear_agent_host_env(&mut cmd);
     let child = pair
         .slave
         .spawn_command(cmd)
@@ -1679,6 +1727,61 @@ mod canonical_guard_tests {
         assert!(
             out.contains("[unset|unset|/tmp/kept.sock]"),
             "a pane child must see PHUX_SOCKET but no PHUX_UPGRADE_* variable; got {out:?}"
+        );
+    }
+
+    /// phux-3oa: a real interactive `claude` in a pane loses its transcript
+    /// end to end when the *server's own* environment carries Claude Code's
+    /// nested-session markers -- the shape of a `phux server` started (or
+    /// `phux upgrade`-restarted) from inside a Claude Code session. This
+    /// reproduces the actual leak (not a mocked env lookup): a `CommandBuilder`
+    /// seeded with `CLAUDE_CODE_CHILD_SESSION` set, spawned for real through
+    /// `spawn_pty`, and the child pane's *observed* environment is asserted --
+    /// proving the production choke point applies the scrub, the same shape
+    /// as `pane_children_never_inherit_the_upgrade_handoff_env` above.
+    ///
+    /// Unlike the pane-kill grace window (phux-sw1 / 9d30cca), nothing here
+    /// is timing-sensitive: a `claude` that inherits this marker never opens
+    /// its `.jsonl` in the first place, so no amount of teardown grace can
+    /// recover it. The fix has to be "the child never sees the variable,"
+    /// which is exactly what this asserts.
+    #[tokio::test(flavor = "current_thread")]
+    async fn pane_children_never_inherit_claude_code_nested_session_markers() {
+        let mut cmd = CommandBuilder::new("/bin/sh");
+        cmd.arg("-c");
+        cmd.arg(
+            "printf '[%s|%s|%s|%s]' \"${CLAUDE_CODE_CHILD_SESSION-unset}\" \
+             \"${CLAUDE_CODE_SESSION_ID-unset}\" \"${CLAUDECODE-unset}\" \
+             \"${PHUX_SOCKET-unset}\"",
+        );
+        // The exact shape a contaminated server process hands every
+        // `CommandBuilder::new` it builds: a handful of `CLAUDE_CODE_*`
+        // vars plus the bare `CLAUDECODE` flag, all "leaked by" the
+        // server's own environment rather than set by this test directly
+        // on the child.
+        cmd.env("CLAUDE_CODE_CHILD_SESSION", "1");
+        cmd.env("CLAUDE_CODE_SESSION_ID", "leaked-by-the-server-env");
+        cmd.env("CLAUDECODE", "1");
+        cmd.env("PHUX_SOCKET", "/tmp/kept.sock");
+        let (mut pty_rx, _input_tx, mut pty) =
+            spawn_pty(cmd, 80, 24).expect("spawn sh under a real pty");
+
+        let mut received = Vec::new();
+        let deadline = tokio::time::Instant::now() + DELIVERY_DEADLINE;
+        while !received.contains(&b']') {
+            match tokio::time::timeout_at(deadline, pty_rx.recv()).await {
+                Ok(Some(PtyEvent::Bytes { chunk, .. })) => received.extend_from_slice(&chunk),
+                Ok(Some(PtyEvent::Eof) | None) | Err(_) => break,
+            }
+        }
+        let _ = pty.child.kill();
+        let out = String::from_utf8_lossy(&received);
+        assert!(
+            out.contains("[unset|unset|unset|/tmp/kept.sock]"),
+            "a pane child must see PHUX_SOCKET but no CLAUDE_CODE_* / CLAUDECODE \
+             nested-session marker -- a claude run interactively in this pane \
+             would otherwise silently disable its own transcript persistence; \
+             got {out:?}"
         );
     }
 
