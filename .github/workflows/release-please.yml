@@ -178,7 +178,9 @@ jobs:
   sync-lockfile:
     name: sync Cargo.lock on the release PR
     needs: release-please
-    if: needs.release-please.outputs.prs_created == 'true' && needs.release-please.outputs.pr_branch != ''
+    # Also runs when release-please failed after opening the PR; see
+    # release-validation.
+    if: always() && needs.release-please.outputs.prs_created == 'true' && needs.release-please.outputs.pr_branch != ''
     runs-on: ubuntu-24.04
     # release-please cannot update Cargo.lock, and this is not a config mistake:
     #
@@ -270,7 +272,12 @@ jobs:
   release-validation:
     name: validate exact root release commit
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    # `always()`: the action creates the tag and the draft, then keeps walking
+    # history, and a GitHub API error there fails the job with the release
+    # already made (2026-09-15, v0.39.0 and nine other drafts). The outputs are
+    # still set, so gate on the output rather than on the job's own result --
+    # otherwise the draft is orphaned with no assets and nothing retries it.
+    if: always() && needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -289,7 +296,8 @@ jobs:
   cockpit-release-validation:
     name: validate exact Cockpit release commit
     needs: release-please
-    if: needs.release-please.outputs.cockpit_release_created == 'true'
+    # See release-validation for why this tolerates a failed release-please.
+    if: always() && needs.release-please.outputs.cockpit_release_created == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
@@ -309,7 +317,7 @@ jobs:
   release-artifacts:
     name: build + attach binaries
     needs: [release-please, release-validation]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: always() && needs.release-validation.result == 'success' && needs.release-please.outputs.release_created == 'true'
     uses: ./.github/workflows/release.yml
     permissions:
       contents: write
@@ -323,7 +331,7 @@ jobs:
   ffi-xcframework-artifacts:
     name: build + attach PhuxFFI xcframework
     needs: [release-please, release-validation]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: always() && needs.release-validation.result == 'success' && needs.release-please.outputs.release_created == 'true'
     uses: ./.github/workflows/ffi-xcframework.yml
     permissions:
       contents: write
@@ -333,7 +341,7 @@ jobs:
   cockpit-release-artifacts:
     name: build + attach Cockpit app
     needs: [release-please, cockpit-release-validation]
-    if: needs.release-please.outputs.cockpit_release_created == 'true'
+    if: always() && needs.cockpit-release-validation.result == 'success' && needs.release-please.outputs.cockpit_release_created == 'true'
     uses: ./.github/workflows/cockpit-release.yml
     permissions:
       contents: write
@@ -354,7 +362,7 @@ jobs:
   linear-release-sync:
     name: report release to Linear
     needs: release-please
-    if: needs.release-please.outputs.release_created == 'true'
+    if: always() && needs.release-please.outputs.release_created == 'true'
     uses: ./.github/workflows/linear-release.yml
     secrets: inherit
     with:
@@ -364,7 +372,7 @@ jobs:
   linear-release-promote:
     name: mark the Linear release released
     needs: [release-please, release-artifacts]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: always() && needs.release-artifacts.result == 'success' && needs.release-please.outputs.release_created == 'true'
     uses: ./.github/workflows/linear-release.yml
     secrets: inherit
     with:
@@ -374,7 +382,7 @@ jobs:
   cockpit-linear-release-sync:
     name: report Cockpit release to Linear
     needs: release-please
-    if: needs.release-please.outputs.cockpit_release_created == 'true'
+    if: always() && needs.release-please.outputs.cockpit_release_created == 'true'
     uses: ./.github/workflows/linear-release.yml
     secrets: inherit
     with:
@@ -384,7 +392,7 @@ jobs:
   cockpit-linear-release-promote:
     name: mark the Linear Cockpit release released
     needs: [release-please, cockpit-release-artifacts]
-    if: needs.release-please.outputs.cockpit_release_created == 'true'
+    if: always() && needs.cockpit-release-artifacts.result == 'success' && needs.release-please.outputs.cockpit_release_created == 'true'
     uses: ./.github/workflows/linear-release.yml
     secrets: inherit
     with:
