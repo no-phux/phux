@@ -104,6 +104,50 @@ fn exits_on_input_argv(code: u8) -> Vec<String> {
     ]
 }
 
+/// ATTACH to the pre-seeded `"demo"` session and drain `ATTACHED` plus the
+/// seed pane's first bootstrap frame.
+///
+/// `wait_for_socket` only proves the UDS is connectable. Under load the
+/// seed can still be absent, and ATTACH then replies `ERROR` (`phux-jzl6`).
+/// `SessionNotFound` is recoverable on the same connection (SPEC §14), so
+/// this retries until a bounded deadline. Any other ERROR fails immediately
+/// with its body, so a real refusal is not mistaken for a race.
+async fn attach_seed_and_drain_bootstrap(stream: &mut UnixStream) {
+    use phux_protocol::wire::frame::{TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
+    let deadline = tokio::time::Instant::now() + SOCKET_CONNECT_DEADLINE;
+    loop {
+        send_frame(stream, &attach_by_name("demo")).await;
+        let (type_byte, frame) = recv_typed(stream).await;
+        match frame {
+            FrameKind::Attached { .. } => {
+                assert_eq!(type_byte, TYPE_ATTACHED, "expected ATTACHED");
+                break;
+            }
+            FrameKind::Error {
+                code: ErrorCode::SessionNotFound,
+                message,
+                ..
+            } => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "timed out waiting for seed session \"demo\" to be attachable; \
+                     last ERROR: {message}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            FrameKind::Error { code, message, .. } => {
+                panic!("expected ATTACHED, got ERROR code={code:?} message={message}");
+            }
+            other => panic!("expected ATTACHED, got type 0x{type_byte:02x} {other:?}"),
+        }
+    }
+    let (type_byte, _snap) = recv_typed(stream).await;
+    assert_eq!(
+        type_byte, TYPE_BOOTSTRAP_BEGIN,
+        "expected the seed pane's bootstrap"
+    );
+}
+
 /// Spawn a server with an immortal seed pane, connect, and drain the
 /// `ATTACHED` + first bootstrap frame so later `recv_typed` calls only see
 /// test-driven traffic. Mirrors `spawn_terminal.rs`'s `spawn_and_attach`.
@@ -114,19 +158,11 @@ async fn connect_and_attach(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
 ) {
-    use phux_protocol::wire::frame::{TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
     let socket_path = tmp.path().join("phux.sock");
     let (shutdown_tx, server_handle) =
         spawn_server_with_seed_cmd(socket_path.clone(), "demo", immortal_shell());
     let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-    send_frame(&mut stream, &attach_by_name("demo")).await;
-    let (type_byte, _attached) = recv_typed(&mut stream).await;
-    assert_eq!(type_byte, TYPE_ATTACHED, "expected ATTACHED");
-    let (type_byte, _snap) = recv_typed(&mut stream).await;
-    assert_eq!(
-        type_byte, TYPE_BOOTSTRAP_BEGIN,
-        "expected the seed pane's bootstrap"
-    );
+    attach_seed_and_drain_bootstrap(&mut stream).await;
     (stream, shutdown_tx, server_handle)
 }
 
@@ -141,7 +177,6 @@ async fn connect_and_attach_with(
     tokio::sync::oneshot::Sender<()>,
     tokio::task::JoinHandle<Result<(), phux_server::ServerError>>,
 ) {
-    use phux_protocol::wire::frame::{TYPE_ATTACHED, TYPE_BOOTSTRAP_BEGIN};
     let socket_path = tmp.path().join("phux.sock");
     let (shutdown_tx, server_handle) =
         spawn_server_with(socket_path.clone(), Some("demo"), |cfg| {
@@ -150,14 +185,7 @@ async fn connect_and_attach_with(
             configure(cfg);
         });
     let mut stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-    send_frame(&mut stream, &attach_by_name("demo")).await;
-    let (type_byte, _attached) = recv_typed(&mut stream).await;
-    assert_eq!(type_byte, TYPE_ATTACHED, "expected ATTACHED");
-    let (type_byte, _snap) = recv_typed(&mut stream).await;
-    assert_eq!(
-        type_byte, TYPE_BOOTSTRAP_BEGIN,
-        "expected the seed pane's bootstrap"
-    );
+    attach_seed_and_drain_bootstrap(&mut stream).await;
     (stream, shutdown_tx, server_handle)
 }
 
