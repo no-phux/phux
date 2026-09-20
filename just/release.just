@@ -69,6 +69,13 @@ publish-protocol:
     cargo publish --locked -p phux-protocol
 
 
+# Write the product skills package (the no-phux/skills publish tree).
+[group('release')]
+[doc('Write the product skills package to DEST (publish mirror of .agents/skills).')]
+sync-skills DEST:
+    bash scripts/export-product-skills.sh "{{DEST}}"
+
+
 # PhuxFFI.xcframework: phux-client-ffi as a static library with the libghostty
 # engine for iOS devices, the arm64 simulator and arm64 macOS, under a
 # `PhuxFFI` module map, plus its provenance file (ADR-0133). Needs full Xcode

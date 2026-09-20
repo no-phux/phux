@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-20
 ---
 
 # The phux MCP adapter
@@ -56,6 +56,10 @@ phux mcp --skill
 phux mcp --schema
 phux mcp --help
 ```
+
+The reusable MCP skill is also published as `using-phux-mcp`. Install it
+with `npx skills add no-phux/skills`. `phux mcp --skill` remains the
+version-matched copy compiled into this binary.
 
 `--skill` is the compiled operating guide. `--schema` is the exact MCP
 Tool descriptor array returned by live `tools/list`, including each

@@ -3,7 +3,7 @@
     "name": "phux-site",
     "version": "1.0.0"
   },
-  "description": "Read-only MCP server for phux.sh: search the phux docs, fetch any phux.sh or docs.phux.sh page as clean markdown, get install commands, and look up the latest phux and Cockpit releases.",
+  "description": "Read-only MCP server for phux.sh: search the phux docs, fetch any phux.sh or docs.phux.sh page as clean markdown, get CLI, Cockpit, and agent-skills install commands, and look up the latest phux and Cockpit releases.",
   "url": "https://phux.sh/mcp",
   "transport": {
     "type": "streamable-http"

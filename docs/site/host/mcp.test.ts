@@ -147,6 +147,14 @@ describe("MCP JSON-RPC", () => {
       "get_install_command",
       "latest_release",
     ]);
+    const install = body.result.tools.find(
+      (tool: { name: string }) => tool.name === "get_install_command",
+    );
+    expect(install.inputSchema.properties.target.enum).toEqual([
+      "cli",
+      "cockpit",
+      "skills",
+    ]);
   });
 
   test("search_docs ranks title matches", async () => {
@@ -215,6 +223,11 @@ describe("MCP JSON-RPC", () => {
     expect(install.body.result.content[0].text).toBe(
       "curl -fsSL https://phux.sh/install-cockpit | sh",
     );
+    const skills = await rpc("tools/call", {
+      name: "get_install_command",
+      arguments: { target: "skills" },
+    });
+    expect(skills.body.result.content[0].text).toBe("npx skills add no-phux/skills");
     const release = await rpc("tools/call", { name: "latest_release", arguments: {} });
     expect(release.body.result.content[0].text).toContain("v0.37.0");
     expect(release.body.result.content[0].text).toContain("cockpit-v0.24.0");

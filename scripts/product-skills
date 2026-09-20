@@ -1,0 +1,5 @@
+# Product skills published to no-phux/skills and phux.sh/.well-known/agent-skills.
+# One name per line. Names must match a directory under .agents/skills/.
+# beads is maintainer tooling and must not be listed here.
+using-phux
+using-phux-mcp
