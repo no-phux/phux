@@ -179,6 +179,7 @@ by a newer one, the newer line is the operative reading.
 
 Drafted and under review; none of these governs anything yet.
 
+- [0132](./0132-swarm-members-are-coordinator-clients.md) Swarm members are coordinator clients; TUI/Cockpit/mobile are projections; a Run may bind no Terminal.
 - [0092](./0092-durable-work-coordinator-authority.md) Durable objectives, runs, and evidence belong to a coordinator, not to any client.
 - [0087](./0087-elastic-status-bar-space.md) The `spacer` widget is paid from the status row's leftover width, split evenly.
 - [0078](./0078-alternate-screen-history.md) The server may harvest alternate-screen history by driving the application's own scrollback, opt-in.
