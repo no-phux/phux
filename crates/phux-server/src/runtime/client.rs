@@ -1674,7 +1674,7 @@ fn reap_exited_pane(
     // phux-60s: reap the dead pane, cascading to its window and session when
     // they empty. Done here (inside the same lock that gathered subscribers)
     // so no ATTACH can interleave between "gather" and "reap".
-    let server_empty = s.reap_terminal(pane);
+    let (server_empty, actor_token) = s.reap_terminal_deferring_actor_cancel(pane);
     let served = s.has_served_client();
     // ADR-0105: a session a group kill released is gone once its last pane
     // is reaped. Its session-attached clients are gathered here, under the
@@ -1694,6 +1694,7 @@ fn reap_exited_pane(
         server_empty,
         killed_clients,
         served,
+        actor_token,
     })
 }
 
@@ -1766,6 +1767,7 @@ async fn announce_close(
         server_empty,
         served,
         killed_clients,
+        actor_token,
     } = reap;
     // docs/consumers/tui.md §9 (phux-r82.1): the inner process exited — the
     // `pane-exit` hook point. Fired off-lock (the hook helper re-takes the
@@ -1801,6 +1803,9 @@ async fn announce_close(
         .await;
     }
     broadcast_terminal_closed(&wire_terminal_id, &targets, exit, reason).await;
+    if let Some(token) = actor_token {
+        token.cancel();
+    }
 
     // ADR-0105: after the closes, so a client sees its last pane go before
     // the session that held it.
@@ -1857,6 +1862,10 @@ struct ReapAndNotify {
     killed_clients: Vec<(ClientId, tokio::sync::mpsc::Sender<Outbound>)>,
     ///Whether any client has ever attached (arms the phux-60s self-exit).
     served: bool,
+    /// Actor token to cancel after `RESOURCE_CLOSED` is queued, so a fenced
+    /// pump can publish the last screen while the broadcast is still open
+    /// (phux-fpgl.28).
+    actor_token: Option<tokio_util::sync::CancellationToken>,
 }
 
 /// One resource closed because its parent did (ADR-0104 §2), captured
@@ -1913,16 +1922,33 @@ pub(crate) async fn broadcast_terminal_closed(
             ?exit,
             "RESOURCE_CLOSED: broadcasting to subscribed clients",
         );
-        for tx in targets {
-            let _ = tx
-                .send(Outbound::Frame(FrameKind::ResourceClosed {
-                    terminal_id: wire_terminal_id.clone(),
-                    exit_status: exit.status,
-                    reason,
-                    signal: exit.signal,
-                }))
-                .await;
-        }
+        // Concurrent, and only after a fenced pump has had a chance to
+        // occupy the mailbox with the EOF snapshot: sequential await let a
+        // stalled owner starve every other subscriber, and a close that
+        // jumped an empty mailbox beat the snapshot (phux-fpgl.28).
+        let sends = targets.iter().map(|tx| {
+            let tx = tx.clone();
+            let frame = Outbound::Frame(FrameKind::ResourceClosed {
+                terminal_id: wire_terminal_id.clone(),
+                exit_status: exit.status,
+                reason,
+                signal: exit.signal,
+            });
+            async move {
+                let occupied = tx.max_capacity().saturating_sub(tx.capacity());
+                for _ in 0..64 {
+                    if tx.capacity() == 0 {
+                        break;
+                    }
+                    if tx.max_capacity().saturating_sub(tx.capacity()) > occupied {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                let _ = tx.send(frame).await;
+            }
+        });
+        futures_util::future::join_all(sends).await;
     }
 }
 

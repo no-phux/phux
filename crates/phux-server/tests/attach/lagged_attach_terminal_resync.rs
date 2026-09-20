@@ -52,7 +52,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, StreamId};
-use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind, SpawnResult};
+use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult};
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, recv_until, run_local, send_frame,
@@ -448,44 +448,6 @@ fn lagged_consumer_of_a_retained_pane_converges_on_the_final_screen_after_exit()
     });
 }
 
-/// Poll `GET_SCREEN` until `needle` is on the server grid, or until the
-/// pane is gone. A non-retained pane can be reaped between polls after
-/// its child exits; that is the dump having finished, not a GET_SCREEN
-/// failure (phux-fpgl.28).
-async fn wait_for_screen_or_reap(probe: &mut UnixStream, pane: &ResourceId, needle: &str) {
-    use phux_protocol::wire::frame::CommandValue;
-    let started = Instant::now();
-    for request_id in 700.. {
-        assert!(
-            started.elapsed() < HANG_GUARD,
-            "pane never showed {needle:?} and was never reaped"
-        );
-        send_frame(
-            probe,
-            &FrameKind::Command {
-                request_id,
-                command: Command::GetScreen {
-                    terminal_id: pane.clone(),
-                    request_scrollback: None,
-                    cells: false,
-                    format: 0,
-                },
-            },
-        )
-        .await;
-        match phux_server_testkit::await_command_result(probe, request_id).await {
-            CommandResult::OkWith(CommandValue::Json(json)) if json.contains(needle) => return,
-            CommandResult::OkWith(CommandValue::Json(_)) => {}
-            CommandResult::Error {
-                code: ErrorCode::TerminalNotFound,
-                ..
-            } => return,
-            other => panic!("GET_SCREEN failed: {other:?}"),
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
 /// Poll `GET_STATE` on `probe` until `pane` is no longer listed. A
 /// non-retained pane is reaped on exit, so absence is the close.
 async fn wait_until_reaped(probe: &mut UnixStream, pane: &ResourceId) {
@@ -549,10 +511,19 @@ fn lagged_consumer_of_an_exiting_pane_receives_the_final_screen_before_close() {
 
         let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
         std::fs::write(&gate, b"").expect("open the dump gate");
-        // GET_SCREEN can lose the race with reap on a non-retained pane;
-        // TerminalNotFound means the dump finished and the engine is gone.
-        wait_for_screen_or_reap(&mut probe, &pane, TAIL_MARKER).await;
-        wait_until_reaped(&mut probe, &pane).await;
+        // Drain the session-attached owner so it stays caught up: only the
+        // ATTACH_RESOURCE watcher is the lagged consumer. Otherwise the
+        // owner's pump asks first and a targeted EOF resync can miss the
+        // watcher (phux-fpgl.28).
+        tokio::select! {
+            biased;
+            () = wait_until_reaped(&mut probe, &pane) => {}
+            () = async {
+                loop {
+                    let (_type_byte, _frame) = recv_typed(&mut owner).await;
+                }
+            } => {}
+        }
 
         let started = Instant::now();
         loop {

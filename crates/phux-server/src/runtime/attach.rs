@@ -911,6 +911,10 @@ impl OutputPumpContext {
         if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
             return ControlFlow::Continue(());
         }
+        if self.resize.is_closed() {
+            // Pane actor is gone; RESOURCE_CLOSED is the terminal signal.
+            return ControlFlow::Break(None);
+        }
         self.fail_unrecoverable_gap().await
     }
 
@@ -938,6 +942,9 @@ impl OutputPumpContext {
         generation.note_resync_requested();
         if enqueue_output_resync(&self.resize, self.resync_target(generation)).await {
             return ControlFlow::Continue(());
+        }
+        if self.resize.is_closed() {
+            return ControlFlow::Break(None);
         }
         self.fail_unrecoverable_gap().await
     }

@@ -2547,6 +2547,9 @@ impl AttachResourcePumpCtx {
         if crate::runtime::attach::enqueue_output_resync(&self.resize, pump).await {
             return PumpStep::Continue;
         }
+        if self.resize.is_closed() {
+            return PumpStep::Stop;
+        }
         self.fail_unrecoverable_gap().await
     }
 
