@@ -14,12 +14,12 @@ against `phux gen-reference-docs` output and fails on any drift, so
 hand edits do not survive. Regenerate with `just docs-gen`.
 -->
 
-Each section below is the verbatim `--help` text for one invocation path, rendered by the same argument parser the binary runs — flags, defaults, value names, and descriptions here are the ones the binary enforces. Hidden internal subcommands are omitted, exactly as they are from `--help` itself.
+Each section below is the `--help` text for one invocation path, rendered by the same argument parser the binary runs — flags, defaults, value names, and descriptions here are the ones the binary enforces. The root page omits the live crate version that `--help` prints (`phux <version>`), so a release bump does not churn this file. Hidden internal subcommands are omitted, exactly as they are from `--help` itself.
 
 ## `phux`
 
 ```text
-phux 0.39.0
+phux
 A terminal multiplexer you can drive by hand or script.
 
 Run `phux` alone to attach to your session; every other verb is headless.
