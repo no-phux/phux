@@ -266,6 +266,40 @@ pub struct SidebarCounts {
     pub roster: usize,
     /// Roster index whose windows expand, or None when there is no active entry.
     pub active_session: Option<usize>,
+    /// Which column carries the separator rule. Part of the shape because
+    /// it moves every hit target: the rule and its collapse chevron are not
+    /// row targets, and the rows shift away from a leading rule.
+    pub rule: SidebarRule,
+}
+
+/// The side of the strip that carries the separator rule: always the side
+/// that faces the panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SidebarRule {
+    /// The last column, for a left-docked strip.
+    #[default]
+    Trailing,
+    /// The first column, for a right-docked strip.
+    Leading,
+}
+
+impl SidebarRule {
+    /// The strip-local column the rule occupies in a `width`-wide strip.
+    #[must_use]
+    pub const fn column(self, width: u16) -> u16 {
+        match self {
+            Self::Trailing => width.saturating_sub(1),
+            Self::Leading => 0,
+        }
+    }
+
+    /// The strip-local column where row content (gutter included) starts.
+    const fn content_x(self) -> u16 {
+        match self {
+            Self::Trailing => 0,
+            Self::Leading => 1,
+        }
+    }
 }
 
 /// One row of the strip, top to bottom. Both the painter and [`hit_test`]
@@ -488,13 +522,14 @@ pub fn hit_test(rect: Rect, counts: SidebarCounts, x: u16, y: u16) -> Option<Sid
     if local_x >= rect.w || local_y >= rect.h {
         return None;
     }
-    // The bottom corner cell is the collapse chevron whenever the footer
+    let rule_x = counts.rule.column(rect.w);
+    // The rule's bottom cell is the collapse chevron whenever the footer
     // renders (same condition the painter uses).
-    if collapse_visible(rect) && local_x == rect.w - 1 && local_y == rect.h - 1 {
+    if collapse_visible(rect) && local_x == rule_x && local_y == rect.h - 1 {
         return Some(SidebarHit::Collapse);
     }
-    // The rest of the last column is the separator rule, not a target.
-    if local_x >= rect.w.saturating_sub(1) {
+    // The rest of the rule column is not a target.
+    if local_x == rule_x {
         return None;
     }
     let row = *row_model(counts, rect.h).get(usize::from(local_y))?;
@@ -536,6 +571,7 @@ pub struct SidebarPainter {
     /// compare rendered rows so hidden/truncated changes emit no bytes.
     last: Option<(Rect, Buffer)>,
     dirty: bool,
+    rule: SidebarRule,
 }
 
 impl SidebarPainter {
@@ -549,6 +585,17 @@ impl SidebarPainter {
             theme,
             last: None,
             dirty: true,
+            rule: SidebarRule::Trailing,
+        }
+    }
+
+    /// Put the separator rule on the pane-facing side. Painters call this
+    /// with the reservation's edge before each paint, so the click targets
+    /// snapshotted from [`Self::click_targets`] match the frame on screen.
+    pub fn set_rule(&mut self, rule: SidebarRule) {
+        if self.rule != rule {
+            self.rule = rule;
+            self.dirty = true;
         }
     }
 
@@ -599,6 +646,7 @@ impl SidebarPainter {
             windows: self.windows.len(),
             roster: self.roster.len(),
             active_session: self.roster.iter().position(|s| s.active),
+            rule: self.rule,
         }
     }
 
@@ -654,7 +702,7 @@ impl SidebarPainter {
         if !self.dirty && self.last.as_ref().is_some_and(|(r, _)| *r == rect) {
             return Ok(());
         }
-        let buf = self.compose(rect);
+        let buf = self.compose(rect, self.rule);
         let previous = self
             .last
             .as_ref()
@@ -671,8 +719,8 @@ impl SidebarPainter {
     /// (phux-l5xa / phux-4h5a). The VT [`Self::paint`] path uses the same
     /// `compose` step internally, so the cells match a live paint.
     #[must_use]
-    pub fn compose_buffer(&self, rect: Rect) -> Buffer {
-        self.compose(rect)
+    pub fn compose_buffer(&self, rect: Rect, rule: SidebarRule) -> Buffer {
+        self.compose(rect, rule)
     }
 
     /// Render a muted section header.
@@ -891,7 +939,7 @@ impl SidebarPainter {
 
     /// Render the sections + affordances + separator into a fresh
     /// `rect`-sized buffer, row-for-row from [`row_model`].
-    fn compose(&self, rect: Rect) -> Buffer {
+    fn compose(&self, rect: Rect, rule: SidebarRule) -> Buffer {
         let area = RataRect::new(0, 0, rect.w, rect.h);
         let mut buf = Buffer::empty(area);
         buf.set_style(
@@ -908,9 +956,13 @@ impl SidebarPainter {
                 .iter()
                 .map(|row| self.row_line(*row, hidden, text_w))
                 .collect();
-            Paragraph::new(lines).render(RataRect::new(GUTTER, 0, text_w, rect.h), &mut buf);
+            let content_x = rule.content_x();
+            Paragraph::new(lines).render(
+                RataRect::new(content_x + GUTTER, 0, text_w, rect.h),
+                &mut buf,
+            );
         }
-        self.paint_separator(&mut buf, rect);
+        paint_separator(&mut buf, rect, rule, &self.theme);
         buf
     }
 
@@ -956,23 +1008,23 @@ impl SidebarPainter {
         }
         self.affordance_line(&parts.join(", "), text_w)
     }
+}
 
-    fn paint_separator(&self, buf: &mut Buffer, rect: Rect) {
-        let sep_x = rect.w.saturating_sub(1);
-        for y in 0..rect.h {
-            if let Some(cell) = buf.cell_mut((sep_x, y)) {
-                cell.set_symbol("│");
-                cell.set_style(Style::default().fg(self.theme.border));
-            }
+fn paint_separator(buf: &mut Buffer, rect: Rect, rule: SidebarRule, theme: &Theme) {
+    let sep_x = rule.column(rect.w);
+    for y in 0..rect.h {
+        if let Some(cell) = buf.cell_mut((sep_x, y)) {
+            cell.set_symbol("│");
+            cell.set_style(Style::default().fg(theme.border));
         }
-        // phux-foz.9: the collapse chevron claims the bottom corner cell
-        // whenever the footer renders (same condition as `hit_test`).
-        if collapse_visible(rect)
-            && let Some(cell) = buf.cell_mut((sep_x, rect.h - 1))
-        {
-            cell.set_symbol(COLLAPSE_GLYPH);
-            cell.set_style(Style::default().fg(self.theme.dim));
-        }
+    }
+    // phux-foz.9: the collapse chevron claims the rule's bottom cell
+    // whenever the footer renders (same condition as `hit_test`).
+    if collapse_visible(rect)
+        && let Some(cell) = buf.cell_mut((sep_x, rect.h - 1))
+    {
+        cell.set_symbol(COLLAPSE_GLYPH);
+        cell.set_style(Style::default().fg(theme.dim));
     }
 }
 
@@ -1225,6 +1277,7 @@ mod tests {
     fn overflow_counts_sessions_and_windows_without_counting_host_lines() {
         let c = SidebarCounts {
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
             ..counts(9, 5, 4)
         };
         let model = row_model(c, 14);
@@ -1247,6 +1300,7 @@ mod tests {
             windows: usize::MAX,
             roster: usize::MAX,
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
         };
         assert_eq!(row_model(c, 1), vec![SidebarRow::RosterOverflow]);
         let rect = Rect {
@@ -1263,6 +1317,7 @@ mod tests {
         }
         let invalid = SidebarCounts {
             active_session: Some(9),
+            rule: SidebarRule::Trailing,
             ..counts(0, 100, 1)
         };
         assert!(
@@ -1299,7 +1354,7 @@ mod tests {
             w,
             h: 14,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         let painted = paint_to_string(p, rect);
         for row in rows_of(&painted) {
             assert_eq!(display_width(&row), usize::from(w), "w={w}: {row:?}");
@@ -1429,7 +1484,7 @@ mod tests {
         let mut unseen = agent(0, "a", "claude", AgentMetaState::Done);
         unseen.seen = false;
         p.set_needs_you(vec![unseen.clone()]);
-        let row = row_text(&p.compose_buffer(rect), rect, 1);
+        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing), rect, 1);
         assert!(row.contains('◆'), "unreviewed done: {row:?}");
 
         let seen = AgentEntry {
@@ -1437,11 +1492,11 @@ mod tests {
             ..unseen
         };
         p.set_needs_you(vec![seen]);
-        let row = row_text(&p.compose_buffer(rect), rect, 1);
+        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing), rect, 1);
         assert!(row.contains('○'), "reviewed done relaxes: {row:?}");
 
         p.set_needs_you(vec![agent(0, "a", "claude", AgentMetaState::Working)]);
-        let row = row_text(&p.compose_buffer(rect), rect, 1);
+        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing), rect, 1);
         assert!(row.contains('◐'), "working: {row:?}");
     }
 
@@ -1707,7 +1762,7 @@ mod tests {
             w: 36,
             h: 12,
         };
-        let b = p.compose_buffer(rect);
+        let b = p.compose_buffer(rect, SidebarRule::Trailing);
         for y in [6, 7, 8] {
             assert_eq!(b[(0, y)].bg, p.theme.surface);
             assert_eq!(b[(34, y)].bg, p.theme.surface);
@@ -1819,7 +1874,7 @@ mod tests {
             w: 20,
             h: 18,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         assert!(row_text(&buf, rect, 8).contains(SPACES_HEADER));
         assert!(row_text(&buf, rect, 9).contains("development"));
         assert!(row_text(&buf, rect, 10).contains("mini"));
@@ -1845,7 +1900,7 @@ mod tests {
             w: 36,
             h: 14,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         assert!(
             row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
             "the queue tops the strip: {:?}",
@@ -1874,7 +1929,7 @@ mod tests {
             agent(0, "phux", "claude", AgentMetaState::Done),
             agent(1, "scratch", "merge-queue-w5", AgentMetaState::Blocked),
         ]);
-        let changed = p.compose_buffer(rect);
+        let changed = p.compose_buffer(rect, SidebarRule::Trailing);
         assert!(row_text(&changed, rect, 1).contains("claude"));
         assert!(row_text(&changed, rect, 2).contains("merge-queue-w5"));
         assert_eq!(row_text(&buf, rect, 6), row_text(&changed, rect, 6));
@@ -1898,7 +1953,7 @@ mod tests {
             w: 36,
             h: 14,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         let row = row_text(&buf, rect, 1);
         assert!(
             row.contains("phux-feat-auth"),
@@ -1969,7 +2024,7 @@ mod tests {
             w: 24,
             h: 12,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         assert!(
             row_text(&buf, rect, 0).contains(NEEDS_YOU_HEADER),
             "Agents tops a calm strip: {:?}",
@@ -1999,7 +2054,7 @@ mod tests {
             w: 24,
             h: 12,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         assert!(
             row_text(&buf, rect, 5).contains(SPACES_HEADER),
             "Sessions header stays at midpoint: {:?}",
@@ -2037,7 +2092,7 @@ mod tests {
             w: 26,
             h: 16,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         let model = row_model(p.counts(), rect.h);
         let first = model
             .iter()
@@ -2060,7 +2115,7 @@ mod tests {
     }
 
     fn strip_text(p: &SidebarPainter, rect: Rect) -> String {
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         let mut out = String::new();
         for y in 0..rect.h {
             let mut row: String = (0..rect.w)
@@ -2172,7 +2227,7 @@ mod tests {
             w: 28,
             h: 8,
         };
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         assert!(
             row_text(&buf, rect, 7).contains(NEW_LABEL),
             "row 7 should hold the new affordance: {:?}",
@@ -2201,6 +2256,51 @@ mod tests {
         );
     }
 
+    /// phux-kb91: a right-docked strip puts its rule (and the collapse
+    /// chevron) on its pane-facing first column, and every row target moves
+    /// one column away from it, out to the screen edge.
+    #[test]
+    fn a_leading_rule_mirrors_the_strip_toward_the_panes() {
+        let rect = Rect {
+            x: 52,
+            y: 0,
+            w: 28,
+            h: 14,
+        };
+        let leading = SidebarCounts {
+            active_session: Some(0),
+            rule: SidebarRule::Leading,
+            ..counts(0, 1, 1)
+        };
+        assert_eq!(
+            hit_test(rect, leading, 52, 9),
+            None,
+            "the rule is no row target"
+        );
+        assert_eq!(hit_test(rect, leading, 52, 13), Some(SidebarHit::Collapse));
+        assert_eq!(
+            hit_test(rect, leading, 79, 9),
+            Some(SidebarHit::Window(0)),
+            "the screen-edge column is row content, not a rule"
+        );
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_windows(vec![win("build", true)]);
+        let local = Rect { x: 0, ..rect };
+        let buf = p.compose_buffer(local, SidebarRule::Leading);
+        assert_eq!(
+            buf.cell((0, 0)).map(ratatui::buffer::Cell::symbol),
+            Some("│")
+        );
+        assert_ne!(
+            buf.cell((27, 0)).map(ratatui::buffer::Cell::symbol),
+            Some("│")
+        );
+        assert_eq!(
+            buf.cell((0, 13)).map(ratatui::buffer::Cell::symbol),
+            Some(COLLAPSE_GLYPH)
+        );
+    }
+
     /// phux-i0e8.10.3: every click the help table advertises resolves
     /// through the real [`hit_test`] to the target its row describes, on
     /// a strip tall enough to render the footer. The affordance row
@@ -2216,6 +2316,7 @@ mod tests {
         };
         let quiet = SidebarCounts {
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
             ..counts(0, 1, 1)
         };
         for binding in HELP_BINDINGS {
@@ -2278,6 +2379,7 @@ mod tests {
             windows,
             roster,
             active_session: None,
+            rule: SidebarRule::Trailing,
         }
     }
 
@@ -2285,6 +2387,7 @@ mod tests {
     fn row_model_reserves_footer_and_truncates_blocks() {
         let c = SidebarCounts {
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
             ..counts(0, 3, 1)
         };
         let rows = row_model(c, 9);
@@ -2430,6 +2533,7 @@ mod tests {
         };
         let c = SidebarCounts {
             active_session: Some(0),
+            rule: SidebarRule::Trailing,
             ..counts(0, 2, 1)
         };
         assert_eq!(hit_test(rect, c, 3, 0), Some(SidebarHit::Fleet));
@@ -2578,7 +2682,7 @@ mod tests {
         p.set_windows(windows.clone());
         p.set_needs_you(agents.clone());
         p.set_roster(peers.clone());
-        let buf = p.compose_buffer(rect);
+        let buf = p.compose_buffer(rect, SidebarRule::Trailing);
         let c = p.counts();
         for (y, row) in row_model(c, rect.h).iter().enumerate() {
             let y16 = u16::try_from(y).expect("row fits u16");
