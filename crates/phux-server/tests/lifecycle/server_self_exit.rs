@@ -199,10 +199,34 @@ fn close_tab_of_keep_empty_last_pane_leaves_the_session_empty() {
             },
         )
         .await;
+        // SET_METADATA has no reply. Confirm the mark on this connection
+        // before Close Tab so a loaded scheduler cannot reap the session
+        // first (phux-gu83).
         send_frame(
             &mut stream,
             &FrameKind::Command {
                 request_id: 2,
+                command: Command::GetState {
+                    scope: StateScope::Server,
+                },
+            },
+        )
+        .await;
+        let result = recv_command_result(&mut stream, 2).await;
+        let CommandResult::OkWith(CommandValue::State(listed)) = result else {
+            panic!("GET_STATE failed: {result:?}");
+        };
+        assert!(
+            listed
+                .sessions
+                .iter()
+                .any(|s| s.name == "solo" && s.keep_empty),
+            "keep-empty must apply before the last pane is released",
+        );
+        send_frame(
+            &mut stream,
+            &FrameKind::Command {
+                request_id: 3,
                 command: Command::CloseTabResources {
                     ids: vec![snapshot.focused_resource],
                 },
