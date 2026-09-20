@@ -284,7 +284,8 @@ impl ServerState {
     /// Withdraw every action that names `terminal`, which is being reaped
     /// (ADR-0128): each ends `withdrawn`, journaled before the Terminal's
     /// close, and its requester is refused ("terminal gone"). A batch that
-    /// names it is withdrawn whole.
+    /// names it is withdrawn whole. The local reap path and a hub's relayed
+    /// `RESOURCE_CLOSED` both call this first.
     pub fn withdraw_approvals_naming(&mut self, terminal: &WireResourceId) {
         let ids: Vec<ApprovalId> = self
             .approvals
