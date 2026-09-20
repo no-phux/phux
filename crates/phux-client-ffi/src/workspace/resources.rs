@@ -25,6 +25,10 @@ impl Subscriptions {
         self.withdrawn.contains(id)
     }
 
+    pub(crate) fn was_closed(&self, id: &ResourceId) -> bool {
+        self.closed.contains(id)
+    }
+
     pub(crate) fn cancel(&mut self, id: &ResourceId) {
         self.pending.retain(|_, pending| pending != id);
     }
@@ -58,7 +62,7 @@ pub(super) fn reconcile(
         .cloned()
         .collect();
     for id in removed {
-        withdraw(client, &id)?;
+        withdraw(client, &id, true)?;
     }
     client
         .workspace
@@ -71,7 +75,7 @@ pub(super) fn reconcile(
         // A federated GET_STATE may have captured its local contribution before
         // an explicit close that we already received. Durable closure wins.
         .filter(|resource| !client.workspace.subscriptions.closed.contains(&resource.id))
-        .map(crate::resource_summary)
+        .map(crate::client::resource_summary)
         .collect();
     for resource in &snapshot.resources {
         if client.workspace.subscriptions.closed.contains(&resource.id) {
@@ -101,12 +105,29 @@ fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeE
     {
         return Ok(());
     }
-    // The bridge's bounded outgoing queue can be busy with host operations.
-    // Leave this resource catalogued; a later refresh retries its subscription.
     if client.outgoing.len() >= 128 || client.workspace.subscriptions.pending.len() >= 128 {
         return Ok(());
     }
-    crate::declare_agent_session(client, resource)?;
+    let facet = resource.agent.as_ref();
+    client
+        .control
+        .apply_engine_event(
+            phux_client_runtime::engine::EngineEvent::AgentSessionDeclared {
+                terminal_id: resource.id.clone(),
+                parent: resource.parent.clone(),
+                provider: facet.map(|facet| facet.provider.clone()),
+                native_id: facet.and_then(|facet| facet.native_id.clone()),
+                state: facet.map(|facet| facet.state.clone()),
+            },
+        )
+        .map_err(crate::control_error)?;
+    client.agent_streams.insert(
+        resource.id.clone(),
+        crate::client::AgentStream {
+            generation: None,
+            retained_pending: false,
+        },
+    );
     client
         .workspace
         .subscriptions
@@ -144,24 +165,29 @@ fn receive_reply(
     }
     // Refusal is not authoritative resource closure. Withdraw only admission;
     // keep the inventory entry and permit the next registry read to retry.
-    if client
-        .agent_streams
-        .get(&id)
-        .is_some_and(|stream| stream.generation.is_none())
-    {
-        client.agent_streams.remove(&id);
-    }
-    withdraw(client, &id)?;
+    withdraw(client, &id, false)?;
     match result {
         CommandResult::Error { .. } => Ok(true),
         _ => Err(BridgeError::invalid("unexpected agent subscription reply")),
     }
 }
 
-/// Membership withdrawal is reversible; only an explicit wire close is durable.
-fn withdraw(client: &mut Client, id: &ResourceId) -> Result<(), BridgeError> {
-    crate::retire_agent_stream(client, id);
-    if !client.session.release_terminal(id) {
+fn withdraw(client: &mut Client, id: &ResourceId, notify: bool) -> Result<(), BridgeError> {
+    if let Some(stream) = client.agent_streams.remove(id)
+        && notify
+    {
+        let (stream_id, bootstrap_id) = stream.generation.unwrap_or((0, 0));
+        let mut effect = crate::OwnedEffect::simple(
+            crate::types::EFFECT_AGENT_RECORDS,
+            crate::types::AGENT_RECORDS_CLOSED,
+            id.clone(),
+        );
+        effect.stream_id = stream_id;
+        effect.bootstrap_id = bootstrap_id;
+        client.owned_effects.push(effect);
+        client.publish_effects();
+    }
+    if client.control.engine().is_some() && !client.control.release_terminal(id) {
         return Err(BridgeError::state("cannot release agent subscription"));
     }
     client.workspace.subscriptions.withdrawn.insert(id.clone());

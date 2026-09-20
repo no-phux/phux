@@ -1,6 +1,8 @@
 use super::*;
 #[cfg(feature = "engine")]
 use crate::publication::GridDamage;
+#[cfg(feature = "engine")]
+use phux_client_core::session::KernelSend;
 
 fn id(value: u32) -> ResourceId {
     ResourceId::local(value)
@@ -19,6 +21,7 @@ fn config() -> EngineConfig {
         profile: BootstrapProfile::SynthesizedVtRaw,
         limits: BootstrapLimits::default(),
         scrollback_lines: 100,
+        history: None,
     }
 }
 
@@ -120,6 +123,73 @@ fn a_published_replica_is_projected_and_generations_advance_on_output() {
     // A scroll re-publishes even when the grid did not change.
     owner.scroll(&terminal, Scroll::Bottom).expect("scroll");
     assert_eq!(publication.generation(&terminal), Some(3));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn scrolling_toward_uncached_history_emits_a_prefetch_request() {
+    let publication = Arc::new(Publication::new());
+    let mut history_config = config();
+    history_config.history = Some(HistoryCacheConfig::default());
+    let owner = EngineHandle::start(&history_config, publication).expect("owner");
+    let terminal = id(9);
+    apply_ok(
+        &owner,
+        EngineEvent::AttachStarted {
+            attach_id: 7,
+            terminals: vec![terminal.clone()],
+        },
+    );
+    apply_ok(
+        &owner,
+        EngineEvent::BootstrapBegin {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(1),
+            profile: BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 20,
+            rows: 4,
+            base_seq: 0,
+        },
+    );
+    apply_ok(
+        &owner,
+        EngineEvent::BootstrapChunk {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(1),
+            chunk_seq: 0,
+            payload: b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix".to_vec(),
+        },
+    );
+    apply_ok(
+        &owner,
+        EngineEvent::BootstrapReady {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(1),
+            history_cursor: Some(b"older".to_vec()),
+        },
+    );
+    apply_ok(&owner, EngineEvent::AttachReady { attach_id: 7 });
+    apply_ok(
+        &owner,
+        EngineEvent::HistoryRejected {
+            terminal_id: terminal.clone(),
+            stream_id: stream(1),
+            bootstrap_id: bootstrap(1),
+            cursor: b"older".to_vec(),
+            reason: HistoryRejectionReason::ZeroLimit,
+            required_bytes: 0,
+            required_rows: 0,
+        },
+    );
+
+    let outcome = owner.scroll(&terminal, Scroll::Top).expect("scroll");
+    assert!(outcome.effects.iter().any(|effect| matches!(
+        effect,
+        KernelEffect::Send(KernelSend::HistoryRequest { cursor, .. }) if cursor == b"older"
+    )));
 }
 
 #[cfg(feature = "engine")]

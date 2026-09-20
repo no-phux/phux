@@ -57,7 +57,9 @@ impl ControlPlane {
             self.input_replay
                 .begin_connection_at(Some(server_id), replay_supported, now_ms);
         self.publish_replay_reports(reports, None);
-        self.queue_post_handshake();
+        if self.options.automatic_lifecycle {
+            self.queue_post_handshake();
+        }
         self.queue_durable_frames();
         Ok(())
     }
@@ -71,11 +73,9 @@ impl ControlPlane {
             profile,
             limits,
             scrollback_lines: self.options.scrollback_lines,
+            history: self.history_config,
         };
-        let same = self
-            .engine_config
-            .as_ref()
-            .is_some_and(|current| current.profile == profile && current.limits == limits);
+        let same = self.engine_config.as_ref() == Some(&config);
         if self.engine.is_some() && same {
             return Ok(());
         }
@@ -146,8 +146,28 @@ impl ControlPlane {
                 "ATTACHED used unexpected attach id {attach_id}"
             )));
         }
-        // Lifecycle events are not replayed on attach; the snapshot is the
-        // floor.
+        self.close_vanished(snapshot)?;
+        let (terminals, seen) = attached_terminals(snapshot)?;
+        self.attach_terminals = seen;
+        self.attached_session = Some(snapshot.focused_session.get());
+        self.selected_session = self.attached_session;
+        self.topology = Some(Topology::from_snapshot(snapshot));
+        self.error = None;
+        self.apply_engine(EngineEvent::AttachStarted {
+            attach_id,
+            terminals: terminals.clone(),
+        })?;
+        self.declare_agent_sessions(snapshot, &terminals)?;
+        self.push_event(Event::TopologySnapshot {
+            attach_id: Some(attach_id),
+            snapshot: snapshot.clone(),
+        });
+        self.push_event(Event::TopologyChanged);
+        Ok(())
+    }
+
+    fn close_vanished(&mut self, snapshot: &SessionSnapshot) -> Result<(), ControlError> {
+        // Lifecycle events are not replayed on attach; the snapshot is the floor.
         let vanished = self
             .topology
             .as_ref()
@@ -162,46 +182,22 @@ impl ControlPlane {
                 phux_protocol::wire::frame::CloseReason::Unknown,
             );
         }
-        // Only the focused session's Terminal-kind resources take part in
-        // the attach barrier: the server bootstraps only that session, and
-        // an AgentSession paints nothing.
-        let focused_windows: HashSet<_> = snapshot
-            .windows
-            .iter()
-            .filter(|window| window.session_id == snapshot.focused_session)
-            .map(|window| window.id)
-            .collect();
-        let terminals: Vec<ResourceId> = topology::terminal_resources(snapshot)
-            .filter(|pane| focused_windows.contains(&pane.window_id))
-            .map(|pane| pane.id.clone())
-            .collect();
-        let mut seen = HashSet::new();
-        if !terminals.iter().all(|id| seen.insert(id.clone())) {
-            return Err(ControlError::Protocol(
-                "ATTACHED target session contains duplicate terminal ids".to_owned(),
-            ));
-        }
-        self.attach_terminals = seen;
-        self.attached_session = Some(snapshot.focused_session.get());
-        self.topology = Some(Topology::from_snapshot(snapshot));
-        self.error = None;
-        self.apply_engine(EngineEvent::AttachStarted {
-            attach_id,
-            terminals: terminals.clone(),
-        })?;
+        Ok(())
+    }
+
+    fn declare_agent_sessions(
+        &mut self,
+        snapshot: &SessionSnapshot,
+        terminals: &[ResourceId],
+    ) -> Result<(), ControlError> {
         self.agent_streams.clear();
-        let agent_sessions: Vec<_> = snapshot
-            .resources
-            .iter()
-            .filter(|resource| resource.kind == ResourceKind::AgentSession)
-            .filter(|resource| {
-                resource
+        let agent_sessions = snapshot.resources.iter().filter(|resource| {
+            resource.kind == ResourceKind::AgentSession
+                && resource
                     .parent
                     .as_ref()
                     .is_some_and(|parent| terminals.contains(parent))
-            })
-            .cloned()
-            .collect();
+        });
         for resource in agent_sessions {
             let facet = resource.agent.as_ref();
             self.apply_engine(EngineEvent::AgentSessionDeclared {
@@ -213,7 +209,6 @@ impl ControlPlane {
             })?;
             self.agent_streams.insert(resource.id.clone());
         }
-        self.push_event(Event::TopologyChanged);
         Ok(())
     }
 
@@ -238,6 +233,22 @@ impl ControlPlane {
         message: String,
     ) -> Result<(), ControlError> {
         let rendered = format!("server error {code:?}: {message}");
+        if let Some(request_id) = request_id
+            && !self.pending.contains_key(&request_id)
+            && !self.input_replay.owns(request_id)
+        {
+            // The binding extension that allocated this correlation owns its
+            // reply. Surface the original wire shape exactly once.
+            self.push_event(Event::Frame(Box::new(FrameKind::Error {
+                request_id: Some(request_id),
+                code,
+                message,
+            })));
+            if code == ErrorCode::VersionIncompatible {
+                return Err(ControlError::Refused(rendered));
+            }
+            return Ok(());
+        }
         self.error = Some(rendered.clone());
         if let Some(request_id) = request_id {
             self.resolve_pending(
@@ -284,7 +295,7 @@ impl ControlPlane {
             (None, extra) => extra.to_owned(),
         };
         self.error = Some(detail.clone());
-        if reason == Some(DetachReason::ProtocolError) {
+        if reason == Some(DetachReason::ProtocolError) && self.options.automatic_lifecycle {
             return Err(ControlError::Refused(detail));
         }
         // Other endings: the server closes the socket itself, and the
@@ -294,7 +305,11 @@ impl ControlPlane {
 
     // ----- lifecycle frames ------------------------------------------------
 
-    pub(super) fn resource_spawned(&mut self, request_id: u32, result: &SpawnResult) {
+    pub(super) fn resource_spawned(&mut self, request_id: u32, result: &SpawnResult) -> bool {
+        if !matches!(self.pending.get(&request_id), Some(Pending::Spawn)) {
+            return false;
+        }
+        self.pending.remove(&request_id);
         let spawned = result.spawned_id().cloned();
         let error = match result {
             SpawnResult::Err(error) => Some(spawn_error_message(error)),
@@ -314,9 +329,10 @@ impl ControlPlane {
         });
         // Nothing else announces this client's own spawn: refresh so the
         // topology lists it.
-        if spawned.is_some() && self.handshake_ready {
+        if spawned.is_some() && self.handshake_ready && self.options.automatic_lifecycle {
             self.queue_refresh_topology();
         }
+        true
     }
 
     pub(super) fn command_result(
@@ -343,10 +359,19 @@ impl ControlPlane {
         result: CommandResult,
     ) -> Result<(), ControlError> {
         let Some(pending) = self.pending.remove(&request_id) else {
+            self.push_event(Event::Frame(Box::new(FrameKind::CommandResult {
+                request_id,
+                result,
+            })));
             return Ok(());
         };
         let error = command_result_error(&result);
         match pending {
+            Pending::Spawn => {
+                return Err(ControlError::Protocol(
+                    "spawn request received COMMAND_RESULT instead of RESOURCE_SPAWNED".to_owned(),
+                ));
+            }
             Pending::AttachTerminal(terminal_id) => {
                 if error.is_some() {
                     self.terminal_attached.remove(&terminal_id);
@@ -359,10 +384,12 @@ impl ControlPlane {
                 });
             }
             Pending::DetachTerminal(terminal_id) => {
-                if error.is_none()
-                    && let Some(engine) = &self.engine
-                {
-                    engine.detach(terminal_id.clone());
+                if error.is_none() {
+                    self.attach_terminals.remove(&terminal_id);
+                    self.agent_streams.remove(&terminal_id);
+                    if let Some(engine) = &self.engine {
+                        let _ = engine.detach(terminal_id.clone());
+                    }
                 }
                 self.push_event(Event::TerminalDetached {
                     request_id,
@@ -428,9 +455,38 @@ impl ControlPlane {
         }
         self.error = None;
         self.topology = Some(topology);
+        self.push_event(Event::TopologySnapshot {
+            attach_id: None,
+            snapshot: snapshot.clone(),
+        });
         self.push_event(Event::TopologyChanged);
         Ok(())
     }
+}
+
+fn attached_terminals(
+    snapshot: &SessionSnapshot,
+) -> Result<(Vec<ResourceId>, HashSet<ResourceId>), ControlError> {
+    // Only the focused session's Terminal-kind resources take part in the
+    // attach barrier: the server bootstraps only that session, and an
+    // AgentSession paints nothing.
+    let focused_windows: HashSet<_> = snapshot
+        .windows
+        .iter()
+        .filter(|window| window.session_id == snapshot.focused_session)
+        .map(|window| window.id)
+        .collect();
+    let terminals: Vec<ResourceId> = topology::terminal_resources(snapshot)
+        .filter(|pane| focused_windows.contains(&pane.window_id))
+        .map(|pane| pane.id.clone())
+        .collect();
+    let mut seen = HashSet::new();
+    if !terminals.iter().all(|id| seen.insert(id.clone())) {
+        return Err(ControlError::Protocol(
+            "ATTACHED target session contains duplicate terminal ids".to_owned(),
+        ));
+    }
+    Ok((terminals, seen))
 }
 
 fn command_result_error(result: &CommandResult) -> Option<String> {

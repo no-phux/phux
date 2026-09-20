@@ -2,7 +2,7 @@
 //! stream after attach and folds cwd/command/exit events into typed status
 //! effects (`docs/consumers/cockpit.md` "Status effects").
 use super::*;
-use phux_protocol::wire::frame::{AgentEvent, CloseReason};
+use phux_protocol::wire::frame::{AgentEvent, CloseReason, TombstoneReason};
 use std::ptr;
 
 /// After every attach completes, the bridge asks the server for the events
@@ -223,10 +223,10 @@ fn command_started_and_finished_become_status_effects() {
     unsafe { phux_client_free(client) };
 }
 
-/// A server-scoped event and an event kind this lane does not surface as
-/// status are both silent no-ops: no effect, no error.
+/// A server-scoped event is ignored while a targeted journal Bell is
+/// projected the same way as a dedicated BELL frame.
 #[test]
-fn unrecognised_and_untargeted_events_produce_no_effect() {
+fn untargeted_events_are_ignored_and_targeted_bells_surface() {
     let client = attached_mixed_client();
     let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
 
@@ -254,7 +254,9 @@ fn unrecognised_and_untargeted_events_produce_no_effect() {
         ),
         PhuxClientResult::Ok
     );
-    assert_eq!(unsafe { phux_client_effect_count(client) }, 0);
+    assert_eq!(unsafe { phux_client_effect_count(client) }, 1);
+    let bell = effect_at(client, 0);
+    assert_eq!((bell.kind, bell.detail), (2, 1));
     unsafe { phux_client_free(client) };
 }
 
@@ -312,6 +314,116 @@ fn resource_closed_with_a_signal_surfaces_it_on_the_exited_status_effect() {
     assert_eq!((effect.kind, effect.detail), (2, 11));
     assert_eq!(effect.status_code, u32::from(CloseReason::Killed.as_wire()));
     assert_eq!(effect.first_row, 9, "signal 9 must reach EXITED.first_row");
+
+    unsafe { phux_client_free(client) };
+}
+
+/// Engine BEL must carry the published (stream, bootstrap) so Cockpit's
+/// `sameReplica` fence accepts the notice. A generation-less effect is
+/// silently dropped by `ownerIsCurrent`.
+#[test]
+fn engine_bell_status_carries_the_published_generation() {
+    let client = attached_mixed_client();
+    let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
+    let stream_id = phux_protocol::StreamId::new(1).expect("stream");
+    let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+
+    assert_eq!(
+        feed_kind(
+            client,
+            &FrameKind::ResourceOutput {
+                terminal_id: terminal,
+                stream_id,
+                bootstrap_id,
+                seq: 1,
+                bytes: b"\x07".as_slice().into(),
+            },
+        ),
+        PhuxClientResult::Ok
+    );
+    let count = unsafe { phux_client_effect_count(client) };
+    let bell = (0..count)
+        .map(|index| effect_at(client, index))
+        .find(|effect| effect.kind == 2 && effect.detail == 1)
+        .expect("BEL output must surface a STATUS_BELL effect");
+    assert_eq!(
+        (bell.stream_id, bell.bootstrap_id),
+        (1, 1),
+        "bell generation must match the published replica",
+    );
+
+    unsafe { phux_client_free(client) };
+}
+
+/// A frame for a retired generation is `InvalidState` with the kernel's
+/// sentence, not a protocol drop. The session stays attached.
+#[test]
+fn retired_generation_output_is_invalid_state_and_keeps_the_session() {
+    let client = attached_mixed_client();
+    let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
+    let stream_id = phux_protocol::StreamId::new(1).expect("stream");
+    let bootstrap_id = phux_protocol::BootstrapId::new(1).expect("bootstrap");
+    let replacement = phux_protocol::BootstrapId::new(2).expect("replacement");
+
+    assert_eq!(
+        feed_kind(
+            client,
+            &FrameKind::BootstrapTombstone {
+                terminal_id: terminal.clone(),
+                stream_id,
+                bootstrap_id,
+                reason: TombstoneReason::Resize,
+                last_valid_seq: 0,
+            },
+        ),
+        PhuxClientResult::Ok
+    );
+    for frame in [
+        FrameKind::BootstrapBegin {
+            terminal_id: terminal.clone(),
+            stream_id,
+            bootstrap_id: replacement,
+            profile: phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
+            cols: 80,
+            rows: 24,
+            base_seq: 0,
+        },
+        FrameKind::BootstrapReady {
+            terminal_id: terminal.clone(),
+            stream_id,
+            bootstrap_id: replacement,
+            history_cursor: None,
+        },
+    ] {
+        assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
+    }
+
+    assert_eq!(
+        feed_kind(
+            client,
+            &FrameKind::ResourceOutput {
+                terminal_id: terminal,
+                stream_id,
+                bootstrap_id,
+                seq: 1,
+                bytes: b"stale".as_slice().into(),
+            },
+        ),
+        PhuxClientResult::InvalidState
+    );
+    let mut error = PhuxBytes::default();
+    assert_eq!(
+        unsafe { phux_client_last_error(client, &raw mut error) },
+        PhuxClientResult::Ok
+    );
+    assert_eq!(
+        std::str::from_utf8(span_bytes(error)).expect("last error is UTF-8"),
+        "generation (StreamId(1), BootstrapId(1)) is retired for ResourceId(30)",
+    );
+    assert_eq!(
+        unsafe { phux_client_state(client) },
+        PhuxClientState::Attached
+    );
 
     unsafe { phux_client_free(client) };
 }

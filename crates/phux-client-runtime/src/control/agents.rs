@@ -79,12 +79,14 @@ impl ControlPlane {
                 kind: ResourceKind::Terminal,
                 ..
             } => self.push_event(Event::PaneSpawned { terminal_id }),
-            AgentEvent::ResourceClosed { exit_status } => self.close_pane(
-                &terminal_id,
-                exit_status,
-                None,
-                phux_protocol::wire::frame::CloseReason::Unknown,
-            ),
+            AgentEvent::ResourceClosed { exit_status } => {
+                self.close_pane(
+                    &terminal_id,
+                    exit_status,
+                    None,
+                    phux_protocol::wire::frame::CloseReason::Unknown,
+                );
+            }
             AgentEvent::Dirty => self.push_event(Event::OutputStarted { terminal_id }),
             AgentEvent::Idle => self.push_event(Event::OutputSettled { terminal_id }),
             AgentEvent::Asked {
@@ -128,7 +130,7 @@ impl ControlPlane {
         exit_status: Option<i32>,
         signal: Option<i32>,
         reason: phux_protocol::wire::frame::CloseReason,
-    ) {
+    ) -> bool {
         let was_known = self.own_spawns.contains(terminal_id)
             || self.terminal_attached.contains(terminal_id)
             || self
@@ -156,5 +158,6 @@ impl ControlPlane {
                 reason,
             });
         }
+        was_known
     }
 }

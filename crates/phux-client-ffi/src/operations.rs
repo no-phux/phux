@@ -20,7 +20,7 @@ use crate::{
     ABI_VERSION, PhuxBytes, PhuxClient, PhuxClientResult, PhuxResourceId, bytes_out,
     terminal_id_out, with_client_mut, with_client_ref,
 };
-use phux_client_core::session::KernelSend;
+use phux_client_core::session::{InputEligibility, KernelSend};
 
 mod close_completion;
 mod close_resource;
@@ -622,6 +622,7 @@ pub unsafe extern "C" fn phux_client_subscribe_events(
             Some(id)
         };
         client.event_after_seq = after_seq;
+        client.control.set_event_after_seq(after_seq);
         if !client.attached {
             return Ok(());
         }
@@ -859,7 +860,7 @@ fn queue_terminal_attach(
 ) -> Result<(), BridgeError> {
     ensure_queue_capacity(client, request_id)?;
     client.operations.check_admission_capacity()?;
-    if client.session.active_attach_contains(&id) || client.operations.admitted(&id) {
+    if client.control.terminal_is_admitted(&id) || client.operations.admitted(&id) {
         return Err(BridgeError::state("terminal is already admitted"));
     }
     if client.operations.subscription_pending(&id) {
@@ -867,11 +868,7 @@ fn queue_terminal_attach(
             "terminal already has a pending subscription operation",
         ));
     }
-    if client.session.input_eligibility(&id)
-        == phux_client_core::session::InputEligibility::Ineligible(
-            phux_client_core::session::InputBlockReason::Closed,
-        )
-    {
+    if client.terminal_closed(&id) {
         return Err(BridgeError::state(
             "terminal in the initial ATTACH inventory has closed",
         ));
@@ -884,6 +881,11 @@ fn queue_terminal_attach(
             role_policy,
         },
     })?;
+    if !client.control.admit_external_attach(&id) {
+        return Err(BridgeError::state(
+            "terminal admission changed while queueing",
+        ));
+    }
     client.operations.dynamic.insert(id.clone());
     client.operations.insert(request_id, Pending::Attach(id));
     Ok(())
@@ -927,7 +929,7 @@ fn queue_terminal_detach(
             "terminal has a pending subscription operation",
         ));
     }
-    if !client.operations.admitted(&id) && !client.session.active_attach_contains(&id) {
+    if !client.control.terminal_is_admitted(&id) && !client.operations.admitted(&id) {
         return Err(BridgeError::state("terminal is not admitted"));
     }
     client.queue_frame(&FrameKind::Command {
@@ -991,6 +993,11 @@ fn complete_spawn(
         SpawnResult::Ok(id) | SpawnResult::OkBound { id, .. } => {
             validate_spawn_reply(client, &id, satellite.as_ref())?;
             if matches!(id, ResourceId::Local { .. }) {
+                if !client.control.admit_external_spawn(&id) {
+                    return Err(BridgeError::protocol(
+                        "spawn reply reused a runtime-admitted terminal ID",
+                    ));
+                }
                 client.operations.dynamic.insert(id.clone());
             }
             if let Some(token) = instance {
@@ -1030,7 +1037,7 @@ fn validate_spawn_reply(
             "spawn reply host differs from request",
         ));
     }
-    if client.session.active_attach_contains(id) || client.operations.admitted(id) {
+    if client.control.terminal_is_admitted(id) || client.operations.admitted(id) {
         return Err(BridgeError::protocol(
             "spawn reply reused an admitted terminal ID",
         ));
@@ -1091,7 +1098,7 @@ fn complete_subscription(
 
 fn complete_detach(client: &mut Client, id: &ResourceId) -> Result<(), BridgeError> {
     client.operations.retire(id);
-    if !client.session.detach_terminal(id) {
+    if !client.release_terminal(id) {
         return Err(BridgeError::state("cannot detach before ATTACH barrier"));
     }
     crate::forget_terminal(client, id);
@@ -1118,7 +1125,7 @@ fn refuse_operation(
     };
     if let Pending::Attach(id) = client.operations.pending(request_id)?.clone() {
         // A bootstrap may already have published before refusal. Revoke only this operation's admission.
-        let published = client.session.published(&id).is_some();
+        let published = client.has_projection(&id);
         release_terminal(client, &id)?;
         crate::forget_terminal(client, &id);
         if published {
@@ -1141,7 +1148,7 @@ fn resume_deferred(
     if let Some(deferred) = deferred {
         for send in deferred.ack.into_iter().chain(deferred.history) {
             if deferred_send_is_current(client, &send) {
-                client.process_send(send)?;
+                client.queue_frame(&kernel_send_frame(send)?)?;
             }
         }
     }
@@ -1156,12 +1163,67 @@ pub(crate) fn release_terminal(client: &mut Client, id: &ResourceId) -> Result<(
         return Ok(());
     }
     client.operations.retire(id);
-    if !client.session.release_terminal(id) {
+    if !client.release_terminal(id) {
         return Err(BridgeError::state(
             "cannot release an initial ATTACH participant",
         ));
     }
     Ok(())
+}
+
+pub(crate) fn kernel_send_frame(send: KernelSend) -> Result<FrameKind, BridgeError> {
+    match send {
+        KernelSend::Input { terminal_id, event } => Ok(match event {
+            phux_protocol::input::InputEvent::Key(event) => {
+                FrameKind::InputKey { terminal_id, event }
+            }
+            phux_protocol::input::InputEvent::Mouse(event) => {
+                FrameKind::InputMouse { terminal_id, event }
+            }
+            phux_protocol::input::InputEvent::Focus(event) => {
+                FrameKind::InputFocus { terminal_id, event }
+            }
+            phux_protocol::input::InputEvent::Paste(event) => {
+                FrameKind::InputPaste { terminal_id, event }
+            }
+            _ => return Err(BridgeError::engine("unsupported deferred input event")),
+        }),
+        KernelSend::PtyWrite { terminal_id, bytes } => Ok(FrameKind::InputTerminalReply {
+            terminal_id,
+            bytes: bytes.into(),
+        }),
+        KernelSend::FrameAck {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            seq,
+        } => Ok(FrameKind::FrameAck {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            seq,
+        }),
+        KernelSend::HistoryRequest {
+            key,
+            cursor,
+            max_bytes,
+            max_rows,
+        } => Ok(FrameKind::HistoryRequest {
+            terminal_id: key.terminal_id,
+            stream_id: key.stream_id,
+            bootstrap_id: key.bootstrap_id,
+            cursor: cursor.into(),
+            max_bytes,
+            max_rows,
+        }),
+        KernelSend::SubscribeEvents {
+            terminal,
+            after_seq,
+        } => Ok(FrameKind::SubscribeEvents {
+            terminal,
+            after_seq,
+        }),
+    }
 }
 
 fn deferred_send_is_current(client: &Client, send: &KernelSend) -> bool {
@@ -1175,11 +1237,12 @@ fn deferred_send_is_current(client: &Client, send: &KernelSend) -> bool {
             bootstrap_id,
             ..
         } => {
-            client.session.input_eligibility(terminal_id)
-                == (phux_client_core::session::InputEligibility::Eligible {
-                    stream_id: *stream_id,
-                    bootstrap_id: *bootstrap_id,
-                })
+            matches!(
+                client.input_eligibility(terminal_id),
+                InputEligibility::Eligible { .. }
+            ) && client
+                .terminal_key(terminal_id)
+                .is_ok_and(|key| key.stream_id == *stream_id && key.bootstrap_id == *bootstrap_id)
         }
         _ => false,
     }
@@ -1190,18 +1253,22 @@ fn history_request_is_current(
     key: &phux_client_core::session::ReplicaKey,
     cursor: &[u8],
 ) -> bool {
-    if client.session.input_eligibility(&key.terminal_id)
-        != (phux_client_core::session::InputEligibility::Eligible {
-            stream_id: key.stream_id,
-            bootstrap_id: key.bootstrap_id,
-        })
+    if !matches!(
+        client.input_eligibility(&key.terminal_id),
+        InputEligibility::Eligible { .. }
+    ) || !client
+        .terminal_key(&key.terminal_id)
+        .is_ok_and(|current| current == *key)
     {
         return false;
     }
-    let Some(replica) = client.session.published(&key.terminal_id) else {
-        return false;
-    };
-    replica.key() == key && replica.history().is_fetching(cursor)
+    client
+        .control
+        .engine()
+        .and_then(|engine| engine.replica_info(&key.terminal_id).ok())
+        .and_then(|info| info.history)
+        .and_then(|history| history.next_cursor)
+        .is_some_and(|current| current.matches_bytes(cursor))
 }
 
 /// Number of retained operation completions (pending operations are excluded).

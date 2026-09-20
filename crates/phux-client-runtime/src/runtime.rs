@@ -213,10 +213,16 @@ impl Client {
         lock(&self.inner.control).attached_once()
     }
 
-    /// The session the active attach bootstrapped.
+    /// The home session whose connection-level attach opened its pumps.
     #[must_use]
     pub fn attached_session(&self) -> Option<u32> {
         lock(&self.inner.control).attached_session()
+    }
+
+    /// The session currently selected by the consumer.
+    #[must_use]
+    pub fn selected_session(&self) -> Option<u32> {
+        lock(&self.inner.control).selected_session()
     }
 
     // ----- events -------------------------------------------------------
@@ -241,8 +247,9 @@ impl Client {
 
     // ----- lifecycle -------------------------------------------------
 
-    /// Retarget the session every connection attaches; a live connection
-    /// reconnects to honor it.
+    /// Select a session. A healthy connection switches with per-terminal
+    /// subscriptions on the same socket; only an unresolved create target
+    /// requires a resync.
     pub fn attach_session(&self, target: AttachTarget) {
         if self.inner.with(|control| control.attach_session(target)) {
             self.resync();

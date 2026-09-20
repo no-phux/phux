@@ -5,6 +5,17 @@ use super::{
     HistoryUnavailableReason, WireRejection, WireTombstone,
 };
 
+const fn allowed_before_handshake(frame: &FrameKind) -> bool {
+    matches!(
+        frame,
+        FrameKind::HelloOk { .. }
+            | FrameKind::Error { .. }
+            | FrameKind::Detached { .. }
+            | FrameKind::Ping { .. }
+            | FrameKind::Pong { .. }
+    )
+}
+
 impl ControlPlane {
     // ----- frames in ------------------------------------------------
 
@@ -27,20 +38,18 @@ impl ControlPlane {
 
     /// Apply one decoded inbound frame.
     pub fn feed(&mut self, frame: FrameKind) -> Result<(), ControlError> {
-        if !self.handshake_ready
-            && !matches!(
-                frame,
-                FrameKind::HelloOk { .. }
-                    | FrameKind::Error { .. }
-                    | FrameKind::Detached { .. }
-                    | FrameKind::Ping { .. }
-                    | FrameKind::Pong { .. }
-            )
-        {
+        if !self.handshake_ready && !allowed_before_handshake(&frame) {
             return Err(ControlError::Protocol(
                 "server frame arrived before HELLO_OK".to_owned(),
             ));
         }
+        let Some(frame) = self.feed_session_frame(frame)? else {
+            return Ok(());
+        };
+        self.feed_resource_frame(frame)
+    }
+
+    fn feed_session_frame(&mut self, frame: FrameKind) -> Result<Option<FrameKind>, ControlError> {
         match frame {
             FrameKind::HelloOk {
                 protocol_major,
@@ -57,25 +66,29 @@ impl ControlPlane {
                 server_caps.layers,
                 selected_profile,
                 bootstrap_limits,
-            ),
-            FrameKind::Ping { nonce } => {
-                self.queue_frame(&FrameKind::Pong { nonce });
-                Ok(())
-            }
+            )?,
+            FrameKind::Ping { nonce } => self.queue_frame(&FrameKind::Pong { nonce }),
             // The answer to a liveness probe: its arrival was the point.
-            FrameKind::Pong { .. } => Ok(()),
+            FrameKind::Pong { .. } => {}
             FrameKind::Attached {
                 attach_id,
                 snapshot,
                 ..
-            } => self.attached(attach_id, &snapshot),
-            FrameKind::AttachReady { attach_id } => self.attach_ready(attach_id),
+            } => self.attached(attach_id, &snapshot)?,
+            FrameKind::AttachReady { attach_id } => self.attach_ready(attach_id)?,
             FrameKind::Error {
                 request_id,
                 code,
                 message,
-            } => self.server_error(request_id, code, message),
-            FrameKind::Detached { reason, message } => self.detached(reason, &message),
+            } => self.server_error(request_id, code, message)?,
+            FrameKind::Detached { reason, message } => self.detached(reason, &message)?,
+            frame => return Ok(Some(frame)),
+        }
+        Ok(None)
+    }
+
+    fn feed_resource_frame(&mut self, frame: FrameKind) -> Result<(), ControlError> {
+        match frame {
             FrameKind::Bell { terminal_id } => {
                 self.push_event(Event::Bell { terminal_id });
                 Ok(())
@@ -86,17 +99,32 @@ impl ControlPlane {
                 reason,
                 signal,
             } => {
+                self.attach_terminals.remove(&terminal_id);
                 self.apply_engine(EngineEvent::Closed {
                     terminal_id: terminal_id.clone(),
                     exit_status,
                     signal,
                     reason,
                 })?;
-                self.close_pane(&terminal_id, exit_status, signal, reason);
+                if !self.close_pane(&terminal_id, exit_status, signal, reason) {
+                    // A manual binding may own the admission correlation;
+                    // still surface the authoritative close exactly once.
+                    self.push_event(Event::TerminalClosed {
+                        terminal_id,
+                        exit_status,
+                        signal,
+                        reason,
+                    });
+                }
                 Ok(())
             }
             FrameKind::ResourceSpawned { request_id, result } => {
-                self.resource_spawned(request_id, &result);
+                if !self.resource_spawned(request_id, &result) {
+                    self.push_event(Event::Frame(Box::new(FrameKind::ResourceSpawned {
+                        request_id,
+                        result,
+                    })));
+                }
                 Ok(())
             }
             FrameKind::CommandResult { request_id, result } => {

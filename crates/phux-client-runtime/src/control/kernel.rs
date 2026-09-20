@@ -1,12 +1,38 @@
 //! Engine outcomes and kernel effect processing.
 
 use super::{
-    ControlError, ControlPlane, EngineEvent, EngineOutcome, Event, FrameKind, InputEvent,
-    KernelEffect, KernelSend, KernelStatus, MAX_INPUT_TERMINAL_REPLY_BYTES, ServerFeature,
+    ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineOutcome, Event, FrameKind,
+    InputEvent, KernelEffect, KernelSend, KernelStatus, MAX_INPUT_TERMINAL_REPLY_BYTES, ResourceId,
+    ServerFeature,
 };
 
 impl ControlPlane {
     // ----- the kernel --------------------------------------------------
+
+    /// Apply one normalized engine event on the owner thread.
+    ///
+    /// Bindings normally use [`ControlPlane::feed`](super::ControlPlane::feed),
+    /// which performs protocol validation first. This lower-level entry point
+    /// exists for native embedders that already hold typed runtime events.
+    pub fn apply_engine_event(&mut self, event: EngineEvent) -> Result<(), ControlError> {
+        match &event {
+            EngineEvent::AttachStarted {
+                attach_id,
+                terminals,
+            } => {
+                self.active_attach_id = Some(*attach_id);
+                self.attach_terminals = terminals.iter().cloned().collect();
+            }
+            EngineEvent::AttachReady { attach_id } if self.active_attach_id == Some(*attach_id) => {
+                self.attached_once = true;
+            }
+            EngineEvent::Closed { terminal_id, .. } => {
+                self.attach_terminals.remove(terminal_id);
+            }
+            _ => {}
+        }
+        self.apply_engine(event)
+    }
 
     pub(super) fn apply_engine(&mut self, event: EngineEvent) -> Result<(), ControlError> {
         let Some(engine) = &self.engine else {
@@ -46,7 +72,12 @@ impl ControlPlane {
         }
         if let Some(error) = outcome.error {
             if strict {
-                return Err(ControlError::Protocol(format!("session kernel: {error}")));
+                return Err(match error {
+                    EngineApplyError::InvalidState(message) => ControlError::InvalidState(message),
+                    EngineApplyError::Protocol(message) => {
+                        ControlError::Protocol(format!("session kernel: {message}"))
+                    }
+                });
             }
             tracing::debug!(%error, "session kernel ignored an event");
         }
@@ -77,29 +108,22 @@ impl ControlPlane {
     }
 
     pub(super) fn process_send(&mut self, send: KernelSend) {
+        if !self.options.automatic_lifecycle {
+            self.push_event(Event::KernelSend(send));
+            return;
+        }
         let frame = match send {
-            KernelSend::Input { terminal_id, event } => match event {
-                InputEvent::Key(event) => FrameKind::InputKey { terminal_id, event },
-                InputEvent::Mouse(event) => FrameKind::InputMouse { terminal_id, event },
-                InputEvent::Focus(event) => FrameKind::InputFocus { terminal_id, event },
-                InputEvent::Paste(event) => FrameKind::InputPaste { terminal_id, event },
-                _ => return,
-            },
+            KernelSend::Input { terminal_id, event } => {
+                let Some(frame) = input_frame(terminal_id, event) else {
+                    return;
+                };
+                frame
+            }
             KernelSend::PtyWrite { terminal_id, bytes } => {
-                if !self.server_has(ServerFeature::TerminalReply) {
-                    tracing::warn!(
-                        "terminal query reply not sent: server lacks terminal-reply support"
-                    );
+                let Some(frame) = self.terminal_reply_frame(terminal_id, bytes) else {
                     return;
-                }
-                if bytes.is_empty() || bytes.len() > MAX_INPUT_TERMINAL_REPLY_BYTES {
-                    tracing::warn!("terminal reply is empty or exceeds the protocol byte limit");
-                    return;
-                }
-                FrameKind::InputTerminalReply {
-                    terminal_id,
-                    bytes: bytes.into(),
-                }
+                };
+                frame
             }
             KernelSend::FrameAck {
                 terminal_id,
@@ -139,6 +163,21 @@ impl ControlPlane {
             },
         };
         self.queue_frame(&frame);
+    }
+
+    fn terminal_reply_frame(&self, terminal_id: ResourceId, bytes: Vec<u8>) -> Option<FrameKind> {
+        if !self.server_has(ServerFeature::TerminalReply) {
+            tracing::warn!("terminal query reply not sent: server lacks terminal-reply support");
+            return None;
+        }
+        if bytes.is_empty() || bytes.len() > MAX_INPUT_TERMINAL_REPLY_BYTES {
+            tracing::warn!("terminal reply is empty or exceeds the protocol byte limit");
+            return None;
+        }
+        Some(FrameKind::InputTerminalReply {
+            terminal_id,
+            bytes: bytes.into(),
+        })
     }
 
     pub(super) fn process_status(&mut self, status: KernelStatus) {
@@ -197,4 +236,14 @@ impl ControlPlane {
             | KernelStatus::CommandFinished { .. } => {}
         }
     }
+}
+
+fn input_frame(terminal_id: ResourceId, event: InputEvent) -> Option<FrameKind> {
+    Some(match event {
+        InputEvent::Key(event) => FrameKind::InputKey { terminal_id, event },
+        InputEvent::Mouse(event) => FrameKind::InputMouse { terminal_id, event },
+        InputEvent::Focus(event) => FrameKind::InputFocus { terminal_id, event },
+        InputEvent::Paste(event) => FrameKind::InputPaste { terminal_id, event },
+        _ => return None,
+    })
 }
