@@ -5,15 +5,11 @@
 
 use std::{mem::size_of, ptr};
 
-use libghostty_vt::style::RgbColor;
-use libghostty_vt::terminal::{Mode, Terminal};
-use phux_client_core::grid::{self, CursorWidth, GridSnapshot};
+use phux_client_core::grid::{self, CursorWidth};
+use phux_client_runtime::publication::{GridFrame, Rgb};
 
 use crate::error::{BridgeError, check_struct, terminal_id_in};
-use crate::{
-    ABI_VERSION, PhuxClient, PhuxClientResult, PhuxResourceId, PhuxTerminalGridView,
-    with_client_ref,
-};
+use crate::{ABI_VERSION, PhuxClient, PhuxClientResult, PhuxResourceId, with_client_ref};
 
 pub const GRID_COLOR_DEFAULT: u8 = grid::COLOR_KIND_DEFAULT;
 pub const GRID_COLOR_PALETTE: u8 = grid::COLOR_KIND_PALETTE;
@@ -27,8 +23,8 @@ pub struct PhuxGridRgb {
     pub b: u8,
 }
 
-impl From<RgbColor> for PhuxGridRgb {
-    fn from(value: RgbColor) -> Self {
+impl From<Rgb> for PhuxGridRgb {
+    fn from(value: Rgb) -> Self {
         Self {
             r: value.r,
             g: value.g,
@@ -108,74 +104,36 @@ pub(crate) struct GridMetadataCache {
 }
 
 impl GridMetadataCache {
-    /// Capture the additive metadata for one projected grid. `cells` lends
-    /// core's per-cell provenance records; `grid` carries the identity and
-    /// cursor fields the view repeats.
-    pub(crate) fn publish(
-        &mut self,
-        snapshot: &GridSnapshot<'_>,
-        terminal: &Terminal<'_, '_>,
-        grid: &PhuxTerminalGridView,
-    ) -> Result<(), BridgeError> {
-        let cursor = snapshot.cursor;
-        let colors = &snapshot.colors;
-        let cells = &snapshot.buffer.metadata;
-        let defaults = DefaultColors::read(terminal)?;
-        self.view = PhuxTerminalGridMetadata {
-            stream_id: grid.stream_id,
-            bootstrap_id: grid.bootstrap_id,
-            last_seq: grid.last_seq,
-            document_revision: grid.document_revision,
-            cols: grid.cols,
-            rows: grid.rows,
-            foreground: defaults
-                .foreground
-                .map_or_else(PhuxGridRgb::default, Into::into),
-            background: defaults
-                .background
-                .map_or_else(PhuxGridRgb::default, Into::into),
-            has_foreground: defaults.foreground.is_some(),
-            has_background: defaults.background.is_some(),
-            reverse_colors: defaults.reversed,
-            cursor_color: colors.cursor.map_or_else(PhuxGridRgb::default, Into::into),
-            has_cursor_color: colors.cursor.is_some(),
-            cursor_blinking: cursor.blinking,
-            cursor_wide: cursor.visible && cursor.width.is_wide(),
-            cursor_at_wide_tail: cursor.width == CursorWidth::WideTail,
-            palette: colors.palette.map(Into::into),
-            cells: cells.as_ptr(),
-            cell_count: cells.len(),
-            ..PhuxTerminalGridMetadata::default()
-        };
-        self.valid = true;
-        Ok(())
-    }
-}
-
-struct DefaultColors {
-    foreground: Option<RgbColor>,
-    background: Option<RgbColor>,
-    reversed: bool,
-}
-
-impl DefaultColors {
-    fn read(terminal: &Terminal<'_, '_>) -> Result<Self, BridgeError> {
-        // RenderState retains its previous colors if either terminal default
-        // is unset. Reading the terminal's effective option avoids exporting
-        // stale OSC colors after reset; the embedder supplies its theme fallback.
-        let mut foreground = terminal.fg_color().map_err(BridgeError::ghostty)?;
-        let mut background = terminal.bg_color().map_err(BridgeError::ghostty)?;
-        let reversed = terminal
-            .mode(Mode::REVERSE_COLORS)
-            .map_err(BridgeError::ghostty)?;
-        if reversed {
-            std::mem::swap(&mut foreground, &mut background);
+    /// Build a C view over one immutable runtime publication.
+    pub(crate) fn from_frame(frame: &GridFrame, document_revision: u64) -> Self {
+        let cursor = frame.cursor;
+        let colors = &frame.colors;
+        let cells = &frame.buffer.metadata;
+        Self {
+            view: PhuxTerminalGridMetadata {
+                stream_id: frame.stream_id,
+                bootstrap_id: frame.bootstrap_id,
+                last_seq: frame.last_seq,
+                document_revision,
+                cols: frame.cols,
+                rows: frame.rows,
+                foreground: colors.foreground.into(),
+                background: colors.background.into(),
+                has_foreground: colors.has_foreground,
+                has_background: colors.has_background,
+                reverse_colors: colors.reversed,
+                cursor_color: colors.cursor.map_or_else(PhuxGridRgb::default, Into::into),
+                has_cursor_color: colors.cursor.is_some(),
+                cursor_blinking: cursor.blinking,
+                cursor_wide: cursor.visible && cursor.width.is_wide(),
+                cursor_at_wide_tail: cursor.width == CursorWidth::WideTail,
+                palette: colors.palette.map(Into::into),
+                cells: cells.as_ptr(),
+                cell_count: cells.len(),
+                ..PhuxTerminalGridMetadata::default()
+            },
+            valid: true,
         }
-        Ok(Self {
-            foreground,
-            background,
-            reversed,
-        })
     }
 }
 

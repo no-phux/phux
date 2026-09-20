@@ -249,7 +249,7 @@ fn pending_detach_fences_history_pagination_and_refusal_resumes_the_unsent_reque
         1,
         "never-sent history request must resume after refusal"
     );
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
     h.0.inner.outgoing.clear();
     assert_eq!(h.detach(2, &id), PhuxClientResult::Ok);
     h.0.inner.outgoing.clear();
@@ -326,7 +326,7 @@ fn closed_initial_participant_drops_deferred_sends_before_detach_refusal() {
         PhuxClientResult::Ok
     );
     assert!(h.0.inner.outgoing.is_empty());
-    assert!(h.0.inner.session.published(&id).is_none());
+    assert!(h.0.inner.projection(&id).is_none());
     assert_eq!(h.result(0).status, 2);
 }
 
@@ -464,7 +464,7 @@ fn deferred_detach_sends_are_coalesced_and_dropped_on_dynamic_close_or_disconnec
                 PhuxClientResult::Ok
             );
             assert_eq!(h.result(1).status, 2);
-            assert!(h.0.inner.session.published(&id).is_none());
+            assert!(h.0.inner.projection(&id).is_none());
         }
         assert!(h.0.inner.operations.deferred_sends.is_empty());
         assert!(h.0.inner.outgoing.is_empty());
@@ -683,7 +683,7 @@ fn detach_retires_initial_participation_only_on_success_and_allows_explicit_reat
     let mut h = Harness::attached();
     let id = ResourceId::local(1);
     assert_eq!(h.detach(1, &id), PhuxClientResult::Ok);
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
     assert_eq!(h.detach(2, &id), PhuxClientResult::InvalidState);
     assert_eq!(
         h.feed(FrameKind::CommandResult {
@@ -692,8 +692,8 @@ fn detach_retires_initial_participation_only_on_success_and_allows_explicit_reat
         }),
         PhuxClientResult::Ok
     );
-    assert!(h.0.inner.session.published(&id).is_none());
-    assert!(!h.0.inner.session.active_attach_contains(&id));
+    assert!(h.0.inner.projection(&id).is_none());
+    assert!(!h.0.inner.active_attach_contains(&id));
     assert_eq!(h.result(0).kind, 3);
     assert_eq!(h.attach(2, &id), PhuxClientResult::Ok);
     h.bootstrap(id.clone());
@@ -704,7 +704,7 @@ fn detach_retires_initial_participation_only_on_success_and_allows_explicit_reat
         }),
         PhuxClientResult::Ok
     );
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
 }
 
 #[test]
@@ -720,7 +720,7 @@ fn detach_refusal_preserves_replica_and_disconnect_is_unknown_without_replay() {
         }),
         PhuxClientResult::Ok
     );
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
     assert_eq!(h.result(0).status, 2);
     assert_eq!(h.detach(2, &id), PhuxClientResult::Ok);
     // SAFETY: harness owns client.
@@ -754,7 +754,7 @@ fn detached_stream_is_unsolicited_and_wrong_reply_does_not_consume_detach() {
         }),
         PhuxClientResult::ProtocolError
     );
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
     assert_eq!(
         h.feed(FrameKind::CommandResult {
             request_id: 1,
@@ -827,18 +827,10 @@ fn local_spawn_is_correlated_and_admitted_before_bootstrap_without_restarting_at
         ),
         (10, 1, 1, 2)
     );
-    assert!(
-        h.0.inner
-            .session
-            .active_attach_contains(&ResourceId::local(1))
-    );
-    assert!(
-        !h.0.inner
-            .session
-            .active_attach_contains(&ResourceId::local(2))
-    );
+    assert!(h.0.inner.active_attach_contains(&ResourceId::local(1)));
+    assert!(!h.0.inner.active_attach_contains(&ResourceId::local(2)));
     h.bootstrap(ResourceId::local(2));
-    assert!(h.0.inner.session.published(&ResourceId::local(2)).is_some());
+    assert!(h.0.inner.projection(&ResourceId::local(2)).is_some());
     assert_eq!(
         h.attach(11, &ResourceId::local(2)),
         PhuxClientResult::InvalidState
@@ -874,7 +866,7 @@ fn satellite_spawn_requires_explicit_attach_and_bootstrap_can_precede_ack() {
     assert!(!h.0.inner.operations.admitted(&id));
     assert_eq!(h.attach(11, &id), PhuxClientResult::Ok);
     h.bootstrap(id.clone());
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
     assert_eq!(
         h.feed(FrameKind::CommandResult {
             request_id: 11,
@@ -926,8 +918,8 @@ fn refusals_are_scoped_results_and_revoke_only_the_requested_admission() {
         PhuxClientResult::Ok
     );
     assert!(!h.0.inner.operations.admitted(&ResourceId::local(2)));
-    assert!(h.0.inner.session.published(&ResourceId::local(2)).is_none());
-    assert!(h.0.inner.session.published(&ResourceId::local(1)).is_some());
+    assert!(h.0.inner.projection(&ResourceId::local(2)).is_none());
+    assert!(h.0.inner.projection(&ResourceId::local(1)).is_some());
     assert!(
         !h.0.inner
             .owned_effects
@@ -1457,8 +1449,8 @@ fn refused_attach_can_be_explicitly_retried_with_or_without_provisional_bootstra
             }),
             PhuxClientResult::Ok
         );
-        assert!(h.0.inner.session.published(&id).is_some());
-        assert!(h.0.inner.session.published(&ResourceId::local(1)).is_some());
+        assert!(h.0.inner.projection(&id).is_some());
+        assert!(h.0.inner.projection(&ResourceId::local(1)).is_some());
     }
 }
 
@@ -1486,7 +1478,7 @@ fn dynamic_terminal_churn_releases_kernel_identity_retention() {
             PhuxClientResult::Ok
         );
         assert_eq!(
-            h.0.inner.session.input_eligibility(&id),
+            h.0.inner.input_eligibility(&id),
             InputEligibility::Ineligible(InputBlockReason::UnknownTerminal)
         );
         assert!(!h.0.inner.operations.admitted(&id));
@@ -1577,7 +1569,7 @@ fn closure_before_attach_result_cannot_allow_overlapping_admission_owners() {
         PhuxClientResult::Ok
     );
     assert!(h.0.inner.operations.admitted(&id));
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
 }
 
 #[test]

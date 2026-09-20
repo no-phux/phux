@@ -20,26 +20,27 @@ mod session_rename;
 mod types;
 mod workspace;
 
-use std::collections::HashSet;
 use std::mem;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 
 use client::{Client, Limits};
 use error::{BridgeError, bytes_in, check_struct, outbound_bytes_in, terminal_id_in};
+#[cfg(test)]
 use phux_client_core::engine::CanonicalGeometry;
-use phux_client_core::engine::ghostty::native_bootstrap_capabilities;
-use phux_client_core::handshake::validate_hello_ok;
-use phux_client_core::session::{AgentSessionDeclaration, KernelAction, KernelInput};
+#[cfg(test)]
+use phux_client_core::session::KernelInput;
+#[cfg(test)]
+use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::ResourceKind;
+use phux_protocol::SessionId;
 use phux_protocol::caps::BootstrapLimits;
 use phux_protocol::input::InputEvent;
 use phux_protocol::input::focus::FocusEvent;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
-use phux_protocol::wire::frame::{AgentEvent, AttachTarget, CloseReason, FrameKind, ViewportInfo};
-use phux_protocol::{PROTOCOL_VERSION, SessionId};
+use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 
 pub use directory::*;
 pub use grid_metadata::*;
@@ -182,15 +183,6 @@ fn invoke_attached(client: *mut PhuxClient) -> PhuxClientResult {
     }
 }
 
-fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(), BridgeError> {
-    let update_result = client
-        .session
-        .update(input, &mut client.effects)
-        .map_err(|error| BridgeError::state(error.to_string()));
-    let effect_result = client.process_effects();
-    update_result.and(effect_result)
-}
-
 fn apply_input(
     client: &mut Client,
     terminal_id: &phux_protocol::ResourceId,
@@ -200,72 +192,24 @@ fn apply_input(
     if client.operations.detaching(terminal_id) {
         return Err(BridgeError::state("terminal detach is pending"));
     }
-    apply_kernel_input(
-        client,
-        KernelInput::Action(KernelAction::Input { terminal_id, event }),
-    )
-}
-
-fn stream_profile_matches(
-    selected: phux_protocol::BootstrapProfile,
-    stream: phux_protocol::BootstrapStreamProfile,
-) -> bool {
-    match (selected, stream) {
-        (
-            phux_protocol::BootstrapProfile::NativeState {
-                codec: selected, ..
-            },
-            phux_protocol::BootstrapStreamProfile::NativeState { codec: stream },
-        ) => selected == stream,
-        (
-            phux_protocol::BootstrapProfile::SynthesizedVtRaw,
-            phux_protocol::BootstrapStreamProfile::SynthesizedVtRaw,
-        )
-        | (
-            phux_protocol::BootstrapProfile::SynthesizedVtStateSync,
-            phux_protocol::BootstrapStreamProfile::SynthesizedVtStateSync,
-        ) => true,
+    let queued = match event {
+        InputEvent::Key(event) => client.control.send_key(terminal_id, event.clone()),
+        InputEvent::Mouse(event) => client.control.send_mouse(terminal_id, *event),
+        InputEvent::Focus(event) => client.control.send_focus(terminal_id, *event),
+        InputEvent::Paste(event) => {
+            client
+                .control
+                .send_paste(terminal_id, event.data.clone(), event.trust)
+        }
         _ => false,
+    };
+    if !queued {
+        return Err(BridgeError::state(
+            "terminal input is not currently eligible",
+        ));
     }
-}
-
-fn history_unavailable_reason(
-    reason: phux_protocol::wire::frame::HistoryTombstoneReason,
-) -> Result<phux_client_core::session::HistoryUnavailableReason, BridgeError> {
-    use phux_client_core::session::HistoryUnavailableReason as Core;
-    use phux_protocol::wire::frame::HistoryTombstoneReason as Wire;
-    Ok(match reason {
-        Wire::Stale => Core::Stale,
-        Wire::Pruned => Core::Pruned,
-        Wire::Reset => Core::Reset,
-        Wire::Resize => Core::Resize,
-        Wire::Expired => Core::Expired,
-        Wire::Released => Core::Released,
-        Wire::Limit => Core::Limit,
-        Wire::CodecFailure => Core::CodecFailure,
-        _ => {
-            return Err(BridgeError::protocol(
-                "unsupported history tombstone reason",
-            ));
-        }
-    })
-}
-
-fn history_rejection_reason(
-    reason: phux_protocol::wire::frame::HistoryRejectionReason,
-) -> Result<phux_client_core::session::HistoryRejectionReason, BridgeError> {
-    use phux_client_core::session::HistoryRejectionReason as Core;
-    use phux_protocol::wire::frame::HistoryRejectionReason as Wire;
-    Ok(match reason {
-        Wire::ZeroLimit => Core::ZeroLimit,
-        Wire::TooSmall => Core::TooSmall,
-        Wire::Busy => Core::Busy,
-        _ => {
-            return Err(BridgeError::protocol(
-                "unsupported history rejection reason",
-            ));
-        }
-    })
+    client.drain_outbound();
+    Ok(())
 }
 
 /// Creates a client owned by the calling thread.
@@ -428,25 +372,17 @@ pub unsafe extern "C" fn phux_client_queue_hello(
     client_name: PhuxBytes,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
-        if client.hello_queued || client.protocol_ready {
-            return Err(BridgeError::state("HELLO was already queued or negotiated"));
-        }
         let name = unsafe { outbound_bytes_in(client_name.data, client_name.len, "client name") }?;
         let name = std::str::from_utf8(name)
             .map_err(|_| BridgeError::invalid("client name is not UTF-8"))?;
         if name.is_empty() {
             return Err(BridgeError::invalid("client name is empty"));
         }
-        let caps = advertised_client_caps(client)?;
-        client.queue_frame(&FrameKind::Hello {
-            client_name: name.to_owned(),
-            protocol_major: PROTOCOL_VERSION.major,
-            protocol_minor: PROTOCOL_VERSION.minor,
-            protocol_patch: PROTOCOL_VERSION.patch,
-            client_caps: caps,
-        })?;
-        client.offered_caps = Some(caps);
+        if !client.control.open_explicit(name.to_owned()) {
+            return Err(BridgeError::state("HELLO was already queued or negotiated"));
+        }
         client.hello_queued = true;
+        client.drain_outbound();
         Ok(())
     })
 }
@@ -465,7 +401,6 @@ pub unsafe extern "C" fn phux_client_queue_attach(
     options: *const PhuxAttachOptions,
 ) -> PhuxClientResult {
     with_client_mut(client, |client| {
-        ensure_attach_allowed(client)?;
         let options =
             unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
         check_struct(
@@ -474,6 +409,9 @@ pub unsafe extern "C" fn phux_client_queue_attach(
             options.version,
         )?;
         validate_attach_options(options)?;
+        #[cfg(test)]
+        seed_legacy_test_lifecycle(client)?;
+        ensure_attach_allowed(client)?;
         let name_bytes =
             unsafe { outbound_bytes_in(options.name.data, options.name.len, "attach name") }?;
         let target = attach_target(options, name_bytes)?;
@@ -481,9 +419,11 @@ pub unsafe extern "C" fn phux_client_queue_attach(
     })
 }
 
-/// Rejects an ATTACH the client's lifecycle cannot accept.
+/// Rejects an ATTACH the runtime lifecycle cannot accept.
 fn ensure_attach_allowed(client: &Client) -> Result<(), BridgeError> {
-    if !client.protocol_ready || client.attached || client.attach_queued || client.detached {
+    if client.control.status() != phux_client_runtime::control::Status::Negotiated
+        || client.detached
+    {
         return Err(BridgeError::state(
             "ATTACH is not valid in the current lifecycle state",
         ));
@@ -491,8 +431,6 @@ fn ensure_attach_allowed(client: &Client) -> Result<(), BridgeError> {
     Ok(())
 }
 
-/// Rejects attach options whose identifier or geometry is unusable, including
-/// pixel geometry that disagrees with its `has_pixel_size` discriminator.
 fn validate_attach_options(options: &PhuxAttachOptions) -> Result<(), BridgeError> {
     if options.attach_id == 0 {
         return Err(BridgeError::invalid("attach_id must be non-zero"));
@@ -514,8 +452,6 @@ fn validate_attach_options(options: &PhuxAttachOptions) -> Result<(), BridgeErro
     Ok(())
 }
 
-/// Resolves the session an ATTACH addresses, rejecting an unknown target kind
-/// and an empty name for the kinds that address a session by name.
 fn attach_target(
     options: &PhuxAttachOptions,
     name_bytes: &[u8],
@@ -539,7 +475,6 @@ fn attach_target(
     Ok(target)
 }
 
-/// Queues the ATTACH frame and records the attach the client now expects.
 fn queue_attach_frame(
     client: &mut Client,
     options: &PhuxAttachOptions,
@@ -551,26 +486,28 @@ fn queue_attach_frame(
     let viewport = ViewportInfo::new(options.cols, options.rows)
         .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1));
     let role_policy = client.next_attach_role();
-    client.queue_frame(&FrameKind::Attach {
-        attach_id: options.attach_id,
+    if !client.control.attach_explicit(
+        options.attach_id,
         target,
         viewport,
-        request_scrollback: options.request_scrollback,
-        scrollback_limit_lines: options.scrollback_limit_lines,
+        options.request_scrollback,
+        options.scrollback_limit_lines,
         role_policy,
-    })?;
+    ) {
+        return Err(BridgeError::state(
+            "ATTACH is not valid in the current lifecycle state",
+        ));
+    }
     client.attach_queued = true;
     client.expected_attach_id = Some(options.attach_id);
+    client.drain_outbound();
     Ok(())
 }
 
-/// Processes one complete server frame.
+/// Processes one complete server frame through the runtime control plane.
 ///
 /// # Safety
-///
-/// When non-null, `client` must be a live client on its owning thread with
-/// exclusive access for the call. When `len` is nonzero, `data` must be
-/// readable for `len` bytes for the call.
+/// `client` is exclusively owned for the call and `data` is readable for `len`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn phux_client_feed_frame(
     client: *mut PhuxClient,
@@ -580,9 +517,9 @@ pub unsafe extern "C" fn phux_client_feed_frame(
     let mut notify_attached = false;
     let result = with_client_mut(client, |client| {
         let data = unsafe { bytes_in(data, len) }?;
-        let frame = decode_one_frame(client, data)?;
-        ensure_frame_accepted(client, &frame)?;
-        dispatch_frame(client, frame, &mut notify_attached)
+        let frame = decode_server_frame(client, data)?;
+        notify_attached = apply_server_frame(client, frame)?;
+        Ok(())
     });
     if result == PhuxClientResult::Ok && notify_attached {
         invoke_attached(client)
@@ -591,41 +528,14 @@ pub unsafe extern "C" fn phux_client_feed_frame(
     }
 }
 
-/// The bootstrap stream a terminal-scoped server frame belongs to.
-#[allow(
-    clippy::struct_field_names,
-    reason = "the fields carry the wire frame's own field names, which is what makes the frame-to-KernelInput mapping checkable by eye"
-)]
-#[derive(Clone, Copy, Debug)]
-struct StreamRef<'a> {
-    terminal_id: &'a phux_protocol::ResourceId,
-    stream_id: phux_protocol::StreamId,
-    bootstrap_id: phux_protocol::BootstrapId,
-}
-
-impl<'a> StreamRef<'a> {
-    const fn new(
-        terminal_id: &'a phux_protocol::ResourceId,
-        stream_id: phux_protocol::StreamId,
-        bootstrap_id: phux_protocol::BootstrapId,
-    ) -> Self {
-        Self {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-        }
-    }
-}
-
-/// Decodes the one complete frame a `feed_frame` call must carry, under the
-/// payload bounds this client negotiated.
-fn decode_one_frame(client: &Client, data: &[u8]) -> Result<FrameKind, BridgeError> {
-    let decode_limits =
+fn decode_server_frame(client: &Client, data: &[u8]) -> Result<FrameKind, BridgeError> {
+    let limits = client.control.decode_limits().unwrap_or_else(|| {
         BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
-            .ok_or_else(|| BridgeError::state("stored bootstrap limits are invalid"))?;
-    let (frame, remaining) = FrameKind::decode_with_limits(data, decode_limits)
+            .unwrap_or_default()
+    });
+    let (frame, tail) = FrameKind::decode_with_limits(data, limits)
         .map_err(|error| BridgeError::protocol(error.to_string()))?;
-    if !remaining.is_empty() {
+    if !tail.is_empty() {
         return Err(BridgeError::protocol(
             "feed_frame accepts exactly one complete frame",
         ));
@@ -633,30 +543,117 @@ fn decode_one_frame(client: &Client, data: &[u8]) -> Result<FrameKind, BridgeErr
     Ok(frame)
 }
 
-/// Rejects a frame that arrives outside the window the client's lifecycle
-/// accepts it in: after DETACHED, or before `HELLO_OK` has been answered.
-fn ensure_frame_accepted(client: &Client, frame: &FrameKind) -> Result<(), BridgeError> {
+fn apply_server_frame(client: &mut Client, frame: FrameKind) -> Result<bool, BridgeError> {
+    if consume_retired_close(client, &frame) {
+        return Ok(false);
+    }
+    let extension_frame = frame.clone();
+    let closed_terminal = match &frame {
+        FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id.clone()),
+        _ => None,
+    };
+    #[cfg(test)]
+    seed_legacy_test_lifecycle(client)?;
+    validate_runtime_frame(client, &frame)?;
+    let runtime_result = client.control.feed(frame).map_err(control_error);
+    let extension_result = if runtime_result.is_ok() {
+        observe_runtime_frame(client, &extension_frame);
+        dispatch_extension_frame(client, extension_frame)
+    } else {
+        Ok(())
+    };
+    let attached = client.process_runtime_events()?;
+    if let Some(terminal_id) = closed_terminal
+        && !client.workspace.subscriptions.was_closed(&terminal_id)
+    {
+        client.finish_terminal_close(&terminal_id)?;
+        client.publish_effects();
+    }
+    runtime_result?;
+    extension_result?;
+    if matches!(
+        client.control.status(),
+        phux_client_runtime::control::Status::Negotiated
+    ) {
+        session_rename::negotiated(client)?;
+    }
+    Ok(attached)
+}
+
+fn consume_retired_close(client: &mut Client, frame: &FrameKind) -> bool {
+    let FrameKind::ResourceClosed { terminal_id, .. } = frame else {
+        return false;
+    };
+    if !client.workspace.subscriptions.was_withdrawn(terminal_id)
+        && !client.workspace.subscriptions.was_closed(terminal_id)
+    {
+        return false;
+    }
+    client.workspace.subscriptions.cancel(terminal_id);
+    client.workspace.subscriptions.mark_closed(terminal_id);
+    client
+        .resources
+        .retain(|resource| &resource.id != terminal_id);
+    true
+}
+
+fn validate_runtime_frame(client: &Client, frame: &FrameKind) -> Result<(), BridgeError> {
     if client.detached {
         return Err(BridgeError::protocol("server frame arrived after DETACHED"));
     }
-    if !client.protocol_ready
-        && !matches!(
-            frame,
-            FrameKind::HelloOk { .. } | FrameKind::Error { .. } | FrameKind::Detached { .. }
-        )
-    {
-        return Err(BridgeError::state("server frame arrived before HELLO_OK"));
+    let terminal = match frame {
+        FrameKind::BootstrapBegin {
+            terminal_id,
+            profile,
+            ..
+        } => {
+            let agent_profile = matches!(
+                profile,
+                phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1
+            );
+            if client.is_agent_stream(terminal_id) != agent_profile {
+                return Err(BridgeError::protocol(
+                    "bootstrap profile does not match the declared resource kind",
+                ));
+            }
+            Some(terminal_id)
+        }
+        FrameKind::BootstrapChunk { terminal_id, .. }
+        | FrameKind::BootstrapReady { terminal_id, .. }
+        | FrameKind::BootstrapTombstone { terminal_id, .. }
+        | FrameKind::ResourceOutput { terminal_id, .. }
+        | FrameKind::HistoryPage { terminal_id, .. }
+        | FrameKind::HistoryTombstone { terminal_id, .. }
+        | FrameKind::HistoryRejected { terminal_id, .. }
+        | FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id),
+        _ => None,
+    };
+    if let Some(terminal) = terminal {
+        let retired_close = matches!(frame, FrameKind::ResourceClosed { .. })
+            && (client.workspace.subscriptions.was_withdrawn(terminal)
+                || client.workspace.subscriptions.was_closed(terminal));
+        if !retired_close {
+            client.ensure_participant(terminal)?;
+        }
     }
     Ok(())
 }
 
-/// Applies a connection-lifecycle or notification frame, deferring every
-/// terminal-stream frame to [`dispatch_bootstrap_frame`].
-fn dispatch_frame(
-    client: &mut Client,
-    frame: FrameKind,
-    notify_attached: &mut bool,
-) -> Result<(), BridgeError> {
+fn observe_runtime_frame(client: &mut Client, frame: &FrameKind) {
+    if let FrameKind::BootstrapBegin {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        profile: phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
+        ..
+    } = frame
+    {
+        client.open_agent_generation(terminal_id, *stream_id, *bootstrap_id);
+    }
+}
+
+/// Feed runtime-owned values through the binding-specific extension projections.
+fn dispatch_extension_frame(client: &mut Client, frame: FrameKind) -> Result<(), BridgeError> {
     let Some(frame) = directory::dispatch(client, frame) else {
         return Ok(());
     };
@@ -678,783 +675,240 @@ fn dispatch_frame(
     let Some(frame) = workspace::dispatch(client, frame) else {
         return Ok(());
     };
-    let Some(frame) = operations::dispatch(client, frame)? else {
-        return Ok(());
-    };
-    match frame {
-        FrameKind::HelloOk {
-            protocol_major,
-            protocol_minor,
-            protocol_patch,
-            server_caps,
-            selected_profile,
-            bootstrap_limits,
-            server_id,
-        } => {
-            apply_hello_ok(
-                client,
-                protocol_major,
-                protocol_minor,
-                protocol_patch,
-                server_caps,
-                selected_profile,
-                bootstrap_limits,
-            )?;
-            client.server_id = server_id;
-            Ok(())
-        }
-        FrameKind::Ping { nonce } => client.queue_frame(&FrameKind::Pong { nonce }),
-        FrameKind::Attached {
+    let _ = operations::dispatch(client, frame)?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
+    if client.protocol_ready && !client.control.handshake_ready() {
+        client.install_profile(
+            client
+                .selected_profile
+                .unwrap_or(phux_protocol::BootstrapProfile::SynthesizedVtRaw),
+            BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
+                .ok_or_else(|| BridgeError::state("invalid test bootstrap limits"))?,
+        );
+    }
+    if client.attach_queued
+        && let Some(attach_id) = client.expected_attach_id
+    {
+        let queued = client.control.attach_explicit(
             attach_id,
-            snapshot,
-            ..
-        } => apply_attached(client, attach_id, snapshot),
-        FrameKind::AttachReady { attach_id } => {
-            apply_attach_ready(client, attach_id)?;
-            *notify_attached = true;
-            Ok(())
+            AttachTarget::Last,
+            ViewportInfo::new(80, 24),
+            false,
+            u32::try_from(client.limits.history_materialized_rows).unwrap_or(u32::MAX),
+            None,
+        );
+        if queued {
+            let _ = client.control.take_outbound();
         }
-        FrameKind::Bell { terminal_id } => apply_bell(client, terminal_id),
-        FrameKind::Error { code, message, .. } => {
-            apply_error(client, code, &message);
-            Ok(())
-        }
-        FrameKind::Detached { reason, message } => {
-            apply_detached(client, reason, message);
-            Ok(())
-        }
-        frame => dispatch_bootstrap_frame(client, frame),
-    }
-}
-
-/// Applies a bootstrap-stream frame, deferring the remaining terminal-stream
-/// frames to [`dispatch_history_frame`].
-fn dispatch_bootstrap_frame(client: &mut Client, frame: FrameKind) -> Result<(), BridgeError> {
-    match frame {
-        FrameKind::BootstrapBegin {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            profile,
-            cols,
-            rows,
-            base_seq,
-        } => apply_bootstrap_begin(
-            client,
-            StreamRef::new(&terminal_id, stream_id, bootstrap_id),
-            profile,
-            cols,
-            rows,
-            base_seq,
-        ),
-        FrameKind::BootstrapChunk {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            chunk_seq,
-            payload,
-        } => apply_bootstrap_chunk(
-            client,
-            StreamRef::new(&terminal_id, stream_id, bootstrap_id),
-            chunk_seq,
-            payload.as_ref(),
-        ),
-        FrameKind::BootstrapReady {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            history_cursor,
-        } => apply_bootstrap_ready(
-            client,
-            StreamRef::new(&terminal_id, stream_id, bootstrap_id),
-            history_cursor.as_deref(),
-        ),
-        FrameKind::BootstrapTombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            reason,
-            last_valid_seq,
-        } => apply_bootstrap_tombstone(
-            client,
-            StreamRef::new(&terminal_id, stream_id, bootstrap_id),
-            reason,
-            last_valid_seq,
-        ),
-        frame => dispatch_history_frame(client, frame),
-    }
-}
-
-/// Applies a history-stream frame, deferring the live terminal frames to
-/// [`dispatch_terminal_frame`].
-fn dispatch_history_frame(client: &mut Client, frame: FrameKind) -> Result<(), BridgeError> {
-    match frame {
-        FrameKind::HistoryPage {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            page_seq,
-            cursor,
-            next_cursor,
-            payload,
-            rows,
-        } => apply_history_page(
-            client,
-            StreamRef::new(&terminal_id, stream_id, bootstrap_id),
-            page_seq,
-            cursor.as_ref(),
-            next_cursor.as_deref(),
-            payload.as_ref(),
-            rows,
-        ),
-        FrameKind::HistoryTombstone {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
-            reason,
-        } => apply_history_tombstone(
-            client,
-            StreamRef::new(&terminal_id, stream_id, bootstrap_id),
-            cursor.as_ref(),
-            reason,
-        ),
-        FrameKind::HistoryRejected {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            cursor,
-            reason,
-            required_bytes,
-            required_rows,
-        } => apply_history_rejected(
-            client,
-            StreamRef::new(&terminal_id, stream_id, bootstrap_id),
-            cursor.as_ref(),
-            reason,
-            required_bytes,
-            required_rows,
-        ),
-        frame => dispatch_terminal_frame(client, frame),
-    }
-}
-
-/// Applies a live terminal frame, and rejects every frame the client session
-/// kernel does not accept.
-fn dispatch_terminal_frame(client: &mut Client, frame: FrameKind) -> Result<(), BridgeError> {
-    match frame {
-        FrameKind::ResourceOutput {
-            terminal_id,
-            stream_id,
-            bootstrap_id,
-            seq,
-            bytes,
-        } => apply_terminal_output(
-            client,
-            StreamRef::new(&terminal_id, stream_id, bootstrap_id),
-            seq,
-            bytes.as_ref(),
-        ),
-        FrameKind::ResourceClosed {
-            terminal_id,
-            exit_status,
-            reason,
-            signal,
-        } => apply_terminal_closed(client, &terminal_id, exit_status, signal, reason),
-        // `stamp` (ADR-0123, the journal envelope) is a separate lane's
-        // concern; this build's status effects need only the event itself.
-        FrameKind::Event {
-            terminal, event, ..
-        } => apply_agent_event(client, terminal, &event),
-        _ => Err(BridgeError::protocol(
-            "server sent a frame not accepted by the client session kernel",
-        )),
-    }
-}
-
-/// Applies one subscribed `AgentEvent` (`SUBSCRIBE_EVENTS`,
-/// `docs/spec/L1.md` §7.5). Only the terminal-scoped status events this
-/// build surfaces (cwd/command boundaries/process exit) reach the kernel;
-/// every other case — a server-scoped event with no terminal, a target
-/// outside this client's active attach, and every event kind the kernel
-/// does not translate into status (including one this decoder does not
-/// recognise, `AgentEvent::Unknown`) — is a silent no-op. `SUBSCRIBE_EVENTS`
-/// is a best-effort accelerator, not a contract every delivered event must
-/// satisfy.
-fn apply_agent_event(
-    client: &mut Client,
-    terminal: Option<phux_protocol::ResourceId>,
-    event: &AgentEvent,
-) -> Result<(), BridgeError> {
-    let Some(terminal_id) = terminal else {
-        return Ok(());
-    };
-    if client.ensure_participant(&terminal_id).is_err() {
-        return Ok(());
-    }
-    apply_kernel_input(
-        client,
-        KernelInput::Event {
-            terminal_id: &terminal_id,
-            event,
-        },
-    )
-}
-
-/// Capabilities this client advertises in `HELLO`, built from stored limits.
-fn advertised_client_caps(
-    client: &Client,
-) -> Result<phux_protocol::ClientCapabilities, BridgeError> {
-    let limits = BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
-        .ok_or_else(|| BridgeError::state("stored bootstrap limits are invalid"))?;
-    Ok(phux_protocol::ClientCapabilities::new()
-        .with_layers(phux_protocol::LayerSet::with(&[phux_protocol::Layer::L3]))
-        .with_bootstrap(native_bootstrap_capabilities(limits)))
-}
-
-/// Closes the handshake and installs the negotiated bootstrap profile.
-fn apply_hello_ok(
-    client: &mut Client,
-    protocol_major: u16,
-    protocol_minor: u16,
-    protocol_patch: u16,
-    server_caps: phux_protocol::caps::ServerCapabilities,
-    selected_profile: phux_protocol::BootstrapProfile,
-    bootstrap_limits: BootstrapLimits,
-) -> Result<(), BridgeError> {
-    if !client.hello_queued || client.protocol_ready {
-        return Err(BridgeError::protocol("unsolicited or duplicate HELLO_OK"));
-    }
-    let offered = match client.offered_caps {
-        Some(caps) => caps,
-        None => advertised_client_caps(client)?,
-    };
-    validate_hello_ok(
-        &offered,
-        protocol_major,
-        protocol_minor,
-        protocol_patch,
-        selected_profile,
-        bootstrap_limits,
-    )
-    .map_err(|err| BridgeError::protocol(err.to_string()))?;
-    client.install_profile(selected_profile, bootstrap_limits);
-    client.selected_profile = Some(selected_profile);
-    client.terminal_reply = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::TerminalReply);
-    client.list_directory = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::ListDirectory);
-    client.list_directory_host = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::ListDirectoryHost);
-    client.keep_empty_sessions = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::KeepEmptySessions);
-    client.conditional_kill = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::ConditionalKill);
-    client.event_journal = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::EventJournal);
-    client.retain_on_exit = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::RetainOnExit);
-    client.spawn_idempotency = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::SpawnIdempotency);
-    client.close_tab_resources = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::CloseTabResources);
-    client.l3_metadata = server_caps.layers.contains(phux_protocol::Layer::L3);
-    client.attach_roles = server_caps
-        .features
-        .contains(phux_protocol::ServerFeature::AttachRoles);
-    client.protocol_ready = true;
-    session_rename::negotiated(client)
-}
-
-/// Rejects an attach-lifecycle frame that answers an attach this client never
-/// requested, naming the frame in the error the way the caller knows it.
-fn ensure_expected_attach(client: &Client, attach_id: u32, frame: &str) -> Result<(), BridgeError> {
-    if !client.attach_queued {
-        return Err(BridgeError::protocol(format!("unsolicited {frame}")));
-    }
-    if client.expected_attach_id != Some(attach_id) {
-        return Err(BridgeError::protocol(format!(
-            "{frame} attach_id does not match the request"
-        )));
     }
     Ok(())
 }
 
-/// Records the session catalog the server attached this client to and starts
-/// the attach in the session kernel.
-fn apply_attached(
-    client: &mut Client,
-    attach_id: u32,
-    snapshot: phux_protocol::wire::info::SessionSnapshot,
-) -> Result<(), BridgeError> {
-    ensure_expected_attach(client, attach_id, "ATTACHED")?;
-    let focused_session = snapshot.focused_session;
-    // ATTACHED describes the whole workspace so native clients can project a
-    // session switcher, but the server bootstraps only the focused session.
-    // Counting panes from other sessions leaves the attach barrier waiting for
-    // bootstrap frames the server will never send.
-    let focused_windows: HashSet<_> = snapshot
-        .windows
-        .iter()
-        .filter(|window| window.session_id == focused_session)
-        .map(|window| window.id)
-        .collect();
-    // Only Terminal-kind resources take part in the attach barrier: an
-    // AgentSession has no grid and paints nothing. It is declared to the
-    // kernel as a record stream instead, and its records reach the host as
-    // AGENT_RECORDS effects.
-    let terminals: Vec<_> = snapshot
-        .resources
-        .iter()
-        .filter(|pane| pane.kind == ResourceKind::Terminal)
-        .filter(|pane| focused_windows.contains(&pane.window_id))
-        .map(|pane| pane.id.clone())
-        .collect();
-    let agent_sessions: Vec<_> = snapshot
-        .resources
-        .iter()
-        .filter(|pane| pane.kind == ResourceKind::AgentSession)
-        .filter(|pane| {
-            pane.parent
-                .as_ref()
-                .is_some_and(|parent| terminals.contains(parent))
-        })
-        .collect();
-    client.agent_streams.clear();
-    client.resources = snapshot.resources.iter().map(resource_summary).collect();
-    apply_kernel_input(
-        client,
+#[cfg(test)]
+fn advertised_client_caps(client: &Client) -> phux_protocol::ClientCapabilities {
+    client
+        .offered_caps
+        .unwrap_or_else(|| client.control.options().client_caps())
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::needless_pass_by_value,
+    clippy::too_many_lines,
+    reason = "compatibility helper mirrors every borrowed KernelInput variant in tests"
+)]
+fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(), BridgeError> {
+    use phux_client_runtime::engine::EngineEvent;
+    if client.control.engine().is_none() {
+        client.install_profile(
+            client
+                .selected_profile
+                .unwrap_or(phux_protocol::BootstrapProfile::SynthesizedVtRaw),
+            BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
+                .ok_or_else(|| BridgeError::state("invalid test bootstrap limits"))?,
+        );
+    }
+    let event = match input {
         KernelInput::AttachStarted {
             attach_id,
-            terminals: &terminals,
+            terminals,
+        } => EngineEvent::AttachStarted {
+            attach_id,
+            terminals: terminals.to_vec(),
         },
-    )?;
-    for pane in agent_sessions {
-        declare_agent_session(client, pane)?;
-    }
-    workspace::attached(client, snapshot);
-    Ok(())
-}
-
-/// Admit a record stream without allocating a terminal replica or changing an
-/// existing generation. Inventory declarations are independent of subscription.
-fn declare_agent_session(
-    client: &mut Client,
-    resource: &phux_protocol::wire::info::ResourceInfo,
-) -> Result<(), BridgeError> {
-    let facet = resource.agent.as_ref();
-    apply_kernel_input(
-        client,
-        KernelInput::AgentSessionDeclared(AgentSessionDeclaration {
-            terminal_id: &resource.id,
-            parent: resource.parent.as_ref(),
-            provider: facet.map(|facet| facet.provider.as_str()),
-            native_id: facet.and_then(|facet| facet.native_id.as_deref()),
-            state: facet.map(|facet| facet.state.as_str()),
-        }),
-    )?;
-    client.agent_streams.entry(resource.id.clone()).or_default();
-    Ok(())
-}
-
-/// Projects one snapshot resource into the host-facing catalog entry.
-fn resource_summary(pane: &phux_protocol::wire::info::ResourceInfo) -> client::ResourceSummary {
-    let facet = pane.agent.as_ref();
-    client::ResourceSummary::new(
-        pane.id.clone(),
-        u32::from(pane.kind.as_wire()),
-        pane.parent.clone(),
-        facet
-            .map(|facet| facet.provider.clone().into_bytes())
-            .unwrap_or_default(),
-        facet
-            .and_then(|facet| facet.native_id.clone())
-            .map(String::into_bytes)
-            .unwrap_or_default(),
-        facet
-            .map(|facet| facet.state.clone().into_bytes())
-            .unwrap_or_default(),
-    )
-}
-
-/// Completes the attach the client requested.
-fn apply_attach_ready(client: &mut Client, attach_id: u32) -> Result<(), BridgeError> {
-    ensure_expected_attach(client, attach_id, "ATTACH_READY")?;
-    apply_kernel_input(client, KernelInput::AttachReady { attach_id })?;
-    client.attach_queued = false;
-    client.attached = true;
-    workspace::initial_read(client);
-    Ok(())
-}
-
-/// Opens a bootstrap stream, holding the server to the profile `HELLO_OK` chose.
-fn apply_bootstrap_begin(
-    client: &mut Client,
-    stream: StreamRef<'_>,
-    profile: phux_protocol::BootstrapStreamProfile,
-    cols: u16,
-    rows: u16,
-    base_seq: u64,
-) -> Result<(), BridgeError> {
-    client.ensure_participant(stream.terminal_id)?;
-    let selected_profile = client
-        .selected_profile
-        .ok_or_else(|| BridgeError::state("BOOTSTRAP_BEGIN arrived before profile negotiation"))?;
-    // An AgentSession stream always carries the record codec, whatever
-    // Terminal profile HELLO_OK selected; it has no grid, so its geometry is
-    // the 0x0 sentinel. A Terminal stream never carries it.
-    let agent_stream = client.is_agent_stream(stream.terminal_id);
-    let agent_profile = matches!(
-        profile,
-        phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1
-    );
-    if agent_stream != agent_profile {
-        return Err(BridgeError::protocol(
-            "BOOTSTRAP_BEGIN profile disagrees with the resource kind",
-        ));
-    }
-    let geometry = if agent_stream {
-        client.open_agent_generation(stream.terminal_id, stream.stream_id, stream.bootstrap_id);
-        CanonicalGeometry { cols, rows }
-    } else {
-        if !stream_profile_matches(selected_profile, profile) {
-            return Err(BridgeError::protocol(
-                "BOOTSTRAP_BEGIN profile differs from HELLO_OK selection",
-            ));
-        }
-        CanonicalGeometry::new(cols, rows)
-            .ok_or_else(|| BridgeError::protocol("BOOTSTRAP_BEGIN geometry is zero"))?
-    };
-    apply_kernel_input(
-        client,
+        KernelInput::AttachReady { attach_id } => EngineEvent::AttachReady { attach_id },
         KernelInput::BootstrapBegin {
-            terminal_id: stream.terminal_id,
-            stream_id: stream.stream_id,
-            bootstrap_id: stream.bootstrap_id,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
             profile,
             geometry,
             base_seq,
+        } => EngineEvent::BootstrapBegin {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            profile,
+            cols: geometry.cols,
+            rows: geometry.rows,
+            base_seq,
         },
-    )
-}
-
-/// Feeds one bootstrap payload chunk to the session kernel.
-fn apply_bootstrap_chunk(
-    client: &mut Client,
-    stream: StreamRef<'_>,
-    chunk_seq: u32,
-    payload: &[u8],
-) -> Result<(), BridgeError> {
-    client.ensure_participant(stream.terminal_id)?;
-    apply_kernel_input(
-        client,
         KernelInput::BootstrapChunk {
-            terminal_id: stream.terminal_id,
-            stream_id: stream.stream_id,
-            bootstrap_id: stream.bootstrap_id,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
             chunk_seq,
             payload,
+        } => EngineEvent::BootstrapChunk {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            chunk_seq,
+            payload: payload.to_vec(),
         },
-    )
-}
-
-/// Closes a bootstrap stream and republishes the terminal's document.
-fn apply_bootstrap_ready(
-    client: &mut Client,
-    stream: StreamRef<'_>,
-    history_cursor: Option<&[u8]>,
-) -> Result<(), BridgeError> {
-    client.ensure_participant(stream.terminal_id)?;
-    apply_kernel_input(
-        client,
         KernelInput::BootstrapReady {
-            terminal_id: stream.terminal_id,
-            stream_id: stream.stream_id,
-            bootstrap_id: stream.bootstrap_id,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
             history_cursor,
+        } => EngineEvent::BootstrapReady {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            history_cursor: history_cursor.map(<[u8]>::to_vec),
         },
-    )?;
-    if client.is_agent_stream(stream.terminal_id) {
-        return Ok(());
-    }
-    client.invalidate_terminal_handles(stream.terminal_id);
-    client.bump_document_revision(stream.terminal_id)
-}
-
-/// The history cache counters that decide whether a page changed the document.
-fn history_cache_counters(
-    client: &Client,
-    terminal_id: &phux_protocol::ResourceId,
-) -> Option<(usize, usize, usize)> {
-    client.session.history_cache(terminal_id).map(|cache| {
-        let status = cache.status();
-        (
-            status.loaded_pages,
-            status.loaded_bytes,
-            status.materialized_rows,
-        )
-    })
-}
-
-/// Admits one history page, republishing the document only when the page
-/// actually moved the cache.
-fn apply_history_page(
-    client: &mut Client,
-    stream: StreamRef<'_>,
-    page_seq: u64,
-    cursor: &[u8],
-    next_cursor: Option<&[u8]>,
-    payload: &[u8],
-    rows: u32,
-) -> Result<(), BridgeError> {
-    client.ensure_participant(stream.terminal_id)?;
-    let before = history_cache_counters(client, stream.terminal_id);
-    apply_kernel_input(
-        client,
         KernelInput::HistoryPage {
-            terminal_id: stream.terminal_id,
-            stream_id: stream.stream_id,
-            bootstrap_id: stream.bootstrap_id,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
             page_seq,
             rows,
             payload,
             cursor,
             next_cursor,
+        } => EngineEvent::HistoryPage {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            page_seq,
+            rows,
+            payload: payload.to_vec(),
+            cursor: cursor.to_vec(),
+            next_cursor: next_cursor.map(<[u8]>::to_vec),
         },
-    )?;
-    let after = history_cache_counters(client, stream.terminal_id);
-    if before != after {
-        client.bump_document_revision(stream.terminal_id)?;
-    }
-    Ok(())
-}
-
-/// Records that a history range the client asked for is gone for good.
-fn apply_history_tombstone(
-    client: &mut Client,
-    stream: StreamRef<'_>,
-    cursor: &[u8],
-    reason: phux_protocol::wire::frame::HistoryTombstoneReason,
-) -> Result<(), BridgeError> {
-    client.ensure_participant(stream.terminal_id)?;
-    apply_kernel_input(
-        client,
         KernelInput::HistoryTombstone {
-            terminal_id: stream.terminal_id,
-            stream_id: stream.stream_id,
-            bootstrap_id: stream.bootstrap_id,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
             cursor,
-            reason: history_unavailable_reason(reason)?,
+            reason,
+        } => EngineEvent::HistoryTombstone {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            cursor: cursor.to_vec(),
+            reason,
         },
-    )
-}
-
-/// Records a history request the server declined, with the bounds it wanted.
-fn apply_history_rejected(
-    client: &mut Client,
-    stream: StreamRef<'_>,
-    cursor: &[u8],
-    reason: phux_protocol::wire::frame::HistoryRejectionReason,
-    required_bytes: u32,
-    required_rows: u32,
-) -> Result<(), BridgeError> {
-    client.ensure_participant(stream.terminal_id)?;
-    apply_kernel_input(
-        client,
         KernelInput::HistoryRejected {
-            terminal_id: stream.terminal_id,
-            stream_id: stream.stream_id,
-            bootstrap_id: stream.bootstrap_id,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
             cursor,
-            reason: history_rejection_reason(reason)?,
+            reason,
+            required_bytes,
+            required_rows,
+        } => EngineEvent::HistoryRejected {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            cursor: cursor.to_vec(),
+            reason,
             required_bytes,
             required_rows,
         },
-    )
-}
-
-/// Feeds live terminal output, republishing the document only when the applied
-/// bytes advanced the published sequence.
-fn apply_terminal_output(
-    client: &mut Client,
-    stream: StreamRef<'_>,
-    seq: u64,
-    payload: &[u8],
-) -> Result<(), BridgeError> {
-    client.ensure_participant(stream.terminal_id)?;
-    let before = published_last_seq(client, stream.terminal_id);
-    apply_kernel_input(
-        client,
         KernelInput::ResourceOutput {
-            terminal_id: stream.terminal_id,
-            stream_id: stream.stream_id,
-            bootstrap_id: stream.bootstrap_id,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
             seq,
             payload,
+        } => EngineEvent::Output {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
+            seq,
+            bytes: payload.to_vec(),
         },
-    )?;
-    let after = published_last_seq(client, stream.terminal_id);
-    if before != after {
-        client.bump_document_revision(stream.terminal_id)?;
-    }
-    Ok(())
-}
-
-/// The published sequence a terminal's replica has reached, when it has one.
-fn published_last_seq(client: &Client, terminal_id: &phux_protocol::ResourceId) -> Option<u64> {
-    client
-        .session
-        .published(terminal_id)
-        .map(|published| published.last_seq())
-}
-
-/// Drops the client-side state of a terminal the bridge can no longer serve.
-fn forget_terminal(client: &mut Client, terminal_id: &phux_protocol::ResourceId) {
-    client.render.remove(terminal_id);
-    client.document_revisions.remove(terminal_id);
-    client.invalidate_terminal_handles(terminal_id);
-}
-
-/// Records a bootstrap stream the server invalidated and drops presentation
-/// state only when that stream is the currently published generation.
-fn apply_bootstrap_tombstone(
-    client: &mut Client,
-    stream: StreamRef<'_>,
-    reason: phux_protocol::wire::frame::TombstoneReason,
-    last_valid_seq: u64,
-) -> Result<(), BridgeError> {
-    client.ensure_participant(stream.terminal_id)?;
-    let retires_published = client
-        .session
-        .published(stream.terminal_id)
-        .is_some_and(|published| {
-            let key = published.key();
-            key.stream_id == stream.stream_id && key.bootstrap_id == stream.bootstrap_id
-        });
-    apply_kernel_input(
-        client,
         KernelInput::Tombstone {
-            terminal_id: stream.terminal_id,
-            stream_id: stream.stream_id,
-            bootstrap_id: stream.bootstrap_id,
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            reason,
+            last_valid_seq,
+        } => EngineEvent::Tombstone {
+            terminal_id: terminal_id.clone(),
+            stream_id,
+            bootstrap_id,
             reason,
             last_valid_seq,
         },
-    )?;
-    if retires_published {
-        forget_terminal(client, stream.terminal_id);
-    }
-    Ok(())
-}
-
-/// Records a terminal whose process exited and drops its state.
-fn apply_terminal_closed(
-    client: &mut Client,
-    terminal_id: &phux_protocol::ResourceId,
-    exit_status: Option<i32>,
-    signal: Option<i32>,
-    reason: CloseReason,
-) -> Result<(), BridgeError> {
-    let resource_closed = KernelInput::ResourceClosed {
-        terminal_id,
-        exit_status,
-        signal,
-        reason,
+        KernelInput::ResourceClosed {
+            terminal_id,
+            exit_status,
+            signal,
+            reason,
+        } => EngineEvent::Closed {
+            terminal_id: terminal_id.clone(),
+            exit_status,
+            signal,
+            reason,
+        },
+        KernelInput::Event { terminal_id, event } => EngineEvent::Agent {
+            terminal_id: terminal_id.clone(),
+            event: event.clone(),
+        },
+        KernelInput::AgentSessionDeclared(declaration) => EngineEvent::AgentSessionDeclared {
+            terminal_id: declaration.terminal_id.clone(),
+            parent: declaration.parent.cloned(),
+            provider: declaration.provider.map(str::to_owned),
+            native_id: declaration.native_id.map(str::to_owned),
+            state: declaration.state.map(str::to_owned),
+        },
+        KernelInput::Action(_) => {
+            return Err(BridgeError::state(
+                "test helper does not apply input actions",
+            ));
+        }
     };
-    // A delayed explicit close after temporary inventory withdrawal still creates
-    // a durable tombstone, without retiring the host projection a second time.
-    client.workspace.subscriptions.cancel(terminal_id);
-    if client.workspace.subscriptions.was_withdrawn(terminal_id) {
-        apply_kernel_input(client, resource_closed)?;
-        client.workspace.subscriptions.mark_closed(terminal_id);
-        client.forget_resource(terminal_id);
-        return Ok(());
-    }
-    if !client.is_agent_stream(terminal_id)
-        && client.session.resource_kind(terminal_id) == Some(ResourceKind::AgentSession)
-    {
-        return Ok(());
-    }
-    client.ensure_participant(terminal_id)?;
-    apply_kernel_input(client, resource_closed)?;
-    if client.is_agent_stream(terminal_id) {
-        client.workspace.subscriptions.mark_closed(terminal_id);
-        retire_agent_stream(client, terminal_id);
-        client.forget_resource(terminal_id);
-        return Ok(());
-    }
-    operations::release_terminal(client, terminal_id)?;
-    forget_terminal(client, terminal_id);
-    client.forget_resource(terminal_id);
-    client.operations.observe_resource_closed(terminal_id);
-    Ok(())
-}
-
-/// Withdraw an agent stream's admission and retire its host projection. The
-/// registry entry is removed only by an authoritative close or inventory read.
-fn retire_agent_stream(client: &mut Client, id: &phux_protocol::ResourceId) {
-    let Some(state) = client.agent_streams.remove(id) else {
-        return;
-    };
-    let (stream_id, bootstrap_id) = state.generation.unwrap_or((0, 0));
-    let mut effect = OwnedEffect::simple(EFFECT_AGENT_RECORDS, AGENT_RECORDS_CLOSED, id.clone());
-    effect.stream_id = stream_id;
-    effect.bootstrap_id = bootstrap_id;
-    client.owned_effects.push(effect);
-    client.publish_effects();
-}
-
-/// Publishes a bell as an effect the embedder can observe.
-fn apply_bell(
-    client: &mut Client,
-    terminal_id: phux_protocol::ResourceId,
-) -> Result<(), BridgeError> {
-    client.ensure_participant(&terminal_id)?;
     client
-        .owned_effects
-        .push(OwnedEffect::simple(2, 1, terminal_id));
-    client.publish_effects();
+        .control
+        .apply_engine_event(event)
+        .map_err(control_error)?;
+    client.drain_outbound();
+    for event in client.control.take_events() {
+        let _ = client.process_runtime_event(event)?;
+    }
     Ok(())
 }
 
-/// Publishes a server error as an effect the embedder can observe.
-fn apply_error(client: &mut Client, code: phux_protocol::wire::frame::ErrorCode, message: &str) {
-    let mut effect = OwnedEffect::simple(2, 4, phux_protocol::ResourceId::local(0));
-    effect.bytes = format!("{code:?}: {message}").into_bytes();
-    client.owned_effects.push(effect);
-    client.publish_effects();
+fn forget_terminal(client: &mut Client, id: &phux_protocol::ResourceId) {
+    client.render.remove(id);
+    client.resources.retain(|resource| &resource.id != id);
 }
 
-/// Ends the session and publishes the ending as an effect.
-fn apply_detached(
-    client: &mut Client,
-    reason: Option<phux_protocol::wire::frame::DetachReason>,
-    message: String,
-) {
-    client.detach();
-    let mut effect = OwnedEffect::simple(2, 5, phux_protocol::ResourceId::local(0));
-    // phux-l83x: carry the ending's reason across the bridge as a
-    // stable wire value, the way RESYNC_REQUIRED carries its
-    // `TombstoneReason`. A consumer that only sees "detached"
-    // cannot tell a requested detach from a server that died
-    // under it. `DETACH_REASON_UNSTATED` is distinct from every
-    // wire value precisely so absence stays legible: `REQUESTED`
-    // is `0`, so a zero default would have claimed the user asked
-    // for an ending they did not.
-    effect.status_code =
-        reason.map_or(DETACH_REASON_UNSTATED, |reason| u32::from(reason.as_wire()));
-    effect.bytes = message.into_bytes();
-    client.owned_effects.push(effect);
-    client.publish_effects();
+fn control_error(error: phux_client_runtime::control::ControlError) -> BridgeError {
+    use phux_client_runtime::control::ControlError;
+    match error {
+        ControlError::Protocol(message) | ControlError::Refused(message) => {
+            BridgeError::protocol(message)
+        }
+        ControlError::Resync => BridgeError::state("a replica needs a fresh bootstrap"),
+        ControlError::Closed => BridgeError::state("the session was detached"),
+    }
 }
 
 /// Returns the number of sessions advertised by the latest accepted ATTACHED.
@@ -1755,6 +1209,7 @@ pub unsafe extern "C" fn phux_client_terminal_mouse_tracking(
     with_client_ref(client, |client| {
         let out = unsafe { out_enabled.as_mut() }
             .ok_or_else(|| BridgeError::invalid("out_enabled is null"))?;
+        client.ensure_attached()?;
         let terminal_id = unsafe { terminal_id_in(terminal_id) }?;
         let enabled = client.mouse_tracking(&terminal_id)?;
         *out = enabled;
@@ -2601,7 +2056,7 @@ mod tests {
     fn hello_ok_accepts_matching_patch_and_native_features() {
         let client = boxed_client();
         unsafe { (*client).inner.hello_queued = true };
-        let offered = advertised_client_caps(unsafe { &(*client).inner }).expect("advertisement");
+        let offered = advertised_client_caps(unsafe { &(*client).inner });
         let profile = if offered
             .bootstrap
             .profiles
@@ -2657,11 +2112,14 @@ mod tests {
                 ),
             );
         }
+        let incomplete = phux_protocol::BootstrapProfile::NativeState {
+            codec: phux_protocol::EngineCodec::LibghosttySnapshotV1,
+            features: phux_protocol::EngineFeatureSet::with(&[
+                phux_protocol::EngineFeature::Continuation,
+            ]),
+        };
         assert_eq!(
-            feed_kind(
-                client,
-                &hello_ok(PROTOCOL_VERSION.patch, native_hello_ok_profile()),
-            ),
+            feed_kind(client, &hello_ok(PROTOCOL_VERSION.patch, incomplete)),
             PhuxClientResult::ProtocolError
         );
         assert!(!unsafe { (*client).inner.protocol_ready });
@@ -2900,19 +2358,9 @@ mod tests {
             ),
             PhuxClientResult::Ok
         );
-        assert!(unsafe {
-            (*client)
-                .inner
-                .session
-                .active_attach_contains(&focused_terminal)
-        });
+        assert!(unsafe { (*client).inner.active_attach_contains(&focused_terminal) });
         assert!(
-            !unsafe {
-                (*client)
-                    .inner
-                    .session
-                    .active_attach_contains(&other_terminal)
-            },
+            !unsafe { (*client).inner.active_attach_contains(&other_terminal) },
             "a terminal in another session is never bootstrapped by this attach"
         );
         unsafe { phux_client_free(client) };
@@ -3185,9 +2633,9 @@ mod tests {
         );
         assert!(unsafe { (*client).inner.attached });
         assert_eq!(unsafe { (*client).inner.sessions.len() }, 2);
-        assert!(!unsafe { (*client).inner.session.active_attach_contains(&seed) });
-        assert!(unsafe { (*client).inner.session.active_attach_contains(&horizontal) });
-        assert!(unsafe { (*client).inner.session.active_attach_contains(&vertical) });
+        assert!(!unsafe { (*client).inner.active_attach_contains(&seed) });
+        assert!(unsafe { (*client).inner.active_attach_contains(&horizontal) });
+        assert!(unsafe { (*client).inner.active_attach_contains(&vertical) });
         unsafe { phux_client_free(client) };
     }
 
@@ -3483,7 +2931,6 @@ mod tests {
         assert!(!unsafe {
             (*client)
                 .inner
-                .session
                 .active_attach_contains(&phux_protocol::ResourceId::local(7))
         });
         unsafe { phux_client_free(client) };
@@ -3520,7 +2967,7 @@ mod tests {
             ),
             PhuxClientResult::ProtocolError
         );
-        assert!(!unsafe { (*client).inner.session.active_attach_contains(&terminal_id) });
+        assert!(!unsafe { (*client).inner.active_attach_contains(&terminal_id) });
         unsafe {
             (*client).inner.attach_queued = true;
         }
@@ -3533,7 +2980,7 @@ mod tests {
             },
         )
         .expect("seed active ATTACH inventory");
-        assert!(unsafe { (*client).inner.session.active_attach_contains(&terminal_id) });
+        assert!(unsafe { (*client).inner.active_attach_contains(&terminal_id) });
         assert_eq!(
             feed_kind(
                 client,
@@ -3607,12 +3054,7 @@ mod tests {
             PhuxClientResult::Ok
         );
         let client_ref = unsafe { &*client };
-        assert!(
-            !client_ref
-                .inner
-                .session
-                .active_attach_contains(&terminal_id)
-        );
+        assert!(!client_ref.inner.active_attach_contains(&terminal_id));
         let effects_before = client_ref.inner.owned_effects.len();
         assert_eq!(
             feed_kind(
@@ -3733,6 +3175,8 @@ mod tests {
             },
         )
         .expect("publish terminal");
+        apply_kernel_input(inner, KernelInput::AttachReady { attach_id: 7 })
+            .expect("release attach barrier");
         inner.attach_queued = false;
         inner.attached = true;
         inner.selection_buf.extend_from_slice(b"borrowed");
@@ -3968,10 +3412,10 @@ mod tests {
             inner.attached,
             "the terminal alone completes an attach the agent never bootstrapped"
         );
-        assert!(inner.session.active_attach_contains(&terminal));
-        assert!(!inner.session.active_attach_contains(&agent));
+        assert!(inner.active_attach_contains(&terminal));
+        assert!(!inner.active_attach_contains(&agent));
         assert_eq!(
-            inner.session.resource_kind(&agent),
+            inner.resource_kind(&agent),
             Some(ResourceKind::AgentSession)
         );
         assert!(inner.is_agent_stream(&agent));
@@ -4083,7 +3527,7 @@ mod tests {
             assert_eq!(feed_kind(client, &frame), PhuxClientResult::Ok);
         }
         assert!(
-            unsafe { (*client).inner.session.published(&agent) }.is_none(),
+            unsafe { (*client).inner.projection(&agent) }.is_none(),
             "an agent stream never publishes a terminal replica"
         );
     }
