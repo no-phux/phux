@@ -581,13 +581,15 @@ exhaustive cross-session CLI projection.
 
 Mouse handling is on by default. On attach the client enables button-event
 tracking plus SGR coordinates on the *outer* terminal and restores them
-on detach, so divider, sidebar, and tab drags work in a plain shell.
+on detach, so divider, sidebar, and tab drags work in a plain shell. It also
+turns on focus reports, so the focused pane sees the window gain and lose
+focus, and a drag whose button goes up outside the window ends cleanly.
 
 | Event | Action |
 |---|---|
 | Click in a pane | Focus, then forward |
 | Press / drag a divider | Resize; release commits the layout |
-| Drag the sidebar's separator rule (left dock) | Resize the strip for this attach; `sidebar.width` in the config is unchanged |
+| Drag the sidebar's separator rule | Resize the strip for this attach; `sidebar.width` in the config is unchanged |
 | Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback (forwarded if the viewport cannot move); alt screen becomes arrows, or is forwarded if alternate-scroll is off |
 | Right-click in a pane | Pane context menu, unless the inner program has mouse tracking |
 | Click a status-bar tab | `select-window` |

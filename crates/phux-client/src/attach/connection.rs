@@ -224,6 +224,9 @@ impl Multistream {
         self.terminal_frame_deadline = deadline;
     }
 
+    // `self` carries the deadline only under `testkit`; the production build
+    // reads the constant, which is still a method so call sites don't fork.
+    #[cfg_attr(not(feature = "testkit"), allow(clippy::unused_self))]
     const fn terminal_frame_deadline(&self) -> std::time::Duration {
         #[cfg(feature = "testkit")]
         {

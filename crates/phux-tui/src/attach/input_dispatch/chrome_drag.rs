@@ -70,19 +70,17 @@ pub(super) fn release(
 }
 
 /// Whether an outer-viewport cell is the sidebar's resize handle: the
-/// painted separator rule, which sits between strip and panes only when the
-/// strip docks left. A right-docked strip paints its rule on the screen
-/// edge and has no pane-facing border to grab, so it has no handle. The
-/// bottom corner of the rule stays the collapse chevron.
+/// separator rule, which always sits on the pane-facing side. Its bottom
+/// cell stays the collapse chevron.
 pub(super) fn on_sidebar_edge(ctx: &DispatchCtx<'_>, x: u16, y: u16) -> bool {
-    let Some(res) = ctx.sidebar.filter(|res| res.edge == SidebarEdge::Left) else {
+    let Some(res) = ctx.sidebar else {
         return false;
     };
     let strip = sidebar_rect(ctx.viewport, res);
     if strip.w == 0 || y < strip.y || y >= strip.y.saturating_add(strip.h) {
         return false;
     }
-    x == strip.x + strip.w - 1
+    x == strip.x + ctx.sidebar_targets.counts.rule.column(strip.w)
         && hit_test(strip, ctx.sidebar_targets.counts, x, y) != Some(SidebarHit::Collapse)
 }
 

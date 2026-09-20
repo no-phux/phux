@@ -537,6 +537,7 @@ pub(super) fn paint_empty_session<W: super::RenderSink>(
     write_centered_lines(&mut block, content, lines);
     if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
         painter.invalidate();
+        painter.set_rule(sidebar_rule(res.edge));
         let _ = painter.paint(&mut block, sidebar_rect(viewport_dims, res));
     }
     let painted = paint_bar_after_pane(
@@ -681,6 +682,7 @@ fn paint_full_frame_into<W: Write>(
     // the columns `content_rect` carved out, so it never overlaps pane content.
     if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
         painter.invalidate();
+        painter.set_rule(sidebar_rule(res.edge));
         let _ = painter.paint(out, sidebar_rect(viewport_dims, res));
     }
     // The ED2 above cleared the bar row, so force a re-emit even if the
@@ -844,6 +846,7 @@ fn paint_chrome_in_place_into<W: Write>(
         |id| super::pane_state::pane_label(panes, id),
     );
     if let (Some(res), Some(painter)) = (sidebar, sidebar_painter) {
+        painter.set_rule(sidebar_rule(res.edge));
         let _ = painter.paint(out, sidebar_rect(viewport_dims, res));
     }
     // `bar_row_clobbered = false`: nothing cleared the bar row, so the
@@ -1268,6 +1271,16 @@ pub(super) fn content_layout(
         },
     );
     ContentLayout { rect, rail }
+}
+
+/// The strip's separator rule faces the panes: trailing on a left dock,
+/// leading on a right dock.
+pub(super) const fn sidebar_rule(edge: SidebarEdge) -> crate::render::chrome::sidebar::SidebarRule {
+    use crate::render::chrome::sidebar::SidebarRule;
+    match edge {
+        SidebarEdge::Left => SidebarRule::Trailing,
+        SidebarEdge::Right => SidebarRule::Leading,
+    }
 }
 
 /// The sidebar strip's own `Rect` — the columns [`content_rect`] reserved for

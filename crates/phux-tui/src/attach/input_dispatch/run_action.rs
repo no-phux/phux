@@ -1487,11 +1487,6 @@ const fn toggle_sidebar(ctx: &DispatchCtx<'_>, effects: &mut ActionEffects) {
     // phux-4h5a: show/hide the window sidebar. The driver owns
     // `sidebar_enabled`; we signal intent + a repaint so the panes
     // reflow into/out of the reserved columns.
-    // phux-4h5a P4 follow-up: a `focus-window`-by-index action (the
-    // keyboard companion to clicking a strip row) is deferred; the
-    // existing `select-window` jumps by tab position, but a strip-row
-    // index action that pairs with mouse click-to-focus is not yet
-    // wired.
     effects.toggle_sidebar = true;
     effects.layout_mutated = true;
 }
