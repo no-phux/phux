@@ -638,7 +638,8 @@ rather than a layer with its own internal architecture worth diagramming:
   consumer-facing leg all write through (see
   [`transport.md`](./transport.md)).
 - **`phux-client-runtime`** — the one client orchestration layer between
-  the sans-IO session kernel and a language binding (ADR-0133). `target.rs`
+  the sans-IO session kernel and a language binding (ADR-0133; see
+  [`client-runtime.md`](./client-runtime.md)). `target.rs`
   resolves `[USER@]HOST[:PORT]` against the CLI's `[[remote]]` registry
   through `phux-config`'s own loader (rung 1 of the ADR-0093 ladder);
   `dial.rs` turns a resolved entry into a `phux-dial` plan under the CLI's
@@ -653,13 +654,22 @@ rather than a layer with its own internal architecture worth diagramming:
   `phux` binary's attach loop and `phux-client`'s wait verb walk it today
   — a reconnect the host refuses ends on that first probe with the refusal
   itself rather than the deadline's timeout — and the mobile bridge moves
-  onto it at its next pin; `tunnel.rs` is the
-  byte-relay tunnel a
+  onto it at its next pin; `tunnel.rs` is the byte-relay tunnel a
   socket-owning embedder hands one end of a Unix-domain socket pair, with
-  its dedicated thread, cancellation, and panic containment. It exposes a
-  Rust API and no FFI; `phux-client-ffi` and phux-mobile's bridge are shims
-  over it and hold no state machine of their own. Later rungs of ADR-0133
-  move the engine owner thread, the frame pump, and grid publication here.
+  its dedicated thread, cancellation, and panic containment. `control.rs`
+  is the sans-IO `ControlPlane` over `SessionKernel`: decoded frames in,
+  encoded frames and owned `Event`s out; it owns the
+  `HELLO`/`ATTACH`/`DETACH` lifecycle, the topology, the per-terminal
+  verbs, raw and acknowledged input, and the event subscription.
+  `engine.rs` is the owner thread that hosts the kernel and every Ghostty
+  replica (a bounded byte adapter without the `engine` feature);
+  `publication.rs` the double-buffered grid a consumer acquires from any
+  thread as an immutable `GridFrame` with a generation counter and dirty
+  rows; `connection.rs` the async driver (UDS, WebSocket, QUIC; framing,
+  keepalive, the ladder); `runtime.rs` the `Runtime::connect` entry point
+  and the synchronous, thread-safe `Client`. It exposes a Rust API and no
+  FFI; `phux-client-ffi` and phux-mobile's bridge are shims over it and
+  hold no state machine of their own.
 - **`phux-relay`** — the reference relay (ADR-0051, ADR-0052): splices an
   inbound consumer connection onto an outbound connector tunnel. Never
   parses phux frames — only the connector's auth preamble.
