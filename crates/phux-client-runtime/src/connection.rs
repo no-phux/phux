@@ -242,8 +242,15 @@ pub async fn run_session(
     let ladder_deadline = tokio::time::Instant::now() + options.initial_budget;
     loop {
         attempts += 1;
-        let Some((end, was_attached)) =
-            run_attempt(&target, options, &shared, &mut signals, ladder_deadline).await
+        let Some((end, was_attached)) = run_attempt(
+            &target,
+            options,
+            &shared,
+            &mut signals,
+            &wake,
+            ladder_deadline,
+        )
+        .await
         else {
             fail(&shared, None, &wake);
             return;
@@ -284,9 +291,10 @@ async fn run_attempt(
     options: ConnectOptions,
     shared: &Shared,
     signals: &mut Signals,
+    wake: &Wake,
     ladder_deadline: tokio::time::Instant,
 ) -> Option<(ConnectionEnd, bool)> {
-    let connection = run_connection(target, options, shared, signals);
+    let connection = run_connection(target, options, shared, signals, wake);
     if lock(shared).attached_once() {
         return Some(connection.await);
     }
@@ -564,6 +572,7 @@ async fn run_connection(
     options: ConnectOptions,
     shared: &Shared,
     signals: &mut Signals,
+    wake: &Wake,
 ) -> (ConnectionEnd, bool) {
     let name = target.name.as_str();
     let started = std::time::Instant::now();
@@ -578,7 +587,7 @@ async fn run_connection(
         elapsed_ms = started.elapsed().as_millis(),
         "connected"
     );
-    let end = pump(name, &mut io, options, shared, signals).await;
+    let end = pump(name, &mut io, options, shared, signals, wake).await;
     let was_attached = lock(shared).status() == Status::Attached;
     io.close();
     (end, was_attached)
@@ -590,6 +599,7 @@ async fn pump(
     options: ConnectOptions,
     shared: &Shared,
     signals: &mut Signals,
+    wake: &Wake,
 ) -> ConnectionEnd {
     let opening = {
         let mut control = lock(shared);
@@ -631,13 +641,16 @@ async fn pump(
                 return ConnectionEnd::Dropped(Some("liveness probe timed out".to_owned()));
             }
             () = tokio::time::sleep(expiry) => {
-                let frames = {
+                let (expired, frames) = {
                     let mut control = lock(shared);
-                    control.expire_inputs();
-                    control.take_outbound()
+                    let expired = control.expire_inputs();
+                    (expired, control.take_outbound())
                 };
                 if let Err(error) = write_all(io, name, frames).await {
                     return ConnectionEnd::Dropped(Some(error));
+                }
+                if expired {
+                    wake();
                 }
             }
             inbound = io.read_frame(name) => {
@@ -659,6 +672,9 @@ async fn pump(
                 if let Err(error) = write_all(io, name, frames).await {
                     return ConnectionEnd::Dropped(Some(error));
                 }
+                // Edge-triggered: a frame flood costs one callback, not one
+                // per frame, and the callback runs with no lock held.
+                wake();
                 match fed {
                     Ok(()) => {}
                     Err(ControlError::Protocol(message)) => return ConnectionEnd::Dropped(Some(message)),

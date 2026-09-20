@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use phux_client_runtime::control::{ControlOptions, Event, SpawnRequest, Status};
 use phux_client_runtime::reconnect::Ladder;
-use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Runtime, Target};
+use phux_client_runtime::{Client, ClientOptions, ConnectOptions, Listener, Runtime, Target};
 use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::AttachTarget;
 use phux_server_testkit::{run_local, spawn_server};
@@ -115,6 +115,18 @@ async fn wait_for_text(client: &Client, terminal: &ResourceId, needle: &str) {
     .await;
 }
 
+/// Counts wakes; the runtime must never call it while holding a lock, so
+/// the callback may call back into the client.
+struct Wakes {
+    count: AtomicUsize,
+}
+
+impl Listener for Wakes {
+    fn on_activity(&self) {
+        self.count.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
 #[test]
 fn attaches_spawns_types_and_observes_the_published_frame() {
     run_local(async {
@@ -122,7 +134,20 @@ fn attaches_spawns_types_and_observes_the_published_frame() {
         let socket = tmp.path().join("phux.sock");
         let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
         let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
+        let wakes = Arc::new(Wakes {
+            count: AtomicUsize::new(0),
+        });
+        client.set_listener(wakes.clone());
         wait_for_status(&client, Status::Attached).await;
+        assert!(
+            wakes.count.load(Ordering::SeqCst) >= 1,
+            "the attach woke the listener"
+        );
+        let woken = wakes.count.load(Ordering::SeqCst);
+        // Edge-triggered: nothing more until the consumer drains.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(wakes.count.load(Ordering::SeqCst), woken);
+        let _ = client.take_events();
         let server_info = client.server().expect("negotiated");
         assert!(!server_info.id.is_empty());
         let topology = client.topology().expect("topology");
