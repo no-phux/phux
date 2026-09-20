@@ -897,7 +897,7 @@ impl SidebarPainter {
         let rest = chars.as_str().to_owned();
         vec![
             Span::styled(glyph, Style::default().fg(self.theme.chord)),
-            Span::styled(rest, Style::default().fg(self.theme.text)),
+            Span::styled(rest, Style::default().fg(self.theme.dim)),
         ]
     }
 

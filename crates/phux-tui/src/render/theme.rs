@@ -303,8 +303,8 @@ pub const SLOT_SPECS: &[SettingSpec] = &[
         key: "theme.accent",
         section: SettingSection::Theme,
         kind: SettingKind::Color,
-        summary: "Modal titles, query caret, active tab fill",
-        detail: "The one hue that says this is phux talking: modal titles, the palette's query caret, the active window tab's fill, and the focused pane's frame.",
+        summary: "Modal titles, query caret, active tab",
+        detail: "The one hue that says this is phux talking: modal titles, the palette's query caret, the active window tab, and the focused pane's frame.",
         applies: Applies::LiveReload,
     },
     SettingSpec {
@@ -327,8 +327,8 @@ pub const SLOT_SPECS: &[SettingSpec] = &[
         key: "theme.dim",
         section: SettingSection::Theme,
         kind: SettingKind::Color,
-        summary: "Footer hints, sub-lines, inactive tabs",
-        detail: "The recessive text register: footer hints, branch sub-lines, affordances, empty-state placeholders, inactive window tabs. Recessive still clears 4.5:1 against surface.",
+        summary: "Sub-lines, affordances, inactive tabs",
+        detail: "The recessive text register: branch sub-lines, affordances, empty-state placeholders, inactive window tabs. Recessive still clears 4.5:1 against surface.",
         applies: Applies::LiveReload,
     },
     SettingSpec {

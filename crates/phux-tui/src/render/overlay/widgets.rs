@@ -475,18 +475,13 @@ impl KeyChordTable {
         lines
     }
 
-    /// One table row: bold chord padded to `width`, two-space gutter, then
+    /// One table row: chord padded to `width`, two-space gutter, then
     /// the description.
     fn row_line(&self, row: &ChordRow, width: usize) -> Line<'static> {
         let pad = width.saturating_sub(crate::render::display_width(&row.chord));
         let padding = " ".repeat(pad);
         Line::from(vec![
-            Span::styled(
-                row.chord.clone(),
-                Style::default()
-                    .fg(self.theme.chord)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled(row.chord.clone(), Style::default().fg(self.theme.chord)),
             Span::raw(padding),
             Span::raw("  "),
             Span::styled(

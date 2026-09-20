@@ -600,10 +600,10 @@ impl SettingsOverlay {
 
     // ---- rendering ------------------------------------------------------
 
-    /// The modal rect: 80% of the viewport, at least 60x16, full-bleed on a
-    /// starved axis.
+    /// The modal rect: 70% of the viewport, at least 60x16, full-bleed on a
+    /// starved axis. Smaller than a page, larger than a picker.
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        centered_panel(outer, 8, 60, 16, bp)
+        centered_panel(outer, 7, 60, 16, bp)
     }
 
     /// Whether the interior is wide enough for the section column.
