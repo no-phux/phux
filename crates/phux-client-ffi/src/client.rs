@@ -745,11 +745,13 @@ impl Client {
     fn process_effect_event(&mut self, event: Event) -> EventProjection {
         match event {
             Event::Bell { terminal_id } => {
-                self.owned_effects
-                    .push(OwnedEffect::simple(2, 1, terminal_id));
+                let mut effect = OwnedEffect::simple(2, 1, terminal_id.clone());
+                self.stamp_replica_generation(&mut effect, &terminal_id);
+                self.owned_effects.push(effect);
             }
             Event::TitleChanged { terminal_id, title } => {
-                let mut effect = OwnedEffect::simple(2, 2, terminal_id);
+                let mut effect = OwnedEffect::simple(2, 2, terminal_id.clone());
+                self.stamp_replica_generation(&mut effect, &terminal_id);
                 effect.bytes = title.into_bytes();
                 self.owned_effects.push(effect);
             }
@@ -757,7 +759,8 @@ impl Client {
                 terminal_id,
                 reason,
             } => {
-                let mut effect = OwnedEffect::simple(2, 3, terminal_id);
+                let mut effect = OwnedEffect::simple(2, 3, terminal_id.clone());
+                self.stamp_replica_generation(&mut effect, &terminal_id);
                 effect.status_code = u32::from(reason.as_wire());
                 self.owned_effects.push(effect);
             }
@@ -765,7 +768,8 @@ impl Client {
                 terminal_id,
                 status,
             } => {
-                let mut effect = OwnedEffect::simple(2, 6, terminal_id);
+                let mut effect = OwnedEffect::simple(2, 6, terminal_id.clone());
+                self.stamp_replica_generation(&mut effect, &terminal_id);
                 effect.status_code = history_state_code(status.state);
                 self.owned_effects.push(effect);
             }
@@ -773,7 +777,8 @@ impl Client {
                 terminal_id,
                 reason,
             } => {
-                let mut effect = OwnedEffect::simple(2, 7, terminal_id);
+                let mut effect = OwnedEffect::simple(2, 7, terminal_id.clone());
+                self.stamp_replica_generation(&mut effect, &terminal_id);
                 effect.status_code = history_unavailable_code(reason);
                 self.owned_effects.push(effect);
             }
@@ -887,9 +892,29 @@ impl Client {
                 effect.first_row = first;
                 effect.last_row = rows.last().unwrap_or(first);
             }
-            phux_client_core::grid::GridDamage::Clean => return,
+            // DECSCNM and other mode-only publication still change
+            // metadata the host paints from. Swallowing Clean left
+            // reverse-video and default colors on the previous canvas.
+            phux_client_core::grid::GridDamage::Clean => effect.detail = 1,
         }
         self.owned_effects.push(effect);
+    }
+
+    /// Copy the published replica identity onto a status effect.
+    ///
+    /// Cockpit fences bells and titles with `sameReplica(stream, bootstrap)`.
+    /// The pre-shim bridge stamped those fields from the kernel key; the
+    /// runtime `Event` no longer carries it, so the current publication is
+    /// the remaining source.
+    fn stamp_replica_generation(&self, effect: &mut OwnedEffect, id: &ResourceId) {
+        let Ok(info) = self
+            .engine()
+            .and_then(|engine| engine.replica_info(id).map_err(engine_bridge))
+        else {
+            return;
+        };
+        effect.stream_id = info.stream_id;
+        effect.bootstrap_id = info.bootstrap_id;
     }
 
     fn exit_effect(

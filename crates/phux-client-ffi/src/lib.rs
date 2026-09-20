@@ -906,6 +906,7 @@ fn control_error(error: phux_client_runtime::control::ControlError) -> BridgeErr
         ControlError::Protocol(message) | ControlError::Refused(message) => {
             BridgeError::protocol(message)
         }
+        ControlError::InvalidState(message) => BridgeError::state(message),
         ControlError::Resync => BridgeError::state("a replica needs a fresh bootstrap"),
         ControlError::Closed => BridgeError::state("the session was detached"),
     }

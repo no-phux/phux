@@ -72,7 +72,10 @@ impl ControlPlane {
         }
         if let Some(error) = outcome.error {
             if strict {
-                return Err(ControlError::Protocol(format!("session kernel: {error}")));
+                // The kernel's Display is the C ABI last-error text
+                // (`InvalidState`, not a dropped connection). Prefixing it
+                // would hide the retired-generation sentence embedders assert.
+                return Err(ControlError::InvalidState(error));
             }
             tracing::debug!(%error, "session kernel ignored an event");
         }
