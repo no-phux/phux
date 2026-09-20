@@ -204,10 +204,8 @@ pub enum ControlError {
     /// A refusal no retry can satisfy; the session is over.
     #[error("{0}")]
     Refused(String),
-    /// The kernel refused a frame that does not invalidate the
-    /// connection: a retired or mismatched generation, an unknown
-    /// terminal, or the same class of update the C ABI reports as
-    /// `InvalidState`. The session stays attached.
+    /// A retired, mismatched, or duplicate generation: the C ABI
+    /// reports `InvalidState` and the session stays attached.
     #[error("{0}")]
     InvalidState(String),
     /// A replica generation was invalidated; reconnect for fresh

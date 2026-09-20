@@ -72,10 +72,7 @@ impl ControlPlane {
         }
         if let Some(error) = outcome.error {
             if strict {
-                // The kernel's Display is the C ABI last-error text
-                // (`InvalidState`, not a dropped connection). Prefixing it
-                // would hide the retired-generation sentence embedders assert.
-                return Err(ControlError::InvalidState(error));
+                return Err(classify_kernel_error(error));
             }
             tracing::debug!(%error, "session kernel ignored an event");
         }
@@ -233,6 +230,17 @@ impl ControlPlane {
             | KernelStatus::CommandStarted { .. }
             | KernelStatus::CommandFinished { .. } => {}
         }
+    }
+}
+
+/// Generation refusals keep the connection; everything else is a
+/// protocol drop. The generation Display is also the C ABI last-error
+/// text embedders assert, so it must not grow a prefix.
+fn classify_kernel_error(error: String) -> ControlError {
+    if error.starts_with("generation (") {
+        ControlError::InvalidState(error)
+    } else {
+        ControlError::Protocol(format!("session kernel: {error}"))
     }
 }
 
