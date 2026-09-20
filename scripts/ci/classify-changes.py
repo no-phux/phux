@@ -66,6 +66,10 @@ ROUTES = (
     # Perf/release/mutation and release-please config are compile-free.
     (("justfile", "just/perf.just", "just/release.just", "just/mutation.just",
       "release-please-config.json", "scripts/check-*"), set()),
+    # The xcframework builder runs only from ffi-xcframework.yml (release and
+    # dispatch) and `just ffi-xcframework`; no product lane consumes it, and
+    # its inputs (the crate, Cargo, the Zig pin) route on their own.
+    (("scripts/build-ffi-xcframework.sh",), set()),
 )
 WORKFLOWS = (
     ".github/workflows/*.yml", ".github/workflows/*.yaml",

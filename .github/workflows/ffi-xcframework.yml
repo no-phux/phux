@@ -1,0 +1,137 @@
+# Build PhuxFFI.xcframework from this checkout and attach it to the root
+# release. The archive is crates/phux-client-ffi as a static library with the
+# libghostty engine inside, for iOS devices, the arm64 simulator, and arm64
+# macOS, plus phux/client.h under a `PhuxFFI` module map (ADR-0133). A
+# Swift-only phux-mobile consumes it the way Cockpit links the same crate
+# from this tree.
+#
+# Release Please owns tags, draft releases and notes. This workflow only adds
+# verified assets to an existing release, the same contract release.yml and
+# cockpit-release.yml follow, and release-please.yml calls it for every root
+# release. It never gates the draft's publication: the CLI tarballs are the
+# release contract; the xcframework is the mobile pin's input.
+#
+# No pull request triggers this workflow, so its caches are saved from every
+# run without thrashing the PR budget docs/RELEASING.md describes.
+
+name: ffi-xcframework
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing root release tag (vX.Y.Z) to build from and attach the xcframework to.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing root release tag (vX.Y.Z) to build from and attach to. Empty builds the dispatched ref and only uploads the workflow artifact.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mini-v1-ffi-xcframework-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build PhuxFFI.xcframework
+    # Standard macos-26 is an arm64 GitHub-hosted runner with Xcode and the
+    # iOS SDK; device and simulator slices need both.
+    runs-on: macos-26
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      ARTIFACTS: target/ffi-xcframework/Artifacts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Validate release tag
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$RELEASE_TAG^{commit}")"
+          bash scripts/check-release-version.sh "$RELEASE_TAG"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+
+      - name: Contributor Zig setup
+        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+
+      - name: Contributor Rust setup
+        run: bash scripts/setup-rust.sh core
+
+      # Three cross targets share one Cargo.lock; the shared key keeps this
+      # cache disjoint from the Cockpit and Linux lanes' profiles.
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: mini-v1-ffi-xcframework
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/zig
+          key: mini-v1-ffi-xcframework-zig-${{ hashFiles('.config/zig-toolchain.json', 'Cargo.lock') }}
+          restore-keys: |
+            mini-v1-ffi-xcframework-zig-
+
+      - name: Build, verify and smoke-test the xcframework
+        run: bash scripts/build-ffi-xcframework.sh --full
+
+      - name: Package the archive and its checksum
+        id: package
+        run: |
+          set -euo pipefail
+          stem="PhuxFFI-${RELEASE_TAG:-$(git rev-parse --short HEAD)}"
+          cd "$ARTIFACTS"
+          # The xcframework sits at the archive root, which is the layout a
+          # SwiftPM binaryTarget URL expects; `swift package compute-checksum`
+          # over the zip equals the sidecar's SHA-256.
+          zip -qry "${stem}.xcframework.zip" PhuxFFI.xcframework
+          shasum -a 256 "${stem}.xcframework.zip" > "${stem}.xcframework.zip.sha256"
+          cp provenance "${stem}.provenance"
+          cat "${stem}.xcframework.zip.sha256" "${stem}.provenance"
+          echo "stem=${stem}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: PhuxFFI-xcframework
+          path: |
+            ${{ env.ARTIFACTS }}/PhuxFFI.xcframework
+            ${{ env.ARTIFACTS }}/provenance
+            ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.xcframework.zip
+            ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.xcframework.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach and verify release assets
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STEM: ${{ steps.package.outputs.stem }}
+        run: |
+          set -euo pipefail
+          cd "$ARTIFACTS"
+          # `gh release upload` adds assets only; it never rewrites the name or
+          # body release-please generated. --clobber keeps a replay against
+          # the same tag idempotent, as release.yml's backfill path is.
+          gh release upload "$RELEASE_TAG" \
+            "${STEM}.xcframework.zip" "${STEM}.xcframework.zip.sha256" "${STEM}.provenance" --clobber
+          existing="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --dir "$existing" --pattern "${STEM}.*"
+          cmp "${STEM}.xcframework.zip" "$existing/${STEM}.xcframework.zip"
+          cmp "${STEM}.provenance" "$existing/${STEM}.provenance"
+          (cd "$existing" && shasum -a 256 -c "${STEM}.xcframework.zip.sha256")
+          echo "attached ${STEM} to ${RELEASE_TAG}"

@@ -698,6 +698,10 @@ rather than a layer with its own internal architecture worth diagramming:
   between an embedder-owned Unix-domain socket pair and a QUIC/WSS dial;
   the module owns only the `phux_remote_tunnel_*` exports, their
   `#[repr(C)]` structs, and the machine-registry snapshot.
+  `scripts/build-ffi-xcframework.sh` packages the crate as
+  `PhuxFFI.xcframework` (iOS device, arm64 simulator, macOS; `phux/client.h`
+  under a `PhuxFFI` module map) for Swift consumers; see
+  `docs/RELEASING.md`.
   Its `directory` module carries the `LIST_DIRECTORY` host query for a
   go-to-directory picker, retaining one correlated listing per client
   (`phux_client_list_directory_on`, `phux_client_directory_*`). Its `log`
