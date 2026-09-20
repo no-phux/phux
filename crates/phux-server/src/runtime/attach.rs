@@ -4498,13 +4498,13 @@ mod tests {
             generation: BootstrapId,
         },
         Tombstone,
-        Other,
+        Other(String),
     }
 
     impl Seen {
         fn of(outbound: Outbound) -> Self {
             let Outbound::Frame(frame) = outbound else {
-                return Self::Other;
+                return Self::Other(format!("{outbound:?}"));
             };
             match frame {
                 FrameKind::ResourceOutput {
@@ -4526,7 +4526,7 @@ mod tests {
                     generation: bootstrap_id,
                 },
                 FrameKind::BootstrapTombstone { .. } => Self::Tombstone,
-                _ => Self::Other,
+                other => Self::Other(format!("{other:?}")),
             }
         }
     }
@@ -4809,17 +4809,8 @@ mod tests {
                     }],
                 );
                 answer_gap_resync(&output, &request, 9);
-                output.send(live(10, now)).expect("pumps subscribed");
-
-                let expected_fresh: Vec<_> = (1..=10)
-                    .map(|seq| Seen::Output {
-                        generation: initial,
-                        seq,
-                    })
-                    .collect();
-                assert_eq!(frames_seen(&mut fresh, 10).await, expected_fresh);
                 assert_eq!(
-                    frames_seen(&mut lagging, 4).await,
+                    frames_seen(&mut lagging, 3).await,
                     vec![
                         Seen::Begin {
                             generation: replacement,
@@ -4829,11 +4820,30 @@ mod tests {
                         Seen::Ready {
                             generation: replacement
                         },
-                        Seen::Output {
-                            generation: replacement,
-                            seq: 10
-                        },
                     ],
+                    "the lagging consumer converges onto a fresh generation",
+                );
+
+                // Stamp seq 10 after the republish so it cannot sit in the
+                // four-slot ring (or age past the stale budget) while the
+                // one-slot mailbox drains Begin/Chunk/Ready.
+                output
+                    .send(live(10, std::time::Instant::now()))
+                    .expect("pumps subscribed");
+
+                let expected_fresh: Vec<_> = (1..=10)
+                    .map(|seq| Seen::Output {
+                        generation: initial,
+                        seq,
+                    })
+                    .collect();
+                assert_eq!(frames_seen(&mut fresh, 10).await, expected_fresh);
+                assert_eq!(
+                    frames_seen(&mut lagging, 1).await,
+                    vec![Seen::Output {
+                        generation: replacement,
+                        seq: 10
+                    }],
                 );
                 assert_quiet(&mut fresh, "the fresh consumer").await;
                 assert_quiet(&mut lagging, "the lagging consumer").await;
