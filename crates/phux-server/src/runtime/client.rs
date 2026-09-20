@@ -1806,13 +1806,6 @@ async fn announce_close(
     if let Some(token) = actor_token {
         token.cancel();
     }
-    // `send` only queues on the client mailbox. A last-session self-exit
-    // that cancels the root token in this same turn tears the socket down
-    // before the connection writer can flush, so the TUI sees "lost the
-    // server" instead of the last-pane explanation (phux-fpgl.28).
-    for _ in 0..8 {
-        tokio::task::yield_now().await;
-    }
 
     // ADR-0105: after the closes, so a client sees its last pane go before
     // the session that held it.
@@ -1832,8 +1825,42 @@ async fn announce_close(
     //     actor too, routing through here; don't log a spurious "self-exit"
     //     or double-cancel during normal teardown.
     if server_empty && served && !root_token.is_cancelled() {
+        // `send` only queues on the client mailbox. Cancelling in the same
+        // turn lets `handle_client`'s cancel arm win the biased select and
+        // close the transport before the writer flushes `RESOURCE_CLOSED`,
+        // so the TUI sees "lost the server" instead of the last-pane
+        // explanation (phux-fpgl.28). Wait until those writers have taken
+        // the close — then a few more turns for write+flush — before
+        // unlinking.
+        yield_until_close_frames_taken(&targets).await;
+        for child in &cascaded {
+            yield_until_close_frames_taken(&child.targets).await;
+        }
         info!("last session reaped after serving clients; server self-exit");
         root_token.cancel();
+    }
+}
+
+/// Yield until each client writer has taken the just-queued close frames,
+/// or a small turn budget expires.
+///
+/// Last-session self-exit must not cancel the root token while
+/// `RESOURCE_CLOSED` is still sitting in the mailbox (phux-fpgl.28).
+async fn yield_until_close_frames_taken(targets: &[tokio::sync::mpsc::Sender<Outbound>]) {
+    for _ in 0..256 {
+        if targets
+            .iter()
+            .all(|tx| tx.is_closed() || tx.capacity() == tx.max_capacity())
+        {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    // Mailbox empty (or budget expired): the writer has the frames, or
+    // never will. Extra turns so `write_frames` + `flush` can complete
+    // before root cancel unlinks the socket.
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
     }
 }
 
