@@ -342,14 +342,68 @@ fn live_session_switch_uses_the_same_socket_and_preserves_home_pumps() {
 }
 
 #[test]
+fn a_picked_up_foreign_pane_is_not_attached_again_on_session_switch() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"home");
+    let _ = plane.take_events();
+    let _ = plane.take_outbound();
+    refresh_to(&mut plane, two_session_snapshot(false));
+    let _ = plane.take_outbound();
+
+    plane
+        .feed(FrameKind::Event {
+            terminal: Some(ResourceId::local(8)),
+            event: phux_protocol::wire::frame::AgentEvent::ResourceSpawned {
+                kind: phux_protocol::ResourceKind::Terminal,
+                parent: None,
+            },
+            stamp: None,
+        })
+        .expect("foreign spawn event");
+    let pickup = plane.take_outbound();
+    assert_eq!(
+        pickup
+            .iter()
+            .map(|frame| decode(frame))
+            .filter(|frame| matches!(
+                frame,
+                FrameKind::Command {
+                    command: Command::AttachResource { terminal_id, .. },
+                    ..
+                } if *terminal_id == ResourceId::local(8)
+            ))
+            .count(),
+        1
+    );
+
+    assert!(!plane.attach_session(AttachTarget::ByName("beta".to_owned())));
+    assert!(
+        plane
+            .take_outbound()
+            .iter()
+            .map(|frame| decode(frame))
+            .all(|frame| !matches!(
+                frame,
+                FrameKind::Command {
+                    command: Command::AttachResource { terminal_id, .. },
+                    ..
+                } if terminal_id == ResourceId::local(8)
+            )),
+        "session switch must reuse the existing foreign stream"
+    );
+}
+
+#[test]
 fn own_spawns_are_never_attached_a_second_time() {
     let (mut plane, attach_id) = negotiated();
     attach(&mut plane, attach_id, b"home");
     let _ = plane.take_events();
     let _ = plane.take_outbound();
+    let request_id = plane.spawn_terminal(SpawnRequest::default());
+    let _ = plane.take_outbound();
     plane
         .feed(FrameKind::ResourceSpawned {
-            request_id: 44,
+            request_id,
             result: SpawnResult::Ok(ResourceId::local(9)),
         })
         .expect("own spawn reply");
@@ -381,7 +435,7 @@ fn own_spawns_are_never_attached_a_second_time() {
     }));
     assert_eq!(
         plane.ensure_stream(&ResourceId::local(9)),
-        StreamRecovery::Noop
+        StreamRecovery::Reconnect
     );
     assert!(plane.take_outbound().is_empty());
 }

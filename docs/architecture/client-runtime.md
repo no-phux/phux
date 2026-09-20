@@ -100,5 +100,7 @@ The common surface is what both consumers need today. A later rung adds a
 lane without a second state machine: `send_command` correlates any
 `COMMAND` and answers it as `Event::CommandResult`; `queue_frame` sends
 any frame; every inbound frame the plane does not consume (metadata,
-directory listings, moves) surfaces as `Event::Frame` for the binding's own
-handler; `ServerInfo` reports the negotiated features a binding gates on.
+directory listings, moves) surfaces exactly once as `Event::Frame` for the
+binding's C-shaped projection; `ServerInfo` reports the negotiated features
+a binding gates on. Bindings must not clone and independently dispatch the
+same inbound frame around `ControlPlane::feed`.

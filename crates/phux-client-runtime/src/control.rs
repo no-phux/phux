@@ -58,7 +58,9 @@ use phux_protocol::wire::frame::{
 };
 use phux_protocol::wire::info::SessionSnapshot;
 
-use crate::engine::{EngineConfig, EngineEvent, EngineHandle, EngineOutcome};
+use crate::engine::{EngineApplyError, EngineConfig, EngineEvent, EngineHandle, EngineOutcome};
+#[cfg(feature = "engine")]
+use crate::engine::{EngineError, Scroll};
 #[cfg(feature = "engine")]
 use crate::publication::Publication;
 
@@ -248,6 +250,7 @@ pub enum StreamRecovery {
 /// right event.
 #[derive(Debug, Clone)]
 enum Pending {
+    Spawn,
     AttachTerminal(ResourceId),
     DetachTerminal(ResourceId),
     Kill(ResourceId),
@@ -425,6 +428,38 @@ impl ControlPlane {
         &self.publication
     }
 
+    /// Scroll and publish a terminal while routing any resulting history
+    /// request through this control plane.
+    #[cfg(feature = "engine")]
+    pub fn scroll(&mut self, terminal_id: &ResourceId, scroll: Scroll) -> Result<(), EngineError> {
+        let engine = self.engine.clone().ok_or(EngineError::Stopped)?;
+        let outcome = engine.scroll(terminal_id, scroll)?;
+        self.process_outcome(outcome, true)
+            .map_err(|error| EngineError::Engine(error.to_string()))
+    }
+
+    /// Pin the viewport at a tracked anchor and route history prefetch.
+    #[cfg(feature = "engine")]
+    pub fn pin_viewport(
+        &mut self,
+        terminal_id: &ResourceId,
+        anchor: u64,
+    ) -> Result<(), EngineError> {
+        let engine = self.engine.clone().ok_or(EngineError::Stopped)?;
+        let outcome = engine.pin_viewport(terminal_id, anchor)?;
+        self.process_outcome(outcome, true)
+            .map_err(|error| EngineError::Engine(error.to_string()))
+    }
+
+    /// Return the viewport to the live tail and route resulting effects.
+    #[cfg(feature = "engine")]
+    pub fn follow_live(&mut self, terminal_id: &ResourceId) -> Result<(), EngineError> {
+        let engine = self.engine.clone().ok_or(EngineError::Stopped)?;
+        let outcome = engine.follow_live(terminal_id)?;
+        self.process_outcome(outcome, true)
+            .map_err(|error| EngineError::Engine(error.to_string()))
+    }
+
     /// The current viewport.
     #[must_use]
     pub const fn viewport(&self) -> (u16, u16) {
@@ -472,19 +507,47 @@ impl ControlPlane {
                 .is_none_or(|engine| !engine.is_closed(terminal_id))
     }
 
+    /// Whether a terminal belongs to any stream pump admitted by this
+    /// control plane, including a manual binding's explicit operations.
+    #[must_use]
+    pub fn terminal_is_admitted(&self, terminal_id: &ResourceId) -> bool {
+        (self.attach_terminals.contains(terminal_id)
+            || self.terminal_attached.contains(terminal_id)
+            || self.own_spawns.contains(terminal_id))
+            && self
+                .engine
+                .as_ref()
+                .is_none_or(|engine| !engine.is_closed(terminal_id))
+    }
+
+    /// Reserve a per-terminal pump queued by a manual binding.
+    pub fn admit_external_attach(&mut self, terminal_id: &ResourceId) -> bool {
+        if self.terminal_is_admitted(terminal_id) {
+            return false;
+        }
+        self.terminal_attached.insert(terminal_id.clone())
+    }
+
+    /// Record a server pump created by a manual binding's successful spawn.
+    pub fn admit_external_spawn(&mut self, terminal_id: &ResourceId) -> bool {
+        if self.terminal_is_admitted(terminal_id) {
+            return false;
+        }
+        self.own_spawns.insert(terminal_id.clone())
+    }
+
     /// Release one explicitly withdrawn terminal from both the attach
     /// inventory and the engine owner.
     pub fn release_terminal(&mut self, terminal_id: &ResourceId) -> bool {
-        let Some(engine) = &self.engine else {
-            return false;
-        };
-        if !engine.detach(terminal_id.clone()) {
-            return false;
-        }
-        self.attach_terminals.remove(terminal_id);
-        self.terminal_attached.remove(terminal_id);
-        self.agent_streams.remove(terminal_id);
-        true
+        let known = self.attach_terminals.remove(terminal_id)
+            | self.terminal_attached.remove(terminal_id)
+            | self.own_spawns.remove(terminal_id)
+            | self.agent_streams.remove(terminal_id);
+        let detached = self
+            .engine
+            .as_ref()
+            .is_some_and(|engine| engine.detach(terminal_id.clone()));
+        known || detached
     }
 
     /// Update the cursor carried by runtime-generated event subscriptions.

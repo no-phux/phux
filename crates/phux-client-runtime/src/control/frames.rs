@@ -106,11 +106,25 @@ impl ControlPlane {
                     signal,
                     reason,
                 })?;
-                self.close_pane(&terminal_id, exit_status, signal, reason);
+                if !self.close_pane(&terminal_id, exit_status, signal, reason) {
+                    // A manual binding may own the admission correlation;
+                    // still surface the authoritative close exactly once.
+                    self.push_event(Event::TerminalClosed {
+                        terminal_id,
+                        exit_status,
+                        signal,
+                        reason,
+                    });
+                }
                 Ok(())
             }
             FrameKind::ResourceSpawned { request_id, result } => {
-                self.resource_spawned(request_id, &result);
+                if !self.resource_spawned(request_id, &result) {
+                    self.push_event(Event::Frame(Box::new(FrameKind::ResourceSpawned {
+                        request_id,
+                        result,
+                    })));
+                }
                 Ok(())
             }
             FrameKind::CommandResult { request_id, result } => {

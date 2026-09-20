@@ -1,8 +1,8 @@
 //! Engine outcomes and kernel effect processing.
 
 use super::{
-    ControlError, ControlPlane, EngineEvent, EngineOutcome, Event, FrameKind, InputEvent,
-    KernelEffect, KernelSend, KernelStatus, MAX_INPUT_TERMINAL_REPLY_BYTES, ResourceId,
+    ControlError, ControlPlane, EngineApplyError, EngineEvent, EngineOutcome, Event, FrameKind,
+    InputEvent, KernelEffect, KernelSend, KernelStatus, MAX_INPUT_TERMINAL_REPLY_BYTES, ResourceId,
     ServerFeature,
 };
 
@@ -72,7 +72,12 @@ impl ControlPlane {
         }
         if let Some(error) = outcome.error {
             if strict {
-                return Err(classify_kernel_error(error));
+                return Err(match error {
+                    EngineApplyError::InvalidState(message) => ControlError::InvalidState(message),
+                    EngineApplyError::Protocol(message) => {
+                        ControlError::Protocol(format!("session kernel: {message}"))
+                    }
+                });
             }
             tracing::debug!(%error, "session kernel ignored an event");
         }
@@ -230,17 +235,6 @@ impl ControlPlane {
             | KernelStatus::CommandStarted { .. }
             | KernelStatus::CommandFinished { .. } => {}
         }
-    }
-}
-
-/// Generation refusals keep the connection; everything else is a
-/// protocol drop. The generation Display is also the C ABI last-error
-/// text embedders assert, so it must not grow a prefix.
-fn classify_kernel_error(error: String) -> ControlError {
-    if error.starts_with("generation (") {
-        ControlError::InvalidState(error)
-    } else {
-        ControlError::Protocol(format!("session kernel: {error}"))
     }
 }
 

@@ -12,6 +12,13 @@ impl ControlPlane {
         let pending: Vec<(u32, Pending)> = self.pending.drain().collect();
         for (request_id, pending) in pending {
             match pending {
+                Pending::Spawn => {
+                    self.push_event(Event::TerminalSpawned {
+                        request_id,
+                        terminal_id: None,
+                        error: Some(message.to_owned()),
+                    });
+                }
                 Pending::AttachTerminal(terminal_id) => {
                     self.push_event(Event::TerminalAttached {
                         request_id,

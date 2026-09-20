@@ -193,13 +193,15 @@ impl ControlPlane {
     pub fn attach_terminal(&mut self, terminal_id: &ResourceId) -> u32 {
         if self.attach_terminals.contains(terminal_id)
             || self.own_spawns.contains(terminal_id)
-            || self
-                .pending
-                .values()
-                .any(|pending| matches!(pending, Pending::AttachTerminal(id) if id == terminal_id))
+            || self.terminal_attached.contains(terminal_id)
+            || self.attach_request_for_terminal(terminal_id).is_some()
         {
             return 0;
         }
+        self.queue_terminal_attach(terminal_id)
+    }
+
+    fn queue_terminal_attach(&mut self, terminal_id: &ResourceId) -> u32 {
         let request_id = self.next_request_id();
         self.pending
             .insert(request_id, Pending::AttachTerminal(terminal_id.clone()));
@@ -242,26 +244,36 @@ impl ControlPlane {
     /// Make one terminal's stream live again, preferring a per-terminal
     /// re-attach over a reconnect.
     pub fn ensure_stream(&mut self, terminal_id: &ResourceId) -> StreamRecovery {
-        if self.stream_is_covered_or_closed(terminal_id) {
+        if self
+            .engine
+            .as_ref()
+            .is_some_and(|engine| engine.is_closed(terminal_id))
+            || self.attach_request_for_terminal(terminal_id).is_some()
+        {
             return StreamRecovery::Noop;
         }
         if !self.stream_recoveries.insert(terminal_id.clone()) {
             return StreamRecovery::Noop;
         }
+        if self.attach_terminals.contains(terminal_id) || self.own_spawns.contains(terminal_id) {
+            // Their streams ride the original session/spawn pump. Adding a
+            // per-terminal attach would double-pump output on this socket.
+            return StreamRecovery::Reconnect;
+        }
         if self.can_attach_foreign_stream(terminal_id) {
-            self.attach_terminal(terminal_id);
+            // Recovery deliberately replaces an admitted foreign stream;
+            // ordinary attach calls remain idempotent.
+            self.queue_terminal_attach(terminal_id);
             return StreamRecovery::Attached;
         }
         StreamRecovery::Reconnect
     }
 
-    fn stream_is_covered_or_closed(&self, terminal_id: &ResourceId) -> bool {
-        self.attach_terminals.contains(terminal_id)
-            || self.own_spawns.contains(terminal_id)
-            || self
-                .engine
-                .as_ref()
-                .is_some_and(|engine| engine.is_closed(terminal_id))
+    fn attach_request_for_terminal(&self, terminal_id: &ResourceId) -> Option<u32> {
+        self.pending.iter().find_map(|(request_id, pending)| {
+            matches!(pending, Pending::AttachTerminal(id) if id == terminal_id)
+                .then_some(*request_id)
+        })
     }
 
     fn can_attach_foreign_stream(&self, terminal_id: &ResourceId) -> bool {
@@ -279,6 +291,7 @@ impl ControlPlane {
     /// server pumps the new terminal's output to this client.
     pub fn spawn_terminal(&mut self, request: SpawnRequest) -> u32 {
         let request_id = self.next_request_id();
+        self.pending.insert(request_id, Pending::Spawn);
         // A spawn into the attached (home) session needs no owner; any
         // other session is addressed through one of its existing panes.
         let target_session = request.session_id.or(self.selected_session);

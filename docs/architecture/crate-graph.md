@@ -119,15 +119,14 @@ for the renderer-side contract on both ends.
 `phux-config` is a sibling of `core` and is consumed by the binary, the
 server, the client, and the TUI.
 
-`phux-client-ffi` sits above `phux-client-core` and below nothing in this
-workspace: it is a stable C ABI over the synchronous session kernel, for
-native embedders that are not written in Rust. It is compile-time excluded
-on wasm. Nothing else in the graph depends on it — it is a leaf, and the
-crate to reach for before hand-rolling a second bridge to the kernel. Its
-remote-host tunnel is `phux-client-runtime`'s, behind a C handle: the
-runtime reads the CLI's `[[remote]]` registry through `phux-config`'s
-loader and dials through `phux-dial`, so an embedder reaches a registered
-host without a second registry, a second dialer, or a second relay.
+`phux-client-ffi` is a leaf above `phux-client-runtime`: it projects the
+runtime's typed events and published grids into a stable C ABI for native
+embedders and is compile-time excluded on wasm. It owns no terminal,
+session, history, topology, or transport state machine. Its remote-host
+tunnel is the runtime's, behind a C handle: the runtime reads the CLI's
+`[[remote]]` registry through `phux-config`'s loader and dials through
+`phux-dial`, so an embedder reaches a registered host without a second
+registry, a second dialer, or a second relay.
 
 ## Browser client crates (standalone wasm workspace)
 

@@ -223,10 +223,10 @@ fn command_started_and_finished_become_status_effects() {
     unsafe { phux_client_free(client) };
 }
 
-/// A server-scoped event and an event kind this lane does not surface as
-/// status are both silent no-ops: no effect, no error.
+/// A server-scoped event is ignored while a targeted journal Bell is
+/// projected the same way as a dedicated BELL frame.
 #[test]
-fn unrecognised_and_untargeted_events_produce_no_effect() {
+fn untargeted_events_are_ignored_and_targeted_bells_surface() {
     let client = attached_mixed_client();
     let terminal = phux_protocol::ResourceId::local(MIXED_TERMINAL);
 
@@ -254,7 +254,9 @@ fn unrecognised_and_untargeted_events_produce_no_effect() {
         ),
         PhuxClientResult::Ok
     );
-    assert_eq!(unsafe { phux_client_effect_count(client) }, 0);
+    assert_eq!(unsafe { phux_client_effect_count(client) }, 1);
+    let bell = effect_at(client, 0);
+    assert_eq!((bell.kind, bell.detail), (2, 1));
     unsafe { phux_client_free(client) };
 }
 

@@ -43,10 +43,7 @@ impl Client {
         terminal_id: &ResourceId,
         scroll: Scroll,
     ) -> Result<(), crate::engine::EngineError> {
-        let engine = lock(&self.inner.control).engine().cloned();
-        engine
-            .ok_or(crate::engine::EngineError::Stopped)?
-            .scroll(terminal_id, scroll)
+        lock(&self.inner.control).scroll(terminal_id, scroll)
     }
 
     /// Keep the final replica after the terminal closes.
