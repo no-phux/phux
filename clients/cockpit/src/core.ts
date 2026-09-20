@@ -791,21 +791,19 @@ function decimalBytes(value: number): Uint8Array {
   return out.subarray(first);
 }
 
+function copyInto(dest: Uint8Array, at: number, src: Uint8Array): number {
+  for (let i = 0; i < src.length; i += 1) {
+    const value = src.subarray(i, i + 1)[0];
+    if (value === undefined) break;
+    dest[at] = value;
+    at += 1;
+  }
+  return at;
+}
+
 function joinBytes(head: Uint8Array, mid: Uint8Array, tail: Uint8Array): Uint8Array {
   const out = new Uint8Array(head.length + mid.length + tail.length);
-  let at = 0;
-  for (let i = 0; i < head.length; i += 1) {
-    out[at] = head[i];
-    at += 1;
-  }
-  for (let i = 0; i < mid.length; i += 1) {
-    out[at] = mid[i];
-    at += 1;
-  }
-  for (let i = 0; i < tail.length; i += 1) {
-    out[at] = tail[i];
-    at += 1;
-  }
+  copyInto(out, copyInto(out, copyInto(out, 0, head), mid), tail);
   return out;
 }
 
@@ -826,6 +824,60 @@ const NO_ACTION_ROWS: readonly ActionRow[] = [];
 const NO_MACHINE_ROWS: readonly MachineRow[] = [];
 const NO_SETTING_ROWS: readonly Setting[] = [];
 const NO_BINDING_ROWS: readonly KeybindingRow[] = [];
+const EMPTY_SWITCHER_ROW: SwitcherRow = {
+  id: 0, index: 0, label: NO_BYTES, target: NO_BYTES, highlighted: false, current: false,
+  detail: NO_BYTES, kind: 0, host: NO_BYTES, selectable: false, disabled: true, renamable: false,
+  resource: NO_BYTES, parent: NO_BYTES, nativeId: NO_BYTES, evidence: NO_BYTES,
+};
+const EMPTY_TAB_AGENTS: readonly AgentRow[] = [];
+const EMPTY_AGENT_ROW: AgentRow = {
+  id: 0, provider: NO_BYTES, state: NO_BYTES, attention: false,
+  resource: NO_BYTES, parent: NO_BYTES, parentIndex: 65535,
+};
+const EMPTY_TAB: Tab = {
+  id: 0, index: 0, slot: 0, title: NO_BYTES, cwd: NO_BYTES, selected: false, attention: false,
+  attentionLabel: NO_BYTES, agents: EMPTY_TAB_AGENTS, target: NO_BYTES,
+};
+const EMPTY_ACTION_ROW: ActionRow = {
+  index: 0, label: NO_BYTES, shortcut: NO_BYTES, detail: NO_BYTES, highlighted: false, disabled: true,
+};
+
+function copySwitcher(row: SwitcherRow, highlighted: boolean): SwitcherRow {
+  const id = row.id;
+  const index = row.index;
+  const kind = row.kind;
+  return {
+    id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
+    index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
+    kind: kind >= 0 && kind <= 9007199254740991 ? Math.trunc(kind) : 0,
+    label: row.label, target: row.target, highlighted, current: row.current,
+    detail: row.detail, host: row.host, selectable: row.selectable, disabled: row.disabled,
+    renamable: row.renamable, resource: row.resource, parent: row.parent,
+    nativeId: row.nativeId, evidence: row.evidence,
+  };
+}
+
+function copyTab(tab: Tab, selected: boolean): Tab {
+  const id = tab.id;
+  const index = tab.index;
+  const slot = tab.slot;
+  return {
+    id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
+    index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
+    slot: slot >= 0 && slot <= 9007199254740991 ? Math.trunc(slot) : 0,
+    title: tab.title, cwd: tab.cwd, selected, attention: tab.attention,
+    attentionLabel: tab.attentionLabel, agents: tab.agents, target: tab.target,
+  };
+}
+
+function copyAction(row: ActionRow, disabled: boolean, detail: Uint8Array): ActionRow {
+  const index = row.index;
+  return {
+    index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
+    label: row.label, shortcut: row.shortcut,
+    detail, highlighted: row.highlighted, disabled,
+  };
+}
 
 function paletteState(model: Model): TextEditState {
   return {
@@ -956,7 +1008,9 @@ function reconcileNavigationSelection(model: Model): Model {
     if (sameBytes(model.paletteRows[i].target, model.paletteSelection)) return highlightNavigation(model, i);
   }
   const rows: SwitcherRow[] = [];
-  for (const row of model.paletteRows) rows.push({ ...row, highlighted: false });
+  for (const row of model.paletteRows) {
+    if (row !== undefined) rows.push(copySwitcher(row, false));
+  }
   return { ...model, paletteRows: rows, paletteCursor: 65535 };
 }
 
@@ -980,8 +1034,10 @@ function currentNavigationPage(model: Model, page: NavigationPage): boolean {
 function switcherRows(rows: readonly NavigationRow[]): readonly SwitcherRow[] {
   const result: SwitcherRow[] = [];
   for (const row of rows) {
-    const index = row.index >= 0 && row.index <= 65535 ? Math.trunc(row.index) : 0;
-    const kind = row.kind >= 0 && row.kind <= 5 ? Math.trunc(row.kind) : 0;
+    const rawIndex = row.index;
+    const rawKind = row.kind;
+    const index = rawIndex >= 0 && rawIndex <= 65535 ? Math.trunc(rawIndex) : 0;
+    const kind = rawKind >= 0 && rawKind <= 5 ? Math.trunc(rawKind) : 0;
     result.push({ id: index, index, kind, label: row.label, detail: row.detail, host: row.host,
       highlighted: row.highlighted, current: row.current && row.kind !== 5, selectable: row.selectable, disabled: !row.selectable, target: row.target,
       renamable: kind === 2 && row.selectable && sessionRowTarget(row.target),
@@ -1040,7 +1096,7 @@ function highlightNavigation(model: Model, next: number): Model {
   const rows: SwitcherRow[] = [];
   for (let i = 0; i < model.paletteRows.length; i += 1) {
     const row = model.paletteRows[i];
-    rows.push({ ...row, highlighted: i === cursor });
+    if (row !== undefined) rows.push(copySwitcher(row, i === cursor));
   }
   return revealNavigator({ ...model, paletteCursor: cursor, paletteRows: rows, paletteSelection: rows[cursor].target }, cursor * 40, 40);
 }
@@ -1095,6 +1151,17 @@ export interface DirRow {
 }
 
 const NO_DIR_ROWS: readonly DirRow[] = [];
+const EMPTY_DIR_ROW: DirRow = { id: 0, index: 0, label: NO_BYTES, highlighted: false };
+
+function copyDirRow(row: DirRow, highlighted: boolean): DirRow {
+  const id = row.id;
+  const index = row.index;
+  return {
+    id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
+    index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
+    label: row.label, highlighted,
+  };
+}
 
 /// What one Go to Directory message leaves: the model, the request to send
 /// (empty for none), and whether the modal slot changed hands. `update`
@@ -1316,7 +1383,8 @@ function relistDirectory(model: Model, connected: boolean): Model {
 function directoryRows(page: DirectoryPage): readonly DirRow[] {
   const rows: DirRow[] = [];
   for (const row of page.rows) {
-    const index = row.index >= 0 && row.index <= 65535 ? Math.trunc(row.index) : 0;
+    const rawIndex = row.index;
+    const index = rawIndex >= 0 && rawIndex <= 65535 ? Math.trunc(rawIndex) : 0;
     rows.push({ id: index, index, label: directoryRowLabel(row), highlighted: false });
   }
   return rows.length === 0 ? NO_DIR_ROWS : rows;
@@ -1328,7 +1396,7 @@ function highlightDirectory(model: Model, next: number): Model {
   const rows: DirRow[] = [];
   for (let i = 0; i < model.dirRows.length; i += 1) {
     const row = model.dirRows[i];
-    rows.push({ ...row, highlighted: i === cursor });
+    if (row !== undefined) rows.push(copyDirRow(row, i === cursor));
   }
   return { ...model, dirCursor: cursor, dirRows: rows };
 }
@@ -1762,7 +1830,8 @@ const IN_EFFECT = asciiBytes("  (in effect)");
 
 function themeRows(themes: readonly { readonly index: number; readonly name: Uint8Array }[], active: number, cursor: number): readonly ThemeRow[] {
   return themes.map((theme) => {
-    const index = theme.index >= 0 && theme.index <= 32 ? Math.trunc(theme.index) : 0;
+    const rawIndex = theme.index;
+    const index = rawIndex >= 0 && rawIndex <= 32 ? Math.trunc(rawIndex) : 0;
     return {
       index,
       label: index === active ? joinBytes(theme.name, IN_EFFECT, NO_BYTES) : theme.name,
@@ -1813,32 +1882,48 @@ const NO_RAIL_ROWS: readonly RailRow[] = [];
 /// The agent rows this window's tab owns, in the order the snapshot listed
 /// them. A row whose state ordinal is outside the closed vocabulary is
 /// dropped rather than shown as a word the engine never said.
-function agentRowsFor(agents: readonly SnapshotAgentRow[], window: number, tab: number, connection: number): readonly AgentRow[] {
-  const out: AgentRow[] = [];
-  let ordinal = 0;
-  for (let i = 0; i < agents.length; i += 1) {
-    const row = agents[i];
-    if (row.window !== window || row.tab !== tab) continue;
-    const projected = projectAgentRow(row, ordinal, connection);
-    if (projected === null) continue;
-    out.push(projected);
-    ordinal += 1;
-  }
-  return out.length === 0 ? NO_AGENT_ROWS : out;
+function copyAgent(row: SnapshotAgentRow, counted: SwitcherRow, connection: number): AgentRow {
+  const id = counted.id;
+  const parentRaw = counted.index;
+  const state = row.state;
+  const picked = state >= 0 && state < AGENT_STATE_WORDS.length ? AGENT_STATE_WORDS[Math.trunc(state)] : undefined;
+  const word = picked === undefined ? NO_BYTES : picked;
+  return {
+    ...EMPTY_AGENT_ROW,
+    id: id >= 0 && id <= 9007199254740991 ? Math.trunc(id) : 0,
+    parentIndex: parentRaw >= 0 && parentRaw <= 9007199254740991 ? Math.trunc(parentRaw) : 65535,
+    provider: row.provider,
+    state: reportedAgentState(word, connection),
+    attention: row.attention && connection === 2,
+    resource: row.resource,
+    parent: row.parent,
+  };
 }
 
-function projectAgentRow(row: SnapshotAgentRow, ordinal: number, connection: number): AgentRow | null {
-  const state = row.state;
-  if (!(state >= 0 && state < AGENT_STATE_WORDS.length)) return null;
-  if (!(ordinal >= 0 && ordinal <= 255)) return null;
-  const parentIndex = row.parentIndex;
-  return {
-    id: Math.trunc(ordinal), provider: row.provider,
-    state: reportedAgentState(AGENT_STATE_WORDS[Math.trunc(state)], connection),
-    attention: row.attention && connection === 2,
-    resource: row.resource, parent: row.parent,
-    parentIndex: parentIndex >= 0 && parentIndex < 65535 ? Math.trunc(parentIndex) : 65535,
-  };
+function agentRowsFor(agents: readonly SnapshotAgentRow[], window: number, tab: number, connection: number): readonly AgentRow[] {
+  const out: AgentRow[] = [];
+  let counted = copySwitcher(EMPTY_SWITCHER_ROW, false);
+  for (let i = 0; i < agents.length; i += 1) {
+    const row = agents[i];
+    if (row === undefined || row.window !== window || row.tab !== tab) continue;
+    const parentRaw = row.parentIndex;
+    counted = copySwitcher({
+      id: counted.id >= 0 && counted.id <= 9007199254740991 ? Math.trunc(counted.id) : 0,
+      index: parentRaw >= 0 && parentRaw <= 9007199254740991 ? Math.trunc(parentRaw) : 65535,
+      label: NO_BYTES, target: NO_BYTES, highlighted: false, current: false,
+      detail: NO_BYTES, kind: 0, host: NO_BYTES, selectable: false, disabled: true,
+      renamable: false, resource: NO_BYTES, parent: NO_BYTES, nativeId: NO_BYTES, evidence: NO_BYTES,
+    }, false);
+    out.push(copyAgent(row, counted, connection));
+    const nextId = counted.id;
+    counted = copySwitcher({
+      id: nextId >= 0 && nextId < 9007199254740991 ? Math.trunc(nextId) + 1 : 0,
+      index: 0, label: NO_BYTES, target: NO_BYTES, highlighted: false, current: false,
+      detail: NO_BYTES, kind: 0, host: NO_BYTES, selectable: false, disabled: true,
+      renamable: false, resource: NO_BYTES, parent: NO_BYTES, nativeId: NO_BYTES, evidence: NO_BYTES,
+    }, false);
+  }
+  return out.length === 0 ? NO_AGENT_ROWS : out;
 }
 
 function reportedAgentState(state: Uint8Array, connection: number): Uint8Array {
@@ -2388,7 +2473,11 @@ export function initialModel(): [Model, Cmd<Msg>] {
 }
 
 function selectTab(tabs: readonly Tab[], selected: number): readonly Tab[] {
-  return tabs.map((tab) => ({ ...tab, selected: tab.index === selected }));
+  const next: Tab[] = [];
+  for (const tab of tabs) {
+    if (tab !== undefined) next.push(copyTab(tab, tab.index === selected));
+  }
+  return next;
 }
 
 function speculateTabTarget(model: Model, target: Uint8Array): Model {
@@ -2703,8 +2792,10 @@ function refreshActions(model: Model, cursor: number): Model {
   for (const row of rows) {
     const command = commandDefinition(row.index);
     const implemented = command !== null && commandMsg(command.name) !== null;
-    available.push({ ...row, disabled: row.disabled || !implemented,
-      detail: implemented ? row.detail : asciiBytes("Unavailable in this connection") });
+    if (row !== undefined) {
+      available.push(copyAction(row, row.disabled || !implemented,
+        implemented ? row.detail : asciiBytes("Unavailable in this connection")));
+    }
   }
   const selected = cursor >= 0 && cursor <= 65535 ? Math.trunc(cursor) : 0;
   return { ...model, actionRows: available, paletteCursor: selected,

@@ -5,6 +5,9 @@
 //!
 //! - [`engine`] and [`session`] — the generic terminal adapter and synchronous
 //!   protocol-0.7 session kernel.
+//! - `grid` (feature `native-engine`) — the one plain-old-data cell layout
+//!   and the projector that flattens a libghostty viewport into it
+//!   (ADR-0133); every binding lends or copies this buffer.
 //! - [`handshake`] — `HELLO_OK` acceptance shared by every frontend.
 //! - [`layout`] — the pane-geometry layout tree, split math, and the CBOR
 //!   metadata envelope that persists it server-side.
@@ -27,6 +30,8 @@
 #![deny(rustdoc::private_intra_doc_links)]
 
 pub mod engine;
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+pub mod grid;
 pub mod handshake;
 pub mod history;
 pub mod input_replay;

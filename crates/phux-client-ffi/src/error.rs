@@ -1,3 +1,4 @@
+use phux_client_core::grid::GridError;
 use phux_protocol::{ResourceId, SatelliteHost};
 
 use crate::types::{ABI_VERSION, PhuxClientResult, PhuxResourceId};
@@ -57,6 +58,18 @@ impl BridgeError {
         Self {
             result,
             message: error.to_string(),
+        }
+    }
+}
+
+impl From<GridError> for BridgeError {
+    /// A libghostty failure keeps its out-of-memory distinction; every other
+    /// projection failure is an engine error, as it was when the flattener
+    /// lived in this crate.
+    fn from(error: GridError) -> Self {
+        match error {
+            GridError::Engine(error) => Self::ghostty(error),
+            other => Self::engine(other.to_string()),
         }
     }
 }

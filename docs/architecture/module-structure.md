@@ -493,6 +493,12 @@ src/
   engine.rs, engine/ghostty.rs — the generic terminal adapter trait plus
                         its libghostty implementation (feature
                         `native-engine`)
+  grid.rs, grid/      — the one plain-old-data cell layout (`Cell`,
+                        `CellMetadata`, the `CELL_*` flags, `Cursor`) and
+                        the `GridProjector` that flattens a libghostty
+                        viewport into a dense `GridBuffer` + UTF-8 arena
+                        (ADR-0133 decision 3; feature `native-engine`)
+    flatten.rs, tests.rs
   handshake.rs        — shared HELLO_OK acceptance (exact protocol triple,
                         advertised profile, native feature intersection,
                         payload limits)
@@ -692,12 +698,21 @@ rather than a layer with its own internal architecture worth diagramming:
   server's `hooks.rs` dispatcher.
 - **`phux-client-ffi`** — a stable native C bridge over
   `phux-client-core`'s synchronous session kernel, for non-Rust native
-  embedders; compile-time excluded on wasm. Its `remote` module is the C
+  embedders; compile-time excluded on wasm. The cell layout is core's:
+  `PhuxTerminalCell`, `PhuxGridCellMetadata` and the `PHUX_CLIENT_CELL_*` flags
+  in `include/phux/client.h` match `phux_client_core::grid` (pinned by core's
+  layout tests), and the grid
+  view lends a pointer into the `GridProjector`'s buffer rather than
+  flattening cells of its own (ADR-0133 decision 3). Its `remote` module is the C
   handle over `phux-client-runtime`'s relay tunnel (ADR-0133): the runtime
   resolves the host in the CLI's `[[remote]]` registry and relays frames
   between an embedder-owned Unix-domain socket pair and a QUIC/WSS dial;
   the module owns only the `phux_remote_tunnel_*` exports, their
   `#[repr(C)]` structs, and the machine-registry snapshot.
+  `scripts/build-ffi-xcframework.sh` packages the crate as
+  `PhuxFFI.xcframework` (iOS device, arm64 simulator, macOS; `phux/client.h`
+  under a `PhuxFFI` module map) for Swift consumers; see
+  `docs/RELEASING.md`.
   Its `directory` module carries the `LIST_DIRECTORY` host query for a
   go-to-directory picker, retaining one correlated listing per client
   (`phux_client_list_directory_on`, `phux_client_directory_*`). Its `log`
