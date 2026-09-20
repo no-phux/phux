@@ -18,6 +18,7 @@ cockpit-test: cockpit-ffi cockpit-build-contracts
     ./scripts/check-sdk-pin.sh
     ./scripts/lib/zon_test.sh
     ./scripts/lib/measure_test.sh
+    ./scripts/generate-operation-fixtures_test.sh
     ./scripts/zig-build.sh test -Dplatform=null -Dphux-enabled=true -Dphux-client-ffi-profile=ffi-dev --summary all
 
 
