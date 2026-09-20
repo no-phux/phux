@@ -1,15 +1,11 @@
 use std::collections::{HashMap, hash_map::Entry};
 use std::ptr;
 
-use libghostty_vt::render::{
-    CellIteration, CellIterator, Colors, CursorVisualStyle, RenderState, RowIterator, Snapshot,
-};
-use libghostty_vt::screen::{Cell, CellContentTag};
 use libghostty_vt::selection::Selection;
-use libghostty_vt::style::{RgbColor, Style, StyleColor};
 use libghostty_vt::terminal::{Point, PointCoordinate, ScrollViewport};
 use phux_client_core::engine::ghostty::{GhosttyAdapter, GhosttyReplica};
 use phux_client_core::engine::{DocumentPoint, DocumentSpace, EngineDocumentSelection};
+use phux_client_core::grid::{Cursor, GridProjector};
 use phux_client_core::history::{
     DocumentAnchorId, HistoryCache, HistoryCacheConfig, HistoryLoadState, HistoryStatus,
 };
@@ -22,13 +18,11 @@ use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::FrameKind;
 
 use crate::error::BridgeError;
-use crate::grid_metadata::{GridMetadataCache, PhuxGridCellMetadata, cell_metadata};
+use crate::grid_metadata::GridMetadataCache;
 use crate::types::{
-    CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,
-    CELL_OVERLINE, CELL_PROTECTED, CELL_SELECTED, CELL_STRIKETHROUGH, OwnedEffect, PhuxBytes,
-    PhuxClientCallbacks, PhuxClientEffect, PhuxClientState, PhuxDocumentAnchor, PhuxDocumentPoint,
-    PhuxResourceId, PhuxSearchResult, PhuxTerminalCell, PhuxTerminalGridView, bytes_out,
-    terminal_id_out,
+    OwnedEffect, PhuxBytes, PhuxClientCallbacks, PhuxClientEffect, PhuxClientState,
+    PhuxDocumentAnchor, PhuxDocumentPoint, PhuxResourceId, PhuxSearchResult, PhuxTerminalGridView,
+    bytes_out, terminal_id_out,
 };
 
 #[derive(Debug, Clone)]
@@ -131,8 +125,6 @@ pub(crate) struct AgentStream {
     pub retained_pending: bool,
 }
 
-const NO_HYPERLINK: (u32, u32) = (0, 0);
-
 #[cfg(test)]
 thread_local! {
     pub(crate) static RENDER_CACHE_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -157,20 +149,16 @@ pub(crate) struct Limits {
     clippy::redundant_pub_crate,
     reason = "the private module's render cache is shared with the crate-root C exports"
 )]
-// phux-u8zm: this is a private fourth copy of the pooled libghostty render
-// trio (`RenderState` + `RowIterator` + `CellIterator`) that ADR-0086 moved
-// into `phux_protocol::render_pool::RenderPool`. It is deliberately NOT
-// migrated: `RenderPool` lives behind phux-protocol's `server` feature, and
-// this crate depends on phux-protocol WITHOUT it — turning it on would pull
-// `png` and the full libghostty type surface into an FFI crate whose feature
-// hygiene excludes them. Migrating needs that feature-graph decision first;
-// it is tracked in phux-u8zm, not here.
+/// One terminal's projected grid and the C views that borrow it.
+///
+/// The cell layout, the UTF-8 arena, the per-cell provenance and the
+/// libghostty render trio that fills them are core's `GridProjector`
+/// (ADR-0133 decision 3); this cache only stages the C-shaped views and the
+/// satellite host span they point at. phux-u8zm still tracks moving that
+/// trio onto `phux_protocol::render_pool::RenderPool`, which sits behind
+/// phux-protocol's `server` feature.
 pub(crate) struct RenderCache {
-    state: RenderState<'static>,
-    rows: RowIterator<'static>,
-    cells: CellIterator<'static>,
-    pub grid_cells: Vec<PhuxTerminalCell>,
-    pub utf8: Vec<u8>,
+    pub projector: GridProjector,
     pub terminal_host: Vec<u8>,
     pub view: PhuxTerminalGridView,
     pub metadata: GridMetadataCache,
@@ -181,64 +169,35 @@ impl RenderCache {
         #[cfg(test)]
         RENDER_CACHE_BUILDS.set(RENDER_CACHE_BUILDS.get() + 1);
         Ok(Self {
-            state: RenderState::new().map_err(BridgeError::ghostty)?,
-            rows: RowIterator::new().map_err(BridgeError::ghostty)?,
-            cells: CellIterator::new().map_err(BridgeError::ghostty)?,
-            grid_cells: Vec::new(),
-            utf8: Vec::new(),
+            projector: GridProjector::new()?,
             terminal_host: Vec::new(),
             view: PhuxTerminalGridView::default(),
             metadata: GridMetadataCache::default(),
         })
     }
 
-    /// Populate the dense cell arenas while the snapshot and both iterators
-    /// borrow disjoint cache fields together.
+    /// Project the viewport into core's buffer and capture the additive
+    /// metadata from the same pass.
     fn populate_grid(
         &mut self,
         terminal: &libghostty_vt::Terminal<'static, 'static>,
         inputs: &GridViewInputs,
-    ) -> Result<(u16, u16, CursorView), BridgeError> {
-        let snapshot = self.state.update(terminal).map_err(BridgeError::ghostty)?;
-        let cols = snapshot.cols().map_err(BridgeError::ghostty)?;
-        let rows = snapshot.rows().map_err(BridgeError::ghostty)?;
-        let colors = snapshot.colors().map_err(BridgeError::ghostty)?;
-        self.grid_cells.clear();
-        self.utf8.clear();
-        self.metadata.cells.clear();
-        self.grid_cells
-            .reserve(usize::from(cols) * usize::from(rows));
-        fill_grid_cells(
-            &mut self.rows,
-            &mut self.cells,
-            &snapshot,
-            &CellContext {
-                terminal,
-                colors: &colors,
-            },
-            &mut GridSink {
-                cells: &mut self.grid_cells,
-                utf8: &mut self.utf8,
-                metadata: &mut self.metadata.cells,
-            },
-        )?;
-        ensure_dense_viewport(self.grid_cells.len(), cols, rows)?;
-        let cursor = read_cursor_view(&snapshot)?;
+    ) -> Result<(u16, u16, Cursor), BridgeError> {
+        let snapshot = self.projector.project(terminal)?;
         let identity = PhuxTerminalGridView {
             stream_id: inputs.key.stream_id.get(),
             bootstrap_id: inputs.key.bootstrap_id.get(),
             last_seq: inputs.last_seq,
             document_revision: inputs.document_revision,
-            cols,
-            rows,
-            cursor_col: cursor.col,
-            cursor_row: cursor.row,
-            cursor_visible: cursor.visible,
+            cols: snapshot.cols,
+            rows: snapshot.rows,
+            cursor_col: snapshot.cursor.col,
+            cursor_row: snapshot.cursor.row,
+            cursor_visible: snapshot.cursor.visible,
             ..PhuxTerminalGridView::default()
         };
-        self.metadata
-            .publish(&snapshot, terminal, &colors, &identity, &self.grid_cells)?;
-        Ok((cols, rows, cursor))
+        self.metadata.publish(&snapshot, terminal, &identity)?;
+        Ok((snapshot.cols, snapshot.rows, snapshot.cursor))
     }
 }
 
@@ -1098,10 +1057,10 @@ impl Client {
     /// Render one snapshot into the terminal's render cache and return the
     /// view that borrows it.
     ///
-    /// Rendering one snapshot atomically keeps its borrowed libghostty state
-    /// cohesive: the snapshot, the row and cell iterators driven from it, and
-    /// the arenas the flattened cells point into are all disjoint fields of
-    /// the same cache entry and stay borrowed together for the whole build.
+    /// The projector owns the libghostty snapshot, the iterators driven from
+    /// it, and the arenas the cells point into, so one `project` call fills
+    /// them together; the view then borrows the projector's buffer, which is
+    /// stable until the next projection of this terminal.
     fn render_grid_view(
         &mut self,
         terminal_id: &ResourceId,
@@ -1122,6 +1081,7 @@ impl Client {
         let history = history_counters(inputs.history.as_ref());
         cache.terminal_host.clear();
         let view_terminal_id = view_terminal_id(terminal_id, &mut cache.terminal_host);
+        let buffer = cache.projector.buffer();
         cache.view = PhuxTerminalGridView {
             terminal_id: view_terminal_id,
             stream_id: inputs.key.stream_id.get(),
@@ -1130,17 +1090,17 @@ impl Client {
             document_revision: inputs.document_revision,
             cols,
             rows,
-            cells: if cache.grid_cells.is_empty() {
+            cells: if buffer.cells.is_empty() {
                 ptr::null()
             } else {
-                cache.grid_cells.as_ptr()
+                buffer.cells.as_ptr()
             },
-            cell_count: cache.grid_cells.len(),
-            utf8: bytes_out(&cache.utf8),
+            cell_count: buffer.cells.len(),
+            utf8: bytes_out(&buffer.utf8),
             cursor_visible: cursor.visible,
             cursor_col: cursor.col,
             cursor_row: cursor.row,
-            cursor_style: cursor.style,
+            cursor_style: cursor.style as u32,
             history_total_rows: scrollbar.total,
             history_viewport_offset: scrollbar.offset,
             history_visible_rows: scrollbar.len,
@@ -1347,26 +1307,9 @@ const fn engine_limits(limits: Limits) -> BootstrapLimits {
         .expect("client limits were validated at construction")
 }
 
-fn resolve_color(color: StyleColor, fallback: RgbColor, palette: &[RgbColor; 256]) -> RgbColor {
-    match color {
-        StyleColor::None => fallback,
-        StyleColor::Palette(index) => palette[usize::from(index.0)],
-        StyleColor::Rgb(rgb) => rgb,
-    }
-}
-
 fn terminal_wants_mouse_tracking(terminal: &libghostty_vt::Terminal<'_, '_>) -> bool {
     libghostty_vt::mouse::EncoderOptions::from_terminal(terminal)
         .is_ok_and(|options| options.tracking_mode != libghostty_vt::mouse::TrackingMode::None)
-}
-
-const fn cursor_style(style: CursorVisualStyle) -> u32 {
-    match style {
-        CursorVisualStyle::Block => 1,
-        CursorVisualStyle::Underline => 2,
-        CursorVisualStyle::BlockHollow => 3,
-        _ => 0,
-    }
 }
 
 /// View fields resolved from session state before the render cache is borrowed.
@@ -1377,44 +1320,6 @@ struct GridViewInputs {
     last_seq: u64,
 }
 
-/// Inputs that stay fixed for every cell of one grid build.
-struct CellContext<'a> {
-    terminal: &'a libghostty_vt::Terminal<'static, 'static>,
-    colors: &'a Colors,
-}
-
-/// The flattened grid handed to the C ABI: one record per viewport cell plus
-/// the shared UTF-8 arena their text and hyperlink URIs point into.
-struct GridSink<'a> {
-    cells: &'a mut Vec<PhuxTerminalCell>,
-    utf8: &'a mut Vec<u8>,
-    metadata: &'a mut Vec<PhuxGridCellMetadata>,
-}
-
-/// Reusable per-cell scratch so flattening allocates at most once per grapheme
-/// cluster and once per hyperlink URI longer than the current buffer.
-struct CellScratch {
-    graphemes: String,
-    hyperlink: Vec<u8>,
-}
-
-impl CellScratch {
-    fn new() -> Self {
-        Self {
-            graphemes: String::new(),
-            hyperlink: vec![0_u8; 64],
-        }
-    }
-}
-
-/// The cursor fields the C view carries, read from a finished snapshot.
-struct CursorView {
-    visible: bool,
-    col: u16,
-    row: u16,
-    style: u32,
-}
-
 /// Progressive-history counters the C view reports for the current cache.
 struct HistoryCounters {
     pages: u64,
@@ -1422,256 +1327,6 @@ struct HistoryCounters {
     unread_rows: u64,
     loading: bool,
     has_more: bool,
-}
-
-/// Walk libghostty's row and cell iterators, appending one C cell record per
-/// viewport cell in row-major order.
-fn fill_grid_cells(
-    rows: &mut RowIterator<'static>,
-    cells: &mut CellIterator<'static>,
-    snapshot: &Snapshot<'static, '_>,
-    context: &CellContext<'_>,
-    sink: &mut GridSink<'_>,
-) -> Result<(), BridgeError> {
-    let mut scratch = CellScratch::new();
-    let mut row_index = 0_u32;
-    let mut row_iter = rows.update(snapshot).map_err(BridgeError::ghostty)?;
-    while let Some(row) = row_iter.next() {
-        let mut column_index = 0_u16;
-        let mut cell_iter = cells.update(row).map_err(BridgeError::ghostty)?;
-        while let Some(cell) = cell_iter.next() {
-            push_flattened_cell(
-                cell,
-                PointCoordinate {
-                    x: column_index,
-                    y: row_index,
-                },
-                context,
-                &mut scratch,
-                sink,
-            )?;
-            column_index = column_index
-                .checked_add(1)
-                .ok_or_else(|| BridgeError::engine("render column exceeds u16"))?;
-        }
-        row_index = row_index
-            .checked_add(1)
-            .ok_or_else(|| BridgeError::engine("render row exceeds u32"))?;
-    }
-    Ok(())
-}
-
-/// Flatten one libghostty cell into the C ABI's cell record, appending its text
-/// and any hyperlink URI to the shared UTF-8 arena first.
-fn push_flattened_cell(
-    cell: &CellIteration<'static, '_>,
-    at: PointCoordinate,
-    context: &CellContext<'_>,
-    scratch: &mut CellScratch,
-    sink: &mut GridSink<'_>,
-) -> Result<(), BridgeError> {
-    let raw = cell.raw_cell().map_err(BridgeError::ghostty)?;
-    let style = cell.style().map_err(BridgeError::ghostty)?;
-    let content_tag = raw.content_tag().map_err(BridgeError::ghostty)?;
-    let start = sink.utf8.len();
-    append_cell_text(cell, raw, content_tag, sink.utf8, &mut scratch.graphemes)?;
-    let cell_utf8_len = sink.utf8.len() - start;
-    let has_hyperlink = raw.has_hyperlink().map_err(BridgeError::ghostty)?;
-    let (hyperlink_offset, hyperlink_len) = if has_hyperlink {
-        append_hyperlink_uri(context.terminal, at, sink.utf8, &mut scratch.hyperlink)?
-    } else {
-        NO_HYPERLINK
-    };
-    let colors = context.colors;
-    let fg = resolve_color(style.fg_color, colors.foreground, &colors.palette);
-    let bg = cell_background(raw, content_tag, style, colors)?;
-    let underline_color = resolve_color(style.underline_color, fg, &colors.palette);
-    let flags = cell_flags(style, cell, raw, has_hyperlink)?;
-    let cell_record = PhuxTerminalCell {
-        utf8_offset: u32::try_from(start)
-            .map_err(|_| BridgeError::engine("cell UTF-8 arena exceeds u32"))?,
-        utf8_len: u16::try_from(cell_utf8_len)
-            .map_err(|_| BridgeError::engine("cell grapheme exceeds u16"))?,
-        hyperlink_offset,
-        hyperlink_len,
-        content_tag: content_tag as u16,
-        wide: raw.wide().map_err(BridgeError::ghostty)? as u8,
-        semantic_content: raw.semantic_content().map_err(BridgeError::ghostty)? as u8,
-        flags,
-        foreground_r: fg.r,
-        foreground_g: fg.g,
-        foreground_b: fg.b,
-        background_r: bg.r,
-        background_g: bg.g,
-        underline_r: underline_color.r,
-        underline_g: underline_color.g,
-        underline_b: underline_color.b,
-        background_b: bg.b,
-        underline: style.underline as u8,
-        reserved: 0,
-    };
-    sink.metadata.push(cell_metadata(style, content_tag));
-    sink.cells.push(cell_record);
-    Ok(())
-}
-
-/// Append a cell's text to the shared UTF-8 arena. Background-only cells carry
-/// no codepoint and contribute nothing to it.
-fn append_cell_text(
-    cell: &CellIteration<'static, '_>,
-    raw: Cell,
-    content_tag: CellContentTag,
-    utf8: &mut Vec<u8>,
-    graphemes: &mut String,
-) -> Result<(), BridgeError> {
-    match content_tag {
-        CellContentTag::Codepoint => {
-            let cp = raw.codepoint().map_err(BridgeError::ghostty)?;
-            if cp != 0 {
-                let ch = char::from_u32(cp)
-                    .ok_or_else(|| BridgeError::engine("invalid terminal codepoint"))?;
-                let mut encoded = [0_u8; 4];
-                utf8.extend_from_slice(ch.encode_utf8(&mut encoded).as_bytes());
-            }
-        }
-        CellContentTag::CodepointGrapheme => {
-            graphemes.clear();
-            cell.graphemes_utf8(graphemes)
-                .map_err(BridgeError::ghostty)?;
-            utf8.extend_from_slice(graphemes.as_bytes());
-        }
-        CellContentTag::BgColorPalette | CellContentTag::BgColorRgb => {}
-    }
-    Ok(())
-}
-
-/// Copy a cell's hyperlink URI into the shared UTF-8 arena, growing the scratch
-/// buffer until libghostty reports the whole URI fits, and return its
-/// (offset, length) within that arena.
-fn append_hyperlink_uri(
-    terminal: &libghostty_vt::Terminal<'static, 'static>,
-    at: PointCoordinate,
-    utf8: &mut Vec<u8>,
-    scratch: &mut Vec<u8>,
-) -> Result<(u32, u32), BridgeError> {
-    let reference = terminal
-        .grid_ref(Point::Viewport(at))
-        .map_err(BridgeError::ghostty)?;
-    let len = loop {
-        match reference.hyperlink_uri(scratch) {
-            Ok(len) => break len,
-            Err(libghostty_vt::Error::OutOfSpace { required }) if required > scratch.len() => {
-                scratch.resize(required, 0);
-            }
-            Err(error) => return Err(BridgeError::ghostty(error)),
-        }
-    };
-    let offset = u32::try_from(utf8.len())
-        .map_err(|_| BridgeError::engine("cell UTF-8 arena exceeds u32"))?;
-    utf8.extend_from_slice(&scratch[..len]);
-    Ok((
-        offset,
-        u32::try_from(len).map_err(|_| BridgeError::engine("hyperlink URI exceeds u32"))?,
-    ))
-}
-
-/// Resolve a cell's background: an explicit palette or RGB background content
-/// tag overrides whatever the cell's style asked for.
-fn cell_background(
-    raw: Cell,
-    content_tag: CellContentTag,
-    style: Style,
-    colors: &Colors,
-) -> Result<RgbColor, BridgeError> {
-    let bg = resolve_color(style.bg_color, colors.background, &colors.palette);
-    Ok(match content_tag {
-        CellContentTag::BgColorPalette => {
-            colors.palette[usize::from(raw.bg_color_palette().map_err(BridgeError::ghostty)?.0)]
-        }
-        CellContentTag::BgColorRgb => raw.bg_color_rgb().map_err(BridgeError::ghostty)?,
-        _ => bg,
-    })
-}
-
-/// Fold a cell's SGR attributes together with its selection, protection and
-/// hyperlink state into the C ABI's flag word.
-fn cell_flags(
-    style: Style,
-    cell: &CellIteration<'static, '_>,
-    raw: Cell,
-    has_hyperlink: bool,
-) -> Result<u32, BridgeError> {
-    let mut flags = style_flags(style);
-    if cell.is_selected().map_err(BridgeError::ghostty)? {
-        flags |= CELL_SELECTED;
-    }
-    if raw.is_protected().map_err(BridgeError::ghostty)? {
-        flags |= CELL_PROTECTED;
-    }
-    if has_hyperlink {
-        flags |= CELL_HYPERLINK;
-    }
-    Ok(flags)
-}
-
-/// The SGR attribute bits of the C ABI's cell flag word.
-const fn style_flags(style: Style) -> u32 {
-    let mut flags = 0;
-    if style.bold {
-        flags |= CELL_BOLD;
-    }
-    if style.italic {
-        flags |= CELL_ITALIC;
-    }
-    if style.faint {
-        flags |= CELL_FAINT;
-    }
-    if style.blink {
-        flags |= CELL_BLINK;
-    }
-    if style.inverse {
-        flags |= CELL_INVERSE;
-    }
-    if style.invisible {
-        flags |= CELL_INVISIBLE;
-    }
-    if style.strikethrough {
-        flags |= CELL_STRIKETHROUGH;
-    }
-    if style.overline {
-        flags |= CELL_OVERLINE;
-    }
-    flags
-}
-
-/// Reject a render pass whose iterators did not yield exactly `cols` x `rows`
-/// cells: the C ABI promises a dense viewport, so a short grid is a defect
-/// rather than something a consumer could interpret.
-fn ensure_dense_viewport(produced: usize, cols: u16, rows: u16) -> Result<(), BridgeError> {
-    let expected_cells = usize::from(cols)
-        .checked_mul(usize::from(rows))
-        .ok_or_else(|| BridgeError::engine("render grid dimensions overflow usize"))?;
-    if produced != expected_cells {
-        return Err(BridgeError::engine(
-            "libghostty render iterator did not produce a dense viewport",
-        ));
-    }
-    Ok(())
-}
-
-/// Read the cursor position and style the C view reports for this snapshot.
-fn read_cursor_view(snapshot: &Snapshot<'static, '_>) -> Result<CursorView, BridgeError> {
-    let cursor = snapshot.cursor_viewport().map_err(BridgeError::ghostty)?;
-    Ok(CursorView {
-        visible: snapshot.cursor_visible().map_err(BridgeError::ghostty)? && cursor.is_some(),
-        col: cursor.map_or(0, |value| value.x),
-        row: cursor.map_or(0, |value| value.y),
-        style: cursor_style(
-            snapshot
-                .cursor_visual_style()
-                .map_err(BridgeError::ghostty)?,
-        ),
-    })
 }
 
 /// Project the progressive-history status onto the counters the C view exposes.
@@ -1949,29 +1604,6 @@ mod tests {
             assert_eq!(error.result, PhuxClientResult::EngineError);
             assert!(client.outgoing.is_empty());
         }
-    }
-
-    #[test]
-    fn underline_color_falls_back_to_resolved_cell_foreground() {
-        let palette = [RgbColor { r: 0, g: 0, b: 0 }; 256];
-        let cell_foreground = RgbColor {
-            r: 0x12,
-            g: 0x34,
-            b: 0x56,
-        };
-        assert_eq!(
-            resolve_color(StyleColor::None, cell_foreground, &palette),
-            cell_foreground
-        );
-        let explicit = RgbColor {
-            r: 0x65,
-            g: 0x43,
-            b: 0x21,
-        };
-        assert_eq!(
-            resolve_color(StyleColor::Rgb(explicit), cell_foreground, &palette),
-            explicit
-        );
     }
 
     #[test]

@@ -4,17 +4,12 @@ use std::ptr;
 use phux_protocol::ResourceId;
 
 pub const ABI_VERSION: u32 = 2;
-pub const CELL_BOLD: u32 = 1 << 0;
-pub const CELL_ITALIC: u32 = 1 << 1;
-pub const CELL_FAINT: u32 = 1 << 2;
-pub const CELL_BLINK: u32 = 1 << 3;
-pub const CELL_INVERSE: u32 = 1 << 4;
-pub const CELL_INVISIBLE: u32 = 1 << 5;
-pub const CELL_STRIKETHROUGH: u32 = 1 << 6;
-pub const CELL_OVERLINE: u32 = 1 << 7;
-pub const CELL_SELECTED: u32 = 1 << 8;
-pub const CELL_PROTECTED: u32 = 1 << 9;
-pub const CELL_HYPERLINK: u32 = 1 << 10;
+/// The cell flag word's bits are core's (`phux_client_core::grid`, ADR-0133
+/// decision 3); the C names in `include/phux/client.h` alias them.
+pub use phux_client_core::grid::{
+    CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,
+    CELL_OVERLINE, CELL_PROTECTED, CELL_SELECTED, CELL_STRIKETHROUGH,
+};
 
 /// `status_code` on a `DETACHED` status effect when the server stated no
 /// reason — an older server, or a `DetachReason` this build does not
@@ -225,29 +220,13 @@ pub struct PhuxDocumentPoint {
     pub column: u16,
     pub reserved: u16,
 }
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PhuxTerminalCell {
-    pub utf8_offset: u32,
-    pub utf8_len: u16,
-    pub content_tag: u16,
-    pub hyperlink_offset: u32,
-    pub hyperlink_len: u32,
-    pub wide: u8,
-    pub semantic_content: u8,
-    pub flags: u32,
-    pub foreground_r: u8,
-    pub foreground_g: u8,
-    pub foreground_b: u8,
-    pub background_r: u8,
-    pub background_g: u8,
-    pub background_b: u8,
-    pub underline: u8,
-    pub underline_r: u8,
-    pub underline_g: u8,
-    pub underline_b: u8,
-    pub reserved: u8,
-}
+/// The borrowed viewport cell, `PhuxTerminalCell` in `include/phux/client.h`.
+///
+/// The layout is defined once, in `phux_client_core::grid::Cell` (ADR-0133
+/// decision 3); this bridge lends a pointer to core's buffer and never copies
+/// or redefines the record. Core's layout test pins the size and every field
+/// offset against the header.
+pub type PhuxTerminalCell = phux_client_core::grid::Cell;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
