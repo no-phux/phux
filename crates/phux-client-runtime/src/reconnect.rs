@@ -2,11 +2,14 @@
 //! satisfy.
 //!
 //! One implementation for every consumer that reconnects (ADR-0133). The
-//! ladder and the fatal rule were phux-mobile's; the TUI, the agent verbs,
-//! and Cockpit each carried their own before this crate existed. A consumer
-//! picks a [`Ladder`] preset for its lane instead of forking the arithmetic:
-//! the shape (double, hold at the ceiling, reset to the floor on progress) is
-//! the same on every lane; only the two rungs differ.
+//! ladder and the fatal rule were phux-mobile's; the `phux` binary's attach
+//! loop and the agent verbs (`phux resource wait`) each carried their own
+//! before this crate existed, and the mobile bridge itself is moving onto
+//! this shared implementation at its next pin. Cockpit's Zig client never
+//! had a backoff ladder to absorb -- only a reconnecting-phase label. A
+//! consumer picks a [`Ladder`] preset for its lane instead of forking the
+//! arithmetic: the shape (double, hold at the ceiling, reset to the floor
+//! on progress) is the same on every lane; only the two rungs differ.
 
 use std::time::Duration;
 
@@ -30,10 +33,11 @@ pub struct Ladder {
 }
 
 impl Ladder {
-    /// The interactive lane: a human attached over a network (the TUI's
-    /// remote dials, the mobile bridge). Each probe is a real TLS handshake
-    /// on a radio, and the thing that broke is usually the client's own
-    /// network, so the ladder is patient: 500 ms doubling to 8 s.
+    /// The interactive lane: a human attached over a network (the `phux`
+    /// binary's remote attach dials, the mobile bridge). Each probe is a
+    /// real TLS handshake on a radio, and the thing that broke is usually
+    /// the client's own network, so the ladder is patient: 500 ms doubling
+    /// to 8 s.
     pub const INTERACTIVE: Self = Self {
         floor: Duration::from_millis(500),
         ceiling: Duration::from_secs(8),
@@ -67,10 +71,13 @@ impl Ladder {
     }
 
     /// The next reconnect delay after one that waited `current`: double,
-    /// capped at [`Self::ceiling`]. A flat ladder never grows.
+    /// clamped to `[floor, ceiling]`. A flat ladder never grows. Clamping
+    /// the low end too means a caller that seeds the walk below the floor
+    /// (`Duration::ZERO`, most often) is pulled up to it instead of
+    /// doubling zero forever.
     #[must_use]
     pub fn next(self, current: Duration) -> Duration {
-        current.saturating_mul(2).min(self.ceiling)
+        current.saturating_mul(2).clamp(self.floor, self.ceiling)
     }
 }
 
@@ -178,6 +185,27 @@ mod tests {
     #[test]
     fn next_saturates_at_the_ceiling() {
         assert_eq!(Ladder::INTERACTIVE.next(Duration::MAX), BACKOFF_CEILING);
+    }
+
+    /// `next` is clamped on both ends: a caller that seeds the walk below
+    /// the floor -- `Duration::ZERO`, most often -- lands on the floor
+    /// instead of doubling zero forever. Both in-tree callers seed with
+    /// `Ladder::floor` today, so this is a footgun guard for the next
+    /// adopter (the mobile bridge, Cockpit) rather than an observed bug.
+    #[test]
+    fn next_never_drops_below_the_floor() {
+        assert_eq!(
+            Ladder::INTERACTIVE.next(Duration::ZERO),
+            Ladder::INTERACTIVE.floor
+        );
+        assert_eq!(
+            Ladder::AGENT_VERB.next(Duration::ZERO),
+            Ladder::AGENT_VERB.floor
+        );
+        assert_eq!(
+            Ladder::LOCAL_UPGRADE.next(Duration::ZERO),
+            Ladder::LOCAL_UPGRADE.floor
+        );
     }
 
     fn refused(status: u16, reason: &str) -> DialError {

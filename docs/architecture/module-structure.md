@@ -645,8 +645,8 @@ rather than a layer with its own internal architecture worth diagramming:
   trust rules (pin off loopback, `wss://` plus a token when routable), owns
   the operator-facing wording of every dial failure, and cuts SPEC §5
   frames for the WebSocket lane; `reconnect.rs` is the backoff `Ladder`
-  (one preset per lane: interactive for the TUI's remote dials and the
-  mobile bridge, agent-verb for `phux resource wait`, the flat
+  (one preset per lane: interactive for the phux binary's remote attach
+  dials and the mobile bridge, agent-verb for `phux resource wait`, the flat
   local-upgrade poll for the UDS graceful-upgrade blink) and the
   fatal-refusal rule (401/403 upgrade, QUIC `AUTH_FAILED`); the `phux`
   binary's attach loop and `phux-client`'s wait verb walk it today, and
