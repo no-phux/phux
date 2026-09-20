@@ -603,8 +603,8 @@ this client's mouse handling while that pane is focused; a click on it
 still focuses it, which is the path back in.
 
 Right-click opens a menu for the pane, the window, or the session,
-listing the actions that apply. The session menu includes Sessions & hosts,
-Agent fleet, Settings, and Commands & Help. Each row commits the same action a
+listing the actions that apply. The session menu includes sessions, fleet,
+settings, and commands. Each row commits the same action a
 keybinding would. An inner program with mouse tracking on keeps every
 button, so no menu opens over it; bind `context-menu` for the keyboard
 path. A terminal resize closes the menu; other overlays reflow.

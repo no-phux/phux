@@ -577,7 +577,7 @@ right = [
 # error           = "#f87171"  # error and alarm text
 # text            = "#f4f7fb"  # body copy ON a filled panel (see surface)
 # surface         = "#171b23"  # sidebar + modal fill; "reset" = transparent
-# shadow          = "#090b0f"  # floating-modal drop shadow
+# shadow          = "reset"    # floating-modal drop shadow; reset = off
 # selection_fg    = "#f4f7fb"  # selected list row / copy-mode strip fg
 # selection_bg    = "#293628"  # selected list row / copy-mode strip bg
 # attention       = "#fde047"  # "needs you": asked-marker, blocked agents

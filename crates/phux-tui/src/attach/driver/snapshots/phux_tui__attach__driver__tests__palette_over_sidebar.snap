@@ -9,7 +9,7 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
                    │
                    │
                    │
-                   │┌──────────────────── command palette ─────────────────────┐
+                   │┌ command palette ─────────────────────────────────────────┐
                    ││ >                                                        │
                    ││ detach                                                   │
                    ││ new-window                                               │

@@ -6,7 +6,7 @@ expression: "render_text(&page, 100, 24)"
 
 
 
-               ┌───────────────────────────── Settings ─────────────────────────────┐
+               ┌ Settings ──────────────────────────────────────────────────────────┐
                │ > accent                                ~/.config/phux/config.toml │
                │                                                                    │
                │  Defaults       6 │ • theme.accent             ██ #ff0000      you █

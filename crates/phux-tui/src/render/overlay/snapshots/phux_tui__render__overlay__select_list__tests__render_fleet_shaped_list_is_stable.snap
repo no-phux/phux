@@ -2,7 +2,7 @@
 source: crates/phux-tui/src/render/overlay/select_list.rs
 expression: out
 ---
-┌────────────────── agent fleet ───────────────────┐
+┌ agent fleet ─────────────────────────────────────┐
 │ >                                                │
 │ work (current)                                   │
 │   ! 0:main.0 reviewer [claude]    blocked - main │

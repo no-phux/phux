@@ -38,7 +38,7 @@ pub const fn modal_inner_width(area_width: u16) -> u16 {
     area_width.saturating_sub(2 + MODAL_PAD * 2)
 }
 
-/// A centered, bordered modal box: themed border + centered title, a body
+/// A centered, bordered modal box: themed border + left title, a body
 /// of pre-built [`Line`]s, and an optional dimmed footer line.
 ///
 /// The caller supplies the body content (already styled) and the
@@ -64,7 +64,7 @@ const FOOTER_SEP: &str = "  ·  ";
 impl<'a> Modal<'a> {
     /// A modal titled `title` with `body` lines. No footer; body wrapping
     /// off by default (use [`Self::wrap`] to enable). Title is rendered
-    /// centered as ` title ` in the border.
+    /// left-aligned as ` title ` in the border.
     #[must_use]
     pub fn new(theme: &Theme, title: impl Into<String>, body: Vec<Line<'a>>) -> Self {
         Self {
@@ -198,11 +198,9 @@ impl<'a> Modal<'a> {
             .border_style(Style::default().fg(self.theme.border))
             .title(Span::styled(
                 format!(" {} ", self.title),
-                Style::default()
-                    .fg(self.theme.accent)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(self.theme.accent),
             ))
-            .title_alignment(Alignment::Center)
+            .title_alignment(Alignment::Left)
             .padding(Padding::horizontal(MODAL_PAD));
 
         let mut para = Paragraph::new(self.lines(modal_inner_width(area.width))).block(block);

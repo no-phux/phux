@@ -127,8 +127,8 @@ pub struct Theme {
     /// `Reset` to inherit the terminal background.
     pub surface: Color,
     /// Drop-shadow color painted one cell below + right of a floating
-    /// modal, giving it depth over the live panes. A subtle dark by
-    /// default so it reads as a shadow on most terminals.
+    /// modal. `Reset` (the shipped default) disables the shadow so the
+    /// overlay is a sheet, not a window. Set a dark colour to opt in.
     pub shadow: Color,
     /// Foreground of selection chrome: the copy-mode status strip (and
     /// future selected list rows).
@@ -195,7 +195,7 @@ impl Default for Theme {
             section_header: Color::Rgb(0x9a, 0xa4, 0xb2),
             error: Color::Rgb(0xf8, 0x71, 0x71),
             surface: Color::Rgb(0x17, 0x1b, 0x23),
-            shadow: Color::Rgb(0x09, 0x0b, 0x0f),
+            shadow: Color::Reset,
             selection_fg: Color::Rgb(0xf4, 0xf7, 0xfb),
             selection_bg: Color::Rgb(0x29, 0x36, 0x28),
             attention: Color::Rgb(0xfd, 0xe0, 0x47),
@@ -384,7 +384,7 @@ pub const SLOT_SPECS: &[SettingSpec] = &[
         section: SettingSection::Theme,
         kind: SettingKind::Color,
         summary: "Modal drop shadow",
-        detail: "The one-cell band below and right of a floating modal that separates it from the panes behind it.",
+        detail: "The one-cell band below and right of a floating modal. Shipped as reset (no shadow). Set a dark colour to opt in.",
         applies: Applies::LiveReload,
     },
     SettingSpec {
@@ -590,7 +590,7 @@ mod tests {
         assert_eq!(t.error, Color::Rgb(0xf8, 0x71, 0x71));
         // Design tokens for floating-modal depth + selection chrome.
         assert_eq!(t.surface, Color::Rgb(0x17, 0x1b, 0x23));
-        assert_eq!(t.shadow, Color::Rgb(0x09, 0x0b, 0x0f));
+        assert_eq!(t.shadow, Color::Reset);
         assert_eq!(t.selection_fg, Color::Rgb(0xf4, 0xf7, 0xfb));
         assert_eq!(t.selection_bg, Color::Rgb(0x29, 0x36, 0x28));
         assert_eq!(t.attention, Color::Rgb(0xfd, 0xe0, 0x47));

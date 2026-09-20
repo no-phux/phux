@@ -2,7 +2,7 @@
 source: crates/phux-tui/src/render/overlay/select_list.rs
 expression: out
 ---
-┌──────────── command palette ─────────────┐
+┌ command palette ─────────────────────────┐
 │ >                                        │
 │ item-3                                   │
 │ item-4                                   │

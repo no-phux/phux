@@ -9,7 +9,7 @@ expression: out
 
 
 
-                         ┌─────────────── command palette ────────────────┐
+                         ┌ command palette ───────────────────────────────┐
                          │ >                                              │
                          │ split-pane                               C-a | │
                          │ new-window                               C-a c │
