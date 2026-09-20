@@ -51,8 +51,28 @@ class RoutingTests(unittest.TestCase):
             (["Cargo.lock"], {"phux", "cockpit", "web", "native"}),
             ([".cargo/config.toml"], {"phux", "cockpit", "web", "native"}),
             ([".config/zig-toolchain.json"], {"phux", "cockpit", "web", "web_engine", "native"}),
-            (["scripts/install-zig.sh"], {"phux", "cockpit", "web", "web_engine", "native"}),
-            (["scripts/setup-rust.sh"], {"phux", "cockpit", "web", "native"}),
+            (["scripts/install-zig.sh"], {"cockpit", "native", "web_engine"}),
+            (["scripts/lib/dev-toolchain.sh"], {"cockpit", "native", "web_engine"}),
+            (["scripts/setup-rust.sh"], {"native"}),
+            (["scripts/doctor.sh"], {"native"}),
+            (["scripts/test-dev-setup.sh"], {"native"}),
+            (["scripts/native-smoke.sh"], {"native"}),
+            (["just/setup.just"], {"native"}),
+            (["just/gates.just"], {"phux"}),
+            (["just/test.just"], {"phux"}),
+            (["just/build.just"], {"phux"}),
+            (["just/cockpit.just"], {"cockpit"}),
+            (["justfile"], set()),
+            (["just/perf.just"], set()),
+            (["just/release.just"], set()),
+            (["just/mutation.just"], set()),
+            (["release-please-config.json"], set()),
+            (["just/unknown.just"], ALL),
+            (["docs/SETUP.md", "scripts/doctor.sh"], {"native"}),
+            (["docs/SETUP.md", "justfile"], set()),
+            (["scripts/check-e2e-lanes.sh"], set()),
+            (["scripts/check-docs.sh"], set()),
+            (["scripts/check-install-surface.sh"], set()),
             ([".github/workflows/release.yml"], set()),
             ([".github/workflows/native-setup.yml"], set()),
             ([".github/actions/setup-rust-lane/action.yml"], set()),
@@ -254,6 +274,22 @@ class EventTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_root_justfile_is_imports_and_default_only(self):
+        # Product recipes in the root justfile would classify as cheap and
+        # silently skip the lane they belong to. Keep them in just/*.just.
+        text = (ROOT / "justfile").read_text()
+        recipes = []
+        for line in text.splitlines():
+            if line.startswith("import ") or line.startswith("#") or not line.strip():
+                continue
+            if line.startswith("[") or line.startswith(" ") or line.startswith("\t"):
+                continue
+            if line.startswith("default:"):
+                continue
+            if ":" in line and not line.lstrip().startswith("#"):
+                recipes.append(line)
+        self.assertEqual(recipes, [], msg=f"product recipes belong in just/*.just: {recipes}")
+
     def test_cheap_changes_do_not_allocate_rust_setup(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         cheap_jobs = workflow.split("  workflow-gate:", 1)[1].split("  check:", 1)[0]
@@ -265,7 +301,10 @@ class WorkflowTests(unittest.TestCase):
 
     def test_pr_unit_lane_uses_classifier_rdeps_filterset(self):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        recipe = (ROOT / "justfile").read_text()
+        recipe = "\n".join(
+            path.read_text()
+            for path in [ROOT / "justfile", *sorted((ROOT / "just").glob("*.just"))]
+        )
         action = (ROOT / ".github/actions/classify-changes/action.yml").read_text()
         self.assertIn("test_filterset:", workflow)
         self.assertIn("PHUX_NEXTEST_FILTERSET:", workflow)
