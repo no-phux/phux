@@ -24,8 +24,12 @@ use libghostty_vt::terminal::ScrollViewport;
 use phux_client_core::engine::ghostty::{GhosttyAdapter, GhosttyReplica};
 use phux_client_core::engine::{CanonicalGeometry, EngineAdapter};
 #[cfg(feature = "engine")]
+use phux_client_core::engine::{DocumentPoint, DocumentSpace, EngineDocumentSelection};
+#[cfg(feature = "engine")]
 use phux_client_core::grid::GridProjector;
 use phux_client_core::history::HistoryCacheConfig;
+#[cfg(feature = "engine")]
+use phux_client_core::history::{DocumentAnchorId, HistoryStatus};
 #[cfg(feature = "engine")]
 use phux_client_core::session::ClosedReplica;
 use phux_client_core::session::{
@@ -233,6 +237,104 @@ pub enum Scroll {
     Row(u64),
 }
 
+/// One document coordinate accepted by the owner thread.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EngineDocumentPoint {
+    /// `0` history, `1` viewport, `2` active screen.
+    pub space: u32,
+    /// Column.
+    pub column: u16,
+    /// Row in the selected space.
+    pub row: u32,
+}
+
+/// Owned facts about one published replica.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone)]
+pub struct ReplicaInfo {
+    /// Negotiated payload profile for this generation.
+    pub profile: BootstrapStreamProfile,
+    /// Logical stream.
+    pub stream_id: u64,
+    /// Bootstrap generation.
+    pub bootstrap_id: u64,
+    /// Highest applied live sequence.
+    pub last_seq: u64,
+    /// Progressive history state, when enabled.
+    pub history: Option<HistoryStatus>,
+    /// Revision of the document visible to document handles.
+    pub document_revision: u64,
+}
+
+/// Mouse tracking mode, matching the C ABI's stable numeric vocabulary.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseMode {
+    /// Tracking disabled.
+    None,
+    /// X10 press tracking.
+    X10,
+    /// Normal press/release tracking.
+    Normal,
+    /// Button-motion tracking.
+    Button,
+    /// Any-motion tracking.
+    Any,
+}
+
+/// A search result represented by owner-thread document-anchor handles.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SearchMatch {
+    /// Start anchor.
+    pub start: u64,
+    /// End anchor.
+    pub end: u64,
+}
+
+/// Provider-owned pointer gesture input. Positions and geometry share units.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone, Copy)]
+pub struct SelectionGestureEvent {
+    /// 0 press, 1 drag, 2 release.
+    pub phase: u32,
+    /// 1, 2, or 3 for a press.
+    pub clicks: u32,
+    /// Existing gesture handle for drag/release.
+    pub handle: u64,
+    /// Viewport column.
+    pub column: u16,
+    /// Rectangular selection.
+    pub rectangle: bool,
+    /// Viewport row.
+    pub row: u32,
+    /// Surface x.
+    pub x: f64,
+    /// Surface y.
+    pub y: f64,
+    /// Surface columns.
+    pub columns: u32,
+    /// Cell width.
+    pub cell_width: u32,
+    /// Screen height.
+    pub screen_height: u32,
+    /// Left padding.
+    pub padding_left: u32,
+}
+
+/// Pointer gesture output.
+#[cfg(feature = "engine")]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SelectionGestureResult {
+    /// Runtime gesture handle.
+    pub handle: u64,
+    /// Start anchor; zero means no current range.
+    pub start: u64,
+    /// End anchor; zero means no current range.
+    pub end: u64,
+}
+
 /// Why an engine request failed.
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -248,24 +350,26 @@ pub enum EngineError {
 }
 
 /// What the owner thread needs to build its kernel.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EngineConfig {
     /// The bootstrap profile `HELLO_OK` selected.
     pub profile: BootstrapProfile,
     /// The payload limits `HELLO_OK` selected.
     pub limits: BootstrapLimits,
-    /// The scrollback depth the attach requested; bounds the history cache.
+    /// The scrollback depth the attach requested; bounds the default history cache.
     pub scrollback_lines: u32,
+    /// An exact binding-supplied history policy, when present.
+    pub history: Option<HistoryCacheConfig>,
 }
 
 impl EngineConfig {
     fn history(&self) -> HistoryCacheConfig {
-        HistoryCacheConfig {
+        self.history.unwrap_or_else(|| HistoryCacheConfig {
             max_materialized_rows: self.scrollback_lines as usize,
             request_max_bytes: self.limits.max_history_page_bytes(),
             request_max_rows: self.scrollback_lines,
             ..HistoryCacheConfig::default()
-        }
+        })
     }
 }
 
@@ -276,7 +380,8 @@ enum Command {
 }
 
 enum Lifecycle {
-    Detach(ResourceId),
+    Detach(ResourceId, Sender<bool>),
+    Reset(Sender<()>),
     #[cfg(feature = "engine")]
     Retain(ResourceId, bool),
     #[cfg(feature = "engine")]
@@ -286,6 +391,7 @@ enum Lifecycle {
 enum Query {
     HasProjection(ResourceId, Sender<bool>),
     IsClosed(ResourceId, Sender<bool>),
+    InputEligibility(ResourceId, Sender<InputEligibility>),
     InputReady(ResourceId, Sender<bool>),
     #[cfg(feature = "engine")]
     Scroll(ResourceId, Scroll, Sender<Result<(), EngineError>>),
@@ -293,6 +399,43 @@ enum Query {
     IsAltScreen(ResourceId, Sender<bool>),
     #[cfg(feature = "engine")]
     Republish(ResourceId, Sender<Result<bool, EngineError>>),
+    #[cfg(feature = "engine")]
+    ReplicaInfo(ResourceId, Sender<Result<ReplicaInfo, EngineError>>),
+    #[cfg(feature = "engine")]
+    MouseMode(ResourceId, Sender<Result<MouseMode, EngineError>>),
+    #[cfg(feature = "engine")]
+    TrackAnchor(
+        ResourceId,
+        EngineDocumentPoint,
+        Sender<Result<u64, EngineError>>,
+    ),
+    #[cfg(feature = "engine")]
+    ReleaseAnchor(ResourceId, u64, Sender<Result<(), EngineError>>),
+    #[cfg(feature = "engine")]
+    ClearPresentation(ResourceId, u64, u64, Sender<Result<(), EngineError>>),
+    #[cfg(feature = "engine")]
+    PinViewport(ResourceId, u64, Sender<Result<(), EngineError>>),
+    #[cfg(feature = "engine")]
+    FollowLive(ResourceId, Sender<Result<(), EngineError>>),
+    #[cfg(feature = "engine")]
+    SetSelection(ResourceId, u64, u64, bool, Sender<Result<(), EngineError>>),
+    #[cfg(feature = "engine")]
+    ClearSelection(ResourceId, Sender<Result<(), EngineError>>),
+    #[cfg(feature = "engine")]
+    SelectionText(ResourceId, Sender<Result<Vec<u8>, EngineError>>),
+    #[cfg(feature = "engine")]
+    Search(
+        ResourceId,
+        String,
+        bool,
+        Sender<Result<Vec<SearchMatch>, EngineError>>,
+    ),
+    #[cfg(feature = "engine")]
+    Gesture(
+        ResourceId,
+        SelectionGestureEvent,
+        Sender<Result<SelectionGestureResult, EngineError>>,
+    ),
     #[cfg(not(feature = "engine"))]
     TakeOutput(ResourceId, Sender<Vec<u8>>),
 }
@@ -340,11 +483,18 @@ impl EngineHandle {
         self.request(|reply| Command::Apply(event, reply))
     }
 
-    /// Forget a terminal and its projection.
-    pub(crate) fn detach(&self, terminal_id: ResourceId) {
-        let _ = self
-            .commands
-            .send(Command::Lifecycle(Lifecycle::Detach(terminal_id)));
+    /// Forget a terminal and its projection after the owner thread applies
+    /// the lifecycle transition. Returns `false` while an aggregate attach
+    /// barrier still owns the terminal.
+    #[must_use]
+    pub fn detach(&self, terminal_id: ResourceId) -> bool {
+        self.request(|reply| Command::Lifecycle(Lifecycle::Detach(terminal_id, reply)))
+            .unwrap_or(false)
+    }
+
+    /// Release every connection-scoped replica and projection.
+    pub(crate) fn reset_connection(&self) {
+        let _ = self.request(|reply| Command::Lifecycle(Lifecycle::Reset(reply)));
     }
 
     /// Whether the terminal has a live (or explicitly retained) replica.
@@ -359,6 +509,15 @@ impl EngineHandle {
     pub fn is_closed(&self, terminal_id: &ResourceId) -> bool {
         self.request(|reply| Command::Query(Query::IsClosed(terminal_id.clone(), reply)))
             .unwrap_or(false)
+    }
+
+    /// The kernel's current input eligibility for one terminal.
+    #[must_use]
+    pub fn input_eligibility(&self, terminal_id: &ResourceId) -> InputEligibility {
+        self.request(|reply| Command::Query(Query::InputEligibility(terminal_id.clone(), reply)))
+            .unwrap_or(InputEligibility::Ineligible(
+                InputBlockReason::UnknownTerminal,
+            ))
     }
 
     /// Whether the kernel would accept input for the terminal right now.
@@ -406,6 +565,128 @@ impl EngineHandle {
     #[cfg(feature = "engine")]
     pub fn republish(&self, terminal_id: &ResourceId) -> Result<bool, EngineError> {
         self.request(|reply| Command::Query(Query::Republish(terminal_id.clone(), reply)))?
+    }
+
+    /// Owned facts about the current replica.
+    #[cfg(feature = "engine")]
+    pub fn replica_info(&self, terminal_id: &ResourceId) -> Result<ReplicaInfo, EngineError> {
+        self.request(|reply| Command::Query(Query::ReplicaInfo(terminal_id.clone(), reply)))?
+    }
+
+    /// The terminal's full DEC mouse-tracking mode.
+    #[cfg(feature = "engine")]
+    pub fn mouse_mode(&self, terminal_id: &ResourceId) -> Result<MouseMode, EngineError> {
+        self.request(|reply| Command::Query(Query::MouseMode(terminal_id.clone(), reply)))?
+    }
+
+    /// Track a document coordinate on the owner thread.
+    #[cfg(feature = "engine")]
+    pub fn track_anchor(
+        &self,
+        terminal_id: &ResourceId,
+        point: EngineDocumentPoint,
+    ) -> Result<u64, EngineError> {
+        self.request(|reply| Command::Query(Query::TrackAnchor(terminal_id.clone(), point, reply)))?
+    }
+
+    /// Release one document anchor.
+    #[cfg(feature = "engine")]
+    pub fn release_anchor(&self, terminal_id: &ResourceId, anchor: u64) -> Result<(), EngineError> {
+        self.request(|reply| {
+            Command::Query(Query::ReleaseAnchor(terminal_id.clone(), anchor, reply))
+        })?
+    }
+
+    /// Clear local presentation for an exact replica generation.
+    #[cfg(feature = "engine")]
+    pub fn clear_presentation(
+        &self,
+        terminal_id: &ResourceId,
+        stream_id: u64,
+        bootstrap_id: u64,
+    ) -> Result<(), EngineError> {
+        self.request(|reply| {
+            Command::Query(Query::ClearPresentation(
+                terminal_id.clone(),
+                stream_id,
+                bootstrap_id,
+                reply,
+            ))
+        })?
+    }
+
+    /// Pin the viewport to an existing document anchor.
+    #[cfg(feature = "engine")]
+    pub fn pin_viewport(&self, terminal_id: &ResourceId, anchor: u64) -> Result<(), EngineError> {
+        self.request(|reply| {
+            Command::Query(Query::PinViewport(terminal_id.clone(), anchor, reply))
+        })?
+    }
+
+    /// Follow the live history tail.
+    #[cfg(feature = "engine")]
+    pub fn follow_live(&self, terminal_id: &ResourceId) -> Result<(), EngineError> {
+        self.request(|reply| Command::Query(Query::FollowLive(terminal_id.clone(), reply)))?
+    }
+
+    /// Set a document selection from two runtime anchor handles.
+    #[cfg(feature = "engine")]
+    pub fn set_selection(
+        &self,
+        terminal_id: &ResourceId,
+        start: u64,
+        end: u64,
+        rectangle: bool,
+    ) -> Result<(), EngineError> {
+        self.request(|reply| {
+            Command::Query(Query::SetSelection(
+                terminal_id.clone(),
+                start,
+                end,
+                rectangle,
+                reply,
+            ))
+        })?
+    }
+
+    /// Clear a document selection.
+    #[cfg(feature = "engine")]
+    pub fn clear_selection(&self, terminal_id: &ResourceId) -> Result<(), EngineError> {
+        self.request(|reply| Command::Query(Query::ClearSelection(terminal_id.clone(), reply)))?
+    }
+
+    /// Format the active selection as owned UTF-8 bytes.
+    #[cfg(feature = "engine")]
+    pub fn selection_text(&self, terminal_id: &ResourceId) -> Result<Vec<u8>, EngineError> {
+        self.request(|reply| Command::Query(Query::SelectionText(terminal_id.clone(), reply)))?
+    }
+
+    /// Search loaded history and return owner-thread anchor handles.
+    #[cfg(feature = "engine")]
+    pub fn search(
+        &self,
+        terminal_id: &ResourceId,
+        query: String,
+        case_sensitive: bool,
+    ) -> Result<Vec<SearchMatch>, EngineError> {
+        self.request(|reply| {
+            Command::Query(Query::Search(
+                terminal_id.clone(),
+                query,
+                case_sensitive,
+                reply,
+            ))
+        })?
+    }
+
+    /// Apply one provider-owned selection gesture.
+    #[cfg(feature = "engine")]
+    pub fn selection_gesture(
+        &self,
+        terminal_id: &ResourceId,
+        event: SelectionGestureEvent,
+    ) -> Result<SelectionGestureResult, EngineError> {
+        self.request(|reply| Command::Query(Query::Gesture(terminal_id.clone(), event, reply)))?
     }
 
     /// Drain the bytes the headless replica retained since the last take.

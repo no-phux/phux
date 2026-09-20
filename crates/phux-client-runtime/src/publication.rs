@@ -58,10 +58,16 @@ pub struct Rgb {
 /// engine type to paint a frame.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FrameColors {
-    /// The default background.
+    /// The effective render background.
     pub background: Rgb,
-    /// The default foreground.
+    /// The effective render foreground.
     pub foreground: Rgb,
+    /// The terminal explicitly set a default background.
+    pub has_background: bool,
+    /// The terminal explicitly set a default foreground.
+    pub has_foreground: bool,
+    /// Reverse-colors mode was active when projected.
+    pub reversed: bool,
     /// The cursor color the terminal set, if any.
     pub cursor: Option<Rgb>,
     /// The active 256-color palette.
@@ -73,6 +79,9 @@ impl Default for FrameColors {
         Self {
             background: Rgb::default(),
             foreground: Rgb::default(),
+            has_background: false,
+            has_foreground: false,
+            reversed: false,
             cursor: None,
             palette: Box::new([Rgb::default(); 256]),
         }

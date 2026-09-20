@@ -1,12 +1,13 @@
 //! The owned events a consumer drains from the control plane.
 
 use phux_client_core::history::HistoryStatus;
-use phux_client_core::session::HistoryUnavailableReason;
 use phux_client_core::session::agent_stream::AgentEventRecord;
+use phux_client_core::session::{HistoryUnavailableReason, KernelSend};
 use phux_protocol::ResourceId;
 use phux_protocol::wire::frame::{
     CloseReason, CommandResult, DetachReason, ErrorCode, FrameKind, TombstoneReason,
 };
+use phux_protocol::wire::info::SessionSnapshot;
 
 /// Where the session is in its life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +58,17 @@ pub enum Event {
     /// The session graph changed (a fresh `ATTACHED`, a `GET_STATE`
     /// refresh, or a close); re-read the topology.
     TopologyChanged,
+    /// The complete wire snapshot behind a topology change.
+    ///
+    /// Runtime-owned extensions use the facets not carried by the public
+    /// topology projection (layout metadata, resource kinds, and session
+    /// attributes) without decoding the same reply a second time.
+    TopologySnapshot {
+        /// `Some` for an `ATTACHED` barrier, `None` for a `GET_STATE` read.
+        attach_id: Option<u32>,
+        /// The owned graph snapshot.
+        snapshot: SessionSnapshot,
+    },
     /// The attach barrier released for `attach_id`.
     Attached {
         /// The attach correlation.
@@ -239,6 +251,8 @@ pub enum Event {
         /// Diagnostic detail.
         message: String,
     },
+    /// One engine send for a manually driven binding to fence and encode.
+    KernelSend(KernelSend),
     /// The reply to a command a binding sent through the extension point
     /// (`send_command`). Lossless.
     CommandResult {
