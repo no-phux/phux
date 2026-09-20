@@ -64,8 +64,7 @@ impl ControlPlane {
 
     pub(super) fn fold_agent_event(&mut self, terminal_id: ResourceId, event: AgentEvent) {
         match event {
-            // A subscribed EVENT Bell is advisory metadata, not the terminal
-            // engine's BEL status. The dedicated BELL frame remains observable.
+            AgentEvent::Bell => self.push_event(Event::Bell { terminal_id }),
             AgentEvent::TitleChanged { title } => {
                 if let Some(pane) = self
                     .topology
@@ -80,12 +79,14 @@ impl ControlPlane {
                 kind: ResourceKind::Terminal,
                 ..
             } => self.push_event(Event::PaneSpawned { terminal_id }),
-            AgentEvent::ResourceClosed { exit_status } => self.close_pane(
-                &terminal_id,
-                exit_status,
-                None,
-                phux_protocol::wire::frame::CloseReason::Unknown,
-            ),
+            AgentEvent::ResourceClosed { exit_status } => {
+                self.close_pane(
+                    &terminal_id,
+                    exit_status,
+                    None,
+                    phux_protocol::wire::frame::CloseReason::Unknown,
+                );
+            }
             AgentEvent::Dirty => self.push_event(Event::OutputStarted { terminal_id }),
             AgentEvent::Idle => self.push_event(Event::OutputSettled { terminal_id }),
             AgentEvent::Asked {
@@ -129,7 +130,7 @@ impl ControlPlane {
         exit_status: Option<i32>,
         signal: Option<i32>,
         reason: phux_protocol::wire::frame::CloseReason,
-    ) {
+    ) -> bool {
         let was_known = self.own_spawns.contains(terminal_id)
             || self.terminal_attached.contains(terminal_id)
             || self
@@ -157,5 +158,6 @@ impl ControlPlane {
                 reason,
             });
         }
+        was_known
     }
 }

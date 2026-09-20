@@ -4,16 +4,17 @@ use super::apply::apply_event;
 #[cfg(feature = "engine")]
 use super::apply::frame_colors;
 use super::{
-    Adapter, Command, EffectBuffer, EngineEvent, EngineOutcome, HashSet, InputBlockReason,
-    InputEligibility, KernelDamageKind, KernelEffect, Lifecycle, Query, ResourceId, SessionKernel,
-    mpsc,
+    Adapter, Command, EffectBuffer, EngineApplyError, EngineEvent, EngineOutcome, HashSet,
+    InputBlockReason, InputEligibility, KernelDamageKind, KernelEffect, Lifecycle, Query,
+    ResourceId, SessionKernel, mpsc,
 };
 #[cfg(feature = "engine")]
 use super::{
     Arc, CanonicalGeometry, ClosedReplica, DocumentAnchorId, DocumentPoint, DocumentSpace,
     EngineDocumentPoint, EngineDocumentSelection, EngineError, GhosttyAdapter, GhosttyReplica,
-    GridBuffer, GridFrame, GridProjector, HashMap, MouseMode, Publication, ReplicaInfo, Rgb,
-    Scroll, ScrollViewport, Scrollbar, SearchMatch, SelectionGestureEvent, SelectionGestureResult,
+    GridBuffer, GridDamage, GridFrame, GridProjector, HashMap, MouseMode, Publication, ReplicaInfo,
+    Rgb, Scroll, ScrollViewport, Scrollbar, SearchMatch, SelectionGestureEvent,
+    SelectionGestureResult,
 };
 #[cfg(feature = "engine")]
 use libghostty_vt::selection::Selection;
@@ -129,6 +130,9 @@ impl Owner {
             }
             Lifecycle::Reset(reply) => {
                 self.kernel.release_active_attach();
+                #[cfg(not(feature = "engine"))]
+                let visible: Vec<_> = self.visible.iter().cloned().collect();
+                #[cfg(feature = "engine")]
                 let mut visible: Vec<_> = self.visible.iter().cloned().collect();
                 #[cfg(feature = "engine")]
                 visible.extend(
@@ -216,6 +220,9 @@ impl Owner {
                 );
                 let _ = reply.send(ready);
             }
+            #[cfg(not(feature = "engine"))]
+            query @ Query::TakeOutput(..) => return Some(query),
+            #[cfg(feature = "engine")]
             query => return Some(query),
         }
         None
@@ -334,7 +341,7 @@ impl Owner {
         drop(damaged);
         EngineOutcome {
             effects,
-            error: result.err().map(|error| error.to_string()),
+            error: result.as_ref().err().map(EngineApplyError::from_kernel),
         }
     }
 
@@ -508,12 +515,19 @@ impl Owner {
                 if let Some(background) = defaults.1 {
                     colors.background = background;
                 }
+                let damage = match snapshot.damage {
+                    // Publication has no separate metadata-damage channel.
+                    // Mode-only updates (for example DECSCNM) must therefore
+                    // conservatively repaint instead of disappearing as Clean.
+                    GridDamage::Clean => GridDamage::Full,
+                    damage => damage,
+                };
                 (
                     snapshot.cols,
                     snapshot.rows,
                     snapshot.cursor,
                     colors,
-                    snapshot.damage,
+                    damage,
                 )
             })
             .map_err(|error| EngineError::Engine(error.to_string()));
@@ -693,7 +707,7 @@ impl Owner {
     }
 
     #[cfg(feature = "engine")]
-    fn pin_viewport(&mut self, id: &ResourceId, handle: u64) -> Result<(), EngineError> {
+    fn pin_viewport(&mut self, id: &ResourceId, handle: u64) -> Result<EngineOutcome, EngineError> {
         let anchor = self.resolve_anchor(id, handle)?;
         let point = self
             .kernel
@@ -704,7 +718,7 @@ impl Owner {
     }
 
     #[cfg(feature = "engine")]
-    fn follow_live(&mut self, id: &ResourceId) -> Result<(), EngineError> {
+    fn follow_live(&mut self, id: &ResourceId) -> Result<EngineOutcome, EngineError> {
         self.scroll(id, Scroll::Bottom)
     }
 
@@ -955,30 +969,96 @@ impl Owner {
     }
 
     #[cfg(feature = "engine")]
-    fn scroll(&mut self, id: &ResourceId, scroll: Scroll) -> Result<(), EngineError> {
-        let viewport = match scroll {
-            Scroll::Top => ScrollViewport::Top,
-            Scroll::Bottom => ScrollViewport::Bottom,
-            Scroll::Delta(delta) => ScrollViewport::Delta(
-                isize::try_from(delta)
-                    .map_err(|_| EngineError::Engine("scroll delta exceeds isize".to_owned()))?,
-            ),
-            Scroll::Row(row) => ScrollViewport::Row(
-                usize::try_from(row)
-                    .map_err(|_| EngineError::Engine("scroll row exceeds usize".to_owned()))?,
-            ),
-        };
+    fn scroll(&mut self, id: &ResourceId, scroll: Scroll) -> Result<EngineOutcome, EngineError> {
+        let viewport = viewport_scroll(scroll)?;
+        let active = self.kernel.published_engine_mut(id).is_some();
         let scrolled = if let Some(replica) = self.kernel.published_engine_mut(id) {
             replica.scroll_viewport(viewport)
         } else if let Some(replica) = self.closed.get_mut(id) {
             replica.engine_mut().scroll_viewport(viewport)
         } else {
-            return Err(EngineError::Engine(
-                "terminal has no scrollable replica".to_owned(),
-            ));
+            return Err(engine_error("terminal has no scrollable replica"));
         };
-        scrolled.map_err(|error| EngineError::Engine(error.to_string()))?;
-        self.render_and_publish(id).map(|_| ())
+        scrolled.map_err(|error| engine_error(error.to_string()))?;
+        if active {
+            self.update_history_viewport(id)?;
+        }
+        self.render_and_publish(id)?;
+        Ok(EngineOutcome {
+            effects: self.effects.take(),
+            error: None,
+        })
+    }
+
+    #[cfg(feature = "engine")]
+    fn update_history_viewport(&mut self, id: &ResourceId) -> Result<(), EngineError> {
+        let scrollbar = self
+            .terminal(id)?
+            .scrollbar()
+            .map_err(|error| engine_error(format!("scrollbar: {error}")))?;
+        let at_tail = scrollbar.offset.saturating_add(scrollbar.len) >= scrollbar.total;
+        if at_tail {
+            self.follow_history_tail(id)?;
+        } else {
+            self.pin_history_viewport(id)?;
+        }
+        let rows_from_oldest = usize::try_from(scrollbar.offset)
+            .map_err(|_| engine_error("history viewport offset exceeds usize"))?;
+        let _ = self
+            .kernel
+            .prefetch_history(id, rows_from_oldest, &mut self.effects);
+        Ok(())
+    }
+
+    #[cfg(feature = "engine")]
+    fn follow_history_tail(&mut self, id: &ResourceId) -> Result<(), EngineError> {
+        self.kernel
+            .follow_history_tail(id)
+            .map_err(|error| engine_error(error.to_string()))?;
+        if let Some(old) = self.viewport_anchors.remove(id) {
+            self.kernel
+                .release_document_anchor(id, old)
+                .map_err(|error| engine_error(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "engine")]
+    fn pin_history_viewport(&mut self, id: &ResourceId) -> Result<(), EngineError> {
+        let anchor = self
+            .kernel
+            .track_document_anchor(
+                id,
+                DocumentPoint {
+                    space: DocumentSpace::Viewport,
+                    x: 0,
+                    y: 0,
+                },
+            )
+            .map_err(|error| engine_error(error.to_string()))?;
+        self.kernel
+            .pin_history_viewport(id, anchor)
+            .map_err(|error| engine_error(error.to_string()))?;
+        if let Some(old) = self.viewport_anchors.insert(id.clone(), anchor) {
+            self.kernel
+                .release_document_anchor(id, old)
+                .map_err(|error| engine_error(error.to_string()))?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "engine")]
+fn viewport_scroll(scroll: Scroll) -> Result<ScrollViewport, EngineError> {
+    match scroll {
+        Scroll::Top => Ok(ScrollViewport::Top),
+        Scroll::Bottom => Ok(ScrollViewport::Bottom),
+        Scroll::Delta(delta) => isize::try_from(delta)
+            .map(ScrollViewport::Delta)
+            .map_err(|_| engine_error("scroll delta exceeds isize")),
+        Scroll::Row(row) => usize::try_from(row)
+            .map(ScrollViewport::Row)
+            .map_err(|_| engine_error("scroll row exceeds usize")),
     }
 }
 

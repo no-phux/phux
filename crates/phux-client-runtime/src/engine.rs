@@ -34,15 +34,17 @@ use phux_client_core::history::{DocumentAnchorId, HistoryStatus};
 use phux_client_core::session::ClosedReplica;
 use phux_client_core::session::{
     AgentSessionDeclaration, EffectBuffer, HistoryRejectionReason, HistoryUnavailableReason,
-    InputBlockReason, InputEligibility, KernelDamageKind, KernelEffect, KernelInput, KernelStatus,
-    SessionKernel,
+    InputBlockReason, InputEligibility, KernelDamageKind, KernelEffect, KernelError, KernelInput,
+    KernelStatus, SessionKernel,
 };
 use phux_protocol::caps::{BootstrapLimits, BootstrapProfile, BootstrapStreamProfile};
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
 use phux_protocol::wire::frame::{AgentEvent, CloseReason, TombstoneReason};
 
 #[cfg(feature = "engine")]
-use crate::publication::{FrameColors, GridBuffer, GridFrame, Publication, Rgb, Scrollbar};
+use crate::publication::{
+    FrameColors, GridBuffer, GridDamage, GridFrame, Publication, Rgb, Scrollbar,
+};
 
 #[cfg(feature = "engine")]
 type Adapter = GhosttyAdapter;
@@ -197,8 +199,37 @@ impl EngineEvent {
     }
 }
 
-/// What one applied event produced: the kernel's declarative effects, in
-/// order, and the update error if the kernel refused.
+/// A kernel refusal classified by protocol semantics rather than display text.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum EngineApplyError {
+    /// A stale, retired, or duplicate generation. The frame is rejected but
+    /// the connection and current replica remain valid.
+    #[error("{0}")]
+    InvalidState(String),
+    /// Any other kernel refusal means the peer violated the active session
+    /// contract and the connection must be replaced.
+    #[error("{0}")]
+    Protocol(String),
+}
+
+impl EngineApplyError {
+    fn from_kernel<E: std::fmt::Display>(error: &KernelError<E>) -> Self {
+        let invalid_state = matches!(
+            error,
+            KernelError::GenerationMismatch { .. }
+                | KernelError::RetiredGeneration { .. }
+                | KernelError::DuplicateGeneration { .. }
+        );
+        let message = error.to_string();
+        if invalid_state {
+            Self::InvalidState(message)
+        } else {
+            Self::Protocol(message)
+        }
+    }
+}
+
+/// Declarative effects plus any typed refusal produced by one engine event.
 ///
 /// Effects are handed back even when the update failed: a codec error can
 /// require an acknowledgement and a resync in the same outcome, and
@@ -207,8 +238,8 @@ impl EngineEvent {
 pub struct EngineOutcome {
     /// The kernel effects this event produced.
     pub effects: Vec<KernelEffect>,
-    /// The kernel's refusal, if any.
-    pub error: Option<String>,
+    /// The kernel's typed refusal, if any.
+    pub error: Option<EngineApplyError>,
 }
 
 impl EngineOutcome {
@@ -394,7 +425,11 @@ enum Query {
     InputEligibility(ResourceId, Sender<InputEligibility>),
     InputReady(ResourceId, Sender<bool>),
     #[cfg(feature = "engine")]
-    Scroll(ResourceId, Scroll, Sender<Result<(), EngineError>>),
+    Scroll(
+        ResourceId,
+        Scroll,
+        Sender<Result<EngineOutcome, EngineError>>,
+    ),
     #[cfg(feature = "engine")]
     IsAltScreen(ResourceId, Sender<bool>),
     #[cfg(feature = "engine")]
@@ -414,9 +449,9 @@ enum Query {
     #[cfg(feature = "engine")]
     ClearPresentation(ResourceId, u64, u64, Sender<Result<(), EngineError>>),
     #[cfg(feature = "engine")]
-    PinViewport(ResourceId, u64, Sender<Result<(), EngineError>>),
+    PinViewport(ResourceId, u64, Sender<Result<EngineOutcome, EngineError>>),
     #[cfg(feature = "engine")]
-    FollowLive(ResourceId, Sender<Result<(), EngineError>>),
+    FollowLive(ResourceId, Sender<Result<EngineOutcome, EngineError>>),
     #[cfg(feature = "engine")]
     SetSelection(ResourceId, u64, u64, bool, Sender<Result<(), EngineError>>),
     #[cfg(feature = "engine")]
@@ -548,7 +583,11 @@ impl EngineHandle {
     /// Scroll the terminal's viewport and publish the result before
     /// returning.
     #[cfg(feature = "engine")]
-    pub fn scroll(&self, terminal_id: &ResourceId, scroll: Scroll) -> Result<(), EngineError> {
+    pub(crate) fn scroll(
+        &self,
+        terminal_id: &ResourceId,
+        scroll: Scroll,
+    ) -> Result<EngineOutcome, EngineError> {
         self.request(|reply| Command::Query(Query::Scroll(terminal_id.clone(), scroll, reply)))?
     }
 
@@ -617,7 +656,11 @@ impl EngineHandle {
 
     /// Pin the viewport to an existing document anchor.
     #[cfg(feature = "engine")]
-    pub fn pin_viewport(&self, terminal_id: &ResourceId, anchor: u64) -> Result<(), EngineError> {
+    pub(crate) fn pin_viewport(
+        &self,
+        terminal_id: &ResourceId,
+        anchor: u64,
+    ) -> Result<EngineOutcome, EngineError> {
         self.request(|reply| {
             Command::Query(Query::PinViewport(terminal_id.clone(), anchor, reply))
         })?
@@ -625,7 +668,10 @@ impl EngineHandle {
 
     /// Follow the live history tail.
     #[cfg(feature = "engine")]
-    pub fn follow_live(&self, terminal_id: &ResourceId) -> Result<(), EngineError> {
+    pub(crate) fn follow_live(
+        &self,
+        terminal_id: &ResourceId,
+    ) -> Result<EngineOutcome, EngineError> {
         self.request(|reply| Command::Query(Query::FollowLive(terminal_id.clone(), reply)))?
     }
 

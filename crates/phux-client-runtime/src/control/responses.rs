@@ -233,6 +233,22 @@ impl ControlPlane {
         message: String,
     ) -> Result<(), ControlError> {
         let rendered = format!("server error {code:?}: {message}");
+        if let Some(request_id) = request_id
+            && !self.pending.contains_key(&request_id)
+            && !self.input_replay.owns(request_id)
+        {
+            // The binding extension that allocated this correlation owns its
+            // reply. Surface the original wire shape exactly once.
+            self.push_event(Event::Frame(Box::new(FrameKind::Error {
+                request_id: Some(request_id),
+                code,
+                message,
+            })));
+            if code == ErrorCode::VersionIncompatible {
+                return Err(ControlError::Refused(rendered));
+            }
+            return Ok(());
+        }
         self.error = Some(rendered.clone());
         if let Some(request_id) = request_id {
             self.resolve_pending(
@@ -289,7 +305,11 @@ impl ControlPlane {
 
     // ----- lifecycle frames ------------------------------------------------
 
-    pub(super) fn resource_spawned(&mut self, request_id: u32, result: &SpawnResult) {
+    pub(super) fn resource_spawned(&mut self, request_id: u32, result: &SpawnResult) -> bool {
+        if !matches!(self.pending.get(&request_id), Some(Pending::Spawn)) {
+            return false;
+        }
+        self.pending.remove(&request_id);
         let spawned = result.spawned_id().cloned();
         let error = match result {
             SpawnResult::Err(error) => Some(spawn_error_message(error)),
@@ -312,6 +332,7 @@ impl ControlPlane {
         if spawned.is_some() && self.handshake_ready && self.options.automatic_lifecycle {
             self.queue_refresh_topology();
         }
+        true
     }
 
     pub(super) fn command_result(
@@ -346,6 +367,11 @@ impl ControlPlane {
         };
         let error = command_result_error(&result);
         match pending {
+            Pending::Spawn => {
+                return Err(ControlError::Protocol(
+                    "spawn request received COMMAND_RESULT instead of RESOURCE_SPAWNED".to_owned(),
+                ));
+            }
             Pending::AttachTerminal(terminal_id) => {
                 if error.is_some() {
                     self.terminal_attached.remove(&terminal_id);

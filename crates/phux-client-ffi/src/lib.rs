@@ -547,37 +547,56 @@ fn apply_server_frame(client: &mut Client, frame: FrameKind) -> Result<bool, Bri
     if consume_retired_close(client, &frame) {
         return Ok(false);
     }
-    let extension_frame = frame.clone();
-    let closed_terminal = match &frame {
-        FrameKind::ResourceClosed { terminal_id, .. } => Some(terminal_id.clone()),
-        _ => None,
-    };
+    let agent_generation = agent_generation(&frame);
     #[cfg(test)]
     seed_legacy_test_lifecycle(client)?;
     validate_runtime_frame(client, &frame)?;
     let runtime_result = client.control.feed(frame).map_err(control_error);
-    let extension_result = if runtime_result.is_ok() {
-        observe_runtime_frame(client, &extension_frame);
-        dispatch_extension_frame(client, extension_frame)
-    } else {
-        Ok(())
-    };
+    record_agent_generation(client, runtime_result.is_ok(), agent_generation);
     let attached = client.process_runtime_events()?;
-    if let Some(terminal_id) = closed_terminal
-        && !client.workspace.subscriptions.was_closed(&terminal_id)
-    {
-        client.finish_terminal_close(&terminal_id)?;
-        client.publish_effects();
-    }
     runtime_result?;
-    extension_result?;
+    follow_negotiated_session(client)?;
+    Ok(attached)
+}
+
+type AgentGeneration = (
+    phux_protocol::ResourceId,
+    phux_protocol::StreamId,
+    phux_protocol::BootstrapId,
+);
+
+fn agent_generation(frame: &FrameKind) -> Option<AgentGeneration> {
+    let FrameKind::BootstrapBegin {
+        terminal_id,
+        stream_id,
+        bootstrap_id,
+        profile: phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
+        ..
+    } = frame
+    else {
+        return None;
+    };
+    Some((terminal_id.clone(), *stream_id, *bootstrap_id))
+}
+
+fn record_agent_generation(
+    client: &mut Client,
+    accepted: bool,
+    generation: Option<AgentGeneration>,
+) {
+    if accepted && let Some((terminal_id, stream_id, bootstrap_id)) = generation {
+        client.open_agent_generation(&terminal_id, stream_id, bootstrap_id);
+    }
+}
+
+fn follow_negotiated_session(client: &mut Client) -> Result<(), BridgeError> {
     if matches!(
         client.control.status(),
         phux_client_runtime::control::Status::Negotiated
     ) {
         session_rename::negotiated(client)?;
     }
-    Ok(attached)
+    Ok(())
 }
 
 fn consume_retired_close(client: &mut Client, frame: &FrameKind) -> bool {
@@ -637,19 +656,6 @@ fn validate_runtime_frame(client: &Client, frame: &FrameKind) -> Result<(), Brid
         }
     }
     Ok(())
-}
-
-fn observe_runtime_frame(client: &mut Client, frame: &FrameKind) {
-    if let FrameKind::BootstrapBegin {
-        terminal_id,
-        stream_id,
-        bootstrap_id,
-        profile: phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1,
-        ..
-    } = frame
-    {
-        client.open_agent_generation(terminal_id, *stream_id, *bootstrap_id);
-    }
 }
 
 /// Feed runtime-owned values through the binding-specific extension projections.

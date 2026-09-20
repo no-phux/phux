@@ -204,7 +204,10 @@ impl Client {
             attach: None,
             attach_role: None,
             event_after_seq: None,
-            auto_attach_foreign_spawns: true,
+            // The ABI workspace subscription owns foreign-pane admission;
+            // enabling the generic runtime path as well would issue a second
+            // ATTACH_RESOURCE for the same spawn.
+            auto_attach_foreign_spawns: false,
             bootstrap_limits,
         };
         Self {
@@ -373,10 +376,7 @@ impl Client {
     }
 
     pub(crate) fn ensure_participant(&self, id: &ResourceId) -> Result<(), BridgeError> {
-        if self.control.active_attach_contains(id)
-            || self.operations.admitted(id)
-            || self.is_agent_stream(id)
-        {
+        if self.control.terminal_is_admitted(id) || self.is_agent_stream(id) {
             Ok(())
         } else {
             Err(BridgeError::protocol(
@@ -526,17 +526,21 @@ impl Client {
     }
 
     pub(crate) fn pin_viewport(
-        &self,
+        &mut self,
         id: &ResourceId,
         anchor: PhuxDocumentAnchor,
     ) -> Result<(), BridgeError> {
-        self.engine()?
+        self.control
             .pin_viewport(id, anchor.opaque_id)
-            .map_err(engine_bridge)
+            .map_err(engine_bridge)?;
+        self.process_runtime_events()?;
+        Ok(())
     }
 
-    pub(crate) fn follow_live(&self, id: &ResourceId) -> Result<(), BridgeError> {
-        self.engine()?.follow_live(id).map_err(engine_bridge)
+    pub(crate) fn follow_live(&mut self, id: &ResourceId) -> Result<(), BridgeError> {
+        self.control.follow_live(id).map_err(engine_bridge)?;
+        self.process_runtime_events()?;
+        Ok(())
     }
 
     pub(crate) fn set_selection(
@@ -616,7 +620,12 @@ impl Client {
         Ok(())
     }
 
-    pub(crate) fn scroll(&self, id: &ResourceId, kind: u32, value: i64) -> Result<(), BridgeError> {
+    pub(crate) fn scroll(
+        &mut self,
+        id: &ResourceId,
+        kind: u32,
+        value: i64,
+    ) -> Result<(), BridgeError> {
         let scroll = match kind {
             0 => Scroll::Top,
             1 => Scroll::Bottom,
@@ -627,7 +636,9 @@ impl Client {
             ),
             _ => return Err(BridgeError::invalid("unknown viewport scroll kind")),
         };
-        self.engine()?.scroll(id, scroll).map_err(engine_bridge)
+        self.control.scroll(id, scroll).map_err(engine_bridge)?;
+        self.process_runtime_events()?;
+        Ok(())
     }
 
     pub(crate) fn selection_gesture(
@@ -646,12 +657,29 @@ impl Client {
     ) -> Result<(), BridgeError> {
         use phux_client_core::session::KernelSend;
         let send = match send {
+            KernelSend::PtyWrite { terminal_id, bytes } => {
+                if !self.terminal_reply {
+                    return Err(BridgeError::engine(
+                        "terminal generated a PTY reply but HELLO_OK did not advertise TERMINAL_REPLY",
+                    ));
+                }
+                if bytes.is_empty()
+                    || bytes.len() > phux_protocol::wire::frame::MAX_INPUT_TERMINAL_REPLY_BYTES
+                {
+                    return Err(BridgeError::engine(
+                        "terminal reply is empty or exceeds the protocol byte limit",
+                    ));
+                }
+                KernelSend::PtyWrite { terminal_id, bytes }
+            }
             KernelSend::SubscribeEvents {
                 terminal,
-                after_seq: None,
+                after_seq,
             } => KernelSend::SubscribeEvents {
                 terminal,
-                after_seq: self.event_after_seq,
+                after_seq: after_seq
+                    .or(self.event_after_seq)
+                    .filter(|_| self.event_journal),
             },
             send => send,
         };
@@ -824,6 +852,7 @@ impl Client {
                 records,
             } => self.agent_records_effect(terminal_id, &records)?,
             Event::KernelSend(send) => self.process_send(send)?,
+            Event::Frame(frame) => crate::dispatch_extension_frame(self, *frame)?,
             event => return Ok(EventProjection::Next(event)),
         }
         Ok(EventProjection::Handled(false))
@@ -884,7 +913,11 @@ impl Client {
         };
         let mut effect = OwnedEffect::simple(1, 0, id.clone());
         match frame.damage {
-            phux_client_core::grid::GridDamage::Full => effect.detail = 1,
+            // DECSCNM and other mode-only publication still change
+            // metadata the host paints from. Swallowing Clean left
+            // reverse-video and default colors on the previous canvas.
+            phux_client_core::grid::GridDamage::Full
+            | phux_client_core::grid::GridDamage::Clean => effect.detail = 1,
             phux_client_core::grid::GridDamage::Rows => {
                 effect.detail = 2;
                 let mut rows = frame.dirty_rows();
@@ -892,10 +925,6 @@ impl Client {
                 effect.first_row = first;
                 effect.last_row = rows.last().unwrap_or(first);
             }
-            // DECSCNM and other mode-only publication still change
-            // metadata the host paints from. Swallowing Clean left
-            // reverse-video and default colors on the previous canvas.
-            phux_client_core::grid::GridDamage::Clean => effect.detail = 1,
         }
         self.owned_effects.push(effect);
     }

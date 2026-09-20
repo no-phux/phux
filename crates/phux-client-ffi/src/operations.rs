@@ -860,7 +860,7 @@ fn queue_terminal_attach(
 ) -> Result<(), BridgeError> {
     ensure_queue_capacity(client, request_id)?;
     client.operations.check_admission_capacity()?;
-    if client.active_attach_contains(&id) || client.operations.admitted(&id) {
+    if client.control.terminal_is_admitted(&id) || client.operations.admitted(&id) {
         return Err(BridgeError::state("terminal is already admitted"));
     }
     if client.operations.subscription_pending(&id) {
@@ -881,6 +881,11 @@ fn queue_terminal_attach(
             role_policy,
         },
     })?;
+    if !client.control.admit_external_attach(&id) {
+        return Err(BridgeError::state(
+            "terminal admission changed while queueing",
+        ));
+    }
     client.operations.dynamic.insert(id.clone());
     client.operations.insert(request_id, Pending::Attach(id));
     Ok(())
@@ -924,7 +929,7 @@ fn queue_terminal_detach(
             "terminal has a pending subscription operation",
         ));
     }
-    if !client.operations.admitted(&id) && !client.active_attach_contains(&id) {
+    if !client.control.terminal_is_admitted(&id) && !client.operations.admitted(&id) {
         return Err(BridgeError::state("terminal is not admitted"));
     }
     client.queue_frame(&FrameKind::Command {
@@ -988,6 +993,11 @@ fn complete_spawn(
         SpawnResult::Ok(id) | SpawnResult::OkBound { id, .. } => {
             validate_spawn_reply(client, &id, satellite.as_ref())?;
             if matches!(id, ResourceId::Local { .. }) {
+                if !client.control.admit_external_spawn(&id) {
+                    return Err(BridgeError::protocol(
+                        "spawn reply reused a runtime-admitted terminal ID",
+                    ));
+                }
                 client.operations.dynamic.insert(id.clone());
             }
             if let Some(token) = instance {
@@ -1027,7 +1037,7 @@ fn validate_spawn_reply(
             "spawn reply host differs from request",
         ));
     }
-    if client.active_attach_contains(id) || client.operations.admitted(id) {
+    if client.control.terminal_is_admitted(id) || client.operations.admitted(id) {
         return Err(BridgeError::protocol(
             "spawn reply reused an admitted terminal ID",
         ));
