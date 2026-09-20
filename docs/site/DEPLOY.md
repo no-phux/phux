@@ -163,6 +163,16 @@ paths are scoped to `docs/site/**`.
    reliable. The `phux.phall.io` redirect lives as a **zone Redirect Rule**
    (Rules → Redirect Rules) over a dummy proxied `AAAA 100::` record, not a
    Worker — keep it that way.
+
+   **That redirect is why pairing links no longer use `phux.phall.io`.** iOS
+   fetches `/.well-known/apple-app-site-association` with redirects
+   disallowed, so a zone redirect is indistinguishable from an unclaimed
+   domain and every scanned pairing QR opened Safari. The association is
+   served from `host/pairing.ts`, ahead of all routing, and the emitted link
+   host is `phux.sh` (ADR-0031, amendment 2026-09-19). If the association
+   ever needs to move hosts again, the app's entitlement is compiled into its
+   signature — a new TestFlight build must ship *before* the CLI emits the
+   new host, or in-app scanning breaks for everyone on the old build.
 4. **Session and OAuth secrets** on the Worker (after the first deploy):
    ```sh
    openssl rand -hex 32 | bunx wrangler secret put SESSION_TOKEN_SECRET --cwd worker

@@ -10,6 +10,7 @@ use phux_client::attach::{
     AttachEnd, AttachError, CertTrust, Dial, InputReplayJournal, QuicDial, WsDial,
 };
 use phux_client::predict::PredictiveConfig;
+use phux_client_runtime::reconnect::Ladder;
 use phux_config::loader as config_loader;
 use phux_protocol::wire::frame::AttachTarget;
 use phux_record::cast::CastVersion;
@@ -508,25 +509,23 @@ pub(crate) fn client_cwd() -> Option<String> {
 struct ReconnectPolicy {
     /// How long to keep trying before giving up and exiting.
     deadline: Duration,
-    /// Delay before the second attempt (the first is immediate).
-    initial_backoff: Duration,
-    /// Ceiling the backoff doubles up to. Equal to `initial_backoff` for a
-    /// flat poll.
-    max_backoff: Duration,
+    /// The cadence between attempts (the first is immediate): the runtime's
+    /// ladder for this lane (ADR-0133), so the arithmetic exists once.
+    ladder: Ladder,
 }
 
 /// The local lane: the ADR-0032 graceful-upgrade blink.
 ///
 /// The re-exec'd server keeps the socket bound and is back in well under a
-/// second, so a flat 100ms poll re-attaches almost invisibly, and a `connect`
-/// on a Unix socket that is not accepting is a cheap, purely local failure —
-/// there is nothing to be gentle about. Ten seconds is generous for a re-exec
-/// and short enough that a server which actually crashed reports promptly
-/// rather than leaving the user staring at a countdown.
+/// second, so the runtime's flat 100ms local-upgrade ladder re-attaches
+/// almost invisibly, and a `connect` on a Unix socket that is not accepting
+/// is a cheap, purely local failure — there is nothing to be gentle about.
+/// Ten seconds is generous for a re-exec and short enough that a server which
+/// actually crashed reports promptly rather than leaving the user staring at
+/// a countdown.
 const UDS_RECONNECT: ReconnectPolicy = ReconnectPolicy {
     deadline: Duration::from_secs(10),
-    initial_backoff: Duration::from_millis(100),
-    max_backoff: Duration::from_millis(100),
+    ladder: Ladder::LOCAL_UPGRADE,
 };
 
 /// The remote lanes: a network transition, not a process restart.
@@ -543,13 +542,13 @@ const UDS_RECONNECT: ReconnectPolicy = ReconnectPolicy {
 /// completes a real connection — for `wss://` that is a TCP connect plus a
 /// full TLS 1.3 handshake plus the RFC 6455 upgrade — so a flat 100ms poll is
 /// ten handshakes a second against a server that is probably fine, on a radio
-/// the user would like to still have a battery for. Exponential 500ms to 8s
+/// the user would like to still have a battery for. The runtime's interactive
+/// ladder (exponential 500ms to 8s, the same one the mobile bridge walks)
 /// turns ~600 handshakes over a minute into about a dozen while still
 /// re-attaching within a second or two of the network actually returning.
 const REMOTE_RECONNECT: ReconnectPolicy = ReconnectPolicy {
     deadline: Duration::from_secs(60),
-    initial_backoff: Duration::from_millis(500),
-    max_backoff: Duration::from_secs(8),
+    ladder: Ladder::INTERACTIVE,
 };
 
 /// Which policy governs this dial.
@@ -557,14 +556,6 @@ const fn reconnect_policy(dial: &Dial) -> ReconnectPolicy {
     match dial {
         Dial::Uds(_) => UDS_RECONNECT,
         Dial::Quic(_) | Dial::Ws(_) => REMOTE_RECONNECT,
-    }
-}
-
-impl ReconnectPolicy {
-    /// The delay after one that waited `previous`, capped at
-    /// [`Self::max_backoff`]. A flat policy (`max == initial`) never grows.
-    fn next_backoff(self, previous: Duration) -> Duration {
-        previous.saturating_mul(2).min(self.max_backoff)
     }
 }
 
@@ -836,7 +827,7 @@ fn close_recorder(recorder: Option<RecorderHandle>) {
 /// that has already come back are both caught without waiting.
 async fn wait_until_connectable(dial: &Dial, policy: ReconnectPolicy) -> ReconnectOutcome {
     let end = tokio::time::Instant::now() + policy.deadline;
-    let mut backoff = policy.initial_backoff;
+    let mut backoff = policy.ladder.floor;
     loop {
         match tokio::time::timeout_at(end, probe_connectability(dial)).await {
             Ok(ProbeAttempt::Connectable(connection)) => {
@@ -852,7 +843,7 @@ async fn wait_until_connectable(dial: &Dial, policy: ReconnectPolicy) -> Reconne
         {
             return ReconnectOutcome::TimedOut;
         }
-        backoff = policy.next_backoff(backoff);
+        backoff = policy.ladder.next(backoff);
     }
 }
 
@@ -2007,8 +1998,7 @@ mod tests {
         });
         let policy = ReconnectPolicy {
             deadline: Duration::from_millis(300),
-            initial_backoff: Duration::from_millis(50),
-            max_backoff: Duration::from_millis(50),
+            ladder: Ladder::flat(Duration::from_millis(50)),
         };
         let start = Instant::now();
         assert!(matches!(
@@ -2125,17 +2115,17 @@ mod tests {
         let policy = reconnect_policy(&Dial::uds(std::path::Path::new("/tmp/phux-test.sock")));
 
         assert_eq!(policy.deadline, Duration::from_secs(10));
-        assert_eq!(policy.initial_backoff, Duration::from_millis(100));
+        assert_eq!(policy.ladder.floor, Duration::from_millis(100));
         assert_eq!(
-            policy.max_backoff,
+            policy.ladder.ceiling,
             Duration::from_millis(100),
             "UDS must not back off — a graceful upgrade is over in <1s"
         );
 
         // Flat means flat, however many times it is applied.
-        let mut backoff = policy.initial_backoff;
+        let mut backoff = policy.ladder.floor;
         for _ in 0..10 {
-            backoff = policy.next_backoff(backoff);
+            backoff = policy.ladder.next(backoff);
             assert_eq!(backoff, Duration::from_millis(100));
         }
     }
@@ -2165,8 +2155,13 @@ mod tests {
             ws.deadline
         );
         assert!(
-            ws.max_backoff > ws.initial_backoff,
+            ws.ladder.ceiling > ws.ladder.floor,
             "remote probes must back off, not hammer TLS"
+        );
+        assert_eq!(
+            ws.ladder,
+            Ladder::INTERACTIVE,
+            "the remote lanes walk the runtime's interactive ladder (ADR-0133)"
         );
     }
 
@@ -2176,14 +2171,14 @@ mod tests {
     #[test]
     fn remote_backoff_doubles_to_the_ceiling_and_stops() {
         let policy = REMOTE_RECONNECT;
-        let mut backoff = policy.initial_backoff;
+        let mut backoff = policy.ladder.floor;
         let mut schedule = vec![backoff];
         // The first attempt is immediate, so `deadline` is covered by the
         // sum of the sleeps between attempts.
         let mut waited = Duration::ZERO;
         while waited < policy.deadline {
             waited += backoff;
-            backoff = policy.next_backoff(backoff);
+            backoff = policy.ladder.next(backoff);
             schedule.push(backoff);
         }
 
@@ -2198,12 +2193,12 @@ mod tests {
             ]
         );
         assert!(
-            schedule.iter().all(|d| *d <= policy.max_backoff),
+            schedule.iter().all(|d| *d <= policy.ladder.ceiling),
             "backoff never exceeds the ceiling: {schedule:?}"
         );
         assert_eq!(
             *schedule.last().expect("non-empty"),
-            policy.max_backoff,
+            policy.ladder.ceiling,
             "it holds at the ceiling rather than growing without bound"
         );
         // One attempt per sleep, plus the immediate first one. The flat

@@ -1,0 +1,208 @@
+---
+// The web half of the pairing Universal Link (phux-z84.4).
+//
+// On an iPhone with the app installed, iOS resolves this URL against
+// /.well-known/apple-app-site-association (host/pairing.ts) and hands it
+// straight to phux — this page never renders. It renders exactly when that
+// did not happen: the app is not installed, the association has not been
+// fetched yet, or the link was opened on a desktop.
+//
+// The URL carries a bearer token, so this page is built to leak it nowhere:
+// no analytics script, no outbound referrer, noindex, and the token is
+// dropped from the address bar as soon as the page has read it. Nothing is
+// ever sent to the server — the whole exchange is local to the device.
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <!-- The query carries a credential: keep it out of indexes and headers. -->
+    <meta name="robots" content="noindex,nofollow" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="theme-color" content="#08080b" />
+    <title>Pair with phux</title>
+  </head>
+  <body>
+    <main>
+      <h1>Pair this device</h1>
+
+      <p id="lede" class="lede">Reading your pairing link&hellip;</p>
+
+      <section id="details" hidden>
+        <dl>
+          <div><dt>Server</dt><dd id="server">&mdash;</dd></div>
+          <div id="name-row" hidden><dt>Name</dt><dd id="name">&mdash;</dd></div>
+          <div id="fp-row" hidden>
+            <dt>Certificate</dt><dd id="fp" class="mono">&mdash;</dd>
+          </div>
+        </dl>
+        <a id="open" class="button" href="#">Open in phux</a>
+        <p class="hint">
+          If nothing happens, phux is not installed on this device yet.
+        </p>
+      </section>
+
+      <section id="install" hidden>
+        <p>
+          Install phux on the Mac you want to reach, then scan the code again
+          from inside the phux app.
+        </p>
+        <pre class="mono">brew install phall1/tap/phux</pre>
+      </section>
+
+      <section id="bad" hidden>
+        <p>
+          This link is not a phux pairing link, or it is missing part of it.
+          Run <code>phux pair --qr</code> again on your Mac for a fresh one.
+        </p>
+      </section>
+    </main>
+
+    <script is:inline>
+      (function () {
+        var q = new URLSearchParams(window.location.search);
+        var url = q.get("url");
+        var token = q.get("token");
+        var name = q.get("name");
+        var fp = q.get("fp");
+
+        var lede = document.getElementById("lede");
+        var show = function (id) {
+          var el = document.getElementById(id);
+          if (el) el.hidden = false;
+        };
+
+        // The same total-parser discipline the app applies: a pairing link
+        // without a ws/wss target and a token is not a pairing link.
+        var ok =
+          !!url && !!token && (url.indexOf("wss://") === 0 || url.indexOf("ws://") === 0);
+
+        if (!ok) {
+          lede.textContent = "That link is incomplete.";
+          show("bad");
+          return;
+        }
+
+        // Build the custom-scheme equivalent before touching the address bar,
+        // so stripping the token cannot strip it out of the button too.
+        var deepLink = "phux://connect" + window.location.search;
+
+        document.getElementById("server").textContent = url;
+        if (name) {
+          document.getElementById("name").textContent = name;
+          show("name-row");
+        }
+        if (fp) {
+          document.getElementById("fp").textContent = fp;
+          show("fp-row");
+        }
+        document.getElementById("open").setAttribute("href", deepLink);
+
+        lede.textContent =
+          "Open this in the phux app to finish pairing. The link never leaves your device.";
+        show("details");
+        show("install");
+
+        // Drop the credential from the address bar (and from anything the
+        // person might later copy, screenshot or share) now that it is read.
+        try {
+          window.history.replaceState({}, "", window.location.pathname);
+        } catch (_) {
+          /* history is unavailable in some embedded browsers; not fatal. */
+        }
+      })();
+    </script>
+
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #08080b;
+        --fg: #e8e8ee;
+        --muted: #9a9aa8;
+        --line: #232330;
+        --accent: #7cf1b0;
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font:
+          16px/1.6 ui-sans-serif,
+          system-ui,
+          -apple-system,
+          sans-serif;
+      }
+      main {
+        max-width: 34rem;
+        margin: 0 auto;
+        padding: 3rem 1rem 4rem;
+      }
+      h1 {
+        font-size: 1.5rem;
+        letter-spacing: -0.01em;
+        margin: 0 0 0.75rem;
+      }
+      .lede {
+        color: var(--muted);
+        margin: 0 0 2rem;
+      }
+      dl {
+        margin: 0 0 1.75rem;
+        border-top: 1px solid var(--line);
+      }
+      dl > div {
+        display: flex;
+        gap: 1rem;
+        padding: 0.7rem 0;
+        border-bottom: 1px solid var(--line);
+      }
+      dt {
+        flex: 0 0 6.5rem;
+        color: var(--muted);
+      }
+      dd {
+        margin: 0;
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .mono {
+        font:
+          13px/1.5 ui-monospace,
+          SFMono-Regular,
+          Menlo,
+          monospace;
+      }
+      .button {
+        display: block;
+        text-align: center;
+        background: var(--accent);
+        color: #06120c;
+        font-weight: 600;
+        text-decoration: none;
+        padding: 0.85rem 1rem;
+        border-radius: 0.6rem;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 0.9rem;
+        text-align: center;
+      }
+      section {
+        margin-bottom: 2rem;
+      }
+      pre {
+        background: #101018;
+        border: 1px solid var(--line);
+        border-radius: 0.5rem;
+        padding: 0.8rem 1rem;
+        overflow-x: auto;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+    </style>
+  </body>
+</html>

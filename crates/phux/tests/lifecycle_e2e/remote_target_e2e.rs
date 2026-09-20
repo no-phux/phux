@@ -455,7 +455,7 @@ fn service_install_failure_falls_back_to_an_unsupervised_server() {
     );
 }
 
-/// `--code` pairs from the same `https://phux.phall.io/connect` link
+/// `--code` pairs from the same `https://phux.sh/connect` link
 /// `phux pair --qr` renders — contacting nothing. The fake ssh here is a path that does not
 /// exist, so any ssh attempt fails the run.
 #[test]
@@ -463,9 +463,8 @@ fn service_install_failure_falls_back_to_an_unsupervised_server() {
 fn code_rung_registers_from_a_connect_link_without_ssh() {
     let home = RemoteHome::new();
     let no_ssh = home.dir.path().join("no-such-ssh");
-    let link = format!(
-        "https://phux.phall.io/connect?url=wss://100.64.0.7:8787&fp={FINGERPRINT}&token={TOKEN}"
-    );
+    let link =
+        format!("https://phux.sh/connect?url=wss://100.64.0.7:8787&fp={FINGERPRINT}&token={TOKEN}");
 
     let seen = home.run_until(
         &["attach", "--remote", "mini", "--code", &link],
@@ -500,7 +499,7 @@ fn a_bad_code_registers_nothing() {
             "--remote",
             "mini",
             "--code",
-            "https://phux.phall.io/connect?url=wss://x",
+            "https://phux.sh/connect?url=wss://x",
         ],
         &no_ssh,
         "--code",
