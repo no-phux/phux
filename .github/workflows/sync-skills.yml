@@ -5,6 +5,12 @@
 # truth; this workflow generates the public tree and pushes it. Do not use
 # git submodules or subtrees.
 #
+# Every main push is wrong: it burns a runner and mints an App token even
+# when the inner `git diff --cached --quiet` no-ops. Path-filter like
+# site-deploy so we only run when product-skill publish inputs change.
+# workflow_dispatch is the manual backstop. The export script still no-ops
+# if the mirror bytes are unchanged.
+#
 # ONE-TIME SETUP: install the Release App on no-phux/skills (or on all
 # no-phux repositories). The same RELEASE_APP_ID / RELEASE_APP_PRIVATE_KEY
 # pair used by release-please.yml mints a token scoped to that repo. Without
@@ -15,6 +21,13 @@ name: sync-skills
 on:
   push:
     branches: [main]
+    paths:
+      - ".agents/skills/using-phux/**"
+      - ".agents/skills/using-phux-mcp/**"
+      - "scripts/product-skills"
+      - "scripts/export-product-skills.sh"
+      - "scripts/skills-package/**"
+      - ".github/workflows/sync-skills.yml"
   workflow_dispatch:
 
 permissions:
