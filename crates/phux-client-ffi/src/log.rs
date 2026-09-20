@@ -135,15 +135,19 @@ mod tests {
 
     #[test]
     fn an_unparsable_filter_is_refused_and_installs_nothing() {
-        let before = INSTALLED.load(Ordering::Acquire);
+        // install() runs only after resolve_filter. INSTALLED is process-wide,
+        // so a before/after snapshot races a sibling test in the same
+        // cargo-test process (phux-01sv). Assert the install-once gate.
+        assert!(
+            resolve_filter("phux=notalevel[[", None).is_err(),
+            "an unparsable filter never reaches install()"
+        );
         // SAFETY: the span borrows a string literal for the call.
         let result = unsafe { phux_client_log_init(span("phux=notalevel[[")) };
         assert_eq!(result, PhuxClientResult::InvalidArgument);
-        assert_eq!(INSTALLED.load(Ordering::Acquire), before);
         // NUL and oversized spans are argument errors too, never a parse.
         // SAFETY: the span borrows a string literal for the call.
         let nul = unsafe { phux_client_log_init(span("phux=info\0")) };
         assert_eq!(nul, PhuxClientResult::InvalidArgument);
-        assert_eq!(INSTALLED.load(Ordering::Acquire), before);
     }
 }
