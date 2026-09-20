@@ -489,15 +489,16 @@ impl TerminalActor {
         true
     }
 
-    /// After PTY EOF: fire any owed gap snapshot, then tell the exit watcher
+    /// After PTY EOF: publish the last grid, then tell the exit watcher
     /// the child is gone.
     ///
-    /// A fenced pump's request is already in `resize_rx` or on the debounce
-    /// from the dump that lapped it. Firing that snapshot — and only that
-    /// snapshot — lets the pump start parking on `send` before
-    /// `RESOURCE_CLOSED` joins the mailbox queue. An everyone-resync on every
-    /// exit would republish a healthy attach and lose the last-pane close to
-    /// server self-exit (phux-fpgl.28).
+    /// Drain any queued gap request first so it rides this snapshot, then
+    /// broadcast everyone: a targeted fire names only the pump that asked,
+    /// and a lagged `ATTACH_RESOURCE` watcher is often not that pump
+    /// (phux-fpgl.28). Healthy last-pane attach still gets one replacement
+    /// generation; it must not get a second, and close must not wait on
+    /// mailbox occupancy — those stuffed the TUI and lost `RESOURCE_CLOSED`
+    /// to server self-exit.
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -506,11 +507,9 @@ impl TerminalActor {
         if self.pty_rx.is_some() || self.core.exit_notify.is_none() || self.exit.is_none() {
             return;
         }
-        if self.flush_final_gap_resync(resync) {
-            // One turn so the addressed pump can start the snapshot send
-            // before `notify_exit` lets the close waiter join the mailbox.
-            tokio::task::yield_now().await;
-        }
+        let _ = self.flush_final_gap_resync(resync);
+        self.broadcast_resync(ResyncReason::OutboundGap, ResyncAudience::Everyone);
+        tokio::task::yield_now().await;
         if let Some(exit) = self.exit.as_ref() {
             self.core.notify_exit(phux_core::process::ExitOutcome {
                 status: exit.status,
