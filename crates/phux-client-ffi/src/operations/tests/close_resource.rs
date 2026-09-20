@@ -55,7 +55,7 @@ fn satellite_close_without_instance_is_refused_despite_current_hub_attachment() 
     let (mut h, id) = satellite_attachment(false);
     let raw = terminal_id_out(&id);
     assert!(h.0.inner.operations.admitted(&id));
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
     // SAFETY: live owned client and readable satellite ID.
     unsafe {
         assert_eq!(
@@ -70,7 +70,7 @@ fn satellite_close_without_instance_is_refused_despite_current_hub_attachment() 
     assert!(h.0.inner.outgoing.is_empty());
     assert!(h.0.inner.operations.pending.is_empty());
     assert!(h.0.inner.operations.completed.is_empty());
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
     assert_eq!(
         close(&mut h, 3, 1),
         PhuxClientResult::Ok,
@@ -119,7 +119,7 @@ fn satellite_close_preserves_bound_instance_and_authoritative_refusal() {
         (out.kind, out.status, out.error_code),
         (5, 2, u32::from(ErrorCode::PreconditionFailed.as_wire()))
     );
-    assert!(h.0.inner.session.published(&id).is_some());
+    assert!(h.0.inner.projection(&id).is_some());
 }
 
 #[test]
@@ -143,8 +143,8 @@ fn satellite_and_mixed_batches_are_refused_without_closing_local_prefix() {
         assert!(h.0.inner.outgoing.is_empty());
         assert!(h.0.inner.operations.pending.is_empty());
         assert!(h.0.inner.operations.completed.is_empty());
-        assert!(h.0.inner.session.published(&local).is_some());
-        assert!(h.0.inner.session.published(&satellite).is_some());
+        assert!(h.0.inner.projection(&local).is_some());
+        assert!(h.0.inner.projection(&satellite).is_some());
     }
     assert_eq!(
         close_many(&mut h, 3, &[1]),
@@ -276,8 +276,8 @@ fn batch_close_validates_every_owner_before_one_atomic_command() {
     );
     let out = result(&mut h, 0);
     assert_eq!((out.kind, out.status, out.terminal_id.id), (6, 2, 0));
-    assert!(h.0.inner.session.published(&ResourceId::local(1)).is_some());
-    assert!(h.0.inner.session.published(&ResourceId::local(9)).is_some());
+    assert!(h.0.inner.projection(&ResourceId::local(1)).is_some());
+    assert!(h.0.inner.projection(&ResourceId::local(9)).is_some());
     assert_eq!(close_many(&mut h, 3, &[1, 9]), PhuxClientResult::Ok);
     // SAFETY: harness owns client. Pending batches share the no-replay fence.
     unsafe {
@@ -395,7 +395,7 @@ fn explicit_close_completion_requires_ack_and_closed_in_either_order() {
         let out = result(&mut h, 0);
         assert_eq!((out.kind, out.status, out.terminal_id.id), (5, 1, 1));
         assert!(h.0.inner.operations.pending.is_empty());
-        assert!(h.0.inner.session.published(&ResourceId::local(1)).is_none());
+        assert!(h.0.inner.projection(&ResourceId::local(1)).is_none());
     }
 }
 
@@ -410,7 +410,7 @@ fn batch_close_completion_waits_for_every_resource_even_after_dynamic_release() 
         resource_closed(&mut h, 9);
         assert!(!h.0.inner.operations.admitted(&ResourceId::local(9)));
         assert!(h.0.inner.operations.completed.is_empty());
-        assert!(h.0.inner.session.published(&ResourceId::local(1)).is_some());
+        assert!(h.0.inner.projection(&ResourceId::local(1)).is_some());
         resource_closed(&mut h, 1);
         if !ack_first {
             assert!(h.0.inner.operations.completed.is_empty());
@@ -451,14 +451,7 @@ fn independent_client_closure_cannot_complete_colliding_close_request() {
     resource_closed(&mut replacement, 1);
     assert_eq!(result(&mut replacement, 0).status, 1);
     assert!(original.0.inner.operations.completed.is_empty());
-    assert!(
-        original
-            .0
-            .inner
-            .session
-            .published(&ResourceId::local(1))
-            .is_some()
-    );
+    assert!(original.0.inner.projection(&ResourceId::local(1)).is_some());
     resource_closed(&mut original, 1);
     assert_eq!(result(&mut original, 0).status, 1);
 }
@@ -513,8 +506,8 @@ fn explicit_close_requires_live_owned_attachment_and_keeps_state_until_server_cl
         }
     );
     let id = ResourceId::local(1);
-    assert!(h.0.inner.session.published(&id).is_some());
-    assert!(h.0.inner.session.active_attach_contains(&id));
+    assert!(h.0.inner.projection(&id).is_some());
+    assert!(h.0.inner.active_attach_contains(&id));
     assert_eq!(close(&mut h, 1, 1), PhuxClientResult::InvalidArgument);
     assert_eq!(close(&mut h, 2, 1), PhuxClientResult::InvalidState);
     assert_eq!(h.0.inner.outgoing.len(), 1);
@@ -530,7 +523,7 @@ fn explicit_close_requires_live_owned_attachment_and_keeps_state_until_server_cl
     // assertion failed on 71730635: a success receipt was already exposed.
     assert!(h.0.inner.operations.completed.is_empty());
     assert!(
-        h.0.inner.session.published(&id).is_some(),
+        h.0.inner.projection(&id).is_some(),
         "receipt does not fake detach/ended"
     );
     assert_eq!(
@@ -572,7 +565,7 @@ fn explicit_close_preserves_authoritative_refusal_and_does_not_reuse_request_ids
         unsafe { bytes_in(out.message.data, out.message.len) }.unwrap(),
         b"instance changed"
     );
-    assert!(h.0.inner.session.published(&ResourceId::local(1)).is_some());
+    assert!(h.0.inner.projection(&ResourceId::local(1)).is_some());
     // SAFETY: harness owns client.
     unsafe {
         assert_eq!(phux_client_operation_clear(h.ptr()), PhuxClientResult::Ok);
@@ -616,8 +609,7 @@ fn explicit_close_never_survives_connection_loss_before_send() {
         replacement
             .0
             .inner
-            .session
-            .published(&ResourceId::local(1))
+            .projection(&ResourceId::local(1))
             .is_some()
     );
 }

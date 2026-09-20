@@ -1,6 +1,5 @@
 //! Intentional pane termination, distinct from abandoned-spawn cleanup.
 
-use phux_client_core::session::InputEligibility;
 use phux_protocol::wire::frame::KillConditions;
 
 use super::{
@@ -190,15 +189,12 @@ fn ensure_local_batch_target(id: &ResourceId) -> Result<(), BridgeError> {
 }
 
 fn ensure_close_owner(client: &Client, id: &ResourceId) -> Result<(), BridgeError> {
-    if !client.operations.admitted(id) && !client.session.active_attach_contains(id) {
+    if !client.operations.admitted(id) && !client.active_attach_contains(id) {
         return Err(BridgeError::state(
             "close requires a terminal owned by this attachment",
         ));
     }
-    if !matches!(
-        client.session.input_eligibility(id),
-        InputEligibility::Eligible { .. }
-    ) {
+    if !client.input_ready(id) {
         return Err(BridgeError::state(
             "close requires a current live terminal stream",
         ));

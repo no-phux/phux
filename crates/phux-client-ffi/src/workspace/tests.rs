@@ -295,13 +295,7 @@ fn external_registry_changes_preserve_attached_session_without_replicas() {
     assert!(ws.revision > before);
     assert_eq!(client.inner.sessions[0].name, b"renamed externally");
     assert!(client.inner.render.is_empty());
-    assert!(
-        client
-            .inner
-            .session
-            .published(&ResourceId::local(3))
-            .is_none()
-    );
+    assert!(client.inner.projection(&ResourceId::local(3)).is_none());
 }
 
 #[test]

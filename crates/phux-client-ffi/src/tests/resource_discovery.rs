@@ -118,13 +118,7 @@ fn agent_created_after_attach_is_discovered_subscribed_streamed_and_removed() {
     unsafe {
         assert_eq!(phux_client_resource_count(client), 1);
         let terminal = ResourceId::local(MIXED_TERMINAL);
-        let generation = (*client)
-            .inner
-            .session
-            .published(&terminal)
-            .unwrap()
-            .key()
-            .clone();
+        let generation = (*client).inner.terminal_key(&terminal).unwrap();
         refresh(client, 1, snapshot(true));
         assert_eq!(
             phux_client_resource_count(client),
@@ -197,10 +191,7 @@ fn agent_created_after_attach_is_discovered_subscribed_streamed_and_removed() {
             outgoing(client).is_empty(),
             "explicit closure must prevent same-ID resubscription"
         );
-        assert_eq!(
-            (*client).inner.session.published(&terminal).unwrap().key(),
-            &generation
-        );
+        assert_eq!((*client).inner.terminal_key(&terminal).unwrap(), generation);
         phux_client_free(client);
     }
 }
