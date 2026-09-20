@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-18
+last-reviewed: 2026-09-19
 ---
 
 # Releasing
@@ -33,6 +33,7 @@ same release.
 | The `cockpit-vX.Y.Z` tag and draft release | release-please |
 | Cockpit ZIP, DMG, signature/notarization evidence, and publication | `cockpit-release.yml` |
 | `phux-cockpit` Homebrew cask | `cockpit-release.yml` |
+| `PhuxFFI-<tag>.xcframework.zip`, its `.sha256`, and `.provenance` on the root release | `ffi-xcframework.yml`, called by release-please |
 | Moving `next` prerelease (green `main`) | `next-release.yml` |
 
 `release.yml` never creates a tag, release, or release body. It uploads assets
@@ -164,7 +165,7 @@ retains the visible `check`/`test` job names.
 |---|---|
 | Handwritten docs, including Cockpit README | Compile-free guards |
 | Workflow/action-only changes | Compile-free workflow/contract guards |
-| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*` | Compile-free guards |
+| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh` | Compile-free guards |
 | `just/gates.just`, `just/test.just`, `just/build.just` | Root Rust check/test |
 | `just/cockpit.just` | Cockpit tests + shipping app |
 | `just/setup.just`, `scripts/doctor.sh`, `scripts/setup-rust.sh`, `scripts/test-dev-setup.sh`, `scripts/native-smoke.sh` | Native setup assurance |
@@ -294,6 +295,7 @@ Linux x86_64, and Linux arm64.
 | `@phux/pi` | npm + GitHub release | `pi-extension-vX.Y.Z`, [`agent-integration-release.yml`](../.github/workflows/agent-integration-release.yml) |
 | Claude Code plugin | repository marketplace + GitHub release | `claude-plugin-vX.Y.Z`, [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) |
 | Phux Cockpit | Homebrew cask + GitHub release | `cockpit-vX.Y.Z`, ZIP + DMG + `SHA256SUMS`, [`cockpit-release.yml`](../.github/workflows/cockpit-release.yml) |
+| `PhuxFFI.xcframework` (phux-client-ffi for iOS, simulator, macOS) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), called by release-please; see [PhuxFFI xcframework](#phuxffi-xcframework) |
 
 `@phux/integration-runtime` is a private implementation module bundled into
 the public Pi artifact and inlined into OpenCode. It has no tag or independent
@@ -563,6 +565,58 @@ The `cockpit-vX.Y.Z` tag shape and the `phux-cockpit-<semver>-macos-arm64.zip`
 asset name are a consumed contract: `scripts/install-cockpit.sh` and the
 site's Cockpit version badge resolve them directly. Rename either and both
 break; `scripts/check-install-surface.sh` pins the three halves together.
+
+## PhuxFFI xcframework
+
+`scripts/build-ffi-xcframework.sh` (`just ffi-xcframework`) builds
+`crates/phux-client-ffi` as a static library with `--profile ffi-release`
+(the C boundary needs `panic = "unwind"`, so never the plain release profile)
+for `aarch64-apple-ios`, `aarch64-apple-ios-sim`, and `aarch64-apple-darwin`,
+each slice with the libghostty engine compiled in by `libghostty-vt-sys`, and
+wraps them as `PhuxFFI.xcframework` whose headers are `phux/client.h` plus a
+`module PhuxFFI` map, so Swift can `import PhuxFFI` directly
+([ADR-0133](adr/0133-one-client-runtime-below-every-binding.md)). The Intel
+simulator is absent by design: the engine's iOS slices come from ghostty's
+arm64-only xcframework path. The script then builds and runs a throwaway
+SwiftPM executable against the macOS slice, which proves the module map and
+the archive link the way a real consumer uses them.
+
+`ffi-xcframework.yml` runs it on `macos-26` for every root release
+(release-please calls it beside `release.yml`) and on dispatch, uploads the
+`PhuxFFI-xcframework` workflow artifact, and with a tag attaches three assets
+to that release:
+
+| Asset | Contents |
+|---|---|
+| `PhuxFFI-<tag>.xcframework.zip` | `PhuxFFI.xcframework` at the archive root, the layout a SwiftPM `binaryTarget(url:checksum:)` expects; `swift package compute-checksum` over the zip equals the sidecar |
+| `PhuxFFI-<tag>.xcframework.zip.sha256` | `"<64 hex>  <archive>"`, the same sidecar format as the CLI tarballs |
+| `PhuxFFI-<tag>.provenance` | the build's inputs, below |
+
+The provenance file is `key value` lines: `phux-rev` and `phux-tree`
+(`clean` or `dirty`), `phux-client-abi-version` from the header,
+`libghostty-vt-rev` as pinned in the root `Cargo.toml`, `ghostty-rev` from the
+`-sys` crate's build script, `zig`, `rustc`, `cargo-profile`, `mode`,
+`targets`, `xcode`, `macosx-sdk`, `iphoneos-sdk`, both deployment floors
+(26.0, phux-mobile's), and one `slice-sha256 <identifier> <digest>` per slice.
+phux-mobile's `PHUX_REV` pin should match `phux-rev` of the archive it links.
+
+The xcframework never gates the draft's publication; `release.yml` owns that,
+and the CLI tarballs remain the release contract. A failed or missing build is
+repaired without a new release:
+
+```sh
+gh workflow run ffi-xcframework.yml --repo no-phux/phux -f tag=vX.Y.Z
+```
+
+Uploads use `--clobber`, so a replay against the same tag replaces the three
+assets with bytes rebuilt from that exact tag. Dispatching with an empty tag
+builds the chosen ref and only uploads the workflow artifact, which is how a
+branch is proven before it lands.
+
+Locally the script needs full Xcode with the iOS SDK, rustup, and the pinned
+Zig on `PATH`; it scrubs Nix devshell toolchain overrides itself, so it runs
+the same from a stock shell, from `mise`, or under `nix develop`. Output lands
+in `target/ffi-xcframework/Artifacts/`.
 
 ## One-time Cockpit import cutover
 
