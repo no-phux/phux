@@ -11,8 +11,9 @@
 //!   rules (pin required off loopback, `wss://` and a token for a routable
 //!   WebSocket), the operator-facing wording of every failure, and the
 //!   SPEC §5 frame cutting the WebSocket lane needs.
-//! - [`reconnect`] — the backoff ladder and the rule for which refusals
-//!   no retry can satisfy.
+//! - [`reconnect`] — the backoff ladder, with one preset per lane
+//!   (interactive, agent verb, local upgrade), and the rule for which
+//!   refusals no retry can satisfy.
 //! - [`tunnel`] — the byte-relay tunnel a socket-owning embedder hands one
 //!   end of a Unix-domain socket pair.
 //!
