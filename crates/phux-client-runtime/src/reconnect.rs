@@ -107,9 +107,33 @@ pub fn next_backoff(current: Duration) -> Duration {
 pub fn is_fatal_refusal(error: &DialError) -> bool {
     match error {
         DialError::AuthRefused(_) => true,
-        DialError::Connect(detail) => detail.contains("401") || detail.contains("403"),
+        DialError::Connect(detail) => is_fatal_refusal_detail(detail),
         DialError::Io(_) | DialError::Unreachable(_) | DialError::Stalled(_) => false,
     }
+}
+
+/// How a refused pairing token reads once a consumer has rendered
+/// [`DialError::AuthRefused`] into its own error vocabulary.
+///
+/// `phux-client`'s `AttachError` has no auth-refused variant — a refused
+/// QUIC preamble and a 401 on the WebSocket upgrade are the same repair
+/// class there, so both arrive as a connect failure — and it words the
+/// flattened one with this phrase. Owning the phrase here keeps the consumer
+/// that writes it and [`is_fatal_refusal_detail`], which reads it, on one
+/// string rather than two that can drift apart.
+pub const TOKEN_REFUSED: &str = "pairing token refused";
+
+/// [`is_fatal_refusal`] for a consumer holding only the *rendered* detail of
+/// a connect failure rather than the [`DialError`] it came from.
+///
+/// The attach loop is the case: its probe dials through the TUI's HELLO
+/// contract, which has already mapped the dial error into the attach
+/// vocabulary by the time the reconnect policy sees it. The rule is the
+/// same one — an ADR-0031 401/403 on the upgrade, or a refused pairing
+/// token — so it is written once here and read from both sides.
+#[must_use]
+pub fn is_fatal_refusal_detail(detail: &str) -> bool {
+    detail.contains("401") || detail.contains("403") || detail.contains(TOKEN_REFUSED)
 }
 
 #[cfg(test)]
@@ -210,5 +234,42 @@ mod tests {
             "failed to lookup address information".to_owned()
         )));
         assert!(!is_fatal_refusal(&DialError::Stalled("no pong".to_owned())));
+    }
+
+    /// The rendered-detail form is the same verdict as the typed one, so a
+    /// consumer that only kept the text of a connect failure — the attach
+    /// loop, whose probe returns the attach vocabulary rather than a
+    /// `DialError` — classifies it identically.
+    #[test]
+    fn the_detail_rule_matches_the_typed_rule() {
+        for error in [
+            refused(401, "Unauthorized"),
+            refused(403, "Forbidden"),
+            refused(503, "Service Unavailable"),
+            DialError::Connect("server certificate fingerprint mismatch".to_owned()),
+        ] {
+            let DialError::Connect(detail) = &error else {
+                unreachable!("every case above is a connect failure");
+            };
+            assert_eq!(
+                is_fatal_refusal(&error),
+                is_fatal_refusal_detail(detail),
+                "the two spellings disagreed on {detail:?}"
+            );
+        }
+    }
+
+    /// A refused QUIC preamble survives being flattened into a consumer's
+    /// connect vocabulary: the wording carries [`TOKEN_REFUSED`], so the
+    /// detail rule still calls it fatal. This is the assertion that keeps
+    /// `phux-client`'s `From<DialError>` wording and this rule together.
+    #[test]
+    fn a_flattened_token_refusal_stays_fatal() {
+        assert!(is_fatal_refusal_detail(&format!(
+            "{TOKEN_REFUSED} (unauthorized)"
+        )));
+        assert!(!is_fatal_refusal_detail(
+            "did not answer (connection refused)"
+        ));
     }
 }

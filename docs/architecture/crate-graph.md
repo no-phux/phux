@@ -88,7 +88,10 @@ Five crate boundaries carry weight:
    lane: `phux-client`'s agent verbs walk the fast agent-verb ladder and
    the binary's attach loop walks the interactive one for remote dials and
    the flat local-upgrade poll for UDS, so no consumer carries a backoff
-   constant of its own. `phux-server`'s hub link and connector keep their
+   constant of its own. The same module owns the other half of the policy:
+   a refusal no retry can satisfy — a 401/403 on the upgrade, a QUIC
+   preamble answered `AUTH_FAILED` — ends the attach loop's reconnect on
+   the probe that saw it, with the refusal as the reported reason. `phux-server`'s hub link and connector keep their
    own redial ladder: they are the server-side federation dialer, not a
    client binding, and moving them onto the runtime's `Ladder` is a
    separate decision. A binding crate translates runtime-owned values

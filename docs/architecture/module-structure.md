@@ -648,9 +648,12 @@ rather than a layer with its own internal architecture worth diagramming:
   (one preset per lane: interactive for the TUI's remote dials and the
   mobile bridge, agent-verb for `phux resource wait`, the flat
   local-upgrade poll for the UDS graceful-upgrade blink) and the
-  fatal-refusal rule (401/403 upgrade, QUIC `AUTH_FAILED`); the `phux`
-  binary's attach loop and `phux-client`'s wait verb walk it today, and
-  the mobile bridge moves onto it at its next pin; `tunnel.rs` is the
+  fatal-refusal rule (401/403 upgrade, QUIC `AUTH_FAILED`, stated over a
+  `DialError` and over the rendered detail a consumer kept instead); the
+  `phux` binary's attach loop and `phux-client`'s wait verb walk it today
+  — a reconnect the host refuses ends on that first probe with the refusal
+  itself rather than the deadline's timeout — and the mobile bridge moves
+  onto it at its next pin; `tunnel.rs` is the
   byte-relay tunnel a
   socket-owning embedder hands one end of a Unix-domain socket pair, with
   its dedicated thread, cancellation, and panic containment. It exposes a
