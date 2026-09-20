@@ -257,6 +257,7 @@
               unset _phux_nix_developer_dir _phux_xcode_select _phux_host_developer_dir _phux_candidate
             ''
             + ''
+              export PATH="${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
               echo "phux dev shell — $(rustc --version)"
             '';
         };
