@@ -15,7 +15,7 @@ expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")
                    ││ new-window                                               │
  Sessions          ││                                                          │
  ○ probe           ││                                                          │
-   on probe-host   ││                                                          │
+   probe-host      ││                                                          │
    ● w1-agent      ││                                                          │
                    ││                                                          │
                    ││                                                          │

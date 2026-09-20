@@ -380,7 +380,7 @@ dot (`●`) is blocked on you; a half-filled ring (`◐`) is still working.
 When none are running, the list is a quiet em dash. Status updates
 in place; the list does not sort by urgency. A local row selects that
 window; a peer row is a one-step `switch-session` onto that pane.
-Overflow is a `+N more` row that opens the fleet dashboard.
+Overflow is a `+N` row that opens the fleet dashboard.
 
 <!-- impl-status: shipped; probe: AgentSessionRow -->
 > **Status: shipped.** When a pane has a live agent session, the sidebar

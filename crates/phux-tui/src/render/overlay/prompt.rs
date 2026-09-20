@@ -105,14 +105,14 @@ impl PromptOverlay {
         }
     }
 
-    /// A small centered modal: 60% width (min 20), fixed 3 rows (border
+    /// A small centered modal: 50% width (min 20), fixed 3 rows (border
     /// + one input line).
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
         // Reuse the shared centering for width/x, then pin height to 3
         // rows (border + one input line) and re-center vertically against
         // that fixed height — the fraction-based height a `Modal`-style
         // box would otherwise get is wrong for a one-line prompt.
-        let wide = centered_panel(outer, 6, 20, 3, bp);
+        let wide = centered_panel(outer, 5, 20, 3, bp);
         let h = 3.min(outer.height);
         let y = outer.y + (outer.height.saturating_sub(h)) / 2;
         Rect::new(wide.x, y, wide.width, h)

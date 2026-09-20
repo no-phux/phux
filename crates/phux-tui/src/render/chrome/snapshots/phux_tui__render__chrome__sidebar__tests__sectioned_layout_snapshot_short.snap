@@ -3,12 +3,12 @@ source: crates/phux-tui/src/render/chrome/sidebar.rs
 expression: "strip_text(&p, rect)"
 ---
  Agents                  │
- ● phux blocked - codex  │
+ ● phux codex            │
                          │
                          │
  Sessions                │
  ○ development           │
-   on mini               │
+   mini                  │
    ● phux main           │
  +1 sessions, +1 windows │
  + new window            ‹

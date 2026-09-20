@@ -477,9 +477,9 @@ impl SelectList {
     /// absolute position — the thing `selected` indexes — is `offset + row`.
     fn body_lines(&self, window: &[usize], offset: usize, inner_width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
-        // Query line: a `> ` prompt, the text, and a reverse-video caret.
+        // Query line: a dim prompt, the text, and a reverse-video caret.
         lines.push(Line::from(vec![
-            Span::styled("> ".to_owned(), Style::default().fg(self.theme.accent)),
+            Span::styled("> ".to_owned(), Style::default().fg(self.theme.dim)),
             Span::styled(
                 self.visible_query(inner_width.saturating_sub(3)),
                 Style::default().fg(self.theme.text),
@@ -532,9 +532,7 @@ impl SelectList {
     fn header_line(&self, item: &SelectItem) -> Line<'static> {
         Line::from(Span::styled(
             item.label.clone(),
-            Style::default()
-                .fg(self.theme.section_header)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(self.theme.section_header),
         ))
     }
 
@@ -587,8 +585,7 @@ impl SelectList {
                 text,
                 Style::default()
                     .fg(self.theme.selection_fg)
-                    .bg(self.theme.selection_bg)
-                    .add_modifier(Modifier::BOLD),
+                    .bg(self.theme.selection_bg),
             ))
         } else {
             // phux-foz.7: an attention row's label paints in the theme's
@@ -1532,12 +1529,6 @@ mod tests {
         assert!(hot.spans[0].style.add_modifier.contains(Modifier::BOLD));
         // Selection owns both colors regardless of the host terminal theme.
         let selected = sl.item_line(&sl.items[1], true, 40);
-        assert!(
-            selected.spans[0]
-                .style
-                .add_modifier
-                .contains(Modifier::BOLD)
-        );
         assert_eq!(selected.spans[0].style.fg, Some(theme.selection_fg));
         assert_eq!(selected.spans[0].style.bg, Some(theme.selection_bg));
     }

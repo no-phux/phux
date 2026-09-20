@@ -314,7 +314,7 @@ pub const fn scroll_into_view(offset: usize, cursor: usize, total: usize, height
 /// Paint a vertical scrollbar into `track` — a one-column [`Rect`], meant to
 /// be the modal's right *border* column beside the scrolling region.
 ///
-/// The thumb (a block glyph in [`Theme::accent`]) is sized to the visible
+/// The thumb (a block glyph in [`Theme::dim`]) is sized to the visible
 /// fraction of `total` and positioned by `offset`, so it reads as both "how
 /// much list is there" and "where am I in it". Track cells keep the border
 /// glyph in [`Theme::border`], so the bar looks like part of the box rather
@@ -334,7 +334,7 @@ pub fn paint_scrollbar(buf: &mut Buffer, track: Rect, theme: &Theme, total: usiz
     let max_offset = total - height;
     let thumb_top = offset.min(max_offset) * travel / max_offset;
 
-    let thumb = Style::default().fg(theme.accent).bg(theme.surface);
+    let thumb = Style::default().fg(theme.dim).bg(theme.surface);
     let rail = Style::default().fg(theme.border).bg(theme.surface);
     for row in 0..track.height {
         let on_thumb = {

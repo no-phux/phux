@@ -81,8 +81,8 @@ impl RenderOverlay for ToastOverlay {
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        // ~60% of the viewport, min 40x8, clamped to the outer rect.
-        Some(centered_panel(area, 6, 40, 8, self.breakpoints))
+        // 50% of the viewport, min 32x6, clamped to the outer rect.
+        Some(centered_panel(area, 5, 32, 6, self.breakpoints))
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
@@ -182,8 +182,8 @@ mod tests {
         let b = toast
             .bounds(Rect::new(0, 0, 100, 40))
             .expect("toast is bounded");
-        assert!(b.width >= 40 && b.width <= 100);
-        assert!(b.height >= 8 && b.height <= 40);
+        assert!(b.width >= 32 && b.width <= 100);
+        assert!(b.height >= 6 && b.height <= 40);
         // Tiny viewport still yields a rect inside it.
         let tiny = toast.bounds(Rect::new(0, 0, 20, 6)).expect("bounded");
         assert!(tiny.width <= 20 && tiny.height <= 6);

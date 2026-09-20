@@ -12,11 +12,11 @@ expression: "strip_text(&p, rect)"
                          │
  Sessions                │
  ○ development           │
-   on mini               │
+   mini                  │
    ● phux main           │
  ◐ feat-auth          *1 │
-   on mini               │
+   mini                  │
  ○ prod-3             ?2 │
-   on devbox             │
+   devbox                │
                          │
  + new window            ‹
