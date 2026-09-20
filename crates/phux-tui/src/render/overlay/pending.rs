@@ -55,7 +55,6 @@ impl RenderOverlay for PendingOverlay {
             Style::default().fg(self.theme.text),
         ))];
         Modal::new(&self.theme, self.title.clone(), body)
-            .footer("Esc cancel")
             .wrap(true)
             .render_into(modal_area, buf);
     }

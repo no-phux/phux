@@ -451,12 +451,14 @@ impl KeyChordTable {
             if !lines.is_empty() {
                 lines.push(Line::from(""));
             }
-            lines.push(Line::from(Span::styled(
-                section.title.clone(),
-                Style::default()
-                    .fg(self.theme.section_header)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            if !section.title.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    section.title.clone(),
+                    Style::default()
+                        .fg(self.theme.section_header)
+                        .add_modifier(Modifier::BOLD),
+                )));
+            }
             for row in &section.rows {
                 lines.push(self.row_line(row, chord_width));
             }

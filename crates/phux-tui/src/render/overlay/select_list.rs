@@ -70,10 +70,9 @@ use crate::render::{ChromeBreakpoints, Theme};
 /// room it does not have on a narrow list.
 const GAP: usize = 1;
 
-/// Rows of the modal box that are *not* list rows: the two borders, the
-/// query line, and the blank beneath it. The list viewport is whatever
-/// height is left over.
-const CHROME_ROWS: u16 = 4;
+/// Rows of the modal box that are *not* list rows: the two borders and
+/// the query line. The list viewport is whatever height is left over.
+const CHROME_ROWS: u16 = 3;
 
 /// Rows the selection moves per mouse-wheel detent, matching copy-mode's
 /// `WHEEL_SCROLL_LINES` so the wheel feels the same everywhere in the client.
@@ -492,7 +491,6 @@ impl SelectList {
                     .bg(self.theme.accent),
             ),
         ]));
-        lines.push(Line::from(""));
 
         if window.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -1289,10 +1287,10 @@ mod tests {
         assert_eq!(sl.selected, 1, "no measured viewport ⇒ a single-row step");
         // After a paint, a page is a real screenful. A 40x16 viewport is
         // compact on both axes, so the picker is full-bleed: 16 rows less
-        // the 4 of shared chrome leaves 12 visible.
+        // the 3 of shared chrome leaves 13 visible.
         render_to_string(&sl, 40, 16);
         sl.handle_key(&press(PhysicalKey::PageDown, None));
-        assert_eq!(sl.selected, 13);
+        assert_eq!(sl.selected, 14);
         sl.handle_key(&press(PhysicalKey::PageUp, None));
         assert_eq!(sl.selected, 1);
         // And both saturate rather than wrapping.

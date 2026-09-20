@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-20
 ---
 
 # The phux reference TUI
@@ -314,8 +314,8 @@ The bar is not multi-row and not a styling engine. Per-widget `style`
 tables only.
 
 **Asked chrome.** When an agent in a pane blocks for a human, the asking
-window gets a ` !` suffix on its tab, and a right-aligned `[ ASK ]`
-chip appears on the bar (`[ ASK xN ]` for several). `C-a q`
+window gets a ` !` suffix on its tab, and a right-aligned `ask`
+mark appears on the bar (`ask·N` for several). `C-a q`
 (`next-attention`) jumps to the next asking pane in window then
 depth-first leaf order, wrapping; the first jump saves where you came
 from. `C-a Q` (`return-from-attention`) returns there once. Both are
@@ -377,7 +377,7 @@ depends only on viewport height.
 
 **Agents** lists agent rows in session / window / pane order. A filled
 dot (`●`) is blocked on you; a half-filled ring (`◐`) is still working.
-When none are running, the list says `none running yet`. Status updates
+When none are running, the list is a quiet em dash. Status updates
 in place; the list does not sort by urgency. A local row selects that
 window; a peer row is a one-step `switch-session` onto that pane.
 Overflow is a `+N more` row that opens the fleet dashboard.
@@ -473,7 +473,7 @@ terminal **keeps** copy-mode open and adopts the new size.
 ## Command palette, pickers, and settings
 
 `C-a :` (`command-palette`) and `C-a ?` (`show-help`) are two aliases
-for one filterable **Commands & Help** overlay. Every action is annotated
+for one filterable **Commands** overlay. Every action is annotated
 with its currently-bound chord. Empty query: rows grouped under Pane,
 Window, Session, View. Typing ranks a fuzzy match; Enter commits through
 the same dispatcher a keybinding uses. Navigate with arrows / `C-n` /

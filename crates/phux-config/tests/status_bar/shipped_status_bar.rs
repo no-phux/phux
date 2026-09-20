@@ -111,7 +111,7 @@ fn shipped_inactive_tabs_are_dim_text_not_a_slab() {
         .and_then(|c| c.style.as_ref())
         .expect("active tab styled");
     assert_eq!(active.fg.as_deref(), Some("#bef264"));
-    assert_eq!(active.bg.as_deref(), Some("#293628"));
+    assert_eq!(active.bg, None);
     assert!(active.bold);
 
     let session = row

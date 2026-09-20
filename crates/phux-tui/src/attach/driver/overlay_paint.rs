@@ -187,9 +187,7 @@ pub(super) fn paint_copy_mode_status<W: Write>(
     // (columnar band) vs linear (text-flow, incl. whole-line Line mode). `Tab`
     // cycles it (ADR-0045).
     let geom = if sel.rectangle { "block" } else { "linear" };
-    let status = format!(
-        " copy-mode | {geom} | {cell_count} cell(s) | arrows/PgUp/PgDn scroll | Tab mode | Enter copy | Esc "
-    );
+    let status = format!(" copy-mode · {geom} · {cell_count} ");
     write_cup(out, rows - 1, 0)?;
     // Selection strip from the theme (`selection_bg`/`selection_fg`). `\x1b[K`
     // fills the rest of the row with the strip bg; then reset + hide the cursor.

@@ -45,16 +45,16 @@ fn format_supervisory_badge(
 ) -> Option<String> {
     let wheel = input_holder.map(|holder| {
         if Some(holder) == own_client_id {
-            "WHEEL:you".to_owned()
+            "wheel".to_owned()
         } else {
-            format!("WHEEL:c{}", holder.get())
+            format!("wheel:c{}", holder.get())
         }
     });
     match (frozen, wheel) {
         (false, None) => None,
-        (true, None) => Some("[ FROZEN ]".to_owned()),
-        (false, Some(w)) => Some(format!("[ {w} ]")),
-        (true, Some(w)) => Some(format!("[ FROZEN {w} ]")),
+        (true, None) => Some(" frozen ".to_owned()),
+        (false, Some(w)) => Some(format!(" {w} ")),
+        (true, Some(w)) => Some(format!(" frozen {w} ")),
     }
 }
 
@@ -68,13 +68,13 @@ fn attention_hint(panes: &HashMap<ResourceId, PaneSlot>) -> Option<String> {
 
 /// Pure hint formatter (split out from [`attention_hint`] so the count→string
 /// mapping is testable without a libghostty-backed `PaneSlot`). `None` ⇒ no
-/// hint (nothing is asking). Plain ASCII chrome, matching the ADR-0033
-/// supervisory badge convention.
+/// hint (nothing is asking). Quiet lowercase chrome; the paint path still
+/// applies the attention color.
 fn format_attention_hint(asking: usize) -> Option<String> {
     match asking {
         0 => None,
-        1 => Some("[ ASK ]".to_owned()),
-        n => Some(format!("[ ASK x{n} ]")),
+        1 => Some(" ask ".to_owned()),
+        n => Some(format!(" ask·{n} ")),
     }
 }
 
@@ -387,24 +387,24 @@ mod tests {
         assert_eq!(format_supervisory_badge(false, None, Some(me)), None);
         assert_eq!(
             format_supervisory_badge(true, None, Some(me)).as_deref(),
-            Some("[ FROZEN ]")
+            Some(" frozen ")
         );
         assert_eq!(
             format_supervisory_badge(false, Some(me), Some(me)).as_deref(),
-            Some("[ WHEEL:you ]")
+            Some(" wheel ")
         );
         assert_eq!(
             format_supervisory_badge(false, Some(other), Some(me)).as_deref(),
-            Some("[ WHEEL:c9 ]")
+            Some(" wheel:c9 ")
         );
         assert_eq!(
             format_supervisory_badge(true, Some(other), Some(me)).as_deref(),
-            Some("[ FROZEN WHEEL:c9 ]")
+            Some(" frozen wheel:c9 ")
         );
         // No own id yet (pre-ATTACHED): a holder still renders by id, never "you".
         assert_eq!(
             format_supervisory_badge(false, Some(me), None).as_deref(),
-            Some("[ WHEEL:c7 ]")
+            Some(" wheel:c7 ")
         );
     }
 
@@ -414,8 +414,8 @@ mod tests {
     #[test]
     fn attention_hint_formats_every_count() {
         assert_eq!(format_attention_hint(0), None);
-        assert_eq!(format_attention_hint(1).as_deref(), Some("[ ASK ]"));
-        assert_eq!(format_attention_hint(3).as_deref(), Some("[ ASK x3 ]"));
+        assert_eq!(format_attention_hint(1).as_deref(), Some(" ask "));
+        assert_eq!(format_attention_hint(3).as_deref(), Some(" ask·3 "));
     }
 
     /// phux-foz.1: `window_infos` marks a window when ANY of its leaves has

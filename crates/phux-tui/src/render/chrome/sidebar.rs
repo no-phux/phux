@@ -44,9 +44,9 @@ pub const NEEDS_YOU_HEADER: &str = "Agents";
 /// Sessions header, including the current session.
 pub const SPACES_HEADER: &str = "Sessions";
 /// Quiet placeholders keep both fixed areas recognizable.
-pub const AGENTS_EMPTY: &str = "none running yet";
+pub const AGENTS_EMPTY: &str = "—";
 /// Placeholder when no sessions are available.
-pub const SESSIONS_EMPTY: &str = "no sessions";
+pub const SESSIONS_EMPTY: &str = "—";
 /// Label of a truncated area's overflow row.
 pub const OVERFLOW_LABEL: &str = "more";
 /// The collapse chevron painted in the strip's bottom corner
@@ -679,9 +679,7 @@ impl SidebarPainter {
     fn header_line(&self, label: &str, text_w: u16) -> Line<'static> {
         Line::from(Span::styled(
             truncate(label, usize::from(text_w)),
-            Style::default()
-                .fg(self.theme.sidebar_section)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(self.theme.sidebar_section),
         ))
     }
 

@@ -4,10 +4,10 @@ expression: out
 ---
 ┌──────────── command palette ─────────────┐
 │ >                                        │
-│                                          │
 │ split-pane                         C-a | │
 │ new-window                         C-a c │
 │ detach                             C-a d │
+│                                          │
 │                                          │
 │                                          │
 │                                          │

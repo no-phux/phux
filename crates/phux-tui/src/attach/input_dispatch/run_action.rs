@@ -52,11 +52,8 @@ pub(super) fn push_action_finder(ctx: &mut DispatchCtx<'_>) {
         ctx.plugin_actions,
         ctx.plugin_panes,
     );
-    ctx.overlays.push(Box::new(SelectList::new(
-        "Commands & Help",
-        items,
-        ctx.theme,
-    )));
+    ctx.overlays
+        .push(Box::new(SelectList::new("Commands", items, ctx.theme)));
 }
 
 /// Take the next client request id, advancing the driver's counter.
@@ -958,8 +955,7 @@ fn push_session_picker(ctx: &mut DispatchCtx<'_>) {
     let items = session_picker_rows(ctx.sessions, ctx.focused_session, ctx.hosts, ctx.workspace);
     *ctx.host_refresh_request = true;
     ctx.overlays.push(Box::new(
-        SelectList::new("Sessions & hosts", items, ctx.theme)
-            .with_live_key(SESSION_PICKER_LIVE_KEY),
+        SelectList::new("Sessions", items, ctx.theme).with_live_key(SESSION_PICKER_LIVE_KEY),
     ));
 }
 
@@ -1003,7 +999,7 @@ fn push_agent_fleet(
         return;
     }
     ctx.overlays.push(Box::new(
-        SelectList::new("Agent fleet", items, ctx.theme)
+        SelectList::new("Fleet", items, ctx.theme)
             .with_live_key(crate::attach::fleet::FLEET_LIVE_KEY),
     ));
 }
