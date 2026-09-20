@@ -32,22 +32,34 @@ build-release:
 
 
 # Build the current checkout and atomically install its developer binaries.
-# The binaries live in Cargo's bin dir, matching normal source installs. Keep
-# that directory ahead of Homebrew in PATH so there is one developer binary.
+# Same destination as `curl | sh` (`$HOME/.local/bin`, or `$PHUX_INSTALL_DIR`)
+# so PATH does not have to be rearranged. Also publish to Cargo's bin dir so
+# a cargo-first PATH still hits this checkout.
 [group('build')]
-[doc('Build and atomically install the developer binaries into Cargo bin dir.')]
+[doc('Build and atomically install the developer binaries next to the curl installer.')]
 install-dev:
     #!/usr/bin/env bash
     set -euo pipefail
     cargo build -p phux -p phux-mcp
-    install_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
-    mkdir -p "$install_dir"
-    install -m 755 target/debug/phux "$install_dir/.phux.new"
-    install -m 755 target/debug/phux-mcp "$install_dir/.phux-mcp.new"
-    mv -f "$install_dir/.phux.new" "$install_dir/phux"
-    mv -f "$install_dir/.phux-mcp.new" "$install_dir/phux-mcp"
-    echo "installed development binaries to $install_dir"
-    echo "phux -> $install_dir/phux"
+    publish() {
+        local dest=$1
+        mkdir -p "$dest"
+        # Replace a symlink with a real binary so we do not write through
+        # to another install location.
+        [[ -L "$dest/phux" ]] && rm -f "$dest/phux"
+        [[ -L "$dest/phux-mcp" ]] && rm -f "$dest/phux-mcp"
+        install -m 755 target/debug/phux "$dest/.phux.new"
+        install -m 755 target/debug/phux-mcp "$dest/.phux-mcp.new"
+        mv -f "$dest/.phux.new" "$dest/phux"
+        mv -f "$dest/.phux-mcp.new" "$dest/phux-mcp"
+        echo "phux -> $dest/phux"
+    }
+    user_dir="${PHUX_INSTALL_DIR:-$HOME/.local/bin}"
+    cargo_dir="${CARGO_HOME:-$HOME/.cargo}/bin"
+    publish "$user_dir"
+    if [[ "$(cd "$user_dir" && pwd -P)" != "$(cd "$cargo_dir" && pwd -P)" ]]; then
+        publish "$cargo_dir"
+    fi
 
 
 # Install the rebuilt developer binaries, then hot-swap a server that was
@@ -57,7 +69,7 @@ install-dev:
 [doc('Install rebuilt binaries, then hot-swap the running server, keeping sessions.')]
 rebuild:
     just install-dev
-    "${CARGO_HOME:-$HOME/.cargo}/bin/phux" upgrade
+    phux upgrade
 
 
 # Compile opt-out consumers separately: workspace feature unification masks them.
