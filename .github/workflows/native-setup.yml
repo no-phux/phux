@@ -14,7 +14,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: mini-v1-native-setup-${{ github.ref }}
+  # Same rule as ci.yml: pull requests are latest-wins, but every main SHA
+  # keeps its own run. Keyed on the ref alone, consecutive merges cancelled
+  # each other's validation of main, so a fast merge sequence left
+  # commits with no setup smoke at all.
+  group: mini-v1-native-setup-${{ github.event_name == 'push' && github.sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
