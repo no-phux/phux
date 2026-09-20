@@ -67,3 +67,15 @@ publish-protocol-dry:
 [confirm('Publish phux-protocol to crates.io? This cannot be undone. [y/N]')]
 publish-protocol:
     cargo publish --locked -p phux-protocol
+
+
+# PhuxFFI.xcframework: phux-client-ffi as a static library with the libghostty
+# engine for iOS devices, the arm64 simulator and arm64 macOS, under a
+# `PhuxFFI` module map, plus its provenance file (ADR-0133). Needs full Xcode
+# with the iOS SDK, rustup and the pinned Zig; ffi-xcframework.yml attaches
+# the same output to root releases. `just ffi-xcframework --dev` skips the
+# device slice.
+[group('release')]
+[doc('Build PhuxFFI.xcframework (device, simulator, macOS) and its provenance file.')]
+ffi-xcframework *ARGS:
+    bash scripts/build-ffi-xcframework.sh {{ARGS}}
