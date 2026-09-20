@@ -99,6 +99,17 @@ impl Drop for OutputPumpTask {
     }
 }
 
+impl OutputPumpTask {
+    /// Drop tracking without aborting the task.
+    ///
+    /// A fenced pump may still be publishing a final screen onto the consumer
+    /// mailbox after the pane is reaped (phux-fpgl.28). Aborting that send
+    /// leaves the consumer with only `RESOURCE_CLOSED`.
+    fn release(self) {
+        let _ = std::mem::ManuallyDrop::new(self);
+    }
+}
+
 /// Every resource-keyed table the server owns, plus the client
 /// subscriptions and output pumps that hang off them.
 ///
@@ -403,6 +414,21 @@ impl ResourceTable {
         tasks.push(OutputPumpTask { abort, done });
     }
 
+    /// Let this pane's output pumps finish without aborting them.
+    fn release_output_pumps(&mut self, terminal: ResourceId) {
+        let keys: Vec<_> = self
+            .output_pumps
+            .keys()
+            .filter(|(_, pane)| *pane == terminal)
+            .copied()
+            .collect();
+        for key in keys {
+            for task in self.output_pumps.remove(&key).unwrap_or_default() {
+                task.release();
+            }
+        }
+    }
+
     /// Abort every output task for this subscription and return their exit
     /// fences. Generation bookkeeping remains available to replacement attach.
     pub(super) fn stop_output_pumps(
@@ -504,12 +530,17 @@ impl ResourceTable {
     /// pumps: the broadcast channel is closing anyway, but the cancel keeps
     /// the token map bounded and the teardown prompt.
     ///
+    /// Output pump *tasks* are released rather than aborted: a fenced pump
+    /// may still be publishing the final screen the consumer is owed
+    /// (phux-fpgl.28). Cooperative cancel still stops `ATTACH_RESOURCE`
+    /// pumps once that publish finishes.
+    ///
     /// The wire-id retirement and the per-resource metadata / agent-record
     /// cleanup that pair with this stay on
     /// [`super::ServerState::reap_terminal`] — they are keyed on the wire id
     /// this resource is about to give up.
     pub(super) fn forget_resource(&mut self, terminal: ResourceId) {
-        self.output_pumps.retain(|(_, pane), _| *pane != terminal);
+        self.release_output_pumps(terminal);
         self.handles.remove(&terminal);
         if let Some(token) = self.tokens.remove(&terminal) {
             token.cancel();

@@ -26,7 +26,10 @@
 //! after its marker — made both halves a race under CPU load: a slow runner
 //! could reach the end of the stall before the ring overflowed, or see the
 //! pane exit (and its resync die with it) while the pump was still fenced,
-//! leaving the consumer waiting on a frame that never came.
+//! leaving the consumer waiting on a frame that never came. That product
+//! gap is phux-fpgl.28: a non-retained pane now flushes a final resync to
+//! fenced pumps before `RESOURCE_CLOSED`, pinned by
+//! [`lagged_consumer_of_an_exiting_pane_receives_the_final_screen_before_close`].
 //!
 //! One trap this test fell into once, worth naming: the bootstrap arrives
 //! *interleaved ahead of* the `COMMAND_RESULT` that answers `ATTACH_RESOURCE`,
@@ -49,7 +52,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, StreamId};
-use phux_protocol::wire::frame::{Command, CommandResult, FrameKind, SpawnResult};
+use phux_protocol::wire::frame::{Command, CommandResult, ErrorCode, FrameKind, SpawnResult};
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, attach_by_name, recv_typed, recv_until, run_local, send_frame,
@@ -430,6 +433,145 @@ fn lagged_consumer_of_a_retained_pane_converges_on_the_final_screen_after_exit()
             }
             if screen.contains(TAIL_MARKER) {
                 break;
+            }
+        }
+        assert!(
+            oracle.generations > 1,
+            "the consumer never lagged, so the test proves nothing",
+        );
+
+        drop(probe);
+        drop(watcher);
+        drop(owner);
+        let _ = shutdown.send(());
+        let _ = server.await;
+    });
+}
+
+/// Poll `GET_SCREEN` until `needle` is on the server grid, or until the
+/// pane is gone. A non-retained pane can be reaped between polls after
+/// its child exits; that is the dump having finished, not a GET_SCREEN
+/// failure (phux-fpgl.28).
+async fn wait_for_screen_or_reap(probe: &mut UnixStream, pane: &ResourceId, needle: &str) {
+    use phux_protocol::wire::frame::CommandValue;
+    let started = Instant::now();
+    for request_id in 700.. {
+        assert!(
+            started.elapsed() < HANG_GUARD,
+            "pane never showed {needle:?} and was never reaped"
+        );
+        send_frame(
+            probe,
+            &FrameKind::Command {
+                request_id,
+                command: Command::GetScreen {
+                    terminal_id: pane.clone(),
+                    request_scrollback: None,
+                    cells: false,
+                    format: 0,
+                },
+            },
+        )
+        .await;
+        match phux_server_testkit::await_command_result(probe, request_id).await {
+            CommandResult::OkWith(CommandValue::Json(json)) if json.contains(needle) => return,
+            CommandResult::OkWith(CommandValue::Json(_)) => {}
+            CommandResult::Error {
+                code: ErrorCode::TerminalNotFound,
+                ..
+            } => return,
+            other => panic!("GET_SCREEN failed: {other:?}"),
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Poll `GET_STATE` on `probe` until `pane` is no longer listed. A
+/// non-retained pane is reaped on exit, so absence is the close.
+async fn wait_until_reaped(probe: &mut UnixStream, pane: &ResourceId) {
+    use phux_protocol::wire::frame::{CommandValue, StateScope};
+    let started = Instant::now();
+    for request_id in 600.. {
+        assert!(
+            started.elapsed() < HANG_GUARD,
+            "the non-retained pane was never reaped"
+        );
+        send_frame(
+            probe,
+            &FrameKind::Command {
+                request_id,
+                command: Command::GetState {
+                    scope: StateScope::Server,
+                },
+            },
+        )
+        .await;
+        let result = phux_server_testkit::await_command_result(probe, request_id).await;
+        let CommandResult::OkWith(CommandValue::State(snapshot)) = result else {
+            panic!("GET_STATE failed: {result:?}");
+        };
+        if snapshot.resources.iter().all(|r| &r.id != pane) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// phux-fpgl.28: a fenced consumer of a NON-retained pane whose child
+/// exits while the consumer is behind still receives the final screen
+/// before `RESOURCE_CLOSED`. The exit watcher used to reap the pane and
+/// abort the pump with only the close, so the pending resync died with the
+/// engine and `phux rec`-style watchers lost the last grid.
+#[test]
+fn lagged_consumer_of_an_exiting_pane_receives_the_final_screen_before_close() {
+    phux_server::resource::set_output_broadcast_capacity_for_test(TEST_OUTPUT_BROADCAST);
+    run_local(async {
+        let tmp = TempDir::new().unwrap();
+        let socket = tmp.path().join("phux.sock");
+        let gate = tmp.path().join("dump.gate");
+        let mut seed = CommandBuilder::new("/bin/sh");
+        seed.args(["-c", "while :; do sleep 3600; done"]);
+        let (shutdown, server) = spawn_server_with_seed_cmd(socket.clone(), "lag", seed);
+
+        let mut owner = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        send_frame(&mut owner, &attach_by_name("lag")).await;
+        let pane = spawn_burst_pane(&mut owner, exiting_burst_cmd(&gate), None).await;
+
+        let mut watcher = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        let opening = attach_terminal_only(&mut watcher, &pane).await;
+        let mut oracle = SequenceOracle::default();
+        let mut screen = Screen::new(COLS, ROWS).expect("screen oracle");
+        for frame in &opening {
+            if let Applied::Fatal(what) = apply(frame, &mut oracle, &mut screen) {
+                panic!("subscription failed while opening: {what}");
+            }
+        }
+
+        let mut probe = wait_for_socket(&socket, SOCKET_CONNECT_DEADLINE).await;
+        std::fs::write(&gate, b"").expect("open the dump gate");
+        // GET_SCREEN can lose the race with reap on a non-retained pane;
+        // TerminalNotFound means the dump finished and the engine is gone.
+        wait_for_screen_or_reap(&mut probe, &pane, TAIL_MARKER).await;
+        wait_until_reaped(&mut probe, &pane).await;
+
+        let started = Instant::now();
+        loop {
+            assert!(
+                started.elapsed() < HANG_GUARD,
+                "a lagged consumer of an exiting pane never converged after its close"
+            );
+            let (_type_byte, frame) = recv_typed(&mut watcher).await;
+            if matches!(&frame, FrameKind::ResourceClosed { terminal_id, .. } if *terminal_id == pane)
+            {
+                assert!(
+                    screen.contains(TAIL_MARKER),
+                    "RESOURCE_CLOSED arrived without the final screen; the pending \
+                     resync died with the pane"
+                );
+                break;
+            }
+            if let Applied::Fatal(what) = apply(&frame, &mut oracle, &mut screen) {
+                panic!("server ended the subscription instead of resyncing: {what}");
             }
         }
         assert!(

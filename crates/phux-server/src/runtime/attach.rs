@@ -609,6 +609,11 @@ impl OutputPumpContext {
 
     /// Forward one live PTY chunk, dropping anything a tombstone voided or the
     /// published bootstrap already covered.
+    ///
+    /// A full consumer mailbox is a gap: parking on `send` would keep this
+    /// pump off the broadcast until the consumer drains, so a pane that exits
+    /// in that window cannot deliver the resync the pump is about to ask for
+    /// (phux-fpgl.28). Fence and skip to a fresh screen instead.
     async fn forward_live(
         &self,
         generation: &mut PumpGeneration,
@@ -619,14 +624,20 @@ impl OutputPumpContext {
             return ControlFlow::Continue(());
         }
         let frame = self.output_frame(generation, seq, bytes);
-        if self.out_tx.send(Outbound::Frame(frame)).await.is_err() {
-            return ControlFlow::Break(Some(PumpFault::OutboundClosed));
+        match pump::try_send_frame(&self.out_tx, frame) {
+            pump::MailboxForward::Sent => {
+                crate::perf::PUMP_FRAMES.incr();
+                crate::perf::PUMP_BYTES.add_len(bytes.len());
+                crate::perf::PUMP_FRAME_BYTES.record_len(bytes.len());
+                generation.note_forwarded(seq);
+                ControlFlow::Continue(())
+            }
+            pump::MailboxForward::Closed => ControlFlow::Break(Some(PumpFault::OutboundClosed)),
+            pump::MailboxForward::Full => {
+                self.request_gap_resync(generation, GapCause::Backpressure)
+                    .await
+            }
         }
-        crate::perf::PUMP_FRAMES.incr();
-        crate::perf::PUMP_BYTES.add_len(bytes.len());
-        crate::perf::PUMP_FRAME_BYTES.record_len(bytes.len());
-        generation.note_forwarded(seq);
-        ControlFlow::Continue(())
     }
 
     /// Does this ordered control frame name this pump's terminal, stream, and
@@ -969,6 +980,9 @@ enum GapCause {
     /// The chunk in hand was read from the pane this long ago, past
     /// [`pump::STALE_OUTPUT_BUDGET`].
     Stale(std::time::Duration),
+    /// The consumer mailbox was full; parking would have kept the pump off
+    /// the broadcast (phux-fpgl.28).
+    Backpressure,
 }
 
 impl std::fmt::Display for GapCause {
@@ -976,6 +990,7 @@ impl std::fmt::Display for GapCause {
         match self {
             Self::Dropped(n) => write!(f, "broadcast dropped {n} chunks"),
             Self::Stale(age) => write!(f, "chunk {}ms old", age.as_millis()),
+            Self::Backpressure => write!(f, "consumer mailbox full"),
         }
     }
 }
