@@ -92,7 +92,7 @@ use phux_protocol::wire::frame::{
 };
 use phux_server::{ServerConfig, ServerError, ServerRuntime};
 use phux_server_testkit::{
-    encode_frame, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket,
+    encode_frame, recv_command_result, recv_typed, send_frame, wait_for_raw_socket, wait_for_socket,
 };
 use tempfile::TempDir;
 use tokio::net::{TcpStream, UnixStream};
@@ -370,17 +370,7 @@ async fn get_screen_via_hub(
         },
     )
     .await;
-    loop {
-        let (_, frame) = recv_typed(hub).await;
-        if let FrameKind::CommandResult {
-            request_id: got,
-            result,
-        } = frame
-            && got == request_id
-        {
-            return result;
-        }
-    }
+    recv_command_result(hub, request_id).await
 }
 
 /// Retry `GET_SCREEN` through the hub until the link connects and the
@@ -451,17 +441,11 @@ fn command_round_trip_and_stream_retagging() {
             },
         )
         .await;
-        loop {
-            let (_, frame) = recv_typed(&mut hub).await;
-            if let FrameKind::CommandResult {
-                request_id: 2000,
-                result,
-            } = frame
-            {
-                assert_eq!(result, CommandResult::Ok, "ROUTE_INPUT relays Ok");
-                break;
-            }
-        }
+        assert_eq!(
+            recv_command_result(&mut hub, 2000).await,
+            CommandResult::Ok,
+            "ROUTE_INPUT relays Ok"
+        );
 
         // 2. Return leg re-tagging: subscribe to the satellite pane's
         //    events through the hub, trigger one via a relayed
