@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-15
+last-reviewed: 2026-09-19
 ---
 
 # Module structure
@@ -403,7 +403,10 @@ src/
                         the `server_id:seq` cursor type `--after` parses
                         and prints; wait.rs is the D2 algorithm (subscribe
                         with `after_seq`, then a level `GET_STATE` read —
-                        race-free and idempotent); show.rs is one
+                        race-free and idempotent; its reconnect pause is
+                        `phux-client-runtime`'s agent-verb `Ladder`, the
+                        shared ADR-0133 policy, not a local constant);
+                        show.rs is one
                         resource's inspection record (kind, lifecycle,
                         exit, process, input holder, tags, agent); methods.rs
                         intersects the `phux-protocol::kinds` catalog with
@@ -635,10 +638,14 @@ rather than a layer with its own internal architecture worth diagramming:
   `dial.rs` turns a resolved entry into a `phux-dial` plan under the CLI's
   trust rules (pin off loopback, `wss://` plus a token when routable), owns
   the operator-facing wording of every dial failure, and cuts SPEC §5
-  frames for the WebSocket lane; `reconnect.rs` is the backoff ladder and
-  the fatal-refusal rule (401/403 upgrade, QUIC `AUTH_FAILED`), the one
-  home the TUI and the mobile bridge move their reconnects onto in later
-  rungs; `tunnel.rs` is the byte-relay tunnel a
+  frames for the WebSocket lane; `reconnect.rs` is the backoff `Ladder`
+  (one preset per lane: interactive for the TUI's remote dials and the
+  mobile bridge, agent-verb for `phux resource wait`, the flat
+  local-upgrade poll for the UDS graceful-upgrade blink) and the
+  fatal-refusal rule (401/403 upgrade, QUIC `AUTH_FAILED`); the `phux`
+  binary's attach loop and `phux-client`'s wait verb walk it today, and
+  the mobile bridge moves onto it at its next pin; `tunnel.rs` is the
+  byte-relay tunnel a
   socket-owning embedder hands one end of a Unix-domain socket pair, with
   its dedicated thread, cancellation, and panic containment. It exposes a
   Rust API and no FFI; `phux-client-ffi` and phux-mobile's bridge are shims

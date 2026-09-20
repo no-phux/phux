@@ -81,13 +81,18 @@ Five crate boundaries carry weight:
    on it.
 5. **`phux-client-runtime` is the one orchestration layer below every
    binding** (ADR-0133). It sits above `phux-dial` and `phux-config` and
-   below `phux-client-ffi`: registry resolution, dial planning under the
-   CLI's trust rules, reconnect policy, WebSocket frame cutting, and the
-   relay tunnel exist once, as a Rust API with no FFI. A binding crate
-   translates runtime-owned values into its language's idiom and holds no
-   state machine; a loop, a `select!`, or a backoff constant in a binding
-   is in the wrong crate. phux-mobile's UniFFI bridge is the second
-   consumer, across its `PHUX_REV` pin.
+   below `phux-client-ffi`, `phux-client`, and the `phux` binary: registry
+   resolution, dial planning under the CLI's trust rules, reconnect policy,
+   WebSocket frame cutting, and the relay tunnel exist once, as a Rust API
+   with no FFI. The reconnect policy is one `Ladder` with a preset per
+   lane: `phux-client`'s agent verbs walk the fast agent-verb ladder and
+   the binary's attach loop walks the interactive one for remote dials and
+   the flat local-upgrade poll for UDS, so no consumer carries a backoff
+   constant of its own. A binding crate translates runtime-owned values
+   into its language's idiom and holds no state machine; a loop, a
+   `select!`, or a backoff constant in a binding is in the wrong crate.
+   phux-mobile's UniFFI bridge is the second binding, across its
+   `PHUX_REV` pin.
 
 `server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
 also depend on `libghostty-vt` directly: the server's `Terminal` is the
