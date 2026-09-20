@@ -1929,10 +1929,10 @@ pub(crate) async fn broadcast_terminal_closed(
             ?exit,
             "RESOURCE_CLOSED: broadcasting to subscribed clients",
         );
-        // Concurrent, and only after a fenced pump has had a chance to
-        // occupy the mailbox with the EOF snapshot: sequential await let a
-        // stalled owner starve every other subscriber, and a close that
-        // jumped an empty mailbox beat the snapshot (phux-fpgl.28).
+        // Concurrent: sequential await let a stalled owner starve every
+        // other subscriber, so a lagged watcher never saw RESOURCE_CLOSED
+        // (phux-fpgl.28). The EOF snapshot is already parking on `send` in
+        // the addressed pump; do not delay close for occupancy.
         let sends = targets.iter().map(|tx| {
             let tx = tx.clone();
             let frame = Outbound::Frame(FrameKind::ResourceClosed {
@@ -1942,16 +1942,6 @@ pub(crate) async fn broadcast_terminal_closed(
                 signal: exit.signal,
             });
             async move {
-                let occupied = tx.max_capacity().saturating_sub(tx.capacity());
-                for _ in 0..64 {
-                    if tx.capacity() == 0 {
-                        break;
-                    }
-                    if tx.max_capacity().saturating_sub(tx.capacity()) > occupied {
-                        break;
-                    }
-                    tokio::task::yield_now().await;
-                }
                 let _ = tx.send(frame).await;
             }
         });

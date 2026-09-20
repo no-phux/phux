@@ -335,7 +335,6 @@ impl TerminalActor {
 
                 () = self.core.token.cancelled() => {
                     let _ = self.flush_final_gap_resync(&mut state.resync);
-                    tokio::task::yield_now().await;
                     self.shutdown_from_cancel().await;
                     return;
                 }
@@ -490,13 +489,15 @@ impl TerminalActor {
         true
     }
 
-    /// After PTY EOF: publish the last screen, then tell the exit watcher
+    /// After PTY EOF: fire any owed gap snapshot, then tell the exit watcher
     /// the child is gone.
     ///
-    /// Yield until a lagged pump has asked (or a small turn budget expires),
-    /// fire an everyone-resync so every subscriber gets the last grid, then
-    /// yield again so pumps can start publishing before `notify_exit`
-    /// (phux-fpgl.28).
+    /// A fenced pump's request is already in `resize_rx` or on the debounce
+    /// from the dump that lapped it. Firing that snapshot — and only that
+    /// snapshot — lets the pump start parking on `send` before
+    /// `RESOURCE_CLOSED` joins the mailbox queue. An everyone-resync on every
+    /// exit would republish a healthy attach and lose the last-pane close to
+    /// server self-exit (phux-fpgl.28).
     #[allow(
         clippy::future_not_send,
         reason = "ADR-0014: TerminalActor owns !Send Terminal; lives on LocalSet"
@@ -505,23 +506,11 @@ impl TerminalActor {
         if self.pty_rx.is_some() || self.core.exit_notify.is_none() || self.exit.is_none() {
             return;
         }
-        for _ in 0..64 {
-            if resync.pending || !self.resize_rx.is_empty() {
-                break;
-            }
+        if self.flush_final_gap_resync(resync) {
+            // One turn so the addressed pump can start the snapshot send
+            // before `notify_exit` lets the close waiter join the mailbox.
             tokio::task::yield_now().await;
         }
-        let _ = self.flush_final_gap_resync(resync);
-        // Always everyone, twice: a targeted fire names only the pump that
-        // asked (the session owner often wins), and a 4-slot ring can still
-        // sit leftover Live ahead of the first snapshot (phux-fpgl.28).
-        self.broadcast_resync(ResyncReason::OutboundGap, ResyncAudience::Everyone);
-        for _ in 0..8 {
-            tokio::task::yield_now().await;
-        }
-        self.broadcast_resync(ResyncReason::OutboundGap, ResyncAudience::Everyone);
-        tokio::task::yield_now().await;
-        tokio::task::yield_now().await;
         if let Some(exit) = self.exit.as_ref() {
             self.core.notify_exit(phux_core::process::ExitOutcome {
                 status: exit.status,
