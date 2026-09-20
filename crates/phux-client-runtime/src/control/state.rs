@@ -46,7 +46,10 @@ impl ControlPlane {
                         error: Some(message.to_owned()),
                     });
                 }
-                Pending::RefreshTopology => {}
+                // Refreshes need no receipt. Durable uploads retain their id
+                // and acknowledged offset for the next connection; transcribe
+                // correlations were resolved by `reset_extension_correlations`.
+                Pending::RefreshTopology | Pending::PutFile(_) | Pending::Transcribe(_) => {}
                 Pending::Extension => {
                     self.push_event(Event::CommandResult {
                         request_id,

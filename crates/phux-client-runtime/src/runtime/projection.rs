@@ -35,6 +35,33 @@ impl Client {
         self.inner.publication.slot(terminal_id)
     }
 
+    /// Add predictive text and publish the resulting presentation.
+    #[cfg(feature = "engine")]
+    pub fn predict_text(
+        &self,
+        terminal_id: &ResourceId,
+        text: String,
+    ) -> Result<bool, crate::engine::EngineError> {
+        lock(&self.inner.control)
+            .engine()
+            .cloned()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .predict_text(terminal_id, text)
+    }
+
+    /// Clear predictive text and republish authoritative state.
+    #[cfg(feature = "engine")]
+    pub fn clear_predictions(
+        &self,
+        terminal_id: &ResourceId,
+    ) -> Result<bool, crate::engine::EngineError> {
+        lock(&self.inner.control)
+            .engine()
+            .cloned()
+            .ok_or(crate::engine::EngineError::Stopped)?
+            .clear_predictions(terminal_id)
+    }
+
     /// Scroll the terminal's viewport; the new frame is published before
     /// this returns.
     #[cfg(feature = "engine")]

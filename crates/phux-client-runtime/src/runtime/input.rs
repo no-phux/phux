@@ -61,6 +61,14 @@ impl Client {
         self.acknowledged(|control| control.apply_tab_completion(terminal_id, text))
     }
 
+    /// Publish an immediate binding-boundary refusal from the runtime's
+    /// correlation sequence (for example, an invalid textual resource id).
+    #[must_use]
+    pub fn refuse_acknowledged_input(&self, message: &str) -> u64 {
+        let message = message.to_owned();
+        self.acknowledged(|control| control.refuse_acknowledged_input(&message))
+    }
+
     fn acknowledged(&self, f: impl FnOnce(&mut ControlPlane) -> u64) -> u64 {
         let (id, resolved) = self.inner.with(|control| {
             let before = control.has_events();
@@ -85,6 +93,12 @@ impl Client {
         lock(&self.inner.control).delivery_fenced(terminal_id)
     }
 
+    /// Confirm that a fresh authoritative projection reached the consumer.
+    pub fn acknowledge_projection(&self, terminal_id: &ResourceId) {
+        self.inner
+            .with(|control| control.acknowledge_projection(terminal_id));
+    }
+
     // ----- events subscription and extension points --------------------
 
     /// Subscribe to the server-wide event stream from a journal cursor.
@@ -98,6 +112,13 @@ impl Client {
     #[must_use]
     pub fn send_command(&self, command: Command) -> u32 {
         self.inner.with(|control| control.send_command(command))
+    }
+
+    /// Extension point: allocate a correlation id from the runtime's one
+    /// sequence, so binding-owned frames cannot collide with built-in work.
+    #[must_use]
+    pub fn next_request_id(&self) -> u32 {
+        self.inner.with(ControlPlane::next_request_id)
     }
 
     /// Extension point: queue any frame.

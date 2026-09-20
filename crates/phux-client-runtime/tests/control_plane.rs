@@ -6,12 +6,13 @@
 #![allow(clippy::panic, reason = "test assertions")]
 
 use phux_client_runtime::control::{
-    ControlError, ControlOptions, ControlPlane, Event, SpawnRequest, Status, StreamRecovery,
+    ControlError, ControlOptions, ControlPlane, Event, FileUploadOutcome, SpawnRequest, Status,
+    StreamRecovery,
 };
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Layer, LayerSet, ServerCapabilities,
-    ServerFeatureSet,
+    ServerFeature, ServerFeatureSet,
 };
 use phux_protocol::ids::{BootstrapId, ClientId, ResourceId, SessionId, StreamId, WindowId};
 use phux_protocol::wire::frame::{
@@ -35,6 +36,30 @@ fn hello_ok(patch: u16) -> FrameKind {
         server_id: vec![0xAB; 16],
         selected_profile: BootstrapProfile::SynthesizedVtRaw,
         bootstrap_limits: BootstrapLimits::default(),
+    }
+}
+
+fn hello_ok_with(features: &[ServerFeature]) -> FrameKind {
+    let FrameKind::HelloOk {
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        server_caps,
+        server_id,
+        selected_profile,
+        bootstrap_limits,
+    } = hello_ok(PROTOCOL_VERSION.patch)
+    else {
+        unreachable!()
+    };
+    FrameKind::HelloOk {
+        protocol_major,
+        protocol_minor,
+        protocol_patch,
+        server_caps: server_caps.with_features(ServerFeatureSet::with(features)),
+        server_id,
+        selected_profile,
+        bootstrap_limits,
     }
 }
 
@@ -527,4 +552,82 @@ fn frames_the_plane_does_not_consume_reach_a_binding_and_commands_correlate() {
         event,
         Event::CommandResult { request_id: id, .. } if *id == request_id
     )));
+}
+
+#[test]
+fn file_upload_replays_the_same_chunk_after_a_reconnect() {
+    let mut plane = ControlPlane::new(ControlOptions::default());
+    plane.connection_opened();
+    plane.take_outbound();
+    plane
+        .feed(hello_ok_with(&[ServerFeature::FileUpload]))
+        .expect("HELLO_OK");
+    plane.take_outbound();
+
+    let transfer_id = plane.put_file(terminal(), "png".to_owned(), b"image".to_vec());
+    let first = plane.take_outbound();
+    let FrameKind::Command {
+        request_id: first_request,
+        command:
+            Command::PutFile {
+                upload_id,
+                offset,
+                data,
+                final_chunk,
+                ..
+            },
+    } = decode(&first[0])
+    else {
+        panic!("upload command");
+    };
+    assert_eq!(offset, 0);
+    assert_eq!(data, b"image");
+    assert!(final_chunk);
+
+    plane.connection_lost(Some("reset".to_owned()));
+    plane.connection_opened();
+    plane.take_outbound();
+    plane
+        .feed(hello_ok_with(&[ServerFeature::FileUpload]))
+        .expect("replacement HELLO_OK");
+    let replay = plane.take_outbound();
+    let FrameKind::Command {
+        request_id: replay_request,
+        command:
+            Command::PutFile {
+                upload_id: replay_id,
+                offset: replay_offset,
+                data: replay_data,
+                ..
+            },
+    } = decode(replay.last().expect("replayed upload"))
+    else {
+        panic!("replayed upload command");
+    };
+    assert_ne!(first_request, replay_request);
+    assert_eq!(upload_id, replay_id, "retry-stable secret upload id");
+    assert_eq!(replay_offset, 0);
+    assert_eq!(replay_data, b"image");
+
+    plane
+        .feed(FrameKind::CommandResult {
+            request_id: replay_request,
+            result: CommandResult::OkWith(CommandValue::FileUpload(
+                phux_protocol::wire::frame::FileUploadAck {
+                    next_offset: 5,
+                    path: Some("/tmp/image.png".to_owned()),
+                },
+            )),
+        })
+        .expect("upload ack");
+    assert_eq!(
+        plane.take_file_upload_receipts(),
+        vec![phux_client_runtime::control::FileUploadReceipt {
+            transfer_id,
+            outcome: FileUploadOutcome::Completed,
+            path: Some("/tmp/image.png".to_owned()),
+            code: None,
+            message: String::new(),
+        }]
+    );
 }

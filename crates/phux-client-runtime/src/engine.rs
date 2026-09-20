@@ -56,6 +56,8 @@ mod apply;
 #[cfg(not(feature = "engine"))]
 pub mod byte_adapter;
 mod owner;
+#[cfg(feature = "engine")]
+mod predict;
 
 use owner::Owner;
 
@@ -433,6 +435,10 @@ enum Query {
     #[cfg(feature = "engine")]
     IsAltScreen(ResourceId, Sender<bool>),
     #[cfg(feature = "engine")]
+    PredictText(ResourceId, String, Sender<Result<bool, EngineError>>),
+    #[cfg(feature = "engine")]
+    ClearPredictions(ResourceId, Sender<Result<bool, EngineError>>),
+    #[cfg(feature = "engine")]
     Republish(ResourceId, Sender<Result<bool, EngineError>>),
     #[cfg(feature = "engine")]
     ReplicaInfo(ResourceId, Sender<Result<ReplicaInfo, EngineError>>),
@@ -597,6 +603,22 @@ impl EngineHandle {
     pub fn is_alt_screen(&self, terminal_id: &ResourceId) -> bool {
         self.request(|reply| Command::Query(Query::IsAltScreen(terminal_id.clone(), reply)))
             .unwrap_or(false)
+    }
+
+    /// Add a local predictive-text commit and publish its presentation.
+    #[cfg(feature = "engine")]
+    pub fn predict_text(
+        &self,
+        terminal_id: &ResourceId,
+        text: String,
+    ) -> Result<bool, EngineError> {
+        self.request(|reply| Command::Query(Query::PredictText(terminal_id.clone(), text, reply)))?
+    }
+
+    /// Clear local predictive presentation and republish authority.
+    #[cfg(feature = "engine")]
+    pub fn clear_predictions(&self, terminal_id: &ResourceId) -> Result<bool, EngineError> {
+        self.request(|reply| Command::Query(Query::ClearPredictions(terminal_id.clone(), reply)))?
     }
 
     /// Re-project and publish the terminal now, whether or not the kernel

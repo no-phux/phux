@@ -10,7 +10,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::{ConnectOptions, ConnectionEnd, Target, Transport};
 use crate::control::encode;
-use crate::dial::{dial_message, load_token, plan_quic, plan_ws, quic_closed_message, timed_out};
+use crate::dial::{
+    dial_message, load_token, plan_quic_with_token, plan_ws, quic_closed_message, timed_out,
+};
 use crate::reconnect::is_fatal_refusal;
 
 /// One established lane, read and written as SPEC section 5 frames.
@@ -170,7 +172,10 @@ async fn dial_ws(target: &Target, url: &str, options: ConnectOptions) -> Result<
         .ok_or_else(|| ConnectionEnd::Refused(format!("{name}: a WebSocket target needs a URL")))?;
     let ws = tokio::time::timeout(options.dial_timeout, async {
         // A planning failure is configuration, which no retry changes.
-        let token = load_token(&resolved).map_err(ConnectionEnd::Refused)?;
+        let token = match target.token.clone() {
+            Some(token) => Some(token),
+            None => load_token(&resolved).map_err(ConnectionEnd::Refused)?,
+        };
         let plan = plan_ws(&resolved, url, token).map_err(ConnectionEnd::Refused)?;
         let connected = phux_dial::ws::dial_with_identity(&plan, &TlsClientIdentity::None).await;
         // The Authorization header has been sent; drop the owned token now.
@@ -196,7 +201,7 @@ async fn dial_quic(
         ConnectionEnd::Refused(format!("{name}: a QUIC target needs an authority"))
     })?;
     let established = tokio::time::timeout(options.dial_timeout, async {
-        let plan = plan_quic(&resolved, authority)
+        let plan = plan_quic_with_token(&resolved, authority, target.token.clone())
             .await
             .map_err(ConnectionEnd::Refused)?;
         let connected = phux_dial::quic::dial_with_identity(&plan, &TlsClientIdentity::None).await;

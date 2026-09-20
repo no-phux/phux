@@ -660,8 +660,9 @@ rather than a layer with its own internal architecture worth diagramming:
   is the sans-IO `ControlPlane` over `SessionKernel`: decoded frames in,
   encoded frames and owned `Event`s out; it owns the
   `HELLO`/`ATTACH`/`DETACH` lifecycle, the topology, the per-terminal
-  verbs, raw and acknowledged input, and the event subscription.
-  `engine.rs` is the owner thread that hosts the kernel and every Ghostty
+  verbs, raw and acknowledged input, the event subscription, and the
+  reconnect-safe upload/transcription/directory extension queues consumed by
+  native bindings. `engine.rs` is the owner thread that hosts the kernel and every Ghostty
   replica (a bounded byte adapter without the `engine` feature);
   `publication.rs` the double-buffered grid a consumer acquires from any
   thread as an immutable `GridFrame` with a generation counter and dirty

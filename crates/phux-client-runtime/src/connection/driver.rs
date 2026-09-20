@@ -73,15 +73,35 @@ async fn wait_to_retry(
     signals: &mut Signals,
     wake: &Wake,
 ) -> bool {
-    tokio::select! {
-        () = tokio::time::sleep(backoff) => false,
-        () = signal(&mut signals.nudge) => false,
-        () = signal(&mut signals.resync) => false,
-        () = closed(&mut signals.close) => {
-            lock(shared).close();
-            wake();
-            true
+    let retry = tokio::time::sleep(backoff);
+    tokio::pin!(retry);
+    loop {
+        let expiry = expiry_wait(shared);
+        tokio::select! {
+            () = &mut retry => return false,
+            () = signal(&mut signals.nudge) => return false,
+            () = signal(&mut signals.resync) => return false,
+            () = tokio::time::sleep(expiry) => expire_operations(shared, wake),
+            () = closed(&mut signals.close) => {
+                lock(shared).close();
+                wake();
+                return true;
+            }
         }
+    }
+}
+
+fn expiry_wait(shared: &Shared) -> Duration {
+    lock(shared)
+        .next_operation_deadline()
+        .map_or_else(crate::control::max_expiry_wait, |deadline| {
+            deadline.saturating_duration_since(std::time::Instant::now())
+        })
+}
+
+fn expire_operations(shared: &Shared, wake: &Wake) {
+    if lock(shared).expire_operations() {
+        wake();
     }
 }
 
@@ -277,11 +297,7 @@ impl<'a> Pump<'a> {
     }
 
     fn expiry_wait(&self) -> Duration {
-        lock(self.shared)
-            .next_input_deadline()
-            .map_or_else(crate::control::max_expiry_wait, |deadline| {
-                deadline.saturating_duration_since(std::time::Instant::now())
-            })
+        expiry_wait(self.shared)
     }
 
     async fn flush_outbound(&mut self) -> Result<(), ConnectionEnd> {
@@ -303,7 +319,7 @@ impl<'a> Pump<'a> {
     async fn expire_inputs(&mut self) -> Result<(), ConnectionEnd> {
         let (expired, frames) = {
             let mut control = lock(self.shared);
-            let expired = control.expire_inputs();
+            let expired = control.expire_operations();
             (expired, control.take_outbound())
         };
         self.write_all(frames).await?;

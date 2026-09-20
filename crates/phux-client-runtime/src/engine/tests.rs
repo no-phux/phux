@@ -208,6 +208,20 @@ fn a_closed_terminal_loses_its_projection_unless_retained() {
     assert!(publication.acquire(&terminal).is_none());
 }
 
+#[cfg(feature = "engine")]
+#[test]
+fn releasing_a_live_terminal_keeps_its_current_publication() {
+    let (owner, publication) = owner();
+    let terminal = id(3);
+    attach(&owner, &terminal, b"live");
+    let generation = publication.generation(&terminal);
+
+    owner.release(&terminal);
+
+    assert!(owner.has_projection(&terminal));
+    assert_eq!(publication.generation(&terminal), generation);
+}
+
 #[cfg(not(feature = "engine"))]
 #[test]
 fn the_headless_replica_keeps_bytes_until_taken() {
