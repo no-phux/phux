@@ -9,7 +9,7 @@ Workflow orchestration is compile-free; Zig pins live in .config independently.
 `test_filterset` is the PR unit-test execution set (phux-14r7): rdeps of each
 changed workspace crate after a `--workspace` build. Empty means run
 everything — empty diffs, docs-only leftovers, or any path that is not a
-workspace crate (Cargo.toml, justfile, skills, scripts).
+workspace crate (Cargo.toml, skills, scripts, just modules).
 """
 
 from fnmatch import fnmatchcase
@@ -47,14 +47,24 @@ ROUTES = (
       "crates/portable-pty-adopt/*"), {"web"}),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",
       "crates/*/*.ld", "crates/*/*.lds", "crates/*/*.c", "crates/*/*.h"), {"native"}),
-    (("Cargo.toml", "rust-toolchain.toml", ".cargo/*",
-      "scripts/setup-rust.sh", "scripts/doctor.sh", "scripts/test-dev-setup.sh"), SHARED),
+    (("Cargo.toml", "rust-toolchain.toml", ".cargo/*"), SHARED),
     (("Cargo.lock",), SHARED),
-    (("scripts/native-smoke.sh",), RUST | {"native"}),
-    ((".config/zig-toolchain.json", "scripts/install-zig.sh",
-      "scripts/lib/dev-toolchain.sh"), ZIG),
+    # Setup helpers and just/setup.just are the native-setup assurance lane.
+    # They do not rebuild Cockpit, the browser, or the root Rust graph.
+    (("just/setup.just", "scripts/setup-rust.sh", "scripts/doctor.sh",
+      "scripts/test-dev-setup.sh", "scripts/native-smoke.sh"), {"native"}),
+    ((".config/zig-toolchain.json",), ZIG),
+    # install-zig.sh is how cockpit-ci, native-setup, and web-engine get Zig;
+    # the Nix phux lanes use flake.nix's compiler instead.
+    (("scripts/install-zig.sh", "scripts/lib/dev-toolchain.sh"),
+     {"cockpit", "native", "web_engine"}),
     (("flake.nix", "flake.lock"), RUST | {"web"}),
-    (("justfile", "release-please-config.json"), ALL),
+    (("just/gates.just", "just/test.just", "just/build.just"), {"phux"}),
+    (("just/cockpit.just",), {"cockpit"}),
+    # Root justfile is imports + `default`. Product recipes live in just/*.just.
+    # Perf/release/mutation and release-please config are compile-free.
+    (("justfile", "just/perf.just", "just/release.just", "just/mutation.just",
+      "release-please-config.json", "scripts/check-*"), set()),
 )
 WORKFLOWS = (
     ".github/workflows/*.yml", ".github/workflows/*.yaml",
@@ -89,10 +99,16 @@ def surfaces_for(path):
     if is_doc(path) or matches(path, WORKFLOWS):
         return set()
     selected = set()
+    matched = False
     for patterns, surfaces in ROUTES:
         if matches(path, patterns):
             selected.update(surfaces)
-    return selected or ALL.copy()
+            matched = True
+    # An explicit empty route is cheap (workflow-gate only). Unknown paths
+    # still fail closed into every surface.
+    if matched:
+        return selected
+    return ALL.copy()
 
 
 def workspace_packages(root=ROOT):

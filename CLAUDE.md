@@ -7,9 +7,8 @@ last-reviewed: 2026-09-08
 # phux Project Instructions for Agents
 
 **TL;DR.** phux-specific agent guidance layered on [`AGENTS.md`](./AGENTS.md)
-(universal rules): how to build and test (`nix develop`, `just ci`), the
-crate/architecture map, and the project conventions to follow when changing
-code or docs.
+(universal rules): how to build and test (`mise install` or `nix develop`,
+then `just ci`), the crate/architecture map, and the project conventions.
 
 See [`AGENTS.md`](./AGENTS.md) for universal agent instructions
 (shell hygiene, session completion protocol). This file adds
@@ -26,23 +25,19 @@ commit defaults in the managed Beads block and `bd prime`.
 
 ## Build & Test
 
-Start at [`docs/SETUP.md`](./docs/SETUP.md). Native tools and Nix are supported;
-select prerequisites by the work area instead of installing the full shell.
-Run `bash scripts/doctor.sh <area>` for prerequisites and the smallest relevant
-gate first. Expand validation for shared APIs, protocol/FFI, Cargo inputs, or
-build scripts. Report exact checks; a scoped pass is not a full CI pass.
-Keep setup/version details in that guide and the toolchain pins, not in agent
-instruction files. Browser engine regeneration uses verified pinned source.
-Beads is maintainer/agent task tracking, not a compiler or contributor gate
-dependency; outside contributors can use a GitHub issue/PR without it.
+Start at [`docs/SETUP.md`](./docs/SETUP.md). Pick `mise install` or
+`nix develop`, then the same commands. Keep setup/version details in that
+guide, not here. Browser engine regeneration uses verified pinned source.
+Beads is maintainer/agent task tracking, not a contributor gate.
 
 ```bash
+mise install        # or: nix develop
 just doctor native  # or core / docs / integrations / web / cockpit / ci
 just core-check     # example scoped loop; see SETUP.md for other areas
 just ci             # full root deterministic/unit gate set
 just ci-full        # ci + the real-server e2e and agent smoke lanes
-just check       # quick type-check
-just test        # cargo nextest run --workspace
+just check          # quick type-check
+just test           # cargo nextest run --workspace
 ```
 
 **`just ci-full` is the full root PR bar; scoped gates are the inner loop.** CI's

@@ -164,12 +164,17 @@ retains the visible `check`/`test` job names.
 |---|---|
 | Handwritten docs, including Cockpit README | Compile-free guards |
 | Workflow/action-only changes | Compile-free workflow/contract guards |
+| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*` | Compile-free guards |
+| `just/gates.just`, `just/test.just`, `just/build.just` | Root Rust check/test |
+| `just/cockpit.just` | Cockpit tests + shipping app |
+| `just/setup.just`, `scripts/doctor.sh`, `scripts/setup-rust.sh`, `scripts/test-dev-setup.sh`, `scripts/native-smoke.sh` | Native setup assurance |
 | `integrations/**` | Node integration gates |
 | `clients/cockpit/**` source | Cockpit tests + shipping app |
 | Browser source | Node/WASM package + Chrome/live-server tests |
 | Root crates | Rust + Cockpit coordinator coverage; browser also runs for its Rust/demo-server dependency closure |
 | Cargo/toolchain/build inputs | Affected products plus clean native setup assurance |
-| `.config/zig-toolchain.json`, engine source/vendor/installer | Affected products plus byte-identical engine reproduction |
+| `.config/zig-toolchain.json` | Affected products plus byte-identical engine reproduction |
+| `scripts/install-zig.sh` | Cockpit + native-setup + engine reproduction (Nix phux lanes use flake Zig) |
 | Embedded `.agents/skills/using-phux*/**` | Rust + Cockpit; these versioned project skills are compiled product inputs |
 
 `bash scripts/ci/check-classify-changes.sh` exercises routes and actual event

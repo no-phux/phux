@@ -403,8 +403,8 @@ actually looking at.
 
 - Apple silicon Mac running macOS 11 or later
 - For source builds, follow [Contributor setup](../../docs/SETUP.md#cockpit)
-  for the SDK, Rust/FFI, Zig, and TypeScript toolchain. Native setup and Nix use
-  the same build commands. Internet access is needed to fetch pinned dependencies.
+  (`mise install` or `nix develop`). The same `just cockpit-*` commands run in
+  either environment. Internet access is needed to fetch pinned dependencies.
 
 native-sdk is pinned to
 [`phall1/native@f62651b1`](https://github.com/phall1/native/commit/f62651b152b18c229b763b27867735b4d9d10743),
@@ -663,6 +663,69 @@ the app's working directory**, and screenshots and a full widget snapshot
 appear beside them. That path has no environment override, so two instances
 launched from the same directory share one dropbox — which is why `dev-run.sh`
 launches from the dev home.
+
+### Native SDK live development
+
+`dev-run.sh` is the isolated shipping-app loop. For UI iteration against the
+SDK's [native dev](https://native-sdk.dev/docs/cli/dev) CLI, use the fork
+pinned in `build.zig.zon` and build its matching CLI once rather than an
+unrelated npm CLI. From the repository root:
+
+```sh
+just cockpit-ffi
+cd clients/cockpit
+eval "$(./scripts/build-automation-cli.sh --export)"
+export ZIG_GLOBAL_CACHE_DIR="$PWD/.zig-global-cache"
+mkdir -p .dev-run/native-real
+touch .dev-run/native-real/config
+export PHUX_COCKPIT_CONFIG="$PWD/.dev-run/native-real/config"
+export PHUX_COCKPIT_STATE="$PWD/.dev-run/native-real/layout.json"
+export PHUX_SOCKET="/tmp/phux-$USER/phux.sock"
+"$NATIVE" dev -Dautomation=true -Dphux-enabled=true \
+  -Dphux-client-ffi-profile=ffi-dev \
+  -Dphux-client-ffi-include-dir="$PWD/../../crates/phux-client-ffi/include" \
+  -Dphux-client-ffi-lib-dir="$PWD/../../target/ffi-dev"
+```
+
+Set `PHUX_SOCKET` to the endpoint reported by `phux status --json`; the example
+uses the normal local endpoint when `XDG_RUNTIME_DIR` is unset. Set
+`PHUX_SESSION` to select a session. Keep the working directory at
+`clients/cockpit`: registered fragment paths start with `src/`. Native's Debug
+default enables the hot-reload watcher; ReleaseSafe disables it. Markup edits
+reload in the running window. TypeScript, Zig, and FFI changes need a
+rebuild/relaunch; rerun the command, rebuilding `cockpit-ffi` first if Rust
+changed. To run the existing binary without a build, execute
+`./zig-out/bin/phux-cockpit` from this same directory and environment. At the
+current pin, `native dev --binary` is the WebView frontend workflow and
+refuses Cockpit with `MissingFrontend`.
+
+In a second shell at the same app root, use the matching CLI's
+[`automate`](https://native-sdk.dev/docs/automation) commands: `snapshot`,
+`assert`, and `profile on`. Verify `publisher_pid` against the launched process
+and `markup_watch=armed` before live editing. The SDK also provides `provenance`
+and `edit`, but Cockpit's composed toolbar currently reports `authored=zig`,
+so source write-back is unavailable there; edit the `.native` source directly.
+
+With that Debug run publishing, bind its PID from a second shell at
+`clients/cockpit` without compiling or restarting the app:
+
+```sh
+# APP_PID must be the process launched by your native dev invocation.
+RUN="$(python3 scripts/dev-diagnostics.py begin --pid "$APP_PID" \
+  --native "$NATIVE" --require-markup-watch \
+  --ffi-lib "$PWD/../../target/ffi-dev/libphux_client_ffi.a" \
+  --socket "$PHUX_SOCKET")"
+python3 scripts/dev-diagnostics.py watch --run "$RUN"
+```
+
+`begin` prints the retained directory even if its first snapshot check fails;
+check its exit status before starting `watch`. Captures retain the typed first
+header only: the current SDK writes unescaped labels into the snapshot body,
+so the body is omitted. A valid capture proves publisher/header checks, not a
+healthy UI. Offline checks for this companion are
+`python3 clients/cockpit/scripts/dev-diagnostics_test.py` from the repository
+root. `dev-run.sh --fresh` removes the default `.dev-run` home, including
+retained diagnostics.
 
 ## Package
 

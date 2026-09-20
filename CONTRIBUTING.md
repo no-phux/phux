@@ -29,10 +29,9 @@ phux away from any of those, it's the wrong proposal.
 
 ## Get set up
 
-Start with [Contributor setup](./docs/SETUP.md): choose docs, Rust core, native
-terminal, an agent integration, browser, or Cockpit. Native tools and Nix run
-the same commands. You do not need Nix or maintainer task-tracking tools to
-contribute; a GitHub issue or PR is enough to coordinate a contribution.
+Start with [Contributor setup](./docs/SETUP.md): `mise install` or
+`nix develop`, then the same `just` recipes. A GitHub issue or PR is enough
+to coordinate; you do not need Beads.
 
 ## Agent entrypoints
 
@@ -110,9 +109,10 @@ commitment to keep the two columns aligned.
 Most rows now say "same recipe" rather than "(identical)". That is the point:
 `ci.yml` used to re-type the cargo invocations, and "identical" was a promise a
 human had to keep on every edit. The workflow calls the recipes instead, so the
-flags exist in exactly one place — the `justfile` — and the columns cannot
+flags exist in exactly one place — `just/*.just` — and the columns cannot
 disagree. A row that names a bare `cargo` command under CI is a row where that
-promise is back; prefer adding the recipe.
+promise is back; prefer adding the recipe. Product recipes stay out of the
+root `justfile` so CI can route by which module changed.
 
 | Gate | CI (`ci.yml`) | Local |
 |---|---|---|

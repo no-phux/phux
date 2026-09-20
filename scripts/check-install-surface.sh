@@ -277,11 +277,11 @@ forbid_fixed scripts/publish-next-channel.sh 'channel_json#channel.json'
 require_fixed scripts/install-cockpit.sh 'https://github.com/no-phux/phux/releases/download/${version}'
 require_fixed crates/phux/src/commands/update/release.rs 'pub(crate) const REPO: &str = "no-phux/phux";'
 
-require_fixed justfile "release-preflight TAG:"
-require_fixed justfile "release-preflight-fast TAG:"
-require_fixed justfile "cargo build --locked -p phux -p phux-mcp --release"
-require_fixed justfile "cargo publish --locked --dry-run -p phux-protocol"
-require_fixed justfile "cargo publish --locked -p phux-protocol"
+require_fixed just/release.just "release-preflight TAG:"
+require_fixed just/release.just "release-preflight-fast TAG:"
+require_fixed just/build.just "cargo build --locked -p phux -p phux-mcp --release"
+require_fixed just/release.just "cargo publish --locked --dry-run -p phux-protocol"
+require_fixed just/release.just "cargo publish --locked -p phux-protocol"
 require_fixed scripts/release-preflight.sh "cargo publish --locked --dry-run --allow-dirty -p phux-protocol"
 require_fixed scripts/check-release-version.sh "cargo metadata --locked --format-version 1 --no-deps"
 

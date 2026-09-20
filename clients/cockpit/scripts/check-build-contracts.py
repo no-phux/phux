@@ -240,7 +240,7 @@ class BuildContracts(unittest.TestCase):
         self.assertIn("_ring_core_0_17_14__p256_sqr_mont", checker)
         self.assertIn("zig-build.sh test -Dplatform=null -Dphux-enabled=true --summary all", workflow)
         node_test = "node --import ./src/tests/navigation-loader.mjs --test ./src/tests/*.test.mjs"
-        justfile = (REPO_ROOT / "justfile").read_text()
+        justfile = (REPO_ROOT / "just" / "cockpit.just").read_text()
         self.assertIn("cockpit-node-test:", justfile)
         self.assertIn(node_test, justfile)
         self.assertIn(node_test, workflow)
