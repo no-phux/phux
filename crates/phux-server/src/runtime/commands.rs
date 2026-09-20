@@ -6620,8 +6620,9 @@ mod relay_satellite_attach_role_tests {
                 terminal_id: local.clone(),
                 role_policy: Some(role),
             };
+            let target = SatelliteLeaseTarget::new(&self.state, &self.host, self.client_id, &local);
             let attach = relay_satellite_attach(
-                &SatelliteLeaseTarget::new(&self.state, &self.host, self.client_id, &local),
+                &target,
                 &self.handle,
                 &command,
                 role,
