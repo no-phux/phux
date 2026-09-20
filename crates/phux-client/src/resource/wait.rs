@@ -36,6 +36,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use phux_client_runtime::reconnect::Ladder;
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{
     AgentEvent, CommandResult, ErrorCode, EventStamp, FrameKind, ResourceLifecycle,
@@ -533,17 +534,19 @@ fn has_exited(info: &ResourceInfo) -> bool {
     info.exit.is_some() || info.lifecycle == ResourceLifecycle::Exited
 }
 
-/// The first pause before a reconnect that made no progress.
-const RECONNECT_BACKOFF: Duration = Duration::from_millis(50);
-/// The longest such pause.
-const RECONNECT_BACKOFF_MAX: Duration = Duration::from_secs(1);
+/// The pause between reconnects that made no progress: the runtime's
+/// agent-verb ladder (ADR-0133), 50 ms doubling to 1 s. An agent is
+/// blocking on this verb over a local socket, so the interactive lane's
+/// 500 ms floor would be latency it sees for no radio saved; the lane is
+/// named here rather than forked so the arithmetic exists once.
+const RECONNECT_LADDER: Ladder = Ladder::AGENT_VERB;
 
 /// Run connections until one answers; a live gap ends a connection and the
 /// next resumes from the position reached. A reconnect that did not move
 /// the position backs off, so a gap that repeats on every connection waits
 /// out the deadline instead of spinning.
 async fn drive(socket: &Path, progress: &mut Progress) -> Result<Verdict, WaitFailure> {
-    let mut pause = RECONNECT_BACKOFF;
+    let mut pause = RECONNECT_LADDER.floor;
     loop {
         let before = progress.position();
         if let Some(verdict) = session(socket, progress).await? {
@@ -551,9 +554,9 @@ async fn drive(socket: &Path, progress: &mut Progress) -> Result<Verdict, WaitFa
         }
         if progress.position() == before {
             tokio::time::sleep(pause).await;
-            pause = (pause * 2).min(RECONNECT_BACKOFF_MAX);
+            pause = RECONNECT_LADDER.next(pause);
         } else {
-            pause = RECONNECT_BACKOFF;
+            pause = RECONNECT_LADDER.floor;
         }
     }
 }

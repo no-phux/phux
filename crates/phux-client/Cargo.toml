@@ -79,6 +79,13 @@ serde = { workspace = true }
 # the identical stack. The attach modules re-export its types under the
 # established `crate::attach::{quic,ws}` paths.
 phux-dial.workspace = true
+# ADR-0133: reconnect policy lives once, in the client runtime. The agent
+# verbs that reconnect (`phux resource wait`) walk its agent-verb ladder
+# instead of carrying their own constants, so one edit changes every lane.
+# Workspace crate already built for phux-client-ffi; its own dependencies
+# (phux-config, phux-dial, phux-protocol, quinn, tokio) are all already this
+# crate's, so no new third-party dependency enters.
+phux-client-runtime.workspace = true
 # QUIC stream types (phux-y8v6, ADR-0007): `connection.rs` holds the quinn
 # endpoint/connection/stream halves phux-dial's establishment returns and
 # frames over them; same stack the server's `QuicListener` uses.

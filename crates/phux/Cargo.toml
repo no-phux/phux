@@ -40,6 +40,11 @@ base64.workspace = true
 # Other workspace consumers can retain the server's own defaults.
 phux-server = { path = "../phux-server", default-features = false, features = ["native-engine"] }
 phux-client.workspace = true
+# ADR-0133: the attach loop's reconnect cadence is the client runtime's
+# ladder (interactive for the remote lanes, the flat local-upgrade poll for
+# UDS), not a third copy of the doubling. Workspace crate already in the
+# tree under phux-client; no new third-party dependency enters.
+phux-client-runtime.workspace = true
 # The reference TUI (`phux attach`, `phux snapshot --render`): the attach
 # driver, ratatui chrome, and overlays over the headless client (ADR-0100).
 phux-tui.workspace = true
