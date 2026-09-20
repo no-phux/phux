@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-20
 ---
 
 # Crate dependency graph
@@ -88,7 +88,10 @@ Five crate boundaries carry weight:
    lane: `phux-client`'s agent verbs walk the fast agent-verb ladder and
    the binary's attach loop walks the interactive one for remote dials and
    the flat local-upgrade poll for UDS, so no consumer carries a backoff
-   constant of its own. A binding crate translates runtime-owned values
+   constant of its own. `phux-server`'s hub link and connector keep their
+   own redial ladder: they are the server-side federation dialer, not a
+   client binding, and moving them onto the runtime's `Ladder` is a
+   separate decision. A binding crate translates runtime-owned values
    into its language's idiom and holds no state machine; a loop, a
    `select!`, or a backoff constant in a binding is in the wrong crate.
    phux-mobile's UniFFI bridge is the second binding, across its
