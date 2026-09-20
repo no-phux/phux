@@ -1270,16 +1270,30 @@ fn an_identity_only_set_gets_its_state_filled_in_by_the_detector() {
         .await;
 
         // The detector must fill `state` in around them, without ever having to
-        // wait for the agent to change state.
+        // wait for the agent to change state. Wait for the conjunction, not
+        // the first `blocked`: an in-flight detector write can still carry
+        // `name: claude` after we *sent* SET_METADATA but before the server
+        // applied it (phux-uaon). Sampling that record was the flake.
         let end = tokio::time::Instant::now() + DETECT_DEADLINE;
+        let mut saw_reviewer = false;
         let filled = loop {
             let left = end.saturating_duration_since(tokio::time::Instant::now());
-            assert!(!left.is_zero(), "the detector never filled `state` in");
+            assert!(
+                !left.is_zero(),
+                "the detector never filled `state` in around the human name"
+            );
             let Some(record) = collect_agent_record(&mut stream, &terminal, left).await else {
-                panic!("the detector never filled `state` in");
+                panic!("the detector never filled `state` in around the human name");
             };
-            if record.get("state").and_then(serde_json::Value::as_str) == Some("blocked") {
-                break record;
+            let name = record.get("name").and_then(serde_json::Value::as_str);
+            let state = record.get("state").and_then(serde_json::Value::as_str);
+            if name == Some("reviewer") {
+                saw_reviewer = true;
+                if state == Some("blocked") {
+                    break record;
+                }
+            } else if saw_reviewer && name == Some("claude") {
+                panic!("detector write clobbered the human's name after it landed: {record}");
             }
         };
         assert_eq!(

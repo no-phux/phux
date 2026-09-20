@@ -8748,6 +8748,56 @@ mod agent_drain_tests {
             .await;
     }
 
+    /// phux-uaon: a human identity-only SET after the detector has already
+    /// published, then a subsequent detector write. The name must survive
+    /// even when the arbiter bit is missing — the store already holds the
+    /// identity-only bytes, and that is enough to merge.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_subsequent_detector_write_merges_over_an_identity_only_set() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let state = SharedState::new();
+                let terminal = WireResourceId::new(1);
+                let scope = Scope::Resource(terminal.clone());
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
+                )
+                .await;
+                assert_eq!(
+                    stored(&state, &terminal).expect("detector published").name,
+                    "claude"
+                );
+
+                // Store-ahead of the arbiter: the SET landed, `note_explicit_set`
+                // has not. This is the race the integration test lost once.
+                let named = br#"{"name":"reviewer","session":"fleet-7"}"#;
+                state.with_mut(|s| {
+                    s.metadata_set(&scope, RESOURCE_AGENT_KEY, named.to_vec());
+                });
+
+                drain(
+                    &state,
+                    &terminal,
+                    vec![AgentDetectEvent::State(report(DetectedState::Blocked))],
+                )
+                .await;
+
+                let record = stored(&state, &terminal).expect("merged");
+                assert_eq!(
+                    record.name, "reviewer",
+                    "human name survives the detector write"
+                );
+                assert_eq!(record.session.as_deref(), Some("fleet-7"));
+                assert_eq!(record.state, "blocked", "detector fills state");
+                assert_eq!(record.kind.as_deref(), Some("claude"));
+            })
+            .await;
+    }
+
     /// The efficiency contract at the store: a `working` agent whose detector
     /// re-emits the same tuple produces ZERO broadcasts after the first. The
     /// detector's edge filter normally means the drain never even sees these —
