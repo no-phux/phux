@@ -19,9 +19,9 @@
 //!
 //! # Features
 //!
-//! `testkit` exposes [`testkit`], the one scripted server every client-side
-//! unit test in the workspace speaks to. There is no `tui` feature any more:
-//! the TUI is a crate.
+//! `testkit` exposes the `testkit` module, the one scripted server every
+//! client-side unit test in the workspace speaks to. There is no `tui`
+//! feature any more: the TUI is a crate.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]

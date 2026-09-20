@@ -789,7 +789,7 @@ impl Connection {
     ///
     /// Production constructors call this before returning. It is public so the
     /// TUI crate's scripted tests can exercise the same handshake over
-    /// [`Self::from_stream`].
+    /// the testkit-only `from_stream` constructor.
     ///
     /// # Errors
     ///
