@@ -99,6 +99,33 @@ fn histogram_count(report: &PerfReport, name: &str) -> u64 {
     }
 }
 
+/// Poll `GET_PERF` until `pty.read.bytes` stops moving.
+///
+/// The first bytes of a seed pane can land before the rest of the same
+/// write. Resetting in that window (phux-bmu2) lets the leftover PTY
+/// traffic inflate the post-reset snapshot past the pre-reset one.
+async fn wait_until_pty_bytes_quiesce(
+    stream: &mut UnixStream,
+    mut request_id: u32,
+    mut last_bytes: u64,
+) -> u32 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let report = get_perf(stream, request_id, false).await;
+        request_id += 1;
+        let now = counter(&report, "pty.read.bytes");
+        if now == last_bytes {
+            return request_id;
+        }
+        last_bytes = now;
+        assert!(
+            std::time::Instant::now() < deadline,
+            "PTY byte counters never quiesced (last={last_bytes})"
+        );
+    }
+}
+
 #[test]
 fn get_perf_reports_hot_path_metrics_and_resets_on_request() {
     run_local(async {
@@ -152,14 +179,19 @@ fn get_perf_reports_hot_path_metrics_and_resets_on_request() {
             other => panic!("{other:?}"),
         }
 
+        // The wait above only proves some output landed. Hold reset until
+        // the reader has finished counting the seed write (phux-bmu2).
+        let next_id =
+            wait_until_pty_bytes_quiesce(&mut stream, 10, counter(&report, "pty.read.bytes")).await;
+
         // reset = true zeroes the table after snapshotting it.
-        let before_reset = get_perf(&mut stream, 2, true).await;
+        let before_reset = get_perf(&mut stream, next_id, true).await;
         assert!(counter(&before_reset, "pty.read.bytes") > 0);
         assert!(
             histogram_count(&before_reset, "cmd.handle") >= 1,
             "the earlier GET_PERF was timed as a command"
         );
-        let after_reset = get_perf(&mut stream, 3, false).await;
+        let after_reset = get_perf(&mut stream, next_id + 1, false).await;
         assert!(
             counter(&after_reset, "pty.read.bytes") < counter(&before_reset, "pty.read.bytes")
                 || counter(&after_reset, "pty.read.bytes") == 0,
