@@ -343,6 +343,11 @@ impl AgentRecordArbiter {
 /// "reviewer" while the detector tracks its state. `session` is carried
 /// through untouched.
 ///
+/// An identity-only store (non-empty `name` / `kind`, empty `state`) is also
+/// treated as explicit even when `owned` has not been marked yet. A concurrent
+/// `SET_METADATA` can land the bytes before the arbiter bit; the detector must
+/// still merge, never clobber (phux-uaon).
+///
 /// Everything else is **reasserted on every write**. That is invariant I1, and
 /// it is not an optimization to skip: the previous rule ("keep whatever kind is
 /// already there") meant that when a pane's occupant changed, the record kept
@@ -366,11 +371,16 @@ pub(crate) fn compose(
     let prior = existing.and_then(AgentRecordJson::decode);
     let record = match prior {
         Some(mut prior) => {
-            if !owned.name || prior.name.is_empty() {
+            // Empty `state` is how an identity-only SET lands in the store
+            // (`#[serde(default)]`). The detector always writes a real
+            // lifecycle word, so this cannot be a record we authored.
+            let identity_only = prior.state.is_empty();
+            if prior.name.is_empty() || !(owned.name || identity_only) {
                 prior.name.clear();
                 prior.name.push_str(name);
             }
-            if !owned.kind || prior.kind.as_ref().is_none_or(String::is_empty) {
+            let kind_present = prior.kind.as_ref().is_some_and(|stored| !stored.is_empty());
+            if !kind_present || !(owned.kind || identity_only) {
                 prior.kind = Some(kind.to_owned());
             }
             prior.state.clear();
@@ -798,6 +808,39 @@ mod tests {
             String::from_utf8(bytes).expect("utf8"),
             r#"{"name":"claude","kind":"claude","state":"working"}"#
         );
+    }
+
+    /// phux-uaon: the store is the source of truth for an identity-only SET
+    /// that beat the arbiter bit. `owned` says the detector wrote everything;
+    /// the bytes say a human named the pane and supplied no `state`. Merge.
+    #[test]
+    fn compose_preserves_an_identity_only_name_without_ownership_bits() {
+        let existing = br#"{"name":"reviewer","session":"fleet-7"}"#;
+        let bytes = compose(Some(existing), "claude", "claude", "blocked", DETECTOR);
+        let got = AgentRecordJson::decode(&bytes).expect("decodes");
+        assert_eq!(
+            got.name, "reviewer",
+            "the human's name survives a stale arbiter"
+        );
+        assert_eq!(got.session.as_deref(), Some("fleet-7"), "and their label");
+        assert_eq!(got.state, "blocked", "the detector supplies only `state`");
+        assert_eq!(
+            got.kind.as_deref(),
+            Some("claude"),
+            "kind was not declared, so the detector fills it",
+        );
+    }
+
+    /// Same race, other field: an identity-only `kind` must survive even when
+    /// `owned.kind` is still false.
+    #[test]
+    fn compose_preserves_an_identity_only_kind_without_ownership_bits() {
+        let existing = br#"{"name":"reviewer","kind":"my-agent"}"#;
+        let bytes = compose(Some(existing), "claude", "claude", "working", DETECTOR);
+        let got = AgentRecordJson::decode(&bytes).expect("decodes");
+        assert_eq!(got.kind.as_deref(), Some("my-agent"));
+        assert_eq!(got.name, "reviewer");
+        assert_eq!(got.state, "working");
     }
 
     /// The field-for-field preservation the ADR promises.
