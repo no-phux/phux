@@ -21,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: sync-skills
+  group: mini-v1-sync-skills
   cancel-in-progress: false
 
 jobs:
