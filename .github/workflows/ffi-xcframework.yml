@@ -44,7 +44,9 @@ jobs:
     # Standard macos-26 is an arm64 GitHub-hosted runner with Xcode and the
     # iOS SDK; device and simulator slices need both.
     runs-on: macos-26
-    timeout-minutes: 90
+    # A cold run compiles ghostty's xcframework emit for both iOS targets;
+    # retain a conservative ceiling until hosted timings justify tightening it.
+    timeout-minutes: 180
     permissions:
       contents: write
     env:
@@ -57,28 +59,35 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Validate release tag
-        if: env.RELEASE_TAG != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
-          test "$(git rev-parse HEAD)" = "$(git rev-parse "$RELEASE_TAG^{commit}")"
-          bash scripts/check-release-version.sh "$RELEASE_TAG"
-          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
-
       - name: Contributor Zig setup
         run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
 
       - name: Contributor Rust setup
         run: bash scripts/setup-rust.sh core
 
+      # After the Rust setup: check-release-version.sh runs `cargo metadata`,
+      # and the pinned toolchain must come from scripts/setup-rust.sh, not
+      # from whatever the runner image auto-installs on first use. The tag
+      # pattern is release.yml's, so both asset workflows agree on what a
+      # root tag is (a prerelease suffix included).
+      - name: Validate release tag
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+[.][0-9]+[.][0-9]+([-.][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]
+          test "$(git rev-parse HEAD)" = "$(git rev-parse "$RELEASE_TAG^{commit}")"
+          bash scripts/check-release-version.sh "$RELEASE_TAG"
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+
       # Three cross targets share one Cargo.lock; the shared key keeps this
-      # cache disjoint from the Cockpit and Linux lanes' profiles.
+      # cache disjoint from the Cockpit and Linux lanes' profiles. Preserve a
+      # partial cold build if the first hosted run times out or fails later.
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           shared-key: mini-v1-ffi-xcframework
+          cache-on-failure: true
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/zig
@@ -107,8 +116,9 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: PhuxFFI-xcframework
+          # The zip already carries the xcframework bytes; uploading the
+          # expanded directory too would double the payload for nothing.
           path: |
-            ${{ env.ARTIFACTS }}/PhuxFFI.xcframework
             ${{ env.ARTIFACTS }}/provenance
             ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.xcframework.zip
             ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.xcframework.zip.sha256
