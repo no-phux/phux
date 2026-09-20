@@ -659,7 +659,9 @@ async fn attach_with_reconnect(
                         initial_notice = Some(Notice::info(RECONNECT_NOTICE_TEXT));
                         reconnect_connection = connection;
                     }
-                    outcome @ (ReconnectOutcome::SocketGone | ReconnectOutcome::TimedOut) => {
+                    outcome @ (ReconnectOutcome::SocketGone
+                    | ReconnectOutcome::TimedOut
+                    | ReconnectOutcome::Refused(_)) => {
                         // Fully reported here — the call sites map a
                         // `Disconnected` breaking out of this loop straight
                         // to the failure exit code without a second remedy
@@ -701,11 +703,12 @@ const RECONNECT_NOTICE_TEXT: &str = "re-attached after server restart";
 
 /// How the bounded reconnect probe ended (phux-i0e8.2.3).
 ///
-/// Three-way rather than a bool because the two failure shapes mean
-/// different things to the user: a *gone* socket is a server that shut
-/// down cleanly (a clean shutdown unlinks it — nothing is coming back),
-/// while a socket that exists but never accepts within the deadline is a
-/// server that crashed or hung.
+/// Shaped rather than a bool because the failure shapes mean different
+/// things to the user: a *gone* socket is a server that shut down cleanly
+/// (a clean shutdown unlinks it — nothing is coming back), a socket that
+/// exists but never accepts within the deadline is a server that crashed or
+/// hung, and a *refused* reconnect is a server that is perfectly healthy and
+/// no longer accepts these credentials.
 #[derive(Debug)]
 enum ReconnectOutcome {
     /// The server accepts connections again — re-attach now.
@@ -718,12 +721,22 @@ enum ReconnectOutcome {
     SocketGone,
     /// The deadline elapsed with every probe still failing.
     TimedOut,
+    /// The host answered and refused the credentials — a rotated token, a
+    /// revoked pairing — so no retry with the same ones can succeed
+    /// (ADR-0133, [`AttachError::is_fatal_refusal`]). Carries the refusal
+    /// itself: the countdown ends now, and the real reason is what the user
+    /// reads instead of a generic timeout. Remote lanes only; a Unix socket
+    /// has no credentials to refuse.
+    Refused(AttachError),
 }
 
 enum ProbeAttempt {
     Connectable(Option<Box<Connection>>),
     SocketGone,
     Unavailable,
+    /// This probe was refused, not merely unanswered: retrying cannot
+    /// change the verdict, so the wait ends on it.
+    Refused(AttachError),
 }
 
 /// One line of `\r`-overwritten countdown, pure so tests can pin the
@@ -740,7 +753,7 @@ fn reconnect_progress_line(remaining: Duration) -> String {
 /// without a server (phux-i0e8.2.3). Pure so tests can pin both shapes;
 /// each names its distinct cause and ends with the `phux doctor` remedy.
 ///
-/// Only the two failure outcomes are meaningful here; `Connectable` never
+/// Only the failure outcomes are meaningful here; `Connectable` never
 /// reaches this function on the production path and maps to an empty
 /// report rather than a panic.
 fn reconnect_failure_lines(outcome: &ReconnectOutcome, deadline: Duration) -> Vec<String> {
@@ -762,6 +775,11 @@ fn reconnect_failure_lines(outcome: &ReconnectOutcome, deadline: Duration) -> Ve
                 phux_server::telemetry::server_log_path().display()
             ),
             "  run `phux doctor` for a health check".to_owned(),
+        ],
+        ReconnectOutcome::Refused(err) => vec![
+            format!("phux: the server refused the reconnect: {err}"),
+            "  the credentials this attach dialed with are no longer accepted;".to_owned(),
+            "  re-pair the host with `phux host enroll NAME` and attach again".to_owned(),
         ],
     }
 }
@@ -820,6 +838,15 @@ fn close_recorder(recorder: Option<RecorderHandle>) {
 /// of immediately paying for a duplicate transport and protocol handshake.
 /// UDS keeps its cheap connect-and-drop readiness probe.
 ///
+/// A remote probe the host *refuses* — a 401/403 on the upgrade, a QUIC
+/// preamble answered `AUTH_FAILED` — returns
+/// [`ReconnectOutcome::Refused`] immediately instead of walking the rest of
+/// the ladder (ADR-0133): the credentials cannot change between attempts, so
+/// every further probe would report the same thing and the only effect of
+/// continuing is that the user waits out the whole deadline to be told the
+/// server timed out, which is not what happened. UDS never reaches it — a
+/// Unix socket has no credentials to refuse.
+///
 /// `policy` supplies both the deadline and the retry cadence: flat for UDS
 /// (see [`UDS_RECONNECT`]), exponential for the remote lanes, where each probe
 /// is a full TLS handshake (see [`REMOTE_RECONNECT`]). The *first* attempt is
@@ -834,6 +861,10 @@ async fn wait_until_connectable(dial: &Dial, policy: ReconnectPolicy) -> Reconne
                 return ReconnectOutcome::Connectable(connection);
             }
             Ok(ProbeAttempt::SocketGone) => return ReconnectOutcome::SocketGone,
+            // No amount of ladder changes a refused token, and the deadline
+            // is the user's attach-wait window, not a grace period for
+            // credentials: end here, with the reason they can act on.
+            Ok(ProbeAttempt::Refused(err)) => return ReconnectOutcome::Refused(err),
             Ok(ProbeAttempt::Unavailable) => {}
             Err(_) => return ReconnectOutcome::TimedOut,
         }
@@ -861,11 +892,15 @@ async fn probe_connectability(dial: &Dial) -> ProbeAttempt {
         }
         // The returned connection is reused by the TUI, so its HELLO must
         // carry the same capabilities and client name as the initial attach.
-        Dial::Quic(_) | Dial::Ws(_) => phux_tui::attach::connect_for_attach(dial)
-            .await
-            .map_or(ProbeAttempt::Unavailable, |conn| {
-                ProbeAttempt::Connectable(Some(Box::new(conn)))
-            }),
+        Dial::Quic(_) | Dial::Ws(_) => match phux_tui::attach::connect_for_attach(dial).await {
+            Ok(conn) => ProbeAttempt::Connectable(Some(Box::new(conn))),
+            // ADR-0133: the runtime owns which refusals no retry can
+            // satisfy. A 401/403 on the upgrade or a refused QUIC preamble
+            // ends the wait; everything else — an unanswered dial, a 503, a
+            // half-open lane — may heal and walks the ladder.
+            Err(err) if err.is_fatal_refusal() => ProbeAttempt::Refused(err),
+            Err(_) => ProbeAttempt::Unavailable,
+        },
     }
 }
 
@@ -2095,6 +2130,153 @@ mod tests {
             offers[0], offers[1],
             "reconnect changed the TUI HELLO contract"
         );
+    }
+
+    /// A TCP peer that answers every WebSocket upgrade with `status`,
+    /// counting how many it was asked for. Enough HTTP for tungstenite to
+    /// read a rejection: the client never gets past the handshake, so the
+    /// body and the connection lifetime after it do not matter.
+    fn refusing_ws_peer(
+        listener: tokio::net::TcpListener,
+        status: &'static str,
+    ) -> (
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&attempts);
+        let peer = tokio::spawn(async move {
+            loop {
+                let Ok((mut stream, _)) = listener.accept().await else {
+                    return;
+                };
+                counter.fetch_add(1, Ordering::SeqCst);
+                let mut request = Vec::new();
+                let mut byte = [0_u8; 1];
+                while !request.ends_with(b"\r\n\r\n") {
+                    match stream.read(&mut byte).await {
+                        Ok(1) => request.push(byte[0]),
+                        _ => break,
+                    }
+                }
+                let _ = stream
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+                let _ = stream.flush().await;
+            }
+        });
+        (attempts, peer)
+    }
+
+    fn ws_dial_to(addr: std::net::SocketAddr) -> Dial {
+        Dial::Ws(WsDial {
+            url: format!("ws://{addr}"),
+            token: None,
+            trust: CertTrust::SkipVerify,
+            tls_server_name: None,
+        })
+    }
+
+    /// ADR-0133: a reconnect the host *refuses* ends on the first probe with
+    /// the refusal itself. Before this, a rotated token or a revoked pairing
+    /// walked the full interactive ladder and then reported a generic
+    /// timeout — the one thing that had definitely not happened. The
+    /// deadline here is far longer than the test could survive if the ladder
+    /// were still being walked, so a regression fails on the clock as well
+    /// as on the outcome.
+    #[tokio::test]
+    async fn a_refused_reconnect_ends_on_the_first_probe_with_the_real_reason() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind refusing remote");
+        let addr = listener.local_addr().expect("listener address");
+        let (attempts, peer) = refusing_ws_peer(listener, "401 Unauthorized");
+        let dial = ws_dial_to(addr);
+
+        let start = Instant::now();
+        let ReconnectOutcome::Refused(err) = wait_until_connectable(
+            &dial,
+            ReconnectPolicy {
+                deadline: Duration::from_secs(60),
+                ladder: Ladder::INTERACTIVE,
+            },
+        )
+        .await
+        else {
+            panic!("a 401 must end the reconnect, not walk the ladder");
+        };
+        assert!(
+            err.to_string().contains("401"),
+            "the refusal must carry the status the server sent: {err}"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(5),
+            "a refusal must not wait out the deadline: {:?}",
+            start.elapsed()
+        );
+        assert_eq!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a refused dial must not be retried"
+        );
+
+        let lines =
+            reconnect_failure_lines(&ReconnectOutcome::Refused(err), Duration::from_secs(60));
+        assert!(
+            lines[0].contains("refused the reconnect") && lines[0].contains("401"),
+            "the report names the refusal, not a timeout: {lines:?}"
+        );
+        assert!(
+            lines.iter().any(|line| line.contains("phux host enroll")),
+            "a refused reconnect points at re-pairing: {lines:?}"
+        );
+
+        peer.abort();
+        let _ = peer.await;
+    }
+
+    /// The other half of the same rule: a status that may heal is still
+    /// worth the ladder, so the wait keeps probing until the deadline
+    /// rather than treating any HTTP failure as terminal.
+    #[tokio::test]
+    async fn a_transient_refusal_still_walks_the_ladder() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind flaky remote");
+        let addr = listener.local_addr().expect("listener address");
+        let (attempts, peer) = refusing_ws_peer(listener, "503 Service Unavailable");
+        let dial = ws_dial_to(addr);
+
+        assert!(
+            matches!(
+                wait_until_connectable(
+                    &dial,
+                    ReconnectPolicy {
+                        deadline: Duration::from_millis(400),
+                        ladder: Ladder::flat(Duration::from_millis(50)),
+                    },
+                )
+                .await,
+                ReconnectOutcome::TimedOut
+            ),
+            "a 503 is not a refusal: the window must close on the deadline"
+        );
+        assert!(
+            attempts.load(std::sync::atomic::Ordering::SeqCst) > 1,
+            "a transient failure must be retried, not given up on"
+        );
+
+        peer.abort();
+        let _ = peer.await;
     }
 
     /// The UDS policy with a test-length deadline; cadence untouched.
