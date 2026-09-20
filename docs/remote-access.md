@@ -105,7 +105,7 @@ If the host has no ssh you can use, run `phux pair` there, copy the one-tap
 link it prints, and hand it over:
 
 ```sh
-phux --remote mini --code 'https://phux.phall.io/connect?url=wss://100.64.0.2:8787&fp=...&token=...'
+phux --remote mini --code 'https://phux.sh/connect?url=wss://100.64.0.2:8787&fp=...&token=...'
 ```
 
 That is the same link `phux pair --qr` renders for a phone, so a laptop and a
@@ -307,7 +307,7 @@ For a phone or tablet, skip the transcription entirely: when the server
 address is known — pass `--host HOST:PORT` (or a full `ws://`/`wss://` URL),
 or let it fall back to a detected overlay address plus the `PHUX_WS_ADDR`
 port — `phux pair` also prints a one-tap
-`https://phux.phall.io/connect?url=…&fp=…&token=…` link carrying the URL,
+`https://phux.sh/connect?url=…&fp=…&token=…` link carrying the URL,
 fingerprint, and token together, and `phux pair --qr` renders that same link
 as a scannable terminal QR. It is an https Universal Link rather than a
 custom `phux://` scheme so that only the app which owns the domain can

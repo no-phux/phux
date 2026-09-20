@@ -9,6 +9,7 @@
  */
 import { Effect } from "effect";
 import { routeRequest } from "./routes";
+import { handleAssociationRequest } from "./pairing";
 import { handleMcpRequest } from "./mcp";
 import { estimateTokens, htmlToMarkdown, wantsMarkdown } from "./markdown";
 import {
@@ -47,6 +48,14 @@ export default {
     ctx?: WaitUntil,
   ): Promise<Response> {
     const url = new URL(request.url);
+
+    // Apple's association file is answered before any routing, because
+    // Universal Links treat a redirect as no association at all. Anything
+    // that could 3xx this path silently un-pairs every iOS device, which is
+    // precisely the failure this handler exists to prevent (phux-z84.4).
+    const association = handleAssociationRequest(url);
+    if (association) return association;
+
     const routed = routeRequest(url.hostname, url);
     if (routed.kind === "redirect") {
       return Response.redirect(routed.location, routed.status);

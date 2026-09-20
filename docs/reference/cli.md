@@ -858,7 +858,7 @@ Remote host:
                                   half names the ssh destination used to pair;
                                   it is not sent on the wire.
       --code <LINK>               Pair `--remote` from a
-                                  `https://phux.phall.io/connect?...` link (or
+                                  `https://phux.sh/connect?...` link (or
                                   its `phux://connect?...` spelling) instead of
                                   over ssh — the same link `phux pair` prints
                                   and `phux pair --qr` renders. Quote it: it
@@ -1811,7 +1811,7 @@ Flags:
                           fingerprint. Defaults to `PHUX_WS_TLS_CERT`.
       --qr                Also render the pairing payload as a scannable QR
                           code. The QR encodes the same
-                          `https://phux.phall.io/connect` one-tap link printed
+                          `https://phux.sh/connect` one-tap link printed
                           as text, so a phone can pair by scanning instead of
                           typing. Needs a server address: pass `--host`, or let
                           it fall back to a detected overlay address plus the

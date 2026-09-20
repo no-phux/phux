@@ -14,7 +14,7 @@
 //! 1. **A registered host.** The steady state, and the whole point: a
 //!    `[[remote]]` entry supplies the endpoint, the pin, and the token, so
 //!    the dial is a direct QUIC connection with no ssh anywhere in it.
-//! 2. **A pasted connect code.** `--code 'https://phux.phall.io/connect?...'`
+//! 2. **A pasted connect code.** `--code 'https://phux.sh/connect?...'`
 //!    — the same artifact `phux pair --qr` renders for a phone. Registers the host from
 //!    the link and dials. No ssh, no shell on the far end.
 //! 3. **A one-time ssh bootstrap.** No entry and no code: install and start
@@ -290,7 +290,7 @@ pub(crate) struct RemoteAttach<'a> {
     pub(crate) target: RemoteTarget,
     /// A session name to request on arrival, overriding the entry's own.
     pub(crate) session: Option<String>,
-    /// A pasted `https://phux.phall.io/connect?...` code (or its
+    /// A pasted `https://phux.sh/connect?...` code (or its
     /// `phux://connect?...` spelling), for the ssh-free cold path.
     pub(crate) code: Option<&'a str>,
     /// Whether a cold target may bootstrap over ssh.
@@ -647,7 +647,7 @@ fn unregistered_remedies(target: &RemoteTarget) -> String {
     let name = target.registry_name();
     format!(
         "phux: to pair without ssh, run `phux pair` on {} and paste the link:\
-         \nphux:   phux --remote {name} --code '<https://phux.phall.io/connect?...>'\
+         \nphux:   phux --remote {name} --code '<https://phux.sh/connect?...>'\
          \nphux: or, with ssh access, `phux host add {name}` (starts and supervises the server there)",
         target.host
     )
