@@ -182,12 +182,19 @@
         // instead of refusing them into the CPU pixel fallback, and
         // NATIVE_SDK_GPU_SHOT_EVERY lets the real-frame capture harness dump
         // settled content without waiting for thirty content-changing
-        // presents. Composite mode remains opt-in. These changes are
-        // backported onto Cockpit's existing v0.10.1 lineage so a Metal fix
-        // does not silently import an unrelated ScriptC compiler migration.
+        // presents. Composite mode remains opt-in.
+        //
+        // cockpit/v0.10.5 (2026-09-19): the packed-grid host rebased onto
+        // current upstream instead of a v0.10.1 backport. scriptc 0.0.36
+        // then 0.1.1: balanced decode-guard trees so a wide model cannot
+        // overflow the recursive IR emitter, stricter optional-read proofs,
+        // and nested recipe scope capacity 16 -> 32 so an argument-rich app
+        // shell still compiles. Cell-background device-pixel partitioning,
+        // the cell_grid composite gate, shot cadence, and the 32-slot
+        // window-drag mirror land here on that rebase.
         .native_sdk = .{
-            .url = "https://github.com/phall1/native/archive/f62651b152b18c229b763b27867735b4d9d10743.tar.gz",
-            .hash = "native_sdk-0.1.0-hzDzQl-otQKvddb0sMGxkPLoFHLEejc9A4iM0Tc7I5u8",
+            .url = "https://github.com/phall1/native/archive/ddf82838a4f7c30293a9c53d80a6414107b66966.tar.gz",
+            .hash = "native_sdk-0.1.0-hzDzQhSTtwJspBXgcDrG2hbmfBi9NEd3VFHViyGU1xe1",
         },
         // libghostty-vt: Ghostty's extracted terminal-state core, consumed
         // as the `ghostty-vt` Zig module. Pinned to the first upstream

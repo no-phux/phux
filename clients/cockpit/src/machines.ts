@@ -52,6 +52,11 @@ export interface MachineState {
 }
 
 const EMPTY = new Uint8Array(0);
+const EMPTY_MACHINE_ROW: MachineRow = {
+  index: 0, role: 0, route: 0, state: 0, name: EMPTY, endpoint: EMPTY, session: EMPTY,
+  message: EMPTY, status: EMPTY, action: EMPTY, target: EMPTY, highlighted: false,
+  connected: false, canDisconnect: false, height: 0, canForget: false, disabled: true,
+};
 const NO_MACHINES: readonly MachineRow[] = [];
 
 export function initialMachines(): MachineState {
@@ -136,38 +141,52 @@ function machineFields(bytes: Uint8Array, at: number): MachineFields | null {
   return { values, end };
 }
 
-function machineCapabilities(row: MachineRow): MachineRow {
-  const busy = row.state === 1 || row.state === 3;
-  return { ...row, canDisconnect: row.role !== 0 && row.connected,
-    canForget: row.role !== 0 && !row.connected && !busy,
-    height: row.message.length > 0 ? 128 : 96,
-    disabled: row.route >= 3 || busy,
-    action: row.route >= 3 ? asciiBytes("Edit Configuration to repair this route") : row.action };
-}
-
 function machineRecord(bytes: Uint8Array, at: number, generation: number): MachineRecord | null {
   if (at + 7 > bytes.length) return null;
-  const rawIndex = u32(bytes, at);
-  const rawRole = bytes[at + 4]; const rawRoute = bytes[at + 5]; const rawState = bytes[at + 6];
-  const index = rawIndex >= 0 && rawIndex <= 4294967295 ? Math.trunc(rawIndex) : 0;
-  // The complete seven-byte header was checked above. Unsigned conversion
-  // carries its byte-valued integer proof into the AOT row record.
-  const role = rawRole >>> 0;
-  const route = rawRoute >>> 0;
-  const state = rawState >>> 0;
-  if (role > 2) return null;
-  if (route > 5) return null;
-  if (state > 4) return null;
+  const b0 = bytes.subarray(at, at + 1)[0];
+  const b1 = bytes.subarray(at + 1, at + 2)[0];
+  const b2 = bytes.subarray(at + 2, at + 3)[0];
+  const b3 = bytes.subarray(at + 3, at + 4)[0];
+  const rawRole = bytes.subarray(at + 4, at + 5)[0];
+  const rawRoute = bytes.subarray(at + 5, at + 6)[0];
+  const rawState = bytes.subarray(at + 6, at + 7)[0];
   const parsed = machineFields(bytes, at + 7);
   if (parsed === null) return null;
-  const fields = parsed.values;
-  const target = new Uint8Array(8);
-  putU32(target, 0, generation); putU32(target, 4, index);
-  const row: MachineRow = { index, role, route, state, name: fields[0], endpoint: fields[1], session: fields[2], message: fields[3],
-    target, status: statusLabel(state), action: actionLabel(state), highlighted: false, connected: state === 2,
-    canDisconnect: false, height: 96,
-    canForget: false, disabled: false };
-  return { row: machineCapabilities(row), end: parsed.end };
+  if (b0 === undefined || b1 === undefined || b2 === undefined || b3 === undefined) return null;
+  if (rawRole === undefined || rawRoute === undefined || rawState === undefined) return null;
+  if (b0 >= 0 && b0 <= 9007199254740991 && b1 >= 0 && b1 <= 9007199254740991
+      && b2 >= 0 && b2 <= 9007199254740991 && b3 >= 0 && b3 <= 9007199254740991
+      && rawRole >= 0 && rawRole <= 2 && rawRoute >= 0 && rawRoute <= 5 && rawState >= 0 && rawState <= 4) {
+    const index = Math.trunc(b0) | Math.trunc(b1) << 8 | Math.trunc(b2) << 16 | Math.trunc(b3) << 24;
+    const role = Math.trunc(rawRole);
+    const route = Math.trunc(rawRoute);
+    const state = Math.trunc(rawState);
+    const fields = parsed.values;
+    const target = new Uint8Array(8);
+    putU32(target, 0, generation); putU32(target, 4, index);
+    const message = fields[3];
+    const busy = state === 1 || state === 3;
+    const connected = state === 2;
+    return {
+      row: {
+        ...EMPTY_MACHINE_ROW,
+        index: index >= 0 && index <= 9007199254740991 ? Math.trunc(index) : 0,
+        role: role >= 0 && role <= 9007199254740991 ? Math.trunc(role) : 0,
+        route: route >= 0 && route <= 9007199254740991 ? Math.trunc(route) : 0,
+        state: state >= 0 && state <= 9007199254740991 ? Math.trunc(state) : 0,
+        name: fields[0], endpoint: fields[1], session: fields[2], message,
+        target, status: statusLabel(state),
+        action: route >= 3 ? asciiBytes("Edit Configuration to repair this route") : actionLabel(state),
+        highlighted: false, connected,
+        canDisconnect: role !== 0 && connected,
+        height: message.length > 0 ? 128 : 96,
+        canForget: role !== 0 && !connected && !busy,
+        disabled: route >= 3 || busy,
+      },
+      end: parsed.end,
+    };
+  }
+  return null;
 }
 
 export function machinePage(bytes: Uint8Array): MachinePage | null {
@@ -192,14 +211,29 @@ function machineMatches(row: MachineRow, query: Uint8Array): boolean {
   return containsQuery(row.name, query) || containsQuery(row.endpoint, query) || containsQuery(row.session, query);
 }
 
+function copyMachine(row: MachineRow, highlighted: boolean): MachineRow {
+  return {
+    index: row.index >= 0 && row.index <= 9007199254740991 ? Math.trunc(row.index) : 0,
+    role: row.role >= 0 && row.role <= 9007199254740991 ? Math.trunc(row.role) : 0,
+    route: row.route >= 0 && row.route <= 9007199254740991 ? Math.trunc(row.route) : 0,
+    state: row.state >= 0 && row.state <= 9007199254740991 ? Math.trunc(row.state) : 0,
+    name: row.name, endpoint: row.endpoint, session: row.session, message: row.message,
+    status: row.status, action: row.action, target: row.target, highlighted,
+    connected: row.connected, canDisconnect: row.canDisconnect,
+    height: row.height >= 0 && row.height <= 9007199254740991 ? Math.trunc(row.height) : 0,
+    canForget: row.canForget, disabled: row.disabled,
+  };
+}
+
 export function filterMachines(state: MachineState, query: Uint8Array): MachineState {
   const visible: MachineRow[] = [];
   let selected: Uint8Array = EMPTY;
   for (const row of state.rows) {
-    if (!machineMatches(row, query)) continue;
-    const highlighted = sameBytes(row.target, state.selected);
-    if (highlighted) selected = row.target;
-    visible.push({ ...row, highlighted });
+    if (row !== undefined && machineMatches(row, query)) {
+      const highlighted = sameBytes(row.target, state.selected);
+      if (highlighted) selected = row.target;
+      visible.push(copyMachine(row, highlighted));
+    }
   }
   return { ...state, visible, selected };
 }

@@ -134,21 +134,19 @@ export function directoryPage(bytes: Uint8Array): DirectoryPage | null {
   };
 }
 
+function copyInto(dest: Uint8Array, at: number, src: Uint8Array): number {
+  for (let i = 0; i < src.length; i += 1) {
+    const value = src.subarray(i, i + 1)[0];
+    if (value === undefined) break;
+    dest[at] = value;
+    at += 1;
+  }
+  return at;
+}
+
 function join(head: Uint8Array, mid: Uint8Array, tail: Uint8Array): Uint8Array {
   const out = new Uint8Array(head.length + mid.length + tail.length);
-  let at = 0;
-  for (let i = 0; i < head.length; i += 1) {
-    out[at] = head[i];
-    at += 1;
-  }
-  for (let i = 0; i < mid.length; i += 1) {
-    out[at] = mid[i];
-    at += 1;
-  }
-  for (let i = 0; i < tail.length; i += 1) {
-    out[at] = tail[i];
-    at += 1;
-  }
+  copyInto(out, copyInto(out, copyInto(out, 0, head), mid), tail);
   return out;
 }
 
