@@ -317,6 +317,19 @@ jobs:
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
 
+  # The mobile pin's input, attached beside the CLI tarballs. It never gates
+  # the draft's publication: release.yml owns that, and a failed xcframework
+  # build is repaired by dispatching ffi-xcframework.yml against the same tag.
+  ffi-xcframework-artifacts:
+    name: build + attach PhuxFFI xcframework
+    needs: [release-please, release-validation]
+    if: needs.release-please.outputs.release_created == 'true'
+    uses: ./.github/workflows/ffi-xcframework.yml
+    permissions:
+      contents: write
+    with:
+      tag: ${{ needs.release-please.outputs.tag_name }}
+
   cockpit-release-artifacts:
     name: build + attach Cockpit app
     needs: [release-please, cockpit-release-validation]

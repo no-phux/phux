@@ -73,6 +73,8 @@ class RoutingTests(unittest.TestCase):
             (["scripts/check-e2e-lanes.sh"], set()),
             (["scripts/check-docs.sh"], set()),
             (["scripts/check-install-surface.sh"], set()),
+            (["scripts/build-ffi-xcframework.sh"], set()),
+            ([".github/workflows/ffi-xcframework.yml"], set()),
             ([".github/workflows/release.yml"], set()),
             ([".github/workflows/native-setup.yml"], set()),
             ([".github/actions/setup-rust-lane/action.yml"], set()),
@@ -111,6 +113,7 @@ class RoutingTests(unittest.TestCase):
             (["docs/SETUP.md", "clients/cockpit/README.md"], "true", "false"),
             ([".agents/skills/using-phux/SKILL.md"], "false", "false"),
             ([".github/workflows/ci.yml", ".github/workflows/release.yml"], "false", "true"),
+            ([".github/workflows/ffi-xcframework.yml"], "false", "true"),
             ([".github/workflows/ci.yml", "crates/phux/src/main.rs"], "false", "false"),
             ([], "false", "false"),
         ]:
