@@ -336,7 +336,13 @@ impl<'a> Pump<'a> {
         // Edge-triggered: a frame flood costs one callback, not one per
         // frame, and the callback runs with no lock held.
         (self.wake)();
-        fed.map_err(control_error)
+        match fed {
+            Ok(()) => Ok(()),
+            // A retired or mismatched generation is visible to the
+            // embedder as InvalidState; it must not tear the socket down.
+            Err(ControlError::InvalidState(_)) => Ok(()),
+            Err(error) => Err(control_error(error)),
+        }
     }
 
     async fn write_all(&mut self, frames: Vec<Vec<u8>>) -> Result<(), ConnectionEnd> {
@@ -360,6 +366,7 @@ fn control_error(error: ControlError) -> ConnectionEnd {
     match error {
         ControlError::Protocol(message) => ConnectionEnd::Dropped(Some(message)),
         ControlError::Refused(message) => ConnectionEnd::Refused(message),
+        ControlError::InvalidState(message) => ConnectionEnd::Dropped(Some(message)),
         ControlError::Resync => ConnectionEnd::Resync,
         ControlError::Closed => ConnectionEnd::Closed,
     }
