@@ -1,7 +1,7 @@
 <!--
 audience: humans, contributors, agents
 stability: stable
-last-reviewed: 2026-09-16
+last-reviewed: 2026-09-20
 -->
 
 <p align="center">
@@ -65,6 +65,12 @@ not supported. For the native macOS Cockpit:
 
 ```sh
 curl -fsSL https://phux.sh/install-cockpit | sh
+```
+
+For agents:
+
+```sh
+npx skills add no-phux/skills
 ```
 
 Run `phux` to start. Prefix is `Ctrl-A`; `Ctrl-A d` detaches. Other channels

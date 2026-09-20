@@ -66,6 +66,10 @@ ROUTES = (
     # Perf/release/mutation and release-please config are compile-free.
     (("justfile", "just/perf.just", "just/release.just", "just/mutation.just",
       "release-please-config.json", "scripts/check-*"), set()),
+    # Product-skills publish mirror and maintainer-only beads skill. The
+    # compiled using-phux* skills stay on the RUST route above.
+    (("scripts/export-product-skills.sh", "scripts/product-skills",
+      "scripts/skills-package/*", ".agents/skills/beads/*"), set()),
     # The xcframework builder runs only from ffi-xcframework.yml (release and
     # dispatch) and `just ffi-xcframework`; no product lane consumes it, and
     # its inputs (the crate, Cargo, the Zig pin) route on their own.

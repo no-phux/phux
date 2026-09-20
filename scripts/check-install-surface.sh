@@ -244,8 +244,12 @@ require_fixed docs/site/public/_headers '/install-cockpit'
 
 require_fixed README.md 'curl -fsSL https://phux.sh/install | sh'
 require_fixed README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
+require_fixed README.md 'npx skills add no-phux/skills'
+forbid_fixed README.md 'npx skills add no-phux/phux'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install | sh'
 require_fixed docs/INSTALL.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
+require_fixed docs/INSTALL.md 'npx skills add no-phux/skills'
+forbid_fixed docs/INSTALL.md 'npx skills add no-phux/phux'
 require_fixed docs/INSTALL.md '## Cockpit (native macOS)'
 require_fixed clients/cockpit/README.md 'curl -fsSL https://phux.sh/install-cockpit | sh'
 require_fixed docs/site/DEPLOY.md '/install-cockpit'
@@ -498,11 +502,15 @@ require_fixed docs/INSTALL.md 'sh -s -- --channel next'
 require_fixed docs/RELEASING.md 'This layout is a consumed contract'
 require_fixed docs/RELEASING.md 'scripts/pack-release.sh'
 
+require_fixed docs/site/public/llms.txt "npx skills add no-phux/skills"
+forbid_fixed docs/site/public/llms.txt "npx skills add no-phux/phux"
+
 if [ "$failures" -ne 0 ]; then
   printf 'install surface check failed: %d missing contract item(s)\n' "$failures" >&2
   exit 1
 fi
 
+bash "$ROOT/scripts/check-product-skills-export.sh"
 bash "$ROOT/scripts/test-pack-release.sh"
 bash "$ROOT/scripts/test-install.sh"
 bash "$ROOT/scripts/test-cockpit-self-update.sh"

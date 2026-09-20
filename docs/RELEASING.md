@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-20
 ---
 
 # Releasing
@@ -165,7 +165,7 @@ retains the visible `check`/`test` job names.
 |---|---|
 | Handwritten docs, including Cockpit README | Compile-free guards |
 | Workflow/action-only changes | Compile-free workflow/contract guards |
-| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh` | Compile-free guards |
+| Root `justfile`, `just/perf.just`, `just/release.just`, `just/mutation.just`, `scripts/check-*`, `scripts/build-ffi-xcframework.sh`, `scripts/export-product-skills.sh`, `scripts/product-skills`, `scripts/skills-package/**`, `.agents/skills/beads/**` | Compile-free guards |
 | `just/gates.just`, `just/test.just`, `just/build.just` | Root Rust check/test |
 | `just/cockpit.just` | Cockpit tests + shipping app |
 | `just/setup.just`, `scripts/doctor.sh`, `scripts/setup-rust.sh`, `scripts/test-dev-setup.sh`, `scripts/native-smoke.sh` | Native setup assurance |
@@ -176,7 +176,7 @@ retains the visible `check`/`test` job names.
 | Cargo/toolchain/build inputs | Affected products plus clean native setup assurance |
 | `.config/zig-toolchain.json` | Affected products plus byte-identical engine reproduction |
 | `scripts/install-zig.sh` | Cockpit + native-setup + engine reproduction (Nix phux lanes use flake Zig) |
-| Embedded `.agents/skills/using-phux*/**` | Rust + Cockpit; these versioned project skills are compiled product inputs |
+| Embedded `.agents/skills/using-phux*/**` | Rust + Cockpit; these versioned project skills are compiled product inputs. Push to `main` also mirrors the allowlisted product skills to `no-phux/skills` (see `.github/workflows/sync-skills.yml`). |
 
 `bash scripts/ci/check-classify-changes.sh` exercises routes and actual event
 diffs, including cross-surface renames and the browser server's manifest closure.

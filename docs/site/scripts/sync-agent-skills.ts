@@ -2,27 +2,49 @@
 /**
  * sync-agent-skills.ts — publish the repo's product skills to the site.
  *
- * Copies `.agents/skills/{using-phux,using-phux-mcp}/SKILL.md` into
- * `public/.well-known/agent-skills/<name>/` and regenerates
- * `public/.well-known/agent-skills/index.json` (Agent Skills Discovery
- * RFC v0.2.0) with a sha256 digest per skill. Like `_synced/`, the copied
- * files are build inputs, not hand-editable artifacts — fix the source skill.
+ * Copies allowlisted `.agents/skills/<name>/SKILL.md` (see
+ * `scripts/product-skills`) into `public/.well-known/agent-skills/<name>/`
+ * and regenerates `public/.well-known/agent-skills/index.json` (Agent Skills
+ * Discovery RFC v0.2.0) with a sha256 digest per skill. Like `_synced/`, the
+ * copied files are build inputs, not hand-editable artifacts — fix the
+ * source skill.
  *
  * `beads` is maintainer task-tracking tooling, not a product skill, so it is
  * intentionally not published.
  */
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
 const ROOT = resolve(import.meta.dirname, "../../.."); // the phux repo root
 const SKILLS_DIR = join(ROOT, ".agents", "skills");
 const OUT_DIR = resolve(import.meta.dirname, "../public/.well-known/agent-skills");
-const PUBLISHED = ["using-phux", "using-phux-mcp"];
+const ALLOWLIST = join(ROOT, "scripts", "product-skills");
+
+async function publishedSkills(): Promise<string[]> {
+  const raw = await readFile(ALLOWLIST, "utf8");
+  const names = [];
+  for (const line of raw.split("\n")) {
+    const name = line.replace(/#.*$/, "").trim();
+    if (!name) continue;
+    if (name === "beads") {
+      throw new Error("scripts/product-skills must not list beads");
+    }
+    if (!/^[A-Za-z0-9_-]+$/.test(name)) {
+      throw new Error(`invalid skill name in scripts/product-skills: ${name}`);
+    }
+    names.push(name);
+  }
+  if (names.length === 0) {
+    throw new Error("scripts/product-skills is empty");
+  }
+  return names;
+}
 
 async function main() {
+  const published = await publishedSkills();
   const skills = [];
-  for (const name of PUBLISHED) {
+  for (const name of published) {
     const source = join(SKILLS_DIR, name, "SKILL.md");
     const body = await readFile(source, "utf8");
     const digest = createHash("sha256").update(body).digest("hex");
@@ -64,4 +86,4 @@ function frontmatterDescription(body: string): string | null {
   return line?.slice("description:".length).trim().replace(/^"(.*)"\s*$/, "$1") ?? null;
 }
 
-await readdir(SKILLS_DIR).then(main);
+await main();

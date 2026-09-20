@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-20
 ---
 
 # The phux agent CLI
@@ -1036,6 +1036,7 @@ look, not what it will find.
 - Host adapters: [`opencode.md`](./opencode.md), [`pi.md`](./pi.md),
   [`claude.md`](./claude.md). They select subsets; they do not redefine
   this contract.
-- `phux --skill` prints the guide compiled into this binary.
-  `phux --capabilities --json` reports installed-build discovery, not
-  negotiated server state.
+- Install the reusable skill with `npx skills add no-phux/skills`.
+  `phux --skill` prints the version-matched copy compiled into this
+  binary. `phux --capabilities --json` reports installed-build discovery,
+  not negotiated server state.

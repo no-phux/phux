@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-20
 ---
 
 # Install
@@ -22,6 +22,7 @@ releases. Windows and `cargo install phux` are not supported.
 | Homebrew | Recommended day-to-day on supported Homebrew platforms | Primary binary path where the tap has an artifact |
 | Release tarball | Manual install and verification | CI-built tarballs include `phux`, `phux-mcp`, licenses, README, and `.sha256` sidecars |
 | From source | Contributors and source-first users | Clone, build, and install with native tools or Nix |
+| Agent skills | Harnesses that load SKILL.md | `npx skills add no-phux/skills` |
 
 The public install page is
 [https://docs.phux.sh/quickstart/install](https://docs.phux.sh/quickstart/install).
@@ -137,6 +138,21 @@ replace, quarantine-clear, and rollback on placement failure. After a
 successful replace the new binary relaunches; Phux-backed remote sessions stay
 on the server. Homebrew, Nix, and development copies refuse and print the
 native command instead of overwriting.
+
+## Agent skills
+
+Harnesses that load Agent Skills install the product skills from the publish
+mirror:
+
+```sh
+npx skills add no-phux/skills
+```
+
+That installs `using-phux` and `using-phux-mcp`. Pass `--skill using-phux` or
+`--skill using-phux-mcp` to take one. The same skills are also served from
+`https://phux.sh` (`npx skills add https://phux.sh`). `phux --skill` and
+`phux mcp --skill` remain the version-matched copies compiled into the
+installed binaries. See [Agents](./consumers/agents.md).
 
 ## Release tarball
 

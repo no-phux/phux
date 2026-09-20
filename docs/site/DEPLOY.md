@@ -35,7 +35,9 @@ The worker and `public/` together publish the machine-readable agent surface
 text/markdown`), a read-only MCP endpoint at `POST /mcp` (`host/mcp.ts`, card
 at `/.well-known/mcp/server-card.json`), RFC 9727 `/.well-known/api-catalog`,
 ARD `/.well-known/ai-catalog.json`, an agent-skills index rebuilt from
-`.agents/skills/` by `scripts/sync-agent-skills.ts` on every build, `llms.txt`,
+`.agents/skills/` by `scripts/sync-agent-skills.ts` on every build (product
+skills only; the same allowlist is mirrored to `no-phux/skills` for
+`npx skills add no-phux/skills`), `llms.txt`,
 `auth.md`, Content Signals + `Agentmap` in `robots.txt`, and RFC 8288 `Link`
 headers on HTML responses.
 
