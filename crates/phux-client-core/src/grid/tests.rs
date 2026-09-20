@@ -6,8 +6,8 @@ use libghostty_vt::screen::{CellContentTag, CellWide};
 use super::{
     CELL_BLINK, CELL_BOLD, CELL_FAINT, CELL_HYPERLINK, CELL_INVERSE, CELL_INVISIBLE, CELL_ITALIC,
     CELL_OVERLINE, CELL_PROTECTED, CELL_SELECTED, CELL_STRIKETHROUGH, COLOR_KIND_DEFAULT,
-    COLOR_KIND_PALETTE, COLOR_KIND_RGB, Cell, CellMetadata, CursorStyle, CursorWidth,
-    GridProjector,
+    COLOR_KIND_PALETTE, COLOR_KIND_RGB, Cell, CellMetadata, CursorStyle, CursorWidth, GridBuffer,
+    GridDamage, GridProjector,
 };
 
 /// `Cell` is `PhuxTerminalCell` in `include/phux/client.h` (ABI v2). Its size
@@ -184,4 +184,47 @@ fn reprojecting_reuses_the_buffer_and_tracks_the_cursor() {
     assert_eq!(second.buffer.utf8, b"abc");
     assert_eq!((second.cursor.col, second.cursor.row), (2, 1));
     assert_eq!(second.cursor.style, CursorStyle::Block);
+}
+
+/// The first projection is full with every row dirty; a later one reports
+/// exactly the rows libghostty saw change, and clears its flags so an
+/// unchanged terminal projects clean.
+#[test]
+fn damage_and_row_dirty_track_changes_between_projections() {
+    let mut terminal = seeded_terminal(4, 3, b"a");
+    let mut projector = GridProjector::new().expect("projector");
+    let first = projector.project(&terminal).expect("project");
+    assert_eq!(first.damage, GridDamage::Full);
+    assert_eq!(first.buffer.row_dirty, vec![true, true, true]);
+
+    let unchanged = projector.project(&terminal).expect("project");
+    assert_eq!(unchanged.damage, GridDamage::Clean);
+    assert!(unchanged.buffer.row_dirty.iter().all(|dirty| !dirty));
+
+    // Move to row 3 and write: only that row is dirty.
+    terminal.vt_write(b"\x1b[3;1Hz");
+    let third = projector.project(&terminal).expect("project");
+    assert_ne!(third.damage, GridDamage::Clean);
+    assert!(third.buffer.row_dirty[2], "the written row is dirty");
+    if third.damage == GridDamage::Rows {
+        assert!(!third.buffer.row_dirty[1], "an untouched row stays clean");
+    }
+    assert_eq!(third.buffer.utf8, b"az");
+}
+
+/// `swap_buffer` is the double-buffering seam: the caller takes the filled
+/// buffer out and the projector keeps working with the one handed back.
+#[test]
+fn swap_buffer_hands_the_projection_out_without_copying() {
+    let terminal = seeded_terminal(3, 1, b"xy");
+    let mut projector = GridProjector::new().expect("projector");
+    projector.project(&terminal).expect("project");
+    let mut taken = GridBuffer::default();
+    projector.swap_buffer(&mut taken);
+    assert_eq!(taken.utf8, b"xy");
+    assert_eq!(taken.cell_text(1), b"y");
+    assert!(projector.buffer().cells.is_empty());
+    let again = projector.project(&terminal).expect("project");
+    assert_eq!(again.buffer.utf8, b"xy");
+    assert_eq!(again.damage, GridDamage::Clean);
 }
