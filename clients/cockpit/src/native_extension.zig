@@ -68,13 +68,14 @@ fn allocatePeerHandleThroughEngine() !u64 {
     try engine.model.ensurePeerSlots(1);
     return engine.model.peers.items[0].channel_key;
 }
+const builtin = @import("builtin");
 const native_sdk = @import("native_sdk");
 const core = @import("core");
 const cockpit = @import("cockpit_engine");
 
 const Engine = cockpit.Engine;
 const protocol = cockpit.protocol;
-const Adapter = native_sdk.TsUiApp(core);
+const Adapter = native_sdk.TsUiAppWithFeatures(core, .{ .runtime_markup = builtin.mode == .Debug });
 const Effects = Adapter.Effects;
 const canvas = native_sdk.canvas;
 const canvas_label = "phux-cockpit-canvas";

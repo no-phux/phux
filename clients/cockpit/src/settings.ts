@@ -48,7 +48,13 @@ function folded(byte: number): number {
 function contains(text: Uint8Array, query: Uint8Array): boolean {
   for (let start = 0; start + query.length <= text.length; start += 1) {
     let at = 0;
-    while (at < query.length && folded(text[start + at]) === folded(query[at])) at += 1;
+    while (at < query.length) {
+      const left = text.subarray(start + at, start + at + 1)[0];
+      const right = query.subarray(at, at + 1)[0];
+      if (left === undefined || right === undefined) break;
+      if (folded(left) !== folded(right)) break;
+      at += 1;
+    }
     if (at === query.length) return true;
   }
   return false;
