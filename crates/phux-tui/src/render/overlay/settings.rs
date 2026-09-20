@@ -600,10 +600,10 @@ impl SettingsOverlay {
 
     // ---- rendering ------------------------------------------------------
 
-    /// The modal rect: 80% of the viewport, at least 60x16, full-bleed on a
-    /// starved axis.
+    /// The modal rect: 70% of the viewport, at least 60x16, full-bleed on a
+    /// starved axis. Smaller than a page, larger than a picker.
     fn modal_area(outer: Rect, bp: ChromeBreakpoints) -> Rect {
-        centered_panel(outer, 8, 60, 16, bp)
+        centered_panel(outer, 7, 60, 16, bp)
     }
 
     /// Whether the interior is wide enough for the section column.
@@ -945,16 +945,12 @@ impl SettingsOverlay {
 
     /// The header row: the filter prompt on the left, the file on the right.
     fn header_row(&self, width: usize) -> Line<'static> {
-        let query_text = if self.query.is_empty() && self.editor.is_none() {
-            "filter\u{2026}".to_owned()
-        } else {
-            self.query.clone()
-        };
+        let query_text = self.query.clone();
         let prompt_w = 2 + display_width(&query_text) + 1;
         let path = clip_text(&self.display_path, width.saturating_sub(prompt_w + 2));
         let pad = width.saturating_sub(prompt_w + display_width(&path));
         Line::from(vec![
-            Span::styled("> ".to_owned(), Style::default().fg(self.theme.accent)),
+            Span::styled("> ".to_owned(), Style::default().fg(self.theme.dim)),
             Span::styled(
                 query_text,
                 if self.query.is_empty() {

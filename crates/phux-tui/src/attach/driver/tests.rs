@@ -1958,14 +1958,14 @@ fn copy_mode_status_block_cell_count_differs_from_linear() {
 
     // Block: 3 rows * 4 band cols = 12 (and no underflow despite 5 > 2).
     assert!(
-        status_of(corners(true)).contains("12 cell(s)"),
+        status_of(corners(true)).contains("· 12 "),
         "block count must be span_rows * band_cols = 12"
     );
     // Linear: the bounding-box arithmetic saturates the reversed columns to
     // a width of 1, giving 3 rows * 1 = 3 — a different number, proving the
     // branch is taken and that the shared corners no longer panic.
     assert!(
-        status_of(corners(false)).contains("3 cell(s)"),
+        status_of(corners(false)).contains("· 3 "),
         "linear count must differ from the block count"
     );
 
@@ -1979,7 +1979,7 @@ fn copy_mode_status_block_cell_count_differs_from_linear() {
     };
     // 3 rows * band {2..=6} (5 wide) = 15.
     assert!(
-        status_of(ordered_block).contains("15 cell(s)"),
+        status_of(ordered_block).contains("· 15 "),
         "ordered block: 3 rows * 5 band cols = 15"
     );
 }

@@ -44,9 +44,9 @@ pub const NEEDS_YOU_HEADER: &str = "Agents";
 /// Sessions header, including the current session.
 pub const SPACES_HEADER: &str = "Sessions";
 /// Quiet placeholders keep both fixed areas recognizable.
-pub const AGENTS_EMPTY: &str = "none running yet";
+pub const AGENTS_EMPTY: &str = "—";
 /// Placeholder when no sessions are available.
-pub const SESSIONS_EMPTY: &str = "no sessions";
+pub const SESSIONS_EMPTY: &str = "—";
 /// Label of a truncated area's overflow row.
 pub const OVERFLOW_LABEL: &str = "more";
 /// The collapse chevron painted in the strip's bottom corner
@@ -679,9 +679,7 @@ impl SidebarPainter {
     fn header_line(&self, label: &str, text_w: u16) -> Line<'static> {
         Line::from(Span::styled(
             truncate(label, usize::from(text_w)),
-            Style::default()
-                .fg(self.theme.sidebar_section)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(self.theme.sidebar_section),
         ))
     }
 
@@ -716,9 +714,7 @@ impl SidebarPainter {
         let label = truncate(&w.name, label_w);
         let branch = fitting_branch(w, label_w.saturating_sub(display_width(&label)));
         let style = if w.active {
-            Style::default()
-                .fg(self.theme.selection_fg)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(self.theme.accent)
         } else {
             Style::default().fg(self.theme.text)
         };
@@ -748,20 +744,15 @@ impl SidebarPainter {
 
     /// Host identity is a separate, dim line and is never inferred here.
     fn host_line(&self, s: &SessionRosterEntry, text_w: u16) -> Line<'static> {
-        let label = truncate(
-            &format!("on {}", s.host),
-            usize::from(text_w).saturating_sub(2),
-        );
+        let label = truncate(&s.host, usize::from(text_w).saturating_sub(2));
         Line::from(Span::styled(
             format!("  {label}"),
             Style::default().fg(self.theme.dim),
         ))
     }
 
-    /// Render one agent row (phux-foz.9): lifecycle glyph, window name,
-    /// then `state - agent-name` colored by state. The state segment keeps
-    /// first claim on width — it is the row's information — with a small
-    /// floor reserved for the window name so it stays identifiable.
+    /// Render one agent row (phux-foz.9): lifecycle glyph, locator, then
+    /// the agent name. The glyph carries state; the name is the identity.
     ///
     /// The glyph carries the attention ladder ([`attention_rank`]), not just
     /// the state: an UNSEEN `done` agent gets the filled diamond and bold —
@@ -776,7 +767,7 @@ impl SidebarPainter {
         let color = badge.color;
         let glyph = badge.glyph;
         let avail = usize::from(text_w).saturating_sub(ICON_COLUMNS);
-        let state_text = format!("{} - {}", e.state.as_str(), e.name);
+        let state_text = e.name.clone();
         // A cross-session row is labelled by its SESSION, not its window: the
         // row's job is to say where in the fleet to go, and a window name
         // out of its session's context ("edit") locates nothing.
@@ -833,9 +824,7 @@ impl SidebarPainter {
             .saturating_sub(display_width(&name))
             .saturating_sub(display_width(&counts));
         let style = if s.active {
-            Style::default()
-                .fg(self.theme.selection_fg)
-                .add_modifier(Modifier::BOLD)
+            Style::default().fg(self.theme.accent)
         } else if s.selectable {
             Style::default().fg(self.theme.text)
         } else {
@@ -872,10 +861,7 @@ impl SidebarPainter {
     /// like an empty state, because it is chrome rather than a target you
     /// aim at — though clicking it does open the fleet dashboard.
     fn overflow_line(&self, hidden: usize, text_w: u16) -> Line<'static> {
-        let label = truncate(
-            &format!("+{hidden} {OVERFLOW_LABEL}"),
-            usize::from(text_w).saturating_sub(2),
-        );
+        let label = truncate(&format!("+{hidden}"), usize::from(text_w).saturating_sub(2));
         Line::from(Span::styled(
             format!("  {label}"),
             Style::default().fg(self.theme.dim),
@@ -899,7 +885,7 @@ impl SidebarPainter {
         let rest = chars.as_str().to_owned();
         vec![
             Span::styled(glyph, Style::default().fg(self.theme.chord)),
-            Span::styled(rest, Style::default().fg(self.theme.text)),
+            Span::styled(rest, Style::default().fg(self.theme.dim)),
         ]
     }
 
@@ -923,27 +909,9 @@ impl SidebarPainter {
                 .map(|row| self.row_line(*row, hidden, text_w))
                 .collect();
             Paragraph::new(lines).render(RataRect::new(GUTTER, 0, text_w, rect.h), &mut buf);
-            for (y, row) in (0..rect.h).zip(&model) {
-                if self.row_selected(*row) {
-                    buf.set_style(
-                        RataRect::new(0, y, rect.w.saturating_sub(1), 1),
-                        Style::default().bg(self.theme.selection_bg),
-                    );
-                }
-            }
         }
         self.paint_separator(&mut buf, rect);
         buf
-    }
-
-    fn row_selected(&self, row: SidebarRow) -> bool {
-        match row {
-            SidebarRow::WindowName(i) => self.windows.get(i).is_some_and(|w| w.active),
-            SidebarRow::RosterEntry(j) | SidebarRow::RosterHost(j) => {
-                self.roster.get(j).is_some_and(|s| s.active)
-            }
-            _ => false,
-        }
     }
 
     fn row_line(&self, row: SidebarRow, hidden: SidebarCounts, text_w: u16) -> Line<'static> {
@@ -1711,7 +1679,7 @@ mod tests {
             "one CUP for the changed host row"
         );
         assert!(changed.starts_with("\x1b[16;8H"));
-        assert!(strip_ansi(&changed).contains("on devbox"));
+        assert!(strip_ansi(&changed).contains("devbox"));
         assert!(!changed.contains("editor"));
         assert!(
             changed.len() * 8 < full.len(),
@@ -1741,8 +1709,8 @@ mod tests {
         };
         let b = p.compose_buffer(rect);
         for y in [6, 7, 8] {
-            assert_eq!(b[(0, y)].bg, p.theme.selection_bg);
-            assert_eq!(b[(34, y)].bg, p.theme.selection_bg);
+            assert_eq!(b[(0, y)].bg, p.theme.surface);
+            assert_eq!(b[(34, y)].bg, p.theme.surface);
             assert_eq!(b[(35, y)].bg, p.theme.surface);
         }
         assert_eq!(b[(3, 7)].fg, p.theme.dim);
@@ -1854,11 +1822,11 @@ mod tests {
         let buf = p.compose_buffer(rect);
         assert!(row_text(&buf, rect, 8).contains(SPACES_HEADER));
         assert!(row_text(&buf, rect, 9).contains("development"));
-        assert!(row_text(&buf, rect, 10).contains("on mini"));
+        assert!(row_text(&buf, rect, 10).contains("mini"));
         assert!(row_text(&buf, rect, 11).starts_with("   ● phux"));
         assert!(row_text(&buf, rect, 12).starts_with("   ○ scratch"));
         assert!(row_text(&buf, rect, 13).contains("peer"));
-        assert!(row_text(&buf, rect, 14).contains("on mini"));
+        assert!(row_text(&buf, rect, 14).contains("mini"));
         assert!(!strip_text(&p, rect).contains("wave2/herdr"));
     }
 
@@ -1885,7 +1853,7 @@ mod tests {
         );
         let claude_row = row_text(&buf, rect, 1);
         assert!(
-            claude_row.contains("phux") && claude_row.contains("idle - claude"),
+            claude_row.contains("phux") && claude_row.contains("claude"),
             "queue row shows locator + state - name: {claude_row:?}"
         );
         let worker_row = row_text(&buf, rect, 2);
@@ -2081,14 +2049,14 @@ mod tests {
             busy.contains("!1") && busy.contains("*2"),
             "histogram carries how much, not just what: {busy:?}"
         );
-        assert!(row_text(&buf, rect, u16::try_from(first + 1).unwrap()).contains("on mini"));
+        assert!(row_text(&buf, rect, u16::try_from(first + 1).unwrap()).contains("mini"));
         let sat = row_text(&buf, rect, u16::try_from(first + 2).unwrap());
         assert!(sat.contains("prod-3"), "satellite name: {sat:?}");
         assert!(
             sat.contains("?4"),
             "a satellite reads as unknown, never as a calm zero: {sat:?}"
         );
-        assert!(row_text(&buf, rect, u16::try_from(first + 3).unwrap()).contains("on devbox"));
+        assert!(row_text(&buf, rect, u16::try_from(first + 3).unwrap()).contains("devbox"));
     }
 
     fn strip_text(p: &SidebarPainter, rect: Rect) -> String {
@@ -2644,7 +2612,7 @@ mod tests {
                     assert_eq!(hit, Some(SidebarHit::Roster(*j)));
                 }
                 SidebarRow::RosterHost(j) => {
-                    assert!(row_text(&buf, rect, y16).contains(&format!("on {}", peers[*j].host)));
+                    assert!(row_text(&buf, rect, y16).contains(&peers[*j].host));
                     assert_eq!(hit, Some(SidebarHit::Roster(*j)));
                 }
                 SidebarRow::NeedsYouOverflow => {

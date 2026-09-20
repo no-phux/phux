@@ -179,37 +179,23 @@ fn write_stage(path: &Path, stage: Stage) -> std::io::Result<()> {
     }
 }
 
-/// Compact guidance using the bindings active for this attach invocation.
-///
-/// `sidebar_visible` is the attach's live sidebar flag (config seed at
-/// first run, runtime toggle later). When the strip is already on, the
-/// copy names the Agents list and glyphs and does not tell the user to
-/// turn it on. When it is off, the copy names the live `toggle-sidebar`
-/// chord.
+/// Compact first-attach guidance: continuity, leave, commands, and the
+/// agent glyphs. `sidebar_visible` is the attach's live sidebar flag.
+/// When the strip is already on, the copy does not tell the user to turn
+/// it on. When it is off, it names the live `toggle-sidebar` chord.
 pub(super) fn hint_lines(
     keybindings: Option<&KeybindingsCfg>,
     sidebar_visible: bool,
 ) -> Vec<String> {
     let detach = binding_label(keybindings, "detach", "Detach action");
     let palette = binding_label(keybindings, "command-palette", "Command palette");
-    let sessions = binding_label(keybindings, "session-picker", "Sessions & hosts");
-    let settings = binding_label(keybindings, "settings", "Settings");
-    let copy = binding_label(keybindings, "copy-mode", "Copy mode");
     let mut lines = vec![
-        "Keep working normally. phux keeps this session alive when you leave.".to_owned(),
+        "This session stays alive when you leave.".to_owned(),
         String::new(),
+        format!("  {detach:<10} leave"),
+        format!("  {palette:<10} commands"),
     ];
     lines.extend(inbox_lines(keybindings, sidebar_visible));
-    lines.extend([
-        format!("  {detach:<18} leave this view"),
-        "  phux               come back from any shell".to_owned(),
-        format!("  {sessions:<18} sessions across hosts"),
-        format!("  {palette:<18} browse every command"),
-        format!("  {settings:<18} edit configuration"),
-        format!("  {copy:<18} select scrollback; Shift-drag uses host selection"),
-        String::new(),
-        destinations_line(sidebar_visible),
-    ]);
     lines
 }
 
@@ -218,26 +204,16 @@ fn inbox_lines(keybindings: Option<&KeybindingsCfg>, sidebar_visible: bool) -> V
     let working = crate::render::chrome::AGENT_WORKING_GLYPH;
     if sidebar_visible {
         vec![
-            format!(
-                "The Agents list is the fleet inbox. {blocked} means blocked on you; {working} means still working."
-            ),
             String::new(),
+            format!("{blocked} blocked  {working} working"),
         ]
     } else {
         let sidebar = binding_label(keybindings, "toggle-sidebar", "Toggle sidebar");
         vec![
-            format!("  {sidebar:<18} show the Agents list"),
-            format!("  {blocked} blocked on you; {working} still working"),
             String::new(),
+            format!("  {sidebar:<10} agents"),
+            format!("  {blocked} blocked  {working} working"),
         ]
-    }
-}
-
-fn destinations_line(sidebar_visible: bool) -> String {
-    if sidebar_visible {
-        "Window tabs and sidebar rows are clickable. Prefix keys and the palette open everything else.".to_owned()
-    } else {
-        "Window tabs are clickable. Prefix keys and the palette open everything else.".to_owned()
     }
 }
 
@@ -389,10 +365,6 @@ mod tests {
         let body = hint_lines(Some(&keys), true).join("\n");
         assert!(body.contains("C-b x"), "detach binding:\n{body}");
         assert!(body.contains("C-b p"), "palette binding:\n{body}");
-        assert!(body.contains("C-b s"), "session binding:\n{body}");
-        assert!(body.contains("C-b S"), "settings binding:\n{body}");
-        assert!(body.contains("C-b ["), "copy binding:\n{body}");
-        assert!(body.contains("Shift-drag"), "native selection:\n{body}");
         assert!(!body.contains("C-a d"), "must not advertise stale defaults");
         assert!(
             !body.contains("C-b b") && !body.contains("C-a b"),
@@ -418,11 +390,6 @@ mod tests {
         );
 
         let visible = hint_lines(Some(&keys), true).join("\n");
-        assert!(visible.contains("Agents"), "names the list:\n{visible}");
-        assert!(
-            visible.contains("fleet inbox"),
-            "names the inbox:\n{visible}"
-        );
         assert!(visible.contains(blocked.glyph), "blocked glyph:\n{visible}");
         assert!(visible.contains(working.glyph), "working glyph:\n{visible}");
         assert!(visible.contains("blocked"), "blocked word:\n{visible}");
@@ -431,20 +398,12 @@ mod tests {
             !visible.contains("C-a b"),
             "must not tell them to turn on a sidebar that is already open:\n{visible}"
         );
-        assert!(
-            visible.contains("sidebar"),
-            "open strip still names the sidebar as a click target:\n{visible}"
-        );
 
         let hidden = hint_lines(Some(&keys), false).join("\n");
         assert!(hidden.contains("C-a b"), "show-sidebar binding:\n{hidden}");
-        assert!(hidden.contains("Agents"), "names the list:\n{hidden}");
+        assert!(hidden.contains("agents"), "names the list:\n{hidden}");
         assert!(hidden.contains(blocked.glyph), "blocked glyph:\n{hidden}");
         assert!(hidden.contains(working.glyph), "working glyph:\n{hidden}");
-        assert!(
-            !hidden.contains("and sidebar"),
-            "hidden strip is not advertised as already clickable:\n{hidden}"
-        );
     }
 
     #[test]
@@ -467,6 +426,6 @@ mod tests {
             !body.contains("C-a b"),
             "must not advertise stale defaults:\n{body}"
         );
-        assert!(body.contains("Agents"), "names the list:\n{body}");
+        assert!(body.contains("agents"), "names the list:\n{body}");
     }
 }

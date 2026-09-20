@@ -3,24 +3,24 @@ source: crates/phux-tui/src/attach/driver/tests.rs
 expression: "rows.iter().map(|r| r.trim_end()).collect::<Vec<_>>().join(\"\\n\")"
 ---
  Agents            │────────────────────────────────────────────────────────────
-   none running y… │PANE-BASE
+   —               │PANE-BASE
                    │
                    │
                    │
                    │
-                   │┌──────────────────── command palette ─────────────────────┐
+                   │
+                   │┌ command palette ─────────────────────────────────────────┐
                    ││ >                                                        │
-                   ││                                                          │
                    ││ detach                                                   │
                    ││ new-window                                               │
  Sessions          ││                                                          │
  ○ probe           ││                                                          │
-   on probe-host   ││                                                          │
+   probe-host      ││                                                          │
    ● w1-agent      ││                                                          │
                    ││                                                          │
                    ││                                                          │
-                   ││                                                          │
                    │└──────────────────────────────────────────────────────────┘
+                   │
                    │
                    │
                    │

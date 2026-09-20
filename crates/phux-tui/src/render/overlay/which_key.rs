@@ -125,25 +125,18 @@ impl RenderOverlay for WhichKeyOverlay {
             .iter()
             .map(|(key, action)| ChordRow::new(key.clone(), action.clone()))
             .collect::<Vec<_>>();
-        let body = KeyChordTable::new(
-            &self.theme,
-            vec![ChordSection::new(
-                format!("{} continuations", self.prefix),
-                rows,
-            )],
-        )
-        .empty_notice("No prefix bindings configured.")
-        .body_lines();
-        Modal::new(&self.theme, format!("{} ...", self.prefix), body)
-            .footer("Esc cancels the prefix; any other key runs its binding")
+        let body = KeyChordTable::new(&self.theme, vec![ChordSection::new(String::new(), rows)])
+            .empty_notice("No prefix bindings configured.")
+            .body_lines();
+        Modal::new(&self.theme, self.prefix.clone(), body)
             .wrap(true)
             .render_into(modal_area, buf);
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        // Same floating-modal shape as help, slightly smaller: ~60% of
-        // the viewport, min 36x8, clamped to the outer rect.
-        Some(centered_panel(area, 6, 36, 8, self.breakpoints))
+        // Same floating-modal shape as the command palette: 50% of the
+        // viewport, min 36x8, clamped to the outer rect.
+        Some(centered_panel(area, 5, 36, 8, self.breakpoints))
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {
@@ -234,7 +227,7 @@ mod tests {
             &Theme::default(),
         );
         let text = render_to_string(&overlay, 80, 24);
-        assert!(text.contains("C-Space ..."), "title:\n{text}");
+        assert!(text.contains("C-Space"), "title:\n{text}");
     }
 
     #[test]

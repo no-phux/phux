@@ -1,7 +1,7 @@
 ---
 audience: humans, contributors
 stability: stable
-last-reviewed: 2026-09-14
+last-reviewed: 2026-09-19
 ---
 
 # Install
@@ -191,23 +191,18 @@ Nix setup and scoped checks in [`SETUP.md`](./SETUP.md).
 For a checkout you edit continuously, install the current debug build with:
 
 ```sh
-just install-dev             # build phux + phux-mcp and install both
+just install-dev             # build phux + phux-mcp into ~/.cargo/bin
 hash -r                      # refresh an older shell's command cache if needed
-command -v phux              # should print ~/.cargo/bin/phux
+command -v phux              # inside the checkout: ~/.cargo/bin/phux
 ```
 
-`install-dev` writes the binaries atomically to `${CARGO_HOME:-~/.cargo}/bin`,
-matching a normal source install. That directory must precede
-`/opt/homebrew/bin` in `PATH`; the standard phux developer environment uses
-that order. The Homebrew package can remain installed as a released fallback.
-`just rebuild` installs the next build and asks a source-installed server to
-re-exec the newly installed binary while preserving its live sessions.
-
-A server already launched from Homebrew cannot change its executable path via
-the same-path re-exec mechanism. Detach and stop that server once, verify
-`command -v phux` resolves to `~/.cargo/bin/phux`, then start `phux` again.
-Existing source-installed servers under `~/.cargo/bin` can upgrade in place;
-subsequent `just rebuild` invocations stay entirely on the developer binary.
+`install-dev` writes debug binaries to `${CARGO_HOME:-~/.cargo}/bin` only.
+`curl | sh` owns `~/.local/bin`. A debug build already uses the `dev`
+profile (separate socket and state), so the two cannot steal each other's
+sessions. Inside this checkout, direnv / `nix develop` put Cargo's bin
+ahead of `~/.local/bin`; leave the repo and `phux` is the user install
+again. `just rebuild` installs the next debug build and hot-swaps the
+dev-profile server.
 
 ## Updating
 

@@ -245,6 +245,7 @@
               fi
             ''
             + ''
+              export PATH="''${CARGO_HOME:-$HOME/.cargo}/bin:$PATH"
               echo "phux dev shell — $(rustc --version)"
             '';
         };

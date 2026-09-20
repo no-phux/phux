@@ -4,22 +4,21 @@ expression: "render_text(&page, 100, 24)"
 ---
 
 
-          ┌────────────────────────────────── Settings ──────────────────────────────────┐
-          │ > accent                                          ~/.config/phux/config.toml │
-          │                                                                              │
-          │  Defaults       6 │ • theme.accent                       ██ #ff0000      you █
-          │  Keybindings      │   theme.title                        ██ #bef264  default █
-          │  Status bar       │   theme.action                         ██ reset  default █
-          │  Sidebar          │   defaults.cwd-inheritance      inherit-focused  default █
-          │  Chrome           │   voice.transcriber                       unset  default █
-          │  Theme          3 │   defaults.spawn-on-attach                unset  default │
-          │  Experimental   1 │   defaults.retain-on-exit-secs              600  default │
-          │  Voice          1 │   defaults.approval-ttl-secs                120  default │
-          │ ──────────────────────────────────────────────────────────────────────────── │
-          │ theme.accent  color: name, #rrggbb, or 0-255                                 │
-          │ Modal titles, query caret, active tab fill                                   │
-          │ The one hue that says this is phux talking: modal titles, the palette's      │
-          │ query caret, the active window tab's fill, and the focused pane's frame.     │
-          │ default █ #bef264  ·  set in your config  ·  applies now (reloaded)          │
-          │                                                                              │
-          └──────────────────────────────────────────────────────────────────────────────┘
+
+
+               ┌ Settings ──────────────────────────────────────────────────────────┐
+               │ > accent                                ~/.config/phux/config.toml │
+               │                                                                    │
+               │  Defaults       6 │ • theme.accent             ██ #ff0000      you █
+               │  Keybindings      │   theme.title              ██ #bef264  default █
+               │  Status bar       │   theme.action               ██ reset  default │
+               │  Sidebar          │   defaults.cwd-inher… inherit-focused  default │
+               │  Chrome           │   voice.transcriber             unset  default │
+               │ ────────────────────────────────────────────────────────────────── │
+               │ theme.accent  color: name, #rrggbb, or 0-255                       │
+               │ Modal titles, query caret, active tab                              │
+               │ The one hue that says this is phux talking: modal titles, the      │
+               │ palette's query caret, the active window tab, and the focused      │
+               │ default █ #bef264  ·  set in your config  ·  applies now (reloaded │
+               │                                                                    │
+               └────────────────────────────────────────────────────────────────────┘

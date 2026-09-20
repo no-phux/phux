@@ -44,7 +44,7 @@ use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
 use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use super::HardcodedBinding;
@@ -310,10 +310,7 @@ impl ContextMenu {
     fn row_line(&self, row: &MenuRow, selected: bool, inner_width: u16) -> Line<'static> {
         let width = usize::from(inner_width);
         match row {
-            MenuRow::Separator => Line::from(Span::styled(
-                "─".repeat(width),
-                Style::default().fg(self.theme.border),
-            )),
+            MenuRow::Separator => Line::from(""),
             MenuRow::Item {
                 label, secondary, ..
             } => {
@@ -330,8 +327,7 @@ impl ContextMenu {
                         format!("{lead}{label}{}{sec}{trail}", " ".repeat(gap)),
                         Style::default()
                             .fg(self.theme.selection_fg)
-                            .bg(self.theme.selection_bg)
-                            .add_modifier(Modifier::BOLD),
+                            .bg(self.theme.selection_bg),
                     ))
                 } else {
                     Line::from(vec![

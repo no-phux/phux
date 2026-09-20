@@ -671,13 +671,13 @@ pub struct StatusBarPainter {
     /// an empty bar (no row is reserved to paint it on — see
     /// [`Self::set_notice`]).
     notice: Option<(Notice, std::time::Instant)>,
-    /// ADR-0033: when `Some`, a supervisory badge (e.g. `[ FROZEN ]`,
+    /// ADR-0033: when `Some`, a supervisory badge (e.g. ` frozen `,
     /// `[ WHEEL:you ]`) is overlaid right-aligned on the bar row for the
     /// focused pane. Set by the driver from inbound `TerminalControl` state; a
     /// change invalidates the cache so the row repaints (and erases a cleared
     /// badge). Painted over the composed widget row, not replacing it.
     supervisory: Option<String>,
-    /// phux-foz.1: when `Some`, the agent-attention hint (e.g. `[ ASK ]`)
+    /// phux-foz.1: when `Some`, the agent-attention hint (e.g. ` ask `)
     /// is overlaid immediately left of the supervisory badge. Set by the
     /// driver whenever a pane's ADR-0035 asked flag flips; same cache
     /// semantics as `supervisory`.

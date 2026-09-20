@@ -3,7 +3,7 @@ source: crates/phux-tui/src/render/chrome/sidebar.rs
 expression: "strip_text(&p, rect)"
 ---
  Agents                  │
-   none running yet      │
+   —                     │
                          │
                          │
                          │
@@ -11,7 +11,7 @@ expression: "strip_text(&p, rect)"
                          │
                          │
  Sessions                │
-   no sessions           │
+   —                     │
                          │
                          │
                          │

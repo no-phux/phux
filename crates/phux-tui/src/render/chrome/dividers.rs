@@ -435,9 +435,7 @@ fn build_cells<'p, F>(
 /// The style of one rule cell.
 fn rule_style(theme: &Theme, focused: bool) -> Style {
     if focused {
-        Style::default()
-            .fg(theme.divider_focus)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.divider_focus)
     } else {
         Style::default().fg(theme.divider)
     }
@@ -574,9 +572,7 @@ fn draw_one_title(
     budget -= badge_cells;
 
     let title_style = if focused {
-        Style::default()
-            .fg(theme.pane_title_focus)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.pane_title_focus)
     } else {
         Style::default().fg(theme.pane_title)
     };
@@ -982,10 +978,7 @@ mod tests {
             s.contains(&sgr_fg(theme().divider_focus)),
             "expected the focus tint in {s:?}"
         );
-        assert!(
-            s.contains("\x1b[1m"),
-            "expected the focused rule to be bold"
-        );
+        assert!(!s.contains("\x1b[1m"), "focus is colour, not bold");
     }
 
     /// An unfocused rule recedes to `theme.divider` and is not bold.
@@ -1687,11 +1680,11 @@ mod tests {
     }
 
     /// Map each painted cell to `(symbol, accented)`, where `accented`
-    /// means the cell carried the focus style (bold + `divider_focus`).
+    /// means the cell carried the focus style (`divider_focus`).
     ///
     /// Width-aware for the same reason [`painted_cells`] is.
     fn styled_cells(s: &str) -> HashMap<(u16, u16), (String, bool)> {
-        let focus_sgr = format!("\x1b[1m{}", sgr_fg(theme().divider_focus));
+        let focus_sgr = sgr_fg(theme().divider_focus);
         let mut out = HashMap::new();
         let (mut x, mut y) = (0u16, 0u16);
         let mut accented = false;

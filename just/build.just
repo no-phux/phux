@@ -32,8 +32,8 @@ build-release:
 
 
 # Build the current checkout and atomically install its developer binaries.
-# The binaries live in Cargo's bin dir, matching normal source installs. Keep
-# that directory ahead of Homebrew in PATH so there is one developer binary.
+# Cargo's bin dir only. The curl installer owns `$HOME/.local/bin`; a debug
+# build already uses the `dev` profile so it cannot steal that server.
 [group('build')]
 [doc('Build and atomically install the developer binaries into Cargo bin dir.')]
 install-dev:

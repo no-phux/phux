@@ -55,13 +55,12 @@ impl RenderOverlay for PendingOverlay {
             Style::default().fg(self.theme.text),
         ))];
         Modal::new(&self.theme, self.title.clone(), body)
-            .footer("Esc cancel")
             .wrap(true)
             .render_into(modal_area, buf);
     }
 
     fn bounds(&self, area: Rect) -> Option<Rect> {
-        Some(centered_panel(area, 6, 40, 8, self.breakpoints))
+        Some(centered_panel(area, 5, 32, 6, self.breakpoints))
     }
 
     fn set_breakpoints(&mut self, bp: ChromeBreakpoints) {

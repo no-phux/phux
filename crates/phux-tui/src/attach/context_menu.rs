@@ -40,28 +40,28 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
     let rows = vec![
         row(
             keybindings,
-            "Split right",
+            "split right",
             "split-pane",
             &[("direction", "vertical")],
         ),
         row(
             keybindings,
-            "Split down",
+            "split down",
             "split-pane",
             &[("direction", "horizontal")],
         ),
-        row(keybindings, "Move beside…", "move-pane", &[]),
+        row(keybindings, "move", "move-pane", &[]),
         row(
             keybindings,
-            if zoomed { "Unzoom" } else { "Zoom" },
+            if zoomed { "unzoom" } else { "zoom" },
             "toggle-zoom",
             &[],
         ),
-        row(keybindings, "Copy mode", "copy-mode", &[]),
+        row(keybindings, "copy", "copy-mode", &[]),
         MenuRow::Separator,
-        row(keybindings, "All commands…", "command-palette", &[]),
+        row(keybindings, "commands", "command-palette", &[]),
         MenuRow::Separator,
-        row(keybindings, "Close pane", "kill-pane", &[]),
+        row(keybindings, "close", "kill-pane", &[]),
     ];
     MenuSpec {
         title: "pane".to_owned(),
@@ -74,25 +74,15 @@ pub(super) fn pane_menu(keybindings: Option<&KeybindingsCfg>, zoomed: bool) -> M
 /// click does), so the rows act on the active window with no target arg.
 pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, name: &str) -> MenuSpec {
     let rows = vec![
-        row(keybindings, "New window", "new-window", &[]),
-        row(keybindings, "Rename window…", "rename-window", &[]),
-        row(keybindings, "Pick window…", "window-picker", &[]),
-        int_row(
-            keybindings,
-            "Move window left",
-            "move-window",
-            ("delta", -1),
-        ),
-        int_row(
-            keybindings,
-            "Move window right",
-            "move-window",
-            ("delta", 1),
-        ),
+        row(keybindings, "new window", "new-window", &[]),
+        row(keybindings, "rename…", "rename-window", &[]),
+        row(keybindings, "windows", "window-picker", &[]),
+        int_row(keybindings, "move left", "move-window", ("delta", -1)),
+        int_row(keybindings, "move right", "move-window", ("delta", 1)),
         MenuRow::Separator,
-        row(keybindings, "All commands…", "command-palette", &[]),
+        row(keybindings, "commands", "command-palette", &[]),
         MenuRow::Separator,
-        row(keybindings, "Close window", "kill-window", &[]),
+        row(keybindings, "close", "kill-window", &[]),
     ];
     MenuSpec {
         title: if name.is_empty() {
@@ -108,18 +98,18 @@ pub(super) fn window_menu(keybindings: Option<&KeybindingsCfg>, name: &str) -> M
 /// status bar outside the tabs. The broad "what can I do here" menu.
 pub(super) fn session_menu(keybindings: Option<&KeybindingsCfg>, session: &str) -> MenuSpec {
     let rows = vec![
-        row(keybindings, "New window", "new-window", &[]),
-        row(keybindings, "Pick window…", "window-picker", &[]),
-        row(keybindings, "Sessions & hosts…", "session-picker", &[]),
-        row(keybindings, "Rename session…", "rename-session", &[]),
+        row(keybindings, "new window", "new-window", &[]),
+        row(keybindings, "windows", "window-picker", &[]),
+        row(keybindings, "sessions", "session-picker", &[]),
+        row(keybindings, "rename…", "rename-session", &[]),
         MenuRow::Separator,
-        row(keybindings, "Agent fleet", "agent-fleet", &[]),
-        row(keybindings, "Settings…", "settings", &[]),
-        row(keybindings, "Commands & Help…", "show-help", &[]),
-        row(keybindings, "Toggle sidebar", "toggle-sidebar", &[]),
-        row(keybindings, "Report bug", "report-bug", &[]),
+        row(keybindings, "fleet", "agent-fleet", &[]),
+        row(keybindings, "settings", "settings", &[]),
+        row(keybindings, "commands", "show-help", &[]),
+        row(keybindings, "sidebar", "toggle-sidebar", &[]),
+        row(keybindings, "report", "report-bug", &[]),
         MenuRow::Separator,
-        row(keybindings, "Detach", "detach", &[]),
+        row(keybindings, "detach", "detach", &[]),
     ];
     MenuSpec {
         title: if session.is_empty() {
@@ -232,10 +222,10 @@ mod tests {
             })
             .collect();
         for destination in [
-            ("Sessions & hosts…", "session-picker"),
-            ("Agent fleet", "agent-fleet"),
-            ("Settings…", "settings"),
-            ("Commands & Help…", "show-help"),
+            ("sessions", "session-picker"),
+            ("fleet", "agent-fleet"),
+            ("settings", "settings"),
+            ("commands", "show-help"),
         ] {
             assert!(rows.contains(&destination), "missing {destination:?}");
         }
@@ -256,8 +246,8 @@ mod tests {
                 })
                 .expect("the pane menu has a zoom row")
         };
-        assert_eq!(label(&unzoomed), "Zoom");
-        assert_eq!(label(&zoomed), "Unzoom");
+        assert_eq!(label(&unzoomed), "zoom");
+        assert_eq!(label(&zoomed), "unzoom");
     }
 
     #[test]
@@ -277,8 +267,8 @@ mod tests {
         };
         // `direction` names the divider, not the split axis: a vertical
         // divider puts the new pane on the right.
-        assert_eq!(dir("Split right"), "vertical");
-        assert_eq!(dir("Split down"), "horizontal");
+        assert_eq!(dir("split right"), "vertical");
+        assert_eq!(dir("split down"), "horizontal");
     }
 
     #[test]
@@ -304,7 +294,7 @@ mod tests {
             .find_map(|row| match row {
                 MenuRow::Item {
                     label, secondary, ..
-                } if label == "Split right" => Some(secondary.clone()),
+                } if label == "split right" => Some(secondary.clone()),
                 _ => None,
             })
             .expect("split row present");
