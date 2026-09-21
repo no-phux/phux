@@ -80,6 +80,7 @@
 #![allow(clippy::print_stderr, reason = "skip markers + KIP forensics")]
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
@@ -94,7 +95,8 @@ use tokio::time::timeout;
 use phux_server_testkit::screen::Screen;
 use phux_server_testkit::{
     SOCKET_CONNECT_DEADLINE, WIRE_RECV_TIMEOUT, attach_by_name, recv_typed, run_local, send_frame,
-    spawn_server_with_seed_cmd_and_term, try_recv_typed, wait_for_socket,
+    spawn_server_with_seed_cmd_and_term, try_recv_typed, wait_for_server_screen_text,
+    wait_for_socket,
 };
 
 // ---------------------------------------------------------------------------
@@ -285,6 +287,11 @@ const fn named_key(key: PhysicalKey) -> KeyEvent {
 /// (for reaction assertions) and raw (for kitty-activity forensics).
 struct TuiProbe {
     stream: UnixStream,
+    /// HELLO'd socket path for a second, unsubscribed `GET_SCREEN` probe.
+    /// `wait_for_server_screen_text` must not share the attached stream:
+    /// that helper skips `RESOURCE_OUTPUT`, which would blind the Screen
+    /// oracle.
+    socket_path: PathBuf,
     terminal_id: ResourceId,
     screen: Screen,
     raw: Vec<u8>,
@@ -300,7 +307,7 @@ impl TuiProbe {
     /// command's first paint) arrives here and never again as
     /// `RESOURCE_OUTPUT`. Dropping it would blind the `Screen` oracle to
     /// the pane's first paint and make fast-printing scenarios flake.
-    async fn attach(mut stream: UnixStream) -> Self {
+    async fn attach(mut stream: UnixStream, socket_path: PathBuf) -> Self {
         send_frame(&mut stream, &attach_by_name("default")).await;
         let (type_byte, attached) = recv_typed(&mut stream).await;
         assert_eq!(type_byte, TYPE_ATTACHED, "first frame must be ATTACHED");
@@ -316,6 +323,7 @@ impl TuiProbe {
         assert!(matches!(begin, FrameKind::BootstrapBegin { .. }));
         let mut probe = Self {
             stream,
+            socket_path,
             terminal_id,
             screen: Screen::new(80, 24).expect("screen oracle"),
             raw: Vec::new(),
@@ -402,6 +410,16 @@ impl TuiProbe {
         );
     }
 
+    /// Poll the pane actor's grid via `GET_SCREEN` until `needle` appears.
+    ///
+    /// Uses a fresh unsubscribed connection so replies are not interleaved
+    /// with this probe's `RESOURCE_OUTPUT`. `deadline` is a hang guard, not
+    /// a latency assertion (phux-7y78).
+    async fn wait_server_screen_text(&self, needle: &str, deadline: Duration) {
+        let mut control = wait_for_socket(&self.socket_path, SOCKET_CONNECT_DEADLINE).await;
+        wait_for_server_screen_text(&mut control, &self.terminal_id, needle, deadline).await;
+    }
+
     /// Drain until the pane closes (child exited → `RESOURCE_CLOSED`
     /// and/or server self-exit → EOF). Panics if it never does.
     async fn expect_closed(&mut self, what: &str) {
@@ -464,7 +482,7 @@ where
         let (shutdown_tx, server_handle) =
             spawn_server_with_seed_cmd_and_term(socket_path.clone(), "default", cmd, term);
         let stream = wait_for_socket(&socket_path, SOCKET_CONNECT_DEADLINE).await;
-        let mut probe = TuiProbe::attach(stream).await;
+        let mut probe = TuiProbe::attach(stream, socket_path).await;
 
         scenario(&mut probe).await;
 
@@ -667,6 +685,10 @@ fn nvim_kip_insert_and_quit_under_term_ghostty() {
 // keep working in legacy/modifyOtherKeys mode.
 // ---------------------------------------------------------------------------
 
+/// Hang guard for vim's startup/input loop under CPU starvation (phux-7y78).
+/// Quiet runs finish in tens of milliseconds; this only fails a hung child.
+const VIM_HANG_GUARD: Duration = Duration::from_secs(60);
+
 /// vim under `TERM=ghostty`: insert-mode text entry and `:q!` must work.
 #[test]
 fn vim_insert_and_quit_under_term_ghostty() {
@@ -680,15 +702,18 @@ fn vim_insert_and_quit_under_term_ghostty() {
     cmd.arg("NONE");
 
     run_tui_probe(cmd, "ghostty", async |probe: &mut TuiProbe| {
-        // The vanilla vim intro screen names itself.
+        // Wait on the pane actor's grid before sending keys. A lone `i` is
+        // consumed as wait_return "continue" rather than insert, so Enter
+        // dismisses the splash first (phux-7y78). The 60s bound is a hang
+        // guard, not a latency assertion.
         probe
-            .expect_screen_contains("VIM - Vi IMproved", "vim startup")
+            .wait_server_screen_text("VIM - Vi IMproved", VIM_HANG_GUARD)
             .await;
-
+        probe.send_key(named_key(PhysicalKey::Enter)).await;
         probe.send_key(printable_key('i')).await;
         probe.type_str("kip roundtrip ok").await;
         probe
-            .expect_screen_contains("kip roundtrip ok", "vim insert-mode echo")
+            .wait_server_screen_text("kip roundtrip ok", VIM_HANG_GUARD)
             .await;
 
         probe.send_key(named_key(PhysicalKey::Escape)).await;
