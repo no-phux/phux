@@ -4,12 +4,12 @@
 # The producer is crates/phux-client-ffi with --no-default-features
 # --features uniffi: one binding crate, one projection, two encoders
 # (ADR-0135). The `c-abi` default stays off so this artifact never carries
-# the extern "C" surface or its C-only dependency closure. cargo names the
-# built archive libphux_client_ffi.a after the crate; it is staged back to
-# libphux_mobile_ffi.a before `xcodebuild -create-xcframework` (which takes
-# a member's name from its input file), so the artifact name, the PhuxFFI
-# Swift module and the provenance layout are byte-for-byte unchanged from
-# the phux-mobile-ffi era.
+# the extern "C" surface or its C-only dependency closure. The archive
+# inside the xcframework is the one cargo links, libphux_client_ffi.a: the
+# artifact carries the name of the crate that produced it, so a reader of a
+# slice, a provenance key or an `nm -u` dump lands on a crate that exists.
+# The bundle, the PhuxFFI Swift module and the provenance layout are
+# unchanged.
 #
 # Output under --out (default target/mobile-ffi-xcframework/Artifacts):
 #   PhuxFFI.xcframework/  engine-bearing device, simulator, and macOS slices
@@ -67,23 +67,20 @@ MAC_TARGET=aarch64-apple-darwin
 TARGETS=("$SIM_TARGET" "$MAC_TARGET")
 [[ "$MODE" == full ]] && TARGETS=("$DEVICE_TARGET" "${TARGETS[@]}")
 CRATE=phux-client-ffi
-# What cargo actually names the staticlib for this crate.
-BUILT_LIB=libphux_client_ffi.a
-# What the xcframework and provenance publish it as (unchanged from the
-# phux-mobile-ffi era); staged into place below.
-LIB=libphux_mobile_ffi.a
+# What cargo names the staticlib, and what the xcframework and provenance
+# publish it as: `xcodebuild -create-xcframework` takes a member's name from
+# its input file, so these are the same name by construction.
+LIB=libphux_client_ffi.a
 FEATURES=uniffi
 IOS_FLOOR="${PHUX_FFI_IOS_DEPLOYMENT_TARGET:-26.0}"
 MACOS_FLOOR="${PHUX_FFI_MACOS_DEPLOYMENT_TARGET:-26.0}"
 GENERATED="$OUT/Generated"
 HEADERS=""
 SMOKE_DIR=""
-STAGED_LIBS=""
 
 cleanup() {
     [[ -z "$HEADERS" ]] || rm -rf "$HEADERS"
     [[ -z "$SMOKE_DIR" ]] || rm -rf "$SMOKE_DIR"
-    [[ -z "$STAGED_LIBS" ]] || rm -rf "$STAGED_LIBS"
     [[ -z "$STAGE" ]] || rm -rf "$STAGE"
     if [[ -n "$PREVIOUS" && ! -e "$DEST" ]]; then
         mv "$PREVIOUS" "$DEST"
@@ -113,11 +110,8 @@ METADATA="$(cargo metadata --locked --format-version 1)"
 TARGET_DIR="$(jq -r .target_directory <<<"$METADATA")"
 [[ -n "$TARGET_DIR" && "$TARGET_DIR" != null ]] || die "cargo metadata reported no target directory"
 
-slice_archive() { printf '%s/%s/%s/%s\n' "$TARGET_DIR" "$1" "$PROFILE" "$BUILT_LIB"; }
+slice_archive() { printf '%s/%s/%s/%s\n' "$TARGET_DIR" "$1" "$PROFILE" "$LIB"; }
 slice_dylib() { printf '%s/%s/%s/libphux_client_ffi.dylib\n' "$TARGET_DIR" "$1" "$PROFILE"; }
-
-STAGED_LIBS="$(mktemp -d "${TMPDIR:-/tmp}/phux-mobile-ffi-staged.XXXXXX")"
-staged_archive() { printf '%s/%s/%s\n' "$STAGED_LIBS" "$1" "$LIB"; }
 
 step "ensuring Apple Rust targets"
 for target in "${TARGETS[@]}"; do rustup target add "$target" >/dev/null; done
@@ -129,8 +123,6 @@ for target in "${TARGETS[@]}"; do
     cargo build --locked --profile "$PROFILE" --target "$target" \
         -p "$CRATE" --no-default-features --features "$FEATURES"
     [[ -s "$(slice_archive "$target")" ]] || die "missing archive for $target"
-    mkdir -p "$STAGED_LIBS/$target"
-    cp "$(slice_archive "$target")" "$(staged_archive "$target")"
 done
 
 step "generating matching Swift bindings"
@@ -140,7 +132,7 @@ cargo run --locked --profile "$PROFILE" -p "$CRATE" --no-default-features --feat
     --bin uniffi-bindgen -- generate --library "$(slice_dylib "$MAC_TARGET")" \
     --language swift --out-dir "$GENERATED"
 
-HEADERS="$(mktemp -d "${TMPDIR:-/tmp}/phux-mobile-ffi-headers.XXXXXX")"
+HEADERS="$(mktemp -d "${TMPDIR:-/tmp}/phux-client-ffi-headers.XXXXXX")"
 ffi_header="$(find "$GENERATED" -maxdepth 1 -type f -name '*FFI.h' -print)"
 ffi_module="$(find "$GENERATED" -maxdepth 1 -type f -name '*FFI.modulemap' -print)"
 [[ -n "$ffi_header" && "$(printf '%s\n' "$ffi_header" | wc -l | tr -d ' ')" == 1 ]] || die "UniFFI did not emit one header"
@@ -153,7 +145,7 @@ step "assembling PhuxFFI.xcframework"
 rm -rf "$OUT/PhuxFFI.xcframework"
 xcargs=()
 for target in "${TARGETS[@]}"; do
-    xcargs+=(-library "$(staged_archive "$target")" -headers "$HEADERS")
+    xcargs+=(-library "$(slice_archive "$target")" -headers "$HEADERS")
 done
 xcodebuild -create-xcframework "${xcargs[@]}" -output "$OUT/PhuxFFI.xcframework" >/dev/null
 
@@ -202,7 +194,7 @@ dirty=false
 
 if [[ "$SMOKE" == 1 ]]; then
     step "smoke-testing generated Swift against the macOS slice"
-    SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/phux-mobile-ffi-smoke.XXXXXX")"
+    SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/phux-client-ffi-smoke.XXXXXX")"
     mkdir -p "$SMOKE_DIR/Sources/Bindings" "$SMOKE_DIR/Sources/Smoke"
     cp "$GENERATED/PhuxFFI.swift" "$SMOKE_DIR/Sources/Bindings/PhuxFFI.swift"
     ln -s "$OUT/PhuxFFI.xcframework" "$SMOKE_DIR/PhuxFFI.xcframework"
@@ -222,7 +214,7 @@ EOF
     cat > "$SMOKE_DIR/Sources/Smoke/main.swift" <<'EOF'
 import Bindings
 precondition(bridgeReady())
-print("phux-mobile-ffi-smoke: ok")
+print("phux-client-ffi-smoke: ok")
 EOF
     swift run --package-path "$SMOKE_DIR" Smoke
 fi

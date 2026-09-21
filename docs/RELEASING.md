@@ -647,12 +647,12 @@ vocabulary, and the UniFFI lane lowers it into the object, callback, receipt,
 and byte-arena surface consumed by native mobile clients. Its connected path
 owns no dial, reconnect, frame pump, or remote engine state machine; the
 artifact also keeps an isolated `TerminalEngine` for local playground and
-test terminals (ADR-0133; phux-mobile ADR-0031). Cargo names the built
-archive `libphux_client_ffi.a`; the build stages it back to
-`libphux_mobile_ffi.a` before assembling the xcframework, so the archive name
-inside the bundle, the bundle name, the `PhuxFFI` module name, the asset
-names and the provenance keys are all unchanged from the `phux-mobile-ffi`
-era.
+test terminals (ADR-0133; phux-mobile ADR-0031). The archive inside the
+bundle is `libphux_client_ffi.a`, the name cargo links it under: the artifact
+carries the name of the crate that produced it. The bundle, the `PhuxFFI`
+module name, the asset names and the provenance keys are unchanged, so a
+phux-mobile re-pin is a `PHUX_REV` bump plus the archive name its artifact
+verifiers assert.
 
 The output directory contains `PhuxFFI.xcframework`,
 `Generated/PhuxFFI.swift`, and `provenance`. The build reads the UniFFI surface
