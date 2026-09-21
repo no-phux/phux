@@ -332,8 +332,9 @@ fn foreground_is_the_tty_pgid_basename_only() {
         let (mut stream, shutdown_tx, server) = server_and_client(&tmp).await;
         let pane = spawn_pane(&mut stream, 1, &["/bin/sleep", "30"], None).await;
 
-        let process = poll_process(&mut stream, 2, &pane, "a foreground group", |p| {
-            p.foreground.is_some()
+        // Hang-guard: wait for the basename, not merely a non-empty foreground.
+        let process = poll_process(&mut stream, 2, &pane, "foreground name sleep", |p| {
+            p.foreground.as_ref().and_then(|fg| fg.name.as_deref()) == Some("sleep")
         })
         .await;
         let child = process.child.expect("child");
