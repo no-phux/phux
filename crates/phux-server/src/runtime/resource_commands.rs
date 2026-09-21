@@ -400,7 +400,7 @@ fn publish_stream_ask(
         return;
     };
     let (payload, wire_parent) = state.with_mut(|s| {
-        let wire = Some(s.intern_terminal_wire(parent));
+        let wire = s.intern_terminal_wire(parent);
         let payload = if let Some(ask) = ask {
             s.report_stream_ask(
                 parent,
@@ -421,7 +421,8 @@ fn publish_stream_ask(
             }
             None
         };
-        (payload, wire)
+        crate::hub::metadata_mirror::publish_asked_flag(s, &wire, s.agent_is_asked(parent));
+        (payload, Some(wire))
     });
     if let (Some(payload), Some(wire_parent)) = (payload, wire_parent) {
         crate::runtime::client::broadcast_event(state, Some(&wire_parent), &payload.into_event());

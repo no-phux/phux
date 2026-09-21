@@ -775,14 +775,11 @@ async fn peer_layout_keys_are_subscribed_not_just_read() {
     );
 }
 
-/// phux-k0cw / phux-lxov.1: a satellite pane's metadata scope is normatively
-/// refused (`docs/spec/L3.md`), so the driver must not install per-pane
-/// `SUBSCRIBE_METADATA` on a satellite scope even when that pane sits beside
-/// a local one. Subscribing earns an
-/// `UNSUPPORTED_SATELLITE_ROUTE` per sweep — errors the correlated-refusal
-/// intercept swallows silently, which is the worst kind of wire noise.
+/// ADR-0135: a satellite pane is subscribed for the agent record and the
+/// asked flag. A local pane is not asked for the asked key here; its ask
+/// still arrives as an event.
 #[tokio::test]
-async fn satellite_panes_are_never_subscribed() {
+async fn satellite_panes_subscribe_the_agent_allowlist() {
     let (client_stream, server_stream) = UnixStream::pair().expect("pair");
     let mut client = Connection::from_stream(client_stream);
     let mut server = Connection::from_stream(server_stream);
@@ -801,6 +798,7 @@ async fn satellite_panes_are_never_subscribed() {
             &mut next_request_id,
             &mut pending,
             &mut subscribed,
+            &mut HashMap::new(),
         )
         .await
         .expect("sweep sends");
@@ -823,17 +821,35 @@ async fn satellite_panes_are_never_subscribed() {
         "the local pane is subscribed: {frames:?}"
     );
     assert!(
-        !frames.iter().any(|f| matches!(
+        frames.iter().any(|f| matches!(
             f,
-            FrameKind::SubscribeMetadata { scope, .. }
-                | FrameKind::GetMetadata { scope, .. }
+            FrameKind::SubscribeMetadata { scope, key, .. }
                 if *scope == Scope::Resource(satellite.clone())
+                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
         )),
-        "a satellite pane is never asked for or subscribed: {frames:?}"
+        "the satellite agent record is subscribed: {frames:?}"
     );
     assert!(
-        !subscribed.contains(&satellite),
-        "and it never enters the send-once bookkeeping"
+        frames.iter().any(|f| matches!(
+            f,
+            FrameKind::GetMetadata { scope, key, .. }
+                if *scope == Scope::Resource(satellite.clone())
+                    && key == phux_client::agent_meta::RESOURCE_ASKED_KEY
+        )),
+        "the satellite asked flag is read: {frames:?}"
+    );
+    assert!(
+        subscribed.contains(&satellite),
+        "the satellite enters the send-once bookkeeping"
+    );
+    assert!(
+        !frames.iter().any(|f| matches!(
+            f,
+            FrameKind::GetMetadata { scope, key, .. }
+                if *scope == Scope::Resource(local.clone())
+                    && key == phux_client::agent_meta::RESOURCE_ASKED_KEY
+        )),
+        "a local pane's asked flag stays on the event stream: {frames:?}"
     );
 }
 
@@ -907,6 +923,7 @@ async fn graph_terminals_are_subscribed_without_a_layout() {
             &mut next_request_id,
             &mut pending,
             &mut subscribed,
+            &mut HashMap::new(),
         )
         .await
         .expect("sweep sends");
@@ -941,13 +958,13 @@ async fn graph_terminals_are_subscribed_without_a_layout() {
         "the graph pane is subscribed: {frames:?}"
     );
     assert!(
-        !frames.iter().any(|f| matches!(
+        frames.iter().any(|f| matches!(
             f,
-            FrameKind::SubscribeMetadata { scope, .. }
-                | FrameKind::GetMetadata { scope, .. }
+            FrameKind::SubscribeMetadata { scope, key, .. }
                 if *scope == Scope::Resource(satellite.clone())
+                    && key == phux_client::agent_meta::RESOURCE_AGENT_KEY
         )),
-        "a satellite pane is never asked for: {frames:?}"
+        "a satellite graph pane is subscribed: {frames:?}"
     );
 }
 

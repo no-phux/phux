@@ -192,6 +192,15 @@ impl AskedDetector {
         self.states.remove(&terminal).map(|state| state.payload)
     }
 
+    /// Whether any source still holds a question on `terminal`.
+    ///
+    /// The projection of the ladder onto `phux.agent.asked/v1` (ADR-0135).
+    /// The payload itself stays test-only: a consumer of the flag only
+    /// needs to know that an ask is pending.
+    pub(crate) fn is_pending(&self, terminal: ResourceId) -> bool {
+        self.states.contains_key(&terminal)
+    }
+
     #[cfg(test)]
     pub(crate) fn current(&self, terminal: ResourceId) -> Option<&AskedPayload> {
         self.states.get(&terminal).map(|state| &state.payload)

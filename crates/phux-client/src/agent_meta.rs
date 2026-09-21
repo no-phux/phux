@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use crate::attach::connection::{Answer, Connection};
 
 pub use phux_protocol::wire::frame::RESOURCE_AGENT_KEY;
+pub use phux_protocol::wire::frame::RESOURCE_ASKED_KEY;
 pub use phux_protocol::wire::frame::RESOURCE_PANE_OCCUPANT_KEY;
 
 /// Server-observed foreground process for `phux.pane-occupant/v1`.

@@ -1,7 +1,7 @@
 ---
 audience: contributors
 stability: stable
-last-reviewed: 2026-09-10
+last-reviewed: 2026-09-21
 ---
 
 # 0108 — A hub relays host queries to satellites per request
@@ -15,6 +15,7 @@ so the satellite answers.
 
 Status: Accepted
 Date: 2026-09-10
+See [ADR-0135](./0135-hub-mirrors-satellite-agent-metadata.md) for the read-only agent-metadata mirror.
 
 ## Context
 

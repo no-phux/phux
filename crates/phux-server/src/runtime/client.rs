@@ -1034,12 +1034,21 @@ fn drain_ask_sentinel(
     // A pane reaped between the actor's send and this drain has no core id
     // left to key the ledger by; its ask died with it.
     let terminal = s.terminal_from_wire(wire_terminal_id)?;
-    let Some(payload) = ask else {
+    let emitted = if let Some(payload) = ask {
+        s.report_agent_asked(terminal, AskedSource::Sentinel, payload)
+            .emit_payload()
+    } else {
         s.retract_agent_asked(terminal, AskedSource::Sentinel);
-        return None;
+        None
     };
-    s.report_agent_asked(terminal, AskedSource::Sentinel, payload)
-        .emit_payload()
+    // The tombstone is how a consumer sees a clear: a retract broadcasts
+    // nothing (ADR-0036). ADR-0135 projects the ladder onto one metadata key.
+    crate::hub::metadata_mirror::publish_asked_flag(
+        s,
+        wire_terminal_id,
+        s.agent_is_asked(terminal),
+    );
+    emitted
 }
 
 /// The drain's `Retract` arm: the pane's agent is confirmed gone.
@@ -4639,6 +4648,7 @@ pub(crate) async fn handle_get_metadata(
     key: &str,
     out_tx: &tokio::sync::mpsc::Sender<Outbound>,
 ) {
+    kick_satellite_metadata_mirror(state, scope, key);
     let nonce_result = is_reserved_session_create_result(scope, key);
     let (value, speaks_l3) = state.with(|s| {
         (
@@ -4705,9 +4715,14 @@ fn read_metadata_value(
 /// connection and never stored, and an approval record is the server's
 /// account of a held action (ADR-0128).
 fn is_server_owned_key(key: &str) -> bool {
-    use phux_protocol::wire::frame::{APPROVAL_KEY_PREFIX, RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY};
+    use phux_protocol::wire::frame::{
+        APPROVAL_KEY_PREFIX, RESOURCE_ASKED_KEY, RESOURCE_PANE_OCCUPANT_KEY, WHOAMI_KEY,
+    };
 
-    key == RESOURCE_PANE_OCCUPANT_KEY || key == WHOAMI_KEY || key.starts_with(APPROVAL_KEY_PREFIX)
+    key == RESOURCE_PANE_OCCUPANT_KEY
+        || key == RESOURCE_ASKED_KEY
+        || key == WHOAMI_KEY
+        || key.starts_with(APPROVAL_KEY_PREFIX)
 }
 
 #[derive(serde::Deserialize)]
@@ -5172,6 +5187,15 @@ fn reject_set_metadata(
         );
         return true;
     }
+    if is_satellite_terminal_scope(scope) {
+        warn!(
+            ?client_id,
+            request_id,
+            %key,
+            "SET_METADATA: satellite terminal metadata is read-only; ignoring"
+        );
+        return true;
+    }
     if is_server_owned_key(key) {
         warn!(
             ?client_id,
@@ -5382,6 +5406,15 @@ pub(crate) fn handle_delete_metadata(
     key: &str,
 ) {
     debug!(?client_id, request_id, ?scope, %key, "DELETE_METADATA");
+    if is_satellite_terminal_scope(scope) {
+        warn!(
+            ?client_id,
+            request_id,
+            %key,
+            "DELETE_METADATA: satellite terminal metadata is read-only; ignoring"
+        );
+        return;
+    }
     if is_reserved_session_create_result(scope, key) {
         warn!(
             ?client_id,
@@ -5459,32 +5492,60 @@ pub(crate) async fn handle_list_metadata(
     }
 }
 
+/// A satellite Terminal scope. Client writes of one are ignored (ADR-0135):
+/// the mirror is read-only, and every other key stays on the satellite.
+const fn is_satellite_terminal_scope(scope: &phux_protocol::wire::frame::Scope) -> bool {
+    matches!(
+        scope,
+        phux_protocol::wire::frame::Scope::Resource(
+            phux_protocol::ids::ResourceId::Satellite { .. }
+        )
+    )
+}
+
+/// Start the read-only agent-metadata mirror when `scope` names a satellite
+/// this hub routes and `key` is allowlisted. `false` otherwise.
+fn kick_satellite_metadata_mirror(
+    state: &SharedState,
+    scope: &phux_protocol::wire::frame::Scope,
+    key: &str,
+) -> bool {
+    state.with(|s| kick_satellite_metadata_mirror_locked(s, scope, key))
+}
+
+fn kick_satellite_metadata_mirror_locked(
+    state: &crate::state::ServerState,
+    scope: &phux_protocol::wire::frame::Scope,
+    key: &str,
+) -> bool {
+    let phux_protocol::wire::frame::Scope::Resource(terminal) = scope else {
+        return false;
+    };
+    if !crate::hub::metadata_mirror::is_mirrored_key(key) {
+        return false;
+    }
+    let Some((host, id)) = crate::hub::relay::satellite_route(terminal) else {
+        return false;
+    };
+    let Some(relay) = state.hub_relay(&host) else {
+        return false;
+    };
+    relay.mirror_terminal(id);
+    true
+}
+
 /// Refuse an L3 metadata subscription whose `Terminal` scope names a
 /// satellite pane, pushing the typed `ERROR` that says so (phux-w7z2.57).
 ///
 /// Returns `true` when the caller must abandon the subscription.
 ///
-/// # Why refuse rather than route
-///
-/// L3 metadata does not federate — at all. The hub relay
-/// ([`crate::hub::relay`]) forwards L1 commands and `SUBSCRIBE_EVENTS`;
-/// it carries no `GET`/`SET`/`SUBSCRIBE_METADATA` leg and no
-/// `METADATA_CHANGED` return leg, so the hub's metadata store holds nothing
-/// for a satellite pane and never will until federation is extended.
-/// Accepting the subscription anyway is the worst of the three options: the
-/// consumer believes it is watching a remote pane's `phux.agent/v1` record
-/// and blocks forever on a `METADATA_CHANGED` no code path can emit. That is
-/// the shape `phux agent wait host/@N` hit — it read the hub's (empty) store
-/// and reported `no_agent_record` for a live remote agent.
-///
-/// Routing is the eventual answer, but it is not this change. It needs a
-/// return leg that re-tags `Scope::Resource(Local(id))` to
-/// `Scope::Resource(Satellite { host, id })`, a decision about what `Global`
-/// and `Group` scopes even mean across a federation boundary. The federated
-/// `APPLY_INPUT` that lets a caller act on what it observed now exists (L1
-/// §9.1), so routing is worth having when it comes. A refusal is upgradeable to
-/// routing without breaking a single consumer: today's `ERROR` becomes
-/// tomorrow's `METADATA_CHANGED`, and nothing that works now stops working.
+/// The two agent keys in [`crate::hub::metadata_mirror`] are the exception
+/// on a hub that routes the host (ADR-0135): [`kick_satellite_metadata_mirror`]
+/// starts the read-only copy and the caller installs a local subscription
+/// against the retagged scope. Every other key, and those two keys on a
+/// server that does not route the host, still refuse. Accepting them
+/// silently is the outcome a consumer cannot recover from: with no reply
+/// frame, it blocks on a `METADATA_CHANGED` no code path can emit.
 ///
 /// # Why this code, and why it is not a wire change
 ///
@@ -5569,7 +5630,9 @@ pub(crate) fn handle_subscribe_metadata(
             debug!(?client_id, ?scope, %key, "SUBSCRIBE_METADATA refused (non-L3)");
             return;
         }
-        if refuse_satellite_metadata_scope(client_id, &scope, &key, out_tx) {
+        if kick_satellite_metadata_mirror_locked(s, &scope, &key) {
+            // Fall through: the subscription is on the hub's retagged scope.
+        } else if refuse_satellite_metadata_scope(client_id, &scope, &key, out_tx) {
             return;
         }
         // Cloned only for the post-call log line below; `scope` and `key`
@@ -7484,7 +7547,7 @@ mod satellite_metadata_subscription_tests {
     use phux_protocol::ids::{ResourceId as WireResourceId, SatelliteHost};
     use phux_protocol::wire::frame::{ErrorCode, FrameKind, Scope};
 
-    use super::handle_subscribe_metadata;
+    use super::{handle_delete_metadata, handle_set_metadata, handle_subscribe_metadata};
     use crate::state::{ClientId, Outbound, SharedState};
 
     const AGENT_KEY: &str = "phux.agent/v1";
@@ -7538,6 +7601,102 @@ mod satellite_metadata_subscription_tests {
             }
             other => panic!("expected a typed ERROR push, got {other:?}"),
         }
+    }
+
+    /// ADR-0135: on a hub that routes the host, the two agent keys install
+    /// a subscription and queue the mirror. A non-allowlisted key still
+    /// refuses, and a client cannot write the satellite scope.
+    #[test]
+    fn a_hub_mirrors_the_agent_allowlist_and_refuses_the_rest() {
+        use phux_protocol::wire::frame::RESOURCE_ASKED_KEY;
+
+        use crate::hub::relay::{HubRelays, RelayHandle, RelayRequest};
+
+        let state = SharedState::new();
+        let (handle, mut mailbox) = RelayHandle::new(SatelliteHost::new("gpubox"));
+        let relays = HubRelays::default();
+        relays.insert(handle);
+        state.with_mut(|s| s.set_hub_relays(relays));
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<Outbound>(4);
+        let client = ClientId(3);
+        let scope = satellite_scope();
+
+        handle_subscribe_metadata(&state, client, scope.clone(), AGENT_KEY.to_owned(), &tx);
+        handle_subscribe_metadata(
+            &state,
+            client,
+            scope.clone(),
+            RESOURCE_ASKED_KEY.to_owned(),
+            &tx,
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "an allowlisted subscribe on a routed host is not an error"
+        );
+        assert_eq!(
+            state
+                .with(|s| s.metadata().subscribers_for(&scope, AGENT_KEY))
+                .len(),
+            1
+        );
+        assert_eq!(
+            state
+                .with(|s| s.metadata().subscribers_for(&scope, RESOURCE_ASKED_KEY))
+                .len(),
+            1
+        );
+        assert!(matches!(
+            mailbox.requests.try_recv(),
+            Ok(RelayRequest::MirrorTerminal { terminal: 7 })
+        ));
+        // The second subscribe queues a second mirror; the session dedups.
+        assert!(matches!(
+            mailbox.requests.try_recv(),
+            Ok(RelayRequest::MirrorTerminal { terminal: 7 })
+        ));
+
+        handle_subscribe_metadata(
+            &state,
+            client,
+            scope.clone(),
+            "phux.tags/v1".to_owned(),
+            &tx,
+        );
+        match rx.try_recv() {
+            Ok(Outbound::Frame(FrameKind::Error { code, message, .. })) => {
+                assert_eq!(code, ErrorCode::UnsupportedSatelliteRoute);
+                assert!(message.contains("does not federate"), "{message}");
+                assert!(message.contains("phux.tags/v1"), "{message}");
+            }
+            other => panic!("expected a refusal of the non-allowlisted key, got {other:?}"),
+        }
+        assert!(
+            state
+                .with(|s| s.metadata().subscribers_for(&scope, "phux.tags/v1"))
+                .is_empty()
+        );
+
+        state.with_mut(|s| {
+            s.metadata_set(&scope, AGENT_KEY, br#"{"name":"reviewer"}"#.to_vec());
+        });
+        handle_set_metadata(
+            &state,
+            client,
+            1,
+            &scope,
+            AGENT_KEY,
+            b"overwrite".to_vec(),
+            &tokio_util::sync::CancellationToken::new(),
+        );
+        handle_delete_metadata(&state, client, 2, &scope, AGENT_KEY);
+        assert_eq!(
+            state
+                .with(|s| s.metadata().get(&scope, AGENT_KEY))
+                .as_deref(),
+            Some(&br#"{"name":"reviewer"}"#[..]),
+            "a client cannot write or delete a satellite terminal's metadata"
+        );
     }
 
     /// The refusal is scoped to satellite `Terminal` scopes only. A local

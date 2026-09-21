@@ -171,13 +171,29 @@ pub(super) fn window_contains_terminal(
 /// Resource identities the foreign agent cache should retain: layout leaves
 /// when a TUI workspace exists, otherwise the server graph's terminals.
 pub(super) fn foreign_terminal_ids(peers: &PeerInputs<'_>) -> HashSet<ResourceId> {
-    peers
+    let mut ids: HashSet<ResourceId> = peers
         .ordered_sessions()
         .into_iter()
         .filter(|session| Some(session.id) != peers.focused_session)
         .flat_map(|session| peer_leaves(peers, session))
         .map(|leaf| leaf.id)
-        .collect()
+        .collect();
+    ids.extend(satellite_terminal_ids(peers));
+    ids
+}
+
+/// Satellite terminals from the federated resource graph (ADR-0135).
+///
+/// These are not leaves of a local session layout, so [`foreign_terminal_ids`]
+/// would otherwise never subscribe their agent records.
+pub(super) fn satellite_terminal_ids<'a>(
+    peers: &'a PeerInputs<'_>,
+) -> impl Iterator<Item = ResourceId> + 'a {
+    peers
+        .resources
+        .iter()
+        .filter(|resource| resource.kind.is_terminal() && resource.id.host().is_some())
+        .map(|resource| resource.id.clone())
 }
 
 /// Full agent list in stable session-id, window and leaf order. Status and
@@ -208,6 +224,7 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
                 || (UNNAMED_AGENT.to_owned(), AgentMetaState::Blocked),
                 |r| (r.name.clone(), r.state),
             );
+            let host = leaf.id.host().map(|host| host.as_str().to_owned());
             let seen = peers.review.is_seen(&leaf.id);
             rows.push(AgentEntry {
                 session: Some(session.name.clone()),
@@ -220,12 +237,57 @@ pub(super) fn needs_you_queue(local: Vec<AgentEntry>, peers: &PeerInputs<'_>) ->
                 state,
                 attention: asked
                     || record.is_some_and(|r| r.effective_attention() == AgentAttention::High),
+                host,
                 seen,
             });
         }
     }
     // Synthetic or not-yet-snapshotted local state still remains navigable.
     rows.extend(local.unwrap_or_default());
+    rows
+}
+
+/// Satellite agents not already open, grouped by agent name then host.
+///
+/// `open` is the attached workspace's leaves, which the agents section
+/// already lists. Order is appended after the local and peer rows so a
+/// state change cannot jump an existing row.
+pub(super) fn satellite_agent_rows(
+    peers: &PeerInputs<'_>,
+    open: &HashSet<ResourceId>,
+) -> Vec<AgentEntry> {
+    let mut rows = Vec::new();
+    for id in satellite_terminal_ids(peers) {
+        if open.contains(&id) {
+            continue;
+        }
+        let asked = peers.foreign_attention.contains(&id);
+        let record = peers.foreign_agents.get(&id);
+        let named = record.is_some_and(|r| !r.name.is_empty());
+        if !named && !asked {
+            continue;
+        }
+        let (name, state) = record.filter(|_| named).map_or_else(
+            || (UNNAMED_AGENT.to_owned(), AgentMetaState::Blocked),
+            |r| (r.name.clone(), r.state),
+        );
+        let host = id.host().map(|host| host.as_str().to_owned());
+        rows.push(AgentEntry {
+            session: Some(name.clone()),
+            session_id: None,
+            resource: Some(id.clone()),
+            window: 0,
+            window_name: host.clone().unwrap_or_default(),
+            pane: None,
+            name,
+            state,
+            attention: asked
+                || record.is_some_and(|r| r.effective_attention() == AgentAttention::High),
+            host,
+            seen: peers.review.is_seen(&id),
+        });
+    }
+    rows.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.host.cmp(&b.host)));
     rows
 }
 
@@ -376,6 +438,7 @@ mod tests {
             name: name.to_owned(),
             state,
             attention: false,
+            host: None,
             seen: false,
         }
     }
@@ -770,5 +833,41 @@ mod tests {
             session_roster(&f.inputs(), &[]),
             session_roster(&f.inputs(), &[])
         );
+    }
+
+    /// ADR-0135: satellite terminals list by agent name, then host, and an
+    /// already-open leaf is left to the workspace rows.
+    #[test]
+    fn satellite_agents_group_by_name_then_host() {
+        let mut f = fixture();
+        let edge = ResourceId::satellite("edge", 9);
+        let gpu = ResourceId::satellite("gpubox", 4);
+        let open = ResourceId::satellite("gpubox", 1);
+        f.resources.push(graph_resource(edge.clone(), 0));
+        f.resources.push(graph_resource(gpu.clone(), 0));
+        f.resources.push(graph_resource(open.clone(), 0));
+        f.agents
+            .insert(edge.clone(), record("reviewer", AgentMetaState::Blocked));
+        f.agents
+            .insert(gpu.clone(), record("reviewer", AgentMetaState::Working));
+        f.agents
+            .insert(open.clone(), record("reviewer", AgentMetaState::Idle));
+        f.attention.insert(edge.clone());
+
+        let local = needs_you_queue(
+            vec![local_row("codex", AgentMetaState::Working)],
+            &f.inputs(),
+        );
+        let rows = satellite_agent_rows(&f.inputs(), &HashSet::from([open.clone()]));
+        assert_eq!(local[0].name, "codex", "local rows stay first and unmoved");
+        assert_eq!(rows.len(), 2, "the open satellite pane is not listed twice");
+        assert_eq!(rows[0].name, "reviewer");
+        assert_eq!(rows[0].host.as_deref(), Some("edge"));
+        assert!(rows[0].attention);
+        assert_eq!(rows[0].resource.as_ref(), Some(&edge));
+        assert_eq!(rows[1].host.as_deref(), Some("gpubox"));
+        assert_eq!(rows[1].state, AgentMetaState::Working);
+        let ids = foreign_terminal_ids(&f.inputs());
+        assert!(ids.contains(&edge) && ids.contains(&gpu) && ids.contains(&open));
     }
 }

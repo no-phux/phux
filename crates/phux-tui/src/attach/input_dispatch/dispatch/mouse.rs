@@ -777,6 +777,11 @@ fn sidebar_agent_action(
             resource,
         } => (id, name, window, pane, resource),
     };
+    if let Some(resource) = resource
+        && let Some(action) = crate::render::chrome::sidebar::satellite_open_action(resource)
+    {
+        return Some(action);
+    }
     let mut args = switch_session_args(name.clone(), *id);
     if let Some(resource) = resource {
         args.insert(

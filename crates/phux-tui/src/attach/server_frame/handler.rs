@@ -25,7 +25,7 @@ use crate::attach::render::ReplicaWalk;
 use crate::layout::{self, LayoutState, Rect, Workspace};
 use crate::predict::{Overlay, PredictionState, reconcile_terminal_output_per_cell_at};
 use crate::render::chrome::status_bar::{Notice, StatusBarPainter};
-use phux_client::agent_meta::RESOURCE_AGENT_KEY;
+use phux_client::agent_meta::{RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY};
 use phux_client::conditional_kill::BoundResource;
 use phux_client::layout_ops::{
     DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, LayoutKeyOwner, layout_key_session,
@@ -1098,6 +1098,9 @@ fn handle_metadata_value<W: crate::attach::RenderSink>(
 ) -> Result<FrameOutcome, AttachError> {
     // ADR-0040: a pending per-Terminal `phux.agent/v1` GET reply.
     // `value: None` (key absent) clears any stale record.
+    if let Some(terminal) = ctx.agent_meta.asked_pending.remove(&request_id) {
+        return Ok(apply_asked_flag(ctx, terminal, value.as_deref()));
+    }
     if let Some(terminal) = ctx.agent_meta.pending.remove(&request_id) {
         let changed = ctx.agent_meta.apply(&terminal, value.as_deref());
         if changed {
@@ -1167,6 +1170,12 @@ fn handle_metadata_changed<W: crate::attach::RenderSink>(
     if key == RESOURCE_AGENT_KEY {
         return Ok(apply_agent_broadcast(ctx, scope, value));
     }
+    if key == RESOURCE_ASKED_KEY {
+        let Scope::Resource(terminal) = scope else {
+            return Ok(FrameOutcome::default());
+        };
+        return Ok(apply_asked_flag(ctx, terminal.clone(), value.as_deref()));
+    }
     // phux-foz.5: the config-reload doorbell. Value bytes are an
     // opaque nonce (only there to defeat the server's equal-bytes
     // SET dedup); a tombstone is not a reload request.
@@ -1231,6 +1240,45 @@ fn layout_decode_refusal(error: &crate::layout::LayoutDecodeError) -> AttachErro
 /// ADR-0040: a `phux.agent/v1` broadcast for a subscribed pane.
 /// A tombstone (`value: None`, the `DELETE_METADATA` path) clears
 /// the record and the label falls back to the OSC title.
+/// ADR-0135: `phux.agent.asked/v1` is `1` while an ask is pending and absent
+/// once it clears. A workspace pane stores that on `PaneSlot::attention`.
+/// Anything else is a foreign attention insert or clear. A declared
+/// `phux.agent/v1` attention is left alone.
+fn apply_asked_flag<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal: ResourceId,
+    value: Option<&[u8]>,
+) -> FrameOutcome {
+    let asked = value == Some(b"1");
+    let in_workspace = window_holding_pane(ctx.workspace, &terminal).is_some();
+    let chrome_dirty = if in_workspace
+        && let Some(slot) = ctx.panes.get_mut(&terminal)
+        && slot.attention != asked
+    {
+        slot.attention = asked;
+        true
+    } else {
+        false
+    };
+    if in_workspace {
+        return FrameOutcome {
+            chrome_dirty,
+            ..FrameOutcome::default()
+        };
+    }
+    if asked {
+        FrameOutcome {
+            foreign_attention: Some(terminal),
+            ..FrameOutcome::default()
+        }
+    } else {
+        FrameOutcome {
+            foreign_attention_clear: Some(terminal),
+            ..FrameOutcome::default()
+        }
+    }
+}
+
 fn apply_agent_broadcast<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
     scope: &Scope,

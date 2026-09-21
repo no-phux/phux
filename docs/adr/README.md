@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-21
 ---
 
 # Architecture Decision Records
@@ -180,6 +180,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0133](./0133-one-client-runtime-below-every-binding.md) | One client runtime below every binding | Accepted (builds on [0020](./0020-layered-render.md), [0100](./0100-the-tui-is-its-own-crate.md)) |
 | [0134](./0134-connected-lanes-refine-the-binding-boundary.md) | Connected lanes refine the binding boundary | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md)) |
 | [0135](./0135-one-binding-crate.md) | One binding crate: one projection, two encoders | Accepted (builds on [0133](./0133-one-client-runtime-below-every-binding.md), [0134](./0134-connected-lanes-refine-the-binding-boundary.md)) |
+| [0135](./0135-hub-mirrors-satellite-agent-metadata.md) | A hub mirrors two satellite agent metadata keys | Accepted (amends [0108](./0108-a-hub-relays-host-queries-per-request.md)) |
 
 ## When to write an ADR
 

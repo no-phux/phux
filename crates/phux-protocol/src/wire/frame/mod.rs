@@ -417,6 +417,15 @@ pub const RESOURCE_LINK_KEY: &str = "phux.link/v1";
 /// `DELETE_METADATA`, observed via `GET_METADATA`/`SUBSCRIBE_METADATA`.
 pub const RESOURCE_AGENT_KEY: &str = "phux.agent/v1";
 
+/// Server-owned projection of a pending `AgentEvent::Asked` (ADR-0035, ADR-0135).
+///
+/// Value is the single byte `1` while any ask source still holds, and the
+/// key is absent once none does. There is no wire event for a question
+/// going away, so this tombstone is how a consumer learns the clear. A hub
+/// copies the key read-only onto `Satellite` scopes; clients must not set
+/// or delete it.
+pub const RESOURCE_ASKED_KEY: &str = "phux.agent.asked/v1";
+
 /// Conventional Terminal-scoped provenance for provider-native session resume.
 ///
 /// Value: bounded UTF-8 JSON `{plugin_id, integration_id, native_id}` owned by

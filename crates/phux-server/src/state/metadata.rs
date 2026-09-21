@@ -325,6 +325,15 @@ impl ServerState {
         self.metadata_delete_by(scope, key, None)
     }
 
+    /// Drop a Terminal's keys and the subscriptions that name it.
+    ///
+    /// The satellite metadata mirror uses this after tombstoning the
+    /// allowlisted keys, so a closed satellite pane cannot keep a
+    /// watcher subscribed forever (ADR-0135).
+    pub(crate) fn drop_terminal_metadata(&mut self, terminal: &WireResourceId) {
+        self.metadata.forget_terminal(terminal);
+    }
+
     /// As [`Self::metadata_delete`], attributing the tombstone to the
     /// connection whose `DELETE_METADATA` caused it (ADR-0123).
     pub fn metadata_delete_by(

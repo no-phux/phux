@@ -75,8 +75,8 @@ use phux_protocol::caps::{
 use phux_protocol::ids::{BootstrapId, GroupId, ResourceId, SatelliteHost, StreamId};
 use phux_protocol::wire::frame::{
     AgentEvent, Command, CommandResult, ControlAction, DirectoryErrorCode, DirectoryListingError,
-    DirectoryListingResult, ErrorCode, FrameKind, HistoryTombstoneReason, SpawnError, SpawnResult,
-    TombstoneReason,
+    DirectoryListingResult, ErrorCode, FrameKind, HistoryTombstoneReason, Scope, SpawnError,
+    SpawnResult, TombstoneReason,
 };
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -361,6 +361,13 @@ pub(crate) enum RelayRequest {
         actor: ClientId,
         /// Resolved with the satellite's result or the hub's refusal.
         reply: oneshot::Sender<CommandResult>,
+    },
+    /// Subscribe and read the agent-metadata allowlist for one
+    /// satellite-local terminal (ADR-0135). Idempotent per connection:
+    /// a terminal already mirrored on this session sends nothing.
+    MirrorTerminal {
+        /// Satellite-local terminal id.
+        terminal: u32,
     },
 }
 
@@ -745,6 +752,22 @@ impl RelayHandle {
         false
     }
 
+    /// Ask the link to mirror `terminal`'s agent metadata (ADR-0135).
+    ///
+    /// A full or dead mailbox drops the request. The session marks the
+    /// terminal mirrored only once it accepts the request, so the next
+    /// inventory or subscribe retries.
+    pub(crate) fn mirror_terminal(&self, terminal: u32) {
+        if let Err(err) = self.tx.try_send(RelayRequest::MirrorTerminal { terminal }) {
+            trace!(
+                satellite = %self.host,
+                terminal,
+                reason = %trysend_reason(&err),
+                "agent metadata mirror was not queued"
+            );
+        }
+    }
+
     /// Drop every proxy subscription `client` holds on this link.
     /// Undroppable (phux-v45.11 finding 1): rides the unbounded
     /// unsubscribe channel, so mailbox pressure can never leave a stale
@@ -882,6 +905,16 @@ pub(crate) fn fail_fast(request: RelayRequest, host: &SatelliteHost, why: &str) 
                 client = ?subscription.client,
                 why,
                 "proxy subscription refused while disconnected"
+            );
+        }
+        RelayRequest::MirrorTerminal { terminal } => {
+            // Not yet marked mirrored. The next inventory or subscribe
+            // queues it again once the link is up.
+            trace!(
+                satellite = %host,
+                terminal,
+                why,
+                "agent metadata mirror dropped while disconnected"
             );
         }
     }
@@ -1162,6 +1195,11 @@ pub(crate) struct RelaySession {
     /// Upstream detach barriers. Old frames may still arrive until the
     /// correlated reply, including after a downstream proxy has reattached.
     pending_detaches: HashMap<u32, PendingDetach>,
+    /// Satellite-local terminals whose agent-metadata allowlist this
+    /// connection has already subscribed (ADR-0135).
+    mirrored: HashSet<u32>,
+    /// Link-side `GET_METADATA` ids for that allowlist: terminal and key.
+    pending_mirror_gets: HashMap<u32, (u32, String)>,
     subscribers: HashMap<u32, Vec<ProxySubscriber>>,
     /// An explicit content attach has been forwarded since the last upstream
     /// detach. Event-only proxies do not establish this ownership. Even a
@@ -1221,6 +1259,8 @@ impl RelaySession {
             pending_listings: HashMap::new(),
             satellite_features,
             pending_detaches: HashMap::new(),
+            mirrored: HashSet::new(),
+            pending_mirror_gets: HashMap::new(),
             enforce_bootstrap_flow: true,
             subscribers: HashMap::new(),
             explicit_content: HashSet::new(),
@@ -1264,6 +1304,9 @@ impl RelaySession {
     /// generation. Fence it upstream before forwarding the attach; peers that
     /// already share a subscription must keep their stream throughout.
     pub(crate) fn prepare_request(&mut self, request: &RelayRequest) -> Vec<Vec<u8>> {
+        if let RelayRequest::MirrorTerminal { terminal } = request {
+            return self.mirror_terminal_frames(*terminal);
+        }
         let RelayRequest::Command {
             command: Command::AttachResource { .. },
             subscribe: Some(sub),
@@ -1399,7 +1442,35 @@ impl RelaySession {
                 forward,
             } => self.subscribe_forward(subscription, &forward),
             RelayRequest::ListDirectory { path, reply } => self.enqueue_listing(path, reply),
+            // Frames were produced by [`Self::prepare_request`].
+            RelayRequest::MirrorTerminal { .. } => None,
         }
+    }
+
+    /// `SUBSCRIBE_METADATA` plus `GET_METADATA` for each allowlisted key,
+    /// once per terminal per connection. The GET correlates through
+    /// [`Self::pending_mirror_gets`] because `METADATA_VALUE` carries no key.
+    fn mirror_terminal_frames(&mut self, terminal: u32) -> Vec<Vec<u8>> {
+        if !self.mirrored.insert(terminal) {
+            return Vec::new();
+        }
+        let scope = Scope::Resource(ResourceId::local(terminal));
+        let mut frames = Vec::new();
+        for key in crate::hub::metadata_mirror::MIRROR_KEYS {
+            frames.push(self.encode(&FrameKind::SubscribeMetadata {
+                scope: scope.clone(),
+                key: (*key).to_owned(),
+            }));
+            let request_id = self.allocate_request_id();
+            self.pending_mirror_gets
+                .insert(request_id, (terminal, (*key).to_owned()));
+            frames.push(self.encode(&FrameKind::GetMetadata {
+                request_id,
+                scope: scope.clone(),
+                key: (*key).to_owned(),
+            }));
+        }
+        frames
     }
 
     /// What the satellite advertised in its `HELLO_OK`, for the hub's own
@@ -1837,6 +1908,21 @@ impl RelaySession {
                 signal,
             } => self.relay_terminal_closed(&terminal_id, exit_status, reason, signal),
             FrameKind::Bell { terminal_id } => self.relay_bell(&terminal_id),
+            FrameKind::MetadataChanged {
+                scope, key, value, ..
+            } => self.apply_mirrored_metadata(&scope, &key, value),
+            FrameKind::MetadataValue { request_id, value } => {
+                self.apply_mirrored_value(request_id, value);
+            }
+            // Any other metadata frame is not part of the mirror. Absorb
+            // it: treating it as direction-invalid would tear the link the
+            // moment the allowlist subscription is live.
+            FrameKind::GetMetadata { .. }
+            | FrameKind::SetMetadata { .. }
+            | FrameKind::DeleteMetadata { .. }
+            | FrameKind::ListMetadata { .. }
+            | FrameKind::SubscribeMetadata { .. }
+            | FrameKind::MetadataKeys { .. } => {}
             other => {
                 return Err(format!(
                     "satellite {} sent a direction-invalid frame after HELLO_OK: {other:?}",
@@ -1879,6 +1965,16 @@ impl RelaySession {
     /// relayed spawn with a generic correlated ERROR instead of
     /// `RESOURCE_SPAWNED`.
     fn resolve_correlated_error(&mut self, request_id: u32, code: ErrorCode, message: String) {
+        if self.pending_mirror_gets.remove(&request_id).is_some() {
+            debug!(
+                satellite = %self.host,
+                request_id,
+                ?code,
+                %message,
+                "satellite refused a mirrored metadata read; leaving the key unset"
+            );
+            return;
+        }
         if self.pending_spawns.contains_key(&request_id) {
             self.resolve_pending_spawn(
                 request_id,
@@ -2192,6 +2288,7 @@ impl RelaySession {
         self.retire_bootstrap_flow(id);
         self.explicit_content.remove(&id);
         self.legacy_events.remove(&id);
+        self.forget_mirror(id);
     }
 
     /// Deliver one `BELL` side-channel notification.
@@ -2265,6 +2362,8 @@ impl RelaySession {
         self.explicit_content.clear();
         self.legacy_events.clear();
         self.pending_detaches.clear();
+        self.mirrored.clear();
+        self.pending_mirror_gets.clear();
         self.retained_bytes = 0;
         self.retained_frames = 0;
         self.inflight_generation_bytes = 0;
@@ -3446,6 +3545,43 @@ impl RelaySession {
             || self.pending_spawns.contains_key(&id)
             || self.pending_listings.contains_key(&id)
             || self.pending_detaches.contains_key(&id)
+            || self.pending_mirror_gets.contains_key(&id)
+    }
+
+    /// Store one allowlisted `METADATA_CHANGED`, retagged `Local` to
+    /// `Satellite`. A non-allowlisted key or a non-local scope is dropped.
+    fn apply_mirrored_metadata(&self, scope: &Scope, key: &str, value: Option<Vec<u8>>) {
+        let Some(journal) = &self.journal else {
+            return;
+        };
+        let journal = journal.clone();
+        let host = self.host.clone();
+        journal.with_mut(|state| {
+            crate::hub::metadata_mirror::apply_mirrored(state, &host, scope, key, value);
+        });
+    }
+
+    /// Store one allowlisted `METADATA_VALUE` correlated to a mirror GET.
+    fn apply_mirrored_value(&mut self, request_id: u32, value: Option<Vec<u8>>) {
+        let Some((terminal, key)) = self.pending_mirror_gets.remove(&request_id) else {
+            return;
+        };
+        self.apply_mirrored_metadata(&Scope::Resource(ResourceId::local(terminal)), &key, value);
+    }
+
+    /// Drop the mirror for a satellite terminal that closed.
+    fn forget_mirror(&mut self, terminal: u32) {
+        self.mirrored.remove(&terminal);
+        self.pending_mirror_gets
+            .retain(|_, (id, _)| *id != terminal);
+        let Some(journal) = &self.journal else {
+            return;
+        };
+        let journal = journal.clone();
+        let host = self.host.clone();
+        journal.with_mut(|state| {
+            crate::hub::metadata_mirror::forget_mirrored_terminal(state, &host, terminal);
+        });
     }
 
     fn encode(&mut self, frame: &FrameKind) -> Vec<u8> {

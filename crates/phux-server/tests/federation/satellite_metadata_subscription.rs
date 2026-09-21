@@ -1,10 +1,11 @@
 //! phux-w7z2.57 — a `SUBSCRIBE_METADATA` naming a satellite pane is refused
 //! **on the wire**, not silently accepted.
 //!
-//! L3 metadata does not federate: the hub relay carries L1 commands and
-//! `SUBSCRIBE_EVENTS` across a satellite link and nothing else, so a
-//! subscription to `Scope::Resource(Satellite { .. })` can never produce a
-//! `METADATA_CHANGED`. Before this ticket the server recorded it anyway, and
+//! L3 metadata does not federate in general. A non-hub server, which this
+//! test starts, still refuses `SUBSCRIBE_METADATA` on a satellite scope.
+//! A hub that routes the host mirrors only `phux.agent/v1` and
+//! `phux.agent.asked/v1` (ADR-0135). Before this ticket the server recorded
+//! the subscription anyway, and
 //! the consumer waited forever for a frame no code path emits — which is how
 //! `phux agent wait host/@N` came to report `no_agent_record` about a live
 //! remote agent.
