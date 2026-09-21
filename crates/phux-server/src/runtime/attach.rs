@@ -4046,9 +4046,9 @@ mod tests {
         assert!(retain_only.idempotency_key.is_none());
 
         let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
-        let combined = forwarded_resource(true, Some(key), Some(0)).expect("all three fields");
+        let combined = forwarded_resource(true, key, Some(0)).expect("all three fields");
         assert!(combined.bind_instance);
-        assert_eq!(combined.idempotency_key, Some(key));
+        assert_eq!(combined.idempotency_key, key);
         assert_eq!(combined.retain_secs, Some(0));
     }
 
