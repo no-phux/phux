@@ -2490,6 +2490,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }]);
         (
             painter,

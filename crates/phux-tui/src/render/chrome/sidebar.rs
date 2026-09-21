@@ -754,15 +754,21 @@ impl SidebarPainter {
             (false, true) => ("●", self.theme.accent),
             (false, false) => ("○", self.theme.dim),
         };
+        let exited = w.exited_marker();
+        let exited_w = exited.as_ref().map_or(0, |marker| display_width(marker));
         // phux-foz.1: reserve 2 cells for the ` !` attention
         // suffix so a long label can't push it off the strip.
+        // phux-fpgl.33: same for the retained-exit ` x` / ` xN` marker.
         let label_w = usize::from(text_w)
             .saturating_sub(4) // nested indent + dot + space
-            .saturating_sub(if w.attention { 2 } else { 0 });
+            .saturating_sub(if w.attention { 2 } else { 0 })
+            .saturating_sub(exited_w);
         let label = truncate(&w.name, label_w);
         let branch = fitting_branch(w, label_w.saturating_sub(display_width(&label)));
         let style = if w.active {
             Style::default().fg(self.theme.accent)
+        } else if w.exited.is_some() {
+            Style::default().fg(self.theme.dim)
         } else {
             Style::default().fg(self.theme.text)
         };
@@ -780,6 +786,9 @@ impl SidebarPainter {
                     .fg(self.theme.attention)
                     .add_modifier(Modifier::BOLD),
             ));
+        }
+        if let Some(marker) = exited {
+            spans.push(Span::styled(marker, Style::default().fg(self.theme.dim)));
         }
         if let Some(branch) = branch {
             spans.push(Span::styled(
@@ -1130,12 +1139,20 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }
     }
 
     fn win_attention(name: &str, active: bool) -> WindowInfo {
         WindowInfo {
             attention: true,
+            ..win(name, active)
+        }
+    }
+
+    fn win_exited(name: &str, active: bool, status: &str) -> WindowInfo {
+        WindowInfo {
+            exited: Some(status.to_owned()),
             ..win(name, active)
         }
     }
@@ -1819,6 +1836,35 @@ mod tests {
         assert!(
             plain.contains("shell !"),
             "asking window tab must carry the marker: {plain:?}"
+        );
+    }
+
+    /// phux-fpgl.33: a window whose pane is retained after exit (ADR-0124)
+    /// carries a dim `x` marker plus the exit status on its sidebar tab.
+    #[test]
+    fn retained_window_gets_an_exit_marker() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_roster(vec![active_roster()]);
+        p.set_windows(vec![win("editor", true), win("shell", false)]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 14,
+        };
+        let plain = strip_ansi(&paint_to_string(&mut p, rect));
+        assert!(
+            !plain.contains(" x"),
+            "no retained pane, no exit marker: {plain:?}"
+        );
+        assert!(
+            p.set_windows(vec![win("editor", true), win_exited("shell", false, "3")]),
+            "exit mark flip must report a change"
+        );
+        let plain = strip_ansi(&paint_to_string(&mut p, rect));
+        assert!(
+            plain.contains("shell x3"),
+            "retained window tab must carry the exit marker: {plain:?}"
         );
     }
 

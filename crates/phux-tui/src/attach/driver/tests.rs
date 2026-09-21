@@ -1465,6 +1465,7 @@ fn probe_window(name: &str, active: bool) -> WindowInfo {
         zoomed: false,
         attention: false,
         branch: None,
+        exited: None,
     }
 }
 
@@ -1743,6 +1744,7 @@ fn paint_overlay_frame(overlay: Box<dyn RenderOverlay>, with_painter: bool) -> V
         zoomed: false,
         attention: false,
         branch: None,
+        exited: None,
     }]);
 
     let mut overlays = OverlayState::new();

@@ -465,8 +465,9 @@ pub const CATALOG: &[SettingSpec] = &[
         detail: "A retained pane stays listed as exited, with its exit status, last screen, \
                  and history, until retain-on-exit-secs pass, retain-on-exit-max evicts it, \
                  or it is killed (ADR-0124). false retains only panes whose spawner asked; \
-                 true retains every pane that does not say, seed panes included. The reference TUI shows a \
-                 retained pane's last screen with an exited mark and refuses input to it.",
+                 true retains every pane that does not say, seed panes included. The reference TUI marks \
+                 a retained pane in the sidebar and window tabs, shows its last screen with an exited \
+                 badge while focused, and refuses input to it.",
         applies: Applies::NextSpawn,
     },
     SettingSpec {

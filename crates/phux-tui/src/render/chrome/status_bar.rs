@@ -1767,6 +1767,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }]);
         assert!(p.set_notice(
             Notice::warn("pane 4: exited 127"),
@@ -1983,6 +1984,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
             WindowInfo {
                 name: "vim".to_owned(),
@@ -1990,6 +1992,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
         ];
         let ctx = StatusBarContext {
@@ -2031,6 +2034,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }]);
         let mut buf = Vec::new();
         p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
@@ -2054,6 +2058,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }]);
         p.set_attention_color(Color::Rgb(251, 191, 36));
         assert!(p.set_attention(Some("[ ASK ]".to_owned())));
@@ -2085,6 +2090,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }]);
         assert!(p.set_supervisory(Some("[ FROZEN ]".to_owned())));
         assert!(p.set_attention(Some("[ ASK ]".to_owned())));
@@ -2117,6 +2123,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }]);
         assert!(p.set_attention(Some("[ ASK ]".to_owned())));
         assert!(
@@ -2250,6 +2257,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
             WindowInfo {
                 name: "vim".to_owned(),
@@ -2257,6 +2265,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
         ]);
         // Before the first paint there is no strip to hit.
@@ -2290,6 +2299,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }]);
         let inset = BarInset { left: 20, right: 0 };
         let mut buf = Vec::new();
@@ -2324,6 +2334,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
             WindowInfo {
                 name: "vim".to_owned(),
@@ -2331,6 +2342,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
         ]);
         let mut buf = Vec::new();
@@ -2372,6 +2384,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }]);
         p.set_supervisory(Some("[F]".to_owned()));
         let mut buf = Vec::new();
@@ -2406,6 +2419,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }]);
         let mut buf = Vec::new();
         p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx_default(""))
@@ -2420,6 +2434,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
             WindowInfo {
                 name: "b".to_owned(),
@@ -2427,6 +2442,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
         ]);
         let mut buf = Vec::new();

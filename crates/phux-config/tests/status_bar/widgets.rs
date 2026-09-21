@@ -57,6 +57,7 @@ fn win(name: &str, active: bool) -> WindowInfo {
         zoomed: false,
         attention: false,
         branch: None,
+        exited: None,
     }
 }
 
@@ -282,7 +283,8 @@ fn widget_cells_from_text_one_cell_per_char() {
 
 /// Table-driven tab rendering with the default format/separator:
 /// plain tabs, the ` Z` zoom suffix on a zoomed window (phux-x2hm), the
-/// ` !` attention suffix (phux-foz.1, ADR-0035), and the empty list.
+/// ` !` attention suffix (phux-foz.1, ADR-0035), the ` x` / ` xN`
+/// retained-exit suffix (phux-fpgl.33, ADR-0124), and the empty list.
 #[test]
 fn windows_widget_renders_tabs_and_markers() {
     let cases: &[(&str, Vec<WindowInfo>, &str)] = &[
@@ -312,6 +314,31 @@ fn windows_widget_renders_tabs_and_markers() {
                 },
             ],
             "0:a 1:b !",
+        ),
+        (
+            "retained window gets the x suffix plus exit status",
+            vec![
+                win("a", true),
+                WindowInfo {
+                    exited: Some("3".to_owned()),
+                    ..win("b", false)
+                },
+            ],
+            "0:a 1:b x3",
+        ),
+        (
+            "signal death and unknown exit still carry the x marker",
+            vec![
+                WindowInfo {
+                    exited: Some("sig9".to_owned()),
+                    ..win("a", true)
+                },
+                WindowInfo {
+                    exited: Some(String::new()),
+                    ..win("b", false)
+                },
+            ],
+            "0:a xsig9 1:b x",
         ),
         ("empty list renders nothing", vec![], ""),
     ];

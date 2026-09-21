@@ -23,11 +23,12 @@ pub(in crate::widget) const SPEC: WidgetKindSpec = WidgetKindSpec {
     summary: "The tmux-style tab bar: one segment per window, the active \
               one in the `active` style and the rest in `inactive`, joined \
               by `separator`. A zoomed active window gets a ` Z` marker, a \
-              window waiting on a human answer a ` !` marker, and every \
-              tab is a click target committing `select-window` for its \
-              index — in any slot, top or bottom bar. Overflow arrows select \
-              the nearest hidden window; long active labels keep these \
-              arrows when space permits.",
+              window waiting on a human answer a ` !` marker, a window \
+              holding a retained (exited) pane a dim ` x` / ` xN` marker, \
+              and every tab is a click target committing `select-window` \
+              for its index — in any slot, top or bottom bar. Overflow \
+              arrows select the nearest hidden window; long active labels \
+              keep these arrows when space permits.",
     options: &[
         WidgetOptSpec {
             name: "active",
@@ -115,6 +116,12 @@ impl WindowsWidget {
         // any window. Plain ASCII, matching the `Z` marker convention.
         if w.attention {
             text.push_str(" !");
+        }
+        // ADR-0124 / phux-fpgl.33: a window holding a retained (exited)
+        // pane gets a compact `x` marker plus the exit status, so it is
+        // findable without focusing that pane.
+        if let Some(marker) = w.exited_marker() {
+            text.push_str(&marker);
         }
         let style = if w.active {
             self.active.clone()

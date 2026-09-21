@@ -871,6 +871,7 @@ fn painted_windows_bar(
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         },
         WindowInfo {
             name: "vim".to_owned(),
@@ -878,6 +879,7 @@ fn painted_windows_bar(
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         },
     ]);
     let mut sink = Vec::new();
