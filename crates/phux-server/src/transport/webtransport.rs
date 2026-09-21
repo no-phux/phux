@@ -898,11 +898,10 @@ mod tests {
             reader.read_frame().await.unwrap().unwrap()
         };
 
-        let ((), frame) = tokio::time::timeout(HANG_GUARD, async {
-            tokio::join!(clients, accepted)
-        })
-        .await
-        .expect("healthy consumer must not wait for stalled first stream");
+        let ((), frame) =
+            tokio::time::timeout(HANG_GUARD, async { tokio::join!(clients, accepted) })
+                .await
+                .expect("healthy consumer must not wait for stalled first stream");
         assert_eq!(frame.as_ref(), FRAME);
     }
 }
