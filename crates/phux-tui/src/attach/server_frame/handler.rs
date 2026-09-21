@@ -1240,7 +1240,7 @@ fn layout_decode_refusal(error: &crate::layout::LayoutDecodeError) -> AttachErro
 /// ADR-0040: a `phux.agent/v1` broadcast for a subscribed pane.
 /// A tombstone (`value: None`, the `DELETE_METADATA` path) clears
 /// the record and the label falls back to the OSC title.
-/// ADR-0135: `phux.agent.asked/v1` is `1` while an ask is pending and absent
+/// ADR-0136: `phux.agent.asked/v1` is `1` while an ask is pending and absent
 /// once it clears. A workspace pane stores that on `PaneSlot::attention`.
 /// Anything else is a foreign attention insert or clear. A declared
 /// `phux.agent/v1` attention is left alone.

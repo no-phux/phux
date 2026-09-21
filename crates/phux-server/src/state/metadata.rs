@@ -329,7 +329,7 @@ impl ServerState {
     ///
     /// The satellite metadata mirror uses this after tombstoning the
     /// allowlisted keys, so a closed satellite pane cannot keep a
-    /// watcher subscribed forever (ADR-0135).
+    /// watcher subscribed forever (ADR-0136).
     pub(crate) fn drop_terminal_metadata(&mut self, terminal: &WireResourceId) {
         self.metadata.forget_terminal(terminal);
     }

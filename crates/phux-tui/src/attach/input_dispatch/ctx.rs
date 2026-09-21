@@ -169,7 +169,7 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// pane with no entry renders `?`/"no agent" (no live subscription, so
     /// no asked flag or cwd/branch).
     pub foreign_agents: &'a HashMap<ResourceId, phux_client::agent_meta::AgentRecord>,
-    /// Satellite terminals whose mirrored asked flag is set (ADR-0135).
+    /// Satellite terminals whose mirrored asked flag is set (ADR-0136).
     pub foreign_attention: &'a std::collections::HashSet<ResourceId>,
     /// phux-4li.20: id of the session this client is attached to. The
     /// picker places this row first and marks it `current`; selecting it

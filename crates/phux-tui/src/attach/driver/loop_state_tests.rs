@@ -860,7 +860,7 @@ async fn fresh_inventory_discovers_peer_sessions_without_an_endless_sweep() {
     );
 }
 
-/// ADR-0135: a satellite terminal on an unchanged session list still
+/// ADR-0136: a satellite terminal on an unchanged session list still
 /// schedules one discovery sweep, and a second identical inventory does not.
 #[tokio::test(flavor = "current_thread")]
 async fn satellite_terminal_on_an_unchanged_session_list_schedules_one_sweep() {

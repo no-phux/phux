@@ -41,7 +41,7 @@
 //!
 //! Two honest limits remain. **Satellite** agents are listed by agent name,
 //! with a host badge, from the hub's read-only mirror of `phux.agent/v1`
-//! and `phux.agent.asked/v1` (ADR-0135) — not by machine, and not as a
+//! and `phux.agent.asked/v1` (ADR-0136) — not by machine, and not as a
 //! general metadata federation. Foreign rows still carry no **branch/cwd**
 //! — a foreign pane has no local `PaneSlot`, and `CwdChanged` is dropped
 //! for an unknown Terminal. The `phux agent list` CLI remains the
@@ -205,7 +205,7 @@ pub(super) fn fleet_items(
     items
 }
 
-/// Satellite terminals grouped by agent name, not by machine (ADR-0135).
+/// Satellite terminals grouped by agent name, not by machine (ADR-0136).
 ///
 /// A pane already open in `workspace` is a current-session row. Everyone
 /// else with a mirrored `phux.agent/v1` record gets a header per agent and

@@ -1042,7 +1042,7 @@ fn drain_ask_sentinel(
         None
     };
     // The tombstone is how a consumer sees a clear: a retract broadcasts
-    // nothing (ADR-0036). ADR-0135 projects the ladder onto one metadata key.
+    // nothing (ADR-0036). ADR-0136 projects the ladder onto one metadata key.
     crate::hub::metadata_mirror::publish_asked_flag(
         s,
         wire_terminal_id,
@@ -5492,7 +5492,7 @@ pub(crate) async fn handle_list_metadata(
     }
 }
 
-/// A satellite Terminal scope. Client writes of one are ignored (ADR-0135):
+/// A satellite Terminal scope. Client writes of one are ignored (ADR-0136):
 /// the mirror is read-only, and every other key stays on the satellite.
 const fn is_satellite_terminal_scope(scope: &phux_protocol::wire::frame::Scope) -> bool {
     matches!(
@@ -5540,7 +5540,7 @@ fn kick_satellite_metadata_mirror_locked(
 /// Returns `true` when the caller must abandon the subscription.
 ///
 /// The two agent keys in [`crate::hub::metadata_mirror`] are the exception
-/// on a hub that routes the host (ADR-0135): [`kick_satellite_metadata_mirror`]
+/// on a hub that routes the host (ADR-0136): [`kick_satellite_metadata_mirror`]
 /// starts the read-only copy and the caller installs a local subscription
 /// against the retagged scope. Every other key, and those two keys on a
 /// server that does not route the host, still refuse. Accepting them
@@ -7603,7 +7603,7 @@ mod satellite_metadata_subscription_tests {
         }
     }
 
-    /// ADR-0135: on a hub that routes the host, the two agent keys install
+    /// ADR-0136: on a hub that routes the host, the two agent keys install
     /// a subscription and queue the mirror. A non-allowlisted key still
     /// refuses, and a client cannot write the satellite scope.
     #[test]

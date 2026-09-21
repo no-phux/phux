@@ -182,7 +182,7 @@ pub(super) fn foreign_terminal_ids(peers: &PeerInputs<'_>) -> HashSet<ResourceId
     ids
 }
 
-/// Satellite terminals from the federated resource graph (ADR-0135).
+/// Satellite terminals from the federated resource graph (ADR-0136).
 ///
 /// These are not leaves of a local session layout, so [`foreign_terminal_ids`]
 /// would otherwise never subscribe their agent records.
@@ -835,7 +835,7 @@ mod tests {
         );
     }
 
-    /// ADR-0135: satellite terminals list by agent name, then host, and an
+    /// ADR-0136: satellite terminals list by agent name, then host, and an
     /// already-open leaf is left to the workspace rows.
     #[test]
     fn satellite_agents_group_by_name_then_host() {

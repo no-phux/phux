@@ -4,7 +4,7 @@
 //! L3 metadata does not federate in general. A non-hub server, which this
 //! test starts, still refuses `SUBSCRIBE_METADATA` on a satellite scope.
 //! A hub that routes the host mirrors only `phux.agent/v1` and
-//! `phux.agent.asked/v1` (ADR-0135). Before this ticket the server recorded
+//! `phux.agent.asked/v1` (ADR-0136). Before this ticket the server recorded
 //! the subscription anyway, and
 //! the consumer waited forever for a frame no code path emits — which is how
 //! `phux agent wait host/@N` came to report `no_agent_record` about a live

@@ -775,7 +775,7 @@ async fn peer_layout_keys_are_subscribed_not_just_read() {
     );
 }
 
-/// ADR-0135: a satellite pane is subscribed for the agent record and the
+/// ADR-0136: a satellite pane is subscribed for the agent record and the
 /// asked flag. A local pane is not asked for the asked key here; its ask
 /// still arrives as an event.
 #[tokio::test]

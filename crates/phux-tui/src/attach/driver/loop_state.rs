@@ -312,7 +312,7 @@ struct PeerCaches {
     foreign_agents: HashMap<ResourceId, AgentRecord>,
     /// In-flight foreign agent-record GETs, by request id.
     foreign_agent_pending: HashMap<u32, ResourceId>,
-    /// In-flight `phux.agent.asked/v1` GETs for satellite terminals (ADR-0135).
+    /// In-flight `phux.agent.asked/v1` GETs for satellite terminals (ADR-0136).
     /// Kept off [`Self::foreign_agent_pending`] so the byte `1` is not parsed
     /// as an agent record.
     foreign_asked_pending: HashMap<u32, ResourceId>,

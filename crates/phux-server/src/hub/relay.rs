@@ -363,7 +363,7 @@ pub(crate) enum RelayRequest {
         reply: oneshot::Sender<CommandResult>,
     },
     /// Subscribe and read the agent-metadata allowlist for one
-    /// satellite-local terminal (ADR-0135). Idempotent per connection:
+    /// satellite-local terminal (ADR-0136). Idempotent per connection:
     /// a terminal already mirrored on this session sends nothing.
     MirrorTerminal {
         /// Satellite-local terminal id.
@@ -752,7 +752,7 @@ impl RelayHandle {
         false
     }
 
-    /// Ask the link to mirror `terminal`'s agent metadata (ADR-0135).
+    /// Ask the link to mirror `terminal`'s agent metadata (ADR-0136).
     ///
     /// A full or dead mailbox drops the request. The session marks the
     /// terminal mirrored only once it accepts the request, so the next
@@ -1196,7 +1196,7 @@ pub(crate) struct RelaySession {
     /// correlated reply, including after a downstream proxy has reattached.
     pending_detaches: HashMap<u32, PendingDetach>,
     /// Satellite-local terminals whose agent-metadata allowlist this
-    /// connection has already subscribed (ADR-0135).
+    /// connection has already subscribed (ADR-0136).
     mirrored: HashSet<u32>,
     /// Link-side `GET_METADATA` ids for that allowlist: terminal and key.
     pending_mirror_gets: HashMap<u32, (u32, String)>,

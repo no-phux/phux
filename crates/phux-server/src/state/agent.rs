@@ -49,7 +49,7 @@ impl ServerState {
         self.agent.current_asked(terminal)
     }
 
-    /// Whether any ask source still holds on `terminal` (ADR-0135).
+    /// Whether any ask source still holds on `terminal` (ADR-0136).
     pub(crate) fn agent_is_asked(&self, terminal: ResourceId) -> bool {
         self.agent.is_asked(terminal)
     }

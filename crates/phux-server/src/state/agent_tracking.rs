@@ -115,7 +115,7 @@ impl AgentState {
         self.asked.current(terminal)
     }
 
-    /// Whether any ask source still holds on `terminal` (ADR-0135).
+    /// Whether any ask source still holds on `terminal` (ADR-0136).
     pub(super) fn is_asked(&self, terminal: ResourceId) -> bool {
         self.asked.is_pending(terminal)
     }

@@ -15,7 +15,7 @@ so the satellite answers.
 
 Status: Accepted
 Date: 2026-09-10
-See [ADR-0135](./0135-hub-mirrors-satellite-agent-metadata.md) for the read-only agent-metadata mirror.
+See [ADR-0136](./0136-hub-mirrors-satellite-agent-metadata.md) for the read-only agent-metadata mirror.
 
 ## Context
 

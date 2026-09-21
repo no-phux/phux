@@ -94,7 +94,7 @@ pub(super) fn apply_foreign_layout_reply(
 ///
 /// Used both after a peer layout lands and from the server graph when no
 /// TUI layout has been persisted yet (phux-ah84). A satellite terminal also
-/// gets the asked-flag key (ADR-0135); that GET is correlated through
+/// gets the asked-flag key (ADR-0136); that GET is correlated through
 /// `asked_pending`, not `pending`, because its value is not an agent record.
 pub(super) async fn sync_foreign_agent_ids(
     conn: &mut Connection,
@@ -234,7 +234,7 @@ pub(super) async fn sync_agent_meta_subscriptions(
             key: RESOURCE_AGENT_KEY.to_owned(),
         })
         .await?;
-        // ADR-0135: a satellite pane's asked flag is metadata, not an event
+        // ADR-0136: a satellite pane's asked flag is metadata, not an event
         // this client is guaranteed to see. The GET must not share `pending`.
         if !id.is_local() {
             let asked_id = *next_request_id;

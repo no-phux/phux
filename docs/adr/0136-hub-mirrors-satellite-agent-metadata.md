@@ -4,7 +4,7 @@ stability: stable
 last-reviewed: 2026-09-21
 ---
 
-# 0135 — A hub mirrors two satellite agent metadata keys
+# 0136 — A hub mirrors two satellite agent metadata keys
 
 **TL;DR.** A hub keeps a read-only copy of `phux.agent/v1` and
 `phux.agent.asked/v1` for each satellite terminal, retagged

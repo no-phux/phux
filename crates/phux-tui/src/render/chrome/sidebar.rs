@@ -140,7 +140,7 @@ pub struct AgentEntry {
     /// `true` when the agent is waiting on a human (declared high
     /// attention, or the pane's ADR-0035 asked flag).
     pub attention: bool,
-    /// Satellite host this agent is running on (ADR-0135). `None` for an
+    /// Satellite host this agent is running on (ADR-0136). `None` for an
     /// agent on the attached server. Painted in the chord color, the same
     /// tone as a satellite pane's border badge.
     pub host: Option<String>,
@@ -2167,7 +2167,7 @@ mod tests {
         );
     }
 
-    /// ADR-0135: a satellite agent row badges its host and opens that pane.
+    /// ADR-0136: a satellite agent row badges its host and opens that pane.
     #[test]
     fn a_satellite_agent_row_badges_its_host_and_opens_the_pane() {
         let mut p = SidebarPainter::new(Theme::default());

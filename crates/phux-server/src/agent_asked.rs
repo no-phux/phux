@@ -194,7 +194,7 @@ impl AskedDetector {
 
     /// Whether any source still holds a question on `terminal`.
     ///
-    /// The projection of the ladder onto `phux.agent.asked/v1` (ADR-0135).
+    /// The projection of the ladder onto `phux.agent.asked/v1` (ADR-0136).
     /// The payload itself stays test-only: a consumer of the flag only
     /// needs to know that an ask is pending.
     pub(crate) fn is_pending(&self, terminal: ResourceId) -> bool {

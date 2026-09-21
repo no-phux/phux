@@ -4319,7 +4319,7 @@ pub(crate) async fn handle_get_state_federated(
 }
 
 /// Ask each satellite link to mirror the agent allowlist for every terminal
-/// the aggregate just listed (ADR-0135). A terminal the inventory does not
+/// the aggregate just listed (ADR-0136). A terminal the inventory does not
 /// name is mirrored later, when a consumer subscribes or reads it.
 fn mirror_federated_agent_metadata(
     state: &SharedState,

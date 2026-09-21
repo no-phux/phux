@@ -1,4 +1,4 @@
-//! Read-only hub mirror of two satellite agent metadata keys (ADR-0135).
+//! Read-only hub mirror of two satellite agent metadata keys (ADR-0136).
 //!
 //! L3 stays server-local. This module is the one carve-out: a hub copies
 //! `phux.agent/v1` and `phux.agent.asked/v1` from a satellite terminal's
