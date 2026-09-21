@@ -4,8 +4,11 @@
 //! grid. There are no literals here for cells, glyphs, commands, text, or
 //! paths. The policy is:
 //!
-//!   * focused pane of the active window: full product grid, if the store
-//!     still has one after holding degraded shares for later panes;
+//!   * if `plan` is given measured cols×rows per visible pane and those
+//!     cells fit in the store, every one of them paints full;
+//!   * otherwise Hybrid C: focused pane of the active window: full product
+//!     grid, if the store still has one after holding degraded shares for
+//!     later panes;
 //!   * every other pane, and every pane in an inactive window: degraded —
 //!     leftover after the full pane(s), cropped last-N at
 //!     `max_rows / 4` rows at `max_cols` (SDK first-N that hides the
@@ -94,6 +97,11 @@ pub const Plan = struct {
     unused_paths: usize,
     full_glyph_share: usize,
     degraded_glyph_share: usize,
+    /// Cells held for each later full pane. Hybrid C uses `full_cells`
+    /// (product max). Measured panes that fit hold nothing extra: they
+    /// already fit, and charging `full_cells` apiece would crop a typical
+    /// split that the store can actually keep.
+    full_cell_hold: usize = full_cells,
     fidelities: [layout.max_panes]Fidelity = @splat(.degraded),
 
     pub fn forPane(self: Plan, index: usize, prologue: usize) Allocation {
@@ -108,7 +116,7 @@ pub const Plan = struct {
         // thumbnail: it keeps that slack. A last degraded pane still holds
         // it, or leftover after the 24-row cap would paint nearly full.
         const hold_unused = remaining.full + remaining.degraded > 0 or fidelity == .degraded;
-        const cell_reserve = remaining.full * full_cells + remaining.degraded * self.degraded_cell_share +
+        const cell_reserve = remaining.full * self.full_cell_hold + remaining.degraded * self.degraded_cell_share +
             if (hold_unused) self.unused_cells else 0;
         const this_glyphs = switch (fidelity) {
             .full => self.full_glyph_share,
@@ -142,6 +150,11 @@ pub const PlanArgs = struct {
     window_active: bool,
     pane_count: usize,
     focused: []const bool,
+    /// Measured cols×rows for each visible pane, same order as `focused`.
+    /// Empty (the default) means Hybrid C at the product max. When the
+    /// slice length matches `pane_count` and the cells fit in the store,
+    /// every visible pane paints full.
+    pane_cells: []const usize = &.{},
 };
 
 /// Split a store the way Hybrid C splits cells: each degraded pane holds a
@@ -161,8 +174,19 @@ fn sharesAfterDegraded(total: usize, n_full: usize, n_degraded: usize, degraded_
     return .{ .full = full, .degraded = degraded, .unused = unused };
 }
 
+fn measuredCellsFit(args: PlanArgs) bool {
+    if (args.pane_cells.len != args.pane_count) return false;
+    var sum: usize = 0;
+    for (args.pane_cells) |cells| {
+        sum +|= cells;
+        if (sum > cell_store) return false;
+    }
+    return true;
+}
+
 pub fn plan(args: PlanArgs) Plan {
     const count = args.pane_count;
+    if (measuredCellsFit(args)) return planAllFull(count, args.pane_cells);
     var fidelities: [layout.max_panes]Fidelity = @splat(.degraded);
     var n_full: usize = 0;
     const full_slots = maxFullPanesThatFit();
@@ -200,6 +224,34 @@ pub fn plan(args: PlanArgs) Plan {
         .unused_paths = paths.unused,
         .full_glyph_share = if (n_full == 0) glyph_budget else glyphs.full,
         .degraded_glyph_share = glyphs.degraded,
+        .fidelities = fidelities,
+    };
+}
+
+fn planAllFull(count: usize, pane_cells: []const usize) Plan {
+    var fidelities: [layout.max_panes]Fidelity = @splat(.degraded);
+    var used_cells: usize = 0;
+    var index: usize = 0;
+    while (index < count) : (index += 1) {
+        fidelities[index] = .full;
+        used_cells +|= pane_cells[index];
+    }
+    return .{
+        .count = count,
+        .n_full = count,
+        .n_degraded = 0,
+        .leftover_cells = cell_store -| used_cells,
+        .unused_cells = 0,
+        .degraded_cell_share = 0,
+        .full_text_share = 0,
+        .degraded_text_share = 0,
+        .unused_text = 0,
+        .full_path_share = 0,
+        .degraded_path_share = 0,
+        .unused_paths = 0,
+        .full_glyph_share = glyph_budget,
+        .degraded_glyph_share = 0,
+        .full_cell_hold = 0,
         .fidelities = fidelities,
     };
 }
@@ -362,4 +414,91 @@ test "degraded last-n on this pin is bound by the row cap, not leftover" {
         .pane_count = 1,
         .focused = &.{true},
     }).forPane(0, 0).rowCap());
+}
+
+test "measured split panes that fit stay full when focus swaps" {
+    const testing = @import("std").testing;
+    const cols: usize = 80;
+    const rows: usize = 48;
+    try testing.expect(rows > degraded_rows);
+    const cells = [_]usize{ cols * rows, cols * rows };
+    try testing.expect(cells[0] + cells[1] <= cell_store);
+
+    const left = plan(.{
+        .window_active = true,
+        .pane_count = 2,
+        .focused = &.{ true, false },
+        .pane_cells = &cells,
+    });
+    const right = plan(.{
+        .window_active = true,
+        .pane_count = 2,
+        .focused = &.{ false, true },
+        .pane_cells = &cells,
+    });
+    try testing.expectEqual(@as(usize, 2), left.n_full);
+    try testing.expectEqual(@as(usize, 0), left.n_degraded);
+    try testing.expectEqual(@as(usize, 2), right.n_full);
+    try testing.expectEqual(Fidelity.full, left.fidelities[0]);
+    try testing.expectEqual(Fidelity.full, left.fidelities[1]);
+    try testing.expectEqual(Fidelity.full, right.fidelities[0]);
+    try testing.expectEqual(Fidelity.full, right.fidelities[1]);
+
+    const left_unfocused = left.forPane(1, 0);
+    const right_unfocused = right.forPane(0, 0);
+    try testing.expectEqual(@as(usize, 0), left_unfocused.rowCap());
+    try testing.expectEqual(@as(usize, 0), right_unfocused.rowCap());
+    try testing.expectEqual(
+        rows,
+        keepRows(left_unfocused.fidelity, cols, rows, left_unfocused.cell_reserve, 0),
+    );
+    try testing.expectEqual(
+        rows,
+        keepRows(right_unfocused.fidelity, cols, rows, right_unfocused.cell_reserve, 0),
+    );
+}
+
+test "two measured product-max panes still fit and stay full" {
+    const testing = @import("std").testing;
+    try testing.expect(2 * full_cells <= cell_store);
+    const cells = [_]usize{ full_cells, full_cells };
+    const planned = plan(.{
+        .window_active = true,
+        .pane_count = 2,
+        .focused = &.{ true, false },
+        .pane_cells = &cells,
+    });
+    try testing.expectEqual(@as(usize, 2), planned.n_full);
+    try testing.expectEqual(Fidelity.full, planned.fidelities[0]);
+    try testing.expectEqual(Fidelity.full, planned.fidelities[1]);
+    try testing.expectEqual(@as(usize, 0), planned.forPane(1, 0).rowCap());
+}
+
+test "measured panes that overflow keep Hybrid C" {
+    const testing = @import("std").testing;
+    const cells = [_]usize{ full_cells, full_cells, full_cells, full_cells, full_cells };
+    try testing.expect(cells.len * full_cells > cell_store);
+    const focused = [_]bool{ true, false, false, false, false };
+    const measured = plan(.{
+        .window_active = true,
+        .pane_count = cells.len,
+        .focused = &focused,
+        .pane_cells = &cells,
+    });
+    const hybrid = plan(.{
+        .window_active = true,
+        .pane_count = cells.len,
+        .focused = &focused,
+    });
+    try testing.expectEqual(hybrid.n_full, measured.n_full);
+    try testing.expectEqual(hybrid.n_degraded, measured.n_degraded);
+    try testing.expectEqual(hybrid.fidelities[0], measured.fidelities[0]);
+    try testing.expectEqual(hybrid.fidelities[1], measured.fidelities[1]);
+    try testing.expectEqual(hybrid.degraded_cell_share, measured.degraded_cell_share);
+    try testing.expectEqual(hybrid.full_cell_hold, measured.full_cell_hold);
+    try testing.expectEqual(hybrid.forPane(0, 0).rowCap(), measured.forPane(0, 0).rowCap());
+    try testing.expectEqual(hybrid.forPane(1, 0).rowCap(), measured.forPane(1, 0).rowCap());
+    try testing.expectEqual(Fidelity.full, measured.fidelities[0]);
+    try testing.expectEqual(Fidelity.degraded, measured.fidelities[1]);
+    try testing.expectEqual(degraded_rows, measured.forPane(1, 0).rowCap());
 }
