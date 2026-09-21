@@ -1,4 +1,4 @@
-# Build the canonical Android UniFFI zip from this checkout.
+# Build the Android UniFFI zip from this checkout.
 # Sibling of ffi-xcframework.yml, not a job on it: Apple publication must not
 # wait on NDK. phux-mobile fetches this zip at PHUX_REV the same way it fetches
 # the xcframework.
@@ -55,17 +55,7 @@ jobs:
         run: bash scripts/setup-rust.sh core
 
       - name: Android NDK
-        run: |
-          set -euo pipefail
-          ndk_home="${ANDROID_NDK_HOME:-}"
-          if [ ! -x "${ndk_home}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
-            mkdir -p "$HOME/android-ndk"
-            curl -fsSL -o /tmp/android-ndk.zip \
-              "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip"
-            unzip -q /tmp/android-ndk.zip -d "$HOME/android-ndk"
-            ndk_home="$HOME/android-ndk/android-ndk-r28c"
-          fi
-          echo "ANDROID_NDK_HOME=$ndk_home" >> "$GITHUB_ENV"
+        run: bash scripts/ci/setup-android-ndk.sh >> "$GITHUB_ENV"
 
       - name: cargo-ndk
         run: cargo install cargo-ndk --version 4.1.2 --locked
@@ -74,6 +64,7 @@ jobs:
         with:
           shared-key: ffi-android
           cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build Android UniFFI artifact
         run: bash scripts/build-mobile-ffi-android.sh
@@ -87,7 +78,6 @@ jobs:
           zip -qry "${stem}.zip" kotlin jniLibs provenance
           shasum -a 256 "${stem}.zip" > "${stem}.zip.sha256"
           cp provenance "${stem}.provenance"
-          cat "${stem}.zip.sha256" "${stem}.provenance"
           echo "stem=${stem}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -115,4 +105,3 @@ jobs:
           gh release download "$RELEASE_TAG" --dir "$existing" --pattern "${STEM}.*"
           cmp "${STEM}.zip" "$existing/${STEM}.zip"
           (cd "$existing" && shasum -a 256 -c "${STEM}.zip.sha256")
-          echo "attached ${STEM} to ${RELEASE_TAG}"

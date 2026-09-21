@@ -126,15 +126,17 @@ ndk_ver="$(basename "$ANDROID_NDK_HOME")"
 } > "$OUT/provenance"
 
 if [[ -e "$DEST" ]]; then
-    PREVIOUS="$(mktemp -d "$OUT_PARENT/.${OUT_NAME}.previous.XXXXXX")"
+    PREVIOUS="${DEST}.previous.$$"
+    rm -rf "$PREVIOUS"
     mv "$DEST" "$PREVIOUS"
 fi
 mv "$STAGE" "$DEST"
 STAGE=""
+rm -rf "$PREVIOUS"
 PREVIOUS=""
-if [[ -n "${PREVIOUS:-}" ]]; then rm -rf "$PREVIOUS"; fi
+OUT="$DEST"
 
-echo "build-mobile-ffi-android: wrote $DEST"
-echo "    kotlin:     $DEST/kotlin/$KT_REL"
-echo "    jniLibs:    $DEST/jniLibs/{arm64-v8a,x86_64}/libphux_mobile_ffi.so"
-echo "    provenance: $DEST/provenance"
+echo "build-mobile-ffi-android: wrote $OUT"
+echo "    kotlin:     $OUT/kotlin/$KT_REL"
+echo "    jniLibs:    $OUT/jniLibs/{arm64-v8a,x86_64}/libphux_mobile_ffi.so"
+echo "    provenance: $OUT/provenance"

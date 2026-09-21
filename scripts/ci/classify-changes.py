@@ -73,7 +73,8 @@ ROUTES = (
     # The xcframework builder runs only from ffi-xcframework.yml (release and
     # dispatch) and `just ffi-xcframework`; no product lane consumes it, and
     # its inputs (the crate, Cargo, the Zig pin) route on their own.
-    (("scripts/build-ffi-xcframework.sh",), set()),
+    (("scripts/build-ffi-xcframework.sh", "scripts/build-mobile-ffi-android.sh",
+      "scripts/ci/setup-android-ndk.sh", "scripts/patch-kotlin-ffi-bindings.py"), set()),
 )
 WORKFLOWS = (
     ".github/workflows/*.yml", ".github/workflows/*.yaml",
