@@ -983,7 +983,7 @@ impl SessionLoop {
         let rows = crate::attach::agent_rows::agent_session_rows(&self.engine_kernel);
         self.review
             .observe_streams(&rows, self.focused_resource.as_ref());
-        refresh_window_chrome(
+        let mut changed = refresh_window_chrome(
             self.settings.status_bar.as_mut(),
             &mut self.sidebar_painter,
             &self.workspace,
@@ -995,7 +995,15 @@ impl SessionLoop {
             &mut self.vcs,
             &rows,
             self.peers.inputs(&self.review),
-        )
+        );
+        let (tab_drop, sidebar_drop) = self.drag.as_ref().map_or((None, None), |drag| {
+            (drag.tab_drop_at(), drag.sidebar_drop_at())
+        });
+        if let Some(status_bar) = self.settings.status_bar.as_mut() {
+            changed |= status_bar.set_drop_index(tab_drop);
+        }
+        changed |= self.sidebar_painter.set_drop_index(sidebar_drop);
+        changed
     }
 
     /// Commit attach onboarding once its notice has reached the render sink.

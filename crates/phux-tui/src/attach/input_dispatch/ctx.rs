@@ -314,9 +314,32 @@ pub(in crate::attach) enum DragGrab {
     /// is runtime chrome like `toggle-sidebar`: it lasts for the attach and
     /// is never written to `config.toml` (ADR-0101 decision 2).
     SidebarEdge,
-    /// A window tab or sidebar window row: the release reorders the
+    /// A window tab or sidebar window row: motion paints an insertion
+    /// marker at [`WindowGrab::drop_at`]; the release reorders the
     /// window to the slot it was dropped on.
     Window(WindowGrab),
+}
+
+impl DragGrab {
+    /// Insertion index on the status-bar tab strip, when this grab is a
+    /// live tab drag over a tab.
+    #[must_use]
+    pub(in crate::attach) const fn tab_drop_at(&self) -> Option<usize> {
+        match self {
+            Self::Window(grab) if matches!(grab.strip, WindowStrip::Tabs) => grab.drop_at,
+            _ => None,
+        }
+    }
+
+    /// Insertion index on the sidebar window rows, when this grab is a
+    /// live sidebar-row drag over a window row.
+    #[must_use]
+    pub(in crate::attach) const fn sidebar_drop_at(&self) -> Option<usize> {
+        match self {
+            Self::Window(grab) if matches!(grab.strip, WindowStrip::Sidebar) => grab.drop_at,
+            _ => None,
+        }
+    }
 }
 
 /// An active divider drag (ADR-0048).
@@ -341,6 +364,10 @@ pub(in crate::attach) struct WindowGrab {
     /// Which strip it was picked up from; the drop resolves against the
     /// same strip, so a tab dropped on the sidebar is a no-op.
     pub strip: WindowStrip,
+    /// Slot under the pointer on [`Self::strip`], painted as the live
+    /// insertion marker. `None` when the pointer is off that strip (the
+    /// drop would be a no-op).
+    pub drop_at: Option<usize>,
 }
 
 /// The two chrome surfaces that list windows.

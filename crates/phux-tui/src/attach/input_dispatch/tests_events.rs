@@ -539,6 +539,8 @@ struct SidebarRun {
     width: u16,
     sidebar_enabled: bool,
     drag_live: bool,
+    /// Insertion index of a live window-row drag, if any.
+    drop_at: Option<usize>,
 }
 
 /// Drive one batch of `events` against a left-docked, 20-column sidebar
@@ -598,6 +600,10 @@ async fn dispatch_sidebar_events(
         width: fx.sidebar_width,
         sidebar_enabled: fx.sidebar_enabled,
         drag_live: fx.drag.is_some(),
+        drop_at: match &fx.drag {
+            Some(DragGrab::Window(grab)) => grab.drop_at,
+            _ => None,
+        },
     }
 }
 
@@ -846,6 +852,53 @@ async fn sidebar_window_drop_off_the_rows_changes_nothing() {
     }
 }
 
+/// phux-mv5y: motion over another window row points the insertion marker
+/// at that slot; release and focus-loss cancel both clear it.
+#[tokio::test]
+async fn sidebar_drag_drop_marker_follows_the_pointer_and_clears() {
+    use phux_protocol::input::focus::FocusEvent;
+    let mid = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 3, 14),
+            left_mouse(MouseAction::Motion, 3, 15),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(mid.drop_at, Some(1), "motion over row 1 paints that slot");
+    assert!(mid.drag_live);
+
+    let released = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 3, 14),
+            left_mouse(MouseAction::Motion, 3, 15),
+            left_mouse(MouseAction::Release, 3, 15),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(released.drop_at, None, "release clears the marker");
+    assert!(!released.drag_live);
+
+    let cancelled = dispatch_sidebar_events(
+        vec![
+            left_mouse(MouseAction::Press, 3, 14),
+            left_mouse(MouseAction::Motion, 3, 15),
+            InputEvent::Focus(FocusEvent::Lost),
+        ],
+        24,
+        targets(0, 2, 1),
+    )
+    .await;
+    assert_eq!(
+        cancelled.drop_at, None,
+        "cancel on focus loss clears the marker"
+    );
+    assert!(!cancelled.drag_live);
+}
+
 /// Build a status-bar painter with the `windows` widget in the left
 /// slot (the default config's layout), fed `bash`/`vim` tabs and
 /// painted once at `cols x rows` so its cached strip — the click
@@ -908,7 +961,7 @@ async fn dispatch_bar_click(
     position: crate::render::chrome::status_bar::Position,
     with_painter: bool,
 ) -> (usize, Vec<FrameKind>, bool) {
-    let (active, received, overlay_active, _) =
+    let (active, received, overlay_active, ..) =
         dispatch_bar_events(vec![ev], position, with_painter).await;
     (active, received, overlay_active)
 }
@@ -923,7 +976,7 @@ async fn dispatch_bar_events(
     events: Vec<InputEvent>,
     position: crate::render::chrome::status_bar::Position,
     with_painter: bool,
-) -> (usize, Vec<FrameKind>, bool, Vec<String>) {
+) -> (usize, Vec<FrameKind>, bool, Vec<String>, Option<usize>) {
     let (a, b) = tokio::net::UnixStream::pair().expect("uds pair");
     let mut conn = Connection::from_stream(a);
     let mut peer = Connection::from_stream(b);
@@ -974,11 +1027,16 @@ async fn dispatch_bar_events(
         .iter()
         .map(|w| w.name.clone())
         .collect();
+    let drop_at = match &fx.drag {
+        Some(DragGrab::Window(grab)) => grab.drop_at,
+        _ => None,
+    };
     (
         fx.workspace.active,
         received,
         fx.overlays.is_active(),
         names,
+        drop_at,
     )
 }
 
@@ -1087,7 +1145,7 @@ async fn bar_click_without_painter_is_consumed() {
 #[tokio::test]
 async fn dragging_a_tab_onto_another_tab_reorders_windows() {
     use crate::render::chrome::status_bar::Position;
-    let (active, received, _, names) = dispatch_bar_events(
+    let (active, received, _, names, _) = dispatch_bar_events(
         vec![
             left_mouse(MouseAction::Press, 2, 23),
             left_mouse(MouseAction::Motion, 5, 23),
@@ -1111,7 +1169,7 @@ async fn dragging_a_tab_onto_another_tab_reorders_windows() {
 async fn tab_drop_off_the_bar_changes_nothing() {
     use crate::render::chrome::status_bar::Position;
     for release_at in [(9, 10), (3, 23), (40, 23)] {
-        let (_, received, _, names) = dispatch_bar_events(
+        let (_, received, _, names, _) = dispatch_bar_events(
             vec![
                 left_mouse(MouseAction::Press, 2, 23),
                 left_mouse(MouseAction::Release, release_at.0, release_at.1),
@@ -1126,6 +1184,48 @@ async fn tab_drop_off_the_bar_changes_nothing() {
             "release at {release_at:?}: {received:?}"
         );
     }
+}
+
+/// phux-mv5y: motion over another tab points the insertion marker at that
+/// slot; release and focus-loss cancel both clear it.
+#[tokio::test]
+async fn tab_drag_drop_marker_follows_the_pointer_and_clears() {
+    use crate::render::chrome::status_bar::Position;
+    use phux_protocol::input::focus::FocusEvent;
+    let (_, _, _, _, drop_at) = dispatch_bar_events(
+        vec![
+            left_mouse(MouseAction::Press, 2, 23),
+            left_mouse(MouseAction::Motion, 9, 23),
+        ],
+        Position::Bottom,
+        true,
+    )
+    .await;
+    assert_eq!(drop_at, Some(1), "motion over tab 1 paints that slot");
+
+    let (_, _, _, _, drop_at) = dispatch_bar_events(
+        vec![
+            left_mouse(MouseAction::Press, 2, 23),
+            left_mouse(MouseAction::Motion, 9, 23),
+            left_mouse(MouseAction::Release, 9, 23),
+        ],
+        Position::Bottom,
+        true,
+    )
+    .await;
+    assert_eq!(drop_at, None, "release clears the marker");
+
+    let (_, _, _, _, drop_at) = dispatch_bar_events(
+        vec![
+            left_mouse(MouseAction::Press, 2, 23),
+            left_mouse(MouseAction::Motion, 9, 23),
+            InputEvent::Focus(FocusEvent::Lost),
+        ],
+        Position::Bottom,
+        true,
+    )
+    .await;
+    assert_eq!(drop_at, None, "cancel on focus loss clears the marker");
 }
 
 #[test]

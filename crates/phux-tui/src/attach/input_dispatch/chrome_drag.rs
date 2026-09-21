@@ -33,13 +33,13 @@ pub(super) struct DragCommit {
 }
 
 /// Advance `grab` by one button-motion event. Returns whether the screen
-/// changed. A window grab has nothing to show mid-drag: the reorder
-/// happens where the pointer is released.
+/// changed. A window grab updates the insertion marker to the slot under
+/// the pointer; the reorder still happens where the pointer is released.
 pub(super) fn motion(ctx: &mut DispatchCtx<'_>, grab: &DragGrab, mouse: &MouseEvent) -> bool {
     match grab {
         DragGrab::Divider(divider) => drag_resize(ctx, mouse, divider),
         DragGrab::SidebarEdge => resize_sidebar(ctx, quantize_cell(mouse.x)),
-        DragGrab::Window(_) => false,
+        DragGrab::Window(_) => preview_window_drop(ctx, mouse),
     }
 }
 
@@ -62,7 +62,9 @@ pub(super) fn release(
         DragGrab::Window(window) => {
             let moved = drop_window(ctx, *window, mouse);
             DragCommit {
-                layout_changed: moved,
+                // Always dirty: the insertion marker has to leave the
+                // strip even when the order did not change.
+                layout_changed: true,
                 broadcast: moved,
             }
         }
@@ -99,7 +101,11 @@ pub(super) fn begin_window_drag(ctx: &mut DispatchCtx<'_>, from: usize, strip: W
     let Some(window) = ctx.workspace.windows.get(from).map(|w| w.id) else {
         return;
     };
-    *ctx.drag = Some(DragGrab::Window(WindowGrab { window, strip }));
+    *ctx.drag = Some(DragGrab::Window(WindowGrab {
+        window,
+        strip,
+        drop_at: Some(from),
+    }));
     tracing::debug!(from, ?strip, "window drag: grabbed");
 }
 
@@ -158,14 +164,31 @@ pub(super) fn dragged_sidebar_width(
     Some(raw.clamp(floors.strip, max))
 }
 
+/// Point the live insertion marker at the slot under the pointer on the
+/// strip the window was picked up from. Off that strip the marker hides
+/// (the drop would be a no-op). Returns whether the painted index changed.
+fn preview_window_drop(ctx: &mut DispatchCtx<'_>, mouse: &MouseEvent) -> bool {
+    let Some(strip) = ctx.drag.as_ref().and_then(|grab| match grab {
+        DragGrab::Window(window) => Some(window.strip),
+        _ => None,
+    }) else {
+        return false;
+    };
+    let drop_at = window_under(ctx, strip, mouse);
+    let Some(DragGrab::Window(live)) = ctx.drag.as_mut() else {
+        return false;
+    };
+    if live.drop_at == drop_at {
+        return false;
+    }
+    live.drop_at = drop_at;
+    true
+}
+
 /// Move the grabbed window to the slot under the release point on the
 /// strip it came from. Returns whether the order changed.
 fn drop_window(ctx: &mut DispatchCtx<'_>, grab: WindowGrab, mouse: &MouseEvent) -> bool {
-    let (x, y) = (quantize_cell(mouse.x), quantize_cell(mouse.y));
-    let target = match grab.strip {
-        WindowStrip::Tabs => tab_under(ctx, x, y),
-        WindowStrip::Sidebar => sidebar_window_under(ctx, x, y),
-    };
+    let target = window_under(ctx, grab.strip, mouse);
     let Some(to) = target else {
         return false;
     };
@@ -183,6 +206,15 @@ fn drop_window(ctx: &mut DispatchCtx<'_>, grab: WindowGrab, mouse: &MouseEvent) 
         tracing::debug!(from, to, "window drag: reordered");
     }
     moved
+}
+
+/// The window slot under the pointer on `strip`, or `None` off that strip.
+fn window_under(ctx: &DispatchCtx<'_>, strip: WindowStrip, mouse: &MouseEvent) -> Option<usize> {
+    let (x, y) = (quantize_cell(mouse.x), quantize_cell(mouse.y));
+    match strip {
+        WindowStrip::Tabs => tab_under(ctx, x, y),
+        WindowStrip::Sidebar => sidebar_window_under(ctx, x, y),
+    }
 }
 
 /// The window tab under `(x, y)`, when the point is on the status bar row.

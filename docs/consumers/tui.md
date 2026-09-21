@@ -595,10 +595,10 @@ focus, and a drag whose button goes up outside the window ends cleanly.
 | Wheel in a pane | Inner mouse mode gets the wheel; else primary screen scrolls local scrollback (forwarded if the viewport cannot move); alt screen becomes arrows, or is forwarded if alternate-scroll is off |
 | Right-click in a pane | Pane context menu, unless the inner program has mouse tracking |
 | Click a status-bar tab | `select-window` |
-| Drag a status-bar tab onto another tab | Move the window into that slot |
+| Drag a status-bar tab onto another tab | Move the window into that slot; an insertion marker follows the pointer |
 | Click a status-bar destination | Open Sessions, Commands, Settings, Help, or Copy |
 | Click a sidebar row | The same action the keyboard binding would run |
-| Drag a sidebar window row onto another window row | Move the window into that slot |
+| Drag a sidebar window row onto another window row | Move the window into that slot; an insertion marker follows the pointer |
 
 Hold **Shift** to bypass application mouse reporting and use the host
 terminal's native selection. `mouse = false` in `[defaults]` skips

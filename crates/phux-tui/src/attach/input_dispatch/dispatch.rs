@@ -261,7 +261,7 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     async fn dispatch_event(&mut self, ev: InputEvent) -> Result<EventChange, AttachError> {
         let mut change = EventChange::default();
         if matches!(ev, InputEvent::Focus(FocusEvent::Lost)) {
-            self.abandon_chrome_drag().await?;
+            change.layout_changed |= self.abandon_chrome_drag().await?;
         }
         let popup = dismiss_passthrough_popup(self.ctx, &ev);
         change.layout_changed |= popup.layout_changed;
