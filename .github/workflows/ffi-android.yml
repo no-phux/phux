@@ -59,6 +59,13 @@ jobs:
           persist-credentials: false
           ref: ${{ inputs.tag || github.ref }}
 
+      # Same packages native-setup.yml uses: .cargo/config.toml passes
+      # -fuse-ld=mold on Linux, and the hosted image has no mold or ld by default.
+      - name: Platform packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config mold curl xz-utils unzip
+
       - name: Contributor Zig setup
         run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
 
