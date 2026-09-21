@@ -16,16 +16,17 @@
 /// The live screen a rule set is evaluated against.
 ///
 /// `lines` are the right-trimmed rows of the **live viewport**, top to
-/// bottom, exactly as [`crate::grid::SnapshotSynthesizer::screen_state_with_scrollback`]
-/// projects them with `scrollback = None`.
+/// bottom, exactly as the server's viewport projection
+/// (`SnapshotSynthesizer::screen_state_with_scrollback`) emits them with
+/// `scrollback = None`.
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct Screen<'a> {
+pub struct Screen<'a> {
     /// The pane's current OSC 0/2 title, as libghostty tracks it.
-    pub(crate) title: &'a str,
+    pub title: &'a str,
     /// Last ConEmu-style OSC 9;4 payload, with the leading `9;` removed.
-    pub(crate) progress: &'a str,
+    pub progress: &'a str,
     /// Live viewport rows, top to bottom.
-    pub(crate) lines: &'a [String],
+    pub lines: &'a [String],
 }
 
 /// A named sub-slice of [`Screen`].
@@ -74,7 +75,7 @@ impl Region {
     /// The parameterized variants appear here in their **default** spelling
     /// only — there is no enumerating `bottom-lines(N)` for every N. A
     /// manifest that names a non-default window gets that window previewed
-    /// too; see [`crate::agent_detect::rules::CompiledManifest::explain`],
+    /// too; see [`crate::rules::CompiledManifest::explain`],
     /// which unions this list with the regions its rules actually read. That
     /// union is the property that matters: "the region I scoped my rule to is
     /// empty" is the failure the explainer exists to make visible, and it

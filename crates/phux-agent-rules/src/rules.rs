@@ -10,7 +10,7 @@
 //!
 //! Predicates form a recursive combinator tree (`contains` / `regex` /
 //! `line-regex` / `all` / `any` / `not`), compiled **once at load** into
-//! [`Predicate`]. A manifest carrying an invalid regex, an unknown state
+//! `Predicate`. A manifest carrying an invalid regex, an unknown state
 //! word, an unparseable region, or more rules / matchers / nesting than the
 //! load-time bounds allow is logged at `warn` and **dropped whole** — a bad
 //! manifest must never wedge a pane, and a half-applied one is worse than
@@ -18,7 +18,7 @@
 //!
 //! `region` accepts the two windowed regions with a line count —
 //! `bottom-lines(1)`, `top-non-empty-lines(3)` — and the bare spellings keep
-//! their historical defaults. See [`super::regions::Region`].
+//! their historical defaults. See `regions::Region`.
 
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -33,17 +33,14 @@ use super::regions::{Region, Screen, extract};
 /// Built-in manifests. Every predicate in these files is derived from the
 /// shipped CLI's observable output and pinned by captured-screen tests below.
 const BUILTIN_MANIFESTS: [(&str, &str); 8] = [
-    ("claude", include_str!("../../rules/claude.toml")),
-    ("codex", include_str!("../../rules/codex.toml")),
-    ("opencode", include_str!("../../rules/opencode.toml")),
-    ("pi", include_str!("../../rules/pi.toml")),
-    ("omp", include_str!("../../rules/omp.toml")),
-    ("grok", include_str!("../../rules/grok.toml")),
-    ("amp", include_str!("../../rules/amp.toml")),
-    (
-        "cursor-agent",
-        include_str!("../../rules/cursor-agent.toml"),
-    ),
+    ("claude", include_str!("../rules/claude.toml")),
+    ("codex", include_str!("../rules/codex.toml")),
+    ("opencode", include_str!("../rules/opencode.toml")),
+    ("pi", include_str!("../rules/pi.toml")),
+    ("omp", include_str!("../rules/omp.toml")),
+    ("grok", include_str!("../rules/grok.toml")),
+    ("amp", include_str!("../rules/amp.toml")),
+    ("cursor-agent", include_str!("../rules/cursor-agent.toml")),
 ];
 
 /// Env knob: `PHUX_AGENT_DETECT=0` disables the detector wholesale by
@@ -199,14 +196,14 @@ pub(crate) struct RuleSpec {
 /// One agent kind's manifest, as written in TOML.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
-pub(crate) struct ManifestSpec {
+pub struct ManifestSpec {
     /// Open-vocabulary kind slug, e.g. `"claude"`. Also the override key.
     pub(crate) kind: String,
     /// Human-facing name for the record's `name` field; defaults to `kind`.
     #[serde(default)]
     pub(crate) name: Option<String>,
     /// argv basenames (and program-path components) that identify this
-    /// agent. See [`super::identify`].
+    /// agent. The daemon's process probe matches these names.
     pub(crate) binaries: Vec<String>,
     /// The rules, in declaration order (the final tiebreak).
     #[serde(default)]
@@ -495,9 +492,9 @@ pub(crate) struct Rule {
 /// stored under in [`RuleSet`], and the detector already carries it as the
 /// identity it resolved.
 #[derive(Debug)]
-pub(crate) struct CompiledManifest {
+pub struct CompiledManifest {
     /// Human-facing name written into the `phux.agent/v1` record.
-    pub(crate) name: String,
+    pub name: String,
     /// Rules in declaration order.
     pub(crate) rules: Vec<Rule>,
 }
@@ -508,19 +505,19 @@ pub(crate) struct CompiledManifest {
     clippy::struct_excessive_bools,
     reason = "the union of the matching rules' independent flags; see RuleSpec"
 )]
-pub(crate) struct Evaluation {
+pub struct Evaluation {
     /// The winning state, or `None` when no state-bearing rule matched
     /// (the caller's fail-safe turns that into `idle`, never `blocked`).
-    pub(crate) state: Option<DetectedState>,
+    pub state: Option<DetectedState>,
     /// A matching rule asserts the screen positively shows idleness. The one
     /// `visible-*` flag the caller acts on: it bypasses the working -> idle
     /// hold.
-    pub(crate) visible_idle: bool,
+    pub visible_idle: bool,
     /// A matching rule says this screen carries no state information at
     /// all. The caller MUST freeze rather than derive.
-    pub(crate) freeze: bool,
+    pub freeze: bool,
     /// The winning rule's id, for `trace` logs.
-    pub(crate) matched: Option<String>,
+    pub matched: Option<String>,
 }
 
 impl CompiledManifest {
@@ -531,7 +528,8 @@ impl CompiledManifest {
     /// cheapest and most direct signal an agent CLI publishes about itself;
     /// a screen rule is always an inference about pixels it happened to
     /// paint.
-    pub(crate) fn evaluate(&self, screen: &Screen<'_>) -> Evaluation {
+    #[must_use]
+    pub fn evaluate(&self, screen: &Screen<'_>) -> Evaluation {
         self.run(screen, None)
     }
 
@@ -625,7 +623,7 @@ impl CompiledManifest {
 /// The process-wide compiled rule set: every known agent kind, plus the
 /// argv-basename index used to identify one.
 #[derive(Debug, Default)]
-pub(crate) struct RuleSet {
+pub struct RuleSet {
     manifests: HashMap<String, CompiledManifest>,
     /// binary name (or program-path component) -> kind.
     by_binary: HashMap<String, String>,
@@ -634,18 +632,20 @@ pub(crate) struct RuleSet {
 impl RuleSet {
     /// `true` when nothing is loaded — the actor then never builds a
     /// detector, so the whole feature costs exactly zero.
-    pub(crate) fn is_empty(&self) -> bool {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
         self.manifests.is_empty()
     }
 
     /// The agent kind a program named `name` belongs to, if any. `name` is
     /// matched case-insensitively.
-    pub(crate) fn kind_for_binary(&self, name: &str) -> Option<&str> {
+    pub fn kind_for_binary(&self, name: &str) -> Option<&str> {
         self.by_binary.get(&name.to_lowercase()).map(String::as_str)
     }
 
     /// The compiled manifest for `kind`.
-    pub(crate) fn manifest(&self, kind: &str) -> Option<&CompiledManifest> {
+    #[must_use]
+    pub fn manifest(&self, kind: &str) -> Option<&CompiledManifest> {
         self.manifests.get(kind)
     }
 
@@ -667,7 +667,7 @@ impl RuleSet {
     /// `self` is not touched until the whole manifest has compiled, so a
     /// rejection leaves no partial state behind. See the bounds section at
     /// the top of this module for why they exist and what they do not claim.
-    pub(crate) fn install(&mut self, spec: ManifestSpec) -> Result<(), String> {
+    pub fn install(&mut self, spec: ManifestSpec) -> Result<(), String> {
         if spec.kind.is_empty() {
             return Err("manifest has an empty `kind`".to_owned());
         }
@@ -835,7 +835,8 @@ thread_local! {
 }
 
 /// The shared, compiled rule set.
-pub(crate) fn global() -> Rc<RuleSet> {
+#[must_use]
+pub fn global() -> Rc<RuleSet> {
     RULES.with(|cell| Rc::clone(cell.get_or_init(|| Rc::new(build()))))
 }
 
@@ -843,8 +844,8 @@ pub(crate) fn global() -> Rc<RuleSet> {
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::{ManifestSpec, RuleSet, global};
-    use crate::agent_detect::DetectedState;
-    use crate::agent_detect::regions::Screen;
+    use crate::DetectedState;
+    use crate::regions::Screen;
 
     fn compile(toml_text: &str) -> RuleSet {
         let spec: ManifestSpec = toml::from_str(toml_text).expect("manifest parses");

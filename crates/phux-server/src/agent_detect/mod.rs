@@ -68,8 +68,13 @@
 pub(crate) mod identify;
 pub(crate) mod live_session;
 pub(crate) mod record;
-pub(crate) mod regions;
-pub(crate) mod rules;
+
+// Manifest evaluation lives in `phux-agent-rules` (phux-w7z2.24). These
+// re-exports keep the detector's existing paths (`rules::`, `regions::`,
+// `DetectedState`) pointed at that crate.
+pub(crate) use phux_agent_rules::DetectedState;
+pub(crate) use phux_agent_rules::regions;
+pub(crate) use phux_agent_rules::rules;
 
 use std::os::fd::RawFd;
 use std::rc::Rc;
@@ -175,33 +180,6 @@ const IDLE_CONFIRMATIONS: u8 = 3;
 /// Upper bound on the `working -> idle` hold, so a pathological screen
 /// cannot pin a `working` badge indefinitely.
 const IDLE_HOLD_CAP: Duration = Duration::from_millis(700);
-
-/// A state the detector can derive. The `unknown` of the wire vocabulary is
-/// not representable here: "we do not know" is expressed by publishing
-/// nothing at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum DetectedState {
-    /// Available, not actively working.
-    Idle,
-    /// Actively doing work.
-    Working,
-    /// Waiting on a human.
-    Blocked,
-    /// Finished its task.
-    Done,
-}
-
-impl DetectedState {
-    /// The kebab-case wire word (`docs/spec/L3.md` §3.7).
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Idle => "idle",
-            Self::Working => "working",
-            Self::Blocked => "blocked",
-            Self::Done => "done",
-        }
-    }
-}
 
 /// What the detector concluded about a pane. The tuple that is edge-filtered.
 #[derive(Debug, Clone, PartialEq, Eq)]

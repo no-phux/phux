@@ -104,9 +104,10 @@ Authoritative docs, in order of priority:
 - [`docs/vision.md`](./docs/vision.md) — the long arc.
 - [`docs/adr/`](./docs/adr/) — decisions, with rationale and tradeoffs.
 
-Crates: twenty, all under `crates/*`, all workspace members. The ones
+Crates: twenty-one, all under `crates/*`, all workspace members. The ones
 you touch most: `phux-protocol` (wire), `phux-core` (domain),
-`phux-server` (daemon), `phux-tui` (the attach driver, libghostty
+`phux-agent-rules` (agent manifest evaluator: regions, TOML rules, offline
+explain), `phux-server` (daemon), `phux-tui` (the attach driver, libghostty
 replicas, and ratatui chrome), `phux-client` (the headless client library
 behind the agent verbs and MCP; no `ratatui`), `phux-client-core`
 (pane-interior substrate and session kernel; no `ratatui` and no `tokio`,

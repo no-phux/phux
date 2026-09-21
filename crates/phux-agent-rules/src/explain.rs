@@ -15,30 +15,28 @@
 //! that comes back empty is the failure mode, and an empty region is only
 //! visible if something prints it.
 //!
-//! # Why this is a facade and not `pub` on the detector
+//! # Why this is a facade over the compiled rules
 //!
-//! `agent_detect` is `pub(crate)` and stays that way. Its types are the
-//! detector's working state — `Rc<RuleSet>`, `Predicate`, `Screen<'a>`,
-//! `DetectedState` — and publishing them would freeze the internals of a
-//! module whose whole design premise is that agent TUIs churn. What a caller
-//! outside this crate needs is narrower and stable: *give me a screen and a
-//! kind, tell me what the detector would conclude and why*. That is the
-//! surface below. The types here own their data (owned `String`s, no
-//! lifetimes, no `Rc`), derive `Serialize` so `--json` is a projection rather
-//! than a second hand-written shape, and speak the wire's state words rather
-//! than the detector's internal enum.
+//! [`crate::rules`] is what the daemon evaluates on a timer. Its working
+//! types — `Rc<RuleSet>`, `Predicate`, [`crate::regions::Screen`],
+//! [`crate::DetectedState`] — are the evaluator's internals, and agent TUIs
+//! churn. What a caller outside the daemon needs is narrower: *give me a
+//! screen and a kind, tell me what the detector would conclude and why*.
+//! That is the surface below. The types here own their data (owned
+//! `String`s, no lifetimes, no `Rc`), derive `Serialize` so `--json` is a
+//! projection rather than a second hand-written shape, and speak the wire's
+//! state words rather than [`crate::DetectedState`].
 //!
 //! # What it deliberately does not do
 //!
 //! Identify. Identification reads the PTY's foreground process group
-//! (`agent_detect::identify`, private to this crate), which a file cannot
-//! supply, so the caller names the kind. [`kinds`] enumerates what is
-//! available.
+//! (`phux-server`'s `agent_detect::identify`), which a file cannot supply,
+//! so the caller names the kind. [`kinds`] enumerates what is available.
 
 use serde::Serialize;
 
-use crate::agent_detect::regions::{Region, Screen};
-use crate::agent_detect::rules::{self, PredicateTrace, RuleTrace};
+use crate::regions::{Region, Screen};
+use crate::rules::{self, PredicateTrace, RuleTrace};
 
 /// A screen to evaluate: what the detector would have read from the pane.
 ///
@@ -295,9 +293,8 @@ mod tests {
     /// the same bytes `rules.rs` pins the detector against, not a screen
     /// invented for this test. A self-referential fixture is precisely the
     /// mistake ADR-0046 records.
-    const CLAUDE_BLOCKED: &str =
-        include_str!("agent_detect/fixtures/claude/blocked_permission.txt");
-    const CLAUDE_IDLE: &str = include_str!("agent_detect/fixtures/claude/idle_prompt.txt");
+    const CLAUDE_BLOCKED: &str = include_str!("fixtures/claude/blocked_permission.txt");
+    const CLAUDE_IDLE: &str = include_str!("fixtures/claude/idle_prompt.txt");
 
     #[test]
     fn every_loaded_kind_is_listed_and_resolvable() {
@@ -437,9 +434,9 @@ mod tests {
     /// through both entry points.
     #[test]
     fn the_explanation_agrees_with_the_production_evaluator() {
-        use crate::agent_detect::regions::Screen;
+        use crate::regions::Screen;
 
-        let set = crate::agent_detect::rules::global();
+        let set = crate::rules::global();
         let manifest = set.manifest("claude").expect("claude manifest");
         for (title, body) in [
             ("\u{2733} phux", CLAUDE_BLOCKED),

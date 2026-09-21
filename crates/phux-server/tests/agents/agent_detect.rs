@@ -240,7 +240,7 @@ fn write_fake_agent_ending_with(dir: &std::path::Path, tail: &str) -> std::path:
     //
     // The screen reproduces the shape Claude Code 2.1.207 ACTUALLY paints for
     // a permission dialog — captured in
-    // `src/agent_detect/fixtures/claude/blocked_permission.txt`. That shape is
+    // `phux-agent-rules/src/fixtures/claude/blocked_permission.txt`. That shape is
     // a horizontal rule (U+2500) with the dialog below it, NOT a box-drawn
     // frame: the dialog REPLACES the input box, so it is the only thing under
     // the final rule. An earlier version of this test painted a rounded box

@@ -1,7 +1,7 @@
 # Agent-state detection manifest for Pi Coding Agent (ADR-0046).
 #
 # Predicates were verified against Pi 0.80.7 running in a phux pane. Fixtures
-# under agent_detect/fixtures/pi are unedited `phux snapshot --json`
+# under src/fixtures/pi are unedited `phux snapshot --json`
 # viewports captured from that binary.
 
 kind = "pi"

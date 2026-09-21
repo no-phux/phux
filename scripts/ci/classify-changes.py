@@ -45,6 +45,7 @@ ROUTES = (
       "crates/phux-client-runtime/*",
       "crates/phux-dial/*", "crates/phux-plugin/*", "crates/phux-relay/*",
       "crates/phux-server/*", "crates/phux-server-testkit/*",
+      "crates/phux-agent-rules/*",
       "crates/portable-pty-adopt/*"), {"web"}),
     (("crates/*/Cargo.toml", "crates/*/Cargo.lock", "crates/*/build.rs",
       "crates/*/*.ld", "crates/*/*.lds", "crates/*/*.c", "crates/*/*.h"), {"native"}),
