@@ -12,10 +12,38 @@
 #
 # No pull request triggers this workflow, so its caches are saved from every
 # run without thrashing the PR budget docs/RELEASING.md describes.
+#
+# It also fires on main when the shim or its runtime inputs change, exactly as
+# ffi-android.yml does, so a merge is the produce run. That pairing is the
+# point: phux-mobile pins ONE revision and fetches both artifacts at it, and a
+# tagless push run uploads the workflow artifact without touching any release
+# (the attach step is guarded on RELEASE_TAG). Before this, only android
+# produced on merge while the xcframework waited for a dispatch, so the two
+# artifacts almost never existed at the same commit and the mobile pin had
+# nothing to land on.
 
 name: ffi-xcframework
 
 on:
+  push:
+    branches: [main]
+    paths:
+      # KEEP THIS LIST IDENTICAL TO ffi-android.yml's. phux-mobile pins one
+      # revision and fetches BOTH artifacts at it, so a commit that produces
+      # only one is unusable as a pin. Identical filters are what guarantee the
+      # pair; if these lists drift, the pin silently has nothing to land on.
+      - crates/phux-mobile-ffi/**
+      - crates/phux-client-ffi/**
+      - crates/phux-client-runtime/**
+      - crates/phux-client-core/**
+      - crates/phux-protocol/**
+      - crates/phux-dial/**
+      - scripts/build-ffi-xcframework.sh
+      - scripts/build-mobile-ffi-xcframework.sh
+      - scripts/build-mobile-ffi-android.sh
+      - scripts/ci/setup-android-ndk.sh
+      - .github/workflows/ffi-android.yml
+      - .github/workflows/ffi-xcframework.yml
   workflow_call:
     inputs:
       tag:
