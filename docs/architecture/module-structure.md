@@ -712,7 +712,15 @@ rather than a layer with its own internal architecture worth diagramming:
   server's `hooks.rs` dispatcher.
 - **`phux-client-ffi`** — a stable native C bridge over
   `phux-client-core`'s synchronous session kernel, for non-Rust native
-  embedders; compile-time excluded on wasm. The cell layout is core's:
+  embedders; compile-time excluded on wasm. It holds a
+  `phux_client_runtime::Client` and reaches the control plane through that
+  handle's guard, never a plane of its own. Two lanes: `phux_client_new`
+  builds the embedded one, where the embedder owns the socket and pumps
+  frames with `feed_frame`/`outgoing_*`; `phux_client_connect` builds the
+  connected one over `Runtime::connect`, where the runtime dials, walks the
+  ladder and owns the socket, and `phux_client_poll` feeds what it read.
+  The lanes are mutually exclusive at runtime and the `connect` module owns
+  that boundary (ADR-0133 decisions 2 and 6). The cell layout is core's:
   `PhuxTerminalCell`, `PhuxGridCellMetadata` and the `PHUX_CLIENT_CELL_*` flags
   in `include/phux/client.h` match `phux_client_core::grid` (pinned by core's
   layout tests), and the grid

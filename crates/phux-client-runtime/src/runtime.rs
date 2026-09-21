@@ -97,7 +97,7 @@ impl Runtime {
             .build()
             .map_err(RuntimeError::Spawn)?;
         let connect = options.connect;
-        std::thread::Builder::new()
+        let driver = std::thread::Builder::new()
             .name("phux-client-runtime".to_owned())
             .spawn(move || {
                 runtime.block_on(run_session(target, connect, shared, signals, wake));
@@ -106,6 +106,7 @@ impl Runtime {
                 runtime.shutdown_background();
             })
             .map_err(RuntimeError::Spawn)?;
+        *lock_driver(&inner) = Some(driver);
         Ok(Client { inner })
     }
 
@@ -137,6 +138,7 @@ impl Runtime {
         let (close_tx, close_rx) = watch::channel(false);
         let inner = Arc::new(Inner {
             lane,
+            driver: Mutex::new(None),
             control: Arc::clone(&shared),
             outbound: Arc::clone(&outbound),
             resync: resync_tx,
@@ -159,6 +161,9 @@ impl Runtime {
 
 struct Inner {
     lane: Lane,
+    /// The driver thread, joined on drop so no wake can outlive this
+    /// client. `None` on the embedded lane, and taken by `Drop`.
+    driver: Mutex<Option<std::thread::JoinHandle<()>>>,
     control: Shared,
     outbound: Arc<Notify>,
     resync: watch::Sender<u64>,
@@ -216,9 +221,33 @@ impl Inner {
 }
 
 impl Drop for Inner {
+    /// Closing alone would let the driver outlive this client and call a
+    /// listener whose context the consumer has already freed, so the drop
+    /// joins. The driver selects on the close signal, so the wait is one
+    /// scheduler poll, never the network.
     fn drop(&mut self) {
         self.shutdown();
+        let driver = lock_driver(self).take();
+        let Some(driver) = driver else {
+            return;
+        };
+        // The driver's wake closure upgrades a `Weak`, so for the length of
+        // one callback it holds a strong reference. If the consumer drops
+        // its last clone in that window, this drop runs on the driver's own
+        // thread, and joining there would hang. Leaving it unjoined is safe
+        // precisely then: the listener died with this `Inner`, so the thread
+        // it is running on can no longer reach the consumer.
+        if driver.thread().id() == std::thread::current().id() {
+            return;
+        }
+        // A panicked driver has already published its failure through the
+        // control plane; there is nothing to add here.
+        let _ = driver.join();
     }
+}
+
+fn lock_driver(inner: &Inner) -> std::sync::MutexGuard<'_, Option<std::thread::JoinHandle<()>>> {
+    inner.driver.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// The synchronous, thread-safe handle on one session. Cloning shares the

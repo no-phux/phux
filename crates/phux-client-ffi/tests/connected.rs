@@ -190,3 +190,60 @@ async fn connected_lane() {
     drop(shutdown);
     server.await.unwrap().unwrap();
 }
+
+/// Counts wakes for the free-while-dialing test.
+static TEARDOWN_WAKES: AtomicUsize = AtomicUsize::new(0);
+
+unsafe extern "C" fn on_teardown_wake(_context: *mut c_void) {
+    TEARDOWN_WAKES.fetch_add(1, Ordering::Release);
+}
+
+/// Freeing must stop the driver, not merely ask it to stop.
+///
+/// The wake callback runs on the driver's thread and carries a context the
+/// embedder owns. If `phux_client_free` returned while that thread was still
+/// walking the reconnect ladder, the next wake would reach a context the
+/// embedder had already freed.
+#[test]
+fn freeing_joins_the_driver_so_no_wake_outlives_the_client() {
+    let tmp = TempDir::new().unwrap();
+    // Nothing is listening, so the driver is inside its ladder for the whole
+    // of this test: the interesting window for a teardown race.
+    let socket = tmp.path().join("absent.sock");
+    let socket_text = socket.to_str().unwrap().to_owned();
+
+    let options = PhuxConnectOptions {
+        size: std::mem::size_of::<PhuxConnectOptions>(),
+        version: ABI_VERSION,
+        base: base_options(),
+        target: PhuxBytes::default(),
+        socket_path: span(&socket_text),
+        config_path: PhuxBytes::default(),
+        client_name: span("phux-client-ffi-teardown"),
+        wake: Some(on_teardown_wake),
+        wake_context: std::ptr::null_mut(),
+    };
+
+    let mut client: *mut PhuxClient = std::ptr::null_mut();
+    // SAFETY: readable options whose spans outlive the call, writable out.
+    assert_eq!(
+        unsafe { phux_client_connect(&raw const options, &raw mut client) },
+        PhuxClientResult::Ok,
+        "a host that is down is the ladder's business, not the call's"
+    );
+
+    // Let the driver get well into a dial and a backoff.
+    std::thread::sleep(Duration::from_millis(50));
+
+    // SAFETY: a live client, uniquely owned, on its owning thread.
+    unsafe { phux_client_free(client) };
+    let after_free = TEARDOWN_WAKES.load(Ordering::Acquire);
+
+    // Any wake from here on would be the driver outliving the client.
+    std::thread::sleep(Duration::from_millis(250));
+    assert_eq!(
+        TEARDOWN_WAKES.load(Ordering::Acquire),
+        after_free,
+        "free joined the driver; no wake reached a freed context"
+    );
+}
