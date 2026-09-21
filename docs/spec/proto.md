@@ -419,6 +419,9 @@ ServerFeature = bitset (u32) {
                                      //   phux.approval.decide/v1/<id>, approval_requested /
                                      //   approval_decided (workload-auth.md §6.1; L3.md §3.10;
                                      //   ADR-0128)
+    // Word 0 is closed (ADR-0137). 0x80000000 is reserved-unallocated:
+    // do not assign it. 0x00000001, 0x00000002, 0x00000004, and
+    // 0x00000008 were never assigned and stay unassigned.
 }
 
 EngineFeatureSet = bitset (u32) {

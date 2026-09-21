@@ -181,6 +181,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0134](./0134-connected-lanes-refine-the-binding-boundary.md) | Connected lanes refine the binding boundary | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md); superseded in part by [0135](./0135-one-binding-crate.md)) |
 | [0135](./0135-one-binding-crate.md) | One binding crate: one projection, two encoders | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md), [0134](./0134-connected-lanes-refine-the-binding-boundary.md)) |
 | [0136](./0136-hub-mirrors-satellite-agent-metadata.md) | A hub mirrors two satellite agent metadata keys | Accepted (amends [0108](./0108-a-hub-relays-host-queries-per-request.md)) |
+| [0137](./0137-server-feature-word-extends.md) | The ServerFeature u32 is closed; the next bit is a trailing word | Accepted (forward-compat; builds on [0061](./0061-capabilities-add-versions-break.md)) |
 
 ## When to write an ADR
 
