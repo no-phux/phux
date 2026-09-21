@@ -39,11 +39,34 @@ use phux_protocol::wire::frame::CloseReason;
 use super::ServerState;
 
 impl ServerState {
-    /// The resources bound to `parent`. Empty for a leaf, and by the
-    /// one-level rule (ADR-0104 §5) a child's own list is always empty.
+    /// The resources bound to `parent`. Empty for a leaf.
+    ///
+    /// Spawn still refuses a second level (ADR-0104 §5); the cascade walks
+    /// whatever graph the registry holds so a grandchild cannot outlive its
+    /// ancestor (ADR-0104 §2).
     #[must_use]
     pub fn resource_children(&self, parent: ResourceId) -> Vec<ResourceId> {
         self.sessions.registry.children(parent)
+    }
+
+    /// `parent`'s children, then theirs, breadth-first.
+    ///
+    /// The close/kill cascade uses this so a frozen `0..len()` range cannot
+    /// stop at one generation.
+    #[must_use]
+    pub fn resource_descendants(&self, parent: ResourceId) -> Vec<ResourceId> {
+        let mut descendants = self.sessions.registry.children(parent);
+        let mut index = 0;
+        while index < descendants.len() {
+            let current = descendants[index];
+            for child in self.sessions.registry.children(current) {
+                if !descendants.contains(&child) {
+                    descendants.push(child);
+                }
+            }
+            index += 1;
+        }
+        descendants
     }
 
     /// The resource `child` was parented to at spawn, if it named one.
@@ -146,13 +169,13 @@ impl ServerState {
             .unwrap_or_default()
     }
 
-    /// Close `targets` and every resource bound to one of them, in a single
-    /// borrow of the state (ADR-0104 §2).
+    /// Close `targets` and every descendant bound to one of them, in a
+    /// single borrow of the state (ADR-0104 §2).
     ///
-    /// Targets close with `reason`; cascaded children close with
-    /// `ParentClosed`, unless the caller also named the child as a target,
-    /// in which case its own reason stands and it is cancelled exactly
-    /// once. Returns how many distinct resources were closed.
+    /// Targets close with `reason`; cascaded descendants close with
+    /// `ParentClosed`, unless the caller also named the descendant as a
+    /// target, in which case its own reason stands and it is cancelled
+    /// exactly once. Returns how many distinct resources were closed.
     ///
     /// Only cancellation happens here. Each closed resource's own exit
     /// watcher performs the reap and the `RESOURCE_CLOSED` fanout with the
@@ -179,9 +202,9 @@ impl ServerState {
                 closing.push((*target, reason));
             }
         }
-        for index in 0..closing.len() {
-            let (parent, _) = closing[index];
-            for child in self.sessions.registry.children(parent) {
+        let roots: Vec<ResourceId> = closing.iter().map(|(id, _)| *id).collect();
+        for parent in roots {
+            for child in self.resource_descendants(parent) {
                 if !closing.iter().any(|(id, _)| *id == child) {
                     closing.push((child, CloseReason::ParentClosed));
                 }
@@ -198,5 +221,80 @@ impl ServerState {
             self.detach_resource_actor(resource);
         }
         closed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use phux_core::ids::ResourceId;
+    use phux_core::resource::AgentFacet;
+    use phux_protocol::wire::frame::CloseReason;
+    use tokio_util::sync::CancellationToken;
+
+    use crate::state::ServerState;
+
+    fn agent(provider: &str) -> AgentFacet {
+        AgentFacet {
+            provider: provider.to_owned(),
+            native_id: None,
+            state: None,
+        }
+    }
+
+    /// Terminal → child → grandchild. Spawn still refuses a second level,
+    /// so the grandchild is re-parented after insert — the graph the
+    /// cascade must walk when a deeper tree exists.
+    fn three_level_tree(state: &mut ServerState) -> (ResourceId, ResourceId, ResourceId) {
+        let (_session, _window, grandparent) = state.seed_session("main");
+        let child = state
+            .registry_mut()
+            .new_agent_session(grandparent, agent("child"))
+            .expect("child");
+        let grandchild = state
+            .registry_mut()
+            .new_agent_session(grandparent, agent("grandchild"))
+            .expect("grandchild seed");
+        state
+            .registry_mut()
+            .resource_mut(grandchild)
+            .expect("live")
+            .parent = Some(child);
+        (grandparent, child, grandchild)
+    }
+
+    #[test]
+    fn kill_cascades_through_grandchildren() {
+        let mut state = ServerState::new();
+        let (grandparent, child, grandchild) = three_level_tree(&mut state);
+        let grandchild_token = CancellationToken::new();
+        state
+            .resources
+            .register_token_for_test(grandchild, grandchild_token.clone());
+
+        let closed = state.close_resources(&[grandparent], CloseReason::Killed);
+
+        assert_eq!(closed, 3, "grandparent, child, and grandchild");
+        assert_eq!(
+            state.pending_close_reason(grandparent),
+            Some(CloseReason::Killed)
+        );
+        assert_eq!(
+            state.pending_close_reason(child),
+            Some(CloseReason::ParentClosed)
+        );
+        assert_eq!(
+            state.pending_close_reason(grandchild),
+            Some(CloseReason::ParentClosed),
+            "a grandchild must close with its ancestor (ADR-0104 §2); a \
+             frozen 0..len() range stops at the child and leaves this None"
+        );
+        assert!(
+            grandchild_token.is_cancelled(),
+            "the grandchild's actor must be cancelled, not left running"
+        );
+        assert_eq!(
+            state.resource_descendants(grandparent),
+            vec![child, grandchild]
+        );
     }
 }
