@@ -5,10 +5,14 @@
 #![allow(clippy::unwrap_used, reason = "test assertions")]
 #![allow(clippy::panic, reason = "test assertions")]
 
+#[cfg(feature = "engine")]
+use bytes::BytesMut;
 use phux_client_runtime::control::{
     ControlError, ControlOptions, ControlPlane, Event, FileUploadOutcome, SpawnRequest, Status,
     StreamRecovery,
 };
+#[cfg(feature = "engine")]
+use phux_client_runtime::engine::EngineEvent;
 use phux_protocol::PROTOCOL_VERSION;
 use phux_protocol::caps::{
     BootstrapLimits, BootstrapProfile, BootstrapStreamProfile, Layer, LayerSet, ServerCapabilities,
@@ -96,6 +100,13 @@ fn two_session_snapshot(include_own_spawn: bool) -> SessionSnapshot {
             WindowInfo::new(beta_window, beta, "other"),
         ])
         .with_resources(resources)
+}
+
+#[cfg(feature = "engine")]
+fn encode(frame: &FrameKind) -> Vec<u8> {
+    let mut bytes = BytesMut::new();
+    frame.encode(&mut bytes);
+    bytes.to_vec()
 }
 
 fn decode(frame: &[u8]) -> FrameKind {
@@ -317,6 +328,249 @@ fn a_fed_attach_publishes_the_terminal_and_input_goes_out_as_frames() {
             ..
         }
     ));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_transport_batch_publishes_once_and_preserves_ordered_changes() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"ready");
+    let _ = plane.take_events();
+    let before = plane
+        .publication()
+        .generation(&terminal())
+        .expect("bootstrap published");
+    let event_count = 32_u64;
+    let frames = (1..=event_count)
+        .map(|seq| {
+            encode(&FrameKind::ResourceOutput {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(1).expect("stream"),
+                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                seq,
+                bytes: b"x".to_vec().into(),
+            })
+        })
+        .collect::<Vec<_>>();
+
+    plane
+        .feed_bytes_batch(&frames)
+        .expect("ordered transport batch");
+
+    assert_eq!(
+        plane.publication().generation(&terminal()),
+        Some(before + 1)
+    );
+    assert_eq!(
+        observed_text(&plane).matches('x').count(),
+        usize::try_from(event_count).expect("fixture count fits usize")
+    );
+    assert_eq!(
+        plane
+            .take_events()
+            .into_iter()
+            .filter(|event| matches!(event, Event::TerminalChanged { .. }))
+            .count(),
+        1,
+        "the binding wake queue coalesces duplicate terminal changes"
+    );
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_control_frame_splits_engine_batches_without_reordering() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"ready");
+    let _ = plane.take_outbound();
+    let before = plane
+        .publication()
+        .generation(&terminal())
+        .expect("bootstrap published");
+    let output = |seq, bytes: &'static [u8]| {
+        encode(&FrameKind::ResourceOutput {
+            terminal_id: terminal(),
+            stream_id: StreamId::new(1).expect("stream"),
+            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+            seq,
+            bytes: bytes.to_vec().into(),
+        })
+    };
+    let frames = vec![
+        output(1, b"one"),
+        encode(&FrameKind::Ping { nonce: 17 }),
+        output(2, b"two"),
+    ];
+
+    plane.feed_bytes_batch(&frames).expect("ordered batch");
+
+    let frame = plane.publication().acquire(&terminal()).expect("published");
+    assert_eq!(frame.generation, before + 2);
+    assert_eq!(frame.last_seq, 2);
+    assert!(matches!(
+        decode(&plane.take_outbound()[0]),
+        FrameKind::Pong { nonce: 17 }
+    ));
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_valid_batch_prefix_is_applied_before_a_later_decode_error() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"ready");
+    let before = plane
+        .publication()
+        .generation(&terminal())
+        .expect("bootstrap published");
+    let frames = vec![
+        encode(&FrameKind::ResourceOutput {
+            terminal_id: terminal(),
+            stream_id: StreamId::new(1).expect("stream"),
+            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+            seq: 1,
+            bytes: b"valid".to_vec().into(),
+        }),
+        vec![0, 0, 0, 0],
+    ];
+
+    let error = plane
+        .feed_bytes_batch(&frames)
+        .expect_err("malformed second frame");
+
+    assert!(matches!(error, ControlError::Protocol(_)));
+    let frame = plane.publication().acquire(&terminal()).expect("published");
+    assert_eq!(frame.generation, before + 1);
+    assert_eq!(frame.last_seq, 1);
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_control_ending_outranks_an_earlier_stale_engine_frame() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"ready");
+    let frames = vec![
+        encode(&FrameKind::ResourceOutput {
+            terminal_id: terminal(),
+            stream_id: StreamId::new(2).expect("stale stream"),
+            bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+            seq: 1,
+            bytes: b"stale".to_vec().into(),
+        }),
+        encode(&FrameKind::Detached {
+            reason: Some(DetachReason::ProtocolError),
+            message: "fatal ending".to_owned(),
+        }),
+    ];
+
+    let error = plane
+        .feed_bytes_batch(&frames)
+        .expect_err("fatal ending must not be hidden");
+
+    assert!(
+        matches!(&error, ControlError::Refused(message) if message.contains("fatal ending")),
+        "expected the ending to outrank stale generation, got {error:?}"
+    );
+}
+
+#[cfg(feature = "engine")]
+#[test]
+fn a_batch_cannot_hide_a_fatal_error_behind_an_earlier_stale_generation() {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"ready");
+    let error = plane
+        .apply_engine_events(vec![
+            EngineEvent::Output {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(2).expect("stale stream"),
+                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                seq: 1,
+                bytes: b"stale".to_vec(),
+            },
+            EngineEvent::Output {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(1).expect("stream"),
+                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                seq: 2,
+                bytes: b"gap".to_vec(),
+            },
+        ])
+        .expect_err("the current generation has a fatal sequence gap");
+
+    assert!(
+        matches!(&error, ControlError::Protocol(message) if message.contains("sequence gap")),
+        "expected the fatal sequence gap to outrank stale generation, got {error:?}"
+    );
+}
+
+#[cfg(feature = "engine")]
+fn timed_output_burst(batched: bool, event_count: u64) -> (std::time::Duration, u64) {
+    let (mut plane, attach_id) = negotiated();
+    attach(&mut plane, attach_id, b"ready");
+    let frames = (1..=event_count)
+        .map(|seq| {
+            encode(&FrameKind::ResourceOutput {
+                terminal_id: terminal(),
+                stream_id: StreamId::new(1).expect("stream"),
+                bootstrap_id: BootstrapId::new(1).expect("bootstrap"),
+                seq,
+                bytes: b"x".to_vec().into(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let started = std::time::Instant::now();
+    if batched {
+        plane.feed_bytes_batch(&frames).expect("transport batch");
+    } else {
+        for frame in &frames {
+            plane.feed_bytes(frame).expect("single transport frame");
+        }
+    }
+    let elapsed = started.elapsed();
+    let generation = plane
+        .publication()
+        .generation(&terminal())
+        .expect("output published");
+    assert_eq!(
+        plane
+            .publication()
+            .acquire(&terminal())
+            .expect("output frame")
+            .last_seq,
+        event_count,
+        "every frame in the burst was applied in order"
+    );
+    (elapsed, generation)
+}
+
+#[cfg(feature = "engine")]
+#[test]
+#[ignore = "microbenchmark; run explicitly with --ignored --nocapture"]
+#[allow(
+    clippy::print_stderr,
+    reason = "the explicit benchmark reports its measurements"
+)]
+fn benchmark_transport_batch_projection() {
+    const EVENTS: u64 = 256;
+    const SAMPLES: usize = 5;
+    let mut sequential = Vec::with_capacity(SAMPLES);
+    let mut batched = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        let (elapsed, generation) = timed_output_burst(false, EVENTS);
+        assert_eq!(generation, 1 + EVENTS);
+        sequential.push(elapsed);
+
+        let (elapsed, generation) = timed_output_burst(true, EVENTS);
+        assert_eq!(generation, 2);
+        batched.push(elapsed);
+    }
+    sequential.sort_unstable();
+    batched.sort_unstable();
+    let sequential_median = sequential[SAMPLES / 2];
+    let batched_median = batched[SAMPLES / 2];
+    eprintln!(
+        "transport output burst: {EVENTS} events; sequential median={sequential_median:?} ({:?}/event, {EVENTS} projections); batched median={batched_median:?} ({:?}/event, 1 projection)",
+        sequential_median / u32::try_from(EVENTS).expect("fixture count fits u32"),
+        batched_median / u32::try_from(EVENTS).expect("fixture count fits u32"),
+    );
 }
 
 #[test]

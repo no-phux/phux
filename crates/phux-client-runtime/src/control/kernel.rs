@@ -15,7 +15,45 @@ impl ControlPlane {
     /// which performs protocol validation first. This lower-level entry point
     /// exists for native embedders that already hold typed runtime events.
     pub fn apply_engine_event(&mut self, event: EngineEvent) -> Result<(), ControlError> {
-        match &event {
+        self.apply_engine_events(vec![event])
+    }
+
+    /// Apply a pump's queued typed events in order and project each damaged
+    /// terminal once after the whole batch. Every outcome is still processed
+    /// in event order, including acknowledgements and resync evidence.
+    pub fn apply_engine_events(&mut self, events: Vec<EngineEvent>) -> Result<(), ControlError> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        let Some(engine) = self.engine.clone() else {
+            return Err(ControlError::Protocol(
+                "stateful frame arrived before the session kernel was initialized".to_owned(),
+            ));
+        };
+        for event in &events {
+            self.note_engine_event(event);
+        }
+        let outcomes = engine
+            .apply_batch(events)
+            .map_err(|error| ControlError::Protocol(error.to_string()))?;
+        self.process_engine_outcomes(outcomes)
+    }
+
+    fn process_engine_outcomes(
+        &mut self,
+        outcomes: Vec<EngineOutcome>,
+    ) -> Result<(), ControlError> {
+        let mut strongest_error = None;
+        for outcome in outcomes {
+            if let Err(error) = self.process_outcome(outcome, true) {
+                strongest_error = Some(ControlError::prefer(strongest_error, error));
+            }
+        }
+        strongest_error.map_or(Ok(()), Err)
+    }
+
+    fn note_engine_event(&mut self, event: &EngineEvent) {
+        match event {
             EngineEvent::AttachStarted {
                 attach_id,
                 terminals,
@@ -31,28 +69,10 @@ impl ControlPlane {
             }
             _ => {}
         }
-        self.apply_engine(event)
     }
 
     pub(super) fn apply_engine(&mut self, event: EngineEvent) -> Result<(), ControlError> {
-        let Some(engine) = &self.engine else {
-            return Err(ControlError::Protocol(
-                "stateful frame arrived before the session kernel was initialized".to_owned(),
-            ));
-        };
-        // A frame for a terminal the kernel already closed is stale
-        // evidence, not an error; only a close itself is idempotent there.
-        if !matches!(event, EngineEvent::Closed { .. })
-            && event
-                .terminal_id()
-                .is_some_and(|terminal_id| engine.is_closed(terminal_id))
-        {
-            return Ok(());
-        }
-        let outcome = engine
-            .apply(event)
-            .map_err(|error| ControlError::Protocol(error.to_string()))?;
-        self.process_outcome(outcome, true)
+        self.apply_engine_events(vec![event])
     }
 
     /// Execute every declarative effect before considering the update
