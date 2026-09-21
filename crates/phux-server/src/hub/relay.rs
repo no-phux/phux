@@ -1368,7 +1368,7 @@ impl RelaySession {
             }
             RelayRequest::Forward { frame } => Some(self.encode(&frame)),
             RelayRequest::Spawn { spawn, reply } => {
-                if let Some(refusal) = self.spawn_idempotency_rejection(&spawn) {
+                if let Some(refusal) = self.spawn_capability_rejection(&spawn) {
                     let _ = reply.send(SpawnResult::Err(refusal));
                     return None;
                 }
@@ -1408,26 +1408,33 @@ impl RelaySession {
         self.satellite_features
     }
 
-    /// ADR-0126: a satellite that never advertised `SPAWN_IDEMPOTENCY` skips
-    /// the key, so a retried keyed spawn would create a second resource
-    /// there. The hub refuses the keyed spawn instead. `None` for an unkeyed
-    /// spawn, or a satellite that evaluates the key.
-    fn spawn_idempotency_rejection(&self, spawn: &SatelliteSpawn) -> Option<SpawnError> {
-        let keyed = spawn
-            .resource
-            .as_ref()
-            .is_some_and(|resource| resource.idempotency_key.is_some());
-        if !keyed
-            || self
+    /// Fields a satellite would skip, so a retry or a retained exit would
+    /// not mean what the consumer asked. The hub refuses instead of
+    /// forwarding. `None` when the spawn carries neither, or the satellite
+    /// advertised every bit it needs.
+    fn spawn_capability_rejection(&self, spawn: &SatelliteSpawn) -> Option<SpawnError> {
+        let resource = spawn.resource.as_ref()?;
+        if resource.idempotency_key.is_some()
+            && !self
                 .satellite_features
                 .contains(ServerFeature::SpawnIdempotency)
         {
-            return None;
+            return Some(SpawnError::SpawnFailed(format!(
+                "satellite {} lacks SPAWN_IDEMPOTENCY; nothing was spawned",
+                self.host
+            )));
         }
-        Some(SpawnError::SpawnFailed(format!(
-            "satellite {} lacks SPAWN_IDEMPOTENCY; nothing was spawned",
-            self.host
-        )))
+        if resource.retain_secs.is_some()
+            && !self
+                .satellite_features
+                .contains(ServerFeature::RetainOnExit)
+        {
+            return Some(SpawnError::SpawnFailed(format!(
+                "satellite {} lacks RETAIN_ON_EXIT; nothing was spawned",
+                self.host
+            )));
+        }
+        None
     }
 
     /// The typed refusal for a command this satellite cannot evaluate, sent
@@ -4888,6 +4895,63 @@ mod tests {
                 }
             );
         }
+    }
+
+    /// ADR-0124: `retain_secs` crosses the link when the satellite advertised
+    /// `RETAIN_ON_EXIT`. A satellite without the bit would skip the field and
+    /// close at exit, so the hub refuses instead. A spawn that omits the
+    /// field still relays.
+    #[test]
+    fn hub_forwards_retain_secs_only_to_a_satellite_that_honors_it() {
+        let mut capable = RelaySession::new_negotiated(
+            host(),
+            BootstrapLimits::default(),
+            BootstrapProfile::SynthesizedVtRaw,
+            ServerFeatureSet::with(&[ServerFeature::RetainOnExit]),
+        );
+        let (reply, _rx) = oneshot::channel();
+        let mut request = spawn_request(reply);
+        if let RelayRequest::Spawn { spawn, .. } = &mut request {
+            spawn.resource = Some(Box::new(
+                phux_protocol::wire::frame::SpawnResource::default().with_retain_secs(Some(600)),
+            ));
+        }
+        let wire = capable
+            .handle_request_checked(request)
+            .expect("relayed to a satellite that honors retain_secs");
+        let FrameKind::SpawnResource { resource, .. } = decode(&wire) else {
+            panic!("expected SPAWN_RESOURCE on the wire");
+        };
+        assert_eq!(
+            resource.and_then(|r| r.retain_secs),
+            Some(600),
+            "retain_secs crosses the link"
+        );
+
+        let mut older = RelaySession::new(host(), BootstrapLimits::default());
+        let (reply, mut rx) = oneshot::channel();
+        let mut request = spawn_request(reply);
+        if let RelayRequest::Spawn { spawn, .. } = &mut request {
+            spawn.resource = Some(Box::new(
+                phux_protocol::wire::frame::SpawnResource::default().with_retain_secs(Some(600)),
+            ));
+        }
+        assert!(
+            older.handle_request_checked(request).is_none(),
+            "the satellite never sees the retained spawn"
+        );
+        assert!(older.pending_spawns.is_empty());
+        assert!(matches!(
+            rx.try_recv().expect("typed refusal"),
+            SpawnResult::Err(SpawnError::SpawnFailed(message))
+                if message.contains("lacks RETAIN_ON_EXIT")
+        ));
+
+        let (reply, _rx) = oneshot::channel();
+        assert!(
+            older.handle_request_checked(spawn_request(reply)).is_some(),
+            "a spawn that omits retain_secs still relays"
+        );
     }
 
     /// ADR-0126: a satellite without `SPAWN_IDEMPOTENCY` would skip the key

@@ -2031,7 +2031,11 @@ pub(crate) async fn handle_spawn_terminal(
                 term,
                 owner_terminal,
                 initial_size,
-                resource: forwarded_resource(bind_instance, attribution.operation_id),
+                resource: forwarded_resource(
+                    bind_instance,
+                    attribution.operation_id,
+                    resource.as_ref().and_then(|r| r.retain_secs),
+                ),
             },
         );
         dispatch_satellite_spawn(state, client_id, out_tx, request_id, &host, spawn).await;
@@ -2127,18 +2131,23 @@ pub(crate) async fn handle_spawn_terminal(
 }
 
 /// The resource record a satellite Terminal spawn forwards: the bind request
-/// (ADR-0109) and the idempotency key (ADR-0126), when the consumer sent
-/// them. The satellite answers with its own instance token and evaluates the
-/// key itself; the hub relays both answers unchanged.
+/// (ADR-0109), the idempotency key (ADR-0126), and `retain_secs` (ADR-0124),
+/// when the consumer sent them. The satellite answers with its own instance
+/// token, evaluates the key, and applies retention itself; the hub relays
+/// those answers unchanged. A satellite that did not advertise the matching
+/// bit is refused in the relay, not here, so the field is never silently
+/// dropped.
 fn forwarded_resource(
     bind_instance: bool,
     idempotency_key: Option<phux_protocol::ids::IdempotencyKey>,
+    retain_secs: Option<u32>,
 ) -> Option<Box<phux_protocol::wire::frame::SpawnResource>> {
-    (bind_instance || idempotency_key.is_some()).then(|| {
+    (bind_instance || idempotency_key.is_some() || retain_secs.is_some()).then(|| {
         Box::new(
             phux_protocol::wire::frame::SpawnResource::default()
                 .with_bind_instance(bind_instance)
-                .with_idempotency_key(idempotency_key),
+                .with_idempotency_key(idempotency_key)
+                .with_retain_secs(retain_secs),
         )
     })
 }
@@ -4024,6 +4033,24 @@ pub(crate) fn apply_attach_viewport(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0124 / ADR-0126: the hub's forwarded spawn carries `retain_secs`
+    /// alongside bind and the idempotency key; omitting every field writes
+    /// no resource record.
+    #[test]
+    fn forwarded_resource_carries_retain_secs() {
+        assert!(forwarded_resource(false, None, None).is_none());
+        let retain_only = forwarded_resource(false, None, Some(600)).expect("retain_secs alone");
+        assert_eq!(retain_only.retain_secs, Some(600));
+        assert!(!retain_only.bind_instance);
+        assert!(retain_only.idempotency_key.is_none());
+
+        let key = phux_protocol::ids::IdempotencyKey::new([7; 16]);
+        let combined = forwarded_resource(true, Some(key), Some(0)).expect("all three fields");
+        assert!(combined.bind_instance);
+        assert_eq!(combined.idempotency_key, Some(key));
+        assert_eq!(combined.retain_secs, Some(0));
+    }
 
     fn tiny_staged_pane(pane: u32) -> Vec<FrameKind> {
         let terminal_id = phux_protocol::ids::ResourceId::local(pane + 1);
