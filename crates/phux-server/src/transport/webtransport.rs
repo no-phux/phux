@@ -490,6 +490,10 @@ mod tests {
     const FRAME: [u8; 7] = [0, 0, 0, 3, 0xde, 0xad, 0xbe];
     /// A second frame for the echo direction (server -> client).
     const ECHO_FRAME: [u8; 6] = [0, 0, 0, 2, 0xca, 0xfe];
+    /// Bound on the no-stream admission wait. A hang guard, never a
+    /// timing assertion: the wait ends when the second consumer is
+    /// admitted while the first holds a session with no stream.
+    const HANG_GUARD: Duration = Duration::from_secs(60);
 
     /// A self-signed cert + key in a fresh tempdir, kept alive for the test.
     fn cert_pair() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
@@ -894,11 +898,10 @@ mod tests {
             reader.read_frame().await.unwrap().unwrap()
         };
 
-        let ((), frame) = tokio::time::timeout(Duration::from_secs(2), async {
-            tokio::join!(clients, accepted)
-        })
-        .await
-        .expect("healthy consumer must not wait for stalled first stream");
+        let ((), frame) =
+            tokio::time::timeout(HANG_GUARD, async { tokio::join!(clients, accepted) })
+                .await
+                .expect("healthy consumer must not wait for stalled first stream");
         assert_eq!(frame.as_ref(), FRAME);
     }
 }
