@@ -566,9 +566,8 @@ impl TerminalActor {
     pub(super) fn land_native_cuts(&mut self) {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         {
-            let _ = self.invalidate_all_native_cursors(
-                phux_protocol::wire::frame::TombstoneReason::Other,
-            );
+            let _ = self
+                .invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Other);
         }
     }
 

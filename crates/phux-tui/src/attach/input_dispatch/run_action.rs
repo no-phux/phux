@@ -28,8 +28,8 @@ use crate::render::overlay::{
 use phux_client::layout_ops::DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID;
 
 use super::args::{
-    PaneMouseArg, amount_arg, direction_arg, focus_terminal, index_arg, mouse_arg, name_arg,
-    kill_resource_frame, ordered_workspace_panes, resource_id_arg, session_id_arg, signal_arg,
+    PaneMouseArg, amount_arg, direction_arg, focus_terminal, index_arg, kill_resource_frame,
+    mouse_arg, name_arg, ordered_workspace_panes, resource_id_arg, session_id_arg, signal_arg,
     split_dir_arg, str_arg, usize_arg,
 };
 use super::ctx::DispatchCtx;

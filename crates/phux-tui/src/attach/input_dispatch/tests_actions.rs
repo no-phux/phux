@@ -376,7 +376,11 @@ fn kill_pane_marks_the_focused_pane_as_expected_close() {
     assert_eq!(effects.kill_frames.len(), 1);
     assert_eq!(effects.expected_closes, vec![tid(7)]);
     assert_eq!(
-        effects.kill_requests.iter().map(|(_, leaf)| leaf.clone()).collect::<Vec<_>>(),
+        effects
+            .kill_requests
+            .iter()
+            .map(|(_, leaf)| leaf.clone())
+            .collect::<Vec<_>>(),
         vec![tid(7)],
     );
 }

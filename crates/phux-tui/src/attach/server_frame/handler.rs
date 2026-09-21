@@ -1688,8 +1688,7 @@ fn resolve_resource_op<W: crate::attach::RenderSink>(
     code: Option<ErrorCode>,
 ) -> Option<FrameOutcome> {
     let terminal_id = ctx.pending_resource_ops.remove(&request_id)?;
-    (code == Some(ErrorCode::TerminalNotFound))
-        .then(|| fold_missing_resource(ctx, &terminal_id))
+    (code == Some(ErrorCode::TerminalNotFound)).then(|| fold_missing_resource(ctx, &terminal_id))
 }
 
 /// ADR-0105: the last pane of a keep-empty session closed. The session is

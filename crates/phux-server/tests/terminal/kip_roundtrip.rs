@@ -554,7 +554,10 @@ impl TuiProbe {
             close.exit_status,
             self.screen.snapshot_text(),
         );
-        eprintln!("kip_roundtrip({what}): exit status = {:?}", close.exit_status);
+        eprintln!(
+            "kip_roundtrip({what}): exit status = {:?}",
+            close.exit_status
+        );
     }
 
     /// Forensics: did the app push kitty progressive enhancement
