@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-20
+last-reviewed: 2026-09-21
 ---
 
 # The client runtime
@@ -128,6 +128,30 @@ holds it. A consumer:
 The frame also carries the geometry, cursor, scrollbar, the colors the
 cells were resolved against, and the replica identity (stream, bootstrap,
 last sequence), so a renderer needs no engine type.
+
+## What a consumer touches when the binding crate changes
+
+ADR-0135 records that a consumer of the mobile artifact re-pins with a
+`PHUX_REV` bump. The re-pin that followed it (phux-mobile #285) shows the
+real scope, which is wider whenever the binding crate's name, features, or
+example set change:
+
+- **The pin.** `PHUX_REV` names the phux commit whose artifact the consumer
+  installs; the artifact's provenance is verified against it.
+- **Artifact and module names.** `PhuxMobileFFI-*` assets, the `PhuxFFI`
+  Swift module, the module map, and the provenance `format` keys are the
+  consumer's contract; the library file names inside
+  (`libphux_client_ffi.*`, `phux_client_ffi.kt`) follow the crate.
+- **License inventory.** The consumer's notices are generated from the
+  crate graph of the lane it ships: `phux-client-ffi` with
+  `--no-default-features --features uniffi`, not the default C lane.
+- **Fixtures and rigs.** Anything seeded from a crate example
+  (`rig_seed`) or gated on a Cargo feature name in a script or a privacy
+  gate names the binding crate and its features.
+- **Prose and test comments** that point at the bridge's source files.
+
+A change to any of those in this repository is a consumer-visible change
+and belongs in the PR body, next to the artifact naming.
 
 ## Extension points
 
