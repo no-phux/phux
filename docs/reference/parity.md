@@ -14,7 +14,7 @@ against `phux gen-reference-docs` output and fails on any drift, so
 hand edits do not survive. Regenerate with `just docs-gen`.
 -->
 
-Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and how it runs. `in-process` tools spawn no subprocess and return the document the CLI verb prints, built by the same `phux-client` function. `in-process (mirror)` tools also spawn no subprocess, but their orchestration is a copy in `phux-mcp` over the same lower-level `phux-client` wire helpers the CLI uses; unifying them is tracked separately. The CLI residue runs the canonical `phux` binary with argv, never a shell, for the reason listed. The parity gate holds this table to the live tool catalog, the CLI grammar, and the kind table, so it cannot drift from the adapter.
+Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and how it runs. `in-process` tools spawn no subprocess and return the document the CLI verb prints, built by the same `phux-client` function. The CLI residue runs the canonical `phux` binary with argv, never a shell, for the reason listed. The parity gate holds this table to the live tool catalog, the CLI grammar, and the kind table, so it cannot drift from the adapter.
 
 | Tool | CLI verb | Runs | Read-only | Destructive |
 |---|---|---|---|---|
@@ -25,15 +25,15 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_run` | `phux run` | CLI | no | yes |
 | `phux_wait` | `phux wait` | in-process | yes | no |
 | `phux_new` | `phux new` | CLI | no | no |
-| `phux_kill` | `phux kill` | in-process (mirror) | no | yes |
+| `phux_kill` | `phux kill` | in-process | no | yes |
 | `phux_detach` | `phux detach` | in-process | no | yes |
 | `phux_watch` | `phux watch` | in-process | yes | no |
 | `phux_ask` | `phux ask` | in-process | no | no |
 | `phux_launch` | `phux launch` | CLI | no | yes |
 | `phux_spawn` | `phux spawn` | in-process | no | yes |
-| `phux_signal` | `phux signal` | in-process (mirror) | no | yes |
-| `phux_tag` | `phux tag` | in-process (mirror) | no | no |
-| `phux_rename` | `phux rename` | in-process (mirror) | no | no |
+| `phux_signal` | `phux signal` | in-process | no | yes |
+| `phux_tag` | `phux tag` | in-process | no | no |
+| `phux_rename` | `phux rename` | in-process | no | no |
 | `phux_insert_pane` | `phux insert-pane` | in-process | no | no |
 | `phux_move_pane` | `phux move-pane` | in-process | no | no |
 | `phux_swap_pane` | `phux swap-pane` | in-process | no | no |
@@ -62,15 +62,6 @@ Every tool the MCP adapter (`phux mcp`) serves, the `phux` verb it mirrors, and 
 | `phux_resource_methods` | `phux resource methods` | in-process | yes | no |
 | `phux_approvals` | `phux approvals` | in-process | yes | no |
 | `phux_approve` | `phux approve` | in-process | no | yes |
-
-## In-process mirrors
-
-Each of these is in-process; mirrors the CLI verb's logic in phux-mcp (unification tracked separately):
-
-- `phux_kill`: `kill_tool.rs` mirrors `phux kill`'s selector resolution and whole-session, empty-session, and per-pane teardown over `phux_client::kill`; the CLI's partial-fleet warning is not mirrored.
-- `phux_signal`: `pane_tools::signal` mirrors `phux signal`'s input-verb resolution and `SIGNAL_TERMINAL` request over `phux_client::signal`.
-- `phux_tag`: `pane_tools::tag` mirrors `phux tag`'s resolution and read-modify-write over `phux_client::tags`.
-- `phux_rename`: `pane_tools::rename` mirrors `phux rename`'s snapshot refusal check and ordering barrier over `phux_client::session::rename`.
 
 ## CLI residue
 

@@ -72,7 +72,7 @@ pub(crate) use crate::exit_codes::EXIT_PARTIAL_VIEW;
 /// every healthy hub — so call sites need no `if`.
 pub(crate) fn warn_partial_view(verb: &str, degradation: &Degradation) {
     for notice in degradation.notices() {
-        eprintln!("phux: warning: {verb} saw only part of the fleet — {notice}");
+        eprintln!("{}", phux_client::state::partial_view_warning(verb, notice));
     }
 }
 

@@ -69,8 +69,8 @@ pub mod deadline;
 pub mod detach;
 pub mod explain;
 // `SHUTDOWN` / `KILL_RESOURCES` / `KILL_RESOURCE` / the keep-empty clear
-// (`phux kill`). Selector resolution and the whole-session-vs-per-pane
-// choice stay in the CLI; this module owns the wire round trips.
+// (`phux kill`). [`kill::selected`] is the verb orchestration both the CLI
+// and MCP `phux_kill` call; the wire round trips sit beside it.
 pub mod kill;
 pub mod layout_ops;
 pub mod pane_move;
@@ -84,11 +84,15 @@ pub mod run;
 pub mod selector;
 pub mod send_keys;
 // Session-identity writes over L3 (`phux rename` today; ADR-0022 §5).
+// [`session::rename_checked`] is the snapshot check + write + ordering
+// barrier both the CLI and MCP `phux_rename` call.
 pub mod session;
 // The `phux ls --json` document, shared by the CLI and the MCP `phux_ls`.
 pub mod session_list;
 // `ACQUIRE_INPUT` / `RELEASE_INPUT` / `SIGNAL_TERMINAL` command builders and
 // their shared outcome (`phux take` / `phux give` / `phux signal`, ADR-0033).
+// [`signal::deliver`] is the resolve-and-send path both the CLI and MCP
+// `phux_signal` call.
 pub mod signal;
 pub mod snapshot;
 // `insert-pane` / `move-pane` / `swap-pane`: resolution, plan, execution,
@@ -98,7 +102,8 @@ pub mod spatial;
 // behind explicit placement (`phux spawn`, `phux launch`).
 pub mod spawn;
 pub mod state;
-// `phux.tags/v1` read/write (`phux tag`, ADR-0027).
+// `phux.tags/v1` read/write (`phux tag`, ADR-0027). [`tags::apply`] is the
+// list/add/rm orchestration both the CLI and MCP `phux_tag` call.
 pub mod tags;
 // `UPGRADE` (`phux upgrade`, ADR-0032): ask the server to graceful-upgrade
 // itself in place.

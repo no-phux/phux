@@ -64,6 +64,16 @@ impl Degradation {
     }
 }
 
+/// The stderr line both `phux` and `phux-mcp` print when a verb hits against
+/// a partial fleet view.
+///
+/// Callers iterate [`Degradation::notices`] and print one line each; a
+/// complete view yields no notices, so the loop is a no-op.
+#[must_use]
+pub fn partial_view_warning(verb: &str, notice: &str) -> String {
+    format!("phux: warning: {verb} saw only part of the fleet — {notice}")
+}
+
 /// A `GET_STATE` answer together with the part of the fleet it could not see.
 ///
 /// # Why the snapshot is not returned bare
@@ -880,5 +890,13 @@ mod tests {
         assert!(index.is_empty(), "got {index:?}");
         drop(conn);
         server.await.unwrap();
+    }
+
+    #[test]
+    fn partial_view_warning_is_the_cli_line() {
+        assert_eq!(
+            super::partial_view_warning("kill", "satellite build-box is unreachable: link is down"),
+            "phux: warning: kill saw only part of the fleet — satellite build-box is unreachable: link is down"
+        );
     }
 }

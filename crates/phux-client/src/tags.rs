@@ -4,6 +4,9 @@
 //! key [`RESOURCE_TAGS_KEY`] (`phux.tags/v1`), scoped to a `ResourceId`. The
 //! value is a UTF-8 JSON array of tag strings; the server stores the bytes
 //! opaquely ([`docs/spec/L3.md`](../../../docs/spec/L3.md) §3.6).
+//!
+//! [`apply`] is the list/add/rm orchestration both `phux tag` and MCP
+//! `phux_tag` call.
 
 use phux_protocol::ids::ResourceId;
 use phux_protocol::wire::frame::{FrameKind, RESOURCE_TAGS_KEY, Scope};
@@ -121,6 +124,143 @@ pub fn normalize(tags: &[String]) -> Vec<String> {
     out
 }
 
+/// One `phux tag` action, with add/rm tags already parsed (not yet
+/// normalized).
+#[derive(Debug, Clone, Copy)]
+pub enum TagOp<'a> {
+    /// List each resolved Terminal's current tags.
+    List,
+    /// Append each missing tag.
+    Add(&'a [String]),
+    /// Drop each named tag.
+    Remove(&'a [String]),
+}
+
+/// A successful [`apply`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TagOutcome {
+    /// One row per resolved Terminal: the id and its (confirmed) tags.
+    pub rows: Vec<(ResourceId, Vec<String>)>,
+    /// Snapshot/index degradation from [`prepare`].
+    pub view: Degradation,
+    /// Interleaved notices from confirming writes.
+    pub interleaved: Vec<String>,
+}
+
+/// Why [`apply`] did not complete.
+#[derive(Debug, thiserror::Error)]
+pub enum TagError {
+    /// Transport failure connecting or fetching state.
+    #[error(transparent)]
+    Attach(#[from] AttachError),
+    /// The selector matched no Terminal.
+    #[error("no such target")]
+    Miss {
+        /// What the snapshot could not see.
+        degradation: Degradation,
+    },
+    /// A write's confirming read was refused.
+    #[error("{message}")]
+    WriteRefused {
+        /// The full refusal sentence, matching `phux tag`.
+        message: String,
+    },
+}
+
+/// `add` appends each missing tag; `rm` drops each named one. The result is
+/// sorted and de-duplicated, as `phux tag` writes it.
+pub fn merge(current: &mut Vec<String>, add: bool, tags: &[String]) {
+    if add {
+        for tag in tags {
+            if !current.iter().any(|existing| existing == tag) {
+                current.push(tag.clone());
+            }
+        }
+    } else {
+        current.retain(|existing| !tags.iter().any(|tag| tag == existing));
+    }
+    current.sort();
+    current.dedup();
+}
+
+/// Resolve `selector`, then list or edit tags.
+///
+/// Snapshot partial-view notices for a hit live on [`TagOutcome::view`]; a
+/// miss is [`TagError::Miss`] without treating the view as a hit.
+///
+/// # Errors
+///
+/// [`TagError`] — see its variants.
+pub async fn apply(
+    socket_path: &std::path::Path,
+    selector: &Selector,
+    op: TagOp<'_>,
+) -> Result<TagOutcome, TagError> {
+    let mut session = prepare(socket_path, selector).await?;
+    if session.targets.is_empty() {
+        return Err(TagError::Miss {
+            degradation: session.degradation,
+        });
+    }
+    let view = session.degradation.clone();
+    let (rows, interleaved) = match op {
+        TagOp::List => (listed_rows(&session), Vec::new()),
+        TagOp::Add(tags) => edit_rows(&mut session, true, tags).await?,
+        TagOp::Remove(tags) => edit_rows(&mut session, false, tags).await?,
+    };
+    drop(session);
+    Ok(TagOutcome {
+        rows,
+        view,
+        interleaved,
+    })
+}
+
+fn listed_rows(session: &TagSession) -> Vec<(ResourceId, Vec<String>)> {
+    session
+        .targets
+        .iter()
+        .map(|id| {
+            (
+                id.clone(),
+                session.index.get(id).cloned().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+async fn edit_rows(
+    session: &mut TagSession,
+    add: bool,
+    tags: &[String],
+) -> Result<(Vec<(ResourceId, Vec<String>)>, Vec<String>), TagError> {
+    let wanted = normalize(tags);
+    let mut rows = Vec::with_capacity(session.targets.len());
+    let mut interleaved = Vec::new();
+    let mut request_id: u32 = 100;
+    for id in session.targets.clone() {
+        let mut current = session.index.get(&id).cloned().unwrap_or_default();
+        merge(&mut current, add, &wanted);
+        request_id += 1;
+        let (outcome, degradation) =
+            write_tags(&mut session.conn, request_id, &id, &current).await?;
+        request_id += 1;
+        interleaved.extend(degradation.notices().iter().cloned());
+        match outcome {
+            TagWriteOutcome::Confirmed(confirmed) => rows.push((id, confirmed)),
+            TagWriteOutcome::Refused(refusal) => {
+                return Err(TagError::WriteRefused {
+                    message: format!(
+                        "tag write to {} could not be confirmed: server refused the read: {refusal}",
+                        selector::format_terminal_id(&id),
+                    ),
+                });
+            }
+        }
+    }
+    Ok((rows, interleaved))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,6 +276,15 @@ mod tests {
             ]),
             vec!["build".to_owned(), "ci".to_owned()]
         );
+    }
+
+    #[test]
+    fn merge_sorts_dedups_and_removes() {
+        let mut tags = vec!["b".to_owned(), "a".to_owned()];
+        merge(&mut tags, true, &["c".to_owned(), "a".to_owned()]);
+        assert_eq!(tags, ["a", "b", "c"]);
+        merge(&mut tags, false, &["b".to_owned()]);
+        assert_eq!(tags, ["a", "c"]);
     }
 
     #[tokio::test]
@@ -177,5 +326,83 @@ mod tests {
             )),
             "expected the confirming GET at request_id 102; sent {seen:?}"
         );
+    }
+
+    fn pane_state() -> phux_protocol::wire::info::SessionSnapshot {
+        use phux_protocol::ids::{SessionId, WindowId};
+        use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
+        let session = SessionId::new(1);
+        let window = WindowId::new(10);
+        phux_protocol::wire::info::SessionSnapshot::new(session, window, ResourceId::local(1))
+            .with_sessions(vec![SessionInfo::new(session, "work").with_window_count(1)])
+            .with_windows(vec![WindowInfo::new(window, session, "shell")])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), window, 80, 24),
+                ResourceInfo::new(ResourceId::local(2), window, 80, 24),
+            ])
+    }
+
+    async fn apply_on(
+        spec: crate::testkit::ScriptSpec,
+        target: &str,
+        op: TagOp<'_>,
+    ) -> Result<TagOutcome, TagError> {
+        use crate::testkit::ScriptedServer;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let selector = crate::selector::parse(target).expect("selector");
+        let result = apply(&socket, &selector, op).await;
+        drop(server);
+        result
+    }
+
+    #[tokio::test]
+    async fn apply_lists_a_hit_and_splits_a_partial_miss() {
+        use crate::testkit::ScriptSpec;
+        const NOTICE: &str = "satellite build-box is unreachable: link is down";
+
+        let listed = apply_on(ScriptSpec::new().state(pane_state()), "@1", TagOp::List)
+            .await
+            .expect("list");
+        assert_eq!(listed.rows.len(), 1);
+        assert!(listed.view.is_complete());
+
+        let miss = apply_on(ScriptSpec::new().state(pane_state()), "@9", TagOp::List).await;
+        assert!(
+            matches!(miss, Err(TagError::Miss { ref degradation }) if degradation.is_complete()),
+            "{miss:?}"
+        );
+
+        let unresolved = apply_on(
+            ScriptSpec::new()
+                .state(pane_state())
+                .degradation_notice(NOTICE),
+            "@9",
+            TagOp::List,
+        )
+        .await;
+        assert!(
+            matches!(
+                unresolved,
+                Err(TagError::Miss { ref degradation }) if degradation.notices() == [NOTICE]
+            ),
+            "{unresolved:?}"
+        );
+
+        let hit = apply_on(
+            ScriptSpec::new()
+                .state(pane_state())
+                .degradation_notice(NOTICE),
+            "@1",
+            TagOp::List,
+        )
+        .await
+        .expect("partial hit");
+        assert_eq!(hit.view.notices(), [NOTICE]);
+        assert_eq!(hit.rows.len(), 1);
     }
 }

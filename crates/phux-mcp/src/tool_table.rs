@@ -43,11 +43,6 @@ pub(crate) enum Exec {
     /// In-process over `phux-client` (or another library): no subprocess,
     /// and the result is built by the function the CLI verb itself calls.
     InProcess,
-    /// In-process, no subprocess, but the verb's orchestration is a copy in
-    /// `phux-mcp` composed from the same lower-level `phux-client` wire
-    /// helpers the CLI uses, for this reason. Unifying the two is tracked
-    /// separately.
-    InProcessMirror(&'static str),
     /// The residue: the adapter runs the canonical CLI with argv, for this
     /// reason. `CliAdapter` refuses any tool not marked this way.
     Cli(&'static str),
@@ -104,24 +99,6 @@ const fn cli(name: &'static str, verb: &'static str, touches: Touches) -> Row {
     }
 }
 
-/// What every mirrored tool's page row says; the reason names the copy.
-pub(crate) const MIRROR_NOTE: &str =
-    "in-process; mirrors the CLI verb's logic in phux-mcp (unification tracked separately)";
-
-const fn mirror(
-    name: &'static str,
-    verb: &'static str,
-    why: &'static str,
-    touches: Touches,
-) -> Row {
-    Row {
-        name,
-        surface: Surface::Cli(verb),
-        exec: Exec::InProcessMirror(why),
-        touches,
-    }
-}
-
 const fn residue(
     name: &'static str,
     verb: &'static str,
@@ -171,10 +148,9 @@ pub(crate) const TOOLS: &[Row] = &[
          binary; `phux_client::session` has the create, but not that server lifecycle",
         Touches::Wire(&[RESOLVE, SESSION_CREATE_KEY, METADATA_WRITE, "GET_METADATA"]),
     ),
-    mirror(
+    cli(
         "phux_kill",
         "kill",
-        "`kill_tool.rs` mirrors `phux kill`'s selector resolution and whole-session, empty-session, and per-pane teardown over `phux_client::kill`; the CLI's partial-fleet warning is not mirrored",
         Touches::Wire(&[RESOLVE, "KILL_RESOURCES", "KILL_RESOURCE"]),
     ),
     cli("phux_detach", "detach", Touches::Wire(&["DETACH_CLIENTS"])),
@@ -208,24 +184,17 @@ pub(crate) const TOOLS: &[Row] = &[
             "KILL_RESOURCE",
         ]),
     ),
-    mirror(
+    cli(
         "phux_signal",
         "signal",
-        "`pane_tools::signal` mirrors `phux signal`'s input-verb resolution and `SIGNAL_TERMINAL` request over `phux_client::signal`",
         Touches::Wire(&[RESOLVE, "SIGNAL_TERMINAL"]),
     ),
-    mirror(
+    cli(
         "phux_tag",
         "tag",
-        "`pane_tools::tag` mirrors `phux tag`'s resolution and read-modify-write over `phux_client::tags`",
         Touches::Wire(&[RESOLVE, "GET_METADATA", METADATA_WRITE]),
     ),
-    mirror(
-        "phux_rename",
-        "rename",
-        "`pane_tools::rename` mirrors `phux rename`'s snapshot refusal check and ordering barrier over `phux_client::session::rename`",
-        Touches::Wire(&[SESSION_NAME_KEY]),
-    ),
+    cli("phux_rename", "rename", Touches::Wire(&[SESSION_NAME_KEY])),
     cli(
         "phux_insert_pane",
         "insert-pane",

@@ -21,6 +21,7 @@ use crate::attach::AttachError;
 use crate::attach::connection::Connection;
 use crate::layout::Workspace;
 use crate::layout_ops::{LayoutOps, LayoutOpsError};
+use phux_protocol::wire::info::SessionSnapshot;
 
 /// The conventional rename write: `current\0new` under [`SESSION_NAME_KEY`].
 ///
@@ -65,6 +66,82 @@ pub async fn rename(
 ) -> Result<(), AttachError> {
     conn.send(&rename_frame(request_id, session, new_name))
         .await
+}
+
+/// Why [`rename_checked`] refused to send the write.
+#[derive(Debug, thiserror::Error)]
+pub enum RenameError {
+    /// `session` is not in the snapshot. Session names are hub-local.
+    #[error("no such session")]
+    NoSuchSession,
+    /// `new_name` is already held by another session.
+    #[error("{new_name:?} already exists")]
+    AlreadyExists {
+        /// The name that collided.
+        new_name: String,
+    },
+    /// Transport or decode failure.
+    #[error(transparent)]
+    Attach(#[from] AttachError),
+}
+
+impl RenameError {
+    /// The refusal reason both surfaces interpolate after `rename refused
+    /// for session …:`.
+    #[must_use]
+    pub fn reason(&self) -> String {
+        match self {
+            Self::NoSuchSession => "no such session".to_owned(),
+            Self::AlreadyExists { new_name } => format!("{new_name:?} already exists"),
+            Self::Attach(err) => err.to_string(),
+        }
+    }
+}
+
+/// Why the rename must not be sent, judged against a pre-write snapshot:
+/// an unknown session, or a new name another session already holds.
+#[must_use]
+pub fn rename_refusal(
+    snapshot: &SessionSnapshot,
+    session: &str,
+    new_name: &str,
+) -> Option<RenameError> {
+    let has = |name: &str| snapshot.sessions.iter().any(|s| s.name == name);
+    if !has(session) {
+        return Some(RenameError::NoSuchSession);
+    }
+    if session != new_name && has(new_name) {
+        return Some(RenameError::AlreadyExists {
+            new_name: new_name.to_owned(),
+        });
+    }
+    None
+}
+
+/// The checked rename: refuse against a fresh snapshot, write, then the
+/// `GET_STATE` ordering barrier.
+///
+/// Snapshot notices are always appended to `notices` (a rename cannot be
+/// misled by a partial fleet — session names are hub-local — but the CLI
+/// still warns).
+///
+/// # Errors
+///
+/// [`RenameError`] — see its variants.
+pub async fn rename_checked(
+    conn: &mut Connection,
+    session: &str,
+    new_name: &str,
+    notices: &mut Vec<String>,
+) -> Result<(), RenameError> {
+    let (snapshot, degradation) = crate::state::get_state_on(conn).await?.into_parts();
+    notices.extend(degradation.notices().iter().cloned());
+    if let Some(err) = rename_refusal(&snapshot, session, new_name) {
+        return Err(err);
+    }
+    rename(conn, 1, session, new_name).await?;
+    let _ = crate::state::get_state_on(conn).await?;
+    Ok(())
 }
 
 /// Failure composing the `SESSION_CREATE_KEY` request document.
@@ -587,6 +664,57 @@ mod tests {
                 key: SESSION_NAME_KEY.to_owned(),
                 value: b"work\0play".to_vec(),
             }
+        );
+    }
+
+    #[test]
+    fn refuses_an_unknown_session_and_a_taken_name() {
+        let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::new(1))
+            .with_sessions(vec![
+                SessionInfo::new(SessionId::new(0), "work"),
+                SessionInfo::new(SessionId::new(1), "play"),
+            ]);
+        assert!(matches!(
+            rename_refusal(&snap, "gone", "x"),
+            Some(RenameError::NoSuchSession)
+        ));
+        assert!(matches!(
+            rename_refusal(&snap, "work", "play"),
+            Some(RenameError::AlreadyExists { ref new_name }) if new_name == "play"
+        ));
+        assert!(rename_refusal(&snap, "work", "fresh").is_none());
+        assert!(rename_refusal(&snap, "work", "work").is_none());
+    }
+
+    #[tokio::test]
+    async fn rename_checked_warns_on_a_partial_view_then_writes() {
+        const NOTICE: &str = "satellite edge is unreachable: timed out";
+        let snap = SessionSnapshot::new(SessionId::new(1), WindowId::new(1), ResourceId::local(1))
+            .with_sessions(vec![SessionInfo::new(SessionId::new(1), "work")]);
+        let spec = ScriptSpec::new().state(snap).degradation_notice(NOTICE);
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+        let server =
+            tokio::spawn(
+                async move { crate::testkit::ScriptedServer::accept(&listener, spec).await },
+            );
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let mut notices = Vec::new();
+        rename_checked(&mut conn, "work", "play", &mut notices)
+            .await
+            .expect("rename");
+        drop(conn);
+        let seen = server.await.expect("scripted server");
+        assert_eq!(notices, [NOTICE]);
+        assert!(
+            seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::SetMetadata { key, .. } if key == SESSION_NAME_KEY
+            )),
+            "expected the rename write; sent {seen:?}"
         );
     }
 
