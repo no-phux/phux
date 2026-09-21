@@ -2368,6 +2368,7 @@ dependencies = [
  "phux-client-runtime",
  "phux-config",
  "phux-protocol",
+ "phux-server-testkit",
  "serde_json",
  "tempfile",
  "tokio",

@@ -1,7 +1,7 @@
 ---
 audience: humans, consumers
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-21
 ---
 
 # Cockpit
@@ -86,6 +86,37 @@ of the close and the workspace snapshot arrives first. The command
 boundaries answer `atPrompt()`. A command that ran at least ten seconds posts
 a notification under the bell's gate and latch. A missing status, such as a
 satellite pane behind a hub, reads as unknown, never as an error.
+
+## Who owns the socket
+
+`phux-client-runtime` does (ADR-0133). Cockpit names a destination; the
+runtime resolves it through the CLI's `[[remote]]` registry under the CLI's
+trust rules, dials, walks the reconnect ladder, and reads and writes the
+socket on its own thread. Cockpit is woken and calls `phux_client_poll`.
+
+Cockpit had its own socket worker until this moved: DNS, connect, length
+framing, a poll loop, write deadlines, a redial ladder, and a socket pair
+relayed to a tunnel for remote hosts. None of that exists now.
+
+Frames are still decoded on Cockpit's owning thread. The runtime retains
+what it reads and `poll` feeds it, because this ABI's per-frame behavior
+reads state only that thread may touch, so the decode point did not move
+with the socket.
+
+Two consequences worth knowing:
+
+- The runtime queues `HELLO` on every connection it opens. `ATTACH` stays
+  explicit, and Cockpit re-sends it when `phux_client_connection_epoch`
+  changes -- that epoch replaces "a new client per connection" as the
+  reconnect fence, because one client now outlives every socket.
+- A bare `host:port` endpoint has no lane and is refused: the registry is
+  what carries the certificate pin and token a routable dial needs.
+
+`phux_client_feed_frame` and the `phux_client_outgoing_*` calls remain in
+the ABI as the embedded lane, and Cockpit's `transport.Bridge` remains the
+seam its tests stage exact frames through -- malformed ones, retired
+generations, protocol violations -- which no real server would send.
+Nothing in production drives either.
 
 ## Clipboard (OSC 52)
 

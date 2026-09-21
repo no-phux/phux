@@ -7,7 +7,7 @@ use tokio::sync::watch;
 
 use super::io::{Io, dial};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Wake, lock};
-use crate::control::{ControlError, Status};
+use crate::control::{ControlError, InboundDelivery, Status};
 
 enum Decision {
     Stop,
@@ -208,9 +208,19 @@ async fn run_connection(
     let name = target.name.as_str();
     let started = std::time::Instant::now();
     tracing::info!(host = name, transport = target.transport.label(), "dialing");
-    let mut io = match dial(target, options).await {
-        Ok(io) => io,
-        Err(end) => return (end, false),
+    // A dial runs to `dial_timeout` against a host that accepts and then says
+    // nothing. Racing the close signal is what keeps teardown bounded by the
+    // consumer rather than by that timeout: a binding that joins this thread
+    // on drop would otherwise block a UI for the whole dial.
+    let mut io = tokio::select! {
+        dialed = dial(target, options) => match dialed {
+            Ok(io) => io,
+            Err(end) => return (end, false),
+        },
+        () = closed(&mut signals.close) => {
+            lock(shared).close();
+            return (ConnectionEnd::Closed, false);
+        }
     };
     tracing::info!(
         host = name,
@@ -346,7 +356,15 @@ impl<'a> Pump<'a> {
         }
         let (fed, outbound) = {
             let mut control = lock(self.shared);
-            let fed = control.feed_bytes_batch(&frames);
+            // A binding that keeps its own per-frame state on one owning
+            // thread takes delivery itself; the socket is still ours.
+            let fed = if control.options().deliver_inbound == InboundDelivery::Queued {
+                frames
+                    .into_iter()
+                    .try_for_each(|frame| control.queue_inbound(frame))
+            } else {
+                control.feed_bytes_batch(&frames)
+            };
             (fed, control.take_outbound())
         };
         self.write_all(outbound).await?;

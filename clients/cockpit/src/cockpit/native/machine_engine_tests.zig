@@ -57,7 +57,10 @@ test "Engine captured Machines retry and group disconnect fence every exact atta
     try engine.retryCapturedPeer(one, try remote_api.Tunnel.resolve("mini", registry.path), identity, &fx);
     try std.testing.expectEqual(@as(usize, 3), fx.restarts);
     try std.testing.expectEqual(one.attachment_id, first.context_id);
-    try std.testing.expect(first.worker == null and second.worker == null);
+    // Neither attachment dialed: a provider that never opened still holds
+    // the embedded client it was created with.
+    try std.testing.expectEqual(.embedded, first.host.lane);
+    try std.testing.expectEqual(.embedded, second.host.lane);
     try engine.disconnectCapturedPeers(&.{ one, two }, &fx);
     try std.testing.expect(engine.model.phuxForAttachment(one.attachment_id) == null);
     try std.testing.expect(engine.model.phuxForAttachment(two.attachment_id) == null);

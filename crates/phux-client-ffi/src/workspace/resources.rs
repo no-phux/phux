@@ -110,7 +110,7 @@ fn subscribe(client: &mut Client, resource: &ResourceInfo) -> Result<(), BridgeE
     }
     let facet = resource.agent.as_ref();
     client
-        .control
+        .control()
         .apply_engine_event(
             phux_client_runtime::engine::EngineEvent::AgentSessionDeclared {
                 terminal_id: resource.id.clone(),
@@ -187,7 +187,13 @@ fn withdraw(client: &mut Client, id: &ResourceId, notify: bool) -> Result<(), Br
         client.owned_effects.push(effect);
         client.publish_effects();
     }
-    if client.control.engine().is_some() && !client.control.release_terminal(id) {
+    // One borrow: two `client.control()` temporaries would both live to
+    // the end of this condition, and the control lock is not reentrant.
+    let released = {
+        let mut control = client.control();
+        control.engine().is_none() || control.release_terminal(id)
+    };
+    if !released {
         return Err(BridgeError::state("cannot release agent subscription"));
     }
     client.workspace.subscriptions.withdrawn.insert(id.clone());
