@@ -7,7 +7,7 @@
            buttons; empty chrome, gaps, and the traffic-light reserve move
            the window. Do not park window-drag on the 78pt spacer alone —
            that reserve sits under the lights and is not a usable grab. -->
-      <row height="50" padding="4" gap="8" cross="center" background="surface" window-drag="true">
+      <row height="50" padding="4" gap="8" cross="center" window-drag="true">
         <spacer width="78" />
         <list-item height="40" width="176" label="Sessions" on-press="sessions_open">
           <column gap="0">
@@ -15,35 +15,57 @@
             <text foreground="text_muted" overflow="ellipsis">{detail}</text>
           </column>
         </list-item>
-        <button size="sm" variant="ghost" icon="terminal" label="Inspect agents" on-press="agents_open" />
+        <stack width="32">
+          <button size="sm" variant="ghost" icon="terminal" label="Inspect agents" on-press="agents_open" />
+          <tooltip anchor="below">Inspect agents</tooltip>
+        </stack>
 
         <if test="{tabPlacement == 'top'}">
           <tabs grow="1" gap="4" label="Terminal tabs">
             <for each="tabs" key="id" as="tab">
               <column width="{width}" gap="4">
                 <row gap="4" cross="center">
-                  <toggle-button size="sm" role="tab" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}" grow="1">{tab.title}</toggle-button>
-                  <if test="{tab.attention}"><text label="{tab.attentionLabel}">●</text></if>
+                  <!-- Full titles stay available to accessibility. The marker
+                       owns a fixed slot so attention cannot shorten the button. -->
+                  <toggle-button size="sm" role="tab" label="{tab.title}" selected="{tab.selected}" accent="surface_pressed" accent-foreground="text" on-toggle="select_target:{tab.target}" grow="1">{tab.title}</toggle-button>
+                  <if test="{tab.attention}"><text width="16" foreground="warning" label="{tab.attentionLabel}">●</text></if>
+                  <else><spacer width="16" /></else>
                 </row>
                 <if test="{tab.selected}"><spacer height="2" background="accent" /></if>
                 <else><spacer height="2" /></else>
               </column>
             </for>
-            <if test="{more}"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button></if>
+            <if test="{more}"><stack width="32"><button size="sm" width="32" variant="ghost" label="Tabs not shown" on-press="palette_open">{cue}</button><tooltip anchor="below">Show hidden tabs</tooltip></stack></if>
           </tabs>
         </if>
         <else><spacer grow="1" /></else>
         <button size="sm" variant="ghost" icon="external-link" label="Machines" on-press="machines_open">Machines</button>
-        <button size="sm" variant="ghost" icon="plus" label="New Tab" on-press="new_terminal" />
-        <button size="sm" variant="ghost" icon="panel-left" label="Move tabs to top or side" on-press="toggle_tab_placement" />
-        <button size="sm" variant="ghost" icon="settings" label="Settings" on-press="settings_open" />
+        <stack width="32">
+          <button size="sm" variant="ghost" icon="search" label="Commands" on-press="commands_open" />
+          <tooltip anchor="below">Commands</tooltip>
+        </stack>
+        <stack width="32">
+          <button size="sm" variant="ghost" icon="plus" label="New Tab" on-press="new_terminal" />
+          <tooltip anchor="below">New tab</tooltip>
+        </stack>
+        <stack width="32">
+          <button size="sm" variant="ghost" icon="panel-left" label="Move tabs to top or side" on-press="toggle_tab_placement" />
+          <tooltip anchor="below">Move tabs to top or side</tooltip>
+        </stack>
+        <stack width="32">
+          <button size="sm" variant="ghost" icon="settings" label="Settings" on-press="settings_open" />
+          <tooltip anchor="below">Settings</tooltip>
+        </stack>
       </row>
       <row grow="1">
         <if test="{tabPlacement == 'side'}">
-          <column width="224" padding="12" gap="12" background="surface">
+          <column width="224" padding="12" gap="12">
             <row height="32" cross="center" gap="8">
               <text grow="1" foreground="text_muted">TABS</text>
-              <button size="sm" variant="ghost" icon="search" label="Find work" on-press="palette_open" />
+              <stack width="32">
+                <button size="sm" variant="ghost" icon="search" label="Find work" on-press="palette_open" />
+                <tooltip anchor="below">Find work</tooltip>
+              </stack>
             </row>
             <scroll grow="1">
               <column gap="4">
@@ -60,8 +82,9 @@
                     <row gap="4" cross="center">
                       <if test="{row.selected}"><spacer width="2" height="24" background="accent" /></if>
                       <else><spacer width="2" height="24" /></else>
-                      <list-item grow="1" icon="terminal" role="tab" selected="{row.selected}" accent="surface_pressed" accent-foreground="text" on-press="select_target:{row.target}">{row.label}</list-item>
-                      <if test="{row.mark}"><text label="{row.attentionLabel}">{row.mark}</text></if>
+                      <list-item grow="1" icon="terminal" role="tab" label="{row.label}" selected="{row.selected}" accent="surface_pressed" accent-foreground="text" on-press="select_target:{row.target}">{row.label}</list-item>
+                      <if test="{row.mark}"><text width="16" foreground="warning" label="{row.attentionLabel}">{row.mark}</text></if>
+                      <else><spacer width="16" /></else>
                     </row>
                   </else>
                 </for>
@@ -69,7 +92,7 @@
             </scroll>
             <separator />
             <button size="sm" variant="ghost" icon="folder" on-press="sessions_open">Sessions</button>
-            <button size="sm" variant="ghost" icon="search" on-press="commands_open">Commands</button>
+            <button size="sm" variant="ghost" icon="search" label="Commands" on-press="commands_open">Commands</button>
             <button size="sm" variant="ghost" icon="external-link" on-press="new_window">New window</button>
           </column>
         </if>
@@ -94,8 +117,9 @@
       </row>
     </column>
     <if test="{paletteopen}">
-      <row main="center" padding="16" background="scrim">
-        <panel grow="1" max-width="640" padding="16">
+        <!-- The SDK owns modal placement and the token-driven frosted scrim.
+             The preferred picker envelope clamps to the viewport; results scroll. -->
+        <dialog width="640" height="640" padding="16" on-dismiss="palette_close" label="Navigator">
           <column grow="1" gap="8">
             <row cross="center" gap="8">
               <icon name="folder-open" width="16" height="16" />
@@ -218,8 +242,7 @@
               <if test="{palettenext}"><button size="sm" variant="ghost" on-press="palette_next">Next</button></if>
             </row>
           </column>
-        </panel>
-      </row>
+        </dialog>
     </if>
     <slot />
   </stack>

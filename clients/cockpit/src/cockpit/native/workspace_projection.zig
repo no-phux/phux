@@ -512,6 +512,13 @@ pub fn terminalTokens(model: *const Model) canvas.DesignTokens {
 pub fn terminalTokensFrom(base: canvas.DesignTokens, model: *const Model) canvas.DesignTokens {
     var tokens = base;
     const cfg = &model.config;
+    // The runtime's base carries device scale and text measurement, but its
+    // colors follow native chrome appearance. An unconfigured terminal keeps
+    // Cockpit's terminal defaults; only terminal config may change its palette.
+    const defaults = baseTokens().colors;
+    tokens.colors.background = defaults.background;
+    tokens.colors.text = defaults.text;
+    tokens.colors.accent = defaults.accent;
     // `fontChoice` owns which family names are supported. An unsupported name
     // is already a config warning; it paints the bundled face, never none.
     fonts.apply(&tokens, config_module.fontChoice(cfg.font_family.slice()) orelse .bundled);

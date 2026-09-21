@@ -44,7 +44,46 @@ the compiled layout audit verifies it at 900×420, 1100×640 and 1680×1000.
 Healthy windows give footer space back to the terminal. Failure notices retain
 their measured band, and terminal geometry is measured from the compiled tree.
 
-`cockpitTokens` resolves `.pack = .geist`, so these are the live numbers, read
+The navigator is a semantic SDK dialog with a preferred 640×640pt frame. The
+width reuses the picker maximum; the square preferred envelope is a composition
+choice, capped by the SDK's viewport placement (24pt modal margins). At the
+900×420 minimum this resolves to 640×372pt, with a scrolling results region and
+fixed search/footer controls. Escape and outside clicks dispatch `palette_close`.
+Icon-only toolbar actions use runtime-owned anchored tooltips; attention keeps
+a fixed 16pt slot so a newly blocked agent does not shorten its tab button.
+
+The navigator uses the pinned SDK's modal scrim: token-driven backdrop blur
+(`blur.scrim`, 4pt) followed by a dim wash, with an opaque foreground panel.
+The [pinned modal renderer](https://github.com/phall1/native/blob/ee690e0a336227ec4eec5a9b9c8077d787a7e91a/src/primitives/canvas/widget_render.zig#L1066-L1108)
+owns that treatment. This is in-window frosting, **not Apple Liquid Glass**.
+Reserve canvas backdrop blur for transient overlays: it samples the rendered
+backdrop and promotes intersecting damage to a full ordered replay; the opt-in
+GPU composite path also performs a readback for blur. Closing the dialog removes
+that work from the terminal path. Persistent chrome uses the host material below.
+
+Native window materials are implemented in the SDK host, underneath the canvas
+content. Chrome uses the manifest's Geist theme and accent, following macOS
+appearance, contrast and reduced motion rather than forcing a dark token set.
+The native material and its foreground controls therefore share one appearance.
+The header and rail leave their background transparent; the terminal
+painter fills the independently measured terminal space, including all gutters,
+with its opaque configured background. Material geometry therefore follows the
+window while terminal geometry continues to follow the compiled markup slot.
+Neither path derives chrome spacing from terminal cell metrics.
+
+Use real WindowServer captures to judge native materials. A GPU texture capture
+contains the canvas content plane but cannot include the AppKit effect behind
+it. Validate native material composition, active/inactive windows, and system
+accessibility settings separately from terminal raster fidelity.
+
+Implementation and acceptance evidence are tracked in `phux-3gpg.5`.
+[Apple's materials guidance](https://developer.apple.com/design/human-interface-guidelines/materials)
+places glass in controls/navigation and recommends restrained use;
+[`NSGlassEffectView`](https://developer.apple.com/documentation/appkit/nsglasseffectview)
+is available starting in macOS 26. Sources checked 2026-09-21.
+
+The manifest selects Geist, as does the native projection's `cockpitTokens`;
+these are the live numbers, read
 out of `primitives/canvas/themes/geist.zig` at the pinned SDK:
 
 | token | value |

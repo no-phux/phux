@@ -3675,13 +3675,13 @@ pub const Engine = struct {
         const size = workspace.surface_size;
         if (size.width <= 0 or size.height <= 0) return .{ .first = 0, .count = @intCast(total), .extent = 168 };
         if (self.model.tab_placement == .top) {
-            return stripRun(workspace);
+            return stripRun(workspace, self.last_runs[index].first);
         }
         // Every window uses the same scrollable rail; it owns vertical overflow.
         return .{ .first = 0, .count = @intCast(total), .extent = 168 };
     }
 
-    fn stripRun(workspace: *const model_module.Workspace) ts_snapshot.TabRun {
+    fn stripRun(workspace: *const model_module.Workspace, previous_first: usize) ts_snapshot.TabRun {
         const total = workspace.tab_count;
         if (total == 0) return .{};
         // app.native and cockpit-window.native use 4pt gaps and one 32pt
@@ -3697,7 +3697,15 @@ pub const Engine = struct {
         }
         count = @min(total, count);
         const selected = @min(workspace.selected_tab, total - 1);
-        const first = if (selected >= count) selected - count + 1 else 0;
+        // Keep visible tabs under the pointer; move only when the selection
+        // leaves the previous run. Clamp the anchor after closing or resizing.
+        const anchor = @min(previous_first, total - count);
+        const first = if (selected < anchor)
+            selected
+        else if (selected >= anchor + count)
+            selected - count + 1
+        else
+            anchor;
         const extent = @max(0, @min(projection.tab_extent, usable / @as(f32, @floatFromInt(count)) - gap));
         return .{ .first = @intCast(first), .count = @intCast(count), .extent = @intFromFloat(extent) };
     }
