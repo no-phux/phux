@@ -251,6 +251,23 @@ pub unsafe extern "C" fn phux_client_resync(client: *mut PhuxClient) -> PhuxClie
     })
 }
 
+/// How many connections this client has opened.
+///
+/// An embedded client fences per-connection state by building a fresh
+/// `PhuxClient` per connection. A connected client cannot: the runtime
+/// reconnects underneath a handle that outlives every socket. This is the
+/// fence instead. It is zero before the first dial, and every later value
+/// retires the state the previous connection built.
+///
+/// # Safety
+///
+/// `client` must be a live client for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_connection_epoch(client: *const PhuxClient) -> u64 {
+    // SAFETY: checked before dereference.
+    unsafe { client.as_ref() }.map_or(0, |client| client.inner.runtime.connection_epoch())
+}
+
 /// Whether this client's socket belongs to the runtime.
 ///
 /// # Safety

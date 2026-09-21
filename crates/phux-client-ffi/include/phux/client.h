@@ -1538,6 +1538,15 @@ PhuxClientResult phux_client_nudge(PhuxClient *client);
  * lane, and never a reopen once the session is closed or failed. */
 PhuxClientResult phux_client_resync(PhuxClient *client);
 
+/** How many connections this client has opened; 0 before the first dial.
+ *
+ * An embedded client fences per-connection state by building a fresh
+ * PhuxClient per connection. A connected client cannot: the runtime
+ * reconnects underneath a handle that outlives every socket. Fence on this
+ * instead -- a change retires the terminals, correlations and replicas the
+ * previous connection built, exactly as replacing the client did. */
+uint64_t phux_client_connection_epoch(const PhuxClient *client);
+
 /** Whether this client's socket belongs to the runtime. False for a NULL
  * client and for every phux_client_new client. */
 bool phux_client_is_connected(const PhuxClient *client);

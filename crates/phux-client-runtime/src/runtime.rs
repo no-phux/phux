@@ -284,6 +284,13 @@ impl Client {
         lock(&self.inner.control).topology().cloned()
     }
 
+    /// How many connections the session has opened. A consumer fences
+    /// per-connection state on this once the runtime owns the reconnect.
+    #[must_use]
+    pub fn connection_epoch(&self) -> u64 {
+        lock(&self.inner.control).connection_epoch()
+    }
+
     /// Whether any connection ever attached.
     #[must_use]
     pub fn attached_once(&self) -> bool {

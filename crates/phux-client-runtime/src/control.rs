@@ -300,6 +300,10 @@ enum Pending {
 #[derive(Debug)]
 pub struct ControlPlane {
     options: ControlOptions,
+    /// Bumped by every `connection_opened`. A consumer that fences
+    /// per-connection state on its own client's identity uses this instead
+    /// once the runtime owns the reconnect.
+    connection_epoch: u64,
     /// Frames read off the socket and not yet drained, under
     /// [`InboundDelivery::Queued`].
     inbound: Vec<Vec<u8>>,
@@ -357,6 +361,7 @@ impl ControlPlane {
             attach_target: options.attach.clone(),
             options,
             offered_caps,
+            connection_epoch: 0,
             inbound: Vec::new(),
             inbound_bytes: 0,
             status: Status::Idle,
@@ -409,6 +414,13 @@ impl ControlPlane {
     }
 
     // ----- observation -------------------------------------------------
+
+    /// How many connections this plane has opened. Zero before the first
+    /// dial; every later value fences the state one connection built.
+    #[must_use]
+    pub const fn connection_epoch(&self) -> u64 {
+        self.connection_epoch
+    }
 
     /// The options this plane was built with.
     #[must_use]
@@ -609,6 +621,7 @@ impl ControlPlane {
     /// `HELLO`. Frames still queued from the previous connection are
     /// discarded, as they were built against per-connection state.
     pub fn connection_opened(&mut self) {
+        self.connection_epoch = self.connection_epoch.saturating_add(1);
         self.outbound.clear();
         // Anything the consumer has not drained belongs to the connection
         // that just ended, and feeding it against fresh per-connection

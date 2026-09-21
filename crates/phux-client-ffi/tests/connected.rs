@@ -21,9 +21,9 @@ use std::time::{Duration, Instant};
 
 use phux_client_ffi::{
     ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxClient, PhuxClientOptions, PhuxClientResult,
-    PhuxClientState, PhuxConnectOptions, phux_client_connect, phux_client_feed_frame,
-    phux_client_free, phux_client_is_connected, phux_client_outgoing_count, phux_client_poll,
-    phux_client_queue_attach, phux_client_resource_count, phux_client_state,
+    PhuxClientState, PhuxConnectOptions, phux_client_connect, phux_client_connection_epoch,
+    phux_client_feed_frame, phux_client_free, phux_client_is_connected, phux_client_outgoing_count,
+    phux_client_poll, phux_client_queue_attach, phux_client_resource_count, phux_client_state,
 };
 use phux_server_testkit::{run_local, spawn_server};
 use tempfile::TempDir;
@@ -173,6 +173,14 @@ async fn connected_lane() {
     assert!(
         WAKES.load(Ordering::Acquire) > 0,
         "the driver woke the embedder from its own thread"
+    );
+
+    // The fence a connected embedder uses in place of a fresh client.
+    // SAFETY: a live client.
+    assert_eq!(
+        unsafe { phux_client_connection_epoch(client) },
+        1,
+        "one connection has opened"
     );
 
     // The embedded lane's pump is refused: this client does not own bytes.
