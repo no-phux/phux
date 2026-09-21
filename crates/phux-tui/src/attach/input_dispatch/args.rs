@@ -12,7 +12,7 @@
 
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
-use phux_protocol::wire::frame::{FrameKind, TerminalSignal};
+use phux_protocol::wire::frame::{Command, FrameKind, TerminalSignal};
 
 use crate::layout::{Direction, SplitDir, Workspace};
 
@@ -214,49 +214,29 @@ pub(super) fn signal_arg(
     }
 }
 
-/// phux-4li.12: build the `INPUT_KEY` frame sequence that types `exit\n`
-/// into the targeted Terminal. The shell processes those bytes, exits,
-/// the PTY closes, and the server emits `RESOURCE_CLOSED` which the
-/// driver folds out of the layout. See the `kill-pane` arm of
-/// [`run_action`] for the soft-kill caveat.
-pub(super) fn soft_kill_input_frames(target: &ResourceId) -> Vec<FrameKind> {
-    use phux_protocol::input::key::{KeyAction, KeyEvent, ModSet, PhysicalKey};
-
-    fn ascii_letter(ch: char, key: PhysicalKey) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: Some(ch.to_string()),
-            unshifted_codepoint: Some(u32::from(ch)),
-        }
-    }
-    const fn named(key: PhysicalKey) -> KeyEvent {
-        KeyEvent {
-            action: KeyAction::Press,
-            key,
-            mods: ModSet::empty(),
-            consumed_mods: ModSet::empty(),
-            composing: false,
-            text: None,
-            unshifted_codepoint: None,
-        }
-    }
-
-    let events = [
-        ascii_letter('e', PhysicalKey::E),
-        ascii_letter('x', PhysicalKey::X),
-        ascii_letter('i', PhysicalKey::I),
-        ascii_letter('t', PhysicalKey::T),
-        named(PhysicalKey::Enter),
-    ];
-    events
-        .into_iter()
-        .map(|event| FrameKind::InputKey {
+/// Build the `KILL_RESOURCE` command that closes `target`.
+///
+/// This used to type `exit\n` into the pane as `INPUT_KEY` events and wait
+/// for the shell to notice (phux-4li.12). That only worked when the pane's
+/// foreground process was a shell sitting at a prompt: with an editor, a
+/// pager, an agent CLI, or a wedged process in the foreground the keystrokes
+/// were swallowed and the pane simply never closed. It also could not remove
+/// a leaf whose resource was already gone, because there was nothing left to
+/// type into. The server closes the resource and broadcasts `RESOURCE_CLOSED`
+/// regardless of what the pane is running, which is the tmux `kill-pane`
+/// semantics the action's name promises.
+///
+/// `request_id` correlates the refusal: a `TerminalNotFound` reply proves the
+/// leaf is dead, which is how a stale layout leaf gets folded out (see
+/// `server_frame::handler::fold_missing_resource`).
+pub(super) fn kill_resource_frame(target: &ResourceId, request_id: u32) -> FrameKind {
+    FrameKind::Command {
+        request_id,
+        command: Command::KillResource {
             terminal_id: target.clone(),
-            event,
-        })
-        .collect()
+            // ADR-0109 idempotency keys are for retried kills across a
+            // reconnect; a keystroke-driven kill is sent once.
+            operation_id: None,
+        },
+    }
 }

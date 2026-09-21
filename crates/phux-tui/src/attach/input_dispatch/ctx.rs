@@ -111,6 +111,14 @@ pub(in crate::attach) struct DispatchCtx<'a> {
     /// id and suppresses the pane-exit notice — the user ordered that
     /// death, so reporting it would be noise.
     pub expected_closes: &'a mut HashSet<ResourceId>,
+    /// `request_id` -> the Terminal a `KILL_RESOURCE` this client sent
+    /// named. [`apply_action_effects`] parks them at the kill-dispatch seam;
+    /// `handle_server_frame` drains the entry when the reply lands. A
+    /// `TerminalNotFound` refusal means the resource was already gone, so
+    /// no `RESOURCE_CLOSED` will ever arrive for it and the layout leaf has
+    /// to be folded out on the strength of the refusal alone — otherwise a
+    /// pane left behind by a dead resource can never be closed.
+    pub pending_kills: &'a mut HashMap<u32, ResourceId>,
     /// phux-5ke.4: overlay stack. When non-empty the dispatcher routes
     /// key events to the active overlay (no resolver, no predict, no
     /// pane forwarding) and discovery actions push onto it.

@@ -1957,7 +1957,10 @@ pub(crate) enum Command {
         long_help = "Run a command in a pane and capture its exit code.\n\n\
             Reports the command's exit code, output, and duration. \
             Brackets the command with sentinels to capture `$?`, so it \
-            assumes a POSIX shell (sh/bash/zsh). The process exit code mirrors \
+            assumes a POSIX shell (sh/bash/zsh) — and refuses (exit 2) when a \
+            shell is not what is reading the pane, since against `vim` or \
+            `less` the same bytes are keystrokes, not a command; `--force` \
+            skips that precondition. The process exit code mirrors \
             the command's — and is 125 when `phux` gives up on `--timeout` — so \
             `phux run … && next` composes like a shell. The timeout is one \
             budget for the whole run — connecting, target resolution, input \
@@ -1970,8 +1973,8 @@ pub(crate) enum Command {
             already delivered. TARGET is a selector \
             (see the top-level help), resolved client-side to one pane; the \
             command routes to it by id (no attach, no resize).\n\n\
-            Flags (`--timeout`, `--json`, `--socket`) MUST precede TARGET, or \
-            they are swallowed into the trailing command.\n\n\
+            Flags (`--timeout`, `--force`, `--json`, `--socket`) MUST precede \
+            TARGET, or they are swallowed into the trailing command.\n\n\
             Examples:\n  \
             phux run build \"cargo test\"\n  \
             phux run --timeout 30 work:1.0 \"cargo test\""
@@ -1993,6 +1996,11 @@ pub(crate) enum Command {
         /// wait indefinitely.
         #[usage(long, value_name = "SECS")]
         timeout: Option<u64>,
+
+        /// Skip the available-shell precondition. Types the command line
+        /// into the pane whatever is running there.
+        #[usage(long)]
+        force: bool,
 
         #[usage(flatten)]
         json: JsonOpt,

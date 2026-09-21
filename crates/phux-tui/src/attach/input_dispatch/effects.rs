@@ -102,8 +102,10 @@ pub(super) async fn apply_action_effects<W: crate::attach::RenderSink>(
     send_kill_frames(
         effects.kill_frames,
         effects.expected_closes,
+        effects.kill_requests,
         conn,
         ctx.expected_closes,
+        ctx.pending_kills,
     )
     .await?;
     send_command_frames(effects.command_frames, conn).await?;
@@ -383,18 +385,21 @@ async fn send_directory_request(
     conn.send(&frame).await
 }
 
-/// kill-pane / kill-window keystroke sequences; the `RESOURCE_CLOSED`
-/// fold-out happens when each shell exits. Park the targets FIRST
-/// (phux-i0e8.2.2): once the frames are on the wire the close can
-/// race back, and an unmarked close would notice-spam the user about
-/// a death they ordered.
+/// kill-pane / kill-window `KILL_RESOURCE` commands; the `RESOURCE_CLOSED`
+/// fold-out happens as each resource tears down. Park the targets and their
+/// request ids FIRST (phux-i0e8.2.2): once the frames are on the wire the
+/// close — or the refusal — can race back, and an unmarked close would
+/// notice-spam the user about a death they ordered.
 async fn send_kill_frames(
     kill_frames: Vec<FrameKind>,
     targets: Vec<ResourceId>,
+    kill_requests: Vec<(u32, ResourceId)>,
     conn: &mut Connection,
     expected_closes: &mut HashSet<ResourceId>,
+    pending_kills: &mut HashMap<u32, ResourceId>,
 ) -> Result<(), AttachError> {
     expected_closes.extend(targets);
+    pending_kills.extend(kill_requests);
     for frame in kill_frames {
         conn.send(&frame).await?;
     }
@@ -649,12 +654,19 @@ pub(super) struct ActionEffects {
     /// async caller records it (id and listed host) as the pending listing,
     /// then sends it; the reply opens the directory picker.
     pub(super) list_directory: Option<(PendingDirectory, FrameKind)>,
-    /// phux-4li.12: a `kill-pane` action ships a sequence of frames to
-    /// the focused Terminal (the "soft-kill via shell-exit" — see
-    /// `run_action`). The async caller sends them in order; the
-    /// resulting `RESOURCE_CLOSED` from the server folds the pane out
+    /// A `kill-pane` / `kill-window` action's `KILL_RESOURCE` commands, one
+    /// per targeted Terminal. The async caller sends them in order; the
+    /// resulting `RESOURCE_CLOSED` from the server folds each pane out
     /// of the layout in [`crate::attach::server_frame::handle_server_frame`].
     pub(super) kill_frames: Vec<FrameKind>,
+    /// `(request_id, Terminal)` for each frame in `kill_frames`. The async
+    /// caller parks them in `DispatchCtx::pending_kills` so a
+    /// `TerminalNotFound` refusal can be attributed back to the leaf it
+    /// names: that reply is the only evidence a client gets that a pane
+    /// whose resource already died should leave the layout, since no
+    /// `RESOURCE_CLOSED` is ever broadcast for a resource the server does
+    /// not have.
+    pub(super) kill_requests: Vec<(u32, ResourceId)>,
     /// phux-i0e8.2.2: the Terminals `kill_frames` targets. The async
     /// caller parks them in `DispatchCtx::expected_closes` so the
     /// eventual `RESOURCE_CLOSED` is recognized as client-initiated and
