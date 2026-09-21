@@ -886,6 +886,120 @@ async fn answer_inventory(
     assert!(passed.is_none(), "the inventory reply is consumed");
 }
 
+/// phux-lxov.1: a down satellite pane keeps its layout slot. An inventory
+/// that still cannot see the host does not attach it; one that can sends
+/// `ATTACH_RESOURCE` and clears the flag. A replay refusal puts the flag
+/// back without folding the leaf out.
+#[tokio::test(flavor = "current_thread")]
+async fn a_down_satellite_pane_keeps_its_slot_and_replays_on_return() {
+    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+    use phux_protocol::wire::info::HostInventory;
+
+    let (mut state, mut client, mut server, _) =
+        bootstrapped_loop_with(ServerFeatureSet::with(&[ServerFeature::HostSessions])).await;
+    let _ = sidebar_frames_sent(&mut client, &mut server).await;
+
+    let local = ResourceId::local(1);
+    let sat = ResourceId::satellite(SatelliteHost::new("devbox"), 7);
+    state.workspace = Workspace::single(local.clone());
+    let tree = state
+        .workspace
+        .active_window()
+        .and_then(|window| window.tree.clone())
+        .expect("tree");
+    state.workspace.active_window_mut().expect("window").tree = Some(
+        crate::layout::split_at(
+            &tree,
+            &local,
+            &sat,
+            crate::layout::SplitDir::Horizontal,
+            0.5,
+        )
+        .expect("split"),
+    );
+    let mut slot = PaneSlot::new().expect("slot");
+    slot.satellite_down = true;
+    state.panes.insert(sat.clone(), slot);
+
+    let leaves = |state: &SessionLoop| {
+        crate::layout::leaves(
+            state
+                .workspace
+                .active_window()
+                .and_then(|window| window.tree.as_ref())
+                .expect("tree"),
+        )
+    };
+
+    answer_inventory(
+        &mut state,
+        &mut client,
+        vec![HostInventory::unreachable(
+            SatelliteHost::new("devbox"),
+            "link is down",
+        )],
+    )
+    .await;
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    assert!(
+        !sent.iter().any(|frame| matches!(
+            frame,
+            FrameKind::Command {
+                command: Command::AttachResource { .. },
+                ..
+            }
+        )),
+        "an unreachable host is not reattached: {sent:?}"
+    );
+    assert!(state.panes[&sat].satellite_down);
+    assert_eq!(leaves(&state), vec![local.clone(), sat.clone()]);
+
+    answer_inventory(
+        &mut state,
+        &mut client,
+        vec![HostInventory::reachable(
+            SatelliteHost::new("devbox"),
+            Vec::new(),
+        )],
+    )
+    .await;
+    let sent = sidebar_frames_sent(&mut client, &mut server).await;
+    let attach = sent.iter().find_map(|frame| match frame {
+        FrameKind::Command {
+            request_id,
+            command: Command::AttachResource { terminal_id, .. },
+        } if terminal_id == &sat => Some(*request_id),
+        _ => None,
+    });
+    let attach = attach.expect("the returned host is reattached");
+    assert!(!state.panes[&sat].satellite_down);
+    assert_eq!(leaves(&state), vec![local.clone(), sat.clone()]);
+
+    let mut out = Vec::new();
+    state
+        .apply_server_frame(
+            &mut client,
+            &mut out,
+            None,
+            FrameKind::CommandResult {
+                request_id: attach,
+                result: CommandResult::Error {
+                    code: ErrorCode::SatelliteUnreachable,
+                    message: "link is down".to_owned(),
+                },
+            },
+            false,
+            &mut RepaintAccumulator::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        state.panes[&sat].satellite_down,
+        "a refused replay marks the pane down again"
+    );
+    assert_eq!(leaves(&state), vec![local, sat]);
+}
+
 /// The panes of every `KILL_RESOURCE` sent before a FIFO barrier.
 async fn killed_panes(client: &mut Connection, server: &mut Connection) -> Vec<ResourceId> {
     kills_sent(client, server)

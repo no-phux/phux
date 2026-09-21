@@ -127,6 +127,12 @@ pub struct PaneLabel<'a> {
     /// `true` once the user has visited the pane since its last state
     /// change; drives the "finished but unread" badge.
     pub seen: bool,
+    /// Satellite that hosts this pane, drawn as a badge ahead of the title.
+    /// `None` for a pane on the attached server.
+    pub host: Option<&'a str>,
+    /// The satellite link is down: title and badge draw in the recessive
+    /// divider tone, and the pane's frame is not the focus colour.
+    pub unreachable: bool,
 }
 
 impl PaneLabel<'_> {
@@ -416,7 +422,15 @@ fn build_cells<'p, F>(
 {
     // The focused pane's rect is the whole emphasis model: a rule is on
     // the focused frame exactly when it lies on that rect's perimeter.
-    let frame = focused.and_then(|id| layout.rects.get(id)).copied();
+    // An unreachable satellite pane keeps its slot but loses the focus
+    // colour, so the frame reads as disabled chrome (phux-lxov.1).
+    let focused_down =
+        focused.is_some_and(|id| label_of(id).is_some_and(|label| label.unreachable));
+    let frame = if focused_down {
+        None
+    } else {
+        focused.and_then(|id| layout.rects.get(id)).copied()
+    };
 
     for cell in &layout.dividers {
         let mut sym = Sym::EMPTY;
@@ -554,7 +568,8 @@ fn draw_one_title(
     focused: bool,
 ) {
     let text = label.text.trim();
-    if text.is_empty() {
+    let host = label.host.map(str::trim).filter(|host| !host.is_empty());
+    if text.is_empty() && host.is_none() {
         return;
     }
     let badge = label.badge(theme);
@@ -566,17 +581,23 @@ fn draw_one_title(
     // reserved as one would spend a column the title budget still
     // believed it had. The two must be the same arithmetic.
     let badge_cells = badge.map_or(0, |b| text_columns(b.glyph) + 1);
-    if budget <= badge_cells {
+    // Host badge plus the space that separates it from the title.
+    let host_cells = host.map_or(0, |host| text_columns(host) + 1);
+    if budget <= badge_cells + host_cells {
         return;
     }
-    budget -= badge_cells;
+    budget -= badge_cells + host_cells;
 
-    let title_style = if focused {
+    let muted = label.unreachable;
+    let title_style = if muted {
+        Style::default().fg(theme.divider)
+    } else if focused {
         Style::default().fg(theme.pane_title_focus)
     } else {
         Style::default().fg(theme.pane_title)
     };
-    let pad = Style::default().fg(if focused {
+    let host_style = Style::default().fg(if muted { theme.divider } else { theme.chord });
+    let pad = Style::default().fg(if focused && !muted {
         theme.divider_focus
     } else {
         theme.divider
@@ -592,8 +613,14 @@ fn draw_one_title(
         x = put_measured(cells, x, y, b.glyph, style);
         x = put_measured(cells, x, y, " ", pad);
     }
-    x = put_clipped(cells, x, y, text, budget, title_style);
-    put_measured(cells, x, y, " ", pad);
+    if let Some(host) = host {
+        x = put_clipped(cells, x, y, host, text_columns(host), host_style);
+        x = put_measured(cells, x, y, " ", pad);
+    }
+    if !text.is_empty() {
+        x = put_clipped(cells, x, y, text, budget, title_style);
+        put_measured(cells, x, y, " ", pad);
+    }
 }
 
 /// The columns `text` advances, counting only what may reach the wire.
@@ -847,6 +874,8 @@ mod tests {
                 agent: None,
                 attention: false,
                 seen: true,
+                host: None,
+                unreachable: false,
             })
         })
         .unwrap();
@@ -1180,6 +1209,8 @@ mod tests {
                     agent: None,
                     attention: true,
                     seen: true,
+                    host: None,
+                    unreachable: false,
                 })
             },
         )
@@ -1187,6 +1218,52 @@ mod tests {
         let s = String::from_utf8(bytes).unwrap();
         assert!(s.contains('●'), "expected the attention badge in {s:?}");
         assert!(s.contains(&sgr_fg(theme().attention)));
+    }
+
+    /// phux-lxov.1: a satellite pane badges its host on the border. While
+    /// the link is down the badge and title use the recessive divider tone
+    /// and the focused frame drops its focus colour.
+    #[test]
+    fn a_satellite_pane_badges_its_host_and_greys_when_unreachable() {
+        let content = railed(80, 24);
+        let layout = split_layout(content);
+        let th = theme();
+        let paint = |unreachable: bool| {
+            let mut bytes: Vec<u8> = Vec::new();
+            render_dividers(
+                &mut bytes,
+                &layout,
+                content,
+                rail_row(content),
+                Some(&t(1)),
+                &th,
+                |_| {
+                    Some(PaneLabel {
+                        text: "shell",
+                        agent: None,
+                        attention: false,
+                        seen: true,
+                        host: Some("devbox"),
+                        unreachable,
+                    })
+                },
+            )
+            .unwrap();
+            String::from_utf8(bytes).unwrap()
+        };
+        let up = paint(false);
+        assert!(up.contains("devbox"), "{up:?}");
+        assert!(up.contains("shell"), "{up:?}");
+        assert!(up.contains(&sgr_fg(th.chord)), "host badge uses chord");
+        assert!(up.contains(&sgr_fg(th.divider_focus)));
+        let down = paint(true);
+        assert!(down.contains("devbox"), "{down:?}");
+        assert!(
+            !down.contains(&sgr_fg(th.divider_focus)),
+            "an unreachable pane does not take the focus colour: {down:?}"
+        );
+        assert!(down.contains(&sgr_fg(th.divider)));
+        assert!(!down.contains(&sgr_fg(th.chord)));
     }
 
     /// The badge vocabulary is shared with the sidebar: a `working` pane
@@ -1206,6 +1283,8 @@ mod tests {
                 agent: Some(state),
                 attention: false,
                 seen: true,
+                host: None,
+                unreachable: false,
             };
             let badge = label.badge(&th).expect("an agent pane badges");
             assert_eq!(badge, agent_badge(&th, state, false, true));
@@ -1338,6 +1417,8 @@ mod tests {
                     agent: Some(AgentMetaState::Working),
                     attention: false,
                     seen: true,
+                    host: None,
+                    unreachable: false,
                 })
             },
         )
@@ -1552,6 +1633,8 @@ mod tests {
                     agent: Some(AgentMetaState::Working),
                     attention: false,
                     seen: true,
+                    host: None,
+                    unreachable: false,
                 })
             },
         )

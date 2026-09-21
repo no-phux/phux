@@ -265,11 +265,24 @@ geometry, 80 columns by 24 rows; a tiny automation viewport therefore cannot
 strand a durable shell at 1x1. `manual` is the setting for a scripted geometry
 and holds an explicit size across detach.
 
-**Satellite splits.** With a satellite pane focused, `split-pane` opens
-the new pane on that same satellite, through the hub. The split appears
-once the new pane attaches; a refused spawn leaves no dead split and
-tries to kill the spawned pane. Against a hub that cannot spawn there,
-the split opens on the hub and a notice says so.
+**Satellite splits.** A window may hold local and satellite panes side by
+side. With a satellite pane focused, `split-pane` opens the new pane on
+that same satellite, through the hub. `split-pane` with `host` spawns on
+that satellite even when the focused pane is local (`owner_terminal`
+stays unset, so the hub places the pane). `split-pane` with `resource`
+set to `host/@N` or `@N` attaches that existing pane into the current
+window. The split appears once the pane attaches. A refused spawn leaves
+no dead split and tries to kill a pane this client spawned; opening an
+existing pane never kills it. Against a hub that cannot spawn there, the
+split opens on the hub and a notice says so.
+
+A satellite pane's border and the status bar name its host. When the hub
+reports that satellite unreachable, the pane stays in the layout, the
+border and badge go grey, and keys to it are dropped. When a later host
+inventory says the satellite is back, the client reattaches and replays
+the snapshot into the same slot. Web and Cockpit see the same mixed
+window through the shared layout document: satellite ids already
+serialize there.
 
 ## Status, sidebar, and theme
 
@@ -301,7 +314,9 @@ Copy); it is not in the shipped center slot. Each of its complete labels is
 a click target for the same action as its keybinding. `min-cols` /
 `max-cols` hide a widget outright. The shipped lineup uses that to change
 shape at 64 columns: session name and clock give way to a clickable
-`switch` chip that opens the fleet dashboard.
+`switch` chip that opens the fleet dashboard. A focused satellite pane
+adds its host to the supervisory badge (`devbox`, or `devbox down` while
+that satellite is unreachable).
 
 ### Spacer
 

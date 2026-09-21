@@ -25,14 +25,27 @@ fn supervisory_badge(
     focused_resource: Option<&ResourceId>,
     own_client_id: Option<ClientId>,
 ) -> Option<String> {
-    let slot = panes.get(focused_resource?)?;
+    let id = focused_resource?;
+    let slot = panes.get(id)?;
     // ADR-0124: a retained pane's process is gone; how it ended is the whole
     // story, and no lease or brake applies to it any more.
     if let Some(mark) = slot.exited {
         return Some(format!("[ {} ]", mark.label()));
     }
+    // phux-lxov.1: a down satellite is the whole story until it returns.
+    if slot.satellite_down {
+        let name = id
+            .host()
+            .map_or("satellite", phux_protocol::SatelliteHost::as_str);
+        return Some(format!(" {name} down "));
+    }
     let frozen = matches!(slot.lifecycle, ResourceLifecycle::Frozen);
-    format_supervisory_badge(frozen, slot.input_holder, own_client_id)
+    format_supervisory_badge(
+        frozen,
+        slot.input_holder,
+        own_client_id,
+        id.host().map(phux_protocol::SatelliteHost::as_str),
+    )
 }
 
 /// Pure badge formatter (split out from [`supervisory_badge`] so the
@@ -42,6 +55,7 @@ fn format_supervisory_badge(
     frozen: bool,
     input_holder: Option<ClientId>,
     own_client_id: Option<ClientId>,
+    host: Option<&str>,
 ) -> Option<String> {
     let wheel = input_holder.map(|holder| {
         if Some(holder) == own_client_id {
@@ -50,11 +64,19 @@ fn format_supervisory_badge(
             format!("wheel:c{}", holder.get())
         }
     });
-    match (frozen, wheel) {
+    let base = match (frozen, wheel) {
         (false, None) => None,
         (true, None) => Some(" frozen ".to_owned()),
         (false, Some(w)) => Some(format!(" {w} ")),
         (true, Some(w)) => Some(format!(" frozen {w} ")),
+    };
+    match (host.filter(|host| !host.is_empty()), base) {
+        (None, badge) => badge,
+        (Some(host), None) => Some(format!(" {host} ")),
+        (Some(host), Some(badge)) => {
+            let inner = badge.trim();
+            Some(format!(" {host} {inner} "))
+        }
     }
 }
 
@@ -403,27 +425,51 @@ mod tests {
         // holder is "you" only when it matches this client's own id.
         let me = ClientId::new(7);
         let other = ClientId::new(9);
-        assert_eq!(format_supervisory_badge(false, None, Some(me)), None);
+        assert_eq!(format_supervisory_badge(false, None, Some(me), None), None);
         assert_eq!(
-            format_supervisory_badge(true, None, Some(me)).as_deref(),
+            format_supervisory_badge(true, None, Some(me), None).as_deref(),
             Some(" frozen ")
         );
         assert_eq!(
-            format_supervisory_badge(false, Some(me), Some(me)).as_deref(),
+            format_supervisory_badge(false, Some(me), Some(me), None).as_deref(),
             Some(" wheel ")
         );
         assert_eq!(
-            format_supervisory_badge(false, Some(other), Some(me)).as_deref(),
+            format_supervisory_badge(false, Some(other), Some(me), None).as_deref(),
             Some(" wheel:c9 ")
         );
         assert_eq!(
-            format_supervisory_badge(true, Some(other), Some(me)).as_deref(),
+            format_supervisory_badge(true, Some(other), Some(me), None).as_deref(),
             Some(" frozen wheel:c9 ")
         );
         // No own id yet (pre-ATTACHED): a holder still renders by id, never "you".
         assert_eq!(
-            format_supervisory_badge(false, Some(me), None).as_deref(),
+            format_supervisory_badge(false, Some(me), None, None).as_deref(),
             Some(" wheel:c7 ")
+        );
+        // phux-lxov.1: a satellite pane badges its host on the status bar,
+        // beside any lease or brake already shown.
+        assert_eq!(
+            format_supervisory_badge(false, None, Some(me), Some("devbox")).as_deref(),
+            Some(" devbox ")
+        );
+        assert_eq!(
+            format_supervisory_badge(true, None, Some(me), Some("devbox")).as_deref(),
+            Some(" devbox frozen ")
+        );
+    }
+
+    /// phux-lxov.1: the status bar names a down satellite, and the layout
+    /// leaf that owns the slot is not this function's to remove.
+    #[test]
+    fn a_down_satellite_pane_badges_its_host_on_the_status_bar() {
+        let id = ResourceId::satellite("devbox", 7);
+        let mut slot = crate::attach::pane_state::PaneSlot::new().expect("slot");
+        slot.satellite_down = true;
+        let panes = HashMap::from([(id.clone(), slot)]);
+        assert_eq!(
+            supervisory_badge(&panes, Some(&id), None).as_deref(),
+            Some(" devbox down ")
         );
     }
 

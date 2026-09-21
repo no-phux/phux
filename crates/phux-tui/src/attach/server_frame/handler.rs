@@ -1423,10 +1423,12 @@ fn apply_split_spawned<W: crate::attach::RenderSink>(
     new_id: ResourceId,
     pending: &PendingSplit,
 ) -> Result<FrameOutcome, AttachError> {
+    let keep_existing = pending.open_existing.is_some();
     let Some(index) = window_holding_pane(ctx.workspace, &pending.focused_at_request) else {
-        return Ok(split_dropped(
+        return Ok(abandon_split(
             ctx,
             &new_id,
+            keep_existing,
             "the pane it was split from has closed",
         ));
     };
@@ -1435,7 +1437,12 @@ fn apply_split_spawned<W: crate::attach::RenderSink>(
         Ok(new_state) => new_state,
         Err(err) => {
             tracing::warn!(error = %err, terminal = ?new_id, "apply_spawned_ok failed");
-            return Ok(split_dropped(ctx, &new_id, "the layout could not take it"));
+            return Ok(abandon_split(
+                ctx,
+                &new_id,
+                keep_existing,
+                "the layout could not take it",
+            ));
         }
     };
     *window = new_state;
@@ -1487,6 +1494,25 @@ fn focus_landed_split<W: crate::attach::RenderSink>(
     if let Some(fid) = ctx.focused_resource.as_ref() {
         reanchor_predict_to_pane(ctx.predict, ctx.panes, fid);
     }
+}
+
+/// A split that cannot land. A pane this client spawned is killed; an
+/// existing pane opened with `resource = "host/@N"` is left alone.
+fn abandon_split<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    new_id: &ResourceId,
+    keep_existing: bool,
+    why: &str,
+) -> FrameOutcome {
+    if keep_existing {
+        tracing::warn!(terminal = ?new_id, why, "split dropped; existing pane kept");
+        let _ = actions::write_bell(ctx.out);
+        return FrameOutcome {
+            notices: vec![Notice::warn(format!("split dropped: {why}"))],
+            ..FrameOutcome::default()
+        };
+    }
+    split_dropped(ctx, new_id, why)
 }
 
 /// A spawned split that has nowhere to go: bell, and say why. The layout,
@@ -2009,15 +2035,62 @@ fn error_frame_outcome<W: crate::attach::RenderSink>(
     code: ErrorCode,
     message: String,
 ) -> Result<FrameOutcome, AttachError> {
+    let mut marked = note_satellite_down(ctx, code, &message);
     if let Some(parked) = request_id.and_then(|id| take_pending_adopt(ctx, id)) {
-        return handle_adopt_reply(ctx, parked, Some(AdoptRefusal { code, message }));
+        return handle_adopt_reply(ctx, parked, Some(AdoptRefusal { code, message }))
+            .map(|outcome| with_satellite_chrome(outcome, marked));
     }
-    if let Some(id) = request_id
-        && let Some(outcome) = resolve_resource_op(ctx, id, Some(code))
-    {
-        return Ok(outcome);
+    if let Some(id) = request_id {
+        // A replay `ATTACH_RESOURCE` cleared the down flag when it was sent.
+        // A refusal that names the pane, even without the hub's diagnostic
+        // wording, puts the flag back so the leaf stays grey.
+        marked |= remark_pending_satellite(ctx, id, Some(code));
+        if let Some(outcome) = resolve_resource_op(ctx, id, Some(code)) {
+            return Ok(with_satellite_chrome(outcome, marked));
+        }
     }
-    Ok(handle_error_frame(request_id, code, &message))
+    Ok(with_satellite_chrome(
+        handle_error_frame(request_id, code, &message),
+        marked,
+    ))
+}
+
+/// Grey every pane on the host a `SatelliteUnreachable` names. The layout
+/// leaf stays; chrome is the only thing that moves (phux-lxov.1).
+fn note_satellite_down<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    code: ErrorCode,
+    message: &str,
+) -> bool {
+    code == ErrorCode::SatelliteUnreachable
+        && crate::attach::pane_state::note_satellite_unreachable(ctx.panes, message)
+}
+
+const fn with_satellite_chrome(mut outcome: FrameOutcome, marked: bool) -> FrameOutcome {
+    outcome.chrome_dirty |= marked;
+    outcome
+}
+
+/// Re-mark the host of a correlated resource reply when the satellite is
+/// unreachable. The pending id is still in the map; [`resolve_resource_op`]
+/// removes it afterwards.
+fn remark_pending_satellite<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    request_id: u32,
+    code: Option<ErrorCode>,
+) -> bool {
+    if !matches!(code, Some(ErrorCode::SatelliteUnreachable)) {
+        return false;
+    }
+    let Some(host) = ctx
+        .pending_resource_ops
+        .get(&request_id)
+        .and_then(ResourceId::host)
+        .map(|host| host.as_str().to_owned())
+    else {
+        return false;
+    };
+    crate::attach::pane_state::mark_satellite_down(ctx.panes, &host)
 }
 
 /// The `COMMAND_RESULT` arm: the reply to a parked satellite attach
@@ -2029,6 +2102,12 @@ fn command_result_outcome<W: crate::attach::RenderSink>(
     request_id: u32,
     result: phux_protocol::wire::frame::CommandResult,
 ) -> Result<FrameOutcome, AttachError> {
+    let marked = match &result {
+        phux_protocol::wire::frame::CommandResult::Error { code, message } => {
+            note_satellite_down(ctx, *code, message)
+        }
+        _ => false,
+    };
     if let Some(parked) = take_pending_adopt(ctx, request_id) {
         let refusal = match result {
             phux_protocol::wire::frame::CommandResult::Error { code, message } => {
@@ -2036,20 +2115,22 @@ fn command_result_outcome<W: crate::attach::RenderSink>(
             }
             _ => None,
         };
-        return handle_adopt_reply(ctx, parked, refusal);
+        return handle_adopt_reply(ctx, parked, refusal)
+            .map(|outcome| with_satellite_chrome(outcome, marked));
     }
     let code = match &result {
         phux_protocol::wire::frame::CommandResult::Error { code, .. } => Some(*code),
         _ => None,
     };
+    let marked = marked || remark_pending_satellite(ctx, request_id, code);
     if let Some(outcome) = resolve_resource_op(ctx, request_id, code) {
-        return Ok(outcome);
+        return Ok(with_satellite_chrome(outcome, marked));
     }
     tracing::debug!(
         request_id,
         "dropping CommandResult with no matching pending request"
     );
-    Ok(FrameOutcome::default())
+    Ok(with_satellite_chrome(FrameOutcome::default(), marked))
 }
 
 /// Take the window or split parked on the satellite attach behind
@@ -2072,7 +2153,7 @@ fn take_pending_adopt<W: crate::attach::RenderSink>(
     if ctx
         .pending_splits
         .get(&request_id)
-        .is_some_and(|pending| pending.adopt.is_some())
+        .is_some_and(|pending| pending.adopt.is_some() || pending.open_existing.is_some())
     {
         return ctx
             .pending_splits
@@ -2217,9 +2298,10 @@ pub(in crate::attach) fn pane_is_referenced(
     let adopting_window = pending_windows
         .values()
         .any(|window| window.adopt.as_ref().map(Adopt::pane) == Some(pane));
-    let adopting_split = pending_splits
-        .values()
-        .any(|split| split.adopt.as_ref().map(|spawned| &spawned.id) == Some(pane));
+    let adopting_split = pending_splits.values().any(|split| {
+        split.adopt.as_ref().map(|spawned| &spawned.id) == Some(pane)
+            || split.open_existing.as_ref() == Some(pane)
+    });
     window_holding_pane(workspace, pane).is_some() || adopting_window || adopting_split
 }
 

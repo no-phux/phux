@@ -742,6 +742,78 @@ fn split_pane_on_a_local_pane_is_unchanged() {
     assert!(!asks_binding(&frame), "{frame:?}");
 }
 
+/// phux-lxov.1: `split-pane { host }` from a local pane spawns on that
+/// satellite with no owner, so the hub places the new pane itself and the
+/// reply's Satellite id is what the layout stores.
+#[test]
+fn split_onto_host_spawns_with_satellite_and_no_owner() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut action = split_action();
+    action
+        .args
+        .insert("host".to_owned(), toml::Value::String("devbox".into()));
+    let effects = run(&action, &mut workspace);
+    let (_req, pending, frame) = effects.spawn_terminal.expect("split parks a SPAWN");
+    let devbox = phux_protocol::ids::SatelliteHost::new("devbox");
+    assert!(
+        matches!(
+            &frame,
+            FrameKind::SpawnResource {
+                satellite: Some(host),
+                owner_terminal: None,
+                ..
+            } if *host == devbox
+        ),
+        "{frame:?}"
+    );
+    assert_eq!(pending.host, SplitHost::Satellite(devbox));
+    assert_eq!(pending.adopt, None);
+    assert_eq!(pending.open_existing, None);
+    assert!(asks_binding(&frame), "{frame:?}");
+}
+
+/// phux-lxov.1: `split-pane { resource = "host/@N" }` attaches that pane
+/// into the current window. It does not spawn, and it does not open a
+/// new window.
+#[test]
+fn open_satellite_pane_attaches_it_into_the_current_window() {
+    let mut workspace = Workspace::single(tid(1));
+    let mut action = split_action();
+    action.args.insert(
+        "resource".to_owned(),
+        toml::Value::String("devbox/@7".into()),
+    );
+    let effects = run(&action, &mut workspace);
+    let target = ResourceId::satellite("devbox", 7);
+    let (_req, pending, frame) = effects
+        .spawn_terminal
+        .expect("open parks an ATTACH on the split");
+    assert_eq!(pending.open_existing.as_ref(), Some(&target));
+    assert_eq!(pending.adopt, None);
+    assert!(
+        matches!(
+            &frame,
+            FrameKind::Command {
+                command: phux_protocol::wire::frame::Command::AttachResource { terminal_id, .. },
+                ..
+            } if terminal_id == &target
+        ),
+        "{frame:?}"
+    );
+    assert!(effects.spawn_window.is_none());
+    let leaves = crate::layout::leaves(
+        workspace
+            .active_window()
+            .and_then(|window| window.tree.as_ref())
+            .expect("tree"),
+    );
+    assert_eq!(
+        leaves,
+        vec![tid(1)],
+        "the leaf appears when the attach succeeds"
+    );
+}
+
 /// A hub without host-aware spawns keeps today's split on itself, with no
 /// satellite path, and the parked split remembers which satellite it stands
 /// in for so the reply can say where the pane opened.

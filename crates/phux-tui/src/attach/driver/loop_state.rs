@@ -104,6 +104,11 @@ mod tests;
 /// aggregate's own work and the transport.
 const HOST_INVENTORY_DEADLINE: std::time::Duration = std::time::Duration::from_secs(35);
 
+/// phux-lxov.1: how long a grey satellite pane waits before the driver asks
+/// the hub which hosts are back. Armed only while a pane is down, and
+/// anchored so a busy output stream cannot postpone the replay forever.
+const SATELLITE_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+
 /// Rename the matching cached session in place. Identity (`SessionId`) is
 /// unchanged; only the display label moves.
 fn apply_graph_rename(
@@ -208,7 +213,7 @@ fn unanswered_spawns(
         .map(|(id, _)| *id);
     let splits = splits
         .iter()
-        .filter(|(_, split)| split.adopt.is_none())
+        .filter(|(_, split)| split.adopt.is_none() && split.open_existing.is_none())
         .map(|(id, _)| *id);
     windows.chain(splits).collect()
 }
@@ -795,6 +800,10 @@ pub(super) struct SessionLoop {
     /// fresher host inventory (opening the session picker). Drained after
     /// the dispatch batch into one `GET_STATE`.
     host_refresh_request: bool,
+    /// phux-lxov.1: when to next ask which down satellites are back. `None`
+    /// while every satellite pane is up, or while a host inventory is
+    /// already in flight. Anchored like [`Self::esc_deadline`].
+    satellite_probe_at: Option<tokio::time::Instant>,
     /// phux-c2td.3: a fresh host inventory landed, so a session picker that
     /// is open needs its rows rebuilt. Drained with the repaint, the same
     /// shape as the fleet dashboard's live refresh.
@@ -865,6 +874,7 @@ impl SessionLoop {
             host_sessions_supported: server_features.contains(ServerFeature::HostSessions),
             whoami_supported: server_features.contains(ServerFeature::Whoami),
             host_refresh_request: false,
+            satellite_probe_at: None,
             session_picker_dirty: false,
             wants_state_sync,
             pending_attach_ready: None,
@@ -2092,6 +2102,11 @@ impl SessionLoop {
                 .map(|since| since + SYNC_OUTPUT_WATCHDOG)
                 .min(),
         );
+        // phux-lxov.1: a down satellite pane probes host inventory on a
+        // fixed cadence. The deadline is set once and survives other arms,
+        // so pane output cannot starve the replay.
+        self.arm_satellite_probe(tokio::time::Instant::now());
+        let satellite_probe = sleep_until_or_pending(self.satellite_probe_at);
 
         tokio::select! {
             biased;
@@ -2154,6 +2169,15 @@ impl SessionLoop {
             // full-screen redraw.
             () = status_tick => {
                 self.on_status_tick(out, sidebar);
+                Ok(Step::Continue)
+            }
+
+            // phux-lxov.1: ask which grey satellite panes can be reattached.
+            // `request_host_inventory` is a no-op while one is in flight;
+            // the reply replays snapshots for hosts that came back.
+            () = satellite_probe => {
+                self.satellite_probe_at = None;
+                self.request_host_inventory(conn).await?;
                 Ok(Step::Continue)
             }
 
@@ -2830,6 +2854,7 @@ impl SessionLoop {
                 // forgets its strays; one it reached gets their kills.
                 let asked_at = self.peers.hosts_pending_since;
                 let answers = self.fold_host_inventory(&result, repaint);
+                self.replay_returned_satellites(conn, &answers).await?;
                 self.retry_after_inventory(conn, &answers, asked_at).await?;
                 Ok(None)
             }
@@ -2855,6 +2880,12 @@ impl SessionLoop {
                 code: phux_protocol::wire::frame::ErrorCode::SatelliteUnreachable,
                 message,
             } if self.peers.hosts_pending.is_some() => {
+                // phux-lxov.1: grey the panes now. The inventory reply still
+                // decides the notice, but the layout slot is already down.
+                if crate::attach::pane_state::note_satellite_unreachable(&mut self.panes, &message)
+                {
+                    self.peers.chrome_dirty = true;
+                }
                 self.peers.held_unreachable.push(message);
                 Ok(None)
             }
@@ -3163,6 +3194,47 @@ impl SessionLoop {
     /// phux-c2td.23: a host inventory asked at `asked_at` could not list
     /// `answers.unreachable`, whose strays are forgotten, and reached
     /// `answers.reachable`, whose strays recorded before it asked are killed.
+    /// phux-lxov.1: an inventory reply is also the satellite-pane recovery
+    /// signal. Hosts it could not list stay grey in their layout slots.
+    /// Hosts it reached have their down flag cleared and are
+    /// `ATTACH_RESOURCE`d so the snapshot replays into the same leaf.
+    async fn replay_returned_satellites(
+        &mut self,
+        conn: &mut Connection,
+        answers: &HostAnswers,
+    ) -> Result<(), AttachError> {
+        let mut changed = false;
+        for host in &answers.unreachable {
+            changed |=
+                crate::attach::pane_state::mark_satellite_down(&mut self.panes, host.as_str());
+        }
+        let mut replay = Vec::new();
+        for host in &answers.reachable {
+            replay.extend(crate::attach::pane_state::satellite_panes_returned(
+                &mut self.panes,
+                host.as_str(),
+            ));
+        }
+        if changed || !replay.is_empty() {
+            self.peers.chrome_dirty = true;
+        }
+        self.attach_discovered_panes(conn, &replay).await
+    }
+
+    /// phux-lxov.1: arm [`SATELLITE_PROBE_INTERVAL`] while any satellite pane
+    /// is down and no host inventory is already in flight.
+    fn arm_satellite_probe(&mut self, now: tokio::time::Instant) {
+        if self.host_sessions_supported
+            && self.peers.hosts_pending.is_none()
+            && self.panes.values().any(|slot| slot.satellite_down)
+        {
+            self.satellite_probe_at
+                .get_or_insert(now + SATELLITE_PROBE_INTERVAL);
+        } else {
+            self.satellite_probe_at = None;
+        }
+    }
+
     async fn retry_after_inventory(
         &mut self,
         conn: &mut Connection,

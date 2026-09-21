@@ -227,8 +227,22 @@ fn split_pane(
         effects.bell = true;
         return;
     };
+    // phux-lxov.1: `resource = "host/@N"` (or `@N`) opens that existing
+    // pane into this window. A spawn is the other shape, below.
+    if resolved.args.contains_key("resource") {
+        let Some(target) = resource_id_arg(resolved) else {
+            tracing::warn!(
+                args = ?resolved.args,
+                "split-pane `resource` is not `@N` or `host/@N`",
+            );
+            effects.bell = true;
+            return;
+        };
+        open_existing_pane(ctx, effects, focused_id, dir, target);
+        return;
+    }
     let request_id = take_request_id(ctx);
-    let host = split_host(&focused_id, ctx.directory_support);
+    let host = explicit_split_host(host_arg(resolved), &focused_id, ctx.directory_support);
     let satellite = match &host {
         SplitHost::Satellite(satellite) => Some(satellite.clone()),
         SplitHost::Attached | SplitHost::AttachedInsteadOf(_) => None,
@@ -247,6 +261,7 @@ fn split_pane(
         zoom_on_spawn: false,
         host,
         adopt: None,
+        open_existing: None,
     };
     let mut frame = FrameKind::SpawnResource {
         request_id,
@@ -279,6 +294,78 @@ fn bind_satellite_spawn(frame: &mut FrameKind) {
         }
     ) {
         phux_client::conditional_kill::request_binding(frame);
+    }
+}
+
+/// phux-lxov.1: attach `target` and split it into the current window.
+///
+/// A pane already in this workspace is focused rather than opened twice.
+/// The attach is parked on the split: the leaf appears only when
+/// `ATTACH_RESOURCE` succeeds, and a refusal does not kill a pane this
+/// client did not spawn.
+fn open_existing_pane(
+    ctx: &mut DispatchCtx<'_>,
+    effects: &mut ActionEffects,
+    focused_id: ResourceId,
+    dir: SplitDir,
+    target: ResourceId,
+) {
+    if let Some(index) = window_holding(ctx.workspace, &target) {
+        focus_open_satellite_pane(ctx, effects, index, target);
+        return;
+    }
+    if attach_in_flight(ctx.pending_windows, &target)
+        || ctx.pending_splits.values().any(|split| {
+            split.open_existing.as_ref() == Some(&target)
+                || split.adopt.as_ref().map(|spawned| &spawned.id) == Some(&target)
+        })
+    {
+        return;
+    }
+    let request_id = take_request_id(ctx);
+    let host = match target.host().cloned() {
+        Some(host) if ctx.directory_support == DirectorySupport::HostAware => {
+            SplitHost::Satellite(host)
+        }
+        Some(host) => SplitHost::AttachedInsteadOf(host),
+        None => SplitHost::Attached,
+    };
+    let pending = PendingSplit {
+        focused_at_request: focused_id,
+        dir,
+        zoom_on_spawn: false,
+        host,
+        adopt: None,
+        open_existing: Some(target.clone()),
+    };
+    effects.spawn_terminal = Some((
+        request_id,
+        pending,
+        FrameKind::Command {
+            request_id,
+            command: Command::AttachResource {
+                terminal_id: target,
+                role_policy: crate::attach::attach_role::pane_attach_role(),
+            },
+        },
+    ));
+}
+
+/// The host a split spawns on.
+///
+/// `wanted` is `split-pane { host }` (phux-lxov.1): the new pane is spawned
+/// on that satellite with `owner_terminal: None`, and the returned
+/// Satellite id is what the layout leaf stores. Absent `wanted`, a split
+/// follows the focused pane (phux-c2td.18).
+fn explicit_split_host(
+    wanted: Option<SatelliteHost>,
+    focused: &ResourceId,
+    support: DirectorySupport,
+) -> SplitHost {
+    match wanted {
+        Some(host) if support == DirectorySupport::HostAware => SplitHost::Satellite(host),
+        Some(host) => SplitHost::AttachedInsteadOf(host),
+        None => split_host(focused, support),
     }
 }
 
@@ -1382,6 +1469,7 @@ fn plugin_pane(
                 zoom_on_spawn: entry.placement == HostedPlacement::Zoomed,
                 host: SplitHost::Attached,
                 adopt: None,
+                open_existing: None,
             };
             set_spawn_initial_size(&mut frame, predicted_split_size(ctx, &pending));
             effects.spawn_terminal = Some((request_id, pending, frame));
