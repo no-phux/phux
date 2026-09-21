@@ -1,0 +1,118 @@
+# Build the canonical Android UniFFI zip from this checkout.
+# Sibling of ffi-xcframework.yml, not a job on it: Apple publication must not
+# wait on NDK. phux-mobile fetches this zip at PHUX_REV the same way it fetches
+# the xcframework.
+#
+# workflow_dispatch with an empty tag builds the dispatched ref and uploads
+# the workflow artifact only. A tag attaches the zip to that GitHub release.
+
+name: ffi-android
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: Existing root release tag (vX.Y.Z) to build from and attach to.
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing root release tag (vX.Y.Z). Empty builds this ref and only uploads the workflow artifact.
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ffi-android-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build Android UniFFI zip
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      ARTIFACTS: target/mobile-ffi-android/Artifacts
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Contributor Zig setup
+        run: bash scripts/install-zig.sh "$RUNNER_TEMP/phux-toolchains" >> "$GITHUB_PATH"
+
+      - name: Contributor Rust setup
+        run: bash scripts/setup-rust.sh core
+
+      - name: Android NDK
+        run: |
+          set -euo pipefail
+          ndk_home="${ANDROID_NDK_HOME:-}"
+          if [ ! -x "${ndk_home}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" ]; then
+            mkdir -p "$HOME/android-ndk"
+            curl -fsSL -o /tmp/android-ndk.zip \
+              "https://dl.google.com/android/repository/android-ndk-r28c-linux.zip"
+            unzip -q /tmp/android-ndk.zip -d "$HOME/android-ndk"
+            ndk_home="$HOME/android-ndk/android-ndk-r28c"
+          fi
+          echo "ANDROID_NDK_HOME=$ndk_home" >> "$GITHUB_ENV"
+
+      - name: cargo-ndk
+        run: cargo install cargo-ndk --version 4.1.2 --locked
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          shared-key: ffi-android
+          cache-on-failure: true
+
+      - name: Build Android UniFFI artifact
+        run: bash scripts/build-mobile-ffi-android.sh
+
+      - name: Package zip and checksum
+        id: package
+        run: |
+          set -euo pipefail
+          stem="PhuxMobileFFI-${RELEASE_TAG:-$(git rev-parse --short HEAD)}.android"
+          cd "$ARTIFACTS"
+          zip -qry "${stem}.zip" kotlin jniLibs provenance
+          shasum -a 256 "${stem}.zip" > "${stem}.zip.sha256"
+          cp provenance "${stem}.provenance"
+          cat "${stem}.zip.sha256" "${stem}.provenance"
+          echo "stem=${stem}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: PhuxMobileFFI-android
+          path: |
+            ${{ env.ARTIFACTS }}/provenance
+            ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.zip
+            ${{ env.ARTIFACTS }}/${{ steps.package.outputs.stem }}.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Attach and verify release assets
+        if: env.RELEASE_TAG != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STEM: ${{ steps.package.outputs.stem }}
+        run: |
+          set -euo pipefail
+          cd "$ARTIFACTS"
+          gh release upload "$RELEASE_TAG" \
+            "${STEM}.zip" "${STEM}.zip.sha256" "${STEM}.provenance" --clobber
+          existing="$(mktemp -d)"
+          gh release download "$RELEASE_TAG" --dir "$existing" --pattern "${STEM}.*"
+          cmp "${STEM}.zip" "$existing/${STEM}.zip"
+          (cd "$existing" && shasum -a 256 -c "${STEM}.zip.sha256")
+          echo "attached ${STEM} to ${RELEASE_TAG}"
