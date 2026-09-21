@@ -407,7 +407,7 @@ impl EngineConfig {
 }
 
 enum Command {
-    Apply(EngineEvent, Sender<EngineOutcome>),
+    ApplyBatch(Vec<EngineEvent>, Sender<Vec<EngineOutcome>>),
     Lifecycle(Lifecycle),
     Query(Query),
 }
@@ -521,7 +521,22 @@ impl EngineHandle {
 
     /// Apply one event and wait for its outcome.
     pub(crate) fn apply(&self, event: EngineEvent) -> Result<EngineOutcome, EngineError> {
-        self.request(|reply| Command::Apply(event, reply))
+        self.apply_batch(vec![event])?
+            .pop()
+            .ok_or(EngineError::Stopped)
+    }
+
+    /// Apply a pump's queued events in order, then project each damaged
+    /// terminal once. Outcomes retain event order; a fatal outcome ends the
+    /// applied prefix so later frames remain unapplied.
+    pub(crate) fn apply_batch(
+        &self,
+        events: Vec<EngineEvent>,
+    ) -> Result<Vec<EngineOutcome>, EngineError> {
+        if events.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.request(|reply| Command::ApplyBatch(events, reply))
     }
 
     /// Forget a terminal and its projection after the owner thread applies

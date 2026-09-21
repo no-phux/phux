@@ -228,6 +228,41 @@ pub enum ControlError {
     Closed,
 }
 
+impl ControlError {
+    const fn precedence(&self) -> u8 {
+        match self {
+            Self::InvalidState(_) => 0,
+            Self::Protocol(_) => 1,
+            Self::Resync => 2,
+            Self::Refused(_) | Self::Closed => 3,
+        }
+    }
+
+    fn prefer(current: Option<Self>, candidate: Self) -> Self {
+        match current {
+            Some(error) if error.precedence() >= candidate.precedence() => error,
+            _ => candidate,
+        }
+    }
+}
+
+#[cfg(test)]
+mod control_error_tests {
+    use super::ControlError;
+
+    #[test]
+    fn fatal_batch_errors_outrank_nonfatal_stale_generation_errors() {
+        let stale = ControlError::InvalidState("stale".to_owned());
+        let protocol = ControlError::Protocol("gap".to_owned());
+        let resync = ControlError::Resync;
+
+        let selected = ControlError::prefer(Some(stale), protocol);
+        assert!(matches!(selected, ControlError::Protocol(_)));
+        let selected = ControlError::prefer(Some(selected), resync);
+        assert!(matches!(selected, ControlError::Resync));
+    }
+}
+
 /// A spawn a consumer asks for.
 #[derive(Debug, Clone, Default)]
 pub struct SpawnRequest {

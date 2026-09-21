@@ -5,6 +5,11 @@ use super::{
     HistoryUnavailableReason, WireRejection, WireTombstone,
 };
 
+enum ClassifiedFrame {
+    Engine(EngineEvent),
+    Other(FrameKind),
+}
+
 const fn allowed_before_handshake(frame: &FrameKind) -> bool {
     matches!(
         frame,
@@ -22,6 +27,36 @@ impl ControlPlane {
     /// Decode exactly one SPEC section 5 frame under the negotiated limits
     /// and feed it.
     pub fn feed_bytes(&mut self, bytes: &[u8]) -> Result<(), ControlError> {
+        let frame = self.decode_frame(bytes)?;
+        self.feed(frame)
+    }
+
+    /// Decode a transport read's complete frames in order, applying each
+    /// contiguous run of engine events as one projection batch.
+    pub fn feed_bytes_batch(&mut self, frames: &[Vec<u8>]) -> Result<(), ControlError> {
+        let mut engine_events = Vec::new();
+        let mut deferred_error = None;
+        for bytes in frames {
+            let frame = match self.decode_frame(bytes) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    return self.error_after_engine_batch(
+                        &mut engine_events,
+                        &mut deferred_error,
+                        error,
+                    );
+                }
+            };
+            self.queue_or_feed_frame(frame, &mut engine_events, &mut deferred_error)?;
+        }
+        Self::continue_after_nonfatal(
+            &mut deferred_error,
+            self.flush_engine_batch(&mut engine_events),
+        )?;
+        deferred_error.map_or(Ok(()), Err)
+    }
+
+    fn decode_frame(&self, bytes: &[u8]) -> Result<FrameKind, ControlError> {
         let decoded = self.decode_limits().map_or_else(
             || FrameKind::decode(bytes),
             |limits| FrameKind::decode_with_limits(bytes, limits),
@@ -33,7 +68,73 @@ impl ControlPlane {
                 "protocol message contained trailing bytes".to_owned(),
             ));
         }
-        self.feed(frame)
+        Ok(frame)
+    }
+
+    fn queue_or_feed_frame(
+        &mut self,
+        frame: FrameKind,
+        engine_events: &mut Vec<EngineEvent>,
+        deferred_error: &mut Option<ControlError>,
+    ) -> Result<(), ControlError> {
+        if !self.handshake_ready && !allowed_before_handshake(&frame) {
+            let error = ControlError::Protocol("server frame arrived before HELLO_OK".to_owned());
+            return self.error_after_engine_batch(engine_events, deferred_error, error);
+        }
+        let classified = match classify_engine_frame(frame) {
+            Ok(classified) => classified,
+            Err(error) => {
+                return self.error_after_engine_batch(engine_events, deferred_error, error);
+            }
+        };
+        match classified {
+            ClassifiedFrame::Engine(event) => {
+                engine_events.push(event);
+                Ok(())
+            }
+            ClassifiedFrame::Other(frame) => {
+                Self::continue_after_nonfatal(
+                    deferred_error,
+                    self.flush_engine_batch(engine_events),
+                )?;
+                Self::continue_after_nonfatal(deferred_error, self.feed(frame))
+            }
+        }
+    }
+
+    fn flush_engine_batch(
+        &mut self,
+        engine_events: &mut Vec<EngineEvent>,
+    ) -> Result<(), ControlError> {
+        self.apply_engine_events(std::mem::take(engine_events))
+    }
+
+    fn error_after_engine_batch(
+        &mut self,
+        engine_events: &mut Vec<EngineEvent>,
+        deferred_error: &mut Option<ControlError>,
+        error: ControlError,
+    ) -> Result<(), ControlError> {
+        if let Err(pending_error) =
+            Self::continue_after_nonfatal(deferred_error, self.flush_engine_batch(engine_events))
+        {
+            return Err(ControlError::prefer(Some(pending_error), error));
+        }
+        Err(ControlError::prefer(deferred_error.take(), error))
+    }
+
+    fn continue_after_nonfatal(
+        deferred_error: &mut Option<ControlError>,
+        result: Result<(), ControlError>,
+    ) -> Result<(), ControlError> {
+        match result {
+            Ok(()) => Ok(()),
+            Err(error @ ControlError::InvalidState(_)) => {
+                *deferred_error = Some(ControlError::prefer(deferred_error.take(), error));
+                Ok(())
+            }
+            Err(error) => Err(ControlError::prefer(deferred_error.take(), error)),
+        }
     }
 
     /// Apply one decoded inbound frame.
@@ -149,137 +250,144 @@ impl ControlPlane {
     }
 
     pub(super) fn feed_stream_frame(&mut self, frame: FrameKind) -> Result<(), ControlError> {
-        let event = match frame {
-            FrameKind::BootstrapBegin {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                profile,
-                cols,
-                rows,
-                base_seq,
-            } => EngineEvent::BootstrapBegin {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                profile,
-                cols,
-                rows,
-                base_seq,
-            },
-            FrameKind::BootstrapChunk {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq,
-                payload,
-            } => EngineEvent::BootstrapChunk {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                chunk_seq,
-                payload: payload.to_vec(),
-            },
-            FrameKind::BootstrapReady {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor,
-            } => EngineEvent::BootstrapReady {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                history_cursor: history_cursor.map(|cursor| cursor.to_vec()),
-            },
-            FrameKind::BootstrapTombstone {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                reason,
-                last_valid_seq,
-            } => EngineEvent::Tombstone {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                reason,
-                last_valid_seq,
-            },
-            FrameKind::ResourceOutput {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq,
-                bytes,
-            } => EngineEvent::Output {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                seq,
-                bytes: bytes.to_vec(),
-            },
-            frame => return self.feed_history_frame(frame),
-        };
-        self.apply_engine(event)
-    }
-
-    pub(super) fn feed_history_frame(&mut self, frame: FrameKind) -> Result<(), ControlError> {
-        let event = match frame {
-            FrameKind::HistoryPage {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                page_seq,
-                cursor,
-                next_cursor,
-                payload,
-                rows,
-            } => EngineEvent::HistoryPage {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                page_seq,
-                rows,
-                cursor: cursor.to_vec(),
-                next_cursor: next_cursor.map(|cursor| cursor.to_vec()),
-                payload: payload.to_vec(),
-            },
-            FrameKind::HistoryTombstone {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor,
-                reason,
-            } => EngineEvent::HistoryTombstone {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: cursor.to_vec(),
-                reason: history_unavailable_reason(reason)?,
-            },
-            FrameKind::HistoryRejected {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor,
-                reason,
-                required_bytes,
-                required_rows,
-            } => EngineEvent::HistoryRejected {
-                terminal_id,
-                stream_id,
-                bootstrap_id,
-                cursor: cursor.to_vec(),
-                reason: history_rejection_reason(reason)?,
-                required_bytes,
-                required_rows,
-            },
-            other => {
-                self.push_event(Event::Frame(Box::new(other)));
-                return Ok(());
+        match classify_engine_frame(frame)? {
+            ClassifiedFrame::Engine(event) => self.apply_engine(event),
+            ClassifiedFrame::Other(frame) => {
+                self.push_event(Event::Frame(Box::new(frame)));
+                Ok(())
             }
-        };
-        self.apply_engine(event)
+        }
     }
+}
+
+fn classify_engine_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlError> {
+    let event = match frame {
+        FrameKind::BootstrapBegin {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            profile,
+            cols,
+            rows,
+            base_seq,
+        } => EngineEvent::BootstrapBegin {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            profile,
+            cols,
+            rows,
+            base_seq,
+        },
+        FrameKind::BootstrapChunk {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            chunk_seq,
+            payload,
+        } => EngineEvent::BootstrapChunk {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            chunk_seq,
+            payload: payload.to_vec(),
+        },
+        FrameKind::BootstrapReady {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            history_cursor,
+        } => EngineEvent::BootstrapReady {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            history_cursor: history_cursor.map(|cursor| cursor.to_vec()),
+        },
+        FrameKind::BootstrapTombstone {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            reason,
+            last_valid_seq,
+        } => EngineEvent::Tombstone {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            reason,
+            last_valid_seq,
+        },
+        FrameKind::ResourceOutput {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            seq,
+            bytes,
+        } => EngineEvent::Output {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            seq,
+            bytes: bytes.to_vec(),
+        },
+        other => return classify_history_frame(other),
+    };
+    Ok(ClassifiedFrame::Engine(event))
+}
+
+fn classify_history_frame(frame: FrameKind) -> Result<ClassifiedFrame, ControlError> {
+    let event = match frame {
+        FrameKind::HistoryPage {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            page_seq,
+            cursor,
+            next_cursor,
+            payload,
+            rows,
+        } => EngineEvent::HistoryPage {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            page_seq,
+            rows,
+            cursor: cursor.to_vec(),
+            next_cursor: next_cursor.map(|cursor| cursor.to_vec()),
+            payload: payload.to_vec(),
+        },
+        FrameKind::HistoryTombstone {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            reason,
+        } => EngineEvent::HistoryTombstone {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor: cursor.to_vec(),
+            reason: history_unavailable_reason(reason)?,
+        },
+        FrameKind::HistoryRejected {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor,
+            reason,
+            required_bytes,
+            required_rows,
+        } => EngineEvent::HistoryRejected {
+            terminal_id,
+            stream_id,
+            bootstrap_id,
+            cursor: cursor.to_vec(),
+            reason: history_rejection_reason(reason)?,
+            required_bytes,
+            required_rows,
+        },
+        other => return Ok(ClassifiedFrame::Other(other)),
+    };
+    Ok(ClassifiedFrame::Engine(event))
 }
 
 fn history_unavailable_reason(

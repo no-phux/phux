@@ -55,14 +55,21 @@ to call from.
 - **The owner thread** (`engine::EngineHandle`) hosts
   `SessionKernel<GhosttyAdapter>` and every replica. Ghostty is `!Send`,
   so only owned values cross: `EngineEvent`s in over a channel,
-  `EngineOutcome`s (the kernel's declarative effects) back. After each
-  applied event it re-projects every damaged terminal and publishes the
-  frame before answering, so an outcome's damage is already visible.
+  `EngineOutcome`s (the kernel's declarative effects) back. A single event
+  publishes before answering as before; `ControlPlane::apply_engine_events`
+  applies an ordered pump batch, accumulates damage, and projects each damaged
+  terminal once before the ordered outcomes return to the plane. A fatal
+  outcome ends the applied prefix; later queued frames never mutate replicas.
+  Generation and dirty-row facts therefore describe the batch's final
+  authoritative state without paying one projection per output frame.
 - **The runtime thread** runs one current-thread tokio runtime with the
-  driver on it. It shares the plane with callers through a mutex and never
-  calls foreign code while holding it: the `Listener` wake fires after the
-  lock is released, edge-triggered (one outstanding wake no matter how many
-  frames land; `take_events` re-arms it).
+  driver on it. Each read drains at most 256 complete frames already buffered
+  by UDS, QUIC, or WebSocket, and the plane batches contiguous engine frames;
+  a session/control frame flushes the pending engine batch first, preserving
+  wire order. The thread shares the plane with callers through a mutex and
+  never calls foreign code while holding it: the `Listener` wake fires after
+  the lock is released, edge-triggered (one outstanding wake no matter how
+  many frames land; `take_events` re-arms it).
 - **Caller threads** hold a `Client` (an `Arc`; clone to share) and call
   synchronous methods from anywhere. Each takes the lock briefly and
   notifies the driver when frames were queued. Grid frames are acquired
