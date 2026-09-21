@@ -873,7 +873,14 @@ impl SidebarPainter {
         let avail = usize::from(text_w)
             .saturating_sub(ICON_COLUMNS)
             .saturating_sub(host_cols);
-        let state_text = e.name.clone();
+        // A satellite row's locator is already the agent name (there is no
+        // attachable session to name). Painting that name again as the
+        // suffix would repeat it. The glyph still carries the live state.
+        let state_text = if e.host.is_some() && e.session.as_deref() == Some(e.name.as_str()) {
+            String::new()
+        } else {
+            e.name.clone()
+        };
         // A cross-session row is labelled by its SESSION, not its window: the
         // row's job is to say where in the fleet to go, and a window name
         // out of its session's context ("edit") locates nothing.
@@ -910,10 +917,12 @@ impl SidebarPainter {
             win_label,
             Style::default().fg(self.theme.text),
         ));
-        spans.push(Span::styled(
-            format!(" {state_label}"),
-            Style::default().fg(color),
-        ));
+        if !state_label.is_empty() {
+            spans.push(Span::styled(
+                format!(" {state_label}"),
+                Style::default().fg(color),
+            ));
+        }
         Line::from(spans)
     }
 
