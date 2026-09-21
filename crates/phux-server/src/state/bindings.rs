@@ -60,7 +60,7 @@ impl ServerState {
         while index < descendants.len() {
             let current = descendants[index];
             for child in self.sessions.registry.children(current) {
-                if !descendants.iter().any(|id| *id == child) {
+                if !descendants.contains(&child) {
                     descendants.push(child);
                 }
             }
