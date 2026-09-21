@@ -1,7 +1,7 @@
 ---
 audience: humans, consumers
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-21
 ---
 
 # Cockpit
@@ -86,6 +86,33 @@ of the close and the workspace snapshot arrives first. The command
 boundaries answer `atPrompt()`. A command that ran at least ten seconds posts
 a notification under the bell's gate and latch. A missing status, such as a
 satellite pane behind a hub, reads as unknown, never as an error.
+
+## Who owns the socket
+
+Two lanes, one C ABI (ADR-0133).
+
+The **embedded lane** is the shipping default and what every Zig test
+drives: Cockpit's own worker dials, reconnects, and pumps frames through
+`phux_client_feed_frame` and `phux_client_outgoing_*`. A remote host is
+reached by handing one end of a Unix-domain socket pair to a tunnel.
+
+The **connected lane** hands all of that to `phux-client-runtime`. It
+resolves the target through the CLI's `[[remote]]` registry under the CLI's
+trust rules, dials, walks the reconnect ladder, and reads and writes the
+socket on its own thread; Cockpit hands it a target, gets woken, and calls
+`phux_client_poll`. Frames are still decoded on Cockpit's owning thread, so
+the ABI's per-frame behavior is unchanged.
+
+The connected lane is opt-in while it waits for live acceptance:
+
+```sh
+PHUX_COCKPIT_CONNECTED=1 phux cockpit
+```
+
+On that lane the runtime queues `HELLO` itself, `phux_client_connection_epoch`
+replaces "a new client per connection" as the reconnect fence, and a bare
+`host:port` endpoint stays on the worker, because the registry is what
+carries the pin and token a routable dial needs.
 
 ## Clipboard (OSC 52)
 

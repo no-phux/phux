@@ -275,10 +275,38 @@ fn publishTitle(terminal: *Terminal) void {
     terminal.pending_title_set = false;
 }
 
+/// Which half of the client runtime owns this host's socket (ADR-0133).
+pub const Lane = enum {
+    /// The Zig socket worker owns it: `extension.Worker` reads frames into
+    /// `bridge.incoming` and writes what `stageOutgoing` stages. This is the
+    /// lane every test harness drives, because staging a frame is how a
+    /// fixture speaks.
+    embedded,
+    /// `phux-client-runtime` owns it: it resolves the target, dials, walks
+    /// the reconnect ladder, and reads and writes the socket on its own
+    /// thread. There is no worker and no bridge traffic; `phux_client_poll`
+    /// feeds what the driver read, on this thread.
+    connected,
+};
+
+/// Where a connected host dials. Exactly one of `target` and `socket_path`
+/// is non-empty; the runtime resolves `target` through the CLI's own
+/// `[[remote]]` registry, under the CLI's trust rules.
+pub const ConnectTarget = struct {
+    target: []const u8 = &.{},
+    socket_path: []const u8 = &.{},
+    config_path: []const u8 = &.{},
+};
+
 pub const Host = struct {
     context_id: u64,
     gpa: std.mem.Allocator,
     client: *c.PhuxClient,
+    lane: Lane = .embedded,
+    /// The connected lane's fence. The runtime reconnects underneath a
+    /// handle that outlives every socket, so client identity stops marking
+    /// a new connection; `phux_client_connection_epoch` does.
+    connection_epoch: u64 = 0,
     bridge: *transport.Bridge,
     terminals: std.ArrayListUnmanaged(Terminal) = .empty,
     sessions: std.ArrayListUnmanaged(SessionSummary) = .empty,
@@ -382,7 +410,78 @@ pub const Host = struct {
         };
     }
 
+    /// Hand the socket to `phux-client-runtime` and switch this host to the
+    /// connected lane, replacing the embedded client it was created with.
+    ///
+    /// `wake` runs on the runtime's thread whenever there is something to
+    /// drain. It must do no more than post to the app's event loop: every
+    /// other call on this host is owning-thread-only.
+    pub fn connect(
+        host: *Host,
+        target: ConnectTarget,
+        client_name: []const u8,
+        wake: c.PhuxClientWakeCallback,
+        wake_context: ?*anyopaque,
+    ) !void {
+        if (host.lane == .connected) return error.InvalidState;
+        var raw: ?*c.PhuxClient = null;
+        const options: c.PhuxConnectOptions = .{
+            .size = @sizeOf(c.PhuxConnectOptions),
+            .version = c.PHUX_CLIENT_ABI_VERSION,
+            .base = clientOptions(),
+            .target = bytes(target.target),
+            .socket_path = bytes(target.socket_path),
+            .config_path = bytes(target.config_path),
+            .client_name = bytes(client_name),
+            .wake = wake,
+            .wake_context = wake_context,
+        };
+        try resultError(c.phux_client_connect(&options, &raw));
+        const replacement = raw orelse return error.InvalidState;
+        c.phux_client_free(host.client);
+        host.client = replacement;
+        host.lane = .connected;
+        host.connection_epoch = 0;
+        host.disconnected = false;
+        // The runtime queues HELLO on every connection it opens, so this
+        // lane never calls `start`. Rename-following still has to be armed
+        // once, and it is idempotent before HELLO_OK.
+        try resultError(c.phux_client_follow_session_names(host.client));
+    }
+
+    /// Give the socket back. Freeing the connected client joins the
+    /// runtime's driver, so no wake can land after this returns, and an
+    /// embedded placeholder takes its place so a later `connect` can start
+    /// a fresh session.
+    ///
+    /// A no-op on the embedded lane. Infallible by design: `stop` has no
+    /// way to report, and leaving a driver running would be worse than the
+    /// degraded path below.
+    pub fn stopConnected(host: *Host) void {
+        if (host.lane != .connected) return;
+        const replacement = newClient() catch {
+            // Out of memory for the placeholder. Detach what we have rather
+            // than leak a live connection; `destroy` still frees it.
+            _ = c.phux_client_disconnect(host.client);
+            host.disconnected = true;
+            return;
+        };
+        c.phux_client_free(host.client);
+        host.client = replacement;
+        host.lane = .embedded;
+        host.connection_epoch = 0;
+        host.disconnected = true;
+    }
+
+    /// Ask the runtime to drop the socket and redial now. A no-op on the
+    /// embedded lane, where redialing is the worker's.
+    pub fn resync(host: *Host) void {
+        if (host.lane != .connected) return;
+        _ = c.phux_client_resync(host.client);
+    }
+
     pub fn start(host: *Host, client_name: []const u8) !void {
+        if (host.lane == .connected) return error.InvalidState;
         try outboundSize(client_name.len);
         try resultError(c.phux_client_queue_hello(host.client, bytes(client_name)));
         // Renames any client makes reach this connection's session list from
@@ -833,12 +932,28 @@ pub const Host = struct {
     pub fn reconnect(host: *Host, client_name: []const u8) !void {
         host.disconnect();
         errdefer host.freezePublished();
-        const next_generation = std.math.add(u64, host.client_generation, 1) catch
-            return error.GenerationExhausted;
+        const next_generation = try host.nextGeneration();
         const replacement = try newClient();
-        host.clearSearchResults(null);
         c.phux_client_free(host.client);
         host.client = replacement;
+        host.retirePreviousConnection(next_generation);
+        try host.start(client_name);
+    }
+
+    fn nextGeneration(host: *const Host) !u64 {
+        return std.math.add(u64, host.client_generation, 1) catch
+            error.GenerationExhausted;
+    }
+
+    /// Retire everything the connection that just ended built, keeping
+    /// provider identity, terminal order and the last complete canvas.
+    ///
+    /// The embedded lane reaches this by replacing the C client, because
+    /// there a new client *is* a new connection. The connected lane reaches
+    /// it from a connection-epoch change, because there one client outlives
+    /// every socket. Both retire the same state.
+    fn retirePreviousConnection(host: *Host, next_generation: u64) void {
+        host.clearSearchResults(null);
         host.workspace_store.deinit(host.gpa);
         host.client_generation = next_generation;
         host.rename_revision_seen = 0;
@@ -855,7 +970,22 @@ pub const Host = struct {
             terminal.pending_title_set = false;
             terminal.viewport = null;
         }
-        try host.start(client_name);
+    }
+
+    /// Feed what the runtime's driver read since the last drain, retiring
+    /// the previous connection first when the driver redialed underneath us.
+    fn pollConnected(host: *Host) !void {
+        const epoch = c.phux_client_connection_epoch(host.client);
+        if (epoch != host.connection_epoch) {
+            // Only a connection after the first retires anything; the first
+            // one has no predecessor to fence.
+            if (host.connection_epoch != 0) {
+                host.freezePublished();
+                host.retirePreviousConnection(try host.nextGeneration());
+            }
+            host.connection_epoch = epoch;
+        }
+        try resultErrorWithContext(host.client, "poll", c.phux_client_poll(host.client));
     }
 
     /// Only for an explicit different-session selection. Same-session reconnect
@@ -929,6 +1059,7 @@ pub const Host = struct {
     }
 
     fn feedReadinessFrames(host: *Host, frame_limit: usize) !void {
+        if (host.lane == .connected) return host.pollConnected();
         const count = host.bridge.incoming.drainCount(frame_limit);
         for (0..count) |_| {
             const frame = host.bridge.incoming.take() orelse break;
@@ -2059,6 +2190,13 @@ pub const Host = struct {
     }
 
     fn stageOutgoing(host: *Host) !void {
+        // Nothing to stage: releasing the ABI's control guard already woke
+        // the runtime's driver, which writes the queued frames itself. A
+        // drain here would take them off the socket.
+        if (host.lane == .connected) {
+            if (host.disconnected) return error.InvalidState;
+            return;
+        }
         // A worker may already have taken an earlier copy when a later one
         // fails. Retiring this connection clears both queues and prevents any
         // caller from replaying the retained FFI prefix after allocator recovery.
@@ -2082,9 +2220,10 @@ pub const Host = struct {
     }
 };
 
-fn newClient() !*c.PhuxClient {
-    var raw: ?*c.PhuxClient = null;
-    const options: c.PhuxClientOptions = .{
+/// The payload limits every client this host builds is given, on either
+/// lane.
+fn clientOptions() c.PhuxClientOptions {
+    return .{
         .size = @sizeOf(c.PhuxClientOptions),
         .version = c.PHUX_CLIENT_ABI_VERSION,
         .max_bootstrap_chunk_bytes = 256 * 1024,
@@ -2094,6 +2233,11 @@ fn newClient() !*c.PhuxClient {
         .max_history_materialized_rows = 8192,
         .history_prefetch_rows = 256,
     };
+}
+
+fn newClient() !*c.PhuxClient {
+    var raw: ?*c.PhuxClient = null;
+    const options = clientOptions();
     try resultError(c.phux_client_new(&options, &raw));
     return raw orelse error.InvalidState;
 }
@@ -3779,4 +3923,82 @@ test "unknown status codes are still dropped silently" {
     try std.testing.expect(!host.atPrompt(terminal));
     try std.testing.expect(host.takeNotice() == null);
     try std.testing.expect(host.takeEnded() == null);
+}
+
+test "the connected lane takes the socket from the worker and gives it back" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try std.testing.expectEqual(Lane.embedded, host.lane);
+
+    // Nothing is listening. A host that is down is the ladder's business, so
+    // the call still succeeds and the driver keeps trying.
+    var noise: std.Random.DefaultPrng = .init(0x5eed);
+    var name: [32]u8 = undefined;
+    const socket = try std.fmt.bufPrint(&name, "/tmp/phux-ct-{d}.sock", .{noise.random().int(u16)});
+    try host.connect(.{ .socket_path = socket }, "cockpit-connected-test", null, null);
+
+    try std.testing.expectEqual(Lane.connected, host.lane);
+    try std.testing.expect(c.phux_client_is_connected(host.client));
+    // The epoch is the fence; nothing has connected yet.
+    try std.testing.expectEqual(@as(u64, 0), host.connection_epoch);
+
+    // The embedded lane's calls are refused while the runtime holds the socket.
+    try std.testing.expectError(error.InvalidState, host.start("cockpit-connected-test"));
+    try std.testing.expectError(error.InvalidState, host.connect(.{ .socket_path = socket }, "again", null, null));
+
+    host.stopConnected();
+    try std.testing.expectEqual(Lane.embedded, host.lane);
+    try std.testing.expect(!c.phux_client_is_connected(host.client));
+    try std.testing.expectEqual(@as(u64, 0), host.connection_epoch);
+}
+
+test "connecting refuses a target that names neither a host nor a socket" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    // Neither a registry target nor a socket: there is nothing to dial.
+    // `resultError` folds the ABI's INVALID_ARGUMENT into InvalidState.
+    try std.testing.expectError(error.InvalidState, host.connect(.{}, "cockpit", null, null));
+    try std.testing.expectEqual(Lane.embedded, host.lane);
+}
+
+test "stopping and resyncing an embedded host are safe no-ops" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    host.stopConnected();
+    host.stopConnected();
+    host.resync();
+    try std.testing.expectEqual(Lane.embedded, host.lane);
+}
+
+test "retiring a connection keeps published canvases and order while fencing its state" {
+    var bridge = transport.Bridge.init(std.testing.allocator);
+    defer bridge.deinit();
+    const host = try Host.create(std.testing.allocator, &bridge);
+    defer host.destroy();
+    try test_support.attachHost(host);
+    const id = try RemoteId.fromPhux(c.PHUX_RESOURCE_ID_LOCAL, 11, "");
+    const terminal = try host.ensureTerminal(cId(&id));
+    terminal.published = true;
+    terminal.phase = .live;
+    terminal.seen_in_attach = true;
+    host.attach_barrier_seen = true;
+    const generation = host.client_generation;
+    const before = host.terminals.items.len;
+
+    host.retirePreviousConnection(try host.nextGeneration());
+
+    try std.testing.expectEqual(generation + 1, host.client_generation);
+    try std.testing.expect(!host.attach_barrier_seen);
+    // Terminal order and membership survive; only per-connection state goes.
+    try std.testing.expectEqual(before, host.terminals.items.len);
+    const retired = host.findTerminalConst(host.refFor(id)) orelse return error.TestExpectedTerminal;
+    // A published terminal survives as a frozen canvas, not as a live one.
+    try std.testing.expectEqual(provider.Phase.reconnecting, retired.phase);
+    try std.testing.expect(!retired.seen_in_attach);
 }
