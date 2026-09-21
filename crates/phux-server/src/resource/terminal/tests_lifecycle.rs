@@ -1363,6 +1363,54 @@ async fn progressive_native_ready_stays_within_one_seed_window() {
         .await;
 }
 
+/// Fails-without-the-fix guard: resetting the canonical terminal for a
+/// replacement child while a client's snapshot capture holds it used to hit
+/// `NativeTerminalManager::reset`'s `unreachable!` and abort the entire
+/// server process — destroying every session on it, since sessions are not
+/// persisted anywhere.
+///
+/// The race is not exotic, it is the designed-for one: `handle_pty_eof`
+/// deliberately keeps the actor alive so "a client attaching just after the
+/// child exited" still finds it, and that attach is exactly what moves the
+/// terminal out into a capture. `reset_for_replacement` now lands every
+/// in-flight cut first, so the terminal is home before it is reset.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn reset_for_replacement_survives_an_in_flight_native_capture() {
+    let bundle = TerminalActor::new(80, 24).expect("new actor");
+    let mut actor = bundle.actor;
+    let (reply, replied) = oneshot::channel();
+    actor.start_native_bootstrap(NativeBootstrapRequest {
+        owner: 31,
+        terminal_id: phux_protocol::ids::ResourceId::local(1),
+        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+        limits: phux_protocol::caps::BootstrapLimits::default(),
+        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        reply,
+    });
+    assert!(
+        actor.pending_native_bootstrap.is_some(),
+        "the capture must be in flight for this to be the race under test",
+    );
+
+    // The panic was here.
+    actor.reset_for_replacement();
+
+    assert!(
+        actor.pending_native_bootstrap.is_none(),
+        "the in-flight cut must be landed, not left holding the terminal",
+    );
+    assert!(
+        replied.await.expect("capture reply").is_err(),
+        "the waiter must be answered, not left hanging on a cut that was discarded",
+    );
+    // The terminal is home and usable: a write that would have panicked
+    // against a loaned terminal now lands.
+    actor.terminal.borrow_mut().vt_write(b"ok");
+}
+
 #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "current_thread")]
 async fn native_bootstrap_capture_lifetime_retires_staged_state() {

@@ -626,6 +626,9 @@ pub(crate) struct NativeTerminalManager {
     retired_generation_charges: Vec<Arc<NativeGenerationCharge>>,
     capacity: usize,
     capture_active: bool,
+    /// A `reset` that landed while `terminal` was on loan to a capture,
+    /// replayed by [`Self::apply_deferred_reset`] when it comes back.
+    reset_pending: bool,
     next_generation: u64,
 }
 
@@ -673,6 +676,7 @@ impl NativeTerminalManager {
             retired_generation_charges,
             capacity,
             capture_active: false,
+            reset_pending: false,
             next_generation: 1,
         })
     }
@@ -706,12 +710,36 @@ impl NativeTerminalManager {
         )
     }
 
+    /// Clear the canonical screen for a replacement child.
+    ///
+    /// Callers are expected to land any in-flight capture first (the actor's
+    /// `reset_for_replacement` does), but this must never abort the process
+    /// if one slips through: a panic here kills the server and every session
+    /// on it. When the terminal is on loan to a capture the reset is recorded
+    /// and applied the moment the capture hands it back. Every generation is
+    /// retired either way, so no cursor outlives the screen it described.
     pub(crate) fn reset(&mut self) {
-        debug_assert!(!self.capture_active);
         self.retire_all_generations();
-        match self.terminal.as_mut() {
-            Some(terminal) => terminal.reset(),
-            None => unreachable!("terminal available outside prefix capture"),
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.reset();
+        } else {
+            tracing::warn!(
+                "reset requested while the canonical terminal is out on a prefix capture; \
+                 deferring it until the capture returns"
+            );
+            self.reset_pending = true;
+        }
+    }
+
+    /// Apply a reset that arrived while the terminal was on loan. Called on
+    /// every path that returns the terminal to this manager.
+    fn apply_deferred_reset(&mut self) {
+        if !std::mem::take(&mut self.reset_pending) {
+            return;
+        }
+        self.retire_all_generations();
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.reset();
         }
     }
 
@@ -763,6 +791,7 @@ impl NativeTerminalManager {
             Ok(capture) => capture,
             Err(failure) => {
                 self.terminal = Some(failure.terminal);
+                self.apply_deferred_reset();
                 return Err(failure.error.into());
             }
         };
@@ -792,7 +821,7 @@ impl NativeTerminalManager {
         if !self.capture_active {
             return Err(NativeStateError::InvalidState);
         }
-        match capture.detach_generation_ready() {
+        let result = match capture.detach_generation_ready() {
             Ok((terminal, cursor, seed)) => {
                 self.terminal = Some(terminal);
                 self.capture_active = false;
@@ -803,12 +832,15 @@ impl NativeTerminalManager {
                 self.capture_active = false;
                 Err(failure.error)
             }
-        }
+        };
+        self.apply_deferred_reset();
+        result
     }
 
     pub(crate) fn abort_generation_capture(&mut self, capture: NativeManagedCapture<'static>) {
         self.terminal = Some(capture.into_terminal());
         self.capture_active = false;
+        self.apply_deferred_reset();
     }
 
     pub(crate) fn has_generation(&self, cursor: &OpaqueHistoryCursor) -> bool {
