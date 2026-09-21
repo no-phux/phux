@@ -86,3 +86,11 @@ sync-skills DEST:
 [doc('Build PhuxFFI.xcframework (device, simulator, macOS) and its provenance file.')]
 ffi-xcframework *ARGS:
     bash scripts/build-ffi-xcframework.sh {{ARGS}}
+
+# Mobile's sibling UniFFI projection over phux-client-runtime. The artifact
+# includes generated Swift from the same revision so consumers replace native
+# slices and bindings atomically (phux-mobile ADR-0031).
+[group('release')]
+[doc('Build the canonical mobile UniFFI xcframework, bindings, and provenance.')]
+mobile-ffi-xcframework *ARGS:
+    bash scripts/build-mobile-ffi-xcframework.sh {{ARGS}}

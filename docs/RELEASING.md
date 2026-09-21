@@ -296,6 +296,7 @@ Linux x86_64, and Linux arm64.
 | Claude Code plugin | repository marketplace + GitHub release | `claude-plugin-vX.Y.Z`, [`.claude-plugin/marketplace.json`](../.claude-plugin/marketplace.json) |
 | Phux Cockpit | Homebrew cask + GitHub release | `cockpit-vX.Y.Z`, ZIP + DMG + `SHA256SUMS`, [`cockpit-release.yml`](../.github/workflows/cockpit-release.yml) |
 | `PhuxFFI.xcframework` (phux-client-ffi for iOS, simulator, macOS) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), called by release-please; see [PhuxFFI xcframework](#phuxffi-xcframework) |
+| `PhuxMobileFFI-<tag>.xcframework.zip` (mobile UniFFI runtime projection plus generated Swift) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), built beside the C artifact; see [Mobile UniFFI xcframework](#mobile-uniffi-xcframework) |
 
 `@phux/integration-runtime` is a private implementation module bundled into
 the public Pi artifact and inlined into OpenCode. It has no tag or independent
@@ -633,6 +634,35 @@ above does not apply to it. It honours cargo's own target directory
 taken from the invoking directory). A local build is for proving a change;
 the slices a release ships come from `ffi-xcframework.yml`, whose provenance
 file is the authoritative record.
+
+## Mobile UniFFI xcframework
+
+`scripts/build-mobile-ffi-xcframework.sh` (`just mobile-ffi-xcframework`)
+builds `crates/phux-mobile-ffi` with `engine,wire` for the same three Apple
+targets. The crate is a projection-only sibling of `phux-client-ffi`: it maps
+`phux-client-runtime` values to the object, callback, receipt, and byte-arena
+surface consumed by native mobile clients. Its connected path owns no dial,
+reconnect, frame pump, or remote engine state machine; the artifact also keeps
+an isolated `TerminalEngine` for local playground and test terminals
+(ADR-0133; phux-mobile ADR-0031).
+
+The output directory contains `PhuxFFI.xcframework`,
+`Generated/PhuxFFI.swift`, and `provenance`. The build reads the UniFFI surface
+from the macOS library, assembles the native slices, and runs a throwaway
+SwiftPM executable that calls `bridgeReady()`. Provenance records the exact
+phux revision and tree, dirty state, engine revision, profile, mode, toolchain,
+generated-source digest, and every archive digest. A consumer must verify and
+replace all three outputs atomically; generated Swift from one revision must
+never load a native slice from another.
+
+`ffi-xcframework.yml` uploads this bundle as the
+`PhuxMobileFFI-xcframework` workflow artifact. For a root release it also
+attaches `PhuxMobileFFI-<tag>.xcframework.zip`, its SHA-256 sidecar, and its
+provenance sidecar. The zip contains the xcframework, generated Swift, and
+provenance at its root. An empty-tag dispatch proves an exact branch or commit
+without mutating a release. The mobile repository resolves the workflow run by
+its pinned phux commit and can fall back to building this script from an exact
+phux checkout after run-artifact retention expires.
 
 ## One-time Cockpit import cutover
 

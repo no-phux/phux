@@ -1,0 +1,92 @@
+[package]
+name = "phux-mobile-ffi"
+description = "UniFFI projection of phux-client-runtime for native mobile clients."
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[lib]
+name = "phux_mobile_ffi"
+# staticlib/cdylib for the Apple linker (the xcframework carries archives);
+# rlib so the uniffi-bindgen bin below can link the crate.
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+# `cargo run --bin uniffi-bindgen -- generate --library ...` emits the Swift
+# bindings that ship inside the artifact. Proc-macro mode: the exported surface
+# is `#[uniffi::export]` in this crate, with no UDL to keep in sync.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+
+# The rig seeder speaks the wire; it stays out of engine-only builds.
+[[example]]
+name = "rig_seed"
+required-features = ["wire"]
+
+[features]
+# The shipped configuration, matching phux-client-runtime's own default: the
+# artifact is built with both lanes on, so the default build is the one that
+# gets gated. `--no-default-features` keeps the bare version surface for a
+# host without the Zig toolchain.
+default = ["engine", "wire"]
+# The real VT engine (ADR-0007). Pulls in `libghostty-vt`, whose `-sys` crate
+# invokes zig from build.rs, so this feature needs the pinned Zig toolchain.
+# kitty-graphics is on so the artifact exposes the image surface.
+engine = [
+    "phux-client-core/native-engine",
+    "phux-client-runtime/engine",
+    "dep:libghostty-vt",
+    "dep:thiserror",
+    "libghostty-vt/kitty-graphics",
+    "dep:unicode-segmentation",
+]
+# The remote projection shim (phux-mobile ADR-0029): `phux-client-runtime` owns
+# transport, reconnect, and protocol dispatch. Deliberately engine-independent
+# so the wire lane checks without zig.
+wire = ["dep:thiserror", "dep:serde_json"]
+
+[dependencies]
+# The binding generator and its runtime scaffolding. New to this workspace:
+# this crate is the mobile projection that phux-mobile ADR-0031 moved here, and
+# UniFFI is what produces its Swift (and later Kotlin) from one exported Rust
+# surface instead of a hand-written adapter per language. 0.28 is the exact
+# version phux-mobile already shipped, kept so the move changes ownership and
+# not generated output. It brings a self-contained generator stack into
+# Cargo.lock — `uniffi_bindgen`/`uniffi_meta`/`uniffi_macros` plus their
+# template and parsing dependencies (askama, weedle2, camino, clap for the
+# `cli` feature, cargo_metadata) — and, in the library, a small runtime of
+# lowering/lifting helpers plus `bytes` and `once_cell`, all of which are
+# either already in the graph or pure-safe Rust. Nothing here is linked into
+# the phux binaries: this crate is not a dependency of any shipped executable,
+# only of its own staticlib. The `cli` feature is what lets the in-crate
+# `uniffi-bindgen` bin drive generation from the built library, which is how
+# the artifact's Swift is guaranteed to come from the same revision as its
+# native slices.
+uniffi = { version = "0.28", features = ["cli"] }
+# The runtime this crate projects, and the two value layers it reads through.
+# Path dependencies on the enclosing workspace: before the move these were git
+# deps pinned to a phux revision, and keeping the shim beside the runtime is
+# the entire point of phux-mobile ADR-0031 decision 3.
+phux-protocol.workspace = true
+phux-client-core.workspace = true
+# Not `workspace = true`: the workspace entry leaves default features on
+# (they include `engine`), and an inheriting member cannot turn them off.
+phux-client-runtime = { path = "../phux-client-runtime", default-features = false }
+# The VT engine behind the `engine` feature, at the workspace's pinned
+# revision so the artifact and every other phux consumer share one engine.
+libghostty-vt = { workspace = true, optional = true }
+# Error-derive for the engine and wire surfaces.
+thiserror = { workspace = true, optional = true }
+# Decodes the `phux.agent/v1` L3 record, which docs/spec/L3.md 3.7 defines as
+# UTF-8 JSON, into the Swift-facing agent events.
+serde_json = { workspace = true, optional = true }
+# Grapheme segmentation for the mobile text-commit path into the shared
+# predictor.
+unicode-segmentation = { workspace = true, optional = true }

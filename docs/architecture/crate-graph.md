@@ -81,8 +81,9 @@ Five crate boundaries carry weight:
    on it.
 5. **`phux-client-runtime` is the one orchestration layer below every
    binding** (ADR-0133). It sits above `phux-dial`, `phux-config`, and
-   `phux-client-core` and below `phux-client-ffi`, `phux-client`, and the
-   `phux` binary: registry resolution, dial planning under the CLI's trust
+   `phux-client-core` and below `phux-client-ffi`, `phux-mobile-ffi`,
+   `phux-client`, and the `phux` binary: registry resolution, dial planning
+   under the CLI's trust
    rules, reconnect policy, WebSocket frame cutting, the relay tunnel, the
    sans-IO control plane over `SessionKernel`, the engine owner thread,
    and grid publication exist once, as a Rust API with no FFI (see
@@ -98,10 +99,10 @@ Five crate boundaries carry weight:
    and connector keep their own redial ladder: they are the server-side
    federation dialer, not a client binding, and moving them onto the
    runtime's `Ladder` is a separate decision. A binding crate translates
-   runtime-owned values into its language's idiom and holds no state
-   machine; a loop, a `select!`, or a backoff constant in a binding is in
-   the wrong crate. phux-mobile's UniFFI bridge is the second binding,
-   across its `PHUX_REV` pin.
+   runtime-owned values into its language's idiom and holds no connected-client
+   state machine; a connection loop, a `select!`, or a backoff constant in a
+   binding is in the wrong crate. `phux-mobile-ffi` is the second binding and is published
+   with generated bindings from this exact source revision.
 
 `server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
 also depend on `libghostty-vt` directly: the server's `Terminal` is the
@@ -127,6 +128,11 @@ tunnel is the runtime's, behind a C handle: the runtime reads the CLI's
 `[[remote]]` registry through `phux-config`'s loader and dials through
 `phux-dial`, so an embedder reaches a registered host without a second
 registry, a second dialer, or a second relay.
+
+`phux-mobile-ffi` is the sibling UniFFI leaf. It projects the runtime's
+connected client, callbacks, lossless receipts, and shared grid byte arenas
+for Swift and Kotlin without passing through the C ABI. Its generated Swift
+and Apple native slices ship as one revision-pinned artifact.
 
 ## Browser client crates (standalone wasm workspace)
 
