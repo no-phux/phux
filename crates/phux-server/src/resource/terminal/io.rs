@@ -519,7 +519,7 @@ impl TerminalActor {
         }
     }
 
-    fn reset_for_replacement(&mut self) {
+    pub(super) fn reset_for_replacement(&mut self) {
         self.exit = None;
         self.lifecycle = super::ResourceLifecycle::Running;
         self.osc133 = super::osc133::Osc133Scanner::new();
@@ -528,7 +528,47 @@ impl TerminalActor {
         self.last_progress.clear();
         self.in_output_burst = false;
         self.output_since_idle_tick = false;
+        // Land every in-flight native cut BEFORE the reset. A pending
+        // bootstrap owns the canonical terminal (it is moved into the
+        // snapshot capture for the duration), and this path is reached
+        // exactly when a client may be attaching: `handle_pty_eof` keeps the
+        // actor alive precisely so a `SnapshotRequest` racing the child's
+        // exit still finds it. Resetting while the terminal is on loan used
+        // to hit `NativeTerminalManager::reset`'s `unreachable!` and abort
+        // the whole server process, taking every session on it with it.
+        //
+        // Invalidating is also the honest answer: the screen the cut
+        // captured is about to be cleared, so any cursor derived from it is
+        // stale. `install_replacement_pty` broadcasts an everyone-resync
+        // right after, which is the resync the tombstoned pumps need, so the
+        // returned targets need no separate address (phux-p5bo).
+        self.land_native_cuts();
         self.terminal.borrow_mut().reset_for_new_child();
+    }
+
+    /// Fail any in-flight native bootstrap and tombstone every outstanding
+    /// cursor, returning the canonical terminal to the manager.
+    ///
+    /// A native bootstrap capture MOVES the canonical terminal out of
+    /// `NativeTerminalManager` for the length of the cut (up to
+    /// `NATIVE_CAPTURE_LIFETIME`), so any path that touches the terminal
+    /// while one is in flight aborts the process — release builds are
+    /// `panic = "abort"`, and this server holds every session the user has.
+    /// The `select!` arms that can reach the terminal are gated on
+    /// `!bootstrap_pending`; the teardown paths below run OUTSIDE those
+    /// guards, so they land the cut instead.
+    ///
+    /// Landing is also the honest answer on those paths: the pane is exiting
+    /// or being replaced, so the screen the cut captured is already stale.
+    ///
+    /// No-op on a build without the native engine, which never loans the
+    /// terminal out.
+    pub(super) fn land_native_cuts(&mut self) {
+        #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+        {
+            let _ = self
+                .invalidate_all_native_cursors(phux_protocol::wire::frame::TombstoneReason::Other);
+        }
     }
 
     fn install_replacement_pty(

@@ -40,39 +40,30 @@ use super::run_action::*;
 use super::test_support::*;
 
 #[test]
-fn soft_kill_input_frames_emits_exit_newline_sequence() {
-    let frames = soft_kill_input_frames(&tid(7));
-    assert_eq!(frames.len(), 5, "expected e/x/i/t/Enter");
-    // Each frame is INPUT_KEY targeting tid(7).
-    for f in &frames {
-        match f {
-            FrameKind::InputKey { terminal_id, .. } => {
-                assert_eq!(terminal_id, &tid(7));
-            }
-            other => panic!("expected InputKey, got {other:?}"),
+fn kill_resource_frame_targets_the_pane_with_a_correlated_command() {
+    // Regression: kill-pane used to type `exit\n` at the pane as five
+    // INPUT_KEY frames and hope a shell was listening. Anything else in the
+    // foreground — an editor, a pager, an agent CLI, a wedged process —
+    // swallowed the keystrokes and the pane never closed. It is now one
+    // KILL_RESOURCE the server acts on regardless of what is running.
+    let frame = kill_resource_frame(&tid(7), 42);
+    match frame {
+        FrameKind::Command {
+            request_id,
+            command:
+                phux_protocol::wire::frame::Command::KillResource {
+                    terminal_id,
+                    operation_id,
+                },
+        } => {
+            assert_eq!(terminal_id, tid(7));
+            // The id has to be correlated: a TERMINAL_NOT_FOUND refusal is
+            // the only evidence a client gets that a leaf naming a dead
+            // resource should leave the layout.
+            assert_eq!(request_id, 42);
+            assert_eq!(operation_id, None);
         }
-    }
-    // First four are printable letters with text="e".."t".
-    let expected_text = ["e", "x", "i", "t"];
-    for (i, want) in expected_text.iter().enumerate() {
-        match &frames[i] {
-            FrameKind::InputKey { event, .. } => {
-                assert_eq!(
-                    event.text.as_deref(),
-                    Some(*want),
-                    "frame {i}: text mismatch",
-                );
-            }
-            _ => unreachable!(),
-        }
-    }
-    // Last frame is Enter (no text).
-    match &frames[4] {
-        FrameKind::InputKey { event, .. } => {
-            assert_eq!(event.key, phux_protocol::input::key::PhysicalKey::Enter);
-            assert_eq!(event.text, None);
-        }
-        _ => unreachable!(),
+        other => panic!("expected a KILL_RESOURCE command, got {other:?}"),
     }
 }
 
@@ -358,8 +349,16 @@ fn kill_window_emits_one_soft_kill_sequence_per_leaf() {
         active: 0,
     };
     let effects = run(&bare_action("kill-window"), &mut workspace);
-    // 3 leaves x 5 frames (e/x/i/t/Enter) each.
-    assert_eq!(effects.kill_frames.len(), 15);
+    // One KILL_RESOURCE per leaf, each under its own request id.
+    assert_eq!(effects.kill_frames.len(), 3);
+    assert_eq!(
+        effects
+            .kill_requests
+            .iter()
+            .map(|(_, leaf)| leaf.clone())
+            .collect::<Vec<_>>(),
+        vec![tid(1), tid(2), tid(3)],
+    );
     // phux-i0e8.2.2: every targeted leaf is marked as an expected
     // close so the resulting TERMINAL_CLOSEDs stay notice-silent.
     assert_eq!(effects.expected_closes, vec![tid(1), tid(2), tid(3)]);
@@ -368,13 +367,22 @@ fn kill_window_emits_one_soft_kill_sequence_per_leaf() {
 }
 
 /// phux-i0e8.2.2: `kill-pane` marks its own target as an expected
-/// close alongside the soft-kill frames.
+/// close alongside the kill frame, and correlates the request id so a
+/// refusal can be attributed back to the leaf.
 #[test]
 fn kill_pane_marks_the_focused_pane_as_expected_close() {
     let mut workspace = Workspace::single(tid(7));
     let effects = run(&bare_action("kill-pane"), &mut workspace);
-    assert!(!effects.kill_frames.is_empty());
+    assert_eq!(effects.kill_frames.len(), 1);
     assert_eq!(effects.expected_closes, vec![tid(7)]);
+    assert_eq!(
+        effects
+            .kill_requests
+            .iter()
+            .map(|(_, leaf)| leaf.clone())
+            .collect::<Vec<_>>(),
+        vec![tid(7)],
+    );
 }
 
 #[test]

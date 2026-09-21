@@ -91,6 +91,16 @@ struct FrameCtx<'a, W: crate::attach::RenderSink> {
     // arm drains the marker and suppresses the pane-exit notice for an
     // expected close — the user killed it; telling them it died is noise.
     expected_closes: &'a mut HashSet<ResourceId>,
+    // `request_id` -> the Terminal that request named, for every command this
+    // client sent whose refusal is authoritative about that Terminal's
+    // existence (`KILL_RESOURCE` from kill-pane / kill-window,
+    // `ATTACH_RESOURCE` for a layout leaf discovered at attach). A
+    // `TERMINAL_NOT_FOUND` reply is the ONLY evidence a client ever gets that
+    // such a resource is gone: the server broadcasts `RESOURCE_CLOSED` when a
+    // resource it holds dies, and nothing at all for one it never had. Without
+    // this correlation a leaf naming a dead resource stays in the layout
+    // forever, painting a blank pane that no kill can remove.
+    pending_resource_ops: &'a mut HashMap<u32, ResourceId>,
     // ADR-0040: the driver-held `phux.agent/v1` index. The MetadataValue /
     // MetadataChanged arms decode agent records into it; the driver reads
     // it when composing window labels.
@@ -184,6 +194,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
     pending_splits: &mut HashMap<u32, PendingSplit>,
     pending_windows: &mut HashMap<u32, PendingWindow>,
     expected_closes: &mut HashSet<ResourceId>,
+    pending_resource_ops: &mut HashMap<u32, ResourceId>,
     agent_meta: &mut AgentMetaIndex,
     overlay_active: bool,
     defer_paint: bool,
@@ -229,6 +240,7 @@ pub(in crate::attach) fn handle_server_frame<W: crate::attach::RenderSink>(
         pending_splits,
         pending_windows,
         expected_closes,
+        pending_resource_ops,
         agent_meta,
         overlay_active,
         defer_paint,
@@ -1547,21 +1559,32 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
             ..FrameOutcome::default()
         };
     }
+    fold_dead_resource(
+        ctx,
+        terminal_id,
+        exit_status,
+        pane_exit_notices(terminal_id, exit_status, expected),
+    )
+}
+
+/// Fold a Terminal that no longer exists out of this client's projection:
+/// drop its `PaneSlot`, remove its layout leaf, prune the window if that
+/// emptied it, and re-anchor focus. Shared by the `RESOURCE_CLOSED` broadcast
+/// and by [`fold_missing_resource`], because a refusal naming a resource the
+/// server does not have is the same fact arriving by a different route.
+fn fold_dead_resource<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal_id: &ResourceId,
+    exit_status: Option<i32>,
+    notices: Vec<Notice>,
+) -> FrameOutcome {
     // Always drop the slot — even for unknown leaves (could be
     // a spawn-failure cleanup race or a stale id from before
     // an attach).
     ctx.panes.remove(terminal_id);
     // Find the window holding this leaf (panes can live in any
     // window, not just the active one) and fold it out there.
-    let owner = ctx.workspace.windows.iter().position(|w| {
-        w.state
-            .tree
-            .as_ref()
-            .map(layout::leaves)
-            .unwrap_or_default()
-            .contains(terminal_id)
-    });
-    let Some(idx) = owner else {
+    let Some(idx) = window_holding_pane(ctx.workspace, terminal_id) else {
         return FrameOutcome::default();
     };
     let new_state = match apply_terminal_closed(&ctx.workspace.windows[idx].state, terminal_id) {
@@ -1594,7 +1617,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
     // alive. ADR-0105: a keep-empty session outlives its last
     // pane, so the attach stays and shows the empty state.
     if ctx.workspace.windows.is_empty() && *ctx.keep_empty_session {
-        return last_pane_closed_keep_empty(ctx, terminal_id, exit_status, expected);
+        return last_pane_closed_keep_empty(ctx, notices);
     }
     if ctx.workspace.windows.is_empty() {
         tracing::info!("ResourceClosed folded the last pane; detaching");
@@ -1622,9 +1645,50 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
         // phux-tnh: the survivor's Rect grew; tell the
         // server so its PTY winsize grows too.
         reflow_panes: true,
-        notices: pane_exit_notices(terminal_id, exit_status, expected),
+        notices,
         ..FrameOutcome::default()
     }
+}
+
+/// A command this client sent was refused with `TERMINAL_NOT_FOUND`: the
+/// Terminal it named is gone and no `RESOURCE_CLOSED` is coming for it (the
+/// server only broadcasts closes for resources it holds). Fold it out on the
+/// strength of the refusal so the stale leaf stops painting a blank pane.
+///
+/// This is what lets a pane orphaned by a server restart be closed at all: its
+/// layout leaf is restored from persisted metadata, but the resource behind it
+/// died with the old process, so every kill aimed at it is refused.
+fn fold_missing_resource<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    terminal_id: &ResourceId,
+) -> FrameOutcome {
+    tracing::info!(
+        terminal = ?terminal_id,
+        "server refused a command naming this resource as not found; folding the stale leaf out",
+    );
+    let expected = ctx.expected_closes.remove(terminal_id);
+    let notices = if expected {
+        Vec::new()
+    } else {
+        vec![Notice::warn(format!(
+            "{}: gone (the server no longer has this pane)",
+            pane_label(terminal_id),
+        ))]
+    };
+    fold_dead_resource(ctx, terminal_id, None, notices)
+}
+
+/// Drain the resource a correlated reply names, if this client sent a command
+/// whose refusal is authoritative about that resource's existence. `Some`
+/// outcome ⇒ the reply was a `TERMINAL_NOT_FOUND` and the leaf was folded out;
+/// `None` ⇒ nothing to do here and the reply falls through to its own arm.
+fn resolve_resource_op<W: crate::attach::RenderSink>(
+    ctx: &mut FrameCtx<'_, W>,
+    request_id: u32,
+    code: Option<ErrorCode>,
+) -> Option<FrameOutcome> {
+    let terminal_id = ctx.pending_resource_ops.remove(&request_id)?;
+    (code == Some(ErrorCode::TerminalNotFound)).then(|| fold_missing_resource(ctx, &terminal_id))
 }
 
 /// ADR-0105: the last pane of a keep-empty session closed. The session is
@@ -1633,9 +1697,7 @@ fn handle_terminal_closed<W: crate::attach::RenderSink>(
 /// dead panes, so it is tombstoned rather than left for the next attach.
 fn last_pane_closed_keep_empty<W: crate::attach::RenderSink>(
     ctx: &mut FrameCtx<'_, W>,
-    terminal_id: &ResourceId,
-    exit_status: Option<i32>,
-    expected: bool,
+    notices: Vec<Notice>,
 ) -> FrameOutcome {
     tracing::info!("ResourceClosed folded the last pane of a keep-empty session; staying attached");
     *ctx.focused_resource = None;
@@ -1643,7 +1705,7 @@ fn last_pane_closed_keep_empty<W: crate::attach::RenderSink>(
     FrameOutcome {
         layout_replaced: true,
         clear_layout: true,
-        notices: pane_exit_notices(terminal_id, exit_status, expected),
+        notices,
         ..FrameOutcome::default()
     }
 }
@@ -1950,6 +2012,11 @@ fn error_frame_outcome<W: crate::attach::RenderSink>(
     if let Some(parked) = request_id.and_then(|id| take_pending_adopt(ctx, id)) {
         return handle_adopt_reply(ctx, parked, Some(AdoptRefusal { code, message }));
     }
+    if let Some(id) = request_id
+        && let Some(outcome) = resolve_resource_op(ctx, id, Some(code))
+    {
+        return Ok(outcome);
+    }
     Ok(handle_error_frame(request_id, code, &message))
 }
 
@@ -1970,6 +2037,13 @@ fn command_result_outcome<W: crate::attach::RenderSink>(
             _ => None,
         };
         return handle_adopt_reply(ctx, parked, refusal);
+    }
+    let code = match &result {
+        phux_protocol::wire::frame::CommandResult::Error { code, .. } => Some(*code),
+        _ => None,
+    };
+    if let Some(outcome) = resolve_resource_op(ctx, request_id, code) {
+        return Ok(outcome);
     }
     tracing::debug!(
         request_id,

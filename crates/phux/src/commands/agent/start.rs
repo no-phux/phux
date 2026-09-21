@@ -77,14 +77,13 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use phux_client::agent_meta::{
-    AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, RESOURCE_PANE_OCCUPANT_KEY,
-    parse_agent_record, parse_pane_occupant,
+    AgentMetaState, AgentRecord, RESOURCE_AGENT_KEY, ShellAvailability, ShellCheck,
+    pane_shell_availability, parse_agent_record,
 };
 use phux_client::agent_prompt::{ApplyVerdict, Refusal as ApplyRefusal, apply_input_once};
 use phux_client::agent_wait::{AgentWaitError, AgentWaitResult, wait_for_agent_state};
 use phux_client::attach::AttachError;
 use phux_client::attach::connection::{Answer, Connection};
-use phux_core::screen::{ScreenState, SemanticContent};
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{InputOperationId, ResourceId};
 use phux_protocol::input::InputEvent;
@@ -102,9 +101,6 @@ const RESULT_SCHEMA_VERSION: u8 = 1;
 /// Poll-floor cadence for the readiness wait's `GET_METADATA` re-read — the
 /// same gap `phux wait` and `phux agent wait` use.
 const POLL_INTERVAL: Duration = phux_client::wait::DEFAULT_POLL_INTERVAL;
-/// Covers the detector's first 500 ms unidentified tick without turning an
-/// older or degraded server into an unbounded preflight.
-const PANE_OCCUPANT_WAIT: Duration = Duration::from_millis(650);
 
 /// Default readiness deadline, in seconds.
 ///
@@ -324,96 +320,6 @@ pub(super) fn shell_line(
         return Err(ShellLineError::TooLong { bytes: line.len() });
     }
     Ok(line)
-}
-
-/// What the client-side available-shell check could establish.
-///
-/// Three-valued because two of the answers are refusals for different reasons
-/// and the third is an admission. Collapsing them would make the verb either
-/// unusable (refusing every pane without shell integration) or unsafe
-/// (typing into `vim`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ShellCheck {
-    /// An OSC-133 `Prompt`/`Input` mark sits on the cursor's row: whatever
-    /// holds the screen right now is a shell command line.
-    AtPrompt,
-    /// The pane carries OSC-133 marks somewhere, but not on the cursor's row.
-    /// Shell integration is on and the cursor is somewhere else — positive
-    /// evidence that something other than the prompt has the screen.
-    NotAtPrompt,
-    /// No semantic marks at all, or no resolvable cursor. Shell integration is
-    /// probably off, and phux cannot answer the question client-side.
-    Unanswerable,
-}
-
-impl ShellCheck {
-    /// The wire word for `--json`.
-    #[must_use]
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::AtPrompt => "at-prompt",
-            Self::NotAtPrompt => "not-at-prompt",
-            Self::Unanswerable => "unanswerable",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ShellAvailability {
-    Available,
-    BusyProcess(String),
-    BusyScreen,
-    Unanswerable,
-}
-
-fn shell_availability(
-    occupant: Option<&phux_client::agent_meta::PaneOccupantRecord>,
-    screen: ShellCheck,
-) -> ShellAvailability {
-    if let Some(occupant) = occupant
-        && !occupant.is_pane_shell
-    {
-        return ShellAvailability::BusyProcess(occupant.foreground.clone());
-    }
-    match screen {
-        ShellCheck::AtPrompt => ShellAvailability::Available,
-        ShellCheck::NotAtPrompt => ShellAvailability::BusyScreen,
-        ShellCheck::Unanswerable if occupant.is_some() => ShellAvailability::Available,
-        ShellCheck::Unanswerable => ShellAvailability::Unanswerable,
-    }
-}
-
-/// Evaluate the available-shell precondition against one screen.
-///
-/// Deliberately scoped to the **cursor's row** rather than the whole viewport:
-/// a prompt mark left further up the screen is equally true while a build runs
-/// in the foreground, and that is exactly the case the precondition exists to
-/// catch.
-#[must_use]
-pub(super) fn shell_check(screen: &ScreenState) -> ShellCheck {
-    let Some(cells) = screen.cells.as_ref() else {
-        return ShellCheck::Unanswerable;
-    };
-    let marked: Vec<&phux_core::screen::CellInfo> = cells
-        .iter()
-        .filter(|cell| {
-            matches!(
-                cell.semantic,
-                Some(SemanticContent::Input | SemanticContent::Prompt)
-            )
-        })
-        .collect();
-    if marked.is_empty() {
-        return ShellCheck::Unanswerable;
-    }
-    let Some(cursor) = screen.cursor.as_ref() else {
-        return ShellCheck::Unanswerable;
-    };
-    if marked.iter().any(|cell| cell.row == cursor.y) {
-        ShellCheck::AtPrompt
-    } else {
-        ShellCheck::NotAtPrompt
-    }
 }
 
 /// How the started agent's identity was confirmed at readiness.
@@ -1015,21 +921,14 @@ fn check_cwd_agreement(
     ))
 }
 
-/// The available-shell precondition: server process truth, conservatively
-/// cross-checked with client-visible OSC-133 state.
+/// The available-shell precondition, rendered as this verb's refusals.
 ///
-/// Fails CLOSED when neither source answers. A missing screen cannot erase a
-/// positive server observation, but it is never itself evidence of safety.
+/// The verdict itself comes from [`phux_client::agent_meta::pane_shell_availability`],
+/// shared with `phux run` so the two verbs cannot drift on what "a shell is
+/// in the foreground" means; only the prose and exit status are this verb's.
 async fn check_shell_available(socket_path: &Path, terminal: &ResourceId) -> Result<(), Refusal> {
     let label = crate::selector::format_terminal_id(terminal);
-    let occupant = read_pane_occupant(socket_path, terminal).await;
-    let screen =
-        phux_client::snapshot::get_screen_scrollback(socket_path, terminal.clone(), None, true)
-            .await;
-    let screen = screen
-        .as_ref()
-        .map_or(ShellCheck::Unanswerable, shell_check);
-    match shell_availability(occupant.as_ref(), screen) {
+    match pane_shell_availability(socket_path, terminal).await {
         ShellAvailability::Available => Ok(()),
         ShellAvailability::BusyProcess(foreground) => Err(Refusal::new(
             codes::AGENT_PANE_NOT_AVAILABLE,
@@ -1059,47 +958,6 @@ async fn check_shell_available(socket_path: &Path, terminal: &ResourceId) -> Res
              own pane and needs no precondition), or pass `--force`",
             EXIT_USAGE,
         )),
-    }
-}
-
-/// Read the detector-owned occupant record, allowing its first 500 ms tick to
-/// land. Absence remains distinguishable from `is_pane_shell: false` so the
-/// OSC-133 compatibility fallback can serve older or degraded servers.
-async fn read_pane_occupant(
-    socket_path: &Path,
-    terminal: &ResourceId,
-) -> Option<phux_client::agent_meta::PaneOccupantRecord> {
-    let mut conn = Connection::connect(socket_path).await.ok()?;
-    let deadline = tokio::time::Instant::now() + PANE_OCCUPANT_WAIT;
-    let mut request_id = 70;
-    loop {
-        let reply = conn
-            .request_metadata(
-                request_id,
-                Scope::Resource(terminal.clone()),
-                RESOURCE_PANE_OCCUPANT_KEY.to_owned(),
-            )
-            .await
-            .ok()?;
-        let (answer, _) = reply.into_parts();
-        match answer {
-            Answer::Ok(Some(bytes)) => {
-                drop(conn);
-                return parse_pane_occupant(&bytes);
-            }
-            Answer::Ok(None) => {}
-            Answer::Err(_) => {
-                drop(conn);
-                return None;
-            }
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            drop(conn);
-            return None;
-        }
-        tokio::time::sleep(POLL_INTERVAL.min(remaining)).await;
-        request_id += 1;
     }
 }
 
@@ -1619,49 +1477,12 @@ fn render(document: &serde_json::Value) -> ExitCode {
 mod tests {
     #![allow(clippy::expect_used, reason = "tests")]
 
-    use phux_core::screen::{CellInfo, CellStyle, CursorState};
     use phux_protocol::input::paste::PasteTrust;
 
     use super::*;
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| (*w).to_owned()).collect()
-    }
-
-    fn cell(row: u16, col: u16, semantic: Option<SemanticContent>) -> CellInfo {
-        CellInfo {
-            col,
-            row,
-            semantic,
-            style: CellStyle::default(),
-        }
-    }
-
-    fn cursor_at(y: u16) -> CursorState {
-        CursorState {
-            x: 2,
-            y,
-            visible: true,
-        }
-    }
-
-    fn screen(cursor: Option<CursorState>, cells: Option<Vec<CellInfo>>) -> ScreenState {
-        ScreenState {
-            schema_version: 1,
-            pane: 7,
-            cols: 80,
-            rows: 24,
-            cursor,
-            lines: vec![String::new(); 24],
-            scrollback: Vec::new(),
-            cells,
-            soft_wrap: None,
-            truncated: false,
-            truncated_reason: None,
-            title: None,
-            rendered: None,
-            rendered_error: None,
-        }
     }
 
     /// The grammar this verb binds is the one reserved for the proposed
@@ -1761,83 +1582,6 @@ mod tests {
         assert_eq!(
             shell_line(&argv(&["claude"]), &env).expect_err("bad env name"),
             ShellLineError::EnvName("NOT AN IDENT".to_owned())
-        );
-    }
-
-    /// The precondition reads the CURSOR'S row, not the whole viewport: a
-    /// prompt mark left further up the screen is equally true while a build
-    /// runs in the foreground, which is the case this check exists to catch.
-    #[test]
-    fn the_shell_check_reads_the_cursor_row_not_the_whole_screen() {
-        let at_prompt = screen(
-            Some(cursor_at(10)),
-            Some(vec![cell(10, 0, Some(SemanticContent::Prompt))]),
-        );
-        assert_eq!(shell_check(&at_prompt), ShellCheck::AtPrompt);
-
-        // Same marks, cursor elsewhere: something else has the screen.
-        let busy = screen(
-            Some(cursor_at(10)),
-            Some(vec![cell(3, 0, Some(SemanticContent::Prompt))]),
-        );
-        assert_eq!(shell_check(&busy), ShellCheck::NotAtPrompt);
-    }
-
-    #[test]
-    fn server_shell_evidence_fills_only_the_unanswerable_case() {
-        use phux_client::agent_meta::PaneOccupantRecord;
-
-        let shell = PaneOccupantRecord {
-            foreground: "zsh".to_owned(),
-            is_pane_shell: true,
-        };
-        let busy = PaneOccupantRecord {
-            foreground: "vim".to_owned(),
-            is_pane_shell: false,
-        };
-        assert_eq!(
-            shell_availability(Some(&shell), ShellCheck::Unanswerable),
-            ShellAvailability::Available
-        );
-        assert_eq!(
-            shell_availability(Some(&shell), ShellCheck::NotAtPrompt),
-            ShellAvailability::BusyScreen
-        );
-        assert_eq!(
-            shell_availability(Some(&busy), ShellCheck::AtPrompt),
-            ShellAvailability::BusyProcess("vim".to_owned())
-        );
-        assert_eq!(
-            shell_availability(None, ShellCheck::Unanswerable),
-            ShellAvailability::Unanswerable
-        );
-    }
-
-    /// No marks at all is an ADMISSION, not a refusal reason of the same
-    /// kind: shell integration is probably off and phux cannot answer. The
-    /// two must stay distinguishable, because only one of them is evidence.
-    #[test]
-    fn a_screen_without_semantic_marks_is_unanswerable() {
-        assert_eq!(
-            shell_check(&screen(Some(cursor_at(0)), None)),
-            ShellCheck::Unanswerable
-        );
-        assert_eq!(
-            shell_check(&screen(Some(cursor_at(0)), Some(Vec::new()))),
-            ShellCheck::Unanswerable
-        );
-        // Styled cells with no semantic mark carry no prompt evidence either.
-        assert_eq!(
-            shell_check(&screen(Some(cursor_at(0)), Some(vec![cell(0, 0, None)]))),
-            ShellCheck::Unanswerable
-        );
-        // Marks but no resolvable cursor: the question has no anchor.
-        assert_eq!(
-            shell_check(&screen(
-                None,
-                Some(vec![cell(0, 0, Some(SemanticContent::Input))])
-            )),
-            ShellCheck::Unanswerable
         );
     }
 
