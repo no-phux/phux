@@ -180,6 +180,10 @@ pub(super) struct PaneSlot {
     /// unseen and climbs the strip until the user actually visits it. Starts
     /// `false` — a pane you have never focused has never been reviewed.
     pub seen: bool,
+    /// phux-lxov.1: the pane's satellite link is down. The layout leaf stays;
+    /// chrome draws grey and input is dropped until a later inventory says
+    /// the host answers again, which replays the pane's snapshot.
+    pub satellite_down: bool,
 }
 
 impl std::fmt::Debug for PaneSlot {
@@ -226,6 +230,7 @@ impl PaneSlot {
             last_exit: None,
             last_title: String::new(),
             seen: false,
+            satellite_down: false,
         })
     }
 
@@ -282,12 +287,16 @@ pub(super) fn pane_label<'a>(
     panes: &'a HashMap<ResourceId, PaneSlot>,
     id: &ResourceId,
 ) -> Option<crate::render::chrome::dividers::PaneLabel<'a>> {
-    let slot = panes.get(id)?;
+    let (key, slot) = panes.get_key_value(id)?;
     Some(crate::render::chrome::dividers::PaneLabel {
         text: slot.last_title.as_str(),
         agent: None,
         attention: slot.attention,
         seen: slot.seen,
+        // Borrow the host from the map key so the label lives as long as
+        // `panes`, the same lifetime as the title.
+        host: key.host().map(phux_protocol::ids::SatelliteHost::as_str),
+        unreachable: slot.satellite_down,
     })
 }
 
@@ -540,11 +549,102 @@ pub(super) fn pane_exited(panes: &HashMap<ResourceId, PaneSlot>, pane: &Resource
     panes.get(pane).is_some_and(|slot| slot.exited.is_some())
 }
 
+/// phux-lxov.1: keys and mouse reports to a satellite pane whose link is
+/// down are dropped. Scrolling and copy-mode still read the last snapshot.
+pub(super) fn pane_satellite_down(
+    panes: &HashMap<ResourceId, PaneSlot>,
+    pane: &ResourceId,
+) -> bool {
+    panes.get(pane).is_some_and(|slot| slot.satellite_down)
+}
+
+/// Host named by a hub `SatelliteUnreachable` diagnostic.
+///
+/// The relay's form is `satellite {host} is unreachable: {why}` (L1 §9.1).
+/// A shorter `satellite {host} unreachable` notice names the same host.
+pub(super) fn satellite_host_in_unreachable(message: &str) -> Option<&str> {
+    let rest = message.strip_prefix("satellite ")?;
+    let host = rest.split_whitespace().next()?;
+    (!host.is_empty() && rest.contains("unreachable")).then_some(host)
+}
+
+/// Mark every pane on `host` down. The layout is not touched. Returns
+/// whether any pane changed, so chrome repaints only then.
+pub(super) fn mark_satellite_down(panes: &mut HashMap<ResourceId, PaneSlot>, host: &str) -> bool {
+    let mut changed = false;
+    for (id, slot) in panes.iter_mut() {
+        if id.host().is_some_and(|named| named.as_str() == host) && !slot.satellite_down {
+            slot.satellite_down = true;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Fold one `SatelliteUnreachable` message into pane state.
+pub(super) fn note_satellite_unreachable(
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    message: &str,
+) -> bool {
+    satellite_host_in_unreachable(message).is_some_and(|host| mark_satellite_down(panes, host))
+}
+
+/// Clear the down flag for `host` and return those panes so the driver can
+/// `ATTACH_RESOURCE` them and replay the satellite's snapshot.
+pub(super) fn satellite_panes_returned(
+    panes: &mut HashMap<ResourceId, PaneSlot>,
+    host: &str,
+) -> Vec<ResourceId> {
+    let mut replay = Vec::new();
+    for (id, slot) in panes.iter_mut() {
+        if slot.satellite_down && id.host().is_some_and(|named| named.as_str() == host) {
+            slot.satellite_down = false;
+            replay.push(id.clone());
+        }
+    }
+    replay
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used, reason = "tests")]
 mod tests {
     use super::*;
     use crate::attach::render::ReplicaWalk;
+
+    /// phux-lxov.1: the hub's unreachable wording names a host, and only
+    /// that host's panes go grey. A later return clears them for replay.
+    #[test]
+    fn satellite_unreachable_marks_one_host_and_a_return_clears_it() {
+        let local = ResourceId::local(1);
+        let edge = ResourceId::satellite("edge", 9);
+        let other = ResourceId::satellite("gpubox", 3);
+        let mut panes = HashMap::from([
+            (local.clone(), PaneSlot::new().expect("slot")),
+            (edge.clone(), PaneSlot::new().expect("slot")),
+            (other.clone(), PaneSlot::new().expect("slot")),
+        ]);
+        assert_eq!(
+            satellite_host_in_unreachable("satellite edge is unreachable: link is down"),
+            Some("edge")
+        );
+        assert_eq!(
+            satellite_host_in_unreachable("satellite gpubox unreachable"),
+            Some("gpubox")
+        );
+        assert!(satellite_host_in_unreachable("the link dropped").is_none());
+        assert!(note_satellite_unreachable(
+            &mut panes,
+            "satellite edge is unreachable: link is down"
+        ));
+        assert!(pane_satellite_down(&panes, &edge));
+        assert!(!pane_satellite_down(&panes, &local));
+        assert!(!pane_satellite_down(&panes, &other));
+        assert_eq!(
+            satellite_panes_returned(&mut panes, "edge"),
+            vec![edge.clone()]
+        );
+        assert!(!pane_satellite_down(&panes, &edge));
+    }
 
     #[test]
     fn pane_slot_initializes_nonzero_cell_pixels_for_live_kitty_render() {

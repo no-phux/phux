@@ -151,7 +151,7 @@ pub const REGISTRY: &[ActionSpec] = &[
         name: "split-pane",
         category: Category::Pane,
         description: "Split the focused pane side-by-side (vertical divider)",
-        params: "`direction` = `horizontal` | `vertical`",
+        params: "`direction` = `horizontal` | `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`)",
         args: &[("direction", ArgValue::Str("vertical"))],
     },
     ActionSpec {

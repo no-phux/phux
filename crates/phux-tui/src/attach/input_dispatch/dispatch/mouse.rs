@@ -392,7 +392,9 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
         }
         // ADR-0124: scrolling and copying a retained pane still work above;
         // a mouse report has no process left to read it.
-        if crate::attach::pane_state::pane_exited(self.panes, &target) {
+        if crate::attach::pane_state::pane_exited(self.panes, &target)
+            || crate::attach::pane_state::pane_satellite_down(self.panes, &target)
+        {
             return Ok(StageOutcome::consumed(layout_changed));
         }
         self.send_terminal_input(

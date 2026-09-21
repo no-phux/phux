@@ -3232,6 +3232,7 @@ fn drive_spawned_with_pending_split(zoom_on_spawn: bool) -> Option<ResourceId> {
             zoom_on_spawn,
             host: crate::attach::actions::SplitHost::Attached,
             adopt: None,
+            open_existing: None,
         },
     );
     let mut pending_windows = HashMap::new();
@@ -3304,6 +3305,7 @@ fn parked_split(
         zoom_on_spawn: false,
         host,
         adopt: adopt.map(crate::attach::actions::SpawnedPane::unbound),
+        open_existing: None,
     }
 }
 
@@ -3440,6 +3442,127 @@ fn a_spawned_satellite_split_applies_when_its_attach_succeeds() {
         "an applied split keeps its pane"
     );
     assert_eq!(reply.parked, 0, "the parked split is consumed");
+}
+
+/// phux-lxov.1: opening `host/@N` places that existing pane beside the
+/// local leaf once its attach succeeds, and kills nothing.
+#[test]
+fn an_existing_satellite_pane_lands_beside_the_local_leaf() {
+    use crate::attach::actions::SplitHost;
+
+    let mut split = parked_split(
+        SplitHost::Satellite(phux_protocol::ids::SatelliteHost::new("edge")),
+        None,
+    );
+    split.open_existing = Some(edge_pane());
+    let reply = drive_split_reply(
+        split,
+        FrameKind::CommandResult {
+            request_id: 9,
+            result: phux_protocol::wire::frame::CommandResult::Ok,
+        },
+    );
+    assert_eq!(reply.leaves, vec![tid(1), edge_pane()]);
+    assert_eq!(reply.focused, Some(edge_pane()));
+    assert!(reply.outcome.layout_replaced && reply.outcome.emit_set_metadata);
+    assert!(reply.outcome.kill_orphans.is_empty());
+    assert!(!reply.belled);
+    assert_eq!(reply.parked, 0);
+}
+
+/// A refused open of an existing satellite pane leaves the layout alone
+/// and does not kill a pane this client did not spawn.
+#[test]
+fn a_refused_open_of_an_existing_satellite_pane_does_not_kill_it() {
+    use crate::attach::actions::SplitHost;
+    use phux_protocol::wire::frame::{CommandResult, ErrorCode};
+
+    let mut split = parked_split(
+        SplitHost::Satellite(phux_protocol::ids::SatelliteHost::new("edge")),
+        None,
+    );
+    split.open_existing = Some(edge_pane());
+    let reply = drive_split_reply(
+        split,
+        FrameKind::CommandResult {
+            request_id: 9,
+            result: CommandResult::Error {
+                code: ErrorCode::SatelliteUnreachable,
+                message: "satellite edge is unreachable: link is down".to_owned(),
+            },
+        },
+    );
+    assert_eq!(
+        reply.leaves,
+        vec![tid(1)],
+        "the existing pane is not inserted"
+    );
+    assert!(reply.outcome.kill_orphans.is_empty());
+    assert!(reply.belled);
+    assert_eq!(reply.parked, 0);
+}
+
+/// phux-lxov.1: `SatelliteUnreachable` greys the satellite pane and keeps
+/// its layout leaf.
+#[test]
+fn satellite_unreachable_greys_the_pane_and_keeps_its_leaf() {
+    use phux_protocol::wire::frame::ErrorCode;
+
+    let sat = edge_pane();
+    let mut workspace = Workspace::single(tid(1));
+    let tree = workspace
+        .active_window()
+        .and_then(|window| window.tree.clone())
+        .expect("tree");
+    workspace.active_window_mut().expect("window").tree = Some(
+        crate::layout::split_at(&tree, &tid(1), &sat, SplitDir::Horizontal, 0.5).expect("split"),
+    );
+    let mut panes = panes_for(&[&tid(1), &sat]);
+    let mut focused = Some(sat.clone());
+    let mut out = Vec::new();
+    let mut zoomed = None;
+    let mut session_name = String::new();
+    let mut predict = PredictionState::new(PredictiveConfig::disabled(), 80, 24);
+    let overlay = Overlay;
+    let outcome = handle_server_frame(
+        &mut out,
+        FrameKind::Error {
+            request_id: None,
+            code: ErrorCode::SatelliteUnreachable,
+            message: "satellite edge is unreachable: link is down".to_owned(),
+        },
+        &mut panes,
+        &mut workspace,
+        &mut focused,
+        &mut zoomed,
+        &mut session_name,
+        None,
+        None,
+        None,
+        (80, 24),
+        &mut predict,
+        &overlay,
+        None,
+        &mut HashMap::new(),
+        &mut HashMap::new(),
+        &mut HashSet::new(),
+        &mut AgentMetaIndex::default(),
+        false,
+        false,
+    )
+    .expect("error frame");
+    assert!(panes[&sat].satellite_down, "the satellite pane is grey");
+    assert!(!panes[&tid(1)].satellite_down);
+    let leaves = crate::layout::leaves(
+        workspace
+            .active_window()
+            .and_then(|window| window.tree.as_ref())
+            .expect("tree"),
+    );
+    assert_eq!(leaves, vec![tid(1), sat]);
+    assert!(outcome.chrome_dirty);
+    assert!(!outcome.layout_replaced, "the slot stays");
+    assert_eq!(outcome.notices.len(), 1);
 }
 
 /// A refused attach of a spawned satellite split, as a `COMMAND_RESULT`

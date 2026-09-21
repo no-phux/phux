@@ -775,8 +775,10 @@ async fn peer_layout_keys_are_subscribed_not_just_read() {
     );
 }
 
-/// phux-k0cw: a satellite pane's metadata scope is normatively refused
-/// (`docs/spec/L3.md`), so subscribing to one earns an
+/// phux-k0cw / phux-lxov.1: a satellite pane's metadata scope is normatively
+/// refused (`docs/spec/L3.md`), so the driver must not install per-pane
+/// `SUBSCRIBE_METADATA` on a satellite scope even when that pane sits beside
+/// a local one. Subscribing earns an
 /// `UNSUPPORTED_SATELLITE_ROUTE` per sweep — errors the correlated-refusal
 /// intercept swallows silently, which is the worst kind of wire noise.
 #[tokio::test]

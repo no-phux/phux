@@ -20,7 +20,7 @@ The **Palette** column is the command-palette section the action is offered unde
 
 | Action | Palette | Parameters | Description |
 |---|---|---|---|
-| `split-pane` | Pane | `direction` = `horizontal` \| `vertical` | Split the focused pane side-by-side (vertical divider) |
+| `split-pane` | Pane | `direction` = `horizontal` \| `vertical`; `host?` (satellite); `resource?` (`@N` or `host/@N`) | Split the focused pane side-by-side (vertical divider) |
 | `move-pane` | Pane | `target` (local Terminal id; picker-supplied) | Move the focused pane beside another pane… |
 | `kill-pane` | Pane |  | Close the focused pane |
 | `new-window` | Window | `cwd?` (working directory on the attached server's host) | Open a new window |

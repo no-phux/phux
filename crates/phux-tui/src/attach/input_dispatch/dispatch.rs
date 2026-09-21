@@ -593,6 +593,12 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
             tracing::debug!(terminal = ?pane, "dropping input: the pane's process exited");
             return Ok(false);
         }
+        // phux-lxov.1: a down satellite keeps its slot and its last
+        // snapshot, and takes no new input until the link returns.
+        if crate::attach::pane_state::pane_satellite_down(self.panes, &pane) {
+            tracing::debug!(terminal = ?pane, "dropping input: satellite unreachable");
+            return Ok(false);
+        }
         // phux-foz.1: forwarding key/paste input to a pane answers (or at
         // least engages) its pending agent question, so clear its asked
         // attention flag. Focus/mouse events don't clear — merely looking
