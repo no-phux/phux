@@ -179,6 +179,7 @@ not a summary: the TL;DR lives in the ADR.
 | [0132](./0132-swarm-members-are-coordinator-clients.md) | Swarm members are coordinator clients | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md), [0092](./0092-durable-work-coordinator-authority.md)) |
 | [0133](./0133-one-client-runtime-below-every-binding.md) | One client runtime below every binding | Accepted (builds on [0020](./0020-layered-render.md), [0100](./0100-the-tui-is-its-own-crate.md)) |
 | [0134](./0134-connected-lanes-refine-the-binding-boundary.md) | Connected lanes refine the binding boundary | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md)) |
+| [0135](./0135-one-binding-crate.md) | One binding crate: one projection, two encoders | Accepted (builds on [0133](./0133-one-client-runtime-below-every-binding.md), [0134](./0134-connected-lanes-refine-the-binding-boundary.md)) |
 
 ## When to write an ADR
 

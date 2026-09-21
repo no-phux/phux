@@ -14,10 +14,11 @@ Coming soon. An Android client is coming as well.
 
 ## Minimum `PHUX_REV`
 
-`phux-mobile` consumes `phux-client-runtime` through the sibling `UniFFI`
-projection in [`crates/phux-mobile-ffi`](../../crates/phux-mobile-ffi), not
-Cockpit's stable C ABI (`phux-client-ffi`). The phux release workflow builds
-that crate's native slices and generated Swift from one revision; the mobile
+`phux-mobile` consumes `phux-client-runtime` through the `UniFFI` encoder of
+the binding crate, [`crates/phux-client-ffi`](../../crates/phux-client-ffi)
+built with `--features uniffi`, not through Cockpit's stable C ABI — the same
+crate's default encoder (ADR-0135). The phux release workflow builds that
+lane's native slices and generated Swift from one revision; the mobile
 consumer resolves the matching artifact for its `PHUX_REV` and installs both
 parts atomically (ADR-0133 and phux-mobile ADR-0031). Two phase-2 surfaces
 matter once a client adopts them, so the mobile pin must be at least:

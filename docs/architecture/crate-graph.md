@@ -81,8 +81,8 @@ Five crate boundaries carry weight:
    on it.
 5. **`phux-client-runtime` is the one orchestration layer below every
    binding** (ADR-0133). It sits above `phux-dial`, `phux-config`, and
-   `phux-client-core` and below `phux-client-ffi`, `phux-mobile-ffi`,
-   `phux-client`, and the `phux` binary: registry resolution, dial planning
+   `phux-client-core` and below `phux-client-ffi`, `phux-client`, and the
+   `phux` binary: registry resolution, dial planning
    under the CLI's trust
    rules, reconnect policy, WebSocket frame cutting, the relay tunnel, the
    sans-IO control plane over `SessionKernel`, the engine owner thread,
@@ -101,8 +101,10 @@ Five crate boundaries carry weight:
    runtime's `Ladder` is a separate decision. A binding crate translates
    runtime-owned values into its language's idiom and holds no connected-client
    state machine; a connection loop, a `select!`, or a backoff constant in a
-   binding is in the wrong crate. `phux-mobile-ffi` is the second binding and is published
-   with generated bindings from this exact source revision.
+   binding is in the wrong crate. There is one binding crate,
+   `phux-client-ffi`, with one projection layer and one encoder per
+   foreign language behind a feature (ADR-0135); its UniFFI lane is
+   published with generated bindings from this exact source revision.
 
 `server`, `client`, and `tui` all depend on `protocol`. `server` and `tui`
 also depend on `libghostty-vt` directly: the server's `Terminal` is the
@@ -120,19 +122,19 @@ for the renderer-side contract on both ends.
 `phux-config` is a sibling of `core` and is consumed by the binary, the
 server, the client, and the TUI.
 
-`phux-client-ffi` is a leaf above `phux-client-runtime`: it projects the
-runtime's typed events and published grids into a stable C ABI for native
-embedders and is compile-time excluded on wasm. It owns no terminal,
-session, history, topology, or transport state machine. Its remote-host
-tunnel is the runtime's, behind a C handle: the runtime reads the CLI's
-`[[remote]]` registry through `phux-config`'s loader and dials through
-`phux-dial`, so an embedder reaches a registered host without a second
-registry, a second dialer, or a second relay.
-
-`phux-mobile-ffi` is the sibling UniFFI leaf. It projects the runtime's
-connected client, callbacks, lossless receipts, and shared grid byte arenas
-for Swift and Kotlin without passing through the C ABI. Its generated Swift
-and Apple native slices ship as one revision-pinned artifact.
+`phux-client-ffi` is the one binding leaf above `phux-client-runtime`,
+compile-time excluded on wasm. Its `projection/` layer derives the product
+vocabulary from the runtime's typed events, topology, receipts and
+published grids exactly once; its `c-abi` encoder lends that vocabulary
+through the stable C ABI native embedders and Cockpit link, and its
+`uniffi` encoder (off by default) lowers the same vocabulary into Swift and
+Kotlin without passing through the C ABI (ADR-0135). Its generated bindings
+and Apple native slices ship as one revision-pinned artifact. It owns no
+terminal, session, history, topology, or transport state machine. Its
+remote-host tunnel is the runtime's, behind a C handle: the runtime reads
+the CLI's `[[remote]]` registry through `phux-config`'s loader and dials
+through `phux-dial`, so an embedder reaches a registered host without a
+second registry, a second dialer, or a second relay.
 
 ## Browser client crates (standalone wasm workspace)
 

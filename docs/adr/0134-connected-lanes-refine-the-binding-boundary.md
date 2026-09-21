@@ -18,6 +18,9 @@ connected lane that must never run at once.
 Status: Accepted
 Date: 2026-09-21
 
+See [ADR-0135](./0135-one-binding-crate.md) for the single binding
+crate that replaces the two shims.
+
 ## Context
 
 ADR-0133 was written before its rungs existed. Its body is immutable

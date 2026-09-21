@@ -138,6 +138,7 @@ by a newer one, the newer line is the operative reading.
 
 ## TUI conventions
 
+- [0135](./0135-one-binding-crate.md) A binding crate is one crate: `phux-client-ffi` derives the product vocabulary from the runtime once in `projection/`, and carries one encoder per language behind a feature (`c-abi` by default, `uniffi` for mobile); `phux-mobile-ffi` is deleted.
 - [0134](./0134-connected-lanes-refine-the-binding-boundary.md) A binding holds no connected-client state machine but may keep its decode point; the runtime owns each connected resource's engine thread; UniFFI stays for mobile with the shim in this repo; the C ABI has an embedded and a connected lane.
 - [0133](./0133-one-client-runtime-below-every-binding.md) `phux-client-runtime` is the one home for connected-client orchestration below the sans-IO kernel; `phux-client-ffi` and the mobile bridge are shims with no connected-client state machine, one cell layout lives in core, and a bindings generator is a per-shim choice.
 - [0129](./0129-projections-are-named-by-key.md) A named projection is a `--projection`-chosen metadata key, not a resource; durability is the workspace archive.
