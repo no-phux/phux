@@ -382,8 +382,10 @@ pub const PhuxProvider = struct {
     /// needs a new session: tear the old one down and connect again.
     fn restartConnected(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !void {
         if (self.pending_retarget == null) {
-            self.host.freezePublished();
-            self.host.resync();
+            // Retire now, so an explicit reconnect presents the same way it
+            // does on the embedded lane, then let the runtime redial.
+            try self.host.reconnectConnected();
+            self.attach_queued = false;
             return;
         }
         self.host.freezePublished();

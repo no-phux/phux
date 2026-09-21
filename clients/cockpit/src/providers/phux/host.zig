@@ -311,6 +311,9 @@ pub const Host = struct {
     /// own. The provider consumes it to re-queue the ATTACH that belonged
     /// to the connection that ended.
     connection_retired: bool = false,
+    /// An explicit reconnect already retired the current connection, so the
+    /// epoch change it causes must not retire a second time.
+    retired_ahead: bool = false,
     bridge: *transport.Bridge,
     terminals: std.ArrayListUnmanaged(Terminal) = .empty,
     sessions: std.ArrayListUnmanaged(SessionSummary) = .empty,
@@ -447,6 +450,7 @@ pub const Host = struct {
         host.lane = .connected;
         host.connection_epoch = 0;
         host.connection_retired = false;
+        host.retired_ahead = false;
         host.disconnected = false;
         // The runtime queues HELLO on every connection it opens, so this
         // lane never calls `start`. Rename-following still has to be armed
@@ -476,6 +480,7 @@ pub const Host = struct {
         host.lane = .embedded;
         host.connection_epoch = 0;
         host.connection_retired = false;
+        host.retired_ahead = false;
         host.disconnected = true;
     }
 
@@ -500,6 +505,20 @@ pub const Host = struct {
     pub fn resync(host: *Host) void {
         if (host.lane != .connected) return;
         _ = c.phux_client_resync(host.client);
+    }
+
+    /// An explicit reconnect on the connected lane.
+    ///
+    /// The retirement happens now rather than when the redial lands, so the
+    /// presentation matches the embedded lane's: a consumer that asked for a
+    /// reconnect sees `reconnecting` immediately, not a live pane that is
+    /// really mid-redial. `retired_ahead` then stops the epoch change this
+    /// causes from retiring the same connection twice.
+    pub fn reconnectConnected(host: *Host) !void {
+        if (host.lane != .connected) return error.InvalidState;
+        host.retirePreviousConnection(try host.nextGeneration());
+        host.retired_ahead = true;
+        host.resync();
     }
 
     pub fn start(host: *Host, client_name: []const u8) !void {
@@ -1000,8 +1019,9 @@ pub const Host = struct {
         const epoch = c.phux_client_connection_epoch(host.client);
         if (epoch != host.connection_epoch) {
             // Only a connection after the first retires anything; the first
-            // one has no predecessor to fence.
-            if (host.connection_epoch != 0) {
+            // one has no predecessor to fence, and an explicit reconnect has
+            // already retired this one.
+            if (host.connection_epoch != 0 and !host.retired_ahead) {
                 host.freezePublished();
                 host.retirePreviousConnection(try host.nextGeneration());
                 // The runtime redialed on its own, so nothing above has
@@ -1009,6 +1029,7 @@ pub const Host = struct {
                 // explicit on this ABI; the provider owns sending it.
                 host.connection_retired = true;
             }
+            host.retired_ahead = false;
             host.connection_epoch = epoch;
         }
         try resultErrorWithContext(host.client, "poll", c.phux_client_poll(host.client));

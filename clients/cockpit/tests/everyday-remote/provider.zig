@@ -21,7 +21,13 @@ fn ready(remote: *PhuxProvider) !contract.TerminalRef {
 }
 
 fn recorded(value: []const u8) !bool {
-    const bytes = try std.Io.Dir.cwd().readFileAlloc(testing.io, "executed", testing.allocator, .limited(4096));
+    // The workload creates this file on its first append, so an absent file
+    // means nothing has executed yet. That is the normal state when this
+    // probe runs without the C probe's scenarios ahead of it.
+    const bytes = std.Io.Dir.cwd().readFileAlloc(testing.io, "executed", testing.allocator, .limited(4096)) catch |err| switch (err) {
+        error.FileNotFound => return false,
+        else => return err,
+    };
     defer testing.allocator.free(bytes);
     return std.mem.endsWith(u8, bytes, value);
 }
