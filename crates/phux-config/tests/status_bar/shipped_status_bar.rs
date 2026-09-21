@@ -23,6 +23,7 @@ fn win(name: &str, active: bool) -> WindowInfo {
         zoomed: false,
         attention: false,
         branch: None,
+        exited: None,
     }
 }
 

@@ -127,7 +127,7 @@ pub struct Cell {
 /// A window as the `windows` widget sees it: a display name and whether
 /// it is the client's active window. Positional index in the slice is the
 /// window's selector (matches `select-window index=N`).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WindowInfo {
     /// Window display name (the editable label).
     pub name: String,
@@ -149,6 +149,25 @@ pub struct WindowInfo {
     /// dim branch line under the window label (herdr-style); the status-bar
     /// `windows` widget ignores it.
     pub branch: Option<String>,
+    /// ADR-0124: compact exit status when any pane in this window is
+    /// retained after its process exited (`"3"`, `"sig9"`, or `""` when
+    /// neither code nor signal is known). `None` when every pane is still
+    /// live. The sidebar and `windows` widget append a dim `x` marker so a
+    /// retained pane is visible without focusing it.
+    pub exited: Option<String>,
+}
+
+impl WindowInfo {
+    /// Compact chrome suffix for a retained pane: ` x`, ` x3`, or ` xsig9`.
+    #[must_use]
+    pub fn exited_marker(&self) -> Option<String> {
+        let status = self.exited.as_ref()?;
+        Some(if status.is_empty() {
+            " x".to_owned()
+        } else {
+            format!(" x{status}")
+        })
+    }
 }
 
 /// Context passed to a [`StatusWidget`] at render time.

@@ -523,6 +523,15 @@ impl ExitMark {
             (None, None) => "exited".to_owned(),
         }
     }
+
+    /// Compact chrome fragment: `"3"`, `"sig9"`, or `""` when neither is known.
+    pub(super) fn compact(self) -> String {
+        match (self.status, self.signal) {
+            (Some(code), _) => code.to_string(),
+            (None, Some(signal)) => format!("sig{signal}"),
+            (None, None) => String::new(),
+        }
+    }
 }
 
 /// ADR-0124: whether `pane` is retained after its process exited. Input to it

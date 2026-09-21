@@ -441,6 +441,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
             WindowInfo {
                 name: "shell".to_owned(),
@@ -448,6 +449,7 @@ mod tests {
                 zoomed: false,
                 attention: false,
                 branch: None,
+                exited: None,
             },
         ]);
 
@@ -636,6 +638,7 @@ mod tests {
             zoomed: false,
             attention: false,
             branch: None,
+            exited: None,
         }];
         painter.set_windows(windows.clone());
 

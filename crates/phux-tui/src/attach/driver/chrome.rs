@@ -7,7 +7,7 @@ use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::ResourceLifecycle;
 
 use crate::attach::agent_rows::AgentSessionRows;
-use crate::attach::pane_state::{PaneSlot, VcsIndex};
+use crate::attach::pane_state::{ExitMark, PaneSlot, VcsIndex};
 use crate::attach::review::ReviewIndex;
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
@@ -197,15 +197,16 @@ pub(super) fn window_infos(
                 .filter(|title| !title.is_empty())
                 .map(ToOwned::to_owned);
             let active = i == workspace.active;
-            // phux-foz.1: a window carries attention when ANY of its leaves
-            // has the ADR-0035 asked flag set — not just the focused leaf —
-            // so a question in a background split still marks the tab.
-            let attention = w
+            let leaves = w
                 .state
                 .tree
                 .as_ref()
                 .map(crate::layout::leaves)
-                .unwrap_or_default()
+                .unwrap_or_default();
+            // phux-foz.1: a window carries attention when ANY of its leaves
+            // has the ADR-0035 asked flag set — not just the focused leaf —
+            // so a question in a background split still marks the tab.
+            let attention = leaves
                 .iter()
                 .any(|id| panes.get(id).is_some_and(|slot| slot.attention));
             // phux-p4vp: the branch line under the label — the focused
@@ -217,9 +218,25 @@ pub(super) fn window_infos(
                 zoomed: active && zoomed.is_some(),
                 attention,
                 branch,
+                exited: window_exited_mark(&leaves, focus, panes),
             }
         })
         .collect()
+}
+
+/// ADR-0124 / phux-fpgl.33: compact exit status for chrome when any leaf is
+/// retained after its process exited. Prefer the focused pane's mark so the
+/// tab agrees with the focused-pane badge; otherwise the first exited leaf.
+fn window_exited_mark(
+    leaves: &[ResourceId],
+    focus: Option<&ResourceId>,
+    panes: &HashMap<ResourceId, PaneSlot>,
+) -> Option<String> {
+    let mark = |id: &ResourceId| panes.get(id).and_then(|slot| slot.exited);
+    focus
+        .and_then(mark)
+        .or_else(|| leaves.iter().find_map(mark))
+        .map(ExitMark::compact)
 }
 
 /// phux-foz.9: build the sidebar's agents-section entries — one per
@@ -370,11 +387,13 @@ mod tests {
             signal: Some(9),
         };
         assert_eq!(signalled.label(), "exited signal 9");
+        assert_eq!(signalled.compact(), "sig9");
         let unknown = ExitMark {
             status: None,
             signal: None,
         };
         assert_eq!(unknown.label(), "exited");
+        assert_eq!(unknown.compact(), "");
     }
 
     #[test]
@@ -459,6 +478,83 @@ mod tests {
             &mut VcsIndex::default(),
         );
         assert!(!infos[1].attention);
+    }
+
+    /// phux-fpgl.33: `window_infos` marks a window when ANY of its leaves is
+    /// retained after exit — including a non-focused leaf — and only that window.
+    #[test]
+    fn window_infos_flags_exited_on_the_retained_window() {
+        let front = ResourceId::local(1);
+        let back = ResourceId::local(2);
+        let mut workspace = Workspace::single(front.clone());
+        workspace.add_window("2".to_owned(), back.clone());
+        workspace.select(0);
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
+        panes.insert(front, PaneSlot::new_with_size(80, 24).expect("slot"));
+        let mut retained = PaneSlot::new_with_size(80, 24).expect("slot");
+        retained.exited = Some(ExitMark {
+            status: Some(3),
+            signal: None,
+        });
+        panes.insert(back, retained);
+
+        let infos = window_infos(
+            &workspace,
+            &panes,
+            None,
+            &HashMap::new(),
+            &mut VcsIndex::default(),
+        );
+        assert_eq!(
+            infos[0].exited.as_deref(),
+            None,
+            "live window stays unmarked"
+        );
+        assert_eq!(
+            infos[1].exited.as_deref(),
+            Some("3"),
+            "the retained (background) window carries the compact status"
+        );
+    }
+
+    /// phux-fpgl.33: a split whose unfocused leaf is retained still marks
+    /// the window, so the tab/sidebar show it without focusing that pane.
+    #[test]
+    fn window_infos_marks_a_split_when_the_unfocused_leaf_exited() {
+        use crate::layout::{LayoutNode, LayoutState, SplitDir};
+        let live = ResourceId::local(1);
+        let dead = ResourceId::local(2);
+        let mut workspace = Workspace::single(live.clone());
+        workspace.windows[0].state = LayoutState {
+            tree: Some(LayoutNode::Split {
+                dir: SplitDir::Horizontal,
+                ratio: 0.5,
+                left: Box::new(LayoutNode::Leaf(live.clone())),
+                right: Box::new(LayoutNode::Leaf(dead.clone())),
+            }),
+            focus: Some(live.clone()),
+        };
+        let mut panes: HashMap<ResourceId, PaneSlot> = HashMap::new();
+        panes.insert(live, PaneSlot::new_with_size(80, 24).expect("slot"));
+        let mut retained = PaneSlot::new_with_size(80, 24).expect("slot");
+        retained.exited = Some(ExitMark {
+            status: None,
+            signal: Some(9),
+        });
+        panes.insert(dead, retained);
+
+        let infos = window_infos(
+            &workspace,
+            &panes,
+            None,
+            &HashMap::new(),
+            &mut VcsIndex::default(),
+        );
+        assert_eq!(
+            infos[0].exited.as_deref(),
+            Some("sig9"),
+            "unfocused retained leaf still marks the window"
+        );
     }
 
     #[test]
