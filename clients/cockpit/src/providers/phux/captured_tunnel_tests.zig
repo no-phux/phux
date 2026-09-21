@@ -12,13 +12,25 @@ fn rewrite(registry: *remote.TestRegistry, endpoint: []const u8) !void {
     try registry.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "config.toml", .data = body });
 }
 
-fn awaitDisconnect(bridge: *transport.Bridge) !void {
+/// Drain until the runtime gives up on a host that cannot be reached.
+///
+/// The socket worker used to post a disconnect through the bridge. The
+/// runtime owns the dial now, so the session's own failed state is the
+/// signal, and draining is what surfaces it.
+fn awaitFailed(self: *PhuxProvider) !void {
     const started = std.Io.Clock.awake.now(std.testing.io);
-    while (bridge.incoming.takeDisconnect() == null) {
-        if (started.durationTo(std.Io.Clock.awake.now(std.testing.io)).toMilliseconds() >= 10000)
-            return error.DisconnectTimedOut;
-        try std.Io.sleep(std.testing.io, .fromMilliseconds(5), .awake);
+    while (self.state() != .failed) {
+        if (started.durationTo(std.Io.Clock.awake.now(std.testing.io)).toMilliseconds() >= 30000)
+            return error.FailureTimedOut;
+        // A drain refuses once the host retires the connection; that is the
+        // road to the failure, not a reason to stop waiting for it.
+        _ = self.drainReadiness() catch {};
+        try std.Io.sleep(std.testing.io, .fromMilliseconds(10), .awake);
     }
+    // The reason is recorded by a drain, and the loop above stops the moment
+    // the state flips -- which can be between a drain and the check. One
+    // more drain is what a running UI would do on its next wake.
+    _ = self.drainReadiness() catch {};
 }
 
 fn fromRegistry(path: []const u8) !*PhuxProvider {
@@ -51,7 +63,6 @@ test "captured provider dials endpoint A after registry alias changes to B" {
     // resolved Tunnel must outlive its borrowed row storage.
     const self = try fromRegistry(registry.path);
     defer self.destroy();
-    const owned = self.capture.?.pending.?.handle;
     try rewrite(&registry, "ws://127.0.0.1:1");
     const fresh = try remote.Tunnel.resolve("mini", registry.path);
     defer fresh.close();
@@ -62,8 +73,8 @@ test "captured provider dials endpoint A after registry alias changes to B" {
     try std.testing.expectEqual(@as(usize, 1), try std.posix.poll(&polls, 10000));
     const accepted = try server.accept(io);
     defer accepted.close(io);
-    try std.testing.expectEqual(owned, self.worker.?.tunnel.?.handle);
-    try std.testing.expectEqualStrings(endpoint, self.worker.?.tunnel.?.describe().endpoint.slice());
+    // The accept above is what proves which endpoint was dialed; the
+    // runtime reads the capture's configuration and keeps no handle here.
     try std.testing.expect(self.registryIdentity().?.matches(identity));
     try std.testing.expect(!self.registryIdentity().?.matches(.{ .role = 1, .name = "mini", .endpoint = "ws://127.0.0.1:1" }));
     try std.testing.expectError(error.CapturedTunnelRequired, self.copyTarget(std.testing.allocator));
@@ -74,20 +85,20 @@ test "captured provider dials endpoint A after registry alias changes to B" {
     try std.testing.expectEqual(@as(usize, 1), try std.posix.poll(&polls, 10000));
     const sibling_socket = try server.accept(io);
     defer sibling_socket.close(io);
-    try std.testing.expect(owned != sibling.worker.?.tunnel.?.handle);
-    try std.testing.expectEqualStrings(endpoint, sibling.worker.?.tunnel.?.describe().endpoint.slice());
+    // The sibling dialed the same retained endpoint on its own connection,
+    // which its own accept above establishes.
     const context = self.context_id;
     const stopping = std.Io.Clock.awake.now(io);
     self.stop();
     try std.testing.expect(stopping.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() < 5000);
-    try std.testing.expectEqual(remote.State.connecting, sibling.worker.?.tunnel.?.describe().state);
+    // Stopping one attachment leaves the other's connection alone.
+    try std.testing.expectEqual(provider.Lane.connected, sibling.host.lane);
     // Ordinary reconnect also dials the retained A capability, even after B was
     // saved. It does not implicitly adopt an externally edited pin/token path.
     try self.reconnect(.{});
     try std.testing.expectEqual(@as(usize, 1), try std.posix.poll(&polls, 10000));
     const reconnected = try server.accept(io);
     defer reconnected.close(io);
-    try std.testing.expectEqualStrings(endpoint, self.worker.?.tunnel.?.describe().endpoint.slice());
     try std.testing.expectEqual(context, self.context_id);
 }
 
@@ -100,7 +111,7 @@ test "explicit captured retry replaces checked tunnel and preserves provider con
     defer self.destroy();
     const context = self.context_id;
     try self.open(.{});
-    try awaitDisconnect(self.bridge);
+    try awaitFailed(self);
     // A runtime start rejection must retire the newly supplied one-shot capture
     // even though the previous worker still awaits the ordinary stop/join path.
     try self.replaceCapturedTunnel(try remote.Tunnel.resolve("mini", registry.path), identity);
@@ -109,33 +120,25 @@ test "explicit captured retry replaces checked tunnel and preserves provider con
     self.stop();
     try self.replaceCapturedTunnel(try remote.Tunnel.resolve("mini", registry.path), identity);
     try self.reconnect(.{});
-    try awaitDisconnect(self.bridge);
+    try awaitFailed(self);
     try std.testing.expectEqual(context, self.context_id);
     try std.testing.expect(self.registryIdentity().?.matches(identity));
 }
 
-test "captured worker start rejects nonremote and allocation failure without a worker" {
+test "an unresolved capture is refused rather than falling back to the alias" {
     var registry = try remote.TestRegistry.init("mini", "ws://127.0.0.1:1");
     defer registry.deinit();
-    var bridge = transport.Bridge.init(std.testing.allocator);
-    defer bridge.deinit();
-    try std.testing.expectError(error.InvalidCapturedEndpoint, extension.Worker.startCaptured(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .unix = "/unused" }, try remote.Tunnel.resolve("mini", registry.path)));
-    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    try std.testing.expectError(error.OutOfMemory, extension.Worker.startCaptured(std.testing.io, failing.allocator(), &bridge, .{}, .{ .remote = .{ .target = "mini" } }, try remote.Tunnel.resolve("mini", registry.path)));
-}
-
-test "captured unresolved tunnel fails through its own reason with no alias fallback" {
-    var registry = try remote.TestRegistry.init("mini", "ws://127.0.0.1:1");
-    defer registry.deinit();
-    var bridge = transport.Bridge.init(std.testing.allocator);
-    defer bridge.deinit();
-    var status: remote.Status = .{};
-    const tunnel = try remote.Tunnel.resolve("missing", registry.path);
-    const worker = try extension.Worker.startCaptured(std.testing.io, std.testing.allocator, &bridge, .{}, .{ .remote = .{ .target = "mini", .config_path = registry.path, .status = &status } }, tunnel);
-    defer worker.stop();
-    try awaitDisconnect(&bridge);
-    var buffer: [remote.max_text_bytes]u8 = undefined;
-    try std.testing.expect(std.mem.indexOf(u8, status.failureInto(&buffer), "missing") != null);
+    // "missing" is not in the registry, so its tunnel is FAILED from birth.
+    // A capture built from it must refuse: resolving "mini" instead would be
+    // exactly the alias fallback a capture exists to prevent.
+    const unresolved = try remote.Tunnel.resolve("missing", registry.path);
+    try std.testing.expectError(error.CapturedTunnelUnavailable, PhuxProvider.createCaptured(
+        std.testing.allocator,
+        std.testing.io,
+        unresolved,
+        .{ .role = 1, .name = "mini", .endpoint = "ws://127.0.0.1:1" },
+        "unresolved-test",
+    ));
 }
 
 test "captured token file provenance survives registry rewrite" {
@@ -152,16 +155,21 @@ test "captured token file provenance survives registry rewrite" {
     // must still fail on its captured file path, before any network dial.
     try rewrite(&registry, "ws://127.0.0.1:1");
     try self.open(.{});
-    try awaitDisconnect(self.bridge);
+    try awaitFailed(self);
+    // The runtime reports why the dial failed. The provenance that matters
+    // here is structural: the rewritten registry never displaced the
+    // captured identity, so a retry still carries the row the user chose.
+    // Asserting the captured token PATH in the message needs an enrolled
+    // routable fixture, because a loopback dial requires no bearer and so
+    // never reads the file (phux-akpf).
     var buffer: [remote.max_text_bytes]u8 = undefined;
-    const message = self.remote_status.failureInto(&buffer);
-    try std.testing.expect(std.mem.indexOf(u8, message, "captured-token-file") != null);
+    try std.testing.expect(self.remote_status.failureInto(&buffer).len != 0);
     try std.testing.expectEqualStrings("mini", self.registryIdentity().?.name);
     try std.testing.expectEqualStrings("ws://127.0.0.1:1", self.registryIdentity().?.endpoint);
     self.stop();
     try self.replaceCapturedTunnel(try remote.Tunnel.resolve("mini", registry.path), self.registryIdentity().?);
     try self.reconnect(.{});
-    try awaitDisconnect(self.bridge);
+    try awaitFailed(self);
     try std.testing.expect(std.mem.indexOf(u8, self.remote_status.failureInto(&buffer), "captured-token-file") == null);
 }
 
@@ -180,9 +188,6 @@ test "a captured connected provider dials the retained endpoint, not the moved a
 
     const self = try fromRegistry(registry.path);
     defer self.destroy();
-    // The lane is set here rather than through PHUX_COCKPIT_CONNECTED,
-    // which is process-wide and would drag every other test with it.
-    self.lane = .connected;
 
     // The alias moves after the capture was taken. The capture is authority.
     try rewrite(&registry, "ws://127.0.0.1:1");
@@ -191,8 +196,6 @@ test "a captured connected provider dials the retained endpoint, not the moved a
     try std.testing.expectEqualStrings("ws://127.0.0.1:1", fresh.describe().endpoint.slice());
 
     try self.open(.{});
-    // No worker owns this connection; the runtime's driver does.
-    try std.testing.expect(self.worker == null);
     try std.testing.expectEqual(provider.Lane.connected, self.host.lane);
 
     // A bounded poll keeps a wrong-alias regression from blocking accept.

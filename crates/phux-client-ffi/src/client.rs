@@ -158,6 +158,8 @@ pub(crate) struct Client {
     pub workspace: crate::workspace::SharedWorkspace,
     pub server_id: Vec<u8>,
     pub last_error: Vec<u8>,
+    /// Borrow-retained copy of the runtime's connection failure.
+    pub connection_error: Vec<u8>,
     pub limits: Limits,
     pub callbacks: PhuxClientCallbacks,
     pub in_callback: bool,
@@ -256,6 +258,7 @@ impl Client {
             workspace: crate::workspace::SharedWorkspace::default(),
             server_id: Vec::new(),
             last_error: Vec::new(),
+            connection_error: Vec::new(),
             limits,
             callbacks: PhuxClientCallbacks::default(),
             in_callback: false,

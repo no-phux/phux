@@ -22,9 +22,10 @@ use std::time::{Duration, Instant};
 use phux_client_ffi::{
     ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxClient, PhuxClientOptions, PhuxClientResult,
     PhuxClientState, PhuxConnectOptions, phux_client_connect, phux_client_connection_epoch,
-    phux_client_feed_frame, phux_client_free, phux_client_is_connected, phux_client_new,
-    phux_client_outgoing_count, phux_client_poll, phux_client_poll_pending,
-    phux_client_queue_attach, phux_client_resource_count, phux_client_state,
+    phux_client_connection_error, phux_client_feed_frame, phux_client_free,
+    phux_client_is_connected, phux_client_new, phux_client_outgoing_count, phux_client_poll,
+    phux_client_poll_pending, phux_client_queue_attach, phux_client_resource_count,
+    phux_client_state,
 };
 use phux_server_testkit::{run_local, spawn_server};
 use tempfile::TempDir;
@@ -270,7 +271,21 @@ fn freeing_joins_the_driver_so_no_wake_outlives_the_client() {
     unsafe { phux_client_free(embedded) };
 
     // Let the driver get well into a dial and a backoff.
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(Duration::from_millis(200));
+
+    // The runtime's reason must be reachable: on this lane it is the only
+    // account of why a host is unreachable, and a consumer showing a failed
+    // host has nothing else to show.
+    let mut reason = PhuxBytes::default();
+    // SAFETY: a live client and a writable out.
+    assert_eq!(
+        unsafe { phux_client_connection_error(client, &raw mut reason) },
+        PhuxClientResult::Ok
+    );
+    assert!(
+        reason.len > 0,
+        "the driver's dial failure is reported to the embedder"
+    );
 
     // SAFETY: a live client, uniquely owned, on its owning thread.
     unsafe { phux_client_free(client) };

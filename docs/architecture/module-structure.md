@@ -720,7 +720,8 @@ rather than a layer with its own internal architecture worth diagramming:
   connected one over `Runtime::connect`, where the runtime dials, walks the
   ladder and owns the socket, and `phux_client_poll` feeds what it read.
   The lanes are mutually exclusive at runtime and the `connect` module owns
-  that boundary (ADR-0133 decisions 2 and 6). The cell layout is core's:
+  that boundary (ADR-0133 decisions 2 and 6). Cockpit runs the connected
+  lane; the embedded one is how a harness stages synthetic frames. The cell layout is core's:
   `PhuxTerminalCell`, `PhuxGridCellMetadata` and the `PHUX_CLIENT_CELL_*` flags
   in `include/phux/client.h` match `phux_client_core::grid` (pinned by core's
   layout tests), and the grid

@@ -89,30 +89,34 @@ satellite pane behind a hub, reads as unknown, never as an error.
 
 ## Who owns the socket
 
-Two lanes, one C ABI (ADR-0133).
-
-The **embedded lane** is the shipping default and what every Zig test
-drives: Cockpit's own worker dials, reconnects, and pumps frames through
-`phux_client_feed_frame` and `phux_client_outgoing_*`. A remote host is
-reached by handing one end of a Unix-domain socket pair to a tunnel.
-
-The **connected lane** hands all of that to `phux-client-runtime`. It
-resolves the target through the CLI's `[[remote]]` registry under the CLI's
+`phux-client-runtime` does (ADR-0133). Cockpit names a destination; the
+runtime resolves it through the CLI's `[[remote]]` registry under the CLI's
 trust rules, dials, walks the reconnect ladder, and reads and writes the
-socket on its own thread; Cockpit hands it a target, gets woken, and calls
-`phux_client_poll`. Frames are still decoded on Cockpit's owning thread, so
-the ABI's per-frame behavior is unchanged.
+socket on its own thread. Cockpit is woken and calls `phux_client_poll`.
 
-The connected lane is opt-in while it waits for live acceptance:
+Cockpit had its own socket worker until this moved: DNS, connect, length
+framing, a poll loop, write deadlines, a redial ladder, and a socket pair
+relayed to a tunnel for remote hosts. None of that exists now.
 
-```sh
-PHUX_COCKPIT_CONNECTED=1 phux cockpit
-```
+Frames are still decoded on Cockpit's owning thread. The runtime retains
+what it reads and `poll` feeds it, because this ABI's per-frame behavior
+reads state only that thread may touch, so the decode point did not move
+with the socket.
 
-On that lane the runtime queues `HELLO` itself, `phux_client_connection_epoch`
-replaces "a new client per connection" as the reconnect fence, and a bare
-`host:port` endpoint stays on the worker, because the registry is what
-carries the pin and token a routable dial needs.
+Two consequences worth knowing:
+
+- The runtime queues `HELLO` on every connection it opens. `ATTACH` stays
+  explicit, and Cockpit re-sends it when `phux_client_connection_epoch`
+  changes -- that epoch replaces "a new client per connection" as the
+  reconnect fence, because one client now outlives every socket.
+- A bare `host:port` endpoint has no lane and is refused: the registry is
+  what carries the certificate pin and token a routable dial needs.
+
+`phux_client_feed_frame` and the `phux_client_outgoing_*` calls remain in
+the ABI as the embedded lane, and Cockpit's `transport.Bridge` remains the
+seam its tests stage exact frames through -- malformed ones, retired
+generations, protocol violations -- which no real server would send.
+Nothing in production drives either.
 
 ## Clipboard (OSC 52)
 

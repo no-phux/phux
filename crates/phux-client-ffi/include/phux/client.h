@@ -1542,6 +1542,17 @@ PhuxClientResult phux_client_nudge(PhuxClient *client);
  * lane, and never a reopen once the session is closed or failed. */
 PhuxClientResult phux_client_resync(PhuxClient *client);
 
+/** Why the session is failing or failed, as the runtime reports it.
+ *
+ * NOT phux_client_last_error, which is the bridge's own last refusal of an
+ * ABI call. On the connected lane the dial, the trust rules and the
+ * reconnect ladder live in the runtime, so their reasons are the only
+ * account of why a host is unreachable -- a consumer that shows a failed
+ * host has nothing else to show. Empty when there is nothing to report, and
+ * always empty on the embedded lane, where the embedder's own transport
+ * owns the reason. Borrowed until the next mutable call on this client. */
+PhuxClientResult phux_client_connection_error(PhuxClient *client, PhuxBytes *out_error);
+
 /** Whether phux_client_poll would find anything: a frame the driver has
  * read, or an event not yet drained. A consumer that polls its clients in
  * turn rather than acting on each wake uses this to skip an empty turn.

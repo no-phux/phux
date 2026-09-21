@@ -313,6 +313,35 @@ pub unsafe extern "C" fn phux_client_resync(client: *mut PhuxClient) -> PhuxClie
     })
 }
 
+/// Why the session is failing or failed, as the runtime reports it.
+///
+/// This is not `phux_client_last_error`, which is the bridge's own last
+/// refusal of an ABI call. On the connected lane the dial, the trust rules
+/// and the reconnect ladder all live in the runtime, so their reasons are
+/// the only account of why a host is unreachable. Empty when the runtime has
+/// nothing to report, and always empty on the embedded lane, where the
+/// embedder's own transport owns the reason.
+///
+/// The span is borrowed until the next mutable call on this client.
+///
+/// # Safety
+///
+/// `client` must be a live client and `out_error` writable for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_connection_error(
+    client: *mut PhuxClient,
+    out_error: *mut PhuxBytes,
+) -> PhuxClientResult {
+    with_client_mut(client, |client| {
+        // SAFETY: checked before write.
+        let out = unsafe { out_error.as_mut() }
+            .ok_or_else(|| BridgeError::invalid("out_error is null"))?;
+        client.connection_error = client.runtime.last_error().unwrap_or_default().into_bytes();
+        *out = crate::types::bytes_out(&client.connection_error);
+        Ok(())
+    })
+}
+
 /// Whether `phux_client_poll` would find anything to do: a frame the driver
 /// has read, or an event not yet drained.
 ///

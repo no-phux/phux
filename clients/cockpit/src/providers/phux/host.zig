@@ -314,6 +314,10 @@ pub const Host = struct {
     /// An explicit reconnect already retired the current connection, so the
     /// epoch change it causes must not retire a second time.
     retired_ahead: bool = false,
+    /// Test seam only. The runtime owns the socket in production, so nothing
+    /// fills this queue there; it is how a fixture stages exact frames --
+    /// malformed ones, retired generations, protocol violations -- that no
+    /// real server would send (ADR-0133 decision 2).
     bridge: *transport.Bridge,
     terminals: std.ArrayListUnmanaged(Terminal) = .empty,
     sessions: std.ArrayListUnmanaged(SessionSummary) = .empty,
@@ -817,6 +821,20 @@ pub const Host = struct {
         host.operation_ledger.accepted(request_id, host.client_generation, .close_resources, null);
         host.stageOutgoing() catch host.disconnect();
         return request_id;
+    }
+
+    /// Copy why the runtime's connection failed. Distinct from
+    /// `copyLastError`, which is the bridge's refusal of an ABI call.
+    pub fn copyConnectionError(host: *Host, out: []u8) []const u8 {
+        var raw: c.PhuxBytes = undefined;
+        if (c.phux_client_connection_error(host.client, &raw) != c.PHUX_CLIENT_OK) return out[0..0];
+        const message = effectSlice(raw) catch return out[0..0];
+        var count = @min(out.len, message.len);
+        if (count < message.len) {
+            while (count > 0 and (message[count] & 0xc0) == 0x80) count -= 1;
+        }
+        @memcpy(out[0..count], message[0..count]);
+        return out[0..count];
     }
 
     /// Copy a synchronous FFI refusal before another mutable client call. The
