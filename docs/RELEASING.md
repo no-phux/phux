@@ -297,6 +297,7 @@ Linux x86_64, and Linux arm64.
 | Phux Cockpit | Homebrew cask + GitHub release | `cockpit-vX.Y.Z`, ZIP + DMG + `SHA256SUMS`, [`cockpit-release.yml`](../.github/workflows/cockpit-release.yml) |
 | `PhuxFFI.xcframework` (phux-client-ffi for iOS, simulator, macOS) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), called by release-please; see [PhuxFFI xcframework](#phuxffi-xcframework) |
 | `PhuxMobileFFI-<tag>.xcframework.zip` (mobile UniFFI runtime projection plus generated Swift) | GitHub release asset on `vX.Y.Z` | [`ffi-xcframework.yml`](../.github/workflows/ffi-xcframework.yml), built beside the C artifact; see [Mobile UniFFI xcframework](#mobile-uniffi-xcframework) |
+| `PhuxMobileFFI-<tag>.android.zip` (same UniFFI surface: Kotlin + arm64-v8a/x86_64 `.so`) | GitHub Actions artifact / release asset | [`ffi-android.yml`](../.github/workflows/ffi-android.yml); phux-mobile fetches at `PHUX_REV` |
 
 `@phux/integration-runtime` is a private implementation module bundled into
 the public Pi artifact and inlined into OpenCode. It has no tag or independent

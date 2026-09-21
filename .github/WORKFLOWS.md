@@ -1,6 +1,6 @@
 # CI and release workflows
 
-**TL;DR.** Twenty-three workflows in five lanes. Only `ci` and `commitlint`
+**TL;DR.** Twenty-four workflows in five lanes. Only `ci` and `commitlint`
 gate `main`. Everything else either self-skips, deploys, or belongs to the
 release train that `release-please.yml` owns end to end. The full runbook,
 the known problems, and the daily health digest live in the private
@@ -12,7 +12,7 @@ the known problems, and the daily health digest live in the private
 |---|---|---|
 | PR validation | `ci`, `cockpit-ci`, `conventional-commits`, `web-check`, `native-setup` | every non-draft pull request, and `main` |
 | Opt-in checks | `stress` (label or dispatch), `mutation` (dispatch) | never automatically |
-| Release train | `release-please` and the four workflows it calls: `release`, `cockpit-release`, `ffi-xcframework`, `linear-release`; plus `agent-integration-release` on component tags, `next-release` off green `main`, `publish-crate` by hand | a push to `main`, then a tag |
+| Release train | `release-please` and the workflows it calls: `release`, `cockpit-release`, `ffi-xcframework`, `ffi-android`, `linear-release`; plus `agent-integration-release` on component tags, `next-release` off green `main`, `publish-crate` by hand | a push to `main`, then a tag. `ffi-android` also runs on `main` when the mobile shim changes, so the pin's SHA already has an artifact. |
 | Site and worker | `site-deploy`, `site-deploy-worker`, `site-rollback-worker`, `site-native-control` | `main` pushes under `docs/`, or an operator |
 | Scheduled ops | `release-drift` (daily), `site-native-monitor` (6-hourly), `native-setup` (weekly) | cron |
 
