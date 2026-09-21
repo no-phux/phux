@@ -44,7 +44,6 @@ mod diagnostic_tools;
 #[cfg(test)]
 mod goldens;
 mod jsonrpc;
-mod kill_tool;
 mod pane_tools;
 mod plugin_action;
 mod plugin_workspace;

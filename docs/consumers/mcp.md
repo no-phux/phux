@@ -1,7 +1,7 @@
 ---
 audience: consumers, contributors, agents
 stability: evolving
-last-reviewed: 2026-09-20
+last-reviewed: 2026-09-21
 ---
 
 # The phux MCP adapter
@@ -144,11 +144,8 @@ stack.
 Name-for-name mapping onto the CLI, checked by an automated parity gate:
 [`../reference/parity.md`](../reference/parity.md) (generated) lists every
 tool, the `phux` verb it mirrors, whether it runs in-process or through
-the CLI, and its annotations. Most tools call the same `phux-client`
-function the CLI verb calls and return the same document; four
-(`phux_kill`, `phux_signal`, `phux_tag`, `phux_rename`) run in-process
-over the same wire helpers but mirror the CLI verb's orchestration in the
-adapter, which the reference marks. A small residue
+the CLI, and its annotations. In-process tools call the same `phux-client`
+function the CLI verb calls and return the same document. A small residue
 (`phux_run`, `phux_new`, `phux_launch`, `phux_workspace`, the diagnostics,
 and the agent verbs whose documents the CLI assembles) still executes the
 CLI: argv (never a shell), the canonical JSON parsed, stdout/stderr capped

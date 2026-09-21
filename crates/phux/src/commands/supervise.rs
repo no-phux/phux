@@ -1,10 +1,10 @@
 //! `phux take` / `phux give` / `phux signal` — the supervisory verbs
 //! (ADR-0033, "take the wheel + kill").
 //!
-//! Each resolves a selector client-side to one pane (the same front door
-//! `send-keys` / `run` use) and issues a single control command built by
-//! [`phux_client::signal`]: `ACQUIRE_INPUT` (seize the input lease),
-//! `RELEASE_INPUT`, or `SIGNAL_TERMINAL`.
+//! `take` / `give` resolve a selector client-side to one pane (the same
+//! front door `send-keys` / `run` use) and issue a single control command
+//! built by [`phux_client::signal`]. `signal` calls
+//! [`phux_client::signal::deliver`], the same path MCP `phux_signal` uses.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -133,54 +133,55 @@ pub(crate) fn run_signal(
         Err(code) => return code,
     };
     rt.block_on(async move {
-        let terminal_id =
-            match resolve_target_for_input(&socket_path, &selector, "signal", false).await {
-                Ok(id) => id,
-                Err(code) => return code,
-            };
-        let outcome = match key {
-            Some(key) => keyed_signal(&socket_path, terminal_id, wire_signal, key).await,
-            None => request_command(
-                &socket_path,
-                phux_client::signal::signal_command(terminal_id, wire_signal),
-            )
-            .await
-            .map(LeaseOutcome::from_result)
-            .map_err(KeyedError::from),
-        };
-        match outcome {
-            Ok(LeaseOutcome::Ok) => {
-                outln!("phux: signalled {target} ({signal:?})");
-                ExitCode::SUCCESS
+        let mut notices = Vec::new();
+        let result =
+            phux_client::signal::deliver(&socket_path, &selector, wire_signal, key, &mut notices)
+                .await;
+        for notice in &notices {
+            eprintln!(
+                "{}",
+                phux_client::state::partial_view_warning("signal", notice)
+            );
+        }
+        match result {
+            Ok(delivered) => {
+                for message in delivered.interleaved {
+                    eprintln!("phux: warning: partial results — {message}");
+                }
+                match delivered.outcome {
+                    LeaseOutcome::Ok => {
+                        outln!("phux: signalled {target} ({signal:?})");
+                        ExitCode::SUCCESS
+                    }
+                    LeaseOutcome::Refused(message) => {
+                        eprintln!("phux: signal refused for {target}: {message}");
+                        ExitCode::from(2)
+                    }
+                    LeaseOutcome::Unexpected(other) => {
+                        eprintln!(
+                            "phux: {target}: {}",
+                            phux_client::explain::explain_unexpected("signal", &other)
+                        );
+                        ExitCode::from(2)
+                    }
+                }
             }
-            Ok(LeaseOutcome::Refused(message)) => {
-                eprintln!("phux: signal refused for {target}: {message}");
-                ExitCode::from(2)
+            Err(phux_client::signal::SignalError::Miss { degradation }) => {
+                crate::commands::partial::report_target_miss_keeping_status_for(
+                    false,
+                    None,
+                    &degradation,
+                )
             }
-            Ok(LeaseOutcome::Unexpected(other)) => {
-                eprintln!(
-                    "phux: {target}: {}",
-                    phux_client::explain::explain_unexpected("signal", &other)
-                );
-                ExitCode::from(2)
+            Err(phux_client::signal::SignalError::Agent(err)) => {
+                crate::commands::report_agent_resolve_error(false, &err, true)
             }
-            Err(KeyedError::Unsupported) => {
+            Err(phux_client::signal::SignalError::Keyed(KeyedError::Unsupported)) => {
                 crate::commands::spawn::unsupported_server(false, ServerFeature::KeyedSignal)
             }
-            Err(KeyedError::Attach(err)) => report_no_server(&err, &socket_path, "signal"),
+            Err(phux_client::signal::SignalError::Keyed(KeyedError::Attach(err))) => {
+                report_no_server(&err, &socket_path, "signal")
+            }
         }
     })
-}
-
-/// Send one keyed signal, printing any partial-results notice beside it.
-async fn keyed_signal(
-    socket_path: &std::path::Path,
-    terminal_id: phux_protocol::ids::ResourceId,
-    signal: TerminalSignal,
-    key: IdempotencyKey,
-) -> Result<LeaseOutcome, KeyedError> {
-    let (outcome, degradation) =
-        phux_client::signal::signal_keyed_at(socket_path, terminal_id, signal, key).await?;
-    crate::commands::warn_interleaved_degradation(&degradation);
-    Ok(outcome)
 }

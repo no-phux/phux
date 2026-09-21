@@ -556,9 +556,11 @@ async fn phux_new(args: &Value) -> Result<Value, ToolError> {
 
 /// `phux_kill` — tear down the Terminal(s) a selector resolves to.
 ///
-/// In-process ([`crate::kill_tool`]), with `phux kill`'s tag-aware
-/// resolution, whole-session atomic teardown, empty-session clear, per-pane
-/// fallback, and clean-disconnect handling.
+/// In-process through [`phux_client::kill::selected`], the same path
+/// `phux kill` calls: tag-aware resolution, whole-session atomic teardown,
+/// empty-session clear, per-pane fallback, and clean-disconnect handling.
+/// A hit against a partial fleet view prints the same stderr warning the
+/// CLI does.
 async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
@@ -573,8 +575,40 @@ async fn phux_kill(args: &Value) -> Result<Value, ToolError> {
     let socket = socket_arg(args)?;
     let selector = selector::parse(&target)
         .map_err(|err| ToolError::new(format!("invalid target '{target}': {err}")))?;
-    crate::kill_tool::kill_selected(&socket, &selector, &target, key).await?;
-    Ok(json!({ "schema_version": 1, "killed": true, "target": target }))
+    let mut conn = Connection::connect(&socket).await?;
+    let mut notices = Vec::new();
+    let result =
+        phux_client::kill::selected(&mut conn, &selector, &target, key, &mut notices).await;
+    drop(conn);
+    warn_partial_view("kill", &notices);
+    match result {
+        Ok(_) => Ok(json!({ "schema_version": 1, "killed": true, "target": target })),
+        Err(err) => Err(kill_error(err)),
+    }
+}
+
+/// Print the CLI's partial-fleet-view warning on stderr, the adapter's
+/// out-of-band diagnostic channel.
+pub(crate) fn warn_partial_view(verb: &str, notices: &[String]) {
+    for notice in notices {
+        eprintln!("{}", phux_client::state::partial_view_warning(verb, notice));
+    }
+}
+
+fn kill_error(err: phux_client::kill::KillError) -> ToolError {
+    use phux_client::kill::KillError;
+    match err {
+        KillError::UnsupportedKeyedSignal => crate::pane_tools::unsupported_keyed_signal(),
+        KillError::Unresolved {
+            target,
+            degradation,
+        } => ToolError::new(format!(
+            "could not resolve '{target}': this server's view of the fleet is incomplete ({}), so a \
+             miss here does not mean the target is gone",
+            degradation.notices().join("; ")
+        )),
+        other => ToolError::new(other.to_string()),
+    }
 }
 
 /// `phux_detach` — force-detach clients from *outside* the attach UI.
@@ -846,35 +880,14 @@ pub(crate) async fn resolve_one(
     selector: &Selector,
     view: &StateView,
 ) -> Result<ResourceId, ToolError> {
-    resolve_with(socket, selector, view, false).await
-}
-
-/// [`resolve_one`] for a tool that delivers into the pane (`signal`): a
-/// `%name` whose record has the withdrawn shape is refused (ADR-0075
-/// point 5) rather than resolved, exactly as the CLI's input verbs refuse it.
-///
-/// # Errors
-///
-/// As [`resolve_one`].
-pub(crate) async fn resolve_one_for_input(
-    socket: &std::path::Path,
-    selector: &Selector,
-    view: &StateView,
-) -> Result<ResourceId, ToolError> {
-    resolve_with(socket, selector, view, true).await
-}
-
-async fn resolve_with(
-    socket: &std::path::Path,
-    selector: &Selector,
-    view: &StateView,
-    for_input: bool,
-) -> Result<ResourceId, ToolError> {
     let snapshot = view.snapshot();
     // `%name` never reaches `pick_target_pane` (ADR-0075 point 3): it
-    // resolves to exactly one agent or refuses with the reason.
+    // resolves to exactly one agent or refuses with the reason. MCP's
+    // remaining callers here are not input verbs; `phux_signal` uses
+    // [`phux_client::signal::deliver`], which applies the withdrawn-record
+    // guard itself.
     if let Selector::Agent(name) = selector {
-        return state::resolve_agent_target(socket, name, snapshot, for_input)
+        return state::resolve_agent_target(socket, name, snapshot, false)
             .await
             .map(|target| target.terminal)
             .map_err(|err| ToolError::new(err.to_string()));
