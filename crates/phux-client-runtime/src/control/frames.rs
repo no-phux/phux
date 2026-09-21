@@ -17,6 +17,42 @@ const fn allowed_before_handshake(frame: &FrameKind) -> bool {
 }
 
 impl ControlPlane {
+    // ----- the queued inbound lane ----------------------------------
+
+    /// Retain one frame for the consumer to feed itself, under
+    /// [`InboundDelivery::Queued`](super::InboundDelivery::Queued).
+    ///
+    /// Overflowing either ceiling is a protocol-level failure, exactly as
+    /// it was when a socket-owning embedder enforced the same bounds: a
+    /// consumer that stopped draining cannot be allowed to grow the queue
+    /// without limit.
+    pub fn queue_inbound(&mut self, frame: Vec<u8>) -> Result<(), ControlError> {
+        let bytes = self.inbound_bytes.saturating_add(frame.len());
+        if self.inbound.len() >= super::MAX_QUEUED_INBOUND_FRAMES
+            || bytes > super::MAX_QUEUED_INBOUND_BYTES
+        {
+            return Err(ControlError::Protocol(
+                "inbound frame queue overflowed; the consumer stopped draining".to_owned(),
+            ));
+        }
+        self.inbound_bytes = bytes;
+        self.inbound.push(frame);
+        Ok(())
+    }
+
+    /// Drain the retained inbound frames.
+    #[must_use]
+    pub fn take_inbound(&mut self) -> Vec<Vec<u8>> {
+        self.inbound_bytes = 0;
+        std::mem::take(&mut self.inbound)
+    }
+
+    /// Whether any retained inbound frame is waiting.
+    #[must_use]
+    pub const fn has_inbound(&self) -> bool {
+        !self.inbound.is_empty()
+    }
+
     // ----- frames in ------------------------------------------------
 
     /// Decode exactly one SPEC section 5 frame under the negotiated limits

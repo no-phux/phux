@@ -128,7 +128,30 @@ pub struct ControlOptions {
     pub auto_attach_foreign_spawns: bool,
     /// The bootstrap payload limits offered in `HELLO`.
     pub bootstrap_limits: BootstrapLimits,
+    /// Where the connection driver puts an inbound frame.
+    pub deliver_inbound: InboundDelivery,
 }
+
+/// What a connected driver does with a frame it read off the socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum InboundDelivery {
+    /// Feed it straight into this plane, on the driver's thread. The
+    /// consumer observes the result through events and the published grid.
+    #[default]
+    Fed,
+    /// Queue it for the consumer to drain with `take_inbound` and feed
+    /// itself. A binding whose own per-frame state lives on one owning
+    /// thread needs this: it keeps the socket in the runtime and the
+    /// decode point in the binding.
+    Queued,
+}
+
+/// The inbound queue's ceiling, mirroring the bounds a socket-owning
+/// embedder had to enforce for itself. A consumer that stops draining
+/// fails its connection rather than growing without limit.
+pub const MAX_QUEUED_INBOUND_FRAMES: usize = 128;
+/// The inbound queue's byte ceiling; see [`MAX_QUEUED_INBOUND_FRAMES`].
+pub const MAX_QUEUED_INBOUND_BYTES: usize = 32 * 1024 * 1024;
 
 impl Default for ControlOptions {
     fn default() -> Self {
@@ -142,6 +165,7 @@ impl Default for ControlOptions {
             event_after_seq: None,
             auto_attach_foreign_spawns: true,
             bootstrap_limits: BootstrapLimits::default(),
+            deliver_inbound: InboundDelivery::Fed,
         }
     }
 }
@@ -276,6 +300,10 @@ enum Pending {
 #[derive(Debug)]
 pub struct ControlPlane {
     options: ControlOptions,
+    /// Frames read off the socket and not yet drained, under
+    /// [`InboundDelivery::Queued`].
+    inbound: Vec<Vec<u8>>,
+    inbound_bytes: usize,
     offered_caps: ClientCapabilities,
     status: Status,
     handshake_ready: bool,
@@ -329,6 +357,8 @@ impl ControlPlane {
             attach_target: options.attach.clone(),
             options,
             offered_caps,
+            inbound: Vec::new(),
+            inbound_bytes: 0,
             status: Status::Idle,
             handshake_ready: false,
             attached_once: false,
@@ -580,6 +610,10 @@ impl ControlPlane {
     /// discarded, as they were built against per-connection state.
     pub fn connection_opened(&mut self) {
         self.outbound.clear();
+        // Anything the consumer has not drained belongs to the connection
+        // that just ended, and feeding it against fresh per-connection
+        // state would be a protocol error.
+        let _ = self.take_inbound();
         self.terminal_attached.clear();
         self.stream_recoveries.clear();
         self.own_spawns.clear();
@@ -628,6 +662,7 @@ impl ControlPlane {
     /// The session ends at the consumer's request.
     pub fn close(&mut self) {
         self.handshake_ready = false;
+        let _ = self.take_inbound();
         self.strand_durable("the client closed before the operation completed");
         self.strand_extensions("the client closed before the operation completed");
         self.fail_pending("the client closed before the server answered");

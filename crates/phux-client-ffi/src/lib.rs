@@ -6,6 +6,7 @@
 compile_error!("phux-client-ffi is a native-only libghostty bridge");
 
 mod client;
+mod connect;
 mod directory;
 mod error;
 mod grid_metadata;
@@ -42,6 +43,7 @@ use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 
+pub use connect::*;
 pub use directory::*;
 pub use grid_metadata::*;
 pub use log::*;
@@ -65,6 +67,15 @@ pub struct PhuxClient {
     _not_send_sync: std::marker::PhantomData<*mut ()>,
 }
 
+impl PhuxClient {
+    pub(crate) const fn new(inner: Client) -> Self {
+        Self {
+            inner,
+            _not_send_sync: std::marker::PhantomData,
+        }
+    }
+}
+
 impl std::fmt::Debug for PhuxClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -74,7 +85,7 @@ impl std::fmt::Debug for PhuxClient {
     }
 }
 
-fn with_client_mut(
+pub(crate) fn with_client_mut(
     client: *mut PhuxClient,
     f: impl FnOnce(&mut Client) -> Result<(), BridgeError>,
 ) -> PhuxClientResult {
@@ -155,7 +166,7 @@ fn invoke_failure(client: *mut PhuxClient, result: PhuxClientResult) -> PhuxClie
     }
 }
 
-fn invoke_attached(client: *mut PhuxClient) -> PhuxClientResult {
+pub(crate) fn invoke_attached(client: *mut PhuxClient) -> PhuxClientResult {
     let invocation = {
         let client_ref = unsafe { &mut *client };
         if client_ref.inner.attached_notified {
@@ -236,11 +247,9 @@ pub unsafe extern "C" fn phux_client_new(
             mem::size_of::<PhuxClientOptions>(),
             options.version,
         )?;
-        let client = Box::new(PhuxClient {
-            inner: Client::new(client_limits(options)?),
-            _not_send_sync: std::marker::PhantomData,
-        });
-        *out = Box::into_raw(client);
+        *out = Box::into_raw(Box::new(PhuxClient::new(Client::new(client_limits(
+            options,
+        )?))));
         Ok(())
     })) {
         Ok(Ok(())) => PhuxClientResult::Ok,
@@ -265,7 +274,7 @@ fn history_cache_cannot_retain_page(options: &PhuxClientOptions) -> bool {
 }
 
 /// Resolves the bootstrap and history bounds a new client will enforce.
-fn client_limits(options: &PhuxClientOptions) -> Result<Limits, BridgeError> {
+pub(crate) fn client_limits(options: &PhuxClientOptions) -> Result<Limits, BridgeError> {
     let limits = BootstrapLimits::new(
         options.max_bootstrap_chunk_bytes,
         options.max_history_page_bytes,
@@ -516,6 +525,11 @@ pub unsafe extern "C" fn phux_client_feed_frame(
 ) -> PhuxClientResult {
     let mut notify_attached = false;
     let result = with_client_mut(client, |client| {
+        if client.is_connected_lane() {
+            return Err(BridgeError::state(
+                "this client's runtime owns the socket; poll instead of feeding",
+            ));
+        }
         let data = unsafe { bytes_in(data, len) }?;
         let frame = decode_server_frame(client, data)?;
         notify_attached = apply_server_frame(client, frame)?;
@@ -526,6 +540,22 @@ pub unsafe extern "C" fn phux_client_feed_frame(
     } else {
         result
     }
+}
+
+/// The connected lane's tick: feed what the driver read, then publish.
+///
+/// Each frame walks the same path `phux_client_feed_frame` walks, so the
+/// retired-close, profile-validation and agent-generation hooks keep running
+/// on the owning thread. The trailing event drain is what surfaces a status
+/// change or a connection loss that carried no frame.
+pub(crate) fn poll_connected(client: &mut Client) -> Result<bool, BridgeError> {
+    let mut attached = false;
+    for frame in client.take_inbound() {
+        let decoded = decode_server_frame(client, &frame)?;
+        attached |= apply_server_frame(client, decoded)?;
+    }
+    attached |= client.process_runtime_events()?;
+    Ok(attached)
 }
 
 fn decode_server_frame(client: &Client, data: &[u8]) -> Result<FrameKind, BridgeError> {

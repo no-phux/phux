@@ -7,7 +7,7 @@ use tokio::sync::watch;
 
 use super::io::{Io, dial};
 use super::{ConnectOptions, ConnectionEnd, Shared, Signals, Target, Wake, lock};
-use crate::control::{ControlError, Status};
+use crate::control::{ControlError, InboundDelivery, Status};
 
 enum Decision {
     Stop,
@@ -345,7 +345,13 @@ impl<'a> Pump<'a> {
         }
         let (fed, frames) = {
             let mut control = lock(self.shared);
-            let fed = control.feed_bytes(&frame);
+            // A binding that keeps its own per-frame state on one owning
+            // thread takes delivery itself; the socket is still ours.
+            let fed = if control.options().deliver_inbound == InboundDelivery::Queued {
+                control.queue_inbound(frame)
+            } else {
+                control.feed_bytes(&frame)
+            };
             (fed, control.take_outbound())
         };
         self.write_all(frames).await?;

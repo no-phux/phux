@@ -14,13 +14,15 @@ use std::sync::Arc;
 
 use phux_client_core::history::{HistoryCacheConfig, HistoryLoadState, HistoryStatus};
 use phux_client_core::session::ReplicaKey;
-use phux_client_runtime::control::{ControlOptions, Event, Status as RuntimeStatus};
-use phux_client_runtime::{Client as RuntimeClient, ControlGuard, Runtime};
+use phux_client_runtime::control::{
+    ControlOptions, Event, InboundDelivery, Status as RuntimeStatus,
+};
 use phux_client_runtime::engine::{
     EngineDocumentPoint, EngineError, MouseMode, Scroll, SelectionGestureEvent,
     SelectionGestureResult,
 };
 use phux_client_runtime::publication::{GridFrame, Rgb};
+use phux_client_runtime::{Client as RuntimeClient, ControlGuard, Lane, Runtime};
 use phux_protocol::ResourceKind;
 use phux_protocol::caps::{BootstrapLimits, Layer, ServerFeature};
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
@@ -191,7 +193,14 @@ pub(crate) struct Client {
 }
 
 impl Client {
-    pub(crate) fn new(limits: Limits) -> Self {
+    /// The plane options and history policy both lanes are built with.
+    ///
+    /// `deliver_inbound` is [`InboundDelivery::Queued`] in either lane: this
+    /// ABI's per-frame hooks (retired-close suppression, bootstrap-profile
+    /// validation, agent-generation tracking) read workspace-subscription
+    /// state that only the owning thread may touch, so the decode point
+    /// stays here even when the runtime owns the socket.
+    pub(crate) fn control_options(limits: &Limits) -> (ControlOptions, HistoryCacheConfig) {
         let bootstrap_limits =
             BootstrapLimits::new(limits.bootstrap_chunk, limits.history_page).unwrap_or_default();
         let history = HistoryCacheConfig {
@@ -214,13 +223,24 @@ impl Client {
             // ATTACH_RESOURCE for the same spawn.
             auto_attach_foreign_spawns: false,
             bootstrap_limits,
+            deliver_inbound: InboundDelivery::Queued,
         };
+        (options, history)
+    }
+
+    pub(crate) fn new(limits: Limits) -> Self {
+        let (options, history) = Self::control_options(&limits);
+        Self::from_runtime(limits, Runtime::embedded(options), history)
+    }
+
+    pub(crate) fn from_runtime(
+        limits: Limits,
+        runtime: RuntimeClient,
+        history: HistoryCacheConfig,
+    ) -> Self {
+        runtime.control().set_history_config(history);
         Self {
-            runtime: {
-                let runtime = Runtime::embedded(options);
-                runtime.control().set_history_config(history);
-                runtime
-            },
+            runtime,
             outgoing: Vec::new(),
             owned_effects: Vec::new(),
             effect_count: 0,
@@ -358,7 +378,10 @@ impl Client {
         if self.detached {
             return PhuxClientState::Detached;
         }
-        match self.control().status() {
+        // Bound the guard: a scrutinee temporary would hold the control
+        // lock across every arm.
+        let status = self.control().status();
+        match status {
             RuntimeStatus::Idle => PhuxClientState::New,
             RuntimeStatus::Connecting => PhuxClientState::HelloQueued,
             RuntimeStatus::Negotiated => PhuxClientState::Negotiated,
@@ -463,7 +486,7 @@ impl Client {
             .is_some_and(|engine| engine.has_projection(id))
     }
 
-    pub(crate) fn release_terminal(&mut self, id: &ResourceId) -> bool {
+    pub(crate) fn release_terminal(&self, id: &ResourceId) -> bool {
         self.control().release_terminal(id)
     }
 
@@ -709,7 +732,23 @@ impl Client {
         Ok(())
     }
 
+    /// Drain the frames a connected driver read since the last poll.
+    pub(crate) fn take_inbound(&self) -> Vec<Vec<u8>> {
+        self.runtime.take_inbound()
+    }
+
+    /// Whether the runtime's driver owns this client's socket.
+    pub(crate) fn is_connected_lane(&self) -> bool {
+        self.runtime.lane() == Lane::Connected
+    }
+
     pub(crate) fn drain_outbound(&mut self) {
+        // The connected lane's driver writes queued frames itself, and the
+        // control guard has already woken it. Draining here would steal
+        // them off the socket.
+        if self.is_connected_lane() {
+            return;
+        }
         let outbound = self.control().take_outbound();
         self.outgoing.extend(outbound);
     }

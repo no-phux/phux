@@ -302,6 +302,14 @@ impl Client {
             .map_err(PumpError::Control)
     }
 
+    /// Drain the frames a connected driver retained under
+    /// [`InboundDelivery::Queued`](crate::control::InboundDelivery::Queued),
+    /// for the consumer to feed on its own thread.
+    #[must_use]
+    pub fn take_inbound(&self) -> Vec<Vec<u8>> {
+        lock(&self.inner.control).take_inbound()
+    }
+
     /// Take the encoded frames the control plane has queued, for the
     /// embedder to write to its own socket. [`Lane::Embedded`] only; a
     /// connected client's driver drains them instead.
