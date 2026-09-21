@@ -3,18 +3,17 @@
 #
 # Output under --out (default target/mobile-ffi-android/Artifacts):
 #   kotlin/               generated + patched UniFFI Kotlin
-#   jniLibs/arm64-v8a/    libphux_mobile_ffi.so
-#   jniLibs/x86_64/       libphux_mobile_ffi.so
+#   jniLibs/arm64-v8a/    libphux_client_ffi.so
+#   jniLibs/x86_64/       libphux_client_ffi.so
 #   provenance            source/toolchain/digest facts for atomic consumers
 #
 # The producer is crates/phux-client-ffi with --no-default-features
 # --features uniffi (ADR-0135); `c-abi` stays off so this artifact never
-# carries the extern "C" surface. The crate's `uniffi::setup_scaffolding!`
-# namespace and uniffi-android.toml's `cdylib_name` are both pinned to
-# `phux_mobile_ffi` (not this crate's own name), and the built .so is
-# renamed to match, so the zip layout, the dev.phux.mobile.ffi Kotlin
-# package, the generated file name and the `loadLibrary` call are all
-# byte-for-byte unchanged from the phux-mobile-ffi era.
+# carries the extern "C" surface. The zip layout and the
+# dev.phux.mobile.ffi Kotlin package are the app's own namespace and do not
+# move; the cdylib, the generated file and its `loadLibrary` call all carry
+# the producing crate's name, because UniFFI names them after the crate and
+# nothing here renames them back.
 #
 # Usage: scripts/build-mobile-ffi-android.sh [--out DIR]
 set -euo pipefail
@@ -49,12 +48,10 @@ OUT="$STAGE"
 
 CRATE=phux-client-ffi
 FEATURES=uniffi
-# What cargo actually names the cdylib for this crate; renamed below.
-BUILT_SO=libphux_client_ffi.so
-# What the jniLibs zip and provenance publish it as (unchanged from the
-# phux-mobile-ffi era; see uniffi-android.toml's cdylib_name).
-SO=libphux_mobile_ffi.so
-KT_REL="dev/phux/mobile/ffi/phux_mobile_ffi.kt"
+# What cargo names the cdylib, what the jniLibs zip publishes, and what the
+# generated Kotlin's `loadLibrary` asks for: one name, from the crate.
+SO=libphux_client_ffi.so
+KT_REL="dev/phux/mobile/ffi/phux_client_ffi.kt"
 
 cleanup() {
     [[ -z "$STAGE" ]] || rm -rf "$STAGE"
@@ -111,9 +108,7 @@ mkdir -p "$OUT/jniLibs"
         build --locked --release --no-default-features --features "$FEATURES"
 )
 for abi in arm64-v8a x86_64; do
-    built="$OUT/jniLibs/$abi/$BUILT_SO"
-    [[ -s "$built" ]] || die "missing $abi cdylib"
-    mv "$built" "$OUT/jniLibs/$abi/$SO"
+    [[ -s "$OUT/jniLibs/$abi/$SO" ]] || die "missing $abi cdylib"
 done
 
 step "writing provenance"

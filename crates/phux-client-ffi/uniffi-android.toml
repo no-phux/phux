@@ -3,7 +3,6 @@
 [bindings.kotlin]
 package_name = "dev.phux.mobile.ffi"
 android = true
-# The built cdylib is renamed to libphux_mobile_ffi.so after linking (build
-# script), so the generated `loadLibrary` call has to ask for that name
-# rather than the crate's own (ADR-0135; phux-mobile-ffi era parity).
-cdylib_name = "phux_mobile_ffi"
+# No `cdylib_name`: the shipped .so is the one cargo links,
+# `libphux_client_ffi.so`, so UniFFI's default (the crate's own name) is
+# already the right `loadLibrary` argument (ADR-0135).
