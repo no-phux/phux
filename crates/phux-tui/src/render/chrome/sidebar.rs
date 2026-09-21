@@ -572,6 +572,9 @@ pub struct SidebarPainter {
     last: Option<(Rect, Buffer)>,
     dirty: bool,
     rule: SidebarRule,
+    /// Window index under a live row drag, painted as the insertion
+    /// marker. `None` when no window drag is over this strip.
+    drop_at: Option<usize>,
 }
 
 impl SidebarPainter {
@@ -586,6 +589,7 @@ impl SidebarPainter {
             last: None,
             dirty: true,
             rule: SidebarRule::Trailing,
+            drop_at: None,
         }
     }
 
@@ -685,6 +689,17 @@ impl SidebarPainter {
                 })
                 .collect(),
         }
+    }
+
+    /// Point (or clear) the live insertion marker at window `drop_at`.
+    /// Same change-report contract as [`Self::set_windows`].
+    pub fn set_drop_index(&mut self, drop_at: Option<usize>) -> bool {
+        if self.drop_at == drop_at {
+            return false;
+        }
+        self.drop_at = drop_at;
+        self.dirty = true;
+        true
     }
 
     /// Drop the paint cache so the next [`Self::paint`] re-emits even if its
@@ -972,7 +987,41 @@ impl SidebarPainter {
             );
         }
         paint_separator(&mut buf, rect, rule, &self.theme);
+        self.paint_window_drop_marker(&mut buf, rect, rule);
         buf
+    }
+
+    /// Reverse the window row under a live drag so the drop slot is
+    /// visible before release. Leaves the separator rule alone so the
+    /// handle stays a handle.
+    fn paint_window_drop_marker(&self, buf: &mut Buffer, rect: Rect, rule: SidebarRule) {
+        let Some(index) = self.drop_at else {
+            return;
+        };
+        let model = row_model(self.counts(), rect.h);
+        let Some(y) = model
+            .iter()
+            .position(|row| *row == SidebarRow::WindowName(index))
+            .and_then(|y| u16::try_from(y).ok())
+        else {
+            return;
+        };
+        if y >= rect.h {
+            return;
+        }
+        let rule_x = rule.column(rect.w);
+        for x in 0..rect.w {
+            if x == rule_x {
+                continue;
+            }
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_style(
+                    Style::default()
+                        .fg(self.theme.accent)
+                        .add_modifier(Modifier::REVERSED),
+                );
+            }
+        }
     }
 
     fn row_line(&self, row: SidebarRow, hidden: SidebarCounts, text_w: u16) -> Line<'static> {
@@ -1929,6 +1978,58 @@ mod tests {
         assert!(row_text(&buf, rect, 13).contains("peer"));
         assert!(row_text(&buf, rect, 14).contains("mini"));
         assert!(!strip_text(&p, rect).contains("wave2/herdr"));
+    }
+
+    /// phux-mv5y: a live window-row drag paints the insertion marker on
+    /// the pointed-at row and clears it when the index is dropped.
+    #[test]
+    fn window_drop_marker_follows_the_index_and_clears() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_roster(vec![active_roster()]);
+        p.set_windows(vec![win("phux", true), win("scratch", false)]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 18,
+        };
+        let model = row_model(p.counts(), rect.h);
+        let y0 = window_row_y(&model, 0);
+        let y1 = window_row_y(&model, 1);
+        let unmarked = p.compose_buffer(rect, SidebarRule::Trailing);
+        assert!(
+            !row_reversed(&unmarked, rect, y0) && !row_reversed(&unmarked, rect, y1),
+            "no drag, no marker"
+        );
+        assert!(p.set_drop_index(Some(1)));
+        assert!(!p.set_drop_index(Some(1)));
+        let marked = p.compose_buffer(rect, SidebarRule::Trailing);
+        assert!(
+            row_reversed(&marked, rect, y1),
+            "drop index 1 must reverse that window row"
+        );
+        assert!(
+            !row_reversed(&marked, rect, y0),
+            "the other window row stays unmarked"
+        );
+        assert!(p.set_drop_index(None));
+        let cleared = p.compose_buffer(rect, SidebarRule::Trailing);
+        assert!(
+            !row_reversed(&cleared, rect, y1),
+            "clearing the index must drop the marker"
+        );
+    }
+
+    fn window_row_y(model: &[SidebarRow], index: usize) -> u16 {
+        model
+            .iter()
+            .position(|row| *row == SidebarRow::WindowName(index))
+            .and_then(|y| u16::try_from(y).ok())
+            .expect("window row is on the strip")
+    }
+
+    fn row_reversed(buf: &Buffer, rect: Rect, y: u16) -> bool {
+        (0..rect.w.saturating_sub(1)).any(|x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
     }
 
     /// Every lifecycle stays in the caller's supplied display order.

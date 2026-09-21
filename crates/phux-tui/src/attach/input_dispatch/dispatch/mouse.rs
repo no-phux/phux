@@ -147,16 +147,22 @@ impl<W: crate::attach::RenderSink> EventEnv<'_, '_, W> {
     /// cannot see. Without this the next press, anywhere, would be eaten as
     /// mid-drag noise. A divider keeps the ratio it reached and publishes
     /// it, exactly as a release would; a window drop has no position, so
-    /// it is cancelled. The focus event itself still reaches the pane.
-    pub(super) async fn abandon_chrome_drag(&mut self) -> Result<(), AttachError> {
+    /// it is cancelled and the insertion marker must leave the strip.
+    /// The focus event itself still reaches the pane.
+    ///
+    /// Returns whether the screen changed (a cancelled window drag still
+    /// has a marker to erase).
+    pub(super) async fn abandon_chrome_drag(&mut self) -> Result<bool, AttachError> {
         let Some(grab) = self.ctx.drag.take() else {
-            return Ok(());
+            return Ok(false);
         };
         if matches!(grab, DragGrab::Divider(_)) {
             self.broadcast_dragged_layout().await?;
+            tracing::debug!(?grab, "chrome drag: abandoned on focus loss");
+            return Ok(false);
         }
         tracing::debug!(?grab, "chrome drag: abandoned on focus loss");
-        Ok(())
+        Ok(matches!(grab, DragGrab::Window(_)))
     }
 
     /// Broadcast the layout a finished divider or window drag produced via

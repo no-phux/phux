@@ -42,7 +42,9 @@ use std::time::{Duration, SystemTime};
 
 use std::str::FromStr;
 
-use phux_config::widget::{Cell as WidgetCell, CellStyle, StatusBar, WidgetContext, WindowInfo};
+use phux_config::widget::{
+    Cell as WidgetCell, CellHit, CellStyle, StatusBar, WidgetContext, WindowInfo,
+};
 use ratatui::buffer::{Buffer, Cell as RatatuiCell};
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
@@ -281,6 +283,23 @@ fn full_row_buffer(message: &str, style: Style, cols: u16) -> Buffer {
         col = col.saturating_add(1);
     }
     buffer
+}
+
+/// Reverse-video + underline the tab under a live drag so the drop slot
+/// is visible before release. Hit stamps stay put, so a release still
+/// resolves against the same cells.
+fn mark_window_drop(row: &mut [WidgetCell], drop_at: Option<usize>) {
+    let Some(index) = drop_at else {
+        return;
+    };
+    for cell in row {
+        if cell.hit == Some(CellHit::Window(index)) {
+            let mut style = cell.style.clone().unwrap_or_default();
+            style.reverse = true;
+            style.underline = true;
+            cell.style = Some(style);
+        }
+    }
 }
 
 /// Copy a [`StatusBar`] composer row into a ratatui [`Buffer`].
@@ -695,6 +714,9 @@ pub struct StatusBarPainter {
     /// phux-foz.4: the focused pane's last known command exit code, fed
     /// by the driver from `command_finished` events. `None` ⇒ unknown.
     last_exit: Option<i32>,
+    /// Window index under a live tab drag, painted as the insertion
+    /// marker. `None` when no tab drag is over this strip.
+    drop_at: Option<usize>,
 }
 
 impl std::fmt::Debug for StatusBarPainter {
@@ -716,6 +738,7 @@ impl std::fmt::Debug for StatusBarPainter {
             .field("prefix", &self.prefix)
             .field("focused_cwd", &self.focused_cwd)
             .field("last_exit", &self.last_exit)
+            .field("drop_at", &self.drop_at)
             .finish()
     }
 }
@@ -738,6 +761,7 @@ impl StatusBarPainter {
             prefix: "C-a".to_owned(),
             focused_cwd: None,
             last_exit: None,
+            drop_at: None,
         }
     }
 
@@ -767,6 +791,7 @@ impl StatusBarPainter {
             prefix: "C-a".to_owned(),
             focused_cwd: None,
             last_exit: None,
+            drop_at: None,
         }
     }
 
@@ -807,6 +832,19 @@ impl StatusBarPainter {
             return false;
         }
         self.windows = windows;
+        self.invalidate();
+        true
+    }
+
+    /// Point (or clear) the live insertion marker at window `drop_at`.
+    /// Returns `true` if the marker actually changed; a change invalidates
+    /// the row cache. No-op on an error-line painter: the diagnostic owns
+    /// the row.
+    pub fn set_drop_index(&mut self, drop_at: Option<usize>) -> bool {
+        if self.error.is_some() || self.drop_at == drop_at {
+            return false;
+        }
+        self.drop_at = drop_at;
         self.invalidate();
         true
     }
@@ -1047,7 +1085,8 @@ impl StatusBarPainter {
         }
         let ctx = self.ctx_with_window_list(ctx);
         crate::attach::render_prof::note_bar_composes(1);
-        let new_row = self.bar.render(&ctx.as_widget(), cols);
+        let mut new_row = self.bar.render(&ctx.as_widget(), cols);
+        mark_window_drop(&mut new_row, self.drop_at);
         if !self.needs_repaint(x, cols, rows, &new_row) {
             return Ok(false);
         }
@@ -1231,7 +1270,8 @@ impl StatusBarPainter {
             last_exit: self.last_exit,
             ..*ctx
         };
-        let row = self.bar.render(&ctx.as_widget(), cols);
+        let mut row = self.bar.render(&ctx.as_widget(), cols);
+        mark_window_drop(&mut row, self.drop_at);
         let mut buffer = Buffer::empty(Rect::new(0, 0, cols, 1));
         fill_buffer(&mut buffer, &row, cols);
         if let Some(gap) = self.badge_gap(cols) {
@@ -2284,6 +2324,73 @@ mod tests {
         assert_eq!(p.window_hit_at(12), None, "padding is inert");
         assert_eq!(p.window_hit_at(39), None, "right edge is inert");
         assert_eq!(p.window_hit_at(40), None, "off-strip is inert");
+    }
+
+    /// phux-mv5y: a live tab drag underlines the pointed-at tab and
+    /// clears the marker when the drop index is dropped. Hit targets stay
+    /// on the original cells.
+    #[test]
+    fn window_drop_marker_underlines_the_target_tab_and_clears() {
+        let mut p = StatusBarPainter::new(windows_bar(), Position::Bottom);
+        p.set_windows(vec![
+            WindowInfo {
+                name: "bash".to_owned(),
+                active: true,
+                zoomed: false,
+                attention: false,
+                branch: None,
+                exited: None,
+            },
+            WindowInfo {
+                name: "vim".to_owned(),
+                active: false,
+                zoomed: false,
+                attention: false,
+                branch: None,
+                exited: None,
+            },
+        ]);
+        let ctx = ctx_default("");
+        let unmarked = p
+            .compose_buffer(BarInset::NONE, 40, 10, &ctx)
+            .expect("bar composes")
+            .0;
+        assert!(
+            !tab_underlined(&unmarked, 7, 11),
+            "no drag, inactive tab is not the marker"
+        );
+        assert!(p.set_drop_index(Some(1)));
+        assert!(!p.set_drop_index(Some(1)));
+        let marked = p
+            .compose_buffer(BarInset::NONE, 40, 10, &ctx)
+            .expect("bar composes")
+            .0;
+        assert!(
+            tab_underlined(&marked, 7, 11),
+            "drop index 1 must underline 1:vim"
+        );
+        assert!(
+            !tab_underlined(&marked, 0, 5),
+            "the other tab stays unmarked"
+        );
+        let mut buf = Vec::new();
+        p.paint(&mut buf, BarInset::NONE, 40, 10, &ctx).unwrap();
+        for x in 7..=11 {
+            assert_eq!(p.window_hit_at(x), Some(1), "marker must not steal hits");
+        }
+        assert!(p.set_drop_index(None));
+        let cleared = p
+            .compose_buffer(BarInset::NONE, 40, 10, &ctx)
+            .expect("bar composes")
+            .0;
+        assert!(
+            !tab_underlined(&cleared, 7, 11),
+            "clearing the index must drop the marker"
+        );
+    }
+
+    fn tab_underlined(buf: &Buffer, start: u16, end: u16) -> bool {
+        (start..=end).all(|x| buf[(x, 0)].modifier.contains(Modifier::UNDERLINED))
     }
 
     /// phux-qtw8: with a left sidebar docked the bar starts BESIDE the strip,
