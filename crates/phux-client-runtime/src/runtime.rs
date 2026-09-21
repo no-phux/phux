@@ -45,6 +45,29 @@ pub struct ClientOptions {
     pub connect: ConnectOptions,
 }
 
+/// Which half of the runtime drives the socket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lane {
+    /// The runtime's own driver thread dials, reconnects, and pumps frames.
+    Connected,
+    /// The embedder owns the socket and pumps frames itself through
+    /// [`Client::feed_bytes`] and [`Client::take_outbound`]. No driver
+    /// thread exists, so the reconnect ladder is the embedder's problem.
+    Embedded,
+}
+
+/// Why a driver-less client refused a frame pump call.
+#[derive(Debug, thiserror::Error)]
+pub enum PumpError {
+    /// The call is only valid on an [`Lane::Embedded`] client; a connected
+    /// client's driver owns the socket.
+    #[error("this client's runtime driver owns the socket")]
+    Connected,
+    /// The control plane refused the frame.
+    #[error(transparent)]
+    Control(#[from] crate::control::ControlError),
+}
+
 /// Why a session could not be started.
 #[derive(Debug, thiserror::Error)]
 pub enum RuntimeError {
@@ -62,36 +85,13 @@ impl Runtime {
     /// begins at once on a runtime-owned thread; observe the listener, the
     /// status, and the events.
     pub fn connect(target: Target, options: ClientOptions) -> Result<Client, RuntimeError> {
-        let shared: Shared = Arc::new(Mutex::new(ControlPlane::new(options.control)));
-        #[cfg(feature = "engine")]
-        let publication = Arc::clone(lock(&shared).publication());
-        let outbound = Arc::new(Notify::new());
-        let (resync_tx, resync_rx) = watch::channel(0_u64);
-        let (nudge_tx, nudge_rx) = watch::channel(0_u64);
-        let (close_tx, close_rx) = watch::channel(false);
-        let inner = Arc::new(Inner {
-            control: Arc::clone(&shared),
-            outbound: Arc::clone(&outbound),
-            resync: resync_tx,
-            nudge: nudge_tx,
-            close: close_tx,
-            listener: Mutex::new(None),
-            wake_pending: AtomicBool::new(false),
-            #[cfg(feature = "engine")]
-            publication,
-        });
+        let (inner, shared, signals) = Self::build(Lane::Connected, options.control);
         let weak = Arc::downgrade(&inner);
         let wake: crate::connection::Wake = Arc::new(move || {
             if let Some(inner) = weak.upgrade() {
                 inner.wake();
             }
         });
-        let signals = Signals {
-            outbound,
-            resync: resync_rx,
-            nudge: nudge_rx,
-            close: close_rx,
-        };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -108,9 +108,57 @@ impl Runtime {
             .map_err(RuntimeError::Spawn)?;
         Ok(Client { inner })
     }
+
+    /// A session with no driver thread, for an embedder that already owns a
+    /// socket: it feeds decoded frames with [`Client::feed_bytes`] and
+    /// drains encoded ones with [`Client::take_outbound`]. Everything above
+    /// the socket — the control plane, the engine owner thread, and the
+    /// published grid — is the same as [`Runtime::connect`]'s.
+    ///
+    /// Nothing dials, so [`ConnectOptions`] does not apply and the reconnect
+    /// ladder stays the embedder's. Prefer `connect` unless the embedder has
+    /// a socket the runtime cannot own.
+    #[must_use]
+    pub fn embedded(options: ControlOptions) -> Client {
+        // The signals are constructed and dropped: with no driver reading
+        // them, `resync` and `nudge` are no-ops and `close` is observed
+        // through the control plane alone.
+        let (inner, _shared, _signals) = Self::build(Lane::Embedded, options);
+        Client { inner }
+    }
+
+    fn build(lane: Lane, options: ControlOptions) -> (Arc<Inner>, Shared, Signals) {
+        let shared: Shared = Arc::new(Mutex::new(ControlPlane::new(options)));
+        #[cfg(feature = "engine")]
+        let publication = Arc::clone(lock(&shared).publication());
+        let outbound = Arc::new(Notify::new());
+        let (resync_tx, resync_rx) = watch::channel(0_u64);
+        let (nudge_tx, nudge_rx) = watch::channel(0_u64);
+        let (close_tx, close_rx) = watch::channel(false);
+        let inner = Arc::new(Inner {
+            lane,
+            control: Arc::clone(&shared),
+            outbound: Arc::clone(&outbound),
+            resync: resync_tx,
+            nudge: nudge_tx,
+            close: close_tx,
+            listener: Mutex::new(None),
+            wake_pending: AtomicBool::new(false),
+            #[cfg(feature = "engine")]
+            publication,
+        });
+        let signals = Signals {
+            outbound,
+            resync: resync_rx,
+            nudge: nudge_rx,
+            close: close_rx,
+        };
+        (inner, shared, signals)
+    }
 }
 
 struct Inner {
+    lane: Lane,
     control: Shared,
     outbound: Arc<Notify>,
     resync: watch::Sender<u64>,
@@ -223,6 +271,81 @@ impl Client {
     #[must_use]
     pub fn selected_session(&self) -> Option<u32> {
         lock(&self.inner.control).selected_session()
+    }
+
+    /// Which half of the runtime drives this client's socket.
+    #[must_use]
+    pub fn lane(&self) -> Lane {
+        self.inner.lane
+    }
+
+    // ----- the embedder's frame pump ------------------------------------
+
+    /// Feed one complete SPEC section 5 frame the embedder read off its own
+    /// socket. [`Lane::Embedded`] only.
+    pub fn feed_bytes(&self, bytes: &[u8]) -> Result<(), PumpError> {
+        if self.inner.lane != Lane::Embedded {
+            return Err(PumpError::Connected);
+        }
+        self.inner
+            .with(|control| control.feed_bytes(bytes))
+            .map_err(PumpError::Control)
+    }
+
+    /// Feed one already-decoded frame. [`Lane::Embedded`] only.
+    pub fn feed(&self, frame: FrameKind) -> Result<(), PumpError> {
+        if self.inner.lane != Lane::Embedded {
+            return Err(PumpError::Connected);
+        }
+        self.inner
+            .with(|control| control.feed(frame))
+            .map_err(PumpError::Control)
+    }
+
+    /// Take the encoded frames the control plane has queued, for the
+    /// embedder to write to its own socket. [`Lane::Embedded`] only; a
+    /// connected client's driver drains them instead.
+    #[must_use]
+    pub fn take_outbound(&self) -> Vec<Vec<u8>> {
+        if self.inner.lane != Lane::Embedded {
+            return Vec::new();
+        }
+        lock(&self.inner.control).take_outbound()
+    }
+
+    // ----- the binding's escape hatch -----------------------------------
+
+    /// Run `f` against the control plane, then tell the driver about any
+    /// frames it queued.
+    ///
+    /// A binding reaches for this only where the common surface above has
+    /// no equivalent. It is the one place the lock is held for binding
+    /// code, so `f` must not block, call back into this `Client`, or
+    /// otherwise take another runtime lock.
+    pub fn with_control<T>(&self, f: impl FnOnce(&mut ControlPlane) -> T) -> T {
+        self.inner.with(f)
+    }
+
+    /// Borrow the control plane directly, for a binding whose call shape
+    /// does not fit a closure. Releasing the guard tells the driver about
+    /// any frames the borrow queued, exactly as [`Client::with_control`]
+    /// does.
+    ///
+    /// The lock is not reentrant: hold at most one guard per thread, and
+    /// do not call back into this `Client` while one is alive.
+    #[must_use]
+    pub fn control(&self) -> ControlGuard<'_> {
+        ControlGuard {
+            guard: lock(&self.inner.control),
+            inner: &self.inner,
+        }
+    }
+
+    /// Deliver a wake to the listener if one is not already outstanding.
+    /// A binding calls this after work that changed consumer-visible state
+    /// without queueing a frame.
+    pub fn wake(&self) {
+        self.inner.wake();
     }
 
     // ----- events -------------------------------------------------------
@@ -340,6 +463,47 @@ impl Client {
     #[must_use]
     pub fn close_terminals(&self, ids: Vec<ResourceId>) -> Option<u32> {
         self.inner.with(|control| control.close_terminals(ids))
+    }
+}
+
+/// A live borrow of the control plane, handed to a binding by
+/// [`Client::control`]. Dropping it notifies the driver about queued frames.
+pub struct ControlGuard<'a> {
+    guard: std::sync::MutexGuard<'a, ControlPlane>,
+    inner: &'a Inner,
+}
+
+impl std::ops::Deref for ControlGuard<'_> {
+    type Target = ControlPlane;
+
+    fn deref(&self) -> &Self::Target {
+        &self.guard
+    }
+}
+
+impl std::ops::DerefMut for ControlGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.guard
+    }
+}
+
+impl std::fmt::Debug for ControlGuard<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControlGuard").finish_non_exhaustive()
+    }
+}
+
+impl Drop for ControlGuard<'_> {
+    /// `Drop::drop` runs before the guard field it owns, so the notify
+    /// below happens with the control lock still held. That costs the
+    /// driver one momentary contention on a lock this thread is about to
+    /// release, and it buys a guard with no `Option` and no panic path.
+    /// `Notify::notify_one` only stores a permit or wakes a waker; it
+    /// never takes a runtime lock, so it cannot deadlock against us.
+    fn drop(&mut self) {
+        if self.guard.has_outbound() {
+            self.inner.outbound.notify_one();
+        }
     }
 }
 

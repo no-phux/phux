@@ -193,12 +193,12 @@ fn apply_input(
         return Err(BridgeError::state("terminal detach is pending"));
     }
     let queued = match event {
-        InputEvent::Key(event) => client.control.send_key(terminal_id, event.clone()),
-        InputEvent::Mouse(event) => client.control.send_mouse(terminal_id, *event),
-        InputEvent::Focus(event) => client.control.send_focus(terminal_id, *event),
+        InputEvent::Key(event) => client.control().send_key(terminal_id, event.clone()),
+        InputEvent::Mouse(event) => client.control().send_mouse(terminal_id, *event),
+        InputEvent::Focus(event) => client.control().send_focus(terminal_id, *event),
         InputEvent::Paste(event) => {
             client
-                .control
+                .control()
                 .send_paste(terminal_id, event.data.clone(), event.trust)
         }
         _ => false,
@@ -378,7 +378,7 @@ pub unsafe extern "C" fn phux_client_queue_hello(
         if name.is_empty() {
             return Err(BridgeError::invalid("client name is empty"));
         }
-        if !client.control.open_explicit(name.to_owned()) {
+        if !client.control().open_explicit(name.to_owned()) {
             return Err(BridgeError::state("HELLO was already queued or negotiated"));
         }
         client.hello_queued = true;
@@ -421,7 +421,7 @@ pub unsafe extern "C" fn phux_client_queue_attach(
 
 /// Rejects an ATTACH the runtime lifecycle cannot accept.
 fn ensure_attach_allowed(client: &Client) -> Result<(), BridgeError> {
-    if client.control.status() != phux_client_runtime::control::Status::Negotiated
+    if client.control().status() != phux_client_runtime::control::Status::Negotiated
         || client.detached
     {
         return Err(BridgeError::state(
@@ -486,7 +486,7 @@ fn queue_attach_frame(
     let viewport = ViewportInfo::new(options.cols, options.rows)
         .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1));
     let role_policy = client.next_attach_role();
-    if !client.control.attach_explicit(
+    if !client.control().attach_explicit(
         options.attach_id,
         target,
         viewport,
@@ -529,7 +529,7 @@ pub unsafe extern "C" fn phux_client_feed_frame(
 }
 
 fn decode_server_frame(client: &Client, data: &[u8]) -> Result<FrameKind, BridgeError> {
-    let limits = client.control.decode_limits().unwrap_or_else(|| {
+    let limits = client.control().decode_limits().unwrap_or_else(|| {
         BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
             .unwrap_or_default()
     });
@@ -551,7 +551,7 @@ fn apply_server_frame(client: &mut Client, frame: FrameKind) -> Result<bool, Bri
     #[cfg(test)]
     seed_legacy_test_lifecycle(client)?;
     validate_runtime_frame(client, &frame)?;
-    let runtime_result = client.control.feed(frame).map_err(control_error);
+    let runtime_result = client.control().feed(frame).map_err(control_error);
     record_agent_generation(client, runtime_result.is_ok(), agent_generation);
     let attached = client.process_runtime_events()?;
     runtime_result?;
@@ -591,7 +591,7 @@ fn record_agent_generation(
 
 fn follow_negotiated_session(client: &mut Client) -> Result<(), BridgeError> {
     if matches!(
-        client.control.status(),
+        client.control().status(),
         phux_client_runtime::control::Status::Negotiated
     ) {
         session_rename::negotiated(client)?;
@@ -687,7 +687,7 @@ fn dispatch_extension_frame(client: &mut Client, frame: FrameKind) -> Result<(),
 
 #[cfg(test)]
 fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
-    if client.protocol_ready && !client.control.handshake_ready() {
+    if client.protocol_ready && !client.control().handshake_ready() {
         client.install_profile(
             client
                 .selected_profile
@@ -699,7 +699,7 @@ fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
     if client.attach_queued
         && let Some(attach_id) = client.expected_attach_id
     {
-        let queued = client.control.attach_explicit(
+        let queued = client.control().attach_explicit(
             attach_id,
             AttachTarget::Last,
             ViewportInfo::new(80, 24),
@@ -708,7 +708,7 @@ fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
             None,
         );
         if queued {
-            let _ = client.control.take_outbound();
+            let _ = client.control().take_outbound();
         }
     }
     Ok(())
@@ -718,7 +718,7 @@ fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
 fn advertised_client_caps(client: &Client) -> phux_protocol::ClientCapabilities {
     client
         .offered_caps
-        .unwrap_or_else(|| client.control.options().client_caps())
+        .unwrap_or_else(|| client.control().options().client_caps())
 }
 
 #[cfg(test)]
@@ -729,7 +729,7 @@ fn advertised_client_caps(client: &Client) -> phux_protocol::ClientCapabilities 
 )]
 fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(), BridgeError> {
     use phux_client_runtime::engine::EngineEvent;
-    if client.control.engine().is_none() {
+    if client.control().engine().is_none() {
         client.install_profile(
             client
                 .selected_profile
@@ -891,11 +891,12 @@ fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(),
         }
     };
     client
-        .control
+        .control()
         .apply_engine_event(event)
         .map_err(control_error)?;
     client.drain_outbound();
-    for event in client.control.take_events() {
+    let events = client.control().take_events();
+    for event in events {
         let _ = client.process_runtime_event(event)?;
     }
     Ok(())

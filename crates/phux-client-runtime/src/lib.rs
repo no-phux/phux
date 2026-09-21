@@ -49,4 +49,7 @@ pub mod runtime;
 pub mod target;
 pub mod tunnel;
 
-pub use runtime::{Client, ClientOptions, ConnectOptions, Listener, Runtime, Target, Transport};
+pub use runtime::{
+    Client, ClientOptions, ConnectOptions, ControlGuard, Lane, Listener, PumpError, Runtime,
+    Target, Transport,
+};

@@ -368,8 +368,14 @@ impl ControlPlane {
     /// ordinary runtime clients derive policy from [`ControlOptions`].
     #[must_use]
     pub fn with_history_config(mut self, config: HistoryCacheConfig) -> Self {
-        self.history_config = Some(config.normalized());
+        self.set_history_config(config);
         self
+    }
+
+    /// The same override, for a binding that reaches an already-built plane
+    /// through its runtime client rather than a builder.
+    pub fn set_history_config(&mut self, config: HistoryCacheConfig) {
+        self.history_config = Some(config.normalized());
     }
 
     // ----- observation -------------------------------------------------
