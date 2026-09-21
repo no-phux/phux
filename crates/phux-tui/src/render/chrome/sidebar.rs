@@ -140,6 +140,10 @@ pub struct AgentEntry {
     /// `true` when the agent is waiting on a human (declared high
     /// attention, or the pane's ADR-0035 asked flag).
     pub attention: bool,
+    /// Satellite host this agent is running on (ADR-0136). `None` for an
+    /// agent on the attached server. Painted in the chord color, the same
+    /// tone as a satellite pane's border badge.
+    pub host: Option<String>,
     /// `true` once the user has visited this agent's pane since its last
     /// state change. Drives the "finished but unreviewed" tier of
     /// [`attention_rank`] and the row's glyph: a `done` agent you have not
@@ -577,6 +581,28 @@ pub struct SidebarPainter {
     drop_at: Option<usize>,
 }
 
+/// Open a satellite agent beside the focused pane. `None` when `resource`
+/// is local: that click stays a session switch.
+#[must_use]
+pub fn satellite_open_action(
+    resource: &ResourceId,
+) -> Option<phux_config::keybind::ResolvedAction> {
+    resource.host()?;
+    let mut args = std::collections::BTreeMap::new();
+    args.insert(
+        "direction".to_owned(),
+        toml::Value::String("horizontal".to_owned()),
+    );
+    args.insert(
+        "resource".to_owned(),
+        toml::Value::String(phux_client::selector::format_terminal_id(resource)),
+    );
+    Some(phux_config::keybind::ResolvedAction {
+        action: "split-pane".to_owned(),
+        args,
+    })
+}
+
 impl SidebarPainter {
     /// A painter styled by `theme`, initially showing no windows.
     #[must_use]
@@ -838,8 +864,23 @@ impl SidebarPainter {
         let badge = crate::render::chrome::agent_badge(&self.theme, e.state, e.attention, e.seen);
         let color = badge.color;
         let glyph = badge.glyph;
-        let avail = usize::from(text_w).saturating_sub(ICON_COLUMNS);
-        let state_text = e.name.clone();
+        let host_label = e.host.as_deref().unwrap_or("");
+        let host_cols = if host_label.is_empty() {
+            0
+        } else {
+            display_width(host_label).saturating_add(1)
+        };
+        let avail = usize::from(text_w)
+            .saturating_sub(ICON_COLUMNS)
+            .saturating_sub(host_cols);
+        // A satellite row's locator is already the agent name (there is no
+        // attachable session to name). Painting that name again as the
+        // suffix would repeat it. The glyph still carries the live state.
+        let state_text = if e.host.is_some() && e.session.as_deref() == Some(e.name.as_str()) {
+            String::new()
+        } else {
+            e.name.clone()
+        };
         // A cross-session row is labelled by its SESSION, not its window: the
         // row's job is to say where in the fleet to go, and a window name
         // out of its session's context ("edit") locates nothing.
@@ -865,11 +906,24 @@ impl SidebarPainter {
         if badge.emphatic {
             glyph_style = glyph_style.add_modifier(Modifier::BOLD);
         }
-        Line::from(vec![
-            Span::styled(format!("{glyph} "), glyph_style),
-            Span::styled(win_label, Style::default().fg(self.theme.text)),
-            Span::styled(format!(" {state_label}"), Style::default().fg(color)),
-        ])
+        let mut spans = vec![Span::styled(format!("{glyph} "), glyph_style)];
+        if let Some(host) = &e.host {
+            spans.push(Span::styled(
+                format!("{host} "),
+                Style::default().fg(self.theme.chord),
+            ));
+        }
+        spans.push(Span::styled(
+            win_label,
+            Style::default().fg(self.theme.text),
+        ));
+        if !state_label.is_empty() {
+            spans.push(Span::styled(
+                format!(" {state_label}"),
+                Style::default().fg(color),
+            ));
+        }
+        Line::from(spans)
     }
 
     /// Render one roster line (phux-k0cw): a status dot, the session name,
@@ -1224,6 +1278,7 @@ mod tests {
             name: name.to_owned(),
             state,
             attention: false,
+            host: None,
             seen: false,
         }
     }
@@ -2110,6 +2165,36 @@ mod tests {
             !row.contains("edit"),
             "window name is not the locator: {row:?}"
         );
+    }
+
+    /// ADR-0136: a satellite agent row badges its host and opens that pane.
+    #[test]
+    fn a_satellite_agent_row_badges_its_host_and_opens_the_pane() {
+        let mut p = SidebarPainter::new(Theme::default());
+        p.set_windows(vec![win("phux", true)]);
+        let resource = ResourceId::satellite("gpubox", 4);
+        p.set_needs_you(vec![AgentEntry {
+            session: Some("reviewer".to_owned()),
+            resource: Some(resource.clone()),
+            host: Some("gpubox".to_owned()),
+            ..agent(0, "edit", "reviewer", AgentMetaState::Working)
+        }]);
+        let rect = Rect {
+            x: 0,
+            y: 0,
+            w: 36,
+            h: 14,
+        };
+        let row = row_text(&p.compose_buffer(rect, SidebarRule::Trailing), rect, 1);
+        assert!(row.contains("gpubox"), "host badge: {row:?}");
+        assert!(row.contains("reviewer"), "agent name: {row:?}");
+        let action = satellite_open_action(&resource).expect("satellite click opens");
+        assert_eq!(action.action, "split-pane");
+        assert_eq!(
+            action.args.get("resource").and_then(|value| value.as_str()),
+            Some("gpubox/@4")
+        );
+        assert!(satellite_open_action(&ResourceId::local(1)).is_none());
     }
 
     /// phux-4s6o: a queue click must carry the peer's `SessionId` so a

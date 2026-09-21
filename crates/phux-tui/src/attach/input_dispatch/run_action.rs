@@ -1082,7 +1082,7 @@ fn push_agent_fleet(
         ctx.vcs,
         &crate::attach::agent_rows::agent_session_rows(ctx.engine_kernel),
     );
-    let items = crate::attach::fleet::fleet_items(
+    let mut items = crate::attach::fleet::fleet_items(
         ctx.workspace,
         ctx.sessions,
         ctx.focused_session,
@@ -1091,6 +1091,11 @@ fn push_agent_fleet(
         ctx.foreign_layouts,
         ctx.foreign_agents,
     );
+    items.extend(crate::attach::fleet::satellite_agent_items(
+        ctx.foreign_agents,
+        ctx.foreign_attention,
+        ctx.workspace,
+    ));
     if items.iter().all(SelectItem::is_header) {
         effects.bell = true;
         return;

@@ -4314,7 +4314,28 @@ pub(crate) async fn handle_get_state_federated(
         hosts.push(fold_satellite_state(&mut snapshot, host, result, out_tx).await);
     }
     hosts.sort_by(|a, b| a.host.as_str().cmp(b.host.as_str()));
+    mirror_federated_agent_metadata(state, &snapshot);
     CommandResult::OkWith(CommandValue::State(snapshot.with_hosts(hosts)))
+}
+
+/// Ask each satellite link to mirror the agent allowlist for every terminal
+/// the aggregate just listed (ADR-0136). A terminal the inventory does not
+/// name is mirrored later, when a consumer subscribes or reads it.
+fn mirror_federated_agent_metadata(
+    state: &SharedState,
+    snapshot: &phux_protocol::wire::info::SessionSnapshot,
+) {
+    for resource in &snapshot.resources {
+        if !resource.kind.is_terminal() {
+            continue;
+        }
+        let phux_protocol::ids::ResourceId::Satellite { host, id } = &resource.id else {
+            continue;
+        };
+        if let Some(relay) = state.with(|s| s.hub_relay(host)) {
+            relay.mirror_terminal(*id);
+        }
+    }
 }
 
 /// Fold one satellite's `GET_STATE` answer into the hub's aggregate: merge
@@ -5611,7 +5632,11 @@ pub(crate) fn handle_report_asked(
         suggestions,
         elapsed_seconds,
     };
-    let transition = state.with_mut(|s| s.report_agent_asked(terminal, AskedSource::Hook, payload));
+    let transition = state.with_mut(|s| {
+        let transition = s.report_agent_asked(terminal, AskedSource::Hook, payload);
+        crate::hub::metadata_mirror::publish_asked_flag(s, terminal_id, s.agent_is_asked(terminal));
+        transition
+    });
     if let Some(payload) = transition.emit_payload() {
         super::client::broadcast_event(state, Some(terminal_id), &payload.into_event());
     }

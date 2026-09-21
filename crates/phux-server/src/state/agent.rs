@@ -49,6 +49,11 @@ impl ServerState {
         self.agent.current_asked(terminal)
     }
 
+    /// Whether any ask source still holds on `terminal` (ADR-0136).
+    pub(crate) fn agent_is_asked(&self, terminal: ResourceId) -> bool {
+        self.agent.is_asked(terminal)
+    }
+
     /// Read the `phux.agent/v1` record arbiter (ADR-0046 §E).
     pub(crate) const fn agent_records(&self) -> &crate::agent_state::AgentRecordArbiter {
         self.agent.records()

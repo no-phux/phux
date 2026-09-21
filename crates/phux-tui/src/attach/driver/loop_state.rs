@@ -312,6 +312,10 @@ struct PeerCaches {
     foreign_agents: HashMap<ResourceId, AgentRecord>,
     /// In-flight foreign agent-record GETs, by request id.
     foreign_agent_pending: HashMap<u32, ResourceId>,
+    /// In-flight `phux.agent.asked/v1` GETs for satellite terminals (ADR-0136).
+    /// Kept off [`Self::foreign_agent_pending`] so the byte `1` is not parsed
+    /// as an agent record.
+    foreign_asked_pending: HashMap<u32, ResourceId>,
     /// phux-k0cw: which peer keys this connection has already subscribed to.
     /// Send-once bookkeeping, not teardown: L3 has no `UNSUBSCRIBE_METADATA`
     /// verb, so a subscription lives as long as the connection and re-sending
@@ -1243,12 +1247,17 @@ impl SessionLoop {
             &mut self.peers.foreign_agent_subscribed,
             &live,
         );
+        self.peers.foreign_attention.retain(|id| live.contains(id));
+        self.peers
+            .foreign_asked_pending
+            .retain(|_, id| live.contains(id));
         sync_foreign_agent_ids(
             conn,
             live.into_iter().collect(),
             &mut self.next_request_id,
             &mut self.peers.foreign_agent_pending,
             &mut self.peers.foreign_agent_subscribed,
+            &mut self.peers.foreign_asked_pending,
         )
         .await?;
         // phux-c2td.3: the fleet's other half. Rides the same deferred
@@ -1340,8 +1349,14 @@ impl SessionLoop {
                 phux_protocol::wire::frame::CommandValue::State(snapshot),
             ) => {
                 self.peers.hosts = snapshot.hosts().to_vec();
-                if self.peers.sessions != snapshot.sessions {
+                let sessions_changed = self.peers.sessions != snapshot.sessions;
+                if sessions_changed {
                     self.peers.sessions.clone_from(&snapshot.sessions);
+                }
+                // Satellite terminals arrive on this inventory even when the
+                // session list is unchanged. Sweep only when the graph the
+                // sweep reads actually moved, so an identical reply stops.
+                if sessions_changed || self.snapshot_graph_changed(snapshot) {
                     self.peers.sweep_pending = true;
                 }
                 self.adopt_snapshot_graph(snapshot);
@@ -1363,6 +1378,18 @@ impl SessionLoop {
         self.peers.hosts_pending = None;
         self.peers.hosts_pending_since = None;
         std::mem::take(&mut self.peers.held_unreachable)
+    }
+
+    /// True when a snapshot carries windows or resources the sweep has not
+    /// already adopted. Empty lists are not a change: host-inventory replies
+    /// often omit the graph, and [`Self::adopt_snapshot_graph`] leaves the
+    /// previous one in place.
+    fn snapshot_graph_changed(
+        &self,
+        snapshot: &phux_protocol::wire::info::SessionSnapshot,
+    ) -> bool {
+        (!snapshot.windows.is_empty() && self.peers.windows != snapshot.windows)
+            || (!snapshot.resources.is_empty() && self.peers.resources != snapshot.resources)
     }
 
     /// Cache windows/resources from a snapshot when it actually carries them.
@@ -2436,6 +2463,7 @@ impl SessionLoop {
             host_refresh_request: &mut self.host_refresh_request,
             foreign_layouts: &self.peers.foreign_layouts,
             foreign_agents: &self.peers.foreign_agents,
+            foreign_attention: &self.peers.foreign_attention,
             focused_session: self.peers.focused_session,
             session_name: &mut self.session_name,
             rename_pending: &mut self.rename_pending,
@@ -2787,6 +2815,23 @@ impl SessionLoop {
                 }
                 Ok(None)
             }
+            FrameKind::MetadataValue { request_id, value }
+                if self.peers.foreign_asked_pending.contains_key(&request_id) =>
+            {
+                if let Some(id) = self.peers.foreign_asked_pending.remove(&request_id) {
+                    let asked = value.as_deref() == Some(b"1");
+                    let changed = if asked {
+                        self.peers.foreign_attention.insert(id)
+                    } else {
+                        self.peers.foreign_attention.remove(&id)
+                    };
+                    if changed {
+                        self.peers.chrome_dirty = true;
+                        repaint.raise_fleet();
+                    }
+                }
+                Ok(None)
+            }
             // phux-h5hj.12: the same two lookups for the
             // *refusal* shape. `proto.md` §9 lets a server
             // answer a request it will not serve with a
@@ -2805,10 +2850,12 @@ impl SessionLoop {
                 request_id: Some(request_id),
                 ..
             } if self.peers.foreign_layout_pending.contains_key(&request_id)
-                || self.peers.foreign_agent_pending.contains_key(&request_id) =>
+                || self.peers.foreign_agent_pending.contains_key(&request_id)
+                || self.peers.foreign_asked_pending.contains_key(&request_id) =>
             {
                 self.peers.foreign_layout_pending.remove(&request_id);
                 self.peers.foreign_agent_pending.remove(&request_id);
+                self.peers.foreign_asked_pending.remove(&request_id);
                 Ok(None)
             }
             other => Ok(Some(other)),
@@ -2938,12 +2985,17 @@ impl SessionLoop {
             &mut self.peers.foreign_agent_subscribed,
             &live,
         );
+        self.peers.foreign_attention.retain(|id| live.contains(id));
+        self.peers
+            .foreign_asked_pending
+            .retain(|_, id| live.contains(id));
         sync_foreign_agent_ids(
             conn,
             live.into_iter().collect(),
             &mut self.next_request_id,
             &mut self.peers.foreign_agent_pending,
             &mut self.peers.foreign_agent_subscribed,
+            &mut self.peers.foreign_asked_pending,
         )
         .await
     }
@@ -3391,9 +3443,18 @@ impl SessionLoop {
             .foreign_attention
             .take()
             .is_some_and(|id| self.peers.foreign_attention.insert(id));
+        let cleared_folded = outcome
+            .foreign_attention_clear
+            .take()
+            .is_some_and(|id| self.peers.foreign_attention.remove(&id));
         // Lifecycle changes owe a real graph/layout sweep after this burst.
         self.peers.sweep_pending |= outcome.foreign_pane_set_dirty;
-        if layout_folded || agent_folded || asked_folded || outcome.foreign_pane_set_dirty {
+        if layout_folded
+            || agent_folded
+            || asked_folded
+            || cleared_folded
+            || outcome.foreign_pane_set_dirty
+        {
             self.peers.chrome_dirty = true;
             repaint.raise_fleet();
         }
@@ -4094,6 +4155,7 @@ impl SessionLoop {
             &mut self.vcs,
             &self.peers.foreign_layouts,
             &self.peers.foreign_agents,
+            &self.peers.foreign_attention,
         );
         self.finish_paint(painted);
     }

@@ -581,18 +581,22 @@ phux report new "note"   # logs-and-version only, when the TUI itself is down
 
 `C-a A` (`agent-fleet`) is the one-view answer to which agent needs you:
 a filterable overlay of every pane of the attached session, grouped
-under session headers. Each row carries the agent's name and kind, a
+under session headers, plus every satellite agent grouped by agent name
+rather than by machine. Each row carries the agent's name and kind, a
 state glyph (`!` blocked, `*` working, `-` idle, `.` done, `?` unknown),
 an attention highlight when the pane has a pending question, and branch
-or cwd in the dim right column.
+or cwd in the dim right column. A satellite row badges its host and
+opens that pane beside the focused one.
 
-Enter focuses the chosen pane. Rows under other sessions are one-step
-cross-session focus when that peer's layout is cached; otherwise a
-single "switch to this session" row. Foreign rows carry no asked flag or
-branch — those need a live subscription. The dashboard is live: while it
-is open, record changes, asks, spawns, and layout changes rebuild rows
-in place without disturbing the query. `phux agent list` remains the
-exhaustive cross-session CLI projection.
+Enter focuses the chosen pane. Rows under other sessions on this server
+are one-step cross-session focus when that peer's layout is cached;
+otherwise a single "switch to this session" row. The Agents list in the
+sidebar appends the same satellite agents, host badge included, after
+the local rows. Live state comes from `phux.agent/v1` and the mirrored
+asked flag. The dashboard is live: while it is open, record changes,
+asks, spawns, and layout changes rebuild rows in place without
+disturbing the query. `phux agent list` remains the exhaustive
+cross-session CLI projection. The session picker stays grouped by host.
 
 ## Mouse
 

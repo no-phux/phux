@@ -39,16 +39,13 @@
 //! after attach) still falls back to the single "switch to this session"
 //! row.
 //!
-//! Two honest limits remain. **Satellite** sessions cannot be watched at
-//! all: `SUBSCRIBE_METADATA` on a satellite Terminal scope is normatively
-//! refused (`docs/spec/L3.md`), so their panes are skipped and their state
-//! is rendered as explicitly unknown rather than as a calm zero. And
-//! foreign rows still carry no **branch/cwd** — a foreign pane has no local
-//! `PaneSlot`, and `CwdChanged` is dropped for an unknown Terminal. The
-//! asked flag, which this doc previously listed alongside them, IS
-//! available now: an ADR-0035 `Asked` for a pane outside the local set
-//! arrives on the server-wide event stream. The `phux agent list` CLI
-//! remains the exhaustive projection (it queries the server per terminal).
+//! Two honest limits remain. **Satellite** agents are listed by agent name,
+//! with a host badge, from the hub's read-only mirror of `phux.agent/v1`
+//! and `phux.agent.asked/v1` (ADR-0136) — not by machine, and not as a
+//! general metadata federation. Foreign rows still carry no **branch/cwd**
+//! — a foreign pane has no local `PaneSlot`, and `CwdChanged` is dropped
+//! for an unknown Terminal. The `phux agent list` CLI remains the
+//! exhaustive projection (it queries the server per terminal).
 //!
 //! ## Row anatomy
 //!
@@ -69,7 +66,7 @@
 //! 3). Attention rows (a pending ADR-0035 question, or a declared/derived
 //! high attention) paint in the theme's `attention` slot.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use phux_protocol::ResourceId;
 use phux_protocol::ids::SessionId;
@@ -208,6 +205,88 @@ pub(super) fn fleet_items(
     items
 }
 
+/// Satellite terminals grouped by agent name, not by machine (ADR-0136).
+///
+/// A pane already open in `workspace` is a current-session row. Everyone
+/// else with a mirrored `phux.agent/v1` record gets a header per agent and
+/// one row per host. Choosing the row opens that pane beside the focused
+/// one (`split-pane` with `resource`), which focuses it when it is already
+/// open.
+pub(super) fn satellite_agent_items(
+    agents: &HashMap<ResourceId, AgentRecord>,
+    attention: &HashSet<ResourceId>,
+    workspace: &Workspace,
+) -> Vec<SelectItem> {
+    let open = open_leaves(workspace);
+    let mut rows: Vec<(&ResourceId, &AgentRecord)> = agents
+        .iter()
+        .filter(|(id, record)| {
+            id.host().is_some() && !open.contains(*id) && !record.name.is_empty()
+        })
+        .collect();
+    rows.sort_by(|a, b| {
+        a.1.name
+            .cmp(&b.1.name)
+            .then_with(|| satellite_sort_key(a.0).cmp(&satellite_sort_key(b.0)))
+    });
+    let mut items = Vec::new();
+    let mut header = String::new();
+    for (id, record) in rows {
+        if header != record.name {
+            items.push(SelectItem::header(record.name.clone()));
+            header.clone_from(&record.name);
+        }
+        items.push(satellite_agent_row(id, record, attention.contains(id)));
+    }
+    items
+}
+
+fn open_leaves(workspace: &Workspace) -> HashSet<ResourceId> {
+    let mut open = HashSet::new();
+    for window in &workspace.windows {
+        if let Some(tree) = window.state.tree.as_ref() {
+            open.extend(crate::layout::leaves(tree));
+        }
+    }
+    open
+}
+
+fn satellite_sort_key(id: &ResourceId) -> (String, u32) {
+    match id {
+        ResourceId::Satellite { host, id } => (host.as_str().to_owned(), *id),
+        ResourceId::Local { id } => (String::new(), *id),
+    }
+}
+
+fn satellite_agent_row(id: &ResourceId, record: &AgentRecord, asked: bool) -> SelectItem {
+    let host = id
+        .host()
+        .map_or("", phux_protocol::ids::SatelliteHost::as_str);
+    let attention = asked || record.effective_attention() == AgentAttention::High;
+    let mut args = BTreeMap::new();
+    args.insert(
+        "direction".to_owned(),
+        toml::Value::String("horizontal".to_owned()),
+    );
+    args.insert(
+        "resource".to_owned(),
+        toml::Value::String(phux_client::selector::format_terminal_id(id)),
+    );
+    let mut item = SelectItem::new(
+        format!("{} {host}", state_glyph(record.state)),
+        phux_config::keybind::ResolvedAction {
+            action: "split-pane".to_owned(),
+            args,
+        },
+    )
+    .indented()
+    .secondary(record.state.as_str().to_owned());
+    if attention {
+        item = item.attention();
+    }
+    item
+}
+
 /// The selectable pane rows for the attached session: every window's DFS
 /// leaves, labelled `{glyph} {w}:{name}.{p} {agent-or-title}` and
 /// committing `focus-pane { window, pane }`.
@@ -234,6 +313,7 @@ fn current_session_pane_rows(
                     agent_meta.get(id),
                     &meta,
                     None,
+                    id.host().map(phux_protocol::ids::SatelliteHost::as_str),
                 ));
                 continue;
             }
@@ -245,6 +325,7 @@ fn current_session_pane_rows(
                     agent_meta.get(id),
                     &meta,
                     Some(session),
+                    id.host().map(phux_protocol::ids::SatelliteHost::as_str),
                 ));
             }
         }
@@ -271,6 +352,7 @@ fn pane_row(
     record: Option<&AgentRecord>,
     meta: &FleetPaneMeta,
     session: Option<&AgentSessionRow>,
+    host: Option<&str>,
 ) -> SelectItem {
     let (glyph, who, state_word) = match (session, record) {
         (Some(session), record) => {
@@ -306,10 +388,14 @@ fn pane_row(
         .branch
         .clone()
         .or_else(|| meta.cwd.as_deref().map(short_cwd));
-    let secondary = match (state_word, place) {
-        (Some(state), Some(place)) => Some(format!("{state} - {place}")),
-        (Some(state), None) => Some(state.to_owned()),
-        (None, place) => place,
+    let secondary = match (state_word, place, host) {
+        (Some(state), Some(place), Some(host)) => Some(format!("{host} {state} - {place}")),
+        (Some(state), None, Some(host)) => Some(format!("{host} {state}")),
+        (None, Some(place), Some(host)) => Some(format!("{host} {place}")),
+        (None, None, Some(host)) => Some(host.to_owned()),
+        (Some(state), Some(place), None) => Some(format!("{state} - {place}")),
+        (Some(state), None, None) => Some(state.to_owned()),
+        (None, place, None) => place,
     };
 
     let mut args = BTreeMap::new();
@@ -987,6 +1073,56 @@ mod tests {
             items[scratch_hdr + 1].secondary.as_deref(),
             Some("4 windows")
         );
+    }
+
+    #[test]
+    fn satellite_agents_group_by_name_with_a_host_badge() {
+        let gpu = ResourceId::satellite("gpubox", 4);
+        let edge = ResourceId::satellite("edge", 9);
+        let local = ResourceId::local(1);
+        let mut agents = HashMap::new();
+        agents.insert(
+            gpu,
+            AgentRecord {
+                name: "reviewer".to_owned(),
+                state: AgentMetaState::Working,
+                ..AgentRecord::default()
+            },
+        );
+        agents.insert(
+            edge.clone(),
+            AgentRecord {
+                name: "reviewer".to_owned(),
+                state: AgentMetaState::Blocked,
+                ..AgentRecord::default()
+            },
+        );
+        agents.insert(
+            local,
+            AgentRecord {
+                name: "local-only".to_owned(),
+                ..AgentRecord::default()
+            },
+        );
+        let attention = HashSet::from([edge]);
+        let items = satellite_agent_items(&agents, &attention, &Workspace::default());
+        assert_eq!(items.len(), 3, "one header, two hosts: {items:?}");
+        assert_eq!(items[0].label, "reviewer");
+        assert!(items[0].is_header());
+        assert_eq!(items[1].label, "! edge");
+        assert!(items[1].attention, "the asked flag highlights the row");
+        assert_eq!(items[1].action.action, "split-pane");
+        assert_eq!(
+            items[1]
+                .action
+                .args
+                .get("resource")
+                .and_then(|v| v.as_str()),
+            Some("edge/@9")
+        );
+        assert_eq!(items[2].label, "* gpubox");
+        assert!(!items[2].attention);
+        assert_eq!(items[2].secondary.as_deref(), Some("working"));
     }
 
     #[test]

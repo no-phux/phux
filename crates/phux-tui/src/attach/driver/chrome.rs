@@ -1,7 +1,7 @@
 //! Window chrome projection: the status-bar badge/hint composers, the
 //! window/agent row builders, and the single chrome-refresh chokepoint.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use phux_protocol::ids::{ClientId, ResourceId};
 use phux_protocol::wire::frame::ResourceLifecycle;
@@ -181,8 +181,18 @@ pub(super) fn refresh_window_chrome(
     changed |=
         sidebar_painter.set_roster(crate::attach::sidebar_zones::session_roster(&peers, &local));
     // Stable navigation order; lifecycle changes only restyle existing rows.
-    changed |=
-        sidebar_painter.set_needs_you(crate::attach::sidebar_zones::needs_you_queue(local, &peers));
+    // Satellite agents append after that order, grouped by name then host.
+    let mut agents = crate::attach::sidebar_zones::needs_you_queue(local, &peers);
+    let mut open = HashSet::new();
+    for window in &workspace.windows {
+        if let Some(tree) = window.state.tree.as_ref() {
+            open.extend(crate::layout::leaves(tree));
+        }
+    }
+    agents.extend(crate::attach::sidebar_zones::satellite_agent_rows(
+        &peers, &open,
+    ));
+    changed |= sidebar_painter.set_needs_you(agents);
     changed
 }
 
@@ -303,13 +313,14 @@ pub(super) fn agent_entries(
             let base = AgentEntry {
                 session: None,
                 session_id: None,
-                resource: None,
+                resource: id.host().map(|_| id.clone()),
                 window: i,
                 window_name: w.name.clone(),
                 pane: Some(leaf),
                 name: String::new(),
                 state: AgentMetaState::Unknown,
                 attention: panes.get(id).is_some_and(|slot| slot.attention),
+                host: id.host().map(|host| host.as_str().to_owned()),
                 seen: review.seen_or(id, panes.get(id).is_some_and(|slot| slot.seen)),
             };
             let record = agent_meta.records.get(id);

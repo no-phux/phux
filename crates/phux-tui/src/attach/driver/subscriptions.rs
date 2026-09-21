@@ -10,7 +10,9 @@ use crate::attach::connection::Connection;
 use crate::attach::outcome::AttachError;
 use crate::attach::server_frame::AgentMetaIndex;
 use crate::layout::Workspace;
-use phux_client::agent_meta::{AgentRecord, RESOURCE_AGENT_KEY, parse_agent_record};
+use phux_client::agent_meta::{
+    AgentRecord, RESOURCE_AGENT_KEY, RESOURCE_ASKED_KEY, parse_agent_record,
+};
 use phux_client::layout_ops::{DEFAULT_LAYOUT_GROUP_ID as DEFAULT_GROUP_ID, layout_key};
 
 /// phux-foz.8: fetch each peer session's persisted layout — one
@@ -88,23 +90,26 @@ pub(super) fn apply_foreign_layout_reply(
     }
 }
 
-/// GET/SUBSCRIBE `phux.agent/v1` for each local terminal in `targets`.
+/// GET/SUBSCRIBE `phux.agent/v1` for each terminal in `targets`.
 ///
 /// Used both after a peer layout lands and from the server graph when no
-/// TUI layout has been persisted yet (phux-ah84).
+/// TUI layout has been persisted yet (phux-ah84). A satellite terminal also
+/// gets the asked-flag key (ADR-0136); that GET is correlated through
+/// `asked_pending`, not `pending`, because its value is not an agent record.
 pub(super) async fn sync_foreign_agent_ids(
     conn: &mut Connection,
     targets: Vec<ResourceId>,
     next_request_id: &mut u32,
     pending: &mut HashMap<u32, ResourceId>,
     subscribed: &mut std::collections::HashSet<ResourceId>,
+    asked_pending: &mut HashMap<u32, ResourceId>,
 ) -> Result<(), AttachError> {
     let in_flight: std::collections::HashSet<&ResourceId> = pending.values().collect();
-    // Dedup while preserving order; skip satellites and in-flight GETs.
+    // Dedup while preserving order; skip in-flight GETs.
     let mut seen = std::collections::HashSet::new();
     let targets: Vec<ResourceId> = targets
         .into_iter()
-        .filter(|id| id.is_local() && !in_flight.contains(id))
+        .filter(|id| !in_flight.contains(id))
         .filter(|id| seen.insert(id.clone()))
         .collect();
     for id in targets {
@@ -119,10 +124,26 @@ pub(super) async fn sync_foreign_agent_ids(
         .await?;
         if subscribed.insert(id.clone()) {
             conn.send(&FrameKind::SubscribeMetadata {
-                scope: Scope::Resource(id),
+                scope: Scope::Resource(id.clone()),
                 key: RESOURCE_AGENT_KEY.to_owned(),
             })
             .await?;
+            if !id.is_local() {
+                let asked_id = *next_request_id;
+                *next_request_id = next_request_id.wrapping_add(1);
+                asked_pending.insert(asked_id, id.clone());
+                conn.send(&FrameKind::GetMetadata {
+                    request_id: asked_id,
+                    scope: Scope::Resource(id.clone()),
+                    key: RESOURCE_ASKED_KEY.to_owned(),
+                })
+                .await?;
+                conn.send(&FrameKind::SubscribeMetadata {
+                    scope: Scope::Resource(id),
+                    key: RESOURCE_ASKED_KEY.to_owned(),
+                })
+                .await?;
+            }
         }
     }
     Ok(())
@@ -189,22 +210,14 @@ pub(super) async fn sync_agent_meta_subscriptions(
     agent_meta.subscribed.retain(|id| pane_ids.contains(id));
     agent_meta.records.retain(|id, _| pane_ids.contains(id));
     agent_meta.pending.retain(|_, id| pane_ids.contains(id));
+    agent_meta
+        .asked_pending
+        .retain(|_, id| pane_ids.contains(id));
     // Same hygiene for the attention ladder's clock: a closed pane must not
     // leave a timestamp behind for a recycled ResourceId to inherit.
     agent_meta.change_at.retain(|id, _| pane_ids.contains(id));
     for id in &pane_ids {
         if agent_meta.subscribed.contains(id) {
-            continue;
-        }
-        // phux-w7z2.57: `phux.agent/v1` does not federate. A hub's metadata
-        // store holds nothing for a satellite pane, so the `GET` can only
-        // answer "unset" and the server now refuses the `SUBSCRIBE` outright
-        // with `ERROR { UNSUPPORTED_SATELLITE_ROUTE }`. Sending them anyway
-        // would spend two frames per remote pane to earn a warning notice in
-        // the status area on every pane-set change. Deliberately not recorded
-        // in `subscribed`: that set means "a live watch exists", and none
-        // does — the re-skip costs nothing because no frame is sent either way.
-        if !id.is_local() {
             continue;
         }
         let request_id = *next_request_id;
@@ -221,6 +234,24 @@ pub(super) async fn sync_agent_meta_subscriptions(
             key: RESOURCE_AGENT_KEY.to_owned(),
         })
         .await?;
+        // ADR-0136: a satellite pane's asked flag is metadata, not an event
+        // this client is guaranteed to see. The GET must not share `pending`.
+        if !id.is_local() {
+            let asked_id = *next_request_id;
+            *next_request_id = next_request_id.wrapping_add(1);
+            agent_meta.asked_pending.insert(asked_id, id.clone());
+            conn.send(&FrameKind::GetMetadata {
+                request_id: asked_id,
+                scope: Scope::Resource(id.clone()),
+                key: RESOURCE_ASKED_KEY.to_owned(),
+            })
+            .await?;
+            conn.send(&FrameKind::SubscribeMetadata {
+                scope: Scope::Resource(id.clone()),
+                key: RESOURCE_ASKED_KEY.to_owned(),
+            })
+            .await?;
+        }
         agent_meta.subscribed.insert(id.clone());
     }
     Ok(())

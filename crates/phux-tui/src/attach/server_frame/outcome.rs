@@ -66,6 +66,10 @@ pub(in crate::attach) struct FrameOutcome {
     /// phux-k0cw: an ADR-0035 `Asked` event for a Terminal outside this
     /// client's pane set — a peer agent is blocked on a human.
     pub(in crate::attach) foreign_attention: Option<ResourceId>,
+    /// ADR-0136: the mirrored asked flag cleared for a Terminal outside
+    /// this client's pane set. Kept apart from [`Self::foreign_attention`]
+    /// so one frame can raise one and the fold can drop the other.
+    pub(in crate::attach) foreign_attention_clear: Option<ResourceId>,
     /// phux-k0cw: a `ResourceSpawned` / `ResourceClosed` for a Terminal this client
     /// does not hold, so the peer pane set (and its subscriptions) needs
     /// re-sweeping. This is what closes the enumerate-then-subscribe race
