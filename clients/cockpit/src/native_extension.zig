@@ -5028,6 +5028,7 @@ const parity_states = [_]ChromeState{
     .{ .label = "scrollable palette beyond one transport page", .palette = true, .tabs = 5 },
     .{ .label = "settings over rail", .settings = true, .placement = .side },
     .{ .label = "workspace settings", .settings = true, .settings_section = 1 },
+    .{ .label = "window settings", .settings = true, .settings_section = 3 },
     .{ .label = "keyboard settings", .settings = true, .settings_section = 2 },
     .{ .label = "connection settings", .settings = true, .settings_section = 4 },
     .{ .label = "about settings", .settings = true, .settings_section = 5 },
@@ -5100,6 +5101,190 @@ test "the markup chrome passes the layout audit at every declared size, density 
         }
     }
     try std.testing.expectEqual(@as(usize, 0), total);
+}
+
+fn pressCanvasFrame(rig: *Rig, frame: native_sdk.geometry.RectF) !void {
+    inline for (.{ .pointer_down, .pointer_up }) |kind| {
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_input = .{
+            .window_id = 1,
+            .label = canvas_label,
+            .kind = kind,
+            .x = frame.x + frame.width / 2,
+            .y = frame.y + frame.height / 2,
+        } });
+    }
+}
+
+test "Settings widget controls dispatch and reflect authoritative selections" {
+    var rig = try Rig.start();
+    defer rig.stop();
+    try rig.settle(0, "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    var widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var font_radios: [2]native_sdk.geometry.RectF = undefined;
+    var fonts: usize = 0;
+    var selected_fonts: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind != .radio) continue;
+        if (node.widget.state.selected) selected_fonts += 1;
+        font_radios[fonts] = node.frame;
+        fonts += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), fonts);
+    try std.testing.expectEqual(@as(usize, 1), selected_fonts);
+    try std.testing.expect(!rig.app_state.model.fontChoices[1].selected);
+    try pressCanvasFrame(&rig, font_radios[1]);
+    try std.testing.expect(rig.app_state.model.appearanceBusy);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio) try std.testing.expect(node.widget.state.disabled);
+    }
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.fontChoices[1].selected);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var selected_font: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind != .radio) continue;
+        if (node.widget.state.selected) selected_font += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), selected_font);
+
+    try rig.dispatch(.{ .settings_section = 1 });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var cursor_radios: [3]native_sdk.geometry.RectF = undefined;
+    var cursor_count: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio and (std.mem.eql(u8, node.widget.text, "Block") or
+            std.mem.eql(u8, node.widget.text, "Bar") or std.mem.eql(u8, node.widget.text, "Underline")))
+        {
+            cursor_radios[cursor_count] = node.frame;
+            cursor_count += 1;
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 3), cursor_count);
+    try pressCanvasFrame(&rig, cursor_radios[1]);
+    try std.testing.expect(rig.app_state.model.appearanceBusy);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio) try std.testing.expect(node.widget.state.disabled);
+    }
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.cursorChoices[1].selected);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var selected_cursor: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio and std.mem.eql(u8, node.widget.text, "Bar") and node.widget.state.selected) selected_cursor += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), selected_cursor);
+
+    // Search brings each boolean into the viewport; clicking the unscrolled
+    // frame of an offscreen row must not accidentally activate it.
+    for ([_][]const u8{ "Cursor blink", "Inherit working directory" }) |query| {
+        try rig.dispatch(.{ .settings_query = .clear });
+        try rig.dispatch(.{ .settings_query = .{ .insert_text = query } });
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var off: ?native_sdk.geometry.RectF = null;
+        for (widgets.nodes) |node| {
+            if (node.widget.kind == .radio and std.mem.eql(u8, node.widget.text, "Off")) off = node.frame;
+        }
+        try std.testing.expect(rig.app_state.model.settingRows[0].checked);
+        try pressCanvasFrame(&rig, off orelse return error.TestExpectedBooleanChoice);
+        try std.testing.expect(rig.app_state.model.appearanceBusy);
+        try rig.settleAppearance();
+        try std.testing.expect(!rig.app_state.model.settingRows[0].checked);
+        try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+        widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+        var off_selected = false;
+        for (widgets.nodes) |node| {
+            if (node.widget.kind == .radio and std.mem.eql(u8, node.widget.text, "Off")) off_selected = node.widget.state.selected;
+        }
+        try std.testing.expect(off_selected);
+    }
+
+    // A generic setting's Edit control makes its input and Preview action
+    // reachable through the compiled widget tree.
+    try rig.dispatch(.{ .settings_query = .clear });
+    try rig.dispatch(.{ .settings_query = .{ .insert_text = "Shell command" } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var edit: ?native_sdk.geometry.RectF = null;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .button and std.mem.eql(u8, node.widget.text, "Edit")) edit = node.frame;
+    }
+    try pressCanvasFrame(&rig, edit orelse return error.TestExpectedSettingsEdit);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var has_value_input = false;
+    var has_preview = false;
+    for (widgets.nodes) |node| {
+        has_value_input = has_value_input or (node.widget.kind == .input and std.mem.eql(u8, node.widget.semantics.label, "Setting value"));
+        has_preview = has_preview or (node.widget.kind == .button and std.mem.eql(u8, node.widget.text, "Preview"));
+    }
+    try std.testing.expect(has_value_input);
+    try std.testing.expect(has_preview);
+
+    try rig.dispatch(.{ .settings_query = .clear });
+    try rig.dispatch(.{ .settings_section = 3 });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var placement_radios: [2]native_sdk.geometry.RectF = undefined;
+    var placements: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind != .radio) continue;
+        placement_radios[placements] = node.frame;
+        placements += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), placements);
+    try pressCanvasFrame(&rig, placement_radios[1]);
+    try std.testing.expect(rig.app_state.model.appearanceBusy);
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.placementChoices[1].selected);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    widgets = try rig.harness.runtime.canvasWidgetLayout(1, canvas_label);
+    var selected_placement: usize = 0;
+    for (widgets.nodes) |node| {
+        if (node.widget.kind == .radio and node.widget.state.selected) selected_placement += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), selected_placement);
+
+    try rig.dispatch(.settings_close);
+    try rig.settleAppearance();
+    try rig.dispatch(.new_window);
+    const engine = bridge.engine.?;
+    try rig.settle(@intCast(engine.sequence), "READY");
+    try rig.dispatch(.settings_open);
+    try rig.settleAppearance();
+    try std.testing.expect(rig.app_state.model.window1SettingsOpen);
+    const secondary = engine.model.wsAt(1) orelse return error.TestExpectedSecondaryWindow;
+    try std.testing.expectEqual(@as(usize, 1), engine.model.active_window);
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .{ .gpu_surface_frame = .{
+        .window_id = secondary.window_id,
+        .label = "phux-cockpit-canvas-1",
+        .size = .init(900, 420),
+        .scale_factor = 1,
+        .frame_index = 2,
+        .timestamp_ns = 2,
+    } });
+    try rig.harness.runtime.dispatchPlatformEvent(rig.decorated, .frame_requested);
+    const secondary_widgets = try rig.harness.runtime.canvasWidgetLayout(secondary.window_id, "phux-cockpit-canvas-1");
+    var rendered_settings = false;
+    for (secondary_widgets.nodes) |node| rendered_settings = rendered_settings or std.mem.eql(u8, node.widget.semantics.label, "Cancel settings");
+    try std.testing.expect(rendered_settings);
+    try std.testing.expectEqual(@as(usize, 0), try auditWindowChromeAt(
+        &rig.app_state.model,
+        native_sdk.geometry.SizeF.init(900, 420),
+        .regular,
+        "secondary settings minimum size",
+        1,
+    ));
 }
 
 /// The shipping hidden-inset header must itself be the drag surface.

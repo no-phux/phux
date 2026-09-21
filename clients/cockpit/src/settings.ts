@@ -11,33 +11,45 @@ export interface Setting {
   readonly editable: boolean;
   readonly value: Uint8Array;
   readonly effectiveValue: Uint8Array;
+  /** Native markup discriminant: text, boolean, font, cursor, placement, font size. */
+  readonly control: number;
+  readonly checked: boolean;
+  readonly unchecked: boolean;
+  readonly available: boolean;
 }
 
-function setting(id: number, section: number, label: string, defaults: string, applies: string, timing: string, editable: boolean): Setting {
+export interface SettingChoice {
+  readonly index: number;
+  readonly label: Uint8Array;
+  readonly value: Uint8Array;
+  readonly selected: boolean;
+}
+
+function setting(id: number, section: number, label: string, defaults: string, applies: string, timing: string, editable: boolean, control: number): Setting {
   return { id: id >= 0 && id <= 14 ? Math.trunc(id) : 0,
     section: section >= 0 && section <= 5 ? Math.trunc(section) : 0,
     label: asciiBytes(label), defaultLabel: asciiBytes(defaults),
-    applicability: asciiBytes(applies), timing: asciiBytes(timing), editable, value: new Uint8Array(0), effectiveValue: new Uint8Array(0) };
+    applicability: asciiBytes(applies), timing: asciiBytes(timing), editable, value: new Uint8Array(0), effectiveValue: new Uint8Array(0), control: control >= 0 && control <= 5 ? Math.trunc(control) : 0, checked: false, unchecked: true, available: false };
 }
 
 /** Display descriptions have one owner. IDs match the append-only native schema. */
 export function settingsCatalog(): readonly Setting[] {
   return [
-    setting(0, 0, "Font family", "JetBrains Mono NL Nerd Font Mono (bundled)", "All terminal views. Blank restores the bundled face; Geist Mono selects the other shipped face. Other fonts are unsupported.", "Live preview", true),
-    setting(1, 0, "Font size", "13 pt", "All terminal views. 4 to 72 points.", "Live preview", true),
-    setting(2, 0, "Theme / follow system", "Cockpit default", "Use auto to follow macOS. Explicit foreground/background take precedence.", "Live preview", true),
-    setting(3, 0, "Minimum contrast", "3", "All Cockpit terminal views, including Phux. Changes presentation without changing source colors. 1 disables the floor; 21 is maximum.", "Live preview", true),
-    setting(4, 1, "Cursor style", "block", "Scratch terminal default: block, bar, underline. Phux and terminal applications own their cursors.", "Live scratch preview", true),
-    setting(5, 1, "Cursor blink", "true", "Scratch terminal default. Phux and terminal applications own their cursors.", "Live scratch preview", true),
-    setting(6, 1, "Scrollback retention (bytes)", "52428800 (50 MiB)", "New scratch terminals only. Phux history is owned by the serving machine.", "New scratch terminals", true),
-    setting(7, 1, "Shell command", "/bin/zsh (login environment)", "New scratch terminals on This Mac. Phux shells use the serving user's configuration.", "New scratch terminals", true),
-    setting(8, 1, "Inherit working directory", "true", "New tabs and splits inherit from the focused resource on its machine.", "New terminals", true),
-    setting(9, 3, "Tab placement", "top", "Choose top or side. All Cockpit windows.", "Live preview", true),
-    setting(10, 1, "Preferred editor", "VISUAL, then EDITOR", "Local configuration editor command and arguments. Blank uses environment discovery.", "Next editor launch", true),
-    setting(11, 2, "Keyboard shortcuts", "Shipping Cockpit commands", "Remap and reset actual Cockpit bindings below. Use Cmd-based chords or none; conflicts are checked before applying.", "Live preview; persisted on Save", false),
-    setting(12, 4, "Attached session", "Current workspace", "Read-only attached session. Use Sessions to change work.", "Shown on Connection", false),
-    setting(13, 4, "Serving machine", "phux on the attached machine", "Shell and history for phux panes live on the serving machine. Change them with phux config or TUI Settings there.", "Owned by the serving machine", false),
-    setting(14, 5, "App version", "CFBundleShortVersionString", "The running Phux Cockpit release. Check for Updates uses the same cockpit-vX.Y.Z GitHub stream as scripts/install-cockpit.sh.", "In-app check; installer-placed copies can reinstall", false),
+    setting(0, 0, "Font family", "JetBrains Mono NL Nerd Font Mono (bundled)", "All terminal views. Blank restores the bundled face; Geist Mono selects the other shipped face. Other fonts are unsupported.", "Live preview", true, 2),
+    setting(1, 0, "Font size", "13 pt", "All terminal views. 4 to 72 points.", "Live preview", true, 5),
+    setting(2, 0, "Theme / follow system", "Cockpit default", "Use auto to follow macOS. Explicit foreground/background take precedence.", "Live preview", true, 0),
+    setting(3, 0, "Minimum contrast", "3", "All Cockpit terminal views, including Phux. Changes presentation without changing source colors. 1 disables the floor; 21 is maximum.", "Live preview", true, 0),
+    setting(4, 1, "Cursor style", "block", "Scratch terminal default: block, bar, underline. Phux and terminal applications own their cursors.", "Live scratch preview", true, 3),
+    setting(5, 1, "Cursor blink", "true", "Scratch terminal default. Phux and terminal applications own their cursors.", "Live scratch preview", true, 1),
+    setting(6, 1, "Scrollback retention (bytes)", "52428800 (50 MiB)", "New scratch terminals only. Phux history is owned by the serving machine.", "New scratch terminals", true, 0),
+    setting(7, 1, "Shell command", "/bin/zsh (login environment)", "New scratch terminals on This Mac. Phux shells use the serving user's configuration.", "New scratch terminals", true, 0),
+    setting(8, 1, "Inherit working directory", "true", "New tabs and splits inherit from the focused resource on its machine.", "New terminals", true, 1),
+    setting(9, 3, "Tab placement", "top", "Choose top or side. All Cockpit windows.", "Live preview", true, 4),
+    setting(10, 1, "Preferred editor", "VISUAL, then EDITOR", "Local configuration editor command and arguments. Blank uses environment discovery.", "Next editor launch", true, 0),
+    setting(11, 2, "Keyboard shortcuts", "Shipping Cockpit commands", "Remap and reset actual Cockpit bindings below. Use Cmd-based chords or none; conflicts are checked before applying.", "Live preview; persisted on Save", false, 0),
+    setting(12, 4, "Attached session", "Current workspace", "Read-only attached session. Use Sessions to change work.", "Shown on Connection", false, 0),
+    setting(13, 4, "Serving machine", "phux on the attached machine", "Shell and history for phux panes live on the serving machine. Change them with phux config or TUI Settings there.", "Owned by the serving machine", false, 0),
+    setting(14, 5, "App version", "CFBundleShortVersionString", "The running Phux Cockpit release. Check for Updates uses the same cockpit-vX.Y.Z GitHub stream as scripts/install-cockpit.sh.", "In-app check; installer-placed copies can reinstall", false, 0),
   ];
 }
 
@@ -64,13 +76,14 @@ function matches(row: Setting, query: Uint8Array): boolean {
   return contains(row.label, query) || contains(row.applicability, query);
 }
 
-function withValue(row: Setting, value: Uint8Array): Setting {
+function withValue(row: Setting, value: Uint8Array, available: boolean): Setting {
   const id = row.id;
   const section = row.section;
-  const effectiveValue = effectiveSettingValue(row, value);
+  const effectiveValue = available ? effectiveSettingValue(row, value) : asciiBytes("Current value unavailable");
+  const checked = sameText(value, "true");
   return { ...row, id: id >= 0 && id <= 14 ? Math.trunc(id) : 0,
     section: section >= 0 && section <= 5 ? Math.trunc(section) : 0,
-    value, effectiveValue };
+    value, effectiveValue, checked, unchecked: !checked, available };
 }
 
 function sameText(value: Uint8Array, expected: string): boolean {
@@ -86,6 +99,27 @@ function effectiveSettingValue(row: Setting, value: Uint8Array): Uint8Array {
   return asciiBytes("Bundled face; requested family is unsupported");
 }
 
+function cursorChoiceValue(cursor: number): Uint8Array {
+  if (cursor === 1) return asciiBytes("bar");
+  if (cursor === 2) return asciiBytes("underline");
+  return asciiBytes("block");
+}
+
+function settingChoiceValue(appearance: Appearance, id: number): Uint8Array {
+  if (id === 4) return cursorChoiceValue(appearance.cursor);
+  if (id === 9) return asciiBytes(appearance.placement === 1 ? "side" : "top");
+  const font = appearance.values[0] ?? new Uint8Array(0);
+  if (sameText(font, "JetBrains Mono NL Nerd Font Mono")) return new Uint8Array(0);
+  return font;
+}
+
+/** Choices project native authority; accepted bundled-font spellings share one choice. */
+export function selectedSettingChoices(appearance: Appearance, id: number, choices: readonly SettingChoice[]): readonly SettingChoice[] {
+  const current = settingChoiceValue(appearance, id);
+  return choices.map(choice => ({ index: choice.index, label: choice.label, value: choice.value,
+    selected: current.length === choice.value.length && contains(current, choice.value) }));
+}
+
 export function settingsRows(appearance: Appearance, query: Uint8Array, section: number): readonly Setting[] {
   const rows: Setting[] = [];
   for (const row of settingsCatalog()) {
@@ -94,7 +128,7 @@ export function settingsRows(appearance: Appearance, query: Uint8Array, section:
     if (query.length === 0 && row.section !== section) continue;
     if (query.length > 0 && !matches(row, query)) continue;
     const value = row.id < appearance.values.length ? appearance.values[row.id] : new Uint8Array(0);
-    rows.push(withValue(row, value));
+    rows.push(withValue(row, value, row.id < appearance.values.length));
   }
   return rows;
 }
