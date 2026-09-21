@@ -1,6 +1,6 @@
 //! Seed the E2E rig through the same shared runtime the app drives.
 //!
-//! Run: `cargo run -p phux-mobile-ffi --example rig_seed --features wire`
+//! Run: `cargo run -p phux-client-ffi --example rig_seed --features uniffi`
 
 #![allow(
     clippy::print_stdout,

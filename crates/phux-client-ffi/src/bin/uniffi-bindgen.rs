@@ -2,7 +2,7 @@
 //!
 //! ```text
 //! cargo run --bin uniffi-bindgen -- generate \
-//!   --library target/<triple>/release/libphux_mobile_ffi.dylib \
+//!   --library target/<triple>/release/libphux_client_ffi.dylib \
 //!   --language swift --out-dir <PhuxFFI/Generated>
 //! ```
 //!

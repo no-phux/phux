@@ -1,4 +1,5 @@
-# UniFFI binding generation config. The generated Swift lands in the PhuxFFI
+# UniFFI binding generation config for crates/phux-client-ffi --features
+# uniffi (ADR-0135). The generated Swift lands in the PhuxFFI
 # SPM module (ADR-0003).
 [bindings.swift]
 module_name = "PhuxFFI"

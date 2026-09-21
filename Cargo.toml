@@ -49,7 +49,6 @@ phux-client = { path = "crates/phux-client" }
 phux-tui = { path = "crates/phux-tui" }
 phux-client-core = { path = "crates/phux-client-core" }
 phux-client-ffi = { path = "crates/phux-client-ffi" }
-phux-mobile-ffi = { path = "crates/phux-mobile-ffi" }
 phux-client-runtime = { path = "crates/phux-client-runtime" }
 phux-config = { path = "crates/phux-config" }
 phux-dial = { path = "crates/phux-dial" }

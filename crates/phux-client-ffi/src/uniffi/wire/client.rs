@@ -7,9 +7,9 @@
 )]
 
 use super::*;
-use phux_client_runtime::control::{
-    DirectoryFailure, FileUploadOutcome, SpawnRequest, TranscribeOutcome,
-};
+use phux_client_runtime::control::SpawnRequest;
+
+use crate::uniffi::engine;
 
 const SCROLLBACK_LINES: u32 = 1000;
 
@@ -37,7 +37,6 @@ pub struct RemoteClient {
     listener: Mutex<Option<Arc<dyn WireListener>>>,
     input_deliveries: Mutex<Vec<WireInputDelivery>>,
     authoritative_damage: Mutex<HashSet<ResourceId>>,
-    #[cfg(feature = "engine")]
     generations: Mutex<HashMap<ResourceId, u64>>,
     pending_agent_metadata: Mutex<HashMap<u32, ResourceId>>,
 }
@@ -77,7 +76,6 @@ impl RemoteClient {
             listener: Mutex::new(None),
             input_deliveries: Mutex::new(Vec::new()),
             authoritative_damage: Mutex::new(HashSet::new()),
-            #[cfg(feature = "engine")]
             generations: Mutex::new(HashMap::new()),
             pending_agent_metadata: Mutex::new(HashMap::new()),
         })
@@ -145,17 +143,7 @@ impl RemoteClient {
                 client
                     .take_file_upload_receipts()
                     .into_iter()
-                    .map(|receipt| WireFileUploadReceipt {
-                        transfer_id: receipt.transfer_id,
-                        outcome: match receipt.outcome {
-                            FileUploadOutcome::Completed => WireFileUploadOutcome::Completed,
-                            FileUploadOutcome::Refused => WireFileUploadOutcome::Refused,
-                            FileUploadOutcome::Unknown => WireFileUploadOutcome::Unknown,
-                        },
-                        path: receipt.path,
-                        code: receipt.code,
-                        message: receipt.message,
-                    })
+                    .map(|receipt| outcome::upload_receipt(receipt).into())
                     .collect()
             })
             .unwrap_or_default()
@@ -232,32 +220,7 @@ impl RemoteClient {
                 client
                     .take_directory_listings()
                     .into_iter()
-                    .map(|listing| WireDirectoryListing {
-                        request_id: listing.request_id,
-                        path: listing.path,
-                        parent: listing.parent,
-                        entries: listing
-                            .entries
-                            .into_iter()
-                            .map(|entry| WireDirectoryEntry {
-                                name: entry.name,
-                                is_symlink: entry.is_symlink,
-                            })
-                            .collect(),
-                        truncated: listing.truncated,
-                        error: listing.error.map(|error| match error {
-                            DirectoryFailure::NotFound => WireDirectoryErrorCode::NotFound,
-                            DirectoryFailure::PermissionDenied => {
-                                WireDirectoryErrorCode::PermissionDenied
-                            }
-                            DirectoryFailure::NotADirectory => {
-                                WireDirectoryErrorCode::NotADirectory
-                            }
-                            DirectoryFailure::Other => WireDirectoryErrorCode::Other,
-                            DirectoryFailure::Unanswered => WireDirectoryErrorCode::Unanswered,
-                        }),
-                        message: listing.message,
-                    })
+                    .map(|listing| outcome::directory(listing).into())
                     .collect()
             })
             .unwrap_or_default()
@@ -304,14 +267,7 @@ impl RemoteClient {
     }
 
     pub fn status(&self) -> WireStatus {
-        match self.runtime_client().map(|client| client.status()) {
-            None | Some(Status::Idle | Status::Connecting | Status::Negotiated) => {
-                WireStatus::Connecting
-            }
-            Some(Status::Attached) => WireStatus::Attached,
-            Some(Status::Closed) => WireStatus::Closed,
-            Some(Status::Failed) => WireStatus::Failed,
-        }
+        status::connection(self.runtime_client().map(|client| client.status())).into()
     }
 
     pub fn last_error(&self) -> Option<String> {
@@ -319,36 +275,23 @@ impl RemoteClient {
     }
 
     pub fn server_protocol_version(&self) -> Option<String> {
-        self.runtime_client().and_then(|client| {
-            client.server().map(|server| {
-                format!(
-                    "{}.{}.{}",
-                    server.protocol.0, server.protocol.1, server.protocol.2
-                )
-            })
-        })
+        self.runtime_client()
+            .and_then(|client| client.server())
+            .map(|server| status::protocol_version(&server))
     }
 
     pub fn negotiated_capabilities(&self) -> Vec<String> {
-        let Some(server) = self.runtime_client().and_then(|client| client.server()) else {
-            return Vec::new();
-        };
-        [
-            (ServerFeature::AcknowledgedInput, "acknowledged-input"),
-            (ServerFeature::FileUpload, "file-upload"),
-            (ServerFeature::Transcribe, "transcribe"),
-            (ServerFeature::ListDirectory, "list-directory"),
-        ]
-        .into_iter()
-        .filter(|(feature, _)| server.features.contains(*feature))
-        .map(|(_, name)| name.to_owned())
-        .collect()
+        self.runtime_client()
+            .and_then(|client| client.server())
+            .as_ref()
+            .map(status::negotiated_features)
+            .unwrap_or_default()
     }
 
     pub fn topology(&self) -> Option<SessionTopology> {
         self.runtime_client()
             .and_then(|client| client.topology())
-            .map(project_topology)
+            .map(|graph| topology::session_graph(graph).into())
     }
 
     pub fn send_text(&self, terminal_id: String, text: String) {
@@ -387,7 +330,7 @@ impl RemoteClient {
         let Some(client) = self.runtime_client() else {
             return 0;
         };
-        let Some(id) = parse_terminal_id(&terminal_id) else {
+        let Some(id) = id::parse(&terminal_id) else {
             return client.refuse_file_upload("invalid terminal id");
         };
         client.put_file(id, extension, data)
@@ -404,19 +347,7 @@ impl RemoteClient {
                 client
                     .take_transcribe_receipts()
                     .into_iter()
-                    .map(|receipt| WireTranscribeReceipt {
-                        request_id: receipt.request_id,
-                        transfer_id: receipt.transfer_id,
-                        outcome: match receipt.outcome {
-                            TranscribeOutcome::Completed => WireTranscribeOutcome::Completed,
-                            TranscribeOutcome::Refused => WireTranscribeOutcome::Refused,
-                            TranscribeOutcome::Unknown => WireTranscribeOutcome::Unknown,
-                        },
-                        text: receipt.text,
-                        pasted: receipt.pasted,
-                        code: receipt.code,
-                        message: receipt.message,
-                    })
+                    .map(|receipt| outcome::transcribe_receipt(receipt).into())
                     .collect()
             })
             .unwrap_or_default()
@@ -459,33 +390,6 @@ impl RemoteClient {
     }
 }
 
-#[cfg(not(feature = "engine"))]
-#[uniffi::export]
-impl RemoteClient {
-    pub fn take_output(&self, terminal_id: String) -> Vec<u8> {
-        self.with_terminal(&terminal_id, |client, id| {
-            let bytes = client.take_output(id);
-            if !bytes.is_empty() {
-                client.acknowledge_projection(id);
-            }
-            bytes
-        })
-        .unwrap_or_default()
-    }
-
-    pub fn has_stream(&self, terminal_id: String) -> bool {
-        self.with_terminal(&terminal_id, |client, id| {
-            client.has_projection(id) && !client.is_closed(id)
-        })
-        .unwrap_or(false)
-    }
-
-    pub fn ensure_stream(&self, terminal_id: String) {
-        let _ = self.with_terminal(&terminal_id, Client::ensure_stream);
-    }
-}
-
-#[cfg(feature = "engine")]
 #[uniffi::export]
 impl RemoteClient {
     pub fn has_projection(&self, terminal_id: String) -> bool {
@@ -500,7 +404,7 @@ impl RemoteClient {
     }
 
     pub fn release_projection(&self, terminal_id: String) {
-        let Some(id) = parse_terminal_id(&terminal_id) else {
+        let Some(id) = id::parse(&terminal_id) else {
             return;
         };
         self.generations.lock().unwrap().remove(&id);
@@ -510,7 +414,7 @@ impl RemoteClient {
     }
 
     pub fn projection_changed(&self, terminal_id: String) -> bool {
-        let Some(id) = parse_terminal_id(&terminal_id) else {
+        let Some(id) = id::parse(&terminal_id) else {
             return false;
         };
         let Some(client) = self.runtime_client() else {
@@ -535,8 +439,8 @@ impl RemoteClient {
     pub fn render_projection(
         &self,
         terminal_id: String,
-    ) -> Result<Option<crate::engine::GridProjection>, crate::engine::EngineError> {
-        let Some(id) = parse_terminal_id(&terminal_id) else {
+    ) -> Result<Option<engine::GridProjection>, engine::EngineError> {
+        let Some(id) = id::parse(&terminal_id) else {
             return Ok(None);
         };
         let Some(client) = self.runtime_client() else {
@@ -552,43 +456,10 @@ impl RemoteClient {
         if self.authoritative_damage.lock().unwrap().remove(&id) {
             client.acknowledge_projection(&id);
         }
-        Ok(Some(crate::engine::GridProjection {
-            cols: frame.cols,
-            rows: frame.rows,
-            cells: crate::engine::encode_cells(&frame.buffer.cells),
-            utf8: frame.buffer.utf8.clone(),
-            cursor_col: frame.cursor.visible.then_some(frame.cursor.col),
-            cursor_row: frame.cursor.visible.then_some(frame.cursor.row),
-            cursor_visible: frame.cursor.visible,
-            cursor_shape: match frame.cursor.style {
-                phux_client_core::grid::CursorStyle::Block => crate::engine::CursorShape::Block,
-                phux_client_core::grid::CursorStyle::Bar => crate::engine::CursorShape::Bar,
-                phux_client_core::grid::CursorStyle::Underline => {
-                    crate::engine::CursorShape::Underline
-                }
-                phux_client_core::grid::CursorStyle::BlockHollow => {
-                    crate::engine::CursorShape::BlockHollow
-                }
-            },
-            cursor_blinking: frame.cursor.blinking,
-            default_fg: crate::engine::Color {
-                r: frame.colors.foreground.r,
-                g: frame.colors.foreground.g,
-                b: frame.colors.foreground.b,
-            },
-            default_bg: crate::engine::Color {
-                r: frame.colors.background.r,
-                g: frame.colors.background.g,
-                b: frame.colors.background.b,
-            },
-            generation: frame.generation,
-            dirty_rows: frame.dirty_rows().collect(),
-            scrollbar: crate::engine::ScrollbarState {
-                total: frame.scrollbar.total,
-                offset: frame.scrollbar.offset,
-                len: frame.scrollbar.len,
-            },
-        }))
+        Ok(Some(engine::grid_projection(
+            &grid::view(&frame),
+            grid::dirty_rows(&frame),
+        )))
     }
 
     pub fn predict_projection_text(&self, terminal_id: String, text: String) {
@@ -618,18 +489,14 @@ impl RemoteClient {
     pub fn projection_scrollbar(
         &self,
         terminal_id: String,
-    ) -> Result<Option<crate::engine::ScrollbarState>, crate::engine::EngineError> {
-        let Some(id) = parse_terminal_id(&terminal_id) else {
+    ) -> Result<Option<engine::ScrollbarState>, engine::EngineError> {
+        let Some(id) = id::parse(&terminal_id) else {
             return Ok(None);
         };
         Ok(self
             .runtime_client()
             .and_then(|client| client.acquire(&id))
-            .map(|frame| crate::engine::ScrollbarState {
-                total: frame.scrollbar.total,
-                offset: frame.scrollbar.offset,
-                len: frame.scrollbar.len,
-            }))
+            .map(|frame| engine::scrollbar_state(grid::view(&frame).scrollbar)))
     }
 
     pub fn projection_is_alt_screen(&self, terminal_id: String) -> bool {
@@ -648,7 +515,7 @@ impl RemoteClient {
         terminal_id: &str,
         call: impl FnOnce(&Client, &ResourceId) -> T,
     ) -> Option<T> {
-        let id = parse_terminal_id(terminal_id)?;
+        let id = id::parse(terminal_id)?;
         let client = self.runtime_client()?;
         Some(call(&client, &id))
     }
@@ -661,7 +528,7 @@ impl RemoteClient {
         let Some(client) = self.runtime_client() else {
             return 0;
         };
-        let Some(id) = parse_terminal_id(terminal_id) else {
+        let Some(id) = id::parse(terminal_id) else {
             return client.refuse_acknowledged_input("invalid terminal id");
         };
         apply(&client, &id)
@@ -715,7 +582,7 @@ impl RemoteClient {
                 value,
                 ..
             } if key == RESOURCE_AGENT_KEY => {
-                projected.push(agent_state_event(&id, value.as_deref()));
+                projected.push(agent::badge(&id, value.as_deref()).into());
             }
             FrameKind::MetadataValue { request_id, value } => {
                 if let Some(id) = self
@@ -724,14 +591,29 @@ impl RemoteClient {
                     .unwrap()
                     .remove(&request_id)
                 {
-                    projected.push(agent_state_event(&id, value.as_deref()));
+                    projected.push(agent::badge(&id, value.as_deref()).into());
                 }
             }
             _ => {}
         }
     }
 
+    /// Lower one runtime event.
+    ///
+    /// The two classifiers run first: whatever they recognize is a product
+    /// fact the projection layer already decided, and this method only
+    /// lowers it. What is left is either bridge-local state (the damage
+    /// bookkeeping, the metadata correlation) or a fact with no Swift
+    /// vocabulary.
     fn project_event(&self, event: Event, projected: &mut Vec<WireEvent>) {
+        let event = match event::terminal_signal(event) {
+            Ok(signal) => return projected.extend(Option::<WireEvent>::from(signal)),
+            Err(event) => event,
+        };
+        let event = match event::lifecycle(event) {
+            Ok(lifecycle) => return projected.extend(Option::<WireEvent>::from(lifecycle)),
+            Err(event) => event,
+        };
         match event {
             Event::TopologyChanged => {
                 projected.push(WireEvent::TopologyChanged);
@@ -743,18 +625,6 @@ impl RemoteClient {
                     .unwrap()
                     .insert(terminal_id);
             }
-            lifecycle @ (Event::PaneSpawned { .. }
-            | Event::TerminalSpawned { .. }
-            | Event::TerminalAttached { .. }
-            | Event::TerminalDetached { .. }
-            | Event::TerminalClosed { .. }) => project_lifecycle(lifecycle, projected),
-            signal @ (Event::Bell { .. }
-            | Event::TitleChanged { .. }
-            | Event::OutputStarted { .. }
-            | Event::OutputSettled { .. }
-            | Event::CommandStarted { .. }
-            | Event::CommandFinished { .. }
-            | Event::CwdChanged { .. }) => project_terminal_signal(signal, projected),
             Event::AgentAsked {
                 terminal_id,
                 question_id,
@@ -762,7 +632,7 @@ impl RemoteClient {
                 suggestions,
                 waiting_seconds,
             } => projected.push(WireEvent::AgentAsked {
-                terminal_id: terminal_id_string(&terminal_id),
+                terminal_id: id::encode(&terminal_id),
                 question_id,
                 text,
                 suggestions,
@@ -770,192 +640,21 @@ impl RemoteClient {
             }),
             Event::InputDelivery {
                 delivery_id,
-                outcome,
+                outcome: result,
                 code,
                 message,
-            } => self
-                .input_deliveries
-                .lock()
-                .unwrap()
-                .push(WireInputDelivery {
+            } => self.input_deliveries.lock().unwrap().push(
+                outcome::InputDelivery {
                     delivery_id,
-                    outcome: project_delivery_outcome(outcome),
+                    outcome: outcome::delivery(result),
                     code,
                     message,
-                }),
-            Event::ServerError { message, .. } => {
-                projected.push(WireEvent::ServerError { message });
-            }
+                }
+                .into(),
+            ),
             Event::Frame(frame) => self.project_metadata_frame(*frame, projected),
             _ => {}
         }
-    }
-}
-
-fn project_lifecycle(event: Event, projected: &mut Vec<WireEvent>) {
-    let event = match event {
-        Event::PaneSpawned { terminal_id } => WireEvent::PaneSpawned {
-            terminal_id: terminal_id_string(&terminal_id),
-        },
-        Event::TerminalSpawned {
-            request_id,
-            terminal_id,
-            error,
-        } => WireEvent::TerminalSpawned {
-            request_id,
-            terminal_id: terminal_id.as_ref().map(terminal_id_string),
-            error,
-        },
-        Event::TerminalAttached {
-            request_id,
-            terminal_id,
-            error,
-        } => WireEvent::TerminalAttached {
-            request_id,
-            terminal_id: terminal_id_string(&terminal_id),
-            error,
-        },
-        Event::TerminalDetached {
-            request_id,
-            terminal_id,
-            error,
-        } => WireEvent::TerminalDetached {
-            request_id,
-            terminal_id: terminal_id_string(&terminal_id),
-            error,
-        },
-        Event::TerminalClosed {
-            terminal_id,
-            exit_status,
-            ..
-        } => WireEvent::PaneClosed {
-            terminal_id: terminal_id_string(&terminal_id),
-            exit_status,
-        },
-        _ => return,
-    };
-    projected.push(event);
-}
-
-fn project_terminal_signal(event: Event, projected: &mut Vec<WireEvent>) {
-    let event = match event {
-        Event::Bell { terminal_id } => WireEvent::Bell {
-            terminal_id: terminal_id_string(&terminal_id),
-        },
-        Event::TitleChanged { terminal_id, title } => WireEvent::TitleChanged {
-            terminal_id: terminal_id_string(&terminal_id),
-            title,
-        },
-        Event::OutputStarted { terminal_id } => WireEvent::OutputStarted {
-            terminal_id: terminal_id_string(&terminal_id),
-        },
-        Event::OutputSettled { terminal_id } => WireEvent::OutputSettled {
-            terminal_id: terminal_id_string(&terminal_id),
-        },
-        Event::CommandStarted { terminal_id } => WireEvent::CommandStarted {
-            terminal_id: terminal_id_string(&terminal_id),
-        },
-        Event::CommandFinished {
-            terminal_id,
-            exit_code,
-        } => WireEvent::CommandFinished {
-            terminal_id: terminal_id_string(&terminal_id),
-            exit_code,
-        },
-        Event::CwdChanged { terminal_id, cwd } => WireEvent::CwdChanged {
-            terminal_id: terminal_id_string(&terminal_id),
-            cwd,
-        },
-        _ => return,
-    };
-    projected.push(event);
-}
-
-fn project_delivery_outcome(outcome: DeliveryOutcome) -> WireInputDeliveryOutcome {
-    match outcome {
-        DeliveryOutcome::Delivered => WireInputDeliveryOutcome::Delivered,
-        DeliveryOutcome::Refused => WireInputDeliveryOutcome::Refused,
-        DeliveryOutcome::Unknown => WireInputDeliveryOutcome::Unknown,
-    }
-}
-
-#[derive(Default)]
-struct ParsedAgentRecord {
-    name: String,
-    kind: Option<String>,
-    session: Option<String>,
-    state: AgentState,
-    attention: Option<AgentAttention>,
-}
-
-fn agent_state_event(id: &ResourceId, bytes: Option<&[u8]>) -> WireEvent {
-    let record = bytes.and_then(parse_agent_record).unwrap_or_default();
-    let attention = record
-        .attention
-        .unwrap_or_else(|| derived_attention(record.state));
-    WireEvent::AgentStateChanged {
-        terminal_id: terminal_id_string(id),
-        name: record.name,
-        kind: record.kind,
-        session: record.session,
-        state: record.state,
-        attention,
-    }
-}
-
-fn parse_agent_record(bytes: &[u8]) -> Option<ParsedAgentRecord> {
-    let value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
-    let object = value.as_object()?;
-    let name = object.get("name")?.as_str()?;
-    if name.is_empty() {
-        return None;
-    }
-    Some(ParsedAgentRecord {
-        name: name.to_owned(),
-        kind: object
-            .get("kind")
-            .and_then(|value| value.as_str())
-            .map(str::to_owned),
-        session: object
-            .get("session")
-            .and_then(|value| value.as_str())
-            .map(str::to_owned),
-        state: object
-            .get("state")
-            .and_then(|value| value.as_str())
-            .map_or(AgentState::Unknown, agent_state_from),
-        attention: object
-            .get("attention")
-            .and_then(|value| value.as_str())
-            .map(agent_attention_from),
-    })
-}
-
-fn agent_state_from(word: &str) -> AgentState {
-    match word {
-        "idle" => AgentState::Idle,
-        "working" => AgentState::Working,
-        "blocked" => AgentState::Blocked,
-        "done" => AgentState::Done,
-        _ => AgentState::Unknown,
-    }
-}
-
-fn agent_attention_from(word: &str) -> AgentAttention {
-    match word {
-        "none" => AgentAttention::None,
-        "low" => AgentAttention::Low,
-        "high" => AgentAttention::High,
-        _ => AgentAttention::Normal,
-    }
-}
-
-fn derived_attention(state: AgentState) -> AgentAttention {
-    match state {
-        AgentState::Blocked => AgentAttention::High,
-        AgentState::Working => AgentAttention::Normal,
-        AgentState::Done | AgentState::Unknown => AgentAttention::Low,
-        AgentState::Idle => AgentAttention::None,
     }
 }
 
@@ -964,45 +663,5 @@ impl Drop for RemoteClient {
         if let Some(client) = self.client.get_mut().unwrap().take() {
             client.close();
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn agent_metadata_keeps_open_vocabulary_defaults() {
-        let event = agent_state_event(
-            &ResourceId::local(9),
-            Some(br#"{"name":"Claude","kind":"claude","state":"newer"}"#),
-        );
-        assert_eq!(
-            event,
-            WireEvent::AgentStateChanged {
-                terminal_id: "local:9".to_owned(),
-                name: "Claude".to_owned(),
-                kind: Some("claude".to_owned()),
-                session: None,
-                state: AgentState::Unknown,
-                attention: AgentAttention::Low,
-            }
-        );
-    }
-
-    #[test]
-    fn malformed_agent_metadata_clears_the_badge() {
-        let event = agent_state_event(&ResourceId::local(2), Some(b"not-json"));
-        assert_eq!(
-            event,
-            WireEvent::AgentStateChanged {
-                terminal_id: "local:2".to_owned(),
-                name: String::new(),
-                kind: None,
-                session: None,
-                state: AgentState::Unknown,
-                attention: AgentAttention::Low,
-            }
-        );
     }
 }

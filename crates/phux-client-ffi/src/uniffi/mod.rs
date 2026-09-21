@@ -7,46 +7,39 @@
     reason = "UniFFI exports are public outside Rust and require owned, non-const signatures"
 )]
 
-//! phux-mobile FFI bridge.
+//! The `UniFFI` encoder: the Swift and Kotlin surface, over
+//! [`crate::projection`].
 //!
-//! A thin, safe `UniFFI` projection over `phux-client-runtime` for native
-//! mobile clients. The runtime owns transport, reconnect, control-plane, and
-//! connected-client engine state; this crate only maps those values into the
-//! Swift/Kotlin surface. The isolated `engine` module also serves local
-//! playground and test terminals that have no connection or runtime session.
-//! This crate is a sibling of Cockpit's stable `phux-client-ffi` C ABI, never a
-//! wrapper around it (ADR-0133 and phux-mobile ADR-0031).
+//! `phux-client-runtime` owns transport, reconnect, the control plane and the
+//! connected-client engine. The projection layer decides what its values
+//! mean. This module only lowers those decisions into the vocabulary `UniFFI`
+//! can carry across the language boundary, and holds the small amount of
+//! binding-local state a polling consumer needs (the pending metadata reads,
+//! the per-pane generation the last render observed).
+//!
+//! The isolated [`engine`] module also serves local playground and test
+//! terminals that have no connection and no runtime session at all.
+//!
+//! Before ADR-0135 this was a separate crate, `phux-mobile-ffi`, with its own
+//! hand-written projection of the same runtime. One crate, one projection,
+//! two encoders replaced it.
 
-uniffi::setup_scaffolding!();
-
-// The VT engine grid surface (ADR-0007). Compiled only with `--features engine`
-// (needs ../phux's nix/zig toolchain); the default build omits it entirely.
-#[cfg(feature = "engine")]
+// The VT engine grid surface (ADR-0007), and the local playground terminal
+// built on it.
 mod engine;
 
-// Mobile text commits adapted onto the canonical shared predictor. This is
-// engine-only because prediction belongs to the native projection owner.
-#[cfg(feature = "engine")]
+// Mobile text commits adapted onto the canonical shared predictor.
 mod predict;
 
-// The remote WebSocket wire bridge (M2, ADR-0009). The `wire` feature uses a
-// bounded headless kernel adapter; `wire,engine` swaps in the owning-thread
-// Ghostty adapter and projects grids directly to Swift.
-#[cfg(feature = "wire")]
+// The remote bridge: one `RemoteClient` object over a runtime session.
 mod wire;
 
 // Key input mapping: Swift keypresses -> wire `KeyEvent`s. The native edition
 // of phux-web's browser mapping; used by the wire bridge's send path.
-#[cfg(feature = "wire")]
 mod keymap;
 
 /// The phux wire protocol version this bridge was built against, formatted as
 /// `"major.minor.patch"`.
-///
-/// Read live from `phux-protocol`'s `PROTOCOL_VERSION`. Before phux-mobile
-/// ADR-0031 this crate lived outside the phux workspace and mirrored the
-/// constant behind a `phux-source` feature so it could build without a phux
-/// checkout; beside the runtime there is nothing to mirror.
 #[uniffi::export]
 pub fn protocol_version() -> String {
     let v = phux_protocol::PROTOCOL_VERSION;
@@ -68,7 +61,7 @@ pub fn bridge_ready() -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{bridge_ready, engine_version, protocol_version};
 
     #[test]
     fn version_is_semver_shaped() {

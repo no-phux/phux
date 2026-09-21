@@ -1,8 +1,12 @@
-//! Native terminal projection across `UniFFI`.
+//! The local playground terminal, and the grid record both lanes fill.
 //!
-//! The cell definition and flattening walk are `phux-client-core::grid`'s.
-//! `UniFFI` copies one 36-byte POD array and one UTF-8 arena instead of lowering
-//! a Rust `String` record for every viewport cell.
+//! The cell definition and flattening walk are `phux-client-core::grid`'s,
+//! and [`crate::projection::grid`] is the one place a frame is read.
+//! `UniFFI` copies one 36-byte POD array and one UTF-8 arena instead of
+//! lowering a Rust `String` record for every viewport cell.
+//!
+//! A [`TerminalEngine`] has no connection and no runtime session: it is the
+//! playground and test terminal, driven by bytes the caller writes.
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -10,7 +14,10 @@ use libghostty_vt::{
     screen::Screen,
     terminal::{ScrollViewport, Terminal},
 };
-use phux_client_core::grid::{Cell, CursorStyle as CoreCursorStyle, GridDamage, GridProjector};
+use phux_client_core::grid::{CursorStyle as CoreCursorStyle, GridDamage, GridProjector};
+use phux_client_runtime::publication::{Rgb, Scrollbar};
+
+use crate::projection::grid;
 
 /// An RGB color already resolved through the terminal palette.
 #[derive(uniffi::Record, Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +29,16 @@ pub struct Color {
 
 impl From<libghostty_vt::style::RgbColor> for Color {
     fn from(color: libghostty_vt::style::RgbColor) -> Self {
+        Self {
+            r: color.r,
+            g: color.g,
+            b: color.b,
+        }
+    }
+}
+
+impl From<Rgb> for Color {
+    fn from(color: Rgb) -> Self {
         Self {
             r: color.r,
             g: color.g,
@@ -65,7 +82,7 @@ pub struct GridProjection {
 struct EngineInner {
     terminal: Terminal<'static, 'static>,
     projector: GridProjector,
-    predictor: crate::predict::Predictor,
+    predictor: super::predict::Predictor,
     generation: u64,
 }
 
@@ -206,7 +223,7 @@ impl EngineInner {
         terminal
             .set_scrollback_max_bytes((scrollback == 0).then_some(0))
             .map_err(|error| EngineError::Engine(format!("scrollback_max_bytes: {error:?}")))?;
-        let mut predictor = crate::predict::Predictor::default();
+        let mut predictor = super::predict::Predictor::default();
         predictor.set_viewport(cols.max(1), rows.max(1));
         Ok(Self {
             terminal,
@@ -291,15 +308,15 @@ impl EngineInner {
         Ok(GridProjection {
             cols,
             rows,
-            cells: encode_cells(&cells),
+            cells: grid::encode_cells(&cells),
             utf8,
             cursor_col: cursor.visible.then_some(cursor.col),
             cursor_row: cursor.visible.then_some(cursor.row),
             cursor_visible: cursor.visible,
             cursor_shape: cursor_shape(cursor.style),
             cursor_blinking: cursor.blinking,
-            default_fg: colors.foreground.into(),
-            default_bg: colors.background.into(),
+            default_fg: Color::from(colors.foreground),
+            default_bg: Color::from(colors.background),
             generation: self.generation,
             dirty_rows: row_dirty
                 .iter()
@@ -321,36 +338,37 @@ fn cursor_shape(style: CoreCursorStyle) -> CursorShape {
     }
 }
 
-/// Serialize one `#[repr(C)]` cell without reading Rust padding. Bytes 18-19
-/// and 35 are explicitly zero, matching the shared layout's pinned offsets.
-pub(crate) fn encode_cells(cells: &[Cell]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(cells.len() * 36);
-    for cell in cells {
-        bytes.extend_from_slice(&cell.utf8_offset.to_ne_bytes());
-        bytes.extend_from_slice(&cell.utf8_len.to_ne_bytes());
-        bytes.extend_from_slice(&cell.content_tag.to_ne_bytes());
-        bytes.extend_from_slice(&cell.hyperlink_offset.to_ne_bytes());
-        bytes.extend_from_slice(&cell.hyperlink_len.to_ne_bytes());
-        bytes.push(cell.wide);
-        bytes.push(cell.semantic_content);
-        bytes.extend_from_slice(&[0, 0]);
-        bytes.extend_from_slice(&cell.flags.to_ne_bytes());
-        bytes.extend_from_slice(&[
-            cell.foreground_r,
-            cell.foreground_g,
-            cell.foreground_b,
-            cell.background_r,
-            cell.background_g,
-            cell.background_b,
-            cell.underline,
-            cell.underline_r,
-            cell.underline_g,
-            cell.underline_b,
-            cell.reserved,
-            0,
-        ]);
+/// Copy one published frame into the record `UniFFI` carries.
+///
+/// The connected lane's counterpart in `crate::c` lends the very same
+/// [`crate::projection::grid::GridView`] by pointer; this one copies it,
+/// because Swift and Kotlin cannot borrow.
+pub(crate) fn grid_projection(view: &grid::GridView<'_>, dirty_rows: Vec<u16>) -> GridProjection {
+    GridProjection {
+        cols: view.cols,
+        rows: view.rows,
+        cells: grid::encode_cells(view.cells),
+        utf8: view.utf8.to_vec(),
+        cursor_col: view.cursor.visible.then_some(view.cursor.col),
+        cursor_row: view.cursor.visible.then_some(view.cursor.row),
+        cursor_visible: view.cursor.visible,
+        cursor_shape: cursor_shape(view.cursor.style),
+        cursor_blinking: view.cursor.blinking,
+        default_fg: view.default_fg.into(),
+        default_bg: view.default_bg.into(),
+        generation: view.generation,
+        dirty_rows,
+        scrollbar: scrollbar_state(view.scrollbar),
     }
-    bytes
+}
+
+/// Copy one scrollbar reading.
+pub(crate) const fn scrollbar_state(bar: Scrollbar) -> ScrollbarState {
+    ScrollbarState {
+        total: bar.total,
+        offset: bar.offset,
+        len: bar.len,
+    }
 }
 
 #[derive(uniffi::Error, Debug, thiserror::Error)]
