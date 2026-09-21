@@ -95,7 +95,8 @@ to call from.
   the session and **joins** this thread. That matters for a binding whose
   listener carries a consumer-owned context: closing alone would let a wake
   reach a context the consumer had already freed. The driver selects on the
-  close signal, so the join costs one scheduler poll, never the network.
+  close signal and abandons an in-flight dial rather than running it to
+  `dial_timeout`, so the join is bounded by the consumer, never the network.
 - **Caller threads** hold a `Client` (an `Arc`; clone to share) and call
   synchronous methods from anywhere. Each takes the lock briefly and
   notifies the driver when frames were queued. Grid frames are acquired

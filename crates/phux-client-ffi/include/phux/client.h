@@ -1518,8 +1518,12 @@ typedef struct PhuxConnectOptions {
  * runtime. The dial begins at once on a runtime-owned thread; observe
  * phux_client_state and phux_client_last_error. Malformed arguments and an
  * unresolvable target fail the call; a reachable-but-down host does not,
- * because the ladder owns that. Free with phux_client_free, which stops the
- * driver and joins its thread. */
+ * because the ladder owns that.
+ *
+ * Free with phux_client_free, which stops the driver and JOINS its thread,
+ * so no wake can reach a context the embedder has already released. The
+ * join is bounded by the consumer, not the network: an in-flight dial is
+ * abandoned on close rather than run to its timeout. */
 PhuxClientResult phux_client_connect(const PhuxConnectOptions *options, PhuxClient **out_client);
 
 /** Feed everything the driver has read since the last poll, then publish the
@@ -1657,6 +1661,19 @@ PhuxClientResult phux_remote_tunnel_start(PhuxRemoteTunnel *tunnel, int transpor
 /** Cancels any dial, closes the connection, and joins the tunnel thread;
  * bounded by one scheduler poll, never by the network. Must not race info. */
 void phux_remote_tunnel_free(PhuxRemoteTunnel *tunnel);
+
+/** Start a session against the exact dial a PhuxRemoteTunnel already
+ * resolved, without reading the registry again.
+ *
+ * This is the Machines path. A captured tunnel retains the endpoint, pin and
+ * token provenance of the row the user chose, so a later reconnect still
+ * reaches that host even if the registry alias has since been retargeted.
+ * The tunnel is BORROWED, not consumed, and nothing is relayed through it:
+ * only its resolved configuration is read, so the caller still frees it with
+ * phux_remote_tunnel_free. options.target and options.socket_path must both
+ * be empty, because the tunnel is the destination. */
+PhuxClientResult phux_client_connect_captured(const PhuxRemoteTunnel *tunnel, const PhuxConnectOptions *options, PhuxClient **out_client);
+
 
 /* Saved-machine inventory, additive ABI v2. All calls are single-owner-thread.
  * Listing reads only configuration (including its layers), never credentials or

@@ -208,9 +208,19 @@ async fn run_connection(
     let name = target.name.as_str();
     let started = std::time::Instant::now();
     tracing::info!(host = name, transport = target.transport.label(), "dialing");
-    let mut io = match dial(target, options).await {
-        Ok(io) => io,
-        Err(end) => return (end, false),
+    // A dial runs to `dial_timeout` against a host that accepts and then says
+    // nothing. Racing the close signal is what keeps teardown bounded by the
+    // consumer rather than by that timeout: a binding that joins this thread
+    // on drop would otherwise block a UI for the whole dial.
+    let mut io = tokio::select! {
+        dialed = dial(target, options) => match dialed {
+            Ok(io) => io,
+            Err(end) => return (end, false),
+        },
+        () = closed(&mut signals.close) => {
+            lock(shared).close();
+            return (ConnectionEnd::Closed, false);
+        }
     };
     tracing::info!(
         host = name,

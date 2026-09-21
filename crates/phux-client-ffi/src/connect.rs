@@ -23,8 +23,8 @@ use phux_client_runtime::{ClientOptions, Listener, Runtime, Target};
 
 use crate::client::{Client, Limits};
 use crate::error::{BridgeError, check_struct};
-use crate::remote::config_path_in;
 use crate::remote::text_in;
+use crate::remote::{PhuxRemoteTunnel, config_path_in};
 use crate::types::{PhuxBytes, PhuxClientOptions, PhuxClientResult};
 use crate::{PhuxClient, client_limits, guard, with_client_mut};
 
@@ -141,6 +141,68 @@ pub unsafe extern "C" fn phux_client_connect(
         // SAFETY: as above.
         let name = unsafe { text_in(options.client_name, MAX_CLIENT_NAME_BYTES, "client_name") }?;
         let target = resolve_target(raw, socket, config)?;
+        let client = connect(limits, target, name, options.wake, options.wake_context)?;
+        *out = Box::into_raw(Box::new(client));
+        Ok(())
+    })
+}
+
+/// Start a session against the exact dial a `PhuxRemoteTunnel` already
+/// resolved, without reading the registry again.
+///
+/// This is the Machines path. A captured tunnel retains the endpoint, pin
+/// and token provenance of the row the user chose, so a later reconnect
+/// still reaches that host even if the registry alias has since been
+/// retargeted. The tunnel is borrowed, not consumed, and nothing is relayed
+/// through it: only its resolved configuration is read.
+///
+/// `options.target` and `options.socket_path` must both be empty, because
+/// the tunnel is the destination.
+///
+/// # Safety
+///
+/// `tunnel` and `options` must be readable, the options' spans readable for
+/// their lengths, and `out_client` writable, for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_connect_captured(
+    tunnel: *const PhuxRemoteTunnel,
+    options: *const PhuxConnectOptions,
+    out_client: *mut *mut PhuxClient,
+) -> PhuxClientResult {
+    guard(|| {
+        // SAFETY: checked before write.
+        let out = unsafe { out_client.as_mut() }
+            .ok_or_else(|| BridgeError::invalid("out_client is null"))?;
+        *out = std::ptr::null_mut();
+        // SAFETY: checked before dereference. A shared borrow only.
+        let tunnel =
+            unsafe { tunnel.as_ref() }.ok_or_else(|| BridgeError::invalid("tunnel is null"))?;
+        // SAFETY: checked before dereference.
+        let options =
+            unsafe { options.as_ref() }.ok_or_else(|| BridgeError::invalid("options is null"))?;
+        check_struct(
+            options.size,
+            mem::size_of::<PhuxConnectOptions>(),
+            options.version,
+        )?;
+        check_struct(
+            options.base.size,
+            mem::size_of::<PhuxClientOptions>(),
+            options.base.version,
+        )?;
+        let limits = client_limits(&options.base)?;
+        // SAFETY: the caller's span contract, bounded by text_in.
+        let raw = unsafe { text_in(options.target, MAX_TARGET_BYTES, "target") }?;
+        // SAFETY: as above.
+        let socket = unsafe { text_in(options.socket_path, MAX_PATH_BYTES, "socket_path") }?;
+        if !raw.is_empty() || !socket.is_empty() {
+            return Err(BridgeError::invalid(
+                "a captured connect takes its destination from the tunnel",
+            ));
+        }
+        // SAFETY: as above.
+        let name = unsafe { text_in(options.client_name, MAX_CLIENT_NAME_BYTES, "client_name") }?;
+        let target = Target::from(tunnel.tunnel()?.resolved().clone());
         let client = connect(limits, target, name, options.wake, options.wake_context)?;
         *out = Box::into_raw(Box::new(client));
         Ok(())

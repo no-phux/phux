@@ -164,3 +164,46 @@ test "captured token file provenance survives registry rewrite" {
     try awaitDisconnect(self.bridge);
     try std.testing.expect(std.mem.indexOf(u8, self.remote_status.failureInto(&buffer), "captured-token-file") == null);
 }
+
+test "a captured connected provider dials the retained endpoint, not the moved alias" {
+    const io = std.testing.io;
+    // The listener is the evidence: whichever endpoint is dialed is the one
+    // that accepts. It never completes a handshake, and does not need to.
+    var listener = try std.Io.net.IpAddress.parse("127.0.0.1", 0);
+    var server = try listener.listen(io, .{});
+    defer server.deinit(io);
+    listener = server.socket.address;
+    const endpoint = try std.fmt.allocPrint(std.testing.allocator, "ws://127.0.0.1:{d}", .{listener.getPort()});
+    defer std.testing.allocator.free(endpoint);
+    var registry = try remote.TestRegistry.init("mini", endpoint);
+    defer registry.deinit();
+
+    const self = try fromRegistry(registry.path);
+    defer self.destroy();
+    // The lane is set here rather than through PHUX_COCKPIT_CONNECTED,
+    // which is process-wide and would drag every other test with it.
+    self.lane = .connected;
+
+    // The alias moves after the capture was taken. The capture is authority.
+    try rewrite(&registry, "ws://127.0.0.1:1");
+    const fresh = try remote.Tunnel.resolve("mini", registry.path);
+    defer fresh.close();
+    try std.testing.expectEqualStrings("ws://127.0.0.1:1", fresh.describe().endpoint.slice());
+
+    try self.open(.{});
+    // No worker owns this connection; the runtime's driver does.
+    try std.testing.expect(self.worker == null);
+    try std.testing.expectEqual(provider.Lane.connected, self.host.lane);
+
+    // A bounded poll keeps a wrong-alias regression from blocking accept.
+    var polls = [_]std.posix.pollfd{.{ .fd = server.socket.handle, .events = std.posix.POLL.IN, .revents = 0 }};
+    try std.testing.expectEqual(@as(usize, 1), try std.posix.poll(&polls, 10000));
+    const accepted = try server.accept(io);
+    defer accepted.close(io);
+
+    // Stopping joins the runtime's driver, so it is bounded, not the network's.
+    const stopping = std.Io.Clock.awake.now(io);
+    self.stop();
+    try std.testing.expect(stopping.durationTo(std.Io.Clock.awake.now(io)).toMilliseconds() < 5000);
+    try std.testing.expectEqual(provider.Lane.embedded, self.host.lane);
+}

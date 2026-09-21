@@ -21,6 +21,7 @@ pub const enabled = true;
 pub const max_sessions = host_mod.max_sessions;
 pub const Endpoint = extension.Endpoint;
 pub const State = host_mod.State;
+pub const Lane = host_mod.Lane;
 pub const SyncDelta = host_mod.SyncDelta;
 pub const DocumentSpace = host_mod.DocumentSpace;
 pub const DocumentPoint = host_mod.DocumentPoint;
@@ -200,9 +201,6 @@ pub const PhuxProvider = struct {
         errdefer capture.deinit(gpa);
         const session: ?[]const u8 = if (identity.session.len == 0) null else identity.session;
         const self = try create(gpa, io, .{ .remote = .{ .target = identity.name } }, session, client_name);
-        // The capture is a retained tunnel the worker starts; the runtime
-        // resolves its own dial from the registry instead.
-        self.lane = .embedded;
         self.capture = capture;
         self.host.setProviderId(provider.phuxCoordinatorId(identity.endpoint));
         return self;
@@ -305,14 +303,28 @@ pub const PhuxProvider = struct {
     fn openConnected(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !void {
         if (self.host.lane == .connected) return error.InvalidState;
         self.applyPendingRetarget();
+        self.wake_context.handle = handle;
+        self.wake_context.stopped.store(false, .release);
+        if (self.capture) |*capture| {
+            // The capture is the destination: its retained endpoint, pin and
+            // token provenance outrank the registry alias, which may since
+            // have been retargeted. The runtime only reads that
+            // configuration, so this tunnel is ours to free.
+            var tunnel = try capture.take();
+            defer tunnel.close();
+            return self.host.connectCaptured(
+                tunnel.handle,
+                self.client_name,
+                connectedWake,
+                &self.wake_context,
+            );
+        }
         const target = try self.connectTarget();
         // The runtime dials; it does not start anything. A local coordinator
         // is still this machine's to supervise, exactly as the worker
         // supervised it, or the ladder would spin against a socket nobody
         // is listening on.
         try self.ensureLocalCoordinator();
-        self.wake_context.handle = handle;
-        self.wake_context.stopped.store(false, .release);
         try self.host.connect(target, self.client_name, connectedWake, &self.wake_context);
     }
 

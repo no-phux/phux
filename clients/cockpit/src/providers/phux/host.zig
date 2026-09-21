@@ -430,6 +430,35 @@ pub const Host = struct {
         wake: c.PhuxClientWakeCallback,
         wake_context: ?*anyopaque,
     ) !void {
+        try host.adoptConnected(target, null, client_name, wake, wake_context);
+    }
+
+    /// Connect to the exact dial a captured tunnel already resolved. The
+    /// tunnel is borrowed: nothing relays through it, only its retained
+    /// endpoint, pin and token provenance are read, so the caller still owns
+    /// and frees it.
+    /// `tunnel` is an opaque `*c.PhuxRemoteTunnel`. It crosses as
+    /// `*anyopaque` because this module and `remote_tunnel.zig` each have
+    /// their own `@cImport` of `phux/client.h`, which makes the same C type
+    /// two incompatible Zig types. The pointer is never dereferenced here.
+    pub fn connectCaptured(
+        host: *Host,
+        tunnel: *anyopaque,
+        client_name: []const u8,
+        wake: c.PhuxClientWakeCallback,
+        wake_context: ?*anyopaque,
+    ) !void {
+        try host.adoptConnected(.{}, @ptrCast(tunnel), client_name, wake, wake_context);
+    }
+
+    fn adoptConnected(
+        host: *Host,
+        target: ConnectTarget,
+        captured_tunnel: ?*c.PhuxRemoteTunnel,
+        client_name: []const u8,
+        wake: c.PhuxClientWakeCallback,
+        wake_context: ?*anyopaque,
+    ) !void {
         if (host.lane == .connected) return error.InvalidState;
         var raw: ?*c.PhuxClient = null;
         const options: c.PhuxConnectOptions = .{
@@ -443,7 +472,11 @@ pub const Host = struct {
             .wake = wake,
             .wake_context = wake_context,
         };
-        try resultError(c.phux_client_connect(&options, &raw));
+        if (captured_tunnel) |handle| {
+            try resultError(c.phux_client_connect_captured(handle, &options, &raw));
+        } else {
+            try resultError(c.phux_client_connect(&options, &raw));
+        }
         const replacement = raw orelse return error.InvalidState;
         c.phux_client_free(host.client);
         host.client = replacement;
