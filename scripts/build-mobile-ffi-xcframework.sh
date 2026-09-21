@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Build the canonical UniFFI mobile projection from this phux revision.
 #
+# The producer is crates/phux-client-ffi with --features uniffi: one binding
+# crate, one projection, two encoders (ADR-0135). The artifact names, the
+# PhuxFFI Swift module and the provenance layout are unchanged from the
+# phux-mobile-ffi era; only the archive file name inside the xcframework
+# moved from libphux_mobile_ffi.a to libphux_client_ffi.a.
+#
 # Output under --out (default target/mobile-ffi-xcframework/Artifacts):
 #   PhuxFFI.xcframework/  engine-bearing device, simulator, and macOS slices
 #   Generated/            matching UniFFI Swift source
@@ -56,9 +62,9 @@ SIM_TARGET=aarch64-apple-ios-sim
 MAC_TARGET=aarch64-apple-darwin
 TARGETS=("$SIM_TARGET" "$MAC_TARGET")
 [[ "$MODE" == full ]] && TARGETS=("$DEVICE_TARGET" "${TARGETS[@]}")
-CRATE=phux-mobile-ffi
-LIB=libphux_mobile_ffi.a
-FEATURES=engine,wire
+CRATE=phux-client-ffi
+LIB=libphux_client_ffi.a
+FEATURES=uniffi
 IOS_FLOOR="${PHUX_FFI_IOS_DEPLOYMENT_TARGET:-26.0}"
 MACOS_FLOOR="${PHUX_FFI_MACOS_DEPLOYMENT_TARGET:-26.0}"
 GENERATED="$OUT/Generated"
@@ -98,7 +104,7 @@ TARGET_DIR="$(jq -r .target_directory <<<"$METADATA")"
 [[ -n "$TARGET_DIR" && "$TARGET_DIR" != null ]] || die "cargo metadata reported no target directory"
 
 slice_archive() { printf '%s/%s/%s/%s\n' "$TARGET_DIR" "$1" "$PROFILE" "$LIB"; }
-slice_dylib() { printf '%s/%s/%s/libphux_mobile_ffi.dylib\n' "$TARGET_DIR" "$1" "$PROFILE"; }
+slice_dylib() { printf '%s/%s/%s/libphux_client_ffi.dylib\n' "$TARGET_DIR" "$1" "$PROFILE"; }
 
 step "ensuring Apple Rust targets"
 for target in "${TARGETS[@]}"; do rustup target add "$target" >/dev/null; done

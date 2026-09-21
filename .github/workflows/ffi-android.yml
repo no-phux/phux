@@ -16,7 +16,6 @@ on:
       # revision and fetches BOTH artifacts at it, so a commit that produces
       # only one is unusable as a pin. Identical filters are what guarantee the
       # pair; if these lists drift, the pin silently has nothing to land on.
-      - crates/phux-mobile-ffi/**
       - crates/phux-client-ffi/**
       - crates/phux-client-runtime/**
       - crates/phux-client-core/**
