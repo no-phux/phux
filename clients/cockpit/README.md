@@ -250,11 +250,18 @@ of those **outranks** it, wherever the two lines happen to sit in the file. It
 deliberately leaves the ANSI-16 palette alone, so a terminal red stays a
 terminal red — see [Decisions](docs/DECISIONS.md).
 
-**`cmd+,`** (or **View > Settings…**) opens the settings surface. Up and down
-preview a theme LIVE against whatever is on screen, `return` saves the choice
-into your config file, and `esc` puts back the one you had. The panel writes
-only the `theme` line: your comments, your spacing, and any key this build has
-never heard of are copied through untouched.
+**`cmd+,`** (or **View > Settings…**) opens the settings surface. Choose a
+supported font, cursor shape or tab placement directly; On/Off choices control
+cursor blink and working-directory inheritance. Font-size buttons preview a size change.
+Free-form values retain an explicit Edit → Preview step. Each setting explains
+its scope and when it takes effect: scratch-terminal defaults do not configure
+the serving Phux machine.
+
+Changes preview together until **Save changes** writes them or **Cancel**
+restores the values from when Settings opened. A failed Save keeps the preview
+open and cancellable. Saving rewrites changed configuration keys while preserving
+comments and unrelated keys. In Appearance, up and down preview themes; the
+theme/follow-system field accepts `auto` to resume following macOS.
 
 The panel also shows the **contrast ratio** between the foreground and
 background actually being painted, and flags it when it drops below the WCAG AA
@@ -271,11 +278,12 @@ attach` keeps its argument. It runs via the login shell with `exec`, so the
 program you name is the pty's own process. A value that is empty, over-long, or
 carries a NUL is refused and the built-in shell stands.
 
-`font-family` and `selection-foreground` are parsed but **cannot** be applied in
-this build: the SDK selects faces from a fixed registered set rather than by
-family name, and a terminal grid carries one selection colour rather than a
-foreground override. Setting either raises the notice above, and logs a line,
-saying so.
+`font-family` supports the bundled **JetBrains Mono NL Nerd Font Mono** and
+**Geist Mono**. An empty value selects the bundled face. Other family names are
+retained in configuration but display an unsupported-family notice and use the
+bundled face; opening Settings does not rewrite them. `selection-foreground`
+remains unsupported: a terminal grid carries one selection colour rather than a
+foreground override.
 
 ## Install
 

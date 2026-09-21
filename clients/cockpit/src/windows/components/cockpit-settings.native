@@ -8,8 +8,8 @@
               <text grow="1" size="heading">Settings</text>
               <button size="sm" variant="ghost" icon="x" label="Cancel settings" on-press="settings_close" />
             </row>
-            <input text="{settingsQuery}" placeholder="Search settings" on-input="settings_query" label="Search settings" />
-            <tabs gap="4" label="Settings groups">
+            <search-field text="{settingsQuery}" placeholder="Search settings" on-input="settings_query" label="Search settings" />
+            <tabs gap="8" label="Settings groups">
               <for each="settingsSections" key="index" as="section">
                 <button size="sm" variant="ghost" selected="{settingsSection == section.index}" on-press="settings_section:{section.index}">{section.label}</button>
               </for>
@@ -58,16 +58,52 @@
                     <column gap="8">
                       <row gap="8" cross="center">
                         <text grow="1">{setting.label}</text>
-                        <button size="sm" variant="outline" disabled="{appearanceBusy}" on-press="settings_select:{setting.id}">Edit</button>
-                        <button size="sm" variant="ghost" disabled="{appearanceBusy}" on-press="settings_reset:{setting.id}">Reset</button>
+                        <if test="{setting.control == 0}"><button size="sm" variant="outline" disabled="{appearanceBusy or setting.available == false}" on-press="settings_select:{setting.id}">Edit</button></if>
+                        <button size="sm" variant="ghost" disabled="{appearanceBusy or setting.available == false}" on-press="settings_reset:{setting.id}">Reset</button>
                       </row>
-                      <if test="{settingEditId == setting.id}">
+                      <if test="{setting.control == 1}">
+                        <!-- Explicit values keep native replies authoritative; switch reconciliation is tracked in phux-3gpg.3. -->
+                        <if test="{setting.available}">
+                          <radio-group gap="8" label="{setting.label}">
+                            <radio checked="{setting.checked}" disabled="{appearanceBusy}" on-change="settings_enable:{setting.id}">On</radio>
+                            <radio checked="{setting.unchecked}" disabled="{appearanceBusy}" on-change="settings_disable:{setting.id}">Off</radio>
+                          </radio-group>
+                        </if>
+                        <else><text foreground="text_muted">Current value unavailable</text></else>
+                      </if>
+                      <if test="{setting.control == 2}">
+                        <if test="{setting.available}">
+                        <radio-group gap="8" label="Font family">
+                          <for each="fontChoices" key="index" as="choice"><radio checked="{choice.selected}" disabled="{appearanceBusy}" on-change="settings_font_family:{choice.index}">{choice.label}</radio></for>
+                        </radio-group>
+                        <text wrap="true" foreground="text_muted">{setting.effectiveValue}</text>
+                        </if>
+                        <else><text foreground="text_muted">Current font family unavailable</text></else>
+                      </if>
+                      <if test="{setting.control == 3}">
+                        <radio-group gap="8" label="Cursor style">
+                          <for each="cursorChoices" key="index" as="choice"><radio checked="{choice.selected}" disabled="{appearanceBusy or setting.available == false}" on-change="settings_cursor:{choice.index}">{choice.label}</radio></for>
+                        </radio-group>
+                      </if>
+                      <if test="{setting.control == 4}">
+                        <radio-group gap="8" label="Tab placement">
+                          <for each="placementChoices" key="index" as="choice"><radio checked="{choice.selected}" disabled="{appearanceBusy or setting.available == false}" on-change="settings_placement:{choice.index}">{choice.label}</radio></for>
+                        </radio-group>
+                      </if>
+                      <if test="{setting.control == 5}">
                         <row gap="8" cross="center">
-                          <input grow="1" text="{settingEditValue}" label="Setting value" on-input="settings_value" on-submit="settings_apply" />
-                          <button size="sm" disabled="{appearanceBusy}" on-press="settings_apply">Preview</button>
+                          <button size="sm" variant="outline" disabled="{appearanceBusy or setting.available == false}" on-press="settings_font:{fontDecrease}" label="Decrease font size">−</button>
+                          <text>{appearance.fontLabel}</text>
+                          <button size="sm" variant="outline" disabled="{appearanceBusy or setting.available == false}" on-press="settings_font:{fontIncrease}" label="Increase font size">+</button>
                         </row>
                       </if>
-                      <else><text wrap="true" foreground="text_muted">{setting.effectiveValue}</text></else>
+                      <if test="{setting.control == 0}"><if test="{settingEditId == setting.id}">
+                        <row gap="8" cross="center">
+                          <input grow="1" text="{settingEditValue}" disabled="{appearanceBusy or setting.available == false}" label="Setting value" on-input="settings_value" on-submit="settings_apply" />
+                          <button size="sm" disabled="{appearanceBusy or setting.available == false}" on-press="settings_apply">Preview</button>
+                        </row>
+                      </if><else><text wrap="true" foreground="text_muted">{setting.effectiveValue}</text></else></if>
+                      <text wrap="true" foreground="text_muted">{setting.applicability} · {setting.timing}</text>
                       <separator />
                     </column>
                   </if>

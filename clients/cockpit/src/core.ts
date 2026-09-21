@@ -6,7 +6,7 @@ import { type CommandResults, type ResultDecision, initialCommandResults, reques
 import { type Appearance, initialAppearance, appearanceRequest, appearanceResponse } from "./appearance.ts";
 import { type ActionRow, commandRows, commandDefinition, contextualCommand, containsQuery } from "./commands.ts";
 import { type KeybindingPage, type KeybindingRow, initialKeybindings, keybindingRequest, keybindingResponse } from "./keybindings.ts";
-import { type Setting, settingsRows, settingRequest, resetSettingRequest, reloadSettingsRequest } from "./settings.ts";
+import { type Setting, type SettingChoice, settingsRows, selectedSettingChoices, settingRequest, resetSettingRequest, reloadSettingsRequest } from "./settings.ts";
 import { type SelfUpdate, initialSelfUpdate, selfUpdateRequest, selfUpdateResponse } from "./self-update.ts";
 import { windowTarget, windowCommand, windowReceipt } from "./window-navigation.ts";
 import { newSessionRequest, newSessionReply } from "./new-session.ts";
@@ -421,8 +421,9 @@ export interface Model {
   readonly settingsSection: number;
   readonly settingsFooterSave: boolean;
   readonly settingsSections: readonly SettingsChoice[];
-  readonly cursorChoices: readonly SettingsChoice[];
-  readonly placementChoices: readonly SettingsChoice[];
+  readonly cursorChoices: readonly SettingChoice[];
+  readonly placementChoices: readonly SettingChoice[];
+  readonly fontChoices: readonly SettingChoice[];
   readonly fontDecrease: number;
   readonly fontIncrease: number;
   readonly navigationAfterSettings: boolean;
@@ -589,6 +590,9 @@ export type Msg =
   | { readonly kind: "settings_reveal" }
   | { readonly kind: "settings_section"; readonly section: number }
   | { readonly kind: "settings_font"; readonly direction: number }
+  | { readonly kind: "settings_font_family"; readonly index: number }
+  | { readonly kind: "settings_enable"; readonly id: number }
+  | { readonly kind: "settings_disable"; readonly id: number }
   | { readonly kind: "settings_cursor"; readonly index: number }
   | { readonly kind: "settings_placement"; readonly index: number }
   | { readonly kind: "appearance_loaded"; readonly body: Uint8Array }
@@ -2413,9 +2417,10 @@ export function initialModel(): [Model, Cmd<Msg>] {
         { index: 0, label: asciiBytes("Appearance") }, { index: 1, label: asciiBytes("Terminal") }, { index: 2, label: asciiBytes("Keyboard") }, { index: 3, label: asciiBytes("Window") }, { index: 4, label: asciiBytes("Connection") }, { index: 5, label: asciiBytes("About") },
       ],
       cursorChoices: [
-        { index: 0, label: asciiBytes("Block") }, { index: 1, label: asciiBytes("Bar") }, { index: 2, label: asciiBytes("Underline") },
+        { index: 0, label: asciiBytes("Block"), value: asciiBytes("block"), selected: true }, { index: 1, label: asciiBytes("Bar"), value: asciiBytes("bar"), selected: false }, { index: 2, label: asciiBytes("Underline"), value: asciiBytes("underline"), selected: false },
       ],
-      placementChoices: [{ index: 0, label: asciiBytes("Top strip") }, { index: 1, label: asciiBytes("Workspace rail") }],
+      placementChoices: [{ index: 0, label: asciiBytes("Top strip"), value: asciiBytes("top"), selected: true }, { index: 1, label: asciiBytes("Workspace rail"), value: asciiBytes("side"), selected: false }],
+      fontChoices: [{ index: 0, label: asciiBytes("JetBrains Mono NL Nerd Font Mono"), value: asciiBytes(""), selected: true }, { index: 1, label: asciiBytes("Geist Mono"), value: asciiBytes("Geist Mono"), selected: false }],
       fontDecrease: 0,
       fontIncrease: 1,
       navigationAfterSettings: false,
@@ -2715,21 +2720,38 @@ function togglePreviewPlacement(model: Model): AppearanceDecision {
 }
 
 function previewTheme(model: Model, index: number): AppearanceDecision {
+  if (model.settingsSection !== 0) return appearanceDecision(model);
   if (!(index >= 0 && index < model.themes.length && index <= 32)) return appearanceDecision(model);
   const cursor = Math.trunc(index);
   return requestAppearance({ ...model, settingsCursor: cursor, themes: highlightThemes(model.themes, cursor) }, 1, cursor);
+}
+
+function requestVisibleAppearance(model: Model, id: number, control: number, action: number, argument: number): AppearanceDecision {
+  if (visibleSetting(model, id, control) === null) return appearanceDecision(model);
+  return requestAppearance(model, action, argument);
+}
+
+function directAppearanceControl(model: Model, msg: Msg): AppearanceDecision | null {
+  switch (msg.kind) {
+    case "settings_font": return requestVisibleAppearance(model, 1, 5, msg.direction > 0 ? 2 : 3, 0);
+    case "settings_cursor": return requestVisibleAppearance(model, 4, 3, 4, msg.index);
+    case "settings_placement": return requestVisibleAppearance(model, 9, 4, 5, msg.index);
+    default: return null;
+  }
+}
+
+function commitAppearance(model: Model): AppearanceDecision {
+  if (!model.settingsFooterSave) return appearanceDecision(model);
+  return requestAppearance(model, 7, 0);
 }
 
 function editAppearance(model: Model, msg: Msg): AppearanceDecision | null {
   switch (msg.kind) {
     case "settings_pick": return previewTheme(model, msg.index);
     case "settings_move": return moveThemePreview(model, msg.delta);
-    case "settings_font": return requestAppearance(model, msg.direction > 0 ? 2 : 3, 0);
-    case "settings_cursor": return requestAppearance(model, 4, msg.index);
-    case "settings_placement": return requestAppearance(model, 5, msg.index);
     case "toggle_tab_placement": return togglePreviewPlacement(model);
-    case "settings_commit": return requestAppearance(model, 7, 0);
-    default: return null;
+    case "settings_commit": return commitAppearance(model);
+    default: return directAppearanceControl(model, msg);
   }
 }
 
@@ -2853,10 +2875,12 @@ interface NavigatorDecision {
 }
 
 function applySettingsChrome(model: Model): Model {
-  // Connection and About are status surfaces: no generic empty-row copy, no Save.
+  // A dirty preview keeps explicit Save/Cancel even on a status section.
   const generic = model.settingsSection !== 2 && model.settingsSection !== 4 && model.settingsSection !== 5;
-  return { ...model, noSettingRows: generic && model.settingRows.length === 0,
-    settingsFooterSave: model.settingsSection >= 0 && model.settingsSection <= 3 };
+  return { ...model, cursorChoices: selectedSettingChoices(model.appearance, 4, model.cursorChoices),
+    placementChoices: selectedSettingChoices(model.appearance, 9, model.placementChoices),
+    fontChoices: selectedSettingChoices(model.appearance, 0, model.fontChoices), noSettingRows: generic && model.settingRows.length === 0,
+    settingsFooterSave: model.appearance.dirty || (model.settingsSection >= 0 && model.settingsSection <= 3) };
 }
 
 function navigatorDecision(model: Model, effect: number, request: Uint8Array): NavigatorDecision {
@@ -3145,7 +3169,7 @@ function editSettingsSearch(model: Model, edit: TextInputEvent): Model {
 
 function selectSetting(model: Model, id: number): Model {
   for (const row of model.settingRows) {
-    if (row.id !== id || !row.editable) continue;
+    if (row.id !== id || !row.editable || !row.available) continue;
     const selected = id >= 0 && id <= 10 ? Math.trunc(id) : 65535;
     const length = row.value.length;
     const end = length >= 0 && length <= 1024 ? Math.trunc(length) : 0;
@@ -3180,16 +3204,51 @@ function reloadSettings(model: Model): NavigatorDecision {
   return navigatorDecision({ ...model, appearanceBusy: true, settingsReloadStage: 1 }, 7, appearanceRequest(6, 0));
 }
 
+function directSetting(model: Model, id: number, value: Uint8Array): NavigatorDecision {
+  return navigatorDecision({ ...model, appearanceBusy: true }, 7, settingRequest(id, value));
+}
+
+function visibleSetting(model: Model, id: number, control: number): Setting | null {
+  for (const row of model.settingRows) if (row.id === id && row.editable && row.available && row.control === control) return row;
+  return null;
+}
+
+function visibleEditableSetting(model: Model, id: number): Setting | null {
+  for (const row of model.settingRows) if (row.id === id && row.editable && row.available) return row;
+  return null;
+}
+
+function directFontFamily(model: Model, index: number): NavigatorDecision {
+  if (model.appearanceBusy || (index !== 0 && index !== 1)) return navigatorDecision(model, 0, NO_BYTES);
+  const row = visibleSetting(model, 0, 2);
+  if (row === null) return navigatorDecision(model, 0, NO_BYTES);
+  return directSetting(model, 0, index === 0 ? asciiBytes("") : asciiBytes("Geist Mono"));
+}
+
+function directBoolean(model: Model, id: number, enabled: boolean): NavigatorDecision {
+  if (model.appearanceBusy || id < 0 || id > 14) return navigatorDecision(model, 0, NO_BYTES);
+  const row = visibleSetting(model, id, 1);
+  if (row === null) return navigatorDecision(model, 0, NO_BYTES);
+  return directSetting(model, id, asciiBytes(enabled ? "true" : "false"));
+}
+
+function applySettingDraft(model: Model): NavigatorDecision {
+  if (model.appearanceBusy || visibleSetting(model, model.settingEditId, 0) === null) return navigatorDecision(model, 0, NO_BYTES);
+  return directSetting(model, model.settingEditId, model.settingEditValue);
+}
+
+function resetVisibleSetting(model: Model, id: number): NavigatorDecision {
+  if (model.appearanceBusy || visibleEditableSetting(model, id) === null) return navigatorDecision(model, 0, NO_BYTES);
+  return navigatorDecision({ ...model, appearanceBusy: true }, 7, resetSettingRequest(id));
+}
+
 function settingControlTransition(model: Model, msg: Msg): NavigatorDecision | null {
   switch (msg.kind) {
-    case "settings_apply": {
-      if (model.appearanceBusy || model.settingEditId > 10) return navigatorDecision(model, 0, NO_BYTES);
-      return navigatorDecision({ ...model, appearanceBusy: true }, 7, settingRequest(model.settingEditId, model.settingEditValue));
-    }
-    case "settings_reset": {
-      if (model.appearanceBusy || msg.id > 10) return navigatorDecision(model, 0, NO_BYTES);
-      return navigatorDecision({ ...model, appearanceBusy: true }, 7, resetSettingRequest(msg.id));
-    }
+    case "settings_font_family": return directFontFamily(model, msg.index);
+    case "settings_enable": return directBoolean(model, msg.id, true);
+    case "settings_disable": return directBoolean(model, msg.id, false);
+    case "settings_apply": return applySettingDraft(model);
+    case "settings_reset": return resetVisibleSetting(model, msg.id);
     case "settings_reload": return reloadSettings(model);
     default: return null;
   }
