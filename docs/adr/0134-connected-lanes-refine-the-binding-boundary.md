@@ -18,8 +18,8 @@ connected lane that must never run at once.
 Status: Accepted
 Date: 2026-09-21
 
-See [ADR-0135](./0135-one-binding-crate.md) for the single binding
-crate that replaces the two shims.
+Superseded in part by [ADR-0135](./0135-one-binding-crate.md): the mobile
+shim is no longer its own crate; it is `phux-client-ffi`'s `uniffi` feature.
 
 ## Context
 

@@ -160,8 +160,9 @@ jobs:
         run: |
           nix develop -c bash -euo pipefail <<'EOF'
           source scripts/ci/timed.sh
-          timed unit env NEXTEST_PROFILE=ci just test
-          timed e2e  just e2e
+          timed unit   env NEXTEST_PROFILE=ci just test
+          timed uniffi just binding-uniffi-test
+          timed e2e    just e2e
           EOF
       - name: sccache stats
         if: always()

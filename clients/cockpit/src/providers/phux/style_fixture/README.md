@@ -28,11 +28,11 @@ invalid offsets, lengths, UTF-8 and arena budgets before replacing valid state.
 
 ## Source contracts
 
-- `crates/phux-client-ffi/src/client.rs::push_flattened_cell` resolves palette
-  entries to RGB but leaves inverse, faint and invisible as flags. The adapter
-  swaps inverse exactly once. Its legacy v1 copy uses per-cell background
-  for faint; metadata-aware projection supplies the terminal default instead.
-  Invisible zeroes the glyph while retaining decorations.
+- `crates/phux-client-core/src/grid/flatten.rs::push_flattened_cell` resolves
+  palette entries to RGB but leaves inverse, faint and invisible as flags. The
+  adapter swaps inverse exactly once. Its legacy v1 copy uses per-cell
+  background for faint; metadata-aware projection supplies the terminal
+  default instead. Invisible zeroes the glyph while retaining decorations.
 - The v1 grid alone has no palette-index or underline-color provenance.
   Its legacy copy preserves the supplied RGB. The additive metadata companion
   now supplies this provenance to the shipping `copyClient` path; see

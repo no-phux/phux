@@ -12,7 +12,6 @@
 
 use phux_client_core::grid::{Cell, Cursor, GridDamage};
 use phux_client_runtime::publication::{GridFrame, Rgb, Scrollbar};
-use phux_protocol::ResourceId;
 
 /// The width of one serialized [`Cell`], with its padding bytes explicit.
 pub const CELL_BYTES: usize = 36;
@@ -20,8 +19,6 @@ pub const CELL_BYTES: usize = 36;
 /// One published frame, read once.
 #[derive(Debug, Clone, Copy)]
 pub struct GridView<'a> {
-    /// The terminal this frame projects.
-    pub terminal_id: &'a ResourceId,
     /// Increases by one per publish of this terminal, starting at one.
     pub generation: u64,
     /// The logical subscription of the projected replica generation.
@@ -54,7 +51,6 @@ pub struct GridView<'a> {
 #[must_use]
 pub fn view(frame: &GridFrame) -> GridView<'_> {
     GridView {
-        terminal_id: &frame.terminal_id,
         generation: frame.generation,
         stream_id: frame.stream_id,
         bootstrap_id: frame.bootstrap_id,

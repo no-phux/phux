@@ -86,25 +86,6 @@ pub enum TerminalSignal {
     },
 }
 
-impl TerminalSignal {
-    /// The terminal this signal is about.
-    #[must_use]
-    pub const fn terminal_id(&self) -> &ResourceId {
-        match self {
-            Self::Bell { terminal_id }
-            | Self::TitleChanged { terminal_id, .. }
-            | Self::CwdChanged { terminal_id, .. }
-            | Self::OutputStarted { terminal_id }
-            | Self::OutputSettled { terminal_id }
-            | Self::CommandStarted { terminal_id }
-            | Self::CommandFinished { terminal_id, .. }
-            | Self::Resync { terminal_id, .. }
-            | Self::History { terminal_id, .. }
-            | Self::HistoryUnavailable { terminal_id, .. } => terminal_id,
-        }
-    }
-}
-
 /// Something that happened to a terminal's existence or to the session.
 #[derive(Debug, Clone)]
 pub enum Lifecycle {
@@ -322,8 +303,10 @@ mod tests {
             terminal_id: ResourceId::local(1),
         })
         .expect("output start is a signal");
-        assert!(matches!(signal, TerminalSignal::OutputStarted { .. }));
-        assert_eq!(signal.terminal_id(), &ResourceId::local(1));
+        assert!(matches!(
+            signal,
+            TerminalSignal::OutputStarted { terminal_id } if terminal_id == ResourceId::local(1)
+        ));
     }
 
     #[test]

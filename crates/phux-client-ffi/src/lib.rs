@@ -33,8 +33,16 @@ pub use c::*;
 // The UniFFI scaffolding's `UniFfiTag` must live at the crate root: every
 // `uniffi` derive in `crate::uniffi` names `crate::UniFfiTag`. The leading
 // `::` is required because the module below shadows the crate name here.
+//
+// The namespace argument is `phux_mobile_ffi`, not this crate's own name:
+// UniFFI's library-mode bindgen names the generated Kotlin file and the
+// cdylib `loadLibrary` call after it (`{namespace}.kt`), so this is what
+// keeps `phux-mobile`'s generated file and `.so` byte-for-byte unchanged
+// from the `phux-mobile-ffi` era (ADR-0135) despite the crate rename. The
+// low-level FFI symbol names UniFFI generates are keyed off the Rust module
+// path instead, so this has no effect on linkage.
 #[cfg(feature = "uniffi")]
-::uniffi::setup_scaffolding!();
+::uniffi::setup_scaffolding!("phux_mobile_ffi");
 
 #[cfg(feature = "uniffi")]
 mod uniffi;

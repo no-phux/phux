@@ -2,7 +2,8 @@
 # attach them to the root release. Both come from crates/phux-client-ffi, the
 # one binding crate (ADR-0135): PhuxFFI is its default C ABI plus
 # phux/client.h for C consumers, PhuxMobileFFI is the same crate built with
-# --features uniffi, including generated Swift from the same revision.
+# --no-default-features --features uniffi, including generated Swift from
+# the same revision.
 # Both carry the engine for iOS devices, the arm64 simulator, and arm64 macOS.
 #
 # Release Please owns tags, draft releases and notes. This workflow only adds
