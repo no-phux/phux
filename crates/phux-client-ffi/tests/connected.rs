@@ -22,8 +22,9 @@ use std::time::{Duration, Instant};
 use phux_client_ffi::{
     ABI_VERSION, PhuxAttachOptions, PhuxBytes, PhuxClient, PhuxClientOptions, PhuxClientResult,
     PhuxClientState, PhuxConnectOptions, phux_client_connect, phux_client_connection_epoch,
-    phux_client_feed_frame, phux_client_free, phux_client_is_connected, phux_client_outgoing_count,
-    phux_client_poll, phux_client_queue_attach, phux_client_resource_count, phux_client_state,
+    phux_client_feed_frame, phux_client_free, phux_client_is_connected, phux_client_new,
+    phux_client_outgoing_count, phux_client_poll, phux_client_poll_pending,
+    phux_client_queue_attach, phux_client_resource_count, phux_client_state,
 };
 use phux_server_testkit::{run_local, spawn_server};
 use tempfile::TempDir;
@@ -183,6 +184,16 @@ async fn connected_lane() {
         "one connection has opened"
     );
 
+    // A drained client has nothing left to poll, which is what a consumer
+    // polling its clients in turn skips an empty turn on.
+    // SAFETY: a live client.
+    assert_eq!(unsafe { phux_client_poll(client) }, PhuxClientResult::Ok);
+    // SAFETY: a live client.
+    assert!(
+        !unsafe { phux_client_poll_pending(client) },
+        "nothing is retained once a poll has drained it"
+    );
+
     // The embedded lane's pump is refused: this client does not own bytes.
     let stray = [0_u8; 4];
     // SAFETY: a live client and a readable span.
@@ -239,6 +250,24 @@ fn freeing_joins_the_driver_so_no_wake_outlives_the_client() {
         PhuxClientResult::Ok,
         "a host that is down is the ladder's business, not the call's"
     );
+    // An embedded client has nothing to poll, ever.
+    let mut embedded: *mut PhuxClient = std::ptr::null_mut();
+    let base = base_options();
+    // SAFETY: readable options, writable out.
+    assert_eq!(
+        unsafe { phux_client_new(&raw const base, &raw mut embedded) },
+        PhuxClientResult::Ok
+    );
+    // SAFETY: a live client.
+    assert!(!unsafe { phux_client_poll_pending(embedded) });
+    // SAFETY: a live client.
+    assert_eq!(
+        unsafe { phux_client_poll(embedded) },
+        PhuxClientResult::InvalidState,
+        "poll is the connected lane's"
+    );
+    // SAFETY: a live client, uniquely owned, on its owning thread.
+    unsafe { phux_client_free(embedded) };
 
     // Let the driver get well into a dial and a backoff.
     std::thread::sleep(Duration::from_millis(50));
