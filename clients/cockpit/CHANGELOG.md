@@ -3,6 +3,13 @@
 All notable changes to Phux Cockpit are documented in this file. The project
 uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.27.1](https://github.com/no-phux/phux/compare/cockpit-v0.27.0...cockpit-v0.27.1) (2026-09-21)
+
+
+### Bug Fixes
+
+* **cockpit:** pick newest rlib after fixture-generator version bump ([#783](https://github.com/no-phux/phux/issues/783)) ([41057d7](https://github.com/no-phux/phux/commit/41057d76c52be191d114dfaf200f86bae0e35692))
+
 ## [0.27.0](https://github.com/no-phux/phux/compare/cockpit-v0.26.0...cockpit-v0.27.0) (2026-09-20)
 
 

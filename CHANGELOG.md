@@ -9,6 +9,35 @@ It is exempt from the `docs/` frontmatter and TL;DR gates in
 at `docs/spec/CHANGELOG.md` and is hand-maintained; it is a different file and
 keeps every gate.
 
+## [0.41.0](https://github.com/no-phux/phux/compare/v0.40.0...v0.41.0) (2026-09-21)
+
+
+### Features
+
+* **client-runtime:** add native binding operations ([145ee58](https://github.com/no-phux/phux/commit/145ee58be4a44ff494ee831283a08ad854787ce5))
+* **client-runtime:** sans-IO control plane, engine owner thread, published grid ([#775](https://github.com/no-phux/phux/issues/775)) ([6e02ea4](https://github.com/no-phux/phux/commit/6e02ea438d7af9df46b824663637d2b947e684a9))
+* **client-runtime:** switch live sessions on one connection ([9926d72](https://github.com/no-phux/phux/commit/9926d727a389663f20b1e4575ea05fe94a68c9b3))
+* **ffi:** publish canonical mobile UniFFI artifact ([#797](https://github.com/no-phux/phux/issues/797)) ([21a1fe6](https://github.com/no-phux/phux/commit/21a1fe6466e6e074c3d71670442cb62f33584c81))
+* **skills:** publish no-phux/skills for npx skills add ([#787](https://github.com/no-phux/phux/issues/787)) ([c759426](https://github.com/no-phux/phux/commit/c759426736a9e698ee462be66f696d89722d0083))
+
+
+### Bug Fixes
+
+* **client-runtime:** close review gaps in FFI migration ([0304edc](https://github.com/no-phux/phux/commit/0304edc2a2955b27a8ceed7b12e2e9c050c68e50))
+* **client-runtime:** silence clippy match_same_arms on InvalidState ([bf19f97](https://github.com/no-phux/phux/commit/bf19f97b85dddf27b7432938836bf45e464a1e64))
+* **client:** drop testkit-only rustdoc links from default docs ([#791](https://github.com/no-phux/phux/issues/791)) ([b3ca915](https://github.com/no-phux/phux/commit/b3ca91573383a20e10bf2a3fbd1c359ee0d65cf3))
+* **cockpit:** pick newest rlib after fixture-generator version bump ([#783](https://github.com/no-phux/phux/issues/783)) ([41057d7](https://github.com/no-phux/phux/commit/41057d76c52be191d114dfaf200f86bae0e35692))
+* **ffi:** apply the xcframework lane's review findings ([#785](https://github.com/no-phux/phux/issues/785)) ([a968920](https://github.com/no-phux/phux/commit/a9689202442210bab34208fa9c8e7fda3dd76949))
+* **ffi:** classify only generation refusals as InvalidState ([74b631f](https://github.com/no-phux/phux/commit/74b631f3b7243cde061418bb34c6ccf4cc293197))
+* **ffi:** restore InvalidState and replica stamps after runtime shim ([164cdf4](https://github.com/no-phux/phux/commit/164cdf4a93a1cbe8b2b9310d6221936ff3a9ed0e))
+* **release:** trust container-mounted workspace ([#788](https://github.com/no-phux/phux/issues/788)) ([cfe21cb](https://github.com/no-phux/phux/commit/cfe21cb046caf1e9c61fe29fa324ab4c1a1e2b9f))
+* **server:** merge detector writes over identity-only agent names (phux-uaon) ([#782](https://github.com/no-phux/phux/issues/782)) ([b0e518a](https://github.com/no-phux/phux/commit/b0e518a33cbe0d11e156552418d97463e010306e))
+
+
+### Refactors
+
+* **ffi:** delegate terminal state to client runtime ([b2e0ec3](https://github.com/no-phux/phux/commit/b2e0ec32a87101f27464090f90989a480eea4a50))
+
 ## [0.40.0](https://github.com/no-phux/phux/compare/v0.39.0...v0.40.0) (2026-09-20)
 
 
