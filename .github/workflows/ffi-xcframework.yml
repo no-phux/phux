@@ -1,7 +1,8 @@
 # Build the canonical C and mobile-native xcframeworks from this checkout and
-# attach them to the root release. PhuxFFI is crates/phux-client-ffi plus
-# phux/client.h for C consumers. PhuxMobileFFI is the sibling UniFFI projection
-# over phux-client-runtime, including generated Swift from the same revision.
+# attach them to the root release. Both come from crates/phux-client-ffi, the
+# one binding crate (ADR-0135): PhuxFFI is its default C ABI plus
+# phux/client.h for C consumers, PhuxMobileFFI is the same crate built with
+# --features uniffi, including generated Swift from the same revision.
 # Both carry the engine for iOS devices, the arm64 simulator, and arm64 macOS.
 #
 # Release Please owns tags, draft releases and notes. This workflow only adds
@@ -32,7 +33,6 @@ on:
       # revision and fetches BOTH artifacts at it, so a commit that produces
       # only one is unusable as a pin. Identical filters are what guarantee the
       # pair; if these lists drift, the pin silently has nothing to land on.
-      - crates/phux-mobile-ffi/**
       - crates/phux-client-ffi/**
       - crates/phux-client-runtime/**
       - crates/phux-client-core/**

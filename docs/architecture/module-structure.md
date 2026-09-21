@@ -720,9 +720,26 @@ rather than a layer with its own internal architecture worth diagramming:
 - **`phux-plugin`** — the shared plugin-runtime surface (argv execution,
   timeouts, env injection) used by both the CLI's `config run` and the
   server's `hooks.rs` dispatcher.
-- **`phux-client-ffi`** — a stable native C bridge over
-  `phux-client-core`'s synchronous session kernel, for non-Rust native
-  embedders; compile-time excluded on wasm. It holds a
+- **`phux-client-ffi`** — the binding crate: one projection of the client
+  runtime, one encoder per foreign language behind a Cargo feature
+  (ADR-0135); compile-time excluded on wasm.
+  `src/projection/` is the single derivation from `phux-client-runtime`
+  values — the terminal-signal and lifecycle event families, the flattened
+  session graph, the connection status, the delivery/upload/transcribe/
+  listing outcomes, the `phux.agent/v1` badge and the one reading of a
+  `GridFrame` — in binding-neutral Rust with no `#[repr(C)]` and no
+  `uniffi` derive, and with unit tests that pin every mapping.
+  `src/c/` (feature `c-abi`, on by default) is the stable native C bridge
+  that `include/phux/client.h` declares, for non-Rust native embedders and
+  Cockpit's staticlib. `src/uniffi/` (feature `uniffi`, off by default) is
+  the Swift/Kotlin surface phux-mobile consumes: `RemoteClient` over one
+  runtime session, the standalone `TerminalEngine` owner for local
+  playground and test terminals with no connection, the keymap and the
+  predictor. `scripts/build-mobile-ffi-xcframework.sh` and
+  `-android.sh` package that lane's slices and generated bindings from one
+  revision, with provenance and digests consumers install atomically;
+  Cockpit's `ffi-release` archive links no UniFFI.
+  The C lane holds a
   `phux_client_runtime::Client` and reaches the control plane through that
   handle's guard, never a plane of its own. Two lanes: `phux_client_new`
   builds the embedded one, where the embedder owns the socket and pumps
@@ -761,17 +778,6 @@ rather than a layer with its own internal architecture worth diagramming:
   one from) and folds cwd/command-boundary/process-exit events into
   `PHUX_CLIENT_STATUS_CWD` / `_COMMAND_STARTED` / `_COMMAND_FINISHED` /
   `_EXITED` effects (PHA-406/PHA-284; `include/phux/client.h`).
-- **`phux-mobile-ffi`** — the native-mobile UniFFI projection over
-  `phux-client-runtime`. It maps runtime-owned topology, events, lossless
-  receipts, key/mouse input, prediction, and the shared 36-byte cell arenas to
-  Swift/Kotlin-facing values; its connected path owns no transport, reconnect,
-  frame pump, or remote engine state machine. Its separate `TerminalEngine`
-  owner serves only local playground and test terminals with no connection or
-  runtime session. `scripts/build-mobile-ffi-xcframework.sh` packages its
-  engine-bearing Apple slices and generated Swift from one revision, with
-  provenance and digests that consumers install atomically. It is a sibling of
-  `phux-client-ffi`, not a wrapper around the C ABI (ADR-0133 and phux-mobile
-  ADR-0031).
 - **`phux-crash`** — vendored fatal-signal handler (see its NOTICE; the one
   Apache-2.0-only crate in the workspace). SIGSEGV/SIGBUS/SIGABRT do not
   unwind, so neither `RawModeGuard::drop` nor the panic hook runs; this

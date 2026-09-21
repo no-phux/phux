@@ -20,6 +20,16 @@ crate-check PACKAGE FEATURES="":
     {{AUTO_SPAWN_BACKSTOP}} cargo test "${args[@]}"
 
 
+# The binding crate's opt-in UniFFI encoder (ADR-0135). `lint` and `doc` are
+# already --all-features, but the unit pool builds default features only, so
+# this lane's tests would otherwise stop running the day the two shims merged.
+# It is not a default feature precisely so Cockpit's archive never links it.
+[group('gates')]
+[private]
+binding-uniffi-test:
+    {{AUTO_SPAWN_BACKSTOP}} cargo test --locked -p phux-client-ffi --features uniffi
+
+
 # One agent integration's type, unit, packed-artifact, and audit gates.
 [group('gates')]
 integration-check PACKAGE:
@@ -198,7 +208,7 @@ agent-integrations-check:
 # contract failures. CONTRIBUTING.md owns the local/CI gate map (phux-yb1m).
 [group('gates')]
 [doc('Full root gate set: the deterministic and unit bar.')]
-ci: fmt-check lint doc deny build-features-check build-features-compile docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check toolchain-check install-surface-check skill-contract agent-integrations-check test
+ci: fmt-check lint doc deny build-features-check build-features-compile docs-check workflow-check formula-check font-check e2e-lane-check zig-pin-check toolchain-check install-surface-check skill-contract agent-integrations-check binding-uniffi-test test
     @echo "ok"
 
 

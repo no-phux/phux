@@ -3,9 +3,14 @@
 #
 # Output under --out (default target/mobile-ffi-android/Artifacts):
 #   kotlin/               generated + patched UniFFI Kotlin
-#   jniLibs/arm64-v8a/    libphux_mobile_ffi.so
-#   jniLibs/x86_64/       libphux_mobile_ffi.so
+#   jniLibs/arm64-v8a/    libphux_client_ffi.so
+#   jniLibs/x86_64/       libphux_client_ffi.so
 #   provenance            source/toolchain/digest facts for atomic consumers
+#
+# The producer is crates/phux-client-ffi with --features uniffi (ADR-0135).
+# The zip layout and the dev.phux.mobile.ffi Kotlin package are unchanged;
+# the generated file and the .so moved from phux_mobile_ffi to
+# phux_client_ffi, because UniFFI names both after the crate.
 #
 # Usage: scripts/build-mobile-ffi-android.sh [--out DIR]
 set -euo pipefail
@@ -38,9 +43,9 @@ STAGE="$(mktemp -d "$OUT_PARENT/.${OUT_NAME}.staging.XXXXXX")"
 PREVIOUS=""
 OUT="$STAGE"
 
-CRATE=phux-mobile-ffi
-FEATURES=engine,wire
-KT_REL="dev/phux/mobile/ffi/phux_mobile_ffi.kt"
+CRATE=phux-client-ffi
+FEATURES=uniffi
+KT_REL="dev/phux/mobile/ffi/phux_client_ffi.kt"
 
 cleanup() {
     [[ -z "$STAGE" ]] || rm -rf "$STAGE"
@@ -64,8 +69,8 @@ TARGET_DIR="$(jq -r .target_directory <<<"$METADATA")"
 [[ -n "$TARGET_DIR" && "$TARGET_DIR" != null ]] || die "cargo metadata reported no target directory"
 
 case "$(uname -s)" in
-Darwin) HOST_LIB="$TARGET_DIR/debug/libphux_mobile_ffi.dylib" ;;
-Linux) HOST_LIB="$TARGET_DIR/debug/libphux_mobile_ffi.so" ;;
+Darwin) HOST_LIB="$TARGET_DIR/debug/libphux_client_ffi.dylib" ;;
+Linux) HOST_LIB="$TARGET_DIR/debug/libphux_client_ffi.so" ;;
 *) die "unsupported metadata host $(uname -s)" ;;
 esac
 
@@ -79,7 +84,7 @@ mkdir -p "$OUT/kotlin"
 cargo run --locked -p "$CRATE" --features "$FEATURES" --bin uniffi-bindgen -- \
     generate --library "$HOST_LIB" \
     --language kotlin --out-dir "$OUT/kotlin" \
-    --config "$ROOT/crates/phux-mobile-ffi/uniffi-android.toml"
+    --config "$ROOT/crates/phux-client-ffi/uniffi-android.toml"
 KT="$OUT/kotlin/$KT_REL"
 [[ -s "$KT" ]] || die "UniFFI did not emit $KT_REL"
 grep -q 'fun `stopConnection`()' "$KT" || die "generated Kotlin does not expose stopConnection"
@@ -90,14 +95,14 @@ rustup target add aarch64-linux-android x86_64-linux-android >/dev/null
 rm -rf "$OUT/jniLibs"
 mkdir -p "$OUT/jniLibs"
 (
-    cd "$ROOT/crates/phux-mobile-ffi"
+    cd "$ROOT/crates/phux-client-ffi"
     cargo ndk --platform 24 \
         -t arm64-v8a -t x86_64 \
         -o "$OUT/jniLibs" \
         build --locked --release --features "$FEATURES"
 )
 for abi in arm64-v8a x86_64; do
-    so="$OUT/jniLibs/$abi/libphux_mobile_ffi.so"
+    so="$OUT/jniLibs/$abi/libphux_client_ffi.so"
     [[ -s "$so" ]] || die "missing $abi cdylib"
 done
 
@@ -120,8 +125,8 @@ ndk_ver="$(basename "$ANDROID_NDK_HOME")"
     echo "ndk=$ndk_ver"
     echo "abis=arm64-v8a,x86_64"
     echo "generated_sha256=$(shasum -a 256 "$KT" | awk '{print $1}')"
-    echo "archive_arm64_v8a_sha256=$(shasum -a 256 "$OUT/jniLibs/arm64-v8a/libphux_mobile_ffi.so" | awk '{print $1}')"
-    echo "archive_x86_64_sha256=$(shasum -a 256 "$OUT/jniLibs/x86_64/libphux_mobile_ffi.so" | awk '{print $1}')"
+    echo "archive_arm64_v8a_sha256=$(shasum -a 256 "$OUT/jniLibs/arm64-v8a/libphux_client_ffi.so" | awk '{print $1}')"
+    echo "archive_x86_64_sha256=$(shasum -a 256 "$OUT/jniLibs/x86_64/libphux_client_ffi.so" | awk '{print $1}')"
 } > "$OUT/provenance"
 
 if [[ -e "$DEST" ]]; then
@@ -137,5 +142,5 @@ OUT="$DEST"
 
 echo "build-mobile-ffi-android: wrote $OUT"
 echo "    kotlin:     $OUT/kotlin/$KT_REL"
-echo "    jniLibs:    $OUT/jniLibs/{arm64-v8a,x86_64}/libphux_mobile_ffi.so"
+echo "    jniLibs:    $OUT/jniLibs/{arm64-v8a,x86_64}/libphux_client_ffi.so"
 echo "    provenance: $OUT/provenance"

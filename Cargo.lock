@@ -2383,10 +2383,13 @@ dependencies = [
  "phux-server-testkit",
  "serde_json",
  "tempfile",
+ "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
  "tracing",
  "tracing-subscriber",
+ "unicode-segmentation",
+ "uniffi",
  "uuid",
 ]
 
@@ -2486,20 +2489,6 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tokio",
-]
-
-[[package]]
-name = "phux-mobile-ffi"
-version = "0.41.0"
-dependencies = [
- "libghostty-vt",
- "phux-client-core",
- "phux-client-runtime",
- "phux-protocol",
- "serde_json",
- "thiserror 2.0.20",
- "unicode-segmentation",
- "uniffi",
 ]
 
 [[package]]

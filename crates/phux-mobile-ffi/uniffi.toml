@@ -1,6 +1,0 @@
-# UniFFI binding generation config. The generated Swift lands in the PhuxFFI
-# SPM module (ADR-0003).
-[bindings.swift]
-module_name = "PhuxFFI"
-# Generate one .modulemap so the xcframework exposes the C symbols cleanly.
-generate_module_map = true

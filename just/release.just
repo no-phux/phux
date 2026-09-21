@@ -87,16 +87,17 @@ sync-skills DEST:
 ffi-xcframework *ARGS:
     bash scripts/build-ffi-xcframework.sh {{ARGS}}
 
-# Mobile's sibling UniFFI projection over phux-client-runtime. The artifact
-# includes generated Swift from the same revision so consumers replace native
-# slices and bindings atomically (phux-mobile ADR-0031).
+# The binding crate's UniFFI encoder (phux-client-ffi --features uniffi,
+# ADR-0135). The artifact includes generated Swift from the same revision so
+# consumers replace native slices and bindings atomically (phux-mobile
+# ADR-0031).
 [group('release')]
 [doc('Build the canonical mobile UniFFI xcframework, bindings, and provenance.')]
 mobile-ffi-xcframework *ARGS:
     bash scripts/build-mobile-ffi-xcframework.sh {{ARGS}}
 
-# Android sibling of the mobile UniFFI artifact: Kotlin + arm64-v8a/x86_64 .so
-# + provenance. ffi-android.yml uploads the zip; phux-mobile fetches it.
+# Android sibling of the same lane: Kotlin + arm64-v8a/x86_64 .so +
+# provenance. ffi-android.yml uploads the zip; phux-mobile fetches it.
 [group('release')]
 [doc('Build the canonical Android UniFFI zip (Kotlin, cdylibs, provenance).')]
 mobile-ffi-android:

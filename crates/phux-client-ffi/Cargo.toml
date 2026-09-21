@@ -1,6 +1,6 @@
 [package]
 name = "phux-client-ffi"
-description = "Stable native C ABI for the phux client session kernel."
+description = "The phux binding crate: one runtime projection, a C ABI and a UniFFI encoder."
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -13,7 +13,34 @@ authors.workspace = true
 workspace = true
 
 [lib]
+# staticlib for Cockpit's linker and the Apple archives the xcframework
+# carries, cdylib for the Android jniLibs and the library-mode bindgen, rlib
+# so the in-crate `uniffi-bindgen` bin can link this crate.
 crate-type = ["rlib", "staticlib", "cdylib"]
+
+# `cargo run --bin uniffi-bindgen -- generate --library ...` emits the Swift
+# and Kotlin that ship inside the mobile artifacts. Proc-macro mode: the
+# exported surface is `#[uniffi::export]` in `src/uniffi/`, with no UDL to
+# keep in sync.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["uniffi"]
+
+# The rig seeder speaks the runtime directly; it stays out of C-only builds.
+[[example]]
+name = "rig_seed"
+required-features = ["uniffi"]
+
+[features]
+# Cockpit's lane and the shipped default: the `extern "C"` surface
+# `include/phux/client.h` declares. `cargo build -p phux-client-ffi` links no
+# UniFFI scaffolding and no proc-macro generator.
+default = ["c-abi"]
+c-abi = []
+# The mobile lane: the Swift/Kotlin surface UniFFI generates. Off by default
+# so Cockpit's `ffi-release` archive never carries it (ADR-0135).
+uniffi = ["dep:uniffi", "dep:thiserror", "dep:unicode-segmentation"]
 
 [dependencies]
 bytes.workspace = true
@@ -44,6 +71,25 @@ phux-config.workspace = true
 # stays off: feature unification would switch it on workspace-wide.
 tracing.workspace = true
 tracing-subscriber.workspace = true
+
+# The binding generator and its runtime scaffolding, behind the `uniffi`
+# feature. It is new to this workspace's DEFAULT graph only when that feature
+# is on: no shipped phux executable depends on this crate, and Cockpit's
+# `just cockpit-ffi` builds the default features, so the proc-macro generator
+# stack (uniffi_bindgen/uniffi_meta/uniffi_macros plus askama, weedle2,
+# camino, clap and cargo_metadata) is compiled only for the mobile artifact
+# jobs. In the library it adds a small lowering/lifting runtime over `bytes`
+# and `once_cell`, both already locked here. 0.28 is the exact version the
+# mobile artifact has always shipped, kept so merging the two shims changes
+# ownership and not generated output. The `cli` feature is what lets the
+# in-crate `uniffi-bindgen` bin drive generation from the built library, which
+# is how the artifact's Swift is guaranteed to come from this revision.
+uniffi = { version = "0.28", features = ["cli"], optional = true }
+# Error-derive for the UniFFI-facing error enums.
+thiserror = { workspace = true, optional = true }
+# Grapheme segmentation for the mobile text-commit path into the shared
+# predictor.
+unicode-segmentation = { workspace = true, optional = true }
 
 [dev-dependencies]
 # The connected lane's e2e test runs the real server the TUI runs.

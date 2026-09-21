@@ -639,13 +639,17 @@ file is the authoritative record.
 ## Mobile UniFFI xcframework
 
 `scripts/build-mobile-ffi-xcframework.sh` (`just mobile-ffi-xcframework`)
-builds `crates/phux-mobile-ffi` with `engine,wire` for the same three Apple
-targets. The crate is a projection-only sibling of `phux-client-ffi`: it maps
-`phux-client-runtime` values to the object, callback, receipt, and byte-arena
-surface consumed by native mobile clients. Its connected path owns no dial,
-reconnect, frame pump, or remote engine state machine; the artifact also keeps
-an isolated `TerminalEngine` for local playground and test terminals
-(ADR-0133; phux-mobile ADR-0031).
+builds `crates/phux-client-ffi` with `--features uniffi` for the same three
+Apple targets. That is the same binding crate the C xcframework above builds,
+under its other encoder (ADR-0135): one `projection/` layer maps
+`phux-client-runtime` values to the product vocabulary, and the UniFFI lane
+lowers it into the object, callback, receipt, and byte-arena surface consumed
+by native mobile clients. Its connected path owns no dial, reconnect, frame
+pump, or remote engine state machine; the artifact also keeps an isolated
+`TerminalEngine` for local playground and test terminals (ADR-0133;
+phux-mobile ADR-0031). The archive inside the bundle is
+`libphux_client_ffi.a`; the bundle, the `PhuxFFI` module name, the asset
+names and the provenance keys are unchanged.
 
 The output directory contains `PhuxFFI.xcframework`,
 `Generated/PhuxFFI.swift`, and `provenance`. The build reads the UniFFI surface
