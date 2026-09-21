@@ -132,7 +132,7 @@ jobs:
       # the name 'v0.24.0' could not be found" thirty seconds after the tag was
       # created, and the `released` update then had nothing to update. The tag
       # is fetched below, straight from github.com and past the mirror.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # The CLI scans the whole commit range, so shallow will not do.
           fetch-depth: 0
@@ -172,7 +172,7 @@ jobs:
           python3 scripts/ci/extract_changelog_section.py \
             --tag "$TAG" --changelog "$CHANGELOG" --output release-notes.md
 
-      - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
+      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
         if: inputs.stage == 'building' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
@@ -183,7 +183,7 @@ jobs:
           links: |
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
-      - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
+      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
         if: inputs.stage == 'building' && steps.meta.outputs.component == 'cockpit'
         with:
           access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}
@@ -195,7 +195,7 @@ jobs:
           links: |
             GitHub release=${{ github.server_url }}/${{ github.repository }}/releases/tag/${{ inputs.tag }}
 
-      - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
+      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
         if: inputs.stage == 'released' && steps.meta.outputs.component == 'phux'
         with:
           access_key: ${{ secrets.LINEAR_RELEASE_ACCESS_KEY }}
@@ -203,7 +203,7 @@ jobs:
           stage: Released
           version: ${{ inputs.tag }}
 
-      - uses: linear/linear-release-action@53ad0f863963e7f8e270fba18426bbb55ef55384 # v0.17.2
+      - uses: linear/linear-release-action@d4af10092984f9bc6d5efa075b242bdf01333463 # v0.18.0
         if: inputs.stage == 'released' && steps.meta.outputs.component == 'cockpit'
         with:
           access_key: ${{ secrets.LINEAR_COCKPIT_RELEASE_ACCESS_KEY }}

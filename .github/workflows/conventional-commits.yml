@@ -42,7 +42,7 @@ jobs:
       # fetch-depth: 0 so base.sha..head.sha resolves. The default checkout
       # of refs/pull/N/merge carries both parents, so this holds for fork
       # PRs too.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 

@@ -51,10 +51,10 @@ jobs:
       PHUX_ZIG_CACHE_MODE: shared
       PHUX_ZIG_BUILD_TIMEOUT: "0"
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
           version: 0.16.0
           # The action's default cache keys each save on run_id, so a
@@ -66,7 +66,7 @@ jobs:
       # Zig caches key on the CHECKED-OUT build manifest — the repoint below
       # rewrites build.zig.zon after this restore. The stable prefix supplies
       # the latest compatible cache when the manifest hash rotates.
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           shared-key: mini-v1-cockpit-ffi
           save-if: ${{ github.ref == 'refs/heads/main' }}
