@@ -606,9 +606,9 @@ Policy is closed:
 
 These are the only modes. There is no bearer-only, SSH-auth-suffices, hybrid, or
 unnamed compatibility state. The bearer token is an outer admission gate inside
-`paired`, not a grant. SSH-stdio fits neither mode — it has no channel the
-handshake can bind to — and is unavailable under `paired` until a later profile
-defines a closed, independently verifiable binding for it.
+`paired`, not a grant. `phux stdio-bridge` is an owner-UDS peer, so a bridged
+connection keeps owner authority under `paired` as well: an SSH peer that can
+run the bridge already owns the host.
 
 With no explicit mode, a server may start only with its owner-only UDS and no
 configured workload registry; that is `local`. A configured registry, CA path,
@@ -628,11 +628,9 @@ successful start applies the empty-snapshot revocation rule in §7.
 > workload mTLS covers WebSocket consumers, WebTransport, and mobile
 > enrollment (PHA-406 decision H1); the posture ends, and this marker goes,
 > when that follow-up lands. Under `local` the server never auto-binds the
-> overlay listener and refuses `OPEN_LISTENER`. Two further gaps: a
+> overlay listener and refuses `OPEN_LISTENER`. One further gap: a
 > configured CA or registry path with no mode is ignored rather than
-> refused, and SSH-stdio under
-> `paired` is not refused, because `phux stdio-bridge` reaches the server as
-> a same-uid Unix-socket peer and its ssh origin is an unauthenticated label.
+> refused.
 
 TLS, certificate verification, an SSH login, a bearer token, or UDS
 peer credentials remain necessary transport evidence where their transports
