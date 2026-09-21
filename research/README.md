@@ -15,6 +15,9 @@ behavior, follow the cross-link to the ADR or to the relevant
 
 ## Files
 
+- [`2026-09-20-cockpit-craft.md`](./2026-09-20-cockpit-craft.md) —
+  native interaction, settings, geometry and equally legible code organization;
+  scratch direction for the Cockpit craft work (`phux-3gpg`).
 - [`2026-09-09-superlogical-demo/`](./2026-09-09-superlogical-demo/README.md) —
   evidence-labeled reconstruction of a Superlogical remote-host terminal demo:
   transcript, screenshots, 24-feature inventory, UX flows and mockups, plus the
