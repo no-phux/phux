@@ -307,6 +307,10 @@ pub const Host = struct {
     /// handle that outlives every socket, so client identity stops marking
     /// a new connection; `phux_client_connection_epoch` does.
     connection_epoch: u64 = 0,
+    /// Set when a drain retired a connection the runtime replaced on its
+    /// own. The provider consumes it to re-queue the ATTACH that belonged
+    /// to the connection that ended.
+    connection_retired: bool = false,
     bridge: *transport.Bridge,
     terminals: std.ArrayListUnmanaged(Terminal) = .empty,
     sessions: std.ArrayListUnmanaged(SessionSummary) = .empty,
@@ -442,6 +446,7 @@ pub const Host = struct {
         host.client = replacement;
         host.lane = .connected;
         host.connection_epoch = 0;
+        host.connection_retired = false;
         host.disconnected = false;
         // The runtime queues HELLO on every connection it opens, so this
         // lane never calls `start`. Rename-following still has to be armed
@@ -470,7 +475,24 @@ pub const Host = struct {
         host.client = replacement;
         host.lane = .embedded;
         host.connection_epoch = 0;
+        host.connection_retired = false;
         host.disconnected = true;
+    }
+
+    /// Whether a drain would find anything. The embedded lane answers from
+    /// the bridge the worker fills; the connected lane asks the runtime,
+    /// whose driver holds what it has read.
+    pub fn hasReadiness(host: *const Host) bool {
+        return switch (host.lane) {
+            .embedded => host.bridge.incoming.hasReadiness(),
+            .connected => c.phux_client_poll_pending(host.client),
+        };
+    }
+
+    /// Take the retirement signal a runtime-driven reconnect raised.
+    pub fn takeConnectionRetired(host: *Host) bool {
+        defer host.connection_retired = false;
+        return host.connection_retired;
     }
 
     /// Ask the runtime to drop the socket and redial now. A no-op on the
@@ -982,6 +1004,10 @@ pub const Host = struct {
             if (host.connection_epoch != 0) {
                 host.freezePublished();
                 host.retirePreviousConnection(try host.nextGeneration());
+                // The runtime redialed on its own, so nothing above has
+                // re-queued ATTACH for the new connection. `ATTACH` stays
+                // explicit on this ABI; the provider owns sending it.
+                host.connection_retired = true;
             }
             host.connection_epoch = epoch;
         }

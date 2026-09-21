@@ -346,6 +346,15 @@ impl Client {
         lock(&self.inner.control).take_inbound()
     }
 
+    /// Whether a drain would find anything: a retained inbound frame, or an
+    /// event the consumer has not taken. A consumer that polls rather than
+    /// waiting on the listener uses this to skip an empty turn.
+    #[must_use]
+    pub fn poll_pending(&self) -> bool {
+        let control = lock(&self.inner.control);
+        control.has_inbound() || control.has_events()
+    }
+
     /// Take the encoded frames the control plane has queued, for the
     /// embedder to write to its own socket. [`Lane::Embedded`] only; a
     /// connected client's driver drains them instead.

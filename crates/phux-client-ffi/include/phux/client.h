@@ -1538,6 +1538,12 @@ PhuxClientResult phux_client_nudge(PhuxClient *client);
  * lane, and never a reopen once the session is closed or failed. */
 PhuxClientResult phux_client_resync(PhuxClient *client);
 
+/** Whether phux_client_poll would find anything: a frame the driver has
+ * read, or an event not yet drained. A consumer that polls its clients in
+ * turn rather than acting on each wake uses this to skip an empty turn.
+ * Always false on the embedded lane, which has nothing to poll. */
+bool phux_client_poll_pending(const PhuxClient *client);
+
 /** How many connections this client has opened; 0 before the first dial.
  *
  * An embedded client fences per-connection state by building a fresh

@@ -251,6 +251,24 @@ pub unsafe extern "C" fn phux_client_resync(client: *mut PhuxClient) -> PhuxClie
     })
 }
 
+/// Whether `phux_client_poll` would find anything to do: a frame the driver
+/// has read, or an event not yet drained.
+///
+/// A consumer that polls its providers in turn, rather than acting on each
+/// wake, uses this to skip an empty turn. On the embedded lane there is
+/// nothing to poll, so this is always false.
+///
+/// # Safety
+///
+/// `client` must be a live client for the duration of the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn phux_client_poll_pending(client: *const PhuxClient) -> bool {
+    // SAFETY: checked before dereference.
+    unsafe { client.as_ref() }.is_some_and(|client| {
+        client.inner.is_connected_lane() && client.inner.runtime.poll_pending()
+    })
+}
+
 /// How many connections this client has opened.
 ///
 /// An embedded client fences per-connection state by building a fresh

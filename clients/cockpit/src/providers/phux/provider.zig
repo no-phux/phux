@@ -635,8 +635,18 @@ pub const PhuxProvider = struct {
         return self.drainReadinessBudget(self.bridge.incoming.pendingCount());
     }
 
+    /// Whether a drain would find anything. The connected lane's frames are
+    /// the runtime's, not the bridge's, so a caller polling providers in
+    /// turn must ask through here rather than reading `bridge.incoming`.
+    pub fn wakePending(self: *const PhuxProvider) bool {
+        return self.host.hasReadiness();
+    }
+
     pub fn drainReadinessBudget(self: *PhuxProvider, frame_limit: usize) !SyncDelta {
         const delta = try self.host.drainReadinessBudget(frame_limit);
+        // The runtime redialed underneath us. The connection that queued the
+        // last ATTACH is gone, so the next negotiation has to queue its own.
+        if (self.host.takeConnectionRetired()) self.attach_queued = false;
         if (self.host.state() == .detached) {
             self.attach_queued = false;
             return delta;
