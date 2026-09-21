@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-21
 ---
 
 # Decisions in force
@@ -138,6 +138,7 @@ by a newer one, the newer line is the operative reading.
 
 ## TUI conventions
 
+- [0134](./0134-connected-lanes-refine-the-binding-boundary.md) A binding holds no connected-client state machine but may keep its decode point; the runtime owns each connected resource's engine thread; UniFFI stays for mobile with the shim in this repo; the C ABI has an embedded and a connected lane.
 - [0133](./0133-one-client-runtime-below-every-binding.md) `phux-client-runtime` is the one home for connected-client orchestration below the sans-IO kernel; `phux-client-ffi` and the mobile bridge are shims with no connected-client state machine, one cell layout lives in core, and a bindings generator is a per-shim choice.
 - [0129](./0129-projections-are-named-by-key.md) A named projection is a `--projection`-chosen metadata key, not a resource; durability is the workspace archive.
 - [0100](./0100-the-tui-is-its-own-crate.md) The TUI lives in `phux-tui`; `phux-client` is the headless library, dependency one-way.
