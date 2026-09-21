@@ -12,14 +12,22 @@ on:
   push:
     branches: [main]
     paths:
+      # KEEP THIS LIST IDENTICAL TO ffi-xcframework.yml's. phux-mobile pins one
+      # revision and fetches BOTH artifacts at it, so a commit that produces
+      # only one is unusable as a pin. Identical filters are what guarantee the
+      # pair; if these lists drift, the pin silently has nothing to land on.
       - crates/phux-mobile-ffi/**
+      - crates/phux-client-ffi/**
       - crates/phux-client-runtime/**
       - crates/phux-client-core/**
       - crates/phux-protocol/**
       - crates/phux-dial/**
+      - scripts/build-ffi-xcframework.sh
+      - scripts/build-mobile-ffi-xcframework.sh
       - scripts/build-mobile-ffi-android.sh
       - scripts/ci/setup-android-ndk.sh
       - .github/workflows/ffi-android.yml
+      - .github/workflows/ffi-xcframework.yml
   workflow_call:
     inputs:
       tag:
