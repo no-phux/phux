@@ -687,11 +687,22 @@ impl NativeTerminalManager {
             .unwrap_or_else(|| unreachable!("terminal unavailable only during prefix capture"))
     }
 
+    /// Apply VT bytes to the canonical screen.
+    ///
+    /// The actor defers live output into the capture's replay queue
+    /// (`buffer_native_live_output`) rather than calling this while a cut is
+    /// out, so the `None` arm should not be reachable. It must still not
+    /// abort: this process owns every session the user has, and dropping one
+    /// write that a later resync repairs is not worth losing all of them.
     pub(crate) fn vt_write(&mut self, bytes: &[u8]) {
-        debug_assert!(!self.capture_active);
-        match self.terminal.as_mut() {
-            Some(terminal) => terminal.vt_write(bytes),
-            None => unreachable!("terminal available outside prefix capture"),
+        if let Some(terminal) = self.terminal.as_mut() {
+            terminal.vt_write(bytes);
+        } else {
+            tracing::error!(
+                bytes = bytes.len(),
+                "vt_write while the canonical terminal is out on a prefix capture; \
+                 dropping the write (the caller should have deferred it)"
+            );
         }
     }
 
@@ -702,10 +713,19 @@ impl NativeTerminalManager {
         cell_width_px: u32,
         cell_height_px: u32,
     ) -> libghostty_vt::error::Result<()> {
-        debug_assert!(!self.capture_active);
         self.retire_all_generations();
         self.terminal.as_mut().map_or_else(
-            || unreachable!("terminal available outside prefix capture"),
+            || {
+                // Same contract as `reset`: the resize arms are gated on
+                // `!bootstrap_pending`, so this is a caller bug rather than
+                // an expected state — but aborting would take every session
+                // on this server with it. Refuse the resize instead; the
+                // gated arm re-applies the queued request once the cut lands.
+                tracing::error!(
+                    "resize while the canonical terminal is out on a prefix capture; refusing it"
+                );
+                Err(libghostty_vt::error::Error::InvalidValue)
+            },
             |terminal| terminal.resize(cols, rows, cell_width_px, cell_height_px),
         )
     }

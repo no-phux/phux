@@ -1363,6 +1363,76 @@ async fn progressive_native_ready_stays_within_one_seed_window() {
         .await;
 }
 
+/// Fails-without-the-fix guard for the OTHER two routes into the same abort.
+///
+/// `flush_final_gap_resync` runs on the teardown paths that sit OUTSIDE the
+/// `!bootstrap_pending` guards protecting the `select!` arms: the `biased`
+/// `token.cancelled()` arm, and `flush_exit_resync_if_needed` hanging off the
+/// ungated ingress arm. It drains queued resizes (which reach
+/// `NativeTerminalManager::resize`) and fires the owed resync (which
+/// dereferences the terminal to synthesize a grid) — both of which a capture
+/// has moved out from under it.
+///
+/// Reached by exactly the bug's own scenario plus one queued resize: a client
+/// attaches, the pane's child exits, and the server is shutting down or the
+/// host terminal was resized. It now lands the cut first.
+#[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
+#[tokio::test(flavor = "current_thread")]
+async fn teardown_drain_survives_an_in_flight_native_capture() {
+    let bundle = TerminalActor::new(80, 24).expect("new actor");
+    let mut actor = bundle.actor;
+    let (reply, replied) = oneshot::channel();
+    actor.start_native_bootstrap(NativeBootstrapRequest {
+        owner: 31,
+        terminal_id: phux_protocol::ids::ResourceId::local(1),
+        stream_id: phux_protocol::ids::StreamId::new(1).expect("stream id"),
+        bootstrap_id: phux_protocol::ids::BootstrapId::new(1).expect("bootstrap id"),
+        limits: phux_protocol::caps::BootstrapLimits::default(),
+        max_bytes: crate::native_state::MAX_NATIVE_PREFIX_BYTES,
+        max_frames: crate::native_state::MAX_NATIVE_PREFIX_CHUNKS + 2,
+        reply,
+    });
+    assert!(
+        actor.pending_native_bootstrap.is_some(),
+        "the capture must be in flight for this to be the race under test",
+    );
+
+    // Queue the resize that the gated `resize_rx` arm has been parking for
+    // the length of the capture. Without it the drain finds an empty mailbox
+    // and never reaches the terminal, so this test would pass against the
+    // unfixed code and prove nothing.
+    bundle
+        .handle
+        .terminal()
+        .expect("terminal facet")
+        .resize
+        .send(super::ResizeRequest {
+            cols: 100,
+            rows: 40,
+            cell_px: None,
+            resync_clients: true,
+            resync_only: false,
+            resync_for: None,
+        })
+        .await
+        .expect("queue a resize behind the capture");
+
+    // The panic was here — the drain applies the resize against a terminal
+    // that is not there.
+    let mut resync = super::run_loop::ResyncDebounce::idle();
+    let _ = actor.flush_final_gap_resync(&mut resync);
+
+    assert!(
+        actor.pending_native_bootstrap.is_none(),
+        "the in-flight cut must be landed, not left holding the terminal",
+    );
+    assert!(
+        replied.await.expect("capture reply").is_err(),
+        "the waiter must be answered, not left hanging on a cut that was discarded",
+    );
+    actor.terminal.borrow_mut().vt_write(b"ok");
+}
+
 /// Fails-without-the-fix guard: resetting the canonical terminal for a
 /// replacement child while a client's snapshot capture holds it used to hit
 /// `NativeTerminalManager::reset`'s `unreachable!` and abort the entire

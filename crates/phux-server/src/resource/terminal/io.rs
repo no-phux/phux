@@ -542,14 +542,28 @@ impl TerminalActor {
         // stale. `install_replacement_pty` broadcasts an everyone-resync
         // right after, which is the resync the tombstoned pumps need, so the
         // returned targets need no separate address (phux-p5bo).
-        self.invalidate_native_cuts_for_replacement();
+        self.land_native_cuts();
         self.terminal.borrow_mut().reset_for_new_child();
     }
 
     /// Fail any in-flight native bootstrap and tombstone every outstanding
-    /// cursor, returning the canonical terminal to the manager. No-op on a
-    /// build without the native engine, which never loans the terminal out.
-    fn invalidate_native_cuts_for_replacement(&mut self) {
+    /// cursor, returning the canonical terminal to the manager.
+    ///
+    /// A native bootstrap capture MOVES the canonical terminal out of
+    /// `NativeTerminalManager` for the length of the cut (up to
+    /// `NATIVE_CAPTURE_LIFETIME`), so any path that touches the terminal
+    /// while one is in flight aborts the process — release builds are
+    /// `panic = "abort"`, and this server holds every session the user has.
+    /// The `select!` arms that can reach the terminal are gated on
+    /// `!bootstrap_pending`; the teardown paths below run OUTSIDE those
+    /// guards, so they land the cut instead.
+    ///
+    /// Landing is also the honest answer on those paths: the pane is exiting
+    /// or being replaced, so the screen the cut captured is already stale.
+    ///
+    /// No-op on a build without the native engine, which never loans the
+    /// terminal out.
+    pub(super) fn land_native_cuts(&mut self) {
         #[cfg(all(feature = "native-engine", not(target_arch = "wasm32")))]
         {
             let _ = self.invalidate_all_native_cursors(
