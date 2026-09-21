@@ -1,11 +1,15 @@
 #!/usr/bin/env bash
 # Build the canonical UniFFI mobile projection from this phux revision.
 #
-# The producer is crates/phux-client-ffi with --features uniffi: one binding
-# crate, one projection, two encoders (ADR-0135). The artifact names, the
-# PhuxFFI Swift module and the provenance layout are unchanged from the
-# phux-mobile-ffi era; only the archive file name inside the xcframework
-# moved from libphux_mobile_ffi.a to libphux_client_ffi.a.
+# The producer is crates/phux-client-ffi with --no-default-features
+# --features uniffi: one binding crate, one projection, two encoders
+# (ADR-0135). The `c-abi` default stays off so this artifact never carries
+# the extern "C" surface or its C-only dependency closure. cargo names the
+# built archive libphux_client_ffi.a after the crate; it is staged back to
+# libphux_mobile_ffi.a before `xcodebuild -create-xcframework` (which takes
+# a member's name from its input file), so the artifact name, the PhuxFFI
+# Swift module and the provenance layout are byte-for-byte unchanged from
+# the phux-mobile-ffi era.
 #
 # Output under --out (default target/mobile-ffi-xcframework/Artifacts):
 #   PhuxFFI.xcframework/  engine-bearing device, simulator, and macOS slices
@@ -63,17 +67,23 @@ MAC_TARGET=aarch64-apple-darwin
 TARGETS=("$SIM_TARGET" "$MAC_TARGET")
 [[ "$MODE" == full ]] && TARGETS=("$DEVICE_TARGET" "${TARGETS[@]}")
 CRATE=phux-client-ffi
-LIB=libphux_client_ffi.a
+# What cargo actually names the staticlib for this crate.
+BUILT_LIB=libphux_client_ffi.a
+# What the xcframework and provenance publish it as (unchanged from the
+# phux-mobile-ffi era); staged into place below.
+LIB=libphux_mobile_ffi.a
 FEATURES=uniffi
 IOS_FLOOR="${PHUX_FFI_IOS_DEPLOYMENT_TARGET:-26.0}"
 MACOS_FLOOR="${PHUX_FFI_MACOS_DEPLOYMENT_TARGET:-26.0}"
 GENERATED="$OUT/Generated"
 HEADERS=""
 SMOKE_DIR=""
+STAGED_LIBS=""
 
 cleanup() {
     [[ -z "$HEADERS" ]] || rm -rf "$HEADERS"
     [[ -z "$SMOKE_DIR" ]] || rm -rf "$SMOKE_DIR"
+    [[ -z "$STAGED_LIBS" ]] || rm -rf "$STAGED_LIBS"
     [[ -z "$STAGE" ]] || rm -rf "$STAGE"
     if [[ -n "$PREVIOUS" && ! -e "$DEST" ]]; then
         mv "$PREVIOUS" "$DEST"
@@ -103,25 +113,30 @@ METADATA="$(cargo metadata --locked --format-version 1)"
 TARGET_DIR="$(jq -r .target_directory <<<"$METADATA")"
 [[ -n "$TARGET_DIR" && "$TARGET_DIR" != null ]] || die "cargo metadata reported no target directory"
 
-slice_archive() { printf '%s/%s/%s/%s\n' "$TARGET_DIR" "$1" "$PROFILE" "$LIB"; }
+slice_archive() { printf '%s/%s/%s/%s\n' "$TARGET_DIR" "$1" "$PROFILE" "$BUILT_LIB"; }
 slice_dylib() { printf '%s/%s/%s/libphux_client_ffi.dylib\n' "$TARGET_DIR" "$1" "$PROFILE"; }
+
+STAGED_LIBS="$(mktemp -d "${TMPDIR:-/tmp}/phux-mobile-ffi-staged.XXXXXX")"
+staged_archive() { printf '%s/%s/%s\n' "$STAGED_LIBS" "$1" "$LIB"; }
 
 step "ensuring Apple Rust targets"
 for target in "${TARGETS[@]}"; do rustup target add "$target" >/dev/null; done
 
-step "building $CRATE ($PROFILE, $FEATURES)"
+step "building $CRATE ($PROFILE, $FEATURES, no default features)"
 for target in "${TARGETS[@]}"; do
     echo "    - $target"
     rm -f "$(slice_archive "$target")"
     cargo build --locked --profile "$PROFILE" --target "$target" \
-        -p "$CRATE" --features "$FEATURES"
+        -p "$CRATE" --no-default-features --features "$FEATURES"
     [[ -s "$(slice_archive "$target")" ]] || die "missing archive for $target"
+    mkdir -p "$STAGED_LIBS/$target"
+    cp "$(slice_archive "$target")" "$(staged_archive "$target")"
 done
 
 step "generating matching Swift bindings"
 rm -rf "$GENERATED"
 mkdir -p "$GENERATED"
-cargo run --locked --profile "$PROFILE" -p "$CRATE" --features "$FEATURES" \
+cargo run --locked --profile "$PROFILE" -p "$CRATE" --no-default-features --features "$FEATURES" \
     --bin uniffi-bindgen -- generate --library "$(slice_dylib "$MAC_TARGET")" \
     --language swift --out-dir "$GENERATED"
 
@@ -138,7 +153,7 @@ step "assembling PhuxFFI.xcframework"
 rm -rf "$OUT/PhuxFFI.xcframework"
 xcargs=()
 for target in "${TARGETS[@]}"; do
-    xcargs+=(-library "$(slice_archive "$target")" -headers "$HEADERS")
+    xcargs+=(-library "$(staged_archive "$target")" -headers "$HEADERS")
 done
 xcodebuild -create-xcframework "${xcargs[@]}" -output "$OUT/PhuxFFI.xcframework" >/dev/null
 

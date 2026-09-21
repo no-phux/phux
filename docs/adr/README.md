@@ -178,8 +178,8 @@ not a summary: the TL;DR lives in the ADR.
 | [0131](./0131-last-shell-exit-keeps-a-terminal.md) | Last-shell exit keeps a terminal | Accepted (amends [0105](./0105-sessions-can-outlive-their-last-window.md), [0063](./0063-ephemeral-server-lifetime.md)) |
 | [0132](./0132-swarm-members-are-coordinator-clients.md) | Swarm members are coordinator clients | Proposed (amends [0009](./0009-phux-vs-mux-positioning.md), [0092](./0092-durable-work-coordinator-authority.md)) |
 | [0133](./0133-one-client-runtime-below-every-binding.md) | One client runtime below every binding | Accepted (builds on [0020](./0020-layered-render.md), [0100](./0100-the-tui-is-its-own-crate.md)) |
-| [0134](./0134-connected-lanes-refine-the-binding-boundary.md) | Connected lanes refine the binding boundary | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md)) |
-| [0135](./0135-one-binding-crate.md) | One binding crate: one projection, two encoders | Accepted (builds on [0133](./0133-one-client-runtime-below-every-binding.md), [0134](./0134-connected-lanes-refine-the-binding-boundary.md)) |
+| [0134](./0134-connected-lanes-refine-the-binding-boundary.md) | Connected lanes refine the binding boundary | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md); superseded in part by [0135](./0135-one-binding-crate.md)) |
+| [0135](./0135-one-binding-crate.md) | One binding crate: one projection, two encoders | Accepted (amends [0133](./0133-one-client-runtime-below-every-binding.md), [0134](./0134-connected-lanes-refine-the-binding-boundary.md)) |
 | [0136](./0136-hub-mirrors-satellite-agent-metadata.md) | A hub mirrors two satellite agent metadata keys | Accepted (amends [0108](./0108-a-hub-relays-host-queries-per-request.md)) |
 
 ## When to write an ADR

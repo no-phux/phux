@@ -37,13 +37,26 @@ required-features = ["uniffi"]
 # `include/phux/client.h` declares. `cargo build -p phux-client-ffi` links no
 # UniFFI scaffolding and no proc-macro generator.
 default = ["c-abi"]
-c-abi = []
+# `dep:` deps here are used only under `src/c/`: JSON-lines re-encoding
+# (bytes), create-operation nonces (uuid), the `[[remote]]`/`[[satellite]]`
+# registry schema (phux-config) and the embedder-facing log init (tracing,
+# tracing-subscriber). Gating them keeps the mobile artifact's dependency
+# closure the same size it was as `phux-mobile-ffi`.
+c-abi = ["dep:bytes", "dep:uuid", "dep:phux-config", "dep:tracing", "dep:tracing-subscriber"]
 # The mobile lane: the Swift/Kotlin surface UniFFI generates. Off by default
-# so Cockpit's `ffi-release` archive never carries it (ADR-0135).
-uniffi = ["dep:uniffi", "dep:thiserror", "dep:unicode-segmentation"]
+# so Cockpit's `ffi-release` archive never carries it (ADR-0135). Kitty
+# graphics stays on for parity with the `phux-mobile-ffi` era artifact (its
+# `engine` feature carried `libghostty-vt/kitty-graphics` so the artifact
+# exposed the image surface); nothing on this side reads placements yet, but
+# the capability isn't dropped silently in a shipped artifact.
+uniffi = [
+    "dep:uniffi",
+    "dep:thiserror",
+    "dep:unicode-segmentation",
+    "libghostty-vt/kitty-graphics",
+]
 
 [dependencies]
-bytes.workspace = true
 libghostty-vt.workspace = true
 phux-client-core = { workspace = true, features = ["native-engine"] }
 phux-protocol.workspace = true
@@ -51,26 +64,33 @@ phux-protocol.workspace = true
 # carries them as JSON lines again, so the same workspace-pinned encoder
 # re-emits them. No new crate enters the lockfile.
 serde_json.workspace = true
+# The C ABI re-encodes the bridge's decoded records as JSON-line bytes.
+# Optional: `c-abi` only, see [features].
+bytes = { workspace = true, optional = true }
 # The server requires UUID-shaped create-operation nonces, just as the CLI
 # emits. Reuse the already-locked workspace v4 implementation rather than
 # inventing a second collision-prone generator for concurrent native clients.
-uuid.workspace = true
+# Optional: `c-abi` only, see [features].
+uuid = { workspace = true, optional = true }
 # Remote hosts (`remote` module, ADR-0007/ADR-0031/ADR-0093 rung 1) are the
 # runtime's relay tunnel behind a C handle (ADR-0133): resolution, dial
 # planning, trust rules and the relay live there, so an embedder never
 # carries a second registry reader or a second dialer. The machine-registry
 # snapshot still reads `[[remote]]` and `[[satellite]]` entries through the
-# CLI's own schema.
+# CLI's own schema. Always on: the runtime layer both encoders sit on.
 phux-client-runtime.workspace = true
-phux-config.workspace = true
+# The `[[remote]]`/`[[satellite]]` registry schema `src/c/remote/registry.rs`
+# reads. Optional: `c-abi` only, see [features].
+phux-config = { workspace = true, optional = true }
 # `phux_client_log_init` gives an embedder the tunnel's lifecycle on its own
 # stderr, and the dial stacks (quinn, rustls, phux-dial) already speak
 # `tracing`, so without a subscriber their spans are dropped. Both crates are
 # workspace deps already locked through phux-server at these exact features
 # (env-filter + fmt); nothing new enters Cargo.lock. tracing's `log` feature
-# stays off: feature unification would switch it on workspace-wide.
-tracing.workspace = true
-tracing-subscriber.workspace = true
+# stays off: feature unification would switch it on workspace-wide. Optional:
+# `c-abi` only, see [features].
+tracing = { workspace = true, optional = true }
+tracing-subscriber = { workspace = true, optional = true }
 
 # The binding generator and its runtime scaffolding, behind the `uniffi`
 # feature. It is new to this workspace's DEFAULT graph only when that feature

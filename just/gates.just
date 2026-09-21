@@ -24,10 +24,14 @@ crate-check PACKAGE FEATURES="":
 # already --all-features, but the unit pool builds default features only, so
 # this lane's tests would otherwise stop running the day the two shims merged.
 # It is not a default feature precisely so Cockpit's archive never links it.
+# --no-default-features --lib: the mobile artifact never carries the c-abi
+# lane (see the build scripts), and its own ~200 tests already run in the
+# default-features unit pool, so this only needs to prove the lib target
+# (projection/ plus uniffi/) builds and passes with c-abi off.
 [group('gates')]
 [private]
 binding-uniffi-test:
-    {{AUTO_SPAWN_BACKSTOP}} cargo test --locked -p phux-client-ffi --features uniffi
+    {{AUTO_SPAWN_BACKSTOP}} cargo test --locked -p phux-client-ffi --no-default-features --features uniffi --lib
 
 
 # One agent integration's type, unit, packed-artifact, and audit gates.
