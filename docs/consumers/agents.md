@@ -104,6 +104,14 @@ child's exit code** (125 when phux itself gives up), so
 the loop for an interactive or long-lived program — a REPL, a pager, an
 agent TUI — where there is no sentinel to harvest.
 
+Because the sentinels are a *typed shell command line*, `run` first
+checks that a shell is what reads the pane — the same available-shell
+precondition `agent start` applies, from the server-owned
+`phux.pane-occupant/v1` record cross-checked with OSC-133 state. Against
+`vim`, `less`, or another agent those bytes would be keystrokes, so the
+verb refuses with `agent_pane_not_available` (exit 2) and types nothing.
+`--force` (MCP: `force: true`) skips the check.
+
 ```sh
 phux run --json --timeout 120 build "cargo test"
 ```
@@ -462,8 +470,10 @@ the whole document.
 ```
 
 `exit_code` is the child's `$?` from the printed sentinel, not shell
-integration. `duration_ms` is wall-clock from the start of the `--timeout` budget (before `TARGET` is resolved), including connection, submission, and poll latency. `truncated` is true
-when the `BEGIN` marker scrolled out of the viewport. **On timeout,
+integration. `duration_ms` is wall-clock from the start of the `--timeout` budget (before `TARGET` is resolved), including connection, submission, and poll latency. The capture is scrollback-aware — once the sentinel lands,
+`run` re-reads the pane with its retained history — so `truncated` is
+true only when the `BEGIN` marker is no longer in that history at all,
+not merely when the command outscrolled the viewport. **On timeout,
 `--json` emits no JSON.** Do not expect `outcome: "timed_out"` here;
 that shape is MCP `phux_run`.
 
