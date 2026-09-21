@@ -46,6 +46,8 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+# The connected lane's e2e test runs the real server the TUI runs.
+phux-server-testkit.workspace = true
 # A registry fixture file for the resolution and relay tests.
 tempfile.workspace = true
 # `TunnelShared::inject_failure` for the captured-tunnel test.

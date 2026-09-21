@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: stable
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-21
 ---
 
 # 0133 — One client runtime below every binding
@@ -74,12 +74,18 @@ the cell shape and the duplicated orchestration, not the generator.
    while direct C would require another connected-runtime ABI and two
    hand-written language adapters. The projection shim lives in this
    repository so its generated source and native artifact share a revision.
+6. **A binding may keep the decode point without keeping the socket.**
+   The C ABI's per-frame behavior reads state its owning thread owns, so
+   its connected clients have the runtime retain inbound frames and feed
+   them on that thread. Decision 2 forbids a second connection state
+   machine, not a binding's own per-frame projection.
 
 Rungs land in this order, each shippable on its own: transport into the
 runtime (the C tunnel consumes it; Cockpit unchanged); cell layout into
 core; engine owner thread and frame pump into the runtime; C ABI over the
 runtime; mobile over the runtime at its next `PHUX_REV` pin; the Swift
-spike. The beads epic that cites this ADR tracks them.
+spike; the C ABI's connected mode, so Cockpit sheds its own dialer,
+ladder and framing. The beads epic that cites this ADR tracks them.
 
 ## Why
 
@@ -97,8 +103,11 @@ tests today, and moving the code moves the tests with it.
   and quinn edges, and the mobile UniFFI crate projects it without state.
 - Until mobile re-pins, the reconnect policy has one in-repo owner and
   no in-repo caller. The pin is the serialization point, not a choice.
-- Cockpit keeps its Zig reconnect and its socket-pair tunnel model;
-  moving it onto the runtime-owned pump is a later rung, not this one.
+- The C ABI carries two lanes: `phux_client_new`'s embedded one, where the
+  embedder owns the socket, and `phux_client_connect`'s connected one. Every
+  consumer runs the connected lane; the embedded one stays because a harness
+  feeds synthetic frames through it, and the cost is that the two must be
+  kept mutually exclusive at runtime.
 - The mobile control plane (uploads, transcribe, directory listings,
   receipts) is a superset of the C ABI's. The runtime grows to it rather
   than the C ABI shrinking.

@@ -55,6 +55,16 @@ pub fn terminalPaintIndex(model: *const Model, terminal_ref: TerminalRef) usize 
     return @intCast(0x0000_8000_0000_0000 | (terminal_ref.hash() & 0x0000_7fff_ffff_ffff));
 }
 
+fn paneMeasuredCells(model: *const Model, tree: *const layout.Tree, pane: layout.Pane) usize {
+    if (model.provider.terminalConst(pane.terminal)) |terminal| {
+        return @as(usize, terminal.session.cols()) * @as(usize, terminal.session.rows());
+    }
+    if (model.remotePaintPresentationIn(tree, pane.terminal)) |presentation| {
+        return @as(usize, presentation.cols) * @as(usize, presentation.rows);
+    }
+    return paint_budget.full_cells;
+}
+
 fn authorityPreviewText(builder: *canvas.Builder, tokens: canvas.DesignTokens, authority: []const u8, width: f32) !?[]const u8 {
     var canonical_buf: [url_module.max_url_bytes]u8 = undefined;
     for (authority, 0..) |byte, index| canonical_buf[index] = std.ascii.toLower(byte);
@@ -205,19 +215,24 @@ fn paintTerminalContents(model: *const Model, builder: *canvas.Builder, tree: *c
     const count = panes.len;
     const focus_node = tree.focus;
     const grid_tokens = projection.terminalTokensFrom(tokens, model);
-    // Hybrid C (Cockpit pkg3b / Metal): focused pane of the active window
-    // takes a full product grid; everything else shares leftover as a
-    // last-N crop at `max_rows / 4`. Glyphs are not `widget_glyph_budget / N`.
-    // Commands/text/paths keep forward-slack inside a tier so a later
-    // full pane cannot be stolen. `widget_cell_reserve` is not a floor.
+    // Hybrid C (Cockpit pkg3b / Metal): when measured pane cells fit in
+    // the store, every visible pane paints full. Otherwise the focused
+    // pane of the active window takes a full product grid and everything
+    // else shares leftover as a last-N crop at `max_rows / 4`. Glyphs are
+    // not `widget_glyph_budget / N`. Commands/text/paths keep forward-slack
+    // inside a tier so a later full pane cannot be stolen.
+    // `widget_cell_reserve` is not a floor.
     var focused_flags: [layout.max_panes]bool = @splat(false);
+    var pane_cells: [layout.max_panes]usize = @splat(paint_budget.full_cells);
     for (panes, 0..) |pane, index| {
         focused_flags[index] = pane.node == focus_node;
+        pane_cells[index] = paneMeasuredCells(model, tree, pane);
     }
     const budget_plan = paint_budget.plan(.{
         .window_active = window_active,
         .pane_count = count,
         .focused = focused_flags[0..count],
+        .pane_cells = pane_cells[0..count],
     });
 
     for (panes, 0..) |pane, index| {

@@ -1004,7 +1004,8 @@ test "replay registers shared mux events without opening peer workers" {
     const peer = try support.PhuxProvider.create(testing.allocator, testing.io, .{ .unix = "/replay-must-not-dial" }, null, "replay");
     engine.model.peers.items[0].provider = peer;
     engine.openPeerWakeForReplay(&fx, Effects.channelMsg(.event));
-    try testing.expect(peer.worker == null);
+    // Replay must not dial: the provider never left its embedded client.
+    try testing.expectEqual(.embedded, peer.host.lane);
     try testing.expectEqual(.new, peer.state());
     try testing.expect(!engine.peer_wake_handle.live());
     const key = engine.peer_wake_key;
@@ -1012,7 +1013,8 @@ test "replay registers shared mux events without opening peer workers" {
     try testing.expectEqual(key, fx.takeMsg().?.event.key);
     try fx.feedChannelEvent(key, .closed, "", 0, 0);
     try testing.expectEqual(.closed, fx.takeMsg().?.event.kind);
-    try testing.expect(peer.worker == null);
+    // Replay must not dial: the provider never left its embedded client.
+    try testing.expectEqual(.embedded, peer.host.lane);
 }
 
 test "allocated peer handles stay unique beyond sixteen entries and across growth" {

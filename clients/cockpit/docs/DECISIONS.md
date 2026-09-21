@@ -457,7 +457,9 @@ alphabet, not the cell count.
 
 Equal-cut at N=2 would give both panes half the store and starve glyphs.
 Hybrid C gives the focused pane the full 96 rows and an honest thumbnail
-to the rest.
+to the rest. Measured pane cells (the visible cols×rows, not `max_cells`)
+gate that fallback: if those panes fit in the cell store together, every
+visible pane paints full. Hybrid C last-N applies only when they do not.
 
 The SDK painter emits top-first and drops the bottom. Leftover-budget
 truncation without a crop is therefore **first-N**, which hides the

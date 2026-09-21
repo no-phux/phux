@@ -6,6 +6,7 @@
 compile_error!("phux-client-ffi is a native-only libghostty bridge");
 
 mod client;
+mod connect;
 mod directory;
 mod error;
 mod grid_metadata;
@@ -42,6 +43,7 @@ use phux_protocol::input::mouse::{MouseAction, MouseButton, MouseEvent};
 use phux_protocol::input::paste::{PasteEvent, PasteTrust};
 use phux_protocol::wire::frame::{AttachTarget, FrameKind, ViewportInfo};
 
+pub use connect::*;
 pub use directory::*;
 pub use grid_metadata::*;
 pub use log::*;
@@ -65,6 +67,15 @@ pub struct PhuxClient {
     _not_send_sync: std::marker::PhantomData<*mut ()>,
 }
 
+impl PhuxClient {
+    pub(crate) const fn new(inner: Client) -> Self {
+        Self {
+            inner,
+            _not_send_sync: std::marker::PhantomData,
+        }
+    }
+}
+
 impl std::fmt::Debug for PhuxClient {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -74,7 +85,7 @@ impl std::fmt::Debug for PhuxClient {
     }
 }
 
-fn with_client_mut(
+pub(crate) fn with_client_mut(
     client: *mut PhuxClient,
     f: impl FnOnce(&mut Client) -> Result<(), BridgeError>,
 ) -> PhuxClientResult {
@@ -155,7 +166,7 @@ fn invoke_failure(client: *mut PhuxClient, result: PhuxClientResult) -> PhuxClie
     }
 }
 
-fn invoke_attached(client: *mut PhuxClient) -> PhuxClientResult {
+pub(crate) fn invoke_attached(client: *mut PhuxClient) -> PhuxClientResult {
     let invocation = {
         let client_ref = unsafe { &mut *client };
         if client_ref.inner.attached_notified {
@@ -193,12 +204,12 @@ fn apply_input(
         return Err(BridgeError::state("terminal detach is pending"));
     }
     let queued = match event {
-        InputEvent::Key(event) => client.control.send_key(terminal_id, event.clone()),
-        InputEvent::Mouse(event) => client.control.send_mouse(terminal_id, *event),
-        InputEvent::Focus(event) => client.control.send_focus(terminal_id, *event),
+        InputEvent::Key(event) => client.control().send_key(terminal_id, event.clone()),
+        InputEvent::Mouse(event) => client.control().send_mouse(terminal_id, *event),
+        InputEvent::Focus(event) => client.control().send_focus(terminal_id, *event),
         InputEvent::Paste(event) => {
             client
-                .control
+                .control()
                 .send_paste(terminal_id, event.data.clone(), event.trust)
         }
         _ => false,
@@ -236,11 +247,9 @@ pub unsafe extern "C" fn phux_client_new(
             mem::size_of::<PhuxClientOptions>(),
             options.version,
         )?;
-        let client = Box::new(PhuxClient {
-            inner: Client::new(client_limits(options)?),
-            _not_send_sync: std::marker::PhantomData,
-        });
-        *out = Box::into_raw(client);
+        *out = Box::into_raw(Box::new(PhuxClient::new(Client::new(client_limits(
+            options,
+        )?))));
         Ok(())
     })) {
         Ok(Ok(())) => PhuxClientResult::Ok,
@@ -265,7 +274,7 @@ fn history_cache_cannot_retain_page(options: &PhuxClientOptions) -> bool {
 }
 
 /// Resolves the bootstrap and history bounds a new client will enforce.
-fn client_limits(options: &PhuxClientOptions) -> Result<Limits, BridgeError> {
+pub(crate) fn client_limits(options: &PhuxClientOptions) -> Result<Limits, BridgeError> {
     let limits = BootstrapLimits::new(
         options.max_bootstrap_chunk_bytes,
         options.max_history_page_bytes,
@@ -378,7 +387,7 @@ pub unsafe extern "C" fn phux_client_queue_hello(
         if name.is_empty() {
             return Err(BridgeError::invalid("client name is empty"));
         }
-        if !client.control.open_explicit(name.to_owned()) {
+        if !client.control().open_explicit(name.to_owned()) {
             return Err(BridgeError::state("HELLO was already queued or negotiated"));
         }
         client.hello_queued = true;
@@ -421,7 +430,7 @@ pub unsafe extern "C" fn phux_client_queue_attach(
 
 /// Rejects an ATTACH the runtime lifecycle cannot accept.
 fn ensure_attach_allowed(client: &Client) -> Result<(), BridgeError> {
-    if client.control.status() != phux_client_runtime::control::Status::Negotiated
+    if client.control().status() != phux_client_runtime::control::Status::Negotiated
         || client.detached
     {
         return Err(BridgeError::state(
@@ -486,7 +495,7 @@ fn queue_attach_frame(
     let viewport = ViewportInfo::new(options.cols, options.rows)
         .with_pixels(pixels.map(|value| value.0), pixels.map(|value| value.1));
     let role_policy = client.next_attach_role();
-    if !client.control.attach_explicit(
+    if !client.control().attach_explicit(
         options.attach_id,
         target,
         viewport,
@@ -516,6 +525,11 @@ pub unsafe extern "C" fn phux_client_feed_frame(
 ) -> PhuxClientResult {
     let mut notify_attached = false;
     let result = with_client_mut(client, |client| {
+        if client.is_connected_lane() {
+            return Err(BridgeError::state(
+                "this client's runtime owns the socket; poll instead of feeding",
+            ));
+        }
         let data = unsafe { bytes_in(data, len) }?;
         let frame = decode_server_frame(client, data)?;
         notify_attached = apply_server_frame(client, frame)?;
@@ -528,8 +542,24 @@ pub unsafe extern "C" fn phux_client_feed_frame(
     }
 }
 
+/// The connected lane's tick: feed what the driver read, then publish.
+///
+/// Each frame walks the same path `phux_client_feed_frame` walks, so the
+/// retired-close, profile-validation and agent-generation hooks keep running
+/// on the owning thread. The trailing event drain is what surfaces a status
+/// change or a connection loss that carried no frame.
+pub(crate) fn poll_connected(client: &mut Client) -> Result<bool, BridgeError> {
+    let mut attached = false;
+    for frame in client.take_inbound() {
+        let decoded = decode_server_frame(client, &frame)?;
+        attached |= apply_server_frame(client, decoded)?;
+    }
+    attached |= client.process_runtime_events()?;
+    Ok(attached)
+}
+
 fn decode_server_frame(client: &Client, data: &[u8]) -> Result<FrameKind, BridgeError> {
-    let limits = client.control.decode_limits().unwrap_or_else(|| {
+    let limits = client.control().decode_limits().unwrap_or_else(|| {
         BootstrapLimits::new(client.limits.bootstrap_chunk, client.limits.history_page)
             .unwrap_or_default()
     });
@@ -551,7 +581,7 @@ fn apply_server_frame(client: &mut Client, frame: FrameKind) -> Result<bool, Bri
     #[cfg(test)]
     seed_legacy_test_lifecycle(client)?;
     validate_runtime_frame(client, &frame)?;
-    let runtime_result = client.control.feed(frame).map_err(control_error);
+    let runtime_result = client.control().feed(frame).map_err(control_error);
     record_agent_generation(client, runtime_result.is_ok(), agent_generation);
     let attached = client.process_runtime_events()?;
     runtime_result?;
@@ -591,7 +621,7 @@ fn record_agent_generation(
 
 fn follow_negotiated_session(client: &mut Client) -> Result<(), BridgeError> {
     if matches!(
-        client.control.status(),
+        client.control().status(),
         phux_client_runtime::control::Status::Negotiated
     ) {
         session_rename::negotiated(client)?;
@@ -687,7 +717,7 @@ fn dispatch_extension_frame(client: &mut Client, frame: FrameKind) -> Result<(),
 
 #[cfg(test)]
 fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
-    if client.protocol_ready && !client.control.handshake_ready() {
+    if client.protocol_ready && !client.control().handshake_ready() {
         client.install_profile(
             client
                 .selected_profile
@@ -699,7 +729,7 @@ fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
     if client.attach_queued
         && let Some(attach_id) = client.expected_attach_id
     {
-        let queued = client.control.attach_explicit(
+        let queued = client.control().attach_explicit(
             attach_id,
             AttachTarget::Last,
             ViewportInfo::new(80, 24),
@@ -708,7 +738,7 @@ fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
             None,
         );
         if queued {
-            let _ = client.control.take_outbound();
+            let _ = client.control().take_outbound();
         }
     }
     Ok(())
@@ -718,7 +748,7 @@ fn seed_legacy_test_lifecycle(client: &mut Client) -> Result<(), BridgeError> {
 fn advertised_client_caps(client: &Client) -> phux_protocol::ClientCapabilities {
     client
         .offered_caps
-        .unwrap_or_else(|| client.control.options().client_caps())
+        .unwrap_or_else(|| client.control().options().client_caps())
 }
 
 #[cfg(test)]
@@ -729,7 +759,7 @@ fn advertised_client_caps(client: &Client) -> phux_protocol::ClientCapabilities 
 )]
 fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(), BridgeError> {
     use phux_client_runtime::engine::EngineEvent;
-    if client.control.engine().is_none() {
+    if client.control().engine().is_none() {
         client.install_profile(
             client
                 .selected_profile
@@ -891,11 +921,12 @@ fn apply_kernel_input(client: &mut Client, input: KernelInput<'_>) -> Result<(),
         }
     };
     client
-        .control
+        .control()
         .apply_engine_event(event)
         .map_err(control_error)?;
     client.drain_outbound();
-    for event in client.control.take_events() {
+    let events = client.control().take_events();
+    for event in events {
         let _ = client.process_runtime_event(event)?;
     }
     Ok(())

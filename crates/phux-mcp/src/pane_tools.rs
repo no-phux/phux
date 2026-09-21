@@ -2,23 +2,20 @@
 //! `phux_spawn`, `phux_signal`, `phux_tag`, `phux_rename`, and the three
 //! spatial edits.
 //!
-//! Each used to execute the canonical CLI; each now calls the library home
-//! that CLI verb calls and returns the same document. Where the document is
-//! a CLI `--json` document (spawn, the spatial edits) the library builds it
-//! for both surfaces; the others are MCP envelopes this adapter always
-//! built. The goldens in `crate::goldens` pin every one.
+//! Signal, tag, and rename call the same `phux-client` builders the CLI
+//! verbs call (`signal::deliver`, `tags::apply`, `session::rename_checked`).
+//! Spawn and the spatial edits already did. The goldens in `crate::goldens`
+//! pin every document.
 
 use std::path::Path;
 
 use phux_client::attach::connection::Connection;
-use phux_client::kill::KeyedError;
 use phux_client::layout::SplitDir;
 use phux_client::selector::{self, Selector, format_terminal_id};
 use phux_client::signal::LeaseOutcome;
 use phux_client::spatial::{Direction, SpatialError, SpatialOp};
 use phux_client::spawn::{Placement, RollbackOutcome};
 use phux_client::state;
-use phux_client::tags::{TagSession, TagWriteOutcome};
 use phux_protocol::caps::ServerFeature;
 use phux_protocol::ids::{GroupId, IdempotencyKey, ResourceId, SatelliteHost};
 use phux_protocol::wire::frame::{
@@ -29,9 +26,7 @@ use serde_json::{Value, json};
 
 use crate::cli_adapter::{bounded_string, bounded_strings, enum_string, ratio};
 use crate::cli_tools::optional_bool;
-use crate::tools::{
-    ToolError, contract_error, resolve_one_for_input, socket_arg, strict_object, transport_error,
-};
+use crate::tools::{ToolError, contract_error, socket_arg, strict_object, transport_error};
 
 /// The split ratio the CLI defaults `--ratio` to.
 const DEFAULT_RATIO: f32 = 0.5;
@@ -351,7 +346,7 @@ fn spawn_document(result: SpawnResult) -> Result<Value, ToolError> {
 // -----------------------------------------------------------------------------
 
 /// `phux_signal` — one `SIGNAL_TERMINAL` to the resolved pane's process
-/// group (ADR-0033), resolved as an input verb resolves.
+/// group (ADR-0033), through [`phux_client::signal::deliver`].
 pub(crate) async fn signal(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
@@ -373,12 +368,21 @@ pub(crate) async fn signal(args: &Value) -> Result<Value, ToolError> {
         .transpose()?;
     let socket = socket_arg(args)?;
     let selector = parse_selector(&target)?;
-    let view = state::get_state(&socket).await?;
-    let terminal = resolve_one_for_input(&socket, &selector, &view).await?;
-    let mut conn = Connection::connect(&socket).await?;
-    let outcome = send_signal(&mut conn, terminal, wire_signal(&signal), key).await?;
-    drop(conn);
-    match outcome {
+    let mut notices = Vec::new();
+    let delivered = match phux_client::signal::deliver(
+        &socket,
+        &selector,
+        wire_signal(&signal),
+        key,
+        &mut notices,
+    )
+    .await
+    {
+        Ok(delivered) => delivered,
+        Err(err) => return Err(signal_error(&target, err)),
+    };
+    crate::tools::warn_partial_view("signal", &notices);
+    match delivered.outcome {
         LeaseOutcome::Ok => Ok(json!({
             "schema_version": 1,
             "signaled": true,
@@ -395,23 +399,21 @@ pub(crate) async fn signal(args: &Value) -> Result<Value, ToolError> {
     }
 }
 
-/// One `SIGNAL_TERMINAL`, keyed when `key` is set (L1 §5.1.1). A keyed
-/// signal to a server without `KEYED_SIGNAL` is refused before it is sent.
-async fn send_signal(
-    conn: &mut Connection,
-    terminal: ResourceId,
-    signal: TerminalSignal,
-    key: Option<IdempotencyKey>,
-) -> Result<LeaseOutcome, ToolError> {
-    let Some(key) = key else {
-        let command = phux_client::signal::signal_command(terminal, signal);
-        let (result, _) = conn.request(1, command).await?.into_parts();
-        return Ok(LeaseOutcome::from_result(result));
-    };
-    match phux_client::signal::signal_keyed(conn, 1, terminal, signal, key).await {
-        Ok((outcome, _)) => Ok(outcome),
-        Err(KeyedError::Unsupported) => Err(unsupported_keyed_signal()),
-        Err(KeyedError::Attach(err)) => Err(err.into()),
+fn signal_error(target: &str, err: phux_client::signal::SignalError) -> ToolError {
+    use phux_client::kill::KeyedError;
+    use phux_client::signal::SignalError;
+    match err {
+        SignalError::Miss { degradation } if degradation.is_complete() => {
+            ToolError::new("no such target")
+        }
+        SignalError::Miss { degradation } => ToolError::new(format!(
+            "could not resolve {target}: this server's view of the fleet is \
+             incomplete ({}), so a miss here does not mean the target is gone",
+            degradation.notices().join("; ")
+        )),
+        SignalError::Agent(err) => ToolError::new(err.to_string()),
+        SignalError::Keyed(KeyedError::Unsupported) => unsupported_keyed_signal(),
+        SignalError::Keyed(KeyedError::Attach(err)) => err.into(),
     }
 }
 
@@ -429,8 +431,8 @@ fn wire_signal(name: &str) -> TerminalSignal {
 // tag
 // -----------------------------------------------------------------------------
 
-/// `phux_tag` — read or edit Terminal tags through `phux_client::tags`, the
-/// home `phux tag` calls. Edits are read back from the server, never echoed.
+/// `phux_tag` — read or edit Terminal tags through [`phux_client::tags::apply`],
+/// the home `phux tag` calls. Edits are read back from the server, never echoed.
 pub(crate) async fn tag(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
@@ -448,90 +450,44 @@ pub(crate) async fn tag(args: &Value) -> Result<Value, ToolError> {
     }
     let socket = socket_arg(args)?;
     let selector = parse_selector(&target)?;
-    let mut session = phux_client::tags::prepare(&socket, &selector).await?;
-    if session.targets.is_empty() {
-        return Err(crate::kill_tool::target_miss(&target, &session.degradation));
-    }
-    let rows = match action.as_str() {
-        "ls" => listed_rows(&session),
-        edit => edited_rows(&mut session, edit, &tags).await?,
+    let op = match action.as_str() {
+        "ls" => phux_client::tags::TagOp::List,
+        "add" => phux_client::tags::TagOp::Add(&tags),
+        _ => phux_client::tags::TagOp::Remove(&tags),
     };
-    drop(session);
-    let terminals: Vec<Value> = rows
+    let outcome = match phux_client::tags::apply(&socket, &selector, op).await {
+        Ok(outcome) => outcome,
+        Err(phux_client::tags::TagError::Miss { degradation }) if degradation.is_complete() => {
+            return Err(ToolError::new(format!("no such target: {target}")));
+        }
+        Err(phux_client::tags::TagError::Miss { degradation }) => {
+            return Err(ToolError::new(format!(
+                "could not resolve '{target}': this server's view of the fleet is incomplete \
+                 ({}), so a miss here does not mean the target is gone",
+                degradation.notices().join("; ")
+            )));
+        }
+        Err(phux_client::tags::TagError::WriteRefused { message }) => {
+            return Err(ToolError::new(message));
+        }
+        Err(phux_client::tags::TagError::Attach(err)) => return Err(err.into()),
+    };
+    crate::tools::warn_partial_view("tag", outcome.view.notices());
+    let terminals: Vec<Value> = outcome
+        .rows
         .iter()
         .map(|(id, tags)| json!({ "terminal": format_terminal_id(id), "tags": tags }))
         .collect();
     Ok(json!({ "schema_version": 1, "action": action, "terminals": terminals }))
 }
 
-/// Each resolved Terminal with its current tags, from the fetched index.
-fn listed_rows(session: &TagSession) -> Vec<(ResourceId, Vec<String>)> {
-    session
-        .targets
-        .iter()
-        .map(|id| {
-            (
-                id.clone(),
-                session.index.get(id).cloned().unwrap_or_default(),
-            )
-        })
-        .collect()
-}
-
-/// Apply `add`/`rm` to every resolved Terminal, returning the confirmed
-/// tags. Request ids and write order match `phux tag`'s.
-async fn edited_rows(
-    session: &mut TagSession,
-    action: &str,
-    tags: &[String],
-) -> Result<Vec<(ResourceId, Vec<String>)>, ToolError> {
-    let wanted = phux_client::tags::normalize(tags);
-    let mut rows = Vec::with_capacity(session.targets.len());
-    let mut request_id: u32 = 100;
-    for id in session.targets.clone() {
-        let mut current = session.index.get(&id).cloned().unwrap_or_default();
-        edit_tags(&mut current, action, &wanted);
-        request_id += 1;
-        let (outcome, _) =
-            phux_client::tags::write_tags(&mut session.conn, request_id, &id, &current).await?;
-        request_id += 1;
-        match outcome {
-            TagWriteOutcome::Confirmed(confirmed) => rows.push((id, confirmed)),
-            TagWriteOutcome::Refused(refusal) => {
-                return Err(ToolError::new(format!(
-                    "tag write to {} could not be confirmed: server refused the read: {refusal}",
-                    format_terminal_id(&id),
-                )));
-            }
-        }
-    }
-    Ok(rows)
-}
-
-/// `add` appends each missing tag; `rm` drops each named one. The result is
-/// sorted and de-duplicated, as `phux tag` writes it.
-fn edit_tags(current: &mut Vec<String>, action: &str, tags: &[String]) {
-    if action == "add" {
-        for tag in tags {
-            if !current.iter().any(|existing| existing == tag) {
-                current.push(tag.clone());
-            }
-        }
-    } else {
-        current.retain(|existing| !tags.iter().any(|tag| tag == existing));
-    }
-    current.sort();
-    current.dedup();
-}
-
 // -----------------------------------------------------------------------------
 // rename
 // -----------------------------------------------------------------------------
 
-/// `phux_rename` — the `phux.session.name/v1` write through
-/// `phux_client::session::rename`, checked against a fresh snapshot first
-/// (`SET_METADATA` has no reply to refuse on) and followed by the
-/// `GET_STATE` ordering barrier `phux rename` sends.
+/// `phux_rename` — through [`phux_client::session::rename_checked`], the
+/// snapshot refusal check, write, and `GET_STATE` ordering barrier
+/// `phux rename` uses.
 pub(crate) async fn rename(args: &Value) -> Result<Value, ToolError> {
     strict_object(
         args,
@@ -542,47 +498,30 @@ pub(crate) async fn rename(args: &Value) -> Result<Value, ToolError> {
     let new_name = bounded_string(args, "new_name", true)?.unwrap_or_default();
     let socket = socket_arg(args)?;
     let mut conn = Connection::connect(&socket).await?;
-    let renamed = rename_on(&mut conn, &session, &new_name).await;
-    if renamed.is_ok() {
-        conn.shutdown().await;
-    } else {
-        drop(conn);
+    let mut notices = Vec::new();
+    let renamed =
+        phux_client::session::rename_checked(&mut conn, &session, &new_name, &mut notices).await;
+    crate::tools::warn_partial_view("rename", &notices);
+    match renamed {
+        Ok(()) => {
+            conn.shutdown().await;
+            Ok(json!({
+                "schema_version": 1,
+                "renamed": { "from": session, "to": new_name },
+            }))
+        }
+        Err(phux_client::session::RenameError::Attach(err)) => {
+            drop(conn);
+            Err(err.into())
+        }
+        Err(err) => {
+            drop(conn);
+            Err(ToolError::new(format!(
+                "rename refused for session {session:?}: {}",
+                err.reason()
+            )))
+        }
     }
-    renamed?;
-    Ok(json!({
-        "schema_version": 1,
-        "renamed": { "from": session, "to": new_name },
-    }))
-}
-
-/// The checked rename on an open connection: refuse against a fresh
-/// snapshot, write, then the ordering barrier.
-async fn rename_on(conn: &mut Connection, session: &str, new_name: &str) -> Result<(), ToolError> {
-    let (snapshot, _) = state::get_state_on(conn).await?.into_parts();
-    if let Some(reason) = rename_refusal(&snapshot, session, new_name) {
-        return Err(ToolError::new(format!(
-            "rename refused for session {session:?}: {reason}"
-        )));
-    }
-    phux_client::session::rename(conn, 1, session, new_name).await?;
-    // An ordering barrier, not a verdict: once the server answers this
-    // GET_STATE it has processed the write before it.
-    let _ordering_barrier = state::get_state_on(conn).await?;
-    Ok(())
-}
-
-/// Why the rename must not be sent: an unknown session, or a new name
-/// another session already holds. Session names are hub-local, so a partial
-/// fleet cannot hide either.
-fn rename_refusal(snapshot: &SessionSnapshot, session: &str, new_name: &str) -> Option<String> {
-    let has = |name: &str| snapshot.sessions.iter().any(|s| s.name == name);
-    if !has(session) {
-        return Some("no such session".to_owned());
-    }
-    if session != new_name && has(new_name) {
-        return Some(format!("{new_name:?} already exists"));
-    }
-    None
 }
 
 // -----------------------------------------------------------------------------
@@ -744,14 +683,5 @@ mod tests {
             "0.3".parse::<f32>().unwrap().to_bits()
         );
         assert!(cli_ratio(&json!({ "ratio": 1.0 })).is_err());
-    }
-
-    #[test]
-    fn tag_edits_sort_dedup_and_remove() {
-        let mut tags = vec!["b".to_owned(), "a".to_owned()];
-        edit_tags(&mut tags, "add", &["c".to_owned(), "a".to_owned()]);
-        assert_eq!(tags, ["a", "b", "c"]);
-        edit_tags(&mut tags, "rm", &["b".to_owned()]);
-        assert_eq!(tags, ["a", "c"]);
     }
 }

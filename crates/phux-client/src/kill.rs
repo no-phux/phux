@@ -1,12 +1,12 @@
-//! Wire primitives for `phux kill`.
+//! `phux kill` — wire primitives and the shared verb orchestration.
 //!
 //! Covers `SHUTDOWN`, `KILL_RESOURCES` (a whole session in one round trip),
 //! `KILL_RESOURCE` (one Terminal), and the keep-empty-session clear that
 //! lets the server remove an emptied session (ADR-0105).
 //!
-//! Selector resolution (which Terminals a target names) and the choice
-//! between the whole-session and per-pane paths stay client-side — see
-//! `crates/phux/src/commands/kill.rs`.
+//! [`selected`] is the selector resolution and whole-session / empty-session
+//! / per-pane choice both `phux kill` and MCP `phux_kill` call, so those
+//! surfaces cannot drift.
 
 use phux_protocol::ResourceId;
 use phux_protocol::caps::ServerFeature;
@@ -15,9 +15,11 @@ use phux_protocol::wire::frame::{
     Command, CommandResult, CommandValue, ErrorCode, FrameKind, SESSION_KEEP_EMPTY_KEY, Scope,
     encode_session_keep_empty,
 };
+use phux_protocol::wire::info::SessionSnapshot;
 
 use crate::attach::AttachError;
 use crate::attach::connection::Connection;
+use crate::selector::{self, Selector};
 use crate::state::Degradation;
 
 /// What a `SHUTDOWN` request answered.
@@ -309,6 +311,341 @@ pub async fn clear_session_keep_empty(
     .await
 }
 
+/// A successful [`selected`] kill.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Selected {
+    /// Interleaved notices from the kill command(s) themselves (a hub's
+    /// per-satellite unreachability on the kill round trip).
+    pub interleaved: Vec<String>,
+}
+
+/// Why [`selected`] did not kill the target.
+#[derive(Debug, thiserror::Error)]
+pub enum KillError {
+    /// The server does not advertise `KEYED_SIGNAL`, so a keyed retry would
+    /// run again. Nothing was sent.
+    #[error(
+        "the server does not advertise KEYED_SIGNAL, so it would run a keyed retry again; \
+         nothing was sent"
+    )]
+    UnsupportedKeyedSignal,
+    /// The selector matched nothing against a complete view, or a named
+    /// session is absent (hub-local, so a partial fleet cannot hide it).
+    #[error("no such target: {target}")]
+    NoSuchTarget {
+        /// The selector as the caller typed it.
+        target: String,
+    },
+    /// The selector matched nothing against a partial fleet view: a miss
+    /// here does not mean the target is gone.
+    #[error(
+        "could not resolve '{target}': this server's view of the fleet is incomplete, so a \
+         miss here does not mean the target is gone"
+    )]
+    Unresolved {
+        /// The selector as the caller typed it.
+        target: String,
+        /// What the snapshot could not see.
+        degradation: Degradation,
+    },
+    /// The server refused a whole-target kill.
+    #[error("kill refused for {label}: {message}")]
+    Refused {
+        /// The target label used in the refusal (`session "work"`, `"@1"`).
+        label: String,
+        /// The server's message.
+        message: String,
+        /// Interleaved notices from that round trip.
+        interleaved: Vec<String>,
+    },
+    /// The server answered a whole-target kill with an unexpected shape.
+    #[error("{label}: {message}")]
+    Unexpected {
+        /// The target label used in the sentence.
+        label: String,
+        /// The unexpected-reply sentence from [`crate::explain`].
+        message: String,
+        /// Interleaved notices from that round trip.
+        interleaved: Vec<String>,
+    },
+    /// One or more per-pane kills were refused; others may have landed.
+    #[error("{}", messages.join("\n"))]
+    PaneRefusals {
+        /// One sentence per refused pane, without a `phux:` prefix.
+        messages: Vec<String>,
+        /// Interleaved notices collected across the loop.
+        interleaved: Vec<String>,
+    },
+    /// An empty-session clear ran but the server still listed the session.
+    #[error("kill refused for session {session:?}: the server kept it")]
+    SessionKept {
+        /// The session that should have gone.
+        session: String,
+    },
+    /// Transport or decode failure.
+    #[error(transparent)]
+    Attach(#[from] AttachError),
+}
+
+impl KillError {
+    /// Interleaved notices from a kill command that still produced an error.
+    #[must_use]
+    pub fn interleaved(&self) -> &[String] {
+        match self {
+            Self::Refused { interleaved, .. }
+            | Self::Unexpected { interleaved, .. }
+            | Self::PaneRefusals { interleaved, .. } => interleaved,
+            _ => &[],
+        }
+    }
+}
+
+/// Resolve `selector` against a fresh snapshot on `conn` and kill what it names.
+///
+/// A whole-session target rides one atomic `KILL_RESOURCES`; an empty
+/// session (ADR-0105) clears its keep-empty mark; a window, pane, `@id`, or
+/// `#tag` target kills each resolved Terminal with `KILL_RESOURCE`. A clean
+/// disconnect after a kill is the server self-exiting once its last session
+/// was reaped: success.
+///
+/// With `key`, the kill is one keyed command (`KILL_RESOURCE` for one
+/// Terminal, `KILL_RESOURCES` for several). An `@N` / `host/@N` target is
+/// sent as written, without a snapshot lookup, so a retry after the first
+/// attempt removed the pane still reaches the server.
+///
+/// Snapshot partial-view notices for a *hit* are appended to `notices`
+/// before the kill runs, so a caller can warn even when the kill then
+/// fails. A miss does not append: the [`KillError::Unresolved`] /
+/// [`KillError::NoSuchTarget`] is the whole answer.
+///
+/// # Errors
+///
+/// [`KillError`] — see its variants.
+pub async fn selected(
+    conn: &mut Connection,
+    selector: &Selector,
+    target: &str,
+    key: Option<IdempotencyKey>,
+    notices: &mut Vec<String>,
+) -> Result<Selected, KillError> {
+    if key.is_some() && !keyed_signal_supported(conn) {
+        return Err(KillError::UnsupportedKeyedSignal);
+    }
+    if let (Some(key), Some(id)) = (key, explicit_id(selector)) {
+        return kill_keyed(conn, target, vec![id], key).await;
+    }
+    let (snapshot, degradation) = crate::state::get_state_on(conn).await?.into_parts();
+    if let Some(session) = selector::whole_session_name(selector, &snapshot) {
+        let ids = selector::resolve(selector, &snapshot);
+        if ids.is_empty() && session_is_empty(&snapshot, &session) {
+            return kill_empty_session(conn, &session).await;
+        }
+        if ids.is_empty() {
+            return Err(KillError::NoSuchTarget {
+                target: target.to_owned(),
+            });
+        }
+        notices.extend(degradation.notices().iter().cloned());
+        return kill_whole_session(conn, &session, ids, key).await;
+    }
+    let terminals = resolve_terminals(conn, selector, &snapshot).await;
+    if terminals.is_empty() {
+        return Err(target_miss(target, degradation));
+    }
+    notices.extend(degradation.notices().iter().cloned());
+    match key {
+        Some(key) => kill_keyed(conn, target, terminals, key).await,
+        None => kill_each_terminal(conn, terminals).await,
+    }
+}
+
+/// The one id an explicit `@N` / `host/@N` target names.
+fn explicit_id(selector: &Selector) -> Option<ResourceId> {
+    match selector {
+        Selector::ResourceId(id) => Some(ResourceId::local(*id)),
+        Selector::SatelliteResourceId { host, id } => {
+            Some(ResourceId::satellite(host.as_str(), *id))
+        }
+        _ => None,
+    }
+}
+
+/// A miss, told apart so a partial fleet view never claims the target is
+/// gone: `#tag` and `@id` search the pane list a hub aggregates.
+fn target_miss(target: &str, degradation: Degradation) -> KillError {
+    if degradation.is_complete() {
+        KillError::NoSuchTarget {
+            target: target.to_owned(),
+        }
+    } else {
+        KillError::Unresolved {
+            target: target.to_owned(),
+            degradation,
+        }
+    }
+}
+
+/// The Terminals a non-session selector names. A `#tag` selector resolves
+/// against L3 tag metadata fetched on this same connection; every other form
+/// is pure snapshot resolution.
+async fn resolve_terminals(
+    conn: &mut Connection,
+    selector: &Selector,
+    snapshot: &SessionSnapshot,
+) -> Vec<ResourceId> {
+    if matches!(selector, Selector::Tag(_)) {
+        let index = crate::state::fetch_tag_index(conn, snapshot).await;
+        return selector::resolve_with_tags(selector, snapshot, &index);
+    }
+    selector::resolve(selector, snapshot)
+}
+
+/// Whether the session named `name` holds no windows (ADR-0105).
+fn session_is_empty(snapshot: &SessionSnapshot, name: &str) -> bool {
+    snapshot
+        .sessions
+        .iter()
+        .any(|session| session.name == name && session.is_empty())
+}
+
+/// Kill an empty session (ADR-0105): clear its keep-empty mark, then confirm
+/// with a `GET_STATE` on the same ordered connection that it is gone. A
+/// disconnect in its place is the server self-exiting after its last
+/// session went, which is success.
+async fn kill_empty_session(conn: &mut Connection, session: &str) -> Result<Selected, KillError> {
+    clear_session_keep_empty(conn, 1, session).await?;
+    match crate::state::get_state_on(conn).await {
+        Ok(view) if view.snapshot().sessions.iter().any(|s| s.name == session) => {
+            Err(KillError::SessionKept {
+                session: session.to_owned(),
+            })
+        }
+        Ok(_) | Err(AttachError::Disconnected) => Ok(Selected::default()),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// One `KILL_RESOURCES` for a whole session, keyed when `key` is set.
+async fn kill_whole_session(
+    conn: &mut Connection,
+    session: &str,
+    ids: Vec<ResourceId>,
+    key: Option<IdempotencyKey>,
+) -> Result<Selected, KillError> {
+    let reply = match key {
+        Some(key) => kill_resources_keyed(conn, 1, ids, key).await,
+        None => kill_resources(conn, 1, ids).await.map_err(KeyedError::from),
+    };
+    batch_outcome(reply, &format!("session {session:?}"))
+}
+
+/// Kill `terminals` as one keyed command: `KILL_RESOURCE` for one,
+/// `KILL_RESOURCES` for several, so the key names the whole operation.
+async fn kill_keyed(
+    conn: &mut Connection,
+    target: &str,
+    mut terminals: Vec<ResourceId>,
+    key: IdempotencyKey,
+) -> Result<Selected, KillError> {
+    let reply = if terminals.len() == 1 {
+        let terminal = terminals.remove(0);
+        kill_resource_keyed(conn, 1, terminal, key).await
+    } else {
+        kill_resources_keyed(conn, 1, terminals, key).await
+    };
+    batch_outcome(reply, &format!("{target:?}"))
+}
+
+/// The result of one kill round trip that covered a whole target. A
+/// disconnect is the server self-exiting after its last session was reaped,
+/// which is success.
+fn batch_outcome(
+    reply: Result<(KillOutcome, Degradation), KeyedError>,
+    label: &str,
+) -> Result<Selected, KillError> {
+    match reply {
+        Ok((KillOutcome::Killed, degradation)) => Ok(Selected {
+            interleaved: degradation.notices().to_vec(),
+        }),
+        Err(KeyedError::Attach(AttachError::Disconnected)) => Ok(Selected::default()),
+        Err(KeyedError::Unsupported) => Err(KillError::UnsupportedKeyedSignal),
+        Ok((KillOutcome::Refused(message), degradation)) => Err(KillError::Refused {
+            label: label.to_owned(),
+            message,
+            interleaved: degradation.notices().to_vec(),
+        }),
+        Ok((KillOutcome::Unexpected(other), degradation)) => Err(KillError::Unexpected {
+            label: label.to_owned(),
+            message: crate::explain::explain_unexpected("kill", &other),
+            interleaved: degradation.notices().to_vec(),
+        }),
+        Err(KeyedError::Attach(err)) => Err(err.into()),
+    }
+}
+
+/// Kill each Terminal in turn: every refusal is collected rather than
+/// stopping the loop, and a disconnect means the remaining targets are
+/// already gone.
+async fn kill_each_terminal(
+    conn: &mut Connection,
+    terminals: Vec<ResourceId>,
+) -> Result<Selected, KillError> {
+    let mut refusals = Vec::new();
+    let mut interleaved = Vec::new();
+    for (i, terminal) in terminals.into_iter().enumerate() {
+        let request_id = u32::try_from(i).unwrap_or(u32::MAX).saturating_add(1);
+        match kill_one(conn, request_id, terminal).await {
+            KillStep::Killed(notices) => interleaved.extend(notices),
+            KillStep::Refused { message, notices } => {
+                interleaved.extend(notices);
+                refusals.push(message);
+            }
+            KillStep::ServerGone => break,
+        }
+    }
+    if refusals.is_empty() {
+        Ok(Selected { interleaved })
+    } else {
+        Err(KillError::PaneRefusals {
+            messages: refusals,
+            interleaved,
+        })
+    }
+}
+
+/// How one `KILL_RESOURCE` ended.
+enum KillStep {
+    Killed(Vec<String>),
+    Refused {
+        message: String,
+        notices: Vec<String>,
+    },
+    ServerGone,
+}
+
+async fn kill_one(conn: &mut Connection, request_id: u32, terminal: ResourceId) -> KillStep {
+    let label = selector::format_terminal_id(&terminal);
+    match kill_resource(conn, request_id, terminal).await {
+        Ok((KillOutcome::Killed, degradation)) => KillStep::Killed(degradation.notices().to_vec()),
+        Ok((KillOutcome::Refused(message), degradation)) => KillStep::Refused {
+            message: format!("kill refused for {label}: {message}"),
+            notices: degradation.notices().to_vec(),
+        },
+        Ok((KillOutcome::Unexpected(other), degradation)) => KillStep::Refused {
+            message: format!(
+                "{label}: {}",
+                crate::explain::explain_unexpected("kill", &other)
+            ),
+            notices: degradation.notices().to_vec(),
+        },
+        Err(AttachError::Disconnected) => KillStep::ServerGone,
+        Err(err) => KillStep::Refused {
+            message: format!("kill failed for {label}: {err}"),
+            notices: Vec::new(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,5 +877,130 @@ mod tests {
         assert_eq!(degradation.notices(), [NOTICE.to_owned()]);
         drop(conn);
         server.await.expect("scripted server task");
+    }
+
+    fn pane_state() -> phux_protocol::wire::info::SessionSnapshot {
+        use phux_protocol::ids::{SessionId, WindowId};
+        use phux_protocol::wire::info::{ResourceInfo, SessionInfo, WindowInfo};
+        let session = SessionId::new(1);
+        let window = WindowId::new(10);
+        SessionSnapshot::new(session, window, ResourceId::local(1))
+            .with_sessions(vec![SessionInfo::new(session, "work").with_window_count(1)])
+            .with_windows(vec![WindowInfo::new(window, session, "shell")])
+            .with_resources(vec![
+                ResourceInfo::new(ResourceId::local(1), window, 80, 24),
+                ResourceInfo::new(ResourceId::local(2), window, 80, 24),
+            ])
+    }
+
+    async fn run_selected(
+        spec: crate::testkit::ScriptSpec,
+        target: &str,
+    ) -> (Result<Selected, KillError>, Vec<String>, Vec<FrameKind>) {
+        use crate::testkit::ScriptedServer;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let socket = dir.path().join("phux.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let listener = tokio::net::UnixListener::from_std(listener).expect("tokio listener");
+        let server = tokio::spawn(async move { ScriptedServer::accept(&listener, spec).await });
+        let mut conn = Connection::connect(&socket).await.expect("connect");
+        let selector = crate::selector::parse(target).expect("selector");
+        let mut notices = Vec::new();
+        let result = selected(&mut conn, &selector, target, None, &mut notices).await;
+        drop(conn);
+        (result, notices, server.await.expect("scripted server task"))
+    }
+
+    /// A pane target rides `KILL_RESOURCE`; a whole-session target rides
+    /// one `KILL_RESOURCES` for every pane in the session.
+    #[tokio::test]
+    async fn selected_kills_a_pane_or_a_whole_session() {
+        use crate::testkit::ScriptSpec;
+        let (result, notices, seen) =
+            run_selected(ScriptSpec::new().state(pane_state()), "@2").await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(notices.is_empty());
+        assert!(
+            seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::Command {
+                    command: Command::KillResource { terminal_id, .. },
+                    ..
+                } if *terminal_id == ResourceId::local(2)
+            )),
+            "expected KILL_RESOURCE @2; sent {seen:?}"
+        );
+
+        let (result, notices, seen) =
+            run_selected(ScriptSpec::new().state(pane_state()), "work").await;
+        assert!(result.is_ok(), "{result:?}");
+        assert!(notices.is_empty());
+        assert!(
+            seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::Command {
+                    command: Command::KillResources { ids, .. },
+                    ..
+                } if ids.len() == 2
+            )),
+            "expected KILL_RESOURCES for the session; sent {seen:?}"
+        );
+    }
+
+    /// A miss against a complete view is absence; a miss against a partial
+    /// fleet is unresolved. A hit under degradation still kills, and the
+    /// snapshot notices are what the CLI/MCP warning prints.
+    #[tokio::test]
+    async fn selected_splits_a_complete_miss_from_a_partial_view() {
+        use crate::testkit::ScriptSpec;
+        const NOTICE: &str = "satellite build-box is unreachable: link is down";
+
+        let (result, notices, _) = run_selected(ScriptSpec::new().state(pane_state()), "@9").await;
+        assert!(
+            matches!(result, Err(KillError::NoSuchTarget { ref target }) if target == "@9"),
+            "{result:?}"
+        );
+        assert!(notices.is_empty());
+
+        let (result, notices, _) = run_selected(
+            ScriptSpec::new()
+                .state(pane_state())
+                .degradation_notice(NOTICE),
+            "@9",
+        )
+        .await;
+        assert!(
+            matches!(
+                result,
+                Err(KillError::Unresolved { ref target, ref degradation })
+                    if target == "@9" && degradation.notices() == [NOTICE]
+            ),
+            "{result:?}"
+        );
+        assert!(
+            notices.is_empty(),
+            "a miss does not warn as a hit: {notices:?}"
+        );
+
+        let (result, notices, seen) = run_selected(
+            ScriptSpec::new()
+                .state(pane_state())
+                .degradation_notice(NOTICE),
+            "@2",
+        )
+        .await;
+        assert!(result.is_ok(), "{result:?}");
+        assert_eq!(notices, [NOTICE]);
+        assert!(
+            seen.iter().any(|frame| matches!(
+                frame,
+                FrameKind::Command {
+                    command: Command::KillResource { terminal_id, .. },
+                    ..
+                } if *terminal_id == ResourceId::local(2)
+            )),
+            "a partial-view hit still kills; sent {seen:?}"
+        );
     }
 }

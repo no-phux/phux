@@ -333,6 +333,8 @@ fn reconnects_through_the_ladder_after_a_server_restart() {
         let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
         let client = Runtime::connect(Target::uds(&socket), options()).expect("connect");
         wait_for_status(&client, Status::Attached).await;
+        let first = client.connection_epoch();
+        assert_eq!(first, 1, "one connection has opened");
 
         drop(shutdown);
         server.await.unwrap().unwrap();
@@ -346,6 +348,14 @@ fn reconnects_through_the_ladder_after_a_server_restart() {
         let (shutdown, server) = spawn_server(socket.clone(), Some("main"));
         wait_for_status(&client, Status::Attached).await;
         assert!(client.attached_once());
+        // The handle outlived the socket, so the epoch is what a consumer
+        // fences the retired connection's state on; it cannot use the
+        // client's own identity, which never changed.
+        assert!(
+            client.connection_epoch() > first,
+            "the reconnect opened a new connection: {first} -> {}",
+            client.connection_epoch()
+        );
         let terminal = spawn_cat(&client).await;
         assert!(client.send_text(&terminal, "back"));
         wait_for_text(&client, &terminal, "back").await;

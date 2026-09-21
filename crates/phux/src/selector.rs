@@ -9,8 +9,9 @@
 //! One parser-reserved form does **not** come through this door. `%name`
 //! ([ADR-0075](../../../docs/adr/0075-agent-name-addressing.md)) parses to
 //! [`Selector::Agent`], but its proposed contract resolves to exactly one
-//! Terminal *or refuses* — so it must not travel the set-valued [`resolve`] /
-//! [`pick_target_pane`] path the rest of this module re-exports.
+//! Terminal *or refuses* — so it must not travel the set-valued
+//! [`phux_client::selector::resolve`] / [`pick_target_pane`] path the rest
+//! of this module re-exports.
 //! [`phux_client::selector::resolve_with_tags`] deliberately yields nothing
 //! for it, which makes an un-migrated caller fail closed with a selector miss.
 //! No shipped verb branches on [`Selector::Agent`] yet. A future implementation
@@ -18,13 +19,10 @@
 //! `resolve_agent_for_input` for writes and maps
 //! `AgentResolveError::exit_code` onto the verb's status.
 
-pub(crate) use phux_client::selector::{
-    Selector, format_terminal_id, parse, pick_target_pane, resolve, resolve_with_tags,
-    whole_session_name,
-};
+pub(crate) use phux_client::selector::{Selector, format_terminal_id, parse, pick_target_pane};
 
 // `WindowRef` is re-exported for the binary's tests (parse-grammar
 // assertions); the non-test build references only `Selector`/`parse`/
-// `resolve`, so gate it to avoid an unused-import warning there.
+// `pick_target_pane`, so gate it to avoid an unused-import warning there.
 #[cfg(test)]
 pub(crate) use phux_client::selector::WindowRef;

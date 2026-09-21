@@ -747,10 +747,12 @@ local `--hub` without dropping listeners already baked into the unit.
 - **SSH-stdio:** `ssh HOST phux stdio-bridge` splices the wire into the
   server's Unix socket on HOST. Authentication and encryption are SSH's;
   the remote bridge is an ordinary local UDS client. There is no bearer
-  token or certificate pin on this transport. The bridge labels the
-  connection `ssh-stdio` in `phux whoami`, and that label grants nothing:
-  its trust is exactly the UDS peer's. Treat `ssh_client` as a label the
-  connecting side reported, not a verified address.
+  token or certificate pin on this transport. Under `paired` it still
+  holds owner authority: an SSH peer that can run the bridge already owns
+  the host. The bridge labels the connection `ssh-stdio` in `phux whoami`,
+  and that label grants nothing: its trust is exactly the UDS peer's.
+  Treat `ssh_client` as a label the connecting side reported, not a
+  verified address.
 
 ### Remote consumer trust model (opt-in)
 

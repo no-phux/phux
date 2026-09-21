@@ -8,15 +8,17 @@
 //!   former subprocess path holds by construction: a CLI `--json` document
 //!   is built by the same `phux-client` function the CLI prints
 //!   (`session_list::document`, `snapshot::project`,
-//!   `spawn::spawned_document`, `spatial::run`), and every MCP envelope
-//!   (`kill`, `signal`, `tag`, `rename`, `detach`, `agent set/clear`) keeps
-//!   the literal shape the adapter built around a CLI exit before. It was
-//!   also checked once, side by side, against a real server with the
-//!   origin/main adapter. The insert-pane and move-pane goldens pin the CLI
-//!   contract: the former argv passed `--horizontal`/`--vertical`, which
-//!   `phux` rejects, so that path never produced a document.
+//!   `spawn::spawned_document`, `spatial::run`, `kill::selected`,
+//!   `signal::deliver`, `tags::apply`, `session::rename_checked`), and
+//!   every MCP envelope (`kill`, `signal`, `tag`, `rename`, `detach`,
+//!   `agent set/clear`) keeps the literal shape the adapter built around
+//!   a CLI exit before. It was also checked once, side by side, against
+//!   a real server with the origin/main adapter. The insert-pane and
+//!   move-pane goldens pin the CLI contract: the former argv passed
+//!   `--horizontal`/`--vertical`, which `phux` rejects, so that path
+//!   never produced a document.
 //! - `no_tool_outside_the_residue_spawns_a_subprocess` sweeps every catalog
-//!   tool that `crate::tool_table` marks in-process (mirrors included) and
+//!   tool that `crate::tool_table` marks in-process and
 //!   proves, through the `CliAdapter` spawn record, that none reaches the
 //!   CLI; a residue tool is the positive control.
 
@@ -318,6 +320,31 @@ async fn in_process_tools_produce_the_same_documents_as_the_former_subprocess_pa
         spawn_record::take().is_empty(),
         "a migrated tool spawned the CLI"
     );
+}
+
+/// A kill that hits under a partial fleet view still succeeds (the CLI
+/// warns and continues). The shared builder is what prints that warning.
+#[tokio::test]
+async fn kill_under_a_partial_view_still_kills() {
+    const NOTICE: &str = "satellite build-box is unreachable: link is down";
+    let dir = tempfile::tempdir().expect("temp dir");
+    let socket = dir.path().join("golden.sock");
+    let listener = UnixListener::bind(&socket).expect("bind");
+    let spec = || ScriptSpec::new().state(state()).degradation_notice(NOTICE);
+    let server = tokio::spawn(testkit::serve_every(listener, spec));
+    let result = crate::tools::dispatch(
+        "phux_kill",
+        &json!({
+            "target": "@2",
+            "confirm": true,
+            "socket": socket.to_string_lossy(),
+        }),
+    )
+    .await;
+    server.abort();
+    let value = result.expect("partial-view kill");
+    assert_eq!(value["killed"], json!(true));
+    assert_eq!(value["target"], "@2");
 }
 
 /// Every in-process tool with minimal valid arguments against a socket

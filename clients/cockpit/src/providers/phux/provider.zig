@@ -21,6 +21,7 @@ pub const enabled = true;
 pub const max_sessions = host_mod.max_sessions;
 pub const Endpoint = extension.Endpoint;
 pub const State = host_mod.State;
+pub const Lane = host_mod.Lane;
 pub const SyncDelta = host_mod.SyncDelta;
 pub const DocumentSpace = host_mod.DocumentSpace;
 pub const DocumentPoint = host_mod.DocumentPoint;
@@ -71,6 +72,27 @@ const OwnedEndpoint = union(enum) {
     }
 };
 
+/// What the runtime's wake callback is handed. The callback runs on the
+/// driver's thread and may do nothing but post the one-byte readiness token
+/// the UI thread already drains for the embedded lane.
+const WakeContext = struct {
+    handle: ?native_sdk.ChannelHandle = null,
+    /// Set before teardown. `stopConnected` joins the driver, so this only
+    /// has to cover the degraded path where the placeholder could not be
+    /// allocated and the driver outlives the stop.
+    stopped: std.atomic.Value(bool) = .init(false),
+};
+
+/// The runtime's driver has something to drain. This is the connected lane's
+/// `extension.Worker.wake`: same token, same channel, no socket. It runs on
+/// the driver's thread and must do nothing else.
+fn connectedWake(context: ?*anyopaque) callconv(.c) void {
+    const wake: *WakeContext = @ptrCast(@alignCast(context orelse return));
+    if (wake.stopped.load(.acquire)) return;
+    const handle = wake.handle orelse return;
+    _ = handle.post(&transport.wake_payload);
+}
+
 /// A host switch waiting for the next connection generation.
 const Retarget = struct {
     endpoint: OwnedEndpoint,
@@ -89,7 +111,14 @@ pub const PhuxProvider = struct {
     io: std.Io,
     bridge: *transport.Bridge,
     host: *host_mod.Host,
-    worker: ?*extension.Worker = null,
+    /// Handed to the runtime's wake callback, which runs on the driver's
+    /// thread. It lives as long as the provider so the callback cannot
+    /// outlive what it dereferences; `Host.connect`'s client is freed in
+    /// `destroy` before this does.
+    wake_context: WakeContext = .{},
+    /// Cancels a local coordinator ensure on the connected lane, where
+    /// there is no worker to carry the worker's own flag.
+    connected_stopping: std.atomic.Value(bool) = .init(false),
     endpoint: OwnedEndpoint,
     /// An explicit PHUX_SESSION selects by name. Null means attach the
     /// server's current session. Neither path has create authority.
@@ -195,14 +224,6 @@ pub const PhuxProvider = struct {
         if (self.capture) |*capture| capture.cancel();
     }
 
-    fn startWorker(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !*extension.Worker {
-        if (self.capture) |*capture| {
-            const tunnel = try capture.take();
-            return extension.Worker.startCaptured(self.io, self.gpa, self.bridge, handle, self.workerEndpoint(), tunnel);
-        }
-        return extension.Worker.startWithOptions(self.io, self.gpa, self.bridge, handle, self.workerEndpoint(), .{ .status = &self.local_status });
-    }
-
     /// The coordinator an endpoint reaches (contract.phuxCoordinatorId).
     pub fn coordinatorId(endpoint: Endpoint) provider.ProviderId {
         return provider.phuxCoordinatorId(switch (endpoint) {
@@ -238,18 +259,76 @@ pub const PhuxProvider = struct {
         self.gpa.destroy(self);
     }
 
+    /// Hand the target to the runtime, which dials, walks the reconnect
+    /// ladder and wakes this channel itself (ADR-0133).
     pub fn open(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !void {
         errdefer self.cancelCapturedTunnel();
-        if (self.worker != null) return error.InvalidState;
+        if (self.host.lane == .connected) return error.InvalidState;
         self.applyPendingRetarget();
-        if (self.host.state() == .new) try self.host.start(self.client_name);
-        self.worker = try self.startWorker(handle);
+        self.wake_context.handle = handle;
+        self.wake_context.stopped.store(false, .release);
+        if (self.capture) |*capture| {
+            // The capture is the destination: its retained endpoint, pin and
+            // token provenance outrank the registry alias, which may since
+            // have been retargeted. The runtime only reads that
+            // configuration, so this tunnel is ours to free.
+            var tunnel = try capture.take();
+            defer tunnel.close();
+            return self.host.connectCaptured(
+                tunnel.handle,
+                self.client_name,
+                connectedWake,
+                &self.wake_context,
+            );
+        }
+        const target = try self.connectTarget();
+        // The runtime dials; it does not start anything. A local coordinator
+        // is still this machine's to supervise, exactly as the worker
+        // supervised it, or the ladder would spin against a socket nobody
+        // is listening on.
+        try self.ensureLocalCoordinator();
+        try self.host.connect(target, self.client_name, connectedWake, &self.wake_context);
+    }
+
+    /// `extension.Worker.ensureLocal`, for the lane that has no worker.
+    fn ensureLocalCoordinator(self: *PhuxProvider) !void {
+        const path = switch (self.endpoint.borrowed()) {
+            .unix => |path| path,
+            // A remote coordinator is the remote host's to supervise.
+            .tcp, .remote => return,
+        };
+        self.connected_stopping.store(false, .release);
+        var evidence: extension.startup.Evidence = .{};
+        const options: extension.startup.Options = .{
+            .evidence = &evidence,
+            .status = &self.local_status,
+        };
+        extension.startup.ensure(self.gpa, self.io, path, &self.connected_stopping, options) catch |err| {
+            self.local_status.record(evidence, path, err);
+            return err;
+        };
+        self.local_status.record(evidence, path, null);
+    }
+
+    /// The runtime dials a local socket or a registered host. A bare
+    /// `host:port` has no runtime lane -- the registry is what carries the
+    /// pin and token a routable dial needs -- so it stays the embedded
+    /// lane's, where the Zig worker owns the connect.
+    fn connectTarget(self: *const PhuxProvider) !host_mod.ConnectTarget {
+        return switch (self.endpoint.borrowed()) {
+            .unix => |path| .{ .socket_path = path },
+            .remote => |remote| .{ .target = remote.target, .config_path = remote.config_path },
+            .tcp => error.Unsupported,
+        };
     }
 
     pub fn stop(self: *PhuxProvider) void {
         self.cancelCapturedTunnel();
-        if (self.worker) |worker| worker.stop();
-        self.worker = null;
+        // Freeing the connected client joins the runtime's driver, so no
+        // wake can reach `wake_context` after this returns.
+        self.connected_stopping.store(true, .release);
+        self.wake_context.stopped.store(true, .release);
+        self.host.stopConnected();
         self.host.disconnect();
         // A standby's list described the connection that just ended.
         if (self.standby) self.host.forgetSessions();
@@ -279,19 +358,31 @@ pub const PhuxProvider = struct {
         return true;
     }
 
+    /// The runtime already owns redialing, so an unchanged destination only
+    /// asks it to redial now. A retarget is a different destination, which
+    /// needs a new session: tear the old one down and connect again.
     fn restartConnection(self: *PhuxProvider, handle: native_sdk.ChannelHandle) !void {
         errdefer self.cancelCapturedTunnel();
+        // Never opened, or already torn down: there is no connection to
+        // retire, so this is an open. The previous generation still freezes,
+        // because a refused open must leave its canvas rather than drop it.
+        if (self.host.lane != .connected) {
+            self.host.freezePublished();
+            return self.open(handle);
+        }
+        if (self.pending_retarget == null) {
+            // Retire now, so an explicit reconnect presents the same way it
+            // does on the embedded lane, then let the runtime redial.
+            try self.host.reconnectConnected();
+            self.attach_queued = false;
+            return;
+        }
         self.host.freezePublished();
         errdefer self.host.freezePublished();
-        if (self.worker) |worker| worker.stop();
-        self.worker = null;
-        self.bridge.incoming.reset();
-        self.bridge.outgoing.reset();
-        self.applyPendingRetarget();
-        self.prepareSessionSwitch();
-        try self.host.reconnect(self.client_name);
+        self.wake_context.stopped.store(true, .release);
+        self.host.stopConnected();
         self.attach_queued = false;
-        self.worker = try self.startWorker(handle);
+        try self.open(handle);
     }
 
     /// Point the next connection at a different coordinator: a registered
@@ -493,6 +584,26 @@ pub const PhuxProvider = struct {
     }
 
     /// The last recorded connection failure, copied into `out`.
+    /// Carry the runtime's reason into the record the Machines UI reads.
+    ///
+    /// The socket worker used to copy this off the relay tunnel it owned.
+    /// The runtime owns the dial now, so its last error is the reason, and
+    /// without this the UI would show a failed host with nothing to say.
+    fn recordRemoteFailure(self: *PhuxProvider) void {
+        if (self.endpoint != .remote) return;
+        if (self.host.state() == .attached) {
+            self.remote_status.noteConnected();
+            return;
+        }
+        // Whenever the runtime has a reason, that reason is the record. The
+        // state is not the gate: a host that retired the connection may have
+        // moved on from `failed` by the time a drain gets here, and a UI
+        // showing a failed host with nothing to say is the bug.
+        var buffer: [extension.remote.max_text_bytes]u8 = undefined;
+        const message = self.host.copyConnectionError(&buffer);
+        if (message.len != 0) self.remote_status.recordFailure(message);
+    }
+
     pub fn remoteFailure(self: *const PhuxProvider, out: []u8) []const u8 {
         if (self.endpoint == .unix) return self.local_status.failureInto(out);
         return self.remote_status.failureInto(out);
@@ -535,8 +646,22 @@ pub const PhuxProvider = struct {
         return self.drainReadinessBudget(self.bridge.incoming.pendingCount());
     }
 
+    /// Whether a drain would find anything. The connected lane's frames are
+    /// the runtime's, not the bridge's, so a caller polling providers in
+    /// turn must ask through here rather than reading `bridge.incoming`.
+    pub fn wakePending(self: *const PhuxProvider) bool {
+        return self.host.hasReadiness();
+    }
+
     pub fn drainReadinessBudget(self: *PhuxProvider, frame_limit: usize) !SyncDelta {
-        const delta = try self.host.drainReadinessBudget(frame_limit);
+        const delta = self.host.drainReadinessBudget(frame_limit) catch |err| {
+            self.recordRemoteFailure();
+            return err;
+        };
+        self.recordRemoteFailure();
+        // The runtime redialed underneath us. The connection that queued the
+        // last ATTACH is gone, so the next negotiation has to queue its own.
+        if (self.host.takeConnectionRetired()) self.attach_queued = false;
         if (self.host.state() == .detached) {
             self.attach_queued = false;
             return delta;
@@ -863,11 +988,14 @@ pub const PhuxProvider = struct {
     }
 };
 
-test "reconnect allocation failure after queue reset leaves old generation frozen" {
+test "a refused reconnect leaves the old generation frozen" {
+    // A bare address has no runtime lane, so the reconnect is refused before
+    // anything is dialed or supervised. What matters is what the refusal
+    // leaves behind: the previous generation's canvas, frozen, not dropped.
     const self = try PhuxProvider.create(
         std.testing.allocator,
         std.testing.io,
-        .{ .unix = "/unused" },
+        .{ .tcp = .{ .host = "127.0.0.1", .port = 4242 } },
         "session",
         "cockpit",
     );
@@ -884,11 +1012,7 @@ test "reconnect allocation failure after queue reset leaves old generation froze
         .terminal_id = .{ .phux = id },
     };
 
-    const original_allocator = self.bridge.outgoing.gpa;
-    self.bridge.outgoing.gpa = std.testing.failing_allocator;
-    defer self.bridge.outgoing.gpa = original_allocator;
-
-    try std.testing.expectError(error.OutOfMemory, self.reconnect(undefined));
+    try std.testing.expectError(error.Unsupported, self.reconnect(undefined));
     const presentation_value = self.presentation(terminal_ref);
     try std.testing.expect(presentation_value != null);
     try std.testing.expectEqual(provider.Phase.frozen, presentation_value.?.phase);
@@ -1149,4 +1273,71 @@ test "provider operations expose owned outcomes and borrowed endpoint incarnatio
     try std.testing.expectEqual(pending, unknown.request_id);
     try std.testing.expectEqual(.unknown_outcome, unknown.status);
     try std.testing.expectEqual(epoch, unknown.connection_epoch);
+}
+
+test "the connected lane dials a socket or a registered host, and refuses a bare address" {
+    const local = try PhuxProvider.create(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .unix = "/tmp/phux-lane.sock" },
+        null,
+        "cockpit",
+    );
+    defer local.destroy();
+    const local_target = try local.connectTarget();
+    try std.testing.expectEqualStrings("/tmp/phux-lane.sock", local_target.socket_path);
+    try std.testing.expectEqual(@as(usize, 0), local_target.target.len);
+
+    const remote = try PhuxProvider.create(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .remote = .{ .target = "mini", .config_path = "/etc/phux.toml" } },
+        null,
+        "cockpit",
+    );
+    defer remote.destroy();
+    const remote_target = try remote.connectTarget();
+    try std.testing.expectEqualStrings("mini", remote_target.target);
+    try std.testing.expectEqualStrings("/etc/phux.toml", remote_target.config_path);
+    try std.testing.expectEqual(@as(usize, 0), remote_target.socket_path.len);
+
+    // A bare address carries neither a pin nor a token, and the registry is
+    // what supplies both. It stays the embedded lane's.
+    const bare = try PhuxProvider.create(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .tcp = .{ .host = "10.0.0.2", .port = 4242 } },
+        null,
+        "cockpit",
+    );
+    defer bare.destroy();
+    try std.testing.expectError(error.Unsupported, bare.connectTarget());
+}
+
+test "a stopped wake context posts nothing, and a null one is inert" {
+    var context: WakeContext = .{};
+    // No handle: the provider has not opened yet.
+    connectedWake(&context);
+    // Stopped: the degraded teardown path, where a driver may outlive stop.
+    context.stopped.store(true, .release);
+    connectedWake(&context);
+    // The runtime never passes null, but a callback that dereferences one
+    // would be a crash in someone else's thread.
+    connectedWake(null);
+}
+
+test "a provider that never opened tears down without a connection" {
+    const self = try PhuxProvider.create(
+        std.testing.allocator,
+        std.testing.io,
+        .{ .unix = "/unused" },
+        null,
+        "cockpit",
+    );
+    defer self.destroy();
+    // Nothing has connected, so the host still holds the embedded client it
+    // was created with; stop must be a safe no-op rather than a refusal.
+    try std.testing.expectEqual(host_mod.Lane.embedded, self.host.lane);
+    self.stop();
+    try std.testing.expectEqual(host_mod.Lane.embedded, self.host.lane);
 }

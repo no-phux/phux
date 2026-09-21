@@ -10,13 +10,20 @@ import time
 
 home = Path(__file__).parent
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
-if (home / "spawn-probe").exists():
-    probe = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-    (home / "probe-pid").write_text(str(probe.pid))
+# Announce this helper before spawning a probe. `ready()` and argv checks
+# must not wait on a second interpreter under CI load (phux-7v35).
 with (home / "calls").open("a") as calls:
     calls.write("\n".join(sys.argv[1:]) + "\n")
 (home / "pid.tmp").write_text(str(os.getpid()))
 (home / "pid.tmp").replace(home / "pid")
+if (home / "spawn-probe").exists():
+    probe = subprocess.Popen(
+        ["/bin/sleep", "60"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    (home / "probe-pid").write_text(str(probe.pid))
 while not (home / "release").exists():
     time.sleep(0.01)
 code = (home / "release").read_text()

@@ -442,11 +442,29 @@ test "ensure success requires the versioned result for the exact socket" {
     try std.testing.expectError(error.InvalidEnsureReply, validateEnsureReply(std.testing.allocator, unknown, "/wanted.sock"));
 }
 
-/// Test-only process fixture shared with the worker integration test. Every path
-/// lives in a disposable directory; the selected socket is never created.
+/// The whole socket path must fit `sockaddr_un.sun_path`: 104 bytes on
+/// Darwin, 108 on Linux. The kernel measures the path, not its last
+/// component, so a deep checkout is what overruns it.
+const max_socket_path = @sizeOf(@FieldType(std.posix.sockaddr.un, "path"));
+
+/// Sockets live here rather than beside the fixture's other files.
+/// `std.testing.tmpDir` is `.zig-cache/tmp/<hash>` relative to the
+/// checkout, and a linked worktree's prefix alone can spend the entire
+/// `sun_path` budget before the fixture adds anything. A short absolute
+/// base keeps these tests runnable from any checkout depth, which is what
+/// the repository's worktree-per-branch rule requires.
+const socket_root = "/tmp";
+
+/// Distinguishes concurrent fixtures within one test binary; the pid
+/// distinguishes binaries running in parallel.
+var socket_sequence: std.atomic.Value(u32) = .init(0);
+
+/// Test-only process fixture shared with the worker integration test. Every
+/// path lives in a disposable directory; the selected socket is never created.
 pub const TestFixture = struct {
     tmp: std.testing.TmpDir,
     cli: [:0]u8,
+    socket_dir: []u8,
     socket: []u8,
 
     pub fn init() !TestFixture {
@@ -459,11 +477,30 @@ pub const TestFixture = struct {
         });
         const cli = try tmp.dir.realPathFileAlloc(std.testing.io, "fixture cli", std.testing.allocator);
         errdefer std.testing.allocator.free(cli);
-        const socket = try std.fs.path.join(std.testing.allocator, &.{ std.fs.path.dirname(cli).?, "s s" });
-        return .{ .tmp = tmp, .cli = cli, .socket = socket };
+
+        const socket_dir = try std.fmt.allocPrint(
+            std.testing.allocator,
+            "{s}/phux-cockpit-{d}-{d}",
+            .{ socket_root, std.c.getpid(), socket_sequence.fetchAdd(1, .monotonic) },
+        );
+        errdefer std.testing.allocator.free(socket_dir);
+        const cwd = std.Io.Dir.cwd();
+        cwd.deleteTree(std.testing.io, socket_dir) catch {};
+        try cwd.createDirPath(std.testing.io, socket_dir);
+        errdefer cwd.deleteTree(std.testing.io, socket_dir) catch {};
+
+        // The space is deliberate: `ensure` hands this path to a helper and
+        // must quote it.
+        const socket = try std.fs.path.join(std.testing.allocator, &.{ socket_dir, "s s" });
+        errdefer std.testing.allocator.free(socket);
+        if (socket.len >= max_socket_path) return error.TestSocketTooLong;
+
+        return .{ .tmp = tmp, .cli = cli, .socket_dir = socket_dir, .socket = socket };
     }
 
     pub fn deinit(self: *TestFixture) void {
+        std.Io.Dir.cwd().deleteTree(std.testing.io, self.socket_dir) catch {};
+        std.testing.allocator.free(self.socket_dir);
         std.testing.allocator.free(self.cli);
         std.testing.allocator.free(self.socket);
         self.tmp.cleanup();
@@ -523,9 +560,11 @@ test "ensure bounds an unresponsive helper and reaps it" {
     defer fixture.deinit();
     try fixture.tmp.dir.writeFile(std.testing.io, .{ .sub_path = "spawn-probe", .data = "" });
     var stopping = std.atomic.Value(bool).init(false);
-    // The fixture runs until released; allow Python startup, then enforce the
-    // outer budget. This is a timeout contract, not a performance assertion.
-    try std.testing.expectError(error.EnsureTimedOut, ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli, .timeout_ms = 1000 }));
+    // Helper-ready is a scheduling wait for Python under CI load. Bound the
+    // unresponsive helper by the production ensure budget so a 1s test clock
+    // cannot fire EnsureTimedOut before the pid file exists (phux-7v35). This
+    // is a timeout/reap contract, not a performance assertion.
+    try std.testing.expectError(error.EnsureTimedOut, ensure(std.testing.allocator, std.testing.io, fixture.socket, &stopping, .{ .cli_path = fixture.cli, .timeout_ms = (Options{}).timeout_ms }));
     try std.testing.expect(fixture.ready());
     try fixture.checkArguments();
     try fixture.expectReaped();

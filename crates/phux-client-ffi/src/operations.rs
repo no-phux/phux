@@ -622,7 +622,7 @@ pub unsafe extern "C" fn phux_client_subscribe_events(
             Some(id)
         };
         client.event_after_seq = after_seq;
-        client.control.set_event_after_seq(after_seq);
+        client.control().set_event_after_seq(after_seq);
         if !client.attached {
             return Ok(());
         }
@@ -860,7 +860,7 @@ fn queue_terminal_attach(
 ) -> Result<(), BridgeError> {
     ensure_queue_capacity(client, request_id)?;
     client.operations.check_admission_capacity()?;
-    if client.control.terminal_is_admitted(&id) || client.operations.admitted(&id) {
+    if client.control().terminal_is_admitted(&id) || client.operations.admitted(&id) {
         return Err(BridgeError::state("terminal is already admitted"));
     }
     if client.operations.subscription_pending(&id) {
@@ -881,7 +881,7 @@ fn queue_terminal_attach(
             role_policy,
         },
     })?;
-    if !client.control.admit_external_attach(&id) {
+    if !client.control().admit_external_attach(&id) {
         return Err(BridgeError::state(
             "terminal admission changed while queueing",
         ));
@@ -929,7 +929,7 @@ fn queue_terminal_detach(
             "terminal has a pending subscription operation",
         ));
     }
-    if !client.control.terminal_is_admitted(&id) && !client.operations.admitted(&id) {
+    if !client.control().terminal_is_admitted(&id) && !client.operations.admitted(&id) {
         return Err(BridgeError::state("terminal is not admitted"));
     }
     client.queue_frame(&FrameKind::Command {
@@ -993,7 +993,7 @@ fn complete_spawn(
         SpawnResult::Ok(id) | SpawnResult::OkBound { id, .. } => {
             validate_spawn_reply(client, &id, satellite.as_ref())?;
             if matches!(id, ResourceId::Local { .. }) {
-                if !client.control.admit_external_spawn(&id) {
+                if !client.control().admit_external_spawn(&id) {
                     return Err(BridgeError::protocol(
                         "spawn reply reused a runtime-admitted terminal ID",
                     ));
@@ -1037,7 +1037,7 @@ fn validate_spawn_reply(
             "spawn reply host differs from request",
         ));
     }
-    if client.control.terminal_is_admitted(id) || client.operations.admitted(id) {
+    if client.control().terminal_is_admitted(id) || client.operations.admitted(id) {
         return Err(BridgeError::protocol(
             "spawn reply reused an admitted terminal ID",
         ));
@@ -1263,7 +1263,7 @@ fn history_request_is_current(
         return false;
     }
     client
-        .control
+        .control()
         .engine()
         .and_then(|engine| engine.replica_info(&key.terminal_id).ok())
         .and_then(|info| info.history)

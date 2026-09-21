@@ -36,8 +36,10 @@ reporting. It never touches a socket or a clock it is not handed:
   (drop and redial), `Refused` (terminal), `Resync` (redial for fresh
   snapshots), `Closed` (the consumer asked).
 
-That is the model Cockpit drives `phux-client-ffi` with: a consumer that
-owns its socket feeds frames directly and needs nothing below this line.
+That is the embedded lane, `Runtime::embedded`: a consumer that owns its
+socket feeds frames directly and needs nothing below this line. It is how a
+harness drives synthetic frames, and how the C ABI's `phux_client_new`
+clients still work.
 
 `connection::run_session` is the driver. It dials the `Target` over its
 lane (Unix socket, WebSocket, or QUIC through `phux-dial` and this crate's
@@ -46,6 +48,26 @@ on a drop walks the `reconnect::Ladder`; `is_fatal_refusal` ends the session
 instead. A resync redials at once, a nudge cuts a backoff short and probes
 an attached socket, and the never-attached phase is bounded by attempts
 and wall clock so a caller can derive its wait from `ConnectOptions`.
+
+## Where a connected binding takes delivery
+
+`ControlOptions::deliver_inbound` decides what the driver does with a frame
+it read. `Fed`, the default, applies it to the plane on the driver's thread;
+that is phux-mobile's lane, and the consumer observes only events and the
+published grid.
+
+`Queued` retains it instead, for `Client::take_inbound` to drain and the
+consumer to feed on its own thread. `phux-client-ffi` takes that lane
+because its per-frame behavior — retired-close suppression,
+bootstrap-profile validation, agent-generation tracking — reads
+workspace-subscription state only its owning thread may touch (ADR-0133
+decision 6). The binding sheds the dialer, the ladder and the framing
+without moving its decode point. The queue is bounded at
+`MAX_QUEUED_INBOUND_FRAMES` and `MAX_QUEUED_INBOUND_BYTES`, mirroring the
+bounds a socket-owning embedder enforced for itself; overflowing either
+fails the connection, and `connection_opened` discards whatever the
+consumer never drained, because those frames were built against the
+connection that ended.
 
 ## Thread model
 
@@ -69,7 +91,12 @@ to call from.
   wire order. The thread shares the plane with callers through a mutex and
   never calls foreign code while holding it: the `Listener` wake fires after
   the lock is released, edge-triggered (one outstanding wake no matter how
-  many frames land; `take_events` re-arms it).
+  many frames land; `take_events` re-arms it). Dropping the last `Client` closes
+  the session and **joins** this thread. That matters for a binding whose
+  listener carries a consumer-owned context: closing alone would let a wake
+  reach a context the consumer had already freed. The driver selects on the
+  close signal and abandons an in-flight dial rather than running it to
+  `dial_timeout`, so the join is bounded by the consumer, never the network.
 - **Caller threads** hold a `Client` (an `Arc`; clone to share) and call
   synchronous methods from anywhere. Each takes the lock briefly and
   notifies the driver when frames were queued. Grid frames are acquired

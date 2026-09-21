@@ -1,7 +1,7 @@
 ---
 audience: contributors, agents
 stability: evolving
-last-reviewed: 2026-09-19
+last-reviewed: 2026-09-21
 ---
 
 # Module structure
@@ -363,26 +363,24 @@ src/
                         agent_session.rs below (a different, server-tracked
                         resource kind) despite the similar names.
   detach.rs           — DETACH_CLIENTS classification (`phux detach`)
-  kill.rs             — SHUTDOWN / KILL_RESOURCES / KILL_RESOURCE and the
-                        keep-empty clear (`phux kill`); selector resolution
-                        and the whole-session-vs-per-pane choice stay with
-                        the caller (`phux kill`, and the MCP `phux_kill`
-                        composing the same primitives in-process)
-  session.rs          — session-identity L3 writes: `rename` (`phux
-                        rename`), whose request id is now a caller parameter
-                        rather than hardcoded inside the write (the CLI
-                        still passes a fixed id today; this only matters
-                        once a caller composes more than one rename per
-                        connection), and create-without-attach (`phux
+  kill.rs             — SHUTDOWN / KILL_RESOURCES / KILL_RESOURCE, the
+                        keep-empty clear, and `selected` (selector
+                        resolution and the whole-session-vs-per-pane
+                        choice), shared by `phux kill` and MCP `phux_kill`
+  session.rs          — session-identity L3 writes: `rename_checked` (`phux
+                        rename` and MCP `phux_rename`), whose request id is a
+                        caller parameter rather than hardcoded inside the
+                        write, and create-without-attach (`phux
                         new`/`phux new --json`/`--empty`), including the
                         atomic-agent-session-restore capability preflight;
-                        duplicate-name rejection and CLI wording stay in
+                        duplicate-name rejection for `phux new` stays in
                         `crates/phux/src/commands/new.rs`
   session_list.rs     — the `phux ls --json` document (SessionListJson)
                         built from one GET_STATE view; `phux ls` prints it
                         and MCP `phux_ls` returns it
-  signal.rs           — ACQUIRE_INPUT / RELEASE_INPUT / SIGNAL_TERMINAL
-                        command builders and their shared outcome
+  signal.rs           — ACQUIRE_INPUT / RELEASE_INPUT command builders,
+                        SIGNAL_TERMINAL, and `deliver` (resolve-and-send),
+                        shared by `phux signal` and MCP `phux_signal`
                         (`phux take` / `phux give` / `phux signal`, ADR-0033)
   spatial.rs          — insert-pane / move-pane / swap-pane: selector
                         resolution, the plan, execution (LayoutOps or the
@@ -394,7 +392,8 @@ src/
                         placement (`phux spawn`, `phux launch`); the
                         `--json` result document and the SpawnError
                         sentences both surfaces print
-  tags.rs             — phux.tags/v1 read/write (`phux tag`, ADR-0027)
+  tags.rs             — phux.tags/v1 read/write and `apply` (list/add/rm),
+                        shared by `phux tag` and MCP `phux_tag` (ADR-0027)
   resource.rs, resource/
                       — the `phux resource` noun (PHA-406): resource.rs
                         picks Terminal-kind panes out of a snapshot and
@@ -691,28 +690,30 @@ rather than a layer with its own internal architecture worth diagramming:
   residue), and what it touches. The parity gate (`tests/parity.rs`) holds
   that table to the live catalog, the CLI grammar, and the kind table;
   `phux`'s refdocs compile the same file to render
-  `docs/reference/parity.md`. `phux_spawn` and the three spatial edits
-  (in `pane_tools.rs`) and `approval_tools.rs` (`phux_approvals`/
-  `phux_approve` over `phux_client::approvals`, ADR-0128, with
-  `phux_approve` gated by the same `annotations::require_confirmation`
-  check as any other destructive tool) run in-process through the same
-  `phux-client` builders the CLI calls, so those surfaces cannot drift.
-  Four tools are marked `Exec::InProcessMirror` instead: `phux_kill`
-  (`kill_tool.rs`, mirroring
-  `crates/phux/src/commands/kill.rs::kill_selected`) and `phux_signal`,
-  `phux_tag` and `phux_rename` (in `pane_tools.rs`, mirroring
-  `supervise.rs` and `tag.rs`). They run in-process but re-implement the
-  CLI verb's logic and share only the lower-level `phux_client` wire
-  helpers, so the two paths can drift; unifying them is tracked
-  separately (phux-c3vw). `phux_kill` also drops one CLI behaviour with
-  no tool-result channel to carry it: the partial-fleet warning a
-  degraded view prints.
+  `docs/reference/parity.md`. `phux_spawn`, `phux_kill`, `phux_signal`,
+  `phux_tag`, `phux_rename`, the three spatial edits (in `pane_tools.rs`)
+  and `approval_tools.rs` (`phux_approvals`/`phux_approve` over
+  `phux_client::approvals`, ADR-0128, with `phux_approve` gated by the
+  same `annotations::require_confirmation` check as any other destructive
+  tool) run in-process through the same `phux-client` builders the CLI
+  calls, so those surfaces cannot drift. `phux_kill` prints the CLI's
+  partial-fleet-view warning on stderr, the adapter's out-of-band
+  diagnostic channel.
 - **`phux-plugin`** — the shared plugin-runtime surface (argv execution,
   timeouts, env injection) used by both the CLI's `config run` and the
   server's `hooks.rs` dispatcher.
 - **`phux-client-ffi`** — a stable native C bridge over
   `phux-client-core`'s synchronous session kernel, for non-Rust native
-  embedders; compile-time excluded on wasm. The cell layout is core's:
+  embedders; compile-time excluded on wasm. It holds a
+  `phux_client_runtime::Client` and reaches the control plane through that
+  handle's guard, never a plane of its own. Two lanes: `phux_client_new`
+  builds the embedded one, where the embedder owns the socket and pumps
+  frames with `feed_frame`/`outgoing_*`; `phux_client_connect` builds the
+  connected one over `Runtime::connect`, where the runtime dials, walks the
+  ladder and owns the socket, and `phux_client_poll` feeds what it read.
+  The lanes are mutually exclusive at runtime and the `connect` module owns
+  that boundary (ADR-0133 decisions 2 and 6). Cockpit runs the connected
+  lane; the embedded one is how a harness stages synthetic frames. The cell layout is core's:
   `PhuxTerminalCell`, `PhuxGridCellMetadata` and the `PHUX_CLIENT_CELL_*` flags
   in `include/phux/client.h` match `phux_client_core::grid` (pinned by core's
   layout tests), and the grid

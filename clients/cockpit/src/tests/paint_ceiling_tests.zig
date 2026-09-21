@@ -261,6 +261,16 @@ fn paintFleet(
     kind: FleetKind,
     focused_index: usize,
 ) !void {
+    try paintFleetPlan(builder, sessions, kind, focused_index, &.{});
+}
+
+fn paintFleetPlan(
+    builder: *canvas.Builder,
+    sessions: []const *grid.Session,
+    kind: FleetKind,
+    focused_index: usize,
+    pane_cells: []const usize,
+) !void {
     builder.* = canvas.Builder.init(builder.commands);
     const count = sessions.len;
     var focused_flags: [layout.max_panes]bool = @splat(false);
@@ -269,6 +279,7 @@ fn paintFleet(
         .window_active = true,
         .pane_count = count,
         .focused = focused_flags[0..count],
+        .pane_cells = pane_cells,
     });
     const prologue: usize = 0;
     for (sessions, 0..) |session, index| {
@@ -459,6 +470,65 @@ test "Hybrid C degraded pane keeps the last-N prompt, not the first-N top" {
     try testing.expectEqual(rowMark(grid.max_rows - keep), neighbour.cluster(0, 0)[0]);
     try testing.expectEqual(rowMark(grid.max_rows - 1), neighbour.cluster(0, neighbour.rows() - 1)[0]);
     try testing.expect(neighbour.cluster(0, 0)[0] != 'A');
+}
+
+test "measured split panes that fit keep full grids when focus swaps" {
+    const gpa = testing.allocator;
+    const cols: u16 = 80;
+    const rows: u16 = 48;
+    try testing.expect(rows > paint_budget.degraded_rows);
+    var pair = try support.createSessions(cols, rows);
+    defer {
+        pair[0].destroy();
+        pair[1].destroy();
+    }
+    feedIndexedRows(pair[0], cols, rows);
+    feedIndexedRows(pair[1], cols, rows);
+
+    const cells = [_]usize{ @as(usize, cols) * @as(usize, rows), @as(usize, cols) * @as(usize, rows) };
+    const builder = try heapBuilder(gpa);
+    defer destroyBuilder(gpa, builder);
+
+    for (0..pair.len) |focus| {
+        try paintFleetPlan(builder, &pair, .hybrid, focus, &cells);
+        const first = support.findPaneCellGrid(builder.displayList(), 0) orelse return error.MissingPane;
+        const second = support.findPaneCellGrid(builder.displayList(), 1) orelse return error.MissingPane;
+        try testing.expectEqual(@as(usize, rows), first.rows());
+        try testing.expectEqual(@as(usize, rows), second.rows());
+        try testing.expectEqual(rowMark(0), first.cluster(0, 0)[0]);
+        try testing.expectEqual(rowMark(rows - 1), first.cluster(0, first.rows() - 1)[0]);
+        try testing.expectEqual(rowMark(0), second.cluster(0, 0)[0]);
+        try testing.expectEqual(rowMark(rows - 1), second.cluster(0, second.rows() - 1)[0]);
+    }
+}
+
+test "measured panes that overflow still last-N crop the unfocused neighbour" {
+    const gpa = testing.allocator;
+    const cols: u16 = 80;
+    const rows: u16 = 48;
+    try testing.expect(rows > paint_budget.degraded_rows);
+    var pair = try support.createSessions(cols, rows);
+    defer {
+        pair[0].destroy();
+        pair[1].destroy();
+    }
+    feedIndexedRows(pair[0], cols, rows);
+    feedIndexedRows(pair[1], cols, rows);
+
+    // Inflated counts: the store cannot hold both, so Hybrid C last-N stays on.
+    const cells = [_]usize{ paint_budget.cell_store, paint_budget.cell_store };
+    try testing.expect(cells[0] + cells[1] > paint_budget.cell_store);
+
+    const builder = try heapBuilder(gpa);
+    defer destroyBuilder(gpa, builder);
+    try paintFleetPlan(builder, &pair, .hybrid, 0, &cells);
+
+    const focused = support.findPaneCellGrid(builder.displayList(), 0) orelse return error.MissingFocusedPane;
+    try testing.expectEqual(@as(usize, rows), focused.rows());
+    const neighbour = support.findPaneCellGrid(builder.displayList(), 1) orelse return error.MissingDegradedPane;
+    try testing.expectEqual(paint_budget.degraded_rows, neighbour.rows());
+    try testing.expectEqual(rowMark(rows - paint_budget.degraded_rows), neighbour.cluster(0, 0)[0]);
+    try testing.expectEqual(rowMark(rows - 1), neighbour.cluster(0, neighbour.rows() - 1)[0]);
 }
 
 fn splitUntil(state: *TerminalApp, harness: anytype, want: usize) !void {

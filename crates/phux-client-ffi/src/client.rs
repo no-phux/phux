@@ -14,12 +14,15 @@ use std::sync::Arc;
 
 use phux_client_core::history::{HistoryCacheConfig, HistoryLoadState, HistoryStatus};
 use phux_client_core::session::ReplicaKey;
-use phux_client_runtime::control::{ControlOptions, ControlPlane, Event, Status as RuntimeStatus};
+use phux_client_runtime::control::{
+    ControlOptions, Event, InboundDelivery, Status as RuntimeStatus,
+};
 use phux_client_runtime::engine::{
     EngineDocumentPoint, EngineError, MouseMode, Scroll, SelectionGestureEvent,
     SelectionGestureResult,
 };
 use phux_client_runtime::publication::{GridFrame, Rgb};
+use phux_client_runtime::{Client as RuntimeClient, ControlGuard, Lane, Runtime};
 use phux_protocol::ResourceKind;
 use phux_protocol::caps::{BootstrapLimits, Layer, ServerFeature};
 use phux_protocol::ids::{BootstrapId, ResourceId, StreamId};
@@ -134,7 +137,11 @@ pub(crate) struct Limits {
 
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct Client {
-    pub control: ControlPlane,
+    /// The runtime session this bridge projects. The C ABI's historical
+    /// lane is `Lane::Embedded`: Cockpit owns the socket and pumps frames.
+    /// `phux_client_connect` builds a `Lane::Connected` one instead, where
+    /// the runtime's driver dials, reconnects, and pumps.
+    pub runtime: RuntimeClient,
     /// Borrow-retained copy of `ControlPlane::take_outbound()`.
     pub outgoing: Vec<Vec<u8>>,
     pub owned_effects: Vec<OwnedEffect>,
@@ -151,6 +158,8 @@ pub(crate) struct Client {
     pub workspace: crate::workspace::SharedWorkspace,
     pub server_id: Vec<u8>,
     pub last_error: Vec<u8>,
+    /// Borrow-retained copy of the runtime's connection failure.
+    pub connection_error: Vec<u8>,
     pub limits: Limits,
     pub callbacks: PhuxClientCallbacks,
     pub in_callback: bool,
@@ -186,7 +195,14 @@ pub(crate) struct Client {
 }
 
 impl Client {
-    pub(crate) fn new(limits: Limits) -> Self {
+    /// The plane options and history policy both lanes are built with.
+    ///
+    /// `deliver_inbound` is [`InboundDelivery::Queued`] in either lane: this
+    /// ABI's per-frame hooks (retired-close suppression, bootstrap-profile
+    /// validation, agent-generation tracking) read workspace-subscription
+    /// state that only the owning thread may touch, so the decode point
+    /// stays here even when the runtime owns the socket.
+    pub(crate) fn control_options(limits: &Limits) -> (ControlOptions, HistoryCacheConfig) {
         let bootstrap_limits =
             BootstrapLimits::new(limits.bootstrap_chunk, limits.history_page).unwrap_or_default();
         let history = HistoryCacheConfig {
@@ -209,9 +225,24 @@ impl Client {
             // ATTACH_RESOURCE for the same spawn.
             auto_attach_foreign_spawns: false,
             bootstrap_limits,
+            deliver_inbound: InboundDelivery::Queued,
         };
+        (options, history)
+    }
+
+    pub(crate) fn new(limits: Limits) -> Self {
+        let (options, history) = Self::control_options(&limits);
+        Self::from_runtime(limits, Runtime::embedded(options), history)
+    }
+
+    pub(crate) fn from_runtime(
+        limits: Limits,
+        runtime: RuntimeClient,
+        history: HistoryCacheConfig,
+    ) -> Self {
+        runtime.control().set_history_config(history);
         Self {
-            control: ControlPlane::new(options).with_history_config(history),
+            runtime,
             outgoing: Vec::new(),
             owned_effects: Vec::new(),
             effect_count: 0,
@@ -227,6 +258,7 @@ impl Client {
             workspace: crate::workspace::SharedWorkspace::default(),
             server_id: Vec::new(),
             last_error: Vec::new(),
+            connection_error: Vec::new(),
             limits,
             callbacks: PhuxClientCallbacks::default(),
             in_callback: false,
@@ -278,9 +310,9 @@ impl Client {
     ) {
         self.limits.bootstrap_chunk = limits.max_chunk_bytes();
         self.limits.history_page = limits.max_history_page_bytes();
-        if self.control.status() == phux_client_runtime::control::Status::Idle {
-            let _ = self.control.open_explicit("ffi-test".to_owned());
-            let _ = self.control.take_outbound();
+        if self.control().status() == phux_client_runtime::control::Status::Idle {
+            let _ = self.control().open_explicit("ffi-test".to_owned());
+            let _ = self.control().take_outbound();
         }
         let mut features = Vec::new();
         for (enabled, feature) in [
@@ -307,7 +339,7 @@ impl Client {
         let server_caps = phux_protocol::caps::ServerCapabilities::new()
             .with_features(phux_protocol::ServerFeatureSet::with(&features))
             .with_layers(layers);
-        self.control
+        self.control()
             .feed(FrameKind::HelloOk {
                 protocol_major: phux_protocol::PROTOCOL_VERSION.major,
                 protocol_minor: phux_protocol::PROTOCOL_VERSION.minor,
@@ -345,11 +377,14 @@ impl Client {
         self.search_results.clear();
     }
 
-    pub(crate) const fn state(&self) -> PhuxClientState {
+    pub(crate) fn state(&self) -> PhuxClientState {
         if self.detached {
             return PhuxClientState::Detached;
         }
-        match self.control.status() {
+        // Bound the guard: a scrutinee temporary would hold the control
+        // lock across every arm.
+        let status = self.control().status();
+        match status {
             RuntimeStatus::Idle => PhuxClientState::New,
             RuntimeStatus::Connecting => PhuxClientState::HelloQueued,
             RuntimeStatus::Negotiated => PhuxClientState::Negotiated,
@@ -366,7 +401,7 @@ impl Client {
     }
 
     pub(crate) fn ensure_attached(&self) -> Result<(), BridgeError> {
-        if (self.control.status() == RuntimeStatus::Attached || cfg!(test) && self.attached)
+        if (self.control().status() == RuntimeStatus::Attached || cfg!(test) && self.attached)
             && !self.detached
         {
             Ok(())
@@ -376,7 +411,7 @@ impl Client {
     }
 
     pub(crate) fn ensure_participant(&self, id: &ResourceId) -> Result<(), BridgeError> {
-        if self.control.terminal_is_admitted(id) || self.is_agent_stream(id) {
+        if self.control().terminal_is_admitted(id) || self.is_agent_stream(id) {
             Ok(())
         } else {
             Err(BridgeError::protocol(
@@ -396,7 +431,7 @@ impl Client {
         self.outgoing.clear();
         self.render.clear();
         self.agent_streams.clear();
-        self.control.close();
+        self.control().close();
         self.attach_queued = false;
         self.expected_attach_id = None;
         self.attached = false;
@@ -404,31 +439,31 @@ impl Client {
     }
 
     pub(crate) fn active_attach_contains(&self, id: &ResourceId) -> bool {
-        self.control.active_attach_contains(id)
+        self.control().active_attach_contains(id)
     }
 
     pub(crate) fn input_ready(&self, id: &ResourceId) -> bool {
-        self.control
+        self.control()
             .engine()
             .is_some_and(|engine| engine.input_ready(id))
     }
 
     pub(crate) fn terminal_closed(&self, id: &ResourceId) -> bool {
-        self.control
+        self.control()
             .engine()
             .is_some_and(|engine| engine.is_closed(id))
     }
 
     #[cfg(test)]
     pub(crate) fn projection(&self, id: &ResourceId) -> Option<Arc<GridFrame>> {
-        self.control.publication().acquire(id)
+        self.control().publication().acquire(id)
     }
 
     pub(crate) fn input_eligibility(
         &self,
         id: &ResourceId,
     ) -> phux_client_core::session::InputEligibility {
-        self.control.engine().map_or(
+        self.control().engine().map_or(
             phux_client_core::session::InputEligibility::Ineligible(
                 phux_client_core::session::InputBlockReason::UnknownTerminal,
             ),
@@ -441,7 +476,7 @@ impl Client {
         if self.is_agent_stream(id) {
             return Some(ResourceKind::AgentSession);
         }
-        let info = self.control.engine()?.replica_info(id).ok()?;
+        let info = self.control().engine()?.replica_info(id).ok()?;
         Some(match info.profile {
             phux_protocol::BootstrapStreamProfile::AgentEventsJsonlV1 => ResourceKind::AgentSession,
             _ => ResourceKind::Terminal,
@@ -449,13 +484,13 @@ impl Client {
     }
 
     pub(crate) fn has_projection(&self, id: &ResourceId) -> bool {
-        self.control
+        self.control()
             .engine()
             .is_some_and(|engine| engine.has_projection(id))
     }
 
-    pub(crate) fn release_terminal(&mut self, id: &ResourceId) -> bool {
-        self.control.release_terminal(id)
+    pub(crate) fn release_terminal(&self, id: &ResourceId) -> bool {
+        self.control().release_terminal(id)
     }
 
     pub(crate) fn terminal_key(&self, id: &ResourceId) -> Result<ReplicaKey, BridgeError> {
@@ -530,7 +565,7 @@ impl Client {
         id: &ResourceId,
         anchor: PhuxDocumentAnchor,
     ) -> Result<(), BridgeError> {
-        self.control
+        self.control()
             .pin_viewport(id, anchor.opaque_id)
             .map_err(engine_bridge)?;
         self.process_runtime_events()?;
@@ -538,7 +573,7 @@ impl Client {
     }
 
     pub(crate) fn follow_live(&mut self, id: &ResourceId) -> Result<(), BridgeError> {
-        self.control.follow_live(id).map_err(engine_bridge)?;
+        self.control().follow_live(id).map_err(engine_bridge)?;
         self.process_runtime_events()?;
         Ok(())
     }
@@ -595,7 +630,7 @@ impl Client {
     )]
     pub(crate) fn release_search_results(&mut self) -> Result<(), BridgeError> {
         let results = std::mem::take(&mut self.search_results);
-        let ids: Vec<ResourceId> = self.control.publication().terminals();
+        let ids: Vec<ResourceId> = self.control().publication().terminals();
         let mut first = None;
         for result in results {
             for anchor in [result.start, result.end] {
@@ -636,7 +671,7 @@ impl Client {
             ),
             _ => return Err(BridgeError::invalid("unknown viewport scroll kind")),
         };
-        self.control.scroll(id, scroll).map_err(engine_bridge)?;
+        self.control().scroll(id, scroll).map_err(engine_bridge)?;
         self.process_runtime_events()?;
         Ok(())
     }
@@ -695,18 +730,36 @@ impl Client {
         reason = "preserves the fallible binding queue seam used by all extension modules"
     )]
     pub(crate) fn queue_frame(&mut self, frame: &FrameKind) -> Result<(), BridgeError> {
-        self.control.queue_frame(frame);
+        self.control().queue_frame(frame);
         self.drain_outbound();
         Ok(())
     }
 
+    /// Drain the frames a connected driver read since the last poll.
+    pub(crate) fn take_inbound(&self) -> Vec<Vec<u8>> {
+        self.runtime.take_inbound()
+    }
+
+    /// Whether the runtime's driver owns this client's socket.
+    pub(crate) fn is_connected_lane(&self) -> bool {
+        self.runtime.lane() == Lane::Connected
+    }
+
     pub(crate) fn drain_outbound(&mut self) {
-        self.outgoing.extend(self.control.take_outbound());
+        // The connected lane's driver writes queued frames itself, and the
+        // control guard has already woken it. Draining here would steal
+        // them off the socket.
+        if self.is_connected_lane() {
+            return;
+        }
+        let outbound = self.control().take_outbound();
+        self.outgoing.extend(outbound);
     }
 
     pub(crate) fn process_runtime_events(&mut self) -> Result<bool, BridgeError> {
         let mut attached = false;
-        for event in self.control.take_events() {
+        let events = self.control().take_events();
+        for event in events {
             attached |= self.process_runtime_event(event)?;
         }
         self.sync_server_features();
@@ -906,7 +959,7 @@ impl Client {
 
     fn damage_effect(&mut self, id: &ResourceId) {
         self.render.remove(id);
-        let Some(frame) = self.control.publication().acquire(id) else {
+        let Some(frame) = self.control().publication().acquire(id) else {
             self.owned_effects
                 .push(OwnedEffect::simple(1, 3, id.clone()));
             return;
@@ -1004,7 +1057,7 @@ impl Client {
     }
 
     fn sync_server_features(&mut self) {
-        let Some(server) = self.control.server() else {
+        let Some(server) = self.control().server().cloned() else {
             return;
         };
         self.protocol_ready = true;
@@ -1047,10 +1100,17 @@ impl Client {
             negotiated_test_feature(self.l3_metadata, server.layers.contains(Layer::L3));
     }
 
-    fn engine(&self) -> Result<&phux_client_runtime::engine::EngineHandle, BridgeError> {
-        self.control
+    fn engine(&self) -> Result<phux_client_runtime::engine::EngineHandle, BridgeError> {
+        self.control()
             .engine()
+            .cloned()
             .ok_or_else(|| BridgeError::state("terminal engine is not negotiated"))
+    }
+
+    /// Borrow the runtime's control plane. Releasing the guard notifies a
+    /// connected lane's driver about anything the borrow queued.
+    pub(crate) fn control(&self) -> ControlGuard<'_> {
+        self.runtime.control()
     }
 
     pub(crate) const fn publish_effects(&mut self) {
@@ -1083,7 +1143,7 @@ impl Client {
         id: &ResourceId,
     ) -> Result<*const PhuxTerminalGridView, BridgeError> {
         let frame = self
-            .control
+            .control()
             .publication()
             .acquire(id)
             .ok_or_else(|| BridgeError::state("terminal has no published grid"))?;

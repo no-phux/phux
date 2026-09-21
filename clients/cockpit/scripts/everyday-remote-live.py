@@ -184,13 +184,17 @@ def exercise_stall(probe, config, directory, env, server):
             server.send_signal(signal.SIGCONT)
 
 
-def assert_execution_records(directory, expected):
+def assert_execution_records(directory, expected, secondary=True):
     assert (directory / "executed").read_text().splitlines() == expected
+    if not secondary:
+        # The second terminal is the C probe's; nothing created it.
+        return
     assert (directory / "second-executed").read_text().splitlines() == [
         "second-terminal-only"], "secondary terminal received unexpected input"
 
 
-def exercise(phux, probe, provider_probe, directory, transport):
+def exercise(phux, probe, provider_probe, directory, transport, connected=False,
+             provider_only=False):
     env = isolated_env(directory)
     paired = json.loads(run([phux, "pair", "--json"], directory, env,
                             capture_output=True).stdout)
@@ -212,22 +216,32 @@ def exercise(phux, probe, provider_probe, directory, transport):
         run([phux, "pair", "revoke", stale["credential_id"], "--json"],
             directory, env, capture_output=True)
         start_workload(phux, directory, env, server)
-        run([probe, config, "loop", "lifecycle"], directory, env)
-        exercise_stall(probe, config, directory, env, server)
-        run([probe, config, "loop", "lease"], directory, env)
-        expected = ["first-input", "after-reconnect", "after-link-stall", "after-expired-history"]
+        expected = []
+        if not provider_only:
+            run([probe, config, "loop", "lifecycle"], directory, env)
+            exercise_stall(probe, config, directory, env, server)
+            run([probe, config, "loop", "lease"], directory, env)
+            expected = ["first-input", "after-reconnect", "after-link-stall",
+                        "after-expired-history"]
         if provider_probe:
-            run([provider_probe], directory, dict(env, EVERYDAY_REMOTE_CONFIG=str(config)))
-            expected.extend(["provider-before-reconnect", "provider-after-reconnect"])
-        for target in ("stale-token", "stale-pin"):
-            run([probe, config, target, "refused"], directory, env)
-        assert_execution_records(directory, expected)
+            # isolated_env strips every PHUX_ name, so the lane selector has
+            # to be put back deliberately rather than inherited.
+            lane = {"PHUX_COCKPIT_CONNECTED": "1"} if connected else {}
+            run([provider_probe], directory,
+                dict(env, EVERYDAY_REMOTE_CONFIG=str(config), **lane))
+            expected.extend(["provider-before-reconnect", "provider-after-reconnect",
+                             "local-before-reconnect", "local-after-reconnect"])
+        if not provider_only:
+            for target in ("stale-token", "stale-pin"):
+                run([probe, config, target, "refused"], directory, env)
+        assert_execution_records(directory, expected, not provider_only)
         assert config.read_bytes() == original, "resolution/dial mutated the saved registry"
         # Stop the actual coordinator before cleanup; its own shutdown ends
         # the PTYs. Reopening must not present a cold server as retained work.
         stop(server)
     with fixture_server(phux, directory, env, port, transport):
-        run([probe, config, "loop", "cold"], directory, env)
+        if not provider_only:
+            run([probe, config, "loop", "cold"], directory, env)
         inventory = json.loads(run([phux, "ls", "--remote", "loop", "--json"],
                                    directory, env, capture_output=True).stdout)
         assert inventory["sessions"] == [], "cold fixture unexpectedly recreated lost work"
@@ -335,6 +349,13 @@ def arguments():
     parser.add_argument("--scratch-root", type=Path, default=Path("/private/tmp/opencode"))
     parser.add_argument("--transport", choices=("quic", "wss", "both"), default="both")
     parser.add_argument("--ffi-only", action="store_true", help="Scoped inner loop; skip the Zig provider probe")
+    parser.add_argument("--provider-only", action="store_true",
+                        help="Scoped inner loop; run only the Zig provider probe, skipping the C "
+                             "probe scenarios. Use to exercise the provider while a C-probe "
+                             "scenario is independently broken; never a substitute for a full run")
+    parser.add_argument("--connected", action="store_true",
+                        help="Run the provider probe on the runtime's connected lane (ADR-0133) "
+                             "instead of the Zig socket worker")
     return parser.parse_args()
 
 
@@ -353,13 +374,17 @@ def verify(args):
         for transport in transports:
             home = directory / transport
             home.mkdir()
-            exercise(phux, probe, provider_probe, home, transport)
+            exercise(phux, probe, provider_probe, home, transport, args.connected,
+                     args.provider_only)
         assert source_identity() == source, "checkout source changed during verification"
         assert artifact_identity(artifact_dir, probe, provider_probe) == artifacts, "artifacts changed during verification"
         publish_evidence({"source": source, "profile": args.profile, "artifacts": artifacts,
                           "native_target": built["target"], "transports": transports,
+                          "provider_lane": "connected" if args.connected else "embedded",
                           "result": "passed"}, args.scratch_root)
-    lane = "FFI-only" if args.ffi_only else "FFI + production provider"
+    lane = "FFI-only" if args.ffi_only else "provider-only" if args.provider_only else (
+        "FFI + production provider on the runtime's connected lane" if args.connected
+        else "FFI + production provider")
     print(f"PASS: isolated {lane} transport proof; genuine remote Cockpit acceptance remains separate")
 
 

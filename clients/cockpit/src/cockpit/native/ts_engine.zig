@@ -1578,7 +1578,7 @@ pub const Engine = struct {
     }
 
     fn peerWakePending(peer: *support.PhuxProvider) bool {
-        return peer.bridge.incoming.hasReadiness();
+        return peer.wakePending();
     }
 
     fn nextBackgroundPeer(self: *Engine) ?usize {
